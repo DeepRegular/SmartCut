@@ -1407,7 +1407,9 @@ el("detect-cm").addEventListener("click", async () => {
   try {
     const res = await invoke("detect_cm", { useLogo });
     cmBlocks = res.blocks;
-    const how = !useLogo ? "無音のみ" : res.logo_found ? "ロゴ＋無音" : "無音のみ（ロゴなし）";
+    const how = res.resets > 0
+      ? `字幕リセット ${res.resets} 箇所`
+      : !useLogo ? "無音のみ" : res.logo_found ? "ロゴ＋無音" : "無音のみ（ロゴなし）";
     el("cm-note").textContent = cmBlocks.length
       ? `${how}: ${cmBlocks.length} ブロック / 合計 ` +
         fmt(cmBlocks.reduce((n, b) => n + (b.end - b.start), 0))

@@ -1,14 +1,34 @@
+<div align="center">
+
 # smartcut
+
+**Cut the commercials out of a broadcast recording without re-encoding it.**
+
+[![Release](https://img.shields.io/github/v/release/DeepRegular/SmartCut?style=flat-square&color=1f883d)](https://github.com/DeepRegular/SmartCut/releases)
+[![License](https://img.shields.io/badge/license-GPL--3.0-blue?style=flat-square)](LICENSE)
+[![Platform](https://img.shields.io/badge/platform-Linux%20%C2%B7%20Windows-lightgrey?style=flat-square)](#install)
+[![Core](https://img.shields.io/badge/core-Rust-dea584?style=flat-square)](rust/)
 
 English ・ [日本語](README.ja.md)
 
-A smart-rendering cut tool: **it re-encodes only the partial GOPs that the cut
-points fall inside, and copies everything else bit-for-bit.** Built primarily
-for removing commercials from Japanese broadcast recordings (MPEG-2 TS).
+<img src="docs/images/demo.gif" width="880"
+     alt="Two commercial blocks being taken out of a recording in the smartcut editor">
 
-On real terrestrial recordings **over 99% of the output is a lossless copy**.
-A 22-minute, 5-range export driven by the automatic commercial detector came
-out **bit-identical across all 40589 frames**.
+</div>
+
+Above: two commercial blocks taken out of a 3:45 recording — **133.91 s copied
+bit-for-bit, 0.93 s re-encoded. 28 frames out of 6743 were touched at all.**
+
+*The clip is a synthetic test recording, built by*
+[`tests/make_demo_media.sh`](tests/make_demo_media.sh)
+*from nothing but ffmpeg's own sources: colour cards, a fake station logo, and a
+15-second commercial grid.*
+
+## How
+
+Cutting video normally means decoding and re-encoding the whole file. smartcut
+**re-encodes only the partial GOPs that the cut points fall inside, and copies
+everything else bit-for-bit.**
 
 ```
 ... I ....... I=========================I ....... I ...
@@ -17,14 +37,19 @@ out **bit-identical across all 40589 frames**.
       re-encode        stream copy       re-encode
 ```
 
+On real terrestrial recordings **over 99% of the output is a lossless copy**.
+A 22-minute, 5-range export driven by the automatic commercial detector came
+out **bit-identical across all 40589 frames**.
+
 ## What it does
 
 - **Smart rendering** — H.264 / HEVC / MPEG-2 / MPEG-4 Part 2. Cutting exactly
   on an access point re-encodes nothing at all.
-- **Automatic commercial-boundary detection** — combines runs of silence with
-  the presence of the station logo, and reports the runs that land on the
-  15-second grid. Boundaries snap to access points, so **cutting commercials
-  stays entirely lossless**.
+- **Automatic commercial-boundary detection** — reads the junction marks the
+  broadcast puts in its own caption stream, runs of silence, and the presence
+  of the station logo, and reports the runs that land on the 15-second grid.
+  Boundaries snap to access points, so **cutting commercials stays entirely
+  lossless**.
 - **Cut-editing GUI** — film strip, scene detection, scroll search, and preview
   playback with audio. What you see is always the *edited* timeline.
 - **Built for broadcast material** — interlacing is preserved, 2:3 pulldown is
@@ -69,6 +94,20 @@ smartcut input.ts --analyze --scenes            # scene changes
 | `--detect-cm` / `--logo` / `--scenes` | Commercial candidates, logo assist, scene detection |
 | `--no-open-gop` | Never start a copy at an open GOP |
 | `-o OUTPUT` | Output path; the extension picks the container |
+
+## The editor
+
+![The smartcut cut editor](docs/images/editor.png)
+
+Cuts are subtractive: the timeline you see is **the recording minus the cuts**,
+never the original. A cut region does not turn grey — it *disappears*. The
+seek bar shrinks, the film strip closes over the hole, and the frame counter
+counts the length that will actually be written. All that is left of a cut is
+a red vertical line at the join.
+
+The status line at the bottom is the plan the engine will execute, before you
+commit to it: which ranges get copied, which get re-encoded, and how many
+frames that is.
 
 ## Documentation
 

@@ -190,7 +190,24 @@ fn main() -> Result<()> {
     }
 
     if detect_cm {
-        let logo = if use_logo {
+        // Ask the caption stream first. When the broadcaster resets the
+        // service at its junctions those marks are exact, which neither of
+        // the other two readings can be, and they cost one pass over a
+        // stream that needs no decoding. When they are absent -- and on
+        // several channels they are -- nothing is lost by having looked.
+        let resets = match smartcut_core::caption::resets(&src) {
+            Ok(r) => {
+                println!("\n字幕リセット : {} 箇所", r.len());
+                Some(r)
+            }
+            Err(e) => {
+                println!("\n字幕リセット : ありません（{e}）");
+                None
+            }
+        };
+        // The logo costs half a minute of decoding and is the weaker signal
+        // where the resets exist, so it is not paid for then.
+        let logo = if use_logo && resets.is_none() {
             match smartcut_core::logo::detect(&src, &Default::default()) {
                 Ok(l) => Some(l),
                 Err(e) => {
@@ -213,10 +230,15 @@ fn main() -> Result<()> {
             }
         }
         let opts = smartcut_core::DetectOptions::default();
-        let silences = smartcut_core::find_silences(&src, &opts)?;
+        // Silences are only wanted where they still decide something.
+        let silences = match &resets {
+            Some(_) => Vec::new(),
+            None => smartcut_core::find_silences(&src, &opts)?,
+        };
         let cands = smartcut_core::cm_candidates(&silences, &opts);
-        let blocks = match &logo {
-            Some(l) if !l.absent.is_empty() => {
+        let blocks = match (&resets, &logo) {
+            (Some(r), _) => smartcut_core::cm_blocks_from_resets(r, src.duration),
+            (None, Some(l)) if !l.absent.is_empty() => {
                 smartcut_core::cm_blocks_from_logo(&cands, &l.absent, &opts, 3.0, src.duration)
             }
             _ => smartcut_core::cm_blocks(&cands, &opts, 0.6),
@@ -228,7 +250,11 @@ fn main() -> Result<()> {
         println!(
             "\nCM ブロック : {} 個{}",
             blocks.len(),
-            if logo.is_some() { "（ロゴ＋無音）" } else { "（無音のみ）" }
+            match (&resets, &logo) {
+                (Some(_), _) => "（字幕リセット）",
+                (None, Some(_)) => "（ロゴ＋無音）",
+                _ => "（無音のみ）",
+            }
         );
         for b in &blocks {
             println!(
@@ -239,6 +265,13 @@ fn main() -> Result<()> {
                 b.junctions,
                 b.score
             );
+        }
+        if let Some(r) = &resets {
+            println!("\n継ぎ目 : 字幕リセット {} 箇所", r.len());
+            for t in r {
+                println!("   {:9.3}  ({})", t, fmt_hms(*t));
+            }
+            return Ok(());
         }
         println!("\nCM 境界候補 : {} 個の無音から", silences.len());
         println!("   score  run   silence   time");

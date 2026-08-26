@@ -391,3 +391,59 @@ pub fn blocks_from_logo(
         })
         .collect()
 }
+
+
+/// How far off a 15-second multiple two resets may sit. Far tighter than the
+/// silences are allowed, because a reset is a timestamp rather than a stretch
+/// to guess a cut inside: measured across four recordings the worst neighbour
+/// was 0.03 s off its grid position.
+const RESET_GRID: f64 = 0.35;
+
+/// A lone reset within one commercial unit of either end of the recording is
+/// the recorder having started or stopped inside a break. Further in than
+/// that, a single mark says a break happened here and nothing about where its
+/// other end is, so nothing is offered.
+const RESET_EDGE: f64 = 15.0;
+
+/// Group caption resets into breaks.
+///
+/// The same shape as [`blocks`] -- junctions a whole number of 15-second
+/// units apart -- but without the fill requirement, which exists to defend
+/// against silences landing on the grid by accident. A reset is not an
+/// accident: it is the caption service being told the programme it was
+/// captioning has stopped. Broadcasters differ in how many junctions they
+/// mark (one channel measured marks every one, another only some), so
+/// demanding a full grid would throw away the sparser channel for no gain.
+pub fn blocks_from_resets(resets: &[f64], duration: f64) -> Vec<Block> {
+    let on_grid = |a: f64, b: f64| {
+        let gap = b - a;
+        let units = (gap / 15.0).round();
+        (1.0..=8.0).contains(&units) && (gap - units * 15.0).abs() <= RESET_GRID
+    };
+
+    let mut runs: Vec<Vec<f64>> = Vec::new();
+    for &t in resets {
+        match runs.last_mut() {
+            Some(run) if on_grid(*run.last().expect("runs are never empty"), t) => run.push(t),
+            _ => runs.push(vec![t]),
+        }
+    }
+
+    runs.into_iter()
+        .filter_map(|run| {
+            let (first, last) = (run[0], *run.last().expect("runs are never empty"));
+            if run.len() >= 2 {
+                return Some(Block { start: first, end: last, junctions: run.len(), score: 1.0 });
+            }
+            // The recording's own ends are the only thing that can stand in
+            // for the junction a lone mark is missing.
+            if first <= RESET_EDGE {
+                Some(Block { start: 0.0, end: first, junctions: 1, score: 0.9 })
+            } else if duration - first <= RESET_EDGE {
+                Some(Block { start: first, end: duration, junctions: 1, score: 0.9 })
+            } else {
+                None
+            }
+        })
+        .collect()
+}

@@ -104,10 +104,29 @@ VM 上の wine 10.0 で確認した。
 - **CLI の出力が Linux ビルドと 1 バイトも違わない** — 同じ `mpeg2.ts` を
   `--cut 5-10` した結果が md5 まで一致する。索引（41 アクセスポイント・
   39 オープン GOP）も、境界の部分 GOP を再エンコードした 0.3% も同一。
-- **GUI は WebView2 の初期化まで到達する** — 1180x800 のウィンドウが出て、
-  「Could not find the WebView2 Runtime」で止まる。wine に WebView2 が無い
-  ためで、*そこまで行けている*以上 FFmpeg DLL の解決は済んでいる。AppImage を
-  `DISPLAY` 無しで起動して GTK の初期化まで到達させる確認と同じ論法。
+  ただし**可搬 zip に入っている `smartcut.exe` は GUI のほう**なので、CLI は
+  別に建てる:
+
+  ```bash
+  cd rust && FFMPEG_DIR=~/win-deps/ffmpeg-7.1.1-full_build-shared \
+    XWIN_ACCEPT_LICENSE=1 cargo xwin build --release \
+    --target x86_64-pc-windows-msvc -p smartcut-cli
+  ```
+
+  DLL は GUI 側と同じものを exe の隣に置く。いま **FFmpeg DLL が解決できて
+  いることを確かめられるのは、実質この経路だけ**になっている（次項）。
+- **GUI は wine 上では起動しなくなった**（2026-08-27 現在）。`tao` の
+  `event_loop.rs:709` で `assertion failed: subclass_result.as_bool()` ——
+  `SetWindowSubclass` が失敗している。WebView2 の初期化より手前なので、
+  以前ここに書いていた「1180x800 のウィンドウが出て『Could not find the
+  WebView2 Runtime』で止まる」には**もう到達しない**。
+
+  **ビルドの退行ではない。** すでに公開した v0.1.0 の exe（Releases の可搬
+  zip）を同じ wine で叩いても、同じ行で同じパニックになる。原因は wine 側
+  （comctl32 のサブクラス化）にある。そのぶん「GUI を WebView2 まで到達させて
+  DLL 解決を確かめる」という論法——AppImage を `DISPLAY` 無しで起動して GTK の
+  初期化まで到達させるのと同じ論法——は今は使えず、同じ DLL 一式を読む CLI が
+  Linux と md5 一致するところで代替している。
 
 wine で取れるのはここまで。**実機の Windows で動かして最初に出たのが、
 プレビューの音が鳴らないという不具合だった**（下記「詰まった点」）。wine の

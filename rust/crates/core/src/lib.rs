@@ -11,6 +11,7 @@ use ffmpeg_next as ff;
 
 pub mod audio;
 pub mod bitstream;
+pub mod caption;
 pub mod cm;
 pub mod cut;
 pub mod index;
@@ -22,8 +23,9 @@ pub mod thumbs;
 
 pub use cm::{
     blocks as cm_blocks, blocks_from_logo as cm_blocks_from_logo,
-    candidates as cm_candidates, find_silences, find_silences_with,
-    refine_boundaries as cm_refine_boundaries, DetectOptions,
+    blocks_from_resets as cm_blocks_from_resets, candidates as cm_candidates,
+    find_silences, find_silences_with, refine_boundaries as cm_refine_boundaries,
+    DetectOptions,
 };
 pub use cut::{cut, cut_with_progress, write_audio_es, AudioMode, CutOptions};
 pub use index::{ContainerIndex, IndexSource, PacketScan};

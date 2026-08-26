@@ -54,6 +54,9 @@ struct BlockInfo {
 #[derive(Serialize)]
 struct CmResult {
     logo_found: bool,
+    /// How many caption resets were found. Non-zero means the blocks came
+    /// from them and neither the audio nor the logo was read.
+    resets: usize,
     blocks: Vec<BlockInfo>,
 }
 
@@ -347,8 +350,8 @@ fn make_plan(ranges: Vec<(f64, f64)>, state: State<Opened>) -> Result<PlanInfo, 
     })
 }
 
-/// Look for commercial breaks: runs of short silences spaced on a
-/// 15-second grid.
+/// Look for commercial breaks: caption resets where the broadcaster sends
+/// them, otherwise runs of short silences spaced on a 15-second grid.
 #[tauri::command]
 async fn detect_cm(app: tauri::AppHandle, use_logo: bool) -> Result<CmResult, String> {
     // Reads the whole audio track, so it belongs off the UI thread.
@@ -364,21 +367,48 @@ async fn detect_cm(app: tauri::AppHandle, use_logo: bool) -> Result<CmResult, St
         let say = |app: &tauri::AppHandle, phase: &str, done: f64| {
             let _ = app.emit("cm-progress", (phase.to_string(), done));
         };
-        let audio_share = if use_logo { 0.1 } else { 1.0 };
+        // The caption stream goes first: where the broadcaster resets the
+        // service at its junctions, those marks are exact and cost one pass
+        // over a stream nothing has to decode. It is also the only signal of
+        // the three that is cheap enough to try speculatively.
+        const CAPTION_SHARE: f64 = 0.15;
         let reporter = app.clone();
-        let silences = smartcut_core::find_silences_with(
+        let resets = smartcut_core::caption::resets_with(
             src,
-            &opts,
             Some(Box::new(move |f| {
-                let _ = reporter.emit("cm-progress", ("音声を調べています".to_string(), f * audio_share));
+                let _ = reporter
+                    .emit("cm-progress", ("字幕を調べています".to_string(), f * CAPTION_SHARE));
             })),
         )
-        .map_err(|e| e.to_string())?;
+        .ok();
+
+        // With the resets in hand neither of the other two reads anything:
+        // the audio is a few seconds, but the logo is two passes over the
+        // video, and it is the weaker signal wherever the marks exist.
+        let rest = 1.0 - CAPTION_SHARE;
+        let audio_share = if use_logo { 0.1 } else { 1.0 } * rest;
+        let silences = match &resets {
+            Some(_) => Vec::new(),
+            None => {
+                let reporter = app.clone();
+                smartcut_core::find_silences_with(
+                    src,
+                    &opts,
+                    Some(Box::new(move |f| {
+                        let _ = reporter.emit(
+                            "cm-progress",
+                            ("音声を調べています".to_string(), CAPTION_SHARE + f * audio_share),
+                        );
+                    })),
+                )
+                .map_err(|e| e.to_string())?
+            }
+        };
         let cands = smartcut_core::cm_candidates(&silences, &opts);
 
         // The logo is the better read on how far a break runs, but not every
         // broadcaster shows one; when it is missing, the silences stand alone.
-        let logo = if use_logo {
+        let logo = if use_logo && resets.is_none() {
             let reporter = app.clone();
             smartcut_core::logo::detect_with(
                 src,
@@ -386,7 +416,10 @@ async fn detect_cm(app: tauri::AppHandle, use_logo: bool) -> Result<CmResult, St
                 Some(Box::new(move |f| {
                     let _ = reporter.emit(
                         "cm-progress",
-                        ("ロゴを探しています".to_string(), 0.1 + f * 0.9),
+                        (
+                            "ロゴを探しています".to_string(),
+                            CAPTION_SHARE + audio_share + f * (rest - audio_share),
+                        ),
                     );
                 })),
             )
@@ -395,12 +428,13 @@ async fn detect_cm(app: tauri::AppHandle, use_logo: bool) -> Result<CmResult, St
             None
         };
         say(&app, "まとめています", 1.0);
-        let blocks = match &logo {
-            Some(l) if !l.absent.is_empty() => {
+        let blocks = match (&resets, &logo) {
+            (Some(r), _) => smartcut_core::cm_blocks_from_resets(r, src.duration),
+            (None, Some(l)) if !l.absent.is_empty() => {
                 smartcut_core::cm_blocks_from_logo(&cands, &l.absent, &opts, 3.0, src.duration)
             }
-            Some(_) => Vec::new(),
-            None => smartcut_core::cm_blocks(&cands, &opts, 0.6),
+            (None, Some(_)) => Vec::new(),
+            _ => smartcut_core::cm_blocks(&cands, &opts, 0.6),
         };
         // The times a block arrives with are estimates -- the middle of a
         // silence, or the moment a logo's rolling average crossed a threshold.
@@ -412,6 +446,7 @@ async fn detect_cm(app: tauri::AppHandle, use_logo: bool) -> Result<CmResult, St
 
         Ok(CmResult {
             logo_found: logo.is_some(),
+            resets: resets.as_ref().map_or(0, |r| r.len()),
             blocks: blocks
                 .into_iter()
                 .map(|b| BlockInfo {
