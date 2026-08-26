@@ -1,0 +1,9 @@
+[package]
+name = "smartcut-core"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+ffmpeg-next.workspace = true
+anyhow.workspace = true
+cpal.workspace = true

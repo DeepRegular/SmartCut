@@ -1,0 +1,21 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "mainBinaryName": "smartcut",
+  "bundle": {
+    "targets": [
+      "nsis"
+    ],
+    "resources": {
+      "windows-deps/*.dll": "./"
+    },
+    "windows": {
+      "nsis": {
+        "languages": [
+          "Japanese",
+          "English"
+        ],
+        "installMode": "currentUser"
+      }
+    }
+  }
+}

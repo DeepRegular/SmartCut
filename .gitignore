@@ -1,0 +1,25 @@
+# Rust / Cargo
+target/
+
+# Node
+node_modules/
+
+# Tauri
+gen/schemas/
+windows-deps/
+
+# Python
+__pycache__/
+*.py[cod]
+
+# Build outputs — these are published as GitHub Releases, not committed
+dist/
+
+# Local development environment (machine-specific; not part of the project)
+DEVENV.md
+sync.sh
+
+# Editors / OS
+.idea/
+.DS_Store
+*.swp

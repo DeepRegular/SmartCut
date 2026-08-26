@@ -1,0 +1,229 @@
+/* Laid out after TMPGEnc MPEG Smart Renderer 6's cut editor: the kept ranges
+   as cards down the left, the picture and its film strip in the middle, the
+   scrubber under them, and a transport row built symmetrically around the
+   cut -- IN to its left, OUT to its right. */
+:root {
+  --bg: #1b1b1b;
+  --panel: #242424;
+  --sunken: #141414;
+  --line: #3a3a3a;
+  --text: #e6e6e6;
+  --dim: #9a9a9a;
+  --sel: #14b8d4;          /* the selected range */
+  --sel-soft: #b6b6ff;     /* ...as the film strip tints it */
+  --accent: #f0a020;       /* IN/OUT marks, the cut, scene ticks */
+  --copy: #14b8d4;
+  --encode: #f0a020;
+  --cm: #b06030;
+  --keep: #2f7d5a;
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0; background: var(--bg); color: var(--text);
+  font: 12.5px/1.55 system-ui, "Noto Sans JP", sans-serif;
+  user-select: none;
+  height: 100vh; display: flex; flex-direction: column;
+}
+
+.tabs {
+  display: flex; align-items: center; gap: 10px;
+  background: #2a2a2a; border-bottom: 1px solid #000; padding: 5px 10px;
+}
+.tab {
+  background: #3a3a3a; color: var(--text); border: 1px solid #4a4a4a;
+  border-radius: 2px; padding: 5px 16px; cursor: pointer;
+}
+.tab.active { background: var(--accent); color: #201400; border-color: var(--accent); font-weight: 600; }
+.title { color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.brand { margin-left: auto; color: var(--dim); font-weight: 600; letter-spacing: .04em; }
+
+.infobar {
+  display: flex; align-items: center; gap: 12px;
+  background: #202020; border-bottom: 1px solid #000;
+  padding: 4px 10px; color: var(--dim); font-variant-numeric: tabular-nums;
+}
+.spacer { flex: 1; }
+
+main { flex: 1; min-height: 0; display: flex; gap: 0; }
+.editor {
+  flex: 1; min-width: 0; min-height: 0; overflow: hidden;
+  display: flex; flex-direction: column; gap: 5px; padding: 5px 8px;
+}
+
+/* --- kept ranges ------------------------------------------------------ */
+.clips {
+  width: 208px; flex: none; display: flex; flex-direction: column;
+  background: #1e1e1e; border-right: 1px solid #000;
+}
+.clips-head { padding: 5px 8px; border-bottom: 1px solid var(--line); line-height: 1.4; }
+#keyframes { list-style: none; margin: 0; padding: 0; overflow-y: auto; flex: 1; }
+#keyframes li {
+  display: grid; grid-template-columns: 84px 1fr auto; gap: 6px; align-items: center;
+  padding: 5px 6px; border-bottom: 1px solid #2c2c2c; cursor: pointer;
+  font-variant-numeric: tabular-nums;
+}
+#keyframes li:hover { background: #262626; }
+#keyframes li.active { background: #1d4d5c; }
+#keyframes img { width: 84px; height: auto; display: block; border: 1px solid #fff; background: #000; }
+#keyframes .no { color: var(--dim); }
+#keyframes li.active .no { color: #cfefff; }
+#keyframes .at { font-size: 12px; }
+#keyframes .kill {
+  background: none; border: 0; color: var(--dim); cursor: pointer;
+  font-size: 13px; padding: 0 4px; align-self: start;
+}
+#keyframes .kill:hover { color: #ff8a80; }
+.clips-empty { color: var(--dim); padding: 8px; font-size: 11px; }
+
+/* --- picture ---------------------------------------------------------- */
+.stage {
+  position: relative; background: #000; border: 1px solid var(--line);
+  flex: 1 1 0; min-height: 160px; width: 100%;
+}
+#preview { display: block; width: 100%; height: 100%; object-fit: contain; }
+.overlay {
+  position: absolute; left: 50%; bottom: 10px; transform: translateX(-50%);
+  background: rgba(0,0,0,.55); padding: 4px 14px; border-radius: 2px;
+  text-align: center; pointer-events: none; white-space: nowrap;
+}
+.ovl-main { display: flex; gap: 26px; font-size: 21px; font-variant-numeric: tabular-nums; }
+.ovl-sub { display: flex; gap: 18px; font-size: 11px; color: #cfcfcf; justify-content: center; }
+#ovl-kind.key { color: #7ee787; font-weight: 600; }
+.searching {
+  position: absolute; top: 8px; left: 50%; transform: translateX(-50%);
+  background: rgba(240,160,32,.9); color: #201400; font-weight: 600;
+  padding: 2px 12px; border-radius: 2px; pointer-events: none;
+}
+
+/* --- film strip ------------------------------------------------------- */
+.strip-wrap { background: var(--panel); border: 1px solid var(--line); padding: 4px; }
+.strip { overflow: hidden; min-height: 78px; cursor: ew-resize; position: relative; }
+/* The cells hang on a reel wider than the window shows, so following the
+   playhead during playback is a transform and not a re-layout. */
+.reel { display: flex; gap: 0; will-change: transform; }
+/* The playhead does not travel along the strip -- it stays here and the
+   thumbnails slide under it. */
+.playline {
+  position: absolute; top: 0; bottom: 0; left: 50%; width: 1px; margin-left: -0.5px;
+  background: #2f7bff; box-shadow: 0 0 0 1px rgba(0,0,0,.55);
+  pointer-events: none; z-index: 3;
+}
+.playline::before, .playline::after {
+  content: ""; position: absolute; left: 50%; transform: translateX(-50%);
+  border-left: 4px solid transparent; border-right: 4px solid transparent;
+}
+.playline::before { top: 0; border-top: 5px solid #2f7bff; }
+.playline::after { bottom: 0; border-bottom: 5px solid #2f7bff; }
+
+/* Cells are GOPs, so their widths are whatever share of the window each GOP
+   takes -- a partial one at a seam or at the end really is narrower. */
+.strip figure { margin: 0; flex: none; min-width: 0; position: relative; overflow: hidden; }
+.strip img { display: block; width: 100%; height: 62px; object-fit: cover; background: #000; }
+/* Captions light, as the reference tool has them: the timecodes are the
+   thing being read here, and dark-on-light wins at this size. */
+.strip figcaption {
+  font-size: 10px; white-space: nowrap; overflow: hidden; text-align: center; color: #1a1a1a; background: #f3f3f3;
+  font-variant-numeric: tabular-nums; padding: 1px 0;
+  border: 1px solid #f3f3f3; border-top: 0;
+}
+.strip .inside figcaption { background: var(--sel-soft); border-color: var(--sel-soft); }
+.strip .inside img { outline: 1px solid var(--sel-soft); outline-offset: -1px; }
+.strip .here { box-shadow: 0 0 0 2px #2f7bff inset; }
+.strip .here figcaption { font-weight: 700; }
+.strip .kf figcaption::before { content: "▲"; color: #148f4c; }
+.strip .scene figcaption::after { content: "✂"; color: #b45309; }
+/* keyframes standing among the pictures, and the joins the cuts closed up */
+.strip .blank { background: #0b0b0b; box-shadow: inset 0 0 0 1px #1c1c1c; }
+.strip .seam { box-shadow: inset 3px 0 0 0 #d05a5a; }
+.strip .mark figcaption { background: #f0a020; color: #201400; font-weight: 700; border-color: #f0a020; }
+.strip .mark figcaption::before { content: "⚑ "; color: #201400; }
+.strip-foot { display: flex; align-items: center; gap: 10px; margin-top: 3px; color: var(--dim); font-size: 11px; }
+.strip-foot b { color: #cfcfcf; }
+
+/* --- scrubber --------------------------------------------------------- */
+.track-wrap { background: var(--panel); border: 1px solid var(--line); padding: 3px 8px 1px; position: relative; }
+#track { width: 100%; display: block; cursor: pointer; }
+.hover {
+  position: absolute; bottom: 86px; pointer-events: none; z-index: 5;
+  background: #0b0b0b; border: 1px solid var(--sel);
+  box-shadow: 0 6px 18px rgba(0,0,0,.6); padding: 2px;
+}
+.hover img { display: block; width: 192px; height: auto; background: #000; }
+.hover-foot {
+  display: flex; justify-content: space-between; gap: 8px;
+  font-size: 10px; color: #bfe9f2; font-variant-numeric: tabular-nums; padding: 1px 3px;
+}
+.warm { color: var(--dim); font-size: 11px; font-variant-numeric: tabular-nums; white-space: nowrap; }
+
+/* --- transport -------------------------------------------------------- */
+.transport {
+  display: flex; align-items: center; justify-content: center; gap: 2px;
+  flex-wrap: nowrap; overflow-x: auto;
+}
+.transport button {
+  background: #333; color: var(--text); border: 1px solid #4a4a4a; border-radius: 2px;
+  min-width: 36px; height: 32px; padding: 0 7px; cursor: pointer; white-space: nowrap;
+  font-variant-numeric: tabular-nums; font-size: 12.5px;
+}
+.transport button:hover:not(:disabled) { background: #3d3d3d; }
+.transport .mark { color: var(--accent); font-weight: 700; min-width: 56px; }
+.transport .flag { color: var(--accent); font-size: 12px; }
+.transport .play { background: #2c5f7a; border-color: #3a7fa0; min-width: 68px; }
+.transport .play.on { background: #7a3a2c; border-color: #a04a3a; }
+.transport .cut {
+  background: var(--accent); color: #201400; border-color: var(--accent);
+  font-weight: 700; min-width: 96px; margin: 0 3px;
+}
+.transport .cut:hover:not(:disabled) { background: #ffb638; }
+.transport .tool { font-size: 11.5px; }
+.gap { width: 12px; flex: none; }
+
+.statusbar {
+  display: flex; align-items: center; gap: 16px;
+  background: var(--sunken); border: 1px solid var(--line); padding: 4px 10px;
+  font-variant-numeric: tabular-nums;
+}
+.counter { font-size: 15px; }
+.dim { color: var(--dim); }
+
+/* --- output ----------------------------------------------------------- */
+.output { flex: none; display: flex; flex-direction: column; gap: 5px; }
+.panel { background: var(--panel); border: 1px solid var(--line); padding: 6px 10px; }
+.bar { height: 13px; background: var(--encode); border-radius: 2px; overflow: hidden; }
+.bar span { display: block; height: 100%; width: 0; background: var(--copy); }
+.plan-text { margin-top: 5px; font-variant-numeric: tabular-nums; }
+/* Fixed, not max-height: the editor above must not shuffle up and down as
+   the plan gains and loses segments. */
+#segments {
+  margin: 4px 0 0; padding: 0; list-style: none; color: var(--dim); font-size: 11px;
+  height: 46px; overflow-y: auto; font-variant-numeric: tabular-nums;
+}
+#segments .copy { color: var(--copy); }
+#segments .reencode { color: var(--encode); }
+
+.export { display: flex; align-items: center; gap: 12px; }
+.export .primary {
+  background: var(--accent); color: #201400; border: 1px solid var(--accent);
+  border-radius: 2px; padding: 7px 22px; font-weight: 600; cursor: pointer;
+}
+.badge {
+  background: #0f3d47; color: #7fe3f5; border: 1px solid #1d6b7c;
+  padding: 2px 8px; border-radius: 2px; font-size: 11px; font-weight: 600;
+}
+.progress { flex: 1; height: 9px; background: var(--sunken); border: 1px solid var(--line); overflow: hidden; }
+.progress span { display: block; height: 100%; width: 0; background: var(--sel); transition: width .15s; }
+.opt { color: var(--dim); display: flex; align-items: center; gap: 5px; white-space: nowrap; }
+.mini.wide { min-width: 96px; }
+.mini { background: #333; color: var(--text); border: 1px solid #4a4a4a; border-radius: 2px; padding: 3px 10px; cursor: pointer; }
+button:disabled { opacity: .45; cursor: default; }
+select, input[type="text"] {
+  background: #141414; color: var(--text); border: 1px solid var(--line);
+  border-radius: 2px; padding: 3px 22px 3px 8px;
+  -webkit-appearance: none; appearance: none;
+  background-image: linear-gradient(45deg, transparent 50%, #9a9a9a 50%),
+                    linear-gradient(135deg, #9a9a9a 50%, transparent 50%);
+  background-position: right 11px top 12px, right 6px top 12px;
+  background-size: 5px 5px, 5px 5px;
+  background-repeat: no-repeat;
+}
+select option { background: #141414; color: #e6e6e6; }

@@ -1,0 +1,12 @@
+[package]
+name = "smartcut-cli"
+version.workspace = true
+edition.workspace = true
+
+[[bin]]
+name = "smartcut"
+path = "src/main.rs"
+
+[dependencies]
+smartcut-core = { path = "../core" }
+anyhow.workspace = true
