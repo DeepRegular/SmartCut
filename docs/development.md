@@ -88,7 +88,7 @@ The [proxy](gui.md#proxy-editing-proxyrs) side is tunable the same way:
 | Variable | Default | |
 |---|---|---|
 | `SMARTCUT_PROXY` | on | `0` / `off` to skip it (read from the recording directly) |
-| `SMARTCUT_PROXY_WIDTH` | `960` | Proxy width (square pixels). Higher looks better and takes longer to build. **The cap is 1920x1080** (for tall material, where the height hits the cap first, the width comes down accordingly) |
+| `SMARTCUT_PROXY_WIDTH` | `1280` | Proxy width (square pixels). Higher looks better and takes longer to build. **The cap is 1920x1080** (for tall material, where the height hits the cap first, the width comes down accordingly) |
 | `SMARTCUT_PROXY_QUALITY` | `22` | Quality, in x264 CRF terms (lower is better; 18–24 is the useful range) |
 | `SMARTCUT_PROXY_ENCODER` | auto | Comma-separated list of encoders to try (`mpeg4`, for instance) |
 

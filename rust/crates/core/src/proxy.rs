@@ -45,13 +45,14 @@ pub const ENCODERS: [&str; 6] =
 
 /// Default width. The picture on screen is what this has to hold up at: the
 /// preview asks the engine for the stage's own pixels, so a proxy narrower
-/// than the stage is a soft picture however well it is encoded, and 720 was
-/// narrower than the stage on any screen worth editing on.
+/// than the stage is a soft picture however well it is encoded, and 960 was
+/// narrower than the stage on any screen with a device pixel ratio above 1 --
+/// where a full-height stage asks for the whole 1920 and got 960 back.
 ///
-/// 960 rather than the stage's full width because the build has to be paid
-/// for at the moment the file is opened, and on four cores the picture goes
-/// on getting better a good deal faster than the wait gets shorter. Measured
-/// on 2.8 minutes of 1440x1080, where the old 720-wide pass took 7.6s:
+/// 1280 rather than the stage's full width because the build has to be paid
+/// for at the moment the file is opened, and past here the wait starts
+/// growing faster than the picture improves. Measured on 2.8 minutes of
+/// 1440x1080:
 ///
 /// | width | build | size |
 /// |---|---|---|
@@ -59,9 +60,10 @@ pub const ENCODERS: [&str; 6] =
 /// | 1152 | 8.2s | 61MB |
 /// | 1280 | 9.1s | 87MB |
 ///
-/// `SMARTCUT_PROXY_WIDTH` is there for a machine with the cores and the disk
-/// to spend on the top row of that table.
-pub const WIDTH: u32 = 960;
+/// `SMARTCUT_PROXY_WIDTH` is there for a machine that wants to trade the
+/// other way -- down to 960 on a slow disk, up towards the 1920 cap on a
+/// machine with the cores to spare.
+pub const WIDTH: u32 = 1280;
 
 /// The ceiling on the picture, whatever `SMARTCUT_PROXY_WIDTH` asks for.
 ///

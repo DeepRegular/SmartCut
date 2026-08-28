@@ -1149,10 +1149,11 @@ function startPlay() {
   // MPEG-2 decode can keep up with anyway, while a proxy can hand over
   // enough to look like motion.
   const fps = proxied ? 24 : 15;
-  // Smaller than the still picture asks for. Softness that would be plain on
-  // a frame held still is not visible at 24 a second, and every one of those
-  // costs a scale, a JPEG and a data URL.
-  const width = Math.min(stageWidth(), 960);
+  // Capped at the proxy's own width, since asking for more than the proxy
+  // holds only makes a bigger JPEG out of the same samples. Each picture
+  // costs a scale, a JPEG and a data URL, so this is the one place where
+  // dropping below the stage's full request buys back frame rate.
+  const width = Math.min(stageWidth(), 1280);
   // not awaited: it resolves when playback ends, and `play-ended` says so
   invoke("play", { ranges: outputRanges(), from: playhead, width, fps }).catch((e) => {
     el("status").textContent = `再生: ${e}`;

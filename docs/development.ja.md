@@ -85,7 +85,7 @@ SMARTCUT_AUDIO=reencode  bash tests/run_audio_tests.sh  # 音声をサンプル�
 | 変数 | 既定 | |
 |---|---|---|
 | `SMARTCUT_PROXY` | 有効 | `0` / `off` で作らない（録画から直接読む） |
-| `SMARTCUT_PROXY_WIDTH` | `960` | プロキシの幅（正方画素）。上げるほど絵は良くなり作成は長くなる。**上限は 1920x1080**（縦が先に当たる縦長素材は幅がそのぶん下がる） |
+| `SMARTCUT_PROXY_WIDTH` | `1280` | プロキシの幅（正方画素）。上げるほど絵は良くなり作成は長くなる。**上限は 1920x1080**（縦が先に当たる縦長素材は幅がそのぶん下がる） |
 | `SMARTCUT_PROXY_QUALITY` | `22` | 画質。x264 の CRF で言う（小さいほど良い、18〜24 が実用域） |
 | `SMARTCUT_PROXY_ENCODER` | 自動 | 試すエンコーダをカンマ区切りで指定（`mpeg4` など） |
 

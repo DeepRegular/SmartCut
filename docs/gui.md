@@ -701,7 +701,7 @@ through first, and the encoder that accepted it is re-opened for the real run.
 > 90 kHz (real broadcast timestamps divide evenly; when they do not, the error is
 > under a microsecond).
 
-The width is 960 and the quality CRF 22 (`SMARTCUT_PROXY_WIDTH` /
+The width is 1280 and the quality CRF 22 (`SMARTCUT_PROXY_WIDTH` /
 `SMARTCUT_PROXY_QUALITY` change them, and `SMARTCUT_PROXY_ENCODER` picks the
 encoder itself). Quality is expressed in x264 CRF, and `quality_for` maps it onto
 each other encoder's scale — a fixed quantiser for hardware encoders (`constqp` /
@@ -712,7 +712,10 @@ Width matters because the preview now requests **the stage's real pixel count**
 (`stageWidth`). It used to ask for a fixed 960, but with a 720-wide proxy
 `encode_jpeg` capped there, and a wider stage got the browser to stretch it —
 **the proxy's width was the ceiling on picture quality**, which is what "far too
-low quality" really was. It matters far more than the coding loss.
+low quality" really was. It matters far more than the coding loss. The same
+ceiling is why 960 was later raised to 1280: on a screen with a device pixel
+ratio above 1 the stage asks for the full 1920, and 960 was again the number it
+got back.
 
 The cap is measured in **square-pixel width**, not coded width. 1440x1080
 broadcast material is displayed 16:9, so keeping all 1080 lines needs 1920 across
@@ -735,8 +738,10 @@ say — hits the 1080 height first and the width comes down to 1440 to match.
 | 1152 | 8.2 s | 61 MB |
 | 1280 | 9.1 s | 87 MB |
 
-960 is the default because this is the time **you pay the moment you open a
-file**. With cores and disk to spare, `SMARTCUT_PROXY_WIDTH=1280`.
+1280 is the default: the time in that table is **paid the moment you open a
+file**, and this is the last row where the picture is still improving faster than
+the wait grows. On a slow disk, `SMARTCUT_PROXY_WIDTH=960`; with cores to spare,
+up towards the 1920 cap.
 
 The output is written with **square pixels** — broadcast 1440x1080 is 16:9 on
 screen, so scaling it as-is would hand a squashed picture to the timeline. The
@@ -755,12 +760,15 @@ name, or a change of width or quality, gets its own proxy. Writing goes to
 `.part.mp4` and is renamed at the end — an interrupted proxy never looks finished
 (and it counts as complete only with its `.marks` sidecar present too).
 
-Old ones are pruned at **8 files or 2 GB, whichever comes first**. A file count
+Old ones are pruned at **8 files or 4 GB, whichever comes first**. A file count
 alone is not a limit — one proxy's size moves with the recording's length and the
-requested quality, so the same "8 files" can be 300 MB or 8 GB. At roughly 1 GB
-per hour of programme, 2 GB is three or four 30-minute programmes: more than are
-open at once, and a size that fits on a machine already full of recordings. The
-newest one is never pruned even over budget, because that is the one being edited.
+requested quality, so the same "8 files" can be 300 MB or 8 GB. At the 1280
+default a 30-minute recording builds a 2.3 GB proxy — roughly 4 GB per hour of
+programme — so 4 GB is two 30-minute programmes. The newest one is never pruned
+even over budget, because that is the one being edited; **that is also why the
+budget has to clear one proxy on its own.** At 2 GB with a 1280-wide proxy it no
+longer did, and every file but the newest was deleted as soon as it was written —
+reopening yesterday's recording would rebuild it from the recording every time.
 
 ### Editing works without a proxy
 

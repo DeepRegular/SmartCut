@@ -486,14 +486,20 @@ fn make_proxy(
             .map_err(|e| e.to_string())?;
         // Old proxies are only worth what the recordings they stand for are;
         // a handful is enough to keep the files worked on lately instant.
-        // Eight recordings back, or two gigabytes, whichever runs out first.
+        // Eight recordings back, or four gigabytes, whichever runs out first.
         // A proxy is worth keeping -- reopening a recording that has one
         // costs nothing -- but not at the price of a disk, and at the width
-        // and quality the picture needs these run about a gigabyte an hour
-        // of programme. Two gigabytes is three or four half-hour shows: more
-        // than anyone has open at once, and small enough to sit on a machine
-        // that is mostly full of the recordings themselves.
-        let _ = proxy::prune(&dir, 8, 2 << 30);
+        // and quality the picture needs these run about four gigabytes an
+        // hour of programme (measured: a half-hour recording builds a 2.3 GB
+        // proxy at the 1280 default). Four gigabytes is two half-hour shows.
+        //
+        // The budget has to clear one proxy on its own or the cache holds
+        // nothing: `prune` never deletes the newest, so a budget below the
+        // size of a single file would delete every other one the moment it
+        // was written, and reopening yesterday's recording would rebuild it
+        // from the recording every time. That is what two gigabytes became
+        // when the width went from 960 to 1280.
+        let _ = proxy::prune(&dir, 8, 4 << 30);
         (psrc, built.marks, built.track, false)
     };
 
