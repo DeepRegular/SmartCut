@@ -81,7 +81,10 @@ fn main() -> Result<()> {
         return Ok(());
     }
 
-    // The GUI's GOP cells: every access point inside the window, decimated.
+    // GOP cells in the GUI's manner: access points inside the window, thinned
+    // to about fifteen. The GUI itself works out how many it wants from how
+    // wide the window is in pixels; this is a diagnostic, so it just picks a
+    // number.
     let (w0, w1) = (centre - span / 2.0, centre + span / 2.0);
     let marks: Vec<f64> =
         src.points.iter().map(|p| p.time).filter(|&t| t >= w0 && t < w1).collect();

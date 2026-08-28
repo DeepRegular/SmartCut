@@ -6,9 +6,18 @@
 
 ```bash
 cargo install tauri-cli --version ^2 --locked   # 一度だけ
-cd gui/src-tauri && cargo tauri build --bundles appimage
-# -> target/release/bundle/appimage/smartcut_0.1.0_amd64.AppImage
+cd gui/src-tauri && NO_STRIP=1 cargo tauri build --bundles appimage
+# -> target/release/bundle/appimage/smartcut_0.1.1_amd64.AppImage
 ```
+
+**`NO_STRIP=1` を付けている。** かつては付けないと linuxdeploy が同梱する
+全てのライブラリで `Strip call failed` を出して落ちた（`failed to run
+linuxdeploy`）。**2026-08-28 現在、これは再現しない**——素で建てても通る。
+そして**付けても外しても成果物の大きさは同じ**で、v0.1.1 を両方の条件で
+建てるとどちらも 184,515,064 バイトになった（md5 は squashfs のタイムスタンプ
+で変わるが、strip が削るバイトは無い）。Debian の共有ライブラリが配布時点で
+既に strip 済みだからで、**払う代償が無い**以上 `NO_STRIP=1` はそのまま
+残してある。
 
 **184MB。745 個の共有ライブラリを丸ごと抱えている**——WebKitGTK 4.1 も、
 `libavcodec` / `libavformat` / `libavutil` / `libavfilter` / `libswscale` /
@@ -34,7 +43,7 @@ glibc だけは同梱できない（AppImage の原理的な制約）ので、�
 してある。同梱されているかどうかは展開して確かめられる：
 
 ```bash
-./smartcut_0.1.0_amd64.AppImage --appimage-extract >/dev/null
+./smartcut_0.1.1_amd64.AppImage --appimage-extract >/dev/null
 ldd squashfs-root/usr/bin/gui | grep -E 'asound|jack|pulse'
 # libasound.so.2 / libjack.so.0 -> /lib/x86_64-linux-gnu/...   (システム側)
 # libpulse.so.0                 -> squashfs-root/usr/bin/../lib/...  (同梱)
@@ -51,13 +60,70 @@ ldd squashfs-root/usr/bin/gui | grep -E 'asound|jack|pulse'
 `Space` の再生まで確認した。再生は 4 秒で 117 フレーム進み、ALSA まわりの
 エラーもパニックも出ない。
 
+## 配布（tar.gz と deb）
+
+```bash
+./gui/build-linux.sh
+# -> gui/src-tauri/target/release/bundle/linux/smartcut-0.1.1-linux-x86_64.tar.gz
+# -> gui/src-tauri/target/release/bundle/linux/smartcut_0.1.1_amd64.deb
+```
+
+同じビルドの詰め方を 2 通り。どちらも **GUI を `smartcut`、コマンドライン版を
+`smartcut-cli`** として置く。cargo のクレート名は `gui` で、Tauri 自身が作る deb は
+それをそのまま `/usr/bin/gui` に入れてしまう——占めてよい名前ではない。
+
+| 成果物 | サイズ | FFmpeg | 要るもの |
+|---|---|---|---|
+| `smartcut-0.1.1-linux-x86_64.tar.gz` | 207.9MB | 同梱 | glibc 2.39 以上。FUSE は不要 |
+| `smartcut_0.1.1_amd64.deb` | 2.5MB | システムのものを使う | FFmpeg 7.1（Debian 13 / Ubuntu 25.04 以降） |
+
+**tar.gz の中身は AppImage と同じ AppDir を展開したもの。** linuxdeploy が `ldd` を
+辿って集めた 745 ライブラリがそのまま `app/` に入っていて、`./smartcut` は AppRun を
+呼ぶだけの 4 行のスクリプト、`./smartcut-cli` は `LD_LIBRARY_PATH` を `app/usr/lib` に
+向けてから CLI を呼ぶだけ。AppImage が動く環境なら動き、FUSE の有無を気にしなくて
+よくなる。圧縮が gzip なので squashfs+zstd の AppImage より 23MB 大きい。
+
+**deb は逆に何も抱えない。** `dpkg-shlibdeps` に 2 つのバイナリを読ませて依存を
+起こしているので、libav* まで並ぶ：
+
+```
+Depends: libasound2t64 (>= 1.0.29), libavcodec61 (>= 7:7.1.5), libavdevice61 (>= 7:7.1.5),
+ libavformat61 (>= 7:7.1.5), libavutil59 (>= 7:7.1.5), libc6 (>= 2.39), libcairo2 (>= 1.10.0),
+ libdbus-1-3 (>= 1.10), libgcc-s1 (>= 4.2), libgdk-pixbuf-2.0-0 (>= 2.36.9),
+ libglib2.0-0t64 (>= 2.66.0), libgtk-3-0t64 (>= 3.21.5), libjavascriptcoregtk-4.1-0,
+ libsoup-3.0-0 (>= 3.0.3), libswresample5 (>= 7:7.1.5), libswscale8 (>= 7:7.1.5),
+ libwebkit2gtk-4.1-0 (>= 2.41.90)
+```
+
+Tauri 自身の deb はここが `libwebkit2gtk-4.1-0, libgtk-3-0` の 2 つで止まっていて、
+**FFmpeg が依存に出てこない**。それだけでも作り直す理由になる。ほかに `.desktop`
+（`Exec=smartcut %f`、`StartupWMClass=smartcut`、MPEG-2 TS と MP4 の MimeType）、
+hicolor の 32/128/256 アイコン、`copyright` と `changelog.Debian.gz` を入れてある。
+
+**バイナリはバンドルごとに別のものを取り出す。** Tauri は詰める直前に種別をバイナリへ
+焼き込む（`UNKNOWN` → `DEB` / `APPIMAGE`）ため、`target/release/gui` は最後に作った
+バンドルの刻印しか持っていない。deb 用は Tauri の deb から、tar.gz 用は AppDir から
+取っている。
+
+### 確認したこと（Debian 13 の開発 VM）
+
+- `smartcut-cli` の出力が **deb 版と tar.gz 版で md5 まで一致**する
+  （`mpeg2.ts --cut 5-10`、無劣化コピー 99.7%）。掴んでいるライブラリは
+  `ldd` で分かれていることを確認済み——tar.gz 版は `app/usr/lib/libavcodec.so.61`、
+  deb 版は `/lib/x86_64-linux-gnu/libavcodec.so.61`。
+- GUI は両方とも実機で起動して `mpeg2.ts` を開けた（無劣化点 41、プロキシ 852x478、
+  サムネイル 41 枚）。deb 版はタスクバーにも `smartcut` として出る（`gui` ではなく）。
+- `apt-get -s install ./smartcut_0.1.1_amd64.deb` が依存を解決する。
+  `desktop-file-validate` は無警告、`md5sums` は 8 ファイルすべて一致。
+- 通していないのは **実際の `dpkg -i`** だけ（VM の sudo にパスワードが要る）。
+
 ## 配布（Windows）
 
 Linux の開発 VM から `x86_64-pc-windows-msvc` へクロスビルドする。
 
 ```bash
 ./gui/build-windows.sh
-# -> gui/src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis/smartcut_0.1.0_x64-setup.exe
+# -> gui/src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis/smartcut_0.1.1_x64-setup.exe
 # -> gui/src-tauri/target/x86_64-pc-windows-msvc/release/bundle/portable/smartcut-portable-x64.zip
 ```
 

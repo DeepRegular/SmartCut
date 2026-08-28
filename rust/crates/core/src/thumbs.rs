@@ -68,6 +68,12 @@ pub struct Track {
     /// The spacing actually used, which is what a caller must assume when
     /// deciding whether the held pictures are fine enough for its purpose.
     pub interval: f64,
+    /// How far into the recording the track speaks for. A finished one speaks
+    /// for the whole of it; one handed over while it is still being built
+    /// speaks only for what has been decoded, and the caller has to stop
+    /// asking past here -- `nearest` is happy to answer with the last picture
+    /// it has, which is the wrong picture rather than no picture.
+    pub covered: f64,
     /// Held images, in time order.
     pub thumbs: Vec<Thumb>,
     /// Times of the key pictures that open a new scene, in time order.
@@ -151,6 +157,132 @@ fn distance(a: &[u8; SIG], b: &[u8; SIG]) -> f64 {
     sum as f64 / (SIG as f64 * 255.0)
 }
 
+/// Somewhere to hand key pictures as they come out of a decoder.
+///
+/// Split out from [`build`] because there are two ways to arrive at the same
+/// pictures. Building the proxy decodes the whole recording anyway and knows
+/// which pictures are its access points, so it feeds them straight in and the
+/// track costs nothing beyond the JPEGs; opening a recording that already has
+/// a proxy runs [`build`] over the proxy instead. Either way the track is
+/// made the same, which is what lets the two be used interchangeably.
+pub struct Collector<'a> {
+    src: &'a Source,
+    opts: &'a ThumbOptions,
+    interval: f64,
+    thumbs: Vec<Thumb>,
+    diffs: Vec<(f64, f64)>,
+    prev: Option<[u8; SIG]>,
+    keep_from: f64,
+    /// The last time fed in, which is how far the pictures held so far
+    /// speak for.
+    seen: f64,
+}
+
+impl<'a> Collector<'a> {
+    pub fn new(src: &'a Source, opts: &'a ThumbOptions) -> Self {
+        Self {
+            src,
+            opts,
+            interval: opts.interval.max(src.duration / opts.max_thumbs.max(1) as f64),
+            thumbs: Vec::new(),
+            diffs: Vec::new(),
+            prev: None,
+            keep_from: f64::NEG_INFINITY,
+            seen: 0.0,
+        }
+    }
+
+    /// The spacing images are actually being kept at.
+    pub fn interval(&self) -> f64 {
+        self.interval
+    }
+
+    /// The pictures collected since this was last called.
+    ///
+    /// For handing a track over while it is still being made: the film strip
+    /// and the scroll search want held pictures long before the pass that is
+    /// producing them has reached the end of the file. Taken rather than
+    /// copied, so the pictures are not held twice -- what [`Self::finish`]
+    /// returns is then only the tail, and whoever has been taking the rest
+    /// owns them and must put the two back together.
+    pub fn take_new(&mut self) -> Batch {
+        Batch {
+            thumbs: std::mem::take(&mut self.thumbs),
+            width: self.opts.width,
+            interval: self.interval,
+            covered: self.seen,
+        }
+    }
+
+    /// Offer a key picture, presented at `time`.
+    pub fn feed(&mut self, time: f64, frame: &ff::frame::Video) -> Result<()> {
+        if time < -1.0 {
+            return Ok(());
+        }
+        self.seen = time;
+        let sig = signature(frame);
+        if let Some(p) = &self.prev {
+            self.diffs.push((time, distance(p, &sig)));
+        }
+        self.prev = Some(sig);
+
+        if time >= self.keep_from {
+            self.keep_from = time + self.interval;
+            self.thumbs.push(Thumb {
+                time,
+                jpeg: crate::preview::encode_jpeg(frame, self.src, self.opts.width)?,
+            });
+        }
+        Ok(())
+    }
+
+    pub fn finish(self) -> Track {
+        let (scenes, threshold, typical) =
+            mark_scenes(&self.diffs, self.src.duration, self.opts);
+        Track {
+            width: self.opts.width,
+            interval: self.interval,
+            // The pass is over, so the track speaks for the whole recording
+            // -- including any tail with no key picture in it at all.
+            covered: f64::INFINITY,
+            thumbs: self.thumbs,
+            scenes,
+            threshold,
+            typical,
+        }
+    }
+}
+
+/// Pictures collected since the last hand-over, and what a track made of them
+/// would have to say about itself.
+pub struct Batch {
+    pub thumbs: Vec<Thumb>,
+    pub width: u32,
+    pub interval: f64,
+    /// How far into the recording the pass producing these has read.
+    pub covered: f64,
+}
+
+impl Batch {
+    /// A track holding just these.
+    ///
+    /// It speaks only for what has been read so far, and it has no scene
+    /// index: a scene is a difference between two key pictures measured
+    /// against what is typical of the whole recording, and that is not known
+    /// until the pass ends.
+    pub fn into_track(self) -> Track {
+        Track {
+            width: self.width,
+            interval: self.interval,
+            covered: self.covered,
+            thumbs: self.thumbs,
+            scenes: Vec::new(),
+            threshold: 0.0,
+            typical: 0.0,
+        }
+    }
+}
+
 /// Decode every key picture once: keep some as images, compare them all.
 pub fn build(
     src: &Source,
@@ -161,36 +293,16 @@ pub fn build(
     let mut ictx = ff::format::input(&src.path)?;
     let idx = src.video.stream_index;
     let params = ictx.stream(idx).ok_or_else(|| anyhow!("video stream vanished"))?.parameters();
-    let mut decoder = ff::codec::context::Context::from_parameters(params)?.decoder().video()?;
+    let mut decoder = crate::video_decoder(params)?;
 
-    let interval =
-        opts.interval.max(src.duration / opts.max_thumbs.max(1) as f64);
-    let mut thumbs: Vec<Thumb> = Vec::new();
-    let mut diffs: Vec<(f64, f64)> = Vec::new();
-    let mut prev: Option<[u8; SIG]> = None;
-    let mut keep_from = f64::NEG_INFINITY;
+    let mut collector = Collector::new(src, opts);
     let mut told = -1.0;
     let mut frame = ff::frame::Video::empty();
 
     let mut take = |frame: &ff::frame::Video| -> Result<()> {
         let Some(pts) = frame.pts() else { return Ok(()) };
         let t = pts as f64 * src.video.time_base - src.start_time;
-        if t < -1.0 {
-            return Ok(());
-        }
-        let sig = signature(frame);
-        if let Some(p) = &prev {
-            diffs.push((t, distance(p, &sig)));
-        }
-        prev = Some(sig);
-
-        if t >= keep_from {
-            keep_from = t + interval;
-            thumbs.push(Thumb {
-                time: t,
-                jpeg: crate::preview::encode_jpeg(frame, src, opts.width)?,
-            });
-        }
+        collector.feed(t, frame)?;
         if let Some(f) = progress.as_mut() {
             let done = (t / src.duration.max(1e-9)).clamp(0.0, 1.0);
             if done - told >= 0.01 {
@@ -239,8 +351,7 @@ pub fn build(
         f(1.0);
     }
 
-    let (scenes, threshold, typical) = mark_scenes(&diffs, src.duration, opts);
-    Ok(Track { width: opts.width, interval, thumbs, scenes, threshold, typical })
+    Ok(collector.finish())
 }
 
 /// Turn the per-key-picture differences into a list of scene starts.

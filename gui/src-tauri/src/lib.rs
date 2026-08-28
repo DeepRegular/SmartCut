@@ -3,15 +3,39 @@
 //! The engine does the work; this layer holds one opened source, answers the
 //! timeline's questions about it, and runs an export off the UI thread.
 
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
 
 use base64::Engine as _;
 use serde::Serialize;
-use smartcut_core::{index, plan, PlanOptions, Source};
+use smartcut_core::{index, plan, proxy, PlanOptions, Source};
 use tauri::{Emitter, Manager, State};
 
 #[derive(Default)]
 struct Opened(Mutex<Option<Source>>);
+
+/// The proxy standing in for the recording, once there is one.
+///
+/// Everything that only wants to *look* at a picture reads from here: the
+/// preview, the film strip, playback, the scene search. Everything that has
+/// to know about the bitstream -- planning, cutting, commercial detection --
+/// keeps reading the recording, because the proxy cannot answer for it.
+#[derive(Default)]
+struct Proxy(Mutex<Option<Proxied>>);
+
+struct Proxied {
+    src: Source,
+    /// What kind of picture the *recording* had at each instant. The proxy is
+    /// re-encoded, so its own picture types describe the proxy alone.
+    marks: proxy::Marks,
+}
+
+/// Counted up every time a file is opened. A background pass carries the
+/// number it started under and throws its result away if it no longer
+/// matches -- otherwise opening a second file while the first is still
+/// building would end with one recording's proxy standing in for another's.
+#[derive(Default)]
+struct Generation(AtomicU64);
 
 /// The thumbnail track and scene index, once the background pass has built
 /// them. Kept apart from [`Opened`] so that a pass lasting tens of seconds
@@ -95,14 +119,59 @@ fn log(msg: String) {
     eprintln!("[js] {msg}");
 }
 
+/// Run `f` against whatever pictures should be decoded: the proxy's if it is
+/// built, the recording's otherwise, and the recording's picture kinds
+/// alongside when the two differ.
+///
+/// Takes one lock at a time, never both. `detect_cm` holds `Opened` for
+/// minutes at a stretch, and a preview arriving in the middle of that has to
+/// be able to answer from the proxy rather than queue behind it.
+fn with_pictures<T>(
+    app: &tauri::AppHandle,
+    f: impl FnOnce(&Source, Option<&proxy::Marks>) -> Result<T, String>,
+) -> Result<T, String> {
+    {
+        let state = app.state::<Proxy>();
+        let guard = state.0.lock().unwrap();
+        if let Some(p) = guard.as_ref() {
+            return f(&p.src, Some(&p.marks));
+        }
+    }
+    let state = app.state::<Opened>();
+    let guard = state.0.lock().unwrap();
+    f(guard.as_ref().ok_or("no file open")?, None)
+}
+
+/// Run `f` on a worker thread, and hand its answer back when it is done.
+///
+/// A `#[tauri::command]` that is not `async` runs on the thread the window is
+/// drawn on, so anything slow in one is a window that has stopped repainting:
+/// the film strip stops following the pointer, the buttons stop lighting up,
+/// and the desktop offers to kill the application. Everything that decodes a
+/// picture therefore goes through here. It is tens of milliseconds against a
+/// proxy, and while a proxy is still being built it is a seek and a GOP out of
+/// the recording itself with an encoder already on every core -- which is
+/// exactly when the strip was unusable.
+async fn off_thread<T: Send + 'static>(
+    f: impl FnOnce() -> Result<T, String> + Send + 'static,
+) -> Result<T, String> {
+    tauri::async_runtime::spawn_blocking(f).await.map_err(|e| e.to_string())?
+}
+
 #[tauri::command]
-fn open_source(
-    path: String,
-    state: State<Opened>,
-    thumbs: State<Thumbs>,
-) -> Result<SourceInfo, String> {
-    let src = smartcut_core::scan(&path).map_err(|e| e.to_string())?;
-    *thumbs.0.lock().unwrap() = None;
+async fn open_source(path: String, app: tauri::AppHandle) -> Result<SourceInfo, String> {
+    off_thread(move || open_now(&path, &app)).await
+}
+
+/// Reading a recording's index is a pass over the file, so it runs on a
+/// worker thread; see [`off_thread`].
+fn open_now(path: &str, app: &tauri::AppHandle) -> Result<SourceInfo, String> {
+    let src = smartcut_core::scan(path).map_err(|e| e.to_string())?;
+    // Anything still building for the file that was open belongs to nothing
+    // now; the count going up is what tells it so.
+    app.state::<Generation>().0.fetch_add(1, Ordering::SeqCst);
+    *app.state::<Thumbs>().0.lock().unwrap() = None;
+    *app.state::<Proxy>().0.lock().unwrap() = None;
     let info = SourceInfo {
         path: src.path.clone(),
         codec: src.video.codec.clone(),
@@ -117,7 +186,7 @@ fn open_source(
         points: src.points.iter().map(|p| p.time).collect(),
         unusable_points: src.points.iter().filter(|p| p.open_gop() && !p.droppable).count(),
     };
-    *state.0.lock().unwrap() = Some(src);
+    *app.state::<Opened>().0.lock().unwrap() = Some(src);
     Ok(info)
 }
 
@@ -134,11 +203,26 @@ fn as_url(jpeg: &[u8]) -> String {
 }
 
 #[tauri::command]
-fn preview(time: f64, width: u32, state: State<Opened>) -> Result<Shot, String> {
-    let guard = state.0.lock().unwrap();
-    let src = guard.as_ref().ok_or("no file open")?;
-    let s = smartcut_core::shot_at(src, time, width).map_err(|e| e.to_string())?;
-    Ok(Shot { url: as_url(&s.jpeg), time: s.time, kind: s.kind.to_string() })
+async fn preview(time: f64, width: u32, app: tauri::AppHandle) -> Result<Shot, String> {
+    off_thread(move || {
+        with_pictures(&app, |src, marks| {
+            let s = smartcut_core::shot_at(src, time, width).map_err(|e| e.to_string())?;
+            Ok(Shot { url: as_url(&s.jpeg), time: s.time, kind: kind_of(&s, src, marks) })
+        })
+    })
+    .await
+}
+
+/// What kind of picture this is, as the *recording* has it.
+///
+/// A proxy is re-encoded, so its own I and P pictures fall where its encoder
+/// put them; the letter beside the frame number is about the recording, and
+/// so is the "無劣化点" beside it.
+fn kind_of(shot: &smartcut_core::Shot, src: &Source, marks: Option<&proxy::Marks>) -> String {
+    marks
+        .and_then(|m| m.kind_at(shot.time, src.video.frame_duration() / 2.0))
+        .unwrap_or(shot.kind)
+        .to_string()
 }
 
 /// Pictures for the film strip, at exactly the times asked for.
@@ -147,74 +231,84 @@ fn preview(time: f64, width: u32, state: State<Opened>) -> Result<Shot, String> 
 /// either side of a cut. Asking by time rather than by "centre and spacing"
 /// is what lets the caller hand over a run that jumps.
 #[tauri::command]
-fn thumbs_at(
+async fn thumbs_at(
     times: Vec<f64>,
     width: u32,
     exact: Option<bool>,
-    state: State<Opened>,
-    thumbs: State<Thumbs>,
+    app: tauri::AppHandle,
 ) -> Result<Vec<Option<Shot>>, String> {
     if times.is_empty() {
         return Ok(Vec::new());
     }
-    let guard = state.0.lock().unwrap();
-    let src = guard.as_ref().ok_or("no file open")?;
+    off_thread(move || thumbs_now(&times, width, exact, &app)).await
+}
 
-    // The smallest gap asked for says whether the held pictures are fine
-    // enough to answer with: they sit one key picture apart. `exact` overrides
-    // that -- a caller asking about a cut's join needs the picture *at* the
-    // time it named, because the nearest held one may be the last picture the
-    // cut took away.
-    let gap = times
-        .windows(2)
-        .map(|w| (w[1] - w[0]).abs())
-        .filter(|d| *d > 1e-9)
-        .fold(f64::INFINITY, f64::min);
-    // A held picture sits *on* a key picture, so the one nearest a GOP start
-    // should be that GOP's own. Further off than the track's own spacing means
-    // there is a hole in it -- an entry point that arrived damaged, say -- and
-    // answering with whatever is nearest would caption one picture with
-    // another picture's time. Those slots are left for a real decode below.
-    let held: Option<Vec<Option<Shot>>> = {
-        let guard = thumbs.0.lock().unwrap();
-        guard
-            .as_ref()
-            .filter(|t| !exact.unwrap_or(false) && gap >= t.interval * 0.9)
-            .map(|track| {
-                let tol = track.interval.max(src.video.frame_duration());
-                times
-                    .iter()
-                    .map(|&t| {
-                        track.nearest(t).filter(|h| (h.time - t).abs() <= tol).map(|h| Shot {
-                            url: as_url(&h.jpeg),
-                            time: h.time,
-                            kind: "I".into(),
+fn thumbs_now(
+    times: &[f64],
+    width: u32,
+    exact: Option<bool>,
+    app: &tauri::AppHandle,
+) -> Result<Vec<Option<Shot>>, String> {
+    let thumbs = app.state::<Thumbs>();
+    with_pictures(app, |src, marks| {
+        // The smallest gap asked for says whether the held pictures are fine
+        // enough to answer with: they sit one key picture apart. `exact` overrides
+        // that -- a caller asking about a cut's join needs the picture *at* the
+        // time it named, because the nearest held one may be the last picture the
+        // cut took away.
+        let gap = times
+            .windows(2)
+            .map(|w| (w[1] - w[0]).abs())
+            .filter(|d| *d > 1e-9)
+            .fold(f64::INFINITY, f64::min);
+        // A held picture sits *on* a key picture, so the one nearest a GOP start
+        // should be that GOP's own. Further off than the track's own spacing means
+        // there is a hole in it -- an entry point that arrived damaged, say -- and
+        // answering with whatever is nearest would caption one picture with
+        // another picture's time. Those slots are left for a real decode below.
+        let held: Option<Vec<Option<Shot>>> = {
+            let guard = thumbs.0.lock().unwrap();
+            guard
+                .as_ref()
+                .filter(|t| !exact.unwrap_or(false) && gap >= t.interval * 0.9)
+                .map(|track| {
+                    let tol = track.interval.max(src.video.frame_duration());
+                    times
+                        .iter()
+                        .map(|&t| {
+                            track.nearest(t).filter(|h| (h.time - t).abs() <= tol).map(|h| Shot {
+                                url: as_url(&h.jpeg),
+                                time: h.time,
+                                kind: "I".into(),
+                            })
                         })
-                    })
-                    .collect()
-            })
-    };
-    if let Some(mut out) = held {
-        let holes: Vec<usize> = (0..out.len()).filter(|&i| out[i].is_none()).collect();
-        if !holes.is_empty() {
-            let want: Vec<f64> = holes.iter().map(|&i| times[i]).collect();
-            let shots = smartcut_core::shots_at(src, &want, width).map_err(|e| e.to_string())?;
-            for (&i, shot) in holes.iter().zip(shots) {
-                out[i] = shot.map(|s| Shot {
-                    url: as_url(&s.jpeg),
-                    time: s.time,
-                    kind: s.kind.to_string(),
-                });
+                        .collect()
+                })
+        };
+        if let Some(mut out) = held {
+            let holes: Vec<usize> = (0..out.len()).filter(|&i| out[i].is_none()).collect();
+            if !holes.is_empty() {
+                let want: Vec<f64> = holes.iter().map(|&i| times[i]).collect();
+                let shots = smartcut_core::shots_at(src, &want, width).map_err(|e| e.to_string())?;
+                for (&i, shot) in holes.iter().zip(shots) {
+                    out[i] = shot.map(|s| Shot {
+                        url: as_url(&s.jpeg),
+                        time: s.time,
+                        kind: kind_of(&s, src, marks),
+                    });
+                }
             }
+            return Ok(out);
         }
-        return Ok(out);
-    }
 
-    let shots = smartcut_core::shots_at(src, &times, width).map_err(|e| e.to_string())?;
-    Ok(shots
-        .into_iter()
-        .map(|o| o.map(|s| Shot { url: as_url(&s.jpeg), time: s.time, kind: s.kind.to_string() }))
-        .collect())
+        let shots = smartcut_core::shots_at(src, times, width).map_err(|e| e.to_string())?;
+        Ok(shots
+            .into_iter()
+            .map(|o| {
+                o.map(|s| Shot { url: as_url(&s.jpeg), time: s.time, kind: kind_of(&s, src, marks) })
+            })
+            .collect())
+    })
 }
 
 #[derive(Serialize)]
@@ -227,39 +321,268 @@ struct TrackInfo {
     seconds: f64,
 }
 
-/// Decode the key pictures once, so that hovering the scrubber and searching
-/// for the next scene are both instant afterwards.
+#[derive(Serialize)]
+struct ProxyInfo {
+    path: String,
+    /// What the proxy turned out to be encoded as. Reported rather than
+    /// chosen: which encoder took it depends on what the machine has.
+    codec: String,
+    width: u32,
+    height: u32,
+    bytes: u64,
+    /// Whether one was already on disc from a previous session.
+    cached: bool,
+    seconds: f64,
+}
+
+#[derive(Serialize)]
+struct PrepareInfo {
+    proxy: Option<ProxyInfo>,
+    track: TrackInfo,
+    /// Why there is no proxy, when there is none. Empty otherwise: the
+    /// recording is still perfectly editable without one, only slower to
+    /// look at, so a failure here is worth saying and not worth stopping for.
+    note: String,
+}
+
+fn track_info(track: &smartcut_core::Track, seconds: f64) -> TrackInfo {
+    TrackInfo {
+        thumbs: track.thumbs.len(),
+        interval: track.interval,
+        scenes: track.scenes.clone(),
+        threshold: track.threshold,
+        typical: track.typical,
+        seconds,
+    }
+}
+
+/// Build the proxy for the open recording -- or pick up the one built last
+/// time -- and the thumbnail track that comes with it.
+///
+/// The two are made together because they are the same pass: the pictures the
+/// track is built from are the recording's access points, and those are
+/// exactly the pictures the proxy is being given keyframes at. Building the
+/// proxy therefore costs the thumbnails nothing, and a cached proxy means the
+/// track is rebuilt from a small file instead of from the recording.
 #[tauri::command]
-async fn warm_thumbs(app: tauri::AppHandle) -> Result<TrackInfo, String> {
-    let src = {
+async fn prepare(app: tauri::AppHandle) -> Result<PrepareInfo, String> {
+    let (src, generation) = {
         let state = app.state::<Opened>();
         let guard = state.0.lock().unwrap();
-        guard.as_ref().ok_or("no file open")?.clone()
+        let src = guard.as_ref().ok_or("no file open")?.clone();
+        (src, app.state::<Generation>().0.load(Ordering::SeqCst))
     };
-    let reporter = app.clone();
     tauri::async_runtime::spawn_blocking(move || {
-        let began = std::time::Instant::now();
-        let track = smartcut_core::thumbs::build(
-            &src,
-            &smartcut_core::ThumbOptions::default(),
-            Some(Box::new(move |f| {
-                let _ = reporter.emit("thumbs-progress", f);
-            })),
-        )
-        .map_err(|e| e.to_string())?;
-        let info = TrackInfo {
-            thumbs: track.thumbs.len(),
-            interval: track.interval,
-            scenes: track.scenes.clone(),
-            threshold: track.threshold,
-            typical: track.typical,
-            seconds: began.elapsed().as_secs_f64(),
-        };
-        *app.state::<Thumbs>().0.lock().unwrap() = Some(track);
-        Ok(info)
+        let opts = proxy::ProxyOptions::default();
+        let thumb_opts = smartcut_core::ThumbOptions::default();
+        match make_proxy(&app, &src, &opts, &thumb_opts, generation) {
+            Ok(Some(info)) => Ok(info),
+            // Superseded: another file was opened while this ran.
+            Ok(None) => Err("cancelled".to_string()),
+            Err(note) => {
+                // A build that was abandoned because another file was opened
+                // is not a failure to fall back from: the recording it was
+                // for is not the one on screen any more.
+                if app.state::<Generation>().0.load(Ordering::SeqCst) != generation {
+                    return Err("cancelled".to_string());
+                }
+                // No proxy, so the recording answers for its own pictures --
+                // which is what it did before there were proxies at all. The
+                // thumbnails still have to be built, from the recording.
+                eprintln!("proxy: {note}");
+                let began = std::time::Instant::now();
+                let reporter = app.clone();
+                let track = smartcut_core::thumbs::build(
+                    &src,
+                    &thumb_opts,
+                    Some(Box::new(move |f| {
+                        let _ = reporter.emit("prepare-progress", ("サムネイル", f));
+                    })),
+                )
+                .map_err(|e| e.to_string())?;
+                let info = track_info(&track, began.elapsed().as_secs_f64());
+                if app.state::<Generation>().0.load(Ordering::SeqCst) != generation {
+                    return Err("cancelled".to_string());
+                }
+                *app.state::<Thumbs>().0.lock().unwrap() = Some(track);
+                Ok(PrepareInfo { proxy: None, track: info, note })
+            }
+        }
     })
     .await
     .map_err(|e| e.to_string())?
+}
+
+/// The proxy half of [`prepare`]. `Ok(None)` means another file was opened
+/// while this was running and the result belongs to nobody.
+fn make_proxy(
+    app: &tauri::AppHandle,
+    src: &Source,
+    opts: &proxy::ProxyOptions,
+    thumb_opts: &smartcut_core::ThumbOptions,
+    generation: u64,
+) -> Result<Option<PrepareInfo>, String> {
+    // A way out for anyone who would rather not have a hundred megabytes per
+    // recording sitting in the cache: without a proxy the recording answers
+    // for its own pictures, which is how this worked before.
+    if matches!(
+        std::env::var("SMARTCUT_PROXY").as_deref(),
+        Ok("0") | Ok("off") | Ok("no")
+    ) {
+        return Err("SMARTCUT_PROXY で無効にされています".to_string());
+    }
+    let dir = app
+        .path()
+        .app_cache_dir()
+        .map_err(|e| format!("キャッシュの置き場が分かりません: {e}"))?
+        .join("proxy");
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    let path = proxy::cache_path(&dir, &src.path, opts).map_err(|e| e.to_string())?;
+    let began = std::time::Instant::now();
+
+    let held = proxy::ready(&path).then(|| load_cached(app, &path, thumb_opts)).and_then(|r| {
+        r.map_err(|e| {
+            // A proxy that cannot be read is worse than no proxy: it would be
+            // found again on the next open and fail again. Out it goes, and
+            // this open builds a new one.
+            eprintln!("proxy: discarding {}: {e}", path.display());
+            let _ = std::fs::remove_file(&path);
+            let _ = std::fs::remove_file(proxy::marks_path(&path));
+        })
+        .ok()
+    });
+
+    let (psrc, marks, track, cached) = if let Some((psrc, marks, track)) = held {
+        (psrc, marks, track, true)
+    } else {
+        let reporter = app.clone();
+        let sharer = app.clone();
+        let watcher = app.clone();
+        let mut built = proxy::build(
+            src,
+            &path.to_string_lossy(),
+            opts,
+            thumb_opts,
+            Some(Box::new(move |f| {
+                let _ = reporter.emit("prepare-progress", ("プロキシ", f));
+            })),
+            Some(Box::new(move |batch| hold(&sharer, batch, generation))),
+            Some(Box::new(move || {
+                watcher.state::<Generation>().0.load(Ordering::SeqCst) != generation
+            })),
+        )
+        .map_err(|e| e.to_string())?;
+        // The pictures handed over during the build are already held; what
+        // came back has the tail of them and the scene index. Both halves are
+        // this build's, so they go back together in the order they were made.
+        if app.state::<Generation>().0.load(Ordering::SeqCst) == generation {
+            if let Some(head) = app.state::<Thumbs>().0.lock().unwrap().take() {
+                let tail = std::mem::take(&mut built.track.thumbs);
+                built.track.thumbs = head.thumbs;
+                built.track.thumbs.extend(tail);
+            }
+        }
+        let psrc = proxy::open_with(&built.path, built.marks.times.first().copied())
+            .map_err(|e| e.to_string())?;
+        // Old proxies are only worth what the recordings they stand for are;
+        // a handful is enough to keep the files worked on lately instant.
+        // Eight recordings back, or two gigabytes, whichever runs out first.
+        // A proxy is worth keeping -- reopening a recording that has one
+        // costs nothing -- but not at the price of a disk, and at the width
+        // and quality the picture needs these run about a gigabyte an hour
+        // of programme. Two gigabytes is three or four half-hour shows: more
+        // than anyone has open at once, and small enough to sit on a machine
+        // that is mostly full of the recordings themselves.
+        let _ = proxy::prune(&dir, 8, 2 << 30);
+        (psrc, built.marks, built.track, false)
+    };
+
+    let info = ProxyInfo {
+        path: path.to_string_lossy().into_owned(),
+        codec: psrc.video.codec.clone(),
+        width: psrc.video.width,
+        height: psrc.video.height,
+        bytes: std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0),
+        cached,
+        seconds: began.elapsed().as_secs_f64(),
+    };
+    let tinfo = track_info(&track, info.seconds);
+
+    if app.state::<Generation>().0.load(Ordering::SeqCst) != generation {
+        return Ok(None);
+    }
+    *app.state::<Thumbs>().0.lock().unwrap() = Some(track);
+    *app.state::<Proxy>().0.lock().unwrap() = Some(Proxied { src: psrc, marks });
+    Ok(Some(PrepareInfo { proxy: Some(info), track: tinfo, note: String::new() }))
+}
+
+/// Hold on to thumbnails a build has just produced, so that everything which
+/// reads held pictures can start using them now rather than when the build
+/// ends.
+///
+/// A build over a half-hour recording runs for a minute or two, and until it
+/// finished there was nothing to answer the film strip, the scroll search or
+/// the mark cards with but the recording itself -- a seek and a GOP each
+/// time, with the encoder already on every core. These are the same pictures
+/// that pass is decoding anyway, and it decodes them in order from the start,
+/// so the part of the recording already gone past answers instantly while the
+/// rest of it is still being read.
+fn hold(app: &tauri::AppHandle, batch: smartcut_core::thumbs::Batch, generation: u64) {
+    if app.state::<Generation>().0.load(Ordering::SeqCst) != generation {
+        return;
+    }
+    let (count, interval, covered) = (batch.thumbs.len(), batch.interval, batch.covered);
+    {
+        let state = app.state::<Thumbs>();
+        let mut guard = state.0.lock().unwrap();
+        match guard.as_mut() {
+            Some(track) => {
+                track.thumbs.extend(batch.thumbs);
+                track.covered = batch.covered;
+            }
+            None => *guard = Some(batch.into_track()),
+        }
+    }
+    if count > 0 {
+        let _ = app.emit("prepare-held", (interval, covered));
+    }
+}
+
+/// Pick up the proxy built for this recording last time, and make the
+/// thumbnail track again from it.
+///
+/// The track is images, tens of megabytes of them, and reading it back off
+/// disc would be most of the cost of making it -- so it is not kept. Making
+/// it again is a pass over the small file rather than over the recording.
+fn load_cached(
+    app: &tauri::AppHandle,
+    path: &std::path::Path,
+    thumb_opts: &smartcut_core::ThumbOptions,
+) -> Result<(Source, proxy::Marks, smartcut_core::Track), String> {
+    let marks = proxy::Marks::load(&proxy::marks_path(path)).map_err(|e| e.to_string())?;
+    let psrc = proxy::open_with(&path.to_string_lossy(), marks.times.first().copied())
+        .map_err(|e| e.to_string())?;
+    // Kept from being pruned as the least recently used, since it plainly is
+    // not: it is being used now.
+    touch(path);
+    let reporter = app.clone();
+    let track = smartcut_core::thumbs::build(
+        &psrc,
+        thumb_opts,
+        Some(Box::new(move |f| {
+            let _ = reporter.emit("prepare-progress", ("サムネイル", f));
+        })),
+    )
+    .map_err(|e| e.to_string())?;
+    Ok((psrc, marks, track))
+}
+
+/// Mark a file as used just now, so the least-recently-used pruning is about
+/// use and not about when the file happened to be written.
+fn touch(path: &std::path::Path) {
+    let _ = std::fs::OpenOptions::new().write(true).open(path).and_then(|f| {
+        f.set_times(std::fs::FileTimes::new().set_modified(std::time::SystemTime::now()))
+    });
 }
 
 /// The held picture nearest `time`. Returns nothing rather than decoding on
@@ -268,7 +591,10 @@ async fn warm_thumbs(app: tauri::AppHandle) -> Result<TrackInfo, String> {
 #[tauri::command]
 fn hover_thumb(time: f64, thumbs: State<Thumbs>) -> Option<Shot> {
     let guard = thumbs.0.lock().unwrap();
-    let t = guard.as_ref()?.nearest(time)?;
+    // `nearest` will hand back the last picture it has for any time past the
+    // end of a track that is still being built -- the wrong picture, where
+    // none is the honest answer.
+    let t = guard.as_ref().filter(|t| time <= t.covered)?.nearest(time)?;
     Some(Shot { url: as_url(&t.jpeg), time: t.time, kind: "I".into() })
 }
 
@@ -282,34 +608,38 @@ fn hover_thumb(time: f64, thumbs: State<Thumbs>) -> Option<Shot> {
 /// forever. Each candidate is therefore checked for having actually moved,
 /// and the next one taken if it has not.
 #[tauri::command]
-fn scene_search(from: f64, dir: i32, app: tauri::AppHandle) -> Result<Option<f64>, String> {
-    let thumbs = app.state::<Thumbs>();
-    let opened = app.state::<Opened>();
-    let guard = opened.0.lock().unwrap();
-    let src = guard.as_ref().ok_or("no file open")?;
-    let fd = src.video.frame_duration();
+async fn scene_search(from: f64, dir: i32, app: tauri::AppHandle) -> Result<Option<f64>, String> {
+    // Refining a boundary decodes the GOP it falls in, once per candidate;
+    // see [`off_thread`].
+    off_thread(move || scene_now(from, dir, &app)).await
+}
 
-    let mut at = from;
-    for _ in 0..8 {
-        let coarse = {
-            let guard = thumbs.0.lock().unwrap();
-            let track = guard.as_ref().ok_or("scene index not built yet")?;
-            if dir >= 0 {
-                track.scene_after(at)
-            } else {
-                track.scene_before(at)
+fn scene_now(from: f64, dir: i32, app: &tauri::AppHandle) -> Result<Option<f64>, String> {
+    let thumbs = app.state::<Thumbs>();
+    with_pictures(app, |src, _| {
+        let fd = src.video.frame_duration();
+        let mut at = from;
+        for _ in 0..8 {
+            let coarse = {
+                let guard = thumbs.0.lock().unwrap();
+                let track = guard.as_ref().ok_or("scene index not built yet")?;
+                if dir >= 0 {
+                    track.scene_after(at)
+                } else {
+                    track.scene_before(at)
+                }
+            };
+            let Some(coarse) = coarse else { return Ok(None) };
+            at = coarse;
+            let exact = smartcut_core::thumbs::refine(src, coarse).map_err(|e| e.to_string())?;
+            let moved =
+                if dir >= 0 { exact > from + fd / 2.0 } else { exact < from - fd / 2.0 };
+            if moved {
+                return Ok(Some(exact));
             }
-        };
-        let Some(coarse) = coarse else { return Ok(None) };
-        at = coarse;
-        let exact = smartcut_core::thumbs::refine(src, coarse).map_err(|e| e.to_string())?;
-        let moved =
-            if dir >= 0 { exact > from + fd / 2.0 } else { exact < from - fd / 2.0 };
-        if moved {
-            return Ok(Some(exact));
         }
-    }
-    Ok(None)
+        Ok(None)
+    })
 }
 
 fn build_plan(src: &Source, ranges: &[(f64, f64)]) -> Vec<smartcut_core::RangePlan> {
@@ -317,7 +647,14 @@ fn build_plan(src: &Source, ranges: &[(f64, f64)]) -> Vec<smartcut_core::RangePl
 }
 
 #[tauri::command]
-fn make_plan(ranges: Vec<(f64, f64)>, state: State<Opened>) -> Result<PlanInfo, String> {
+async fn make_plan(ranges: Vec<(f64, f64)>, app: tauri::AppHandle) -> Result<PlanInfo, String> {
+    // The first plan for a recording may have to read its leading pictures,
+    // which is a decode; see [`off_thread`].
+    off_thread(move || plan_now(&ranges, &app)).await
+}
+
+fn plan_now(ranges: &[(f64, f64)], app: &tauri::AppHandle) -> Result<PlanInfo, String> {
+    let state = app.state::<Opened>();
     let mut guard = state.0.lock().unwrap();
     let src = guard.as_mut().ok_or("no file open")?;
     if !src.leading_known {
@@ -326,11 +663,11 @@ fn make_plan(ranges: Vec<(f64, f64)>, state: State<Opened>) -> Result<PlanInfo, 
             &src.video.clone(),
             src.start_time,
             &mut src.points,
-            &ranges,
+            ranges,
         )
         .map_err(|e| e.to_string())?;
     }
-    let plans = build_plan(src, &ranges);
+    let plans = build_plan(src, ranges);
     let copied: f64 = plans.iter().map(|p| p.copied()).sum();
     let reencoded: f64 = plans.iter().map(|p| p.reencoded()).sum();
     Ok(PlanInfo {
@@ -356,6 +693,10 @@ fn make_plan(ranges: Vec<(f64, f64)>, state: State<Opened>) -> Result<PlanInfo, 
 async fn detect_cm(app: tauri::AppHandle, use_logo: bool) -> Result<CmResult, String> {
     // Reads the whole audio track, so it belongs off the UI thread.
     tauri::async_runtime::spawn_blocking(move || {
+        // Taken before the recording's lock and kept for the whole pass:
+        // refining a boundary is a picture comparison and nothing more, so it
+        // reads from the proxy where there is one.
+        let pictures = with_pictures(&app, |s, _| Ok(s.clone()))?;
         let state = app.state::<Opened>();
         let guard = state.0.lock().unwrap();
         let src = guard.as_ref().ok_or("no file open")?;
@@ -442,7 +783,7 @@ async fn detect_cm(app: tauri::AppHandle, use_logo: bool) -> Result<CmResult, St
         // boundary within reach of one is moved onto the exact frame it
         // happens on.
         let mut blocks = blocks;
-        smartcut_core::cm_refine_boundaries(src, &mut blocks, 0.5, 0.08);
+        smartcut_core::cm_refine_boundaries(&pictures, &mut blocks, 0.5, 0.08);
 
         Ok(CmResult {
             logo_found: logo.is_some(),
@@ -525,8 +866,10 @@ async fn play(
     width: u32,
     fps: f64,
 ) -> Result<(), String> {
-    use std::sync::atomic::Ordering;
-    let src = {
+    // The pictures come from the proxy when there is one; the sound always
+    // comes from the recording, which is where the audio actually is.
+    let src = with_pictures(&app, |s, _| Ok(s.clone()))?;
+    let audio_from = {
         let state = app.state::<Opened>();
         let guard = state.0.lock().unwrap();
         guard.as_ref().ok_or("no file open")?.clone()
@@ -537,8 +880,8 @@ async fn play(
     // doc comment): it just keeps a ring buffer fed, and the sound card
     // paces itself. `Playing` is the one thing the two sides share, so
     // stopping either one stops both.
-    let audio_handle = src.audio.is_some().then(|| {
-        let audio_src = src.clone();
+    let audio_handle = audio_from.audio.is_some().then(|| {
+        let audio_src = audio_from.clone();
         let audio_ranges = ranges.clone();
         let audio_app = app.clone();
         std::thread::spawn(move || {
@@ -664,6 +1007,8 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .manage(Opened::default())
+        .manage(Proxy::default())
+        .manage(Generation::default())
         .manage(Thumbs::default())
         .manage(Playing::default())
         .manage(argv)
@@ -674,7 +1019,7 @@ pub fn run() {
             detect_cm,
             thumbs_at,
             preview,
-            warm_thumbs,
+            prepare,
             hover_thumb,
             scene_search,
             make_plan,

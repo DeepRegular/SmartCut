@@ -52,6 +52,10 @@ out **bit-identical across all 40589 frames**.
   lossless**.
 - **Cut-editing GUI** — film strip, scene detection, scroll search, and preview
   playback with audio. What you see is always the *edited* timeline.
+- **Proxy editing** — a small stand-in is built once when a recording is
+  opened, and the preview, the film strip and playback all read from it
+  afterwards. It carries the recording's own timestamps and access points, so
+  cutting still works from the recording itself.
 - **Built for broadcast material** — interlacing is preserved, 2:3 pulldown is
   handled on a field-level timeline, and dropped frames, non-zero `start_time`,
   and ARIB ADTS layout are all accounted for.
@@ -64,12 +68,13 @@ Codec and track-layout limits apply; see
 ## Install
 
 Grab a build from [Releases](https://github.com/DeepRegular/SmartCut/releases).
-**You do not need to install FFmpeg** — both builds bundle it.
+**Only the .deb asks for FFmpeg on the system** — every other build bundles it.
 
 | | |
 |---|---|
-| Linux | `smartcut_0.1.0_amd64.AppImage` — needs glibc 2.39+ (Ubuntu 24.04 / Debian 13 / Fedora 40 or newer) |
-| Windows | `smartcut_0.1.0_x64-setup.exe` (installer) or `smartcut-portable-x64.zip` (unzip and run). x64 only; needs the WebView2 runtime |
+| Linux | `smartcut_0.1.1_amd64.AppImage`, or `smartcut-0.1.1-linux-x86_64.tar.gz` (unpack it, run `./smartcut`). Both carry FFmpeg and need glibc 2.39+ (Ubuntu 24.04 / Debian 13 / Fedora 40 or newer) |
+| Linux (deb) | `smartcut_0.1.1_amd64.deb` — `sudo apt install ./smartcut_0.1.1_amd64.deb`. 2.5MB, because it links the system FFmpeg 7.1 instead of carrying one; that means Debian 13 / Ubuntu 25.04 or newer. Installs the GUI as `smartcut` and the cutter as `smartcut-cli` |
+| Windows | `smartcut_0.1.1_x64-setup.exe` (installer) or `smartcut-portable-x64.zip` (unzip and run). x64 only; needs the WebView2 runtime |
 
 To build it yourself, see [ビルドと開発](docs/development.md) (Japanese).
 
@@ -121,7 +126,7 @@ were hit.
 | [Algorithm and pitfalls](docs/algorithm.md) | How the cut is split, and the eight traps |
 | [Rust core](docs/rust-core.md) | Timestamps, mixed SPS/PPS, audio boundaries |
 | [Validation and limits](docs/validation.md) | Frame-hash verification, real-material results |
-| [GUI](docs/gui.md) | Editor, thumbnail track, scene detection, playback |
+| [GUI](docs/gui.md) | Editor, proxy editing, thumbnail track, scene detection, playback |
 | [Commercial detection](docs/cm-detection.md) | Silence plus logo, the 15-second grid, avoiding false positives |
 | [Broadcast workflow compatibility](docs/broadcast-ts.md) | PID layout, ADTS, L-SMASH / DGIndex |
 | [Building](docs/development.md) ・ [Distribution](docs/distribution.md) | How to build and ship it |

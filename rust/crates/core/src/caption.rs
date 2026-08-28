@@ -34,12 +34,33 @@ use crate::Source;
 /// broadcasters re-clear a plane that is already clear. Keep the first.
 const MIN_GAP: f64 = 2.0;
 
+/// How many marks a recording needs before its caption stream counts as
+/// marking junctions at all.
+///
+/// A channel that marks them marks every one, so the count follows from how
+/// long the recording is rather than from luck: the two measured channels
+/// that do this sent 13 and 35 across half an hour. A channel that does not
+/// sends none -- except that the caption service itself starts and stops, and
+/// a stop leaves a reset behind with no junction under it.
+///
+/// One such stray is what this exists for. A BS 日テレ recording carried
+/// captions for its first twenty seconds and nothing afterwards, and the
+/// single reset that ended them read as "this broadcaster marks its
+/// junctions" -- which is read *exclusively*, since neither the silences nor
+/// the logo are looked at once marks are found. Half an hour of commercials
+/// went undetected on the strength of one mark with no junction under it.
+///
+/// Three is near neither side of the measured gap.
+const MIN_MARKS: usize = 3;
+
 /// No caption stream in this recording marks its junctions.
 ///
 /// Several broadcasters never send a bare reset -- their caption encoder
 /// clears the plane only as part of writing the next line. Saying so lets
 /// the caller fall back to the silences and the logo, which is the same
 /// shape [`crate::logo::NoLogo`] has and for the same reason.
+///
+/// Too few marks says the same thing: see [`MIN_MARKS`].
 #[derive(Debug)]
 pub struct NoResets;
 
@@ -196,7 +217,7 @@ pub fn resets_with(
 
     out.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
     out.dedup_by(|later, earlier| *later - *earlier < MIN_GAP);
-    if out.is_empty() {
+    if out.len() < MIN_MARKS {
         return Err(NoResets.into());
     }
     Ok(out)

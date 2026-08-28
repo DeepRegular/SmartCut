@@ -19,6 +19,7 @@ pub mod logo;
 pub mod plan;
 pub mod playback_audio;
 pub mod preview;
+pub mod proxy;
 pub mod thumbs;
 
 pub use cm::{
@@ -30,6 +31,7 @@ pub use cm::{
 pub use cut::{cut, cut_with_progress, write_audio_es, AudioMode, CutOptions};
 pub use index::{ContainerIndex, IndexSource, PacketScan};
 pub use preview::{frame_at, play_from, shot_at, shots_at, Pace, Shot};
+pub use proxy::{Marks, ProxyOptions};
 pub use thumbs::{ThumbOptions, Track};
 pub use plan::{plan, plan_range, PlanOptions, RangePlan, Segment, SegmentKind};
 pub use playback_audio::play_audio;
@@ -135,6 +137,31 @@ pub struct Source {
 
 pub fn init() -> Result<()> {
     ff::init().map_err(|e| anyhow!("ffmpeg init failed: {e}"))
+}
+
+/// A video decoder allowed to use every core.
+///
+/// libavcodec threads only when it is told a number, and its own default is
+/// one -- which for a straight pass over 1440x1080 MPEG-2 is most of the wall
+/// clock: the same half hour decodes in 23.6s on one core and 10.6s across
+/// four. Which *kind* of threading is left to the codec, because they do not
+/// all offer the same one (MPEG-2 has slice threading only, H.264 frame
+/// threading as well) and `thread_type` already asks for whichever is there.
+///
+/// For passes over the whole file only. A decoder opened to fetch one
+/// picture, or one that stops as soon as it has read far enough, wants its
+/// answer back on the packet that carried it -- and frame threading holds
+/// pictures back until the pipeline fills, so the last few would never come.
+pub fn video_decoder(params: ff::codec::Parameters) -> Result<ff::decoder::Video> {
+    let mut ctx = ff::codec::context::Context::from_parameters(params)?;
+    // ffmpeg-next's `set_threading` writes the kind as well as the count, and
+    // naming one kind is exactly how a codec that only has the other ends up
+    // single threaded anyway. The count is the one field that needs saying:
+    // zero means "as many as this machine has".
+    unsafe {
+        (*ctx.as_mut_ptr()).thread_count = 0;
+    }
+    Ok(ctx.decoder().video()?)
 }
 
 /// Index the video stream's random access points by walking packets.

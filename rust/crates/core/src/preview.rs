@@ -17,7 +17,7 @@ pub struct Shot {
     pub kind: &'static str,
 }
 
-fn kind_of(frame: &ff::frame::Video) -> &'static str {
+pub(crate) fn kind_of(frame: &ff::frame::Video) -> &'static str {
     match frame.kind() {
         ff::picture::Type::I => "I",
         ff::picture::Type::P => "P",
@@ -51,7 +51,24 @@ pub fn shots_at(src: &Source, times: &[f64], width: u32) -> Result<Vec<Option<Sh
         .map(|w| w[1] - w[0])
         .filter(|d| *d > 1e-9)
         .fold(f64::INFINITY, f64::min);
-    let jump = if base.is_finite() { base * 2.5 + 0.5 } else { f64::INFINITY };
+    // ...with a ceiling over the top of it, because a run is decoded straight
+    // through: cells a minute apart are evenly spaced too, and walking from
+    // one to the next would decode the whole minute between them to throw all
+    // but one picture of it away. Past a second or two the seek is cheaper
+    // than the pictures it skips -- broadcast material carries an access
+    // point every half second, and a seek lands on one. The film strip at its
+    // wider settings asks for exactly that, and used to wait tens of seconds
+    // for it.
+    const WALK: f64 = 2.0;
+    let jump = if base.is_finite() { (base * 2.5 + 0.5).min(WALK) } else { f64::INFINITY };
+
+    // Every cell of a GOP-divided film strip stands on an entry point, and
+    // when they all do, everything between them can go by unparsed: an entry
+    // picture decodes on its own. That is the difference between decoding the
+    // six seconds a run covers and decoding the thirteen pictures wanted out
+    // of it, which is what the strip costs while a proxy is being built and
+    // there is nothing faster to read from.
+    let keys = times.iter().all(|&t| on_point(&src.points, t, fd / 2.0));
 
     let mut out: Vec<Option<Shot>> = (0..times.len()).map(|_| None).collect();
     let mut start = 0usize;
@@ -60,12 +77,20 @@ pub fn shots_at(src: &Source, times: &[f64], width: u32) -> Result<Vec<Option<Sh
         if !split {
             continue;
         }
-        for (k, shot) in collect_run(src, &times[start..i], width, fd)?.into_iter().enumerate() {
+        for (k, shot) in
+            collect_run(src, &times[start..i], width, fd, keys)?.into_iter().enumerate()
+        {
             out[start + k] = shot;
         }
         start = i;
     }
     Ok(out)
+}
+
+/// Is `t` a random access point, to within `tol`?
+fn on_point(points: &[AccessPoint], t: f64, tol: f64) -> bool {
+    let i = points.partition_point(|p| p.time < t - tol);
+    points.get(i).is_some_and(|p| (p.time - t).abs() <= tol)
 }
 
 /// One seek, then a straight decode filling every slot with the nearest
@@ -75,6 +100,7 @@ fn collect_run(
     wanted: &[f64],
     width: u32,
     fd: f64,
+    keys: bool,
 ) -> Result<Vec<Option<Shot>>> {
     let first = wanted[0];
     let last = *wanted.last().unwrap();
@@ -90,7 +116,7 @@ fn collect_run(
     for (attempt, margin) in [0.0, src.seek_margin].into_iter().enumerate() {
         let mut slots: Vec<Option<(f64, &'static str, ff::frame::Video)>> =
             (0..wanted.len()).map(|_| None).collect();
-        let began = walk(src, from, margin, |t, frame| {
+        let began = walk(src, from, margin, keys, |t, frame| {
             if t > last + fd {
                 return false;
             }
@@ -164,7 +190,7 @@ pub fn play_from(
     let mut stopped = false;
     for (attempt, margin) in [0.0, src.seek_margin].into_iter().enumerate() {
         let mut began_late = true;
-        let first = walk(src, entry, margin, |t, frame| {
+        let first = walk(src, entry, margin, false, |t, frame| {
             if t > until + fd / 2.0 {
                 stopped = true;
                 return false;
@@ -215,7 +241,7 @@ pub fn shot_at(src: &Source, time: f64, width: u32) -> Result<Shot> {
     for (attempt, margin) in [0.0, src.seek_margin].into_iter().enumerate() {
         let mut hit: Option<(f64, ff::frame::Video)> = None;
         let mut tail: Option<(f64, ff::frame::Video)> = None;
-        let began = walk(src, from, margin, |t, frame| {
+        let began = walk(src, from, margin, false, |t, frame| {
             // The wanted picture is whichever of the two straddling `time` is
             // nearer -- not "the first one at or after it". Under 2:3
             // pulldown the pictures are 41.7ms apart inside a 29.97 fps
@@ -255,7 +281,16 @@ fn entry_before(points: &[AccessPoint], time: f64) -> f64 {
 
 pub(crate) fn encode_jpeg(picture: &ff::frame::Video, src: &Source, width: u32) -> Result<Vec<u8>> {
     let sar = src.video.sample_aspect_ratio.max(0.01);
-    let out_w = width.max(16) & !1;
+    // What the picture is worth, in square pixels. Not its coded width: 1440
+    // samples across shown at 16:9 needs 1920 to keep all 1080 of its lines,
+    // and stopping at 1440 would throw a quarter of them away. Past that
+    // there is nothing more to ask for -- the stage asks for its own pixels
+    // and can be wider than the source, and a bigger number there only makes
+    // a bigger JPEG out of the same samples. It is the proxy that this
+    // usually measures, and a proxy is square-pixel: its width *is* the
+    // ceiling on everything the timeline shows.
+    let native = (picture.width() as f64 * sar).round() as u32;
+    let out_w = width.min(native).max(16) & !1;
     // Downscaling far enough also takes the comb out of interlaced material,
     // so a preview needs no deinterlacer of its own.
     let out_h = (((out_w as f64 * picture.height() as f64)
@@ -314,18 +349,36 @@ pub(crate) fn encode_jpeg(picture: &ff::frame::Video, src: &Source, width: u32) 
 /// look identical from here, and both are fixed the same way, by starting
 /// again a few GOPs earlier.
 ///
-/// `visit` returns false to stop.
+/// `keys` hands over only the pictures that open a GOP, skipping everything
+/// between them unparsed -- for callers that are asking about entry points
+/// and nothing else. `visit` returns false to stop.
 fn walk(
     src: &Source,
     from: f64,
     margin: f64,
+    keys: bool,
     mut visit: impl FnMut(f64, &ff::frame::Video) -> bool,
 ) -> Result<Option<f64>> {
     let mut ictx = ff::format::input(&src.path)?;
     let idx = src.video.stream_index;
     let in_tb = src.video.time_base;
     let landing = (from - margin).max(0.0);
-    let target = ((landing + src.start_time) * ff::ffi::AV_TIME_BASE as f64) as i64;
+    // Asking for the beginning has to mean the beginning, exactly as in
+    // `cut::seek_to`: aiming at the container's own start time lands *past*
+    // the file's first entry point, and that is the one place the back-off
+    // below has nothing earlier to fall back to. A recording whose first
+    // entry point sits at time zero -- which is most of them once the times
+    // are rebased -- could not have its opening pictures read at all, and the
+    // film strip drew its first cell blank while a proxy was being built.
+    //
+    // The threshold is that first entry point rather than zero, because
+    // nothing before it can be decoded anyway: aiming at it would land past
+    // it and cost a whole second pass to find that out.
+    let target = if src.points.first().is_none_or(|p| landing <= p.time) {
+        i64::MIN / 2
+    } else {
+        ((landing + src.start_time) * ff::ffi::AV_TIME_BASE as f64) as i64
+    };
     let _ = ictx.seek(target, ..target);
 
     let params =
@@ -338,6 +391,13 @@ fn walk(
     let mut stopped = false;
     'outer: for (stream, packet) in ictx.packets() {
         if stream.index() != idx {
+            continue;
+        }
+        // Never handed over rather than decoded and dropped -- and filtered
+        // here rather than with `skip_frame`, which is per *picture* and so
+        // takes the P bottom field off a field-coded entry point; see the
+        // note in `thumbs::build`.
+        if keys && !packet.is_key() {
             continue;
         }
         if decoder.send_packet(&packet).is_err() {

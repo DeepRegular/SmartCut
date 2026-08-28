@@ -24,7 +24,6 @@ jlog("main.js start");
 const el = (id) => document.getElementById(id);
 const track = el("track");
 const ctx = track.getContext("2d");
-const CELLS = 9;
 
 let src = null;
 let playhead = 0; // source time, always on material that still exists
@@ -42,6 +41,12 @@ let activeKey = null; // source time of the selected mark, null for none
 let cmBlocks = [];
 let scenes = [];
 let warmed = false;
+/// Whether there are held pictures to read -- which happens well before
+/// `warmed`, because the pass that makes them hands them over as it goes.
+/// The film strip, the scroll search and the mark cards want this one; only
+/// the scene index has to wait for the pass to end.
+let held = false;
+let proxied = false; // whether the pictures now come from a proxy
 let interval = 0.5;
 let previewToken = 0;
 let stripToken = 0;
@@ -251,7 +256,7 @@ const isActive = (t) => activeKey !== null && Math.abs(t - activeKey) < frame() 
 const isJoin = (o) => seams.some((s) => Math.abs(s - o) < 1e-9);
 
 async function cardThumb(t) {
-  if (!warmed) return null;
+  if (!held) return null;
   // A mark sitting on a join needs the picture that is actually there. The
   // held ones are key pictures, and the nearest key picture to a join is
   // usually the last one the cut took.
@@ -481,6 +486,24 @@ function draw() {
 
 // --- picture ------------------------------------------------------------
 
+/// How many pixels wide the picture on the stage actually is.
+///
+/// Asking for a fixed 960 was asking for the wrong thing twice: on a stage
+/// wider than that the picture was blown up by the browser and looked soft
+/// however good the proxy was, and on a narrow one it was decoded and
+/// encoded at a size nothing would ever show. The stage is laid out with
+/// `object-fit: contain`, so its own width is the ceiling; device pixels
+/// rather than CSS ones, because that is what the screen has.
+///
+/// Rounded down to a step so that dragging a window edge does not ask for a
+/// different size on every frame it passes through.
+const STAGE_STEP = 64;
+function stageWidth(cap = 1920) {
+  const box = el("preview").clientWidth || 960;
+  const want = box * (window.devicePixelRatio || 1);
+  return clamp(Math.round(want / STAGE_STEP) * STAGE_STEP, 320, cap);
+}
+
 async function showFrame(t) {
   if (!src) return;
   if (playing && t !== playhead) stopPlay();
@@ -496,7 +519,7 @@ async function showFrame(t) {
     // frame earlier until the picture is one that survived.
     let shot = null;
     for (let ask = playhead, i = 0; i < 3; i++, ask -= frame()) {
-      shot = await invoke("preview", { time: ask, width: 960 });
+      shot = await invoke("preview", { time: ask, width: stageWidth() });
       if (token !== previewToken) return;
       if (srcToOut(shot.time) !== null) break;
     }
@@ -533,16 +556,20 @@ function updateReadouts() {
 
 // --- film strip ---------------------------------------------------------
 //
-// A window of fixed duration, centred on the playhead and divided where the
-// GOPs divide -- which is how the reference tool draws it, and it is the
-// right unit twice over: those boundaries are the only places a cut is free,
-// and the pictures at them are exactly the ones already held in memory, so a
-// cell costs nothing to fill.
+// A row of pictures taken at the GOP boundaries and centred on the playhead
+// -- which is how the reference tool draws it, and the right unit twice
+// over: those boundaries are the only places a cut is free, and the pictures
+// at them are exactly the ones already held in memory, so a cell costs
+// nothing to fill.
 //
-// Cell widths are the GOPs' own share of the window, so a partial GOP at the
-// end of the recording or at a cut really does come out narrower. The window
-// follows the playhead, so the marker stays at the middle and the boundaries
-// creep across it a frame at a time.
+// **Every cell is one picture wide.** What the menu picks is therefore how
+// much *time* a cell covers, not how wide it is drawn: at three minutes a
+// cell swallows a run of GOPs and the boundaries inside it are skipped, at
+// three seconds it holds a single one. Widths that followed each GOP's own
+// length were tried first and read badly -- a long GOP at a close zoom came
+// out as one small picture stranded in a wide black cell, and the same strip
+// drew cells of two different sizes for a reason nobody can see. A cell's
+// width now says the same thing everywhere, and its caption says when.
 //
 // The cells hang on a reel drawn wider than the window shows, and following
 // the playhead is a transform on that reel rather than a redraw. That is what
@@ -555,7 +582,41 @@ function updateReadouts() {
 let stripTimer = null;
 function scheduleStrip() {
   clearTimeout(stripTimer);
-  stripTimer = setTimeout(refreshStrip, 140);
+  stripTimer = setTimeout(() => askStrip(), 140);
+}
+
+/// One redraw at a time, and the latest place asked for wins.
+///
+/// A redraw is a round trip, and until the proxy is built it is a decode per
+/// cell behind that. Firing one off per pointer notch -- which the scroll
+/// search does, fourteen times a second -- queues work far faster than it can
+/// finish, and the strip ends up chasing a position the playhead left long
+/// ago. This is the treatment the wheel's own decodes already get.
+let stripBusy = false;
+let stripNext = null;
+
+function askStrip(at) {
+  if (stripBusy) {
+    stripNext = { at };
+    return;
+  }
+  stripBusy = true;
+  runStrip(at);
+}
+
+async function runStrip(at) {
+  try {
+    await refreshStrip(at);
+  } catch (e) {
+    jlog(`strip: ${e}`);
+  }
+  if (stripNext) {
+    const next = stripNext;
+    stripNext = null;
+    runStrip(next.at);
+  } else {
+    stripBusy = false;
+  }
 }
 
 /// How much of the recording the strip covers, and whether it is divided by
@@ -565,18 +626,55 @@ function stripView() {
   return v === "frame" ? { span: null } : { span: parseFloat(v.slice(4)) };
 }
 
-const MAX_CELLS = 15;
+/// The height the pictures are drawn at -- `.strip img` in the stylesheet has
+/// the other copy of this number -- and, with the recording's own shape, how
+/// wide one cell comes out.
+///
+/// The shape is read off a picture that is already on screen rather than off
+/// the coded size, because the coded size is not it: broadcast material is
+/// anamorphic, and the engine has already undone that in everything it hands
+/// over. 16:9 until there is a picture to ask.
+const CELL_H = 62;
+
+function cellPx() {
+  const p = el("preview");
+  const r = p.naturalWidth > 0 ? p.naturalWidth / p.naturalHeight : 16 / 9;
+  return clamp(Math.round(CELL_H * r), 48, 320);
+}
+
+/// Ceiling on how many pictures one reel is worth asking for. Only reached on
+/// a very wide window during playback, where the margin doubles the count.
+const MAX_CELLS = 40;
 
 const reel = el("reel");
 
-/// What the drawn reel covers, in output time: `at` is the moment at its left
-/// edge, `span` how much it holds, `vis` how much of that the window shows,
-/// and `rest` where it sits when nothing is chasing the playhead.
+/// What the drawn reel holds: its cells, each with the stretch of output time
+/// it stands for and where it sits on the reel in pixels; `px`, how wide the
+/// whole reel is; `vis`, how much time the window shows, which is what says
+/// when the playhead has wandered far enough to want a fresh one; and `rest`,
+/// the place it was drawn for.
+///
+/// Pixels rather than shares of a span, because the cells are all one width
+/// and the time behind them is not.
 let reelWin = null;
 
 /// How many windows wide to draw the reel. Only playback has anything to
 /// slide, and the margin is pictures decoded for nothing everywhere else.
 const overscan = () => (playing ? 2 : 1);
+
+/// Where output time `o` falls on the reel, in pixels from its left edge.
+///
+/// A cell stands for the whole stretch of time it covers, so the place inside
+/// it is read off proportionally: that is what keeps the playhead creeping
+/// across a cell rather than jumping from one to the next.
+function reelX(o) {
+  const cells = reelWin.cells;
+  let i = 0;
+  while (i + 1 < cells.length && cells[i + 1].a <= o) i++;
+  const c = cells[i];
+  const f = c.b > c.a ? (o - c.a) / (c.b - c.a) : 0;
+  return c.x + f * c.px;
+}
 
 /// Slide the reel so that output time `o` falls under the marker. Clamped to
 /// what was drawn: if a redraw is late, the strip holding still for a moment
@@ -585,8 +683,7 @@ function placeReel(o) {
   if (!reelWin) return;
   const w = el("strip").clientWidth;
   if (w <= 0) return;
-  const px = w / reelWin.vis;
-  const x = clamp(w / 2 - (o - reelWin.at) * px, Math.min(0, w - reelWin.span * px), 0);
+  const x = clamp(w / 2 - reelX(o), Math.min(0, w - reelWin.px), 0);
   reel.style.transform = `translateX(${x.toFixed(2)}px)`;
   markHere(o);
 }
@@ -598,17 +695,15 @@ const holdReel = () => reelWin && placeReel(playing ? playPos() : reelWin.rest);
 /// Outline the cell the playhead stands in. It changes as the reel slides, so
 /// it is set here rather than baked in when the cells are built.
 ///
-/// A GOP-divided reel wants the last cell that has begun -- the cells are
-/// clipped to the window, so their ends cannot be trusted to bracket the
-/// playhead at the edges -- while frame cells are centred on their picture
-/// and want the nearest.
+/// A GOP-divided reel wants the last cell that has begun, while frame cells
+/// are centred on their picture and want the nearest.
 function markHere(o) {
   const cells = reelWin.cells;
   let i = -1;
   for (let k = 0; k < cells.length; k++) {
     if (reelWin.byNearest) {
       if (i < 0 || Math.abs(cells[k].at - o) < Math.abs(cells[i].at - o)) i = k;
-    } else if (o >= cells[k].at - 1e-9) i = k;
+    } else if (o >= cells[k].a - 1e-9) i = k;
   }
   if (i === reelWin.here) return;
   if (cells[reelWin.here]) cells[reelWin.here].fig.classList.remove("here");
@@ -616,27 +711,64 @@ function markHere(o) {
   reelWin.here = i;
 }
 
-/// The cells of a GOP-divided window: `start` is the GOP's own beginning --
-/// the picture to show and the time to caption -- and `from`..`to` is the
-/// part of it the window can see, which is where the widths come from.
-function gopCells(w0, w1, max) {
-  let i = 0;
-  while (i < gops.length && gops[i] <= w0 + 1e-9) i++;
-  const marks = [];
-  for (let j = Math.max(0, i - 1); j < gops.length && gops[j] < w1 - 1e-9; j++) {
-    marks.push(gops[j]);
+/// The cells a GOP-divided reel is made of: `slots` of them, each covering a
+/// run of `every` GOPs, centred on the one the playhead stands in. `at` is
+/// the picture to show and the time to caption; `a` and `b` are the stretch
+/// the cell speaks for, which is what the playhead is placed against.
+///
+/// `every` is chosen so that the cells the *window* can hold cover about the
+/// span the menu asked for. That is what "GOP・3 分" means once the widths are
+/// fixed: three minutes across the window, at however many GOPs per cell that
+/// comes to. At the short end a cell cannot hold less than one GOP, so the
+/// window covers rather more than it says and every boundary is drawn -- the
+/// honest answer, and the one that reads.
+///
+/// Slots that fall outside the recording are kept, as blanks. They are what
+/// lets the reel slide far enough to hold the playhead at the middle when it
+/// is near either end; without them the reel would run out and the marker
+/// would drift off the picture it is meant to be standing on.
+function gopCells(o, span, slots, vis) {
+  const n = gops.length;
+  if (!n) return [{ at: 0, a: 0, b: Math.max(outDur, span), live: true }];
+  // the GOP the playhead is standing in
+  let i0 = 0;
+  while (i0 + 1 < n && gops[i0 + 1] <= o + 1e-9) i0++;
+  // How many GOPs one cell has to swallow for `vis` of them to reach across
+  // the span the menu asked for. Off the whole recording's average rather
+  // than off the boundaries around the playhead, because at either end only
+  // half the span is there to count and the answer would come out half what
+  // it should be -- which drew a minute and a quarter under "3 分".
+  const every = Math.max(1, Math.round((span / vis) * (n / Math.max(outDur, 1e-9))));
+
+  const half = slots >> 1;
+  const cells = [];
+  for (let k = -half; k < slots - half; k++) {
+    const j = i0 + k * every;
+    if (j < 0 || j >= n) {
+      cells.push({ live: false });
+      continue;
+    }
+    const a = gops[j];
+    const b = Math.min(gops[j + every] ?? outDur, outDur);
+    cells.push({ at: a, a, b: Math.max(b, a + 1e-3), live: true });
   }
-  if (!marks.length) marks.push(0);
-
-  // A minute of half-second GOPs is 120 cells; nobody can read a ten-pixel
-  // thumbnail, so boundaries get skipped rather than the pictures shrunk.
-  const every = Math.ceil(marks.length / max);
-  const kept = marks.filter((_, k) => k % every === 0);
-
-  return kept.map((m, k) => {
-    const next = kept[k + 1] ?? Math.min(w1, outDur);
-    return { start: m, from: Math.max(m, w0), to: Math.min(next, w1) };
-  });
+  // A blank has no time of its own, so it takes over where the cell beside it
+  // leaves off. The reel stays continuous in time that way, and the playhead
+  // can be found on it whichever slot it happens to fall in.
+  const d = Math.max(span / vis, 1e-3);
+  for (let k = 1; k < cells.length; k++) {
+    if (!cells[k].live && cells[k - 1].b !== undefined) {
+      cells[k].a = cells[k - 1].b;
+      cells[k].b = cells[k].a + d;
+    }
+  }
+  for (let k = cells.length - 2; k >= 0; k--) {
+    if (!cells[k].live && cells[k].a === undefined) {
+      cells[k].b = cells[k + 1].a;
+      cells[k].a = cells[k].b - d;
+    }
+  }
+  return cells;
 }
 
 /// Draw a reel centred on `at`, or on the playhead when it is not given.
@@ -650,21 +782,24 @@ async function refreshStrip(at) {
   }
   stripCache = null;
 
-  // The reel is the window plus its margin; the window is what is seen, and
-  // it is the window that decides how wide a second is on screen.
-  const span = view.span * overscan();
-  const w0 = o - span / 2;
-  const w1 = o + span / 2;
-  const cells = gopCells(Math.max(0, w0), Math.min(outDur, w1), MAX_CELLS * overscan());
-  const times = cells.map((c) => outToSrc(c.start));
+  const px = cellPx();
+  // as many cells as the window holds, and a reel of them wide enough to
+  // slide across while playback runs
+  const vis = Math.max(1, Math.ceil(el("strip").clientWidth / px));
+  const slots = Math.max(vis + 1, Math.min(vis * overscan() + 1, MAX_CELLS));
+  const cells = gopCells(o, view.span, slots, vis);
+  const live = cells.filter((c) => c.live);
+  if (!live.length) return;
+
+  const times = live.map((c) => outToSrc(c.at));
   // Cells that begin on a GOP are already in memory; a cell that begins on a
   // join is not, and asking the held pictures for it would hand back the
   // last picture the cut took. Those few are decoded.
-  const wanted = cells.map((c) => isJoin(c.start));
+  const wanted = live.map((c) => isJoin(c.at));
   const token = ++stripToken;
   let got;
   try {
-    const [held, decoded] = await Promise.all([
+    const [kept, decoded] = await Promise.all([
       invoke("thumbs_at", { times: times.filter((_, i) => !wanted[i]), width: 200 }),
       wanted.some(Boolean)
         ? invoke("thumbs_at", { times: times.filter((_, i) => wanted[i]), width: 200, exact: true })
@@ -672,51 +807,46 @@ async function refreshStrip(at) {
     ]);
     let h = 0;
     let d = 0;
-    got = wanted.map((w) => (w ? decoded[d++] : held[h++]));
+    got = wanted.map((w) => (w ? decoded[d++] : kept[h++]));
   } catch (e) {
     jlog(`thumbs_at: ${e}`);
     return;
   }
   if (token !== stripToken) return;
 
-  const shots = cells.map((c, k) => ({
-    url: got[k] ? got[k].url : null,
-    time: outToSrc(c.start),
-    at: c.start,
-    width: (c.to - c.from) / span,
-  }));
-  // nothing exists before the start of the file or past its end
-  const lead = (Math.min(w1, Math.max(w0, 0)) - w0) / span;
-  const tail = (w1 - Math.max(w0, Math.min(w1, outDur))) / span;
-  renderStrip(shots, span / Math.max(1, cells.length), lead, tail, {
-    at: w0,
-    span,
-    vis: view.span,
+  let k = 0;
+  const shots = cells.map((c) => {
+    if (!c.live) return { url: null, time: null, at: c.a, a: c.a, b: c.b, px };
+    const g = got[k++];
+    return { url: g ? g.url : null, time: outToSrc(c.at), at: c.at, a: c.a, b: c.b, px };
+  });
+  // what one cell covers, which is what the marks below are drawn against
+  const mid = live[live.length >> 1];
+  renderStrip(shots, mid.b - mid.a, {
+    vis: vis * (mid.b - mid.a),
     rest: o,
     byNearest: false,
   });
 }
 
-/// Frame mode: equal cells, one picture each, with a wide window cached so
-/// that stepping does not pay for a seek and a GOP every time.
+/// Frame mode: one cell per picture, with a wide window cached so that
+/// stepping does not pay for a seek and a GOP every time.
 async function refreshFrameStrip(o) {
   const sp = frame();
-  // cells either side of the middle one: the window holds CELLS of them, the
+  // One picture wide here too, so that changing the menu changes how much of
+  // the recording is on screen and nothing else about how it looks.
+  const px = cellPx();
+  const vis = Math.max(3, Math.ceil(el("strip").clientWidth / px));
+  // cells either side of the middle one: the window holds `vis` of them, the
   // reel that many again for the margin
-  const half = Math.ceil((CELLS * overscan()) / 2);
+  const half = Math.ceil((vis * overscan()) / 2);
   const put = (shots, i) =>
     renderStrip(
-      shots.slice(i - half, i + half + 1).map((s) => ({ ...s, width: 1 / (2 * half + 1) })),
+      shots
+        .slice(i - half, i + half + 1)
+        .map((s) => ({ ...s, a: s.at - sp / 2, b: s.at + sp / 2, px })),
       sp,
-      0,
-      0,
-      {
-        at: shots[i - half].at - sp / 2,
-        span: (2 * half + 1) * sp,
-        vis: CELLS * sp,
-        rest: shots[i].at,
-        byNearest: true,
-      }
+      { vis: vis * sp, rest: shots[i].at, byNearest: true }
     );
   if (stripCache) {
     // by nearest picture rather than by index arithmetic: the playhead sits
@@ -733,7 +863,9 @@ async function refreshFrameStrip(o) {
       return;
     }
   }
-  const n = 41;
+  // wide enough that stepping through it finds a reel's worth of pictures
+  // either side of the playhead before it has to be built again
+  const n = Math.max(41, 4 * half + 1);
   const first = o - (n >> 1) * sp;
   const times = Array.from({ length: n }, (_, i) => first + i * sp);
   const live = times.map((t) => (t < -1e-9 || t > outDur + 1e-9 ? null : outToSrc(t)));
@@ -757,23 +889,14 @@ async function refreshFrameStrip(o) {
   put(shots, n >> 1);
 }
 
-/// Lay the cells out on the reel. `win` says what the reel covers, which is
-/// what `placeReel` needs to slide it; widths are the cells' share of the
-/// reel, not of the window.
-function renderStrip(shots, unit, lead, tail, win) {
+/// Lay the cells out on the reel. Each is drawn at its own `px` -- one
+/// picture wide, the same for every cell on the reel -- and `win` carries
+/// what `placeReel` needs to slide the result.
+function renderStrip(shots, unit, win) {
   stripShots = shots;
   reel.innerHTML = "";
-  reel.style.width = `${(win.span / win.vis) * 100}%`;
   const cells = [];
-
-  const pad = (w) => {
-    if (w <= 1e-6) return;
-    const fig = document.createElement("figure");
-    fig.className = "blank";
-    fig.style.width = `${w * 100}%`;
-    reel.append(fig);
-  };
-  pad(lead);
+  let x = 0;
 
   // Every cell shows the picture its GOP begins with, the one the playhead is
   // standing in included. Swapping that one for the picture under the playhead
@@ -782,8 +905,9 @@ function renderStrip(shots, unit, lead, tail, win) {
   // glitch. The strip is a ruler; the marker says where you are.
   shots.forEach((s, i) => {
     const fig = document.createElement("figure");
-    fig.style.width = `${s.width * 100}%`;
-    cells.push({ fig, at: s.at, live: !!s.url });
+    fig.style.width = `${s.px.toFixed(2)}px`;
+    cells.push({ fig, at: s.at, a: s.a, b: s.b, x, px: s.px, live: !!s.url });
+    x += s.px;
     if (!s.url) {
       fig.className = "blank";
       reel.append(fig);
@@ -815,9 +939,9 @@ function renderStrip(shots, unit, lead, tail, win) {
     });
     reel.append(fig);
   });
-  pad(tail);
+  reel.style.width = `${x.toFixed(2)}px`;
   el("playline").hidden = false;
-  reelWin = { ...win, cells, here: null };
+  reelWin = { ...win, cells, px: x, here: null };
   holdReel();
 }
 
@@ -828,7 +952,7 @@ let lastFast = -1;
 let lastSharp = 0;
 
 async function paintFast(t) {
-  if (!warmed) return;
+  if (!held) return;
   if (Math.abs(t - lastFast) < interval / 2) return;
   const token = ++hoverToken;
   const shot = await invoke("hover_thumb", { time: t });
@@ -846,7 +970,7 @@ async function paintFast(t) {
 async function paintSharp(t) {
   const token = ++previewToken;
   try {
-    const shot = await invoke("preview", { time: t, width: 960 });
+    const shot = await invoke("preview", { time: t, width: stageWidth() });
     if (token === previewToken) el("preview").src = shot.url;
   } catch {
     /* the next tick will try again */
@@ -870,7 +994,7 @@ function startSearch(ev) {
     updateReadouts();
     draw();
     paintFast(playhead);
-    refreshStrip();
+    askStrip();
     if (Math.abs(rate) < 2.5 && Date.now() - lastSharp > 320) {
       lastSharp = Date.now();
       paintSharp(playhead);
@@ -968,7 +1092,6 @@ let playing = false;
 // were drawn.
 let playAnchor = null;
 let reelRaf = 0;
-let reelBusy = false;
 
 const playPos = () =>
   playing && playAnchor
@@ -998,12 +1121,7 @@ function reelTick() {
   if (!playing) return;
   const o = playPos();
   placeReel(o);
-  if (!reelBusy && reelWin && Math.abs(o - (reelWin.at + reelWin.span / 2)) > reelWin.vis / 4) {
-    reelBusy = true;
-    refreshStrip(o).finally(() => {
-      reelBusy = false;
-    });
-  }
+  if (!stripBusy && reelWin && Math.abs(o - reelWin.rest) > reelWin.vis / 4) askStrip(o);
   reelRaf = requestAnimationFrame(reelTick);
 }
 
@@ -1024,10 +1142,19 @@ function startPlay() {
   // Redraw before the first picture arrives: the reel standing there was
   // drawn without a margin, and there is nowhere for it to slide.
   clearTimeout(stripTimer);
-  refreshStrip();
+  askStrip();
   reelRaf = requestAnimationFrame(reelTick);
+  // Every picture shown costs a JPEG and a data URL, so how many are worth
+  // asking for depends on what is being read: a dozen a second is all a full
+  // MPEG-2 decode can keep up with anyway, while a proxy can hand over
+  // enough to look like motion.
+  const fps = proxied ? 24 : 15;
+  // Smaller than the still picture asks for. Softness that would be plain on
+  // a frame held still is not visible at 24 a second, and every one of those
+  // costs a scale, a JPEG and a data URL.
+  const width = Math.min(stageWidth(), 960);
   // not awaited: it resolves when playback ends, and `play-ended` says so
-  invoke("play", { ranges: outputRanges(), from: playhead, width: 640, fps: 15 }).catch((e) => {
+  invoke("play", { ranges: outputRanges(), from: playhead, width, fps }).catch((e) => {
     el("status").textContent = `再生: ${e}`;
     setPlaying(false);
   });
@@ -1062,30 +1189,57 @@ async function toScene(dir, from = playhead) {
   }
 }
 
-/// Decode the key pictures once in the background. The hover preview, the
-/// scroll search and the scene index all read from what it leaves behind.
-async function warmThumbs() {
+/// Build the proxy and the thumbnail track, once, in the background.
+///
+/// Until this finishes the recording answers for its own pictures, which is
+/// slow but works -- so nothing here blocks editing. When it does finish the
+/// preview, the film strip, playback and the scene search all switch over to
+/// the proxy without being told: the engine simply has something faster to
+/// read, at the same timestamps.
+async function prepare() {
   warmed = false;
+  held = false;
+  // Until this says otherwise the recording is answering for its own
+  // pictures -- including when the file just opened is the second one and
+  // the first one had a proxy.
+  proxied = false;
   scenes = [];
   cardThumbs.clear();
   el("prev-scene").disabled = true;
   el("next-scene").disabled = true;
-  el("warm").textContent = "サムネイル準備中 0%";
+  el("warm").textContent = "プロキシ準備中 0%";
   try {
-    const t = await invoke("warm_thumbs");
+    const r = await invoke("prepare");
+    const t = r.track;
     scenes = t.scenes;
     interval = t.interval;
     warmed = true;
+    held = true;
+    proxied = !!r.proxy;
     el("prev-scene").disabled = false;
     el("next-scene").disabled = false;
+    const made = r.proxy
+      ? `プロキシ ${r.proxy.width}x${r.proxy.height} ` +
+        `${(r.proxy.bytes / 1e6).toFixed(0)}MB（` +
+        (r.proxy.cached ? "前回のを再利用 " : "作成 ") +
+        `${r.proxy.seconds.toFixed(0)}秒）`
+      : `プロキシなし（${r.note}）`;
     el("warm").textContent =
-      `サムネイル ${t.thumbs} 枚 ${t.interval.toFixed(2)}s 間隔 / シーン ${t.scenes.length} 箇所`;
+      `${made} / サムネイル ${t.thumbs} 枚 ${t.interval.toFixed(2)}s 間隔 / ` +
+      `シーン ${t.scenes.length} 箇所`;
     draw();
     stripCache = null;
-    refreshStrip();
+    askStrip();
     renderKeyframes();
+    // The picture on screen came from the recording, decoded before any of
+    // this existed. Ask again so that what is shown is what the timeline will
+    // keep showing from here on.
+    showFrame(playhead);
   } catch (e) {
-    el("warm").textContent = `サムネイル: ${e}`;
+    // Opening another file supersedes this one; that is not a failure worth
+    // showing, because the second file's own pass is already running.
+    if (String(e).includes("cancelled")) return;
+    el("warm").textContent = `プロキシ: ${e}`;
   }
 }
 
@@ -1108,8 +1262,8 @@ track.addEventListener("mousemove", (ev) => {
   const bw = box.offsetWidth || 198;
   box.style.left = `${clamp(ev.offsetX + 6 - bw / 2, 0, Math.max(0, w - bw))}px`;
   el("hover-time").textContent = fmt(o);
-  el("hover-kind").textContent = warmed ? "" : "準備中";
-  if (!warmed) return;
+  el("hover-kind").textContent = held ? "" : "準備中";
+  if (!held) return;
   clearTimeout(hoverTimer);
   const token = ++hoverToken;
   hoverTimer = setTimeout(async () => {
@@ -1244,7 +1398,7 @@ async function openPath(picked) {
     el("status").textContent = "";
     await showFrame(0);
     schedulePlan();
-    warmThumbs();
+    prepare();
   } catch (e) {
     el("title").textContent = "";
     el("status").textContent = `開けません: ${e}`;
@@ -1312,7 +1466,7 @@ el("strip-step").addEventListener("change", (ev) => {
   // spacing instead of stepping through frames.
   ev.target.blur();
   stripCache = null;
-  refreshStrip();
+  askStrip();
 });
 
 el("snap").addEventListener("click", () => {
@@ -1517,8 +1671,25 @@ if (listen) {
     el("detect-cm").textContent = `検出中 ${Math.round(done * 100)}%`;
     el("cm-note").textContent = phase;
   });
-  listen("thumbs-progress", (ev) => {
-    if (!warmed) el("warm").textContent = `サムネイル準備中 ${Math.round(ev.payload * 100)}%`;
+  listen("prepare-progress", (ev) => {
+    const [phase, done] = ev.payload;
+    if (!warmed) el("warm").textContent = `${phase}準備中 ${Math.round(done * 100)}%`;
+  });
+  // Pictures from a pass that is still running. Everything that reads held
+  // pictures can use them from here on, for the stretch of the recording the
+  // pass has read -- which is what stops the strip decoding the recording
+  // itself while a proxy is being built.
+  listen("prepare-held", (ev) => {
+    const [gap] = ev.payload;
+    interval = gap;
+    // Only the first batch is worth redrawing for. A strip drawn before there
+    // were held pictures is not wrong -- the cells it could not fill were
+    // decoded -- so the later batches change nothing on screen and arrive
+    // twice a second for the length of the build.
+    if (held) return;
+    held = true;
+    scheduleStrip();
+    renderKeyframes();
   });
   listen("export-progress", (ev) => {
     const pct = Math.round(ev.payload * 100);
@@ -1529,8 +1700,10 @@ if (listen) {
 
 window.addEventListener("resize", () => {
   draw();
-  // the reel is placed in pixels, so a narrower window is a wrong offset
+  // the reel is placed in pixels, so a narrower window is a wrong offset --
+  // and a narrower window holds fewer cells, so it wants a fresh reel too
   holdReel();
+  scheduleStrip();
 });
 renderKeyframes();
 draw();

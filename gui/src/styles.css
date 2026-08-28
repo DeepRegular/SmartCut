@@ -115,10 +115,30 @@ main { flex: 1; min-height: 0; display: flex; gap: 0; }
 .playline::before { top: 0; border-top: 5px solid #2f7bff; }
 .playline::after { bottom: 0; border-bottom: 5px solid #2f7bff; }
 
-/* Cells are GOPs, so their widths are whatever share of the window each GOP
-   takes -- a partial one at a seam or at the end really is narrower. */
-.strip figure { margin: 0; flex: none; min-width: 0; position: relative; overflow: hidden; }
-.strip img { display: block; width: 100%; height: 62px; object-fit: cover; background: #000; }
+/* Every cell is one picture wide, whatever stretch of the recording it
+   speaks for -- `cellPx` in main.js sets the width, from this height and the
+   shape of the pictures themselves. */
+.strip figure {
+  margin: 0; flex: none; min-width: 0; position: relative; overflow: hidden;
+  border-right: 1px solid rgba(0,0,0,.65);
+  /* Under the picture, so a cell rounded up by a fraction of a pixel shows
+     the same ground an empty cell does rather than a bright seam. */
+  background: #0b0b0b;
+}
+.strip figure:last-child { border-right: 0; }
+/* One height for every picture on the reel, and the width the picture's own
+   shape asks for at that height -- which is the width its cell was given, so
+   the two come out flush. Scaling the picture to fill the cell instead would
+   let the cell's shape decide the picture's, and a cell that is not 16:9 at
+   this height would either stretch it sideways or crop the top and bottom
+   off it.
+
+   `margin-left` and the transform together centre the picture in the cell,
+   which matters for the pixel or two either way that rounding leaves. */
+.strip img {
+  display: block; height: 62px; width: auto; max-width: none;
+  margin-left: 50%; transform: translateX(-50%); background: #000;
+}
 /* Captions light, as the reference tool has them: the timecodes are the
    thing being read here, and dark-on-light wins at this size. */
 .strip figcaption {
@@ -127,7 +147,13 @@ main { flex: 1; min-height: 0; display: flex; gap: 0; }
   border: 1px solid #f3f3f3; border-top: 0;
 }
 .strip .inside figcaption { background: var(--sel-soft); border-color: var(--sel-soft); }
-.strip .inside img { outline: 1px solid var(--sel-soft); outline-offset: -1px; }
+/* On the picture area rather than on the picture: the picture hangs past
+   its cell and is clipped by it, so an outline drawn on the picture itself
+   would lose its sides. */
+.strip .inside::after {
+  content: ""; position: absolute; left: 0; right: 0; top: 0; height: 62px;
+  outline: 1px solid var(--sel-soft); outline-offset: -1px; pointer-events: none;
+}
 .strip .here { box-shadow: 0 0 0 2px #2f7bff inset; }
 .strip .here figcaption { font-weight: 700; }
 .strip .kf figcaption::before { content: "▲"; color: #148f4c; }

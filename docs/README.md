@@ -14,7 +14,7 @@
 
 | | |
 |---|---|
-| [GUI](gui.md) | カット編集画面、フィルムストリップ、サムネイル軌道とシーン検出、再生 |
+| [GUI](gui.md) | カット編集画面、フィルムストリップ、プロキシ編集、サムネイル軌道とシーン検出、再生 |
 | [CM 境界の検出](cm-detection.md) | 字幕リセット・無音・ロゴの 3 つ、15 秒格子、誤検出を出さないための設計 |
 | [放送録画ワークフローとの互換](broadcast-ts.md) | 出力 TS の PID レイアウト、シーケンスヘッダ、ADTS、L-SMASH / DGIndex |
 
@@ -23,7 +23,7 @@
 | | |
 |---|---|
 | [ビルドと開発](development.md) | 必要なライブラリ、ビルド手順、テストの走らせ方 |
-| [配布](distribution.md) | AppImage と Windows インストーラ、同梱される依存 |
+| [配布](distribution.md) | AppImage・tar.gz・deb と Windows インストーラ、同梱される依存 |
 
 ## そのほか
 

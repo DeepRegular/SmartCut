@@ -48,6 +48,8 @@ fn main() -> Result<()> {
     let mut analyze = false;
     let mut index_kind = "scan".to_string();
     let mut preview_at: Option<f64> = None;
+    let mut make_proxy = false;
+    let mut as_proxy = false;
     let mut detect_cm = false;
     let mut scenes = false;
     let mut audio_es = false;
@@ -91,6 +93,8 @@ fn main() -> Result<()> {
                 i += 1;
                 index_kind = args.get(i).context("--index needs scan|container")?.clone();
             }
+            "--proxy" => make_proxy = true,
+            "--as-proxy" => as_proxy = true,
             "--analyze" => analyze = true,
             "-o" | "--output" => {
                 i += 1;
@@ -113,7 +117,13 @@ fn main() -> Result<()> {
         "container" => Box::new(index::ContainerIndex),
         other => bail!("unknown --index {other}; want scan or container"),
     };
-    let mut src = smartcut_core::scan_with(&input, index_source.as_ref())?;
+    // `--as-proxy` reads the input as a proxy of something else: same file,
+    // but its timestamps are the recording's and must not be rebased again.
+    let mut src = if as_proxy {
+        smartcut_core::proxy::open(&input)?
+    } else {
+        smartcut_core::scan_with(&input, index_source.as_ref())?
+    };
     let v = &src.video;
     println!("input : {}", src.path);
     println!(
@@ -285,6 +295,43 @@ fn main() -> Result<()> {
                 fmt_hms(c.time)
             );
         }
+        return Ok(());
+    }
+
+    if make_proxy {
+        let out = output.clone().unwrap_or_else(|| {
+            std::path::Path::new(&src.path)
+                .with_extension("proxy.mp4")
+                .to_string_lossy()
+                .into_owned()
+        });
+        let opts = smartcut_core::ProxyOptions::default();
+        let built = smartcut_core::proxy::build(
+            &src,
+            &out,
+            &opts,
+            &smartcut_core::ThumbOptions::default(),
+            Some(Box::new(|f| {
+                eprint!("\r  proxy {:5.1}%", f * 100.0);
+                use std::io::Write as _;
+                let _ = std::io::stderr().flush();
+            })),
+            None,
+            None,
+        )?;
+        eprintln!();
+        println!(
+            "\nwrote {} ({:.1} MB)  {}x{}  {}  {} pictures  {} thumbs  {} scenes  {:.1}s",
+            built.path,
+            built.bytes as f64 / 1e6,
+            built.width,
+            built.height,
+            built.encoder,
+            built.pictures,
+            built.track.thumbs.len(),
+            built.track.scenes.len(),
+            built.seconds
+        );
         return Ok(());
     }
 
