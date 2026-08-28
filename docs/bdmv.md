@@ -1,73 +1,77 @@
-# BDMV / BDAV への拡張（調査結果）
+# Extending to BDMV / BDAV (research notes)
 
-[← ドキュメント一覧](README.md) ・ [← smartcut](../README.ja.md)
+[← Documentation](README.md) ・ [← smartcut](../README.md) ・ [日本語](bdmv.ja.md)
 
-結論: **可能。しかも第1段階は今日そのまま動く。** 検証した事実:
+Conclusion: **it is feasible, and the first stage already works today.** What was
+verified:
 
-| 項目 | 状態 |
+| Item | State |
 |---|---|
-| **M2TS（192バイトパケット）の読み込み** | **無改造で動作**。実素材を M2TS に再多重して 450/450・96.2% 無劣化・A/V 17.7ms を確認 |
-| `bluray:` プロトコル | この ffmpeg は `--enable-libbluray` 済み。自前バイナリからも到達（`-playlist` `-angle` `-chapter` オプションあり） |
-| AC-3 音声（BDMV の定番） | MP4 出力まで通る |
-| **BD LPCM（`pcm_bluray`）** | **MP4 も MKV も不可**、TS では `bin_data` に落ちる。標準 PCM への変換が要る |
-| BDAV プレイリスト（`.rpls`） | libbluray は BDMV 専用。自前パーサが要る |
+| **Reading M2TS (192-byte packets)** | **Works unmodified.** Real material re-muxed to M2TS gave 450/450, 96.2 % lossless, A/V 17.7 ms |
+| The `bluray:` protocol | This ffmpeg is built `--enable-libbluray`, and it is reachable from our own binary (with `-playlist`, `-angle` and `-chapter` options) |
+| AC-3 audio (the BDMV staple) | Goes through as far as MP4 output |
+| **BD LPCM (`pcm_bluray`)** | **Not possible in MP4 or MKV**; in TS it degrades to `bin_data`. Conversion to standard PCM is required |
+| BDAV playlists (`.rpls`) | libbluray is BDMV-only. A parser of our own is needed |
 
-## 段階的な作業量
+## The work, stage by stage
 
-1. **単一 `.m2ts` を切る** — 済み。追加作業なし。
-2. **BDMV をプレイリスト単位で切る** — `ff::format::input_with()` に切り替えて
-   `playlist` オプションを渡すだけ。小さい。
-3. **BDAV のプレイリスト対応** — `.rpls` を自前で読む。フォーマットは
-   PlayItem の並び（クリップ参照 + IN/OUT 時刻）で素直だが、実装は要る。
-4. **BD 特有ストリーム** — LPCM の変換、PGS 字幕、TrueHD/DTS-HD、VC-1。
-   現状は「映像1本 + 音声1本」しか扱わないので、BD の多音声・字幕には
-   トラック選択の一般化が前提。
-5. **BDMV/BDAV として書き出す** — オーサリングであり別問題。大きい。
+1. **Cutting a single `.m2ts`** — done. No further work.
+2. **Cutting BDMV by playlist** — switch to `ff::format::input_with()` and pass
+   the `playlist` option. Small.
+3. **BDAV playlist support** — read `.rpls` ourselves. The format is
+   straightforward, a list of PlayItems (clip reference plus IN/OUT times), but it
+   still has to be written.
+4. **BD-specific streams** — LPCM conversion, PGS subtitles, TrueHD/DTS-HD, VC-1.
+   Right now only "one video track plus one audio track" is handled, so BD's
+   multiple audio tracks and subtitles presuppose generalising track selection.
+5. **Writing BDMV/BDAV out** — that is authoring, a different problem. Large.
 
-## 索引取得は差し替え可能（実装済み）
+## The index source is swappable (implemented)
 
-アクセスポイント索引の作り方を [`index.rs`](../rust/crates/core/src/index.rs) の
-`IndexSource` トレイトに切り出してある。BD の CLPI EP map を読む実装は
-ここに足すだけで済む。
+How the access point index is built is factored out into the `IndexSource` trait
+in [`index.rs`](../rust/crates/core/src/index.rs). An implementation that reads
+BD's CLPI EP map only has to be added there.
 
-| 実装 | 内容 |
+| Implementation | What it does |
 |---|---|
-| `PacketScan` | 全パケット走査。厳密で、どのコンテナでも動く |
-| `ContainerIndex` | コンテナのシークテーブル（MP4 の `stss` 等）を読む |
-| （将来）`ClpiIndex` | BD の CLIPINF EP map を読む |
+| `PacketScan` | Scans every packet. Exact, and works on any container |
+| `ContainerIndex` | Reads the container's seek table (MP4's `stss`, and so on) |
+| (future) `ClpiIndex` | Reads BD's CLIPINF EP map |
 
-`--index scan|container` で切り替えられる。654MB の実 MP4 で計測:
+`--index scan|container` switches between them. Measured on a real 654 MB MP4:
 
 ```
 container    2.73s   430 access points
-scan        56.44s   430 access points   ← 計画は完全に同一
+scan        56.44s   430 access points   <- the plans are byte-identical
 ```
 
-**なぜ「時刻だけ」で足りるようにしたか。** 以前はコピー区間を
-「デコード順のパケット数」で区切っていたが、これは全パケット走査でしか
-得られない。外部索引が持っているのは時刻なので、**終端アクセスポイントの
-時刻に到達したら止める**方式に変えた。leading picture の除去も
-「エントリポイントより前に表示されるパケットを落とす」という時刻ベースの
-規則にした。結果としてカッターは索引の出自に依存しない。
+**Why "times alone" were made sufficient.** Copy regions used to be delimited by
+"packet count in decode order", which only a full packet scan can give you. What
+an external index has is times, so the scheme was changed to **stop on reaching
+the terminating access point's time**. Leading-picture removal likewise became a
+time-based rule: "drop packets that display before the entry point". The result
+is a cutter that does not care where its index came from.
 
-**外部索引が答えられないこと。** 索引はエントリポイントの位置しか知らない。
-GOP が開いているか、leading picture が参照されているかはビットストリームを
-見ないと分からない。そこで索引は「答えられたかどうか」を申告し、
-`refine_leading()` が**実際にカットで使うアクセスポイントの周辺だけ**を読んで
-埋める。ファイル全体を読み直すことはない。
+**What an external index cannot answer.** An index only knows where the entry
+points are. Whether a GOP is open, and whether its leading pictures are
+referenced, cannot be known without looking at the bitstream. So the index
+declares whether it could answer, and `refine_leading()` fills in the gaps by
+reading **only around the access points the cut actually uses**. The file is
+never read through again.
 
-途中で踏んだ罠が 2 つ:
+Two traps along the way:
 
-- **コンテナのシークテーブルは DTS で引かれている。** B ピラミッドでは
-  PTS との差が一定ではないので、単純な補正では合わない。窓の中で DTS で
-  照合して PTS を読み直す形にした。
-- 照合を DTS でやると、**対象キーフレームの PTS が既に「次の GOP」の
-  打ち切り条件を満たしてしまい**、窓がその場で閉じて leading picture を
-  一つも見られなくなる。打ち切りは対象自身ではなく次のアクセスポイントで
-  判定する必要がある。
+- **Container seek tables are keyed by DTS.** With B pyramids the difference from
+  PTS is not constant, so a simple correction does not line up. It became: match
+  by DTS within a window, then read the PTS back.
+- Once matching is done by DTS, **the target keyframe's own PTS already satisfies
+  the "next GOP" stop condition**, so the window closes immediately and not a
+  single leading picture is seen. The stop condition has to be evaluated on the
+  next access point, not on the target itself.
 
-検証: MP4 系の全 13 ケース中 9 件（TS 以外）が `--index container` でも
-走査と同一結果。MPEG-TS はシークテーブルを持たないので明示的にエラーを返す
-——**まさに BD の CLPI が埋める穴**である。
+Verification: 9 of the 13 cases (everything but TS) give results identical to the
+scan under `--index container`. MPEG-TS has no seek table, so it returns an
+explicit error — **precisely the hole that BD's CLPI fills**.
 
-なお**暗号化されたディスクは対象外**。復号を前提とした機能は扱わない。
+Note that **encrypted discs are out of scope**. Nothing that presupposes
+decryption is handled here.

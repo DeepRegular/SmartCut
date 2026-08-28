@@ -1,121 +1,130 @@
-# 放送録画ワークフローとの互換
+# Broadcast workflow compatibility
 
-[← ドキュメント一覧](README.md) ・ [← smartcut](../README.ja.md)
+[← Documentation](README.md) ・ [← smartcut](../README.md) ・ [日本語](broadcast-ts.ja.md)
 
-## 出力の TS は録画のレイアウトを引き継ぐ
+## The output TS inherits the recording's layout
 
-DGIndex のような**放送録画を前提にした道具は、フレームを 1 枚も読む前に
-PID・PMT・サービス番号・記述子を読む**。そこが録画と違えば、開けないか、
-音声トラックを見つけられない。素材と初期の出力を並べるとこうだった:
+**Tools built around broadcast recordings, DGIndex among them, read the PIDs, the
+PMT, the service number and the descriptors before they read a single frame.** If
+those differ from the recording, the file either does not open or the audio track
+cannot be found. Lined up against the source, the early output looked like this:
 
-| | PMT PID | 映像 PID | 音声 PID | 音声の記述子 |
+| | PMT PID | Video PID | Audio PID | Audio descriptors |
 |---|---|---|---|---|
-| 素材（BS フジ） | 0x100 | 0x1100 | 0x1101 | `0x52` `0x0a` |
-| 出力（当初） | 0x1000 | 0x100 | 0x101 | **なし** |
-| 出力（現在） | 0x100 | 0x1100 | 0x1101 | `0x0a` |
+| Source (BS Fuji) | 0x100 | 0x1100 | 0x1101 | `0x52` `0x0a` |
+| Output (originally) | 0x1000 | 0x100 | 0x101 | **none** |
+| Output (now) | 0x100 | 0x1100 | 0x1101 | `0x0a` |
 
-**PID は映像ストリームのものを起点にする。** 「ファイル中の最小 PID」では
-ない——放送録画は字幕やデータ放送も*ストリーム*として持っていて、その PID は
-多重化器が受け付ける範囲（0x0020〜0x1FFA）より下にある。最初はそれを拾って
-`mpegts_start_pid` に 18 を渡し、出力が 0 バイトになった。
+**The PIDs are derived from the video stream's.** Not from "the lowest PID in the
+file" — a broadcast recording carries subtitles and data broadcasting as *streams*
+too, and their PIDs sit below the range the muxer accepts (0x0020–0x1FFA). The
+first attempt picked one of those up, passed 18 as `mpegts_start_pid`, and
+produced a 0-byte output.
 
-`0x52`（component_tag）だけは ffmpeg の多重化器が書かないので付かない。
+`0x52` (component_tag) is the one thing that does not get written, because
+ffmpeg's muxer does not write it.
 
-### muxer のオプションが一度も届いていなかった
+### The muxer options had never been arriving
 
-これを直す過程で判明した。`ffmpeg-next` の `output_with()` は渡した辞書を
-**プロトコル層**（`avio_open2`）に渡すだけで、多重化器の private option には
-届かない。多重化器のオプションは `write_header` に渡す必要がある
-（`write_header_with()`）。つまり `video_track_timescale` も含め、**指定して
-いたつもりのものが全部黙って捨てられていた**。フレーム比較には出ないので、
-`tests/run_ts_layout_tests.sh` を置いた。
+This came out while fixing the above. `output_with()` in `ffmpeg-next` passes the
+dictionary you give it to the **protocol layer** (`avio_open2`) only; it never
+reaches the muxer's private options. Muxer options have to be passed to
+`write_header` (`write_header_with()`). Which means that everything we thought we
+were setting, `video_track_timescale` included, **was being silently discarded**.
+None of it shows up in a frame comparison, hence `tests/run_ts_layout_tests.sh`.
 
-## 再エンコードした先頭が「59.94fps」と名乗っていた
+## The re-encoded head claimed to be "59.94 fps"
 
-DGIndex → AviSynth（MPEG2Dec）でフレームレートが合わない、という報告から
-出てきた不具合。**無劣化点から外れたところで切ると先頭が再エンコード区間に
-なり、そのシーケンスヘッダを書くのはこちら**だ。そこが素材と食い違っていた:
-
-```
-素材   frame_rate_code=4 (30000/1001)
-出力   frame_rate_code=7 (60000/1001)   ← 再エンコードした先頭だけ
-```
-
-**索引を作る道具は最初に出会ったシーケンスヘッダを全編ぶんとして信じる**ので、
-29.97 の録画が 59.94 として下流に渡っていた。
-
-原因は出力タイムラインの単位。フィールド単位（1 目盛 = 1 フィールド）の
-time_base をエンコーダにもそのまま渡していて、**MPEG-2 のフレームレート符号は
-time_base から逆算される**ため倍になった。`framerate` を別に立てても
-mpeg12enc は time_base しか見ないので効かない。エンコーダには**ピクチャ単位の
-time_base** を渡し、渡す絵には通し番号を振って、**その番号がタイムライン上の
-どこに何フィールド分置かれるかは別に覚えておく**形にして解決。出力側の
-フィールド単位のタイムラインはそのまま。
-
-フレームハッシュの比較では出ない種類なので、`tests/run_ts_layout_tests.sh` に
-「再エンコードした先頭のシーケンスヘッダが素材と一致するか」を足した。
-
-## 音声だけを `.aac` で出せる
-
-DGIndex → x264 → mux という流れでは、音声は**素の ADTS ファイル**として
-mux 器に渡ることになる。その `.aac` を作る工程が弱い環に化けた例があって、
-**DGIndex が出した `.aac` の先頭が `FF F8 04 22`**——同期語は正しいのに、
-そのあとが「Main プロファイル / 88.2kHz / チャンネル数 0」という、およそ
-成り立たない申告になっていた。L-SMASH はその 1 フレーム目から
-AudioSpecificConfig を組むので、読む前に匙を投げる
-（`failed to find the matched importer`）。
-
-出力側の ADTS は素材と 1 バイトも違わない:
+This one surfaced from a report that the frame rate did not line up in
+DGIndex → AviSynth (MPEG2Dec). **Cut anywhere other than a lossless point and the
+head becomes a re-encoded region — and we are the ones writing its sequence
+header.** It disagreed with the source:
 
 ```
-素材   ff f8 4c a0  MPEG-2 CRCあり profile=LC rate=48000 ch=2
-出力   ff f8 4c a0  MPEG-2 CRCあり profile=LC rate=48000 ch=2
+source   frame_rate_code=4 (30000/1001)
+output   frame_rate_code=7 (60000/1001)   <- only the re-encoded head
 ```
 
-**壊れるのは「音声をサンプル精度に」のときだけ**、というのが決め手だった。
-コピーなら放送そのもののバイト列が通るので ADTS は
-`ff f8`（MPEG-2・CRC あり）——日本の放送 AAC は必ずこの形。再エンコードすると
-ffmpeg の ADTS 書き出しが `ff f1`（MPEG-4・CRC なし）を**決め打ちで**書く。
-ヘッダ長が 9 バイトから 7 バイトに変わるので、ARIB 前提で 9 バイトを見に行く
-道具は設定を読み損ねる——`04 22`（Main / 88.2kHz / 0ch）という「読めなかった
-ときの既定値」がそれだ。ffmpeg 側にこの 2 ビットを変える術はない。
+**Indexing tools trust the first sequence header they meet for the whole file**,
+so a 29.97 recording was being handed downstream as 59.94.
 
-`write_audio_es()`（CLI では `--audio-es`）は**書き終えた出力を読み直して**
-音声だけを ADTS で書き出す。隣に置かれるのは定義上その動画の中にある音声
-そのもので、L-SMASH の `muxer` に通ることを確認済み（`Track 1: MPEG-4 Audio`、
-48kHz ステレオ、尺も一致）。
+The cause was the unit of the output timeline. The field-based time base (one
+tick = one field) was being handed to the encoder as it was, and **MPEG-2's frame
+rate code is derived from the time base**, so it doubled. Setting `framerate`
+separately has no effect, because mpeg12enc looks only at the time base. Fixed by
+giving the encoder a **picture-based time base**, numbering the pictures we hand
+it, and **keeping separately track of where on the timeline each number lands and
+how many fields it occupies**. The field-based timeline on the output side is
+unchanged.
 
-これも**窓からは外した**。サンプル精度をやめた時点でコピーだけが残り、
-コピーなら放送そのもののバイト列が通るので、DGIndex は素材と同じように
-読める——回避策の要る場面がなくなったため。
+It is not the kind of thing a frame-hash comparison reveals, so
+`tests/run_ts_layout_tests.sh` gained a check that the re-encoded head's sequence
+header matches the source.
 
-## L-SMASH に渡すなら素のストリームで
+## Audio can be written out on its own as `.aac`
 
-出力を L-SMASH の `muxer` に渡すと
-`[importer: Error]: failed to find the matched importer.` で止まる、という
-報告があったので確かめた。**素材の `.ts` をそのまま渡しても同じエラーが出る**
-——`muxer` が読むのは**素のストリーム**（Annex-B の H.264/H.265、ADTS の AAC、
-AC-3 など）だけで、トランスポートストリームは端から対象外だからだ。
-出力の AAC が悪いわけではない。
+In a DGIndex → x264 → mux workflow, the audio reaches the muxer as a **bare ADTS
+file**. There is a case where the step producing that `.aac` turned out to be the
+weak link: **the `.aac` DGIndex produced started with `FF F8 04 22`** — the sync
+word is right, but what follows declares "Main profile / 88.2 kHz / 0 channels",
+which is not a thing that can exist. L-SMASH builds its AudioSpecificConfig from
+that first frame, so it gives up before reading anything
+(`failed to find the matched importer`).
 
-確認したこと:
+Our output's ADTS does not differ from the source by a single byte:
 
-| 渡したもの | 結果 |
+```
+source   ff f8 4c a0  MPEG-2 with CRC profile=LC rate=48000 ch=2
+output   ff f8 4c a0  MPEG-2 with CRC profile=LC rate=48000 ch=2
+```
+
+The decisive observation was that **it only breaks with "sample-accurate
+audio"**. On copy the broadcast's own bytes go through, so the ADTS stays
+`ff f8` (MPEG-2, with CRC) — the form Japanese broadcast AAC always takes.
+Re-encode and ffmpeg's ADTS writer **hard-codes** `ff f1` (MPEG-4, no CRC). The
+header length changes from 9 bytes to 7, so a tool that expects ARIB and goes
+looking at 9 bytes misreads the configuration — and `04 22` (Main / 88.2 kHz /
+0 ch) is exactly what "could not read it" defaults to. There is no way to change
+those two bits from the ffmpeg side.
+
+`write_audio_es()` (`--audio-es` on the CLI) **reads the finished output back**
+and writes the audio out as ADTS. What ends up next to the video is by
+construction the very audio inside it, and it has been confirmed to pass through
+L-SMASH's `muxer` (`Track 1: MPEG-4 Audio`, 48 kHz stereo, matching duration).
+
+This too is **kept out of the window**. Once sample-accurate audio was dropped
+only copy remains, and on copy the broadcast's own bytes go through, so DGIndex
+reads the output exactly as it reads the source — the situation that needed the
+workaround no longer arises.
+
+## To hand it to L-SMASH, use the bare stream
+
+A report said that feeding the output to L-SMASH's `muxer` stops with
+`[importer: Error]: failed to find the matched importer.`, so it was checked.
+**Feeding it the source `.ts` gives the same error** — `muxer` reads **bare
+streams** only (Annex-B H.264/H.265, ADTS AAC, AC-3 and so on), and a transport
+stream is out of scope from the start. There is nothing wrong with the output's
+AAC.
+
+What was confirmed:
+
+| What was passed | Result |
 |---|---|
-| 出力 `.ts` をそのまま | `failed to find the matched importer` |
-| **素材 `.ts` をそのまま** | **同じエラー** |
-| 出力から取り出した `.aac`（ffmpeg） | `Track 1: MPEG-4 Audio` — 通る |
-| 出力から取り出した `.aac`（PID の PES を素朴に連結） | 通る |
-| 素材から取り出した `.aac` | 通る |
+| The output `.ts` directly | `failed to find the matched importer` |
+| **The source `.ts` directly** | **The same error** |
+| `.aac` extracted from the output (ffmpeg) | `Track 1: MPEG-4 Audio` — works |
+| `.aac` extracted from the output (naive concatenation of the PID's PES) | works |
+| `.aac` extracted from the source | works |
 
-出力の PMT も素材と同じ stream_type `0x0F`（ADTS AAC）で、先頭バイトも
-`ff f8` の同期語。取り出しは素朴な PID ダンプでも成立する。
+The output's PMT carries the same stream_type as the source, `0x0F` (ADTS AAC),
+and the leading bytes are the `ff f8` sync word. Extraction works even with a
+naive PID dump.
 
 ```bash
-ffmpeg -i cut_xxx.ts -map 0:a:0 -c copy cut_xxx.aac   # これを muxer に渡す
+ffmpeg -i cut_xxx.ts -map 0:a:0 -c copy cut_xxx.aac   # hand this to muxer
 ```
 
-なお **L-SMASH は MPEG-2 映像を扱わない**（`remuxer` は
-`no support to remux this stream` と言う）ので、この素材を L-SMASH だけで
-MP4 にすることはそもそもできない。映像を H.264 に変換する工程が別にあり、
-音声だけ持っていく——という使い方が前提になる。
+Note that **L-SMASH does not handle MPEG-2 video** (`remuxer` says
+`no support to remux this stream`), so this material cannot be turned into MP4 by
+L-SMASH alone in the first place. The assumed workflow has a separate step
+converting the video to H.264, and carries only the audio across.

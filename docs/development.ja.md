@@ -1,0 +1,108 @@
+# ビルドと開発
+
+[← ドキュメント一覧](README.ja.md) ・ [← smartcut](../README.ja.md) ・ [English](development.md)
+
+Linux（Debian 13 / Ubuntu 24.04 以降）でビルドする。Windows 版も Linux から
+クロスビルドする。
+
+## 必要なもの
+
+**FFmpeg は 7.1 系であること。** `ffmpeg-sys-next` はバージョンごとに
+バインディングを出し分けるので、別系列を掴ませると API がずれる。
+
+```bash
+# ビルド基盤（clang / libclang は bindgen が使う）
+sudo apt install build-essential pkg-config cmake clang libclang-dev
+
+# FFmpeg 7.1 の開発ヘッダ
+sudo apt install libavcodec-dev libavformat-dev libavutil-dev \
+                 libavfilter-dev libavdevice-dev libswscale-dev libswresample-dev
+
+# Tauri GUI の前提（GUI をビルドしないなら不要）
+sudo apt install libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev \
+                 librsvg2-dev libsoup-3.0-dev libjavascriptcoregtk-4.1-dev \
+                 patchelf desktop-file-utils xdg-utils
+
+# Rust
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+```
+
+| 項目 | 版 |
+|---|---|
+| FFmpeg | 7.1 系（開発は 7.1.5） |
+| Rust | 1.98 以上 |
+| WebKitGTK | 4.1（Tauri v2） |
+| Node.js | 24 LTS（GUI のバンドルに使う） |
+
+## ビルド
+
+```bash
+# Rust コア + CLI
+cd rust && cargo build --release
+# -> rust/target/release/smartcut
+
+# GUI
+cd gui/src-tauri && cargo build --release
+# -> gui/src-tauri/target/release/gui
+```
+
+### 配布物
+
+AppImage・tar.gz・deb / Windows インストーラの作り方は [配布](distribution.ja.md) を参照。
+
+## テスト
+
+```bash
+bash tests/run_tests.sh               # Python E2E                     13
+bash tests/run_rust_tests.sh          # Rust E2E（+ container 索引で 9） 13
+bash tests/run_audio_tests.sh         # A/V 同期（+ reencode で 5）       5
+bash tests/run_audio_content_tests.sh # 実素材の音声が正しい位置にあるか   4
+bash tests/run_preview_tests.sh       # スクラブの絵が頼んだ時刻か         7
+bash tests/run_proxy_tests.sh         # プロキシが録画の代わりになるか     22
+bash tests/run_scene_tests.sh         # シーン検出 vs CM 境界             1
+bash tests/run_ts_layout_tests.sh     # TS の素性とシーケンスヘッダ         5
+bash tests/run_cm_tests.sh            # CM 検出 vs 目視の正解              4
+```
+
+合成フィクスチャ（H.264 / HEVC / オープン GOP / 29.97fps / MPEG-2 TS）は
+`/tmp/smartcut-fixtures/` に自動生成される。
+
+**実素材を読むテスト**は `run_audio_content_tests.sh` / `run_preview_tests.sh` /
+`run_proxy_tests.sh`（合成素材でも走る）/ `run_scene_tests.sh` /
+`run_cm_tests.sh` / `run_ts_layout_tests.sh`。既定の
+置き場は `~/media`、`SMARTCUT_MEDIA` で変えられる。音声の照合には numpy が要る
+（無ければ SKIP する）。
+
+環境変数で実装を切り替えて同じ結果になるかを確かめられる:
+
+```bash
+SMARTCUT_INDEX=container bash tests/run_rust_tests.sh   # 索引をコンテナ由来に
+SMARTCUT_AUDIO=reencode  bash tests/run_audio_tests.sh  # 音声をサンプル精度に
+```
+
+[プロキシ](gui.ja.md#プロキシ編集proxyrs)まわりも環境変数で振れる:
+
+| 変数 | 既定 | |
+|---|---|---|
+| `SMARTCUT_PROXY` | 有効 | `0` / `off` で作らない（録画から直接読む） |
+| `SMARTCUT_PROXY_WIDTH` | `960` | プロキシの幅（正方画素）。上げるほど絵は良くなり作成は長くなる。**上限は 1920x1080**（縦が先に当たる縦長素材は幅がそのぶん下がる） |
+| `SMARTCUT_PROXY_QUALITY` | `22` | 画質。x264 の CRF で言う（小さいほど良い、18〜24 が実用域） |
+| `SMARTCUT_PROXY_ENCODER` | 自動 | 試すエンコーダをカンマ区切りで指定（`mpeg4` など） |
+
+幅と品質は[キャッシュのハッシュに入っている](gui.ja.md#キャッシュ)ので、
+振ったぶんだけ別のプロキシが建つ。
+
+## 実素材での検証
+
+`tests/verify_real.py <src> <out> <ranges>` — フレーム数・整列・ビット完全一致率・
+タイムライン・インターレース・A/V 長差をまとめて確認する。結果は
+[検証](validation.ja.md) を参照。
+
+## 仮想マシンで動かす場合
+
+WebKitGTK のコンポジタが GPU の無い環境では何も描かず、初回描画のあと一切
+更新されない——フリーズにしか見えない。アプリ側で
+`WEBKIT_DISABLE_COMPOSITING_MODE=1` を既定にしてあるので、通常は意識しなくてよい。
+
+`xdotool` で GUI を機械的に叩く場合は、DOM の更新が X に伝わらずスクリーン
+ショットが古くなることがある。ウィンドウを 1px リサイズすれば再描画が起きる。

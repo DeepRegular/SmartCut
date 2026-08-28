@@ -1,22 +1,23 @@
-# Rust 実装の状況（`rust/`）
+# State of the Rust implementation (`rust/`)
 
-[← ドキュメント一覧](README.md) ・ [← smartcut](../README.ja.md)
+[← Documentation](README.md) ・ [← smartcut](../README.md) ・ [日本語](rust-core.ja.md)
 
-移植中。**「先頭フレームが 13ms 早い」制限は解消済み** — 下記参照。
+The port is in progress. **The "first frame is 13 ms early" limitation is
+gone** — see below.
 
-| 部分 | 状態 |
+| Part | State |
 |---|---|
-| アクセスポイント索引・leading picture 解析 | 完了（Python と出力完全一致） |
-| leading picture の参照判定 | 完了・**Python より正確** |
-| planner | 完了（11ケースで Python と一致） |
-| カット（コピー経路） | 完了 |
-| カット（再エンコード経路） | 完了 |
-| SPS/PPS 混在の解決 | 完了（`avc3` + パラメータセット再挿入） |
-| 音声（コピー） | 完了（同期を実測検証） |
-| 音声（再エンコード） | 未着手 |
+| Access point index and leading-picture analysis | Done (output identical to Python) |
+| Leading-picture reference test | Done, and **more accurate than Python** |
+| Planner | Done (agrees with Python on 11 cases) |
+| Cutting (copy path) | Done |
+| Cutting (re-encode path) | Done |
+| Resolving mixed SPS/PPS | Done (`avc3` plus parameter set re-insertion) |
+| Audio (copy) | Done (sync verified by measurement) |
+| Audio (re-encode) | Not started |
 
-映像は `tests/run_rust_tests.sh` の 13 ケースが
-`tests/run_tests.sh`（Python）と**同一の無劣化率**になる:
+On video, the 13 cases in `tests/run_rust_tests.sh` reach the **same lossless
+ratio** as `tests/run_tests.sh` (Python):
 
 ```
 h264 single range      lossless 180/222   first=0.00000 step=0.033333 jitter=0
@@ -26,129 +27,147 @@ ntsc 29.97fps          lossless 300/342   first=0.00000 step=0.033367 jitter=0
 mpeg2 ts open-GOP      lossless 328/342   first=0.00000 step=0.033367 jitter=0
 ```
 
-そのうえで**全ケースでタイムスタンプが完璧**（Python 版は先頭が 13ms 早い）。
+And on top of that **the timestamps are perfect in every case** (the Python
+version starts 13 ms early).
 
-## タイムスタンプ問題の解消
+## Fixing the timestamp problem
 
-Python 版は raw ES を ffmpeg に渡すしかなく、先頭フレームが 13ms 早くなる
-（`irregular=[(0, 0.046667)]`）。Rust 版は各ピクチャの表示インデックスから
-**整数のティックで PTS/DTS を直接振る**（出力タイムベースは `1/fps分子`
-なので 1 フレーム = `fps分母` ティック、丸めが一切発生しない）:
+The Python version had no option but to hand a raw ES to ffmpeg, which puts the
+first frame 13 ms early (`irregular=[(0, 0.046667)]`). The Rust version
+**assigns PTS/DTS directly, in integer ticks**, from each picture's display
+index. The output time base is `1/fps_numerator`, so one frame is exactly
+`fps_denominator` ticks and no rounding happens at all:
 
 ```
 h264 keyframe-exact   lossless 180/180   first=0.00000 step=0.033333 jitter=0
 mpeg2 ts open-GOP     lossless 283/283   first=0.00000 step=0.033367 jitter=0
 ```
 
-`tests/run_rust_tests.sh` で検証。全ケースで先頭 0.000 秒ちょうど、乱れゼロ。
+Verified by `tests/run_rust_tests.sh`. Every case starts at exactly 0.000 s with
+zero jitter.
 
-## SPS/PPS 混在の解決
+## Resolving mixed SPS/PPS
 
-MP4 の `avcC` はパラメータセットを 1 組しか持てないが、再エンコード部の SPS は
-元ストリームと必ず異なる。さらに MP4 は NAL を length-prefixed で格納するのに
-エンコーダは Annex-B を吐く。両方を放置すると
-`sps_id 32 out of range` / `Invalid NAL unit size` で映像が崩壊する。
+An MP4 `avcC` can hold only one set of parameter sets, but the SPS of the
+re-encoded part is always different from the original stream. On top of that MP4
+stores NALs length-prefixed while the encoder emits Annex-B. Leave either alone
+and the video collapses with `sps_id 32 out of range` / `Invalid NAL unit size`.
 
-- sample entry を **`avc3` / `hev1`** にしてインバンドのパラメータセットを許可
-- エンコーダ出力を Annex-B → length-prefixed に再フレーミング
-- **コピー部の各キーフレームの手前に、元の SPS/PPS を再挿入する** —
-  再エンコード部の SPS が有効化されたままだとコピー部が誤った SPS で
-  復号されるため、スプライスのたびに元のパラメータセットを復帰させる
+- Set the sample entry to **`avc3` / `hev1`** so in-band parameter sets are
+  allowed
+- Reframe the encoder output from Annex-B to length-prefixed
+- **Re-insert the original SPS/PPS ahead of every keyframe in the copied part** —
+  if the re-encoded part's SPS were left active, the copied part would be decoded
+  with the wrong SPS, so the original parameter sets are restored at each splice
 
-## 音声の境界（`--audio-mode`）
+## Audio boundaries (`--audio-mode`)
 
-音声は GOP 構造を持たないので、映像セグメントではなく**保持区間単位**で
-扱う。各区間の音声を**その区間の映像が始まる出力時刻にアンカーする**ので、
-区間をまたいだドリフトが原理的に起きない……はずだった。
+Audio has no GOP structure, so it is handled **per kept interval** rather than
+per video segment. Each interval's audio is **anchored to the output time where
+that interval's video starts**, so drift across intervals cannot happen by
+construction… or so it seemed.
 
-実際には落とし穴があった。**MP4 の音声トラックはサンプルの尺（stts）で
-時間を表現し、パケットごとのタイムスタンプを保持しない。** 保持するのは
-トラックの開始オフセットだけで、あとはサンプルを連続配置する。つまり
-区間境界で音声フレームを 1 つ落とすと、**それ以降の全区間が恒久的にずれ、
-区間ごとに累積する**。クリック音を 0.5 秒ごとに置いた素材で実測したところ、
-2 番目の区間が一律 11ms 早くなっていた。
+There was a trap. **An MP4 audio track expresses time through sample durations
+(stts); it does not keep a timestamp per packet.** All it keeps is the track's
+start offset, and the samples are laid out back to back after that. So dropping
+a single audio frame at an interval boundary **shifts every following interval
+permanently, and the error accumulates interval by interval**. Measured on
+material with a click every 0.5 s, the second interval came out a uniform 11 ms
+early.
 
-対策は、書き出し済み音声の**実際の終端位置を追跡し、その誤差を次の区間の
-開始フレーム選択に持ち越す**こと。境界に最も近いフレームで開くので、誤差は
-**±半フレーム（AAC 48kHz で約 10.7ms）に有界**で、累積しない。
-3 区間・境界を全てフレーム非整列にしたテストで最悪 +7.67ms を確認。
+The fix is to **track the actual end position of the audio written so far and
+carry that error into the choice of the next interval's first frame**. Since the
+interval opens on the frame nearest the boundary, the error is **bounded by half
+a frame (about 10.7 ms for AAC at 48 kHz)** and does not accumulate. A test with
+three intervals and every boundary deliberately off the frame grid showed a worst
+case of +7.67 ms.
 
-コンテナ側でトリムする道は 2 つ試して、どちらも塞がっていた:
+Two routes to trimming in the container were tried, and both are dead ends:
 
-- `AV_PKT_DATA_SKIP_SAMPLES`（ギャップレス再生用のサイドデータ）— **MP4
-  muxer が解釈しない**。スキップ指定したサンプルがそのまま残り、音声が
-  指定量ちょうど遅れた。
-- 出力ストリームの `initial_padding` — **muxer がファイルに書かない**
-  （出力を probe すると `initial_padding=0`）。試したところ単一区間の誤差が
-  0.00ms から +9.33ms に悪化した。
+- `AV_PKT_DATA_SKIP_SAMPLES` (the side data used for gapless playback) — **the
+  MP4 muxer ignores it**. The samples marked for skipping stayed in and the audio
+  ran late by exactly the amount requested.
+- `initial_padding` on the output stream — **the muxer does not write it to the
+  file** (probe the output and `initial_padding=0`). Trying it made the
+  single-interval error worse, from 0.00 ms to +9.33 ms.
 
-残るのは再エンコードだけなので、`--audio-mode reencode` として実装した。
-各区間の音声をサンプル単位で切り出して 1 本のエンコーダに連続して流す。
+That leaves re-encoding, which is implemented as `--audio-mode reencode`: each
+interval's audio is cut sample-exactly and fed continuously into a single
+encoder.
 
-| モード | 境界誤差 | 音声 |
+| Mode | Boundary error | Audio |
 |---|---|---|
-| `copy`（既定） | ±半フレーム（AAC 48kHz で 10.7ms）、累積なし | 無劣化 |
-| `reencode` | **-0.02ms**（1 サンプル = 0.021ms なので実質ゼロ） | 再エンコード |
+| `copy` (default) | ±half a frame (10.7 ms for AAC at 48 kHz), no accumulation | Lossless |
+| `reencode` | **-0.02 ms** (one sample is 0.021 ms, so effectively zero) | Re-encoded |
 
-`tests/run_audio_tests.sh` を `SMARTCUT_AUDIO=reencode` で走らせると全 5 ケースが
--0.02ms に収まる。映像側は両モードとも無劣化のまま（実素材で 1798/1798、99.1%）。
+Run `tests/run_audio_tests.sh` with `SMARTCUT_AUDIO=reencode` and all 5 cases
+land at -0.02 ms. Video stays lossless in both modes (1798/1798, 99.1 % on real
+material).
 
-**既定を `copy` にしてある。** スマートレンダリングは再エンコードを避けるための
-道具であり、10.7ms はリップシンクの知覚閾値をはるかに下回る。GUI では
-「音声をサンプル精度に」のチェックで切り替えられる。
+**The default is `copy`.** Smart rendering is a tool for avoiding re-encoding,
+and 10.7 ms is far below the perceptual threshold for lip sync. The GUI exposes
+the switch as a "sample-accurate audio" checkbox.
 
-実装で踏んだ落とし穴: セグメント境界にまたがる音声フレームが**隣り合う 2 つの
-セグメントから二重に投入され**、AAC 1 フレーム（21.3ms）ずつ誤差が累積した。
-コピー経路と同じ排他的な取り合い規則に揃えて解決。
+A trap hit while implementing this: audio frames straddling a segment boundary
+were **submitted twice, once from each of the two adjacent segments**, and the
+error accumulated one AAC frame (21.3 ms) at a time. Fixed by adopting the same
+exclusive ownership rule as the copy path.
 
-`tests/run_audio_tests.sh` — 2ms のインパルスを 0.5 秒ごとに置いた素材で
-A/V 同期をサンプル単位で実測する。定常音では同期のズレは検出できない。
+`tests/run_audio_tests.sh` — measures A/V sync sample by sample on material with
+a 2 ms impulse every 0.5 s. Steady tones cannot reveal a sync error.
 
-## 実素材の音声が本当に正しいか（`tests/run_audio_content_tests.sh`）
+## Whether the audio of real material is genuinely correct (`tests/run_audio_content_tests.sh`)
 
-インパルス素材で測れるのは「作った素材でどうか」までで、「実際の放送録画を
-切ったとき、出てきた音は本当にその場所の音か」は別の問いだ。そこで**出力から
-6 秒を復号し、録画のどこと一致するかを相互相関で探す**。落としても、消しても、
-場所を間違えても通らない。
+Impulse material can only answer "how does it behave on material we made". "When
+a real broadcast recording is cut, is the sound that comes out really the sound
+from that place?" is a different question. So: **decode 6 seconds of the output
+and find, by cross-correlation, where in the recording it matches**. Dropped,
+muted or misplaced audio all fail this.
 
-見るべきは**ずれの絶対値ではなく、区間ごとにずれが変わるかどうか**。デコーダの
-priming も器の開始時刻もどこでも同じだけ乗るので、一定のずれは測定系のもの。
-**変わったらそれが継ぎ目の誤り**。
+What matters is **not the absolute offset but whether the offset changes from
+interval to interval**. Decoder priming and the container start time apply
+equally everywhere, so a constant offset belongs to the measurement.
+**If it changes, that is a bad seam.**
 
-2 区間・実素材（日本海テレビ 30 分）での実測:
+Measured on two intervals of real material (Nihonkai TV, 30 minutes):
 
-| 音声 | 器 | 相関 | 継ぎ目でのずれ幅 |
+| Audio | Container | Correlation | Offset spread across seams |
 |---|---|---|---|
-| コピー | MP4 | **1.000** | 31.0ms |
-| コピー | TS | **1.000** | 31.0ms |
-| サンプル精度 | MP4 | **1.000** | **0.0ms** |
-| サンプル精度 | TS | **1.000** | **0.0ms** |
+| copy | MP4 | **1.000** | 31.0 ms |
+| copy | TS | **1.000** | 31.0 ms |
+| sample-accurate | MP4 | **1.000** | **0.0 ms** |
+| sample-accurate | TS | **1.000** | **0.0 ms** |
 
-**音は間違いなく出ている**——全区間で相関 1.000、RMS も素材と 1dB 以内。
-そのうえで、**コピーのままだと継ぎ目 1 か所につき最大 30ms ほど音がずれ、
-継ぎ目の数だけ積み上がる**。AAC は 1 フレーム 21.3ms の粒でしか切れないので、
-境界の丸めがそのまま出る。器を MP4 にしても TS にしても同じ 31.0ms なので、
-これは多重化ではなく切り出し側の性質。
+**The sound is unquestionably there** — correlation 1.000 across every interval,
+with RMS within 1 dB of the source. On top of that, **leaving audio on copy
+shifts the sound by up to about 30 ms per seam, and it stacks up with the number
+of seams**. AAC can only be cut on a 21.3 ms frame grid, so the boundary rounding
+shows through directly. The same 31.0 ms appears in MP4 and in TS, so this is a
+property of the cutting side, not of the muxing.
 
-サンプル精度で焼き直せば 0.0ms になる（`--audio-mode reencode`）。ただし
-**窓からは外してある**。理由は 2 つあって、どちらも実測から出ている:
+Re-rendering sample-accurately brings it to 0.0 ms (`--audio-mode reencode`).
+It is nonetheless **kept out of the window**, for two reasons, both from
+measurement:
 
-- **実際の CM カットでは、コピーのままでもずれが出なかった。** 上の 31.0ms は
-  無劣化点に乗っていない境界を狙って作った 2 区間での値。CM 検出の境界は
-  アクセスポイントへ吸着させるので、実素材 5 区間の書き出しでは 6 か所すべて
-  **+5.7ms で一定**——区間をまたいでも動かない。ずれは継ぎ目ごとの丸めであって
-  積み上がるものではなく、境界の置き方でほぼ消える。
-- **焼き直すと ADTS の形が変わり、下流が壊れる。** 後述のとおり、
-  日本の放送 AAC は `ff f8`（MPEG-2・CRC あり）だが ffmpeg は `ff f1`
-  （MPEG-4・CRC なし）しか書けない。ARIB 前提の索引ソフトはこれを読み損ねる。
+- **On actual commercial cuts, copy showed no drift.** The 31.0 ms above comes
+  from two intervals deliberately placed on boundaries that are not lossless
+  points. Commercial detection snaps its boundaries to access points, and across
+  a five-interval export of real material all six seams were **a constant
+  +5.7 ms** — unchanged from interval to interval. The offset is per-seam
+  rounding, not something that stacks, and placing the boundaries well removes
+  almost all of it.
+- **Re-rendering changes the shape of the ADTS and breaks downstream tools.** As
+  described below, Japanese broadcast AAC is `ff f8` (MPEG-2, with CRC) while
+  ffmpeg can only write `ff f1` (MPEG-4, no CRC). Indexing software written for
+  ARIB fails to read it.
 
-得るもの（ほぼ 0ms の改善）より失うもの（下流が読めない）のほうが大きい、
-という判断。エンジンと CLI には残してあるので、必要なら
-`--audio-mode reencode` で出せる。
+The judgement is that what is lost (downstream tools cannot read the file)
+outweighs what is gained (an improvement of roughly 0 ms). It is still in the
+engine and the CLI, so `--audio-mode reencode` is there if it is needed.
 
-## 参照判定が Python より正確になった点
+## Where the reference test became more accurate than Python
 
-Python はビットストリームを読むのに ffmpeg をもう一度起動する必要があった
-ため、ファイル内の**1箇所をサンプルして全体に適用**していた。Rust では
-パケットを走査するその場で `nal_ref_idc` を読めるので、**アクセスポイント
-ごとに厳密に判定**している。追加のパスもコストもかからない。
+Python needed to launch ffmpeg a second time to read the bitstream, so it
+**sampled one place in the file and applied the result to the whole thing**. In
+Rust `nal_ref_idc` can be read while the packets are already being scanned, so
+the test is **evaluated exactly, per access point**. No extra pass, no extra cost.

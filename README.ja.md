@@ -58,7 +58,7 @@
   タイムライン）、フレーム欠落、非ゼロの `start_time`、ARIB の ADTS レイアウト。
 - **出力の器** — MPEG-TS / MP4 / Matroska。既定は入力と同じ器・同じ場所。
 
-対応コーデック・トラック構成には制限がある。[既知の制限](docs/validation.md#既知の制限)を参照。
+対応コーデック・トラック構成には制限がある。[既知の制限](docs/validation.ja.md#既知の制限)を参照。
 
 ## 導入
 
@@ -71,7 +71,7 @@
 | Linux（deb） | `smartcut_0.1.1_amd64.deb` — `sudo apt install ./smartcut_0.1.1_amd64.deb`。FFmpeg を抱えずシステムの 7.1 にリンクするので 2.5MB で済むかわりに Debian 13 / Ubuntu 25.04 以降が要る。GUI が `smartcut`、コマンドライン版が `smartcut-cli` |
 | Windows | `smartcut_0.1.1_x64-setup.exe`（インストーラ）または `smartcut-portable-x64.zip`（解凍して実行）。x64 のみ、WebView2 ランタイムが要る |
 
-自分でビルドする場合は [ビルドと開発](docs/development.md)。
+自分でビルドする場合は [ビルドと開発](docs/development.ja.md)。
 
 ## 使い方
 
@@ -109,19 +109,20 @@ smartcut input.ts --analyze --scenes            # シーンの変わり目を出
 
 ## ドキュメント
 
-読みどころは[実装上の難所](docs/algorithm.md#実装上の難所)——「GOP 単位で切って
-繋ぐだけ」で済まない 8 つの理由を、実際に踏んだ順に書いてある。
+各ページに英語版がある（切り替えは各ページの冒頭）。読みどころは
+[実装上の難所](docs/algorithm.ja.md#実装上の難所)——「GOP 単位で切って繋ぐだけ」
+で済まない 8 つの理由を、実際に踏んだ順に書いてある。
 
 | | |
 |---|---|
-| [アルゴリズムと実装上の難所](docs/algorithm.md) | 切り分けの原理と、8 つの落とし穴 |
-| [Rust コアの実装](docs/rust-core.md) | タイムスタンプ、SPS/PPS 混在、音声境界 |
-| [検証結果と既知の制限](docs/validation.md) | フレームハッシュ照合、実素材での検証 |
-| [GUI](docs/gui.md) | 編集画面、プロキシ編集、サムネイル軌道、シーン検出、再生 |
-| [CM 境界の検出](docs/cm-detection.md) | 字幕リセット・無音・ロゴ、15 秒格子、誤検出を出さない設計 |
-| [放送録画ワークフローとの互換](docs/broadcast-ts.md) | PID レイアウト、ADTS、L-SMASH / DGIndex |
-| [ビルドと開発](docs/development.md) ・ [配布](docs/distribution.md) | 作り方と配り方 |
-| [BDMV / BDAV への拡張](docs/bdmv.md) ・ [移植方針](docs/design.md) | 調査と設計判断 |
+| [アルゴリズムと実装上の難所](docs/algorithm.ja.md) | 切り分けの原理と、8 つの落とし穴 |
+| [Rust コアの実装](docs/rust-core.ja.md) | タイムスタンプ、SPS/PPS 混在、音声境界 |
+| [検証結果と既知の制限](docs/validation.ja.md) | フレームハッシュ照合、実素材での検証 |
+| [GUI](docs/gui.ja.md) | 編集画面、プロキシ編集、サムネイル軌道、シーン検出、再生 |
+| [CM 境界の検出](docs/cm-detection.ja.md) | 字幕リセット・無音・ロゴ、15 秒格子、誤検出を出さない設計 |
+| [放送録画ワークフローとの互換](docs/broadcast-ts.ja.md) | PID レイアウト、ADTS、L-SMASH / DGIndex |
+| [ビルドと開発](docs/development.ja.md) ・ [配布](docs/distribution.ja.md) | 作り方と配り方 |
+| [BDMV / BDAV への拡張](docs/bdmv.ja.md) ・ [移植方針](docs/design.ja.md) | 調査と設計判断 |
 
 ## 構成
 

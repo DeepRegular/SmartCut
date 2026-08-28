@@ -63,7 +63,7 @@ out **bit-identical across all 40589 frames**.
   container and directory as the input.
 
 Codec and track-layout limits apply; see
-[known limitations](docs/validation.md#既知の制限) (Japanese).
+[known limitations](docs/validation.md#known-limitations).
 
 ## Install
 
@@ -76,7 +76,7 @@ Grab a build from [Releases](https://github.com/DeepRegular/SmartCut/releases).
 | Linux (deb) | `smartcut_0.1.1_amd64.deb` — `sudo apt install ./smartcut_0.1.1_amd64.deb`. 2.5MB, because it links the system FFmpeg 7.1 instead of carrying one; that means Debian 13 / Ubuntu 25.04 or newer. Installs the GUI as `smartcut` and the cutter as `smartcut-cli` |
 | Windows | `smartcut_0.1.1_x64-setup.exe` (installer) or `smartcut-portable-x64.zip` (unzip and run). x64 only; needs the WebView2 runtime |
 
-To build it yourself, see [ビルドと開発](docs/development.md) (Japanese).
+To build it yourself, see [Building and development](docs/development.md).
 
 ## Usage
 
@@ -116,8 +116,9 @@ frames that is.
 
 ## Documentation
 
-The documentation is in Japanese. The part worth reading first is
-[実装上の難所](docs/algorithm.md#実装上の難所) — the eight reasons why
+Every page is available in English and in Japanese; the switch is at the top
+of each one. The part worth reading first is
+[the pitfalls](docs/algorithm.md#pitfalls) — the eight reasons why
 "just cut on GOP boundaries and concatenate" does not work, in the order they
 were hit.
 

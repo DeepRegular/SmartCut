@@ -1,884 +1,961 @@
-# GUI（`gui/`）
+# GUI (`gui/`)
 
-[← ドキュメント一覧](README.md) ・ [← smartcut](../README.ja.md)
+[← Documentation](README.md) ・ [← smartcut](../README.md) ・ [日本語](gui.ja.md)
 
-Tauri v2 + バニラ JS。コアを crate として抱えるだけで、エンジン側の変更は
-ほぼ不要だった（最初に足したのは 1 フレーム取り出しと進捗通知の 2 つ。
-サムネイル軌道とプロキシはそのあと）。
+Tauri v2 plus vanilla JS. It embeds the core as a crate, and the engine barely
+needed to change (the first two additions were extracting a single frame and
+reporting progress; the thumbnail track and the proxy came later).
 
 ```
-[カット編集] full_ntv.ts
-無劣化点: 3607  1440x1080  29.97 fps  インターレース (TFF)  音声あり  [☑ロゴ] [CM を検出]
-┌──────────┬────────────────────────────────────┐
-│キーフレーム 9個│                                            │
-│ ┌──┐#01   │                プレビュー                    │
-│ │▤ │00:00 │                                            │
-│ └──┘00.00 │           20   00:00:00.66                  │ ← 大きなフレーム番号と TC
-│ ┌──┐#02 ✕ │        I フレーム — 無劣化点  選択 0-54111    │
-│ │▤ │09:49 │                                            │
-│ └──┘49.75 ├────────────────────────────────────┤
-│ ┌──┐#03 ✕ │ [GOP][GOP][GOP]▼[GOP][GOP][GO]▒▒ 表示 GOP・6秒│ ← 1 コマ = 1 GOP、
-│ │▤ │12:19 │  34.55 35.05 35.55 ┊ 36.06 36.56 37.06        │   印は中央に固定
-│ └──┘19.90 ├────────────────────────────────────┤
-│    …      │   ▼      ▼        ▼    ← キーフレーム        │
-│           │ ┌────────────────────────────────┐ │
-│           │ │████████ 緑 = 出力そのもの ███│███  ●  ← 再生位置│ │
-│           │ └───────────────────────┴────────┘ │
-│           │                        ↑ 赤い縦線 = カットの継ぎ目 │
-│           │  ◤[                             ]◥  ← IN / OUT │
-│           │  ▏▏▏ ▏ ▏▏▏▏▏▏  ← シーンの変わり目             │
-│           ├────────────────────────────────────┤
-│           │ ⚑キーフレーム ⇤シーン シーン⇥ │ |◀ ◀| ◀ ⇤| [IN ✂カット OUT] |⇥ ▶ |▶ ▶| │ 外側をカット 無劣化点へ吸着 ↺取消 全消去 │
-│           │ 20 / 54111  00:00:00.66   選択 0 - 54111 : 00:30:05.50      │
-│           ├────────────────────────────────────┤
-│           │ ██████████████████████████ 青=コピー / 橙=再エンコード       │
-│           │ 20 / 44766 …  ← カウンタも出力の尺で数える               │
-│           │ 出力 00:24:53.02（2 区間、カット 1 箇所）— 無劣化コピー 100.0% │
-│           │ [出力] □音声をサンプル精度に [映像 完全無劣化] ─────         │
-└──────────┴────────────────────────────────────┘
+[Cut editor] full_ntv.ts
+Lossless points: 3607  1440x1080  29.97 fps  interlaced (TFF)  audio  [x logo] [Detect commercials]
+┌──────────────┬─────────────────────────────────────────────┐
+│ Keyframes: 9 │                                             │
+│ ┌──┐#01      │                  Preview                    │
+│ │▤ │00:00    │                                             │
+│ └──┘00.00    │           20   00:00:00.66                  │ <- big frame number and TC
+│ ┌──┐#02 ✕    │      I frame — lossless point  sel 0-54111   │
+│ │▤ │09:49    │                                             │
+│ └──┘49.75    ├─────────────────────────────────────────────┤
+│ ┌──┐#03 ✕    │ [GOP][GOP][GOP]▼[GOP][GOP][GO]▒▒  view GOP·6s│ <- one cell = one GOP,
+│ │▤ │12:19    │  34.55 35.05 35.55 ┊ 36.06 36.56 37.06      │    the mark stays centred
+│ └──┘19.90    ├─────────────────────────────────────────────┤
+│    …         │   ▼      ▼        ▼   <- keyframes           │
+│              │ ┌─────────────────────────────────────────┐ │
+│              │ │███████ green = the output itself ██│███ ●│ │ <- playhead
+│              │ └────────────────────────────────────┴────┘ │
+│              │                      ↑ red line = a cut seam │
+│              │  ◤[                             ]◥  <- IN/OUT│
+│              │  ▏▏▏ ▏ ▏▏▏▏▏▏  <- scene changes              │
+│              ├─────────────────────────────────────────────┤
+│              │ ⚑Keyframe ⇤Scene Scene⇥ │ |◀ ◀| ◀ ⇤| [IN ✂Cut OUT] |⇥ ▶ |▶ ▶| │ Cut outside  Snap to lossless  ↺Undo  Clear all │
+│              │ 20 / 54111  00:00:00.66   selection 0 - 54111 : 00:30:05.50 │
+│              ├─────────────────────────────────────────────┤
+│              │ █████████████████ blue = copy / orange = re-encode │
+│              │ 20 / 44766 …  <- the counter counts the output too │
+│              │ output 00:24:53.02 (2 intervals, 1 cut) — lossless copy 100.0% │
+│              │ [Export] □sample-accurate audio [video fully lossless] ──── │
+└──────────────┴─────────────────────────────────────────────┘
 ```
 
-**画面構成は TMPGEnc MPEG Smart Renderer 6 のカット編集画面に寄せてある。**
-借りたのは見た目ではなく**手の動き**で、要は 2 つの考えを混ぜないこと:
+**The screen layout follows TMPGEnc MPEG Smart Renderer 6's cut editor.** What
+was borrowed is not the look but **the movements of the hand**, and above all not
+mixing two ideas together:
 
-- **キーフレーム**は「目印」。編集ではない。左に絵つきで並び、押せばそこへ飛ぶ。
-  `⚑ キーフレーム`（または `K`）でいまのフレームを登録する。
-- **カット**が「編集」。IN・OUT で選んで中央の `✂ カット` を押すと、その範囲が
-  出力から消える。**出てくるのは「録画全体からカットを引いたもの」**なので、
-  開いた直後は何もカットしていない＝全編がそのまま出力、という状態から始まる。
-  だから読み込み時点で選択も全編になっている。
+- A **keyframe** is a *mark*, not an edit. They line up on the left with a
+  picture, and pressing one jumps there. `⚑ Keyframe` (or `K`) registers the
+  current frame.
+- A **cut** is the edit. Select with IN and OUT, press `✂ Cut` in the middle, and
+  that range disappears from the output. **What comes out is "the whole recording
+  minus the cuts"**, so immediately after opening a file nothing is cut — the
+  whole thing is the output. That is why the selection covers the whole file at
+  load time too.
 
-**画面に出ているのは編集後のタイムラインで、元の録画ではない。** カットした
-ところは灰色にならず**消える**——シークバーが縮み、フィルムストリップは穴の
-上で閉じ、フレームカウンタは「書き出されるほうの尺」を数える
-（54111 フレームの録画から 9345 フレーム切れば、その場で 44766 になる）。
-残るのは継ぎ目を示す赤い縦線だけ。
+**What is on screen is the edited timeline, not the original recording.** A cut
+region does not go grey, it **disappears** — the seek bar shrinks, the filmstrip
+closes over the hole, and the frame counter counts **the length that will be
+written** (cut 9345 frames out of a 54111-frame recording and it becomes 44766 on
+the spot). All that remains is a red vertical line marking the seam.
 
-そのため、時刻には**出力時間**と**素材時間**の 2 つがある。画面に出る数字と
-座標はすべて出力時間、`cuts` / キーフレーム / シーン / エンジンへの引数はすべて
-素材時間で、`outToSrc()` と `srcToOut()` のたった 2 つの関数だけがその境目に
-立っている。**カットの中に入ってしまった時刻は `srcToOut()` が「無い」と答える**
-——キーフレームは一覧から消え（カットを取り消せば戻る）、再生位置は継ぎ目へ
-寄る。矢印キーが出力時間で動くので、カット地点をまたぐ送りが自動的に飛ぶのも
-同じ仕組みによる。
+So there are two kinds of time: **output time** and **source time**. Every number
+and coordinate on screen is output time; `cuts`, keyframes, scenes and the
+arguments to the engine are all source time; and exactly two functions,
+`outToSrc()` and `srcToOut()`, stand on the border. **A time that has fallen
+inside a cut gets "no such time" from `srcToOut()`** — the keyframe leaves the
+list (undo the cut and it comes back) and the playhead moves to the seam. The
+arrow keys move in output time, which is the same mechanism that makes stepping
+across a cut point jump automatically.
 
-この分け方にしてから、ボタンの並びも素直になった。**中央がカット、その左が
-`[ IN` で右が `OUT ]`、さらに外へ「その位置へ移動」「1 コマ」「無劣化点」
-「先頭・末尾」と対称に広がる。** 左右どちらの操作かが位置で分かる。
+Once that split was made, the button layout became obvious too. **Cut is in the
+middle, `[ IN` to its left and `OUT ]` to its right, and outward from there,
+symmetrically: "go to that point", "one frame", "lossless point", "start/end".**
+Which side an action belongs to is readable from where it is.
 
-- `外側をカット` — 選択の外を全部落とす。1 か所だけ切り出したいときの一手。
-- `無劣化点へ吸着` — 選択の両端をいちばん近いアクセスポイントへ寄せる。押せば
-  再エンコードがゼロになる。
-- `↺ 取消` — 直前のカットを戻す（50 段）。`全消去` はカットとキーフレームの両方。
+- `Cut outside` — drop everything outside the selection. One press for extracting
+  a single region.
+- `Snap to lossless` — pull both ends of the selection to the nearest access
+  point. Press it and re-encoding goes to zero.
+- `↺ Undo` — undo the last cut (50 levels). `Clear all` clears both cuts and
+  keyframes.
 
-**IN〜OUT は OUT のコマも含む。** 「ここまで消したい」と思って OUT を置いた
-のに 1 コマだけ残る、という言い方は通らない。5 コマ選べば 5 コマ減る。
+**IN to OUT includes the OUT frame.** "I put OUT where I wanted the deletion to
+end and one frame survived" is not a thing that should be sayable. Select five
+frames and five frames go.
 
-**片方を打っても、もう片方は動かない。** IN・OUT は片端ずつ置いて詰めていく
-ものなので、IN を打ち直したからといって OUT を失う理由はない。二つが交差した
-ときだけ、いま置いたほうが勝ち、相手はタイムラインの端まで退く——「ここから
-先」「ここまで」が、絞り込まれるまでの正直な読み方だからだ。
+**Setting one end does not move the other.** IN and OUT are placed one end at a
+time as you close in, so re-placing IN is no reason to lose OUT. Only when the
+two cross does the one just placed win, and the other retreats to the end of the
+timeline — "from here on" and "up to here" is the honest reading until the range
+is narrowed.
 
-**カットが残した継ぎ目は、そのままキーフレームになる。** あとで確かめたく
-なるのはまさにそこだからで、CM 除去でも手動カットでも同じように並ぶ。
-**録画の頭を切ったときも同じ。** 頭を落とすと区間はひとつしか残らないので
-「区間と区間のあいだ」は生まれないが、**新しい先頭は立派な継ぎ目**であり、
-そこにも印が要る。
+**A seam left by a cut becomes a keyframe.** That is exactly what you will want
+to check afterwards, and it works the same for commercial removal and for manual
+cuts. **The same applies when the head of the recording is cut.** Removing the
+head leaves only one interval, so no "between two intervals" is created, but
+**the new start is a seam in every sense** and it needs a mark too.
 
-**継ぎ目のセルとカードは、その場のコマを復号して出す。** 保持しているのは
-キーピクチャなので、継ぎ目にいちばん近い保持画像は**たいていカットが持って
-いったほうの絵**になる——「切ったはずの絵が印になっている」では確かめようがない。
-継ぎ目だけは `exact` を立てて実際に復号する。
+**Seam cells and cards decode the actual frame at that point.** What is retained
+are key pictures, so the nearest retained image to a seam is **usually the frame
+the cut took away** — "the frame you supposedly cut is standing in as the mark"
+is not something you can check anything against. Seams alone set `exact` and
+really decode.
 
-これを 2 箇所で取りこぼしていた。**「継ぎ目かどうか」の判定が二重に書いてあり、
-フィルムストリップとキーフレームカードが見ていたほうは区間の 2 本目以降しか
-数えていなかった**——つまり**頭を切った場合だけ**、いちばん肝心な新しい先頭が
-継ぎ目と見なされず、キーピクチャの絵が出ていた。判定を `joinTimes()` の
-一覧に一本化した。もうひとつは**カードの画像キャッシュ**で、CM 検出で先に
-立てておいた印がカットで継ぎ目に変わっても、描画済みの古い絵がそのまま
-残っていた。継ぎ目かどうかをキャッシュキーに含めて解決（取り消せば元の絵に
-戻るのも同じ仕組みで済む）。
+This was missed in two places. **"Is this a seam" was written twice, and the copy
+the filmstrip and the keyframe cards consulted only counted intervals from the
+second onwards** — so **only when the head was cut**, the one thing that mattered
+most, the new start, was not treated as a seam and showed a key picture instead.
+The test was unified onto the `joinTimes()` list. The other was **the cards'
+image cache**: a mark placed earlier by commercial detection could turn into a
+seam through a cut, and the already-drawn old image stayed. Fixed by including
+seam-ness in the cache key (which also makes undo restore the original image for
+free).
 
-**立てたばかりの印は、選ばれた状態で並ぶ。** `K` で登録したキーフレームも、
-カットが残した継ぎ目も、一覧のカードがその場で選択色になる——直後に確かめたいのは
-たいていその 1 枚で、印が増えるほど「どれが今のか」を目で探す手間のほうが高くつく。
-選択は一覧の何番目かではなく**時刻**で覚えている。あとから前のほうを切って番号が
-ずれても、選ばれているのは同じ印のままになる。CM 検出のように一度に何本も立つ
-ときだけは、どれか 1 本を選ぶ理由がないので選択を動かさない。
+**A mark that was just placed comes up selected.** A keyframe registered with `K`
+and a seam left behind by a cut both turn the list card selection-coloured
+immediately — the one you want to check right after is almost always that one,
+and the more marks there are, the more the eye pays to find "which is the new
+one". The selection is remembered by **time**, not by position in the list. Cut
+something earlier and shift the numbering, and the same mark stays selected. Only
+when several go up at once, as with commercial detection, is the selection left
+alone, since there is no reason to prefer any one of them.
 
-**キーフレームは出力と一緒に書き出せる。** 出力ボタンの横の
-「キーフレームを .keyframe に」を入れると、動画と同じ名前の `.keyframe` が
-隣に出る。中身は**行番号だけ・CRLF 改行・ヘッダなし**——この種のファイルを読む道具が
-期待する形。**番号は元の録画ではなく書き出した側の尺**:
+**Keyframes can be written out alongside the output.** Tick "keyframes to
+.keyframe" next to the export button and a `.keyframe` file appears beside the
+video with the same name. The contents are **line numbers only, CRLF, no
+header** — the shape the tools that read this kind of file expect. **The numbers
+are in the exported timeline, not the original recording:**
 
 ```
 1532<CR><LF>
 2827<CR><LF>
 ```
 
-`Ctrl+D` でも起動する。**検出の進み具合はボタンに出る。** 30 分の録画でロゴまで使うと 1 分半かかる
-——待たされていることは分かるが、どこまで進んだか分からないのが困る。
-`CM を検出` のボタン自体が `検出中 34%` に変わり、その横に
-「音声を調べています」「ロゴを探しています」と段階が出る。**音声は数秒、ロゴは
-映像 2 パスでその 10 倍**かかるので、進捗も 1:9 で重み付けしてある——
-そうしないと最初の一瞬で 10% まで飛んで、あとは動かないように見える。
+`Ctrl+D` starts it too. **Detection progress shows on the button.** A 30-minute
+recording with the logo takes a minute and a half — you can tell you are waiting,
+but not knowing how far along it is, is the problem. The `Detect commercials`
+button itself becomes `Detecting 34%`, with the stage beside it: "examining the
+audio", "looking for the logo". **Audio takes seconds and the logo ten times
+that, being two passes over the video**, so progress is weighted 1:9 —
+otherwise it jumps to 10 % instantly and then appears stuck.
 
-**CM を検出すると、本編と CM それぞれの先頭がキーフレームとして並ぶ。** 実素材
-（日本海テレビ 30 分）では 9 個 — 録画の頭、CM の頭 4 つ、本編に戻る頭 4 つ。
-サムネイルを見れば #05 が CM のタイトルカードだと一目で分かる。
+**Detecting commercials lines up the start of each programme part and each
+commercial as keyframes.** On real material (Nihonkai TV, 30 minutes) that is 9 —
+the head of the recording, four commercial starts, four returns to the programme.
+The thumbnails make it obvious at a glance that #05 is a commercial's title card.
 
-検出は**印を立てるところまで**で、切るのは人がやる。「見つけた区間をまとめて
-落とす」ボタンも一度は付けたが、外した——境界を目で確かめてから切りたい以上、
-一発で消す道は使われない。
+Detection goes **as far as placing the marks**; a human does the cutting. A
+"drop all the detected regions" button was added once and then removed — as long
+as you want to check the boundaries by eye first, the one-press route goes unused.
 
-**コピー率が指で見えるのが要点。** カットを足すたびに planner を呼び直して
-帯とセグメント一覧が更新される。
+**The point is that the copy ratio is visible under your finger.** Every added cut
+re-runs the planner and updates the bar and the segment list.
 
-**「完全無劣化」は 1 コマも再エンコードしていないときだけ言う。** 無劣化点から
-外れたところで切れば必ず数コマは焼き直しになるが、40000 コマ中の 2 コマは
-四捨五入すれば 100.0% になってしまう——**スマートレンダラが決して出しては
-いけない数字**がそれだ。バッジは割合ではなく実際のコマ数を出す
-（`再エンコード 14 コマ`）。割合のほうも、100% に達していないなら 100% とは
-書かない（99.96% は `99.9%`）。
+**"Fully lossless" is claimed only when not a single frame was re-encoded.** Cut
+away from a lossless point and a few frames are always rebuilt, but 2 frames in
+40000 rounds to 100.0 % — **the one number a smart renderer must never print**.
+The badge gives the actual frame count instead of a percentage (`re-encoded 14
+frames`). The percentage too refuses to write 100 % when it has not reached 100 %
+(99.96 % becomes `99.9%`).
 
-**フィルムストリップが「どこを切るか」を決める道具。** 再生位置を中央に置いて
-絵を並べ、並ぶ枚数は窓に入るだけ。間隔は GOP・3 秒 / 6 秒 / 30 秒 / 3 分 /
-フレームから選ぶ。キャプションの `▲` が無劣化点（そこを境界にすればコピー
-だけで済む）、`✂` がシーンの変わり目、`⚑` が登録したキーフレーム。
+**The filmstrip is the tool for deciding where to cut.** The playhead sits at the
+centre with pictures laid out around it, as many as fit the window. The spacing
+is chosen from GOP · 3 s / 6 s / 30 s / 3 min / frame. In the caption, `▲` is a
+lossless point (make it a boundary and it costs no re-encoding), `✂` is a scene
+change, and `⚑` is a registered keyframe.
 
-**区切りは秒ではなく GOP。** TMSR6 のスクリーンショットを数えると、
-サムネイルのタイムコードは 00:03:42.36 / 42.86 / 43.36 … と **0.50 秒**
-きざみ——29.97fps の放送 MPEG-2 でちょうど 1 GOP だ。しかもクリップ末尾の
-セルだけ**幅が狭い**（00:24:09.25 の次が 00:24:09.95 で、そこから先は灰色）。
-つまりあれは「等間隔のコマ並べ」ではなく、**一定の時間窓を GOP の境目で
-区切ったもの**で、セルの幅はその GOP の長さそのものになっている。
+**The unit of division is the GOP, not seconds.** Count the timecodes in a TMSR6
+screenshot and the thumbnails go 00:03:42.36 / 42.86 / 43.36 … — steps of
+**0.50 seconds**, which is exactly one GOP for broadcast MPEG-2 at 29.97 fps.
+And the cell at the end of the clip is **narrower** (00:24:09.25 is followed by
+00:24:09.95, and everything after is grey). So that is not "frames at equal
+spacing" but **a fixed time window divided at GOP boundaries**, with each cell's
+width being that GOP's length.
 
-**ただし幅は GOP の長さに従わせない。どのセルも絵 1 枚ぶんの一定幅**で、
-1 つのセルが何秒ぶんを代表しているかはキャプションが言う。メニューで選ぶのは
-「セルの幅」ではなく「1 セルが何秒か」だ。
+**The widths, however, do not follow GOP length here. Every cell is one picture
+wide**, and the caption says how many seconds that cell represents. What the menu
+selects is not "cell width" but "seconds per cell".
 
-> ここは 2 回作り直している。最初は**窓の幅を GOP 長で按分**していた。すると
-> 1 コマ送るたびに左端のサムネイルが削られ右端が伸びる——絵は止まっているのに
-> 大きさだけがじりじり動く。これが「サムネイルのサイズが可変で落ち着かない」の
-> 正体だった。次に**セルを丸ごと 1 GOP にして窓の縁で切り落とす**ようにした。
-> 幅の「じりじり」は止まったが、幅が GOP 長のままである以上、
-> **1 つのリールの中に広いセルと狭いセルが混じる**ことは変わらない。しかも
-> 窓を短く（＝ GOP あたりを広く）すると、絵 1 枚のとなりに絵 1 枚ぶん以上の
-> 下地が空く——「GOP・3 秒」がまさにそれで、幅が広すぎて使いものに
-> ならなかった。幅を一定にすると、この形の不満はまとめて消える。
+> This was rebuilt twice. The first version **apportioned the window width by GOP
+> length**. Step one frame and the leftmost thumbnail is shaved while the
+> rightmost grows — the pictures are still, but their sizes creep. That was the
+> real content of "the thumbnail size is variable and unsettling". The second
+> version made **each cell a whole GOP and clipped at the window's edge**. The
+> creeping stopped, but as long as width follows GOP length, **wide and narrow
+> cells still mix within one reel**. And shortening the window (which widens each
+> GOP) opens up more than a picture's worth of empty backing beside each picture —
+> "GOP · 3 s" was exactly that, too wide to be usable. Fixing the width makes this
+> whole family of complaints go away at once.
 
-**絵の拡大率はリール全体で 1 つ。** かつてセル幅が GOP 長だったころ、絵を
-`object-fit: cover` でセルに合わせると**拡大率までセル幅について動いた**。
-2:3 プルダウンを載せた素材では GOP 長が半フレームきざみに散る（AT-X の実素材で
-0.63 秒のとなりが 1.07 秒）ので、隣り合うコマで顔の大きさが 1.7 倍ちがう——
-これが「サムネイルのサイズが一定でない」のもう 1 つの正体だった。
+**There is one scale factor for the whole reel.** Back when cell width followed
+GOP length, fitting the picture to the cell with `object-fit: cover` made **the
+scale factor move with the cell width too**. On material carrying 2:3 pulldown,
+GOP lengths scatter in half-frame steps (0.63 s next to 1.07 s on real AT-X
+material), so a face is 1.7× larger in one cell than in its neighbour — the other
+half of "the thumbnail size is not constant".
 
-いまは**高さを 62px に固定し、幅はその高さで絵の形が求めるぶんだけ**取る。
-セルの幅もその値（`cellPx()`）で、絵とセルはぴったり同じ大きさになる。形は
-**画面に出ている絵から読む**——コード上の解像度ではない。放送素材は
-アナモルフィックで、エンジンが渡してくる絵ではもう直っているからだ。
+Now **the height is fixed at 62 px and the width is whatever the picture's shape
+asks for at that height**. The cell takes the same value (`cellPx()`), so picture
+and cell are exactly the same size. The shape is **read from the picture on
+screen**, not from the resolution in the code, because broadcast material is
+anamorphic and the pictures the engine hands over have already been corrected.
 
-> 途中、**リールで一番長いセルの幅**で全部の絵を描いていた時期がある。
-> 拡大率は確かに 1 つになるのだが、`object-fit: cover` は与えた箱を
-> 埋めるので、**箱が 16:9 より横長になると絵を拡大して上下を切り落とす**。
-> 長い GOP が 1 つ混じるか、窓を短く（＝セルを広く）するだけでリール全体が
-> それになり、どのセルも「横に引き伸ばした帯」に見える。実素材で 250px 幅の
-> セルに 62px 高さ——4:1 の箱に 16:9 の絵——という状態になっていた。
-> 高さを決めて幅を絵に決めさせれば、この形の失敗はそもそも起こらない。
+> There was a period in between where every picture was drawn at **the width of
+> the longest cell in the reel**. That does give a single scale factor, but
+> `object-fit: cover` fills the box it is given, so **when the box is wider than
+> 16:9 it enlarges the picture and crops the top and bottom**. One long GOP in the
+> mix, or simply a shorter window (wider cells), turns the entire reel into that,
+> and every cell looks like a horizontally stretched band. On real material this
+> produced 250 px-wide cells at 62 px tall — a 4:1 box holding a 16:9 picture.
+> Decide the height and let the picture decide the width, and this failure mode
+> cannot occur in the first place.
 
-セルの下地は空セルと同じ色にしてある。丸めで 1px ずれたときにそこだけ明るい
-筋が出ないようにするためで、通常は絵が覆い隠して見えない。位置と幅はピクセルで
-置くので、ウィンドウの幅が変わればリールは組み直す（入るセルの枚数が変わる）。
+The cell's backing is the same colour as an empty cell, so that a 1px rounding
+error does not leave a bright stripe; normally the picture covers it. Positions
+and widths are laid out in pixels, so the reel is rebuilt when the window width
+changes (the number of cells that fit changes).
 
-この単位が正しいのは二重の意味でだ。**GOP の頭は「カットしてもコピーだけで
-済む唯一の場所」**であり、しかも**その絵はすでに走査でメモリに持っている**
-（`thumbs.rs` はキーピクチャごとに保持している）ので、セルを埋めるのに
-復号がいらない。
+This unit is right in two senses. **The head of a GOP is the only place a cut
+costs nothing but a copy**, and **its picture is already in memory from the scan**
+(`thumbs.rs` keeps one per key picture), so filling a cell needs no decoding.
 
-**どのセルも、いま立っているセルも含めて、その GOP の先頭を出す。** 再生位置の
-セルだけプレビューと同じ絵に差し替えてみたことがあるが、こちらのほうが悪い——
-シーンの変わり目をまたいだ瞬間、**1 つのセルだけが別の絵に飛び、両隣は
-止まったまま**になる。目にはグリッチとしか読めない。ストリップは定規で、
-いまどこにいるかを言うのは印のほうだ。
+**Every cell, including the one you are standing on, shows the head of its GOP.**
+Replacing just the playhead's cell with the preview's picture was tried, and it is
+worse — the moment you cross a scene change, **one cell jumps to a different
+picture while both neighbours stay put**. The eye can only read that as a glitch.
+The strip is a ruler; saying where you are is the mark's job.
 
-**窓は再生位置を中心に置くので、印は自動的に真ん中に来る。** 1 コマ送れば
-セルの列がまるごと 1 コマぶん左へ流れていく——「印は中央に固定、動くのは絵の
-ほう」と「1 コマずつ動く」が同じ仕組みで両立する。録画の外側は灰色のまま残す
-（詰めれば印が中央から外れてしまう）。
+**The window is centred on the playhead, so the mark automatically sits in the
+middle.** Step one frame and the whole row of cells flows one frame to the left —
+"the mark is fixed at the centre and the pictures move" and "it moves one frame at
+a time" are the same mechanism. Outside the recording stays grey (closing the gap
+would take the mark off centre).
 
-表示幅は GOP・3 秒 / 6 秒 / 30 秒 / 3 分から選ぶ。幅が一定なので、窓に入る
-枚数（1400px なら 13 枚）は先に決まっている。**選んだ秒数をその枚数で割った
-ぶんを 1 セルが受け持つ**ように、GOP を何個ずつまとめるかを決める——3 分なら
-0.5 秒 GOP を 28 個ずつまとめて 14 秒／セル。まとめても**セルの頭は本物の
-GOP 頭**なので、絵とタイムコードは常に一致する。
+The view width is chosen from GOP · 3 s / 6 s / 30 s / 3 min. Since the width is
+constant, the number of cells that fit (13 at 1400 px) is known in advance.
+**The number of GOPs grouped per cell is chosen so that each cell covers the
+chosen duration divided by that count** — for 3 minutes, 28 half-second GOPs per
+cell, 14 seconds per cell. Even grouped, **a cell's head is a real GOP head**, so
+picture and timecode always agree.
 
-1 セルが 1 GOP より短くなることはない（絵が 1 枚しかないのだから）。だから
-「3 秒」は実際には 6 秒ぶんほど映る——境目を全部描いたうえで、いちばん細かい
-表示という意味になる。まとめる個数は**録画全体の平均 GOP 長**から出す。
-再生位置の前後を数えると、録画の端では片側しか無いぶん答えが半分になり、
-「3 分」で 1 分 15 秒しか映らなかった。
+A cell is never shorter than one GOP (there is only one picture). So "3 s" really
+shows about 6 seconds — it means "draw every boundary", the finest view available.
+The grouping count comes from **the average GOP length across the whole
+recording**. Counting around the playhead instead halves the answer at the ends of
+the recording, where only one side exists, and "3 min" showed only 1 minute 15.
 
-別に**フレーム表示**もある。カット点をコマ単位で追い込むときはこちらで、
-41 コマ窓の使い回しが効いて実測 27ms/コマ。ホイールは 1 ノッチ＝1 コマ、
-Shift＋ホイールで GOP 単位に飛ぶ。セルの幅は GOP 表示と同じ絵 1 枚ぶんで、
-**メニューを変えて変わるのは「どれだけの時間が映るか」だけ**にしてある。
+There is also a **frame view**. That is the one for closing in on a cut point
+frame by frame, and reusing a 41-frame window gets it to a measured 27 ms per
+frame. One wheel notch is one frame; Shift plus wheel jumps by GOP. Cell width is
+one picture, same as the GOP view, so **changing the menu changes only how much
+time is on screen**.
 
-**1 フレーム刻みは 41 コマ以上をまとめて取ってくる。** 素直に窓に映る 13 コマだけ頼むと
-1 コマ送るたびにシークと GOP の復号を払うことになり、しかもその 13 コマのうち
-12 コマは前回と同じものだ。広めの窓を一度取って端に近づくまで使い回すことで、
-1 コマ送りの実測は **1 ステップ約 27ms** に収まっている。
+**Frame-by-frame fetches 41 frames or more at a time.** Asking naively for just
+the 13 frames on screen pays a seek and a GOP decode per step, and 12 of those 13
+are the same as last time. Fetching a wider window once and reusing it until you
+approach its edge keeps a measured single-frame step at **about 27 ms**.
 
-**取り出しは「中心と間隔」ではなく「この時刻の一覧」で頼む。** 編集後の
-タイムラインを歩く以上、隣り合うセルがカットを挟んで何分も離れていることが
-あるからだ（`preview::shots_at()`）。連続している時刻はまとめて 1 回のシークで
-復号し、飛んでいるところで run を切る。「飛び」の判定はしきい値を決め打ちに
-せず**要求された最小間隔の 2.5 倍 +0.5 秒**とした——1 コマ間隔も 2 秒間隔も
-どちらも等間隔であって、どちらも切ってはいけない。ただし**上限 2 秒**を
-かぶせてある。等間隔でも 14 秒おき（＝「GOP・3 分」）なら、run をつないだ
-ままでは 3 分ぶんを丸ごと復号して 13 枚だけ残すことになるからだ——
-[作成中に固まらないための 5 つ](#作成中に固まらないための-5-つ)。
+**The request is "this list of times", not "a centre and a spacing".** Walking the
+edited timeline, adjacent cells can be minutes apart across a cut
+(`preview::shots_at()`). Contiguous times are decoded in one seek, and the run is
+broken where there is a jump. Rather than hard-coding the jump threshold, it is
+**2.5× the smallest requested spacing plus 0.5 s** — one-frame spacing and
+two-second spacing are both regular, and neither should be broken. On top of that
+sits a **2-second cap**: even regular 14-second spacing ("GOP · 3 min") would,
+with the run kept whole, decode three whole minutes to keep 13 pictures — see
+[the five reasons it froze while building](#five-reasons-it-froze-while-building).
 
-**再生できる（`▶ 再生` / `Space`）。** 映像は 640px 幅で、プロキシから読める
-なら毎秒 24 枚、録画から直接なら 15 枚——1 枚ごとに JPEG と data URL を作る
-ので、頼む枚数は「何を読んでいるか」で決まる。**音声も一緒に鳴る**。番組を観るためではなく**継ぎ目が正しいか確かめるため**の
-再生なので、それで足りる。時計は**編集後のタイムライン**で進むので、カットは
-時間を食わない——区間をまたいでも再生は続く。
+**It plays (`▶ Play` / `Space`).** Video is 640 px wide, at 24 pictures a second
+from the proxy or 15 reading the recording directly — each one becomes a JPEG and
+a data URL, so how many are requested depends on what is being read. **The audio
+plays with it.** This is playback for **checking that the seams are right**, not
+for watching the programme, and that is enough for it. The clock runs on **the
+edited timeline**, so cuts take no time — playback continues straight across an
+interval boundary.
 
-音声は映像と同じ区間を追う（`playback_audio.rs`）ので、継ぎ目では一緒に飛ぶ。
-ただし**自前の時計は持たない**——リングバッファに積みさえすれば、あとは
-サウンドカード自身のクロックが正しい速さで鳴らしてくれるからだ。映像の壁時計
-とは独立しているので長く回せば少しずつ離れていくが、これは `audio.rs` が
-継ぎ目に 10.7ms の誤差を許すのと同じ理由で承知の上にしてある。**切った音が
-正しいかを聴くための再生**であって、通しで観るためのものではない。
+The audio follows the same intervals as the video (`playback_audio.rs`), so it
+jumps at the seams too. It **keeps no clock of its own**, though — once samples
+are in the ring buffer, the sound card's own clock plays them at the right rate.
+That is independent of the video's wall clock, so they drift apart slowly over a
+long run, which is accepted for the same reason `audio.rs` allows 10.7 ms of error
+at a seam. **It is playback for hearing whether the cut audio is right**, not for
+watching end to end.
 
-**再生中のストリップは作り直さず、滑らせる。** 絵は毎秒 15 枚しか来ないので、
-届くたびに窓を引き直せば秒 15 回の飛びになる（以前は 0.4 秒に 1 回だったので
-なおさら目立った）。そこでセルは**窓より広いリール**に載せ、再生中は
-`translateX` を書き換えるだけにした。再生は編集後のタイムラインを壁時計 1 倍で
-進むので、絵と絵の間のいまの位置は当て推量ではなく計算で出る——最後に届いた絵の
-時刻とそれを受け取った時刻から求め、画面の再描画ごとに置き直す。届いた絵の時刻は
-そのまま採らずに少しずつ寄せる（復号の数十ミリ秒のばらつきが、そのままだと
-逆走に見える）。リールを引き直すのは再生位置が描いてある端に近づいたときだけで、
-同じ絵が同じ場所に並ぶので入れ替わりは見えない。実測 160px/秒、1.8 秒追い続けて
-飛びも止まりもなし（GOP・6 秒、16ms ごとに 2〜7px）。
+**During playback the strip is slid, not rebuilt.** Pictures only arrive 15 times
+a second, so redrawing the window on each arrival gives 15 jumps a second (and it
+was more noticeable before, at once every 0.4 s). So the cells sit on **a reel
+wider than the window** and playback merely rewrites `translateX`. Playback
+advances the edited timeline at 1× wall clock, so the current position between two
+pictures is computed, not guessed — from the last picture's time and when it
+arrived — and re-placed on every repaint. The arriving picture's time is eased in
+rather than taken directly (tens of milliseconds of decode jitter otherwise looks
+like running backwards). The reel is only redrawn when the playhead nears the
+drawn edge, and since the same pictures land in the same places, the swap is
+invisible. Measured at 160 px/s, tracked for 1.8 s with no jumps and no stalls
+(GOP · 6 s, 2–7 px every 16 ms).
 
-| ストリップの操作 | 動き |
+| Strip action | Behaviour |
 |---|---|
-| 左クリック | そのコマへ移動 |
-| **右ドラッグ（押しっぱなし）** | **前後へなめらかにサーチ**。中央より右で送り、左で戻し、離れるほど速い |
-| 中クリック | そこから**次のシーンの変わり目**を探して飛ぶ |
-| ホイール | 1 目盛ずつ流す |
+| Left click | Go to that frame |
+| **Right drag (held)** | **Smooth search back and forth.** Right of centre goes forward, left goes back, and further out is faster |
+| Middle click | Find and jump to the **next scene change** from there |
+| Wheel | Flow one step at a time |
 
-キーボードは `←` `→` が 1 フレーム、`Shift` 併用で 1 秒、`s` / `Shift+s` が
-次・前のシーン、`i` / `o` が IN / OUT。
+On the keyboard, `←` `→` move one frame, with `Shift` one second, `s` /
+`Shift+s` go to the next/previous scene, and `i` / `o` set IN / OUT.
 
-**出力は入力の名前を継ぐ。** 既定は元のファイルと同じ場所・同じ器で、名前に
-`cut_` を付けただけのもの——`2026年08月20日00時00分-ＢＳフジ…#8.ts` を開けば
-`cut_2026年08月20日00時00分-ＢＳフジ…#8.ts`。放送録画の名前には日付・局・話数
-が入っていて、あとから探す手がかりはそこにしかない。`cut.ts` に潰すのは損だ。
-器も入力に合わせる（`.ts` なら `.ts`）——毎回 MP4 へ移し替えたいわけではない。
-ファイル選択ダイアログは拡張子リストの先頭を補うので、入力と同じものを先頭に
-並べ替えている。
+**The output inherits the input's name.** The default is the same directory and
+the same container as the original with `cut_` prefixed to the name — open
+`2026年08月20日00時00分-ＢＳフジ…#8.ts` and you get
+`cut_2026年08月20日00時00分-ＢＳフジ…#8.ts`. Broadcast recording names carry the
+date, the station and the episode number, and that is the only handle for finding
+them later. Collapsing that to `cut.ts` is a loss. The container follows the input
+too (`.ts` gives `.ts`) — nobody wants everything moved to MP4 every time. The
+file dialog completes with the first extension in its list, so the input's own is
+sorted to the front.
 
-器はダイアログの種類欄で選べる（`MPEG-2 TS (.ts)` / `MP4 (.mp4)` / …）。
-一つの「動画」フィルタにまとめず**器ごとに項目を分けてある**のは、選ぶと
-拡張子が付け替わるからで、こうしないと器は「覚えておく拡張子」になってしまう。
+The container can be chosen in the dialog's type field (`MPEG-2 TS (.ts)` /
+`MP4 (.mp4)` / …). They are **separate entries per container** rather than one
+"video" filter, because selecting one swaps the extension; without that, the
+container would become "an extension you have to remember".
 
-TS 出力も実素材で確認済み（地デジ 60 秒、**1798/1798 フレーム、99.2% 無劣化、
-インターレース保持**）。エンジン側は器の名前で分岐していて、MP4 系だけが
-`avc3`/`hev1` の細工を要る——Annex-B の器はパラメータセットを本来ストリーム内に
-持つので、そのまま通る。ひとつだけ違うのは、**TS では先頭が 0.000 秒ではなく
-0.050 秒から始まる**こと。MPEG-TS に「ゼロ始まり」の約束はなく、映像・音声に
-同じだけ乗る定数なので同期には影響しない。
+TS output is verified on real material too (60 seconds of terrestrial,
+**1798/1798 frames, 99.2 % lossless, interlacing preserved**). The engine branches
+on the container name, and only the MP4 family needs the `avc3`/`hev1`
+manoeuvre — an Annex-B container carries parameter sets in the stream natively and
+just works. One thing does differ: **in TS the start is 0.050 s, not 0.000 s**.
+MPEG-TS makes no promise of starting at zero, and it is a constant applied equally
+to video and audio, so it does not affect sync.
 
-**複数区間に対応。** カットは足すたびに並び替えと重なりの結合を行い、
-出力区間はその補集合として作る。エンジンが前提とする「昇順・非重複」が
-常に保たれる。シークバーは緑＝出力そのもの、水色＝いまの選択、赤い縦線＝
-カットの継ぎ目。カットした直後は選択を継ぎ目へ畳む。
+**Multiple intervals are supported.** Every added cut is sorted and merged with
+overlapping ones, and the output intervals are built as the complement. The
+engine's precondition — ascending, non-overlapping — always holds. On the seek
+bar, green is the output itself, light blue the current selection, and a red
+vertical line a cut seam. Right after a cut the selection collapses onto the seam.
 
-GUI から書き出したファイルも `tests/verify_real.py` で検証済み
-（地デジ実素材、872/872 フレーム、99.5% 無劣化、A/V 2.9ms）。
-複数区間は 2 区間・実素材で **1799/1799 フレーム、99.0% 無劣化、A/V 0.6ms**。
+Files exported from the GUI have been verified with `tests/verify_real.py` too
+(real terrestrial material, 872/872 frames, 99.5 % lossless, A/V 2.9 ms). Multiple
+intervals on real material give **1799/1799 frames, 99.0 % lossless, A/V 0.6 ms**
+across two intervals.
 
-CM 自動除去で作った 5 区間・22 分 34 秒の書き出しは
-**40589/40589 フレーム、100.0% ビット一致、タイムライン一様、
-インターレース保持**。
+A five-interval, 22-minute-34-second export produced by automatic commercial
+removal gives **40589/40589 frames, 100.0 % bit-exact, uniform timeline,
+interlacing preserved**.
 
-> `verify_real.py` の「A/V skew」がこの素材で 399ms と出るが、これは
-> **素材そのものの性質**で出力の誤りではない。この録画は音声トラックが映像より
-> 383ms 早く終わっている（`start_time`+`duration` を見れば分かる）。5 区間の
-> うち末尾の 1.5 秒の欠片がちょうどその末端にあたるため、そのぶんが丸ごと
-> 差として出る。区間ごとに単独で書き出して測ると、他の 4 区間はいずれも
-> ±18ms 以内——AAC 1 フレーム（21.3ms）の中に収まっている。
-> この指標は映像と音声の**長さの差**であって、ズレの累積ではない。
+> `verify_real.py` reports an "A/V skew" of 399 ms on this material, but that is
+> **a property of the material** and not an error in the output. This recording's
+> audio track ends 383 ms before the video (visible in `start_time`+`duration`).
+> The last of the five intervals is a 1.5-second fragment sitting exactly at that
+> end, so the whole difference shows up there. Export each interval on its own and
+> the other four are all within ±18 ms — inside one AAC frame (21.3 ms). This
+> metric is the **difference in length** between video and audio, not accumulated
+> drift.
 
-## 高速サムネイルと Smart Scene Search（`thumbs.rs`）
+## Fast thumbnails and Smart Scene Search (`thumbs.rs`)
 
-TMSR6 の「流れるサムネイルの上でのサーチ」と「シーク先サムネイルホバー表示」を
-再現したかった。どちらも**その場で復号していては間に合わない**。1 回のシークと
-GOP の復号で数百ミリ秒かかるので、ポインタが動くたびに要求を出せば行列になる。
+The goal was to reproduce TMSR6's "search over a flowing filmstrip" and "hover a
+thumbnail of the seek target". **Neither can keep up if it decodes on demand.**
+One seek plus a GOP decode is hundreds of milliseconds, so issuing a request every
+time the pointer moves builds a queue.
 
-答えは**開いた直後に一度だけ全部復号しておく**こと。しかも**イントラピクチャ
-だけ**でよく、キーフレームでないパケットはデコーダに渡しさえしない（渡せば捨てる
-ためだけに解析される）。放送素材は 0.5 秒に 1 枚 I ピクチャを持つので、ホバーにも
-シーン検出にも過剰なくらいの細かさがある。
+The answer is **to decode everything once, right after opening**. And **intra
+pictures alone** suffice: non-keyframe packets are never even handed to the
+decoder (handing them over means they are parsed only to be thrown away).
+Broadcast material has an I picture every 0.5 s, which is more than fine enough
+for hover and for scene detection.
 
-**間引きはパケットの側でやること。** libavcodec の `skip_frame`
-（`AVDISCARD_NONKEY`）で同じことをしようとすると壊れる——後述。
+**The thinning has to happen on the packet side.** Doing the same thing with
+libavcodec's `skip_frame` (`AVDISCARD_NONKEY`) breaks — see below.
 
-**シーン検出は同じパスのついでに手に入る。** 隣り合う I ピクチャを比べるのが
-シーンの切れ目を見つける方法で、その I ピクチャはサムネイルのために復号している
-最中のものだから、追加費用は署名の数百バイトだけ。署名は輝度を 16×9 の平均に
-潰したもの——シーンの変わり目は画面の広い範囲が入れ替わるので、これより細かく
-すると手ぶれに同じ大きさで反応してしまう。
+**Scene detection comes free on the same pass.** The way to find a scene change is
+to compare adjacent I pictures, and those I pictures are already being decoded for
+the thumbnails, so the extra cost is a few hundred bytes of signature. The
+signature is luma collapsed to a 16×9 average — a scene change swaps out a wide
+area of the screen, and anything finer would respond to camera shake just as
+strongly.
 
-**保持するのはキーピクチャ全部**（上限 4000 枚、超えるぶんは間引く）。
-スクロールサーチの絵はここから出すので、保持間隔がそのまま送りの粒度になる。
+**All key pictures are retained** (capped at 4000, thinning the excess). The
+scroll-search pictures come from here, so the retention interval is the granularity
+of the search.
 
-| 素材 | 走査時間 | サムネイル | シーン |
+| Material | Scan time | Thumbnails | Scenes |
 |---|---|---|---|
-| 日本海テレビ 30分（3.5GB） | 21.6s | 3606 枚 / 37MB（0.45s 間隔） | 602 箇所（3.0s 間隔） |
-| AT-X 30分（1.8GB） | 8.8s | 1863 枚 / 14MB（0.45s 間隔） | 360 箇所（5.0s 間隔） |
-| NHK Eテレ 6.5分（700MB） | 3.2s | 774 枚 / 5MB（0.45s 間隔） | 129 箇所（3.0s 間隔） |
+| Nihonkai TV, 30 min (3.5 GB) | 21.6 s | 3606 / 37 MB (0.45 s apart) | 602 (3.0 s apart) |
+| AT-X, 30 min (1.8 GB) | 8.8 s | 1863 / 14 MB (0.45 s apart) | 360 (5.0 s apart) |
+| NHK E-Tele, 6.5 min (700 MB) | 3.2 s | 774 / 5 MB (0.45 s apart) | 129 (3.0 s apart) |
 
-ピーク常駐は 30 分の録画で 112MB。
+Peak resident memory is 112 MB for a 30-minute recording.
 
-**しきい値は素材から決める。** 「典型的な差の 3 倍」を基準にするが、静かな
-教育番組では典型値が 0.0016 と小さすぎて意味を成さないので下限を置き、
-逆に全編が動く素材では印が半秒おきに出てしまうので「平均 3 秒に 1 箇所」を
-上限にして、そこから逆算した分位点をしきい値にする。AT-X では素材由来の値
-（中央値 0.0672 × 3）が、他の 2 本では上限側が効いた。
+**The threshold comes from the material.** The baseline is "3× the typical
+difference", but on a quiet educational programme the typical value is 0.0016,
+too small to mean anything, so there is a floor; and on material that moves
+throughout, marks would appear every half second, so there is a ceiling of "one
+every 3 seconds on average", with the threshold taken as the quantile that implies.
+On AT-X the material-derived value won (median 0.0672 × 3); on the other two the
+ceiling did.
 
-### 目で見ずに検証する
+### Verifying it without looking
 
-シーン検出は「それらしく見える」だけでは検証にならない。**CM の切れ目は必ず
-ハードカット**で、しかも無音とロゴという完全に独立した経路で見つけてあるので、
-それを正解表として使える（`tests/run_scene_tests.sh`）。
+Scene detection is not verified by "looking about right". **A commercial boundary
+is always a hard cut**, and it has been found through two completely independent
+routes (silence and logo), so it can serve as the answer key
+(`tests/run_scene_tests.sh`).
 
 ```
 602 scenes, CM 4 blocks: edges 8/8, 15s junctions 31/32
 ```
 
-CM ブロックの端 8 箇所すべてと、ブロック内部の 15 秒格子 32 箇所のうち 31 箇所に
-シーンの印が立っていた。
+All 8 edges of the commercial blocks, and 31 of the 32 points on the 15-second
+grid inside them, had a scene mark.
 
-### 「BS フジや BS 日テレでフィルムストリップが壊れる」——I ピクチャが 1 枚とは限らない
+### "The filmstrip breaks on BS Fuji and BS Nittele" — one frame is not always one I picture
 
-GOP 表示のセルが**別の時刻の絵**を映し、ところどころ**絵そのものが乱れる**という
-報告。フレーム表示では起きない、という切り分けが決め手だった。フレーム表示は
-`shots_at()`（`preview::walk()`）で毎回復号するが、**GOP 表示は開いたときに作った
-サムネイル軌道から出している**。壊れているのは `thumbs::build()` のほうだった。
+The report was that GOP-view cells showed **pictures from the wrong time** and
+that **the pictures themselves were corrupted in places**. The decisive
+observation was that it does not happen in frame view. Frame view decodes afresh
+every time through `shots_at()` (`preview::walk()`), while **GOP view comes from
+the thumbnail track built at open time**. What was broken was `thumbs::build()`.
 
-そこはデコーダに `skip_frame = AVDISCARD_NONKEY` を立てていた。**この設定は
-ピクチャ単位**で、「I でないピクチャのスライスを読まない」という意味になる。
-ところが**インターレースの MPEG-2 は、1 フレームが 1 ピクチャとは限らない。**
-放送のエンコーダは内容に応じてフレーム符号化とフィールド符号化を切り替えていて、
-**フィールド符号化されたエントリポイントは「I のトップフィールド + P のボトム
-フィールド」の 2 ピクチャ**になる。`AVDISCARD_NONKEY` は後半を P だからと捨てる
-——**半分しか復号されない絵か、フレームが 1 枚も出てこないか**。これが「乱れる」と
-「穴」の正体で、穴の上のセルは `Track::nearest()` が返す遠くの絵で埋まっていた。
-実測で**最大 16 秒ずれた絵**が並んでいた。
+That code set `skip_frame = AVDISCARD_NONKEY` on the decoder. **That setting is
+per picture**, meaning "do not read the slices of non-I pictures". But
+**interlaced MPEG-2 does not always put one picture in one frame.** Broadcast
+encoders switch between frame coding and field coding depending on the content,
+and **a field-coded entry point is two pictures: an I top field plus a P bottom
+field**. `AVDISCARD_NONKEY` throws the second away for being a P — leaving
+**either a half-decoded picture or no frame at all**. That is what "corrupted" and
+"holes" were, and the cells over a hole were filled by whatever distant picture
+`Track::nearest()` returned. Measured, pictures **up to 16 seconds off** were
+being displayed.
 
-素材依存なので「ことがある」になる。ビットストリームを直接数えると:
+It is material-dependent, hence "sometimes". Counting directly in the bitstream:
 
-| 素材 | エントリポイント | うちフィールド符号化 |
+| Material | Entry points | Of which field-coded |
 |---|---|---|
-| BS フジ（サンダー3 #2, 28分） | 3371 | **350（10.4%）** |
-| BS フジ（アニメギルド #8, 24分） | 2879 | **669（23.2%）** |
-| BS11 | 422 | 1（0.2%） |
-| 地デジ NHK Eテレ / AT-X | 776 / 487 | 0 |
+| BS Fuji (Thunder 3 #2, 28 min) | 3371 | **350 (10.4 %)** |
+| BS Fuji (Anime Guild #8, 24 min) | 2879 | **669 (23.2 %)** |
+| BS11 | 422 | 1 (0.2 %) |
+| Terrestrial NHK E-Tele / AT-X | 776 / 487 | 0 |
 
-**`skip_frame` は外した。** キーフレームでないパケットはそもそも渡していないので
-元から重複しており、害だけがあった。走査時間は 16.8 秒 → 17.1 秒でほぼ変わらない。
-保持されたサムネイルは **3020 枚 → 3371 枚**（＝エントリポイント全数）になり、
-アクセスポイントとのずれは全て 0.000 秒。同じ時刻を `shots_at()` で復号し直した
-JPEG と**バイト単位で一致**する。
+**`skip_frame` was removed.** Non-keyframe packets are not handed over in the
+first place, so it was redundant to begin with and did nothing but harm. Scan time
+went from 16.8 s to 17.1 s, essentially unchanged. Retained thumbnails went from
+**3020 to 3371** (= the full count of entry points), and every one is 0.000 s from
+its access point. The JPEGs are **byte-identical** to re-decoding the same times
+through `shots_at()`.
 
-**ついでに 2 つ直した。**
+**Two more things were fixed along the way.**
 
-- **最後の GOP が落ちていた。** デコーダは並べ替えのためにピクチャを 1 枚
-  抱えるので、パケットを流し終えたあと `send_eof()` しないと**ファイル末尾の
-  エントリポイントだけ出てこない**。`preview::walk()` は既にやっていた。
-- **`Track::nearest()` は距離を問わない。** 軌道に穴があれば、いくら離れていても
-  何かを返す——そしてフィルムストリップはそれを**別の時刻のキャプション付きで**
-  並べる。`thumbs_at` 側で「保持間隔より遠ければ、それは穴」と見なし、その
-  セルだけ本当に復号するようにした。上限 4000 枚に当たって間引かれた素材
-  （AT-X 30 分で 1889 中 25 個）でも同じ経路で救われる。
+- **The last GOP was being dropped.** The decoder holds one picture back for
+  reordering, so without `send_eof()` after the packets are exhausted, **only the
+  entry point at the end of the file never comes out**. `preview::walk()` already
+  did this.
+- **`Track::nearest()` does not care about distance.** With a hole in the track it
+  returns *something* however far away — and the filmstrip lines that up **with a
+  caption from a different time**. `thumbs_at` now treats "further than the
+  retention interval" as a hole and really decodes that one cell. Material thinned
+  by the 4000 cap (25 out of 1889 on 30 minutes of AT-X) is rescued by the same
+  path.
 
-### 「音が出ない」——サンプル精度 × TS だけが壊れていた
+### "No audio" — only sample-accurate × TS was broken
 
-実素材で報告を受けて追ったところ、**4 通りの組み合わせのうち 1 つだけ**が
-壊れていた。原因は 2 つ重なっていた。
+Chasing a report from real material, **exactly one of the four combinations** was
+broken. Two causes had stacked up.
 
-1. **出力ストリームが常に素材の素性を名乗っていた。** 再エンコードすると
-   パケットを作るのは自前のエンコーダなのに、出力側のパラメータは素材の
-   ものを写していた。MP4 は気づかないが、**MPEG-TS は生の AAC を ADTS に
-   包み直すのにそのパラメータの extradata を使う**ので、他人の素性を渡された
-   多重化器は同期語のないバイト列を書き出す。デコーダから見れば雑音であり、
-   再生機からは無音に見える。エンコーダを**ストリームを宣言する前**に組み立て、
-   そこから素性を取るようにして解決。
-2. **再エンコード時だけタイムスタンプを変換していなかった。** コピー経路は
-   秒→出力時間軸に直していたのに、再エンコード経路はエンコーダのサンプル数を
-   そのまま書いていた。MP4 の音声時間軸はたまたまサンプルレートなので合って
-   しまい、**90kHz を強制する TS では 799 秒のトラックが 426 秒**になった
-   （ちょうど 48000/90000）。
+1. **The output stream always advertised the source's parameters.** On a
+   re-encode the packets come from our own encoder, yet the output-side parameters
+   were copied from the source. MP4 does not notice, but **MPEG-TS uses that
+   parameter set's extradata to re-wrap raw AAC into ADTS**, so a muxer handed
+   somebody else's identity writes out bytes with no sync word. To a decoder that
+   is noise; to a player it looks like silence. Fixed by constructing the encoder
+   **before declaring the stream** and taking the identity from it.
+2. **Timestamps were not converted on the re-encode path.** The copy path
+   converted seconds to the output time base, while the re-encode path wrote the
+   encoder's sample count directly. MP4's audio time base happens to be the sample
+   rate, so it worked by accident, but **TS forces 90 kHz and a 799-second track
+   came out as 426 seconds** (exactly 48000/90000).
 
-どちらも「MP4 では偶然通る」種類で、**器を 1 つしか試していなかったから
-見つからなかった**。`tests/run_audio_content_tests.sh` に TS × サンプル精度を
-足してある。
+Both are the kind that pass by coincidence in MP4, and **they were missed because
+only one container had been tried**. TS × sample-accurate has been added to
+`tests/run_audio_content_tests.sh`.
 
-### ついでに見つかった 2 つ
+### Two more found along the way
 
-- **アクセスポイントの時刻が負になりうる。** 素材時刻はコンテナの開始時刻で
-  引き算して作るので、最初のピクチャが**マイナス 0.0000003 秒**に落ちること
-  がある。範囲の先頭はそこへ丸められるので、先頭から切ろうとすると
-  「そんな時刻へはシークできない」で落ちる。索引を作る時点で 0 で床を張った。
-- **「先頭へシーク」がファイルの先頭を意味していなかった。** コンテナの
-  開始時刻を狙っていたが、MPEG-TS はバイト位置を時刻で二分探索するので、
-  見つかる最初の PES がヘッダの申告より後ろの時刻を持っていると、**ファイルの
-  最初のエントリポイントより後ろに着地する**——そこだけは戻る先がない。
-  0 以下を狙うときは時刻ではなく「いちばん最初」を指すようにした
-  （`cut::seek_to`）。
+- **An access point's time can be negative.** Source times are formed by
+  subtracting the container's start time, so the first picture can land at
+  **-0.0000003 seconds**. The head of a range is rounded to that, so cutting from
+  the beginning dies with "cannot seek to that time". A floor of 0 is now applied
+  when the index is built.
+- **"Seek to the start" did not mean the start of the file.** It aimed at the
+  container's start time, but MPEG-TS binary-searches byte positions by time, so
+  if the first PES found has a time later than the header claims, **it lands after
+  the file's first entry point** — and from there, there is nowhere to go back to.
+  Aiming at 0 or below now means "the very first" rather than a time
+  (`cut::seek_to`).
 
-  **同じ罠がプレビュー側（`preview::walk`）にも残っていた。** 最初の
-  エントリポイントを狙うと 2 番目に着地するのは手元の実素材 4 本すべてで
-  再現し、時刻 0 にエントリポイントがある録画では**先頭の絵がどうしても
-  読めない**（戻る先が無いので `seek_margin` のやり直しも同じ場所に着く）。
-  ストリップの先頭セルが作成中だけ空になり、`shot_at` のほうは黙って
-  **0.6 秒の絵**を返していた。こちらも「いちばん最初」を指すようにし、
-  境目は 0 ではなく**最初のエントリポイント**にした——その手前は
-  どのみち復号できないので、狙って外してやり直す 1 パスが丸ごと要らない。
+  **The same trap remained on the preview side (`preview::walk`).** Aiming at the
+  first entry point lands on the second, reproducibly, on all four pieces of real
+  material to hand, and on a recording with an entry point at time 0 **the first
+  picture simply cannot be read** (with nowhere to go back to, the `seek_margin`
+  retry lands in the same place). The strip's first cell was empty during
+  building, and `shot_at` quietly returned **the picture at 0.6 s**. This too now
+  means "the very first", and the boundary is **the first entry point** rather
+  than 0 — nothing before it can be decoded anyway, which removes an entire pass
+  of aiming, missing and retrying.
 
-### 精密化 — 印は I ピクチャ、切れ目はその手前
+### Refinement — the mark is an I picture, the cut is just before it
 
-見つかるのは「新しい絵を最初に映した I ピクチャ」であって、切れ目そのものは
-その前の GOP の中にある。そこで飛ぶ直前にその GOP だけを全復号し、連続する
-ピクチャの差が最大になる場所を探す（`thumbs::refine()`、約 95ms）。実測では
-0〜0.47 秒ぶん手前に寄る。
+What is found is "the I picture that first showed the new image"; the cut itself
+is inside the preceding GOP. So just before jumping, that one GOP is fully decoded
+and the place where consecutive pictures differ most is located
+(`thumbs::refine()`, about 95 ms). Measured, it moves 0 to 0.47 s earlier.
 
-ここに落とし穴があった。**精密化は必ず手前に動かすので、その結果を起点に次を
-探すと同じシーンに戻ってくる。**「次のシーンへ」を押しても動かない。候補ごとに
-「本当に進んだか」を確かめ、進んでいなければ次の候補に移るようにして解決。
+There was a trap here. **Refinement always moves earlier, so searching onward from
+the result comes back to the same scene.** "Next scene" does nothing. Fixed by
+checking per candidate whether it really advanced, and moving to the next
+candidate if not.
 
-### 右ドラッグのスクロールサーチ
+### Right-drag scroll search
 
-TMSR6 の「流れるサムネイルの上でのサーチ」は、**右ボタンを押している間だけ
-前後に流れる**。中央より右なら送り、左なら戻し、中央から離れるほど速い。
-速さは距離の 3 乗（最大 60 倍速）にしてあるので、中央付近は 1 コマずつの
-這うような詰めができ、端まで持っていけば 30 分の録画を 30 秒で横断できる。
+TMSR6's "search over a flowing filmstrip" flows **only while the right button is
+held**. Right of centre goes forward, left goes back, and further from centre is
+faster. The speed is the cube of the distance (up to 60×), so near the centre you
+can crawl a frame at a time, and taken to the edge it crosses a 30-minute
+recording in 30 seconds.
 
-**流している間の絵は復号しない。** 1 枚あたり数百ミリ秒かかる復号では、
-どれだけ丁寧に作ってもなめらかにはならない。代わりに走査済みのサムネイル
-（キーピクチャごと＝0.45 秒間隔）をそのまま出す。フィルムストリップも
-同じ配列から引けるので、絵とストリップが一緒に流れる。
+**Nothing is decoded while it flows.** With hundreds of milliseconds per picture,
+no amount of care makes decoding smooth. The already-scanned thumbnails (one per
+key picture, 0.45 s apart) are used as they are. The filmstrip draws from the same
+array, so pictures and strip flow together.
 
-ただし遅い速度では粗さが目につく。そこで**毎秒 2.5 秒より遅いときだけ、
-本物の復号を 320ms おきに後ろから差し込む**。速いときは残像で分からないし、
-遅いときは復号が追いつく——という具合に、必要なところにだけコストを払う。
+At slow speeds the coarseness shows, though. So **only below 2.5 seconds per
+second, a real decode is slipped in from behind every 320 ms**. At speed the
+persistence of vision hides it; slowly, the decode keeps up — cost paid only where
+it is needed.
 
-離した瞬間に、その位置の絵をフル解像度で出し直す。
+The moment the button is released, that position is re-rendered at full
+resolution.
 
-### ホバー
+### Hover
 
-シークバーをなぞると、その位置の絵が浮かぶ。`Track::nearest()` を引くだけで
-**復号は一切しない**——用意できていない間は時刻だけ出して「準備中」と言う。
-決め打ちで待たせるより、出せるものから出したほうが速く感じる。
+Trace the seek bar and a picture of that position floats up. It is a lookup in
+`Track::nearest()` and **decodes nothing at all** — while it is not ready yet, it
+shows the time and says "preparing". Showing what you have beats making people
+wait on principle; it feels faster.
 
-副産物として、**2 秒刻みのフィルムストリップも走査結果から即座に描ける**。
+As a by-product, **a 2-second-step filmstrip can be drawn instantly from the scan
+results** too.
 
-## プロキシ編集（`proxy.rs`）
+## Proxy editing (`proxy.rs`)
 
-読み込んだ録画をそのまま復号し続けるのは、**絵を見るためだけには高すぎる**。
-MPEG-TS のシークはバイト位置なので目標より後ろに着くことがあり、そのぶん
-`seek_margin` だけ戻ってやり直す。開いた GOP はその先頭からしか復号できない。
-1440x1080 の MPEG-2 は 1 枚あたりの復号自体が重い。しかもこの 3 つは、
-ポインタが動くたびに**毎回**払うことになる。
+Continuing to decode the loaded recording as it is, is **too expensive just to
+look at pictures**. MPEG-TS seeks by byte position, so it can land past the
+target, and then it has to go back `seek_margin` and try again. An open GOP can
+only be decoded from its head. And 1440x1080 MPEG-2 is simply heavy to decode per
+picture. All three are paid **every time** the pointer moves.
 
-そこで**開いた直後に全体を 1 回だけ復号して、小さく書き直しておく**。以後、
-プレビュー・フィルムストリップ・再生・シーン検索はそのファイルから読む。
-カットと出力は録画そのものを読み続ける——プロキシは**見るためのもので、
-切るためのものではない**。
+So **right after opening, the whole thing is decoded once and rewritten small**.
+From then on the preview, the filmstrip, playback and scene search read from that
+file. Cutting and export keep reading the recording itself — the proxy is **for
+looking, not for cutting**.
 
-### 差し替えが見えないための 2 つの条件
+### Two conditions for the substitution to be invisible
 
-**時計が同じであること。** プロキシの各ピクチャは、元のピクチャの表示時刻を
-`crate::scan` と同じ基準で持ち回る。プロキシの時刻は素材の時刻**そのもの**で、
-変換表は存在しない——だから間違えようがないし、カットが動いても同期が
-ずれようがない。
+**The clocks must match.** Each proxy picture carries the original picture's
+display time on the same basis as `crate::scan`. A proxy time **is** a source
+time; there is no conversion table, so there is nothing to get wrong and nothing
+that can drift out of sync when the cuts move.
 
-> ここは一度踏んだ。コンテナは「タイムラインの始まり」について独自の意見を
-> 持っている。MP4 は自分の `start_time` を名乗り、edit list を書き、
-> ときには先頭サンプルが 0 になるよう全体をこっそりずらす。そのうちいくつかは
-> 読み戻すときに打ち消されるが、打ち消されないものが残ると**プロキシの絵が
-> 一律 10ms 早い**という結果になる。1/3 フレームなので、間違った絵が出ていても
-> 間違って見えない。いまはコンテナの言い分をいっさい信用せず、**プロキシ先頭
-> ピクチャの「録画側の時刻」を横のテーブルに書いておいて**、それに合わせて
-> タイムライン全体を平行移動している。
+> This one bit once. Containers have opinions of their own about where a timeline
+> begins. MP4 advertises its own `start_time`, writes an edit list, and sometimes
+> quietly shifts everything so the first sample lands at 0. Some of that is undone
+> on reading back, and whatever is not leaves **every proxy picture uniformly
+> 10 ms early**. That is a third of a frame, so a wrong picture does not look
+> wrong. Now the container's claims are ignored entirely and **the first proxy
+> picture's time on the recording's side is written into a side table**, with the
+> whole timeline translated to match.
 
-**アクセスポイントが同じであること。** 元の録画のアクセスポイントすべてに
-キーフレームを強制し、それ以外には置かない（`sc_threshold` /
-`x264-params scenecut=0` でエンコーダ自身の判断を止める）。結果、プロキシの
-索引は同じ時刻に並び、そこから作るサムネイル軌道も元の録画から作ったものと
-同じキーピクチャに乗る。日本海テレビ 30 分で `frame I:3607` ——
-録画のアクセスポイント数 3607 とぴったり一致する。
+**The access points must match.** A keyframe is forced at every access point of
+the original recording and nowhere else (`sc_threshold` / `x264-params
+scenecut=0` stop the encoder from deciding for itself). As a result the proxy's
+index lands on the same times, and the thumbnail track built from it sits on the
+same key pictures as one built from the original. On 30 minutes of Nihonkai TV,
+`frame I:3607` — exactly the recording's 3607 access points.
 
-### サムネイル軌道はこのパスのついで
+### The thumbnail track comes free on this pass
 
-プロキシを作るパスは録画を全部復号しているのだから、**そのうちアクセス
-ポイントに当たる絵を `thumbs::Collector` に渡すだけ**でサムネイル軌道と
-シーン索引が同時に手に入る（`thumbs.rs` の走査と同じ絵、同じ計算）。
-30 分の録画でシーン 602 箇所——専用パスの結果と一致する。
+The pass that builds the proxy is decoding the whole recording anyway, so
+**handing the pictures that land on access points to `thumbs::Collector`** yields
+the thumbnail track and the scene index at the same time (the same pictures and
+the same computation as the `thumbs.rs` scan). 602 scenes on a 30-minute
+recording — identical to the dedicated pass.
 
-2 回目からはプロキシがキャッシュにあるので、軌道は**小さいほうのファイル**を
-走査して作り直す——BS フジ 2.8 分で 1 秒（作成に 10 秒かかったのと同じ素材）。
-軌道そのものは保存していない。中身は JPEG で 30 分の録画なら 37MB あり、
-読み戻す手間は作り直す手間とたいして変わらない。
+From the second time on the proxy is in the cache, so the track is rebuilt by
+scanning **the smaller file** — 1 second for 2.8 minutes of BS Fuji (the same
+material that took 10 seconds to build). The track itself is not saved: it is
+JPEGs, 37 MB for a 30-minute recording, and reading it back is about as much work
+as rebuilding it.
 
-| 素材 | プロキシ作成 | できたもの |
+| Material | Proxy build | Result |
 |---|---|---|
-| BS フジ 2.8分（300MB、アニメ） | 7.1s | 52MB / 960x540 / 4995 枚 |
-| 日本海テレビ 30分（3.7GB） | 85.5s | 1503MB / 960x540 / 54089 枚 |
+| BS Fuji, 2.8 min (300 MB, anime) | 7.1 s | 52 MB / 960x540 / 4995 pictures |
+| Nihonkai TV, 30 min (3.7 GB) | 85.5 s | 1503 MB / 960x540 / 54089 pictures |
 
-4コアの開発 VM。**同じ素材が 720x404・CBR 523kbps だったころは 7.6 秒で
-13MB、30 分のほうは（この表の前の版で）120 秒**——幅は 1.33 倍、絵は別物に
-なって、時間はどちらも短くなっている。理由は[すぐ下](#h264-である必要はあるのか)。
+On the 4-core development VM. **When the same material was 720x404 CBR 523 kbps
+it took 7.6 s for 13 MB, and the 30-minute one took 120 s** (in the previous
+version of this table) — the width is 1.33× larger, the pictures are a different
+thing entirely, and both times came down. The reason is
+[just below](#does-it-have-to-be-h264).
 
-容量は素材で 3 倍ちがう（アニメ 1.1GB/時、実写 3.0GB/時）。平板な絵ほど
-小さく済むので、**本数ではなくバイト数で打ち切っている**——[キャッシュ](#キャッシュ)。
+Size varies 3× with the material (1.1 GB/hour for anime, 3.0 GB/hour for live
+action). Flatter pictures compress smaller, so **the cache is bounded by bytes,
+not by file count** — see [the cache](#the-cache).
 
-払ったぶんは 1 コマごとに返ってくる。日本海テレビ 30 分で
-`--preview 900.25`（プロセス起動・索引作成こみ）:
+What it costs comes back frame by frame. On 30 minutes of Nihonkai TV,
+`--preview 900.25` (including process startup and index building):
 
 ```
-録画から      3.05s   ← うち 2.8s はパケット走査、絵そのものは 0.21s
-プロキシから  0.10s   ← 走査が要らないので、これがほぼ全部
+from the recording   3.05s   <- 2.8 s of that is the packet scan; the picture itself is 0.21 s
+from the proxy       0.10s   <- no scan needed, so this is essentially all of it
 ```
 
-GUI は索引を開いた時点で持っているので、効くのは後者の差——スクラブ
-1 コマぶんが 0.2 秒から 0.1 秒未満になる。**フィルムストリップは 1 回で
-41 コマ復号する**ので、そちらはもっと大きく効く。
+The GUI already holds the index once the file is open, so what matters is the
+latter difference — one scrub frame goes from 0.2 s to under 0.1 s. **The
+filmstrip decodes 41 frames at once**, so it gains far more.
 
-### 読む側と書く側を分ける
+### Separating the reading side from the writing side
 
-このパスは長いあいだ**1 スレッドで全部やっていた**。libavcodec は
-スレッド数を言われないかぎり 1 本しか使わないので復号がまず遅く、しかも
-その同じスレッドが縮小とエンコードの受け渡しまで抱えていた。4 コアのうち
-動いているのは実質 2 コア、という状態だった。
+For a long time this pass **did everything on one thread**. libavcodec uses one
+thread unless told otherwise, so decoding was slow to start with, and that same
+thread also carried the scaling and the handoff to the encoder. Of four cores,
+effectively two were working.
 
-直したのは 2 つだけ。**復号器にコア数を渡す**（`crate::video_decoder`。
-MPEG-2 はスライス並列、H.264 はフレーム並列と、種類は codec に選ばせる）のと、
-**縮小＋エンコード＋多重化を別スレッドに出す**（`proxy::write_side`、
-深さ 8 の同期チャネル）。読む側と書く側は仕事量がほぼ同じ——地上波 6.5 分で
-復号 18 秒に対し縮小 13 秒＋エンコード 6 秒——なので、直列に足していたものが
-重なるだけで**同じ素材が 40.3 秒から 23.3 秒**になった。
+Only two things changed. **Pass the core count to the decoder**
+(`crate::video_decoder`; MPEG-2 gets slice threading and H.264 frame threading —
+the codec chooses), and **move scaling, encoding and muxing to another thread**
+(`proxy::write_side`, a synchronous channel of depth 8). The reading and writing
+sides do about the same amount of work — on 6.5 minutes of terrestrial, 18 seconds
+of decoding against 13 of scaling plus 6 of encoding — so what used to add up in
+series now overlaps, and **the same material went from 40.3 s to 23.3 s**.
 
-チャネルが閉じたら書く側は終わる。途中で `stop` が立ったときは送信側を
-落として join し、書きかけを消して `cancelled` を返す——これは前と同じで、
-**中断したプロキシが完成品に見えることはない**。
+The writing side finishes when the channel closes. If `stop` is raised part-way,
+the sender is dropped, the thread joined, the partial file deleted and `cancelled`
+returned — unchanged from before, so **an interrupted proxy never looks like a
+finished one**.
 
-### H.264 である必要はあるのか
+### Does it have to be H.264?
 
-無い。ただし**重さの原因も H.264 ではなかった**ので、測ってから決めた。
-2.8 分の 1440x1080 MPEG-2、4コアの VM、復号だけなら 3.4 秒（これが床）:
+No. But **H.264 was not the cause of the cost either**, so it was measured before
+deciding. 2.8 minutes of 1440x1080 MPEG-2 on the 4-core VM; decoding alone is
+3.4 s, which is the floor:
 
-| エンコーダ | 追加コスト | 1時間あたり | SSIM |
+| Encoder | Added cost | Per hour | SSIM |
 |---|---|---|---|
-| libx264 `veryfast` CBR（旧） | 4.2s | 0.29GB | 0.9913 |
-| libx264 `ultrafast` CRF（新） | 3.7s | 1.25GB | 0.9946 |
-| mpeg2video `-g 15` qscale | 2.4s | 0.39GB | 0.9825 |
-| mpeg2video 全イントラ | 2.4s | 2.7GB | 0.9816 |
-| MJPEG q=3 | 3.6s | 3.2GB | 0.9827 |
+| libx264 `veryfast` CBR (old) | 4.2 s | 0.29 GB | 0.9913 |
+| libx264 `ultrafast` CRF (new) | 3.7 s | 1.25 GB | 0.9946 |
+| mpeg2video `-g 15` qscale | 2.4 s | 0.39 GB | 0.9825 |
+| mpeg2video all-intra | 2.4 s | 2.7 GB | 0.9816 |
+| MJPEG q=3 | 3.6 s | 3.2 GB | 0.9827 |
 
-（SSIM は**同じ大きさに縮めた素材**との比較なので、符号化の損失だけを見て
-いる。解像度の損失は別で、そちらのほうが大きい——後述。）
+(SSIM is measured against **the source scaled to the same size**, so it isolates
+the coding loss. Resolution loss is separate, and larger — see below.)
 
-イントラ専用（MJPEG・全イントラ MPEG-2）は「どのコマからでも復号できる」の
-が魅力で、実際そこは効く。だが**速くはならなかった**。この経路の重さは
-動き探索ではなく画素の量そのもので、しかも縮小は事実上ただ（1800 コマの
-1440x1080→960x540 が単スレッドで 0.2 秒）。代わりに容量は 3〜10 倍になり、
-画質は H.264 に負ける。lowres 復号（`AVCodecContext.lowres`）も試したが
-1.18s → 1.13s で、MPEG-2 の重さは IDCT ではなくビットストリーム解析の側に
-あった。
+Intra-only (MJPEG, all-intra MPEG-2) is attractive because any frame can be
+decoded on its own, and that part is real. But **it was not faster**. The cost on
+this path is the sheer pixel count, not motion search, and scaling is effectively
+free (1800 frames of 1440x1080→960x540 in 0.2 s on one thread). In exchange the
+size grows 3–10× and the quality loses to H.264. Lowres decoding
+(`AVCodecContext.lowres`) was tried too: 1.18 s → 1.13 s. MPEG-2's cost is in
+bitstream parsing, not the IDCT.
 
-**効いたのは 2 つとも H.264 の中の話だった。**
+**Both of the things that worked were inside H.264.**
 
-1. **`veryfast` → `ultrafast`。** 遅いプリセットが買っているのはビットで
-   あって絵ではない。プロキシは今週中に消える一時ファイルなので、
-   ここは配信用エンコードと逆に倒す——**ディスクを払って時間を取る**。
-   30 分の実写で測ると `ultrafast` 85.5 秒 / 1503MB に対し `veryfast`
-   132.3 秒 / 719MB。容量は半分になるが、**開いた瞬間の待ちが 1.5 倍**に
-   なるほうが痛い。容量のほうはキャッシュの予算で受ける。
-2. **CBR → CRF。** 旧設定は `幅×高さ×fps×0.06`（960x540 なら 930kbps）を
-   狙う平均ビットレートだった。そこに**元録画のアクセスポイントすべてで
-   IDR を強制**しているので、0.5 秒ごとに来る I ピクチャが予算の大半を
-   食い、残り全部が飢える。同じ強制を定量子のもとでやれば、**代償は容量
-   だけ**になる。
+1. **`veryfast` → `ultrafast`.** What a slow preset buys is bits, not pictures. A
+   proxy is a temporary file that will be gone this week, so this leans the
+   opposite way from a delivery encode — **spend disk, buy time**. Measured on 30
+   minutes of live action, `ultrafast` gives 85.5 s / 1503 MB against `veryfast`'s
+   132.3 s / 719 MB. The size halves, but **the wait when you open the file
+   getting 1.5× longer** hurts more. The size is absorbed by the cache budget.
+2. **CBR → CRF.** The old setting targeted an average bitrate of
+   `width × height × fps × 0.06` (930 kbps at 960x540). On top of that **an IDR is
+   forced at every access point of the original recording**, so an I picture every
+   0.5 s eats most of the budget and everything else starves. Do the same forcing
+   under a fixed quantiser and **the only price is size**.
 
-### エンコーダの選び方
+### How the encoder is chosen
 
-`h264_nvenc` → `h264_videotoolbox` → `h264_amf` → `h264_qsv` → `libx264` →
-`mpeg4` の順に**使えたものを使う**。ハードウェアを先に試すのは
-[移植方針](design.md#ライセンスと特許配布するなら先に決める)のとおりで、
-`mpeg4` は libavcodec にかならず居るので最後の砦になる。
+It tries `h264_nvenc` → `h264_videotoolbox` → `h264_amf` → `h264_qsv` →
+`libx264` → `mpeg4` and **uses whichever opens**. Hardware is tried first for the
+reasons in the [design notes](design.md#licence-and-patents-decide-before-shipping),
+and `mpeg4` is always present in libavcodec, which makes it the last resort.
 
-**「開けた」は「使える」ではない。** ハードウェアエンコーダはビルドに入って
-さえいれば、その裏に何も無い機械でも開いてしまい、**最初のピクチャを渡した
-ところで初めて断る**ことがある——そのときにはもうファイルが書きかけで、
-次の候補に移る道はない。なので捨てるピクチャを 1 枚だけ先に通してみて、
-受け取ったエンコーダをもう一度開き直して本番に使う。
+**"It opened" is not "it works".** A hardware encoder that is merely present in
+the build will open on a machine with nothing behind it, and **refuse only when
+the first picture is handed over** — by which time the file is part-written and
+there is no route to the next candidate. So one throwaway picture is pushed
+through first, and the encoder that accepted it is re-opened for the real run.
 
-> 最後の砦のほうにも罠があった。**MPEG-4 part 2 は自分のタイムベースを
-> ビットストリームに 16 ビットで書く**（`vop_time_increment_resolution`）ので、
-> MPEG-TS の 90kHz は大きすぎて**そもそも開かない**——つまりこのツールが
-> 相手にしている素材そのもので、最後の砦が最初から機能していなかった。
-> エンコーダには 60kHz で渡し、出てきたパケットを 90kHz に戻している
-> （放送素材の実際のタイムスタンプなら割り切れる。割り切れなくても
-> 1 マイクロ秒に満たない）。
+> The last resort had a trap of its own. **MPEG-4 part 2 writes its own time base
+> into the bitstream in 16 bits** (`vop_time_increment_resolution`), so MPEG-TS's
+> 90 kHz is too large and **it will not open at all** — that is, on exactly the
+> material this tool exists for, the last resort was inoperative from the start.
+> It is now given 60 kHz and the packets that come out are converted back to
+> 90 kHz (real broadcast timestamps divide evenly; when they do not, the error is
+> under a microsecond).
 
-幅は 960、品質は CRF 22（`SMARTCUT_PROXY_WIDTH` /
-`SMARTCUT_PROXY_QUALITY` で変更可。`SMARTCUT_PROXY_ENCODER` で
-エンコーダそのものも指定できる）。品質は x264 の CRF で言い、他の
-エンコーダには `quality_for` がそれぞれの目盛りに移す——ハードウェア
-エンコーダには定量子（`constqp` / `global_quality` / `cqp`）、MPEG 系には
-qscale。**どれを引いても同じ意味の 1 本のつまみ**になる。
+The width is 960 and the quality CRF 22 (`SMARTCUT_PROXY_WIDTH` /
+`SMARTCUT_PROXY_QUALITY` change them, and `SMARTCUT_PROXY_ENCODER` picks the
+encoder itself). Quality is expressed in x264 CRF, and `quality_for` maps it onto
+each other encoder's scale — a fixed quantiser for hardware encoders (`constqp` /
+`global_quality` / `cqp`), qscale for the MPEG family. **Whichever you get, it is
+one knob meaning one thing.**
 
-幅が効くのは、プレビューが**ステージの実ピクセル数**を要求するように
-なったから（`stageWidth`）。以前は固定で 960 を頼んでいたが、プロキシが
-720 しか無いので `encode_jpeg` がそこで頭打ちにし、ステージがそれより
-広ければブラウザが引き伸ばしていた——**プロキシの幅がそのまま絵の上限**
-だったわけで、これが「低画質すぎる」の正体だった。符号化の損失より
-こちらのほうがずっと大きい。
+Width matters because the preview now requests **the stage's real pixel count**
+(`stageWidth`). It used to ask for a fixed 960, but with a 720-wide proxy
+`encode_jpeg` capped there, and a wider stage got the browser to stretch it —
+**the proxy's width was the ceiling on picture quality**, which is what "far too
+low quality" really was. It matters far more than the coding loss.
 
-頭打ちの位置は**正方画素に直した幅**で、符号化された幅ではない。1440x1080
-の放送素材は 16:9 で映すので、1080 本の走査線を全部残すには横 1920 要る
-——1440 で止めると縦を 810 に落とすことになり、4 分の 1 を捨ててしまう。
-プロキシは正方画素なので、そちらでは coded 幅と一致する（`stageWidth` が
-1920 で頭を打っているのはこの数字）。
+The cap is measured in **square-pixel width**, not coded width. 1440x1080
+broadcast material is displayed 16:9, so keeping all 1080 lines needs 1920 across
+— stop at 1440 and the height has to drop to 810, throwing away a quarter of it.
+The proxy has square pixels, so there the two agree (1920 is the number
+`stageWidth` caps at).
 
-**プロキシ自身の頭打ちも同じ数え方をする。** `SMARTCUT_PROXY_WIDTH` は
-まず素材の正方画素幅で頭を打ち（1440x1080 の放送素材なら 1920。ここを
-coded 幅の 1440 で止めていたのは数え間違いで、幅 1920 を頼んでも
-1440x810 しか建たなかった）、その上に **1920x1080** という絶対の上限が
-乗る（`proxy::MAX_WIDTH` / `MAX_HEIGHT`）。ステージが 1920 で頭を打つ以上、
-それより大きいプロキシは**作成時間とディスクだけ払って、見られる前に
-縮められる**。上限は絵そのものに掛かるので、16:9 より縦長の素材——たとえば
-4:3 の 2880x2160——は縦 1080 が先に当たり、幅はそれに合う 1440 まで下がる。
+**The proxy's own cap counts the same way.** `SMARTCUT_PROXY_WIDTH` is first
+capped at the material's square-pixel width (1920 for 1440x1080 broadcast
+material; capping at the coded width of 1440 was a counting error, and asking for
+1920 built only 1440x810), and above that sits an absolute **1920x1080**
+(`proxy::MAX_WIDTH` / `MAX_HEIGHT`). Since the stage caps at 1920, a larger proxy
+**pays build time and disk only to be scaled down before anyone sees it**. The cap
+applies to the picture itself, so material taller than 16:9 — 4:3 at 2880x2160,
+say — hits the 1080 height first and the width comes down to 1440 to match.
 
-| 幅 | 作成 | 容量 |
+| Width | Build | Size |
 |---|---|---|
-| 960 | 7.0s | 48MB |
-| 1152 | 8.2s | 61MB |
-| 1280 | 9.1s | 87MB |
+| 960 | 7.0 s | 48 MB |
+| 1152 | 8.2 s | 61 MB |
+| 1280 | 9.1 s | 87 MB |
 
-960 を既定にしたのは、**開いた瞬間に払わされる**のがこの時間だから。
-コアとディスクに余裕があるなら `SMARTCUT_PROXY_WIDTH=1280`。
+960 is the default because this is the time **you pay the moment you open a
+file**. With cores and disk to spare, `SMARTCUT_PROXY_WIDTH=1280`.
 
-書き出しは**正方画素**にする——
-放送の 1440x1080 は画面上では 16:9 なので、そのまま縮めると潰れた絵を
-タイムラインに渡すことになる。縮小そのものがインターレースの櫛を均すので、
-プロキシ側にデインターレーサは要らない。B ピクチャは使わない（復号順と表示順が
-一致していたほうが、ポインタと絵のあいだに挟まるものが 1 つ減る）。
+The output is written with **square pixels** — broadcast 1440x1080 is 16:9 on
+screen, so scaling it as-is would hand a squashed picture to the timeline. The
+scaling itself evens out interlacing combs, so the proxy needs no deinterlacer.
+B pictures are not used (with decode order matching display order, there is one
+fewer thing between the pointer and the picture).
 
-音声はプロキシに入れない。再生の音は録画から直接読んでいて、そこは速さが
-問題になっていない。
+Audio is not put in the proxy. Playback audio is read from the recording directly,
+and speed is not a problem there.
 
-### キャッシュ
+### The cache
 
-`<キャッシュ>/dev.smartcut.app/proxy/<名前>-<ハッシュ>.mp4`。ハッシュは
-**パス・サイズ・更新時刻・幅・品質**から取るので、同じ名前で録り直した
-ファイルも、幅や品質を変えた場合も、別のプロキシになる。書き込みは
-`.part.mp4` に対して行い、最後に改名する——途中で止まったプロキシが
-「出来上がったもの」に見えることはない（横の `.marks` と両方揃って初めて
-完成とみなす）。
+`<cache>/dev.smartcut.app/proxy/<name>-<hash>.mp4`. The hash is taken from
+**path, size, mtime, width and quality**, so a file re-recorded under the same
+name, or a change of width or quality, gets its own proxy. Writing goes to
+`.part.mp4` and is renamed at the end — an interrupted proxy never looks finished
+(and it counts as complete only with its `.marks` sidecar present too).
 
-古いものは**8 本、または 2GB、先に尽きたほうで**打ち切る。本数だけでは
-限度にならない——1 本の大きさは録画の長さと要求した画質で動くので、
-同じ「8 本」が 300MB のことも 8GB のこともある。番組 1 時間あたり
-おおよそ 1GB なので、2GB は 30 分番組で 3〜4 本。同時に開いているより多く、
-録画そのもので埋まっている機械にも置ける大きさ。いちばん新しい 1 本は
-予算を超えていても消さない（いま編集しているものだから）。
+Old ones are pruned at **8 files or 2 GB, whichever comes first**. A file count
+alone is not a limit — one proxy's size moves with the recording's length and the
+requested quality, so the same "8 files" can be 300 MB or 8 GB. At roughly 1 GB
+per hour of programme, 2 GB is three or four 30-minute programmes: more than are
+open at once, and a size that fits on a machine already full of recordings. The
+newest one is never pruned even over budget, because that is the one being edited.
 
-### プロキシが無くても編集はできる
+### Editing works without a proxy
 
-エンコーダが 1 つも開けない、キャッシュが書けない——どれもプレビューが
-遅いままになるだけで、編集そのものは成立する。作成に失敗したときは
-録画から直接サムネイル軌道を作り、理由をストリップ下に出して続行する。
-作成中も同じで、そこはまだ軌道が喋れないので録画が自分の絵を答える。
+No encoder opens, the cache is unwritable — each of those only leaves the preview
+slow; editing itself still works. When the build fails, the thumbnail track is
+built from the recording directly and the reason is shown under the strip. The
+same applies while it is building: the track cannot speak yet, so the recording
+answers with its own pictures.
 
-`SMARTCUT_PROXY=0` で最初から作らないようにもできる——録画 1 本につき
-100MB 前後のキャッシュが要らない人のために。
+`SMARTCUT_PROXY=0` skips building it entirely — for people who do not want about
+100 MB of cache per recording.
 
-### 作成中に固まらないための 5 つ
+### Five reasons it froze while building
 
-「作成中も編集できる」は建前で、実際には**プロキシを作っている間はストリップを
-動かすと固まって使いものにならなかった**。理由は 5 つあって、どれも独立に
-効いていた。
+"You can edit while it builds" was the claim, but in practice **moving the strip
+while the proxy was building froze it solid**. There were five reasons, each
+independent.
 
-前半の 3 つでウィンドウは止まらなくなったが、**それでもまだ「固まる」**。
-測ってみると止まってはいなかった——ストリップの 1 回が 1.5〜1.9 秒かかり、
-右ドラッグのサーチは 70ms ごとに描き直しを頼むので、絵は**つねに 1 秒以上
-後ろ**にいる。24 分の録画で playhead が 23 秒まで進んだとき、ストリップは
-まだ 5 秒あたりを映していた。しかもサーチ中のプレビューは
-`hover_thumb`（軌道の手持ち）から描いていて、軌道は作成が終わるまで
-空なので**絵が 1 枚も動かない**。止まっていないが、止まって見える。
+The first three stopped the window locking up, but **it still "froze"**. Measured,
+it had not stopped: one strip update took 1.5–1.9 s, and right-drag search asks
+for a redraw every 70 ms, so the pictures were **always more than a second
+behind**. On a 24-minute recording, when the playhead had reached 23 seconds the
+strip was still showing around 5. And the preview during a search was drawn from
+`hover_thumb` (the track's holdings), which is empty until the build finishes, so
+**not one picture moved**. Not stopped, but indistinguishable from stopped.
 
-**1. 復号がウィンドウのスレッドで走っていた。** Tauri の
-`#[tauri::command]` は `async` を付けないかぎり**ウィンドウを描いている
-スレッドで実行される**。`thumbs_at` も `preview` も `scene_search` も
-同期関数だったので、1 回の復号が終わるまで webview は 1px も描き直せない。
-プロキシがあるときは数十ミリ秒なので気づかないが、無いときは録画から
-シーク＋GOP 復号——しかも 4 コアはエンコーダが埋めている。いまは絵に触る
-コマンドを全部 `off_thread()`（`spawn_blocking`）に通してある。索引を読む
-`open_source` と、先頭ピクチャを読みにいくことがある `make_plan` も同じ。
+**1. Decoding ran on the window's thread.** Tauri's `#[tauri::command]` runs
+**on the thread that paints the window** unless it is `async`. `thumbs_at`,
+`preview` and `scene_search` were all synchronous functions, so the webview could
+not repaint a single pixel until a decode finished. With a proxy that is tens of
+milliseconds and goes unnoticed; without one it is a seek plus a GOP decode from
+the recording — while the encoder occupies all four cores. Every command that
+touches pictures now goes through `off_thread()` (`spawn_blocking`), as do
+`open_source`, which reads the index, and `make_plan`, which may go and read the
+first picture.
 
-**2. 広い窓が「窓のぶんだけ全部」復号していた。** `shots_at()` は、等間隔に
-並んだ時刻はひとつながりの run とみなして**1 回シークしてあとは前へ復号し
-続ける**。1 コマ刻みならそれが正しい。だが「GOP・3 分」は 14 秒おきの時刻を
-13 個くれと言うので、同じ規則だと**3 分ぶんを丸ごと復号して 13 枚だけ残す**
-ことになる。放送素材は 0.5 秒ごとにアクセスポイントがあり、シークはそこに
-着く——**2 秒より離れていたらシークし直したほうが安い**。run を切る条件に
-その上限を足した。
+**2. A wide window decoded "everything the window spans".** `shots_at()` treats
+evenly spaced times as one run and **seeks once, then keeps decoding forward**.
+For one-frame steps that is right. But "GOP · 3 min" asks for 13 times 14 seconds
+apart, and the same rule would **decode three whole minutes to keep 13 pictures**.
+Broadcast material has an access point every 0.5 s and a seek lands on one —
+**past 2 seconds it is cheaper to seek again**. That cap was added to the
+run-breaking condition.
 
-**3. 描き直しの要求が復号より速く積み上がっていた。** 右ドラッグの
-スクロールサーチは 70ms ごとに、再生中は毎フレーム、ストリップの描き直しを
-呼ぶ。1 回が 1 秒かかる状況ではキューが伸びる一方で、返ってくる絵は
-**とっくに通り過ぎた位置のもの**になる。ホイールの復号にはもともと
-「同時に 1 本、いちばん新しい要求が勝つ」という仕組みがあったので、
-ストリップにも同じものを付けた（`askStrip`）。
+**3. Redraw requests piled up faster than decoding.** Right-drag scroll search
+calls for a strip redraw every 70 ms, and playback calls for one every frame. When
+one takes a second the queue only grows, and the pictures that come back are
+**from a position long since passed**. Wheel decoding already had a "one at a
+time, newest request wins" mechanism, so the strip got the same one (`askStrip`).
 
-**4. 作ったサムネイルを最後まで渡していなかった。** プロキシを作るパスは
-録画のアクセスポイントを**先頭から順に**復号していて、サムネイル軌道は
-その副産物として `thumbs::Collector` に溜まっていく。ところが軌道が
-`Thumbs` に入るのは**パスが終わってから**で、それまでの 1〜2 分は
-ストリップもスクロールサーチもキーフレームのカードも「手持ちは無い」として
-録画から復号していた——**すでに手元にある絵を使っていなかった**。いまは
-0.5 秒ごとに `Collector::take_new()` で受け取って足していく（`proxy::build`
-の `share`、GUI 側は `hold()`）。通り過ぎたところは**メモリ引きになって
-即答**し、`hover_thumb` が答えるのでサーチ中の絵も動く。渡したぶんは
-`Built::track` には残らないので、最後に頭と尻尾を繋ぎ直す——繋いだ軌道は
-キャッシュから 1 パスで作ったものと枚数もシーン数も一致する。
+**4. The thumbnails being built were not handed over until the end.** The proxy
+pass decodes the recording's access points **in order from the start**, and the
+thumbnail track accumulates in `thumbs::Collector` as a by-product. But the track
+only entered `Thumbs` **after the pass finished**, and for the one or two minutes
+before that the strip, the scroll search and the keyframe cards all decoded from
+the recording on the grounds that "we have nothing" — **not using pictures that
+were already in hand**. Now they are collected every 0.5 s via
+`Collector::take_new()` and appended (`share` in `proxy::build`, `hold()` on the
+GUI side). Anything already passed **answers instantly from memory**, and since
+`hover_thumb` can answer, the pictures move during a search too. What has been
+handed over does not remain in `Built::track`, so the head and tail are stitched
+back together at the end — and the stitched track matches a one-pass track built
+from the cache in both picture count and scene count.
 
-`Track` に `covered`（**どこまで喋れるか**）を持たせたのはこのため。
-`nearest()` は端より先を訊かれても手持ちの最後の 1 枚を返すので、それが
-無いと**まだ復号していない場所に別の時刻の絵**が出る。`thumbs_at` は
-もともと手持ちとの時刻差を見ていたが、`hover_thumb` は見ていなかった。
+That is why `Track` carries `covered` (**how far it can speak for**).
+`nearest()` returns its last held picture when asked past the end, so without it
+**a picture from a different time appears where nothing has been decoded yet**.
+`thumbs_at` was already checking the time difference against its holdings;
+`hover_thumb` was not.
 
-**5. GOP のストリップが GOP の中身まで復号していた。** 「GOP・6 秒」は
-0.5 秒おきの時刻を 13 個くれと言う。2 の上限（2 秒）より詰まっているので
-ひとつながりの run になり、**6 秒ぶんを丸ごと復号して 13 枚だけ残す**——
-1440x1080 の MPEG-2 で 180 枚、1.8 秒。だが GOP モードのセルは定義から
-**全部がアクセスポイント**で、アクセスポイントの絵は単独で復号できる
-（`thumbs::build` が前からそうしている）。そこで**要求された時刻がすべて
-アクセスポイントなら key パケット以外は渡さない**ようにした
-（`preview::walk` の `keys`）。13 枚だけ復号して 0.24 秒。
+**5. The GOP strip was decoding the insides of GOPs.** "GOP · 6 s" asks for 13
+times 0.5 s apart. That is tighter than #2's 2-second cap, so it becomes one run
+and **decodes six whole seconds to keep 13 pictures** — 180 pictures of 1440x1080
+MPEG-2, 1.8 s. But in GOP mode the cells are **by definition all access points**,
+and an access point's picture can be decoded on its own (`thumbs::build` has
+always relied on this). So **when every requested time is an access point,
+non-key packets are not handed over** (`keys` in `preview::walk`). 13 pictures
+decoded, 0.24 s.
 
-捨てるのは `skip_frame` ではなくパケットの段階で——`thumbs::build` の
-注記と同じ理由で、フィールド符号化されたエントリポイントは I 上位フィールド
-＋ **P** 下位フィールドの 1 パケットなので、`AVDISCARD_NONKEY` は絵を半分
-にしてしまう。出てくる JPEG が全復号と 1 バイトも違わないことは
-`examples/keysdiag.rs` で確かめてある。
+The discarding happens at the packet stage, not through `skip_frame` — for the
+same reason as the note in `thumbs::build`: a field-coded entry point is one
+packet holding an I top field plus a **P** bottom field, so `AVDISCARD_NONKEY`
+would halve the picture. That the resulting JPEGs do not differ from a full decode
+by a single byte is confirmed by `examples/keysdiag.rs`.
 
-作成中のストリップは、**通り過ぎたところは 0 秒、その先は 0.24 秒**になった。
-`examples/proxydiag.rs` が、作成を回しながらストリップを叩いて両方を測る。
+While building, the strip is now **0 seconds for anything already passed and
+0.24 s beyond it**. `examples/proxydiag.rs` runs a build while hammering the strip
+and measures both.
 
-## 実装で必要だったエンジン側の追加
+## Engine-side additions the GUI needed
 
-- `preview::frame_at()` — 時刻 T のピクチャを JPEG で返す。webview は
-  MPEG-2 TS を再生できないので、スクラブ用の絵はこちらで作る。開いている
-  GOP は先頭からしか復号できないので、直前のアクセスポイントへシークする。
-- `preview::shot_at()` / `shots_at()` — JPEG に加えてそのピクチャの実時刻と
-  種別（I / P / B）を返す。ストリップは 1 回のシークで続きの何枚かをまとめて
-  取り出す——ただし時刻どうしが 2 秒以上離れていたら、そのぶんを復号するより
-  シークし直したほうが安いので run を切る。要求がすべてアクセスポイントなら
-  そのあいだのパケットは渡さない（上記 5）。
-- `thumbs::build()` / `refine()` — サムネイル軌道とシーン索引。上記参照。
-- `proxy::build()` / `open()` — プロキシの作成と読み込み。上記参照。作成は
-  進捗・受け渡し・中止の 3 つを受け取る。受け渡し（`share`）は溜まった
-  サムネイルを**作成中に**渡すもので、中止は別のファイルを開いたときに
-  前のファイルのために回っているパスを捨てるためのもの。
-- `cut_with_progress()` — 進捗コールバック。書き出しは `spawn_blocking` で
-  UI スレッドから外してある。
+- `preview::frame_at()` — returns the picture at time T as a JPEG. The webview
+  cannot play MPEG-2 TS, so the scrubbing pictures are made here. An open GOP can
+  only be decoded from its head, so it seeks to the preceding access point.
+- `preview::shot_at()` / `shots_at()` — returns, besides the JPEG, that picture's
+  real time and type (I / P / B). The strip pulls several consecutive pictures out
+  of one seek — but breaks the run when two times are more than 2 seconds apart,
+  where seeking again is cheaper than decoding through. When every request is an
+  access point, the packets in between are not handed over (#5 above).
+- `thumbs::build()` / `refine()` — the thumbnail track and the scene index. See
+  above.
+- `proxy::build()` / `open()` — building and opening the proxy. See above. The
+  build takes three things: progress, handoff and cancellation. The handoff
+  (`share`) passes accumulated thumbnails over **while it is still building**, and
+  the cancellation exists to throw away a pass still running for a previous file
+  when a new one is opened.
+- `cut_with_progress()` — a progress callback. Export is moved off the UI thread
+  with `spawn_blocking`.
 
-## 詰まった点
+## Where it got stuck
 
-- **VM では画面が更新されない。** WebKitGTK のコンポジタが GPU 無しの環境で
-  何も描かず、初回描画のあと一切更新されない——フリーズにしか見えない。
-  `WEBKIT_DISABLE_COMPOSITING_MODE=1` で解決。この UI に合成は要らないので
-  アプリ側で既定にしてある。
-- **`sync.sh` の `--delete` が GUI のビルド成果物を消していた。** 除外が
-  `rust/target` だけだったため。`target/` 全般を除外するよう修正。
-- 実素材（バイト切り出しの TS）で `no pictures decoded` が出た。ファイルの
-  最初のアクセスポイントより前は復号できないので、区間の開始をそこへ
-  クランプするようにした。この修正でコピー率が 96.5% → 99.6% に上がった。
-- **シークが 1 GOP 遅れて着地することがあり、それが黙って間違った絵を返して
-  いた。** MPEG-TS のシークはバイト位置なので目標より後ろに着くことがあり、
-  さらにシーケンスヘッダを跨いだ場合は最初の GOP がまるごと復号できない。
-  どちらも「頼んだピクチャが出てこない」という同じ症状になる。画面には
-  もっともらしい絵が出るので気づけない——フレーム番号と絵が食い違うだけ。
-  最初のピクチャが目標より後ろなら `seek_margin` ぶん戻ってやり直すようにし、
-  `tests/run_preview_tests.sh` で「頼んだ時刻の絵が返るか」を検証している。
-  シーン精密化がまったく効かない（`seen=1`）ことから見つかった。
-- **プルダウン素材では「フレーム間隔ぶんの許容」が間違い。** 2:3 プルダウンでは
-  1 ピクチャが 2 フィールドか 3 フィールドなので、間隔が 33.4ms と 50.1ms で
-  交互になる。29.97fps を仮定して「近いほう」を選ぶと溝の反対側を掴む。
-  実際に前後 2 枚と比べて近いほうを返すようにし、GUI 側も返ってきた
-  ピクチャの実時刻に再生位置を吸着させて、カウンタと絵が食い違わないようにした。
-- **継ぎ目のフレームがどちら側のものか。** 区間は `[a, b)` で、`b` のピクチャは
-  カットが持っていった最初の 1 枚。なのに出力時刻→素材時刻の変換が継ぎ目を
-  「手前の区間の終わり」と答えていて、**カットした直後の 1 コマだけ消えた絵が
-  画面に残っていた**。エンジンは正しく捨てていたので、フレーム数も出力も
-  合っている——ずれていたのは画面だけ、という見つけにくい種類の不具合。
-  境界を「継ぎ目は後ろの区間の先頭」に統一して解決。
-- **落とすほうが高くついていた。** 再生の最初の実装は、間に合わない絵も
-  いったん JPEG に焼いてから捨てていた——復号 3ms に対して符号化は桁が違うので、
-  「落とす」判断が最も高い処理になっていた。**実測 0.3 倍速**。判断を符号化の
-  **前**に移す口（`Pace::Show` / `Skip` / `Stop`）を `play_from()` に付けた
-  だけで、10 秒で 10.01 秒ぶん——実時間ちょうどになった。**捨てる道は、通す道
-  より安くなければ意味がない。**
-- **「音声再生エラー: The requested device is no longer available」——鳴って
-  いる DAC が「抜かれた」と言われる。** cpal の既定出力は Linux では ALSA の
-  `default` そのもので、それが何を指すかはそのマシンの `alsa.conf` 次第。
-  PipeWire のデスクトップに `pipewire-alsa` が入っていないと `default` は
-  **素のサウンドカードのまま**を指し、そのカードは PipeWire が握っているので
-  `EBUSY` が返る。cpal は `EBUSY` を `DeviceNotAvailable` に写すので、文面は
-  「取り外されたのかもしれません」になる——実際には挿さっていて、デスクトップの
-  他のアプリはそこから鳴っている。`aplay -D default` も同じ `EBUSY` で落ちる
-  ので、アプリ固有ではないとすぐ切り分けられる。`default` が開けなかったときは
-  `pipewire` / `pulse` / `sysdefault` を**名前で**当たるようにした
-  （`playback_audio::open_output`）。サウンドサーバの PCM は、他のアプリが
-  現に使っているデバイスそのものだ。列挙は失敗してからしか行わない——cpal は
-  デバイスを一覧するのに ALSA のヒントが挙げる PCM を**全部開く**ので、
-  通る道でやる仕事ではない。マシン側を直すなら `sudo apt install pipewire-alsa`
-  で `default` の行き先ごと直る。**Windows には同じ寛容さが無い**——
-  そちらの話は「配布（Windows）」の詰まった点に書いた。
-- **継ぎ目のサムネイルは走査結果から取ってはいけない。** ストリップのセルは
-  走査済みのキーピクチャで埋めるから速いのだが、**カットの継ぎ目だけは GOP の
-  頭ではない**。そこに「いちばん近いキーピクチャ」を出すと、半分の確率で
-  **カットしたはずの最後の GOP** が出てくる——切った内容が継ぎ目に居座って
-  見える。継ぎ目のセルとキーフレームのカードだけ、その時刻をそのまま復号する
-  ようにした（`thumbs_at` の `exact`）。継ぎ目は画面に多くて数個なので、
-  復号を数回足すだけで済む。見分け方は簡単で、**継ぎ目のセルだけタイムコードの
-  間隔が 0.50 秒からずれる**（例: …51.21 → 51.71 → 52.07）。GOP の頭ではなく
-  カット位置そのものに立っている証拠になる。
-- **末尾では `[IN, OUT)` が表現できない。** 半開区間は録画の途中では正しいが、
-  末端では正しくない——**最後のピクチャより後ろに OUT を置く場所がない**ので、
-  「末尾までカット」しても最後の 1 枚だけが残り、1 コマの区間として出力に
-  ぶら下がっていた。IN・OUT を置くときに、先頭のピクチャ／末尾のピクチャに
-  いるならタイムラインの端へ吸着させて解決。設定の問題ではなく、
-  **端では表現力が足りていなかった**という話。
-- **タイムラインの原点は 0 秒ではなく最初のアクセスポイント。** その手前は
-  復号できず planner も切り上げるので、出力には入らない。にもかかわらず画面の
-  タイムラインは 0 秒から数えていて、カウンタが `54111` と言うのに書き出される
-  のは `54091` フレーム、という 20 コマのずれが出ていた。原点を最初の
-  アクセスポイントに合わせて一致させた。
-- **`<select>` にフォーカスが残ると矢印キーを取られる。** 間隔を選んだあと
-  `←` `→` を押すと、コマ送りではなく間隔が変わっていた。keydown 側で
-  `SELECT` を除外してもブラウザ既定の動作までは止まらないので、`change` で
-  `blur()` してキーボードを返す必要がある。
-- **セグメント一覧を `max-height` にすると編集画面が上下に踊る。** カットの
-  数でリストの高さが変わり、その分だけストリップもシークバーもボタン列も
-  動く。高さは固定にした。座標を覚えている手にも、`xdotool` にも優しい。
-- **VM 上の自動操作は当てにならない。** DOM の更新が X に伝わらないので
-  スクリーンショットが古くなり、そこから割り出した座標がずれる。ウィンドウを
-  1px リサイズすれば再描画が起きるので、確認のたびにそれを挟む必要がある。
-  実機では起きない問題だが、`xdotool` で GUI を機械的に叩くときは注意。
+- **The screen does not update in a VM.** WebKitGTK's compositor draws nothing
+  without a GPU and never updates after the first paint — which looks exactly like
+  a freeze. `WEBKIT_DISABLE_COMPOSITING_MODE=1` fixes it. This UI does not need
+  compositing, so the app sets it by default.
+- **`sync.sh`'s `--delete` was deleting the GUI build artifacts**, because the
+  exclusion was only `rust/target`. Fixed to exclude `target/` generally.
+- Real material (a byte-sliced TS) produced `no pictures decoded`. Nothing before
+  the file's first access point can be decoded, so an interval's start is now
+  clamped to it. That fix took the copy ratio from 96.5 % to 99.6 %.
+- **A seek could land one GOP late, and that silently returned the wrong
+  picture.** MPEG-TS seeks by byte position, so it can land past the target, and
+  crossing a sequence header additionally makes the first GOP undecodable. Both
+  produce the same symptom: the picture you asked for does not come out. Nothing
+  on screen looks wrong — the frame number and the picture simply disagree. Now,
+  if the first picture is past the target, it goes back `seek_margin` and retries,
+  and `tests/run_preview_tests.sh` verifies "does the time you asked for come
+  back". It was found because scene refinement never did anything (`seen=1`).
+- **On pulldown material, "tolerance of one frame interval" is wrong.** Under 2:3
+  pulldown one picture is two or three fields, so the interval alternates between
+  33.4 ms and 50.1 ms. Assuming 29.97 fps and picking "the nearer" grabs the wrong
+  side of the gap. It now actually compares the two neighbours and returns the
+  nearer, and the GUI snaps the playhead to the returned picture's real time so
+  that counter and picture cannot disagree.
+- **Which side of a seam a frame belongs to.** An interval is `[a, b)`, so the
+  picture at `b` is the first one the cut took. But the output-time to source-time
+  conversion answered a seam with "the end of the preceding interval", and
+  **exactly one frame of the material just cut stayed on screen**. The engine was
+  discarding it correctly, so the frame count and the output were right — only the
+  display was off, which is the hard kind to find. Fixed by settling the boundary
+  as "a seam is the head of the following interval".
+- **Dropping cost more than keeping.** The first playback implementation encoded a
+  JPEG even for pictures it was too late for, and then threw it away — encoding is
+  an order of magnitude above the 3 ms decode, so "drop it" was the most expensive
+  path in the program. **Measured at 0.3× speed.** Adding a place to decide
+  **before** encoding (`Pace::Show` / `Skip` / `Stop` on `play_from()`) was the
+  entire fix: 10.01 seconds of material in 10 seconds — exactly real time. **A
+  discard path is pointless unless it is cheaper than the keep path.**
+- **"Audio playback error: The requested device is no longer available" — the DAC
+  that is currently making sound is reported as unplugged.** cpal's default output
+  on Linux is ALSA's `default`, and what that points at depends on the machine's
+  `alsa.conf`. On a PipeWire desktop without `pipewire-alsa`, `default` points at
+  **the bare sound card**, which PipeWire is holding, so it returns `EBUSY`. cpal
+  maps `EBUSY` to `DeviceNotAvailable`, hence the wording about removal — while it
+  is in fact plugged in and other applications on the desktop are playing through
+  it. `aplay -D default` fails with the same `EBUSY`, which makes it quick to rule
+  out an application-specific cause. When `default` cannot be opened, `pipewire` /
+  `pulse` / `sysdefault` are now tried **by name**
+  (`playback_audio::open_output`): a sound server's PCM is the very device other
+  applications are already using. Enumeration only happens after a failure — cpal
+  **opens every PCM** the ALSA hints list in order to enumerate devices, which is
+  not work for the path that succeeds. To fix the machine instead,
+  `sudo apt install pipewire-alsa` fixes where `default` points. **Windows has no
+  equivalent tolerance** — that story is under "Where it got stuck" in
+  Distribution (Windows).
+- **A seam's thumbnail must not come from the scan results.** Strip cells are fast
+  because they are filled with already-scanned key pictures, but **a cut seam is
+  not a GOP head**. Show "the nearest key picture" there and half the time you get
+  **the last GOP that was supposedly cut** — the material you removed appears to be
+  sitting on the seam. Seam cells and keyframe cards now decode that exact time
+  (`exact` in `thumbs_at`). There are at most a handful of seams on screen, so it
+  is only a few extra decodes. It is easy to spot: **only the seam cell's timecode
+  breaks the 0.50-second spacing** (e.g. …51.21 → 51.71 → 52.07), which is proof
+  that it stands on the cut position itself rather than on a GOP head.
+- **`[IN, OUT)` cannot be expressed at the end.** A half-open interval is right in
+  the middle of a recording and wrong at its end — **there is nowhere to put OUT
+  past the last picture**, so "cut to the end" left the final picture hanging off
+  the output as a one-frame interval. Fixed by snapping IN/OUT to the end of the
+  timeline when they are on the first or last picture. Not a settings problem: the
+  representation was simply not expressive enough at the edges.
+- **The timeline's origin is the first access point, not 0 seconds.** Nothing
+  before it can be decoded and the planner rounds it up, so it never reaches the
+  output. Yet the on-screen timeline counted from 0, so the counter said `54111`
+  while `54091` frames were written — 20 frames out. Fixed by putting the origin on
+  the first access point.
+- **Focus left on a `<select>` steals the arrow keys.** After choosing a spacing,
+  `←` `→` changed the spacing instead of stepping frames. Excluding `SELECT` in
+  keydown does not stop the browser's default behaviour, so `blur()` on `change` is
+  needed to give the keyboard back.
+- **A `max-height` on the segment list makes the editor dance vertically.** The
+  list's height changes with the number of cuts, and the strip, the seek bar and
+  the button row all move with it. The height is fixed now. Kinder to hands that
+  remember coordinates, and to `xdotool`.
+- **Automated interaction on a VM is unreliable.** DOM updates do not reach X, so
+  screenshots go stale and coordinates derived from them are wrong. Resizing the
+  window by 1px forces a repaint, so that has to be interleaved before every check.
+  It does not happen on real hardware, but it is worth knowing when driving the GUI
+  mechanically with `xdotool`.

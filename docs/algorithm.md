@@ -1,131 +1,143 @@
-# アルゴリズムと実装上の難所
+# Algorithm and pitfalls
 
-[← ドキュメント一覧](README.md) ・ [← smartcut](../README.ja.md)
+[← Documentation](README.md) ・ [← smartcut](../README.md) ・ [日本語](algorithm.ja.md)
 
-## アルゴリズム
+## The algorithm
 
-保持区間 `[t_in, t_out)` に対して:
+For a kept interval `[t_in, t_out)`:
 
 ```
 ... I ....... I=========================I ....... I ...
       ^t_in   ^k_first                  ^k_term   ^t_out
     |<-head->|<--------- body --------->|<-tail->|
-     再エンコード      ストリームコピー      再エンコード
+      re-encode        stream copy       re-encode
 ```
 
-`head` / `tail` は GOP の途中から始まる／途中で終わるので、前のアクセス
-ポイントから復号して作り直すしかない。その間の `body` は入力のバイト列を
-そのまま出力する。アクセスポイント上でカットすれば再エンコードはゼロになる。
+`head` and `tail` begin or end partway through a GOP, so there is no choice but
+to decode from the previous access point and rebuild them. The `body` between
+them is emitted as the input's own bytes. Cut exactly on access points and there
+is no re-encoding at all.
 
-- [`probe.py`](../smartcut/probe.py) — ストリーム諸元、アクセスポイント索引、
-  leading picture の検出と参照判定
-- [`planner.py`](../smartcut/planner.py) — 区間 → セグメント列
-- [`bitstream.py`](../smartcut/bitstream.py) — Annex-B / MPEG-2 のアクセスユニット分割
-- [`renderer.py`](../smartcut/renderer.py) — ffmpeg 実行と連結
-- [`verify.py`](../smartcut/verify.py) — 出力を復号してソースとフレーム単位で照合
+- [`probe.py`](../smartcut/probe.py) — stream parameters, the access point index,
+  leading-picture detection and the reference test
+- [`planner.py`](../smartcut/planner.py) — intervals to segment list
+- [`bitstream.py`](../smartcut/bitstream.py) — Annex-B / MPEG-2 access unit splitting
+- [`renderer.py`](../smartcut/renderer.py) — running ffmpeg and concatenating
+- [`verify.py`](../smartcut/verify.py) — decoding the output and comparing it against
+  the source frame by frame
 
-## 実装上の難所
+## Pitfalls
 
-「GOP 単位で切って繋ぐだけ」で済まない理由。どれも試作中に実際に踏んで、
-テストで再現を固定してある。
+Why "just cut on GOP boundaries and join" is not enough. Every one of these was
+hit for real while building the prototype, and every one has a test pinning the
+reproduction.
 
-### 1. パラメータセット（SPS/PPS）が一致しない
+### 1. The parameter sets (SPS/PPS) do not match
 
-再エンコード部の SPS を元ストリームとビット単位で一致させることは事実上
-不可能（エンコーダが違えば VUI も VBV も変わる）。ところが MP4 の `avcC`
-box も Matroska の CodecPrivate も**パラメータセットを 1 組しか持てない**。
-素朴に連結すると、コピー部か再エンコード部のどちらかが誤った SPS で
-復号され、映像が壊れる。
+Making the re-encoded part's SPS match the original stream bit for bit is
+effectively impossible — a different encoder means different VUI and different
+VBV. And yet an MP4 `avcC` box, like a Matroska CodecPrivate, **can only hold one
+set of parameter sets**. Concatenate naively and either the copied part or the
+re-encoded part gets decoded with the wrong SPS, and the picture falls apart.
 
-対策は 2 段構え:
+The fix has two parts:
 
-- 各ピースを **raw Annex-B エレメンタリストリーム**として書き出し、
-  単純なバイト連結で繋ぐ。ES は IDR ごとに SPS/PPS をインバンドで持つので、
-  ピースごとに異なるパラメータセットを合法的に共存させられる。
-- 最終 MP4 は **`avc3` / `hev1` sample entry** で書く。これは
-  ISO/IEC 14496-15 が定めるインバンド方式で、`avcC` に畳み込まれない。
+- Write each piece as a **raw Annex-B elementary stream** and join them by plain
+  byte concatenation. An ES carries SPS/PPS in band at every IDR, so parameter
+  sets that differ from piece to piece can legally coexist.
+- Write the final MP4 with an **`avc3` / `hev1` sample entry**. That is the
+  in-band form defined by ISO/IEC 14496-15, and it is not folded into `avcC`.
 
-MPEG-2 はシーケンスヘッダが元々インバンドなので、この問題自体が無い。
+MPEG-2 does not have this problem in the first place: its sequence headers are
+in band already.
 
-### 2. アクセスポイント索引は「パケット」を走査する
+### 2. The access point index has to scan *packets*
 
-`ffprobe -skip_frame nokey` は**オープン GOP で取りこぼす**。参照が欠けた
-I ピクチャをデコーダが出力できないため。試作の検証素材では、実際には 10 個
-あるアクセスポイントのうち 3 個しか拾えていなかった。
+`ffprobe -skip_frame nokey` **misses access points in open GOPs**, because the
+decoder cannot output an I picture whose references are absent. On the
+prototype's test material it found only 3 of the 10 access points that were
+actually there.
 
-パケットの `K` フラグを見れば復号せずに済み、速く、かつ正確。
+Looking at the packet's `K` flag avoids decoding entirely: it is faster, and it
+is correct.
 
-### 3. leading picture — オープン GOP の本丸
+### 3. Leading pictures — the heart of the open-GOP problem
 
-I ピクチャの**復号順では後ろ、表示順では前**にあるピクチャ（leading
-picture）は前の GOP を参照している。そこからコピーを始めると、それらは
-表示できない。
+Pictures that come **after an I picture in decode order but before it in display
+order** (leading pictures) reference the previous GOP. Start a copy there and
+they cannot be displayed.
 
-ここで分岐がある。**leading picture 自身が参照ピクチャかどうか**で
-扱いが正反対になる:
+And here the paths diverge. The handling is the exact opposite depending on
+**whether the leading picture is itself a reference picture**:
 
-- **MPEG-2**: B ピクチャは決して参照されない。→ leading picture を
-  捨ててよい。オープン GOP でもコピー開始点として使える。
-- **H.264 / HEVC（x264 の `open-gop` など）**: B ピラミッドにより
-  leading picture が参照ピクチャになりうる。→ **捨てると、それを参照して
-  いた後続フレームが GOP 丸ごと壊れる。**
+- **MPEG-2**: B pictures are never referenced. → Leading pictures can be
+  dropped. Even an open GOP works as a copy start point.
+- **H.264 / HEVC** (x264's `open-gop` and friends): B pyramids mean a leading
+  picture can be a reference picture. → **Drop it and every later frame that
+  referenced it breaks, taking the whole GOP with it.**
 
-これは実測で確認した。x264 open-gop 素材で leading picture を落としたところ、
-コピー区間の先頭 GOP 60 フレームがすべて不一致になった（落とさなければ一致）。
+This was confirmed by measurement. Dropping leading pictures on x264 open-gop
+material made all 60 frames of the first GOP of the copy region mismatch; keeping
+them, they matched.
 
-そこで、`nal_ref_idc`（H.264）/ NAL 種別（HEVC）/ `picture_coding_type`
-（MPEG-2）をビットストリームから読んで**参照されているかを判定**し、
-参照されているならその点をコピー開始点として使わない。コピーの*終了*点
-としてはオープン GOP でも問題なく使える（表示範囲が `lead_start` まで
-になるだけ）。
+So `nal_ref_idc` (H.264) / the NAL type (HEVC) / `picture_coding_type` (MPEG-2)
+are read out of the bitstream to **decide whether the picture is referenced**,
+and if it is, that point is not used as a copy start point. As a copy *end*
+point an open GOP is fine either way — the display range simply ends at
+`lead_start`.
 
-leading picture の除去はコンテナでは表現できない（エディットリストが要る）
-ため、Annex-B のアクセスユニット境界を自前で解析して切り出している
-（[`bitstream.py`](../smartcut/bitstream.py)）。H.264 は「先頭スライス＝
-ピクチャ開始」だが MPEG-2 は「picture start code のあとヘッダが数個続いて
-からスライス」なので、AU の切り方が異なる点に注意。
+Removing leading pictures cannot be expressed in the container (it would need an
+edit list), so the Annex-B access unit boundaries are parsed by hand and the
+pictures cut out there ([`bitstream.py`](../smartcut/bitstream.py)). Note that
+H.264's "first slice = start of picture" does not carry over to MPEG-2, where a
+picture start code is followed by several headers before the slices, so the AU
+split differs.
 
-### 4. 区間指定は秒ではなくフレーム数・パケット数で
+### 4. Specify intervals in frames and packets, not seconds
 
-秒数で `-t` を渡すと二重に狂う。
+Pass `-t` a duration in seconds and it goes wrong twice over.
 
-- `-c copy` の `-t` は **DTS** で判定される。DTS は表示時刻をリオーダ深度
-  ぶん前倒ししたものなので、次の GOP の I/P が余分に紛れ込む
-  （180 フレームのはずが 182 になった）。
-- 分数フレームレート（30000/1001）では端数の丸めで ±1 フレームずれる。
+- Under `-c copy`, `-t` is evaluated against the **DTS**. DTS runs ahead of
+  presentation time by the reorder depth, so extra I/P pictures from the next GOP
+  sneak in (180 frames came out as 182).
+- With fractional frame rates (30000/1001), rounding shifts the result by ±1
+  frame.
 
-結局、**表示フレーム数と、コピーすべきパケット数を整数で数えて渡す**のが
-唯一頑健だった（`-frames:v N`）。パケット数はアクセスポイント索引の
-復号順インデックスの差から厳密に求まる。
+In the end the only robust approach was to **count the display frames and the
+packets to copy as integers and pass those** (`-frames:v N`). The packet count
+follows exactly from the difference of decode-order indices in the access point
+index.
 
-### 5. コンテナの start_time（MPEG-TS）
+### 5. Container start_time (MPEG-TS)
 
-TS のタイムスタンプは 0 から始まらない（検証素材では 1.423s）。`-ss` は
-ファイル先頭基準なのに、ffmpeg は出力を `-ss` の値だけで再基準化するため、
-**start_time が残差オフセットとして出力タイムラインに残る**。秒数ベースの
-`-t` はこれをまともに被る。アクセスポイント時刻は start_time を引いて
-正規化し、区間長はフレーム数で渡すことで両方回避している。
+TS timestamps do not start at 0 (1.423 s on the test material). `-ss` is relative
+to the start of the file, but ffmpeg re-bases the output by the `-ss` value
+alone, so **start_time survives as a residual offset in the output timeline**.
+A seconds-based `-t` takes that hit head on. Access point times are normalised by
+subtracting start_time, and interval lengths are passed as frame counts, which
+avoids both problems.
 
-### 6. 再エンコード区間は「手前から」復号する
+### 6. Re-encoded regions must be decoded *from earlier*
 
-オープン GOP のソースでは、`-ss` で目的位置に直接シークすると ffmpeg は
-復号できなかった GOP を丸ごと捨て、**出力が最大 1 GOP 遅れて始まる**
-（実測 0.2s）。数 GOP 手前のアクセスポイントから復号を始め、出力側 `-ss`
-で前方を切り捨てる。
+With open-GOP sources, seeking straight to the target position with `-ss` makes
+ffmpeg discard the entire GOP it could not decode, so **the output starts up to
+one GOP late** (0.2 s, measured). Decoding starts from an access point a few GOPs
+earlier and the front is trimmed with an output-side `-ss`.
 
-### 7. 音声は GOP 構造を持たない
+### 7. Audio has no GOP structure
 
-音声は映像セグメントではなく**保持区間単位**で切る。
+Audio is cut **per kept interval**, not per video segment.
 
-- `--audio-mode copy`（既定）: ソースのフレームをそのまま使う。区間境界は
-  最寄りの音声フレームにスナップされる（AAC で最大 ~24ms）。
-- `--audio-mode reencode`: `atrim` + `concat` フィルタで 1 パス処理。
-  サンプル単位で正確だが再エンコードになる。
+- `--audio-mode copy` (default): the source frames are used as they are. Interval
+  boundaries snap to the nearest audio frame (up to ~24 ms for AAC).
+- `--audio-mode reencode`: one pass through the `atrim` + `concat` filters.
+  Sample accurate, but it re-encodes.
 
-AAC の encoder delay / priming を edit list で厳密に処理する実装は未着手。
+Handling AAC encoder delay / priming strictly via edit lists has not been
+implemented.
 
-### 8. 検証の参照はファイル先頭から全復号する
+### 8. The verification reference decodes from the start of the file
 
-`--verify` の参照側を `-ss` で作ってはいけない。オープン GOP では
-（#6 と同じ理由で）参照側自身がずれ、**正しいカットを不正と誤判定する**。
-先頭から全復号してフレーム番号でスライスする。
+The reference side of `--verify` must not be built with `-ss`. On open GOPs the
+reference itself shifts (for the same reason as #6), and **a correct cut gets
+reported as wrong**. Decode from the beginning and slice by frame number.

@@ -1,26 +1,28 @@
-# 移植方針
+# Design notes
 
-[← ドキュメント一覧](README.md) ・ [← smartcut](../README.ja.md)
+[← Documentation](README.md) ・ [← smartcut](../README.md) ・ [日本語](design.ja.md)
 
-決定: **Rust コア + Tauri GUI**
+Decision: **a Rust core with a Tauri GUI**.
 
-- コア: `rsmpeg` / `ffmpeg-next`（libavformat / libavcodec バインディング）で
-  デマルチプレクス〜パケット選別〜マルチプレクスを自前制御。
-  - タイムスタンプを自分で振れるので継ぎ目の問題が原理的に消える
-  - `nal_ref_idc` をパケットから直接読めるので #3 のサンプリングが不要
-  - 中間ファイルも ffprobe の複数パスも不要になる
-- GUI: Tauri（Windows / macOS / Linux、配布サイズが小さい）。
-  タイムライン UI は Web 技術で作れる。
+- Core: demux, packet selection and mux are all driven directly through
+  `rsmpeg` / `ffmpeg-next` (the libavformat / libavcodec bindings).
+  - Timestamps are assigned by us, so the seam problem disappears by construction
+  - `nal_ref_idc` can be read straight off the packet, so the sampling of #3 is
+    not needed
+  - No intermediate files, and no multiple ffprobe passes
+- GUI: Tauri (Windows / macOS / Linux, small distribution size). The timeline UI
+  can be built with web technology.
 
-この試作は**リファレンス実装兼テストオラクル**として使っている。
-`tests/run_tests.sh`（Python）と `tests/run_rust_tests.sh`（Rust）は
-同じフレームハッシュ照合を共有する。
+The Python prototype is kept as a **reference implementation and test oracle**.
+`tests/run_tests.sh` (Python) and `tests/run_rust_tests.sh` (Rust) share the same
+frame-hash comparison.
 
-## ライセンスと特許（配布するなら先に決める）
+## Licence and patents (decide before shipping)
 
-- **x264 / x265 は GPL。** リンクするとアプリ全体が GPL になる。
-- 回避策は**ハードウェアエンコーダ**（NVENC / QSV / VideoToolbox / AMF）。
-  再エンコードするのは部分 GOP だけなので画質面の妥協は小さく、
-  ライセンス面はクリーンになる。この試作の `--video-encoder` で切り替え可能。
-- H.264 / HEVC の**特許ライセンス**（MPEG LA / Access Advance）は
-  商用配布では別途検討が要る。
+- **x264 / x265 are GPL.** Linking them makes the whole application GPL.
+- The way around that is a **hardware encoder** (NVENC / QSV / VideoToolbox /
+  AMF). Only partial GOPs get re-encoded, so the quality compromise is small and
+  the licence situation is clean. The prototype can switch between them with
+  `--video-encoder`.
+- The **patent licences** for H.264 / HEVC (MPEG LA / Access Advance) need
+  separate consideration for commercial distribution.

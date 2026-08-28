@@ -1,304 +1,352 @@
-# CM 境界の検出（`cm.rs` / `logo.rs` / `caption.rs`）
+# Commercial boundary detection (`cm.rs` / `logo.rs` / `caption.rs`)
 
-[← ドキュメント一覧](README.md) ・ [← smartcut](../README.ja.md)
+[← Documentation](README.md) ・ [← smartcut](../README.md) ・ [日本語](cm-detection.ja.md)
 
-日本の放送は CM を 15 秒単位で並べ、継ぎ目ごとに短い無音を置く。番組中の
-「間」と区別できるのはこの 2 点:
+Japanese broadcasters lay commercials out in 15-second units and put a short
+silence at every seam. Two things distinguish that from a pause inside the
+programme:
 
-- **無音が長い** — 継ぎ目は約 1 秒、番組中の間は 0.1〜0.4 秒
-- **15 秒の格子に乗る** — 隣の継ぎ目が 15/30/60 秒ちょうど離れている
+- **The silence is long** — about 1 second at a seam, 0.1–0.4 s for a pause in
+  the programme
+- **It lands on a 15-second grid** — the neighbouring seam is exactly 15/30/60
+  seconds away
 
-どちらも単独では決め手にならないので、出すのは*候補*であって判定ではない。
-無音長と「連なりの長さ」からスコアを付け、連なりを CM ブロックとしてまとめる。
+Neither is decisive on its own, so what comes out is a *candidate*, not a
+verdict. Silence length and the length of the run give a score, and the run is
+grouped into a commercial block.
 
-読み方は 3 つある。**無音**（`cm.rs`）、**局ロゴ**（`logo.rs`）、そして
-**字幕サービスのリセット**（`caption.rs`）。最後のものだけは推定ではなく
-実イベントなので、出ている録画ではこれを使い、無い録画で残り 2 つに退く。
-局によって出す・出さないがはっきり分かれるため、3 つとも要る。
+There are three ways to read it: **silence** (`cm.rs`), **the station logo**
+(`logo.rs`), and **resets of the subtitle service** (`caption.rs`). Only the last
+of these is a real event rather than an inference, so it is used on recordings
+that carry it, and the other two are the fallback for recordings that do not.
+Stations divide sharply into those that emit it and those that do not, so all
+three are needed.
 
-## 実素材での結果
+## Results on real material
 
-| 素材 | 使った読み方 | 本編を誤削除 | CM 残り |
+| Material | Method used | Programme wrongly cut | Commercial left in |
 |---|---|---|---|
-| 日本海テレビ バラエティ（30分） | 字幕リセット | 0.2s | 0.1s |
-| AT-X アニメ（30分、ロゴなし） | 無音のみ | 0.0s | 0.1s |
-| BS フジ アニメ（28分、枠つき） | 字幕リセット | 0.1s | 3.4s |
-| BS フジ アニメ（24分、CM なし） | ロゴ＋無音 | 0.0s | 0.0s |
-| NHK Eテレ（6分、CM なし） | ロゴ＋無音 | 0.0s | 0.0s |
+| Nihonkai TV variety show (30 min) | Subtitle resets | 0.2 s | 0.1 s |
+| AT-X anime (30 min, no logo) | Silence only | 0.0 s | 0.1 s |
+| BS Fuji anime (28 min, with slot idents) | Subtitle resets | 0.1 s | 3.4 s |
+| BS Fuji anime (24 min, no commercials) | Logo plus silence | 0.0 s | 0.0 s |
+| NHK E-Tele (6 min, no commercials) | Logo plus silence | 0.0 s | 0.0 s |
 
-**2 つの誤りは別々に測る。**「精度 98%」のような 1 つの数字だと、高いほうの
-誤りが低いほうの改善に隠れてしまう。区間を出せばそこは消えるので、
-本編を巻き込んだ秒数と CM を残した秒数は値段が違う。
+**The two errors are measured separately.** With a single number like "98 %
+accurate", the expensive error hides inside an improvement to the cheap one.
+Emitting an interval deletes what is inside it, so seconds of programme swallowed
+and seconds of commercial left behind do not cost the same.
 
-CM のある 3 本はいずれもブロック長が **15 秒の正確な倍数**になる（150.0 /
-120.0 / 120.0 / 60.0、135.0 / 105.0、300.0）。検出器はこの性質を一切使って
-いないので、境目が本物の切り替えに乗ったことの独立した裏付けになる。
+All three recordings with commercials produce block lengths that are **exact
+multiples of 15 seconds** (150.0 / 120.0 / 120.0 / 60.0, 135.0 / 105.0, 300.0).
+The detector does not use that property at all, which makes it independent
+evidence that the boundaries landed on real cuts.
 
-## 精度を上げようとして分かったこと
+## What came out of trying to improve accuracy
 
-「検出漏れを減らしたい」から始めたが、目視で正解を作った時点で問題が
-**逆だった**ことが分かった。BS フジの録画に対して出していた
-**5 分ぶんの「CM ブロック」は、全編まるごと本編だった**。
+It started as "reduce the misses", but building a ground truth by eye showed the
+problem was **the other way round**. The **five minutes of "commercial block"**
+being emitted on the BS Fuji recording **were programme from end to end**.
 
-正解は 30 秒ごとのサムネイルを全編ぶん並べて目で確かめた。検出器の出力は
-検出器の証拠にならない。
+The ground truth came from laying out thumbnails every 30 seconds across the
+whole recording and checking by eye. A detector's output is not evidence about
+the detector.
 
-| 素材 | 実際 | 直す前 | 直した後 |
+| Material | Actually | Before | After |
 |---|---|---|---|
-| 地デジ 日本海テレビ | 頭に CM 4 秒＋CM 4 ブロック | 4（頭を取りこぼし） | 5（正解） |
-| AT-X | 末尾に CM 5 分 | 1（正解） | 1（正解） |
-| **BS フジ** | **CM なし** | **1（5 分の誤検出）** | **0** |
-| NHK E | CM なし | 0 | 0 |
+| Terrestrial Nihonkai TV | 4 s of commercial at the head plus 4 commercial blocks | 4 (the head missed) | 5 (correct) |
+| AT-X | 5 minutes of commercial at the end | 1 (correct) | 1 (correct) |
+| **BS Fuji** | **No commercials** | **1 (a 5-minute false positive)** | **0** |
+| NHK E | No commercials | 0 | 0 |
 
-**誤検出は取りこぼしより重い。** 出した区間はそのままカットされるので、
-外せば本編が 5 分消える。取りこぼしは人が見れば気づく。
+**A false positive costs more than a miss.** An emitted interval gets cut as it
+stands, so getting it wrong deletes five minutes of programme. A miss is
+something a person notices on sight.
 
-### 試して捨てた案
+### Ideas tried and dropped
 
-思いつきを実装する前に測った。どちらも効かなかった:
+Measured before implementing the hunch. Neither worked:
 
-- **シーン変化に吸着させる。** 無音の中心は cut の位置としては粗い（無音の
-  長さぶん揺れる）ので、無音の中にあるシーン変化に寄せれば 15 秒格子が
-  くっきりするはず——と考えた。中央値は改善したが**最悪値が悪化**した
-  （日本海テレビで格子±0.4 秒に乗る隣接が 27/29 → 22/29）。CM の中にも
-  シーン変化はあり、間違ったほうに吸着する。
-- **シーン変化の密度。** CM は本編より速く切り替わるはず。実測の比は
-  地デジ 3.13 倍、AT-X 1.58 倍、**BS フジ 1.08 倍**——アニメも十分速く切る。
+- **Snapping to scene changes.** The centre of a silence is a coarse position for
+  a cut (it wanders by the length of the silence), so pulling it towards a scene
+  change inside the silence ought to sharpen the 15-second grid. The median
+  improved but **the worst case got worse** (on Nihonkai TV, neighbours landing
+  within ±0.4 s of the grid went from 27/29 to 22/29). Commercials contain scene
+  changes too, and it snaps to the wrong one.
+- **Scene change density.** Commercials should cut faster than the programme. The
+  measured ratios: 3.13× on terrestrial, 1.58× on AT-X, **1.08× on BS Fuji** —
+  anime cuts plenty fast.
 
-### 録画の頭の CM
+### The commercial at the head of a recording
 
-「先頭の CM が取れない」という指摘から。ロゴは**不在が 20 秒に満たなければ
-無視する**——CM ブロックがそれより短いことは無いからだ。ところが録画の頭は
-違う。**録画機が番組より早く回り始めただけ**の数秒であって、ブロックではない。
+This came from a report that the leading commercial was never removed. Logo
+absences **shorter than 20 seconds are ignored**, because no commercial block is
+shorter than that. But the head of a recording is different: those few seconds
+are just **the recorder starting before the programme did**, not a block.
 
-`00:00:00.665 → 00:00:04.169` の 3.5 秒がそれで、閾値に届かず捨てられていた。
-**両端に接する不在は「break」ではなく「edge」**として、1 秒あれば拾うように
-した。ロゴが最初に現れたところが番組の頭、それだけのことだった。
+The 3.5 s from `00:00:00.665` to `00:00:04.169` was exactly that, and it fell
+below the threshold and was thrown away. An absence touching either end is now
+treated as an **edge, not a break**, and one second is enough to pick it up.
+Where the logo first appears is the head of the programme — that is all it was.
 
-### 境目をフレーム単位で出す
+### Placing boundaries to the frame
 
-ブロックの時刻は推定でしかない——無音の中心か、ロゴの移動平均が閾値を
-またいだ瞬間か。どちらもピクチャではなく、実測で 0.2〜0.33 秒ずれる。
-本当の境目は**連続するピクチャの間の変化**なので、その窓を復号して探す
-（`thumbs::cut_near()`）。
+A block's times are only estimates — the centre of a silence, or the moment a
+moving average of logo strength crossed a threshold. Neither is a picture, and in
+practice they are off by 0.2–0.33 s. The real boundary is **the change between
+two consecutive pictures**, so that window is decoded and searched
+(`thumbs::cut_near()`).
 
-ここで一度間違えた。最初は**シーン索引のいちばん近い印**に寄せたが、索引は
-0.5 秒ごとのキーピクチャから作られていて粗く、しかも CM の中にも切り替えは
-ある。次に**窓の中で差がいちばん大きいところ**にしたら、CM 内部の切り替えの
-ほうが端の切り替えより派手なので、境目を 1 秒ぶん CM の中へ持っていった。
-正解は**いちばん近い切り替え**を採ること——入ってくる推定はもともと近いので、
-やるべきは「どのピクチャで変わるか」を決めることだけだった。窓は ±0.5 秒。
+This was got wrong once. The first attempt snapped to **the nearest mark in the
+scene index**, but that index is built from key pictures every 0.5 s, which is
+coarse, and commercials contain cuts too. The second attempt took **the largest
+difference within the window**, and since a cut inside a commercial is more
+dramatic than the cut at its edge, that dragged the boundary a full second into
+the commercial. The right answer is **the nearest cut** — the incoming estimate
+is close to begin with, so all that was left to decide was which picture the
+change happens on. The window is ±0.5 s.
 
-効いていることは、直した結果がひとりでに証明した。日本海テレビの 4 ブロックの
-長さが **119.8 / 120.2 / 59.9 秒から 120.0 / 120.0 / 60.0 秒**になった——CM は
-15 秒単位で売られているので、境目が本物の切り替えに乗って初めて**ちょうどの
-倍数**になる。検出器はこの性質を一切使っていないから、独立した裏付けになる。
-`tests/run_cm_tests.sh` はこの「15 秒の倍数であること」も見ている。
+The fix proved itself. The four Nihonkai TV blocks went from **119.8 / 120.2 /
+59.9 s to 120.0 / 120.0 / 60.0 s** — commercials are sold in 15-second units, so
+only when the boundaries land on real cuts do the lengths become **exact
+multiples**. The detector makes no use of that property, so it is independent
+evidence. `tests/run_cm_tests.sh` checks the multiple-of-15 property too.
 
-先頭 CM の境目もフレームまで確かめた。3.80 秒はまだ CM（缶の絵）、
-**3.835 秒が番組の最初のピクチャ**。印はそこにある。
+The leading commercial's boundary was checked to the frame as well: 3.80 s is
+still commercial (a picture of a can), and **3.835 s is the programme's first
+picture**. The mark is there.
 
-### 効いた 2 つ
+### The two things that worked
 
-- **格子の許容幅を無音そのものから取る。** 継ぎ目の時刻は無音の中心で
-  代表させているが、実際の cut は無音のどこにあってもよい。つまり**長い無音は
-  継ぎ目の位置について曖昧**なのであって、固定値 ±0.4 秒は 1.4 秒の無音を持つ
-  地デジには狭すぎ、0.5 秒の無音を持つ BS には広すぎた。許容幅を
-  「両者の無音の長さの平均（上限 0.6 秒）＋ 0.15 秒」にした。
-- **ブロックは 15 秒の境目が埋まっていることを要求する。** CM の連なりは
-  15 秒ごとに必ず無音がある——それが CM の切れ目だからだ。実測すると
-  正しいブロックは境目の **81〜100%** が埋まっているのに対し、誤検出は
-  **23〜43%** しかない。閾値 0.6 できれいに分かれる。
+- **Take the grid tolerance from the silence itself.** A seam's time is
+  represented by the centre of the silence, but the actual cut may be anywhere
+  inside it. In other words **a long silence is ambiguous about where the seam
+  is**, and a fixed ±0.4 s was too narrow for terrestrial recordings with 1.4 s
+  silences and too wide for BS with 0.5 s ones. The tolerance became "the mean of
+  the two silence lengths (capped at 0.6 s) plus 0.15 s".
+- **Require a block's 15-second boundaries to be filled.** A run of commercials
+  has a silence every 15 seconds, because that is where one commercial ends.
+  Measured, correct blocks have **81–100 %** of their boundaries filled while
+  false positives have only **23–43 %**. A threshold of 0.6 separates them
+  cleanly.
 
-後者が効くのは、**おしゃべりな番組では無音がもともと 15 秒に 1 つくらいある**
-ため。BS フジの録画は 1440 秒に無音 91 個＝16 秒に 1 個で、格子に乗ること自体
-には情報がほとんど無い。「乗っている」ではなく「**隙間なく乗っている**」を
-見る必要があった。
+The latter works because **a talkative programme already has roughly one silence
+every 15 seconds**. The BS Fuji recording has 91 silences in 1440 seconds, one
+every 16 s, so landing on the grid carries almost no information by itself. What
+had to be checked was not "it lands on the grid" but "**it lands on the grid with
+no gaps**".
 
-## 正解と、測り方
+## The ground truth, and how it is scored
 
-正解は `tests/run_cm_tests.sh` に 5 本ぶん固定してある。CM の無い 2 本の
-ほうが価値が高い——出してはいけないものを出さない、という側を守るテスト
-だからだ。素材が置いていない環境では **SKIP ではなく失敗**にしてある。
-何も検査しなかった実行が「通った」と読めてはいけない。
+The ground truth for five recordings is pinned in `tests/run_cm_tests.sh`. The
+two with no commercials are the more valuable ones, because they are the tests
+guarding the side that must not emit anything. On a machine without the material
+they **fail rather than SKIP**: a run that checked nothing must not read as
+"passed".
 
-採点は `tests/cm_score.py`。ブロック数と ±2 秒ではなく、**秒で 2 つ**出す:
+Scoring is `tests/cm_score.py`. Not block counts and ±2 s, but **two numbers, in
+seconds**:
 
 | | |
 |---|---|
-| 本編を誤削除 | ブロックが飲み込んだ本編。カットした時点で消える |
-| CM 残り | ブロックの外に残った CM。目障りだが、見れば分かる |
+| Programme wrongly cut | Programme swallowed by a block. Gone the moment you cut |
+| Commercial left in | Commercial left outside the blocks. Annoying, but visible |
 
-予算は別々に持たせる。1 つにまとめると、高いほうの誤りが安いほうの改善に
-隠れる。
+Each gets its own budget. Combine them and the expensive error hides inside an
+improvement to the cheap one.
 
-**どちらでもない秒もある。** 枠 ID、番宣、提供表示——放送局が継ぎ目の周りに
-置く自前の素材は、消したいかどうかが視聴者の好みであって録画の事実ではない。
-どちらかに決めさせると決めた方向に嘘をつくので、**灰色**（`~START-END`）と
-して両方の勘定から外してある。
+**Some seconds are neither.** Slot idents, programme promos, sponsor credits —
+material the broadcaster places around the seams — are a matter of viewer taste,
+not a fact about the recording. Forcing a decision makes the score lie in the
+direction you forced, so they are marked **grey** (`~START-END`) and excluded from
+both counts.
 
-秒の予算が見るのは大きな取り違えで、境目の精度は別の物差しが見ている——
-**15 秒の倍数**である。検出器はこれを使っていないので独立で、しかも
-サブ秒まで効く。使い始めるなら、代わりの独立した検査を先に用意すること。
+The seconds budget catches large mistakes; boundary precision is measured by a
+different ruler — **the multiple of 15**. The detector does not use it, so it is
+independent, and it works down to sub-second scale. If it ever starts being used,
+an independent replacement check has to exist first.
 
-BS フジ（枠つき）の正解はフレーム単位で確かめた。3.930 が枠 ID の最初の
-ピクチャ、189.916 が CM の最初、324.818 が本編（EPISODE 2 のアイキャッチ）の
-最初。ブロック長は 134.90s と 105.005s になり、9×15 と 7×15 に 0.1 秒と
-0.005 秒で乗る。
+The ground truth for BS Fuji (with slot idents) was checked frame by frame:
+3.930 is the slot ident's first picture, 189.916 the commercial's first, 324.818
+the first of the programme (the EPISODE 2 eyecatch). The block lengths come out
+at 134.90 s and 105.005 s, landing on 9×15 and 7×15 within 0.1 s and 0.005 s.
 
-## ロゴ検出の併用（`logo.rs`）
+## Adding logo detection (`logo.rs`)
 
-無音だけでは足りない。連なりは**最後の継ぎ目**で終わるが、その後にもう 1 本
-CM が続いてから番組が戻る。その最後の 1 本には継ぎ目が無いので取りこぼす。
+Silence alone is not enough. A run ends at the **last seam**, but one more
+commercial follows it before the programme returns. That last one has no seam
+after it, so it is missed.
 
-局ロゴは番組中だけ出ていて CM 中は消えるので、**範囲**を教えてくれる。
-無音が**正確な境界**を、ロゴが**本当の終わり**を担当する形で補完し合う。
+The station logo is on during the programme and gone during commercials, so it
+tells you the **range**. Silence supplies the **precise boundary** and the logo
+the **real end**; they complement each other.
 
-**ロゴのテンプレートは録画自身から学習する。** 局ごとのロゴ画像は要らない。
-ロゴはその隅で唯一動かないものなので、数千フレーム平均すればロゴだけが残り、
-背景はぼやけて消える。それを高域通過させたものがテンプレートで、判定は
-相関を取るだけ。
+**The logo template is learned from the recording itself.** No per-station logo
+images are needed. The logo is the one thing in its corner that never moves, so
+averaging a few thousand frames leaves the logo and blurs the background away.
+High-pass that and you have the template; the test is just a correlation.
 
-実装で効いた点が 3 つある:
+Three things mattered in the implementation:
 
-- **「最も強い」隅を選んではいけない。** 番組テロップのほうが濃いことが多い。
-  ロゴは番組中ずっと出ているので、**状態の切り替わりが最も少ない**隅を選ぶ。
-  この基準にしたら日本海テレビで正しく右上（強さ 26.9）が選ばれ、右下の
-  番組ロゴ（強さ 1110.7）を退けられた。
-- **マスクは最大の連結成分だけ残す。** ロゴは 1 つの塊で、散らばった生き残りは
-  字幕枠の縁などの雑音。これを入れると CM 中に相関が揺れて区間が分断される
-  （13 区間 → 4 区間に改善）。
-- **しきい値は録画から決める。** ロゴの濃さは局によって違うが、番組が尺の
-  大半を占めるので、スコアの中央値を「ロゴあり」の代表値に使える。
+- **Do not pick the "strongest" corner.** Programme captions are usually denser.
+  The logo is on throughout the programme, so pick the corner with **the fewest
+  state changes**. With that criterion, Nihonkai TV correctly selected the top
+  right (strength 26.9) and rejected the programme logo at the bottom right
+  (strength 1110.7).
+- **Keep only the largest connected component of the mask.** The logo is one
+  blob; scattered survivors are noise such as the edges of a subtitle box. Adding
+  this stopped the correlation wobbling during commercials and fragmenting the
+  regions (13 regions down to 4).
+- **Take the threshold from the recording.** Logo density differs by station, but
+  the programme occupies most of the running time, so the median score works as
+  the representative "logo present" value.
 
-**ロゴが無い録画は「無い」と答える。** 常時ロゴを出さない局もある。
-CM ブロックは必ず長いので、見つかった不在区間が短く細切れなら追跡対象は
-ロゴではないと判断して無音のみに退く。
+**A recording with no logo gets the answer "none".** Some stations do not show a
+logo continuously. Commercial blocks are always long, so if the absences found
+are short and fragmented, the thing being tracked is not a logo, and it falls
+back to silence only.
 
-| 素材 | ロゴ | 結果 |
+| Material | Logo | Result |
 |---|---|---|
-| 日本海テレビ（ロゴあり・CM 4回） | 右上で検出 | **4 ブロック、全て 15 秒の正確な倍数**（150.0 / 119.8 / 120.2 / 59.9s） |
-| AT-X（ロゴなし） | **見つからないと判定 → 無音のみへ** | 1 ブロック（正解） |
-| NHK Eテレ（CM なし） | 左下で検出、不在 0 区間 | 0 ブロック（正解） |
+| Nihonkai TV (logo present, 4 commercial breaks) | Detected top right | **4 blocks, every one an exact multiple of 15 s** (150.0 / 119.8 / 120.2 / 59.9 s) |
+| AT-X (no logo) | **Judged not found → silence only** | 1 block (correct) |
+| NHK E-Tele (no commercials) | Detected bottom left, 0 absences | 0 blocks (correct) |
 
-無音のみだと 2 番目と 3 番目のブロックが 104.8s / 105.2s と半端な長さになる。
-ロゴを併用すると 119.8s / 120.2s になり、15 秒の倍数に揃う——取りこぼしていた
-最後の 1 本が埋まった証拠。
+With silence alone the second and third blocks come out at the odd lengths
+104.8 s / 105.2 s. Adding the logo makes them 119.8 s / 120.2 s, back on the
+multiple of 15 — evidence that the missing last commercial got filled in.
 
-コストは 30 分の録画で約 30 秒（映像を 2 パス読む。キーフレームだけ復号するので
-全フレーム復号の 8 分の 1）。無音のみなら 3 秒。GUI の「ロゴも使う」で選べる。
+The cost is about 30 seconds on a 30-minute recording (two passes over the video;
+only keyframes are decoded, so an eighth of a full decode). Silence alone is 3
+seconds. The GUI offers it as "use the logo too".
 
-**字幕リセットが見つかった録画では、ロゴは読まない。** そちらが強いうえに
-10 倍速いので、「ロゴも使う」を入れていても素通りする。
+**On recordings where subtitle resets are found, the logo is not read.** That
+method is both stronger and ten times faster, so it is skipped even with "use the
+logo too" ticked.
 
-## 字幕リセットの併用（`caption.rs`）
+## Adding subtitle resets (`caption.rs`)
 
-無音もロゴも**推定**でしかない。無音は「この中のどこか」を言うだけだし、
-ロゴの端は移動平均の窓のぶん遅れる。放送そのものが継ぎ目を打刻していれば、
-そちらのほうが良い。打刻はある。
+Silence and logo are both **inferences**. Silence only says "somewhere in here",
+and a logo's edges lag by the moving-average window. If the broadcast itself
+stamps the seam, that is better. It does.
 
-日本の放送は字幕を ARIB STD-B24 のストリームで運んでいて、そこには
-**字幕サービスが再開されるたび**に「画面を消して表示形式を宣言し直す」文が
-流れる。継ぎ目がまさにそれで、CM は番組ではないから字幕を持ち越さない。
+Japanese broadcasts carry subtitles in an ARIB STD-B24 stream, and that stream
+carries a statement that "clears the screen and re-declares the display format"
+**every time the subtitle service restarts**. A seam is exactly that, because a
+commercial is not the programme and does not carry subtitles across.
 
 ```
 CS(0x0C)  →  CSI…SWF  CSI…SDP  CSI…SDF  CSI…SSM  CSI…SHS  CSI…SVS
 ```
 
-**そのあと何も書かない**のが目印。字幕の 1 行も途中までは同じ形をしていて、
-そのあとカーソルを置いて文字を書く。分かれ目はそこだけなので、判定は
-「CS のあとが CSI の並びで終わっているか」で足りる。「CS で始まる」だけでは
-だめで、それだと AT-X で 395 回・NHK E で 90 回鳴った——普通の字幕行も
-まず消してから書くからだ。
+The tell is that **nothing is written afterwards**. A normal line of subtitles
+looks the same up to a point, then positions the cursor and writes characters.
+That is the only difference, so testing "does the run after CS end in a sequence
+of CSIs" is enough. "Starts with CS" alone is not: that fired 395 times on AT-X
+and 90 times on NHK E, because ordinary subtitle lines clear the screen before
+writing too.
 
-| 素材 | リセット | CM 内 | 本編 |
+| Material | Resets | In commercials | In programme |
 |---|---|---|---|
-| 日本海テレビ | 35 | **35** | **0** |
-| BS フジ（枠つき） | 14 | 12 | 2（どちらも枠 ID と番宣、つまり灰色地帯） |
+| Nihonkai TV | 35 | **35** | **0** |
+| BS Fuji (with slot idents) | 14 | 12 | 2 (both a slot ident and a promo, i.e. the grey area) |
 | AT-X | 0 | — | — |
-| NHK E（CM なし） | 0 | — | — |
-| BS 日テレ（アニメ） | 1 | 0 | 1（字幕そのものの終わり。下記） |
+| NHK E (no commercials) | 0 | — | — |
+| BS Nittele (anime) | 1 | 0 | 1 (the end of the subtitles themselves; see below) |
 
-日本海テレビの 35 個は**全て 15 秒ちょうどの格子**に乗る。目視で確かめた
-境目との差は最大 0.16 秒で、しかも**必ず少し手前**にある——画面はカットの
-ために消されるのであって、カットによって消えるのではない。
+All 35 on Nihonkai TV land **exactly on the 15-second grid**. The largest
+difference from the boundaries checked by eye is 0.16 s, and it is **always
+slightly early** — the screen is cleared *for* the cut, not *by* it.
 
-**出さない局のほうが多いかもしれない。** 5 本のうち 3 本は 1 個も出さない。
-だから `NoLogo` と同じ形にしてある: 見つからなければ `NoResets` を返し、
-呼び出し側は無音とロゴに退く。**見つかったときだけ、他の 2 つより強い。**
+**More stations may omit it than emit it.** Three of the five recordings emit
+none. So it takes the same shape as `NoLogo`: if nothing is found it returns
+`NoResets` and the caller falls back to silence and logo. **Only when it is
+found is it stronger than the other two.**
 
-### 1 個のリセットは「出す局」ではない
+### One reset does not make an emitting station
 
-BS 日テレのアニメ録画（30 分）で **CM ブロックが 1 つも出なかった**。字幕
-リセットが **1 個**見つかっていて、見つかった時点で無音もロゴも読まれない
-からだ。強いほうを選んだつもりで、何も見ないことを選んでいた。
+A BS Nittele anime recording (30 minutes) produced **no commercial blocks at
+all**, because **one** subtitle reset had been found and finding any means
+neither silence nor logo gets read. What looked like choosing the stronger
+method was choosing to look at nothing.
 
-その 1 個は継ぎ目ではない。この録画の字幕は**最初の 20 秒だけ**——民放連の
-スポットに付いていたもの——で、そのあと 30 分間 1 文も無い。19.986 の
-リセットは**字幕そのものが終わった**印であって、CM の切れ目ではなかった。
+That one reset is not a seam. This recording's subtitles cover **only the first
+20 seconds** — they came with a JBA public-service spot — and there is not one
+line in the following 30 minutes. The reset at 19.986 marks **the end of the
+subtitles themselves**, not a commercial boundary.
 
-リセットを出す局は**全部の継ぎ目に出す**ので、数は録画の長さで決まる。
-実測した 2 局は半時間で 13 個と 35 個、出さない 3 本は 0 個、そしてこの録画が
-1 個。**3 個未満は「無い」と答える**ことにした（`caption::MIN_MARKS`）。
-3 はどちら側からも遠い。
+Stations that emit resets **emit them at every seam**, so the count follows the
+length of the recording. The two measured stations gave 13 and 35 in half an
+hour, the three non-emitting recordings gave 0, and this recording gave 1.
+**Fewer than three now answers "none"** (`caption::MIN_MARKS`). Three is far from
+either side.
 
-閾値を足したのは、数えることに意味があるからではない。**リセットが 1 個も
-2 個も出るのは、字幕サービスが録画のどこかで始まったか終わったときだけ**で、
-それは継ぎ目の数ではなく字幕の有無の話だからだ。
+The threshold was added not because counting means something, but because
+**getting one or two resets only happens when the subtitle service started or
+ended somewhere in the recording**, which is a fact about subtitles, not about
+seams.
 
-#### 退いた先はまだ足りていない
+#### The fallback is not good enough yet
 
-直したのは「何も出ない」ところまでで、**出たものが正しいかは別**である。
-30 秒ごとのサムネイルで確かめたこの録画の中身は、CM が 4 ブロック:
+The fix goes as far as "nothing at all comes out"; **whether what comes out is
+correct is a separate matter**. Checked with thumbnails every 30 seconds, this
+recording contains four commercial blocks:
 
-| | 目視 | ロゴ＋無音が出したもの |
+| | By eye | What logo plus silence produced |
 |---|---|---|
-| 頭（民放連スポット） | 0 – 約 19 | **出ない** |
-| OP 明け | 約 263 – 327 | **出ない** |
-| A/B パート間 | 約 827 – 886 | 825.2 – 858.2（**末尾 28 秒を残す**） |
-| 末尾（ED 後） | 約 1570 – 1805.8 | 1586.8–1640.2 / 1665.1–1760.1 / 1761.9–1805.2 |
+| Head (JBA spot) | 0 – about 19 | **Nothing** |
+| After the OP | about 263 – 327 | **Nothing** |
+| Between parts A and B | about 827 – 886 | 825.2 – 858.2 (**28 s left at the end**) |
+| End (after the ED) | about 1570 – 1805.8 | 1586.8–1640.2 / 1665.1–1760.1 / 1761.9–1805.2 |
 
-**ロゴが弱い。** 隅の相関の強さは 9.4 で、日本海テレビの 26.9 の 3 分の 1 しか
-ない（BS 日テレのウォーターマークは薄い灰色）。状態は 23 回反転していて、
-不在区間はもっと見つかっているのに `min_absent` の 20 秒に届かず捨てられて
-いる——64 秒あるはずの 263–327 が、細切れになって全部落ちた。
+**The logo is weak.** The corner correlation strength is 9.4, a third of Nihonkai
+TV's 26.9 (BS Nittele's watermark is a pale grey). The state flips 23 times and
+more absences are being found, but they fall short of `min_absent`'s 20 seconds
+and get thrown away — the 64 seconds that should be 263–327 fragmented and all of
+it was dropped.
 
-**無音だけでも出ない。** 末尾には score 1.00 の継ぎ目が 15 秒格子に 8 つ
-並んでいるが、`fill` が 0.6 に届かない。番宣の並ぶ 1640–1685 が 10 秒・25 秒・
-20 秒と刻まれていて、**格子そのものが崩れている**からで、閾値の問題ではない。
+**Silence alone does not produce it either.** The ending has eight score-1.00
+seams sitting on the 15-second grid, but `fill` does not reach 0.6. The run of
+promos at 1640–1685 is chopped into 10 s, 25 s and 20 s, so **the grid itself has
+broken down**; this is not a threshold problem.
 
-つまりここから先は別の作業になる。灰色地帯（番宣）を含む末尾をどう数えるか
-を決めないと、`fill` も `min_absent` も動かす先が決まらない。
+Which makes everything beyond here separate work. Until it is decided how to
+count an ending that contains the grey area (promos), there is no target to move
+`fill` or `min_absent` towards.
 
-### 効く理由と、代償
+### Why it works, and what it costs
 
-無音とロゴは「番組か CM か」を*推し量って*いるが、これは放送局の設備が
-継ぎ目に打った印そのものを読んでいる。しかも**復号が要らない** —— PID を
-選んでパケットを読むだけで、3.7GB の録画に 3 秒。ロゴは 30 秒かかる。
-リセットが見つかった録画ではロゴも音声も読まないので、日本海テレビの解析は
-**50 秒から 7 秒**になった。
+Silence and logo *guess* at "programme or commercial"; this reads the mark the
+broadcaster's own equipment stamped on the seam. And **it needs no decoding** —
+select a PID and read packets, 3 seconds for a 3.7 GB recording. The logo takes
+30. On recordings where resets are found neither logo nor audio is read, which
+took Nihonkai TV's analysis **from 50 seconds to 7**.
 
-代償は 2 つ。
+There are two costs.
 
-- **ロゴのほうが正しい場面を捨てている。** BS フジではロゴが CM 中に
-  「あり」に振れる（電話番号の白抜き文字が隅で相関を上げる）ので、この
-  録画に限ればロゴを捨てたのは得だった。他局で逆になる可能性は残る。
-- **録画の末尾は詰めきれない。** BS フジの末尾ブロックは最後のリセット
-  1683.9 で終わるが、録画はその 3.4 秒あとまで続いていて、そこはまだ CM。
-  リセットだけでは分からない——日本海テレビは同じ形（最後のリセットが尺の
-  2 秒手前）で、そのあと**本編**が始まっている。伸ばせばあちらを 1.7 秒
-  削る。分けるにはロゴを見るしかなく、CM 3.4 秒のために 30 秒の復号を払う
-  ことになるので、払っていない。取りこぼしは安いほうの誤りだからだ。
+- **It discards cases where the logo would be right.** On BS Fuji the logo swings
+  to "present" during commercials (white-on-dark phone numbers in the corner raise
+  the correlation), so for that recording discarding the logo was a win. It could
+  go the other way on another station.
+- **The end of a recording cannot be closed up.** BS Fuji's final block ends at
+  the last reset, 1683.9, but the recording continues for another 3.4 s and that
+  is still commercial. Resets alone cannot tell — Nihonkai TV has the same shape
+  (last reset 2 s before the end) and what follows there is **programme**.
+  Extending would shave 1.7 s off that one. Separating the two means looking at
+  the logo, which costs 30 seconds of decoding for 3.4 seconds of commercial, so
+  it is not paid. A miss is the cheap error.
 
-## GUI では 2 クリックで済む
+## In the GUI it takes two clicks
 
-「CM を検出」→「CM を除いた区間にする」。境界は**±0.5 秒以内のアクセス
-ポイントに吸着**させてから区間にする。30 分の民放録画を処理すると
-本編 22.6 分が 5 区間として残り、**無劣化コピー 100.0%**。単一区間の例では
+"Detect commercials" → "Keep everything but the commercials". The boundaries are
+**snapped to an access point within ±0.5 s** before becoming intervals. On a
+30-minute commercial-broadcast recording, 22.6 minutes of programme remain as
+five intervals, **100.0 % lossless copy**. For a single-interval example:
 
 ```
-出力 1506.005s — 無劣化コピー 1505.971s (100.0%) / 再エンコード 0.033s (0.0%)
+output 1506.005s — lossless copy 1505.971s (100.0%) / re-encoded 0.033s (0.0%)
 ```
 
-継ぎ目は約 1 秒の無音の真ん中にあるため、数百ミリ秒動かしても聞こえない。
-その一手間で **CM カットがまるごと無劣化**になる。
+The seam sits in the middle of about a second of silence, so moving it a few
+hundred milliseconds is inaudible. That small concession makes **the whole
+commercial cut lossless**.

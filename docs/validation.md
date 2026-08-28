@@ -1,128 +1,138 @@
-# 検証結果と既知の制限
+# Validation and known limits
 
-[← ドキュメント一覧](README.md) ・ [← smartcut](../README.ja.md)
+[← Documentation](README.md) ・ [← smartcut](../README.md) ・ [日本語](validation.ja.md)
 
-## 検証結果
+## Validation results
 
-`tests/run_tests.sh` — 出力を復号してソースのフレームハッシュと突き合わせ、
-「フレーム数」「位置ずれ」「ビット完全一致数」を確認する。
+`tests/run_tests.sh` — decodes the output, matches it against the source's frame
+hashes, and checks the frame count, the alignment, and how many frames are
+bit-exact.
 
-| ケース | 無劣化コピー率 |
+| Case | Lossless copy ratio |
 |---|---|
-| H.264 単一区間 | 180/222 (81.1%) |
-| H.264 複数区間 | 300/336 (89.3%) |
-| H.264 中間削除（末尾まで） | **540/540 (100%)** |
-| H.264 アクセスポイント丁度 | **180/180 (100%)** |
-| H.264 GOP 未満の区間 | 0/21 — 全再エンコードへフォールバック |
-| HEVC | 300/342 (87.7%) |
-| H.264 29.97fps | 300/342 (87.7%) |
-| H.264 オープン GOP（参照 leading） | 0/342 — 開始点として拒否（正しい挙動） |
-| **MPEG-2 TS オープン GOP** | **328/342 (95.9%)** |
-| MPEG-2 TS 複数区間 | 296/299 (99.0%) |
-| MPEG-2 TS 末尾まで | 447/449 (99.6%) |
-| Matroska 出力 | 180/222 (81.1%) |
+| H.264 single interval | 180/222 (81.1 %) |
+| H.264 multiple intervals | 300/336 (89.3 %) |
+| H.264 middle removed (through to the end) | **540/540 (100 %)** |
+| H.264 exactly on access points | **180/180 (100 %)** |
+| H.264 interval shorter than a GOP | 0/21 — falls back to a full re-encode |
+| HEVC | 300/342 (87.7 %) |
+| H.264 29.97 fps | 300/342 (87.7 %) |
+| H.264 open GOP (referenced leading pictures) | 0/342 — rejected as a start point (correct behaviour) |
+| **MPEG-2 TS open GOP** | **328/342 (95.9 %)** |
+| MPEG-2 TS multiple intervals | 296/299 (99.0 %) |
+| MPEG-2 TS through to the end | 447/449 (99.6 %) |
+| Matroska output | 180/222 (81.1 %) |
 
-全 13 ケースでフレーム数・整列位置とも一致。
+All 13 cases agree on both frame count and alignment.
 
-## 実素材での検証
+## Validation against real material
 
-合成フィクスチャでは見えない問題が出るので、実際の放送録画で検証している。
-`tests/verify_real.py <src> <out> <ranges>` — フレーム数・整列・ビット完全一致率・
-タイムライン・インターレース・A/V 長差をまとめて確認する。
+Synthetic fixtures hide certain problems, so validation also runs against actual
+broadcast recordings. `tests/verify_real.py <src> <out> <ranges>` checks frame
+count, alignment, bit-exact ratio, timeline, interlacing and A/V length
+difference in one go.
 
-| 素材 | 結果 |
+| Material | Result |
 |---|---|
-| 地デジ NHK Eテレ（MPEG-2 1440x1080i, 真の29.97） | **899/899、98.2% 無劣化、タイムライン一致、インターレース保持、A/V 2.0ms** |
-| BS11（MPEG-2 1920x1080i） | **899/899、98.2% 無劣化、同上** |
-| AT-X（MPEG-2 1440x1080, **2:3プルダウン**） | **719/719、99.9% 無劣化、2:3パターン保持、A/V 2.0ms** |
-| YouTube 由来 H.264 720p（29.24fps） | 878フレーム、A/V 2.6ms |
-| VP9 + Opus（webm→mp4） | コピーのみの計画なら通る |
+| Terrestrial NHK E-Tele (MPEG-2 1440x1080i, true 29.97) | **899/899, 98.2 % lossless, timeline matches, interlacing preserved, A/V 2.0 ms** |
+| BS11 (MPEG-2 1920x1080i) | **899/899, 98.2 % lossless, same as above** |
+| AT-X (MPEG-2 1440x1080, **2:3 pulldown**) | **719/719, 99.9 % lossless, 2:3 pattern preserved, A/V 2.0 ms** |
+| H.264 720p from YouTube (29.24 fps) | 878 frames, A/V 2.6 ms |
+| VP9 + Opus (webm→mp4) | Passes if the plan is copy-only |
 
-実 TS が持つ性質は一通り踏んだ:
+Everything a real TS throws at you turned up:
 
-- **`start_time` が 29288 秒**（PCR は実時刻ベース）
-- **アクセスポイントが全て open GOP**（776個中776個、leading picture は droppable）
-- **フレーム欠落**（668MBの録画で28フレーム、ドロップアウト由来）
-- ARIB字幕・データ放送など**複数ストリーム**の同居
+- **A `start_time` of 29288 seconds** (PCR is based on wall-clock time)
+- **Every access point an open GOP** (776 out of 776; the leading pictures are
+  droppable)
+- **Missing frames** (28 of them in a 668 MB recording, from dropouts)
+- **Multiple coexisting streams** — ARIB subtitles, data broadcasting and so on
 
-### 実素材で見つかったバグ: 再エンコード部でインターレースが失われる
+### A bug found on real material: interlacing lost in re-encoded regions
 
-再エンコードされた部分 GOP だけが `interlaced_frame=0` になり、コピー部と
-コーミングが食い違っていた。エンコーダに `AV_CODEC_FLAG_INTERLACED_DCT` /
-`INTERLACED_ME` とフィールド順を渡していなかったのが原因。放送素材では
-カット点ごとに画質が変わるので致命的。修正済み。
+Only the re-encoded partial GOPs came out with `interlaced_frame=0`, so the
+combing disagreed with the copied parts. The cause was not passing
+`AV_CODEC_FLAG_INTERLACED_DCT` / `INTERLACED_ME` and the field order to the
+encoder. On broadcast material this is fatal, because picture quality changes at
+every cut point. Fixed.
 
-### 2:3 プルダウン対応（フィールド単位のタイムライン）
+### 2:3 pulldown support (a field-based timeline)
 
-アニメ系の多くは 24fps のフィルム素材を `repeat_first_field` で 29.97 の
-ストリームに載せている。デコードされるピクチャは **0.0334 秒と 0.0500 秒の
-間隔が交互**に来る＝ピクチャ単位では CFR ではない。
+Most anime carries 24 fps film material in a 29.97 stream via
+`repeat_first_field`. The decoded pictures therefore arrive with **alternating
+intervals of 0.0334 s and 0.0500 s** — per picture, the stream is not CFR.
 
-ライブラリ実測では**40本中13本（32%）**がプルダウンだった:
+Measured across the library, **13 of 40 files (32 %)** were pulldown:
 
-| 局 | プルダウン率 |
+| Station | Pulldown ratio |
 |---|---|
-| ＡＴ－Ｘ | 8/14 (57%) |
-| ディズニーｃｈ | 2/2 (100%) |
-| ＢＳアニマックス | 3/10 (30%) |
-| BS11 / BS-TBS / BS日テレ / NHK / キッズ / テレ朝ch2 | 0% |
+| AT-X | 8/14 (57 %) |
+| Disney Channel | 2/2 (100 %) |
+| BS Animax | 3/10 (30 %) |
+| BS11 / BS-TBS / BS Nittele / NHK / Kids / Tele-Asa ch2 | 0 % |
 
-無視できないので対応した。要点は**出力タイムラインの単位をフレームから
-フィールドに落とす**こと。プルダウンは「2フィールド／3フィールド」の交互
-なので、フィールド格子なら整数で表せる。出力タイムベースは `1/(2×fps分子)`
-（29.97 なら 1/60000）で、1フィールド = `fps分母` ティックちょうど。
+Too common to ignore, so it is handled. The key is to **drop the unit of the
+output timeline from the frame to the field**. Pulldown alternates two fields and
+three fields, so on a field grid it is expressible in integers. The output time
+base is `1/(2 × fps_numerator)` (1/60000 for 29.97), which makes one field
+exactly `fps_denominator` ticks.
 
-副作用として **DTS の作り方も変える必要があった**。「デコード順に各ピクチャの
-長さを足す」方式はフィールド長が可変だと presentation を追い越し、
-muxer に `pts < dts` で弾かれる。表示順にソートした位置から DTS を導く
-正しい構成に置き換えた。
+As a side effect, **the way DTS is built had to change too**. Summing each
+picture's duration in decode order overtakes presentation once field durations
+vary, and the muxer rejects it with `pts < dts`. It was replaced with the correct
+construction, deriving DTS from the position in display order.
 
-### planner の位相問題（解決済み）
+### The planner's phase problem (resolved)
 
-区間の境界を `round(t*fps)/fps` という理想グリッドにスナップしていたため、
-実ストリームのフレーム位相（検証素材では 0.010 秒ずれ）と食い違い、区間端で
-1フレーム落ちていた。
+Interval boundaries used to be snapped to an ideal grid, `round(t*fps)/fps`. That
+disagreed with the real stream's frame phase (0.010 s off on the test material)
+and dropped one frame at the interval edges.
 
-**スナップを廃止して解決した。** セグメントの長さを planner の算術ではなく
-**実際に出力したピクチャから測る**ようにしたので、グリッドに合わせる必要が
-なくなった。各セグメントは自分の最初のピクチャを基準に配置され、次の
-セグメントは前のセグメントが実際に占めた長さの後ろから始まる。位相にも
-プルダウンにも自動的に追随する。
+**Removing the snapping fixed it.** Segment durations are now **measured from the
+pictures actually written** rather than from the planner's arithmetic, so there
+is nothing left to align to a grid. Each segment is placed relative to its own
+first picture, and the next segment starts after the length the previous segment
+actually occupied. That follows both the phase and the pulldown automatically.
 
-### 検証側にもバグがあった
+### The verification side had bugs of its own
 
-実素材で初めて露見したもの:
+These only surfaced on real material:
 
-- **グラウンドトゥルースをフレーム番号で切っていた。** 実録画はフレームが
-  欠落するので `フレーム番号 = 時刻 × fps` が成り立たず、比較対象が
-  27フレームずれて「一致率0%」に見えていた。PTS 基準に修正。
-- **時刻の原点が違った。** カットは*プレゼンテーション*タイムライン
-  （format の `start_time`、プレイヤーが 00:00 と表示する位置）基準だが、
-  ffmpeg のデコード出力は*映像ストリームの* `start_time` 基準。放送録画は
-  音声が先に始まるので両者が **0.346 秒**ずれる。補正を追加。
+- **The ground truth was being sliced by frame number.** Real recordings drop
+  frames, so `frame number = time × fps` does not hold, and the comparison target
+  was 27 frames off — which looked like "0 % match". Fixed to work from PTS.
+- **The time origin differed.** Cuts are relative to the *presentation* timeline
+  (the format's `start_time`, the position a player shows as 00:00), but ffmpeg's
+  decoded output is relative to the *video stream's* `start_time`. In broadcast
+  recordings audio starts first, so the two differ by **0.346 s**. Correction
+  added.
 
-## 既知の制限
+## Known limitations
 
-- **先頭フレームが 13ms 早い。** raw ES はタイムスタンプを一切持たず
-  （全パケットが `N/A`）、ffmpeg が `-r` と POC から合成する。この際
-  先頭 `has_b_frames` 個のパケットは PTS 無しで出てくる。MP4 muxer だけが
-  これを許容し（`-avoid_negative_ts make_zero`）、Matroska と MPEG-TS は
-  拒否する（そのため MKV 出力は MP4 を経由して remux している）。
-  2 フレーム目以降の間隔は完全に均一。パケット単位で PTS/DTS を自分で
-  振る libav 実装では発生しない。
-- **leading picture が参照ピクチャである H.264/HEVC オープン GOP は、
-  コピー開始点にできない**（#3）。これは原理的な制約で、回避するには
-  leading picture をビットストリームに残したままエディットリストで
-  非表示にする必要があり、ES 連結方式では表現できない。
-  IDR が定期的に入る素材（多くの放送 H.264）では問題にならない。
-- leading picture の参照判定はファイル内の 1 箇所をサンプルして全体に
-  適用している（エンコーダが途中で方針を変えない前提）。libav 実装では
-  デマルチプレクス時に `nal_ref_idc` を直接読めるので不要になる。
-- H.264 / HEVC のプルダウン（SEI の `pic_struct`）は未検出。日本の放送
-  H.264 は CFR なので実害は確認していないが、MPEG-2 と違って検出していない。
-- Python リファレンス実装は理想グリッドのスナップを残したままで、位相問題を
-  抱えている（`tests/run_tests.sh` の `mpeg2 ts multi` が xfail）。
-  テストオラクルとしての役割は果たすが、Rust 実装のほうが進んでいる。
-- 対応コーデックは H.264 / HEVC / MPEG-2 / MPEG-4 Part 2。
-  VP9 / AV1 は ES 連結の形を持たないので別設計が要る。
-- 映像トラック 1 本・音声トラック 1 本のみ。字幕・複数音声は未対応。
+- **The first frame is 13 ms early.** A raw ES carries no timestamps at all
+  (every packet is `N/A`), so ffmpeg synthesises them from `-r` and the POC. In
+  doing so, the first `has_b_frames` packets come out with no PTS. Only the MP4
+  muxer tolerates that (`-avoid_negative_ts make_zero`); Matroska and MPEG-TS
+  reject it, which is why MKV output is remuxed via MP4. From the second frame
+  on the spacing is perfectly uniform. This does not happen in the libav
+  implementation, which assigns PTS/DTS per packet itself.
+- **An H.264/HEVC open GOP whose leading pictures are reference pictures cannot
+  be used as a copy start point** (#3). This is inherent: avoiding it would mean
+  keeping the leading pictures in the bitstream and hiding them with an edit
+  list, which the ES-concatenation approach cannot express. It is a non-issue on
+  material with regular IDRs, which covers most broadcast H.264.
+- The leading-picture reference test samples one place in the file and applies
+  the result to the whole thing (assuming the encoder does not change its mind
+  partway). The libav implementation does not need this, since `nal_ref_idc` can
+  be read directly while demuxing.
+- H.264 / HEVC pulldown (the SEI `pic_struct`) is not detected. Japanese
+  broadcast H.264 is CFR, so no actual harm has been observed, but unlike MPEG-2
+  it is not detected.
+- The Python reference implementation still snaps to the ideal grid and therefore
+  still has the phase problem (`mpeg2 ts multi` in `tests/run_tests.sh` is an
+  xfail). It still serves as a test oracle, but the Rust implementation is ahead
+  of it.
+- Supported codecs are H.264 / HEVC / MPEG-2 / MPEG-4 Part 2. VP9 and AV1 have no
+  ES-concatenation form and would need a different design.
+- One video track and one audio track only. Subtitles and multiple audio tracks
+  are not supported.

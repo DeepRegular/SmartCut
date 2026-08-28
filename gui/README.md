@@ -1,12 +1,15 @@
 # gui
 
-smartcut のカット編集 GUI。Tauri v2 + バニラ JS。
+English ・ [日本語](README.ja.md)
 
-設計と操作の説明は [`docs/gui.md`](../docs/gui.md) にある。ビルド手順は
-[`docs/development.md`](../docs/development.md)、配布物の作り方は
-[`docs/distribution.md`](../docs/distribution.md)。
+The smartcut cut editor. Tauri v2 plus vanilla JS.
+
+The design and the controls are described in [`docs/gui.md`](../docs/gui.md).
+Build instructions are in [`docs/development.md`](../docs/development.md), and
+how the release artifacts are produced is in
+[`docs/distribution.md`](../docs/distribution.md).
 
 ```bash
 cd src-tauri && cargo build --release   # -> target/release/gui
-./build-windows.sh                      # Windows 版のクロスビルド
+./build-windows.sh                      # cross-build for Windows
 ```

@@ -1,24 +1,24 @@
-# ビルドと開発
+# Building and development
 
-[← ドキュメント一覧](README.md) ・ [← smartcut](../README.ja.md)
+[← Documentation](README.md) ・ [← smartcut](../README.md) ・ [日本語](development.ja.md)
 
-Linux（Debian 13 / Ubuntu 24.04 以降）でビルドする。Windows 版も Linux から
-クロスビルドする。
+Builds on Linux (Debian 13 / Ubuntu 24.04 or newer). The Windows build is
+cross-built from Linux too.
 
-## 必要なもの
+## Requirements
 
-**FFmpeg は 7.1 系であること。** `ffmpeg-sys-next` はバージョンごとに
-バインディングを出し分けるので、別系列を掴ませると API がずれる。
+**FFmpeg must be from the 7.1 series.** `ffmpeg-sys-next` selects its bindings by
+version, so a different series gives you a mismatched API.
 
 ```bash
-# ビルド基盤（clang / libclang は bindgen が使う）
+# Build essentials (bindgen uses clang / libclang)
 sudo apt install build-essential pkg-config cmake clang libclang-dev
 
-# FFmpeg 7.1 の開発ヘッダ
+# FFmpeg 7.1 development headers
 sudo apt install libavcodec-dev libavformat-dev libavutil-dev \
                  libavfilter-dev libavdevice-dev libswscale-dev libswresample-dev
 
-# Tauri GUI の前提（GUI をビルドしないなら不要）
+# Prerequisites for the Tauri GUI (not needed if you are not building the GUI)
 sudo apt install libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev \
                  librsvg2-dev libsoup-3.0-dev libjavascriptcoregtk-4.1-dev \
                  patchelf desktop-file-utils xdg-utils
@@ -27,17 +27,17 @@ sudo apt install libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
 ```
 
-| 項目 | 版 |
+| Item | Version |
 |---|---|
-| FFmpeg | 7.1 系（開発は 7.1.5） |
-| Rust | 1.98 以上 |
-| WebKitGTK | 4.1（Tauri v2） |
-| Node.js | 24 LTS（GUI のバンドルに使う） |
+| FFmpeg | 7.1 series (developed against 7.1.5) |
+| Rust | 1.98 or newer |
+| WebKitGTK | 4.1 (Tauri v2) |
+| Node.js | 24 LTS (used to bundle the GUI) |
 
-## ビルド
+## Building
 
 ```bash
-# Rust コア + CLI
+# Rust core and CLI
 cd rust && cargo build --release
 # -> rust/target/release/smartcut
 
@@ -46,63 +46,68 @@ cd gui/src-tauri && cargo build --release
 # -> gui/src-tauri/target/release/gui
 ```
 
-### 配布物
+### Release artifacts
 
-AppImage・tar.gz・deb / Windows インストーラの作り方は [配布](distribution.md) を参照。
+For how the AppImage, tar.gz and deb, and the Windows installer are produced, see
+[Distribution](distribution.md).
 
-## テスト
-
-```bash
-bash tests/run_tests.sh               # Python E2E                     13
-bash tests/run_rust_tests.sh          # Rust E2E（+ container 索引で 9） 13
-bash tests/run_audio_tests.sh         # A/V 同期（+ reencode で 5）       5
-bash tests/run_audio_content_tests.sh # 実素材の音声が正しい位置にあるか   4
-bash tests/run_preview_tests.sh       # スクラブの絵が頼んだ時刻か         7
-bash tests/run_proxy_tests.sh         # プロキシが録画の代わりになるか     22
-bash tests/run_scene_tests.sh         # シーン検出 vs CM 境界             1
-bash tests/run_ts_layout_tests.sh     # TS の素性とシーケンスヘッダ         5
-bash tests/run_cm_tests.sh            # CM 検出 vs 目視の正解              4
-```
-
-合成フィクスチャ（H.264 / HEVC / オープン GOP / 29.97fps / MPEG-2 TS）は
-`/tmp/smartcut-fixtures/` に自動生成される。
-
-**実素材を読むテスト**は `run_audio_content_tests.sh` / `run_preview_tests.sh` /
-`run_proxy_tests.sh`（合成素材でも走る）/ `run_scene_tests.sh` /
-`run_cm_tests.sh` / `run_ts_layout_tests.sh`。既定の
-置き場は `~/media`、`SMARTCUT_MEDIA` で変えられる。音声の照合には numpy が要る
-（無ければ SKIP する）。
-
-環境変数で実装を切り替えて同じ結果になるかを確かめられる:
+## Tests
 
 ```bash
-SMARTCUT_INDEX=container bash tests/run_rust_tests.sh   # 索引をコンテナ由来に
-SMARTCUT_AUDIO=reencode  bash tests/run_audio_tests.sh  # 音声をサンプル精度に
+bash tests/run_tests.sh               # Python E2E                                13
+bash tests/run_rust_tests.sh          # Rust E2E (+9 with the container index)    13
+bash tests/run_audio_tests.sh         # A/V sync (+5 with reencode)                5
+bash tests/run_audio_content_tests.sh # is real material's audio in the right place 4
+bash tests/run_preview_tests.sh       # does a scrub show the time you asked for    7
+bash tests/run_proxy_tests.sh         # can the proxy stand in for the recording   22
+bash tests/run_scene_tests.sh         # scene detection vs commercial boundaries    1
+bash tests/run_ts_layout_tests.sh     # TS provenance and sequence headers          5
+bash tests/run_cm_tests.sh            # commercial detection vs a human's answer    4
 ```
 
-[プロキシ](gui.md#プロキシ編集proxyrs)まわりも環境変数で振れる:
+The synthetic fixtures (H.264 / HEVC / open GOP / 29.97 fps / MPEG-2 TS) are
+generated automatically into `/tmp/smartcut-fixtures/`.
 
-| 変数 | 既定 | |
+The tests that **read real material** are `run_audio_content_tests.sh`,
+`run_preview_tests.sh`, `run_proxy_tests.sh` (which also runs on synthetic
+material), `run_scene_tests.sh`, `run_cm_tests.sh` and
+`run_ts_layout_tests.sh`. They look in `~/media` by default, which
+`SMARTCUT_MEDIA` overrides. The audio comparison needs numpy (it SKIPs without
+it).
+
+Environment variables let you swap implementations and check that the result is
+the same:
+
+```bash
+SMARTCUT_INDEX=container bash tests/run_rust_tests.sh   # take the index from the container
+SMARTCUT_AUDIO=reencode  bash tests/run_audio_tests.sh  # sample-accurate audio
+```
+
+The [proxy](gui.md#proxy-editing-proxyrs) side is tunable the same way:
+
+| Variable | Default | |
 |---|---|---|
-| `SMARTCUT_PROXY` | 有効 | `0` / `off` で作らない（録画から直接読む） |
-| `SMARTCUT_PROXY_WIDTH` | `960` | プロキシの幅（正方画素）。上げるほど絵は良くなり作成は長くなる。**上限は 1920x1080**（縦が先に当たる縦長素材は幅がそのぶん下がる） |
-| `SMARTCUT_PROXY_QUALITY` | `22` | 画質。x264 の CRF で言う（小さいほど良い、18〜24 が実用域） |
-| `SMARTCUT_PROXY_ENCODER` | 自動 | 試すエンコーダをカンマ区切りで指定（`mpeg4` など） |
+| `SMARTCUT_PROXY` | on | `0` / `off` to skip it (read from the recording directly) |
+| `SMARTCUT_PROXY_WIDTH` | `960` | Proxy width (square pixels). Higher looks better and takes longer to build. **The cap is 1920x1080** (for tall material, where the height hits the cap first, the width comes down accordingly) |
+| `SMARTCUT_PROXY_QUALITY` | `22` | Quality, in x264 CRF terms (lower is better; 18–24 is the useful range) |
+| `SMARTCUT_PROXY_ENCODER` | auto | Comma-separated list of encoders to try (`mpeg4`, for instance) |
 
-幅と品質は[キャッシュのハッシュに入っている](gui.md#キャッシュ)ので、
-振ったぶんだけ別のプロキシが建つ。
+Width and quality are [part of the cache hash](gui.md#the-cache), so each setting
+builds its own proxy.
 
-## 実素材での検証
+## Validating against real material
 
-`tests/verify_real.py <src> <out> <ranges>` — フレーム数・整列・ビット完全一致率・
-タイムライン・インターレース・A/V 長差をまとめて確認する。結果は
-[検証](validation.md) を参照。
+`tests/verify_real.py <src> <out> <ranges>` — checks frame count, alignment,
+bit-exact ratio, timeline, interlacing and A/V length difference in one go. For
+the results, see [Validation](validation.md).
 
-## 仮想マシンで動かす場合
+## Running in a virtual machine
 
-WebKitGTK のコンポジタが GPU の無い環境では何も描かず、初回描画のあと一切
-更新されない——フリーズにしか見えない。アプリ側で
-`WEBKIT_DISABLE_COMPOSITING_MODE=1` を既定にしてあるので、通常は意識しなくてよい。
+WebKitGTK's compositor draws nothing on a machine without a GPU, and never
+updates after the first paint — which looks exactly like a freeze. The app
+defaults `WEBKIT_DISABLE_COMPOSITING_MODE=1`, so normally you do not have to
+think about it.
 
-`xdotool` で GUI を機械的に叩く場合は、DOM の更新が X に伝わらずスクリーン
-ショットが古くなることがある。ウィンドウを 1px リサイズすれば再描画が起きる。
+If you drive the GUI mechanically with `xdotool`, DOM updates sometimes fail to
+reach X and the screenshot goes stale. Resizing the window by 1px forces a
+repaint.

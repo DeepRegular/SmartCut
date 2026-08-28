@@ -1,33 +1,33 @@
-# ドキュメント
+# Documentation
 
-[← smartcut](../README.ja.md)
+[← smartcut](../README.md) ・ [日本語](README.ja.md)
 
-## 仕組み
-
-| | |
-|---|---|
-| [アルゴリズムと実装上の難所](algorithm.md) | head / body / tail の切り分けと、「GOP 単位で切って繋ぐだけ」では済まない 8 つの理由 |
-| [Rust コアの実装](rust-core.md) | タイムスタンプの生成、SPS/PPS 混在の解決、音声境界の扱い |
-| [検証結果と既知の制限](validation.md) | フレームハッシュ照合の結果、実放送録画での検証、原理的な制約 |
-
-## 機能
+## How it works
 
 | | |
 |---|---|
-| [GUI](gui.md) | カット編集画面、フィルムストリップ、プロキシ編集、サムネイル軌道とシーン検出、再生 |
-| [CM 境界の検出](cm-detection.md) | 字幕リセット・無音・ロゴの 3 つ、15 秒格子、誤検出を出さないための設計 |
-| [放送録画ワークフローとの互換](broadcast-ts.md) | 出力 TS の PID レイアウト、シーケンスヘッダ、ADTS、L-SMASH / DGIndex |
+| [Algorithm and pitfalls](algorithm.md) | How head / body / tail are split, and the eight reasons "just cut on GOP boundaries and join" is not enough |
+| [The Rust core](rust-core.md) | Generating timestamps, resolving mixed SPS/PPS, handling audio boundaries |
+| [Validation and known limits](validation.md) | Frame-hash verification results, testing against real broadcast recordings, the limits inherent in the approach |
 
-## 作る・配る
-
-| | |
-|---|---|
-| [ビルドと開発](development.md) | 必要なライブラリ、ビルド手順、テストの走らせ方 |
-| [配布](distribution.md) | AppImage・tar.gz・deb と Windows インストーラ、同梱される依存 |
-
-## そのほか
+## Features
 
 | | |
 |---|---|
-| [BDMV / BDAV への拡張](bdmv.md) | 調査結果と段階的な作業量 |
-| [移植方針](design.md) | Rust コア + Tauri GUI を選んだ理由、ライセンスと特許 |
+| [GUI](gui.md) | The cut editor, the filmstrip, proxy editing, the thumbnail track and scene detection, playback |
+| [Commercial boundary detection](cm-detection.md) | Subtitle resets, silence and logo presence, the 15-second grid, and the design that keeps false positives out |
+| [Broadcast workflow compatibility](broadcast-ts.md) | PID layout of the output TS, sequence headers, ADTS, L-SMASH / DGIndex |
+
+## Building and shipping
+
+| | |
+|---|---|
+| [Building and development](development.md) | Required libraries, how to build, how to run the tests |
+| [Distribution](distribution.md) | AppImage, tar.gz and deb, the Windows installer, and the bundled dependencies |
+
+## Also
+
+| | |
+|---|---|
+| [Extending to BDMV / BDAV](bdmv.md) | Research notes and the work involved, stage by stage |
+| [Design notes](design.md) | Why a Rust core plus a Tauri GUI, and the licence and patent situation |
