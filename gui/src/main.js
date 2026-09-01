@@ -49,6 +49,9 @@ let held = false;
 let proxied = false; // whether the pictures now come from a proxy
 let interval = 0.5;
 let previewToken = 0;
+/// Source time of the picture on the stage, or -1 for none. What `paintFast`
+/// weighs its stand-in against before putting it up.
+let shownTime = -1;
 let stripToken = 0;
 let hoverToken = 0;
 let stripShots = [];
@@ -584,6 +587,7 @@ async function showFrame(t) {
     updateReadouts();
     draw();
     el("preview").src = shot.url;
+    shownTime = shot.time;
     el("ovl-kind").textContent = atPoint(shot.time)
       ? `${shot.kind} フレーム — 無劣化点`
       : `${shot.kind} フレーム`;
@@ -1031,16 +1035,40 @@ function renderStrip(shots, unit, win) {
 // --- scroll search ------------------------------------------------------
 
 let search = null;
-let lastFast = -1;
 let lastSharp = 0;
 
+/// How far behind the stage has to be before a stand-in is worth putting on
+/// it. A quarter of a second: less than that and the picture up is close
+/// enough that covering it costs more than the wait it saves.
+const STANDIN_STALE = 0.25;
+
+/// A held key picture on the stage, as a stand-in until a real one arrives.
+///
+/// The held pictures are 192px wide and sit on key pictures -- 0.6s apart on
+/// the broadcast material this is for -- so a stand-in is both soft and up to
+/// nine frames from the time asked for. What it buys is arriving now instead
+/// of after a decode, and that is worth having while a drag or a search
+/// crosses ground faster than anything can be decoded. Stepping a frame at a
+/// time it is worth nothing: the picture already up is one frame from the
+/// answer and the real one is milliseconds behind it. Laying a soft key
+/// picture over that and taking it back is what made stepping flicker, on the
+/// frames where the key picture was far enough away to look like a different
+/// shot.
+///
+/// So the stage has to be behind before a stand-in is fetched at all, and the
+/// stand-in has to be nearer the mark than the picture it would cover. Both
+/// are measured against what is actually on the stage rather than against
+/// `interval`, which is only the floor under the spacing -- the pass keeps
+/// every key picture it is offered, so the pictures land where the recording
+/// puts them and the floor can sit an order of magnitude below that.
 async function paintFast(t) {
   if (!held) return;
-  if (Math.abs(t - lastFast) < interval / 2) return;
+  if (shownTime >= 0 && Math.abs(t - shownTime) < STANDIN_STALE) return;
   const token = ++hoverToken;
   const shot = await invoke("hover_thumb", { time: t });
   if (token !== hoverToken || !shot) return;
-  lastFast = shot.time;
+  if (shownTime >= 0 && Math.abs(t - shot.time) >= Math.abs(t - shownTime)) return;
+  shownTime = shot.time;
   el("preview").src = shot.url;
   el("ovl-kind").textContent = "サーチ";
   el("ovl-kind").className = "";
@@ -1054,7 +1082,9 @@ async function paintSharp(t) {
   const token = ++previewToken;
   try {
     const shot = await invoke("preview", { time: t, width: stageWidth() });
-    if (token === previewToken) el("preview").src = shot.url;
+    if (token !== previewToken) return;
+    el("preview").src = shot.url;
+    shownTime = shot.time;
   } catch {
     /* the next tick will try again */
   }
@@ -1065,7 +1095,6 @@ function startSearch(ev) {
   const rect = el("strip").getBoundingClientRect();
   search = { x: ev.clientX, rect };
   el("searching").hidden = false;
-  lastFast = -1;
   search.timer = setInterval(() => {
     const half = search.rect.width / 2;
     const dx = clamp((search.x - (search.rect.left + half)) / half, -1, 1);
@@ -1545,6 +1574,7 @@ async function openPath(picked) {
     cmBlocks = [];
     stripCache = null;
     stripShots = [];
+    shownTime = -1;
     hideHover();
     rebuildTimeline();
     el("undo-cut").disabled = true;
@@ -1909,6 +1939,7 @@ if (listen) {
     const [t, url] = ev.payload;
     playhead = t;
     el("preview").src = url;
+    shownTime = t;
     updateReadouts();
     draw();
     // The strip is not redrawn here -- it is already sliding, and this is

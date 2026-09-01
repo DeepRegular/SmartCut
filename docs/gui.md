@@ -400,9 +400,13 @@ of the search.
 
 | Material | Scan time | Thumbnails | Scenes |
 |---|---|---|---|
-| Nihonkai TV, 30 min (3.5 GB) | 21.6 s | 3606 / 37 MB (0.45 s apart) | 602 (3.0 s apart) |
-| AT-X, 30 min (1.8 GB) | 8.8 s | 1863 / 14 MB (0.45 s apart) | 360 (5.0 s apart) |
-| NHK E-Tele, 6.5 min (700 MB) | 3.2 s | 774 / 5 MB (0.45 s apart) | 129 (3.0 s apart) |
+| Nihonkai TV, 30 min (3.5 GB) | 21.6 s | 3606 / 37 MB (0.50 s apart) | 602 (3.0 s apart) |
+| AT-X, 30 min (1.8 GB) | 8.8 s | 1863 / 14 MB (1.00 s apart) | 360 (5.0 s apart) |
+| NHK E-Tele, 6.5 min (700 MB) | 3.2 s | 774 / 5 MB (0.50 s apart) | 129 (3.0 s apart) |
+
+The spacings are measured off the pictures, not the floor the pass was given —
+which is a different number and, until this was corrected, the one being
+reported. See below.
 
 Peak resident memory is 112 MB for a 30-minute recording.
 
@@ -413,6 +417,52 @@ throughout, marks would appear every half second, so there is a ceiling of "one
 every 3 seconds on average", with the threshold taken as the quantile that implies.
 On AT-X the material-derived value won (median 0.0672 × 3); on the other two the
 ceiling did.
+
+### `Track::interval` is measured, not asked for
+
+**It used to report the floor, and the floor was an order of magnitude out.**
+What the pass is given is "hold nothing closer together than this", worked out
+as the recording's length over the 4000-picture cap. What it holds are key
+pictures, and a recording puts those where it likes. On a 2 m 46 s BS Fuji
+recording the floor comes to **0.042 s** and the pictures land **0.50 s** apart
+— and 0.042 was what the track reported, what the status line printed, and what
+two decisions in `thumbs_at` were taken against.
+
+`Track::interval` is now **the median gap between neighbouring held pictures**.
+The median rather than the mean or the smallest: on that recording the gaps run
+from 0.27 s (an extra entry point where the picture changed) to 6.5 s (a stretch
+with none at all), and neither end is what the film strip is drawn at.
+
+Two consequences, both in `thumbs_at`:
+
+- **"Is the caller asking for something finer than we hold?"** now compares two
+  numbers arrived at the same way — the median gap *asked* for against the
+  median gap *held*. It has to be the median on the asking side too: GOP mode
+  asks at the recording's own entry points, and one short GOP anywhere in the
+  window would otherwise send the whole strip off to be decoded (1.7 s for
+  sixty cells) when every time it asked for is a picture already in hand.
+- **"Is the nearest held picture near enough, or is this a hole?"** no longer
+  asks the spacing at all. Every time asked for down that path is a key
+  picture's own, so the held picture has to *be* that picture: the tolerance is
+  two nominal frames, which under 2:3 pulldown is one picture's worth. Taking
+  it from the spacing made it scale with the recording's length for no reason
+  to do with the question — a hundredth of a second on a three-minute
+  recording, half a second on a half-hour one — and on the corrected spacing it
+  would have grown to 0.50 s, wide enough to caption the picture beside a hole
+  with the hole's own time. Thirty minutes of AT-X is where that showed: 25 of
+  its 1889 entry points are closer together than the floor and so are not held,
+  and a tolerance of 0.45 s let each of those cells be answered by the picture
+  next to it.
+
+Frame mode, meanwhile, was only saved from answering a 0.033 s request with
+pictures 0.50 s apart by 0.033 falling narrowly under 0.038. It is now 0.033
+against 0.45, which is not a coincidence to rely on.
+
+The seek index keeps the field in its format so that indexes already on disc
+stay readable, but **the value in them is not trusted**: the spacing is taken
+from the pictures the file carries, so an index written when the field meant
+the floor still loads with the right answer. The stored number stands in only
+when there are fewer than two pictures to measure anything from.
 
 ### Verifying it without looking
 

@@ -23,6 +23,12 @@ pub struct ThumbOptions {
     /// Shortest spacing between kept thumbnails. Every key picture is
     /// compared, but only pictures this far apart are held as images.
     ///
+    /// A floor, not the spacing. What is kept are key pictures, and a
+    /// recording puts those where it likes, so the pictures land wherever
+    /// the material's own entry points are and the floor is merely what
+    /// they are never closer together than. What they turned out to be is
+    /// [`Track::interval`], and that is the number a caller wants.
+    ///
     /// Zero means "keep every key picture", which is what a scroll search
     /// wants: dragging across the film strip shows the held pictures, so
     /// their spacing is the granularity of the scroll.
@@ -65,8 +71,16 @@ pub struct Thumb {
 
 pub struct Track {
     pub width: u32,
-    /// The spacing actually used, which is what a caller must assume when
-    /// deciding whether the held pictures are fine enough for its purpose.
+    /// The spacing the held pictures actually sit at -- the median gap
+    /// between neighbours -- which is what a caller must assume when
+    /// deciding whether they are fine enough for its purpose.
+    ///
+    /// **Measured, not asked for.** [`ThumbOptions::interval`] and the
+    /// ceiling on how many to hold only set a floor; what is held are key
+    /// pictures, so the spacing is the material's. On a 2 m 46 s BS Fuji
+    /// recording the floor works out at 0.04 s and the pictures land 0.50 s
+    /// apart -- and a caller told 0.04 would answer a scrub from held
+    /// pictures that are nowhere near fine enough for it.
     pub interval: f64,
     /// How far into the recording the track speaks for. A finished one speaks
     /// for the whole of it; one handed over while it is still being built
@@ -107,6 +121,35 @@ impl Track {
     pub fn scene_before(&self, time: f64) -> Option<f64> {
         self.scenes.iter().rev().copied().find(|&s| s < time - 1e-3)
     }
+}
+
+/// The spacing a run of held pictures sits at, or `None` when there are
+/// fewer than two of them and nothing can be told.
+pub fn spacing(thumbs: &[Thumb]) -> Option<f64> {
+    median_gap(&thumbs.windows(2).map(|w| w[1].time - w[0].time).collect::<Vec<_>>())
+}
+
+/// What a run of gaps amounts to as a spacing: their median.
+///
+/// The median rather than the mean, or the smallest. Key pictures are not
+/// evenly spaced -- a recording carries one every half second and then an
+/// extra one wherever the picture changes enough to be worth it, and a
+/// damaged or abandoned stretch leaves a gap of seconds. The mean is dragged
+/// up by the long gaps and the minimum is decided by a single short one;
+/// neither is the spacing anything on screen actually sees. On a BS Fuji
+/// recording the gaps run from 0.27 s to 6.5 s and the median is 0.50 s,
+/// which is what the film strip is really drawn at.
+///
+/// Shared with the callers who have to weigh a spacing they are *asking*
+/// for against the one the pictures sit at, so that the two numbers are
+/// arrived at the same way.
+pub fn median_gap(gaps: &[f64]) -> Option<f64> {
+    if gaps.is_empty() {
+        return None;
+    }
+    let mut sorted = gaps.to_vec();
+    sorted.sort_by(f64::total_cmp);
+    Some(sorted[sorted.len() / 2])
 }
 
 /// Width and height of the picture signature, in cells.
@@ -168,7 +211,16 @@ fn distance(a: &[u8; SIG], b: &[u8; SIG]) -> f64 {
 pub struct Collector<'a> {
     src: &'a Source,
     opts: &'a ThumbOptions,
-    interval: f64,
+    /// Nothing is kept closer together than this. A floor only -- see
+    /// [`Track::interval`] for why it is not the answer to "how far apart
+    /// are the pictures".
+    min_gap: f64,
+    /// The gap between each kept picture and the one before it, which is
+    /// what the spacing is measured from. Kept here rather than read back
+    /// off the pictures because [`Self::take_new`] moves those out.
+    gaps: Vec<f64>,
+    /// The time of the last picture kept, for the gap to the next one.
+    last_kept: Option<f64>,
     thumbs: Vec<Thumb>,
     diffs: Vec<(f64, f64)>,
     prev: Option<[u8; SIG]>,
@@ -183,7 +235,9 @@ impl<'a> Collector<'a> {
         Self {
             src,
             opts,
-            interval: opts.interval.max(src.duration / opts.max_thumbs.max(1) as f64),
+            min_gap: opts.interval.max(src.duration / opts.max_thumbs.max(1) as f64),
+            gaps: Vec::new(),
+            last_kept: None,
             thumbs: Vec::new(),
             diffs: Vec::new(),
             prev: None,
@@ -192,9 +246,10 @@ impl<'a> Collector<'a> {
         }
     }
 
-    /// The spacing images are actually being kept at.
+    /// The spacing images are actually being kept at, falling back to the
+    /// floor while there are too few of them to have measured anything.
     pub fn interval(&self) -> f64 {
-        self.interval
+        median_gap(&self.gaps).unwrap_or(self.min_gap)
     }
 
     /// The pictures collected since this was last called.
@@ -209,7 +264,7 @@ impl<'a> Collector<'a> {
         Batch {
             thumbs: std::mem::take(&mut self.thumbs),
             width: self.opts.width,
-            interval: self.interval,
+            interval: self.interval(),
             covered: self.seen,
         }
     }
@@ -227,21 +282,24 @@ impl<'a> Collector<'a> {
         self.prev = Some(sig);
 
         if time >= self.keep_from {
-            self.keep_from = time + self.interval;
-            self.thumbs.push(Thumb {
-                time,
-                jpeg: crate::preview::encode_jpeg(frame, self.src, self.opts.width)?,
-            });
+            let jpeg = crate::preview::encode_jpeg(frame, self.src, self.opts.width)?;
+            if let Some(prev) = self.last_kept {
+                self.gaps.push(time - prev);
+            }
+            self.last_kept = Some(time);
+            self.keep_from = time + self.min_gap;
+            self.thumbs.push(Thumb { time, jpeg });
         }
         Ok(())
     }
 
     pub fn finish(self) -> Track {
+        let interval = self.interval();
         let (scenes, threshold, typical) =
             mark_scenes(&self.diffs, self.src.duration, self.opts);
         Track {
             width: self.opts.width,
-            interval: self.interval,
+            interval,
             // The pass is over, so the track speaks for the whole recording
             // -- including any tail with no key picture in it at all.
             covered: f64::INFINITY,
@@ -258,6 +316,10 @@ impl<'a> Collector<'a> {
 pub struct Batch {
     pub thumbs: Vec<Thumb>,
     pub width: u32,
+    /// The spacing measured over everything kept so far, not just over
+    /// these: the pictures already handed over are the same pass and the
+    /// same material, and a whole run is a steadier measurement than a
+    /// half-second of one.
     pub interval: f64,
     /// How far into the recording the pass producing these has read.
     pub covered: f64,
@@ -572,4 +634,37 @@ pub fn refine(src: &Source, at: f64) -> Result<f64> {
         }
     }
     Ok(best.0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn at(times: &[f64]) -> Vec<Thumb> {
+        times.iter().map(|&time| Thumb { time, jpeg: Vec::new() }).collect()
+    }
+
+    #[test]
+    fn nothing_to_measure_says_so() {
+        assert_eq!(spacing(&at(&[])), None);
+        assert_eq!(spacing(&at(&[1.0])), None);
+        assert_eq!(spacing(&at(&[1.0, 1.5])), Some(0.5));
+    }
+
+    /// The shape of a real recording: half a second between entry points,
+    /// one short GOP where the picture changed, and a stretch with none at
+    /// all. Neither outlier is allowed to become the answer -- the mean of
+    /// these is 1.08 and the smallest is 0.27, and what the film strip is
+    /// drawn at is 0.50.
+    #[test]
+    fn outliers_do_not_become_the_spacing() {
+        let mut times = vec![0.0];
+        for _ in 0..8 {
+            times.push(times.last().unwrap() + 0.5);
+        }
+        times.push(times.last().unwrap() + 0.27);
+        times.push(times.last().unwrap() + 6.5);
+        let s = spacing(&at(&times)).unwrap();
+        assert!((s - 0.5).abs() < 1e-9, "spacing came out {s}");
+    }
 }

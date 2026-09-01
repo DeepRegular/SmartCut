@@ -317,28 +317,46 @@ fn thumbs_now(
 ) -> Result<Vec<Option<Shot>>, String> {
     let thumbs = app.state::<Thumbs>();
     with_pictures(app, |src, marks| {
-        // The smallest gap asked for says whether the held pictures are fine
-        // enough to answer with: they sit one key picture apart. `exact` overrides
+        // The spacing asked for says whether the held pictures are fine enough
+        // to answer with: they sit one key picture apart. `exact` overrides
         // that -- a caller asking about a cut's join needs the picture *at* the
         // time it named, because the nearest held one may be the last picture the
         // cut took away.
-        let gap = times
+        //
+        // The median gap rather than the smallest, and weighed against the
+        // track's own median. The film strip's GOP mode asks at the recording's
+        // own entry points, and those are not evenly spaced: one short GOP
+        // anywhere in the window would take the smallest gap below the track's
+        // spacing and send the whole strip off to be decoded -- a second and a
+        // half for sixty cells -- when every time it asked for is a picture
+        // already in hand.
+        let gaps: Vec<f64> = times
             .windows(2)
             .map(|w| (w[1] - w[0]).abs())
             .filter(|d| *d > 1e-9)
-            .fold(f64::INFINITY, f64::min);
-        // A held picture sits *on* a key picture, so the one nearest a GOP start
-        // should be that GOP's own. Further off than the track's own spacing means
-        // there is a hole in it -- an entry point that arrived damaged, say -- and
-        // answering with whatever is nearest would caption one picture with
-        // another picture's time. Those slots are left for a real decode below.
+            .collect();
+        let gap = smartcut_core::thumbs::median_gap(&gaps).unwrap_or(f64::INFINITY);
+        // A held picture sits *on* a key picture, and every time asked for down
+        // this path is a key picture's own, so the nearest held picture has to
+        // *be* the one asked for. Further off than that means there is a hole in
+        // the track -- an entry point that arrived damaged, say, or one thinned
+        // out by the cap -- and answering with whatever is nearest would put a
+        // caption from one time under a picture from another. Those slots are
+        // left for a real decode below.
+        //
+        // Two nominal frames of slack, and not the track's own spacing: under
+        // 2:3 pulldown a picture runs to three fields, so one nominal frame is
+        // not quite enough. The spacing was what this used to allow, which made
+        // the tolerance a hundredth of a second on a three-minute recording and
+        // half a second on a half-hour one -- the same hole caught on one and
+        // papered over on the other, for no reason to do with either.
         let held: Option<Vec<Option<Shot>>> = {
             let guard = thumbs.0.lock().unwrap();
             guard
                 .as_ref()
                 .filter(|t| !exact.unwrap_or(false) && gap >= t.interval * 0.9)
                 .map(|track| {
-                    let tol = track.interval.max(src.video.frame_duration());
+                    let tol = src.video.frame_duration() * 2.0;
                     times
                         .iter()
                         .map(|&t| {
@@ -715,6 +733,10 @@ fn hold(app: &tauri::AppHandle, batch: smartcut_core::thumbs::Batch, generation:
             Some(track) => {
                 track.thumbs.extend(batch.thumbs);
                 track.covered = batch.covered;
+                // The spacing is measured, so every batch knows it a little
+                // better than the one before -- and it decides whether the
+                // film strip may answer from these pictures at all.
+                track.interval = batch.interval;
             }
             None => *guard = Some(batch.into_track()),
         }

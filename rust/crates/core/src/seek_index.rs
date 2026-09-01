@@ -179,7 +179,13 @@ impl SeekIndex {
 
         let track = if flags & FLAG_HAS_TRACK != 0 {
             let width = r.u32()?;
-            let interval = r.f64()?;
+            // Read, but only as the fallback below. The spacing is a
+            // property of the pictures themselves, so it is taken from them
+            // rather than trusted -- an index written by a version that
+            // meant the *floor* by this field then still loads with the
+            // right answer, instead of every recording already cached
+            // having to be read again to correct one number.
+            let stored_interval = r.f64()?;
             let covered = r.f64()?;
             let threshold = r.f64()?;
             let typical = r.f64()?;
@@ -197,7 +203,7 @@ impl SeekIndex {
             }
             Some(thumbs::Track {
                 width,
-                interval,
+                interval: thumbs::spacing(&list).unwrap_or(stored_interval),
                 covered,
                 thumbs: list,
                 scenes,
