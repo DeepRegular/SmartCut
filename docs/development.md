@@ -64,7 +64,7 @@ bash tests/run_index_tests.sh         # does the index answer as the walk did   
 bash tests/run_proxy_tests.sh         # can the proxy stand in for the recording   22
 bash tests/run_scene_tests.sh         # scene detection vs commercial boundaries    1
 bash tests/run_ts_layout_tests.sh     # TS provenance and sequence headers          5
-bash tests/run_cm_tests.sh            # commercial detection vs a human's answer    4
+bash tests/run_cm_tests.sh            # commercial detection vs a human's answer    5
 ```
 
 The synthetic fixtures (H.264 / HEVC / open GOP / 29.97 fps / MPEG-2 TS) are

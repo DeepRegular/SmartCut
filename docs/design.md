@@ -17,7 +17,10 @@ The Python prototype is kept as a **reference implementation and test oracle**.
 `tests/run_tests.sh` (Python) and `tests/run_rust_tests.sh` (Rust) share the same
 frame-hash comparison.
 
-## Licence and patents (decide before shipping)
+## Licence and patents
+
+**It ships under GPL-3.0**: of the two ways out below, the software encoders
+are the side that was taken.
 
 - **x264 / x265 are GPL.** Linking them makes the whole application GPL.
 - The way around that is a **hardware encoder** (NVENC / QSV / VideoToolbox /

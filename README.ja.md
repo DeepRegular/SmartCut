@@ -80,9 +80,9 @@
 
 | | |
 |---|---|
-| Linux | `smartcut_0.1.1_amd64.AppImage`、または `smartcut-0.1.1-linux-x86_64.tar.gz`（解凍して `./smartcut`）。どちらも FFmpeg 同梱、glibc 2.39 以上（Ubuntu 24.04 / Debian 13 / Fedora 40 以降） |
-| Linux（deb） | `smartcut_0.1.1_amd64.deb` — `sudo apt install ./smartcut_0.1.1_amd64.deb`。FFmpeg を抱えずシステムの 7.1 にリンクするので 2.5MB で済むかわりに Debian 13 / Ubuntu 25.04 以降が要る。GUI が `smartcut`、コマンドライン版が `smartcut-cli` |
-| Windows | `smartcut_0.1.1_x64-setup.exe`（インストーラ）または `smartcut-portable-x64.zip`（解凍して実行）。x64 のみ、WebView2 ランタイムが要る |
+| Linux | `smartcut_0.1.2_amd64.AppImage`、または `smartcut-0.1.2-linux-x86_64.tar.gz`（解凍して `./smartcut`）。どちらも FFmpeg 同梱、glibc 2.39 以上（Ubuntu 24.04 / Debian 13 / Fedora 40 以降） |
+| Linux（deb） | `smartcut_0.1.2_amd64.deb` — `sudo apt install ./smartcut_0.1.2_amd64.deb`。FFmpeg を抱えずシステムの 7.1 にリンクするので 2.5MB で済むかわりに Debian 13 / Ubuntu 25.04 以降が要る。GUI が `smartcut`、コマンドライン版が `smartcut-cli` |
+| Windows | `smartcut_0.1.2_x64-setup.exe`（インストーラ）または `smartcut-portable-x64.zip`（解凍して実行）。x64 のみ、WebView2 ランタイムが要る |
 
 自分でビルドする場合は [ビルドと開発](docs/development.ja.md)。
 
@@ -105,6 +105,7 @@ smartcut input.ts --analyze --scenes            # シーンの変わり目を出
 | `--audio-mode smart\|copy\|reencode` | 既定は `smart`（継ぎ目のフレームだけ焼き直して切った側の音を消す。無音で切れば `copy` と完全一致）。`copy` はバイト単位で無劣化、`reencode` はサンプル精度 |
 | `--aac auto\|mpeg2\|mpeg4` | 焼き直したフレームが名乗る AAC。既定の `auto` は素材に合わせる（放送素材なら MPEG-2 AAC） |
 | `--index scan\|container` | アクセスポイント索引の作り方。`container` は速いが TS では使えない |
+| `--seek-index PATH` | シーク用インデックスの置き場所。初回に書き、2 回目からは読むのでパケットの走査を省ける |
 | `--detect-cm` / `--logo` / `--scenes` | CM 候補・ロゴ併用・シーン検出 |
 | `--no-open-gop` | オープン GOP をコピー開始点として使わない |
 | `-o OUTPUT` | 出力先。器は拡張子で決まる |
@@ -144,7 +145,7 @@ smartcut input.ts --analyze --scenes            # シーンの変わり目を出
 rust/     Rust コア（smartcut_core）と CLI    ← 本体
 gui/      Tauri v2 + バニラ JS の GUI
 smartcut/ Python リファレンス実装             ← テストオラクル
-tests/    E2E テスト 76 ケース
+tests/    E2E テスト 11 スイート・112 チェック
 docs/     ドキュメント
 ```
 

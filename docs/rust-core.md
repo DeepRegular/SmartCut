@@ -2,8 +2,8 @@
 
 [← Documentation](README.md) ・ [← smartcut](../README.md) ・ [日本語](rust-core.ja.md)
 
-The port is in progress. **The "first frame is 13 ms early" limitation is
-gone** — see below.
+The port is what ships; the Python implementation is kept as the test oracle.
+**The "first frame is 13 ms early" limitation is gone** — see below.
 
 | Part | State |
 |---|---|
@@ -103,7 +103,7 @@ encoder.
 | `reencode` | **-0.02 ms** (one sample is 0.021 ms, so effectively zero) | nothing | all of them |
 
 Run `tests/run_audio_tests.sh` with `SMARTCUT_AUDIO=reencode` and all 5 cases
-land at -0.02 ms. Video stays lossless in both modes (1798/1798, 99.1 % on real
+land at -0.02 ms. Video stays lossless in every mode (1798/1798, 99.1 % on real
 material).
 
 **The default is `smart`.** On an ordinary cut -- a commercial break taken out

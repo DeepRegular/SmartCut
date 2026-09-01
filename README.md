@@ -86,9 +86,9 @@ Grab a build from [Releases](https://github.com/DeepRegular/SmartCut/releases).
 
 | | |
 |---|---|
-| Linux | `smartcut_0.1.1_amd64.AppImage`, or `smartcut-0.1.1-linux-x86_64.tar.gz` (unpack it, run `./smartcut`). Both carry FFmpeg and need glibc 2.39+ (Ubuntu 24.04 / Debian 13 / Fedora 40 or newer) |
-| Linux (deb) | `smartcut_0.1.1_amd64.deb` — `sudo apt install ./smartcut_0.1.1_amd64.deb`. 2.5MB, because it links the system FFmpeg 7.1 instead of carrying one; that means Debian 13 / Ubuntu 25.04 or newer. Installs the GUI as `smartcut` and the cutter as `smartcut-cli` |
-| Windows | `smartcut_0.1.1_x64-setup.exe` (installer) or `smartcut-portable-x64.zip` (unzip and run). x64 only; needs the WebView2 runtime |
+| Linux | `smartcut_0.1.2_amd64.AppImage`, or `smartcut-0.1.2-linux-x86_64.tar.gz` (unpack it, run `./smartcut`). Both carry FFmpeg and need glibc 2.39+ (Ubuntu 24.04 / Debian 13 / Fedora 40 or newer) |
+| Linux (deb) | `smartcut_0.1.2_amd64.deb` — `sudo apt install ./smartcut_0.1.2_amd64.deb`. 2.5MB, because it links the system FFmpeg 7.1 instead of carrying one; that means Debian 13 / Ubuntu 25.04 or newer. Installs the GUI as `smartcut` and the cutter as `smartcut-cli` |
+| Windows | `smartcut_0.1.2_x64-setup.exe` (installer) or `smartcut-portable-x64.zip` (unzip and run). x64 only; needs the WebView2 runtime |
 
 To build it yourself, see [Building and development](docs/development.md).
 
@@ -111,6 +111,7 @@ smartcut input.ts --analyze --scenes            # scene changes
 | `--audio-mode smart\|copy\|reencode` | `smart` (default) re-encodes only the frames a boundary falls inside, so nothing from the far side of a cut is heard -- and nothing at all when the seam falls in silence. `copy` is lossless to the byte; `reencode` is sample-accurate |
 | `--aac auto\|mpeg2\|mpeg4` | Which AAC the frames this tool writes announce themselves as. `auto` follows the recording, which for a broadcast means MPEG-2 AAC |
 | `--index scan\|container` | How access points are indexed. `container` is faster but unavailable for TS |
+| `--seek-index PATH` | Where to keep the seek index. Written on the first run, read on the next, which skips the walk over the packets |
 | `--detect-cm` / `--logo` / `--scenes` | Commercial candidates, logo assist, scene detection |
 | `--no-open-gop` | Never start a copy at an open GOP |
 | `-o OUTPUT` | Output path; the extension picks the container |
@@ -154,7 +155,7 @@ were hit.
 rust/     Rust core (smartcut_core) and CLI   <- the real implementation
 gui/      Tauri v2 + vanilla JS GUI
 smartcut/ Python reference implementation     <- test oracle
-tests/    76 end-to-end test cases
+tests/    11 end-to-end suites, 112 checks
 docs/     Documentation
 ```
 

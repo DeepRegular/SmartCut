@@ -63,7 +63,7 @@ bash tests/run_index_tests.sh         # 索引が走査と同じ答えを返す�
 bash tests/run_proxy_tests.sh         # プロキシが録画の代わりになるか     22
 bash tests/run_scene_tests.sh         # シーン検出 vs CM 境界             1
 bash tests/run_ts_layout_tests.sh     # TS の素性とシーケンスヘッダ         5
-bash tests/run_cm_tests.sh            # CM 検出 vs 目視の正解              4
+bash tests/run_cm_tests.sh            # CM 検出 vs 目視の正解              5
 ```
 
 合成フィクスチャ（H.264 / HEVC / オープン GOP / 29.97fps / MPEG-2 TS）は

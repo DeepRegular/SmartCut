@@ -71,31 +71,49 @@ which is not a thing that can exist. L-SMASH builds its AudioSpecificConfig from
 that first frame, so it gives up before reading anything
 (`failed to find the matched importer`).
 
-Our output's ADTS does not differ from the source by a single byte:
+The frames that were copied do not differ from the source by a single byte:
 
 ```
-source   ff f8 4c a0  MPEG-2 with CRC profile=LC rate=48000 ch=2
-output   ff f8 4c a0  MPEG-2 with CRC profile=LC rate=48000 ch=2
+source              ff f8 4c a0  MPEG-2 with CRC profile=LC rate=48000 ch=2
+copied frame        ff f8 ...    the recording's own bytes, by construction
+frame written here  ff f9 ...    MPEG-2, no CRC
 ```
 
-The decisive observation was that **it only breaks with "sample-accurate
-audio"**. On copy the broadcast's own bytes go through, so the ADTS stays
-`ff f8` (MPEG-2, with CRC) — the form Japanese broadcast AAC always takes.
-Re-encode and ffmpeg's ADTS writer **hard-codes** `ff f1` (MPEG-4, no CRC). The
-header length changes from 9 bytes to 7, so a tool that expects ARIB and goes
-looking at 9 bytes misreads the configuration — and `04 22` (Main / 88.2 kHz /
-0 ch) is exactly what "could not read it" defaults to. There is no way to change
-those two bits from the ffmpeg side.
+The decisive observation was that **it only breaks on a frame that is written
+rather than copied**. On copy the broadcast's own bytes go through, so the ADTS
+stays `ff f8` (MPEG-2, with CRC) — the form Japanese broadcast AAC always takes.
+Hand the same frame to ffmpeg's ADTS writer and it **hard-codes** `ff f1`
+(MPEG-4, no CRC). The header length changes from 9 bytes to 7, so a tool that
+expects ARIB and goes looking at 9 bytes misreads the configuration — and
+`04 22` (Main / 88.2 kHz / 0 ch) is exactly what "could not read it" defaults
+to. Those two bits cannot be changed from the ffmpeg side.
+
+So they are not written from the ffmpeg side any more. `adts.rs` builds the
+header here, and a frame this tool writes announces the version the recording
+announces: a broadcast is MPEG-2 AAC, and so is the seam
+([the Rust core](rust-core.md#smart-rendering-applied-to-audio---audio-mode-smart)).
+What is still not the recording's shape is the CRC — `protection_absent` is set
+on the frames written here, so their header is 7 bytes rather than 9. That is a
+per-frame field, so they sit legally among frames that carry one, but they are
+not byte-for-byte what the recording would have had. `--aac mpeg2|mpeg4`
+overrides the version, and while frames are being copied a request that
+disagrees with the recording is refused rather than producing a stream that is
+two kinds of AAC at once.
+
+How many such frames there are is the mode's business. Under `smart`, the
+default, it is the frames a boundary falls inside — four out of 5606 on a
+two-interval cut, and none at all when the seam falls in silence, as a
+commercial cut does. Under `reencode` it is all of them, and under `copy` none.
 
 `write_audio_es()` (`--audio-es` on the CLI) **reads the finished output back**
 and writes the audio out as ADTS. What ends up next to the video is by
 construction the very audio inside it, and it has been confirmed to pass through
 L-SMASH's `muxer` (`Track 1: MPEG-4 Audio`, 48 kHz stereo, matching duration).
 
-This too is **kept out of the window**. Once sample-accurate audio was dropped
-only copy remains, and on copy the broadcast's own bytes go through, so DGIndex
-reads the output exactly as it reads the source — the situation that needed the
-workaround no longer arises.
+This too is **kept out of the window**: the GUI offers neither it nor the audio
+modes, and leaves the audio smart-rendered as the engine's own default has it.
+What made the workaround worth having — a seam declaring itself MPEG-4 in the
+middle of an MPEG-2 stream — is dealt with where it arises now.
 
 ## To hand it to L-SMASH, use the bare stream
 

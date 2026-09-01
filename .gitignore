@@ -15,6 +15,9 @@ __pycache__/
 # Build outputs — these are published as GitHub Releases, not committed
 dist/
 
+# The demo clip tests/make_demo_media.sh builds beside itself (322 MB)
+tests/demo_broadcast.ts
+
 # Local development environment (machine-specific; not part of the project)
 DEVENV.md
 sync.sh
