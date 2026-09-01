@@ -17,7 +17,7 @@ MEDIA="${SMARTCUT_MEDIA:-$HOME/media}"
 rm -rf "$OUT"; mkdir -p "$OUT"
 
 [ -x "$BIN" ] || { echo "build first: (cd rust && cargo build --release)" >&2; exit 2; }
-[ -f "$FIX/mpeg2.ts" ] || bash tests/make_demo_media.sh >/dev/null 2>&1
+[ -f "$FIX/mpeg2.ts" ] || { echo "run tests/run_tests.sh first to generate fixtures" >&2; exit 2; }
 
 pass=0; fail=0
 ok()  { printf "  ok    %-26s %s\n" "$1" "$2"; pass=$((pass+1)); }

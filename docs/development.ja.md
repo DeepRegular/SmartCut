@@ -67,7 +67,19 @@ bash tests/run_cm_tests.sh            # CM 検出 vs 目視の正解            
 ```
 
 合成フィクスチャ（H.264 / HEVC / オープン GOP / 29.97fps / MPEG-2 TS）は
-`/tmp/smartcut-fixtures/` に自動生成される。
+`run_tests.sh` が `/tmp/smartcut-fixtures/` に生成するので、まずこれを走らせる。
+フィクスチャを使い回す側（`run_rust_tests.sh` / `run_index_tests.sh` /
+`run_proxy_tests.sh`）は、無ければ検査を黙って飛ばさずに
+`run tests/run_tests.sh first to generate fixtures` と言って止まる。
+
+各テストの出力もフィクスチャと同じ `$TMPDIR` の下に書かれる。プロキシのテストは
+実素材だと数 GB 要る（1 時間の放送 TS のプロキシ 1 本で 2.3 GB）ので、小さな
+`/tmp` の tmpfs では足りない。`No space left on device` で落ちるときは `TMPDIR`
+をディスク上のディレクトリに向ける:
+
+```bash
+TMPDIR=~/tmp bash tests/run_proxy_tests.sh
+```
 
 **実素材を読むテスト**は `run_audio_content_tests.sh` / `run_aac_tests.sh` /
 `run_preview_tests.sh` /
