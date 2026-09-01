@@ -15,6 +15,7 @@
 use anyhow::{anyhow, bail, Context, Result};
 use ffmpeg_next as ff;
 
+use crate::adts::AacVersion;
 use crate::bitstream::{
     annexb_to_length, is_annexb, parameter_sets, prepend_parameter_sets, NalFraming,
 };
@@ -36,14 +37,37 @@ struct Reframe {
 /// How the audio track is produced.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub enum AudioMode {
-    /// Keep the source's own frames. Lossless, but each range's boundary
-    /// lands on a whole audio frame -- up to half a frame, 10.7 ms for AAC at
-    /// 48 kHz, out of step with the video.
-    #[default]
+    /// Keep the source's own frames, whatever is in them. Lossless to the
+    /// byte, and each range's boundary lands on a whole audio frame -- so the
+    /// frame the cut falls inside arrives whole, carrying up to 21 ms of the
+    /// material that was cut away.
     Copy,
+    /// As [`AudioMode::Copy`], except for the frames a boundary falls inside:
+    /// those are re-encoded from the recording's own samples with the far
+    /// side of the cut faded out. Smart rendering, applied to audio -- the
+    /// boundary still lands on a whole frame, but what fills the rest of that
+    /// frame is silence instead of the material that was cut away.
+    ///
+    /// The default, and in the ordinary case identical to [`AudioMode::Copy`]
+    /// byte for byte: a commercial break is cut in the silence around it,
+    /// where there is nothing on the far side to remove and nothing is
+    /// re-encoded. What it costs is two frames per boundary that lands in the
+    /// middle of sound; what it buys is that no cut is heard twice.
+    #[default]
+    Smart,
     /// Decode, trim to the exact sample, re-encode. Sample-exact at every
     /// boundary, at the cost of re-encoding the whole track.
     Reencode,
+}
+
+impl AudioMode {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            AudioMode::Copy => "copy",
+            AudioMode::Smart => "smart",
+            AudioMode::Reencode => "reencode",
+        }
+    }
 }
 
 #[derive(Debug, Default, Clone)]
@@ -57,6 +81,10 @@ pub struct CutOptions {
     pub audio_mode: AudioMode,
     /// Bits per second for re-encoded audio. `None` follows the source.
     pub audio_bit_rate: Option<usize>,
+    /// Which AAC the frames this tool encodes announce themselves as.
+    /// The default follows the recording, which for a Japanese broadcast
+    /// means MPEG-2 AAC.
+    pub aac: AacVersion,
 }
 
 /// One packet on its way out, before timestamps are assigned.
@@ -75,7 +103,7 @@ struct Emitted {
 /// the output time its video starts at, which is what keeps A/V sync from
 /// drifting when several ranges are joined: an error at one seam cannot
 /// accumulate into the next.
-struct AudioCtx {
+struct AudioCtx<'a> {
     in_index: usize,
     in_tb: f64,
     /// Seconds to add to a source time to reach the output timeline.
@@ -98,7 +126,10 @@ struct AudioCtx {
     window: (i64, i64),
     /// Where the range starts, in seconds.
     range_in: f64,
-    reencode: bool,
+    mode: AudioMode,
+    /// Frames re-encoded because a boundary falls inside them, by the source
+    /// packet's `pts`.
+    patches: &'a std::collections::HashMap<i64, crate::audio::Patch>,
 }
 
 /// What a segment contributed, so the next one can be placed after it.
@@ -122,7 +153,7 @@ struct SegmentCtx<'a> {
     /// First display index this segment contributes.
     display_base: i64,
     reframe: Option<&'a Reframe>,
-    audio: Option<&'a AudioCtx>,
+    audio: Option<&'a AudioCtx<'a>>,
     /// Whether this is the opening segment of its keep-range, which is where
     /// the range's audio boundary decision is made.
     first: bool,
@@ -147,6 +178,9 @@ struct Writer {
     /// Output stream index and time base for audio, when there is any.
     audio: Option<(usize, f64)>,
     audio_written: i64,
+    /// Source `pts` of the last audio frame written, which is what a guard
+    /// frame's condition is checked against.
+    audio_prev: Option<i64>,
     /// Output time at which the audio written so far ends. The container
     /// concatenates samples, so this -- not the packet's nominal timestamp --
     /// is where the next frame will actually be heard.
@@ -249,8 +283,9 @@ impl Writer {
 /// so the segments tile the range without dropping or duplicating anything.
 /// The range's own edges are the exception: the frame straddling the start
 /// belongs to the first segment even though it begins earlier, and the frame
-/// straddling the end overruns. Both are trimmed with SKIP_SAMPLES rather
-/// than dropped, which is what makes the boundaries sample-exact.
+/// straddling the end overruns. What becomes of those two is what the audio
+/// mode decides -- rounded away, re-encoded in place, or decoded into a track
+/// that is re-encoded whole.
 fn take_audio(
     audio: &AudioCtx,
     src: &Source,
@@ -264,7 +299,7 @@ fn take_audio(
     let dur = packet.duration() as f64 * audio.in_tb;
     let past_end = t >= seg.end;
 
-    if audio.reencode {
+    if audio.mode == AudioMode::Reencode {
         // Claim exclusively, exactly as the copy path does, or a frame lying
         // across an internal seam is fed by both neighbours and the whole
         // track drifts a frame later each time. The opening segment also
@@ -289,12 +324,20 @@ fn take_audio(
         return Ok(past_end);
     }
 
-    // The range's opening frame is the one *containing* the chosen start, so
-    // that a boundary falling mid-frame keeps the frame rather than losing it.
-    // Later segments claim strictly by start time, or the frame straddling an
-    // internal seam would be emitted twice.
     // Open on whichever frame sits nearest the chosen start, so the error is
-    // at most half a frame either way rather than a whole frame late.
+    // at most half a frame either way rather than a whole frame late. Later
+    // segments claim strictly by start time, or the frame straddling an
+    // internal seam would be emitted twice.
+    //
+    // Smart mode does not get to be cleverer here, and the reason is worth
+    // recording. Opening on the frame the boundary falls *inside* would lose
+    // nothing at all -- but that frame begins before the boundary, so it
+    // reaches back into the range before it, where the previous range's own
+    // overrunning last frame already is. Two frames cannot share an instant:
+    // an MP4 lays its samples end to end, and MPEG-TS rejects a timestamp
+    // that goes backwards outright. Keeping a whole number of frames per
+    // range and centring the error is the only arrangement that neither
+    // overlaps nor accumulates, so it is what every mode uses.
     let claimed = if first_segment {
         t + dur / 2.0 > audio.pick_from && t >= audio.min_start
     } else {
@@ -305,8 +348,24 @@ fn take_audio(
     }
     // Trimming the frame that straddles a boundary was tried with
     // AV_PKT_DATA_SKIP_SAMPLES; the MP4 muxer does not act on it, and the
-    // skipped samples came back through intact. So boundaries snap to whole
-    // audio frames instead. See README, "音声の境界".
+    // skipped samples came back through intact. So a boundary either snaps to
+    // a whole audio frame, or -- in smart mode -- the frame it lands inside
+    // was re-encoded beforehand with the far side faded out, and stands here
+    // in place of the recording's own.
+    let patch = audio
+        .patches
+        .get(&pts)
+        .filter(|p| p.after.is_none() || p.after == writer.audio_prev);
+    let packet = match patch {
+        Some(p) => {
+            let mut patched = ff::Packet::copy(&p.bytes);
+            patched.set_flags(ff::packet::Flags::KEY);
+            patched.set_duration(packet.duration());
+            patched
+        }
+        None => packet,
+    };
+    writer.audio_prev = Some(pts);
     writer.push_audio(packet, t + audio.offset, dur)?;
     Ok(past_end)
 }
@@ -337,7 +396,12 @@ fn open_input(path: &str) -> Result<(ff::format::context::Input, usize)> {
 ///
 /// Reads back what was just written rather than cutting again, so the file
 /// beside the video is by construction the audio that is *in* the video.
-pub fn write_audio_es(cut: &str, output: &str) -> Result<usize> {
+///
+/// Frames that arrive framed already are written as they are, headers and
+/// all, so an MPEG-2 AAC recording stays MPEG-2 AAC without anything being
+/// said. `aac` only reaches the frames this has to frame itself, which is
+/// what audio taken back out of an MP4 amounts to.
+pub fn write_audio_es(cut: &str, output: &str, aac: AacVersion) -> Result<usize> {
     crate::init()?;
     let mut ictx = ff::format::input(&cut)?;
     let ist = ictx
@@ -357,7 +421,11 @@ pub fn write_audio_es(cut: &str, output: &str) -> Result<usize> {
             (*ost.parameters().as_mut_ptr()).codec_tag = 0;
         }
     }
-    octx.write_header()?;
+    let mut muxer_opts = ff::Dictionary::new();
+    if octx.format().name().contains("adts") && aac == AacVersion::Mpeg2 {
+        muxer_opts.set("write_mpeg2", "1");
+    }
+    octx.write_header_with(muxer_opts)?;
     let out_tb = octx.stream(0).ok_or_else(|| anyhow!("no output stream"))?.time_base();
 
     let mut written = 0usize;
@@ -799,7 +867,7 @@ pub fn cut_with_progress(
 ) -> Result<()> {
     crate::init()?;
 
-    let (ictx, ist_index) = open_input(&src.path)?;
+    let (mut ictx, ist_index) = open_input(&src.path)?;
     let params = ictx.stream(ist_index).unwrap().parameters();
     let extradata = unsafe {
         let p = params.as_ptr();
@@ -827,6 +895,12 @@ pub fn cut_with_progress(
     // those where broadcasts put them, and numbering a fresh set from 0x100
     // makes the output look like something else entirely.
     let layout = ts_layout(&ictx, src.video.stream_index);
+    // What the recording's own audio frames look like from the outside. Only
+    // an answer for ADTS AAC, which is what a Japanese broadcast carries;
+    // anything else leaves the frames this tool encodes unframed, exactly as
+    // the packets they sit among are.
+    let source_adts =
+        src.audio.as_ref().and_then(|a| crate::adts::framing(&mut ictx, a.stream_index));
     let pids;
     let pmt;
     let service;
@@ -883,6 +957,43 @@ pub fn cut_with_progress(
     let audio_params = src.audio.as_ref().map(|a| {
         ictx.stream(a.stream_index).map(|s| s.parameters()).unwrap()
     });
+    // Asking for the AAC the recording does not carry only reaches the frames
+    // written here -- the copied ones keep the headers they came with -- so
+    // honouring it would leave the output two kinds of AAC at once, which is
+    // the very thing this framing exists to prevent. A whole-track re-encode
+    // is the exception: nothing is copied there, so there is nothing to
+    // disagree with.
+    let aac = match (opts.aac.forced(), source_adts) {
+        (Some(want), Some(f)) if f.mpeg2 != want && opts.audio_mode != AudioMode::Reencode => {
+            eprintln!(
+                "note: --aac {} was asked for, but this recording carries MPEG-{} AAC and \
+                 its own frames are copied unchanged. Writing the few frames this cut \
+                 encodes as MPEG-{} would leave the audio two kinds of AAC at once, so the \
+                 recording's own is followed instead. --audio-mode reencode writes every \
+                 frame, and can be asked for either.",
+                opts.aac.as_str(),
+                if f.mpeg2 { 2 } else { 4 },
+                if want { 2 } else { 4 },
+            );
+            AacVersion::Auto
+        }
+        _ => opts.aac,
+    };
+
+    // Whether the frames this cut encodes are written framed.
+    //
+    // In smart mode they must be: they are spliced in among the recording's
+    // own frames, which are framed, and a track has to be one thing or the
+    // other for a muxer to handle it -- MPEG-TS passes a framed packet
+    // through untouched, MP4 runs the whole track through `aac_adtstoasc`.
+    // A whole-track re-encode has no copied frames to match, so it keeps to
+    // raw AAC and the encoder's own parameters, except into a transport
+    // stream, where framing them here is the only way to say MPEG-2.
+    let frame_as = match (opts.audio_mode, source_adts) {
+        (AudioMode::Smart, Some(f)) => Some(f.as_version(aac)),
+        (AudioMode::Reencode, Some(f)) if to_ts => Some(f.as_version(aac)),
+        _ => None,
+    };
     // Built here, before the stream is declared, because when it exists the
     // stream must describe *it* rather than the source.
     let reencoder = match (opts.audio_mode, src.audio.as_ref()) {
@@ -892,7 +1003,7 @@ pub fn cut_with_progress(
                 .ok_or_else(|| anyhow!("audio stream vanished"))?
                 .parameters();
             let rate = opts.audio_bit_rate.or(a.bit_rate).unwrap_or(192_000);
-            Some(crate::audio::Reencoder::new(params, a, rate)?)
+            Some(crate::audio::Reencoder::new(params, a, rate, frame_as)?)
         }
         _ => None,
     };
@@ -903,8 +1014,11 @@ pub fn cut_with_progress(
     if let (Some(a), Some(ap)) = (src.audio.as_ref(), audio_params) {
         let mut ost = octx.add_stream(ff::encoder::find(ff::codec::Id::None))?;
         match reencoder.as_ref() {
-            Some(re) => ost.set_parameters(re.parameters()),
-            None => ost.set_parameters(ap),
+            // Framed frames are the same shape the recording's were, so the
+            // recording's parameters describe them and the extradata that
+            // would otherwise reframe them is not wanted.
+            Some(re) if frame_as.is_none() => ost.set_parameters(re.parameters()),
+            _ => ost.set_parameters(ap),
         }
         ost.set_time_base(ff::Rational::new(1, a.sample_rate as i32));
         // Carried across so the muxer writes the language descriptor the
@@ -955,12 +1069,36 @@ pub fn cut_with_progress(
         written: 0,
         audio: audio_out,
         audio_written: 0,
+        audio_prev: None,
         audio_end: None,
         audio_rate: src.audio.as_ref().map(|a| a.sample_rate).unwrap_or(48_000),
         reencoder,
         progress,
         expected: plans.iter().flat_map(|p| &p.segments).map(|s| s.frames as i64).sum(),
     };
+
+    // Smart mode re-encodes the frames the boundaries fall inside, before any
+    // of them is written, so that the pass below can stay a copy with a
+    // lookup in it. Two frames per range edge, in a file of tens of thousands.
+    let patches = match (opts.audio_mode, src.audio.as_ref()) {
+        (AudioMode::Smart, Some(a)) => {
+            let windows: Vec<(i64, i64)> = plans
+                .iter()
+                .map(|p| {
+                    (
+                        (p.t_in * a.sample_rate as f64).round() as i64,
+                        (p.t_out * a.sample_rate as f64).round() as i64,
+                    )
+                })
+                .collect();
+            let rate = opts.audio_bit_rate.or(a.bit_rate).unwrap_or(192_000);
+            crate::audio::boundary_patches(src, a, &windows, rate, source_adts, aac)?
+        }
+        _ => Default::default(),
+    };
+    if std::env::var("SMARTCUT_DEBUG").is_ok() && opts.audio_mode == AudioMode::Smart {
+        eprintln!("  audio: {} frame(s) prepared for the boundaries", patches.len());
+    }
 
     let fps = num as f64 / den as f64;
     let mut display_base: i64 = 0;
@@ -993,7 +1131,8 @@ pub fn cut_with_progress(
                 (plan.t_out * a.sample_rate as f64).round() as i64,
             ),
             range_in: plan.t_in,
-            reencode: opts.audio_mode == AudioMode::Reencode,
+            mode: opts.audio_mode,
+            patches: &patches,
         });
         for (n, seg) in plan.segments.iter().enumerate() {
             let first_segment = n == 0;

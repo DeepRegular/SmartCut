@@ -48,6 +48,37 @@ Everything a real TS throws at you turned up:
 - **Missing frames** (28 of them in a 668 MB recording, from dropouts)
 - **Multiple coexisting streams** — ARIB subtitles, data broadcasting and so on
 
+### How many audio frames were re-encoded (`tests/run_aac_tests.sh`)
+
+The same count the video is judged by, applied to the audio: walk the output's
+ADTS frame by frame and compare each with the recording's own bytes. Nippon TV
+recording, two intervals, four boundaries:
+
+| Mode | Container | Frames verbatim | Re-encoded | ADTS |
+|---|---|---|---|---|
+| `copy` | TS | **5606/5606 (100%)** | 0 | all MPEG-2 LC |
+| `smart` | TS | **5602/5606 (99.929%)** | **4** | all MPEG-2 LC |
+| `smart` | MP4 | 5602/5606 (payloads) | 4 | — |
+| `reencode` | TS | 0/5607 | 5607 | all MPEG-2 LC |
+| `smart --aac mpeg4` | TS | 5602/5606 | 4 | **all MPEG-2** (see below) |
+| `reencode --aac mpeg4` | TS | 0/5607 | 5607 | all MPEG-4 |
+| `smart` (**a commercial block cut out**, all four boundaries in silence) | TS | **1392/1392 (100%)** | **0** | all MPEG-2 LC |
+
+As long as frames are being copied, asking for an AAC the recording does not
+carry cannot be honoured -- honouring it would make a stream that is two kinds
+of AAC at once -- so the request is refused with a note and the recording's own
+version followed. A whole-track re-encode copies nothing, so there it is
+honoured (the `reencode --aac mpeg4` row).
+
+The `smart` row with the commercial block cut out is what an ordinary cut looks
+like, and there the output is **byte-identical to `copy`**.
+
+The last row is what checks how `--aac` behaves: **only the frames this tool
+writes** change, and the copied frames keep their own headers.
+
+An MP4 keeps the payloads and throws the ADTS framing away, so payloads are
+what can be compared there. Same payload, same sound.
+
 ### A bug found on real material: interlacing lost in re-encoded regions
 
 Only the re-encoded partial GOPs came out with `interlaced_frame=0`, so the
@@ -136,3 +167,25 @@ These only surfaced on real material:
   ES-concatenation form and would need a different design.
 - One video track and one audio track only. Subtitles and multiple audio tracks
   are not supported.
+- **The audio boundary is still rounded to a whole frame in every mode but
+  `reencode`.** What `smart` removes is the audio from the far side of a cut
+  being left in the seam; it does not change an interval being a whole number
+  of frames long. As long as no container can put two frames at one instant, a
+  seam gains up to 10.7 ms of silence or loses up to 10.7 ms of sound.
+- **The frames written here carry no ADTS CRC** (`protection_absent = 1`). It
+  is a per-frame field, so they sit legally among frames that have one, but
+  they are not byte-for-byte the same shape as the recording's.
+- **`smart` goes as far as AAC and no further.** A replacement frame has to
+  cover the same samples the recording's frame did, and whether it can comes
+  down to the encoder's delay being a whole number of frames. AAC's is 1024,
+  exactly one frame, so its packets land on the same grid. AC-3's is 256,
+  which puts every packet it makes 256 samples off that grid; MP2's encoder
+  will not take planar float at all. Both are caught before the run, said out
+  loud and copied instead of quietly doing nothing -- so **on such material
+  the default behaves exactly as `copy` does.**
+- `--aac` reaches only the frames this tool writes. Copied frames keep their
+  own ADTS headers, so **material cannot be converted from one to the other**:
+  the payload may use tools the other version does not have, and flipping the
+  bit alone would be a lie. A request that disagrees with the recording is
+  refused with a note rather than producing a mixed stream -- except under a
+  whole-track re-encode, where nothing is copied and it is honoured.

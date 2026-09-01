@@ -14,7 +14,7 @@
 
 | | |
 |---|---|
-| [GUI](gui.md) | The cut editor, the filmstrip, proxy editing, the thumbnail track and scene detection, playback |
+| [GUI](gui.md) | The cut editor, the filmstrip, the seek index, the thumbnail track and scene detection, playback, the proxy |
 | [Commercial boundary detection](cm-detection.md) | Subtitle resets, silence and logo presence, the 15-second grid, and the design that keeps false positives out |
 | [Broadcast workflow compatibility](broadcast-ts.md) | PID layout of the output TS, sequence headers, ADTS, L-SMASH / DGIndex |
 

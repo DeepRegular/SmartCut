@@ -9,6 +9,7 @@
 use anyhow::{anyhow, Result};
 use ffmpeg_next as ff;
 
+pub mod adts;
 pub mod audio;
 pub mod bitstream;
 pub mod caption;
@@ -20,6 +21,7 @@ pub mod plan;
 pub mod playback_audio;
 pub mod preview;
 pub mod proxy;
+pub mod seek_index;
 pub mod thumbs;
 
 pub use cm::{
@@ -28,8 +30,10 @@ pub use cm::{
     find_silences, find_silences_with, refine_boundaries as cm_refine_boundaries,
     DetectOptions,
 };
+pub use adts::{AacVersion, AdtsFormat};
 pub use cut::{cut, cut_with_progress, write_audio_es, AudioMode, CutOptions};
 pub use index::{ContainerIndex, IndexSource, PacketScan};
+pub use seek_index::SeekIndex;
 pub use preview::{frame_at, play_from, shot_at, shots_at, Pace, Shot};
 pub use proxy::{Marks, ProxyOptions};
 pub use thumbs::{ThumbOptions, Track};
@@ -50,6 +54,16 @@ pub struct AccessPoint {
     /// Whether those leading pictures may be cut away, i.e. none of them is
     /// itself a reference picture.
     pub droppable: bool,
+    /// Byte offset of the packet the I picture arrives in, or -1 when the
+    /// index could not say.
+    ///
+    /// This is what makes a seek exact. A transport stream has no seek table,
+    /// so libavformat answers a timestamp by bisecting the file on byte
+    /// position -- which lands near the instant asked for and not on it, and
+    /// in decode order an I picture sits *before* its leading pictures, so
+    /// landing a little late means missing the entry point entirely. Given
+    /// the byte it starts at there is nothing left to approximate.
+    pub pos: i64,
 }
 
 impl AccessPoint {
@@ -132,7 +146,21 @@ pub struct Source {
     /// the picture that was asked for -- and in decode order an I picture
     /// sits *before* its leading pictures, so overshooting is invisible
     /// until the entry point simply never turns up.
+    ///
+    /// The fallback, now: where the index knows the byte an access point
+    /// starts at, [`index::seek_to_entry`] goes straight there and no margin
+    /// is spent. This is what is left for the containers and the indexes that
+    /// cannot say.
     pub seek_margin: f64,
+    /// Whether a raw byte offset may be seeked to.
+    ///
+    /// True of the stream formats, which are demuxed by reading forward from
+    /// wherever the file happens to be positioned. Not true of MP4 or
+    /// Matroska: their demuxers walk an internal sample table and a
+    /// repositioned file handle does not move it, so a byte seek there would
+    /// be quietly ignored -- and they carry a real seek table anyway, which
+    /// is exact already.
+    pub byte_seekable: bool,
 }
 
 pub fn init() -> Result<()> {
@@ -183,10 +211,21 @@ pub fn scan(path: &str) -> Result<Source> {
     scan_with(path, &index::PacketScan)
 }
 
+/// Container formats whose demuxer reads forward from wherever the file is
+/// positioned, and so can be placed by byte offset. See
+/// [`Source::byte_seekable`].
+const BYTE_SEEKABLE: [&str; 5] = ["mpegts", "mpeg", "h264", "hevc", "mpegvideo"];
+
 /// Probe the source and build its access-point index with the given strategy.
 pub fn scan_with(path: &str, source: &dyn index::IndexSource) -> Result<Source> {
     init()?;
     let ictx = ff::format::input(&path).map_err(|e| anyhow!("cannot open {path}: {e}"))?;
+    // Read before the demuxer is handed to the index source, which takes it.
+    let byte_seekable = ictx
+        .format()
+        .name()
+        .split(',')
+        .any(|n| BYTE_SEEKABLE.contains(&n.trim()));
 
     let stream = ictx
         .streams()
@@ -293,6 +332,7 @@ pub fn scan_with(path: &str, source: &dyn index::IndexSource) -> Result<Source> 
         path: path.to_string(),
         audio,
         seek_margin,
+        byte_seekable,
         video,
         duration,
         start_time,

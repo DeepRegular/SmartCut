@@ -47,6 +47,7 @@ fn main() -> Result<()> {
     let mut output: Option<String> = None;
     let mut analyze = false;
     let mut index_kind = "scan".to_string();
+    let mut seek_index: Option<String> = None;
     let mut preview_at: Option<f64> = None;
     let mut make_proxy = false;
     let mut as_proxy = false;
@@ -55,7 +56,9 @@ fn main() -> Result<()> {
     let mut audio_es = false;
     let mut cut_near: Option<f64> = None;
     let mut use_logo = false;
-    let mut audio_mode = smartcut_core::AudioMode::Copy;
+    // Whatever the engine has as its default, which is smart rendering.
+    let mut audio_mode = smartcut_core::AudioMode::default();
+    let mut aac = smartcut_core::AacVersion::Auto;
 
     let mut i = 0;
     while i < args.len() {
@@ -81,8 +84,18 @@ fn main() -> Result<()> {
                 i += 1;
                 audio_mode = match args.get(i).map(String::as_str) {
                     Some("copy") => smartcut_core::AudioMode::Copy,
+                    Some("smart") => smartcut_core::AudioMode::Smart,
                     Some("reencode") => smartcut_core::AudioMode::Reencode,
-                    other => bail!("--audio-mode wants copy or reencode, got {other:?}"),
+                    other => bail!("--audio-mode wants copy, smart or reencode, got {other:?}"),
+                };
+            }
+            "--aac" => {
+                i += 1;
+                aac = match args.get(i).map(String::as_str) {
+                    Some("auto") => smartcut_core::AacVersion::Auto,
+                    Some("mpeg2") => smartcut_core::AacVersion::Mpeg2,
+                    Some("mpeg4") => smartcut_core::AacVersion::Mpeg4,
+                    other => bail!("--aac wants auto, mpeg2 or mpeg4, got {other:?}"),
                 };
             }
             "--preview" => {
@@ -92,6 +105,11 @@ fn main() -> Result<()> {
             "--index" => {
                 i += 1;
                 index_kind = args.get(i).context("--index needs scan|container")?.clone();
+            }
+            "--seek-index" => {
+                i += 1;
+                seek_index =
+                    Some(args.get(i).context("--seek-index needs a path")?.clone());
             }
             "--proxy" => make_proxy = true,
             "--as-proxy" => as_proxy = true,
@@ -117,19 +135,51 @@ fn main() -> Result<()> {
         "container" => Box::new(index::ContainerIndex),
         other => bail!("unknown --index {other}; want scan or container"),
     };
+    // A seek index written by an earlier run stands in for the walk over the
+    // packets. Reading it back is the whole point: it is the same answer, and
+    // it did not cost a pass over the recording to get.
+    let index_file = seek_index.as_ref().map(std::path::PathBuf::from);
+    let held = match &index_file {
+        Some(p) if p.is_file() => Some(smartcut_core::SeekIndex::load(p)?),
+        _ => None,
+    };
     // `--as-proxy` reads the input as a proxy of something else: same file,
     // but its timestamps are the recording's and must not be rebased again.
     let mut src = if as_proxy {
         smartcut_core::proxy::open(&input)?
+    } else if let Some(ix) = &held {
+        smartcut_core::scan_with(&input, ix)?
     } else {
         smartcut_core::scan_with(&input, index_source.as_ref())?
     };
+    // Written straight away, so that a run which never builds a thumbnail
+    // track still leaves the expensive half behind. The `--scenes` path
+    // writes it again with the track once it has one.
+    let writing = index_file.filter(|_| held.is_none() && !as_proxy);
+    if let Some(p) = &writing {
+        smartcut_core::SeekIndex::of(&src, None).save(p)?;
+    }
     let v = &src.video;
     println!("input : {}", src.path);
     println!(
         "        {} {}x{} {:.3}fps  has_b_frames={}  dur={:.3}s  start={:.3}s",
         v.codec, v.width, v.height, v.frame_rate, v.has_b_frames, src.duration, src.start_time
     );
+
+    if let Some(a) = src.audio.as_ref() {
+        // Which AAC the recording carries is the thing to know before a cut
+        // re-encodes any of it: a broadcast is MPEG-2 AAC, and a frame this
+        // tool writes has to say the same.
+        let form = match smartcut_core::adts::of_source(&src) {
+            Some(f) if f.mpeg2 => "  MPEG-2 ADTS".to_string(),
+            Some(_) => "  MPEG-4 ADTS".to_string(),
+            None => String::new(),
+        };
+        println!(
+            "audio : {} {}Hz {}ch{form}",
+            a.codec, a.sample_rate, a.channels
+        );
+    }
 
     let open = src.points.iter().filter(|p| p.open_gop()).count();
     let droppable = src.points.iter().filter(|p| p.open_gop() && p.droppable).count();
@@ -165,10 +215,19 @@ fn main() -> Result<()> {
     if scenes {
         let opts = smartcut_core::ThumbOptions::default();
         let began = std::time::Instant::now();
-        let track = smartcut_core::thumbs::build(&src, &opts, None)?;
+        // A held index carries the track it was built with, so the pass over
+        // the key pictures is not repeated either.
+        let built;
+        let (track, how) = match held.as_ref().and_then(|ix| ix.track.as_ref()) {
+            Some(t) => (t, "読み込み"),
+            None => {
+                built = smartcut_core::thumbs::build(&src, &opts, None)?;
+                (&built, "構築")
+            }
+        };
         let bytes: usize = track.thumbs.iter().map(|t| t.jpeg.len()).sum();
         println!(
-            "\nサムネイル : {} 枚 ({:.2}s 間隔, 幅 {}px, {:.1} MB) — {:.2}s で構築",
+            "\nサムネイル : {} 枚 ({:.2}s 間隔, 幅 {}px, {:.1} MB) — {:.2}s で{how}",
             track.thumbs.len(),
             track.interval,
             track.width,
@@ -182,6 +241,14 @@ fn main() -> Result<()> {
             track.typical,
             src.duration / track.scenes.len().max(1) as f64
         );
+        if let Some(p) = &writing {
+            smartcut_core::SeekIndex::of(&src, Some(track)).save(p)?;
+            println!(
+                "シーク用インデックス : {} ({:.1} MB)",
+                p.display(),
+                std::fs::metadata(p).map(|m| m.len()).unwrap_or(0) as f64 / 1e6
+            );
+        }
         if let Ok(path) = std::env::var("SMARTCUT_SCENES_OUT") {
             let dump: String =
                 track.scenes.iter().map(|t| format!("{t:.3}\n")).collect();
@@ -418,11 +485,11 @@ fn main() -> Result<()> {
         return Ok(());
     }
     let out = output.unwrap();
-    println!("\nrender:");
-    cut(&src, &plans, &out, &CutOptions { audio_mode, ..Default::default() })?;
+    println!("\nrender:  audio {}", audio_mode.as_str());
+    cut(&src, &plans, &out, &CutOptions { audio_mode, aac, ..Default::default() })?;
     if audio_es {
         let beside = std::path::Path::new(&out).with_extension("aac");
-        let n = smartcut_core::write_audio_es(&out, &beside.to_string_lossy())?;
+        let n = smartcut_core::write_audio_es(&out, &beside.to_string_lossy(), aac)?;
         println!("wrote {} ({n} packets)", beside.display());
     }
     println!("wrote {out}");

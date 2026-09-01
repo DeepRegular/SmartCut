@@ -42,6 +42,8 @@ run() {
 
 run "音声コピー (MP4)"          "$WORK/_ac.mp4" 0.040
 run "音声コピー (TS)"           "$WORK/_ac.ts"  0.040
+run "音声スマート (MP4)"        "$WORK/_as.mp4" 0.040 --audio-mode smart
+run "音声スマート (TS)"         "$WORK/_as.ts"  0.040 --audio-mode smart
 run "音声サンプル精度 (MP4)"    "$WORK/_ar.mp4" 0.005 --audio-mode reencode
 # The one combination that was silently broken: our encoder makes raw AAC,
 # and MPEG-TS has to reframe it into ADTS from the stream's own extradata.

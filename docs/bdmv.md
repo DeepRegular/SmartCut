@@ -36,6 +36,7 @@ BD's CLPI EP map only has to be added there.
 |---|---|
 | `PacketScan` | Scans every packet. Exact, and works on any container |
 | `ContainerIndex` | Reads the container's seek table (MP4's `stss`, and so on) |
+| `SeekIndex` | Reads back a previous walk that was written out ([the seek index](gui.md#the-seek-index-seek_indexrs)) |
 | (future) `ClpiIndex` | Reads BD's CLIPINF EP map |
 
 `--index scan|container` switches between them. Measured on a real 654 MB MP4:

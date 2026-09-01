@@ -501,13 +501,6 @@ fn write_side(
     Ok(Wrote { encoder: s.name, width: s.width, height: s.height, pictures })
 }
 
-/// How often the pictures collected so far are handed to `share`.
-///
-/// The point of handing them over at all is that the film strip stops having
-/// to decode the recording, so this wants to be short. It is a `Vec` moved
-/// across a callback, so short costs nothing.
-const SHARE_EVERY: std::time::Duration = std::time::Duration::from_millis(500);
-
 /// Decode the recording once, writing a small copy of it.
 ///
 /// `stop` is asked between packets; answering true abandons the build and
@@ -594,7 +587,7 @@ pub fn build(
             if entry {
                 collector.feed(t, &frame)?;
                 if let Some(f) = share.as_mut() {
-                    if shared.elapsed() >= SHARE_EVERY {
+                    if shared.elapsed() >= thumbs::SHARE_EVERY {
                         shared = std::time::Instant::now();
                         f(collector.take_new());
                     }

@@ -56,9 +56,11 @@ For how the AppImage, tar.gz and deb, and the Windows installer are produced, se
 ```bash
 bash tests/run_tests.sh               # Python E2E                                13
 bash tests/run_rust_tests.sh          # Rust E2E (+9 with the container index)    13
-bash tests/run_audio_tests.sh         # A/V sync (+5 with reencode)                5
-bash tests/run_audio_content_tests.sh # is real material's audio in the right place 4
+bash tests/run_audio_tests.sh         # A/V sync (+10 with copy and reencode)      5
+bash tests/run_audio_content_tests.sh # is real material's audio in the right place 6
+bash tests/run_aac_tests.sh           # what the output's AAC frames are made of    8
 bash tests/run_preview_tests.sh       # does a scrub show the time you asked for    7
+bash tests/run_index_tests.sh         # does the index answer as the walk did      27
 bash tests/run_proxy_tests.sh         # can the proxy stand in for the recording   22
 bash tests/run_scene_tests.sh         # scene detection vs commercial boundaries    1
 bash tests/run_ts_layout_tests.sh     # TS provenance and sequence headers          5
@@ -69,8 +71,10 @@ The synthetic fixtures (H.264 / HEVC / open GOP / 29.97 fps / MPEG-2 TS) are
 generated automatically into `/tmp/smartcut-fixtures/`.
 
 The tests that **read real material** are `run_audio_content_tests.sh`,
-`run_preview_tests.sh`, `run_proxy_tests.sh` (which also runs on synthetic
-material), `run_scene_tests.sh`, `run_cm_tests.sh` and
+`run_aac_tests.sh`,
+`run_preview_tests.sh`, `run_index_tests.sh` and `run_proxy_tests.sh` (both of
+which also run on synthetic material), `run_scene_tests.sh`, `run_cm_tests.sh`
+and
 `run_ts_layout_tests.sh`. They look in `~/media` by default, which
 `SMARTCUT_MEDIA` overrides. The audio comparison needs numpy (it SKIPs without
 it).
@@ -80,14 +84,28 @@ the same:
 
 ```bash
 SMARTCUT_INDEX=container bash tests/run_rust_tests.sh   # take the index from the container
+SMARTCUT_AUDIO=copy      bash tests/run_audio_tests.sh  # never touch the audio (smart is the default)
 SMARTCUT_AUDIO=reencode  bash tests/run_audio_tests.sh  # sample-accurate audio
+SMARTCUT_BYTE_SEEK=0     bash tests/run_preview_tests.sh # seek by timestamp again
 ```
 
-The [proxy](gui.md#proxy-editing-proxyrs) side is tunable the same way:
+The [seek index](gui.md#the-seek-index-seek_indexrs) can be built from the CLI
+too. Pass the same path twice and the second run skips the walk:
+
+```bash
+smartcut rec.ts --seek-index /tmp/rec.scix --scenes
+```
 
 | Variable | Default | |
 |---|---|---|
-| `SMARTCUT_PROXY` | on | `0` / `off` to skip it (read from the recording directly) |
+| `SMARTCUT_BYTE_SEEK` | on | `0` / `off` goes back to aiming at a timestamp and reading forward from `seek_margin` seconds early |
+
+The [proxy](gui.md#proxy-editing-proxyrs) is off by default, and tunable the
+same way:
+
+| Variable | Default | |
+|---|---|---|
+| `SMARTCUT_PROXY` | off | `1` / `on` to build one (the preview, the strip and playback then read from it) |
 | `SMARTCUT_PROXY_WIDTH` | `1280` | Proxy width (square pixels). Higher looks better and takes longer to build. **The cap is 1920x1080** (for tall material, where the height hits the cap first, the width comes down accordingly) |
 | `SMARTCUT_PROXY_QUALITY` | `22` | Quality, in x264 CRF terms (lower is better; 18–24 is the useful range) |
 | `SMARTCUT_PROXY_ENCODER` | auto | Comma-separated list of encoders to try (`mpeg4`, for instance) |

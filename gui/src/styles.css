@@ -182,9 +182,20 @@ main { flex: 1; min-height: 0; display: flex; gap: 0; }
 .warm { color: var(--dim); font-size: 11px; font-variant-numeric: tabular-nums; white-space: nowrap; }
 
 /* --- transport -------------------------------------------------------- */
+/* Wrapping rather than scrolling. A row this long does not fit the window's
+   own default width, and `overflow-x: auto` answered that with a scroll bar
+   drawn across the bottom of the buttons: a click landing on it went to the
+   row instead of to the button under it, so the last few pixels of every
+   button were dead. Nothing here is worth reaching by scrolling anyway --
+   these are the controls, not a list. The buttons break onto a second line
+   between the clusters, and inside a cluster only if even that will not fit. */
 .transport {
-  display: flex; align-items: center; justify-content: center; gap: 2px;
-  flex-wrap: nowrap; overflow-x: auto;
+  display: flex; align-items: center; justify-content: center;
+  flex-wrap: wrap; row-gap: 4px; column-gap: 12px;
+}
+.tgroup {
+  display: flex; align-items: center; justify-content: center;
+  flex-wrap: wrap; gap: 2px;
 }
 .transport button {
   background: #333; color: var(--text); border: 1px solid #4a4a4a; border-radius: 2px;
@@ -202,7 +213,6 @@ main { flex: 1; min-height: 0; display: flex; gap: 0; }
 }
 .transport .cut:hover:not(:disabled) { background: #ffb638; }
 .transport .tool { font-size: 11.5px; }
-.gap { width: 12px; flex: none; }
 
 .statusbar {
   display: flex; align-items: center; gap: 16px;

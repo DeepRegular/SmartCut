@@ -362,24 +362,33 @@ fn walk(
     let mut ictx = ff::format::input(&src.path)?;
     let idx = src.video.stream_index;
     let in_tb = src.video.time_base;
-    let landing = (from - margin).max(0.0);
-    // Asking for the beginning has to mean the beginning, exactly as in
-    // `cut::seek_to`: aiming at the container's own start time lands *past*
-    // the file's first entry point, and that is the one place the back-off
-    // below has nothing earlier to fall back to. A recording whose first
-    // entry point sits at time zero -- which is most of them once the times
-    // are rebased -- could not have its opening pictures read at all, and the
-    // film strip drew its first cell blank while a proxy was being built.
-    //
-    // The threshold is that first entry point rather than zero, because
-    // nothing before it can be decoded anyway: aiming at it would land past
-    // it and cost a whole second pass to find that out.
-    let target = if src.points.first().is_none_or(|p| landing <= p.time) {
-        i64::MIN / 2
-    } else {
-        ((landing + src.start_time) * ff::ffi::AV_TIME_BASE as f64) as i64
-    };
-    let _ = ictx.seek(target, ..target);
+    // The index knows the byte `from` begins at, so on the first attempt
+    // there is nothing to approximate and no margin to spend. The timestamp
+    // seek below is what is left for the containers and indexes that cannot
+    // say -- and for the second attempt, which only happens now when the
+    // first somehow still landed late.
+    let placed = margin == 0.0 && crate::index::seek_to_entry(&mut ictx, src, from).is_some();
+    if !placed {
+        let landing = (from - margin).max(0.0);
+        // Asking for the beginning has to mean the beginning, exactly as in
+        // `cut::seek_to`: aiming at the container's own start time lands
+        // *past* the file's first entry point, and that is the one place the
+        // back-off below has nothing earlier to fall back to. A recording
+        // whose first entry point sits at time zero -- which is most of them
+        // once the times are rebased -- could not have its opening pictures
+        // read at all, and the film strip drew its first cell blank while a
+        // proxy was being built.
+        //
+        // The threshold is that first entry point rather than zero, because
+        // nothing before it can be decoded anyway: aiming at it would land
+        // past it and cost a whole second pass to find that out.
+        let target = if src.points.first().is_none_or(|p| landing <= p.time) {
+            i64::MIN / 2
+        } else {
+            ((landing + src.start_time) * ff::ffi::AV_TIME_BASE as f64) as i64
+        };
+        let _ = ictx.seek(target, ..target);
+    }
 
     let params =
         ictx.stream(idx).ok_or_else(|| anyhow!("stream {idx} vanished"))?.parameters();

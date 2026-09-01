@@ -8,7 +8,7 @@ use std::sync::Mutex;
 
 use base64::Engine as _;
 use serde::Serialize;
-use smartcut_core::{index, plan, proxy, PlanOptions, Source};
+use smartcut_core::{index, plan, proxy, seek_index, PlanOptions, SeekIndex, Source};
 use tauri::{Emitter, Manager, State};
 
 #[derive(Default)]
@@ -42,6 +42,15 @@ struct Generation(AtomicU64);
 /// never holds the lock the timeline needs to answer a keystroke.
 #[derive(Default)]
 struct Thumbs(Mutex<Option<smartcut_core::Track>>);
+
+/// The seek index read off disc for the open recording, when there was one.
+///
+/// Held between [`open_source`] and [`prepare`] because it answers both: the
+/// access points it carries are what the recording was opened with, and the
+/// thumbnail track beside them is what `prepare` would otherwise spend a pass
+/// over the key pictures building.
+#[derive(Default)]
+struct Held(Mutex<Option<SeekIndex>>);
 
 /// Set while playback is running; cleared to ask it to stop.
 #[derive(Default)]
@@ -163,15 +172,72 @@ async fn open_source(path: String, app: tauri::AppHandle) -> Result<SourceInfo, 
     off_thread(move || open_now(&path, &app)).await
 }
 
+/// Where seek indexes are kept.
+fn index_dir(app: &tauri::AppHandle) -> Result<std::path::PathBuf, String> {
+    let dir = app
+        .path()
+        .app_cache_dir()
+        .map_err(|e| format!("キャッシュの置き場が分かりません: {e}"))?
+        .join("index");
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    Ok(dir)
+}
+
+/// The seek index written for this recording by an earlier session, if there
+/// is one and it can still be read.
+///
+/// A file that cannot be read is deleted rather than stepped around: it would
+/// be found again on the next open and fail again.
+fn held_index(app: &tauri::AppHandle, path: &str) -> Option<SeekIndex> {
+    let file = seek_index::cache_path(&index_dir(app).ok()?, path).ok()?;
+    if !file.is_file() {
+        return None;
+    }
+    match SeekIndex::load(&file) {
+        Ok(ix) => {
+            // Not the least recently used, since it is being used now.
+            seek_index::touch(&file);
+            Some(ix)
+        }
+        Err(e) => {
+            eprintln!("index: discarding {}: {e}", file.display());
+            let _ = std::fs::remove_file(&file);
+            None
+        }
+    }
+}
+
 /// Reading a recording's index is a pass over the file, so it runs on a
 /// worker thread; see [`off_thread`].
 fn open_now(path: &str, app: &tauri::AppHandle) -> Result<SourceInfo, String> {
-    let src = smartcut_core::scan(path).map_err(|e| e.to_string())?;
+    // The pass over the packets is the same answer every time, so a previous
+    // session's is taken where there is one: about a second per gigabyte
+    // saved, which on a half-hour recording is the whole of the wait between
+    // choosing a file and being able to move the pointer.
+    let mut held = held_index(app, path);
+    let mut src = match &held {
+        Some(ix) => smartcut_core::scan_with(path, ix),
+        None => smartcut_core::scan(path),
+    };
+    // An index that the key could not tell was stale is still an index that
+    // does not fit. Out it goes, and this open reads the file.
+    if src.is_err() && held.is_some() {
+        eprintln!("index: {} -- reading the recording instead", src.unwrap_err());
+        if let Ok(dir) = index_dir(app) {
+            if let Ok(file) = seek_index::cache_path(&dir, path) {
+                let _ = std::fs::remove_file(file);
+            }
+        }
+        held = None;
+        src = smartcut_core::scan(path);
+    }
+    let src = src.map_err(|e| e.to_string())?;
     // Anything still building for the file that was open belongs to nothing
     // now; the count going up is what tells it so.
     app.state::<Generation>().0.fetch_add(1, Ordering::SeqCst);
     *app.state::<Thumbs>().0.lock().unwrap() = None;
     *app.state::<Proxy>().0.lock().unwrap() = None;
+    *app.state::<Held>().0.lock().unwrap() = held;
     let info = SourceInfo {
         path: src.path.clone(),
         codec: src.video.codec.clone(),
@@ -336,12 +402,23 @@ struct ProxyInfo {
 }
 
 #[derive(Serialize)]
+struct IndexInfo {
+    path: String,
+    bytes: u64,
+    /// Whether it was already on disc from a previous session.
+    cached: bool,
+}
+
+#[derive(Serialize)]
 struct PrepareInfo {
     proxy: Option<ProxyInfo>,
+    /// The seek index this open left behind, or picked up. Absent only when
+    /// the cache could not be written at all.
+    index: Option<IndexInfo>,
     track: TrackInfo,
-    /// Why there is no proxy, when there is none. Empty otherwise: the
-    /// recording is still perfectly editable without one, only slower to
-    /// look at, so a failure here is worth saying and not worth stopping for.
+    /// Why there is no proxy, when one was asked for and could not be made.
+    /// Empty otherwise -- including in the ordinary case where none was
+    /// asked for, which is not a failure and must not read as one.
     note: String,
 }
 
@@ -356,14 +433,23 @@ fn track_info(track: &smartcut_core::Track, seconds: f64) -> TrackInfo {
     }
 }
 
-/// Build the proxy for the open recording -- or pick up the one built last
-/// time -- and the thumbnail track that comes with it.
+/// Is the proxy asked for?
 ///
-/// The two are made together because they are the same pass: the pictures the
-/// track is built from are the recording's access points, and those are
-/// exactly the pictures the proxy is being given keyframes at. Building the
-/// proxy therefore costs the thumbnails nothing, and a cached proxy means the
-/// track is rebuilt from a small file instead of from the recording.
+/// Off unless it is. A proxy is a whole re-encode of the recording -- a
+/// minute or two of every core, and about four gigabytes an hour of
+/// programme -- and what it buys is the *picture* getting cheaper to decode.
+/// The seek index buys the rest of it for a fraction of a percent of that:
+/// the pass over the packets and the pass over the key pictures are both kept
+/// instead of repeated, and the byte offsets it carries take the guesswork
+/// out of seeking. What is left for the proxy is material where decoding one
+/// picture is itself too slow to scrub -- which 1440x1080 MPEG-2 is not, and
+/// 8K will be.
+fn proxy_wanted() -> bool {
+    matches!(std::env::var("SMARTCUT_PROXY").as_deref(), Ok("1") | Ok("on") | Ok("yes"))
+}
+
+/// Make the recording ready to look at: the thumbnail track and scene index,
+/// and the proxy if one was asked for.
 #[tauri::command]
 async fn prepare(app: tauri::AppHandle) -> Result<PrepareInfo, String> {
     let (src, generation) = {
@@ -373,44 +459,127 @@ async fn prepare(app: tauri::AppHandle) -> Result<PrepareInfo, String> {
         (src, app.state::<Generation>().0.load(Ordering::SeqCst))
     };
     tauri::async_runtime::spawn_blocking(move || {
-        let opts = proxy::ProxyOptions::default();
         let thumb_opts = smartcut_core::ThumbOptions::default();
-        match make_proxy(&app, &src, &opts, &thumb_opts, generation) {
-            Ok(Some(info)) => Ok(info),
-            // Superseded: another file was opened while this ran.
-            Ok(None) => Err("cancelled".to_string()),
-            Err(note) => {
-                // A build that was abandoned because another file was opened
-                // is not a failure to fall back from: the recording it was
-                // for is not the one on screen any more.
-                if app.state::<Generation>().0.load(Ordering::SeqCst) != generation {
-                    return Err("cancelled".to_string());
+        let mut note = String::new();
+        if proxy_wanted() {
+            let opts = proxy::ProxyOptions::default();
+            match make_proxy(&app, &src, &opts, &thumb_opts, generation) {
+                Ok(Some(info)) => return Ok(info),
+                // Superseded: another file was opened while this ran.
+                Ok(None) => return Err("cancelled".to_string()),
+                Err(why) => {
+                    // A build that was abandoned because another file was
+                    // opened is not a failure to fall back from: the
+                    // recording it was for is not the one on screen any more.
+                    if app.state::<Generation>().0.load(Ordering::SeqCst) != generation {
+                        return Err("cancelled".to_string());
+                    }
+                    eprintln!("proxy: {why}");
+                    note = why;
                 }
-                // No proxy, so the recording answers for its own pictures --
-                // which is what it did before there were proxies at all. The
-                // thumbnails still have to be built, from the recording.
-                eprintln!("proxy: {note}");
-                let began = std::time::Instant::now();
-                let reporter = app.clone();
-                let track = smartcut_core::thumbs::build(
-                    &src,
-                    &thumb_opts,
-                    Some(Box::new(move |f| {
-                        let _ = reporter.emit("prepare-progress", ("サムネイル", f));
-                    })),
-                )
-                .map_err(|e| e.to_string())?;
-                let info = track_info(&track, began.elapsed().as_secs_f64());
-                if app.state::<Generation>().0.load(Ordering::SeqCst) != generation {
-                    return Err("cancelled".to_string());
-                }
-                *app.state::<Thumbs>().0.lock().unwrap() = Some(track);
-                Ok(PrepareInfo { proxy: None, track: info, note })
             }
         }
+        without_proxy(&app, &src, &thumb_opts, generation, note)
     })
     .await
     .map_err(|e| e.to_string())?
+}
+
+/// The ordinary path: the recording answers for its own pictures, and what is
+/// kept about it is the seek index.
+///
+/// Either the index from an earlier session already holds the thumbnail
+/// track, in which case there is nothing to do at all, or the key pictures
+/// are decoded once and the result written down so that this is the last time
+/// -- about ten seconds for half an hour of 1440x1080 MPEG-2, against the
+/// minute or two a proxy takes over the same material.
+fn without_proxy(
+    app: &tauri::AppHandle,
+    src: &Source,
+    thumb_opts: &smartcut_core::ThumbOptions,
+    generation: u64,
+    note: String,
+) -> Result<PrepareInfo, String> {
+    let began = std::time::Instant::now();
+    let current = || app.state::<Generation>().0.load(Ordering::SeqCst);
+
+    // The index read when the file was opened carries the track it was built
+    // with. Taken rather than borrowed: the pictures are tens of megabytes
+    // and there is no reason to hold them twice.
+    let kept = app.state::<Held>().0.lock().unwrap().as_mut().and_then(|ix| ix.track.take());
+    if let Some(track) = kept {
+        let info = track_info(&track, began.elapsed().as_secs_f64());
+        if current() != generation {
+            return Err("cancelled".to_string());
+        }
+        let index = index_info(app, src, true);
+        *app.state::<Thumbs>().0.lock().unwrap() = Some(track);
+        return Ok(PrepareInfo { proxy: None, index, track: info, note });
+    }
+
+    let reporter = app.clone();
+    let sharer = app.clone();
+    let watcher = app.clone();
+    let mut track = smartcut_core::thumbs::build_with(
+        src,
+        thumb_opts,
+        Some(Box::new(move |f| {
+            let _ = reporter.emit("prepare-progress", ("シーク用インデックス", f));
+        })),
+        Some(Box::new(move |batch| hold(&sharer, batch, generation))),
+        Some(Box::new(move || {
+            watcher.state::<Generation>().0.load(Ordering::SeqCst) != generation
+        })),
+    )
+    .map_err(|e| e.to_string())?;
+    if current() != generation {
+        return Err("cancelled".to_string());
+    }
+    // The pictures handed over during the pass are already held; what came
+    // back has the tail of them and the scene index. Both halves are this
+    // pass's, so they go back together in the order they were made.
+    if let Some(head) = app.state::<Thumbs>().0.lock().unwrap().take() {
+        let tail = std::mem::take(&mut track.thumbs);
+        track.thumbs = head.thumbs;
+        track.thumbs.extend(tail);
+    }
+    let info = track_info(&track, began.elapsed().as_secs_f64());
+    let index = remember(app, src, Some(&track));
+    *app.state::<Thumbs>().0.lock().unwrap() = Some(track);
+    Ok(PrepareInfo { proxy: None, index, track: info, note })
+}
+
+/// Write down what this open worked out, so the next one does not repeat it.
+///
+/// A failure here is not one worth stopping for: the recording is open and
+/// everything works, it will simply cost the same passes again next time.
+fn remember(
+    app: &tauri::AppHandle,
+    src: &Source,
+    track: Option<&smartcut_core::Track>,
+) -> Option<IndexInfo> {
+    let dir = index_dir(app).ok()?;
+    let file = seek_index::cache_path(&dir, &src.path).ok()?;
+    if let Err(e) = SeekIndex::of(src, track).save(&file) {
+        eprintln!("index: cannot write {}: {e}", file.display());
+        return None;
+    }
+    // An index is a thousandth of what a proxy costs -- the pictures are 192
+    // pixels wide and there is no video at all, so half an hour comes to
+    // around forty megabytes -- which is why the count is large where the
+    // proxy cache's is eight. A gigabyte holds a couple of dozen recordings,
+    // and the index for one finished last week is still worth having.
+    let _ = seek_index::prune(&dir, 32, 1 << 30);
+    index_info(app, src, false)
+}
+
+fn index_info(app: &tauri::AppHandle, src: &Source, cached: bool) -> Option<IndexInfo> {
+    let file = seek_index::cache_path(&index_dir(app).ok()?, &src.path).ok()?;
+    Some(IndexInfo {
+        bytes: std::fs::metadata(&file).map(|m| m.len()).unwrap_or(0),
+        path: file.to_string_lossy().into_owned(),
+        cached,
+    })
 }
 
 /// The proxy half of [`prepare`]. `Ok(None)` means another file was opened
@@ -422,15 +591,6 @@ fn make_proxy(
     thumb_opts: &smartcut_core::ThumbOptions,
     generation: u64,
 ) -> Result<Option<PrepareInfo>, String> {
-    // A way out for anyone who would rather not have a hundred megabytes per
-    // recording sitting in the cache: without a proxy the recording answers
-    // for its own pictures, which is how this worked before.
-    if matches!(
-        std::env::var("SMARTCUT_PROXY").as_deref(),
-        Ok("0") | Ok("off") | Ok("no")
-    ) {
-        return Err("SMARTCUT_PROXY で無効にされています".to_string());
-    }
     let dir = app
         .path()
         .app_cache_dir()
@@ -517,22 +677,32 @@ fn make_proxy(
     if app.state::<Generation>().0.load(Ordering::SeqCst) != generation {
         return Ok(None);
     }
+    // The access points are the recording's whichever file the pictures came
+    // from, and a proxy's thumbnails sit on the same key pictures as the
+    // recording's -- that is what makes the two interchangeable. So the seek
+    // index is written here too, and a later open with the proxy turned back
+    // off still finds it.
+    let index = remember(app, src, Some(&track));
+    // Whatever a held index was carrying, the proxy's own track is what the
+    // timeline will use. Dropped rather than left to sit: it is tens of
+    // megabytes of pictures nothing will ask for again.
+    *app.state::<Held>().0.lock().unwrap() = None;
     *app.state::<Thumbs>().0.lock().unwrap() = Some(track);
     *app.state::<Proxy>().0.lock().unwrap() = Some(Proxied { src: psrc, marks });
-    Ok(Some(PrepareInfo { proxy: Some(info), track: tinfo, note: String::new() }))
+    Ok(Some(PrepareInfo { proxy: Some(info), index, track: tinfo, note: String::new() }))
 }
 
 /// Hold on to thumbnails a build has just produced, so that everything which
 /// reads held pictures can start using them now rather than when the build
 /// ends.
 ///
-/// A build over a half-hour recording runs for a minute or two, and until it
-/// finished there was nothing to answer the film strip, the scroll search or
-/// the mark cards with but the recording itself -- a seek and a GOP each
-/// time, with the encoder already on every core. These are the same pictures
-/// that pass is decoding anyway, and it decodes them in order from the start,
-/// so the part of the recording already gone past answers instantly while the
-/// rest of it is still being read.
+/// The pass runs for ten seconds over half an hour of recording, and for a
+/// minute or two where a proxy is being built as well, and until it finished
+/// there was nothing to answer the film strip, the scroll search or the mark
+/// cards with but the recording itself -- a seek and a GOP each time. These
+/// are the same pictures that pass is decoding anyway, and it decodes them in
+/// order from the start, so the part of the recording already gone past
+/// answers instantly while the rest of it is still being read.
 fn hold(app: &tauri::AppHandle, batch: smartcut_core::thumbs::Batch, generation: u64) {
     if app.state::<Generation>().0.load(Ordering::SeqCst) != generation {
         return;
@@ -814,9 +984,11 @@ async fn export(
     app: tauri::AppHandle,
     ranges: Vec<(f64, f64)>,
     output: String,
-    // Both switchable from the CLI; the window offers neither, so both are
-    // optional here and default to the plain copy.
+    // All switchable from the CLI; the window offers none of them, so they
+    // are optional here and leave the audio smart-rendered, as the engine's
+    // own default has it.
     audio_reencode: Option<bool>,
+    audio_copy: Option<bool>,
     audio_es: Option<bool>,
 ) -> Result<(), String> {
     // Cutting is minutes of I/O on a broadcast recording; keeping it off the
@@ -830,8 +1002,10 @@ async fn export(
         let opts = smartcut_core::CutOptions {
             audio_mode: if audio_reencode.unwrap_or(false) {
                 smartcut_core::AudioMode::Reencode
-            } else {
+            } else if audio_copy.unwrap_or(false) {
                 smartcut_core::AudioMode::Copy
+            } else {
+                smartcut_core::AudioMode::Smart
             },
             ..Default::default()
         };
@@ -850,7 +1024,11 @@ async fn export(
         // video is by construction the audio that is in it.
         if audio_es.unwrap_or(false) {
             let beside = std::path::Path::new(&output).with_extension("aac");
-            smartcut_core::write_audio_es(&output, &beside.to_string_lossy())
+            smartcut_core::write_audio_es(
+                &output,
+                &beside.to_string_lossy(),
+                smartcut_core::AacVersion::Auto,
+            )
                 .map_err(|e| e.to_string())?;
         }
         Ok(())
@@ -997,6 +1175,28 @@ fn write_keyframes(path: String, frames: Vec<u32>, fps: f64) -> Result<usize, St
     Ok(frames.len())
 }
 
+/// Read a keyframe list back, for the sidecar beside a recording being opened.
+///
+/// `Ok(None)` is "there is no such file", which is the ordinary case and not
+/// an error: most recordings have no marks saved next to them.
+///
+/// The write side emits bare numbers, but files that arrive from elsewhere
+/// carry a `# keyframe format v1` header and an `fps` line above them. Lines
+/// that are not a frame number are skipped rather than refused: a mark list
+/// is an aid, and failing to open the recording over a line nobody reads
+/// would be the worse trade.
+#[tauri::command]
+fn read_keyframes(path: String) -> Result<Option<Vec<u32>>, String> {
+    let body = match std::fs::read_to_string(&path) {
+        Ok(b) => b,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(e.to_string()),
+    };
+    Ok(Some(
+        body.lines().filter_map(|l| l.trim().parse::<u32>().ok()).collect(),
+    ))
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     // WebKitGTK's compositor draws nothing on a machine without a GPU: the
@@ -1016,6 +1216,7 @@ pub fn run() {
         .manage(Proxy::default())
         .manage(Generation::default())
         .manage(Thumbs::default())
+        .manage(Held::default())
         .manage(Playing::default())
         .manage(argv)
         .invoke_handler(tauri::generate_handler![
@@ -1030,6 +1231,7 @@ pub fn run() {
             scene_search,
             make_plan,
             write_keyframes,
+            read_keyframes,
             play,
             stop_play,
             export

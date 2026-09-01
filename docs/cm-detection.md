@@ -186,7 +186,7 @@ images are needed. The logo is the one thing in its corner that never moves, so
 averaging a few thousand frames leaves the logo and blurs the background away.
 High-pass that and you have the template; the test is just a correlation.
 
-Three things mattered in the implementation:
+Four things mattered in the implementation:
 
 - **Do not pick the "strongest" corner.** Programme captions are usually denser.
   The logo is on throughout the programme, so pick the corner with **the fewest
@@ -200,6 +200,15 @@ Three things mattered in the implementation:
 - **Take the threshold from the recording.** Logo density differs by station, but
   the programme occupies most of the running time, so the median score works as
   the representative "logo present" value.
+- **Make the hysteresis asymmetric in time, not just in level.** Going absent is
+  believed at once, but a return only ends the absence once it has been held for
+  the length of the smoothing window. Inside a long break the correlation
+  occasionally grazes the threshold for a frame or two on a commercial that
+  happens to resemble the template. Splitting a break there is worse than it
+  sounds: each fragment becomes its own block, each edge is snapped to its own
+  nearest junction, and the earlier block's end can then pass the later block's
+  start — **overlapping blocks**. On BS Animax one 302-second break was coming
+  out as three, two of which overlapped by 1.6 s.
 
 **A recording with no logo gets the answer "none".** Some stations do not show a
 logo continuously. Commercial blocks are always long, so if the absences found

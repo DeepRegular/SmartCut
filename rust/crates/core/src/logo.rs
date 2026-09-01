@@ -27,6 +27,10 @@ pub struct LogoOptions {
     /// having begun before the programme did, or stopped after it ended --
     /// and those are routinely only a few seconds long.
     pub min_edge_absent: f64,
+    /// How long the logo must stay up before an absence counts as over.
+    /// Shorter than the window the scores were smoothed over, a return
+    /// cannot register at full height anyway, so it is not evidence of one.
+    pub min_present: f64,
     /// A run of commercials is long. If the absences found are mostly short,
     /// what is being tracked is not a logo.
     pub typical_break: f64,
@@ -49,6 +53,7 @@ impl Default for LogoOptions {
             absent: 0.02,
             min_absent: 20.0,
             min_edge_absent: 1.0,
+            min_present: 5.0,
             typical_break: 30.0,
             max_breaks: 12,
             window_seconds: 5.0,
@@ -369,6 +374,14 @@ pub fn detect_with(
 /// Turn a score timeline into "logo missing" stretches, with hysteresis so a
 /// single dark frame does not end the programme. Also reports how often the
 /// state flipped, which is what tells a steady logo from a flickering caption.
+///
+/// The hysteresis is asymmetric in time as well as in level. Going absent is
+/// believed at once, but a return has to be held for [`LogoOptions::min_present`]
+/// before it ends the absence: inside a break the correlation occasionally
+/// grazes the threshold for a frame or two on a commercial that happens to
+/// resemble the template, and splitting one break there produces blocks that
+/// overlap -- each edge is snapped to its own nearest junction, and the
+/// earlier block's end can pass the later block's start.
 fn intervals_from(
     times: &[f64],
     scores: &[f64],
@@ -376,35 +389,52 @@ fn intervals_from(
     absent_t: f64,
     opts: &LogoOptions,
 ) -> (Vec<(f64, f64)>, usize) {
-    let mut absent = Vec::new();
+    // Each stretch, and whether it runs off an end of the recording -- an
+    // edge is held to a much shorter minimum than a break is.
+    let mut absent: Vec<(f64, f64, bool)> = Vec::new();
     let mut transitions = 0usize;
     let mut present = scores.first().copied().unwrap_or(0.0) >= present_t;
-    // An absence still running from before the first sample is an edge, and
-    // edges are held to a much shorter minimum than breaks are.
     let mut at_head = !present;
     let mut from = times.first().copied().unwrap_or(0.0);
+    // While absent: when the logo first came back, if it has been back ever
+    // since. Going absent needs one sample; coming back needs to be held.
+    let mut back: Option<f64> = None;
     for (i, &s) in scores.iter().enumerate() {
-        if present && s < absent_t {
-            present = false;
-            transitions += 1;
-            from = times[i];
-        } else if !present && s >= present_t {
-            present = true;
-            transitions += 1;
-            let least = if at_head { opts.min_edge_absent } else { opts.min_absent };
-            at_head = false;
-            if times[i] - from >= least {
-                absent.push((from, times[i]));
+        if present {
+            if s < absent_t {
+                present = false;
+                transitions += 1;
+                from = times[i];
+                back = None;
             }
+        } else if s >= present_t {
+            // An absence ends where the logo returned, not where the return
+            // was confirmed -- the wait is only to establish that it was one.
+            let since = *back.get_or_insert(times[i]);
+            if times[i] - since >= opts.min_present {
+                present = true;
+                transitions += 1;
+                absent.push((from, since, at_head));
+                at_head = false;
+                back = None;
+            }
+        } else {
+            back = None;
         }
     }
     if !present {
         if let Some(&last) = times.last() {
-            if last - from >= opts.min_edge_absent {
-                absent.push((from, last));
-            }
+            absent.push((from, last, true));
         }
     }
+
+    let absent = absent
+        .into_iter()
+        .filter(|&(a, b, edge)| {
+            b - a >= if edge { opts.min_edge_absent } else { opts.min_absent }
+        })
+        .map(|(a, b, _)| (a, b))
+        .collect();
     (absent, transitions)
 }
 

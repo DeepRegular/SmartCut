@@ -94,21 +94,29 @@ cuts. **The same applies when the head of the recording is cut.** Removing the
 head leaves only one interval, so no "between two intervals" is created, but
 **the new start is a seam in every sense** and it needs a mark too.
 
-**Seam cells and cards decode the actual frame at that point.** What is retained
-are key pictures, so the nearest retained image to a seam is **usually the frame
-the cut took away** — "the frame you supposedly cut is standing in as the mark"
-is not something you can check anything against. Seams alone set `exact` and
-really decode.
+**Seam cells decode the actual frame at that point.** What is retained are key
+pictures, so the nearest retained image to a seam is **usually the frame the cut
+took away** — "the frame you supposedly cut is standing in as the mark" is not
+something you can check anything against. Seam cells set `exact` and really
+decode.
 
-This was missed in two places. **"Is this a seam" was written twice, and the copy
-the filmstrip and the keyframe cards consulted only counted intervals from the
-second onwards** — so **only when the head was cut**, the one thing that mattered
-most, the new start, was not treated as a seam and showed a key picture instead.
-The test was unified onto the `joinTimes()` list. The other was **the cards'
-image cache**: a mark placed earlier by commercial detection could turn into a
-seam through a cut, and the already-drawn old image stayed. Fixed by including
-seam-ness in the cache key (which also makes undo restore the original image for
-free).
+This was missed in the filmstrip. **"Is this a seam" was written twice, and the
+copy the filmstrip consulted only counted intervals from the second onwards** —
+so **only when the head was cut**, the one thing that mattered most, the new
+start, was not treated as a seam and showed a key picture instead. The test was
+unified onto the `joinTimes()` list.
+
+**The cards decode every mark, seam or not.** A card carries its own time in its
+caption, and marks do not sit on key pictures: `⚑` takes the playhead where it
+is, and commercial detection reports **the frame** a break falls on. Answering
+with the nearest retained picture therefore put some other frame next to that
+caption — off by **up to half a GOP, seven frames on broadcast material**. Twenty
+marks placed across a 30-minute recording measured **eighteen showing another
+frame**. The cards now go out as one `thumbs_at` call asking for the frame at
+each mark's own time, and a retained picture only fills a card for as long as
+that decode takes — at a seam not even that, the nearest one there being material
+the cut removed. The frame at an instant does not change with the edit around it,
+so the cache is keyed by time alone and holds across cutting and undoing.
 
 **A mark that was just placed comes up selected.** A keyframe registered with `K`
 and a seam left behind by a cut both turn the list card selection-coloured
@@ -129,6 +137,19 @@ are in the exported timeline, not the original recording:**
 1532<CR><LF>
 2827<CR><LF>
 ```
+
+**A `.keyframe` of the same name beside the video is read back when the video
+is opened.** Opening what you exported and starting from an empty list means
+doing the last session's work again. The numbers are in the exported timeline,
+so reading them back treats them the same way: `0` lands on the first picture
+even when the recording's clock starts at 00:00:00.94. Numbers past the end are
+dropped — a list written for a different cut of the same recording is the likely
+reason, and a mark with no material behind it can neither be shown nor exported.
+Header lines, and lines like `fps 29.970`, are skipped: files that arrive from
+elsewhere carry them, and failing to open the recording over one unreadable line
+would be the worse trade. The selection is left alone, as with commercial
+detection — there is no reason to prefer any one of them. The number read shows
+in the status line.
 
 `Ctrl+D` starts it too. **Detection progress shows on the button.** A 30-minute
 recording with the logo takes a minute and a half — you can tell you are waiting,
@@ -544,18 +565,121 @@ wait on principle; it feels faster.
 As a by-product, **a 2-second-step filmstrip can be drawn instantly from the scan
 results** too.
 
+## The seek index (`seek_index.rs`)
+
+Two passes stand between opening a recording and being able to work on it, and
+both give **exactly the same answer every time the same file is opened**.
+
+- **The access-point index** (`index::PacketScan`) — every packet read once, in
+  decode order. Open GOPs and leading pictures can be learned nowhere else.
+  About a second per gigabyte from cache, far worse from a disc.
+- **The thumbnail track** (`thumbs::build`) — every key picture decoded once:
+  the pictures the hover, the strip and the scroll search show, and the scene
+  index that falls out of comparing them. Around 15 seconds for half an hour of
+  1440x1080 MPEG-2.
+
+The same answer does not need working out twice. **Both are written to one file
+and kept** — that is the seek index. On 30 minutes of Nihonkai TV (3.7 GB):
+
+| | First time | Second time |
+|---|---|---|
+| The walk (3607 access points) | 3.35 s | 0.09 s |
+| The thumbnail track (3607 pictures, 602 scenes) | 15.4 s | 0.12 s |
+| Total | 18.1 s | 0.13 s |
+
+The file is 37 MB, of which the index itself is 133 kB; the rest is all JPEG.
+
+**This is not a proxy.** Nothing is re-encoded and nothing is made to stand in
+for the recording; the pictures still come from the recording itself. All the
+index says is **where in the file they are**, which is the part that was being
+worked out from scratch every time.
+
+### What makes the substitution invisible
+
+**The seam is `index::IndexSource` itself.** A held index hands back what the
+walk would have handed back, so nothing below `scan_with` can tell which one
+answered. That the two agree is checked on every run by
+`tests/run_index_tests.sh` — the access-point count, the open-GOP count, the
+mean GOP, the plan for the same cut, and the scene list.
+
+**Never pick up a stale one.** The hash in the filename is taken from **the
+path, the size, the modification time and the format version** (the same FNV-1a
+as `proxy::cache_path`), so a file re-recorded under the same name gets its own
+index. If one that does not fit is read anyway, the open fails, the index is
+deleted and the recording is read instead — being one open slower beats quietly
+using the wrong answer.
+
+Writing goes to `.part.scix` and is renamed into place at the end. Close the
+application while 37 MB is being written and **the half-written file never looks
+like a finished one**.
+
+Old ones are cut off at **32 files or 1 GB, whichever runs out first**
+(`prune`). More files and a smaller budget than the proxy's eight and 4 GB,
+because one is three orders of magnitude smaller — about 40 MB per half hour, so
+a gigabyte holds more than twenty. The index for a recording finished last week
+is still worth keeping, which is exactly the point.
+
+### Byte offsets — taking the guesswork out of seeking
+
+The index also carries the **byte offset** of every access point
+(`AccessPoint::pos`).
+
+It matters because MPEG-TS has no seek table: given a timestamp, libavformat
+**bisects the file on byte position**. The landing is near the target rather
+than on it, and in decode order an I picture sits *before* its leading pictures,
+so overshooting by a little means missing the entry point entirely. Without an
+index the remedy is to aim `seek_margin` seconds early and read forward, paying
+a few GOPs of decoding every time the pointer moves — and sometimes that was
+still not enough.
+
+Given the byte there is nothing to guess. `index::seek_to_entry` jumps there
+with `AVSEEK_FLAG_BYTE`, and the next packet out of the demuxer is the one
+wanted. On 30 minutes of Nihonkai TV with the index already held, `--preview`
+(including process startup):
+
+| Time | Timestamp seek | Byte seek |
+|---|---|---|
+| 300.5 s | 0.23 s | 0.12 s |
+| 900.25 s | 0.25 s | 0.14 s |
+| 1500.125 s | 0.26 s | 0.16 s |
+| 1799.9 s | 0.30 s | 0.17 s |
+
+Startup is 0.09 s of that, so the picture itself goes from **around 0.15 s to
+around 0.05 s**. That the JPEG is byte-identical either way is checked by
+`run_index_tests.sh`.
+
+**Only the stream containers.** MP4 and Matroska demuxers walk a sample table of
+their own, which moving the file position does not touch — and both carry a real
+seek table, so a timestamp seek is exact there already. `Source::byte_seekable`
+draws that line (`mpegts` / `mpeg` / raw elementary streams). The old path comes
+back with `SMARTCUT_BYTE_SEEK=0`.
+
 ## Proxy editing (`proxy.rs`)
 
-Continuing to decode the loaded recording as it is, is **too expensive just to
-look at pictures**. MPEG-TS seeks by byte position, so it can land past the
-target, and then it has to go back `seek_margin` and try again. An open GOP can
-only be decoded from its head. And 1440x1080 MPEG-2 is simply heavy to decode per
-picture. All three are paid **every time** the pointer moves.
+**Off by default. `SMARTCUT_PROXY=1` builds one.**
 
-So **right after opening, the whole thing is decoded once and rewritten small**.
-From then on the preview, the filmstrip, playback and scene search read from that
-file. Cutting and export keep reading the recording itself — the proxy is **for
-looking, not for cutting**.
+The idea has not changed. Continuing to decode the loaded recording as it is, is
+**too expensive just to look at pictures**, so **right after opening, the whole
+thing is decoded once and rewritten small**. From then on the preview, the
+filmstrip, playback and scene search read from that file. Cutting and export
+keep reading the recording itself — the proxy is **for looking, not for
+cutting**.
+
+What changed is what "too expensive" was made of. Three reasons were given, and
+[the seek index](#the-seek-index-seek_indexrs) removed two of them for orders of
+magnitude less.
+
+| Why it is expensive | The index | The proxy |
+|---|---|---|
+| MPEG-TS seeks by byte position, lands past the target, and has to go back `seek_margin` and try again | **Gone.** It holds the byte offset, so there is nothing to guess | Gone |
+| The packets are walked again on every open to reach the same pictures | **Gone.** It is written down | Gone |
+| 1440x1080 MPEG-2 is simply heavy to decode per picture | Remains | **Gone.** The pictures are small, all-keyframe, and carry no B pictures |
+
+For that third one the proxy costs 85 seconds and 2.3 GB per half-hour
+recording. But decoding one picture of broadcast 1440x1080 MPEG-2, with an index
+in hand, is **50 milliseconds** — not heavy enough to be worth that price. So it
+is off by default, and kept for when the material really does get heavy: 8K,
+high bit depth. What follows is the record for when that day comes.
 
 ### Two conditions for the substitution to be invisible
 
@@ -590,9 +714,15 @@ recording — identical to the dedicated pass.
 
 From the second time on the proxy is in the cache, so the track is rebuilt by
 scanning **the smaller file** — 1 second for 2.8 minutes of BS Fuji (the same
-material that took 10 seconds to build). The track itself is not saved: it is
-JPEGs, 37 MB for a 30-minute recording, and reading it back is about as much work
-as rebuilding it.
+material that took 10 seconds to build).
+
+> **This used to say: "The track itself is not saved: it is JPEGs, 37 MB for a
+> 30-minute recording, and reading it back is about as much work as rebuilding
+> it."** That was true while rebuilding meant a pass over a small proxy. The
+> moment the proxy stopped being built by default, "rebuilding it" went back to
+> 15 seconds against the recording — against 0.12 seconds to read it back. It is
+> now written out alongside [the seek
+> index](#the-seek-index-seek_indexrs).
 
 | Material | Proxy build | Result |
 |---|---|---|
@@ -609,17 +739,19 @@ Size varies 3× with the material (1.1 GB/hour for anime, 3.0 GB/hour for live
 action). Flatter pictures compress smaller, so **the cache is bounded by bytes,
 not by file count** — see [the cache](#the-cache).
 
-What it costs comes back frame by frame. On 30 minutes of Nihonkai TV,
-`--preview 900.25` (including process startup and index building):
+What it costs comes back frame by frame — **though the amount coming back got
+smaller once there was an index**. On 30 minutes of Nihonkai TV,
+`--preview 900.25` (including process startup, with the index already held):
 
 ```
-from the recording   3.05s   <- 2.8 s of that is the packet scan; the picture itself is 0.21 s
-from the proxy       0.10s   <- no scan needed, so this is essentially all of it
+from the recording   0.14s   <- 0.09 s of that is process startup; the picture itself is 0.05 s
+from the proxy       0.10s
 ```
 
-The GUI already holds the index once the file is open, so what matters is the
-latter difference — one scrub frame goes from 0.2 s to under 0.1 s. **The
-filmstrip decodes 41 frames at once**, so it gains far more.
+Before the index the same table read "from the recording 3.05 s (2.8 s of it the
+packet scan) / from the proxy 0.10 s". **Most of what the proxy was buying was
+the scan**, and what is left is one picture's decode. **The filmstrip decodes 41
+frames at once**, so if anywhere, that is where it still tells.
 
 ### Separating the reading side from the writing side
 
@@ -772,14 +904,12 @@ reopening yesterday's recording would rebuild it from the recording every time.
 
 ### Editing works without a proxy
 
-No encoder opens, the cache is unwritable — each of those only leaves the preview
-slow; editing itself still works. When the build fails, the thumbnail track is
-built from the recording directly and the reason is shown under the strip. The
+Which is now the default. Set `SMARTCUT_PROXY=1` and then have no encoder open,
+or an unwritable cache, and each of those only leaves the preview slow; editing
+itself still works. When the build fails the reason is shown under the strip and
+it falls through to [the seek index](#the-seek-index-seek_indexrs) path. The
 same applies while it is building: the track cannot speak yet, so the recording
 answers with its own pictures.
-
-`SMARTCUT_PROXY=0` skips building it entirely — for people who do not want about
-100 MB of cache per recording.
 
 ### Five reasons it froze while building
 
@@ -868,8 +998,17 @@ and measures both.
   of one seek — but breaks the run when two times are more than 2 seconds apart,
   where seeking again is cheaper than decoding through. When every request is an
   access point, the packets in between are not handed over (#5 above).
-- `thumbs::build()` / `refine()` — the thumbnail track and the scene index. See
-  above.
+- `thumbs::build()` / `build_with()` / `refine()` — the thumbnail track and the
+  scene index. See above. `build_with` takes the same three things the proxy
+  build does — progress, handoff and cancellation — because the pass that makes
+  the index runs for 15 seconds too, and the strip needs something to show
+  meanwhile.
+- `seek_index::SeekIndex` — saving and loading the access-point index and the
+  thumbnail track. See above. It implements `IndexSource`, so a loaded one goes
+  straight into `scan_with()`.
+- `index::seek_to_entry()` — seeks directly to an access point's byte offset.
+  See above. Returns `None` where it cannot, and the caller falls back to a
+  timestamp seek.
 - `proxy::build()` / `open()` — building and opening the proxy. See above. The
   build takes three things: progress, handoff and cancellation. The handoff
   (`share`) passes accumulated thumbnails over **while it is still building**, and

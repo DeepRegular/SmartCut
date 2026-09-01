@@ -53,6 +53,8 @@ let stripToken = 0;
 let hoverToken = 0;
 let stripShots = [];
 let stripCache = null;
+/// Mark time -> a promise for that mark's picture. Promises rather than URLs
+/// so that a re-render during a decode joins the decode already running.
 const cardThumbs = new Map();
 
 const clamp = (v, lo, hi) => Math.min(hi, Math.max(lo, v));
@@ -255,30 +257,79 @@ const isActive = (t) => activeKey !== null && Math.abs(t - activeKey) < frame() 
 /// the same -- which is why this reads the list rather than the segments.
 const isJoin = (o) => seams.some((s) => Math.abs(s - o) < 1e-9);
 
-async function cardThumb(t) {
-  if (!held) return null;
-  // A mark sitting on a join needs the picture that is actually there. The
-  // held ones are key pictures, and the nearest key picture to a join is
-  // usually the last one the cut took.
-  //
-  // Whether a mark is a join is part of the cache key, not just of the
-  // request: cuts come and go, and the same instant wants a different picture
-  // on either side of the edit. Cutting a detected break out turns the mark
-  // that was already standing at its head into a join, and without this the
-  // card kept the key picture it had been drawn with.
+/// A decoded picture is the frame at that instant whatever the edit around it
+/// looks like, so the time alone identifies it: unlike a held picture, it does
+/// not have to be thrown away when a cut turns the mark into a join.
+const cardKey = (t) => t.toFixed(3);
+
+/// Fill a card while its decode runs.
+///
+/// The held pictures are key pictures, so the nearest one to a mark is up to
+/// half a GOP away -- seven frames, on broadcast material. Close enough to say
+/// "about here" for the moment it is up, and it costs nothing, the picture
+/// being already in memory. Not close enough to keep: `paintCards` replaces it.
+///
+/// A mark on a join gets nothing instead. There the nearest key picture is
+/// usually the last one the cut took away -- material that is no longer in the
+/// recording at all, which is worse to show than a moment of blank.
+async function paintHeld(t, img) {
+  if (!held || cardThumbs.has(cardKey(t))) return;
   const o = srcToOut(t);
-  const join = o !== null && isJoin(o);
-  const key = `${t.toFixed(3)}${join ? "J" : ""}`;
-  if (cardThumbs.has(key)) return cardThumbs.get(key);
+  if (o !== null && isJoin(o)) return;
   try {
-    const url = join
-      ? (await invoke("thumbs_at", { times: [t], width: 200, exact: true }))[0]?.url
-      : (await invoke("hover_thumb", { time: t }))?.url;
-    if (url) cardThumbs.set(key, url);
-    return url ?? null;
+    const shot = await invoke("hover_thumb", { time: t });
+    if (shot && !img.dataset.exact) img.src = shot.url;
   } catch {
-    return null;
+    /* the decode below is the one that has to arrive */
   }
+}
+
+/// The frame at each mark's own time, decoded.
+///
+/// A card captions itself with the mark's time, so the picture beside it has
+/// to be the frame at that time rather than a key picture near it. Marks do
+/// not sit on key pictures: the flag button takes the playhead where it is,
+/// and CM detection reports the frame the break is actually on.
+///
+/// One call for all of them. `thumbs_at` walks a run of nearby times in a
+/// single pass and seeks between the rest, and against a proxy each one is
+/// tens of milliseconds. Every mark's picture is cached as the promise for it,
+/// so a re-render while the batch is still in flight waits on that batch
+/// instead of asking for the same pictures again.
+function paintCards(times, imgs) {
+  if (!src) return;
+  const want = times.map((_, i) => i).filter((i) => !cardThumbs.has(cardKey(times[i])));
+  if (want.length) {
+    const batch = invoke("thumbs_at", {
+      times: want.map((i) => times[i]),
+      width: 200,
+      exact: true,
+    }).catch((e) => {
+      jlog(`thumbs_at: ${e}`);
+      return [];
+    });
+    want.forEach((i, k) => {
+      const key = cardKey(times[i]);
+      cardThumbs.set(
+        key,
+        batch.then((shots) => {
+          const url = shots[k]?.url ?? null;
+          // A decode that failed is not an answer worth keeping: drop it, so
+          // the next render asks again rather than leaving the card blank for
+          // as long as the file is open.
+          if (!url) cardThumbs.delete(key);
+          return url;
+        })
+      );
+    });
+  }
+  times.forEach((t, i) => {
+    cardThumbs.get(cardKey(t))?.then((url) => {
+      if (!url) return;
+      imgs[i].src = url;
+      imgs[i].dataset.exact = "1";
+    });
+  });
 }
 
 /// `focus` is the mark to leave selected. Adding one by hand selects it; a
@@ -321,6 +372,7 @@ function renderKeyframes() {
     list.append(p);
     return;
   }
+  const imgs = [];
   live.forEach((t, i) => {
     const li = document.createElement("li");
     if (isActive(t)) {
@@ -330,7 +382,8 @@ function renderKeyframes() {
     }
     const img = document.createElement("img");
     img.alt = "";
-    cardThumb(t).then((url) => url && (img.src = url));
+    imgs.push(img);
+    paintHeld(t, img);
     const box = document.createElement("div");
     const no = document.createElement("div");
     no.className = "no";
@@ -359,6 +412,7 @@ function renderKeyframes() {
     });
     list.append(li);
   });
+  paintCards(live, imgs);
 }
 
 // --- access points and scenes -------------------------------------------
@@ -541,7 +595,6 @@ async function showFrame(t) {
 }
 
 const seekOut = (o) => showFrame(outToSrc(clamp(o, 0, outDur)));
-const stepOut = (d) => seekOut(playOut() + d);
 
 function updateReadouts() {
   const o = playOut();
@@ -579,10 +632,28 @@ function updateReadouts() {
 // playhead nears the edge of the drawn one -- around the same pictures, in the
 // same places, so the swap does not show.
 
+/// A moment of quiet and the strip redraws, so that a burst of small moves
+/// costs one round trip rather than one each -- but with a ceiling on how
+/// long that can be put off. A run of moves closer together than the delay
+/// -- a held step button, a spun wheel -- kept pushing the redraw back for
+/// as long as the run lasted, and the strip sat still until the hand came
+/// off. Once a redraw has been deferred this long it is left alone to
+/// happen, and the run picks up a fresh delay from there.
+const STRIP_WAIT = 140;
+const STRIP_FLOOR = 240;
+
 let stripTimer = null;
+let stripSince = 0;
+
 function scheduleStrip() {
+  const now = Date.now();
+  if (!stripTimer) stripSince = now;
+  else if (now - stripSince >= STRIP_FLOOR) return;
   clearTimeout(stripTimer);
-  stripTimer = setTimeout(() => askStrip(), 140);
+  stripTimer = setTimeout(() => {
+    stripTimer = null;
+    askStrip();
+  }, STRIP_WAIT);
 }
 
 /// One redraw at a time, and the latest place asked for wins.
@@ -658,9 +729,18 @@ const reel = el("reel");
 /// and the time behind them is not.
 let reelWin = null;
 
-/// How many windows wide to draw the reel. Only playback has anything to
-/// slide, and the margin is pictures decoded for nothing everywhere else.
-const overscan = () => (playing ? 2 : 1);
+/// How many windows wide to draw the reel. The margin is what the reel slides
+/// across, and every move now slides it -- playback, a held step button, a
+/// spun wheel. One window wide there is nothing to slide across: `placeReel`
+/// reaches its clamp within a step or two of being drawn, so the strip stands
+/// still while the playhead goes on, and then lurches when the next redraw
+/// re-centres it.
+///
+/// Until the pass has pictures in memory each cell of the margin is a decode
+/// of its own, which costs more than the sliding is worth -- a strip that dear
+/// to draw is better drawn small. Playback keeps its margin either way, having
+/// nothing else it can do.
+const overscan = () => (playing || held ? 2 : 1);
 
 /// Where output time `o` falls on the reel, in pixels from its left edge.
 ///
@@ -688,9 +768,12 @@ function placeReel(o) {
   markHere(o);
 }
 
-/// Where the reel belongs right now: under the playhead while it is being
-/// played, at the place it was drawn for otherwise.
-const holdReel = () => reelWin && placeReel(playing ? playPos() : reelWin.rest);
+/// Where the reel belongs right now: under the playhead, wherever that has
+/// got to. Placing a fresh reel at `rest` -- the place it was *drawn* for --
+/// was near enough while nothing moved during the round trip, but a held step
+/// button moves on while it runs, and the reel arriving a frame behind reads
+/// as the strip twitching backwards.
+const holdReel = () => reelWin && placeReel(playing ? playPos() : playOut());
 
 /// Outline the cell the playhead stands in. It changes as the reel slides, so
 /// it is set here rather than baked in when the cells are built.
@@ -1035,6 +1118,15 @@ window.addEventListener("mouseup", (ev) => {
 // finds nothing in flight and decodes at once, same as before.
 let scrubBusy = false;
 let scrubPending = null;
+let scrubIdle = [];
+
+/// Resolves once nothing is in flight -- that is, once the picture for the
+/// last place asked for is on the stage. What a held step button waits on
+/// before asking for the next frame, so that the run goes at the speed the
+/// decoder can actually draw at instead of running the counter and the strip
+/// away from the picture.
+const scrubSettled = () =>
+  scrubBusy ? new Promise((r) => scrubIdle.push(r)) : Promise.resolve();
 
 function scrubTo(o) {
   o = clamp(o, 0, outDur);
@@ -1042,6 +1134,10 @@ function scrubTo(o) {
   updateReadouts();
   draw();
   paintFast(playhead);
+  // Slide what has already been drawn under the playhead now, rather than
+  // waiting on the redraw: it is a transform, and it keeps the marked cell
+  // on the cell the playhead is really in.
+  placeReel(o);
   scheduleStrip();
   if (scrubBusy) {
     scrubPending = o;
@@ -1059,6 +1155,9 @@ async function runScrub(o) {
     runScrub(next);
   } else {
     scrubBusy = false;
+    const waiting = scrubIdle;
+    scrubIdle = [];
+    for (const r of waiting) r();
   }
 }
 
@@ -1142,6 +1241,7 @@ function startPlay() {
   // Redraw before the first picture arrives: the reel standing there was
   // drawn without a margin, and there is nowhere for it to slide.
   clearTimeout(stripTimer);
+  stripTimer = null;
   askStrip();
   reelRaf = requestAnimationFrame(reelTick);
   // Every picture shown costs a JPEG and a data URL, so how many are worth
@@ -1149,10 +1249,10 @@ function startPlay() {
   // MPEG-2 decode can keep up with anyway, while a proxy can hand over
   // enough to look like motion.
   const fps = proxied ? 24 : 15;
-  // Capped at the proxy's own width, since asking for more than the proxy
-  // holds only makes a bigger JPEG out of the same samples. Each picture
-  // costs a scale, a JPEG and a data URL, so this is the one place where
-  // dropping below the stage's full request buys back frame rate.
+  // Capped at 1280 whatever the stage asks for. Each picture costs a scale,
+  // a JPEG and a data URL, so this is the one place where dropping below the
+  // stage's full request buys back frame rate -- and where there is a proxy,
+  // 1280 is also its own width, past which the extra pixels are invented.
   const width = Math.min(stageWidth(), 1280);
   // not awaited: it resolves when playback ends, and `play-ended` says so
   invoke("play", { ranges: outputRanges(), from: playhead, width, fps }).catch((e) => {
@@ -1190,13 +1290,13 @@ async function toScene(dir, from = playhead) {
   }
 }
 
-/// Build the proxy and the thumbnail track, once, in the background.
+/// Build the seek index -- and the proxy, where one was asked for -- once, in
+/// the background.
 ///
-/// Until this finishes the recording answers for its own pictures, which is
-/// slow but works -- so nothing here blocks editing. When it does finish the
-/// preview, the film strip, playback and the scene search all switch over to
-/// the proxy without being told: the engine simply has something faster to
-/// read, at the same timestamps.
+/// Until this finishes the recording answers for its own pictures with
+/// nothing held, which is slow but works, so nothing here blocks editing.
+/// When an index from an earlier session is found there is nothing to do at
+/// all and this returns at once.
 async function prepare() {
   warmed = false;
   held = false;
@@ -1208,7 +1308,7 @@ async function prepare() {
   cardThumbs.clear();
   el("prev-scene").disabled = true;
   el("next-scene").disabled = true;
-  el("warm").textContent = "プロキシ準備中 0%";
+  el("warm").textContent = "準備中 0%";
   try {
     const r = await invoke("prepare");
     const t = r.track;
@@ -1219,15 +1319,34 @@ async function prepare() {
     proxied = !!r.proxy;
     el("prev-scene").disabled = false;
     el("next-scene").disabled = false;
-    const made = r.proxy
-      ? `プロキシ ${r.proxy.width}x${r.proxy.height} ` +
-        `${(r.proxy.bytes / 1e6).toFixed(0)}MB（` +
-        (r.proxy.cached ? "前回のを再利用 " : "作成 ") +
-        `${r.proxy.seconds.toFixed(0)}秒）`
-      : `プロキシなし（${r.note}）`;
-    el("warm").textContent =
-      `${made} / サムネイル ${t.thumbs} 枚 ${t.interval.toFixed(2)}s 間隔 / ` +
-      `シーン ${t.scenes.length} 箇所`;
+    const made = [];
+    if (r.proxy) {
+      made.push(
+        `プロキシ ${r.proxy.width}x${r.proxy.height} ` +
+          `${(r.proxy.bytes / 1e6).toFixed(0)}MB（` +
+          (r.proxy.cached ? "前回のを再利用 " : "作成 ") +
+          `${r.proxy.seconds.toFixed(0)}秒）`,
+      );
+    }
+    // A recording with no proxy is the ordinary case, so it is not worth
+    // saying. A proxy that was asked for and failed is.
+    if (r.note) made.push(`プロキシなし（${r.note}）`);
+    if (r.index) {
+      // The seconds are the thumbnail pass's, which is the whole of what the
+      // index cost only when there is no proxy -- with one, the same number
+      // is already reported above and saying it twice reads as twice the wait.
+      const how = r.index.cached
+        ? "（前回のを再利用）"
+        : r.proxy
+          ? ""
+          : `（作成 ${t.seconds.toFixed(0)}秒）`;
+      made.push(`シーク用インデックス ${(r.index.bytes / 1e6).toFixed(0)}MB${how}`);
+    } else {
+      made.push("シーク用インデックスは保存できず");
+    }
+    made.push(`サムネイル ${t.thumbs} 枚 ${t.interval.toFixed(2)}s 間隔`);
+    made.push(`シーン ${t.scenes.length} 箇所`);
+    el("warm").textContent = made.join(" / ");
     draw();
     stripCache = null;
     askStrip();
@@ -1240,7 +1359,7 @@ async function prepare() {
     // Opening another file supersedes this one; that is not a failure worth
     // showing, because the second file's own pass is already running.
     if (String(e).includes("cancelled")) return;
-    el("warm").textContent = `プロキシ: ${e}`;
+    el("warm").textContent = `準備: ${e}`;
   }
 }
 
@@ -1317,7 +1436,7 @@ async function refreshPlan() {
     // percentage that rounds to a hundred: a cut off an access point always
     // re-encodes a frame or two, and 2 frames out of 40000 rounds to 100.0%.
     el("smart-badge").textContent =
-      redone === 0 ? "映像 完全無劣化" : `再エンコード ${redone} コマ`;
+      redone === 0 ? "映像 完全無劣化" : `再エンコード ${redone} フレーム`;
     el("segments").innerHTML = p.segments
       .map(
         (s) =>
@@ -1365,6 +1484,44 @@ function setOut(o) {
   scheduleStrip();
 }
 
+/// Pick up the marks saved beside a recording, if any are.
+///
+/// The export writes `<name>.keyframe` next to the video; opening that video
+/// again -- or the cut it produced -- should not start from an empty list
+/// when the work is sitting right there. Nothing is selected: this is a batch
+/// like CM detection, with no one mark it is about.
+///
+/// The numbers count from the first picture, the way the export writes them,
+/// which is not where the recording's clock starts: broadcast material often
+/// opens most of a second in. So the number is an output time and has to be
+/// put back through the timeline to become a source time -- nothing is cut
+/// yet, so that is the start offset, but going through `outToSrc` keeps it
+/// right whatever the timeline turns out to be.
+///
+/// Marks past the end are dropped -- a list written for a different cut of
+/// the same recording is the likely reason, and `outToSrc` would otherwise
+/// clamp them all onto the last picture.
+async function loadSidecarKeyframes(path) {
+  const side = path.replace(/\.[^./\\]*$/, "") + ".keyframe";
+  if (side === path) return;
+  let frames;
+  try {
+    frames = await invoke("read_keyframes", { path: side });
+  } catch (e) {
+    el("status").textContent = `キーフレームを読めません: ${e}`;
+    return;
+  }
+  if (!frames) return;
+  const times = frames
+    .map((n) => n / src.fps)
+    .filter((o) => o <= outDur + 1e-6)
+    .map(outToSrc);
+  if (!times.length) return;
+  addKeyframes(times);
+  el("status").textContent =
+    `キーフレーム ${liveKeyframes().length} 個を ${side.split(/[/\\]/).pop()} から読み込みました`;
+}
+
 async function openPath(picked) {
   jlog(`openPath ${picked}`);
   if (!picked) return;
@@ -1397,6 +1554,7 @@ async function openPath(picked) {
     selA = 0;
     selB = outDur;
     el("status").textContent = "";
+    await loadSidecarKeyframes(picked);
     await showFrame(0);
     schedulePlan();
     prepare();
@@ -1449,10 +1607,82 @@ window.addEventListener("mouseup", () => {
 
 // --- transport ----------------------------------------------------------
 
+// Holding the frame buttons keeps stepping, the way the arrow keys already do
+// under the keyboard's own repeat -- a frame at a time is how you find a cut,
+// and clicking sixty times to cross two seconds is not an edit, it is typing.
+// The first step lands on the press, so a tap is still exactly one frame; the
+// run only starts once the button has been held past the point where a tap
+// would have ended, and picks up speed after a second, which is about when
+// holding stops meaning "one more" and starts meaning "keep going".
+//
+// The steps go through `scrubTo` rather than `seekOut`: it keeps at most one
+// decode in flight and always for the latest place asked for, so a repeat
+// faster than the decoder moves the playhead and the film strip at the rate
+// asked for instead of queueing decodes it can never catch up on. That is the
+// same treatment the wheel and the arrow keys get.
+//
+// **A step is not asked for until the picture for the last one is up.** A
+// fixed repeat was tried first and is wrong at both ends: on a fast file it
+// ran the counter ahead of the stage, and on a slow one the run turned into
+// the playhead sprinting while the picture and the strip stood still --
+// stepping a frame at a time is for *looking* at the frames, so a run that
+// outpaces the pictures has nothing left to be for. Waiting on the picture
+// makes the speed the machine's answer rather than a guess, and the interval
+// below is the floor under it, not the rate.
+//
+// Capped, all the same: a file the decoder is slow on would otherwise stop
+// the run dead, and a hand still on the button is asking to keep going.
+const HOLD_DELAY = 400;
+const HOLD_SLOW = 130;
+const HOLD_FAST = 65;
+const HOLD_RAMP = 1500;
+const HOLD_WAIT = 400;
+
+const after = (ms) => new Promise((r) => setTimeout(r, ms));
+
+function holdStep(id, dir) {
+  const btn = el(id);
+  let timer = null;
+  let began = 0;
+  // Bumped on release, so a run whose picture is still being decoded when the
+  // button comes up does not schedule one more step behind it.
+  let run = 0;
+  const step = () => scrubTo(playOut() + dir * frame());
+  const stop = () => {
+    run++;
+    clearTimeout(timer);
+    timer = null;
+  };
+  const tick = async () => {
+    const mine = run;
+    const at = Date.now();
+    step();
+    await Promise.race([scrubSettled(), after(HOLD_WAIT)]);
+    if (mine !== run) return;
+    const gap = at - began > HOLD_RAMP ? HOLD_FAST : HOLD_SLOW;
+    timer = setTimeout(tick, Math.max(0, gap - (Date.now() - at)));
+  };
+  btn.addEventListener("pointerdown", (ev) => {
+    if (!src || ev.button !== 0) return;
+    ev.preventDefault();
+    if (playing) stopPlay();
+    // Captured, so a finger or a pointer that wanders off the button while
+    // held goes on stepping and the release is still heard here.
+    btn.setPointerCapture(ev.pointerId);
+    stop();
+    began = Date.now();
+    step();
+    timer = setTimeout(tick, HOLD_DELAY);
+  });
+  btn.addEventListener("pointerup", stop);
+  btn.addEventListener("pointercancel", stop);
+  window.addEventListener("blur", stop);
+}
+
 el("go-start").addEventListener("click", () => seekOut(0));
 el("go-end").addEventListener("click", () => seekOut(outDur));
-el("step-back").addEventListener("click", () => stepOut(-frame()));
-el("step-fwd").addEventListener("click", () => stepOut(frame()));
+holdStep("step-back", -1);
+holdStep("step-fwd", 1);
 el("prev-kf").addEventListener("click", () => showFrame(nearestPoint(playhead, -1)));
 el("next-kf").addEventListener("click", () => showFrame(nearestPoint(playhead, 1)));
 el("goto-in").addEventListener("click", () => seekOut(selA));
@@ -1529,6 +1759,31 @@ el("clear-all").addEventListener("click", () => {
   schedulePlan();
 });
 
+/// Whether a held arrow key's repeat is worth acting on.
+///
+/// The keyboard repeats at whatever rate it is set to, which on most is fast
+/// enough to outrun the decoder -- and a frame run whose pictures never catch
+/// up is a counter spinning, not a search. Same answer the step buttons get:
+/// a repeat waits for the picture for the last one, with the same floor under
+/// the gap and the same ceiling on the wait. A deliberate press is never
+/// dropped, so a tap is still exactly one frame.
+let arrowLast = 0;
+let arrowSince = 0;
+
+function arrowDue(ev) {
+  const now = Date.now();
+  if (!ev.repeat) {
+    arrowSince = now;
+    arrowLast = now;
+    return true;
+  }
+  const gap = now - arrowSince > HOLD_RAMP ? HOLD_FAST : HOLD_SLOW;
+  if (now - arrowLast < gap) return false;
+  if (scrubBusy && now - arrowLast < HOLD_WAIT) return false;
+  arrowLast = now;
+  return true;
+}
+
 window.addEventListener("keydown", (ev) => {
   if (!src || ev.target.tagName === "INPUT" || ev.target.tagName === "SELECT") return;
   if (ev.key === " ") {
@@ -1544,8 +1799,11 @@ window.addEventListener("keydown", (ev) => {
   if (ev.ctrlKey || ev.metaKey || ev.altKey) return;
   if (playing && ev.key !== "i" && ev.key !== "o" && ev.key !== "k") stopPlay();
   const step = ev.shiftKey ? 1 : frame();
-  if (ev.key === "ArrowRight") { scrubTo(playOut() + step); ev.preventDefault(); }
-  if (ev.key === "ArrowLeft") { scrubTo(playOut() - step); ev.preventDefault(); }
+  if (ev.key === "ArrowRight" || ev.key === "ArrowLeft") {
+    ev.preventDefault();
+    if (arrowDue(ev)) scrubTo(playOut() + (ev.key === "ArrowRight" ? step : -step));
+    return;
+  }
   if (ev.key === "i") setIn(playOut());
   if (ev.key === "o") setOut(playOut());
   if (ev.key === "k" || ev.key === "K") addKeyframes([playhead], playhead);
@@ -1621,11 +1879,12 @@ el("export").addEventListener("click", async () => {
   const started = Date.now();
   el("status").textContent = "映像を無劣化出力しています…";
   try {
-    // Audio is copied, and written into the same container as the video.
-    // Both were once switchable here; the engine still does either (see the
-    // CLI's --audio-mode and --audio-es), but neither earned its place on
-    // screen: on real cuts, with the boundaries snapped to access points,
-    // copied audio measured no drift at all.
+    // Audio is smart-rendered -- copied, bar the frames a cut lands inside --
+    // and written into the same container as the video. The engine will also
+    // copy outright or re-encode the track whole (see the CLI's --audio-mode
+    // and --audio-es), but neither earned its place on screen: on real cuts,
+    // with the boundaries snapped to access points, the default does the
+    // right thing without being asked.
     await invoke("export", { ranges, output: out });
     let extra = "";
     if (el("keyframes-out").checked) {
@@ -1679,7 +1938,7 @@ if (listen) {
   // Pictures from a pass that is still running. Everything that reads held
   // pictures can use them from here on, for the stretch of the recording the
   // pass has read -- which is what stops the strip decoding the recording
-  // itself while a proxy is being built.
+  // itself while the index, or a proxy, is being built.
   listen("prepare-held", (ev) => {
     const [gap] = ev.payload;
     interval = gap;

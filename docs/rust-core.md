@@ -14,7 +14,8 @@ gone** — see below.
 | Cutting (re-encode path) | Done |
 | Resolving mixed SPS/PPS | Done (`avc3` plus parameter set re-insertion) |
 | Audio (copy) | Done (sync verified by measurement) |
-| Audio (re-encode) | Not started |
+| Audio (smart rendering) | Done (only the boundary frames re-encoded) |
+| Audio (re-encode) | Done (sample-accurate, and MPEG-2 AAC on the way out) |
 
 On video, the 13 cases in `tests/run_rust_tests.sh` reach the **same lossless
 ratio** as `tests/run_tests.sh` (Python):
@@ -95,18 +96,22 @@ That leaves re-encoding, which is implemented as `--audio-mode reencode`: each
 interval's audio is cut sample-exactly and fed continuously into a single
 encoder.
 
-| Mode | Boundary error | Audio |
-|---|---|---|
-| `copy` (default) | ±half a frame (10.7 ms for AAC at 48 kHz), no accumulation | Lossless |
-| `reencode` | **-0.02 ms** (one sample is 0.021 ms, so effectively zero) | Re-encoded |
+| Mode | Boundary error | Left over at a seam | Frames re-encoded |
+|---|---|---|---|
+| `copy` | ±half a frame (10.7 ms for AAC at 48 kHz), no accumulation | up to 21.3 ms of the audio that was cut away | none |
+| `smart` (default) | as above | nothing (it is silence) | at most 2 per boundary, none when the seam is in silence |
+| `reencode` | **-0.02 ms** (one sample is 0.021 ms, so effectively zero) | nothing | all of them |
 
 Run `tests/run_audio_tests.sh` with `SMARTCUT_AUDIO=reencode` and all 5 cases
 land at -0.02 ms. Video stays lossless in both modes (1798/1798, 99.1 % on real
 material).
 
-**The default is `copy`.** Smart rendering is a tool for avoiding re-encoding,
-and 10.7 ms is far below the perceptual threshold for lip sync. The GUI exposes
-the switch as a "sample-accurate audio" checkbox.
+**The default is `smart`.** On an ordinary cut -- a commercial break taken out
+in the silence around it -- its output is byte-identical to `copy`, so there is
+nothing to lose by making it the default; where they differ, the cut is in the
+middle of sound and the frame is worth touching. `copy` remains for work that
+must be exact to the byte. The ±10.7 ms boundary error is the same in both, and
+far below the perceptual threshold for lip sync.
 
 A trap hit while implementing this: audio frames straddling a segment boundary
 were **submitted twice, once from each of the two adjacent segments**, and the
@@ -115,6 +120,119 @@ exclusive ownership rule as the copy path.
 
 `tests/run_audio_tests.sh` — measures A/V sync sample by sample on material with
 a 2 ms impulse every 0.5 s. Steady tones cannot reveal a sync error.
+
+## Smart rendering, applied to audio (`--audio-mode smart`)
+
+The boundary error is not the only thing copying leaves behind. **The frame a
+boundary falls inside is copied whole**, and what is inside it includes the
+audio from the side that was cut away. That is the last syllable of a
+commercial arriving over the opening of the programme: up to 21.3 ms of it,
+once per seam, every seam.
+
+Smart mode re-encodes **only the frames the boundaries fall inside**. Each is
+built from the recording's own samples, with everything outside the kept range
+faded to silence over a millisecond. No other frame is touched. On real
+material (Nippon TV, two intervals, four boundaries), **5602 of 5606 frames
+are the recording's own bytes; 4 were rewritten**.
+
+**The boundary itself does not move.** Two frames cannot occupy one instant --
+MP4 lays its samples end to end, and MPEG-TS rejects a timestamp that goes
+backwards -- so an interval is always a whole number of frames long. Opening
+an interval on the frame the boundary falls inside would lose nothing, but
+that frame reaches back into the interval before it, where the previous
+interval's own overrunning last frame already is. Every mode therefore keeps
+whole frames and centres the error; what smart mode changes is **what fills
+the rest of the straddling frame**.
+
+One neighbour is re-encoded with it, as a **guard**. AAC frames overlap by
+half a window, so the decoder rebuilds each frame from that frame and its
+neighbour, and a re-encoded frame sitting directly against a copied one is the
+one place the two halves can disagree. Silencing part of a frame is a
+transient, and a transient is what makes an encoder switch to short windows --
+which is exactly that disagreement. The guard carries the recording's own
+samples, unmasked, and keeps the switch one frame away from the copied
+material. When the straddling frame is not the one the interval opens on --
+the nearest-frame rule may pick the next -- the guard has nothing to guard and
+is not re-encoded either.
+
+**When the far side is already silent, nothing is re-encoded.** A commercial
+break is cut in the silence around it, so the far half of the straddling frame
+is usually silent already and replacing it would remove nothing. The test is
+whether the samples outside the range peak above -60 dBFS. On real material, a
+cut that takes out one commercial block -- all four boundaries inside the
+silence -- re-encodes **no frames at all, and the output is byte-identical to
+`copy`**. The re-encode only engages where a cut lands in the middle of sound.
+
+That design came from measuring TMPGEnc MPEG Smart Renderer 6.1's output
+against its source. It re-encodes **not one audio frame**: of the 67499 frames
+in a 24-minute cut, 67492 (99.99%) carry the recording's own coded audio, and
+the seven that do not sit nowhere near a join. All three of its joins are
+inside digital silence at -91.0 dBFS, where cutting on a frame boundary loses
+nothing. (It does re-pad every frame to a strict 256 kbps CBR, so only 24.7%
+of its frames are byte-identical -- the audio data inside them is untouched.)
+
+Whether a frame can be replaced at all comes down to **the encoder's delay
+being a whole number of frames**: the replacement has to cover the same
+samples the recording's frame did, and a fractional delay puts every packet
+the encoder makes off the recording's frame grid. AAC's delay is 1024, exactly
+one frame, and lines up. AC-3's is 256, and does not. An encoder is opened
+once before the run to check, and when it does not line up the tool says so
+and copies instead.
+
+## Writing MPEG-2 AAC (`--aac`)
+
+A Japanese broadcast carries **MPEG-2 AAC**: the ADTS `ID` bit is 1, profile
+LC, 48 kHz, with a CRC. FFmpeg's AAC encoder produces MPEG-4 AAC, and every
+muxer that frames raw AAC for us writes `ID = 0`. The ADTS muxer has a
+`write_mpeg2` option, but **MPEG-TS has no way to pass it down to the ADTS
+muxer it uses internally**. Left alone, a cut comes out as a stream that is
+MPEG-2 nearly everywhere and MPEG-4 for one frame per seam, which the tools
+downstream of a recording read as malformed rather than as the recording they
+were handed.
+
+So the ADTS headers are written here instead (`adts.rs`). The profile,
+sampling frequency, channel configuration and `ID` are read off the
+recording's own frames and put in front of the encoder's output. **Every muxer
+involved leaves a packet that already begins with a sync word alone**, which
+is what makes this work: MPEG-TS passes it through untouched, and MP4 runs it
+through `aac_adtstoasc` exactly as it does the source's own frames.
+
+- The default follows the recording (`--aac auto`), so broadcast material
+  stays MPEG-2.
+- Only **the frames this tool writes** are framed here; copied frames keep
+  their own headers. So a version that disagrees with the recording cannot be
+  delivered while anything is being copied -- it would make a stream that is
+  two kinds of AAC at once -- and the request is refused with a note instead.
+  Under `--audio-mode reencode` nothing is copied and it is honoured. The
+  tests check both.
+- The payload is kept inside MPEG-2 AAC LC as well: perceptual noise
+  substitution, an MPEG-4 tool, is switched off.
+- The frames written here carry no CRC (`protection_absent = 1`).
+  It is a per-frame field, so such a frame sits legally among frames that have
+  one, and writing a CRC that was subtly wrong would be worse: a decoder that
+  checks it would throw the frame away.
+- `--audio-mode reencode` uses the same framing, so **a whole track
+  re-encoded into a transport stream also comes out MPEG-2 AAC** -- a
+  combination FFmpeg on its own cannot be asked for.
+
+`tests/run_aac_tests.sh` — walks the output's ADTS frame by frame, checks they
+are all MPEG-2 LC, and counts how many are the recording's own bytes. Neither
+question can be put to a decoder; both are about the bytes.
+
+## The encoder knows its own delay
+
+The re-encoding path was a frame out, and had been all along. It counted the
+encoder's delay itself, from `initial_padding`, dropped that many opening
+packets, *and* subtracted the same amount from their timestamps -- taking it
+off twice.
+
+A libav encoder declares its delay by stamping its output: the first packet
+comes out at `pts = -1024`, covering the window that reaches back before
+anything was fed, and the next at `pts = 0`, covering the first frame that
+was. The packet says where it belongs, so the fix is to believe it -- drop
+what lands before zero and take the timestamp as the position. The A/V length
+skew in `run_audio_tests.sh` under `reencode`, which peaked at 21.3 ms
+(exactly one frame), now peaks at 16.0 ms and averages 6.4 ms.
 
 ## Whether the audio of real material is genuinely correct (`tests/run_audio_content_tests.sh`)
 

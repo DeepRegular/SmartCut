@@ -34,6 +34,7 @@
 |---|---|
 | `PacketScan` | 全パケット走査。厳密で、どのコンテナでも動く |
 | `ContainerIndex` | コンテナのシークテーブル（MP4 の `stss` 等）を読む |
+| `SeekIndex` | 前回の走査結果を書き出したものを読む（[シーク用インデックス](gui.ja.md#シーク用インデックスseek_indexrs)） |
 | （将来）`ClpiIndex` | BD の CLIPINF EP map を読む |
 
 `--index scan|container` で切り替えられる。654MB の実 MP4 で計測:

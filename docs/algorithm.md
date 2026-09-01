@@ -128,10 +128,14 @@ earlier and the front is trimmed with an output-side `-ss`.
 
 Audio is cut **per kept interval**, not per video segment.
 
-- `--audio-mode copy` (default): the source frames are used as they are. Interval
+- `--audio-mode copy`: the source frames are used as they are. Interval
   boundaries snap to the nearest audio frame (up to ~24 ms for AAC).
 - `--audio-mode reencode`: one pass through the `atrim` + `concat` filters.
   Sample accurate, but it re-encodes.
+
+The Rust core adds a third, `smart`, which is its default: the frames a
+boundary falls inside are re-encoded and the rest copied. See
+[the Rust core](rust-core.md#smart-rendering-applied-to-audio---audio-mode-smart).
 
 Handling AAC encoder delay / priming strictly via edit lists has not been
 implemented.

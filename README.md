@@ -44,7 +44,13 @@ out **bit-identical across all 40589 frames**.
 ## What it does
 
 - **Smart rendering** — H.264 / HEVC / MPEG-2 / MPEG-4 Part 2. Cutting exactly
-  on an access point re-encodes nothing at all.
+  on an access point re-encodes nothing at all. **The audio works the same
+  way** (`--audio-mode smart`, the default): only the AAC frames a boundary falls inside
+  are re-encoded, so nothing from the far side of a cut is heard -- 4 frames
+  out of 5606, measured, and **none at all when the seam falls in silence**,
+  as a commercial cut does -- where the output is byte-identical to a copy. And it stays **MPEG-2 AAC**, which left to FFmpeg it
+  would not: the ADTS headers are written here so a seam is not one MPEG-4
+  frame in an MPEG-2 stream.
 - **Automatic commercial-boundary detection** — reads the junction marks the
   broadcast puts in its own caption stream, runs of silence, and the presence
   of the station logo, and reports the runs that land on the 15-second grid.
@@ -52,10 +58,18 @@ out **bit-identical across all 40589 frames**.
   lossless**.
 - **Cut-editing GUI** — film strip, scene detection, scroll search, and preview
   playback with audio. What you see is always the *edited* timeline.
-- **Proxy editing** — a small stand-in is built once when a recording is
-  opened, and the preview, the film strip and playback all read from it
-  afterwards. It carries the recording's own timestamps and access points, so
-  cutting still works from the recording itself.
+- **A seek index** — the two passes that used to be repeated on every open
+  (walking the packets for the access points, decoding the key pictures for
+  the thumbnail track) are done once and written down. **Opening a half-hour
+  recording a second time goes from 18 seconds to 0.1.** The index also
+  carries the byte offset of every access point, which takes the guesswork
+  out of seeking.
+- **Proxy editing** (off by default; `SMARTCUT_PROXY=1`) — a small stand-in is
+  built from the recording, and the preview, the film strip and playback read
+  from it. It carries the recording's own timestamps and access points, so
+  cutting still works from the recording itself. It is for material where
+  decoding a single picture is itself too slow to scrub, which broadcast
+  1440x1080 MPEG-2 is not.
 - **Built for broadcast material** — interlacing is preserved, 2:3 pulldown is
   handled on a field-level timeline, and dropped frames, non-zero `start_time`,
   and ARIB ADTS layout are all accounted for.
@@ -94,7 +108,8 @@ smartcut input.ts --analyze --scenes            # scene changes
 | Option | Meaning |
 |---|---|
 | `--keep START-END` / `--cut START-END` | Ranges; repeatable. `1:23:45.6` form also accepted |
-| `--audio-mode copy\|reencode` | `copy` (default) is lossless with ±10.7ms boundary error; `reencode` is sample-accurate |
+| `--audio-mode smart\|copy\|reencode` | `smart` (default) re-encodes only the frames a boundary falls inside, so nothing from the far side of a cut is heard -- and nothing at all when the seam falls in silence. `copy` is lossless to the byte; `reencode` is sample-accurate |
+| `--aac auto\|mpeg2\|mpeg4` | Which AAC the frames this tool writes announce themselves as. `auto` follows the recording, which for a broadcast means MPEG-2 AAC |
 | `--index scan\|container` | How access points are indexed. `container` is faster but unavailable for TS |
 | `--detect-cm` / `--logo` / `--scenes` | Commercial candidates, logo assist, scene detection |
 | `--no-open-gop` | Never start a copy at an open GOP |
@@ -127,7 +142,7 @@ were hit.
 | [Algorithm and pitfalls](docs/algorithm.md) | How the cut is split, and the eight traps |
 | [Rust core](docs/rust-core.md) | Timestamps, mixed SPS/PPS, audio boundaries |
 | [Validation and limits](docs/validation.md) | Frame-hash verification, real-material results |
-| [GUI](docs/gui.md) | Editor, proxy editing, thumbnail track, scene detection, playback |
+| [GUI](docs/gui.md) | Editor, the seek index, thumbnail track, scene detection, playback, the proxy |
 | [Commercial detection](docs/cm-detection.md) | Silence plus logo, the 15-second grid, avoiding false positives |
 | [Broadcast workflow compatibility](docs/broadcast-ts.md) | PID layout, ADTS, L-SMASH / DGIndex |
 | [Building](docs/development.md) ・ [Distribution](docs/distribution.md) | How to build and ship it |
@@ -139,7 +154,7 @@ were hit.
 rust/     Rust core (smartcut_core) and CLI   <- the real implementation
 gui/      Tauri v2 + vanilla JS GUI
 smartcut/ Python reference implementation     <- test oracle
-tests/    66 end-to-end test cases
+tests/    76 end-to-end test cases
 docs/     Documentation
 ```
 

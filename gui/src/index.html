@@ -52,7 +52,7 @@
             <div id="playline" class="playline" hidden></div>
           </div>
           <div class="strip-foot">
-            <span class="dim">クリックで移動／<b>右ドラッグ</b>で前後にサーチ（右へ＝送り・左へ＝戻し）／中クリックで次のシーン／ホイールで 1 コマ送り（Shift で GOP 単位）／Space で再生</span>
+            <span class="dim">クリックで移動／<b>右ドラッグ</b>で前後にサーチ（右へ＝送り・左へ＝戻し）／中クリックで次のシーン／ホイールで 1 フレーム送り（Shift で GOP 単位）／Space で再生</span>
             <span class="spacer"></span>
             <span id="warm" class="warm"></span>
             <label class="opt">表示
@@ -77,31 +77,42 @@
 
         <!-- Laid out like the reference tool's: the cut sits in the middle,
              IN to its left and OUT to its right, and the ways of getting
-             about radiate outwards from there. -->
+             about radiate outwards from there.
+
+             The three clusters are their own elements so that a window too
+             narrow for one line breaks it between them, keeping the symmetry
+             around the cut on whichever line it lands. The row used to be one
+             flat, unwrapping line that scrolled instead -- and the scroll bar
+             it grew lay across the bottom of the buttons, where it swallowed
+             the clicks meant for them. At the window's own default width. -->
         <div class="transport">
-          <button id="add-key" class="flag" title="いまのフレームをキーフレームに登録 (K)">⚑ キーフレーム</button>
-          <button id="prev-scene" class="tool" title="前のシーンの変わり目へ (Shift+S)" disabled>⇤ シーン</button>
-          <button id="next-scene" class="tool" title="次のシーンの変わり目へ (S)" disabled>シーン ⇥</button>
-          <span class="gap"></span>
+          <div class="tgroup">
+            <button id="add-key" class="flag" title="いまのフレームをキーフレームに登録 (K)">⚑ キーフレーム</button>
+            <button id="prev-scene" class="tool" title="前のシーンの変わり目へ (Shift+S)" disabled>⇤ シーン</button>
+            <button id="next-scene" class="tool" title="次のシーンの変わり目へ (S)" disabled>シーン ⇥</button>
+          </div>
 
-          <button id="play" class="play" title="ここから再生 (Space)">▶ 再生</button>
-          <button id="go-start" title="先頭へ">|◀</button>
-          <button id="prev-kf" title="前の無劣化点へ">◀|</button>
-          <button id="step-back" title="1 コマ戻る (←)">◀</button>
-          <button id="goto-in" title="選択の開始位置へ移動">⇤|</button>
-          <button id="set-in" class="mark" title="ここを選択の開始に (I)">[ IN</button>
-          <button id="cut-range" class="cut" title="いまの選択を出力から取り除く">✂ カット</button>
-          <button id="set-out" class="mark" title="ここを選択の終わりに (O)">OUT ]</button>
-          <button id="goto-out" title="選択の終わり位置へ移動">|⇥</button>
-          <button id="step-fwd" title="1 コマ進む (→)">▶</button>
-          <button id="next-kf" title="次の無劣化点へ">|▶</button>
-          <button id="go-end" title="末尾へ">▶|</button>
+          <div class="tgroup">
+            <button id="play" class="play" title="ここから再生 (Space)">▶ 再生</button>
+            <button id="go-start" title="先頭へ">|◀</button>
+            <button id="prev-kf" title="前の無劣化点へ">◀|</button>
+            <button id="step-back" title="1 フレーム戻る (←) ─ 押しっぱなしで連続">◀</button>
+            <button id="goto-in" title="選択の開始位置へ移動">⇤|</button>
+            <button id="set-in" class="mark" title="ここを選択の開始に (I)">[ IN</button>
+            <button id="cut-range" class="cut" title="いまの選択を出力から取り除く">✂ カット</button>
+            <button id="set-out" class="mark" title="ここを選択の終わりに (O)">OUT ]</button>
+            <button id="goto-out" title="選択の終わり位置へ移動">|⇥</button>
+            <button id="step-fwd" title="1 フレーム進む (→) ─ 押しっぱなしで連続">▶</button>
+            <button id="next-kf" title="次の無劣化点へ">|▶</button>
+            <button id="go-end" title="末尾へ">▶|</button>
+          </div>
 
-          <span class="gap"></span>
-          <button id="cut-outside" class="tool" title="選択の外側をすべて取り除く">外側をカット</button>
-          <button id="snap" class="tool" title="選択の両端をいちばん近い無劣化点へ寄せる">無劣化点へ吸着</button>
-          <button id="undo-cut" class="tool" title="直前のカットを取り消す" disabled>↺ 取消</button>
-          <button id="clear-all" class="tool" title="カットとキーフレームをすべて消す">全消去</button>
+          <div class="tgroup">
+            <button id="cut-outside" class="tool" title="選択の外側をすべて取り除く">外側をカット</button>
+            <button id="snap" class="tool" title="選択の両端をいちばん近い無劣化点へ寄せる">無劣化点へ吸着</button>
+            <button id="undo-cut" class="tool" title="直前のカットを取り消す" disabled>↺ 取消</button>
+            <button id="clear-all" class="tool" title="カットとキーフレームをすべて消す">全消去</button>
+          </div>
         </div>
 
         <div class="statusbar">

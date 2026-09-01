@@ -14,7 +14,7 @@
 //! decode, and broadcast material carries one every half second, which is
 //! finer than either job needs.
 
-use anyhow::{anyhow, Result};
+use anyhow::{anyhow, bail, Result};
 use ffmpeg_next as ff;
 
 use crate::Source;
@@ -283,11 +283,41 @@ impl Batch {
     }
 }
 
+/// How often the pictures collected so far are handed to a `share` callback.
+///
+/// The point of handing them over at all is that whatever is waiting for the
+/// track -- the film strip, the scroll search, the mark cards -- stops having
+/// to decode the recording, so this wants to be short. It is a `Vec` moved
+/// across a callback, so short costs nothing.
+pub const SHARE_EVERY: std::time::Duration = std::time::Duration::from_millis(500);
+
 /// Decode every key picture once: keep some as images, compare them all.
 pub fn build(
     src: &Source,
     opts: &ThumbOptions,
+    progress: Option<Box<dyn FnMut(f64) + Send>>,
+) -> Result<Track> {
+    build_with(src, opts, progress, None, None)
+}
+
+/// As [`build`], but handing the pictures over as they are made and stopping
+/// when asked.
+///
+/// The pass runs for around ten seconds on half an hour of 1440x1080 MPEG-2,
+/// and until it finishes there is nothing but the recording to answer the
+/// film strip from -- a seek and a GOP for every cell. These are the same
+/// pictures, decoded in order from the start, so the part already gone past
+/// answers instantly while the rest is still being read. **They are moved,
+/// not copied**: what comes back then holds only the tail, and a caller that
+/// took some owns them and must put the two halves back together.
+///
+/// `stop` is asked between packets; answering true abandons the pass.
+pub fn build_with(
+    src: &Source,
+    opts: &ThumbOptions,
     mut progress: Option<Box<dyn FnMut(f64) + Send>>,
+    mut share: Option<Box<dyn FnMut(Batch) + Send>>,
+    stop: Option<Box<dyn Fn() -> bool + Send>>,
 ) -> Result<Track> {
     crate::init()?;
     let mut ictx = ff::format::input(&src.path)?;
@@ -298,6 +328,7 @@ pub fn build(
     let mut collector = Collector::new(src, opts);
     let mut told = -1.0;
     let mut frame = ff::frame::Video::empty();
+    let mut shared = std::time::Instant::now();
 
     let mut take = |frame: &ff::frame::Video| -> Result<()> {
         let Some(pts) = frame.pts() else { return Ok(()) };
@@ -310,10 +341,21 @@ pub fn build(
                 f(done);
             }
         }
+        if let Some(f) = share.as_mut() {
+            if shared.elapsed() >= SHARE_EVERY {
+                shared = std::time::Instant::now();
+                f(collector.take_new());
+            }
+        }
         Ok(())
     };
 
     for (stream, packet) in ictx.packets() {
+        if let Some(f) = stop.as_ref() {
+            if f() {
+                bail!("abandoned");
+            }
+        }
         if stream.index() != idx {
             continue;
         }
@@ -412,10 +454,14 @@ pub fn cut_near(src: &Source, at: f64, window: f64, floor: f64) -> Result<f64> {
 
     let mut ictx = ff::format::input(&src.path)?;
     let idx = src.video.stream_index;
-    // A transport stream seeks by byte position and can land a GOP late.
-    let landing = (entry - src.seek_margin).max(0.0);
-    let target = ((landing + src.start_time) * ff::ffi::AV_TIME_BASE as f64) as i64;
-    let _ = ictx.seek(target, ..target);
+    // Straight to the byte the entry point starts at where the index has it.
+    // Failing that, a transport stream seeks by byte position of its own
+    // reckoning and can land a GOP late, so aim early and read forward.
+    if crate::index::seek_to_entry(&mut ictx, src, entry).is_none() {
+        let landing = (entry - src.seek_margin).max(0.0);
+        let target = ((landing + src.start_time) * ff::ffi::AV_TIME_BASE as f64) as i64;
+        let _ = ictx.seek(target, ..target);
+    }
     let params = ictx.stream(idx).ok_or_else(|| anyhow!("video stream vanished"))?.parameters();
     let mut decoder = ff::codec::context::Context::from_parameters(params)?.decoder().video()?;
 
@@ -486,11 +532,14 @@ pub fn refine(src: &Source, at: f64) -> Result<f64> {
 
     let mut ictx = ff::format::input(&src.path)?;
     let idx = src.video.stream_index;
-    // A transport stream seeks by byte position and can land a GOP late, so
-    // this starts well before the picture wanted and reads forward.
-    let landing = (from - src.seek_margin).max(0.0);
-    let target = ((landing + src.start_time) * ff::ffi::AV_TIME_BASE as f64) as i64;
-    let _ = ictx.seek(target, ..target);
+    // Straight to the byte the entry point starts at where the index has it;
+    // otherwise start well before the picture wanted and read forward, since
+    // a transport stream's own seeking can land a GOP late.
+    if crate::index::seek_to_entry(&mut ictx, src, from).is_none() {
+        let landing = (from - src.seek_margin).max(0.0);
+        let target = ((landing + src.start_time) * ff::ffi::AV_TIME_BASE as f64) as i64;
+        let _ = ictx.seek(target, ..target);
+    }
     let params = ictx.stream(idx).ok_or_else(|| anyhow!("video stream vanished"))?.parameters();
     let mut decoder = ff::codec::context::Context::from_parameters(params)?.decoder().video()?;
 

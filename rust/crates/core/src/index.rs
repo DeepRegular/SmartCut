@@ -15,7 +15,7 @@
 use anyhow::{anyhow, Result};
 use ffmpeg_next as ff;
 
-use crate::{bitstream, AccessPoint, VideoInfo};
+use crate::{bitstream, AccessPoint, Source, VideoInfo};
 
 pub struct Index {
     pub points: Vec<AccessPoint>,
@@ -77,6 +77,7 @@ impl IndexSource for PacketScan {
                 dts: p.dts().unwrap_or(pts) as f64 * time_base - start_time,
                 key: p.is_key(),
                 reference,
+                pos: p.position() as i64,
             });
         }
 
@@ -119,6 +120,7 @@ impl IndexSource for ContainerIndex {
                     lead_start: t,
                     lead_indices: Vec::new(),
                     droppable: true,
+                    pos: (*e).pos,
                 });
             }
         }
@@ -128,6 +130,58 @@ impl IndexSource for ContainerIndex {
         points.sort_by(|a, b| a.time.partial_cmp(&b.time).unwrap_or(std::cmp::Ordering::Equal));
         Ok(Index { points, leading_known: false, pulldown: None })
     }
+}
+
+/// Is an environment switch turned off?
+fn off(key: &str) -> bool {
+    matches!(std::env::var(key).as_deref(), Ok("0") | Ok("off") | Ok("no"))
+}
+
+/// The access point decoding has to begin at to produce the picture at `time`.
+pub fn entry_before(points: &[AccessPoint], time: f64, slack: f64) -> Option<&AccessPoint> {
+    points.iter().rev().find(|p| p.time <= time + slack)
+}
+
+/// Put the demuxer on the access point that can decode `time`, by byte
+/// offset. Answers the access point's presentation time, or nothing if the
+/// caller has to fall back to a timestamp seek.
+///
+/// This is the whole point of holding an index rather than asking the
+/// container. A transport stream carries no seek table, so libavformat
+/// answers a timestamp by bisecting the file, and the landing is only
+/// approximate: it can arrive past the entry point wanted, or inside a GOP
+/// whose sequence header has already gone by. The only fix available without
+/// an index is to aim `seek_margin` seconds early and read forward, which
+/// costs a few GOPs of decoding on every move of the pointer -- and still
+/// fails, sometimes, when one margin is not enough.
+///
+/// The index has the byte the access point's packet begins at, so there is
+/// nothing to approximate: seek there and the next packet out of the demuxer
+/// is the one wanted.
+pub fn seek_to_entry(
+    ictx: &mut ff::format::context::Input,
+    src: &Source,
+    time: f64,
+) -> Option<f64> {
+    if !src.byte_seekable || off("SMARTCUT_BYTE_SEEK") {
+        return None;
+    }
+    let entry = entry_before(&src.points, time, 1e-6)?;
+    if entry.pos < 0 {
+        return None;
+    }
+    // Stream index -1 with AVSEEK_FLAG_BYTE means "the timestamp is a byte
+    // offset": libavformat repositions the file and flushes what it had
+    // buffered, and the demuxer picks the stream up again from there.
+    let placed = unsafe {
+        ff::ffi::av_seek_frame(
+            ictx.as_mut_ptr(),
+            -1,
+            entry.pos,
+            ff::ffi::AVSEEK_FLAG_BYTE,
+        ) >= 0
+    };
+    placed.then_some(entry.time)
 }
 
 // --- shared machinery ---------------------------------------------------
@@ -141,6 +195,8 @@ struct PacketView {
     dts: f64,
     key: bool,
     reference: bool,
+    /// Byte offset the packet starts at, or -1 where the demuxer does not say.
+    pos: i64,
 }
 
 /// The access point rooted at `i`, from the packets that follow it.
@@ -159,7 +215,7 @@ fn point_at(packets: &[PacketView], i: usize) -> AccessPoint {
             droppable &= !next.reference;
         }
     }
-    AccessPoint { time: pkt.pts, lead_start, lead_indices, droppable }
+    AccessPoint { time: pkt.pts, lead_start, lead_indices, droppable, pos: pkt.pos }
 }
 
 /// Derive access points from a run of packets in decode order.
@@ -203,6 +259,11 @@ pub fn refine_leading(
                 slot.lead_start = found.lead_start;
                 slot.lead_indices = found.lead_indices;
                 slot.droppable = found.droppable;
+                // A container's seek table already gave a position; keep it
+                // if this read could not better it.
+                if found.pos >= 0 {
+                    slot.pos = found.pos;
+                }
             }
         }
     }
@@ -234,7 +295,7 @@ fn window_at(
         }
         let reference =
             p.data().map(|d| bitstream::is_reference(d, &video.codec, video.framing)).unwrap_or(true);
-        out.push(PacketView { pts: t, dts: d, key, reference });
+        out.push(PacketView { pts: t, dts: d, key, reference, pos: p.position() as i64 });
         // Stop at the *next* access point: everything between it and the
         // target is what the target's leading pictures could be. Matching on
         // DTS means the target's own PTS is already past `at`, so the test
