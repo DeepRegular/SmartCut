@@ -1,6 +1,6 @@
 # 検証結果と既知の制限
 
-[← ドキュメント一覧](README.ja.md) ・ [← smartcut](../README.ja.md) ・ [English](validation.md)
+[← ドキュメント一覧](README.ja.md) ・ [← SmartCut](../README.ja.md) ・ [English](validation.md)
 
 ## 検証結果
 

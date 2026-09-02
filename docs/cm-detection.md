@@ -1,6 +1,6 @@
 # Commercial boundary detection (`cm.rs` / `logo.rs` / `caption.rs`)
 
-[← Documentation](README.md) ・ [← smartcut](../README.md) ・ [日本語](cm-detection.ja.md)
+[← Documentation](README.md) ・ [← SmartCut](../README.md) ・ [日本語](cm-detection.ja.md)
 
 Japanese broadcasters lay commercials out in 15-second units and put a short
 silence at every seam. Two things distinguish that from a pause inside the

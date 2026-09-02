@@ -1,6 +1,6 @@
 # 放送録画ワークフローとの互換
 
-[← ドキュメント一覧](README.ja.md) ・ [← smartcut](../README.ja.md) ・ [English](broadcast-ts.md)
+[← ドキュメント一覧](README.ja.md) ・ [← SmartCut](../README.ja.md) ・ [English](broadcast-ts.md)
 
 ## 出力の TS は録画のレイアウトを引き継ぐ
 

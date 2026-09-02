@@ -1,15 +1,30 @@
 //! Desktop front end for the smart-rendering cutter.
 //!
-//! The engine does the work; this layer holds one opened source, answers the
-//! timeline's questions about it, and runs an export off the UI thread.
+//! The engine does the work; this layer holds the source the editor has
+//! open, answers the timeline's questions about it, and runs an export off
+//! the UI thread.
+//!
+//! Beside that sits the clip list's half, which shares none of it. Indexing
+//! a clip, detecting its commercials and writing it out all open the
+//! recording afresh from the seek index on disc, so they can run while
+//! another recording is being edited without ever touching [`Opened`],
+//! [`Thumbs`] or [`Proxy`]. The list is the one screen the window can be on
+//! while work carries on for a recording nobody is looking at.
+//!
+//! Those two halves run **at the same time**: an index pass, a commercial
+//! detection and an open cut editor, all three at once. Sharing nothing is
+//! what makes that safe; what makes it bearable is that the two background
+//! passes hold themselves to part of the machine while the editor is up
+//! (see [`background_threads`]), because the picture under the pointer is
+//! the one somebody is waiting for.
 
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
 
 use base64::Engine as _;
-use serde::Serialize;
-use smartcut_core::{index, plan, proxy, seek_index, PlanOptions, SeekIndex, Source};
-use tauri::{Emitter, Manager, State};
+use serde::{Deserialize, Serialize};
+use smartcut_core::{index, netpath, plan, proxy, seek_index, PlanOptions, SeekIndex, Source};
+use tauri::{Emitter, Manager, State, WebviewUrl, WebviewWindowBuilder};
 
 #[derive(Default)]
 struct Opened(Mutex<Option<Source>>);
@@ -56,6 +71,25 @@ struct Held(Mutex<Option<SeekIndex>>);
 #[derive(Default)]
 struct Playing(std::sync::atomic::AtomicBool);
 
+/// How many times each of the clip list's two background lanes has been
+/// asked to give up.
+///
+/// Two counts because there are two lanes -- one seek index and one
+/// commercial detection run alongside each other -- and stopping one of them
+/// may not touch the other: opening the cut editor on a clip the index lane
+/// is reading stops that pass and nothing else.
+///
+/// A count rather than a flag. A pass takes the number as it starts and
+/// gives up as soon as it sees a larger one, so a stop lands on exactly the
+/// passes that were running when it was asked for. A flag would have to be
+/// lowered again before the next pass could start, and there is no moment to
+/// lower it in: the other lane is still watching it.
+#[derive(Default)]
+struct BatchStop {
+    index: AtomicU64,
+    cm: AtomicU64,
+}
+
 #[derive(Serialize)]
 struct SourceInfo {
     path: String,
@@ -76,7 +110,45 @@ struct SourceInfo {
     unusable_points: usize,
 }
 
+/// One row of the clip list, once the recording behind it has been read.
+///
+/// A superset of what [`SourceInfo`] carries, bar the access point times --
+/// the list wants how many there are, not where they are, and a broadcast
+/// recording has tens of thousands of them.
 #[derive(Serialize)]
+struct ClipInfo {
+    path: String,
+    name: String,
+    codec: String,
+    width: u32,
+    height: u32,
+    fps: f64,
+    duration: f64,
+    frames: u64,
+    interlaced: bool,
+    pulldown: bool,
+    has_audio: bool,
+    index_name: String,
+    points: usize,
+    unusable_points: usize,
+    /// Where the material actually begins. Nothing before the first access
+    /// point can be decoded and the planner clamps to it, so this is what
+    /// the output's own clock starts from -- and broadcast recordings often
+    /// open most of a second in.
+    first_point: f64,
+    scenes: usize,
+    /// A picture from a little way in, for the row to show. Absent only when
+    /// the pass produced no pictures at all.
+    poster: Option<String>,
+    /// Whether the seek index was already on disc from an earlier session,
+    /// in which case this cost a read and not a pass over the recording.
+    cached: bool,
+    seconds: f64,
+}
+
+/// Serialized both ways: out to the window, and on and off the cache a
+/// detection is written to. See [`remember_cm`].
+#[derive(Serialize, Deserialize, Clone)]
 struct BlockInfo {
     start: f64,
     end: f64,
@@ -84,7 +156,7 @@ struct BlockInfo {
     score: f64,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Deserialize, Clone)]
 struct CmResult {
     logo_found: bool,
     /// How many caption resets were found. Non-zero means the blocks came
@@ -109,16 +181,100 @@ struct PlanInfo {
     segments: Vec<SegmentInfo>,
 }
 
-/// A path given on the command line, so a file can be opened without the
-/// picker -- handy when the app is launched from a file manager.
+/// The paths given on the command line, so files can be opened without the
+/// picker -- handy when the app is launched from a file manager, which hands
+/// over everything that was selected.
 ///
 /// Captured before Tauri starts rather than read on demand: nothing should
 /// depend on what the process's argv looks like once a webview is up.
-struct Argv(Option<String>);
+struct Argv(Vec<String>);
 
 #[tauri::command]
-fn initial_path(argv: State<Argv>) -> Option<String> {
+fn initial_paths(argv: State<Argv>) -> Vec<String> {
     argv.0.clone()
+}
+
+/// What one thing the user handed the list turned into.
+///
+/// One input can be several files: a directory -- a night's recordings on the
+/// NAS, named as one share path -- is worth taking whole rather than making
+/// the picker walk into it. The frontend keeps its own say over which of the
+/// files it will have, so everything readable is listed and nothing is
+/// filtered by extension here.
+#[derive(Serialize)]
+struct Resolved {
+    input: String,
+    files: Vec<String>,
+    /// Japanese, and shown as it stands: this is the one place the user is
+    /// talking about a path they typed, and the reason it did not work is the
+    /// whole of the answer.
+    error: Option<String>,
+}
+
+/// Turn what was dropped, picked or pasted into paths that can be opened.
+///
+/// `smb://nas/rec/a.ts` and `\\nas\rec\a.ts` become the mount point they are
+/// under; an ordinary path passes straight through. Called for every way
+/// clips get added, so that a share path works wherever a path works.
+#[tauri::command]
+fn resolve_paths(paths: Vec<String>) -> Vec<Resolved> {
+    paths
+        .into_iter()
+        .map(|input| match files_at(&input) {
+            Ok(files) => Resolved { input, files, error: None },
+            Err(error) => Resolved { input, files: Vec::new(), error: Some(error) },
+        })
+        .collect()
+}
+
+/// The files one input names: itself, or everything in it when it is a
+/// directory.
+fn files_at(input: &str) -> Result<Vec<String>, String> {
+    let path = local_path(input)?;
+    let meta = std::fs::metadata(&path).map_err(|e| {
+        let shown = netpath::parse(input).map_or_else(|| path.display().to_string(), |s| s.unc());
+        format!("開けません: {shown} ({e})")
+    })?;
+    if !meta.is_dir() {
+        return Ok(vec![path.to_string_lossy().into_owned()]);
+    }
+    let mut files: Vec<String> = std::fs::read_dir(&path)
+        .map_err(|e| format!("フォルダーを読めません: {} ({e})", path.display()))?
+        .flatten()
+        .filter(|e| e.file_type().map(|t| !t.is_dir()).unwrap_or(false))
+        .map(|e| e.path().to_string_lossy().into_owned())
+        .collect();
+    // In name order, which for recordings named by date is the order they
+    // were made -- and in any case an order, which `read_dir` is not.
+    files.sort();
+    Ok(files)
+}
+
+/// The local path for something the user named, translating a share the
+/// machine has mounted and saying so plainly when it has not.
+fn local_path(input: &str) -> Result<std::path::PathBuf, String> {
+    let Some(share) = netpath::parse(input) else {
+        return Ok(std::path::PathBuf::from(input));
+    };
+    netpath::local(&share).map_err(|_| {
+        let mounted = netpath::mounts();
+        let seen = if mounted.is_empty() {
+            String::new()
+        } else {
+            let list = mounted.iter().map(|m| format!(r"\\{}\{}", m.host, m.share))
+                .collect::<Vec<_>>().join("、");
+            format!("（今つながっている共有: {list}）")
+        };
+        // Named by the share and not by the file: the share is what is not
+        // connected, and it is what the file manager is asked to open.
+        let root = netpath::Share { rest: String::new(), ..share.clone() };
+        format!(
+            "{} につながっていません。ファイルマネージャーで {} を開いてから、\
+             もう一度追加してください。{seen}",
+            root.unc(),
+            root.url()
+        )
+    })
 }
 
 /// Frontend diagnostics, surfaced in the process log. A webview on a
@@ -207,9 +363,13 @@ fn held_index(app: &tauri::AppHandle, path: &str) -> Option<SeekIndex> {
     }
 }
 
-/// Reading a recording's index is a pass over the file, so it runs on a
-/// worker thread; see [`off_thread`].
-fn open_now(path: &str, app: &tauri::AppHandle) -> Result<SourceInfo, String> {
+/// Open `path` with a previous session's seek index where one still fits,
+/// and hand the index back alongside so its thumbnail track can be picked up.
+///
+/// Touches nothing shared. The clip list works through recordings in the
+/// background while another one is being edited, and neither pass may stand
+/// on the other's [`Opened`], [`Thumbs`] or [`Held`].
+fn scan_cached(app: &tauri::AppHandle, path: &str) -> Result<(Source, Option<SeekIndex>), String> {
     // The pass over the packets is the same answer every time, so a previous
     // session's is taken where there is one: about a second per gigabyte
     // saved, which on a half-hour recording is the whole of the wait between
@@ -231,14 +391,11 @@ fn open_now(path: &str, app: &tauri::AppHandle) -> Result<SourceInfo, String> {
         held = None;
         src = smartcut_core::scan(path);
     }
-    let src = src.map_err(|e| e.to_string())?;
-    // Anything still building for the file that was open belongs to nothing
-    // now; the count going up is what tells it so.
-    app.state::<Generation>().0.fetch_add(1, Ordering::SeqCst);
-    *app.state::<Thumbs>().0.lock().unwrap() = None;
-    *app.state::<Proxy>().0.lock().unwrap() = None;
-    *app.state::<Held>().0.lock().unwrap() = held;
-    let info = SourceInfo {
+    Ok((src.map_err(|e| e.to_string())?, held))
+}
+
+fn info_of(src: &Source) -> SourceInfo {
+    SourceInfo {
         path: src.path.clone(),
         codec: src.video.codec.clone(),
         width: src.video.width,
@@ -251,7 +408,20 @@ fn open_now(path: &str, app: &tauri::AppHandle) -> Result<SourceInfo, String> {
         index_name: src.index_name.to_string(),
         points: src.points.iter().map(|p| p.time).collect(),
         unusable_points: src.points.iter().filter(|p| p.open_gop() && !p.droppable).count(),
-    };
+    }
+}
+
+/// Reading a recording's index is a pass over the file, so it runs on a
+/// worker thread; see [`off_thread`].
+fn open_now(path: &str, app: &tauri::AppHandle) -> Result<SourceInfo, String> {
+    let (src, held) = scan_cached(app, path)?;
+    // Anything still building for the file that was open belongs to nothing
+    // now; the count going up is what tells it so.
+    app.state::<Generation>().0.fetch_add(1, Ordering::SeqCst);
+    *app.state::<Thumbs>().0.lock().unwrap() = None;
+    *app.state::<Proxy>().0.lock().unwrap() = None;
+    *app.state::<Held>().0.lock().unwrap() = held;
+    let info = info_of(&src);
     *app.state::<Opened>().0.lock().unwrap() = Some(src);
     Ok(info)
 }
@@ -549,7 +719,10 @@ fn without_proxy(
             watcher.state::<Generation>().0.load(Ordering::SeqCst) != generation
         })),
     )
-    .map_err(|e| e.to_string())?;
+    // Superseded reads as cancelled, not as a failure: the file this pass
+    // was for is not the one on screen any more, and the one that is has a
+    // pass of its own running.
+    .map_err(|e| if current() != generation { "cancelled".to_string() } else { e.to_string() })?;
     if current() != generation {
         return Err("cancelled".to_string());
     }
@@ -597,6 +770,212 @@ fn index_info(app: &tauri::AppHandle, src: &Source, cached: bool) -> Option<Inde
         bytes: std::fs::metadata(&file).map(|m| m.len()).unwrap_or(0),
         path: file.to_string_lossy().into_owned(),
         cached,
+    })
+}
+
+/// Open the cut editor, in its own window.
+///
+/// A window rather than a fourth tab. Cutting is the one thing here that is
+/// *done to* a clip rather than settled once for the list, and the reference
+/// tool makes the same split: its cut editor is a dialog you come back out
+/// of with OK, not a page you leave by clicking elsewhere. Keeping it in the
+/// tab bar meant the same window had to be both the list and the thing being
+/// edited, and there was no moment that said "done with this one".
+///
+/// The window is made here rather than from the page so that its size and
+/// title are not the webview's business, and so no capability has to be
+/// opened up for building windows out of JavaScript.
+#[tauri::command]
+fn open_editor(title: String, app: tauri::AppHandle) -> Result<(), String> {
+    if let Some(w) = app.get_webview_window(EDITOR) {
+        // Already up: this is a second double-click, not a second editor.
+        let _ = w.set_title(&title);
+        let _ = w.unminimize();
+        let _ = w.set_focus();
+        return Ok(());
+    }
+    let window = WebviewWindowBuilder::new(&app, EDITOR, WebviewUrl::App("editor.html".into()))
+        .title(title)
+        .inner_size(1240.0, 860.0)
+        .min_inner_size(900.0, 620.0)
+        .center()
+        .build()
+        .map_err(|e| e.to_string())?;
+    // The list has to know the editor has gone, whichever way it went -- OK,
+    // キャンセル, or the title bar's cross. Said from here rather than from the
+    // page, because the page going away is the thing being reported.
+    let teller = app.clone();
+    window.on_window_event(move |event| {
+        if matches!(event, tauri::WindowEvent::Destroyed) {
+            let _ = teller.emit("editor-closed", ());
+        }
+    });
+    Ok(())
+}
+
+#[tauri::command]
+fn close_editor(app: tauri::AppHandle) {
+    if let Some(w) = app.get_webview_window(EDITOR) {
+        let _ = w.close();
+    }
+}
+
+/// The label the editor window goes by. One at a time: there is one opened
+/// recording in [`Opened`], so a second editor would be a second view of the
+/// first one's material with the first one's marks.
+const EDITOR: &str = "editor";
+
+/// The last path component, which is what the list shows.
+fn clip_name(path: &str) -> String {
+    path.rsplit(['/', '\\']).next().unwrap_or(path).to_string()
+}
+
+/// Ask the clip list's background passes to stop: `"index"`, `"cm"`, or
+/// both when no lane is named.
+///
+/// It says nothing about what comes after. A pass that has not started yet
+/// takes the count as it finds it, so there is nothing to undo and no
+/// "resume" to call -- whether more work is taken is the list's own
+/// business, not a flag held down here.
+#[tauri::command]
+fn stop_batch(lane: Option<String>, stop: State<BatchStop>) {
+    match lane.as_deref() {
+        Some("index") => stop.index.fetch_add(1, Ordering::SeqCst),
+        Some("cm") => stop.cm.fetch_add(1, Ordering::SeqCst),
+        _ => {
+            stop.index.fetch_add(1, Ordering::SeqCst);
+            stop.cm.fetch_add(1, Ordering::SeqCst)
+        }
+    };
+}
+
+/// How many cores one of the clip list's background passes may decode with.
+///
+/// Every core while nobody is cutting anything: the list working through a
+/// night's recordings on its own should have the machine, and the two lanes
+/// splitting it between them is the whole of the sharing needed.
+///
+/// Half of it, split again between the lanes, while the cut editor is open.
+/// A pass over a recording is a decoder on every core, and the film strip
+/// asking for the picture under the pointer is one more decode that has to
+/// come back inside a frame or two. This is the trade that lets all three
+/// run at once: the pass takes a few seconds longer, the pointer keeps its
+/// picture. Zero is what libavcodec reads as "as many as this machine has".
+fn background_threads(app: &tauri::AppHandle) -> usize {
+    if app.get_webview_window(EDITOR).is_none() {
+        return 0;
+    }
+    let cores = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4);
+    (cores / (2 * LANES)).max(1)
+}
+
+/// How many background passes the clip list runs at once: an index and a
+/// commercial detection. See [`BatchStop`].
+const LANES: usize = 2;
+
+/// Read one clip of the list and leave its seek index on disc.
+///
+/// The same work [`prepare`] does for the recording being edited, done ahead
+/// of time and for a recording nothing is looking at: the pass over the
+/// packets and the pass over the key pictures, written down under the same
+/// cache key. So opening this clip for editing later finds both already made
+/// and returns at once.
+///
+/// Deliberately shares nothing with the editing session -- no [`Opened`], no
+/// [`Thumbs`], no [`Generation`] -- because it runs while another recording
+/// is open and being cut.
+#[tauri::command]
+async fn index_clip(path: String, app: tauri::AppHandle) -> Result<ClipInfo, String> {
+    off_thread(move || index_clip_now(&path, &app)).await
+}
+
+fn index_clip_now(path: &str, app: &tauri::AppHandle) -> Result<ClipInfo, String> {
+    let began = std::time::Instant::now();
+    // What the lane had been asked to stop before this pass existed is not
+    // about this pass. See [`BatchStop`].
+    let mine = app.state::<BatchStop>().index.load(Ordering::SeqCst);
+    let stopped = move || app.state::<BatchStop>().index.load(Ordering::SeqCst) != mine;
+    let say = |phase: &str, done: f64| {
+        let _ = app.emit("clip-progress", (path.to_string(), phase.to_string(), done));
+    };
+    if stopped() {
+        return Err("cancelled".into());
+    }
+    say("読み込み中", 0.0);
+    let (src, held) = scan_cached(app, path)?;
+
+    // An index from an earlier session carries the pictures it was built
+    // with, so there is nothing left to do for this clip at all.
+    let kept = held.and_then(|mut ix| ix.track.take());
+    let (track, cached) = match kept {
+        Some(track) => (track, true),
+        None => {
+            let reporter = app.clone();
+            let owned = path.to_string();
+            let watcher = app.clone();
+            let track = smartcut_core::thumbs::build_with(
+                &src,
+                &smartcut_core::ThumbOptions {
+                    threads: background_threads(app),
+                    ..Default::default()
+                },
+                Some(Box::new(move |f| {
+                    let _ = reporter.emit(
+                        "clip-progress",
+                        (owned.clone(), "シーク用インデックス".to_string(), f),
+                    );
+                })),
+                // Nothing is looking at this recording, so there is nobody to
+                // hand pictures to as they are made.
+                None,
+                Some(Box::new(move || {
+                    watcher.state::<BatchStop>().index.load(Ordering::SeqCst) != mine
+                })),
+            )
+            // A pass that was asked to stop does not come back with what it
+            // had; it gives up where it stands and says so. Said in the one
+            // word the list watches for, because a stop is not a failure --
+            // the row goes back to 解析待ち rather than red.
+            .map_err(|e| if stopped() { "cancelled".to_string() } else { e.to_string() })?;
+            // And a pass that was asked between finishing and returning is
+            // the same thing. Writing its track down would leave an index
+            // claiming to speak for the whole file, and every later session
+            // would believe it.
+            if stopped() {
+                return Err("cancelled".into());
+            }
+            remember(app, &src, Some(&track));
+            (track, false)
+        }
+    };
+
+    // A little way in rather than at the head: broadcast recordings open on
+    // black, or on the tail of the programme before.
+    let poster = track
+        .nearest(src.duration * 0.1)
+        .or_else(|| track.thumbs.first())
+        .map(|t| as_url(&t.jpeg));
+    say("完了", 1.0);
+    Ok(ClipInfo {
+        name: clip_name(path),
+        path: src.path.clone(),
+        codec: src.video.codec.clone(),
+        width: src.video.width,
+        height: src.video.height,
+        fps: src.video.frame_rate,
+        duration: src.duration,
+        frames: (src.duration * src.video.frame_rate).round().max(0.0) as u64,
+        interlaced: src.video.interlaced(),
+        pulldown: src.video.pulldown,
+        has_audio: src.audio.is_some(),
+        index_name: src.index_name.to_string(),
+        points: src.points.len(),
+        unusable_points: src.points.iter().filter(|p| p.open_gop() && !p.droppable).count(),
+        first_point: src.points.first().map_or(0.0, |p| p.time),
+        scenes: track.scenes.len(),
+        poster,
+        cached,
+        seconds: began.elapsed().as_secs_f64(),
     })
 }
 
@@ -865,10 +1244,13 @@ fn plan_now(ranges: &[(f64, f64)], app: &tauri::AppHandle) -> Result<PlanInfo, S
         )
         .map_err(|e| e.to_string())?;
     }
-    let plans = build_plan(src, ranges);
+    Ok(plan_info(&build_plan(src, ranges)))
+}
+
+fn plan_info(plans: &[smartcut_core::RangePlan]) -> PlanInfo {
     let copied: f64 = plans.iter().map(|p| p.copied()).sum();
     let reencoded: f64 = plans.iter().map(|p| p.reencoded()).sum();
-    Ok(PlanInfo {
+    PlanInfo {
         total: copied + reencoded,
         copied,
         reencoded,
@@ -882,13 +1264,336 @@ fn plan_now(ranges: &[(f64, f64)], app: &tauri::AppHandle) -> Result<PlanInfo, S
                 frames: s.frames,
             })
             .collect(),
-    })
+    }
 }
+
+/// The cutting plan for a clip of the list, without opening it.
+///
+/// Same answer [`make_plan`] gives for the recording in the editor, for one
+/// that is not in it. The output screen wants it to say which parts of a
+/// clip will be re-encoded before it starts writing -- and after the editor
+/// became its own window, the list is a place you can stand with no
+/// recording open at all.
+#[tauri::command]
+async fn clip_plan(
+    path: String,
+    ranges: Vec<(f64, f64)>,
+    app: tauri::AppHandle,
+) -> Result<PlanInfo, String> {
+    off_thread(move || {
+        let (mut src, _) = scan_cached(&app, &path)?;
+        if !src.leading_known {
+            index::refine_leading(
+                &src.path.clone(),
+                &src.video.clone(),
+                src.start_time,
+                &mut src.points,
+                &ranges,
+            )
+            .map_err(|e| e.to_string())?;
+        }
+        Ok(plan_info(&build_plan(&src, &ranges)))
+    })
+    .await
+}
+
+/// Pictures out of a clip of the list, at the instants asked for.
+///
+/// One open for the lot: the seek index makes opening cheap but not free,
+/// and these are asked for in small batches -- the frames either side of
+/// each join, which is what the output screen puts on show.
+#[tauri::command]
+async fn clip_thumbs(
+    path: String,
+    times: Vec<f64>,
+    width: u32,
+    app: tauri::AppHandle,
+) -> Result<Vec<Option<Shot>>, String> {
+    off_thread(move || {
+        let (src, _) = scan_cached(&app, &path)?;
+        Ok(times
+            .into_iter()
+            .map(|t| {
+                smartcut_core::shot_at(&src, t, width)
+                    .ok()
+                    .map(|s| Shot { url: as_url(&s.jpeg), time: s.time, kind: s.kind.to_string() })
+            })
+            .collect())
+    })
+    .await
+}
+
+/// Where a long pass reports the phase it is in and how far through it is.
+///
+/// Shared rather than borrowed because each of the three passes wants its own
+/// copy to carry off onto a worker thread.
+type Say = std::sync::Arc<dyn Fn(&str, f64) + Send + Sync>;
 
 /// Look for commercial breaks: caption resets where the broadcaster sends
 /// them, otherwise runs of short silences spaced on a 15-second grid.
+///
+/// `src` is what the bitstream is read out of -- captions, audio, logo --
+/// and `pictures` what a boundary is refined against, which is the proxy
+/// where there is one and `src` itself otherwise. `say` carries the phase
+/// and how far through it back to whoever asked, because the same pass
+/// serves the editor's own button and the clip list's batch, and the two
+/// report to different places.
+fn detect_now(src: &Source, pictures: &Source, say: Say) -> Result<CmResult, String> {
+    let opts = smartcut_core::DetectOptions::default();
+
+    // Reading the audio is a few seconds; the logo is two passes over the
+    // video and takes ten times as long. Weighting them that way is what
+    // makes the bar move at an honest rate rather than sitting at 10%.
+    //
+    // The caption stream goes first: where the broadcaster resets the
+    // service at its junctions, those marks are exact and cost one pass
+    // over a stream nothing has to decode. It is also the only signal of
+    // the three that is cheap enough to try speculatively.
+    const CAPTION_SHARE: f64 = 0.15;
+    let reporter = say.clone();
+    let resets = smartcut_core::caption::resets_with(
+        src,
+        Some(Box::new(move |f| (*reporter)("字幕を調べています", f * CAPTION_SHARE))),
+    )
+    .ok();
+
+    // With the resets in hand neither of the other two reads anything:
+    // the audio is a few seconds, but the logo is two passes over the
+    // video, and it is the weaker signal wherever the marks exist.
+    let rest = 1.0 - CAPTION_SHARE;
+    let audio_share = 0.1 * rest;
+    let silences = match &resets {
+        Some(_) => Vec::new(),
+        None => {
+            let reporter = say.clone();
+            smartcut_core::find_silences_with(
+                src,
+                &opts,
+                Some(Box::new(move |f| {
+                    (*reporter)("音声を調べています", CAPTION_SHARE + f * audio_share)
+                })),
+            )
+            .map_err(|e| e.to_string())?
+        }
+    };
+    let cands = smartcut_core::cm_candidates(&silences, &opts);
+
+    // The logo is the better read on how far a break runs, but not every
+    // broadcaster shows one; when it is missing, the silences stand alone.
+    let logo = if resets.is_none() {
+        let reporter = say.clone();
+        smartcut_core::logo::detect_with(
+            src,
+            &Default::default(),
+            Some(Box::new(move |f| {
+                (*reporter)(
+                    "ロゴを探しています",
+                    CAPTION_SHARE + audio_share + f * (rest - audio_share),
+                )
+            })),
+        )
+        .ok()
+    } else {
+        None
+    };
+    (*say)("まとめています", 1.0);
+    let blocks = match (&resets, &logo) {
+        (Some(r), _) => smartcut_core::cm_blocks_from_resets(r, src.duration),
+        (None, Some(l)) if !l.absent.is_empty() => {
+            smartcut_core::cm_blocks_from_logo(&cands, &l.absent, &opts, 3.0, src.duration)
+        }
+        (None, Some(_)) => Vec::new(),
+        _ => smartcut_core::cm_blocks(&cands, &opts, 0.6),
+    };
+    // The times a block arrives with are estimates -- the middle of a
+    // silence, or the moment a logo's rolling average crossed a threshold.
+    // Neither is a picture. The cut itself is a scene change, so a
+    // boundary within reach of one is moved onto the exact frame it
+    // happens on.
+    let mut blocks = blocks;
+    smartcut_core::cm_refine_boundaries(pictures, &mut blocks, 0.5, 0.08);
+
+    Ok(CmResult {
+        logo_found: logo.is_some(),
+        resets: resets.as_ref().map_or(0, |r| r.len()),
+        blocks: blocks
+            .into_iter()
+            .map(|b| BlockInfo {
+                start: b.start,
+                end: b.end,
+                junctions: b.junctions,
+                score: b.score,
+            })
+            .collect(),
+    })
+}
+
+// --- remembering a detection --------------------------------------------
+//
+// A detection is minutes of reading the recording, and it is the same answer
+// every time: the same file gives the same caption resets, the same silences,
+// the same logo. Yet until now it lived only in the window that asked for it,
+// so a list built again the next morning showed nothing about recordings that
+// had been detected the night before -- and re-detecting them was the whole
+// evening again.
+//
+// Kept beside the seek index and the proxy, in the cache directory rather
+// than beside the recording: the recordings sit on a share that other things
+// read, and a file this program wrote for its own convenience does not belong
+// in with them. Losing the cache costs a pass, never any work of the user's --
+// what they cut is in the clip list and in the `.keyframe` beside the output.
+
+/// Where detections are kept.
+fn cm_dir(app: &tauri::AppHandle) -> Result<std::path::PathBuf, String> {
+    let dir = app
+        .path()
+        .app_cache_dir()
+        .map_err(|e| format!("キャッシュの置き場が分かりません: {e}"))?
+        .join("cm");
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    Ok(dir)
+}
+
+/// Bumped when what is written here stops meaning what it used to -- a change
+/// to the detection that would make yesterday's answer the wrong one. Every
+/// cached detection is then ignored, and the recordings are read again.
+const CM_VERSION: u32 = 1;
+
+/// Where this recording's detection belongs.
+///
+/// Keyed the way [`seek_index::cache_path`] and [`proxy::cache_path`] key
+/// theirs, and for the same reason: the path alone would go on answering for
+/// a recording that has since been replaced, so the size and the modification
+/// time are in the key and a changed file simply misses.
+fn cm_path(app: &tauri::AppHandle, src_path: &str) -> Result<std::path::PathBuf, String> {
+    let meta = std::fs::metadata(src_path).map_err(|e| e.to_string())?;
+    let mtime = meta
+        .modified()
+        .ok()
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|d| d.as_nanos() as u64)
+        .unwrap_or(0);
+
+    // FNV-1a, as in the other two.
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    let mut eat = |bytes: &[u8]| {
+        for b in bytes {
+            h ^= *b as u64;
+            h = h.wrapping_mul(0x1_0000_01b3);
+        }
+    };
+    eat(src_path.as_bytes());
+    eat(&meta.len().to_le_bytes());
+    eat(&mtime.to_le_bytes());
+    eat(&CM_VERSION.to_le_bytes());
+
+    let stem: String = std::path::Path::new(src_path)
+        .file_stem()
+        .map(|s| s.to_string_lossy().to_string())
+        .unwrap_or_default()
+        .chars()
+        .filter(|c| c.is_alphanumeric() || *c == '-' || *c == '_')
+        .take(40)
+        .collect();
+    Ok(cm_dir(app)?.join(format!("{stem}-{h:016x}.cmj")))
+}
+
+/// Write a detection down, so the next session's list already knows.
+///
+/// A failure is not worth stopping for: the answer is in the window either
+/// way, and all that is lost is having it again tomorrow.
+fn remember_cm(app: &tauri::AppHandle, src_path: &str, res: &CmResult) {
+    let Ok(file) = cm_path(app, src_path) else { return };
+    match serde_json::to_vec(res) {
+        Ok(json) => {
+            if let Err(e) = std::fs::write(&file, json) {
+                eprintln!("cm: cannot write {}: {e}", file.display());
+                return;
+            }
+        }
+        Err(e) => {
+            eprintln!("cm: cannot encode: {e}");
+            return;
+        }
+    }
+    // A few hundred bytes each -- a block is four numbers and there are
+    // rarely more than a dozen -- so the limit is about not leaving an
+    // unbounded directory behind rather than about the space. A thousand
+    // recordings is more than anyone's list has held.
+    if let Ok(dir) = cm_dir(app) {
+        let _ = cm_prune(&dir, 1000);
+    }
+}
+
+/// A detection an earlier session wrote for this recording, if the file is
+/// still the one it was written for.
+///
+/// One that cannot be read is deleted rather than stepped around, as with the
+/// seek index: it would be found again next time and fail again.
+fn cached_cm(app: &tauri::AppHandle, src_path: &str) -> Option<CmResult> {
+    let file = cm_path(app, src_path).ok()?;
+    let raw = std::fs::read(&file).ok()?;
+    match serde_json::from_slice::<CmResult>(&raw) {
+        Ok(res) => {
+            // Not the least recently used, since it is being used now.
+            seek_index::touch(&file);
+            Some(res)
+        }
+        Err(e) => {
+            eprintln!("cm: discarding {}: {e}", file.display());
+            let _ = std::fs::remove_file(&file);
+            None
+        }
+    }
+}
+
+/// Delete the least recently used detections until at most `keep` remain.
+///
+/// Same shape as [`seek_index::prune`] without its byte budget, which would
+/// be measuring nothing: these are text files a page long.
+fn cm_prune(dir: &std::path::Path, keep: usize) -> std::io::Result<()> {
+    let mut found: Vec<(std::time::SystemTime, std::path::PathBuf)> = Vec::new();
+    for entry in std::fs::read_dir(dir)? {
+        let path = entry?.path();
+        if path.extension().and_then(|e| e.to_str()) != Some("cmj") {
+            continue;
+        }
+        let when = path
+            .metadata()
+            .and_then(|m| m.modified())
+            .unwrap_or(std::time::UNIX_EPOCH);
+        found.push((when, path));
+    }
+    if found.len() <= keep {
+        return Ok(());
+    }
+    found.sort_by_key(|(when, _)| std::cmp::Reverse(*when));
+    for (_, path) in found.into_iter().skip(keep) {
+        let _ = std::fs::remove_file(path);
+    }
+    Ok(())
+}
+
+/// What is already known about `path`'s commercials, for a clip the list has
+/// just been handed.
+///
+/// Answers with nothing where nothing has been detected, which is the usual
+/// case and costs a `stat` and a miss.
 #[tauri::command]
-async fn detect_cm(app: tauri::AppHandle, use_logo: bool) -> Result<CmResult, String> {
+async fn cm_cached(path: String, app: tauri::AppHandle) -> Result<Option<CmResult>, String> {
+    // Reads two small files at most, but one of them is on whatever the
+    // recording is on -- a share that has gone to sleep answers a `stat` in
+    // its own time, and the list adds clips a hundred at a go.
+    //
+    // The path is taken as it is given, not put through `local_path`: it has
+    // already been through `resolve_paths`, and it is the string the
+    // detection will be written under, so the two have to agree.
+    off_thread(move || Ok(cached_cm(&app, &path))).await
+}
+
+/// The editor's own detection, against the recording that is open.
+#[tauri::command]
+async fn detect_cm(app: tauri::AppHandle) -> Result<CmResult, String> {
     // Reads the whole audio track, so it belongs off the UI thread.
     tauri::async_runtime::spawn_blocking(move || {
         // Taken before the recording's lock and kept for the whole pass:
@@ -898,117 +1603,80 @@ async fn detect_cm(app: tauri::AppHandle, use_logo: bool) -> Result<CmResult, St
         let state = app.state::<Opened>();
         let guard = state.0.lock().unwrap();
         let src = guard.as_ref().ok_or("no file open")?;
-        let opts = smartcut_core::DetectOptions::default();
-
-        // Reading the audio is a few seconds; the logo is two passes over the
-        // video and takes ten times as long. Weighting them that way is what
-        // makes the bar move at an honest rate rather than sitting at 10%.
-        let say = |app: &tauri::AppHandle, phase: &str, done: f64| {
-            let _ = app.emit("cm-progress", (phase.to_string(), done));
-        };
-        // The caption stream goes first: where the broadcaster resets the
-        // service at its junctions, those marks are exact and cost one pass
-        // over a stream nothing has to decode. It is also the only signal of
-        // the three that is cheap enough to try speculatively.
-        const CAPTION_SHARE: f64 = 0.15;
         let reporter = app.clone();
-        let resets = smartcut_core::caption::resets_with(
+        let res = detect_now(
             src,
-            Some(Box::new(move |f| {
-                let _ = reporter
-                    .emit("cm-progress", ("字幕を調べています".to_string(), f * CAPTION_SHARE));
-            })),
-        )
-        .ok();
-
-        // With the resets in hand neither of the other two reads anything:
-        // the audio is a few seconds, but the logo is two passes over the
-        // video, and it is the weaker signal wherever the marks exist.
-        let rest = 1.0 - CAPTION_SHARE;
-        let audio_share = if use_logo { 0.1 } else { 1.0 } * rest;
-        let silences = match &resets {
-            Some(_) => Vec::new(),
-            None => {
-                let reporter = app.clone();
-                smartcut_core::find_silences_with(
-                    src,
-                    &opts,
-                    Some(Box::new(move |f| {
-                        let _ = reporter.emit(
-                            "cm-progress",
-                            ("音声を調べています".to_string(), CAPTION_SHARE + f * audio_share),
-                        );
-                    })),
-                )
-                .map_err(|e| e.to_string())?
-            }
-        };
-        let cands = smartcut_core::cm_candidates(&silences, &opts);
-
-        // The logo is the better read on how far a break runs, but not every
-        // broadcaster shows one; when it is missing, the silences stand alone.
-        let logo = if use_logo && resets.is_none() {
-            let reporter = app.clone();
-            smartcut_core::logo::detect_with(
-                src,
-                &Default::default(),
-                Some(Box::new(move |f| {
-                    let _ = reporter.emit(
-                        "cm-progress",
-                        (
-                            "ロゴを探しています".to_string(),
-                            CAPTION_SHARE + audio_share + f * (rest - audio_share),
-                        ),
-                    );
-                })),
-            )
-            .ok()
-        } else {
-            None
-        };
-        say(&app, "まとめています", 1.0);
-        let blocks = match (&resets, &logo) {
-            (Some(r), _) => smartcut_core::cm_blocks_from_resets(r, src.duration),
-            (None, Some(l)) if !l.absent.is_empty() => {
-                smartcut_core::cm_blocks_from_logo(&cands, &l.absent, &opts, 3.0, src.duration)
-            }
-            (None, Some(_)) => Vec::new(),
-            _ => smartcut_core::cm_blocks(&cands, &opts, 0.6),
-        };
-        // The times a block arrives with are estimates -- the middle of a
-        // silence, or the moment a logo's rolling average crossed a threshold.
-        // Neither is a picture. The cut itself is a scene change, so a
-        // boundary within reach of one is moved onto the exact frame it
-        // happens on.
-        let mut blocks = blocks;
-        smartcut_core::cm_refine_boundaries(&pictures, &mut blocks, 0.5, 0.08);
-
-        Ok(CmResult {
-            logo_found: logo.is_some(),
-            resets: resets.as_ref().map_or(0, |r| r.len()),
-            blocks: blocks
-                .into_iter()
-                .map(|b| BlockInfo {
-                    start: b.start,
-                    end: b.end,
-                    junctions: b.junctions,
-                    score: b.score,
-                })
-                .collect(),
-        })
+            &pictures,
+            std::sync::Arc::new(move |phase: &str, done: f64| {
+                let _ = reporter.emit("cm-progress", (phase.to_string(), done));
+            }),
+        )?;
+        // Written down whichever window asked for it: it is the recording's
+        // answer, not the window's, and the list is where it will be wanted
+        // next. Out from under the recording's lock first -- the editor has
+        // to keep answering, and this is a file being written.
+        let path = src.path.clone();
+        drop(guard);
+        remember_cm(&app, &path, &res);
+        Ok(res)
     })
     .await
     .map_err(|e| e.to_string())?
 }
 
+/// The clip list's detection, against a recording nothing is looking at.
+///
+/// Opened afresh rather than through [`Opened`], because the list runs this
+/// while another recording is being edited; the seek index built when the
+/// clip was added is what makes that open cheap. There is no proxy for a
+/// clip that was never opened, so the recording answers for its own pictures
+/// when a boundary is refined.
+///
+/// [`BatchStop`] is read at the ends and not in the middle: none of the three
+/// passes takes a stop, so asking the list to stop lands between clips rather
+/// than inside one.
+#[tauri::command]
+async fn detect_cm_at(path: String, app: tauri::AppHandle) -> Result<CmResult, String> {
+    off_thread(move || {
+        let mine = app.state::<BatchStop>().cm.load(Ordering::SeqCst);
+        let stopped = || app.state::<BatchStop>().cm.load(Ordering::SeqCst) != mine;
+        if stopped() {
+            return Err("cancelled".into());
+        }
+        let (src, _) = scan_cached(&app, &path)?;
+        let reporter = app.clone();
+        let owned = path.clone();
+        let res = detect_now(
+            &src,
+            &src,
+            std::sync::Arc::new(move |phase: &str, done: f64| {
+                let _ =
+                    reporter.emit("clip-cm-progress", (owned.clone(), phase.to_string(), done));
+            }),
+        )?;
+        if stopped() {
+            return Err("cancelled".into());
+        }
+        remember_cm(&app, &path, &res);
+        Ok(res)
+    })
+    .await
+}
+
+/// Write one clip out.
+///
+/// `path` names the recording to cut; without it the one that is open in the
+/// editor is used. Naming it is what lets the output screen work through a
+/// list of clips without opening each one into the editor first -- the seek
+/// index built when the clip was added makes that open cheap.
 #[tauri::command]
 async fn export(
     app: tauri::AppHandle,
     ranges: Vec<(f64, f64)>,
     output: String,
-    // All switchable from the CLI; the window offers none of them, so they
-    // are optional here and leave the audio smart-rendered, as the engine's
-    // own default has it.
+    path: Option<String>,
+    // All switchable from the CLI; the window offers the audio mode on the
+    // output settings screen and leaves the rest at the engine's defaults.
     audio_reencode: Option<bool>,
     audio_copy: Option<bool>,
     audio_es: Option<bool>,
@@ -1016,11 +1684,44 @@ async fn export(
     // Cutting is minutes of I/O on a broadcast recording; keeping it off the
     // UI thread is what lets the progress bar move at all.
     tauri::async_runtime::spawn_blocking(move || {
-        let state = app.state::<Opened>();
-        let guard = state.0.lock().unwrap();
-        let src = guard.as_ref().ok_or("no file open")?;
-        let plans = build_plan(src, &ranges);
+        // The output folder is typed as often as it is picked, so it too can
+        // name a share: `smb://nas/rec` lands on the mount the same way an
+        // input does. A plain path is handed back untouched.
+        let output = local_path(&output)?.to_string_lossy().into_owned();
+        // Owned either way, so the recording's lock is not held for the
+        // minutes the cut takes: the editor has to keep answering while its
+        // own output runs.
+        let mut src = match &path {
+            Some(p) => scan_cached(&app, p)?.0,
+            None => app
+                .state::<Opened>()
+                .0
+                .lock()
+                .unwrap()
+                .as_ref()
+                .ok_or("no file open")?
+                .clone(),
+        };
+        // Which pictures a GOP leads with decides where a copy can start.
+        // The editor's plan panel has usually settled that already, but a
+        // clip going straight from the list to the output screen was never
+        // planned, and a fresh open knows nothing of it either way.
+        if !src.leading_known {
+            index::refine_leading(
+                &src.path.clone(),
+                &src.video.clone(),
+                src.start_time,
+                &mut src.points,
+                &ranges,
+            )
+            .map_err(|e| e.to_string())?;
+        }
+        let plans = build_plan(&src, &ranges);
         let reporter = app.clone();
+        // Tagged with the recording it belongs to: the output screen runs
+        // through a list, and an untagged fraction would move whichever row
+        // happened to be on screen.
+        let whose = src.path.clone();
         let opts = smartcut_core::CutOptions {
             audio_mode: if audio_reencode.unwrap_or(false) {
                 smartcut_core::AudioMode::Reencode
@@ -1032,12 +1733,12 @@ async fn export(
             ..Default::default()
         };
         smartcut_core::cut_with_progress(
-            src,
+            &src,
             &plans,
             &output,
             &opts,
             Some(Box::new(move |f| {
-                let _ = reporter.emit("export-progress", f);
+                let _ = reporter.emit("export-progress", (whose.clone(), f));
             })),
         )
         .map_err(|e| e.to_string())?;
@@ -1051,7 +1752,7 @@ async fn export(
                 &beside.to_string_lossy(),
                 smartcut_core::AacVersion::Auto,
             )
-                .map_err(|e| e.to_string())?;
+            .map_err(|e| e.to_string())?;
         }
         Ok(())
     })
@@ -1231,7 +1932,7 @@ pub fn run() {
         std::env::set_var("WEBKIT_DISABLE_DMABUF_RENDERER", "1");
     }
 
-    let argv = Argv(std::env::args().nth(1).filter(|a| !a.starts_with('-')));
+    let argv = Argv(std::env::args().skip(1).filter(|a| !a.starts_with('-')).collect());
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .manage(Opened::default())
@@ -1240,10 +1941,12 @@ pub fn run() {
         .manage(Thumbs::default())
         .manage(Held::default())
         .manage(Playing::default())
+        .manage(BatchStop::default())
         .manage(argv)
         .invoke_handler(tauri::generate_handler![
             log,
-            initial_path,
+            initial_paths,
+            resolve_paths,
             open_source,
             detect_cm,
             thumbs_at,
@@ -1256,7 +1959,15 @@ pub fn run() {
             read_keyframes,
             play,
             stop_play,
-            export
+            export,
+            index_clip,
+            detect_cm_at,
+            cm_cached,
+            stop_batch,
+            clip_plan,
+            clip_thumbs,
+            open_editor,
+            close_editor
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

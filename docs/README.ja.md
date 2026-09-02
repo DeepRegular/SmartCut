@@ -1,6 +1,6 @@
 # ドキュメント
 
-[← smartcut](../README.ja.md) ・ [English](README.md)
+[← SmartCut](../README.ja.md) ・ [English](README.md)
 
 ## 仕組み
 

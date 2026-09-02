@@ -17,6 +17,7 @@ pub mod cm;
 pub mod cut;
 pub mod index;
 pub mod logo;
+pub mod netpath;
 pub mod plan;
 pub mod playback_audio;
 pub mod preview;
@@ -181,13 +182,28 @@ pub fn init() -> Result<()> {
 /// answer back on the packet that carried it -- and frame threading holds
 /// pictures back until the pipeline fills, so the last few would never come.
 pub fn video_decoder(params: ff::codec::Parameters) -> Result<ff::decoder::Video> {
+    video_decoder_with(params, 0)
+}
+
+/// As [`video_decoder`], but held to `threads` of them; zero still means
+/// every core.
+///
+/// For a pass that is not the one being waited on. The clip list reads its
+/// recordings while another one is open in the cut editor, and a pass that
+/// takes every core is precisely what leaves nothing for the picture the
+/// pointer is asking for -- the film strip stops following it, which is a
+/// worse trade than the pass finishing a few seconds later.
+pub fn video_decoder_with(
+    params: ff::codec::Parameters,
+    threads: usize,
+) -> Result<ff::decoder::Video> {
     let mut ctx = ff::codec::context::Context::from_parameters(params)?;
     // ffmpeg-next's `set_threading` writes the kind as well as the count, and
     // naming one kind is exactly how a codec that only has the other ends up
     // single threaded anyway. The count is the one field that needs saying:
     // zero means "as many as this machine has".
     unsafe {
-        (*ctx.as_mut_ptr()).thread_count = 0;
+        (*ctx.as_mut_ptr()).thread_count = threads as i32;
     }
     Ok(ctx.decoder().video()?)
 }

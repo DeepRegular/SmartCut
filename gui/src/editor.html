@@ -1,0 +1,152 @@
+<!doctype html>
+<html lang="ja">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>カット編集</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <!-- The cut editor, in its own window. Opened on one clip out of the list
+       and left again with OK or キャンセル; the list window is what says which
+       clip, and what becomes of the cuts afterwards. -->
+  <body>
+    <header class="tabs">
+      <span class="tab active still">カット編集</span>
+      <span class="title" id="title">読み込み中…</span>
+      <span class="brand">SmartCut</span>
+    </header>
+
+    <div class="infobar">
+      <span id="info">—</span>
+      <span class="spacer"></span>
+      <button id="detect-cm" class="mini wide" title="CM らしい区間を探してキーフレームを立てる (Ctrl+D)">CM を検出</button>
+    </div>
+
+    <main>
+      <!-- Keyframes down the left, where the reference tool keeps them: the
+           marks you navigate by, not the edit itself. -->
+      <aside class="clips">
+        <div class="clips-head">
+          キーフレーム <span id="key-count" class="dim"></span>
+        </div>
+        <ol id="keyframes"></ol>
+      </aside>
+
+      <div class="editor">
+        <div class="stage">
+          <img id="preview" alt="" />
+          <div class="overlay">
+            <div class="ovl-main">
+              <span id="ovl-frame">—</span>
+              <span id="ovl-time">--:--:--.--</span>
+            </div>
+            <div class="ovl-sub">
+              <span id="ovl-kind">—</span>
+              <span id="ovl-sel">選択 —</span>
+            </div>
+          </div>
+          <div id="searching" class="searching" hidden>サーチ中</div>
+        </div>
+
+        <div class="strip-wrap">
+          <div id="strip" class="strip">
+            <div id="reel" class="reel"></div>
+            <div id="playline" class="playline" hidden></div>
+          </div>
+          <div class="strip-foot">
+            <span class="dim">クリックで移動／<b>右ドラッグ</b>で前後にサーチ（右へ＝送り・左へ＝戻し）／中クリックで次のシーン／ホイールで 1 フレーム送り（Shift で GOP 単位）／Space で再生</span>
+            <span class="spacer"></span>
+            <span id="warm" class="warm"></span>
+            <label class="opt">表示
+              <select id="strip-step">
+                <option value="gop:3">GOP・3 秒</option>
+                <option value="gop:6" selected>GOP・6 秒</option>
+                <option value="gop:30">GOP・30 秒</option>
+                <option value="gop:180">GOP・3 分</option>
+                <option value="frame">フレーム</option>
+              </select>
+            </label>
+          </div>
+        </div>
+
+        <div class="track-wrap">
+          <canvas id="track" height="84"></canvas>
+          <div id="hover" class="hover" hidden>
+            <img id="hover-img" alt="" />
+            <div class="hover-foot"><span id="hover-time">--:--:--.--</span><span id="hover-kind"></span></div>
+          </div>
+        </div>
+
+        <!-- Laid out like the reference tool's: the cut sits in the middle,
+             IN to its left and OUT to its right, and the ways of getting
+             about radiate outwards from there.
+
+             The three clusters are their own elements so that a window too
+             narrow for one line breaks it between them, keeping the symmetry
+             around the cut on whichever line it lands. The row used to be one
+             flat, unwrapping line that scrolled instead -- and the scroll bar
+             it grew lay across the bottom of the buttons, where it swallowed
+             the clicks meant for them. At the window's own default width. -->
+        <div class="transport">
+          <div class="tgroup">
+            <button id="add-key" class="flag" title="いまのフレームをキーフレームに登録 (K)">⚑ キーフレーム</button>
+            <button id="prev-scene" class="tool" title="前のシーンの変わり目へ (Shift+S)" disabled>⇤ シーン</button>
+            <button id="next-scene" class="tool" title="次のシーンの変わり目へ (S)" disabled>シーン ⇥</button>
+          </div>
+
+          <div class="tgroup">
+            <button id="play" class="play" title="ここから再生 (Space)">▶ 再生</button>
+            <button id="go-start" title="先頭へ">|◀</button>
+            <button id="prev-kf" title="前の無劣化点へ">◀|</button>
+            <button id="step-back" title="1 フレーム戻る (←) ─ 押しっぱなしで連続">◀</button>
+            <button id="goto-in" title="選択の開始位置へ移動">⇤|</button>
+            <button id="set-in" class="mark" title="ここを選択の開始に (I)">[ IN</button>
+            <button id="cut-range" class="cut" title="いまの選択を出力から取り除く">✂ カット</button>
+            <button id="set-out" class="mark" title="ここを選択の終わりに (O)">OUT ]</button>
+            <button id="goto-out" title="選択の終わり位置へ移動">|⇥</button>
+            <button id="step-fwd" title="1 フレーム進む (→) ─ 押しっぱなしで連続">▶</button>
+            <button id="next-kf" title="次の無劣化点へ">|▶</button>
+            <button id="go-end" title="末尾へ">▶|</button>
+          </div>
+
+          <div class="tgroup">
+            <button id="cut-outside" class="tool" title="選択の外側をすべて取り除く">外側をカット</button>
+            <button id="snap" class="tool" title="選択の両端をいちばん近い無劣化点へ寄せる">無劣化点へ吸着</button>
+            <button id="undo-cut" class="tool" title="直前のカットを取り消す" disabled>↺ 取消</button>
+            <button id="clear-all" class="tool" title="カットとキーフレームをすべて消す">全消去</button>
+          </div>
+        </div>
+
+        <div class="statusbar">
+          <span class="counter" id="counter">— / —</span>
+          <span class="dim" id="selection">選択 —</span>
+          <span class="spacer"></span>
+          <span class="dim" id="cm-note"></span>
+        </div>
+
+        <footer class="output">
+          <div class="panel">
+            <div class="bar"><span id="copied-bar"></span></div>
+            <div class="plan-text" id="plan-text">ファイルを開いてください</div>
+            <ul id="segments"></ul>
+          </div>
+          <!-- No 出力 button here. What gets written, where, and in what
+               container is one answer for the whole list, and it is settled
+               on the list window's own screens.
+
+               OK and キャンセル instead, as the reference tool has them: this
+               window is opened on one clip and left again, and those two are
+               what say which way you left it. -->
+          <div class="export">
+            <span class="badge" id="smart-badge">—</span>
+            <span class="dim" id="status"></span>
+            <span class="spacer"></span>
+            <button id="editor-ok" class="primary wide">OK</button>
+            <button id="editor-cancel" class="secondary">キャンセル</button>
+          </div>
+        </footer>
+      </div>
+    </main>
+    <script src="main.js" type="module"></script>
+  </body>
+</html>

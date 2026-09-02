@@ -1,6 +1,6 @@
 <div align="center">
 
-# smartcut
+# SmartCut
 
 **Cut the commercials out of a broadcast recording without re-encoding it.**
 
@@ -12,7 +12,7 @@
 English ・ [日本語](README.ja.md)
 
 <img src="docs/images/demo.gif" width="880"
-     alt="Two commercial blocks being taken out of a recording in the smartcut editor">
+     alt="Two commercial blocks being taken out of a recording in the SmartCut editor">
 
 </div>
 
@@ -26,7 +26,7 @@ bit-for-bit, 0.93 s re-encoded. 28 frames out of 6743 were touched at all.**
 
 ## How
 
-Cutting video normally means decoding and re-encoding the whole file. smartcut
+Cutting video normally means decoding and re-encoding the whole file. SmartCut
 **re-encodes only the partial GOPs that the cut points fall inside, and copies
 everything else bit-for-bit.**
 
@@ -58,6 +58,18 @@ out **bit-identical across all 40589 frames**.
   lossless**.
 - **Cut-editing GUI** — film strip, scene detection, scroll search, and preview
   playback with audio. What you see is always the *edited* timeline.
+- **A clip list, and a batch behind it** — drop a night's recordings on the
+  input screen and they are read in the background, each leaving its seek
+  index on disc; `Ctrl+A` then `Ctrl+D` sets a commercial detection running on
+  all of them. Reading, detecting and cutting **run at the same time**: the
+  batch does not stop for the editor, and a clip the batch has not reached can
+  be opened anyway. The cut editor opens on one clip in a window of its
+  own and closes with OK; cuts stay with the clip, so you can work through the
+  list and then write the lot out in one go. A clip can be **duplicated**,
+  cuts and marks and all — one recording cut two ways, both written out, sat
+  side by side in the list. What the output screen shows is
+  not a poster frame but **the frames that will actually be re-encoded** —
+  everything else is copied byte for byte.
 - **A seek index** — the two passes that used to be repeated on every open
   (walking the packets for the access points, decoding the key pictures for
   the thumbnail track) are done once and written down. **Opening a half-hour
@@ -118,7 +130,7 @@ smartcut input.ts --analyze --scenes            # scene changes
 
 ## The editor
 
-![The smartcut cut editor](docs/images/editor.png)
+![The SmartCut cut editor](docs/images/editor.png)
 
 Cuts are subtractive: the timeline you see is **the recording minus the cuts**,
 never the original. A cut region does not turn grey — it *disappears*. The

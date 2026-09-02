@@ -1,6 +1,6 @@
 # Distribution
 
-[← Documentation](README.md) ・ [← smartcut](../README.md) ・ [日本語](distribution.ja.md)
+[← Documentation](README.md) ・ [← SmartCut](../README.md) ・ [日本語](distribution.ja.md)
 
 ## Distribution (AppImage)
 
@@ -72,9 +72,14 @@ no ALSA-related errors and no panics.
 ```
 
 Two ways of packing the same build. Both install **the GUI as `smartcut` and the
-command-line version as `smartcut-cli`**. The cargo crate is named `gui`, and the
-deb Tauri itself produces installs that straight to `/usr/bin/gui` — not a name
-anyone should be occupying.
+command-line version as `smartcut-cli`**. **The program is called SmartCut; what
+you type is smartcut.** The cargo crate is named `gui`, so left alone Tauri
+installs it straight to `/usr/bin/gui` — not a name anyone should be occupying;
+`mainBinaryName` in `tauri.conf.json` pins it to `smartcut` (since 0.2.0; before
+that it was set for Windows only). The bundle *files* Tauri writes are named
+after `productName` instead — `SmartCut_0.2.0_amd64.deb` and the like — which is
+why they and the deb's package name `smartcut` differ. `build-linux.sh` reads
+both out of `tauri.conf.json`.
 
 | Artifact | Size | FFmpeg | Requires |
 |---|---|---|---|
@@ -108,7 +113,7 @@ rebuild it. Also added: a `.desktop` file (`Exec=smartcut %f`,
 
 **The binary is taken from a different place for each bundle.** Tauri stamps the
 bundle type into the binary just before packing (`UNKNOWN` → `DEB` /
-`APPIMAGE`), so `target/release/gui` carries only the stamp of the last bundle
+`APPIMAGE`), so `target/release/smartcut` carries only the stamp of the last bundle
 built. The deb's binary comes from Tauri's deb, the tar.gz's from the AppDir.
 
 ### What was verified (the Debian 13 development VM)
@@ -248,5 +253,6 @@ Tauri stamps the bundle type into the exe: `NSIS` on the installer side,
   Dynamic linking produces no VC++ redistributable dependency anyway, so this was
   not pursued further.
 - **By default it is `gui.exe`**, because the cargo binary takes the crate name
-  `gui`. `mainBinaryName` in `tauri.windows.conf.json` makes it `smartcut.exe`.
-  That is a Windows-only config file, so it does not affect the Linux bundles.
+  `gui`. `mainBinaryName` makes it `smartcut.exe`; it was set in
+  `tauri.windows.conf.json` until 0.2.0 moved it into `tauri.conf.json`, where it
+  names the Linux binary as well.

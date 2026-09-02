@@ -1,6 +1,6 @@
 # 配布
 
-[← ドキュメント一覧](README.ja.md) ・ [← smartcut](../README.ja.md) ・ [English](distribution.md)
+[← ドキュメント一覧](README.ja.md) ・ [← SmartCut](../README.ja.md) ・ [English](distribution.md)
 
 ## 配布（AppImage）
 
@@ -69,8 +69,13 @@ ldd squashfs-root/usr/bin/gui | grep -E 'asound|jack|pulse'
 ```
 
 同じビルドの詰め方を 2 通り。どちらも **GUI を `smartcut`、コマンドライン版を
-`smartcut-cli`** として置く。cargo のクレート名は `gui` で、Tauri 自身が作る deb は
-それをそのまま `/usr/bin/gui` に入れてしまう——占めてよい名前ではない。
+`smartcut-cli`** として置く。**プログラムの名前は SmartCut、打つ名前は
+smartcut。** cargo のクレート名は `gui` なので、放っておくと Tauri は
+`/usr/bin/gui` に入れてしまう——占めてよい名前ではない。`tauri.conf.json` の
+`mainBinaryName` で `smartcut` に固定してある（0.2.0 から。それ以前は Windows
+だけで指定していた）。Tauri が作るバンドルのファイル名のほうは `productName` に
+従うので `SmartCut_0.2.0_amd64.deb` などになる——deb のパッケージ名 `smartcut` と
+違うのはそのため。`build-linux.sh` は両方を `tauri.conf.json` から読む。
 
 | 成果物 | サイズ | FFmpeg | 要るもの |
 |---|---|---|---|
@@ -101,7 +106,7 @@ Tauri 自身の deb はここが `libwebkit2gtk-4.1-0, libgtk-3-0` の 2 つで�
 hicolor の 32/128/256 アイコン、`copyright` と `changelog.Debian.gz` を入れてある。
 
 **バイナリはバンドルごとに別のものを取り出す。** Tauri は詰める直前に種別をバイナリへ
-焼き込む（`UNKNOWN` → `DEB` / `APPIMAGE`）ため、`target/release/gui` は最後に作った
+焼き込む（`UNKNOWN` → `DEB` / `APPIMAGE`）ため、`target/release/smartcut` は最後に作った
 バンドルの刻印しか持っていない。deb 用は Tauri の deb から、tar.gz 用は AppDir から
 取っている。
 
@@ -232,5 +237,6 @@ exe に焼くためで、インストーラ側が `NSIS`、可搬 zip 側が `UN
   `.cargo/config.toml` のどちらに書いても駄目。動的リンクのままでも VC++
   再頒布パッケージ依存は出ていないので、これ以上は追っていない。
 - **既定では `gui.exe` になる。** cargo のバイナリ名がクレート名 `gui` だから。
-  `tauri.windows.conf.json` に `mainBinaryName` を書いて `smartcut.exe` にした。
-  Windows 用の設定ファイルなので、Linux 側のバンドルには影響しない。
+  `mainBinaryName` で `smartcut.exe` にしている。0.2.0 までは
+  `tauri.windows.conf.json` にだけ書いていたが、いまは `tauri.conf.json` にあり、
+  Linux 側のバイナリ名も同じものが決めている。

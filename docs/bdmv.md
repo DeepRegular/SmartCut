@@ -1,6 +1,6 @@
 # Extending to BDMV / BDAV (research notes)
 
-[← Documentation](README.md) ・ [← smartcut](../README.md) ・ [日本語](bdmv.ja.md)
+[← Documentation](README.md) ・ [← SmartCut](../README.md) ・ [日本語](bdmv.ja.md)
 
 Conclusion: **it is feasible, and the first stage already works today.** What was
 verified:

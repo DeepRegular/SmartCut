@@ -1,6 +1,6 @@
 # Broadcast workflow compatibility
 
-[← Documentation](README.md) ・ [← smartcut](../README.md) ・ [日本語](broadcast-ts.ja.md)
+[← Documentation](README.md) ・ [← SmartCut](../README.md) ・ [日本語](broadcast-ts.ja.md)
 
 ## The output TS inherits the recording's layout
 

@@ -1,6 +1,6 @@
 # BDMV / BDAV への拡張（調査結果）
 
-[← ドキュメント一覧](README.ja.md) ・ [← smartcut](../README.ja.md) ・ [English](bdmv.md)
+[← ドキュメント一覧](README.ja.md) ・ [← SmartCut](../README.ja.md) ・ [English](bdmv.md)
 
 結論: **可能。しかも第1段階は今日そのまま動く。** 検証した事実:
 

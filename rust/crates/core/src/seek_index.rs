@@ -29,6 +29,10 @@ use std::path::{Path, PathBuf};
 
 use crate::{index, thumbs, AccessPoint};
 
+/// Tells one half-written index from another within this process; see
+/// [`SeekIndex::save`].
+static SERIAL: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
 /// Bumped when a change here would make an existing file wrong. It goes into
 /// the cache key, so older ones are simply never looked at again.
 pub const VERSION: u32 = 1;
@@ -143,7 +147,17 @@ impl SeekIndex {
         // megabytes and the process can be closed while it is writing; a
         // half-written index that still had the right name would be found
         // and trusted on the next open.
-        let part = path.with_extension("part.scix");
+        //
+        // The temporary is named apart from every other one, because two
+        // passes over the same recording can be running at once -- the clip
+        // list indexing a row while the editor opens that same file -- and a
+        // shared temporary would have them writing over each other and
+        // renaming the result into place as if it were whole.
+        let part = path.with_extension(format!(
+            "{}-{}.part.scix",
+            std::process::id(),
+            SERIAL.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        ));
         std::fs::write(&part, &w.0)
             .with_context(|| format!("cannot write {}", part.display()))?;
         std::fs::rename(&part, path)

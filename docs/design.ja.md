@@ -1,6 +1,6 @@
 # 移植方針
 
-[← ドキュメント一覧](README.ja.md) ・ [← smartcut](../README.ja.md) ・ [English](design.md)
+[← ドキュメント一覧](README.ja.md) ・ [← SmartCut](../README.ja.md) ・ [English](design.md)
 
 決定: **Rust コア + Tauri GUI**
 

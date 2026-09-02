@@ -1,6 +1,6 @@
 # Algorithm and pitfalls
 
-[← Documentation](README.md) ・ [← smartcut](../README.md) ・ [日本語](algorithm.ja.md)
+[← Documentation](README.md) ・ [← SmartCut](../README.md) ・ [日本語](algorithm.ja.md)
 
 ## The algorithm
 

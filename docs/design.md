@@ -1,6 +1,6 @@
 # Design notes
 
-[← Documentation](README.md) ・ [← smartcut](../README.md) ・ [日本語](design.ja.md)
+[← Documentation](README.md) ・ [← SmartCut](../README.md) ・ [日本語](design.ja.md)
 
 Decision: **a Rust core with a Tauri GUI**.
 

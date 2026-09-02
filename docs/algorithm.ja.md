@@ -1,6 +1,6 @@
 # アルゴリズムと実装上の難所
 
-[← ドキュメント一覧](README.ja.md) ・ [← smartcut](../README.ja.md) ・ [English](algorithm.md)
+[← ドキュメント一覧](README.ja.md) ・ [← SmartCut](../README.ja.md) ・ [English](algorithm.md)
 
 ## アルゴリズム
 

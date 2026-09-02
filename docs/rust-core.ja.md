@@ -1,6 +1,6 @@
 # Rust 実装の状況（`rust/`）
 
-[← ドキュメント一覧](README.ja.md) ・ [← smartcut](../README.ja.md) ・ [English](rust-core.md)
+[← ドキュメント一覧](README.ja.md) ・ [← SmartCut](../README.ja.md) ・ [English](rust-core.md)
 
 配布しているのは移植したこちらで、Python 実装はテストオラクルとして残してある。
 **「先頭フレームが 13ms 早い」制限は解消済み** — 下記参照。

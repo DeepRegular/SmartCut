@@ -1,5 +1,12 @@
-// Frontend for the smart-rendering cutter, arranged after TMPGEnc MPEG Smart
-// Renderer 6's cut editor.
+// The cut editor, arranged after TMPGEnc MPEG Smart Renderer 6's, and, like
+// the reference tool's, a window of its own.
+//
+// It is opened on one clip out of the list window and left again with OK or
+// キャンセル. It never chooses the clip and never decides what becomes of the
+// cuts: `app.js` does both. All this window knows how to do is show a
+// recording and let it be cut, and it hands what it did back over the wire
+// (`editor-state`) as the cuts happen rather than only at the end -- so
+// closing it by the title bar's cross loses nothing.
 //
 // Two separate ideas, kept separate on purpose:
 //   * キーフレーム -- marks you navigate by. They are not edits.
@@ -17,9 +24,11 @@ window.addEventListener("unhandledrejection", (e) => jlog(`reject ${e.reason}`))
 const T = window.__TAURI__ || {};
 const invoke = T.core && T.core.invoke;
 const listen = T.event && T.event.listen;
-const dialog = T.dialog;
+const emit = T.event && T.event.emit;
 const jlog = (m) => invoke && invoke("log", { msg: String(m) });
 jlog("main.js start");
+
+import { fmt, cmNote, noBrowserMenu } from "./shared.js";
 
 const el = (id) => document.getElementById(id);
 const track = el("track");
@@ -39,6 +48,10 @@ let outDur = 0;
 let keyframes = []; // source times
 let activeKey = null; // source time of the selected mark, null for none
 let cmBlocks = [];
+/// The sentence under the last detection, kept so it can travel back to the
+/// list with the rest of the state -- the row there says what was found, and
+/// a detection run in here has to reach it.
+let cmSummary = "";
 let scenes = [];
 let warmed = false;
 /// Whether there are held pictures to read -- which happens well before
@@ -63,17 +76,6 @@ const cardThumbs = new Map();
 const clamp = (v, lo, hi) => Math.min(hi, Math.max(lo, v));
 const frame = () => (src && src.fps > 0 ? 1 / src.fps : 1 / 30);
 const frameNo = (t) => Math.round(t * (src ? src.fps : 30));
-
-/// HH:MM:SS.cc, the way the reference tool writes it.
-function fmt(t) {
-  if (!isFinite(t)) return "--:--:--.--";
-  const sign = t < 0 ? "-" : "";
-  t = Math.abs(t);
-  const p = (v) => String(v).padStart(2, "0");
-  return `${sign}${p(Math.floor(t / 3600))}:${p(Math.floor((t % 3600) / 60))}:${p(
-    Math.floor(t % 60)
-  )}.${p(Math.floor((t % 1) * 100))}`;
-}
 
 // --- the edited timeline ------------------------------------------------
 
@@ -222,6 +224,8 @@ function joinTimes() {
 }
 
 function afterCutsChanged() {
+  // The list is told about every cut as it happens, not at OK; see `sync`.
+  sync();
   const before = playOut();
   const had = joinTimes();
   rebuildTimeline();
@@ -363,6 +367,9 @@ function liveKeyframes() {
 }
 
 function renderKeyframes() {
+  // Runs whenever the marks change, and on a bare selection change too --
+  // which `sync` coalesces away.
+  sync();
   const list = el("keyframes");
   const live = liveKeyframes();
   el("key-count").textContent = live.length ? `${live.length} 個` : "";
@@ -1122,7 +1129,6 @@ function endSearch() {
   showFrame(playhead);
 }
 
-el("strip").addEventListener("contextmenu", (ev) => ev.preventDefault());
 el("strip").addEventListener("mousedown", (ev) => {
   if (ev.button !== 2) return;
   ev.preventDefault();
@@ -1551,7 +1557,17 @@ async function loadSidecarKeyframes(path) {
     `キーフレーム ${liveKeyframes().length} 個を ${side.split(/[/\\]/).pop()} から読み込みました`;
 }
 
-async function openPath(picked) {
+/// Load `picked` into the editor, putting `saved` back where there is any.
+///
+/// `saved` is what [`captureEdit`] handed the clip list the last time this
+/// recording left the editor. Restoring it is what makes the list a place
+/// you can go back to: cuts and marks belong to the clip, not to the one
+/// session that happened to be looking at it.
+///
+/// The sidecar marks are read only on a first visit. On a return the list
+/// already holds marks that have been worked on, and re-reading the file
+/// beside the recording would add its own on top of them.
+async function openPath(picked, saved) {
   jlog(`openPath ${picked}`);
   if (!picked) return;
   el("title").textContent = "解析中…";
@@ -1561,49 +1577,40 @@ async function openPath(picked) {
       src.interlaced ? "インターレース (TFF)" : "プログレッシブ",
       src.pulldown ? "2:3プルダウン" : null,
     ].filter(Boolean);
-    el("title").textContent = picked.split("/").pop();
+    el("title").textContent = picked.split(/[/\\]/).pop();
     el("info").textContent =
       `無劣化点: ${src.points.length}   ${src.width}x${src.height}   ` +
       `${src.fps.toFixed(2)} fps   ${flags.join(" ")}   ` +
       `${src.has_audio ? "音声あり" : "音声なし"}   ${src.codec}` +
       (src.unusable_points ? `   （うち ${src.unusable_points} 個は開始に使えません）` : "");
-    cuts = [];
+    cuts = saved ? saved.cuts.map((c) => ({ a: c.a, b: c.b })) : [];
     cutHistory = [];
-    keyframes = [];
-    activeKey = null;
-    cmBlocks = [];
+    keyframes = saved ? saved.keyframes.slice() : [];
+    activeKey = saved ? saved.activeKey : null;
+    cmBlocks = saved ? saved.cmBlocks || [] : [];
+    cmSummary = saved ? saved.cmNote || "" : "";
     stripCache = null;
     stripShots = [];
     shownTime = -1;
     hideHover();
     rebuildTimeline();
     el("undo-cut").disabled = true;
-    el("cm-note").textContent = "";
+    el("cm-note").textContent = cmSummary;
     renderKeyframes();
     // Opened whole: nothing is cut yet, so the selection is the recording.
-    selA = 0;
-    selB = outDur;
+    selA = saved ? Math.min(saved.selA, outDur) : 0;
+    selB = saved ? Math.min(saved.selB, outDur) : outDur;
     el("status").textContent = "";
-    await loadSidecarKeyframes(picked);
-    await showFrame(0);
+    if (!saved) await loadSidecarKeyframes(picked);
+    await showFrame(saved ? saved.playhead : 0);
     schedulePlan();
     prepare();
   } catch (e) {
     el("title").textContent = "";
     el("status").textContent = `開けません: ${e}`;
+    throw e;
   }
 }
-
-el("open").addEventListener("click", async () =>
-  openPath(
-    await dialog.open({
-      multiple: false,
-      filters: [
-        { name: "動画", extensions: ["ts", "m2ts", "mts", "mp4", "mkv", "m2t", "mov", "m4v"] },
-      ],
-    })
-  )
-);
 
 // --- scrubber pointer ---------------------------------------------------
 
@@ -1845,91 +1852,20 @@ window.addEventListener("keydown", (ev) => {
 el("detect-cm").addEventListener("click", async () => {
   if (!src) return;
   el("detect-cm").disabled = true;
-  const useLogo = el("use-logo").checked;
-  el("cm-note").textContent = useLogo ? "検出中…（映像も読みます）" : "検出中…";
+  el("cm-note").textContent = "検出中…（映像も読みます）";
   try {
-    const res = await invoke("detect_cm", { useLogo });
-    cmBlocks = res.blocks;
-    const how = res.resets > 0
-      ? `字幕リセット ${res.resets} 箇所`
-      : !useLogo ? "無音のみ" : res.logo_found ? "ロゴ＋無音" : "無音のみ（ロゴなし）";
-    el("cm-note").textContent = cmBlocks.length
-      ? `${how}: ${cmBlocks.length} ブロック / 合計 ` +
-        fmt(cmBlocks.reduce((n, b) => n + (b.end - b.start), 0))
-      : `${how}: CM らしい区間は見つかりませんでした`;
-    // Each block's start is where the commercials begin and its end is where
-    // the programme comes back, so both are worth a mark -- along with the
-    // opening of the recording itself.
-    if (cmBlocks.length) {
-      // The head of the material, not of the clock: nothing before the first
-      // access point can be decoded, so a mark at zero would have nothing
-      // under it.
-      // Not snapped to an access point: the mark should say where the cut
-      // actually is, to the frame. Moving it onto the nearest lossless point
-      // is a separate decision, and there is a button for it.
-      addKeyframes(
-        [src.points[0] ?? 0].concat(cmBlocks.flatMap((b) => [b.start, b.end]))
-      );
-    }
-    draw();
+    const res = await invoke("detect_cm");
+    cmSummary = cmNote(res);
+    el("cm-note").textContent = cmSummary;
+    applyCmBlocks(res.blocks);
+    // Reported to the clip list too, so the row says what was found and a
+    // later visit to this clip does not have to detect it again.
+    sync();
   } catch (e) {
     el("cm-note").textContent = `検出できません: ${e}`;
   } finally {
     el("detect-cm").disabled = false;
     el("detect-cm").textContent = "CM を検出";
-  }
-});
-
-// --- output -------------------------------------------------------------
-
-el("export").addEventListener("click", async () => {
-  const ranges = outputRanges();
-  if (!src || !ranges.length) return;
-  jlog(`export clicked, ranges=${JSON.stringify(ranges)}`);
-  // Named after the recording it came from, beside it, in the same container.
-  // A broadcast file's name carries the date, the channel and the episode --
-  // everything you would need to find it again -- so throwing it away for
-  // "cut.ts" is a loss. The prefix is what says which one is the edit.
-  const ext = (src.path.match(/\.([A-Za-z0-9]+)$/)?.[1] || "mp4").toLowerCase();
-  const others = ["mp4", "mkv", "ts", "m2ts", "mov"].filter((e) => e !== ext);
-  const cut = src.path.lastIndexOf("/") + 1 || src.path.lastIndexOf("\\") + 1;
-  const dir = src.path.slice(0, cut);
-  const stem = src.path.slice(cut).replace(/\.[^.]*$/, "");
-  // One entry per container rather than one lumped "動画": the picker appends
-  // the extension of whichever entry is chosen, so separate entries are what
-  // make the container an actual choice instead of a filename to remember.
-  // The source's own leads, being the default.
-  const named = { ts: "MPEG-2 TS", m2ts: "M2TS", mp4: "MP4", mkv: "Matroska", mov: "QuickTime" };
-  const out = await dialog.save({
-    defaultPath: `${dir}cut_${stem}.${ext}`,
-    filters: [ext, ...others].map((e) => ({ name: `${named[e] ?? e} (.${e})`, extensions: [e] })),
-  });
-  if (!out) return;
-  el("export").disabled = true;
-  const started = Date.now();
-  el("status").textContent = "映像を無劣化出力しています…";
-  try {
-    // Audio is smart-rendered -- copied, bar the frames a cut lands inside --
-    // and written into the same container as the video. The engine will also
-    // copy outright or re-encode the track whole (see the CLI's --audio-mode
-    // and --audio-es), but neither earned its place on screen: on real cuts,
-    // with the boundaries snapped to access points, the default does the
-    // right thing without being asked.
-    await invoke("export", { ranges, output: out });
-    let extra = "";
-    if (el("keyframes-out").checked) {
-      // Numbered against the file being written, not the recording.
-      const frames = liveKeyframes().map((t) => frameNo(srcToOut(t)));
-      const side = out.replace(/\.[^./\\]*$/, "") + ".keyframe";
-      const n = await invoke("write_keyframes", { path: side, frames, fps: src.fps });
-      extra += ` / キーフレーム ${n} 個を ${side.split("/").pop()} へ`;
-    }
-    el("status").textContent =
-      `完了 (${((Date.now() - started) / 1000).toFixed(1)} 秒): ${out}${extra}`;
-  } catch (e) {
-    el("status").textContent = `失敗: ${e}`;
-  } finally {
-    el("export").disabled = false;
   }
 });
 
@@ -1982,27 +1918,140 @@ if (listen) {
     scheduleStrip();
     renderKeyframes();
   });
-  listen("export-progress", (ev) => {
-    const pct = Math.round(ev.payload * 100);
-    el("progress-bar").style.width = `${pct}%`;
-    if (pct < 100) el("status").textContent = `映像を無劣化出力しています… ${pct}%`;
-  });
 }
 
-window.addEventListener("resize", () => {
+window.addEventListener("resize", relayout);
+
+// --- talking to the list window ------------------------------------------
+//
+// Two documents, so nothing is shared but events. The list says which clip
+// and hands over whatever was done to it last time; the editor says what has
+// been done to it since, as it happens.
+//
+// Reporting continuously rather than only at OK is what makes the title
+// bar's cross safe: by the time the window goes away the list already has
+// everything, so closing it that way is the same as OK. キャンセル is the
+// one that needs saying out loud, because it means "put back what you had".
+
+/// Redraw everything that was measured in pixels.
+///
+/// The canvas and the film strip are both laid out against the width they
+/// are actually given, so a resized window is a wrong offset and a wrong
+/// number of cells until this runs.
+function relayout() {
   draw();
   // the reel is placed in pixels, so a narrower window is a wrong offset --
   // and a narrower window holds fewer cells, so it wants a fresh reel too
   holdReel();
   scheduleStrip();
+}
+
+/// Everything this session has done to the recording, in source time.
+function captureEdit() {
+  if (!src) return null;
+  return {
+    id: editId,
+    path: src.path,
+    cuts: cuts.map((c) => ({ a: c.a, b: c.b })),
+    keyframes: keyframes.slice(),
+    activeKey,
+    cmBlocks,
+    cmNote: cmSummary,
+    playhead,
+    selA,
+    selB,
+  };
+}
+
+/// Tell the list what the timeline looks like now.
+///
+/// Coalesced: a cut moves the marks, the plan, the strip and the scrubber,
+/// and each of those would otherwise report the same state again.
+/// Which row of the list is being cut. Not the path: the same recording can
+/// be in the list twice, cut two different ways, and what comes back out of
+/// here has to land on the row it came from.
+let editId = null;
+/// The row being loaded, if one is. See the `editor-open` handler.
+let opening = null;
+
+let syncTimer = null;
+function sync() {
+  clearTimeout(syncTimer);
+  syncTimer = setTimeout(() => {
+    const state = captureEdit();
+    if (state && emit) emit("editor-state", state);
+  }, 150);
+}
+
+/// Put the marks a commercial detection found onto the timeline.
+///
+/// A block's start is where the commercials begin and its end is where the
+/// programme comes back, so both are worth a mark -- along with the opening
+/// of the recording itself, which is the head of the material and not of the
+/// clock: nothing before the first access point can be decoded.
+///
+/// Not snapped to an access point: the mark should say where the cut
+/// actually is, to the frame. Moving it onto the nearest lossless point is a
+/// separate decision, and there is a button for it.
+function applyCmBlocks(blocks) {
+  if (!src || !blocks || !blocks.length) return;
+  cmBlocks = blocks;
+  addKeyframes([src.points[0] ?? 0].concat(blocks.flatMap((b) => [b.start, b.end])));
+  draw();
+}
+
+el("editor-ok").addEventListener("click", () => {
+  sync();
+  // After the debounce, so the last cut is over the wire before the window
+  // that made it goes away.
+  setTimeout(() => invoke("close_editor"), 220);
 });
+
+el("editor-cancel").addEventListener("click", () => {
+  clearTimeout(syncTimer);
+  if (emit) emit("editor-cancel", editId);
+  setTimeout(() => invoke("close_editor"), 80);
+});
+
+if (listen) {
+  // The list's answer to `editor-ready`: which recording, and what was done
+  // to it the last time it was in here.
+  listen("editor-open", async (ev) => {
+    const { id, path, saved, cm } = ev.payload;
+    // The list sends this twice for a window it had to build; the second is
+    // the one that usually lands, but both can. Opening the same row twice
+    // over would throw away whatever the first open had got to.
+    if (opening === id) return;
+    // Reloaded when the *row* changes, not merely the recording: two rows can
+    // be the same file cut two different ways, and coming from one to the
+    // other has to bring the other one's cuts with it.
+    if (editId !== id) {
+      opening = id;
+      editId = id;
+      try {
+        await openPath(path, saved);
+      } finally {
+        opening = null;
+      }
+    }
+    // Blocks the list found on its own, which only this window can turn into
+    // marks: it is the one that knows where the material begins. Applied
+    // whether or not the recording was already up -- a detection run from the
+    // list while this window sat open on the same clip has marks to put down
+    // just the same.
+    if (cm && cm.blocks && cm.blocks.length) {
+      applyCmBlocks(cm.blocks);
+      cmSummary = cm.note || "";
+      el("cm-note").textContent = cmSummary;
+    }
+    relayout();
+    sync();
+  });
+}
+
+noBrowserMenu();
 renderKeyframes();
 draw();
-jlog("wiring done");
-invoke("initial_path")
-  .then((p) => {
-    jlog(`initial_path -> ${JSON.stringify(p)}`);
-    if (p) return openPath(p);
-    el("status").textContent = "ファイルを開いてください";
-  })
-  .catch((e) => (el("status").textContent = `initial_path: ${e}`));
+jlog("editor wired");
+// The window is up and has nothing in it; the list is what fills it.
+if (emit) emit("editor-ready", null);

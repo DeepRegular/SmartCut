@@ -1,10 +1,235 @@
 # GUI (`gui/`)
 
-[← Documentation](README.md) ・ [← smartcut](../README.md) ・ [日本語](gui.ja.md)
+[← Documentation](README.md) ・ [← SmartCut](../README.md) ・ [日本語](gui.ja.md)
 
 Tauri v2 plus vanilla JS. It embeds the core as a crate, and the engine barely
 needed to change (the first two additions were extracting a single frame and
 reporting progress; the thumbnail track and the proxy came later).
+
+## Four screens, two windows
+
+Split along the order the work goes in. TMPGEnc MPEG Smart Renderer 6, the
+reference, has the same shape — including **the cut editor being a window of
+its own**.
+
+| Screen | Where | What it is for |
+|---|---|---|
+| **入力設定 (Input)** | List window | The list of clips. Drop files on it or use ファイルを追加; each one is read in turn and its seek index left on disc |
+| **カット編集 (Cut editor)** | **Its own window** | Open one clip out of the list, cut it, and come back with **OK**. Nearly all of this document is about this one |
+| **出力設定 (Output settings)** | List window | Folder, filename prefix, container, what to do with the audio. **One answer for the whole list** |
+| **出力 (Output)** | List window | Write the list out, top to bottom |
+
+The list window's three are tabs, and only one is up at a time — they are
+**stages you pass through**, not panels laid side by side.
+
+**Cutting is not among them because it is not something settled once for the
+list; it is done to one clip.** As a tab it made the same window both the
+list and the thing being edited, and there was no moment anywhere that said
+"done with this one". That moment is the OK button, and the window it sits in
+(`editor.html`, built by `open_editor` on the Rust side) is where it belongs.
+
+### The input screen
+
+```
+Clips: 3   Total: 14 min 41 s                       [x use logo]
+┌───────────────────────────────────────┬──────────────┐
+│ 1 ┌────┐ demo_broadcast.ts                    [Smart]│ File input   │
+│   │ ▤  │ 3 m 45 s (6743 frames) 1440x1080 29.97 fps  │ + Add files  │
+│   └────┘ CM: logo+silence: 2 blocks / 00:01:30.09    │ Clip editing │
+│          / 1 cut — output 00:02:45.20                │ ✂ Cut editor │
+├───────────────────────────────────────┤ Detect CM    │
+│ 2 ┌────┐ atx.ts                               [Smart]│ Stop reading │
+│   │ ▤  │ 8 m 9 s (14683 frames) …                    │ Other        │
+│   └────┘ detecting 39% — looking for a logo ▓▓▓░░░░  │ Move up      │
+├───────────────────────────────────────┤ Move down    │
+│ 3 ┌────┐ terrestrial_nhke.ts            [reading]    │ Select all   │
+│   │ ▤  │ /home/kaz/media/terrestrial_nhke.ts         │ Remove clip  │
+│   └────┘ seek index 63% ▓▓▓▓▓▓░░░░                   │ Remove all   │
+└───────────────────────────────────────┴──────────────┘
+ Quick properties -- what the one selected clip is made of
+```
+
+- **Double-click** a row to cut that clip; `Enter` does the same.
+- **Ctrl+A** selects every clip, **Ctrl+D** detects commercials in the ones
+  selected. `Delete` takes them off the list. Up and down move the selection
+  (with Shift, extend it).
+- **Drag and drop** adds clips. Tauri intercepts the drag before the page sees
+  it, so what is listened for is `tauri://drag-drop` and not the HTML5 `drop`
+  event — which is also what makes a drop anywhere in the window count.
+- **Dragging a row** reorders the list. The rows being carried go dim and a
+  line shows where they would land; the whole selection moves, so five rows
+  go to the top in one drag. What carries them is the page's own mouse
+  events rather than an HTML5 drag -- Tauri takes those first, as above, so
+  a `dragstart` inside the page is not something to build on. `Esc` puts
+  them back.
+- **クリップを複製** puts the same recording in the list a second time.
+
+### SMB shares
+
+A share path -- given on the command line, dropped in from a file manager,
+or typed as the output folder -- is translated, before anything opens it,
+into **where this machine has already mounted it** -- `netpath`
+(`rust/crates/core/src/netpath.rs`) reads both kinds of mount: the kernel's
+cifs ones, which `/proc/self/mounts` lists as `//nas/rec`, and the desktop's
+gvfs ones, which are directories named `smb-share:server=nas,share=rec` under
+the session's runtime directory. On Windows the UNC path is already the path
+and nothing is translated.
+
+**Nothing is mounted here.** Mounting is where the password lives, and that
+belongs to the desktop's keyring rather than to a cut editor. A share that is
+not connected is refused with the place to open instead:
+
+```
+\\nas\rec につながっていません。ファイルマネージャーで smb://nas/rec を
+開いてから、もう一度追加してください。（今つながっている共有: \\nas\録画）
+```
+
+After the translation it is an ordinary path, so the packet scan, the seek
+index and the output go on without knowing a network was involved.
+
+### Duplicates — one recording cut two ways
+
+For the two-hour capture holding two programmes: the same file on two rows,
+each written out at different bounds.
+
+**A duplicate carries the cuts and the marks over.** The second cut is nearly
+always the first one moved rather than one begun from nothing, and a copy that
+dropped the edit would be useless for the thing duplicates are for. The index,
+the length and what a commercial detection found come too — all of them are
+the same file's answer — so a duplicate costs no pass over the disc.
+
+That made **a row and a recording different things**, so a row now carries an
+`id`. Everything about a row — the round trip to the editor window, what
+キャンセル puts back, which row an export's progress belongs to — is addressed
+by that; `path` is left to mean the file. Looking a row up by path with two of
+them in the list can hand you the one that is not running.
+
+Output filenames gain `_1`, `_2` in list order when a recording is in the list
+more than once; without it the second cut would land on top of the first.
+Remove one copy and the survivor gets its plain name back — the number is
+counted off the list each time rather than stamped on at duplication.
+
+### Two lanes, and an editor that stays open
+
+A clip added to the list is read **in the order it arrived** and its seek
+index is left on disc. It is the same work the engine would do the moment you
+opened the clip for editing, done ahead of time — which is why a clip that has
+gone green in the list is editable the instant it is opened.
+
+There are two lanes: **one builds indexes, the other detects commercials**,
+and they run side by side. One pass of each kind at a time; two of different
+kinds at once. They are split because **they do not weigh the same** — an
+index decodes every key picture and takes the cores, while a detection reads
+the caption stream, or the audio and a logo, none of which libavcodec threads
+at all. That is one core and a great deal of waiting for the disc. What the
+index pass loses by sharing is far less than what the detection gains, and it
+is what gets an evening's Ctrl+D finished by morning.
+
+There is no third lane, because a third pass is a second decoder on the same
+cores and beyond that the disc is the wall anyway: three answers late is not
+better than two answers early and a third behind them.
+
+**And neither lane stops for the cut editor.** An index, a detection and an
+open editor all run at once. Sharing nothing is what makes that possible;
+what makes it bearable is that the background passes take **only part of the
+machine** — while that window is up the two lanes divide half of it between
+them (`background_threads`, on the Rust side). The picture under the pointer
+is the one somebody is waiting for, and a pass finishing a few seconds later
+is the trade that buys it.
+
+**A clip the list has not read yet can be opened in the editor too.** The
+editor makes that pass itself, showing the recording as far as it has got
+(`prepare`), so waiting for the lane's turn buys nothing. While the editor
+has the clip the index lane walks past that row — reading one file twice over
+is the one thing worth avoiding, and it is the lane that gives way. The index
+the editor writes stays on disc, so when the editor closes and the lane takes
+the row up, it costs a read.
+
+Ctrl+D's commercial detections queue in the detection lane. Selecting eighteen
+clips and pressing Ctrl+D once is a night's work asked for in one keystroke,
+which is the point of it — and the reading of the clips that have no index yet
+carries on beside it.
+
+**The queue shares nothing with the editor.** Indexing a clip, detecting its
+commercials and writing it out all reopen the recording from the seek index on
+disc (`scan_cached`), touching neither [`Opened`] nor [`Thumbs`] nor
+[`Proxy`]. So a long pass over clip 12 costs the clip you are cutting nothing.
+
+解析を中止 stops both lanes, and pressing it again resumes them. The index
+pass can stop mid-file; the three passes a commercial detection makes have no
+stop in them, so a stop lands **between clips** rather than inside one.
+
+It stops what is running and nothing after it. `BatchStop` is not a flag but
+**a count per lane**: a pass takes the number as it starts and gives up when
+it sees a larger one. A flag would have to be lowered before the next pass
+could start, and there is no moment to lower it in — the other lane is still
+watching it. It is also what lets the editor stop the one pass the index lane
+is making over the clip being opened, and nothing else.
+
+### Between the two windows
+
+Separate documents, so nothing passes between them but events. Three steps:
+
+1. the editor window says `editor-ready` once its page is up;
+2. the list answers with `editor-open`, naming the clip and handing over
+   whatever was done to it last time;
+3. from then on the editor reports every change back as `editor-state`.
+
+**Reporting as it goes rather than at the end is the point of it.** By the
+time the window goes away the list already has everything, so closing it by
+the title bar's cross loses nothing — it is the same as OK. Undoing, on the
+other hand, has to be said out loud: only キャンセル emits `editor-cancel`,
+and the list puts back the snapshot it took before opening.
+
+**A commercial detection is not undone by キャンセル, though.** It is minutes
+of reading the recording, started from the list as readily as from the editor,
+and the marks it leaves are **its answer** rather than something anybody did
+to the clip in this session. So the state the marks landed in becomes what
+cancelling goes back to. Without that, detecting from the list and then
+opening the editor to look and backing out lost the marks — and lost them for
+good, since the finding had already been handed over and would not be offered
+again.
+
+That the window has gone at all is reported from Rust, by `on_window_event`
+as `editor-closed`. The page that is being destroyed is in no position to say
+so itself.
+
+The output settings and output screens read the same kept state, which is
+what lets you cut all eighteen clips and then write the lot.
+
+### The output screen shows the frames that get re-encoded
+
+A smart render copies the recording byte for byte apart from the part-GOPs a
+cut lands inside. Those few frames are **the whole of what this program can
+be blamed for**, which makes them the one thing on that screen worth looking
+at — a poster frame would only repeat what the list already said.
+
+`clip_plan` works out the plan for one clip without opening the editor on it,
+and `clip_thumbs` decodes a frame from the middle of each segment that is not
+a copy. The *middle*, because the start is the join itself and what you want
+to see is the picture the encoder had to invent.
+
+**It is shaped like the cut editor's preview**, and made of the same CSS
+classes (`.stage`, `.overlay`): one picture filling the stage with its numbers
+under it, so changing how a picture is shown lands on both screens at once.
+What differs is only what moves it along: the playhead there, the writing head
+here.
+
+**There is no strip of them.** This screen is watched while it works rather
+than worked in, and the question it is asked is "how is the part being written
+right now?". How many there are in total is what the overlay's `1 / 4` and the
+line below are for.
+
+The numbers are read off **the clock of the file being written**, not the
+recording's: this screen is about that file, so it shows output times and
+output frame numbers.
+
+A clip whose cuts all landed on access points shows its own poster frame with
+"再エンコードなし — 全編を無劣化コピー" under it. Showing a poster there is not
+a false claim: directly beneath it says that not one frame is being made
+again.
+
+## The cut editor (its own window)
 
 ```
 [Cut editor] full_ntv.ts
@@ -34,7 +259,7 @@ Lossless points: 3607  1440x1080  29.97 fps  interlaced (TFF)  audio  [x logo] [
 │              │ █████████████████ blue = copy / orange = re-encode │
 │              │ 20 / 44766 …  <- the counter counts the output too │
 │              │ output 00:24:53.02 (2 intervals, 1 cut) — lossless copy 100.0% │
-│              │ [Export] □sample-accurate audio [video fully lossless] ──── │
+│              │ [video fully lossless] ─────────  [OK] [Cancel] <- corner │
 └──────────────┴─────────────────────────────────────────────┘
 ```
 
@@ -1069,6 +1294,15 @@ and measures both.
 
 ## Where it got stuck
 
+- **Double-clicking a row stopped opening the editor — but only while
+  something was being read.** Progress events arrive twice a second per clip
+  and repaint the row each time. Assigning `textContent` builds a fresh text
+  node whether or not the text changed, so the node under the pointer was
+  swapped out between the two halves of a double click. WebKit fires **no
+  `dblclick` at all** when the two clicks have different targets — and since
+  the first click still selects, the row looks responsive and simply never
+  opens. Fixed by writing only when the value actually changed (`setText`);
+  losing the pointless DOM churn came free.
 - **The screen does not update in a VM.** WebKitGTK's compositor draws nothing
   without a GPU and never updates after the first paint — which looks exactly like
   a freeze. `WEBKIT_DISABLE_COMPOSITING_MODE=1` fixes it. This UI does not need

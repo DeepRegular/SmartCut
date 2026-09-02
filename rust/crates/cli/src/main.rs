@@ -126,6 +126,12 @@ fn main() -> Result<()> {
     let Some(input) = input else {
         bail!("usage: smartcut <input> [--keep START-END]... [--cut START-END]... [--no-open-gop]");
     };
+    // A share the machine has already mounted may be named the way it is
+    // written down -- `smb://nas/rec/a.ts` or `\\nas\rec\a.ts` -- rather than
+    // by the mount point it happens to have been given.
+    let input = smartcut_core::netpath::resolve(&input)?
+        .to_string_lossy()
+        .into_owned();
     if !keeps.is_empty() && !cuts.is_empty() {
         bail!("use --keep or --cut, not both");
     }

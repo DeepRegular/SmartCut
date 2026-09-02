@@ -1,6 +1,6 @@
 # ビルドと開発
 
-[← ドキュメント一覧](README.ja.md) ・ [← smartcut](../README.ja.md) ・ [English](development.md)
+[← ドキュメント一覧](README.ja.md) ・ [← SmartCut](../README.ja.md) ・ [English](development.md)
 
 Linux（Debian 13 / Ubuntu 24.04 以降）でビルドする。Windows 版も Linux から
 クロスビルドする。

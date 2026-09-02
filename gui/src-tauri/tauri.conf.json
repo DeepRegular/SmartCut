@@ -1,7 +1,8 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "smartcut",
-  "version": "0.1.2",
+  "productName": "SmartCut",
+  "mainBinaryName": "smartcut",
+  "version": "0.2.0",
   "identifier": "dev.smartcut.app",
   "build": {
     "frontendDist": "../src"
@@ -10,7 +11,7 @@
     "withGlobalTauri": true,
     "windows": [
       {
-        "title": "smartcut",
+        "title": "SmartCut",
         "width": 1180,
         "height": 800,
         "resizable": true
@@ -35,7 +36,7 @@
     "category": "Video",
     "shortDescription": "スマートレンダリング対応の動画カットツール",
     "longDescription": "カット点にかかる部分 GOP だけを再エンコードし、残りはビット単位でそのままコピーする動画カットツール。MPEG-2 TS / MP4 に対応し、CM 境界の検出とシーン検出を備える。",
-    "publisher": "smartcut",
+    "publisher": "SmartCut",
     "linux": {
       "appimage": {
         "bundleMediaFramework": true

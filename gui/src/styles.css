@@ -18,10 +18,19 @@
   --keep: #2f7d5a;
 }
 * { box-sizing: border-box; }
+/* The window is not a document, so nothing in it is selectable -- except the
+   fields that are there to be typed into. WebKit inherits `user-select` into
+   form controls and then refuses the caret, so an input under a `none` is an
+   input you cannot type in. The output settings screen is the first one to
+   have any, which is why this never came up. */
+input, textarea { user-select: text; -webkit-user-select: text; accent-color: var(--sel); }
 body {
   margin: 0; background: var(--bg); color: var(--text);
   font: 12.5px/1.55 system-ui, "Noto Sans JP", sans-serif;
-  user-select: none;
+  /* Both spellings. WebKitGTK is the webview on Linux and it reads only the
+     prefixed one, which is how a drag down the clip list came to leave every
+     name it passed highlighted. */
+  user-select: none; -webkit-user-select: none;
   height: 100vh; display: flex; flex-direction: column;
 }
 
@@ -29,11 +38,21 @@ body {
   display: flex; align-items: center; gap: 10px;
   background: #2a2a2a; border-bottom: 1px solid #000; padding: 5px 10px;
 }
+.screens { display: flex; gap: 4px; }
+
+/* One screen at a time. `hidden` has to be spelled out because every screen
+   is a flex column, and `display` set on the element beats the attribute's
+   own `display: none`. */
+.screen { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+.screen[hidden] { display: none; }
 .tab {
   background: #3a3a3a; color: var(--text); border: 1px solid #4a4a4a;
   border-radius: 2px; padding: 5px 16px; cursor: pointer;
 }
 .tab.active { background: var(--accent); color: #201400; border-color: var(--accent); font-weight: 600; }
+/* The editor window's own label. It says which window this is; there is
+   nowhere else to go from here but OK. */
+.tab.still { cursor: default; }
 .title { color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .brand { margin-left: auto; color: var(--dim); font-weight: 600; letter-spacing: .04em; }
 
@@ -86,6 +105,7 @@ main { flex: 1; min-height: 0; display: flex; gap: 0; }
   background: rgba(0,0,0,.55); padding: 4px 14px; border-radius: 2px;
   text-align: center; pointer-events: none; white-space: nowrap;
 }
+.ovl-main[hidden] { display: none; }
 .ovl-main { display: flex; gap: 26px; font-size: 21px; font-variant-numeric: tabular-nums; }
 .ovl-sub { display: flex; gap: 18px; font-size: 11px; color: #cfcfcf; justify-content: center; }
 #ovl-kind.key { color: #7ee787; font-weight: 600; }
@@ -237,11 +257,21 @@ main { flex: 1; min-height: 0; display: flex; gap: 0; }
 #segments .copy { color: var(--copy); }
 #segments .reencode { color: var(--encode); }
 
+/* The badge and the status read left to right from the plan above them; the
+   two buttons that end this window sit in the far corner, paired and the same
+   size, where a dialog's are looked for. */
 .export { display: flex; align-items: center; gap: 12px; }
+.export #status { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .export .primary {
   background: var(--accent); color: #201400; border: 1px solid var(--accent);
   border-radius: 2px; padding: 7px 22px; font-weight: 600; cursor: pointer;
 }
+.export .secondary {
+  background: #333; color: var(--text); border: 1px solid #4a4a4a;
+  border-radius: 2px; padding: 7px 22px; cursor: pointer;
+}
+.export .secondary:hover { background: #3d3d3d; }
+.export .primary.wide, .export .secondary { min-width: 118px; }
 .badge {
   background: #0f3d47; color: #7fe3f5; border: 1px solid #1d6b7c;
   padding: 2px 8px; border-radius: 2px; font-size: 11px; font-weight: 600;
@@ -252,7 +282,12 @@ main { flex: 1; min-height: 0; display: flex; gap: 0; }
 .mini.wide { min-width: 96px; }
 .mini { background: #333; color: var(--text); border: 1px solid #4a4a4a; border-radius: 2px; padding: 3px 10px; cursor: pointer; }
 button:disabled { opacity: .45; cursor: default; }
-select, input[type="text"] {
+/* The drop-down arrow is drawn rather than left to the platform, which under
+   this theme draws it as an unreadable smudge. Only on `select`: the same
+   `appearance: none` on a text field leaves WebKit drawing the placeholder
+   over whatever has been typed, and a field you cannot read back is worse
+   than an ugly one. */
+select {
   background: #141414; color: var(--text); border: 1px solid var(--line);
   border-radius: 2px; padding: 3px 22px 3px 8px;
   -webkit-appearance: none; appearance: none;
@@ -263,3 +298,187 @@ select, input[type="text"] {
   background-repeat: no-repeat;
 }
 select option { background: #141414; color: #e6e6e6; }
+input[type="text"] {
+  background: #141414; color: var(--text); border: 1px solid var(--line);
+  border-radius: 2px; padding: 4px 8px;
+}
+input[type="text"]::placeholder { color: var(--dim); }
+
+
+/* ======================================================================
+   入力画面 -- the clip list
+
+   After the reference tool's: numbered rows down the middle carrying a
+   poster, the recording's own name and what was read out of it; the buttons
+   in a column down the right, grouped by what they are for; and the
+   properties of whichever row is selected along the bottom.
+   ====================================================================== */
+
+.input-body { flex: 1; min-height: 0; display: flex; }
+
+.cliplist-wrap {
+  flex: 1; min-width: 0; position: relative;
+  background: var(--sunken); border-right: 1px solid #000; overflow-y: auto;
+}
+/* Dropping files anywhere in the list, not only on the placeholder. */
+.cliplist-wrap.over { outline: 2px solid var(--sel); outline-offset: -2px; background: #10222a; }
+
+#cliplist { list-style: none; margin: 0; padding: 0; }
+.clip {
+  display: grid; grid-template-columns: 30px 96px 1fr 190px 22px;
+  gap: 8px; align-items: center;
+  padding: 6px 8px; border-bottom: 1px solid #000;
+  background: #2b3a44; cursor: pointer;
+}
+.clip:hover { background: #33454f; }
+.clip.on { background: #175a70; }
+.clip.bad { background: #4a2b2b; }
+.clip .n { color: var(--dim); text-align: right; font-variant-numeric: tabular-nums; }
+.clip.on .n { color: #cfefff; }
+.clip .poster {
+  width: 96px; height: 54px; object-fit: cover; display: block;
+  background: #000; border: 1px solid #000;
+}
+.clip .poster.blank { background: repeating-linear-gradient(45deg, #1a1a1a 0 6px, #141414 6px 12px); }
+.clip .meta { min-width: 0; }
+.clip .nm { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.clip .sub, .clip .cm {
+  font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  font-variant-numeric: tabular-nums;
+}
+.clip.on .sub, .clip.on .cm { color: #cfe9f2; }
+.clip .stat { display: flex; flex-direction: column; gap: 3px; align-items: stretch; }
+/* The row's state, and beside it whether its commercials have been found.
+   Two answers about one clip, in the corner where the first was already
+   being looked for. */
+.clip .badges { display: flex; gap: 4px; justify-content: flex-end; align-items: center; }
+.cmbadge {
+  padding: 2px 8px; border-radius: 2px; font-size: 11px; font-weight: 600;
+  background: #143d1e; color: #7fe0a0; border: 1px solid #256b39;
+}
+/* Detected, and there was nothing to cut. Still a pass that has been made,
+   so it is still a badge -- just not one offering anything. */
+.cmbadge.empty { background: #33383a; color: var(--dim); border-color: #4a4f52; }
+.clip .badge.queued { background: #3a3a3a; color: var(--dim); border-color: #4a4a4a; }
+.clip .badge.indexing { background: #4a3a10; color: #f0c060; border-color: #6a5420; }
+.clip .badge.error { background: #4a1e1e; color: #ff9a90; border-color: #7a3030; }
+.clip .badge.editing { background: #2f2a50; color: #bdb2ff; border-color: #4b4380; }
+.clip .pbar { height: 6px; background: var(--sunken); border: 1px solid var(--line); overflow: hidden; }
+.clip .pbar span { display: block; height: 100%; background: var(--sel); }
+.clip .ptext { font-size: 10.5px; text-align: right; font-variant-numeric: tabular-nums; }
+.clip .kill {
+  background: none; border: 0; color: var(--dim); cursor: pointer;
+  font-size: 14px; padding: 0 3px; align-self: start;
+}
+.clip .kill:hover { color: #ff8a80; }
+
+/* 並べ替え中。A row being carried is dimmed where it still is, and the line
+   between two rows is where the carried ones would land. The pictures are
+   told not to start a drag of their own: a dragged <img> is a native drag,
+   and a native drag is Tauri's rather than the list's. */
+.clip .poster { -webkit-user-drag: none; user-drag: none; }
+.cliplist-wrap.reordering, .cliplist-wrap.reordering .clip { cursor: grabbing; }
+.clip.dragging { opacity: 0.45; }
+.clip.dropbefore { box-shadow: inset 0 3px 0 var(--sel); }
+.clip.dropafter { box-shadow: inset 0 -3px 0 var(--sel); }
+
+.drop-hint {
+  position: absolute; top: 90px; left: 50%; transform: translateX(-50%);
+  width: min(620px, 80%); text-align: center; color: var(--dim);
+  background: #262626; border: 1px solid var(--line); padding: 28px 24px;
+  pointer-events: none;
+}
+.drop-hint b { color: var(--text); font-size: 15px; display: block; margin-bottom: 14px; }
+.drop-hint p { margin: 8px 0; line-height: 1.9; }
+.drop-hint .keys { color: #cfcfcf; font-size: 11px; margin-top: 18px; }
+
+.side {
+  width: 208px; flex: none; background: #1e1e1e; padding: 0 6px 8px;
+  display: flex; flex-direction: column; gap: 3px; overflow-y: auto;
+}
+.side-head {
+  background: #313131; color: var(--dim); font-size: 11px;
+  padding: 2px 6px; margin: 8px -6px 3px;
+}
+.side-btn {
+  background: #333; color: var(--text); border: 1px solid #4a4a4a; border-radius: 2px;
+  padding: 7px 10px; text-align: left; cursor: pointer; font-size: 12px;
+}
+.side-btn:hover:not(:disabled) { background: #3d3d3d; }
+.side-btn.hot { background: #3d4a52; border-color: #56707c; }
+
+.props { flex: none; border-top: 1px solid #000; background: #1e1e1e; }
+.props-head {
+  padding: 4px 10px; border-bottom: 2px solid var(--sel); display: inline-block;
+}
+.props-body {
+  margin: 6px 10px 8px; padding: 8px 10px; height: 96px; overflow: auto;
+  background: var(--sunken); border: 1px solid var(--line);
+  white-space: pre-wrap; font-variant-numeric: tabular-nums; font-size: 11.5px;
+}
+
+/* ======================================================================
+   出力設定画面
+   ====================================================================== */
+
+.outset-body {
+  flex: 1; min-height: 0; overflow-y: auto;
+  display: flex; flex-direction: column; gap: 8px; padding: 8px;
+}
+.panel-head {
+  background: #313131; color: var(--dim); font-size: 11px;
+  padding: 2px 6px; margin: -6px -10px 8px;
+}
+.grow { flex: 1; min-height: 0; }
+.format {
+  margin: 0; background: var(--sunken); border: 1px solid var(--line);
+  padding: 10px; overflow: auto; min-height: 120px;
+  font: 12px/1.9 ui-monospace, "Noto Sans Mono", monospace; white-space: pre-wrap;
+}
+.row { display: flex; align-items: center; gap: 8px; margin: 5px 0; }
+.row > span:first-child { color: var(--dim); min-width: 132px; }
+.row .lbl { color: var(--dim); min-width: 48px; }
+.row .num { color: var(--dim); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.row input[type="text"], .row select { flex: 1; min-width: 0; }
+.row input[readonly] { color: var(--dim); }
+.opts { display: flex; flex-direction: column; gap: 5px; margin-top: 8px; }
+
+/* ======================================================================
+   出力画面
+   ====================================================================== */
+
+/* The stage is the cut editor's, reused: same class names, so a change to how
+   a picture is shown lands on both screens at once. What differs is only what
+   moves it along -- the playhead there, the writing head here. */
+.out-stage { flex: 1 1 0; min-height: 140px; margin: 8px 8px 0; }
+#out-preview { display: block; width: 100%; height: 100%; object-fit: contain; }
+#out-shots-note.lossless { color: #7ee787; }
+.out-idle {
+  position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
+  color: var(--dim); background: #000;
+}
+/* `display` on the element beats the attribute, as with `.screen`. */
+.out-idle[hidden] { display: none; }
+#screen-out .panel { margin: 8px 8px 0; }
+.out-run { display: flex; gap: 10px; padding: 8px; align-items: stretch; }
+.out-buttons { display: flex; flex-direction: column; gap: 6px; width: 132px; flex: none; }
+.primary.big { padding: 14px 10px; font-size: 13px; }
+.out-status {
+  flex: 1; min-width: 0; background: var(--panel); border: 1px solid var(--line); padding: 6px 10px;
+}
+#out-list {
+  list-style: none; margin: 6px 0 0; padding: 0; height: 104px; overflow-y: auto;
+  font-size: 11px; font-variant-numeric: tabular-nums;
+}
+#out-list li {
+  display: grid; grid-template-columns: 26px 1fr 74px 120px 190px;
+  gap: 8px; align-items: center; padding: 2px 0; border-bottom: 1px solid #2c2c2c;
+}
+#out-list .n { color: var(--dim); text-align: right; }
+#out-list .nm { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+#out-list .note { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+#out-list .pbar { height: 7px; background: var(--sunken); border: 1px solid var(--line); overflow: hidden; }
+#out-list .pbar span { display: block; height: 100%; background: var(--copy); }
+#out-list li.done .note { color: #7ee787; }
+#out-list li.error .note { color: #ff9a90; }
+#out-list li.running .nm { color: var(--sel); font-weight: 600; }

@@ -1,6 +1,6 @@
 # State of the Rust implementation (`rust/`)
 
-[← Documentation](README.md) ・ [← smartcut](../README.md) ・ [日本語](rust-core.ja.md)
+[← Documentation](README.md) ・ [← SmartCut](../README.md) ・ [日本語](rust-core.ja.md)
 
 The port is what ships; the Python implementation is kept as the test oracle.
 **The "first frame is 13 ms early" limitation is gone** — see below.

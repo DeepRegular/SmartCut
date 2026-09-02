@@ -11,26 +11,31 @@
 # libraries, which is what a Debian package is supposed to do; that ties it to
 # FFmpeg 7.1 (Debian 13 / Ubuntu 25.04 or newer).
 #
-# Both name the GUI `smartcut` and the command-line cutter `smartcut-cli`.
-# Cargo calls the GUI crate `gui` and Tauri's own deb installs it under that
-# name — /usr/bin/gui is not a name this project gets to occupy.
+# The program is called SmartCut; the two things you type are not. Both
+# packagings name the GUI `smartcut` and the command-line cutter
+# `smartcut-cli`, which is also what the Debian package is called -- a command
+# and a package name are lowercase, whatever the program's name is.
 set -euo pipefail
 cd "$(dirname "$0")"
 
-VERSION=$(sed -n 's/^  "version": "\(.*\)",$/\1/p' src-tauri/tauri.conf.json)
+conf() { sed -n "s/^  \"$1\": \"\(.*\)\",\$/\1/p" src-tauri/tauri.conf.json; }
+VERSION=$(conf version)
+# Tauri names the bundles it makes after this, so the paths below have to read
+# it rather than spell it.
+PRODUCT=$(conf productName)
 MAINTAINER="mevius <supernova@supersolenoid.com>"
 HOMEPAGE="https://github.com/DeepRegular/SmartCut"
-NAME=smartcut-$VERSION-linux-x86_64
+NAME=$PRODUCT-$VERSION-linux-x86_64
 
 OUT=src-tauri/target/release
 STAGE=$OUT/bundle/linux
-APPDIR=$OUT/bundle/appimage/smartcut.AppDir
+APPDIR=$OUT/bundle/appimage/$PRODUCT.AppDir
 CLI_BIN=../rust/target/release/smartcut
-# Not $OUT/gui. Tauri stamps the bundle type into the binary as it packs each
-# one ("UNKNOWN" -> "DEB" / "APPIMAGE"), so $OUT/gui only ever carries the
-# stamp of whichever bundle was built last. Take each payload from its own
+# Not $OUT/smartcut. Tauri stamps the bundle type into the binary as it packs
+# each one ("UNKNOWN" -> "DEB" / "APPIMAGE"), so that copy only ever carries
+# the stamp of whichever bundle was built last. Take each payload from its own
 # bundle: the deb's binary from Tauri's deb, the tarball's from the AppDir.
-GUI_BIN=$OUT/bundle/deb/smartcut_${VERSION}_amd64/data/usr/bin/gui
+GUI_BIN=$OUT/bundle/deb/${PRODUCT}_${VERSION}_amd64/data/usr/bin/smartcut
 
 # ------------------------------------------------------------------ build
 cargo build --release --manifest-path ../rust/Cargo.toml -p smartcut-cli
@@ -68,7 +73,7 @@ chmod +x "$TREE/smartcut" "$TREE/smartcut-cli"
 cp ../LICENSE "$TREE/LICENSE"
 
 cat > "$TREE/README.txt" <<EOF
-smartcut $VERSION — portable Linux build (x86_64)
+SmartCut $VERSION — portable Linux build (x86_64)
 
     ./smartcut              放送録画を開いてカット編集する GUI
     ./smartcut [FILE]       ファイルを開いた状態で起動する
@@ -98,7 +103,7 @@ install -Dm644 src-tauri/icons/128x128@2x.png "$ROOT/usr/share/icons/hicolor/256
 install -Dm644 /dev/stdin "$ROOT/usr/share/applications/smartcut.desktop" <<'EOF'
 [Desktop Entry]
 Type=Application
-Name=smartcut
+Name=SmartCut
 Comment=スマートレンダリング対応の動画カットツール
 Comment[en]=Cut a broadcast recording without re-encoding it
 Exec=smartcut %f
@@ -111,7 +116,7 @@ EOF
 
 install -Dm644 /dev/stdin "$ROOT/usr/share/doc/smartcut/copyright" <<EOF
 Format: https://www.debian.org/doc/packaging-manuals/copyright-format/1.0/
-Upstream-Name: smartcut
+Upstream-Name: SmartCut
 Source: $HOMEPAGE
 
 Files: *

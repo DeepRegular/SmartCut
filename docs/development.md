@@ -1,6 +1,6 @@
 # Building and development
 
-[← Documentation](README.md) ・ [← smartcut](../README.md) ・ [日本語](development.ja.md)
+[← Documentation](README.md) ・ [← SmartCut](../README.md) ・ [日本語](development.ja.md)
 
 Builds on Linux (Debian 13 / Ubuntu 24.04 or newer). The Windows build is
 cross-built from Linux too.

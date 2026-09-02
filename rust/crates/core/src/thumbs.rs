@@ -49,6 +49,13 @@ pub struct ThumbOptions {
     /// Never report scenes closer together, on average, than this. A guard
     /// against material where the whole picture churns.
     pub min_spacing: f64,
+    /// How many cores the decoder may have. Zero, the default, is all of
+    /// them.
+    ///
+    /// Said only by the clip list, whose passes run behind an open cut
+    /// editor and must leave it something to decode with. See
+    /// [`crate::video_decoder_with`].
+    pub threads: usize,
 }
 
 impl Default for ThumbOptions {
@@ -60,6 +67,7 @@ impl Default for ThumbOptions {
             floor: 0.055,
             over_typical: 3.0,
             min_spacing: 3.0,
+            threads: 0,
         }
     }
 }
@@ -385,7 +393,7 @@ pub fn build_with(
     let mut ictx = ff::format::input(&src.path)?;
     let idx = src.video.stream_index;
     let params = ictx.stream(idx).ok_or_else(|| anyhow!("video stream vanished"))?.parameters();
-    let mut decoder = crate::video_decoder(params)?;
+    let mut decoder = crate::video_decoder_with(params, opts.threads)?;
 
     let mut collector = Collector::new(src, opts);
     let mut told = -1.0;

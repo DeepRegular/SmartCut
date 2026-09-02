@@ -1,6 +1,6 @@
 # Documentation
 
-[← smartcut](../README.md) ・ [日本語](README.ja.md)
+[← SmartCut](../README.md) ・ [日本語](README.ja.md)
 
 ## How it works
 
