@@ -10,6 +10,6 @@ SmartCut の GUI。Tauri v2 + バニラ JS。入力設定・出力設定・出�
 [`docs/distribution.ja.md`](../docs/distribution.ja.md)。
 
 ```bash
-cd src-tauri && cargo build --release   # -> target/release/gui
+cd src-tauri && cargo build --release   # -> target/release/smartcut
 ./build-windows.sh                      # Windows 版のクロスビルド
 ```

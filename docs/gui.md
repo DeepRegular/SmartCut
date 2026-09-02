@@ -16,7 +16,7 @@ its own**.
 |---|---|---|
 | **入力設定 (Input)** | List window | The list of clips. Drop files on it or use ファイルを追加; each one is read in turn and its seek index left on disc |
 | **カット編集 (Cut editor)** | **Its own window** | Open one clip out of the list, cut it, and come back with **OK**. Nearly all of this document is about this one |
-| **出力設定 (Output settings)** | List window | Folder, filename prefix, container, what to do with the audio. **One answer for the whole list** |
+| **出力設定 (Output settings)** | List window | Folder, filename prefix, container, what to do with the audio, whether to write a `.keyframe` sidecar. **One answer for the whole list** |
 | **出力 (Output)** | List window | Write the list out, top to bottom |
 
 The list window's three are tabs, and only one is up at a time — they are
@@ -352,10 +352,12 @@ something earlier and shift the numbering, and the same mark stays selected. Onl
 when several go up at once, as with commercial detection, is the selection left
 alone, since there is no reason to prefer any one of them.
 
-**Keyframes can be written out alongside the output.** Tick "keyframes to
-.keyframe" next to the export button and a `.keyframe` file appears beside the
-video with the same name. The contents are **line numbers only, CRLF, no
-header** — the shape the tools that read this kind of file expect. **The numbers
+**Keyframes can be written out alongside the output.** Tick
+「キーフレーム情報を別ファイル (.keyframe) で出力する」 on the output settings
+screen and a `.keyframe` file appears beside the video with the same name. It is
+a setting of the output, so it holds for every clip in the list. The contents
+are **line numbers only, CRLF, no header** — the shape the tools that read this
+kind of file expect. **The numbers
 are in the exported timeline, not the original recording:**
 
 ```

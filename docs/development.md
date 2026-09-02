@@ -43,7 +43,7 @@ cd rust && cargo build --release
 
 # GUI
 cd gui/src-tauri && cargo build --release
-# -> gui/src-tauri/target/release/gui
+# -> gui/src-tauri/target/release/smartcut
 ```
 
 ### Release artifacts

@@ -128,6 +128,18 @@ smartcut input.ts --analyze --scenes            # scene changes
 | `--no-open-gop` | Never start a copy at an open GOP |
 | `-o OUTPUT` | Output path; the extension picks the container |
 
+## The clip list
+
+![The SmartCut clip list](docs/images/list.png)
+
+Where a night's worth of recordings goes. **Each one is read in the background
+as it arrives**, leaving a seek index behind; `Ctrl+A` then `Ctrl+D` runs
+commercial detection over everything selected. The row carries what is known
+about that recording — length, resolution, the commercial blocks found, the cuts
+made, the length it will be written at. Cuts live with the clip, so the list can
+be cut through one at a time and **written out in one go**. The cut editor opens
+on one clip in a window of its own and comes back with OK.
+
 ## The editor
 
 ![The SmartCut cut editor](docs/images/editor.png)

@@ -7,7 +7,7 @@
 ```bash
 cargo install tauri-cli --version ^2 --locked   # once
 cd gui/src-tauri && NO_STRIP=1 cargo tauri build --bundles appimage
-# -> target/release/bundle/appimage/smartcut_0.1.2_amd64.AppImage
+# -> target/release/bundle/appimage/SmartCut_0.2.0_amd64.AppImage
 ```
 
 **`NO_STRIP=1` is set.** Without it, linuxdeploy used to die with
@@ -45,8 +45,8 @@ in tends to make things *more* fragile across environments, so the exclusion
 stays. What is bundled can be checked by extracting:
 
 ```bash
-./smartcut_0.1.2_amd64.AppImage --appimage-extract >/dev/null
-ldd squashfs-root/usr/bin/gui | grep -E 'asound|jack|pulse'
+./SmartCut_0.2.0_amd64.AppImage --appimage-extract >/dev/null
+ldd squashfs-root/usr/bin/smartcut | grep -E 'asound|jack|pulse'
 # libasound.so.2 / libjack.so.0 -> /lib/x86_64-linux-gnu/...   (system)
 # libpulse.so.0                 -> squashfs-root/usr/bin/../lib/...  (bundled)
 ```
@@ -67,8 +67,8 @@ no ALSA-related errors and no panics.
 
 ```bash
 ./gui/build-linux.sh
-# -> gui/src-tauri/target/release/bundle/linux/smartcut-0.1.2-linux-x86_64.tar.gz
-# -> gui/src-tauri/target/release/bundle/linux/smartcut_0.1.2_amd64.deb
+# -> gui/src-tauri/target/release/bundle/linux/SmartCut-0.2.0-linux-x86_64.tar.gz
+# -> gui/src-tauri/target/release/bundle/linux/smartcut_0.2.0_amd64.deb
 ```
 
 Two ways of packing the same build. Both install **the GUI as `smartcut` and the
@@ -83,8 +83,8 @@ both out of `tauri.conf.json`.
 
 | Artifact | Size | FFmpeg | Requires |
 |---|---|---|---|
-| `smartcut-0.1.2-linux-x86_64.tar.gz` | 207.9 MB | Bundled | glibc 2.39 or newer. No FUSE needed |
-| `smartcut_0.1.2_amd64.deb` | 2.5 MB | Uses the system's | FFmpeg 7.1 (Debian 13 / Ubuntu 25.04 and later) |
+| `SmartCut-0.2.0-linux-x86_64.tar.gz` | 208.1 MB | Bundled | glibc 2.39 or newer. No FUSE needed |
+| `smartcut_0.2.0_amd64.deb` | 2.6 MB | Uses the system's | FFmpeg 7.1 (Debian 13 / Ubuntu 25.04 and later) |
 
 **The tar.gz contains the same AppDir as the AppImage, extracted.** The 745
 libraries linuxdeploy gathered by following `ldd` sit in `app/` as they are,
@@ -136,14 +136,14 @@ Cross-built from the Linux development VM to `x86_64-pc-windows-msvc`.
 
 ```bash
 ./gui/build-windows.sh
-# -> gui/src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis/smartcut_0.1.2_x64-setup.exe
+# -> gui/src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis/SmartCut_0.2.0_x64-setup.exe
 # -> gui/src-tauri/target/x86_64-pc-windows-msvc/release/bundle/portable/smartcut-portable-x64.zip
 ```
 
 | Artifact | Size | Contents |
 |---|---|---|
-| NSIS installer | 52.8 MB | 167 MB installed (9.6 MB exe plus 8 FFmpeg DLLs) |
-| Portable zip | 65.9 MB | The same set. Unzip and run `smartcut.exe` |
+| NSIS installer | 52.8 MB | 168.9 MB installed (10.6 MB exe plus 8 FFmpeg DLLs) |
+| Portable zip | 66.0 MB | The same set. Unzip and run `smartcut.exe` |
 
 **Exactly one piece of code had to be rewritten for the port: audio output.**
 Everything goes through libav, so there is no `Command::new` and no POSIX path.
