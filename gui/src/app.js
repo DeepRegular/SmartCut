@@ -1118,7 +1118,6 @@ const settings = {
   container: "",
   audio: "smart",
   keyframes: false,
-  audioEs: false,
 };
 
 /// Where a clip will be written, given the settings.
@@ -1156,7 +1155,6 @@ bindSetting("out-prefix", "prefix");
 bindSetting("out-container", "container");
 bindSetting("out-audio", "audio");
 bindSetting("out-keyframes", "keyframes", "checked");
-bindSetting("out-audio-es", "audioEs", "checked");
 
 el("browse-dir").addEventListener("click", async (ev) => {
   ev.preventDefault();
@@ -1195,8 +1193,7 @@ function renderOutset() {
     `出力先:　${outputPath(clip)}` +
     (settings.keyframes && clip.edit && clip.edit.keyframes.length
       ? `\n　　　　${outputPath(clip).replace(/\.[^./\\]*$/, "")}.keyframe`
-      : "") +
-    (settings.audioEs ? `\n　　　　${outputPath(clip).replace(/\.[^./\\]*$/, "")}.aac` : "");
+      : "");
 }
 el("outset-clip").addEventListener("change", renderOutset);
 
@@ -1453,7 +1450,6 @@ async function runExport() {
         output: out,
         audioCopy: settings.audio === "copy",
         audioReencode: settings.audio === "reencode",
-        audioEs: settings.audioEs,
       });
       let extra = "";
       if (settings.keyframes) {
