@@ -89,9 +89,9 @@
 
 | | |
 |---|---|
-| Linux | `smartcut_0.1.2_amd64.AppImage`、または `smartcut-0.1.2-linux-x86_64.tar.gz`（解凍して `./smartcut`）。どちらも FFmpeg 同梱、glibc 2.39 以上（Ubuntu 24.04 / Debian 13 / Fedora 40 以降） |
-| Linux（deb） | `smartcut_0.1.2_amd64.deb` — `sudo apt install ./smartcut_0.1.2_amd64.deb`。FFmpeg を抱えずシステムの 7.1 にリンクするので 2.5MB で済むかわりに Debian 13 / Ubuntu 25.04 以降が要る。GUI が `smartcut`、コマンドライン版が `smartcut-cli` |
-| Windows | `smartcut_0.1.2_x64-setup.exe`（インストーラ）または `smartcut-portable-x64.zip`（解凍して実行）。x64 のみ、WebView2 ランタイムが要る |
+| Linux | `SmartCut_0.2.0_amd64.AppImage`、または `SmartCut-0.2.0-linux-x86_64.tar.gz`（解凍して `./smartcut`）。どちらも FFmpeg 同梱、glibc 2.39 以上（Ubuntu 24.04 / Debian 13 / Fedora 40 以降） |
+| Linux（deb） | `smartcut_0.2.0_amd64.deb` — `sudo apt install ./smartcut_0.2.0_amd64.deb`。FFmpeg を抱えずシステムの 7.1 にリンクするので 2.6MB で済むかわりに Debian 13 / Ubuntu 25.04 以降が要る。GUI が `smartcut`、コマンドライン版が `smartcut-cli` |
+| Windows | `SmartCut_0.2.0_x64-setup.exe`（インストーラ）または `smartcut-portable-x64.zip`（解凍して実行）。x64 のみ、WebView2 ランタイムが要る |
 
 自分でビルドする場合は [ビルドと開発](docs/development.ja.md)。
 

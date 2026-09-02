@@ -98,9 +98,9 @@ Grab a build from [Releases](https://github.com/DeepRegular/SmartCut/releases).
 
 | | |
 |---|---|
-| Linux | `smartcut_0.1.2_amd64.AppImage`, or `smartcut-0.1.2-linux-x86_64.tar.gz` (unpack it, run `./smartcut`). Both carry FFmpeg and need glibc 2.39+ (Ubuntu 24.04 / Debian 13 / Fedora 40 or newer) |
-| Linux (deb) | `smartcut_0.1.2_amd64.deb` — `sudo apt install ./smartcut_0.1.2_amd64.deb`. 2.5MB, because it links the system FFmpeg 7.1 instead of carrying one; that means Debian 13 / Ubuntu 25.04 or newer. Installs the GUI as `smartcut` and the cutter as `smartcut-cli` |
-| Windows | `smartcut_0.1.2_x64-setup.exe` (installer) or `smartcut-portable-x64.zip` (unzip and run). x64 only; needs the WebView2 runtime |
+| Linux | `SmartCut_0.2.0_amd64.AppImage`, or `SmartCut-0.2.0-linux-x86_64.tar.gz` (unpack it, run `./smartcut`). Both carry FFmpeg and need glibc 2.39+ (Ubuntu 24.04 / Debian 13 / Fedora 40 or newer) |
+| Linux (deb) | `smartcut_0.2.0_amd64.deb` — `sudo apt install ./smartcut_0.2.0_amd64.deb`. 2.6MB, because it links the system FFmpeg 7.1 instead of carrying one; that means Debian 13 / Ubuntu 25.04 or newer. Installs the GUI as `smartcut` and the cutter as `smartcut-cli` |
+| Windows | `SmartCut_0.2.0_x64-setup.exe` (installer) or `smartcut-portable-x64.zip` (unzip and run). x64 only; needs the WebView2 runtime |
 
 To build it yourself, see [Building and development](docs/development.md).
 
