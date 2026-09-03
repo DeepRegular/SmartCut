@@ -113,9 +113,9 @@
 
 | | |
 |---|---|
-| Linux | `SmartCut_0.3.0_amd64.AppImage`、または `SmartCut-0.3.0-linux-x86_64.tar.gz`（解凍して `./smartcut`）。どちらも FFmpeg 同梱、glibc 2.39 以上（Ubuntu 24.04 / Debian 13 / Fedora 40 以降） |
-| Linux（deb） | `smartcut_0.3.0_amd64.deb` — `sudo apt install ./smartcut_0.3.0_amd64.deb`。FFmpeg を抱えずシステムの 7.1 にリンクするので 2.6MB で済むかわりに Debian 13 / Ubuntu 25.04 以降が要る。GUI が `smartcut`、コマンドライン版が `smartcut-cli` |
-| Windows | `SmartCut_0.3.0_x64-setup.exe`（インストーラ）または `smartcut-portable-x64.zip`（解凍して実行）。x64 のみ、WebView2 ランタイムが要る |
+| Linux | `SmartCut_0.3.1_amd64.AppImage`、または `SmartCut-0.3.1-linux-x86_64.tar.gz`（解凍して `./smartcut`）。どちらも FFmpeg 同梱、glibc 2.39 以上（Ubuntu 24.04 / Debian 13 / Fedora 40 以降） |
+| Linux（deb） | `smartcut_0.3.1_amd64.deb` — `sudo apt install ./smartcut_0.3.1_amd64.deb`。FFmpeg を抱えずシステムの 7.1 にリンクするので 2.6MB で済むかわりに Debian 13 / Ubuntu 25.04 以降が要る。GUI が `smartcut`、コマンドライン版が `smartcut-cli` |
+| Windows | `SmartCut_0.3.1_x64-setup.exe`（インストーラ）または `smartcut-portable-x64-0.3.1.zip`（解凍して実行）。x64 のみ、WebView2 ランタイムが要る |
 
 自分でビルドする場合は [ビルドと開発](docs/development.ja.md)。
 
@@ -143,7 +143,7 @@ smartcut input.ts --analyze --scenes            # シーンの変わり目を出
 | `--seek-index PATH` | シーク用インデックスの置き場所。初回に書き、2 回目からは読むのでパケットの走査を省ける |
 | `--detect-cm` / `--logo` / `--scenes` | CM 候補・ロゴ併用・シーン検出 |
 | `--drop-stream INDEX` | 録画のストリームを 1 本、出力から外す（複数指定可）。カット編集の**トラック**メニューと同じもの |
-| `--no-tables` | `.ts` を書くとき、録画自身の PMT・SDT・EIT・TOT を戻さない（muxer が書いたテーブルのままにする） |
+| `--tables partial\|broadcast\|muxer` | `.ts` の自己記述をどう書くか。既定の `partial` は部分TS（SIT 1 枚、DVB EN 300 468 Annex C / ARIB TR-B15）。`broadcast` は録画の PMT・SDT・EIT・TOT をそのまま戻す。`muxer` は muxer が書いたテーブルのまま（旧 `--no-tables`） |
 | `--no-open-gop` | オープン GOP をコピー開始点として使わない |
 | `-o OUTPUT` | 出力先。器は拡張子で決まる |
 

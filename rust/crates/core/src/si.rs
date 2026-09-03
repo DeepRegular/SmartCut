@@ -26,6 +26,14 @@
 //!     on, taken from the recording at the point each kept range starts,
 //!   * and every stream is put back on the PID it arrived on.
 //!
+//! What is put back is trimmed to what the file turned out to hold. The
+//! recording describes a data broadcast, a superimposed crawl and every
+//! sound track it was sent with; a cut carries the pictures, the sound and
+//! the subtitles. A descriptor that names one of the streams left behind
+//! would have the output announce something a player can then go looking
+//! for and never find, so those come out -- of the map and of the programme
+//! description alike.
+//!
 //! The pass is byte-level on purpose. Sections are not timed -- they carry
 //! no PTS and are meant to be repeated -- so nothing here has to be spliced,
 //! only placed and given a continuity counter that follows on.
@@ -41,6 +49,9 @@ const PID_PAT: u16 = 0x0000;
 const PID_SDT: u16 = 0x0011;
 const PID_EIT: u16 = 0x0012;
 const PID_TDT: u16 = 0x0014;
+/// Where a partial transport stream says what it is. Reserved for exactly
+/// this and nothing else, which is why a recording never carries it.
+const PID_SIT: u16 = 0x001F;
 
 const TABLE_PAT: u8 = 0x00;
 const TABLE_PMT: u8 = 0x02;
@@ -52,6 +63,9 @@ const TABLE_SDT_ACTUAL: u8 = 0x42;
 /// programmes that are not in this file, and nothing reads them off a
 /// recording.
 const TABLE_EIT_PF_ACTUAL: u8 = 0x4E;
+/// Selection information: everything a partial transport stream says about
+/// itself, in the one table that replaces the rest.
+const TABLE_SIT: u8 = 0x7F;
 const TABLE_TDT: u8 = 0x70;
 const TABLE_TOT: u8 = 0x73;
 
@@ -63,6 +77,40 @@ const TABLE_TOT: u8 = 0x73;
 /// that does not exist and invites a player to wait for a key that never
 /// comes.
 const DROP_DESCRIPTORS: [u8; 1] = [0x09];
+
+/// Which account of itself a finished cut carries.
+///
+/// A recording is a slice out of a multiplex, and there are two established
+/// ways to write one down. A partial transport stream -- what a recorder
+/// writes, what DVB describes in EN 300 468 Annex C and ARIB in TR-B15 --
+/// says everything in one table, the SIT, and carries none of the tables
+/// that describe a live multiplex. Keeping the broadcast's own SDT, EIT and
+/// TOT instead says the same things in the shape they arrived in, which is
+/// what the tools built around Japanese recordings read.
+///
+/// The first is the standard answer to "what is a recording", so it is the
+/// default. The second is kept because it is what most software downstream
+/// of this one actually looks at.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Tables {
+    /// The muxer's own, which describe the streams and nothing else.
+    Muxer,
+    /// The recording's own SDT, EIT and TOT, put back where they belong.
+    Broadcast,
+    /// One selection information table, the way a recording is written down.
+    #[default]
+    Partial,
+}
+
+impl Tables {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Tables::Muxer => "muxer",
+            Tables::Broadcast => "broadcast",
+            Tables::Partial => "partial",
+        }
+    }
+}
 
 /// Whether a byte offset holds a packet, checked the way a demuxer checks.
 ///
@@ -254,6 +302,92 @@ pub fn descriptor(loop_bytes: &[u8], tag: u8) -> Option<&[u8]> {
         i += 2 + len;
     }
     None
+}
+
+/// The component a descriptor is about, when it is about one.
+///
+/// ARIB names streams by a one-byte tag rather than by PID, and three of the
+/// descriptors a programme carries point at a stream that way: the component
+/// and audio component descriptors say which stream they describe, and the
+/// data content descriptor says which stream a viewer would enter the data
+/// broadcast on. All three put the tag in the same place, third in the body.
+///
+/// Nothing else here refers to a stream. The event group descriptor points
+/// at other *events*, and the series descriptor at other broadcasts; those
+/// travel whole.
+fn component_reference(tag: u8, body: &[u8]) -> Option<u8> {
+    match tag {
+        0x50 | 0xC4 | 0xC7 => body.get(2).copied(),
+        _ => None,
+    }
+}
+
+/// Which component tags the recording described, and which the cut carries.
+///
+/// The two are compared rather than the second used alone, because a
+/// recording that names no components at all -- one that has been through a
+/// muxer already, where the stream identifier descriptors did not survive --
+/// would otherwise look like a cut that carries nothing, and every
+/// descriptor naming a component would be thrown away on no evidence.
+struct Components {
+    described: HashSet<u8>,
+    carried: HashSet<u8>,
+}
+
+impl Components {
+    fn of(g: &Graft) -> Self {
+        let described = g.service.streams.iter().filter_map(|s| s.component_tag()).collect();
+        let carried = g
+            .streams
+            .iter()
+            // A downmixed track is not the track that was described; see
+            // `GraftStream`. Its audio component descriptor names a channel
+            // arrangement the output no longer has, so the tag counts as
+            // uncarried and the descriptor goes with it.
+            .filter(|gs| gs.faithful)
+            .filter_map(|gs| g.service.stream(gs.pid).and_then(|es| es.component_tag()))
+            .collect();
+        Components { described, carried }
+    }
+
+    /// Whether a descriptor about this component still describes the output.
+    ///
+    /// Only a component the recording itself described can be judged
+    /// missing. One that appears nowhere in the recording's map is a
+    /// disagreement between the broadcaster's own tables, and not something
+    /// to settle here.
+    fn still_true(&self, tag: u8) -> bool {
+        self.carried.contains(&tag) || !self.described.contains(&tag)
+    }
+}
+
+/// Copy a descriptor loop, leaving out anything that names a component the
+/// cut does not carry.
+///
+/// A cut is a smaller file than the recording in more than length: the data
+/// broadcast is gone, the superimposed crawl may be, a track the editor
+/// switched off certainly is. The programme description that arrives with
+/// the recording still speaks of all of them, and copied across whole it
+/// would have the output announce an entry point into a data broadcast that
+/// is not in the file. This is the same reasoning as [`DROP_DESCRIPTORS`],
+/// applied to what the cut turned out to contain rather than to a fixed tag.
+fn keep_carried(loop_bytes: &[u8], components: &Components) -> Vec<u8> {
+    let mut out = Vec::with_capacity(loop_bytes.len());
+    let mut i = 0;
+    while i + 2 <= loop_bytes.len() {
+        let tag = loop_bytes[i];
+        let len = loop_bytes[i + 1] as usize;
+        let Some(whole) = loop_bytes.get(i..i + 2 + len) else { break };
+        let keep = match component_reference(tag, &whole[2..]) {
+            Some(component) => components.still_true(component),
+            None => true,
+        };
+        if keep {
+            out.extend_from_slice(whole);
+        }
+        i += 2 + len;
+    }
+    out
 }
 
 /// Copy a descriptor loop, leaving out the tags that must not travel.
@@ -556,6 +690,8 @@ pub struct Graft<'a> {
     /// when the finished file's own map does not say -- it normally does.
     pub pcr_pid: u16,
     pub ranges: Vec<GraftRange>,
+    /// Which account of itself the output is to carry.
+    pub tables: Tables,
 }
 
 #[derive(Debug, Default, Clone, Copy)]
@@ -568,6 +704,8 @@ pub struct Stats {
     pub eit: usize,
     /// Time and date sections injected.
     pub tot: usize,
+    /// Selection information sections written, in a partial transport stream.
+    pub sit: usize,
 }
 
 /// How often each table is repeated through the output.
@@ -578,6 +716,10 @@ pub struct Stats {
 /// can say what it is playing, so these are short on purpose.
 const EIT_PERIOD: f64 = 2.0;
 const TOT_PERIOD: f64 = 5.0;
+/// How often the muxer writes a service description, and so how often a
+/// partial stream's own table goes out in its place. libavformat's default,
+/// which this does not change.
+const SDT_PERIOD: f64 = 0.5;
 
 /// Wrap a section into transport packets on one PID.
 fn packetize(pid: u16, section: &[u8], cc: &mut u8, out: &mut Vec<u8>) {
@@ -605,8 +747,13 @@ fn packetize(pid: u16, section: &[u8], cc: &mut u8, out: &mut Vec<u8>) {
 }
 
 /// Build the program map the recording had, for the streams that were kept.
-fn build_pmt(g: &Graft, pcr_pid: u16) -> Vec<u8> {
+fn build_pmt(g: &Graft, pcr_pid: u16, components: &Components) -> Vec<u8> {
     let s = g.service;
+    // The programme-level loop can name components too -- a data content
+    // descriptor sits there as readily as in an event. The per-stream loops
+    // below are not filtered this way: a stream's own descriptors are about
+    // that stream, and it is in the output or it is not written at all.
+    let program_info = keep_carried(&s.program_info, components);
     let mut sec = vec![
         TABLE_PMT,
         0xB0, // syntax indicator, then the length, filled in below
@@ -618,10 +765,10 @@ fn build_pmt(g: &Graft, pcr_pid: u16) -> Vec<u8> {
         0x00, // last section number
         0xE0 | ((pcr_pid >> 8) as u8 & 0x1F),
         pcr_pid as u8,
-        0xF0 | ((s.program_info.len() >> 8) as u8 & 0x0F),
-        s.program_info.len() as u8,
+        0xF0 | ((program_info.len() >> 8) as u8 & 0x0F),
+        program_info.len() as u8,
     ];
-    sec.extend_from_slice(&s.program_info);
+    sec.extend_from_slice(&program_info);
     for gs in &g.streams {
         // A stream the source's own map did not describe is written the way
         // the muxer would have: the type it was given, and nothing said
@@ -645,6 +792,243 @@ fn build_pmt(g: &Graft, pcr_pid: u16) -> Vec<u8> {
         sec.push(desc.len() as u8);
         sec.extend_from_slice(&desc);
     }
+    finish_section(&mut sec);
+    sec
+}
+
+/// Rewrite an event information section for the streams the cut carries.
+///
+/// The section arrives from the recording and is written back as it came,
+/// except for the descriptors that name a stream the cut left behind. Those
+/// are taken out and the section is closed again -- a new length, a new CRC.
+///
+/// Only the present event is trimmed this way. Present and following arrive
+/// as two sections, numbered 0 and 1, and only the first is about this file:
+/// the second is a note about what came next on the air, a programme whose
+/// streams were never going to be in here. Judging its description against
+/// what this file carries would answer a question nobody asked -- and would
+/// throw away the one true thing it says, which is what was coming.
+///
+/// Returns `None` when nothing had to change, which is the usual case and
+/// the one where the recording's own bytes should travel untouched, and also
+/// when the section does not parse as event information, where saying
+/// nothing is better than writing a guess.
+fn prune_events(section: &[u8], components: &Components) -> Option<Vec<u8>> {
+    if *section.get(6)? != 0 {
+        return None;
+    }
+    // Everything but the CRC, which is recomputed over whatever is left.
+    let body = section.get(..section.len().checked_sub(4)?)?;
+    // Table id, length, service, version, section numbers, transport stream,
+    // network, and the two that say where this section sits in the schedule.
+    let mut out = body.get(..14)?.to_vec();
+    let mut at = 14;
+    let mut changed = false;
+    while at + 12 <= body.len() {
+        let len = (((body[at + 10] & 0x0F) as usize) << 8) | body[at + 11] as usize;
+        let descriptors = body.get(at + 12..at + 12 + len)?;
+        let kept = keep_carried(descriptors, components);
+        changed |= kept.len() != descriptors.len();
+        // Event id, start time, duration and running status are untouched:
+        // which programme this is and when it went out is a fact about the
+        // broadcast, not about what was kept of it.
+        out.extend_from_slice(&body[at..at + 10]);
+        out.push((body[at + 10] & 0xF0) | ((kept.len() >> 8) as u8 & 0x0F));
+        out.push(kept.len() as u8);
+        out.extend_from_slice(&kept);
+        at += 12 + len;
+    }
+    // A trailing byte means the walk and the section disagree about where
+    // the events end, so the walk was wrong about all of it.
+    if at != body.len() || !changed {
+        return None;
+    }
+    finish_section(&mut out);
+    Some(out)
+}
+
+/// The largest a section may be, counting the three bytes before the length
+/// field and the four of CRC after the body.
+const SECTION_MAX: usize = 4096;
+
+/// What the programme on now says about itself, ready to go into a SIT.
+struct Present {
+    /// The version of the section it was read from, which is what a partial
+    /// transport stream calls the event version.
+    version: u8,
+    /// Modified Julian day and three bytes of binary-coded decimal.
+    start: [u8; 5],
+    /// Binary-coded decimal, hours to seconds.
+    duration: [u8; 3],
+    /// The event's own descriptor loop, trimmed to the streams that are here.
+    descriptors: Vec<u8>,
+}
+
+/// Read the present event out of a snapshot.
+///
+/// Present and following arrive as two sections and only the first describes
+/// this file. The following one names a programme that is not here, and a
+/// partial transport stream has nowhere to put it: the SIT describes what
+/// the file *is*.
+fn present_event(snapshot: &Snapshot, components: &Components) -> Option<Present> {
+    let section = snapshot.eit.iter().find(|s| s.len() > 26 && s[6] == 0)?;
+    let body = &section[..section.len() - 4];
+    let event = body.get(14..)?;
+    let len = (((event[10] & 0x0F) as usize) << 8) | event[11] as usize;
+    let descriptors = keep_carried(event.get(12..12 + len)?, components);
+    Some(Present {
+        version: (section[5] >> 1) & 0x1F,
+        start: event[2..7].try_into().ok()?,
+        duration: event[7..10].try_into().ok()?,
+        descriptors,
+    })
+}
+
+/// The service descriptor, dug out of the recording's own service description.
+///
+/// The name arrives as ARIB text and leaves as ARIB text; this only has to
+/// find where it starts and how far it runs.
+fn service_descriptor(sdt: &[u8]) -> Option<&[u8]> {
+    // Section header, then the one service: its id, the event flags, and the
+    // running status and length that open its descriptor loop.
+    let service = sdt.get(11..sdt.len().checked_sub(4)?)?;
+    let len = (((service[3] & 0x0F) as usize) << 8) | service[4] as usize;
+    let loop_bytes = service.get(5..5 + len)?;
+    let mut i = 0;
+    while i + 2 <= loop_bytes.len() {
+        let whole = loop_bytes.get(i..i + 2 + loop_bytes[i + 1] as usize)?;
+        if whole[0] == 0x48 {
+            return Some(whole);
+        }
+        i += whole.len();
+    }
+    None
+}
+
+/// How fast the partial transport stream runs, in the 400 bit/s the
+/// descriptor counts in.
+fn partial_stream_descriptor(peak_rate: u32) -> Vec<u8> {
+    let peak = peak_rate.min(0x3F_FFFF);
+    vec![
+        0x63,
+        0x08,
+        0xC0 | ((peak >> 16) as u8 & 0x3F),
+        (peak >> 8) as u8,
+        peak as u8,
+        // The smoothing rate and buffer are what a device would need to feed
+        // this back into a decoder at a steady rate. Nothing here measures
+        // either, and all ones is how the descriptor says so.
+        0xFF,
+        0xFF,
+        0xFF,
+        0xFF,
+        0xFF,
+    ]
+}
+
+/// Which network the recording came off, when the network id says plainly.
+///
+/// The original network id is allocated per country and per medium, so the
+/// three that matter in Japan can be read straight off it. An id outside
+/// them is left undescribed rather than guessed at.
+fn network_descriptor(original_network_id: u16) -> Option<Vec<u8>> {
+    let medium = match original_network_id {
+        0x0004 => b"BS",
+        0x0006 | 0x0007 => b"CS",
+        0x7880..=0x7FEF => b"TB",
+        _ => return None,
+    };
+    let mut d = vec![0xC2, 0x07, b'J', b'P', b'N'];
+    d.extend_from_slice(medium);
+    d.extend_from_slice(&original_network_id.to_be_bytes());
+    Some(d)
+}
+
+/// When the programme went out and how long it ran.
+///
+/// This is where a partial transport stream keeps what an event information
+/// table would have said, and it is the reason the times in it are the
+/// broadcast's own rather than the file's: the descriptor is about the event,
+/// not about how much of it was kept.
+fn partial_time_descriptor(present: &Present) -> Vec<u8> {
+    let mut d = vec![0xC3, 0x0D, present.version];
+    d.extend_from_slice(&present.start);
+    d.extend_from_slice(&present.duration);
+    // No offset from the time given, so the offset itself is zero and the
+    // flag that would say to read it is clear.
+    d.extend_from_slice(&[0x00, 0x00, 0x00]);
+    // Reserved bits set, then three flags: whether to read the offset above,
+    // whether the event's other descriptors follow in this loop, and whether
+    // the time is already the broadcaster's local one. The offset is zero so
+    // the first is clear; the descriptors do follow, so the second is set.
+    d.push(0b1111_1000 | 0b010);
+    d
+}
+
+/// Build the one table a partial transport stream carries.
+///
+/// Everything a player would otherwise read from four tables is here: which
+/// service this is and what it is called, which programme, when it went out
+/// and for how long, and what the broadcaster said about it. The bytes are
+/// the recording's own wherever there were any -- only the frame around them
+/// is written here.
+fn build_sit(
+    service: &Service,
+    present: Option<&Present>,
+    version: u8,
+    peak_rate: u32,
+) -> Vec<u8> {
+    let mut transmission = partial_stream_descriptor(peak_rate);
+    if let Some(d) = network_descriptor(service.original_network_id) {
+        transmission.extend_from_slice(&d);
+    }
+
+    let mut described = Vec::new();
+    if let Some(p) = present {
+        described.extend_from_slice(&partial_time_descriptor(p));
+    }
+    if let Some(d) = service.sdt.as_deref().and_then(service_descriptor) {
+        described.extend_from_slice(d);
+    }
+    if let Some(p) = present {
+        described.extend_from_slice(&p.descriptors);
+    }
+
+    let mut sec = vec![
+        TABLE_SIT,
+        0xF0, // syntax indicator and the reserved bits, then the length
+        0x00,
+        0xFF, // reserved
+        0xFF,
+        0xC0 | ((version & 0x1F) << 1) | 0x01, // current
+        0x00,                                  // section number
+        0x00,                                  // last section number
+        0xF0 | ((transmission.len() >> 8) as u8 & 0x0F),
+        transmission.len() as u8,
+    ];
+    sec.extend_from_slice(&transmission);
+
+    // A section has a ceiling and a long programme description can reach it:
+    // the extended event descriptors alone ran to a kilobyte on the recording
+    // this was written against. What does not fit is dropped whole
+    // descriptors at a time, from the end, rather than truncated -- the
+    // service and the times come first for that reason.
+    let room = SECTION_MAX - sec.len() - 4 - 4;
+    let mut kept = 0usize;
+    let mut i = 0;
+    while i + 2 <= described.len() {
+        let len = 2 + described[i + 1] as usize;
+        if kept + len > room {
+            break;
+        }
+        kept += len;
+        i += len;
+    }
+    sec.extend_from_slice(&service.service_id.to_be_bytes());
+    // Running status undefined: a recording is not on the air.
+    sec.push(0x80 | ((kept >> 8) as u8 & 0x0F));
+    sec.push(kept as u8);
+    sec.extend_from_slice(&described[..kept]);
     finish_section(&mut sec);
     sec
 }
@@ -743,6 +1127,68 @@ fn output_layout(path: &str) -> Result<(u16, u16)> {
     Ok((pmt_pid, pcr_pid))
 }
 
+/// How fast the finished cut runs at its fastest, in the 400 bit/s a partial
+/// transport stream descriptor counts in.
+///
+/// Measured rather than assumed. The rate a mux comes out at is neither the
+/// recording's nor a constant, and this is the one number in the table that
+/// cannot be copied from anywhere -- the recording never described itself as
+/// a partial stream, because it was not one.
+///
+/// The window is a second because that is the shortest span a rate is
+/// meaningful over: measured tighter, one large picture reads as a burst the
+/// file never sustains, and the descriptor would name a rate no device needs
+/// to provide. `added` is what the tables written here will themselves take
+/// up, since they are not in the file being measured yet.
+///
+/// This is a whole extra pass over the output, which is why it is only asked
+/// for when a partial stream is being written.
+fn peak_rate(path: &str, pcr_pid: u16, added: f64) -> Result<u32> {
+    let mut src = BufReader::with_capacity(1 << 20, std::fs::File::open(path)?);
+    let mut packet = [0u8; PACKET];
+    let mut at: u64 = 0;
+    let mut base: Option<i64> = None;
+    let mut window: std::collections::VecDeque<(u64, f64)> = std::collections::VecDeque::new();
+    let mut peak = 0f64;
+    let mut last = 0f64;
+    loop {
+        match src.read_exact(&mut packet) {
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => break,
+            Err(e) => return Err(e).context("measuring the rate of the cut"),
+        }
+        at += PACKET as u64;
+        if pid_of(&packet) != pcr_pid {
+            continue;
+        }
+        let Some(pcr) = pcr_of(&packet) else { continue };
+        let start = *base.get_or_insert(pcr);
+        let mut ticks = pcr - start;
+        if ticks < 0 {
+            ticks += 1 << 33;
+        }
+        let now = ticks as f64 / 90_000.0;
+        last = now;
+        window.push_back((at, now));
+        while window.front().is_some_and(|&(_, t)| now - t > 1.0) {
+            window.pop_front();
+        }
+        if let Some(&(from, t)) = window.front() {
+            // Under half a second is not a window, it is two clocks close
+            // together; the rate between them says nothing.
+            if now - t >= 0.5 {
+                peak = peak.max((at - from) as f64 * 8.0 / (now - t));
+            }
+        }
+    }
+    // A file too short to hold a window still has an average, and an average
+    // is a truer floor for the peak than zero.
+    if last > 0.0 {
+        peak = peak.max(at as f64 * 8.0 / last);
+    }
+    Ok((((peak + added) / 400.0).ceil() as u64).min(0x3F_FFFF) as u32)
+}
+
 /// Put the recording's own tables back into a finished cut.
 ///
 /// One pass, packet by packet. The map and the service description are
@@ -766,8 +1212,52 @@ pub fn graft(output: &str, g: &Graft) -> Result<Stats> {
         let mut src = BufReader::with_capacity(1 << 20, std::fs::File::open(output)?);
         let mut dst = std::io::BufWriter::with_capacity(1 << 20, std::fs::File::create(&temp)?);
 
-        let pmt_section = build_pmt(g, pcr_pid);
+        let components = Components::of(g);
+        let pmt_section = build_pmt(g, pcr_pid, &components);
         let sdt_section = g.service.sdt.clone();
+        // One selection information table per range, so a cut spanning two
+        // programmes names each over its own stretch -- the same reason the
+        // event information is read per range. A range whose table comes out
+        // identical to the one before keeps its version number: a version
+        // that changes when nothing has says a player should re-read a table
+        // it already has.
+        let sit = if g.tables == Tables::Partial {
+            // Measured before the pass, against the file as the muxer left
+            // it, plus what these tables will add to it.
+            // The largest a section can be, since which range holds the
+            // largest table is not known before the rate they all carry is.
+            let biggest = SECTION_MAX.div_ceil(PACKET - 5) as f64;
+            let rate = peak_rate(output, pcr_pid, biggest * PACKET as f64 * 8.0 / SDT_PERIOD)?;
+            let mut sections: Vec<Vec<u8>> = Vec::with_capacity(g.ranges.len());
+            let mut version = 0u8;
+            for r in &g.ranges {
+                let present = present_event(&r.snapshot, &components);
+                let probe = build_sit(g.service, present.as_ref(), version, rate);
+                if sections.last().is_some_and(|last| *last != probe) {
+                    version = version.wrapping_add(1) & 0x1F;
+                    sections.push(build_sit(g.service, present.as_ref(), version, rate));
+                } else {
+                    sections.push(probe);
+                }
+            }
+            sections
+        } else {
+            Vec::new()
+        };
+        // Done once per range rather than at every injection: the same two
+        // sections go out every couple of seconds for the length of the
+        // range, and what has to come out of them does not change within it.
+        let eit: Vec<Vec<Vec<u8>>> = g
+            .ranges
+            .iter()
+            .map(|r| {
+                r.snapshot
+                    .eit
+                    .iter()
+                    .map(|sec| prune_events(sec, &components).unwrap_or_else(|| sec.clone()))
+                    .collect()
+            })
+            .collect();
         let mut cc: HashMap<u16, u8> = HashMap::new();
         let mut scratch: Vec<u8> = Vec::with_capacity(PACKET * 4);
 
@@ -822,6 +1312,19 @@ pub fn graft(output: &str, g: &Graft) -> Result<Stats> {
                     stats.pmt += 1;
                     continue;
                 }
+                // The muxer's own service description is where a partial
+                // stream's table goes too. It arrives at the cadence a
+                // service description is written at, which is the cadence
+                // either table wants, and taking its place is what leaves
+                // PID 0x11 out of the output altogether.
+                PID_SDT if g.tables == Tables::Partial => {
+                    let c = cc.entry(PID_SIT).or_default();
+                    scratch.clear();
+                    packetize(PID_SIT, &sit[range], c, &mut scratch);
+                    dst.write_all(&scratch)?;
+                    stats.sit += 1;
+                    continue;
+                }
                 PID_SDT if sdt_section.is_some() => {
                     let c = cc.entry(PID_SDT).or_default();
                     scratch.clear();
@@ -834,12 +1337,17 @@ pub fn graft(output: &str, g: &Graft) -> Result<Stats> {
             }
             dst.write_all(&packet)?;
 
+            // A partial stream has said everything it has to say in the one
+            // table; the tables below are the ones it exists instead of.
+            if g.tables == Tables::Partial {
+                continue;
+            }
             let snap = &g.ranges[range].snapshot;
-            if now >= next_eit && !snap.eit.is_empty() {
+            if now >= next_eit && !eit[range].is_empty() {
                 next_eit = now + EIT_PERIOD;
                 let c = cc.entry(PID_EIT).or_default();
                 scratch.clear();
-                for sec in &snap.eit {
+                for sec in &eit[range] {
                     packetize(PID_EIT, sec, c, &mut scratch);
                 }
                 dst.write_all(&scratch)?;
@@ -874,4 +1382,322 @@ pub fn graft(output: &str, g: &Graft) -> Result<Stats> {
         return Err(anyhow::Error::new(e).context(format!("replacing {output}")));
     }
     Ok(stats)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A component descriptor, which is about one stream and says so third.
+    fn component(tag: u8) -> Vec<u8> {
+        vec![0x50, 0x06, 0x01, 0xB3, tag, 0x6A, 0x70, 0x6E]
+    }
+
+    /// A data content descriptor, whose third byte is the component a viewer
+    /// would enter the data broadcast on.
+    fn data_content(entry: u8) -> Vec<u8> {
+        vec![0xC7, 0x07, 0x00, 0x07, entry, 0x00, 0x6A, 0x70, 0x6E]
+    }
+
+    /// A short event descriptor, which is about the programme and not about
+    /// any one stream, so it travels whatever happens around it.
+    fn short_event() -> Vec<u8> {
+        vec![0x4D, 0x06, 0x6A, 0x70, 0x6E, 0x02, 0x41, 0x42]
+    }
+
+    /// One present-and-following section carrying one event.
+    fn eit(section_number: u8, descriptors: &[Vec<u8>]) -> Vec<u8> {
+        let loop_bytes: Vec<u8> = descriptors.concat();
+        let mut sec = vec![
+            TABLE_EIT_PF_ACTUAL,
+            0xF0,
+            0x00, // length, filled in by finish_section
+            0x00,
+            0xB5, // service
+            0xC1, // version 0, current
+            section_number,
+            0x01, // last section number
+            0x40,
+            0xD1, // transport stream
+            0x00,
+            0x04, // original network
+            0x01, // segment last section number
+            TABLE_EIT_PF_ACTUAL,
+        ];
+        sec.extend_from_slice(&[0x0B, 0x29]); // event id
+        sec.extend_from_slice(&[0xEF, 0x58, 0x00, 0x00, 0x00]); // start time
+        sec.extend_from_slice(&[0x00, 0x30, 0x00]); // duration
+        // Running status 0 and not scrambled, then the loop length.
+        sec.push((loop_bytes.len() >> 8) as u8 & 0x0F);
+        sec.push(loop_bytes.len() as u8);
+        sec.extend_from_slice(&loop_bytes);
+        finish_section(&mut sec);
+        sec
+    }
+
+    /// A recording that sent five components, of which a cut kept three.
+    fn broadcast() -> Components {
+        Components {
+            described: [0x00, 0x10, 0x30, 0x38, 0x40].into_iter().collect(),
+            carried: [0x00, 0x10, 0x30].into_iter().collect(),
+        }
+    }
+
+    /// The descriptor tags a section's one event carries, in order.
+    fn tags(sec: &[u8]) -> Vec<u8> {
+        let loop_bytes = &sec[26..sec.len() - 4];
+        let mut out = Vec::new();
+        let mut i = 0;
+        while i + 2 <= loop_bytes.len() {
+            out.push(loop_bytes[i]);
+            i += 2 + loop_bytes[i + 1] as usize;
+        }
+        out
+    }
+
+    #[test]
+    fn a_section_about_streams_that_are_all_there_is_left_alone() {
+        let sec = eit(0, &[component(0x00), short_event(), data_content(0x30)]);
+        assert!(prune_events(&sec, &broadcast()).is_none());
+    }
+
+    #[test]
+    fn the_description_of_a_dropped_stream_does_not_travel() {
+        let sec = eit(0, &[component(0x00), short_event(), data_content(0x40)]);
+        let out = prune_events(&sec, &broadcast()).expect("the data broadcast is not in the cut");
+        assert_eq!(tags(&out), vec![0x50, 0x4D]);
+        // What is left is the recording's own bytes, in the order they came.
+        // Up to byte 24 only: which event, when it started and how long it
+        // ran. The nibble after that is the loop length, and it is the one
+        // thing that has to have changed.
+        assert_eq!(&out[14..24], &sec[14..24], "the event itself must not move");
+        assert_eq!(out[24] & 0xF0, sec[24] & 0xF0, "nor its running status");
+        assert_eq!(&out[26..out.len() - 4], [component(0x00), short_event()].concat());
+    }
+
+    #[test]
+    fn what_is_left_is_still_a_section() {
+        let sec = eit(0, &[component(0x00), short_event(), data_content(0x40)]);
+        let out = prune_events(&sec, &broadcast()).unwrap();
+        let length = (((out[1] & 0x0F) as usize) << 8) | out[2] as usize;
+        assert_eq!(length + 3, out.len(), "the length has to describe what is there");
+        let event_loop = (((out[24] & 0x0F) as usize) << 8) | out[25] as usize;
+        assert_eq!(event_loop, out.len() - 4 - 26, "and so does the event's own");
+        assert_eq!(crc32(&out), 0, "a section is not accepted without its CRC");
+    }
+
+    #[test]
+    fn the_programme_that_followed_is_not_judged_against_this_file() {
+        // Section 1 is the next programme, whose streams were never going to
+        // be in here. Naming a component this file lacks is correct of it.
+        let sec = eit(1, &[component(0x00), data_content(0x40)]);
+        assert!(prune_events(&sec, &broadcast()).is_none());
+    }
+
+    #[test]
+    fn a_component_the_recording_never_described_is_left_where_it_is() {
+        // The broadcaster's own tables disagreeing is not something to settle
+        // here: 0x11 is in no map this program read, so nothing is known
+        // about whether the cut should have carried it.
+        let sec = eit(0, &[component(0x11)]);
+        assert!(prune_events(&sec, &broadcast()).is_none());
+    }
+
+    #[test]
+    fn a_recording_that_named_no_components_loses_nothing() {
+        // A source that has been through a muxer already carries no stream
+        // identifier descriptors, so nothing can be judged missing.
+        let muxed = Components { described: HashSet::new(), carried: HashSet::new() };
+        let sec = eit(0, &[component(0x00), data_content(0x40)]);
+        assert!(prune_events(&sec, &muxed).is_none());
+    }
+
+    #[test]
+    fn a_downmixed_track_is_not_the_track_that_was_described() {
+        // Carried, but not faithfully: the tag is in the recording's map and
+        // out of the cut's, which is the same case as a dropped stream.
+        let folded = Components {
+            described: [0x00, 0x10].into_iter().collect(),
+            carried: [0x00].into_iter().collect(),
+        };
+        let sec = eit(0, &[component(0x00), vec![0xC4, 0x03, 0x01, 0x03, 0x10]]);
+        let out = prune_events(&sec, &folded).expect("the audio is no longer as described");
+        assert_eq!(tags(&out), vec![0x50]);
+    }
+
+    #[test]
+    fn a_section_that_does_not_parse_is_not_rewritten() {
+        let mut sec = eit(0, &[component(0x00), data_content(0x40)]);
+        // An event loop that runs past the end of the section.
+        sec[25] = 0xFF;
+        assert!(prune_events(&sec, &broadcast()).is_none());
+        assert!(prune_events(&[], &broadcast()).is_none());
+        assert!(prune_events(&[TABLE_EIT_PF_ACTUAL, 0xF0, 0x00], &broadcast()).is_none());
+    }
+
+    /// A service description carrying one service and the descriptors given.
+    fn sdt(descriptors: &[u8]) -> Vec<u8> {
+        let mut sec = vec![
+            TABLE_SDT_ACTUAL,
+            0xF0,
+            0x00,
+            0x40,
+            0xD1, // transport stream
+            0xC1,
+            0x00,
+            0x00,
+            0x00,
+            0x04, // original network
+            0xFF,
+        ];
+        sec.extend_from_slice(&[0x00, 0xB5]); // service
+        sec.push(0xFC); // reserved, and both event information flags
+        sec.push(0x80 | ((descriptors.len() >> 8) as u8 & 0x0F));
+        sec.push(descriptors.len() as u8);
+        sec.extend_from_slice(descriptors);
+        finish_section(&mut sec);
+        sec
+    }
+
+    /// The service descriptor as a broadcast sends it: the type, then the
+    /// provider and the name as ARIB text.
+    fn service_name() -> Vec<u8> {
+        vec![0x48, 0x06, 0x01, 0x02, b'A', b'B', 0x01, b'C']
+    }
+
+    fn recording(sdt_section: Option<Vec<u8>>) -> Service {
+        Service {
+            transport_stream_id: 0x40D1,
+            original_network_id: 0x0004,
+            service_id: 0x00B5,
+            service_type: 0x01,
+            pmt_pid: 0x0101,
+            pcr_pid: 0x0100,
+            program_info: Vec::new(),
+            streams: Vec::new(),
+            sdt: sdt_section,
+        }
+    }
+
+    fn snapshot_of(section: Vec<u8>) -> Snapshot {
+        Snapshot { eit: vec![section], tot: None, tdt: None }
+    }
+
+    /// The descriptor tags a built SIT carries, service loop only.
+    fn sit_tags(sec: &[u8]) -> Vec<u8> {
+        let til = (((sec[8] & 0x0F) as usize) << 8) | sec[9] as usize;
+        let body = &sec[10 + til..sec.len() - 4];
+        let len = (((body[2] & 0x0F) as usize) << 8) | body[3] as usize;
+        let loop_bytes = &body[4..4 + len];
+        let mut out = Vec::new();
+        let mut i = 0;
+        while i + 2 <= loop_bytes.len() {
+            out.push(loop_bytes[i]);
+            i += 2 + loop_bytes[i + 1] as usize;
+        }
+        out
+    }
+
+    #[test]
+    fn one_table_says_what_four_used_to() {
+        let service = recording(Some(sdt(&service_name())));
+        let snapshot = snapshot_of(eit(0, &[short_event(), component(0x00), data_content(0x40)]));
+        let present = present_event(&snapshot, &broadcast()).expect("a programme is on");
+        let sec = build_sit(&service, Some(&present), 0, 46235);
+
+        assert_eq!(sec[0], TABLE_SIT);
+        assert_eq!(crc32(&sec), 0, "a section is not accepted without its CRC");
+        let length = (((sec[1] & 0x0F) as usize) << 8) | sec[2] as usize;
+        assert_eq!(length + 3, sec.len(), "the length has to describe what is there");
+        // The times, the name, then the programme's own descriptors -- and
+        // not the one naming the data broadcast, which is not in the cut.
+        assert_eq!(sit_tags(&sec), vec![0xC3, 0x48, 0x4D, 0x50]);
+    }
+
+    #[test]
+    fn the_transmission_loop_describes_the_stream_and_the_network() {
+        let sec = build_sit(&recording(None), None, 0, 46235);
+        let til = (((sec[8] & 0x0F) as usize) << 8) | sec[9] as usize;
+        let loop_bytes = &sec[10..10 + til];
+        assert_eq!(loop_bytes[0], 0x63, "a partial stream says how fast it runs");
+        let peak = (((loop_bytes[2] & 0x3F) as u32) << 16)
+            | ((loop_bytes[3] as u32) << 8)
+            | loop_bytes[4] as u32;
+        assert_eq!(peak, 46235);
+        // The partial stream descriptor is ten bytes, then the network's:
+        // read the medium and the original network id off the end of it.
+        assert_eq!(loop_bytes[10], 0xC2);
+        assert_eq!(&loop_bytes[12..19], &[b'J', b'P', b'N', b'B', b'S', 0x00, 0x04]);
+    }
+
+    #[test]
+    fn a_network_nobody_here_knows_is_left_undescribed() {
+        assert!(network_descriptor(0x2000).is_none());
+        assert_eq!(&network_descriptor(0x7FE0).unwrap()[2..7], b"JPNTB");
+        assert_eq!(&network_descriptor(0x0006).unwrap()[2..7], b"JPNCS");
+        assert_eq!(network_descriptor(0x0004).unwrap()[7..9], [0x00, 0x04]);
+    }
+
+    #[test]
+    fn the_times_are_the_broadcasts_and_not_the_files() {
+        let snapshot = snapshot_of(eit(0, &[short_event()]));
+        let present = present_event(&snapshot, &broadcast()).unwrap();
+        let d = partial_time_descriptor(&present);
+        assert_eq!(d[0], 0xC3);
+        assert_eq!(d[1] as usize, d.len() - 2);
+        // The event started when it was broadcast and ran for half an hour,
+        // whatever was kept of it.
+        assert_eq!(&d[3..8], &[0xEF, 0x58, 0x00, 0x00, 0x00]);
+        assert_eq!(&d[8..11], &[0x00, 0x30, 0x00]);
+        assert_eq!(&d[11..14], &[0x00, 0x00, 0x00], "no offset from that time");
+        assert_eq!(d[14] & 0b010, 0b010, "the event's own descriptors follow");
+    }
+
+    #[test]
+    fn a_programme_too_long_to_fit_is_cut_at_a_descriptor() {
+        // Extended event descriptors run to a kilobyte on a real recording;
+        // enough of them will not fit in a section however large it is.
+        let long: Vec<Vec<u8>> = (0..40)
+            .map(|_| {
+                let mut d = vec![0x4E, 0xFF];
+                d.extend(std::iter::repeat_n(0x41, 0xFF));
+                d
+            })
+            .collect();
+        let snapshot = snapshot_of(eit(0, &long));
+        let present = present_event(&snapshot, &broadcast()).unwrap();
+        let sec = build_sit(&recording(Some(sdt(&service_name()))), Some(&present), 0, 1);
+        assert!(sec.len() <= SECTION_MAX, "a section has a ceiling: {}", sec.len());
+        assert_eq!(crc32(&sec), 0);
+        // Whole descriptors were dropped, not the tail of one, and the two
+        // that have to survive are still at the front.
+        let tags = sit_tags(&sec);
+        assert_eq!(&tags[..2], &[0xC3, 0x48]);
+        assert!(tags[2..].iter().all(|&t| t == 0x4E));
+        assert!(tags.len() < 42, "something had to go");
+    }
+
+    #[test]
+    fn a_recording_with_no_service_description_still_gets_a_table() {
+        let snapshot = snapshot_of(eit(0, &[short_event()]));
+        let present = present_event(&snapshot, &broadcast()).unwrap();
+        let sec = build_sit(&recording(None), Some(&present), 3, 1);
+        assert_eq!((sec[5] >> 1) & 0x1F, 3, "the version it was asked for");
+        assert_eq!(sit_tags(&sec), vec![0xC3, 0x4D]);
+    }
+
+    #[test]
+    fn the_following_programme_is_not_what_the_file_is() {
+        // Only section 0 describes this file, so a snapshot holding just the
+        // following event describes nothing here.
+        let snapshot = snapshot_of(eit(1, &[short_event()]));
+        assert!(present_event(&snapshot, &broadcast()).is_none());
+    }
+
+    #[test]
+    fn the_service_name_is_found_where_the_broadcast_put_it() {
+        let section = sdt(&[service_name(), vec![0xC1, 0x01, 0x84]].concat());
+        assert_eq!(service_descriptor(&section), Some(&service_name()[..]));
+        assert!(service_descriptor(&sdt(&[])).is_none());
+    }
 }

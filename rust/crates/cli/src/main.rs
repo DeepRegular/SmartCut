@@ -64,7 +64,9 @@ fn main() -> Result<()> {
     let mut audio_bit_rate: Option<usize> = None;
     // Everything the recording carries is written unless it is named here.
     let mut drop_streams: Vec<usize> = Vec::new();
-    let mut keep_tables = true;
+    // A cut of a broadcast is a partial transport stream unless asked for
+    // in one of the other two shapes. See `smartcut_core::si::Tables`.
+    let mut tables = smartcut_core::si::Tables::default();
 
     let mut i = 0;
     while i < args.len() {
@@ -151,7 +153,18 @@ fn main() -> Result<()> {
                         .with_context(|| format!("--drop-stream wants a number, got {v:?}"))?,
                 );
             }
-            "--no-tables" => keep_tables = false,
+            "--tables" => {
+                i += 1;
+                let v = args.get(i).context("--tables needs partial, broadcast or muxer")?;
+                tables = match v.as_str() {
+                    "partial" => smartcut_core::si::Tables::Partial,
+                    "broadcast" => smartcut_core::si::Tables::Broadcast,
+                    "muxer" | "none" => smartcut_core::si::Tables::Muxer,
+                    other => bail!("--tables wants partial, broadcast or muxer, got {other:?}"),
+                };
+            }
+            // What the option was called when there were only two answers.
+            "--no-tables" => tables = smartcut_core::si::Tables::Muxer,
             "--proxy" => make_proxy = true,
             "--as-proxy" => as_proxy = true,
             "--analyze" => analyze = true,
@@ -167,7 +180,7 @@ fn main() -> Result<()> {
     let Some(input) = input else {
         bail!(
             "usage: smartcut <input> [--keep START-END]... [--cut START-END]... \
-             [--drop-stream INDEX]... [--no-tables] [--no-open-gop]"
+             [--drop-stream INDEX]... [--tables partial|broadcast|muxer] [--no-open-gop]"
         );
     };
     // A share the machine has already mounted may be named the way it is
@@ -583,12 +596,11 @@ fn main() -> Result<()> {
         "         {kept_audio} of {} sound track(s), {kept_caps} of {} caption stream(s){}",
         src.audios.len(),
         src.captions.len(),
-        if to_ts && keep_tables {
-            ", the broadcast's own tables"
-        } else if to_ts {
-            ", tables left to the muxer"
-        } else {
-            ""
+        match (to_ts, tables) {
+            (true, smartcut_core::si::Tables::Partial) => ", written as a partial transport stream",
+            (true, smartcut_core::si::Tables::Broadcast) => ", the broadcast's own tables",
+            (true, smartcut_core::si::Tables::Muxer) => ", tables left to the muxer",
+            (false, _) => "",
         },
     );
     cut(
@@ -601,7 +613,7 @@ fn main() -> Result<()> {
             audio_channels,
             audio_bit_rate,
             drop_streams,
-            keep_tables,
+            tables,
             ..Default::default()
         },
     )?;

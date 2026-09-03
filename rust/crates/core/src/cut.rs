@@ -70,7 +70,7 @@ impl AudioMode {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct CutOptions {
     /// Reorder depth used when deriving DTS from decode order.
     /// `None` takes the source stream's own depth.
@@ -100,31 +100,19 @@ pub struct CutOptions {
     /// and both are kept, because which of them is wanted is not something
     /// this can know -- the caller says, or neither is dropped.
     pub drop_streams: Vec<usize>,
-    /// Whether the recording's own tables are put back over the muxer's.
+    /// Which account of itself the output carries.
+    ///
+    /// Defaults to a partial transport stream, which is what a cut of a
+    /// broadcast is: [`crate::si::Tables::Partial`].
     ///
     /// The muxer writes a description of the streams and stops there. What
-    /// this restores is everything else a broadcast says about itself --
-    /// the service and its name, the programme on now and the one after,
-    /// the clock, and the descriptors that say what each stream is. See
-    /// [`crate::si`]. Only means anything writing a transport stream.
-    pub keep_tables: bool,
-}
-
-impl Default for CutOptions {
-    fn default() -> Self {
-        Self {
-            reorder_depth: None,
-            bit_rate: None,
-            audio_mode: AudioMode::default(),
-            audio_bit_rate: None,
-            audio_channels: None,
-            aac: AacVersion::default(),
-            drop_streams: Vec::new(),
-            // A recording keeps what it came with unless something says
-            // otherwise. Every other default here follows the source too.
-            keep_tables: true,
-        }
-    }
+    /// the other two settings restore is everything else a broadcast says
+    /// about itself -- the service and its name, the programme, the times,
+    /// and the descriptors that say what each stream is -- either as the one
+    /// table a recording is written down in or in the shape the broadcast
+    /// sent them. See [`crate::si::Tables`]. Only means anything writing a
+    /// transport stream.
+    pub tables: crate::si::Tables,
 }
 
 /// How far past a segment's end the reader will go for a stream that has
@@ -1200,6 +1188,7 @@ fn graft_tables(
     range_starts: &[f64],
     plans: &[RangePlan],
     output: &str,
+    tables: crate::si::Tables,
 ) -> Result<crate::si::Stats> {
     let mut streams = vec![crate::si::GraftStream { pid: video_pid as u16, faithful: true }];
     for setup in setups {
@@ -1232,7 +1221,7 @@ fn graft_tables(
 
     crate::si::graft(
         output,
-        &crate::si::Graft { service, streams, pcr_pid: video_pid as u16, ranges },
+        &crate::si::Graft { service, streams, pcr_pid: video_pid as u16, ranges, tables },
     )
 }
 
@@ -1313,7 +1302,8 @@ pub fn cut_with_progress(
     // with it: an event information section names its service by transport
     // stream and by network, and a player that finds those disagreeing with
     // the tables around them is right to believe neither.
-    let tables = match (to_ts && opts.keep_tables).then(|| crate::si::read_service(&src.path)) {
+    let wants_tables = to_ts && opts.tables != crate::si::Tables::Muxer;
+    let tables = match wants_tables.then(|| crate::si::read_service(&src.path)) {
         Some(Ok(t)) => Some(t),
         Some(Err(e)) => {
             eprintln!("note: {e}. The streams are kept; the broadcast's own tables are not.");
@@ -1686,12 +1676,21 @@ pub fn cut_with_progress(
     // The file is complete and correct as a file; what it does not yet have
     // is the broadcast's own account of itself. See [`crate::si`].
     if let Some(service) = tables.as_ref() {
-        match graft_tables(src, service, &setups, &captions, video_pid, &range_starts, plans, output)
-        {
+        match graft_tables(
+            src,
+            service,
+            &setups,
+            &captions,
+            video_pid,
+            &range_starts,
+            plans,
+            output,
+            opts.tables,
+        ) {
             Ok(stats) if std::env::var("SMARTCUT_DEBUG").is_ok() => {
                 eprintln!(
-                    "  tables: {} map, {} service, {} event, {} clock",
-                    stats.pmt, stats.sdt, stats.eit, stats.tot
+                    "  tables: {} map, {} service, {} event, {} clock, {} selection",
+                    stats.pmt, stats.sdt, stats.eit, stats.tot, stats.sit
                 );
             }
             Ok(_) => {}

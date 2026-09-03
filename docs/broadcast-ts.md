@@ -39,6 +39,10 @@ and they are restored by the pass below.
 
 ## Putting the recording's own tables back
 
+> Since 0.3.1 the default output is the partial transport stream described
+> below. This section is what `--tables broadcast` does -- and the machinery
+> under it is what both shapes are built on.
+
 A broadcast also talks about itself. Which service this is, what the station
 is called, what is on now and what follows, what time it is -- PAT, PMT, SDT,
 EIT, TOT. **That is what a recorder's library view, a player's channel
@@ -74,36 +78,111 @@ The conditional access descriptor (0x09) is the one thing not carried across.
 The output is not scrambled and has no ECM stream, so restating it would be
 describing a file that does not exist.
 
-The pass runs whenever the output is a `.ts` and the recording had tables of
-its own to read; **`--no-tables` turns it off** and leaves the muxer's own PAT,
-PMT and SDT standing. It is there for the tool that wants a plain stream rather
-than a recording — and for telling, when something downstream disagrees, which
-of the two descriptions it was reading. The `--analyze` line says which it will
-be, `the broadcast's own tables` or `tables left to the muxer`, and a recording
-whose tables cannot be read says so and carries the streams anyway. In the GUI
-there is no switch: writing a `.ts` puts the tables back.
+## What is put back is trimmed to what was written
 
-Which *streams* are written is the other half, and that is `--drop-stream`
-(the cut editor's **Tracks** menu). A caption stream left out is one the
-finished file does not describe either — the tables are rebuilt around what was
-actually written, not around what arrived.
+The same reasoning is needed one step further along. The broadcast describes
+the data broadcast and the superimposed crawl as streams it is sending, and a
+cut carries neither. Copy the programme description across whole and **the
+output announces an entry point into something that is not in the file** --
+on a BS Fuji recording, a data content descriptor pointing at the data
+broadcast (component tag 0x40) survives into a file that has no data
+broadcast in it.
 
-Captions are a stream and not a table, so they travel with the cut rather
-than with this pass. A caption statement is whole inside one packet with a
-time on it, so unlike an audio frame there is nothing at a seam to re-encode
--- it only has to be moved by what its range moved. Superimposed text and the
-data broadcast cannot travel at all: the demuxer hands over the first with no
-timestamp, so there is nowhere to put it on a new timeline, and the second is
-not a stream of timed packets in the first place.
+ARIB names a stream by a one-byte component tag rather than by PID. Three
+descriptors point at another stream that way -- component (0x50), audio
+component (0xC4) and data content (0xC7) -- and all three put the tag third
+in the body. A descriptor naming a tag **the recording's map described and
+the output does not carry** is dropped, and the section is closed again with
+a new length and a new CRC. Both halves are required: a tag that appears in
+no map this program read is left alone, because the broadcaster's own tables
+disagreeing is not something to settle here.
 
-### The muxer options had never been arriving
+A downmixed track counts as not carried. A folded track no longer has the
+channel arrangement its audio component descriptor names, so it comes out of
+the programme description for the same reason it comes out of the map.
 
-This came out while fixing the above. `output_with()` in `ffmpeg-next` passes the
-dictionary you give it to the **protocol layer** (`avio_open2`) only; it never
-reaches the muxer's private options. Muxer options have to be passed to
-`write_header` (`write_header_with()`). Which means that everything we thought we
-were setting, `video_track_timescale` included, **was being silently discarded**.
-None of it shows up in a frame comparison, hence `tests/run_ts_layout_tests.sh`.
+**Only the programme on now is trimmed.** Present and following arrive as two
+sections and only the first is about this file; the second is a note about
+what came next on the air, a programme whose streams were never going to be
+in here. Judging its tags against what this file carries would answer a
+question nobody asked, and would throw away the one true thing it says.
+
+## Written as a partial transport stream (the default)
+
+A cut of a broadcast recording is, in the standards' terms, a **partial
+transport stream**. DVB describes one in EN 300 468 Annex C and ARIB in
+TR-B15; a Blu-ray recorder writes one, and so does TMPGEnc MPEG Smart
+Renderer.
+
+A partial stream carries none of the tables that describe a live multiplex.
+In place of NIT, SDT, EIT, TDT and TOT there is **one SIT** -- a selection
+information table, on PID 0x001F, table 0x7F -- and everything goes in it:
+
+| Where | What |
+|---|---|
+| The transmission loop | `partial_transport_stream_descriptor` (this file's own measured peak rate) and `network_identification_descriptor` (JPN and BS/CS/TB, read off the original network id) |
+| The service loop | `partial_transport_stream_time_descriptor` (when the programme was broadcast and how long it ran), `service_descriptor` (the service name, from the recording's SDT) and **every descriptor the present event carried** -- the name, the long text, the genre, the components, from the recording's EIT |
+
+**The bytes are the recording's own.** The service name and the programme
+name travel in ARIB's own character encoding without this program having to
+understand any of it. Only the frame around them is written here.
+
+The peak rate is the one number that cannot be copied across: the recording
+never described itself as a partial stream, because it was not one, so
+nobody wrote that number down. So the output is measured, in one pass, over
+a one-second window. Measured tighter, a single large picture reads as a
+burst the file never sustains, and the table would name a rate no device
+needs to provide.
+
+The programme that followed does not go in. Present and following arrive as
+two sections and only the first is about this file; the SIT says what this
+file *is*.
+
+A SIT is built per kept range and its version only moves when the contents
+do, so a cut spanning a programme boundary names each programme over its own
+stretch -- and a version that changed when nothing else had would be telling
+a player to re-read a table it already has.
+
+A section has a ceiling of 4096 bytes, and a real recording's extended event
+descriptors ran to a kilobyte on their own. What does not fit is dropped
+whole descriptors at a time, from the end, which is why the times and the
+service name are written first.
+
+## Written with the broadcast's own tables (`--tables broadcast`)
+
+The partial stream is the standard's answer, but **what the software around
+Japanese recordings actually reads is SDT and EIT**. TVTest does, EDCB does,
+ffmpeg does; none of them reads a SIT. Run `ffprobe` over a partial stream
+and no service name comes back -- the same is true of TMSR's output.
+
+So the older shape is still there. `--tables broadcast` rebuilds the PMT,
+replaces the SDT with the recording's own, and injects EIT present/following
+and TOT on the PIDs they belong on. The clock in the TOT runs on from the
+source time each range opened at, so it jumps at every cut -- which is what
+keeping the broadcast's own wall clock means.
+
+`--tables muxer` (once `--no-tables`) leaves the muxer's own PAT, PMT and SDT
+standing. It is there for the tool that wants a plain stream rather than a
+recording, and for telling apart which account a downstream tool was reading
+when it disagrees. Which one you get is on the `--analyze` line.
+
+## The PIDs are the recording's; the clock rides with the video
+
+A partial stream does not specify where the PIDs go. TMSR renumbers them
+into the 0x1100s; **this keeps the recording's own** -- the map, the video,
+the sound and the subtitles all come back on the PID they arrived on.
+
+One thing does not carry across. **A Japanese broadcast sends its clock on a
+PID of its own** -- 0x0100 on BS Fuji, 0x01FF on the terrestrial services --
+and libavformat's mpegts muxer has no way to be told to do that, so the PCR
+rides in the video's adaptation fields. The PMT says so, correctly, and the
+file is consistent with itself: it is legal MPEG-2 and legal ARIB, and
+anything that reads PCR_PID out of the PMT is unaffected. A dedicated PID
+could be synthesised, but the video would then carry a second copy of the
+clock, and the gap between where an inserted packet lands and the time it
+claims -- about 63 microseconds at 24 Mbit/s -- is outside what MPEG allows
+a PCR to be out by. A correctly placed clock on the video beats an invented
+one that meets the letter of the spec.
 
 ## The re-encoded head claimed to be "59.94 fps"
 

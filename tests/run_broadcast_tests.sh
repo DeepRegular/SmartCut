@@ -35,16 +35,11 @@ field()  { echo "$1" | sed -n "s/^$2=//p"; }
 
 echo "録画が自分自身について言っていることが、カットにも残るか"
 
-for name in atx.ts full_ntv.ts terrestrial_nhke.ts animax_kisekoi_01.ts; do
-  src="$MEDIA/$name"
-  if [ ! -f "$src" ]; then skip "$name" "no $name"; continue; fi
-  out="$WORK/out.ts"
-  "$BIN" "$src" --keep 20.0-80.0 --keep 120.0-180.0 -o "$out" >/dev/null 2>&1
-  if [ ! -s "$out" ]; then bad "$name" "出力が空"; continue; fi
-
-  a=$(tables "$src"); b=$(tables "$out")
-  why=""
-  for k in transport_stream_id service_id pmt_pid original_network_id sdt.service program_info; do
+# What every cut has to get right whatever shape its tables are written in:
+# the service it is of, and the map of the streams it actually carries.
+common() {
+  a=$1; b=$2; why=""
+  for k in transport_stream_id service_id pmt_pid program_info; do
     av=$(field "$a" "$k"); bv=$(field "$b" "$k")
     [ "$av" = "$bv" ] || why="$why $k($av→$bv)"
   done
@@ -56,19 +51,48 @@ for name in atx.ts full_ntv.ts terrestrial_nhke.ts animax_kisekoi_01.ts; do
     [ "$av" = "$bv" ] || echo "stream.$pid($av→$bv)"
   done > "$WORK/streams.bad"
   [ -s "$WORK/streams.bad" ] && why="$why $(tr '\n' ' ' < "$WORK/streams.bad")"
-  # The programme on now and the one after, hashed: the sections have to be
-  # the recording's own and not something written here.
-  for k in eit.0 eit.1; do
-    av=$(field "$a" "$k"); bv=$(field "$b" "$k")
-    if [ -z "$av" ]; then continue; fi
-    [ "$av" = "$bv" ] || why="$why $k"
+  # Whatever the programme description still names has to be a stream the
+  # cut's own map lists, or the file is telling a player to go looking for
+  # something that is not there.
+  have=$(field "$b" components)
+  for tag in $(field "$b" event_refs | fold -w2); do
+    case "$have" in *"$tag"*) ;; *) why="$why 番組情報が $tag を名乗る(なし)" ;; esac
   done
-  [ -n "$(field "$b" clock)" ] || why="$why 時刻なし"
+  # And the programme itself, wherever the file chose to say it: the service
+  # name, the descriptors and the times have to be the recording's own bytes.
+  for k in service_descriptor event_descriptors event_time; do
+    av=$(field "$a" "$k"); bv=$(field "$b" "$k")
+    [ -z "$av" ] && continue
+    [ "$av" = "$bv" ] || why="$why $k($av→$bv)"
+  done
+  echo "$why"
+}
 
+for name in atx.ts full_ntv.ts terrestrial_nhke.ts animax_kisekoi_01.ts; do
+  src="$MEDIA/$name"
+  if [ ! -f "$src" ]; then skip "$name" "no $name"; continue; fi
+  a=$(tables "$src")
+
+  # --- the default: a partial transport stream ---------------------------
+  out="$WORK/out.ts"
+  "$BIN" "$src" --keep 20.0-80.0 --keep 120.0-180.0 -o "$out" >/dev/null 2>&1
+  if [ ! -s "$out" ]; then bad "$name 部分TS" "出力が空"; continue; fi
+  b=$(tables "$out")
+  why=$(common "$a" "$b")
+  [ "$(field "$b" sit)" = "1" ] || why="$why SITなし"
+  [ "$(field "$b" sit.well_formed)" = "1" ] || why="$why SITの長さが合わない"
+  [ "$(field "$b" sit.service_id)" = "$(field "$a" service_id)" ] || why="$why SITのサービスが違う"
+  # A partial transport stream carries the one table instead of the four it
+  # replaces, so finding any of them is the failure, not the absence.
+  [ -z "$(field "$b" sdt.service)" ] || why="$why SDTが残っている"
+  [ -z "$(field "$b" eit.0)" ] || why="$why EITが残っている"
+  [ -z "$(field "$b" clock)" ] || why="$why TOTが残っている"
+  peak=$(field "$b" sit.peak_rate)
+  [ -n "$peak" ] && [ "$peak" -gt 1000000 ] || why="$why 伝送レートが不当($peak)"
   if [ -z "$why" ]; then
-    ok "$name" "サービス $(field "$b" service_id) / PMT 0x$(printf %x "$(field "$b" pmt_pid)") / 番組情報 $(field "$b" eit.0)"
+    ok "$name 部分TS" "SIT v$(field "$b" sit.version) / $((peak / 1000)) kbps / 番組情報 $(field "$b" event_descriptors)"
   else
-    bad "$name" "録画と違う:$why"
+    bad "$name 部分TS" "録画と違う:$why"
   fi
 
   # And the captions, which are the one non-audio stream a cut can move.
@@ -81,6 +105,37 @@ for name in atx.ts full_ntv.ts terrestrial_nhke.ts animax_kisekoi_01.ts; do
     bad "$name の字幕" "$(field "$cap" why)"
   fi
   rm -f "$out"
+
+  # --- and the broadcast's own tables, which --tables broadcast keeps -----
+  # Written over the first one rather than beside it: two cuts of a
+  # broadcast recording are a third of a gigabyte, and a test suite that
+  # needs both at once fails on a small /tmp for a reason that is not a bug.
+  "$BIN" "$src" --keep 20.0-80.0 --keep 120.0-180.0 --tables broadcast -o "$out" >/dev/null 2>&1
+  if [ ! -s "$out" ]; then bad "$name 放送テーブル" "出力が空"; else
+    c=$(tables "$out")
+    why=$(common "$a" "$c")
+    [ "$(field "$a" original_network_id)" = "$(field "$c" original_network_id)" ] \
+      || why="$why original_network_id"
+    [ "$(field "$a" sdt.service)" = "$(field "$c" sdt.service)" ] || why="$why sdt.service"
+    # The programme on now and the one after, hashed: the sections have to be
+    # the recording's own and not something written here. eit.1 is the
+    # programme that followed, which is not in this file at all -- it names
+    # its own streams and is right to.
+    for k in eit.0 eit.1; do
+      av=$(field "$a" "$k"); cv=$(field "$c" "$k")
+      [ -z "$av" ] && continue
+      [ "$av" = "$cv" ] || why="$why $k"
+    done
+    [ -n "$(field "$c" clock)" ] || why="$why 時刻なし"
+    [ "$(field "$c" sit)" = "0" ] || why="$why SITが混ざっている"
+    if [ -z "$why" ]; then
+      ok "$name 放送テーブル" "サービス $(field "$c" service_id) / 番組情報 $(field "$c" eit.0) / 時刻あり"
+    else
+      bad "$name 放送テーブル" "録画と違う:$why"
+    fi
+  fi
+  rm -f "$out"
+
 done
 
 # --- 音声多重 -------------------------------------------------------------

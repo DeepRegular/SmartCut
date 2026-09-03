@@ -128,9 +128,9 @@ Grab a build from [Releases](https://github.com/DeepRegular/SmartCut/releases).
 
 | | |
 |---|---|
-| Linux | `SmartCut_0.3.0_amd64.AppImage`, or `SmartCut-0.3.0-linux-x86_64.tar.gz` (unpack it, run `./smartcut`). Both carry FFmpeg and need glibc 2.39+ (Ubuntu 24.04 / Debian 13 / Fedora 40 or newer) |
-| Linux (deb) | `smartcut_0.3.0_amd64.deb` — `sudo apt install ./smartcut_0.3.0_amd64.deb`. 2.6MB, because it links the system FFmpeg 7.1 instead of carrying one; that means Debian 13 / Ubuntu 25.04 or newer. Installs the GUI as `smartcut` and the cutter as `smartcut-cli` |
-| Windows | `SmartCut_0.3.0_x64-setup.exe` (installer) or `smartcut-portable-x64.zip` (unzip and run). x64 only; needs the WebView2 runtime |
+| Linux | `SmartCut_0.3.1_amd64.AppImage`, or `SmartCut-0.3.1-linux-x86_64.tar.gz` (unpack it, run `./smartcut`). Both carry FFmpeg and need glibc 2.39+ (Ubuntu 24.04 / Debian 13 / Fedora 40 or newer) |
+| Linux (deb) | `smartcut_0.3.1_amd64.deb` — `sudo apt install ./smartcut_0.3.1_amd64.deb`. 2.6MB, because it links the system FFmpeg 7.1 instead of carrying one; that means Debian 13 / Ubuntu 25.04 or newer. Installs the GUI as `smartcut` and the cutter as `smartcut-cli` |
+| Windows | `SmartCut_0.3.1_x64-setup.exe` (installer) or `smartcut-portable-x64-0.3.1.zip` (unzip and run). x64 only; needs the WebView2 runtime |
 
 To build it yourself, see [Building and development](docs/development.md).
 
@@ -158,7 +158,7 @@ smartcut input.ts --analyze --scenes            # scene changes
 | `--seek-index PATH` | Where to keep the seek index. Written on the first run, read on the next, which skips the walk over the packets |
 | `--detect-cm` / `--logo` / `--scenes` | Commercial candidates, logo assist, scene detection |
 | `--drop-stream INDEX` | Leave one of the recording's streams out of the output; repeatable. The same thing the cut editor's **Tracks** menu does |
-| `--no-tables` | Writing a `.ts`, do not put the recording's own PMT, SDT, EIT and TOT back — leave the muxer's own tables standing |
+| `--tables partial\|broadcast\|muxer` | How a `.ts` describes itself. The default `partial` writes a partial transport stream (one SIT, per DVB EN 300 468 Annex C / ARIB TR-B15); `broadcast` puts the recording's own PMT, SDT, EIT and TOT back; `muxer` leaves the muxer's own tables standing (once `--no-tables`) |
 | `--no-open-gop` | Never start a copy at an open GOP |
 | `-o OUTPUT` | Output path; the extension picks the container |
 
