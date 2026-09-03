@@ -53,16 +53,20 @@ const FADE: usize = 48;
 /// that announces itself as MPEG-2 AAC must not contain one. It is on by
 /// default in this encoder, so a frame written into an ARIB recording without
 /// this is a frame an MPEG-2 decoder is entitled to refuse.
+///
+/// `channels` is what comes *out*, which is the recording's own count except
+/// where a downmix was asked for.
 fn open_encoder(
     params: &ff::codec::Parameters,
     audio: &AudioInfo,
+    channels: u16,
     bit_rate: usize,
 ) -> Result<ff::encoder::Audio> {
     let id = params.id();
     let codec = ff::encoder::find(id).ok_or_else(|| anyhow!("no encoder for {id:?}"))?;
     let mut enc = ff::codec::context::Context::new_with_codec(codec).encoder().audio()?;
     enc.set_rate(audio.sample_rate as i32);
-    enc.set_channel_layout(ff::channel_layout::ChannelLayout::default(audio.channels as i32));
+    enc.set_channel_layout(ff::channel_layout::ChannelLayout::default(channels as i32));
     enc.set_format(ff::format::Sample::F32(ff::format::sample::Type::Planar));
     enc.set_bit_rate(bit_rate);
     enc.set_time_base(ff::Rational::new(1, audio.sample_rate as i32));
@@ -96,6 +100,48 @@ fn frame_size_of(encoder: &ff::encoder::Audio) -> usize {
 /// Planar float, one buffer per channel.
 type Pcm = Vec<Vec<f32>>;
 
+/// What the encoder is fed and what the buffers below hold.
+const PLANAR_F32: ff::format::Sample = ff::format::Sample::F32(ff::format::sample::Type::Planar);
+
+/// A decoded frame in the shape the encoder wants it: planar float, with the
+/// channels the output is to have.
+///
+/// The frame is handed straight back when it is already that, which is the
+/// ordinary case -- an AAC recording re-encoded to its own channel count.
+/// Otherwise swresample does the work: the rematrixing coefficients for 5.1
+/// into stereo are libav's own, so what comes out is what a player downmixing
+/// the recording would have produced.
+///
+/// In and out at the same rate, which is what makes this a per-frame
+/// operation: swresample returns a frame's samples one for one and holds
+/// nothing back between frames, so the sample window the caller trims
+/// against still means what it meant on the source's own clock.
+fn rematrix<'a>(
+    resampler: &mut Option<ff::software::resampling::Context>,
+    out: &'a mut ff::frame::Audio,
+    frame: &'a ff::frame::Audio,
+    channels: u16,
+) -> Result<&'a ff::frame::Audio> {
+    if frame.channels() == channels && frame.format() == PLANAR_F32 {
+        return Ok(frame);
+    }
+    let layout = ff::channel_layout::ChannelLayout::default(channels as i32);
+    let ctx = match resampler {
+        Some(ctx) => ctx,
+        None => resampler.insert(ff::software::resampling::Context::get(
+            frame.format(),
+            frame.channel_layout(),
+            frame.rate(),
+            PLANAR_F32,
+            layout,
+            frame.rate(),
+        )?),
+    };
+    *out = ff::frame::Audio::new(PLANAR_F32, frame.samples().max(1), layout);
+    ctx.run(frame, out)?;
+    Ok(out)
+}
+
 /// Copy a decoded frame's samples out, whatever layout it arrived in.
 fn take_samples(frame: &ff::frame::Audio, channels: usize, into: &mut Pcm, range: (usize, usize)) {
     let (a, b) = range;
@@ -115,7 +161,13 @@ pub struct Reencoder {
     encoder: ff::encoder::Audio,
     pending: Pcm,
     frame_size: usize,
+    /// Channels written out, which is the source's own unless a downmix was
+    /// asked for.
     channels: usize,
+    /// Built on the first frame, and only when the decoded frames are not
+    /// already the shape the encoder wants.
+    resampler: Option<ff::software::resampling::Context>,
+    remixed: ff::frame::Audio,
     sample_rate: u32,
     /// Samples handed to the encoder so far -- the output timeline.
     fed: i64,
@@ -127,22 +179,27 @@ pub struct Reencoder {
 }
 
 impl Reencoder {
+    /// `channels` is what the track is written with: `audio.channels` to
+    /// follow the recording, fewer to downmix it.
     pub fn new(
         params: ff::codec::Parameters,
         audio: &AudioInfo,
+        channels: u16,
         bit_rate: usize,
         adts: Option<AdtsFormat>,
     ) -> Result<Self> {
         let decoder =
             ff::codec::context::Context::from_parameters(params.clone())?.decoder().audio()?;
-        let encoder = open_encoder(&params, audio, bit_rate)?;
+        let encoder = open_encoder(&params, audio, channels, bit_rate)?;
         let frame_size = frame_size_of(&encoder);
         Ok(Self {
             decoder,
             encoder,
-            pending: vec![Vec::new(); audio.channels as usize],
+            pending: vec![Vec::new(); channels as usize],
             frame_size,
-            channels: audio.channels as usize,
+            channels: channels as usize,
+            resampler: None,
+            remixed: ff::frame::Audio::empty(),
             sample_rate: audio.sample_rate,
             fed: 0,
             last_pts: None,
@@ -158,9 +215,10 @@ impl Reencoder {
     /// stream's own extradata, and given the wrong extradata it writes a PID
     /// full of bytes no decoder can find a sync word in.
     ///
-    /// Moot when the frames leave here framed already -- then the source's
-    /// parameters are the true ones, because the frames are the same shape as
-    /// the source's were.
+    /// Moot when the frames leave here framed already and carry the source's
+    /// own channels -- then the source's parameters are the true ones,
+    /// because the frames are the same shape as the source's were. A downmix
+    /// makes them a different shape, and these the true ones again.
     pub fn parameters(&self) -> ff::codec::Parameters {
         let mut par = ff::codec::Parameters::new();
         unsafe {
@@ -198,12 +256,19 @@ impl Reencoder {
             if hi <= lo {
                 continue;
             }
-            take_samples(
+            let src = rematrix(
+                &mut self.resampler,
+                &mut self.remixed,
                 &frame,
-                self.channels,
-                &mut self.pending,
-                ((lo - first) as usize, (hi - first) as usize),
-            );
+                self.channels as u16,
+            )?;
+            // Same rate in and out, so the window still counts in the frame's
+            // own samples; clamped all the same, so a shorter frame than was
+            // asked for cannot index past its buffers.
+            let have = src.samples();
+            let a = ((lo - first) as usize).min(have);
+            let b = ((hi - first) as usize).min(have);
+            take_samples(src, self.channels, &mut self.pending, (a, b));
         }
         Ok(())
     }
@@ -212,7 +277,7 @@ impl Reencoder {
     pub fn drain(&mut self, out: &mut Vec<(ff::Packet, i64)>) -> Result<()> {
         while self.pending[0].len() >= self.frame_size {
             let mut frame = ff::frame::Audio::new(
-                ff::format::Sample::F32(ff::format::sample::Type::Planar),
+                PLANAR_F32,
                 self.frame_size,
                 ff::channel_layout::ChannelLayout::default(self.channels as i32),
             );
@@ -334,7 +399,7 @@ pub fn boundary_patches(
     // it: MP2 wants signed 16-bit and is handed planar float here. Smart
     // rendering is an improvement on copying, not a condition of it, so this
     // says so and copies rather than failing the cut.
-    let probe = match open_encoder(&params, audio, bit_rate) {
+    let probe = match open_encoder(&params, audio, audio.channels, bit_rate) {
         Ok(e) => e,
         Err(e) => {
             eprintln!(
@@ -503,7 +568,7 @@ fn patch_run(
         return Ok(());
     }
 
-    let mut encoder = open_encoder(params, audio, bit_rate)?;
+    let mut encoder = open_encoder(params, audio, audio.channels, bit_rate)?;
     if frame_size_of(&encoder) != size {
         // The encoder frames the audio differently from the recording, so a
         // frame it produces cannot stand in for one of the recording's.

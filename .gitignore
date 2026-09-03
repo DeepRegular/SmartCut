@@ -22,6 +22,9 @@ tests/demo_broadcast.ts
 DEVENV.md
 sync.sh
 
+# Claude Code's own working directory (agent worktrees, not project files)
+.claude/
+
 # Editors / OS
 .idea/
 .DS_Store

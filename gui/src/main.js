@@ -28,7 +28,8 @@ const emit = T.event && T.event.emit;
 const jlog = (m) => invoke && invoke("log", { msg: String(m) });
 jlog("main.js start");
 
-import { fmt, cmNote, noBrowserMenu } from "./shared.js";
+import { fmt, chLabel, cmNote, noBrowserMenu } from "./shared.js";
+import { t as tr, applyStatic, setLang, onLangChange, confirmWithOs } from "./i18n.js";
 
 const el = (id) => document.getElementById(id);
 const track = el("track");
@@ -372,13 +373,12 @@ function renderKeyframes() {
   sync();
   const list = el("keyframes");
   const live = liveKeyframes();
-  el("key-count").textContent = live.length ? `${live.length} 個` : "";
+  el("key-count").textContent = live.length ? tr("editor.keyCount", { n: live.length }) : "";
   list.innerHTML = "";
   if (!live.length) {
     const p = document.createElement("div");
     p.className = "clips-empty";
-    p.textContent =
-      "まだありません。「⚑ キーフレーム」でいまの位置を登録できます。CM を検出すると、本編と CM それぞれの先頭が自動で並びます。";
+    p.textContent = tr("editor.keyframes.empty");
     list.append(p);
     return;
   }
@@ -405,7 +405,7 @@ function renderKeyframes() {
     const kill = document.createElement("button");
     kill.className = "kill";
     kill.textContent = "✕";
-    kill.title = "このキーフレームを消す";
+    kill.title = tr("editor.keyframes.kill");
     kill.addEventListener("click", (ev) => {
       ev.stopPropagation();
       keyframes = keyframes.filter((x) => x !== t);
@@ -595,12 +595,13 @@ async function showFrame(t) {
     draw();
     el("preview").src = shot.url;
     shownTime = shot.time;
-    el("ovl-kind").textContent = atPoint(shot.time)
-      ? `${shot.kind} フレーム — 無劣化点`
-      : `${shot.kind} フレーム`;
+    el("ovl-kind").textContent = tr(
+      atPoint(shot.time) ? "editor.frameKindPoint" : "editor.frameKind",
+      { kind: shot.kind }
+    );
     el("ovl-kind").className = atPoint(shot.time) ? "key" : "";
   } catch (e) {
-    if (token === previewToken) el("status").textContent = `プレビュー失敗: ${e}`;
+    if (token === previewToken) el("status").textContent = tr("editor.previewFailed", { e });
   }
   scheduleStrip();
 }
@@ -611,9 +612,17 @@ function updateReadouts() {
   const o = playOut();
   el("ovl-frame").textContent = String(frameNo(o));
   el("ovl-time").textContent = fmt(o);
-  el("counter").textContent = `${frameNo(o)} / ${outFrames()}   ${fmt(o)}`;
+  el("counter").textContent = tr("editor.counter", {
+    at: frameNo(o),
+    all: outFrames(),
+    t: fmt(o),
+  });
   // OUT is part of the selection, so its own picture counts towards the length
-  const sel = `選択 ${frameNo(selA)} - ${frameNo(selB)} : ${fmt(selEnd() - selA)}`;
+  const sel = tr("editor.selection", {
+    a: frameNo(selA),
+    b: frameNo(selB),
+    len: fmt(selEnd() - selA),
+  });
   el("selection").textContent = sel;
   el("ovl-sel").textContent = sel;
 }
@@ -1077,7 +1086,7 @@ async function paintFast(t) {
   if (shownTime >= 0 && Math.abs(t - shot.time) >= Math.abs(t - shownTime)) return;
   shownTime = shot.time;
   el("preview").src = shot.url;
-  el("ovl-kind").textContent = "サーチ";
+  el("ovl-kind").textContent = tr("editor.searchKind");
   el("ovl-kind").className = "";
 }
 
@@ -1261,7 +1270,7 @@ function reelTick() {
 
 function setPlaying(on) {
   playing = on;
-  el("play").textContent = on ? "■ 停止" : "▶ 再生";
+  el("play").textContent = tr(on ? "t.stop" : "t.play");
   el("play").classList.toggle("on", on);
   if (!on) {
     playAnchor = null;
@@ -1291,7 +1300,7 @@ function startPlay() {
   const width = Math.min(stageWidth(), 1280);
   // not awaited: it resolves when playback ends, and `play-ended` says so
   invoke("play", { ranges: outputRanges(), from: playhead, width, fps }).catch((e) => {
-    el("status").textContent = `再生: ${e}`;
+    el("status").textContent = tr("editor.playFailed", { e });
     setPlaying(false);
   });
 }
@@ -1321,7 +1330,7 @@ async function toScene(dir, from = playhead) {
       from = t;
     }
   } catch (e) {
-    el("status").textContent = `シーン検索: ${e}`;
+    el("status").textContent = tr("editor.sceneFailed", { e });
   }
 }
 
@@ -1343,12 +1352,12 @@ async function prepare() {
   cardThumbs.clear();
   el("prev-scene").disabled = true;
   el("next-scene").disabled = true;
-  el("warm").textContent = "準備中 0%";
+  el("warm").textContent = tr("warm.start");
   try {
     const r = await invoke("prepare");
-    const t = r.track;
-    scenes = t.scenes;
-    interval = t.interval;
+    const tk = r.track;
+    scenes = tk.scenes;
+    interval = tk.interval;
     warmed = true;
     held = true;
     proxied = !!r.proxy;
@@ -1357,30 +1366,33 @@ async function prepare() {
     const made = [];
     if (r.proxy) {
       made.push(
-        `プロキシ ${r.proxy.width}x${r.proxy.height} ` +
-          `${(r.proxy.bytes / 1e6).toFixed(0)}MB（` +
-          (r.proxy.cached ? "前回のを再利用 " : "作成 ") +
-          `${r.proxy.seconds.toFixed(0)}秒）`,
+        tr("warm.proxy", {
+          w: r.proxy.width,
+          h: r.proxy.height,
+          mb: (r.proxy.bytes / 1e6).toFixed(0),
+          how: tr(r.proxy.cached ? "warm.proxyReused" : "warm.proxyBuilt"),
+          s: r.proxy.seconds.toFixed(0),
+        })
       );
     }
     // A recording with no proxy is the ordinary case, so it is not worth
     // saying. A proxy that was asked for and failed is.
-    if (r.note) made.push(`プロキシなし（${r.note}）`);
+    if (r.note) made.push(tr("warm.noProxy", { note: r.note }));
     if (r.index) {
       // The seconds are the thumbnail pass's, which is the whole of what the
       // index cost only when there is no proxy -- with one, the same number
       // is already reported above and saying it twice reads as twice the wait.
       const how = r.index.cached
-        ? "（前回のを再利用）"
+        ? tr("warm.indexReused")
         : r.proxy
           ? ""
-          : `（作成 ${t.seconds.toFixed(0)}秒）`;
-      made.push(`シーク用インデックス ${(r.index.bytes / 1e6).toFixed(0)}MB${how}`);
+          : tr("warm.indexBuilt", { s: tk.seconds.toFixed(0) });
+      made.push(tr("warm.index", { mb: (r.index.bytes / 1e6).toFixed(0), how }));
     } else {
-      made.push("シーク用インデックスは保存できず");
+      made.push(tr("warm.noIndex"));
     }
-    made.push(`サムネイル ${t.thumbs} 枚 ${t.interval.toFixed(2)}s 間隔`);
-    made.push(`シーン ${t.scenes.length} 箇所`);
+    made.push(tr("warm.thumbs", { n: tk.thumbs, gap: tk.interval.toFixed(2) }));
+    made.push(tr("warm.scenes", { n: tk.scenes.length }));
     el("warm").textContent = made.join(" / ");
     draw();
     stripCache = null;
@@ -1394,7 +1406,7 @@ async function prepare() {
     // Opening another file supersedes this one; that is not a failure worth
     // showing, because the second file's own pass is already running.
     if (String(e).includes("cancelled")) return;
-    el("warm").textContent = `準備: ${e}`;
+    el("warm").textContent = tr("warm.failed", { e });
   }
 }
 
@@ -1417,7 +1429,7 @@ track.addEventListener("mousemove", (ev) => {
   const bw = box.offsetWidth || 198;
   box.style.left = `${clamp(ev.offsetX + 6 - bw / 2, 0, Math.max(0, w - bw))}px`;
   el("hover-time").textContent = fmt(o);
-  el("hover-kind").textContent = held ? "" : "準備中";
+  el("hover-kind").textContent = held ? "" : tr("editor.hoverWarming");
   if (!held) return;
   clearTimeout(hoverTimer);
   const token = ++hoverToken;
@@ -1425,7 +1437,7 @@ track.addEventListener("mousemove", (ev) => {
     const shot = await invoke("hover_thumb", { time: outToSrc(o) });
     if (token !== hoverToken || !shot) return;
     el("hover-img").src = shot.url;
-    el("hover-kind").textContent = nearScene(shot.time, 1.2) ? "シーン" : "";
+    el("hover-kind").textContent = nearScene(shot.time, 1.2) ? tr("editor.hoverScene") : "";
   }, 20);
 });
 track.addEventListener("mouseleave", hideHover);
@@ -1450,7 +1462,7 @@ function pctText(pct, redone) {
 async function refreshPlan() {
   const ranges = outputRanges();
   if (!src || !ranges.length) {
-    el("plan-text").textContent = src ? "すべてカットされています" : "ファイルを開いてください";
+    el("plan-text").textContent = tr(src ? "plan.allCut" : "plan.openFile");
     el("segments").innerHTML = "";
     el("copied-bar").style.width = "0%";
     el("smart-badge").textContent = "—";
@@ -1463,24 +1475,28 @@ async function refreshPlan() {
     const redone = p.segments
       .filter((g) => g.kind !== "copy")
       .reduce((n, g) => n + g.frames, 0);
-    el("plan-text").textContent =
-      `出力 ${fmt(p.total)}（${ranges.length} 区間、カット ${cuts.length} 箇所）— ` +
-      `無劣化コピー ${p.copied.toFixed(2)}s (${pctText(pct, redone)})` +
-      ` / 再エンコード ${p.reencoded.toFixed(2)}s`;
+    el("plan-text").textContent = tr("plan.text", {
+      total: fmt(p.total),
+      ranges: ranges.length,
+      cuts: cuts.length,
+      copied: p.copied.toFixed(2),
+      pct: pctText(pct, redone),
+      reencoded: p.reencoded.toFixed(2),
+    });
     // "Completely lossless" has to mean not one re-encoded picture, not a
     // percentage that rounds to a hundred: a cut off an access point always
     // re-encodes a frame or two, and 2 frames out of 40000 rounds to 100.0%.
     el("smart-badge").textContent =
-      redone === 0 ? "映像 完全無劣化" : `再エンコード ${redone} フレーム`;
+      redone === 0 ? tr("plan.lossless") : tr("plan.reencoded", { n: redone });
     el("segments").innerHTML = p.segments
       .map(
         (s) =>
-          `<li class="${s.kind}">${s.kind === "copy" ? "コピー　　" : "再エンコード"} ` +
-          `${fmt(s.start)} → ${fmt(s.end)}  (${s.frames} フレーム)</li>`
+          `<li class="${s.kind}">${tr(s.kind === "copy" ? "plan.segCopy" : "plan.segEncode")} ` +
+          `${fmt(s.start)} → ${fmt(s.end)}  (${tr("out.ovlNote", { n: s.frames })})</li>`
       )
       .join("");
   } catch (e) {
-    el("plan-text").textContent = `計画できません: ${e}`;
+    el("plan-text").textContent = tr("plan.failed", { e });
   }
 }
 
@@ -1543,7 +1559,7 @@ async function loadSidecarKeyframes(path) {
   try {
     frames = await invoke("read_keyframes", { path: side });
   } catch (e) {
-    el("status").textContent = `キーフレームを読めません: ${e}`;
+    el("status").textContent = tr("keyframes.readFailed", { e });
     return;
   }
   if (!frames) return;
@@ -1553,8 +1569,37 @@ async function loadSidecarKeyframes(path) {
     .map(outToSrc);
   if (!times.length) return;
   addKeyframes(times);
-  el("status").textContent =
-    `キーフレーム ${liveKeyframes().length} 個を ${side.split(/[/\\]/).pop()} から読み込みました`;
+  el("status").textContent = tr("keyframes.read", {
+    n: liveKeyframes().length,
+    file: side.split(/[/\\]/).pop(),
+  });
+}
+
+/// The recording's name in the title bar of the window's own header, and its
+/// shape on the line under it.
+///
+/// Its own function because it is said twice: once when the recording is
+/// opened, and again if the language changes while it is up.
+function paintSourceInfo() {
+  if (!src) return;
+  const flags = [
+    tr(src.interlaced ? "media.interlaced" : "media.progressive"),
+    src.pulldown ? tr("media.pulldown") : null,
+  ].filter(Boolean);
+  el("title").textContent = src.path.split(/[/\\]/).pop();
+  el("info").textContent = tr("editor.info", {
+    points: src.points.length,
+    w: src.width,
+    h: src.height,
+    fps: src.fps.toFixed(2),
+    flags: flags.join(" "),
+    audio: src.has_audio
+      ? tr("editor.infoAudioYes") +
+        (src.audio_channels ? ` (${chLabel(src.audio_channels)})` : "")
+      : tr("editor.infoAudioNo"),
+    codec: src.codec,
+    unusable: src.unusable_points ? tr("editor.infoUnusable", { n: src.unusable_points }) : "",
+  });
 }
 
 /// Load `picked` into the editor, putting `saved` back where there is any.
@@ -1570,25 +1615,19 @@ async function loadSidecarKeyframes(path) {
 async function openPath(picked, saved) {
   jlog(`openPath ${picked}`);
   if (!picked) return;
-  el("title").textContent = "解析中…";
+  el("title").textContent = tr("editor.analysing");
   try {
     src = await invoke("open_source", { path: picked });
-    const flags = [
-      src.interlaced ? "インターレース (TFF)" : "プログレッシブ",
-      src.pulldown ? "2:3プルダウン" : null,
-    ].filter(Boolean);
-    el("title").textContent = picked.split(/[/\\]/).pop();
-    el("info").textContent =
-      `無劣化点: ${src.points.length}   ${src.width}x${src.height}   ` +
-      `${src.fps.toFixed(2)} fps   ${flags.join(" ")}   ` +
-      `${src.has_audio ? "音声あり" : "音声なし"}   ${src.codec}` +
-      (src.unusable_points ? `   （うち ${src.unusable_points} 個は開始に使えません）` : "");
+    paintSourceInfo();
     cuts = saved ? saved.cuts.map((c) => ({ a: c.a, b: c.b })) : [];
     cutHistory = [];
     keyframes = saved ? saved.keyframes.slice() : [];
     activeKey = saved ? saved.activeKey : null;
     cmBlocks = saved ? saved.cmBlocks || [] : [];
     cmSummary = saved ? saved.cmNote || "" : "";
+    dropStreams = saved ? (saved.dropStreams || []).slice() : [];
+    trackList = null;
+    paintTrackButton();
     stripCache = null;
     stripShots = [];
     shownTime = -1;
@@ -1607,7 +1646,7 @@ async function openPath(picked, saved) {
     prepare();
   } catch (e) {
     el("title").textContent = "";
-    el("status").textContent = `開けません: ${e}`;
+    el("status").textContent = tr("editor.openFailed", { e });
     throw e;
   }
 }
@@ -1822,6 +1861,13 @@ function arrowDue(ev) {
 }
 
 window.addEventListener("keydown", (ev) => {
+  // A panel over the timeline is the program not listening to the timeline:
+  // space would start playback behind it, and the arrow keys would step the
+  // playhead nobody can see.
+  if (!el("tracks-modal").hidden) {
+    if (ev.key === "Escape") el("tracks-modal").hidden = true;
+    return;
+  }
   if (!src || ev.target.tagName === "INPUT" || ev.target.tagName === "SELECT") return;
   if (ev.key === " ") {
     ev.preventDefault();
@@ -1849,10 +1895,126 @@ window.addEventListener("keydown", (ev) => {
 
 // --- commercial breaks --------------------------------------------------
 
+// --- 書き出すトラック ------------------------------------------------------
+//
+// A broadcast recording is more than a picture and a sound. It carries the
+// captions, sometimes a second language, and things a cut cannot take with
+// it at all. Which of them are written is a decision about this clip, so it
+// is made here and travels back to the list inside the edit.
+//
+// The default is everything, and that is deliberate: a track nobody asked
+// about is a track that was in the recording, and dropping it silently would
+// be this program deciding what the recording is for.
+
+/// Source stream indices switched off. Empty is the ordinary case.
+let dropStreams = [];
+/// What the backend last said this recording carries, or null before it has
+/// been asked. Kept so reopening the menu does not ask again.
+let trackList = null;
+
+/// Say on the button whether anything is being left out.
+///
+/// Only when something is: a label that reads "0 left out" is a label that
+/// makes the ordinary case look like a decision.
+function paintTrackButton() {
+  const b = el("tracks");
+  if (!b) return;
+  b.textContent = dropStreams.length
+    ? `${tr("tracks.button")} (${tr("tracks.summary", { n: dropStreams.length })})`
+    : tr("tracks.button");
+}
+
+function renderTracks() {
+  const list = el("tracks-list");
+  list.innerHTML = "";
+  if (!trackList || !trackList.length) {
+    const li = document.createElement("li");
+    li.className = "dim";
+    li.textContent = tr("tracks.none");
+    list.appendChild(li);
+    return;
+  }
+  // Listed to be honest about them, not to be chosen between, so they go
+  // under the tracks that are a choice rather than among them -- with the
+  // reason said once at the end and not after each.
+  const dropped = trackList.filter((k) => !k.optional);
+  for (const track of trackList) {
+    if (!track.optional) continue;
+    const li = document.createElement("li");
+    const box = document.createElement("input");
+    box.type = "checkbox";
+    box.checked = !dropStreams.includes(track.index);
+    box.id = `track-${track.index}`;
+    box.addEventListener("change", () => {
+      dropStreams = box.checked
+        ? dropStreams.filter((i) => i !== track.index)
+        : dropStreams.concat([track.index]);
+      paintTrackButton();
+      sync();
+    });
+    const label = document.createElement("label");
+    label.htmlFor = box.id;
+    const kind = tr(track.kind === "audio" ? "tracks.audio" : "tracks.caption");
+    const bits = [kind, track.detail];
+    if (track.language) bits.push(track.language);
+    if (track.main) bits.push(tr("tracks.main"));
+    bits.push(tr("tracks.pid", { pid: track.pid.toString(16).padStart(4, "0") }));
+    label.textContent = bits.join(tr("sep"));
+    li.appendChild(box);
+    li.appendChild(label);
+    list.appendChild(li);
+  }
+  for (const track of dropped) {
+    const li = document.createElement("li");
+    li.className = "dim";
+    li.textContent = tr("tracks.dropped", {
+      what: tr(track.detail === "superimpose" ? "tracks.superimpose" : "tracks.data"),
+      pid: track.pid.toString(16).padStart(4, "0"),
+    });
+    list.appendChild(li);
+  }
+  if (dropped.length) {
+    const note = document.createElement("li");
+    note.className = "dim small";
+    note.textContent = tr("tracks.droppedNote");
+    list.appendChild(note);
+  }
+  // The other half of the answer, and the half nobody would think to ask
+  // for: the programme information is kept, and it is not a track.
+  const tables = document.createElement("li");
+  tables.className = "dim small";
+  tables.textContent = tr("tracks.tablesNote");
+  list.appendChild(tables);
+}
+
+el("tracks").addEventListener("click", async () => {
+  if (!src) return;
+  el("tracks-modal").hidden = false;
+  if (!trackList) {
+    try {
+      trackList = await invoke("tracks", { path: src.path });
+    } catch (e) {
+      el("status").textContent = tr("tracks.failed", { e });
+      el("tracks-modal").hidden = true;
+      return;
+    }
+  }
+  renderTracks();
+});
+
+el("tracks-close").addEventListener("click", () => {
+  el("tracks-modal").hidden = true;
+});
+
+// The ground behind the panel, which is the other way out of one.
+el("tracks-modal").addEventListener("mousedown", (ev) => {
+  if (ev.target === el("tracks-modal")) el("tracks-modal").hidden = true;
+});
+
 el("detect-cm").addEventListener("click", async () => {
   if (!src) return;
   el("detect-cm").disabled = true;
-  el("cm-note").textContent = "検出中…（映像も読みます）";
+  el("cm-note").textContent = tr("editor.detecting");
   try {
     const res = await invoke("detect_cm");
     cmSummary = cmNote(res);
@@ -1862,10 +2024,10 @@ el("detect-cm").addEventListener("click", async () => {
     // later visit to this clip does not have to detect it again.
     sync();
   } catch (e) {
-    el("cm-note").textContent = `検出できません: ${e}`;
+    el("cm-note").textContent = tr("cm.failed", { e });
   } finally {
     el("detect-cm").disabled = false;
-    el("detect-cm").textContent = "CM を検出";
+    el("detect-cm").textContent = tr("editor.detectCm");
   }
 });
 
@@ -1891,16 +2053,16 @@ if (listen) {
   // they run on separate threads and separate clocks -- so without this the
   // picture just plays silently with nothing on screen to say why.
   listen("audio-error", (ev) => {
-    el("status").textContent = `音声再生エラー: ${ev.payload}`;
+    el("status").textContent = tr("editor.audioFailed", { e: ev.payload });
   });
   listen("cm-progress", (ev) => {
     const [phase, done] = ev.payload;
-    el("detect-cm").textContent = `検出中 ${Math.round(done * 100)}%`;
+    el("detect-cm").textContent = tr("editor.detectingPct", { pct: Math.round(done * 100) });
     el("cm-note").textContent = phase;
   });
   listen("prepare-progress", (ev) => {
     const [phase, done] = ev.payload;
-    if (!warmed) el("warm").textContent = `${phase}準備中 ${Math.round(done * 100)}%`;
+    if (!warmed) el("warm").textContent = tr("warm.progress", { phase, pct: Math.round(done * 100) });
   });
   // Pictures from a pass that is still running. Everything that reads held
   // pictures can use them from here on, for the stretch of the recording the
@@ -1957,6 +2119,11 @@ function captureEdit() {
     activeKey,
     cmBlocks,
     cmNote: cmSummary,
+    // Streams the track menu switched off, by source stream index. Part of
+    // the edit because it is about this clip and nothing else: the same
+    // recording can be in the list twice, one copy with the dub and one
+    // without, and the output settings are one answer for the whole list.
+    dropStreams: dropStreams.slice(),
     playhead,
     selA,
     selB,
@@ -2047,11 +2214,48 @@ if (listen) {
     relayout();
     sync();
   });
+
+  // The list window is where 環境設定 lives, so a language change is news
+  // that arrives from there. It carries the language it settled on rather
+  // than the preference, because "follow the machine" is answered once, in
+  // that window, and both windows have to land on the same answer.
+  listen("lang-changed", (ev) => setLang(ev.payload, false));
 }
 
+/// Everything this window has drawn out of the catalogue since it opened.
+///
+/// The static markup is `applyStatic`'s and has already been done. What is
+/// left is the readouts, which are all cheap to draw again -- except the
+/// plan, which is a call into the engine, and the one line this window does
+/// not own: the detection's summary came over the wire already written, and
+/// re-wording it here would mean holding what it was made of.
+onLangChange(() => {
+  el("detect-cm").textContent = tr("editor.detectCm");
+  // The label carries a count when something is left out, so `applyStatic`
+  // has just written the plain word over it.
+  paintTrackButton();
+  if (!el("tracks-modal").hidden) renderTracks();
+  el("play").textContent = tr(playing ? "t.stop" : "t.play");
+  paintSourceInfo();
+  if (src) {
+    updateReadouts();
+    renderKeyframes();
+    showFrame(playhead);
+    schedulePlan();
+  }
+});
+
 noBrowserMenu();
+applyStatic();
+// The two labels that say what would happen rather than what the button is,
+// and are therefore written from here rather than by `applyStatic`.
+el("detect-cm").textContent = tr("editor.detectCm");
+el("play").textContent = tr("t.play");
 renderKeyframes();
 draw();
 jlog("editor wired");
 // The window is up and has nothing in it; the list is what fills it.
 if (emit) emit("editor-ready", null);
+// A second opinion on what the machine is set to, for a window opened before
+// the list window had a chance to pass its own on.
+confirmWithOs(invoke);

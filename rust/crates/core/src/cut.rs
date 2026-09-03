@@ -70,7 +70,7 @@ impl AudioMode {
     }
 }
 
-#[derive(Debug, Default, Clone)]
+#[derive(Debug, Clone)]
 pub struct CutOptions {
     /// Reorder depth used when deriving DTS from decode order.
     /// `None` takes the source stream's own depth.
@@ -81,11 +81,65 @@ pub struct CutOptions {
     pub audio_mode: AudioMode,
     /// Bits per second for re-encoded audio. `None` follows the source.
     pub audio_bit_rate: Option<usize>,
+    /// Channels the audio is written with. `None` follows the source.
+    ///
+    /// A count that is not the source's is a downmix -- 5.1 into stereo, for
+    /// the recording whose surround track is a nuisance everywhere it is
+    /// played back. Nothing about it is a splice: a stereo frame cannot sit
+    /// among the recording's 5.1 ones, so asking for one asks for the whole
+    /// track, and [`AudioMode::Reencode`] is what actually runs.
+    pub audio_channels: Option<u16>,
     /// Which AAC the frames this tool encodes announce themselves as.
     /// The default follows the recording, which for a Japanese broadcast
     /// means MPEG-2 AAC.
     pub aac: AacVersion,
+    /// Source stream indices to leave out of the output.
+    ///
+    /// Everything the recording carries that a cut can carry is written
+    /// unless it is named here. A bilingual broadcast has two sound tracks
+    /// and both are kept, because which of them is wanted is not something
+    /// this can know -- the caller says, or neither is dropped.
+    pub drop_streams: Vec<usize>,
+    /// Whether the recording's own tables are put back over the muxer's.
+    ///
+    /// The muxer writes a description of the streams and stops there. What
+    /// this restores is everything else a broadcast says about itself --
+    /// the service and its name, the programme on now and the one after,
+    /// the clock, and the descriptors that say what each stream is. See
+    /// [`crate::si`]. Only means anything writing a transport stream.
+    pub keep_tables: bool,
 }
+
+impl Default for CutOptions {
+    fn default() -> Self {
+        Self {
+            reorder_depth: None,
+            bit_rate: None,
+            audio_mode: AudioMode::default(),
+            audio_bit_rate: None,
+            audio_channels: None,
+            aac: AacVersion::default(),
+            drop_streams: Vec::new(),
+            // A recording keeps what it came with unless something says
+            // otherwise. Every other default here follows the source too.
+            keep_tables: true,
+        }
+    }
+}
+
+/// How far past a segment's end the reader will go for a stream that has
+/// nothing more to say.
+///
+/// A segment stops when every stream it is gathering has run past the end,
+/// which works for streams that are actually there. A caption PID a
+/// recording declares in its map and never sends a packet on is never going
+/// to run past anything, and without a bound it holds the read open to the
+/// end of the file -- once per segment, on a recording of several gigabytes.
+///
+/// The pictures say where the read has got to. Streams are interleaved
+/// within a fraction of a second of each other, so a packet that has not
+/// arrived three seconds later is not going to.
+const TRAIL: f64 = 3.0;
 
 /// One packet on its way out, before timestamps are assigned.
 struct Emitted {
@@ -103,7 +157,9 @@ struct Emitted {
 /// the output time its video starts at, which is what keeps A/V sync from
 /// drifting when several ranges are joined: an error at one seam cannot
 /// accumulate into the next.
-struct AudioCtx<'a> {
+struct AudioCtx {
+    /// Which of the output's sound tracks this is.
+    track: usize,
     in_index: usize,
     in_tb: f64,
     /// Seconds to add to a source time to reach the output timeline.
@@ -127,9 +183,20 @@ struct AudioCtx<'a> {
     /// Where the range starts, in seconds.
     range_in: f64,
     mode: AudioMode,
-    /// Frames re-encoded because a boundary falls inside them, by the source
-    /// packet's `pts`.
-    patches: &'a std::collections::HashMap<i64, crate::audio::Patch>,
+}
+
+/// Where a caption stream sits on the output timeline.
+///
+/// Simpler than sound, and for a reason worth stating: a caption statement
+/// is whole inside one packet with one presentation time, so there is
+/// nothing to splice and nothing that can straddle a boundary. Each packet
+/// either falls inside a kept range or it does not, and the ones that do are
+/// moved by the same offset the pictures were.
+struct CaptionCtx {
+    track: usize,
+    in_index: usize,
+    in_tb: f64,
+    offset: f64,
 }
 
 /// What a segment contributed, so the next one can be placed after it.
@@ -153,7 +220,8 @@ struct SegmentCtx<'a> {
     /// First display index this segment contributes.
     display_base: i64,
     reframe: Option<&'a Reframe>,
-    audio: Option<&'a AudioCtx<'a>>,
+    audio: &'a [AudioCtx],
+    captions: &'a [CaptionCtx],
     /// Whether this is the opening segment of its keep-range, which is where
     /// the range's audio boundary decision is made.
     first: bool,
@@ -175,26 +243,61 @@ struct Writer {
     /// Display positions seen so far, smallest first.
     seen: std::collections::BinaryHeap<std::cmp::Reverse<i64>>,
     written: i64,
-    /// Output stream index and time base for audio, when there is any.
-    audio: Option<(usize, f64)>,
-    audio_written: i64,
-    /// Source `pts` of the last audio frame written, which is what a guard
-    /// frame's condition is checked against.
-    audio_prev: Option<i64>,
-    /// Output time at which the audio written so far ends. The container
-    /// concatenates samples, so this -- not the packet's nominal timestamp --
-    /// is where the next frame will actually be heard.
-    audio_end: Option<f64>,
-    /// Samples per second of the audio, for turning the encoder's sample
-    /// clock into the container's.
-    audio_rate: u32,
-    /// Set when the audio is being re-encoded; packets then carry the
-    /// encoder's own timestamps instead of the source's.
-    reencoder: Option<crate::audio::Reencoder>,
+    /// The output's sound tracks, in the order they were added. A broadcast
+    /// in two languages has two, and each is cut on its own -- one track's
+    /// boundary frame is no business of another's.
+    audio: Vec<AudioTrack>,
+    /// The output's caption tracks, likewise.
+    captions: Vec<CaptionTrack>,
     /// Called as pictures land, with a 0..1 fraction. A long cut is mostly
     /// I/O, so the caller needs something to show.
     progress: Option<Box<dyn Fn(f64) + Send + Sync>>,
     expected: i64,
+}
+
+/// One sound track being written, and everything that is true of it alone.
+///
+/// Every field here used to be a field of the writer, back when there could
+/// only be one. What made them a group is that a bilingual recording has two
+/// tracks whose frames land at different instants, are re-encoded at
+/// different boundaries and drift by different amounts -- so a single
+/// running position, a single encoder and a single patch table describe one
+/// of them and corrupt the other.
+struct AudioTrack {
+    /// Index of the stream in the output, and the time base the muxer gave
+    /// it -- which is not the one it was asked for: MPEG-TS keeps time in
+    /// 90 kHz whatever it is handed.
+    out_index: usize,
+    out_tb: f64,
+    /// Where it came from.
+    in_index: usize,
+    info: crate::AudioInfo,
+    /// How this track is produced, which is not always how the caller asked:
+    /// a downmix is a whole-track re-encode however it was requested.
+    mode: AudioMode,
+    written: i64,
+    /// Source `pts` of the last frame written, which is what a guard frame's
+    /// condition is checked against.
+    prev: Option<i64>,
+    /// Output time at which what has been written ends. The container
+    /// concatenates samples, so this -- not the packet's nominal timestamp --
+    /// is where the next frame will actually be heard.
+    end: Option<f64>,
+    /// Set when this track is being re-encoded; packets then carry the
+    /// encoder's own timestamps instead of the source's.
+    reencoder: Option<crate::audio::Reencoder>,
+    /// Frames re-encoded because a boundary falls inside them, by the source
+    /// packet's `pts`.
+    patches: std::collections::HashMap<i64, crate::audio::Patch>,
+}
+
+/// One caption track being written.
+struct CaptionTrack {
+    out_index: usize,
+    out_tb: f64,
+    in_index: usize,
+    in_tb: f64,
+    written: i64,
 }
 
 impl Writer {
@@ -236,19 +339,20 @@ impl Writer {
         Ok(())
     }
 
-    fn push_audio_encoded(&mut self, mut packet: ff::Packet, pts: i64) -> Result<()> {
-        let Some((index, tb)) = self.audio else { return Ok(()) };
+    fn push_audio_encoded(&mut self, track: usize, mut packet: ff::Packet, pts: i64) -> Result<()> {
+        let Some(t) = self.audio.get(track) else { return Ok(()) };
+        let (index, tb, rate) = (t.out_index, t.out_tb, t.info.sample_rate);
         packet.set_stream(index);
         // `pts` counts samples, because that is the encoder's own clock. The
         // container keeps time in whatever it likes -- MP4 happens to use the
         // sample rate, which hid this for a long time, while MPEG-TS insists
         // on 90 kHz and turned a 799-second track into a 426-second one.
-        let at = ((pts as f64 / self.audio_rate.max(1) as f64) / tb).round() as i64;
+        let at = ((pts as f64 / rate.max(1) as f64) / tb).round() as i64;
         packet.set_pts(Some(at));
         packet.set_dts(Some(at));
         packet.set_position(-1);
         packet.write_interleaved(&mut self.octx)?;
-        self.audio_written += 1;
+        self.audio[track].written += 1;
         Ok(())
     }
 
@@ -259,8 +363,15 @@ impl Writer {
         Ok(())
     }
 
-    fn push_audio(&mut self, mut packet: ff::Packet, out_start: f64, out_dur: f64) -> Result<()> {
-        let Some((index, tb)) = self.audio else { return Ok(()) };
+    fn push_audio(
+        &mut self,
+        track: usize,
+        mut packet: ff::Packet,
+        out_start: f64,
+        out_dur: f64,
+    ) -> Result<()> {
+        let Some(t) = self.audio.get(track) else { return Ok(()) };
+        let (index, tb) = (t.out_index, t.out_tb);
         if out_dur <= 0.0 {
             return Ok(());
         }
@@ -271,8 +382,29 @@ impl Writer {
         packet.set_duration((out_dur / tb).round() as i64);
         packet.set_position(-1);
         packet.write_interleaved(&mut self.octx)?;
-        self.audio_written += 1;
-        self.audio_end = Some(self.audio_end.unwrap_or(out_start.max(0.0)) + out_dur);
+        let t = &mut self.audio[track];
+        t.written += 1;
+        t.end = Some(t.end.unwrap_or(out_start.max(0.0)) + out_dur);
+        Ok(())
+    }
+
+    /// Write one caption statement at the output time it now belongs at.
+    ///
+    /// No duration is set. A caption is displayed until the next statement
+    /// replaces or clears it, which is a property of the stream and not of
+    /// the packet, and a duration invented here would only be a claim the
+    /// muxer then has to reconcile with the next packet's timestamp.
+    fn push_caption(&mut self, track: usize, mut packet: ff::Packet, at: f64) -> Result<()> {
+        let Some(t) = self.captions.get(track) else { return Ok(()) };
+        let (index, tb) = (t.out_index, t.out_tb);
+        packet.set_stream(index);
+        let pts = (at.max(0.0) / tb).round() as i64;
+        packet.set_pts(Some(pts));
+        packet.set_dts(Some(pts));
+        packet.set_duration(0);
+        packet.set_position(-1);
+        packet.write_interleaved(&mut self.octx)?;
+        self.captions[track].written += 1;
         Ok(())
     }
 }
@@ -311,14 +443,14 @@ fn take_audio(
             t >= seg.start && t < seg.end
         };
         if claimed {
-            let info = src.audio.as_ref().expect("audio present");
             let mut out = Vec::new();
-            if let Some(re) = writer.reencoder.as_mut() {
+            let AudioTrack { info, reencoder, .. } = &mut writer.audio[audio.track];
+            if let Some(re) = reencoder.as_mut() {
                 re.take(&packet, info, src.start_time, audio.window)?;
                 re.drain(&mut out)?;
             }
             for (p, pts) in out {
-                writer.push_audio_encoded(p, pts)?;
+                writer.push_audio_encoded(audio.track, p, pts)?;
             }
         }
         return Ok(past_end);
@@ -352,10 +484,8 @@ fn take_audio(
     // a whole audio frame, or -- in smart mode -- the frame it lands inside
     // was re-encoded beforehand with the far side faded out, and stands here
     // in place of the recording's own.
-    let patch = audio
-        .patches
-        .get(&pts)
-        .filter(|p| p.after.is_none() || p.after == writer.audio_prev);
+    let track = &writer.audio[audio.track];
+    let patch = track.patches.get(&pts).filter(|p| p.after.is_none() || p.after == track.prev);
     let packet = match patch {
         Some(p) => {
             let mut patched = ff::Packet::copy(&p.bytes);
@@ -365,9 +495,40 @@ fn take_audio(
         }
         None => packet,
     };
-    writer.audio_prev = Some(pts);
-    writer.push_audio(packet, t + audio.offset, dur)?;
+    writer.audio[audio.track].prev = Some(pts);
+    writer.push_audio(audio.track, packet, t + audio.offset, dur)?;
     Ok(past_end)
+}
+
+/// Emit a caption statement if it falls inside this segment's stretch.
+///
+/// Returns whether the segment's end has been passed, so the reader can stop
+/// once every stream it is gathering has run out.
+///
+/// A statement carried across a cut is not always the whole story. What is
+/// on screen at the moment a range ends stays on screen into the next one,
+/// because what would have cleared it lives in the material that was
+/// removed. In practice the case this tool exists for does not run into it:
+/// a broadcaster who marks a commercial junction marks it by clearing the
+/// caption plane, so the statement that opens the next range is the clear
+/// itself. Where the marks are absent, a caption can outlive its scene by a
+/// line.
+fn take_caption(
+    caption: &CaptionCtx,
+    src: &Source,
+    seg: &Segment,
+    packet: ff::Packet,
+    writer: &mut Writer,
+) -> Result<bool> {
+    let Some(pts) = packet.pts() else { return Ok(false) };
+    let t = pts as f64 * caption.in_tb - src.start_time;
+    if t >= seg.end {
+        return Ok(true);
+    }
+    if t >= seg.start {
+        writer.push_caption(caption.track, packet, t + caption.offset)?;
+    }
+    Ok(false)
 }
 
 fn open_input(path: &str) -> Result<(ff::format::context::Input, usize)> {
@@ -526,8 +687,7 @@ fn copy_segment(
     ctx: &SegmentCtx,
     writer: &mut Writer,
 ) -> Result<Span> {
-    let (display_base, reframe, audio, first_segment) =
-        (ctx.display_base, ctx.reframe, ctx.audio, ctx.first);
+    let (display_base, reframe, first_segment) = (ctx.display_base, ctx.reframe, ctx.first);
     let (mut ictx, ist_index) = open_input(&src.path)?;
     let in_tb = f64::from(ictx.stream(ist_index).unwrap().time_base());
     let fd = src.video.frame_duration();
@@ -541,23 +701,41 @@ fn copy_segment(
     let mut started = false;
     let mut overshot = false;
     let mut video_done = false;
-    let mut audio_done = audio.is_none();
+    // One flag per stream being gathered. The read stops when every one of
+    // them has run past this segment, not when the first does: the sound of
+    // a bilingual recording arrives on two PIDs that are interleaved but not
+    // in step, and stopping on either would truncate the other.
+    let mut audio_done = vec![false; ctx.audio.len()];
+    let mut caption_done = vec![false; ctx.captions.len()];
 
     for (stream, packet) in ictx.packets() {
-        if stream.index() != ist_index {
-            if let Some(a) = audio {
-                if stream.index() == a.in_index && !audio_done {
-                    audio_done = take_audio(a, src, seg, first_segment, packet, writer)?;
+        let index = stream.index();
+        if index != ist_index {
+            if let Some(k) = ctx.audio.iter().position(|a| a.in_index == index) {
+                if !audio_done[k] {
+                    audio_done[k] =
+                        take_audio(&ctx.audio[k], src, seg, first_segment, packet, writer)?;
+                }
+            } else if let Some(k) = ctx.captions.iter().position(|c| c.in_index == index) {
+                if !caption_done[k] {
+                    caption_done[k] = take_caption(&ctx.captions[k], src, seg, packet, writer)?;
                 }
             }
-            if video_done && audio_done {
+            if video_done && audio_done.iter().all(|&d| d) && caption_done.iter().all(|&d| d) {
                 break;
             }
             continue;
         }
         if video_done {
-            if audio_done {
+            if audio_done.iter().all(|&d| d) && caption_done.iter().all(|&d| d) {
                 break;
+            }
+            // See [`TRAIL`]. The pictures are still arriving, so they are
+            // what says how far past the end the read has gone.
+            if let Some(pts) = packet.pts() {
+                if pts as f64 * in_tb - src.start_time > seg.end + TRAIL {
+                    break;
+                }
             }
             continue;
         }
@@ -583,7 +761,7 @@ fn copy_segment(
         if let Some(until) = seg.copy_until {
             if (packet.is_key() && (t - until).abs() < fd / 2.0) || t > until + fd {
                 video_done = true;
-                if audio_done {
+                if audio_done.iter().all(|&d| d) && caption_done.iter().all(|&d| d) {
                     break;
                 }
                 continue;
@@ -766,8 +944,7 @@ fn reencode_segment(
     opts: &CutOptions,
     writer: &mut Writer,
 ) -> Result<Span> {
-    let (display_base, reframe, audio, first_segment) =
-        (ctx.display_base, ctx.reframe, ctx.audio, ctx.first);
+    let (display_base, reframe, first_segment) = (ctx.display_base, ctx.reframe, ctx.first);
     let (mut ictx, ist_index) = open_input(&src.path)?;
     let stream = ictx.stream(ist_index).unwrap();
     let in_tb = f64::from(stream.time_base());
@@ -786,7 +963,8 @@ fn reencode_segment(
     seek_to(&mut ictx, src, seg.seek_from)?;
 
     let mut frame = ff::frame::Video::empty();
-    let mut audio_done = audio.is_none();
+    let mut audio_done = vec![false; ctx.audio.len()];
+    let mut caption_done = vec![false; ctx.captions.len()];
     let mut anchor: Option<f64> = None;
     let mut span = Span::default();
     // The encoder hands packets back in decode order, labelled only with the
@@ -825,21 +1003,34 @@ fn reencode_segment(
     }
 
     for (stream, packet) in ictx.packets() {
-        if stream.index() != ist_index {
-            if let Some(a) = audio {
-                if stream.index() == a.in_index && !audio_done {
-                    audio_done = take_audio(a, src, seg, first_segment, packet, writer)?;
+        let index = stream.index();
+        if index != ist_index {
+            if let Some(k) = ctx.audio.iter().position(|a| a.in_index == index) {
+                if !audio_done[k] {
+                    audio_done[k] =
+                        take_audio(&ctx.audio[k], src, seg, first_segment, packet, writer)?;
+                }
+            } else if let Some(k) = ctx.captions.iter().position(|c| c.in_index == index) {
+                if !caption_done[k] {
+                    caption_done[k] = take_caption(&ctx.captions[k], src, seg, packet, writer)?;
                 }
             }
             continue;
+        }
+        // See [`TRAIL`]: past the end and still decoding only to wait for a
+        // stream that is not coming.
+        if past_end {
+            if audio_done.iter().all(|&d| d) && caption_done.iter().all(|&d| d) {
+                break;
+            }
+            if packet.pts().is_some_and(|p| p as f64 * in_tb - src.start_time > seg.end + TRAIL) {
+                break;
+            }
         }
         decoder.send_packet(&packet)?;
         // Decoded frames arrive in display order, so a simple window test
         // picks out exactly the pictures this segment owns.
         feed!();
-        if past_end && audio_done {
-            break;
-        }
     }
     decoder.send_eof()?;
     feed!();
@@ -851,6 +1042,198 @@ fn reencode_segment(
         bail!("segment {:.3}-{:.3}: no pictures decoded", seg.start, seg.end);
     }
     Ok(span)
+}
+
+/// Ask the muxer to put a stream back on the PID it arrived on.
+///
+/// The MPEG-TS muxer reads a stream's id as the PID to write it on, and only
+/// numbers from `mpegts_start_pid` the streams that do not name one. Which
+/// is what lets a recording come back out on its own PIDs: the sound where
+/// the tools downstream expect sound, the captions where a caption decoder
+/// looks. Anything below 16 is not a PID a stream can sit on and is how
+/// libav says it has no opinion.
+unsafe fn set_pid(ost: &mut ff::format::stream::StreamMut, to_ts: bool, pid: i32) {
+    if to_ts && (0x0010..=0x1FFA).contains(&pid) {
+        (*ost.as_mut_ptr()).id = pid;
+    }
+}
+
+/// What is to become of one sound track, settled before anything is written.
+struct AudioSetup {
+    info: crate::AudioInfo,
+    /// How the track is produced, which is not always how it was asked for:
+    /// a downmix is a whole-track re-encode however it was requested.
+    mode: AudioMode,
+    /// Channels out.
+    channels: u16,
+    /// The fold, when there is one: what it was, and what it became.
+    downmix: Option<(u16, u16)>,
+    /// What the recording's own frames of this track look like from outside.
+    /// Only an answer for ADTS AAC, which is what a Japanese broadcast
+    /// carries; anything else leaves the frames this tool encodes unframed,
+    /// exactly as the packets they sit among are.
+    source_adts: Option<crate::adts::AdtsFormat>,
+    /// How the frames this cut encodes for the track are framed.
+    frame_as: Option<crate::adts::AdtsFormat>,
+    aac: AacVersion,
+    bit_rate: usize,
+}
+
+/// Decide what will be done to one sound track.
+///
+/// Every question here used to be asked once, of the one track there was.
+/// Asked per track they are the same questions, and the answers may differ
+/// inside one recording: a bilingual broadcast can carry stereo beside dual
+/// mono, and folding one of them says nothing about the other.
+///
+/// `many` only decides whether the notes name which track they are about.
+fn plan_audio(
+    path: &str,
+    info: &crate::AudioInfo,
+    opts: &CutOptions,
+    to_ts: bool,
+    many: bool,
+) -> Result<AudioSetup> {
+    let named = if many { format!(" on PID 0x{:04x}", info.pid) } else { String::new() };
+    let source_adts = {
+        let mut probe = ff::format::input(&path)?;
+        crate::adts::framing(&mut probe, info.stream_index)
+    };
+    // Channels out, and whether that is a downmix. A downmix is the one audio
+    // setting that decides the mode rather than living under it: there is no
+    // copying a 5.1 frame into a stereo track, so it is a whole-track
+    // re-encode or it is nothing.
+    let channels = opts.audio_channels.unwrap_or(info.channels);
+    let downmix = (channels != info.channels).then_some((info.channels, channels));
+    let mode = match downmix {
+        Some((from, to)) if opts.audio_mode != AudioMode::Reencode => {
+            eprintln!(
+                "note: {from} channels were asked for as {to}{named}, which no frame of the \
+                 recording's own can be copied through, so the whole track is re-encoded \
+                 rather than {}.",
+                opts.audio_mode.as_str(),
+            );
+            AudioMode::Reencode
+        }
+        _ => opts.audio_mode,
+    };
+    // Asking for the AAC the recording does not carry only reaches the frames
+    // written here -- the copied ones keep the headers they came with -- so
+    // honouring it would leave the output two kinds of AAC at once, which is
+    // the very thing this framing exists to prevent. A whole-track re-encode
+    // is the exception: nothing is copied there, so there is nothing to
+    // disagree with.
+    let aac = match (opts.aac.forced(), source_adts) {
+        (Some(want), Some(f)) if f.mpeg2 != want && mode != AudioMode::Reencode => {
+            eprintln!(
+                "note: --aac {} was asked for, but this recording carries MPEG-{} AAC{} and \
+                 its own frames are copied unchanged. Writing the few frames this cut \
+                 encodes as MPEG-{} would leave the audio two kinds of AAC at once, so the \
+                 recording's own is followed instead. --audio-mode reencode writes every \
+                 frame, and can be asked for either.",
+                opts.aac.as_str(),
+                if f.mpeg2 { 2 } else { 4 },
+                named,
+                if want { 2 } else { 4 },
+            );
+            AacVersion::Auto
+        }
+        _ => opts.aac,
+    };
+    // Whether the frames this cut encodes are written framed.
+    //
+    // In smart mode they must be: they are spliced in among the recording's
+    // own frames, which are framed, and a track has to be one thing or the
+    // other for a muxer to handle it -- MPEG-TS passes a framed packet
+    // through untouched, MP4 runs the whole track through `aac_adtstoasc`.
+    // A whole-track re-encode has no copied frames to match, so it keeps to
+    // raw AAC and the encoder's own parameters, except into a transport
+    // stream, where framing them here is the only way to say MPEG-2.
+    //
+    // A downmixed frame is also a frame with a different channel count, and
+    // the header is where a transport stream says so.
+    let frame_as = match (mode, source_adts) {
+        (AudioMode::Smart, Some(f)) => Some(f.as_version(aac)),
+        (AudioMode::Reencode, Some(f)) if to_ts => Some(match downmix {
+            Some((_, to)) => f.as_version(aac).with_channels(to),
+            None => f.as_version(aac),
+        }),
+        _ => None,
+    };
+    // Following the recording's own rate is right until the channels stop
+    // being the recording's: 384 kbit/s is what 5.1 cost, not what the stereo
+    // it was folded into is worth, so the derived rate comes down with the
+    // channel count. An explicit rate is taken as given.
+    let bit_rate = opts.audio_bit_rate.unwrap_or_else(|| {
+        let src_rate = info.bit_rate.unwrap_or(192_000);
+        match downmix {
+            Some((from, to)) if from > 0 => (src_rate * to as usize / from as usize).max(128_000),
+            _ => src_rate,
+        }
+    });
+    Ok(AudioSetup {
+        info: info.clone(),
+        mode,
+        channels,
+        downmix,
+        source_adts,
+        frame_as,
+        aac,
+        bit_rate,
+    })
+}
+
+/// Put the recording's own tables into the finished cut.
+///
+/// Reading what was on the air is done per kept range rather than once,
+/// because a recording can span a programme boundary and a cut across one
+/// should describe both sides of it. The read is a windowed one at the byte
+/// the range's opening picture arrives at -- the access-point index knows
+/// that byte, which is what makes this cheap on a file of several gigabytes.
+#[allow(clippy::too_many_arguments)]
+fn graft_tables(
+    src: &Source,
+    service: &crate::si::Service,
+    setups: &[AudioSetup],
+    captions: &[crate::CaptionInfo],
+    video_pid: i32,
+    range_starts: &[f64],
+    plans: &[RangePlan],
+    output: &str,
+) -> Result<crate::si::Stats> {
+    let mut streams = vec![crate::si::GraftStream { pid: video_pid as u16, faithful: true }];
+    for setup in setups {
+        streams.push(crate::si::GraftStream {
+            pid: setup.info.pid as u16,
+            // A folded track no longer has the channels the recording's own
+            // audio component descriptor names, and saying it does is worse
+            // than saying nothing.
+            faithful: setup.downmix.is_none(),
+        });
+    }
+    for c in captions {
+        streams.push(crate::si::GraftStream { pid: c.pid as u16, faithful: true });
+    }
+
+    let ranges = plans
+        .iter()
+        .zip(range_starts)
+        .map(|(plan, &start)| {
+            let pos = src
+                .points
+                .iter()
+                .rfind(|p| p.time <= plan.t_in + 1e-6 && p.pos >= 0)
+                .map_or(0, |p| p.pos);
+            let snapshot =
+                crate::si::snapshot_at(&src.path, pos, service.service_id).unwrap_or_default();
+            crate::si::GraftRange { start, snapshot }
+        })
+        .collect();
+
+    crate::si::graft(
+        output,
+        &crate::si::Graft { service, streams, pcr_pid: video_pid as u16, ranges },
+    )
 }
 
 pub fn cut(src: &Source, plans: &[RangePlan], output: &str, opts: &CutOptions) -> Result<()> {
@@ -867,7 +1250,7 @@ pub fn cut_with_progress(
 ) -> Result<()> {
     crate::init()?;
 
-    let (mut ictx, ist_index) = open_input(&src.path)?;
+    let (ictx, ist_index) = open_input(&src.path)?;
     let params = ictx.stream(ist_index).unwrap().parameters();
     let extradata = unsafe {
         let p = params.as_ptr();
@@ -895,15 +1278,56 @@ pub fn cut_with_progress(
     // those where broadcasts put them, and numbering a fresh set from 0x100
     // makes the output look like something else entirely.
     let layout = ts_layout(&ictx, src.video.stream_index);
-    // What the recording's own audio frames look like from the outside. Only
-    // an answer for ADTS AAC, which is what a Japanese broadcast carries;
-    // anything else leaves the frames this tool encodes unframed, exactly as
-    // the packets they sit among are.
-    let source_adts =
-        src.audio.as_ref().and_then(|a| crate::adts::framing(&mut ictx, a.stream_index));
+    let video_pid = ictx.stream(src.video.stream_index).map_or(0, |s| s.id());
+    // Which of the recording's streams are being written. Everything it
+    // carries that a cut can carry, less whatever the caller named.
+    let kept = |i: usize| !opts.drop_streams.contains(&i);
+    let audios: Vec<crate::AudioInfo> =
+        src.audios.iter().filter(|a| kept(a.stream_index)).cloned().collect();
+    // Captions go into a transport stream and nowhere else. MP4 has no
+    // sample entry for an ARIB caption stream -- there is nothing to declare
+    // it as, and no format to turn it into that is still what it was.
+    let captions: Vec<crate::CaptionInfo> = if to_ts {
+        src.captions.iter().filter(|c| kept(c.stream_index)).cloned().collect()
+    } else {
+        Vec::new()
+    };
+    if !to_ts && !src.captions.is_empty() {
+        eprintln!(
+            "note: this recording carries {} caption stream(s), which only a transport \
+             stream can hold. Write a .ts to keep them.",
+            src.captions.len(),
+        );
+    }
+    // What each sound track is and what will become of it. Settled before
+    // anything is declared, because a stream has to be declared as the thing
+    // it will contain and a downmixed track is not what the recording's own
+    // parameters describe.
+    let setups: Vec<AudioSetup> = audios
+        .iter()
+        .map(|a| plan_audio(&src.path, a, opts, to_ts, audios.len() > 1))
+        .collect::<Result<Vec<_>>>()?;
+
+    // What the recording says about itself. Read here rather than after the
+    // cut because the muxer's own idea of the transport stream has to agree
+    // with it: an event information section names its service by transport
+    // stream and by network, and a player that finds those disagreeing with
+    // the tables around them is right to believe neither.
+    let tables = match (to_ts && opts.keep_tables).then(|| crate::si::read_service(&src.path)) {
+        Some(Ok(t)) => Some(t),
+        Some(Err(e)) => {
+            eprintln!("note: {e}. The streams are kept; the broadcast's own tables are not.");
+            None
+        }
+        None => None,
+    };
+
     let pids;
     let pmt;
     let service;
+    let tsid;
+    let onid;
+    let service_type;
     if to_ts {
         if let Some(l) = layout {
             pids = l.first_pid.to_string();
@@ -917,6 +1341,24 @@ pub fn cut_with_progress(
             }
             if l.service_id > 0 {
                 muxer_opts.set("mpegts_service_id", &service);
+            }
+        }
+        // Where this service sits in its network, which only the recording's
+        // own tables can say. Left at the muxer's defaults when they are not
+        // being kept -- a made-up network number is no worse than the
+        // default one, and nothing downstream will be looking for it.
+        if let Some(t) = tables.as_ref() {
+            tsid = t.transport_stream_id.to_string();
+            onid = t.original_network_id.to_string();
+            service_type = t.service_type.to_string();
+            if t.transport_stream_id > 0 {
+                muxer_opts.set("mpegts_transport_stream_id", &tsid);
+            }
+            if t.original_network_id > 0 {
+                muxer_opts.set("mpegts_original_network_id", &onid);
+            }
+            if t.service_type > 0 {
+                muxer_opts.set("mpegts_service_type", &service_type);
             }
         }
     }
@@ -951,86 +1393,85 @@ pub fn cut_with_progress(
                 (Some(_), "hevc") => u32::from_le_bytes(*b"hev1"),
                 _ => 0,
             };
+            set_pid(&mut ost, to_ts, video_pid);
         }
     }
-    // Audio rides along as a second track, copied packet for packet.
-    let audio_params = src.audio.as_ref().map(|a| {
-        ictx.stream(a.stream_index).map(|s| s.parameters()).unwrap()
-    });
-    // Asking for the AAC the recording does not carry only reaches the frames
-    // written here -- the copied ones keep the headers they came with -- so
-    // honouring it would leave the output two kinds of AAC at once, which is
-    // the very thing this framing exists to prevent. A whole-track re-encode
-    // is the exception: nothing is copied there, so there is nothing to
-    // disagree with.
-    let aac = match (opts.aac.forced(), source_adts) {
-        (Some(want), Some(f)) if f.mpeg2 != want && opts.audio_mode != AudioMode::Reencode => {
-            eprintln!(
-                "note: --aac {} was asked for, but this recording carries MPEG-{} AAC and \
-                 its own frames are copied unchanged. Writing the few frames this cut \
-                 encodes as MPEG-{} would leave the audio two kinds of AAC at once, so the \
-                 recording's own is followed instead. --audio-mode reencode writes every \
-                 frame, and can be asked for either.",
-                opts.aac.as_str(),
-                if f.mpeg2 { 2 } else { 4 },
-                if want { 2 } else { 4 },
-            );
-            AacVersion::Auto
-        }
-        _ => opts.aac,
-    };
-
-    // Whether the frames this cut encodes are written framed.
-    //
-    // In smart mode they must be: they are spliced in among the recording's
-    // own frames, which are framed, and a track has to be one thing or the
-    // other for a muxer to handle it -- MPEG-TS passes a framed packet
-    // through untouched, MP4 runs the whole track through `aac_adtstoasc`.
-    // A whole-track re-encode has no copied frames to match, so it keeps to
-    // raw AAC and the encoder's own parameters, except into a transport
-    // stream, where framing them here is the only way to say MPEG-2.
-    let frame_as = match (opts.audio_mode, source_adts) {
-        (AudioMode::Smart, Some(f)) => Some(f.as_version(aac)),
-        (AudioMode::Reencode, Some(f)) if to_ts => Some(f.as_version(aac)),
-        _ => None,
-    };
-    // Built here, before the stream is declared, because when it exists the
-    // stream must describe *it* rather than the source.
-    let reencoder = match (opts.audio_mode, src.audio.as_ref()) {
-        (AudioMode::Reencode, Some(a)) => {
-            let params = ictx
-                .stream(a.stream_index)
-                .ok_or_else(|| anyhow!("audio stream vanished"))?
-                .parameters();
-            let rate = opts.audio_bit_rate.or(a.bit_rate).unwrap_or(192_000);
-            Some(crate::audio::Reencoder::new(params, a, rate, frame_as)?)
-        }
-        _ => None,
-    };
-    let audio_language = src.audio.as_ref().and_then(|a| {
-        ictx.stream(a.stream_index)
-            .and_then(|s| s.metadata().get("language").map(|v| v.to_string()))
-    });
-    if let (Some(a), Some(ap)) = (src.audio.as_ref(), audio_params) {
+    // Sound rides along beside the pictures: one output track for each the
+    // recording carries, each copied packet for packet.
+    let mut audio_pending: Vec<(usize, Option<crate::audio::Reencoder>)> = Vec::new();
+    for setup in &setups {
+        let params = ictx
+            .stream(setup.info.stream_index)
+            .ok_or_else(|| anyhow!("audio stream {} vanished", setup.info.stream_index))?
+            .parameters();
+        // Built before the stream is declared, because when it exists the
+        // stream must describe *it* rather than the source.
+        let reencoder = match setup.mode {
+            AudioMode::Reencode => Some(crate::audio::Reencoder::new(
+                params.clone(),
+                &setup.info,
+                setup.channels,
+                setup.bit_rate,
+                setup.frame_as,
+            )?),
+            _ => None,
+        };
         let mut ost = octx.add_stream(ff::encoder::find(ff::codec::Id::None))?;
         match reencoder.as_ref() {
             // Framed frames are the same shape the recording's were, so the
             // recording's parameters describe them and the extradata that
-            // would otherwise reframe them is not wanted.
-            Some(re) if frame_as.is_none() => ost.set_parameters(re.parameters()),
-            _ => ost.set_parameters(ap),
+            // would otherwise reframe them is not wanted -- unless the
+            // channels have changed underneath, in which case the recording's
+            // parameters describe a track this file does not contain. A
+            // packet that already begins with a sync word is passed through
+            // whatever the extradata says, so the encoder's parameters cost
+            // the framing nothing.
+            Some(re) if setup.frame_as.is_none() || setup.downmix.is_some() => {
+                ost.set_parameters(re.parameters())
+            }
+            _ => ost.set_parameters(params),
         }
-        ost.set_time_base(ff::Rational::new(1, a.sample_rate as i32));
+        ost.set_time_base(ff::Rational::new(1, setup.info.sample_rate as i32));
         // Carried across so the muxer writes the language descriptor the
-        // recording had; without it the audio arrives anonymous.
-        if let Some(lang) = &audio_language {
+        // recording had; without it the audio arrives anonymous -- and on a
+        // bilingual recording, anonymous twice over.
+        if let Some(lang) = &setup.info.language {
             let mut meta = ff::Dictionary::new();
             meta.set("language", lang);
             ost.set_metadata(meta);
         }
+        let out_index = ost.index();
         unsafe {
             (*ost.parameters().as_mut_ptr()).codec_tag = 0;
+            set_pid(&mut ost, to_ts, setup.info.pid);
         }
+        audio_pending.push((out_index, reencoder));
+    }
+
+    // Captions, likewise, and more simply: nothing about them is re-encoded
+    // and nothing about them is spliced, so the stream is declared exactly
+    // as it arrived. The muxer knows this codec and writes the descriptors
+    // that say a Japanese player should look here for subtitles.
+    let mut caption_pending: Vec<usize> = Vec::new();
+    for info in &captions {
+        let params = ictx
+            .stream(info.stream_index)
+            .ok_or_else(|| anyhow!("caption stream {} vanished", info.stream_index))?
+            .parameters();
+        let mut ost = octx.add_stream(ff::encoder::find(ff::codec::Id::None))?;
+        ost.set_parameters(params);
+        ost.set_time_base(ff::Rational::new(1, 90_000));
+        if let Some(lang) = &info.language {
+            let mut meta = ff::Dictionary::new();
+            meta.set("language", lang);
+            ost.set_metadata(meta);
+        }
+        let out_index = ost.index();
+        unsafe {
+            (*ost.parameters().as_mut_ptr()).codec_tag = 0;
+            set_pid(&mut ost, to_ts, info.pid);
+        }
+        caption_pending.push(out_index);
     }
 
     {
@@ -1049,12 +1490,83 @@ pub fn cut_with_progress(
     // container actually uses, so every packet has to be rescaled from the
     // tick scale we built timestamps in into the one that got written.
     let out_tb = octx.stream(0).ok_or_else(|| anyhow!("no output stream"))?.time_base();
-    // The muxer may have rewritten the audio time base too.
-    let audio_out = src
-        .audio
-        .as_ref()
-        .and_then(|_| octx.stream(1))
-        .map(|s| (1usize, f64::from(s.time_base())));
+
+    // Smart mode re-encodes the frames the boundaries fall inside, before any
+    // of them is written, so that the pass below can stay a copy with a
+    // lookup in it. Two frames per range edge, in a file of tens of
+    // thousands -- per track, since where a boundary falls inside a frame is
+    // a fact about one track's framing and not about the recording.
+    let mut patches: Vec<std::collections::HashMap<i64, crate::audio::Patch>> = Vec::new();
+    for setup in &setups {
+        let a = &setup.info;
+        patches.push(match setup.mode {
+            AudioMode::Smart => {
+                let windows: Vec<(i64, i64)> = plans
+                    .iter()
+                    .map(|p| {
+                        (
+                            (p.t_in * a.sample_rate as f64).round() as i64,
+                            (p.t_out * a.sample_rate as f64).round() as i64,
+                        )
+                    })
+                    .collect();
+                let rate = opts.audio_bit_rate.or(a.bit_rate).unwrap_or(192_000);
+                crate::audio::boundary_patches(
+                    src,
+                    a,
+                    &windows,
+                    rate,
+                    setup.source_adts,
+                    setup.aac,
+                )?
+            }
+            _ => Default::default(),
+        });
+    }
+    if std::env::var("SMARTCUT_DEBUG").is_ok() {
+        for (setup, p) in setups.iter().zip(&patches) {
+            if setup.mode == AudioMode::Smart {
+                eprintln!(
+                    "  audio 0x{:04x}: {} frame(s) prepared for the boundaries",
+                    setup.info.pid,
+                    p.len()
+                );
+            }
+        }
+    }
+
+    // The muxer is free to replace the time base of every stream it was
+    // given: MPEG-TS keeps 90 kHz whatever it is handed, and MP4 counts in
+    // the sample rate.
+    let audio_tracks: Vec<AudioTrack> = setups
+        .iter()
+        .zip(audio_pending)
+        .zip(patches)
+        .map(|((setup, (out_index, reencoder)), patches)| AudioTrack {
+            out_index,
+            out_tb: octx.stream(out_index).map_or(1.0 / 90_000.0, |s| f64::from(s.time_base())),
+            in_index: setup.info.stream_index,
+            info: setup.info.clone(),
+            mode: setup.mode,
+            written: 0,
+            prev: None,
+            end: None,
+            reencoder,
+            patches,
+        })
+        .collect();
+    let caption_tracks: Vec<CaptionTrack> = captions
+        .iter()
+        .zip(caption_pending)
+        .map(|(info, out_index)| CaptionTrack {
+            out_index,
+            out_tb: octx.stream(out_index).map_or(1.0 / 90_000.0, |s| f64::from(s.time_base())),
+            in_index: info.stream_index,
+            in_tb: info.time_base,
+            written: 0,
+        })
+        .collect();
+
     let mut writer = Writer {
         octx,
         field_ticks: den,
@@ -1067,79 +1579,79 @@ pub fn cut_with_progress(
         pending: Default::default(),
         seen: Default::default(),
         written: 0,
-        audio: audio_out,
-        audio_written: 0,
-        audio_prev: None,
-        audio_end: None,
-        audio_rate: src.audio.as_ref().map(|a| a.sample_rate).unwrap_or(48_000),
-        reencoder,
+        audio: audio_tracks,
+        captions: caption_tracks,
         progress,
         expected: plans.iter().flat_map(|p| &p.segments).map(|s| s.frames as i64).sum(),
     };
 
-    // Smart mode re-encodes the frames the boundaries fall inside, before any
-    // of them is written, so that the pass below can stay a copy with a
-    // lookup in it. Two frames per range edge, in a file of tens of thousands.
-    let patches = match (opts.audio_mode, src.audio.as_ref()) {
-        (AudioMode::Smart, Some(a)) => {
-            let windows: Vec<(i64, i64)> = plans
-                .iter()
-                .map(|p| {
-                    (
-                        (p.t_in * a.sample_rate as f64).round() as i64,
-                        (p.t_out * a.sample_rate as f64).round() as i64,
-                    )
-                })
-                .collect();
-            let rate = opts.audio_bit_rate.or(a.bit_rate).unwrap_or(192_000);
-            crate::audio::boundary_patches(src, a, &windows, rate, source_adts, aac)?
-        }
-        _ => Default::default(),
-    };
-    if std::env::var("SMARTCUT_DEBUG").is_ok() && opts.audio_mode == AudioMode::Smart {
-        eprintln!("  audio: {} frame(s) prepared for the boundaries", patches.len());
-    }
-
     let fps = num as f64 / den as f64;
     let mut display_base: i64 = 0;
     let mut pictures: i64 = 0;
+    // Where each kept range began in the output, which is what the tables
+    // grafted on afterwards are placed against.
+    let mut range_starts: Vec<f64> = Vec::with_capacity(plans.len());
     for plan in plans {
         // Anchor this range's audio to the output time its video starts at.
         // display_base counts fields, so two per frame.
         let target_start = display_base as f64 / (2.0 * fps);
-        // How far the audio actually laid down runs ahead of or behind where
+        range_starts.push(target_start);
+        // How far each track actually laid down runs ahead of or behind where
         // this range's video starts. Zero for the first range, which is
-        // positioned by the track's own start offset instead.
-        let drift = writer.audio_end.map_or(0.0, |end| end - target_start);
-        if std::env::var("SMARTCUT_DEBUG").is_ok() {
-            eprintln!(
-                "  range t_in={:.4} target_start={:.4} audio_end={:?} drift={:+.4}",
-                plan.t_in,
-                target_start,
-                writer.audio_end.map(|v| (v * 1e4).round() / 1e4),
-                drift
-            );
-        }
-        let audio_ctx = src.audio.as_ref().map(|a| AudioCtx {
-            in_index: a.stream_index,
-            in_tb: a.time_base,
-            offset: target_start - plan.t_in,
-            pick_from: plan.t_in + drift,
-            min_start: if writer.audio_end.is_none() { plan.t_in } else { f64::NEG_INFINITY },
-            window: (
-                (plan.t_in * a.sample_rate as f64).round() as i64,
-                (plan.t_out * a.sample_rate as f64).round() as i64,
-            ),
-            range_in: plan.t_in,
-            mode: opts.audio_mode,
-            patches: &patches,
-        });
+        // positioned by the track's own start offset instead. Kept per track:
+        // two tracks of the same recording drift by different amounts,
+        // because their frames fall at different instants.
+        let audio_ctx: Vec<AudioCtx> = writer
+            .audio
+            .iter()
+            .enumerate()
+            .map(|(track, t)| {
+                let drift = t.end.map_or(0.0, |end| end - target_start);
+                if std::env::var("SMARTCUT_DEBUG").is_ok() {
+                    eprintln!(
+                        "  range t_in={:.4} target_start={:.4} track=0x{:04x} end={:?} \
+                         drift={:+.4}",
+                        plan.t_in,
+                        target_start,
+                        t.info.pid,
+                        t.end.map(|v| (v * 1e4).round() / 1e4),
+                        drift
+                    );
+                }
+                AudioCtx {
+                    track,
+                    in_index: t.in_index,
+                    in_tb: t.info.time_base,
+                    offset: target_start - plan.t_in,
+                    pick_from: plan.t_in + drift,
+                    min_start: if t.end.is_none() { plan.t_in } else { f64::NEG_INFINITY },
+                    window: (
+                        (plan.t_in * t.info.sample_rate as f64).round() as i64,
+                        (plan.t_out * t.info.sample_rate as f64).round() as i64,
+                    ),
+                    range_in: plan.t_in,
+                    mode: t.mode,
+                }
+            })
+            .collect();
+        let caption_ctx: Vec<CaptionCtx> = writer
+            .captions
+            .iter()
+            .enumerate()
+            .map(|(track, t)| CaptionCtx {
+                track,
+                in_index: t.in_index,
+                in_tb: t.in_tb,
+                offset: target_start - plan.t_in,
+            })
+            .collect();
         for (n, seg) in plan.segments.iter().enumerate() {
             let first_segment = n == 0;
             let ctx = SegmentCtx {
                 display_base,
                 reframe: reframe.as_ref(),
-                audio: audio_ctx.as_ref(),
+                audio: &audio_ctx,
+                captions: &caption_ctx,
                 first: first_segment,
             };
             // Each segment reports the span it actually occupied, so the
@@ -1154,24 +1666,46 @@ pub fn cut_with_progress(
             pictures += span.pictures;
         }
     }
-    // Flush whatever the audio encoder still holds before closing the file.
-    if writer.reencoder.is_some() {
+    // Flush whatever each audio encoder still holds before closing the file.
+    for track in 0..writer.audio.len() {
         let mut tail = Vec::new();
-        if let Some(re) = writer.reencoder.as_mut() {
+        if let Some(re) = writer.audio[track].reencoder.as_mut() {
             re.finish(&mut tail)?;
         }
         for (p, pts) in tail {
-            writer.push_audio_encoded(p, pts)?;
+            writer.push_audio_encoded(track, p, pts)?;
         }
     }
     writer.flush()?;
     writer.octx.write_trailer()?;
-    if let Some(report) = &writer.progress {
-        report(1.0);
-    }
 
     if writer.written != pictures {
         bail!("segments reported {pictures} pictures, wrote {}", writer.written);
+    }
+
+    // The file is complete and correct as a file; what it does not yet have
+    // is the broadcast's own account of itself. See [`crate::si`].
+    if let Some(service) = tables.as_ref() {
+        match graft_tables(src, service, &setups, &captions, video_pid, &range_starts, plans, output)
+        {
+            Ok(stats) if std::env::var("SMARTCUT_DEBUG").is_ok() => {
+                eprintln!(
+                    "  tables: {} map, {} service, {} event, {} clock",
+                    stats.pmt, stats.sdt, stats.eit, stats.tot
+                );
+            }
+            Ok(_) => {}
+            // A cut that came out right is not worth failing over a table.
+            // Say what was lost and leave the file alone.
+            Err(e) => eprintln!(
+                "note: the cut is written, but the broadcast's own tables could not be put \
+                 back: {e}"
+            ),
+        }
+    }
+
+    if let Some(report) = &writer.progress {
+        report(1.0);
     }
     Ok(())
 }

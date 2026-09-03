@@ -20,13 +20,28 @@ FRAME = 1024 / SR     # one AAC frame
 TOLERANCE_MS = 1.0 if os.environ.get("SMARTCUT_AUDIO") == "reencode" else FRAME / 2 * 1000 + 1.0
 
 
-def start_time(path):
+def probe(path, stream, field):
+    """One field of one stream, as a string.
+
+    The first line of the answer, not the whole of it: a transport stream
+    carries its streams inside a program as well as beside it, and ffprobe
+    prints the entry once for each -- so the reply to a question about one
+    stream arrives twice.
+    """
     out = subprocess.run(
-        ["ffprobe", "-v", "error", "-select_streams", "a:0",
-         "-show_entries", "stream=start_time", "-of", "csv=p=0", path],
-        capture_output=True, text=True).stdout.strip().rstrip(",")
+        ["ffprobe", "-v", "error", "-select_streams", stream,
+         "-show_entries", f"stream={field}", "-of", "csv=p=0", path],
+        capture_output=True, text=True).stdout
+    for line in out.splitlines():
+        line = line.strip().rstrip(",")
+        if line:
+            return line
+    return ""
+
+
+def start_time(path):
     try:
-        return float(out)
+        return float(probe(path, "a:0", "start_time"))
     except ValueError:
         return 0.0
 
@@ -47,11 +62,11 @@ def clicks(path):
 
 
 def duration(path, stream):
-    out = subprocess.run(
-        ["ffprobe", "-v", "error", "-select_streams", stream,
-         "-show_entries", "stream=duration", "-of", "csv=p=0", path],
-        capture_output=True, text=True).stdout.strip().rstrip(",")
-    return float(out) if out else 0.0
+    out = probe(path, stream, "duration")
+    try:
+        return float(out)
+    except ValueError:
+        return 0.0
 
 
 src, out = os.environ["SRC"], os.environ["OUT"]

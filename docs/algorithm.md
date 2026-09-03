@@ -137,6 +137,11 @@ The Rust core adds a third, `smart`, which is its default: the frames a
 boundary falls inside are re-encoded and the rest copied. See
 [the Rust core](rust-core.md#smart-rendering-applied-to-audio---audio-mode-smart).
 
+It also takes a channel count (`--audio-channels`), which is what folds a 5.1
+recording to stereo. That has no copy path at all, so it is a whole-track
+re-encode whatever the mode says. See
+[the Rust core](rust-core.md#downmixing---audio-channels).
+
 Handling AAC encoder delay / priming strictly via edit lists has not been
 implemented.
 

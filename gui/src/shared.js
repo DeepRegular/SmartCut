@@ -6,6 +6,8 @@
 // clip in the list and the timecode over the picture in the editor are one
 // answer.
 
+import { t } from "./i18n.js";
+
 /// HH:MM:SS.cc, the way the reference tool writes an instant.
 export function fmt(t) {
   if (!isFinite(t)) return "--:--:--.--";
@@ -25,12 +27,20 @@ export function clock(t) {
 }
 
 /// "28分5秒", the way the reference tool puts a clip's length.
-export function coarse(t) {
-  if (!isFinite(t)) return "—";
-  const h = Math.floor(t / 3600);
-  const m = Math.floor((t % 3600) / 60);
-  const s = Math.floor(t % 60);
-  return (h ? `${h}時間 ` : "") + (h || m ? `${m}分 ` : "") + `${s}秒`;
+export function coarse(secs) {
+  if (!isFinite(secs)) return "—";
+  const h = Math.floor(secs / 3600);
+  const m = Math.floor((secs % 3600) / 60);
+  const s = Math.floor(secs % 60);
+  return (
+    (h ? t("dur.h", { h }) : "") + (h || m ? t("dur.m", { m }) : "") + t("dur.s", { s })
+  );
+}
+
+/// How a channel count is written: 5.1 rather than 6, because that is what
+/// the recording calls itself and what a player will call it back.
+export function chLabel(n) {
+  return n === 6 ? "5.1ch" : n === 8 ? "7.1ch" : `${n}ch`;
 }
 
 /// How a commercial detection was arrived at and what it came to, in one line.
@@ -40,14 +50,17 @@ export function coarse(t) {
 export function cmNote(res) {
   const how =
     res.resets > 0
-      ? `字幕リセット ${res.resets} 箇所`
+      ? t("cm.how.captions", { n: res.resets })
       : res.logo_found
-        ? "ロゴ＋無音"
-        : "無音のみ（ロゴなし）";
+        ? t("cm.how.logo")
+        : t("cm.how.silence");
   return res.blocks.length
-    ? `${how}: ${res.blocks.length} ブロック / 合計 ` +
-        fmt(res.blocks.reduce((n, b) => n + (b.end - b.start), 0))
-    : `${how}: CM らしい区間は見つかりませんでした`;
+    ? t("cm.found", {
+        how,
+        n: res.blocks.length,
+        total: fmt(res.blocks.reduce((n, b) => n + (b.end - b.start), 0)),
+      })
+    : t("cm.none", { how });
 }
 
 /// Filenames and error messages go into rows built as markup, and a recording

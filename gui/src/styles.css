@@ -56,6 +56,98 @@ body {
 .title { color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .brand { margin-left: auto; color: var(--dim); font-weight: 600; letter-spacing: .04em; }
 
+/* The program's name, where it is a button. It keeps the plain look the
+   label had -- it is the corner of a title bar, not a control anyone should
+   be drawn to -- and only lights up under the pointer and while its menu is
+   down. */
+.brandmenu { margin-left: auto; position: relative; }
+/* Bordered, because it is a button and there is nothing else in the corner
+   to say so -- no caret: the name is the label, and an arrow beside it only
+   repeats what pressing it shows. */
+button.brand {
+  margin: 0; background: #333; border: 1px solid #4a4a4a; border-radius: 2px;
+  padding: 3px 12px; font: inherit; font-weight: 600; letter-spacing: .04em;
+  color: var(--dim); cursor: pointer;
+}
+button.brand:hover, button.brand.open { background: #3a3a3a; border-color: #5c5c5c; color: var(--text); }
+.menu {
+  position: absolute; top: calc(100% + 4px); right: 0; z-index: 20;
+  min-width: 180px; padding: 4px;
+  background: var(--panel); border: 1px solid #000;
+  box-shadow: 0 6px 18px rgba(0, 0, 0, .6);
+}
+.menu[hidden] { display: none; }
+.menu-item {
+  display: flex; align-items: baseline; gap: 24px; width: 100%; text-align: left;
+  /* The label and the key it is paired with stay on one line, and the menu
+     is as wide as the widest of them -- a wrapped 名前を付けて保存… reads as
+     two items. */
+  white-space: nowrap;
+  background: none; border: 0; border-radius: 2px; padding: 6px 10px;
+  font: inherit; color: var(--text); cursor: pointer;
+}
+.menu-item:hover { background: #3a3a3a; }
+/* The key that does the same thing, held to the right of the label it
+   belongs to. Dim: it is a reminder for next time, not part of the name. */
+.menu-key { margin-left: auto; color: var(--dim); font-size: 11px; }
+.menu-sep { height: 1px; margin: 4px 6px; background: #4a4a4a; }
+
+/* --- 環境設定 ----------------------------------------------------------
+   A panel over the window rather than a window of its own: it is two lines
+   long, and a second OS window for two lines is a second thing to find on
+   the taskbar. The ground behind it is what says the rest of the program is
+   not listening. */
+.modal {
+  position: fixed; inset: 0; z-index: 30;
+  display: flex; align-items: center; justify-content: center;
+  background: rgba(0, 0, 0, .55);
+}
+.modal[hidden] { display: none; }
+.modal-box {
+  min-width: 420px; max-width: min(560px, 92vw);
+  background: var(--panel); border: 1px solid #000;
+  box-shadow: 0 10px 30px rgba(0, 0, 0, .7);
+}
+.modal-head {
+  padding: 7px 12px; background: #2a2a2a; border-bottom: 1px solid #000;
+  font-weight: 600;
+}
+.modal-body { padding: 12px; display: flex; flex-direction: column; gap: 8px; }
+.modal-body .row { display: flex; align-items: center; gap: 10px; }
+.modal-body select { min-width: 220px; }
+.modal-body p { margin: 0; line-height: 1.6; }
+.modal-foot {
+  display: flex; justify-content: flex-end; gap: 8px;
+  padding: 10px 12px; border-top: 1px solid var(--line);
+}
+
+/* --- 書き出すトラック ----------------------------------------------------
+   A list of what the recording carries, one row each, the box in front of
+   the words so the column of boxes reads as the choice being made. */
+.tracks { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+.tracks li { display: flex; align-items: baseline; gap: 8px; }
+.tracks label { cursor: pointer; }
+.tracks .small { font-size: 11px; line-height: 1.5; }
+
+/* --- バージョン情報 ------------------------------------------------------
+   The name and the number on one line and the rest as a two-column list
+   under it: the number is what the panel is opened for, and a table of
+   labels it has to be found among is a panel that has buried its answer. */
+.about-mark { display: flex; align-items: baseline; gap: 10px; }
+.about-name { font-size: 17px; font-weight: 600; letter-spacing: .04em; }
+.about-ver { color: var(--dim); font-variant-numeric: tabular-nums; }
+.about-facts {
+  display: grid; grid-template-columns: max-content 1fr;
+  gap: 3px 12px; margin: 4px 0 0;
+  /* The one part of either window that is there to be copied out of --
+     these lines are what a bug report has to carry, and a version read off
+     the screen and typed back in is a version that comes back wrong. Both
+     spellings, as everywhere else: WebKitGTK reads only the prefixed one. */
+  user-select: text; -webkit-user-select: text;
+}
+.about-facts dt { color: var(--dim); }
+.about-facts dd { margin: 0; overflow-wrap: anywhere; }
+
 .infobar {
   display: flex; align-items: center; gap: 12px;
   background: #202020; border-bottom: 1px solid #000;
@@ -95,9 +187,16 @@ main { flex: 1; min-height: 0; display: flex; gap: 0; }
 .clips-empty { color: var(--dim); padding: 8px; font-size: 11px; }
 
 /* --- picture ---------------------------------------------------------- */
+/* No `width: 100%`. As a flex item in a column it already stretches to the
+   full width, and the percentage is of that same width -- so on 出力画面,
+   where the stage carries side margins, it drew itself 8px past the right
+   edge. Nothing showed for it under WebKitGTK, whose scroll bars float over
+   the page, but the Windows webview reserves room for one: the overflow put
+   a horizontal bar along the bottom, and the height that bar took away then
+   pushed the 100vh body under a vertical bar as well. */
 .stage {
   position: relative; background: #000; border: 1px solid var(--line);
-  flex: 1 1 0; min-height: 160px; width: 100%;
+  flex: 1 1 0; min-height: 160px;
 }
 #preview { display: block; width: 100%; height: 100%; object-fit: contain; }
 .overlay {
@@ -282,6 +381,11 @@ main { flex: 1; min-height: 0; display: flex; gap: 0; }
 .mini.wide { min-width: 96px; }
 .mini { background: #333; color: var(--text); border: 1px solid #4a4a4a; border-radius: 2px; padding: 3px 10px; cursor: pointer; }
 button:disabled { opacity: .45; cursor: default; }
+/* A control the chosen mode has no use for. The output settings do this to
+   the audio channel and bitrate pickers unless the whole track is being
+   re-encoded: what they hold is still readable, and still there when the mode
+   comes back round to wanting it. */
+select:disabled { opacity: .5; cursor: default; }
 /* The drop-down arrow is drawn rather than left to the platform, which under
    this theme draws it as an unreadable smudge. Only on `select`: the same
    `appearance: none` on a text field leaves WebKit drawing the placeholder
@@ -436,10 +540,36 @@ input[type="text"]::placeholder { color: var(--dim); }
   font: 12px/1.9 ui-monospace, "Noto Sans Mono", monospace; white-space: pre-wrap;
 }
 .row { display: flex; align-items: center; gap: 8px; margin: 5px 0; }
+
+/* A `<select>` whose popup is drawn here rather than by the platform, so that
+   it can go upward: see `opensUpward`. The wrapper is what the popup is
+   positioned against, and it stands in for the control in the row's layout. */
+.drop { position: relative; display: inline-flex; }
+.drop > select { width: 100%; }
+/* Not `.menu`: that name is already the brand menu's, and its `top` would
+   still apply here -- an absolutely positioned box given both a top and a
+   bottom is stretched between them, which is a full-width sliver and not a
+   list. */
+.drop-menu {
+  position: absolute; bottom: calc(100% + 3px); left: 0; right: 0; z-index: 30;
+  margin: 0; padding: 2px; list-style: none;
+  /* Tall enough for the bitrate ladder, short enough that it cannot reach
+     past the top of the window and be the same problem upside down. */
+  max-height: min(52vh, 460px); overflow-y: auto;
+  background: var(--sunken); border: 1px solid var(--line); border-radius: 2px;
+  box-shadow: 0 -8px 20px rgba(0, 0, 0, .6);
+}
+.drop-menu li { padding: 4px 8px; cursor: pointer; white-space: nowrap; }
+/* `on` is the answer the control is holding; `at` is the cursor, which the
+   mouse and the arrow keys move together. `at` is written second so that it
+   wins when they are the same row. */
+.drop-menu li.on { background: #2c4a50; }
+.drop-menu li.at { background: var(--sel); color: #10262b; }
+.drop-menu[hidden] { display: none; }
 .row > span:first-child { color: var(--dim); min-width: 132px; }
 .row .lbl { color: var(--dim); min-width: 48px; }
 .row .num { color: var(--dim); font-variant-numeric: tabular-nums; white-space: nowrap; }
-.row input[type="text"], .row select { flex: 1; min-width: 0; }
+.row input[type="text"], .row select, .row .drop { flex: 1; min-width: 0; }
 .row input[readonly] { color: var(--dim); }
 .opts { display: flex; flex-direction: column; gap: 5px; margin-top: 8px; }
 

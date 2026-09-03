@@ -58,11 +58,13 @@ bash tests/run_rust_tests.sh          # Rust E2E（+ container 索引で 9） 13
 bash tests/run_audio_tests.sh         # A/V 同期（+ copy/reencode で 10）   5
 bash tests/run_audio_content_tests.sh # 実素材の音声が正しい位置にあるか   6
 bash tests/run_aac_tests.sh           # 出力の AAC フレームそのものを見る   8
+bash tests/run_downmix_tests.sh       # 5.1ch を畳んだ音がどこへ行ったか    8
 bash tests/run_preview_tests.sh       # スクラブの絵が頼んだ時刻か         7
 bash tests/run_index_tests.sh         # 索引が走査と同じ答えを返すか       27
 bash tests/run_proxy_tests.sh         # プロキシが録画の代わりになるか     22
 bash tests/run_scene_tests.sh         # シーン検出 vs CM 境界             1
 bash tests/run_ts_layout_tests.sh     # TS の素性とシーケンスヘッダ         5
+bash tests/run_broadcast_tests.sh    # 字幕・番組情報・音声多重                   10
 bash tests/run_cm_tests.sh            # CM 検出 vs 目視の正解              5
 ```
 
@@ -71,6 +73,9 @@ bash tests/run_cm_tests.sh            # CM 検出 vs 目視の正解            
 フィクスチャを使い回す側（`run_rust_tests.sh` / `run_index_tests.sh` /
 `run_proxy_tests.sh`）は、無ければ検査を黙って飛ばさずに
 `run tests/run_tests.sh first to generate fixtures` と言って止まる。
+`run_audio_tests.sh` と `run_downmix_tests.sh` は自前のフィクスチャを同じ
+ディレクトリに作る——インパルス列と、チャンネルごとに違う純音を入れた 5.1ch。
+どちらも他のテストが要らないものである。
 
 各テストの出力もフィクスチャと同じ `$TMPDIR` の下に書かれる。プロキシのテストは
 実素材だと数 GB 要る（1 時間の放送 TS のプロキシ 1 本で 2.3 GB）ので、小さな

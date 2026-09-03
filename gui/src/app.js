@@ -20,7 +20,9 @@
 // lanes here and a window of its own, and the passes hold themselves to part
 // of the machine while that window is up.
 
-import { fmt, clock, coarse, cmNote, esc, noBrowserMenu } from "./shared.js";
+import { fmt, clock, coarse, chLabel, cmNote, esc, noBrowserMenu } from "./shared.js";
+import { t, applyStatic, preference, currentLang, setLang, onLangChange, tellBackend, confirmWithOs }
+  from "./i18n.js";
 
 const T = window.__TAURI__ || {};
 const invoke = T.core && T.core.invoke;
@@ -60,7 +62,7 @@ function copyNo(clip) {
 /// moment there are two of them.
 function clipLabel(clip) {
   const n = copyNo(clip);
-  return n ? `${clip.name}（${n}）` : clip.name;
+  return n ? t("list.copyLabel", { name: clip.name, n }) : clip.name;
 }
 
 // --- the clip list ------------------------------------------------------
@@ -85,12 +87,17 @@ function makeClip(path) {
     name: nameOf(path),
     info: null,
     state: "queued", // queued | indexing | ready | error
-    phase: "待機中",
+    phase: t("phase.queued"),
     progress: 0,
     error: "",
     cm: null, // the last CmResult for this clip
     cmState: "none", // none | queued | running | done | error
     cmPhase: "",
+    /// Who wrote `cmPhase`: this window off `cm` ("run"), this window off
+    /// what an earlier session left on disc ("cache"), or the editor
+    /// (`null`), whose sentence arrived already written. Only the first two
+    /// can be written again in another language -- see `relocalise`.
+    cmSource: null,
     cmProgress: 0,
     /// Blocks found by the list that the timeline has not been shown yet.
     /// Applied on the next visit to the editor, which is the only place that
@@ -126,6 +133,12 @@ function show(name) {
   for (const b of document.querySelectorAll(".screens .tab")) {
     b.classList.toggle("active", b.dataset.screen === name);
   }
+  // The menu stands on all three screens: what hangs off it -- the project,
+  // the preferences, the about box -- is about the program rather than about
+  // whichever screen is up, and a project is as much the output settings as
+  // it is the cuts. Shut on the way across, or a screen change under an open
+  // menu would leave it to reappear later.
+  showMenu(false);
   if (name === "outset") renderOutset();
   if (name === "out") renderOutScreen();
 }
@@ -156,7 +169,7 @@ async function edit(clip) {
   // recording that has never been read, showing what it has got to as it
   // goes, so waiting for the list's turn buys nothing.
   if (clip.state === "error") {
-    note(`${clipLabel(clip)} は読み込めませんでした`);
+    note(t("list.cannotRead", { clip: clipLabel(clip) }));
     return;
   }
   editing = clip;
@@ -169,13 +182,13 @@ async function edit(clip) {
   // index the editor wrote is on disc, so the lane's pass is a read.
   if (clip.state === "indexing") await invoke("stop_batch", { lane: "index" });
   try {
-    await invoke("open_editor", { title: `カット編集 — ${clipLabel(clip)}` });
+    await invoke("open_editor", { title: t("editor.windowTitle", { clip: clipLabel(clip) }) });
     // Lost if the window is still starting up, which is what `editor-ready`
     // is for; sent anyway for the case where it is already open on another
     // clip and there will be no `editor-ready` at all.
     tellEditor();
   } catch (e) {
-    note(`編集画面を開けません: ${e}`);
+    note(t("list.cannotOpenEditor", { e }));
     editing = null;
     before = null;
   }
@@ -225,6 +238,7 @@ if (listen) {
       clip.cmPhase = state.cmNote;
       clip.cmState = "done";
       clip.cmPending = false;
+      clip.cmSource = null;
     }
     // **A detection is not an edit, so キャンセル does not undo it.** It is
     // minutes of reading the recording, asked for by its own button and out
@@ -236,6 +250,9 @@ if (listen) {
     // handed over and would not be offered again.
     if (landed && clip === editing) before = JSON.parse(JSON.stringify(state));
     paintRow(clip);
+    // The other way a project changes: a cut made in the other window. It
+    // repaints one row rather than the list, so it says so itself.
+    touch();
     if (screen === "outset") renderOutset();
     if (screen === "out") renderOutScreen();
   });
@@ -298,10 +315,12 @@ async function addPaths(inputs) {
   // A path that could not be reached at all is the more useful thing to say,
   // so it wins the one line there is.
   if (failed.length) {
-    note(failed[0].error + (failed.length > 1 ? ` ほか ${failed.length - 1} 件` : ""));
+    note(failed[0].error + (failed.length > 1 ? t("list.andMore", { n: failed.length - 1 }) : ""));
   } else if (skipped.length) {
-    note(`対応していない形式のため無視しました: ${skipped.slice(0, 3).join(", ")}` +
-      (skipped.length > 3 ? ` ほか ${skipped.length - 3} 件` : ""));
+    note(
+      t("list.unsupported", { names: skipped.slice(0, 3).join(", ") }) +
+        (skipped.length > 3 ? t("list.andMore", { n: skipped.length - 3 }) : "")
+    );
   }
   if (taken.length) pump();
   return taken;
@@ -310,7 +329,7 @@ async function addPaths(inputs) {
 el("add-files").addEventListener("click", async () => {
   const picked = await dialog.open({
     multiple: true,
-    filters: [{ name: "動画", extensions: VIDEO_EXT }],
+    filters: [{ name: t("dialog.video"), extensions: VIDEO_EXT }],
   });
   if (!picked) return;
   await addPaths(Array.isArray(picked) ? picked : [picked]);
@@ -327,6 +346,14 @@ if (listen) {
     el("droptarget").classList.remove("over");
     const paths = ev.payload?.paths || [];
     if (!paths.length) return;
+    // A project dropped on the window is a project being opened. One at a
+    // time and nothing else with it: two projects are two lists, and a
+    // project alongside recordings does not say whether the recordings are
+    // to be added to it or dropped instead of it.
+    if (paths.length === 1 && extOf(paths[0]) === PROJECT_EXT) {
+      openDroppedProject(paths[0]);
+      return;
+    }
     // A drop is a way of adding clips, so it lands on the list whichever
     // screen was up when it happened.
     show("input");
@@ -379,9 +406,9 @@ function paintQueueNote() {
   const bits = [];
   const ix = clips.find((c) => c.state === "indexing");
   const cm = clips.find((c) => c.cmState === "running");
-  if (ix) bits.push(`シーク用インデックスを作成中: ${clipLabel(ix)}`);
-  if (cm) bits.push(`CM を検出中: ${clipLabel(cm)}`);
-  el("queue-note").textContent = bits.length ? bits.join("　／　") : sticky;
+  if (ix) bits.push(t("queue.indexing", { clip: clipLabel(ix) }));
+  if (cm) bits.push(t("queue.detecting", { clip: clipLabel(cm) }));
+  el("queue-note").textContent = bits.length ? bits.join(t("sep")) : sticky;
 }
 
 /// The next clip for a lane, or nothing.
@@ -424,7 +451,7 @@ async function pumpLane(lane) {
 
 async function runIndex(clip) {
   clip.state = "indexing";
-  clip.phase = "読み込み中";
+  clip.phase = t("phase.reading");
   clip.progress = 0;
   paintRow(clip);
   paintQueueNote();
@@ -432,13 +459,15 @@ async function runIndex(clip) {
     clip.info = await invoke("index_clip", { path: clip.path });
     clip.state = "ready";
     clip.progress = 1;
-    clip.phase = clip.info.cached ? "前回の索引を再利用" : `索引 ${clip.info.seconds.toFixed(0)} 秒`;
+    clip.phase = clip.info.cached
+      ? t("phase.indexReused")
+      : t("phase.indexBuilt", { s: clip.info.seconds.toFixed(0) });
   } catch (e) {
     if (String(e).includes("cancelled")) {
       // Put back, not failed: 中止 means "not now", and the pass left
       // nothing behind to be inconsistent about.
       clip.state = "queued";
-      clip.phase = "中止しました";
+      clip.phase = t("phase.stopped");
     } else {
       clip.state = "error";
       clip.error = String(e);
@@ -462,7 +491,11 @@ async function runIndex(clip) {
 /// Nothing is said when there is nothing to say: the usual answer for a
 /// recording added for the first time is `null`, and a row that has never
 /// been detected should look like one.
-async function restoreCm(clip) {
+///
+/// `pending` is for rows that came out of a project file, which knows
+/// something the cache cannot: whether those blocks have already been shown
+/// to the timeline. The cache can only say that a detection was once run.
+async function restoreCm(clip, pending = null) {
   if (!invoke) return;
   let res;
   try {
@@ -480,8 +513,9 @@ async function restoreCm(clip) {
   // Said as a detection that has already happened rather than as one that
   // just did: the difference matters to someone looking at a list they left
   // open overnight and wondering what it has been doing.
-  clip.cmPhase = `${cmNote(res)}（前回の検出）`;
-  clip.cmPending = res.blocks.length > 0;
+  clip.cmPhase = t("cm.previous", { note: cmNote(res) });
+  clip.cmSource = "cache";
+  clip.cmPending = pending === null ? res.blocks.length > 0 : pending;
   paintRow(clip);
   paintButtons();
   if (clip.selected) paintProps();
@@ -490,7 +524,7 @@ async function restoreCm(clip) {
 async function runCm(clip) {
   clip.cmState = "running";
   clip.cmProgress = 0;
-  clip.cmPhase = "検出中";
+  clip.cmPhase = t("phase.detecting");
   paintRow(clip);
   paintQueueNote();
   try {
@@ -498,6 +532,7 @@ async function runCm(clip) {
     clip.cm = res;
     clip.cmState = "done";
     clip.cmPhase = cmNote(res);
+    clip.cmSource = "run";
     // The marks themselves need to know where the material starts, which is
     // the editor's business; the list only carries the finding across.
     clip.cmPending = res.blocks.length > 0;
@@ -509,10 +544,10 @@ async function runCm(clip) {
   } catch (e) {
     if (String(e).includes("cancelled")) {
       clip.cmState = "queued";
-      clip.cmPhase = "中止しました";
+      clip.cmPhase = t("phase.stopped");
     } else {
       clip.cmState = "error";
-      clip.cmPhase = `検出できません: ${e}`;
+      clip.cmPhase = t("cm.failed", { e });
     }
   }
   paintRow(clip);
@@ -572,7 +607,7 @@ function renderList() {
         <div class="pbar"><span></span></div>
         <div class="ptext dim"></div>
       </div>
-      <button class="kill" title="この行を一覧から外す">×</button>`;
+      <button class="kill" title="${esc(t("list.kill"))}">×</button>`;
     li.querySelector(".poster").draggable = false;
     li.addEventListener("mousedown", (ev) => {
       if (ev.target.classList.contains("kill")) return;
@@ -595,6 +630,9 @@ function paintList() {
   paintTotals();
   paintButtons();
   paintProps();
+  // Everything that adds, removes, reorders or duplicates a row ends here,
+  // so this is where the title finds out whether there is work to save.
+  touch();
 }
 
 /// Write `text` into `node` only when it is not already what is there.
@@ -626,9 +664,16 @@ function paintRow(clip) {
   setText(
     li.querySelector(".sub"),
     i
-      ? `${coarse(i.duration)} (${i.frames} フレーム)　00:00:00.00-${fmt(i.duration)}　` +
-        `${i.width}x${i.height}　${i.fps.toFixed(2)} fps　${i.codec}` +
-        `${i.has_audio ? "" : "　音声なし"}`
+      ? t("row.sub", {
+          len: coarse(i.duration),
+          frames: i.frames,
+          end: fmt(i.duration),
+          w: i.width,
+          h: i.height,
+          fps: i.fps.toFixed(2),
+          codec: i.codec,
+          audio: i.has_audio ? "" : t("row.noAudio"),
+        })
       : clip.state === "error"
         ? clip.error
         : clip.path
@@ -639,18 +684,20 @@ function paintRow(clip) {
   // neither is about the file, which is what the line above is for.
   const bits = [];
   if (clip.cmState === "running") {
-    bits.push(`CM 検出中 ${Math.round(clip.cmProgress * 100)}% — ${clip.cmPhase}`);
-  } else if (clip.cmState === "queued") bits.push("CM 検出 待機中");
-  else if (clip.cmPhase) bits.push(`CM: ${clip.cmPhase}`);
+    bits.push(
+      t("row.cmRunning", { pct: Math.round(clip.cmProgress * 100), phase: clip.cmPhase })
+    );
+  } else if (clip.cmState === "queued") bits.push(t("row.cmQueued"));
+  else if (clip.cmPhase) bits.push(t("row.cmNote", { note: clip.cmPhase }));
   const cutCount = clip.edit ? clip.edit.cuts.length : 0;
   if (cutCount && i) {
     const kept = keepsOf(clip).reduce((n, k) => n + (k.b - k.a), 0);
-    bits.push(`カット ${cutCount} 箇所 — 出力 ${fmt(kept)}`);
+    bits.push(t("row.cuts", { n: cutCount, kept: fmt(kept) }));
   }
   if (clip.edit && clip.edit.keyframes.length) {
-    bits.push(`キーフレーム ${clip.edit.keyframes.length}`);
+    bits.push(t("row.keyframes", { n: clip.edit.keyframes.length }));
   }
-  setText(li.querySelector(".cm"), bits.join("　／　"));
+  setText(li.querySelector(".cm"), bits.join(t("sep")));
 
   // Being edited is worth saying over anything else the row could say: it
   // is the one state that is about where the clip is rather than what has
@@ -659,8 +706,12 @@ function paintRow(clip) {
   const state = clip === editing ? "editing" : clip.state;
   setText(
     badge,
-    { ready: "Smart", error: "エラー", indexing: "解析中", editing: "編集中" }[state] ||
-      "解析待ち"
+    {
+      ready: t("badge.smart"),
+      error: t("badge.error"),
+      indexing: t("badge.indexing"),
+      editing: t("badge.editing"),
+    }[state] || t("badge.queued")
   );
   badge.className = `badge ${state}`;
 
@@ -685,7 +736,7 @@ function paintRow(clip) {
   const detected = clip.cmState === "done" && blocks !== null;
   cmBadge.hidden = !detected;
   if (detected) {
-    setText(cmBadge, blocks ? `CM ${blocks}` : "CM なし");
+    setText(cmBadge, blocks ? t("badge.cm", { n: blocks }) : t("badge.cmNone"));
     cmBadge.className = `cmbadge ${blocks ? "found" : "empty"}`;
   }
 
@@ -696,9 +747,12 @@ function paintRow(clip) {
   setText(
     li.querySelector(".ptext"),
     running
-      ? `${clip.phase && clip.state === "indexing" ? clip.phase : "CM 検出"} ${Math.round(pct * 100)}%`
+      ? t("ptext.running", {
+          phase: clip.phase && clip.state === "indexing" ? clip.phase : t("ptext.cm"),
+          pct: Math.round(pct * 100),
+        })
       : clip.state === "queued"
-        ? "待機中"
+        ? t("phase.queued")
         : clip.phase
   );
 }
@@ -708,8 +762,8 @@ function paintTotals() {
   const total = known.reduce((n, c) => n + c.info.duration, 0);
   const pending = clips.length - known.length;
   el("clip-total").textContent =
-    `クリップ合計数: ${clips.length}　合計時間: ${coarse(total)}` +
-    (pending ? `（未解析 ${pending} 本を除く）` : "");
+    t("input.total", { n: clips.length, t: coarse(total) }) +
+    (pending ? t("input.totalPending", { n: pending }) : "");
 }
 
 function paintButtons() {
@@ -722,7 +776,7 @@ function paintButtons() {
   el("detect-selected").disabled = !selected().some((c) => c.state === "ready");
   const queued = clips.some((c) => c.state === "queued" || c.cmState === "queued");
   el("stop-batch").disabled = !busy && !(paused && queued);
-  el("stop-batch").textContent = paused && queued && !busy ? "解析を再開" : "解析を中止";
+  el("stop-batch").textContent = t(paused && queued && !busy ? "side.resumeBatch" : "side.stopBatch");
   el("move-up").disabled = n === 0;
   el("move-down").disabled = n === 0;
   el("select-all").disabled = clips.length === 0;
@@ -737,30 +791,50 @@ function paintProps() {
   if (picked.length !== 1) {
     box.className = "props-body dim";
     box.textContent = picked.length
-      ? `${picked.length} 個のクリップを選択中`
-      : "クリップが選択されていません";
+      ? t("props.many", { n: picked.length })
+      : t("props.none");
     return;
   }
   const c = picked[0];
   box.className = "props-body";
   if (!c.info) {
-    box.textContent = c.state === "error" ? `${c.name}\n${c.error}` : `${c.name}\n解析待ちです`;
+    box.textContent =
+      c.state === "error"
+        ? t("props.error", { name: c.name, error: c.error })
+        : t("props.queued", { name: c.name });
     return;
   }
   const i = c.info;
-  const flags = [i.interlaced ? "インターレース (TFF)" : "プログレッシブ", i.pulldown ? "2:3プルダウン" : null]
+  const flags = [
+    t(i.interlaced ? "media.interlaced" : "media.progressive"),
+    i.pulldown ? t("media.pulldown") : null,
+  ]
     .filter(Boolean)
     .join(", ");
   const n = copyNo(c);
-  box.textContent =
-    `クリップ名:　${c.name}${n ? `（同じ録画の ${n} 本目）` : ""}\n` +
-    `${c.path}\n` +
-    `映像:　${i.codec}, ${i.width}x${i.height}, ${i.fps.toFixed(2)} fps, ${flags}\n` +
-    `音声:　${i.has_audio ? "あり" : "なし"}\n` +
-    `長さ:　${coarse(i.duration)} (${i.frames} フレーム)　無劣化点 ${i.points} 個` +
-    (i.unusable_points ? `（うち ${i.unusable_points} 個は開始に使えません）` : "") +
-    `\nシーン ${i.scenes} 箇所　索引 ${i.index_name}` +
-    (c.cmPhase ? `\nCM:　${c.cmPhase}` : "");
+  box.textContent = t("props.body", {
+    name: c.name,
+    copy: n ? t("props.copyOf", { n }) : "",
+    path: c.path,
+    codec: i.codec,
+    w: i.width,
+    h: i.height,
+    fps: i.fps.toFixed(2),
+    flags,
+    // With the channel count, because that is what says whether there is
+    // anything to downmix -- and a 5.1 clip in a list of stereo ones is
+    // otherwise indistinguishable until the output has already been written.
+    audio: i.has_audio
+      ? `${t("media.audioYes")}${i.audio_channels ? ` (${chLabel(i.audio_channels)})` : ""}`
+      : t("media.audioNo"),
+    len: coarse(i.duration),
+    frames: i.frames,
+    points: i.points,
+    unusable: i.unusable_points ? t("props.unusable", { n: i.unusable_points }) : "",
+    scenes: i.scenes,
+    index: i.index_name,
+    cm: c.cmPhase ? t("props.cm", { note: c.cmPhase }) : "",
+  });
 }
 
 // --- selection ----------------------------------------------------------
@@ -871,9 +945,9 @@ el("stop-batch").addEventListener("click", async () => {
     return;
   }
   paused = true;
-  note("中止しています…");
+  note(t("list.stopping"));
   await invoke("stop_batch", { lane: null });
-  note("解析を止めました。残りは「解析を再開」で続けられます");
+  note(t("list.stopped"));
   paintButtons();
 });
 
@@ -1117,6 +1191,12 @@ const settings = {
   prefix: "cut_",
   container: "",
   audio: "smart",
+  /// Empty follows the recording; anything else is a downmix, which is the
+  /// one audio setting that decides the mode instead of living under it.
+  audioChannels: "",
+  /// Empty lets the engine derive one from the recording -- and bring it down
+  /// with the channel count when there is a fold.
+  audioBitrate: "",
   keyframes: false,
 };
 
@@ -1139,22 +1219,320 @@ function outputPath(clip) {
   return `${dir}${settings.prefix}${stemOf(clip.path)}${n ? `_${n}` : ""}.${ext}`;
 }
 
+/// Which control stands for which setting. Kept because the flow is
+/// otherwise one-way -- the screen is where the settings are made, and the
+/// only thing that ever makes them from the other side is a project opening.
+const settingInputs = [];
+
 function bindSetting(id, key, kind = "value") {
   const input = el(id);
   const read = () => {
     settings[key] = kind === "checked" ? input.checked : input.value;
     renderOutset();
     renderOutScreen();
+    touch();
   };
   input.addEventListener(kind === "checked" ? "change" : "input", read);
+  settingInputs.push([input, key, kind]);
   if (kind === "checked") input.checked = settings[key];
   else input.value = settings[key];
+}
+
+/// Put `settings` back on screen, for when something other than the screen
+/// has changed them.
+function showSettings() {
+  for (const [input, key, kind] of settingInputs) {
+    if (kind === "checked") input.checked = !!settings[key];
+    else input.value = settings[key];
+    // A `<select>` handed a value it has no option for lands on nothing at
+    // all, so it is put back on its first option -- and then the setting is
+    // read back off the control in every case. What is on screen and what
+    // will be written have to be one answer, and the control is the one that
+    // can only hold an answer that exists.
+    if (input.tagName === "SELECT" && input.selectedIndex < 0) input.selectedIndex = 0;
+    settings[key] = kind === "checked" ? input.checked : input.value;
+  }
+  renderOutset();
+  renderOutScreen();
 }
 bindSetting("out-dir", "dir");
 bindSetting("out-prefix", "prefix");
 bindSetting("out-container", "container");
 bindSetting("out-audio", "audio");
+bindSetting("out-audio-channels", "audioChannels");
+bindSetting("out-audio-bitrate", "audioBitrate");
 bindSetting("out-keyframes", "keyframes", "checked");
+
+// --- drop-downs that open upward -----------------------------------------
+//
+// The file settings are the bottom panel of the window, so a native popup
+// there has nowhere to go but off the screen -- the bitrate list, sixteen
+// rungs of it, ran past the edge with most of itself out of reach. Where a
+// native popup opens is the platform's to decide and not ours, so the popup
+// is ours instead.
+//
+// The `<select>` stays exactly where it was and goes on holding the answer:
+// everything that reads a setting off a control, puts one back on opening a
+// project, or translates the options still works, because the control is
+// still there. What is replaced is only what a click on it draws -- and what
+// that draws has to answer a keyboard too, because the control it stands in
+// for did.
+
+/// The menu that is up: `{ hide, onKey }`. Only ever one.
+let openDrop = null;
+
+function closeDrop() {
+  if (openDrop) openDrop.hide();
+  openDrop = null;
+}
+
+/// Draw `select`'s options above it instead of below.
+function opensUpward(select) {
+  const menu = document.createElement("ul");
+  menu.className = "drop-menu";
+  menu.hidden = true;
+  select.parentElement.appendChild(menu);
+  let items = [];
+  /// Where the cursor is, which the mouse and the arrow keys both move.
+  let at = -1;
+
+  const paint = () => {
+    items.forEach((li, i) => li.classList.toggle("at", i === at));
+    if (items[at]) items[at].scrollIntoView({ block: "nearest" });
+  };
+
+  const open = () => {
+    // Built on the way up rather than once: the options carry `data-i18n`, so
+    // their text is whatever the language is now, not whatever it was when
+    // the window was built.
+    menu.innerHTML = "";
+    items = [...select.options].map((opt) => {
+      const li = document.createElement("li");
+      li.textContent = opt.textContent;
+      li.dataset.value = opt.value;
+      // The answer the control is holding, marked whether or not the cursor
+      // is on it -- which is what makes a list of sixteen rungs readable.
+      if (opt.value === select.value) li.className = "on";
+      menu.appendChild(li);
+      return li;
+    });
+    at = select.selectedIndex;
+    menu.hidden = false;
+    openDrop = { hide: () => (menu.hidden = true), onKey };
+    paint();
+  };
+
+  const commit = (i) => {
+    if (items[i]) {
+      select.value = items[i].dataset.value;
+      // What a click on a real option would have raised, which is what every
+      // setting on this screen is bound to.
+      select.dispatchEvent(new Event("input", { bubbles: true }));
+    }
+    closeDrop();
+  };
+
+  const onKey = (ev) => {
+    switch (ev.key) {
+      case "ArrowDown":
+      case "ArrowUp":
+        at = Math.max(0, Math.min(items.length - 1, at + (ev.key === "ArrowUp" ? -1 : 1)));
+        paint();
+        break;
+      case "Home":
+      case "End":
+        at = ev.key === "Home" ? 0 : items.length - 1;
+        paint();
+        break;
+      case "Enter":
+      case " ":
+        commit(at);
+        break;
+      case "Escape":
+        closeDrop();
+        break;
+      default:
+        // Tab included: it is leaving, and leaving should still work.
+        closeDrop();
+        return;
+    }
+    // Swallowed, so the `<select>` underneath does not answer the same key a
+    // second time -- and so a menu being driven does not also reach the
+    // window's own shortcuts.
+    ev.preventDefault();
+    ev.stopPropagation();
+  };
+
+  select.addEventListener("mousedown", (ev) => {
+    // The one thing that has to happen: without it the platform's own popup
+    // opens underneath this one. It costs the click its focus, which is why
+    // the focus is given back by hand -- a control that cannot be reached by
+    // the keyboard after being clicked is worse than a popup in the wrong
+    // place.
+    ev.preventDefault();
+    if (select.disabled) return;
+    select.focus();
+    const wasOpen = openDrop && !menu.hidden;
+    closeDrop();
+    if (!wasOpen) open();
+  });
+
+  menu.addEventListener("mousemove", (ev) => {
+    const li = ev.target.closest("li");
+    if (li && items.indexOf(li) !== at) {
+      at = items.indexOf(li);
+      paint();
+    }
+  });
+
+  menu.addEventListener("click", (ev) => {
+    const li = ev.target.closest("li");
+    if (li) commit(items.indexOf(li));
+  });
+}
+
+document.querySelectorAll(".drop > select").forEach(opensUpward);
+// Anywhere else, and it is not a choice being made.
+window.addEventListener("mousedown", (ev) => {
+  if (!ev.target.closest(".drop")) closeDrop();
+});
+window.addEventListener("keydown", (ev) => openDrop && openDrop.onKey(ev), true);
+window.addEventListener("wheel", closeDrop, true);
+
+/// Whether the audio is being rebuilt rather than carried through.
+///
+/// The two controls under the mode -- channels and bitrate -- only describe
+/// an encode, and the other two modes do not run one over the whole track:
+/// `copy` runs none at all, and `smart` runs one on two frames per boundary,
+/// where the whole point is that they come out the same shape as the frames
+/// they are spliced between. So they answer to the mode.
+function reencodingAudio() {
+  return settings.audio === "reencode";
+}
+
+/// Grey out what the chosen mode has no use for.
+function lockAudioDetail() {
+  el("out-audio-channels").disabled = !reencodingAudio();
+  el("out-audio-bitrate").disabled = !reencodingAudio();
+}
+
+/// The ladder AAC is spoken in, in bits per second.
+const AUDIO_RUNGS = [
+  64, 80, 96, 112, 128, 144, 160, 192, 224, 256, 320, 384, 448, 512, 640,
+].map((k) => k * 1000);
+
+/// How high the ladder goes, by channel count.
+///
+/// 384 kbit/s for stereo and 640 for 5.1, which is where a broadcast puts
+/// them with room over the top; mono at half the stereo figure. Nothing above
+/// 640 is offered at all.
+///
+/// Worth knowing, though it is not what sets these: the encoder has a ceiling
+/// of its own and does not announce it. Asked for more than it can spend,
+/// FFmpeg's AAC encoder writes less -- driven with noise at 48 kHz so that it
+/// and not the material runs out first, mono walls near 218 kbit/s and stereo
+/// near 250. So the top of the stereo ladder is headroom rather than a
+/// promise: ask for 384 of stereo and what comes back is what the encoder
+/// found worth spending.
+const BITRATE_CEILING = { 1: 192_000, 2: 384_000, 6: 640_000 };
+const BITRATE_MAX = 640_000;
+
+/// The ceiling for any channel count, named or not.
+///
+/// The counts the control offers are named. A recording read as 入力と同じ
+/// can be any count at all, and one of those takes the ceiling of the next
+/// count up -- a 4-channel recording is nearer 5.1 than it is stereo.
+function bitrateCap(channels) {
+  if (!channels) return BITRATE_MAX;
+  const key = Object.keys(BITRATE_CEILING)
+    .map(Number)
+    .find((n) => n >= channels);
+  return key ? BITRATE_CEILING[key] : BITRATE_MAX;
+}
+
+/// How many channels the ceiling should be worked out for.
+///
+/// An explicit choice answers for itself. 入力と同じ does not, and the
+/// setting is one answer for a whole list that may hold both a 5.1 recording
+/// and a stereo one -- so it is the widest track in the list that decides,
+/// which is the widest the ceiling could have to cover. An empty list decides
+/// nothing and the whole ladder is offered.
+function channelsForCap() {
+  if (settings.audioChannels) return Number(settings.audioChannels);
+  const counts = ready().map((c) => (c.info && c.info.audio_channels) || 0);
+  return counts.length ? Math.max(...counts) : 0;
+}
+
+/// Put the rungs worth offering in the bitrate control, and bring the answer
+/// it is holding inside them.
+function fillBitrates() {
+  const select = el("out-audio-bitrate");
+  const cap = bitrateCap(channelsForCap());
+  const rungs = cap ? AUDIO_RUNGS.filter((b) => b <= cap) : AUDIO_RUNGS;
+  // Rebuilt only when it would come out different -- which the language is
+  // part of, since おまかせ is a word and not a number.
+  const sig = `${currentLang()}|${rungs.length}`;
+  if (select.dataset.sig !== sig) {
+    select.dataset.sig = sig;
+    select.innerHTML =
+      `<option value="" data-i18n="bitrate.auto">${esc(t("bitrate.auto"))}</option>` +
+      rungs.map((b) => `<option value="${b}">${b / 1000} kbps</option>`).join("");
+  }
+  // A rate the list no longer offers -- the channel count came down under it,
+  // or a project was written by a version whose ladder had other rungs -- is
+  // taken to the nearest rung at or below it rather than thrown away.
+  const want = Number(settings.audioBitrate) || 0;
+  if (want && !rungs.includes(want)) {
+    settings.audioBitrate = String(rungs.filter((b) => b <= want).pop() ?? rungs[0]);
+  }
+  select.value = settings.audioBitrate;
+}
+
+/// What the engine will actually be asked for. A control that is greyed out
+/// still holds whatever it was last set to -- that is the point of greying it
+/// out rather than clearing it -- and what it holds must not reach the cut
+/// behind the screen's back.
+function audioChannelsOut() {
+  return reencodingAudio() && settings.audioChannels ? Number(settings.audioChannels) : null;
+}
+
+function audioBitrateOut() {
+  return reencodingAudio() && settings.audioBitrate ? Number(settings.audioBitrate) : null;
+}
+
+/// What is happening to the audio, when it is not being copied.
+///
+/// The notes on the output screen are about pictures -- that is what it shows
+/// -- and "the whole clip is copied losslessly" stops being true of the file
+/// the moment the audio is re-encoded from end to end, which a downmix always
+/// is. So the picture's own claim carries this after it.
+function audioNote(info) {
+  if (!info.has_audio || !reencodingAudio()) return "";
+  const from = info.audio_channels || 0;
+  const to = audioChannelsOut() || from;
+  if (from && to && to !== from) {
+    // Which way it goes is the recording's to decide, not the setting's: one
+    // list can hold a 5.1 recording and a stereo one, and 2ch asked of both
+    // folds the first and spreads the second.
+    const key = to < from ? "out.audioDownmixed" : "out.audioUpmixed";
+    return " " + t(key, { from: chLabel(from), to: chLabel(to) });
+  }
+  return " " + t("out.audioReencoded");
+}
+
+/// What the output's audio will be, in the one line the format panel has.
+function audioSummary(info) {
+  if (!info.has_audio) return t("media.audioNo");
+  const from = info.audio_channels || 0;
+  const to = audioChannelsOut() || from;
+  const down = !!(from && to && to !== from);
+  const rate = audioBitrateOut();
+  const detail = [];
+  if (from) detail.push(down ? `${chLabel(from)} → ${chLabel(to)}` : chLabel(from));
+  if (rate) detail.push(`${rate / 1000} kbps`);
+  const mode = t(`audio.${settings.audio}.short`);
+  return detail.length ? t("outset.audioLine", { mode, detail: detail.join(", ") }) : mode;
+}
 
 el("browse-dir").addEventListener("click", async (ev) => {
   ev.preventDefault();
@@ -1164,9 +1542,12 @@ el("browse-dir").addEventListener("click", async (ev) => {
   el("out-dir").value = picked;
   renderOutset();
   renderOutScreen();
+  touch();
 });
 
 function renderOutset() {
+  lockAudioDetail();
+  fillBitrates();
   const list = ready();
   const select = el("outset-clip");
   const was = select.value;
@@ -1177,23 +1558,31 @@ function renderOutset() {
   const clip = byId(Number(select.value)) || list[0];
   const box = el("outset-format");
   if (!clip) {
-    box.textContent = "解析の済んだクリップがありません";
+    box.textContent = t("outset.noReady");
     return;
   }
   const i = clip.info;
   const keeps = keepsOf(clip);
   const kept = keeps.reduce((n, k) => n + (k.b - k.a), 0);
-  const audio = { smart: "スマートレンダリング", copy: "そのままコピー", reencode: "再エンコード" }[settings.audio];
-  box.textContent =
-    `映像:　${i.codec}, ${i.width}x${i.height}, ${i.fps.toFixed(2)} fps, ` +
-    `${i.interlaced ? "インターレース (トップフィールド優先)" : "プログレッシブ"}\n` +
-    `音声:　${i.has_audio ? audio : "なし"}\n` +
-    `区間:　${keeps.length} 区間 / 出力 ${fmt(kept)}（元 ${fmt(i.duration)}、` +
-    `カット ${clip.edit ? clip.edit.cuts.length : 0} 箇所）\n` +
-    `出力先:　${outputPath(clip)}` +
-    (settings.keyframes && clip.edit && clip.edit.keyframes.length
-      ? `\n　　　　${outputPath(clip).replace(/\.[^./\\]*$/, "")}.keyframe`
-      : "");
+  box.textContent = t("outset.format", {
+    codec: i.codec,
+    w: i.width,
+    h: i.height,
+    fps: i.fps.toFixed(2),
+    scan: t(i.interlaced ? "outset.interlaced" : "media.progressive"),
+    audio: audioSummary(i),
+    keeps: keeps.length,
+    kept: fmt(kept),
+    dur: fmt(i.duration),
+    cuts: clip.edit ? clip.edit.cuts.length : 0,
+    out: outputPath(clip),
+    side:
+      settings.keyframes && clip.edit && clip.edit.keyframes.length
+        ? t("outset.sidecar", {
+            path: `${outputPath(clip).replace(/\.[^./\\]*$/, "")}.keyframe`,
+          })
+        : "",
+  });
 }
 el("outset-clip").addEventListener("change", renderOutset);
 
@@ -1241,8 +1630,25 @@ async function reencodeOf(clip) {
 }
 
 /// What the stage is currently speaking for: the clip, its re-encoded
-/// segments, and which of them is up.
+/// segments, and which of them is up. `note` is the picture half of the line
+/// under it -- see `paintShotsNote`.
 let onShow = null;
+
+/// Put the line under the stage up, picture half and audio half.
+///
+/// The picture half is worked out once and cached with the frames, because
+/// getting it costs a plan and some decodes. The audio half is a reading of
+/// the output settings, which can change while this screen is up -- and does,
+/// since every settings change repaints it -- so it is composed here rather
+/// than baked into what the cache holds. A note saying the audio is being
+/// re-encoded when the mode has since gone back to smart rendering is a lie
+/// about the file that is about to be written.
+function paintShotsNote() {
+  if (!onShow || !onShow.note) return;
+  const box = el("out-shots-note");
+  box.className = onShow.note.className;
+  box.textContent = onShow.note.text + audioNote(onShow.clip.info);
+}
 /// Keyed on the clip *and its cuts*, so coming back after changing one looks
 /// at the new joins rather than the ones that were there before.
 let shownReencode = null;
@@ -1260,35 +1666,44 @@ async function showReencode(clip) {
   if (shownReencode === key) return;
   shownReencode = key;
   el("out-shots-note").className = "grow dim";
-  el("out-shots-note").textContent = "調べています…";
-  stageShot(null, `${clipLabel(clip)} — 調べています…`);
+  el("out-shots-note").textContent = t("out.looking");
+  // Nothing to repaint until there is an answer: this runs on into an await,
+  // and a `paintShotsNote` in the meantime would put the last clip's line
+  // back over "working it out".
+  if (onShow) onShow.note = null;
+  stageShot(null, t("out.lookingAt", { clip: clipLabel(clip) }));
   try {
     const r = await reencodeOf(clip);
     if (token !== shotsToken) return;
-    onShow = { clip, r, at: -1 };
+    onShow = { clip, r, at: -1, note: null };
     const redone = r.segs.reduce((n, g) => n + g.frames, 0);
     if (!r.segs.length) {
       // Cuts that all landed on access points, or no cuts at all. Worth
       // saying rather than leaving it blank: it is the best outcome this
       // program has.
-      el("out-shots-note").className = "grow lossless";
-      el("out-shots-note").textContent = `${clipLabel(clip)} — なし。全編を無劣化コピーします`;
+      onShow.note = {
+        className: "grow lossless",
+        text: t("out.losslessNote", { clip: clipLabel(clip) }),
+      };
+      paintShotsNote();
       // The clip's own poster rather than a black rectangle. It does not
       // contradict what this screen is for: the line under it says there is
       // nothing to re-encode, so the picture is standing for the clip about
       // to be written and not for a frame being made again.
-      stageShot(null, "再エンコードなし — 全編を無劣化コピー", clip.info.poster);
+      stageShot(null, t("out.losslessStage"), clip.info.poster);
       return;
     }
-    el("out-shots-note").className = "grow dim";
-    el("out-shots-note").textContent =
-      `${clipLabel(clip)} — ${r.segs.length} 箇所 / ${redone} フレーム（ほかはバイト単位でコピー）`;
+    onShow.note = {
+      className: "grow dim",
+      text: t("out.shots", { clip: clipLabel(clip), n: r.segs.length, frames: redone }),
+    };
+    paintShotsNote();
     stageShot(0);
   } catch (e) {
     if (token !== shotsToken) return;
     shownReencode = null;
     el("out-shots-note").className = "grow dim";
-    el("out-shots-note").textContent = `調べられません: ${e}`;
+    el("out-shots-note").textContent = t("out.cannotLook", { e });
   }
 }
 
@@ -1323,8 +1738,8 @@ function stageShot(i, note = "", poster = null) {
   else img.removeAttribute("src");
   el("out-ovl-frame").textContent = String(Math.round(r.out[i] * clip.info.fps));
   el("out-ovl-time").textContent = fmt(r.out[i]);
-  el("out-ovl-kind").textContent = `再エンコード ${i + 1} / ${r.segs.length}`;
-  el("out-ovl-note").textContent = `${g.frames} フレーム`;
+  el("out-ovl-kind").textContent = t("out.ovlKind", { i: i + 1, n: r.segs.length });
+  el("out-ovl-note").textContent = t("out.ovlNote", { n: g.frames });
 }
 
 /// Follow the writing head: put the segment it is passing through on the
@@ -1347,12 +1762,16 @@ let writing = null;
 let began = 0;
 
 function renderOutScreen() {
-  el("out-dir-shown").value = settings.dir || "（入力ファイルと同じ場所）";
+  el("out-dir-shown").value = settings.dir || t("outset.sameAsInput");
   const list = ready();
   el("out-idle").hidden = list.length > 0;
   // Idle, the screen speaks for whichever clip is about to be written first;
   // running, `runExport` points it at the one under the head.
   if (!exporting) showReencode(list[0] || null);
+  // The picture half of the note is cached against the clip and its cuts;
+  // this puts the audio half back on it, which the settings can have changed
+  // since.
+  paintShotsNote();
   el("out-list").innerHTML = list
     .map((c, i) => {
       const kept = keepsOf(c).reduce((n, k) => n + (k.b - k.a), 0);
@@ -1373,9 +1792,11 @@ function paintOutProgress(overall) {
   el("progress-bar").style.width = `${pct}%`;
   el("out-pct").textContent = `${pct}%`;
   const spent = (Date.now() - began) / 1000;
-  el("out-elapsed").textContent = `経過 ${clock(spent)}`;
+  el("out-elapsed").textContent = t("out.elapsed", { t: clock(spent) });
   el("out-left").textContent =
-    overall > 0.01 ? `残り ${clock((spent / overall) * (1 - overall))}` : "残り --:--:--";
+    overall > 0.01
+      ? t("out.left", { t: clock((spent / overall) * (1 - overall)) })
+      : t("out.leftUnknown");
 }
 
 if (listen) {
@@ -1395,8 +1816,7 @@ if (listen) {
 
 el("abort-export").addEventListener("click", () => {
   abort = true;
-  el("out-state").textContent =
-    "中止します（いま書き出しているクリップは最後まで書き終えます）";
+  el("out-state").textContent = t("out.aborting");
 });
 
 el("run-export").addEventListener("click", runExport);
@@ -1416,7 +1836,7 @@ async function runExport() {
   exporting = true;
   abort = false;
   began = Date.now();
-  list.forEach((c) => (c.out = { state: "waiting", progress: 0, note: "待機中" }));
+  list.forEach((c) => (c.out = { state: "waiting", progress: 0, note: t("out.waiting") }));
   el("abort-export").disabled = false;
   paintButtons();
   renderOutScreen();
@@ -1424,18 +1844,18 @@ async function runExport() {
   let done = 0;
   for (const clip of list) {
     if (abort) {
-      clip.out = { state: "skipped", progress: 0, note: "中止" };
+      clip.out = { state: "skipped", progress: 0, note: t("out.skipped") };
       continue;
     }
     const out = outputPath(clip);
     if (out === clip.path) {
-      clip.out = { state: "error", progress: 0, note: "入力と同じ名前になります" };
+      clip.out = { state: "error", progress: 0, note: t("out.sameName") };
       renderOutScreen();
       continue;
     }
     writing = clip;
     clip.out = { state: "running", progress: 0, note: "0%" };
-    el("out-state").textContent = `"${nameOf(out)}" を出力中: 映像を無劣化出力しています…`;
+    el("out-state").textContent = t("out.writing", { name: nameOf(out) });
     renderOutScreen();
     // Before the cut starts, not during: the plan and the frames are reads of
     // the same recording the cut is about to stream off the disc.
@@ -1450,6 +1870,13 @@ async function runExport() {
         output: out,
         audioCopy: settings.audio === "copy",
         audioReencode: settings.audio === "reencode",
+        audioChannels: audioChannelsOut(),
+        audioBitrate: audioBitrateOut(),
+        // What the editor's track menu switched off for this clip. Per clip
+        // and not per list: the audio settings above are one answer for the
+        // whole run, but which of a recording's own streams are wanted is a
+        // fact about that recording.
+        dropStreams: clip.edit ? clip.edit.dropStreams || [] : [],
       });
       let extra = "";
       if (settings.keyframes) {
@@ -1467,10 +1894,10 @@ async function runExport() {
         if (frames.length) {
           const side = out.replace(/\.[^./\\]*$/, "") + ".keyframe";
           const n = await invoke("write_keyframes", { path: side, frames, fps: clip.info.fps });
-          extra = ` / キーフレーム ${n} 個`;
+          extra = t("out.doneKeyframes", { n });
         }
       }
-      clip.out = { state: "done", progress: 1, note: `完了${extra}` };
+      clip.out = { state: "done", progress: 1, note: t("out.done", { extra }) };
       done++;
     } catch (e) {
       clip.out = { state: "error", progress: 0, note: String(e) };
@@ -1484,16 +1911,499 @@ async function runExport() {
   writing = null;
   el("abort-export").disabled = true;
   const failed = list.filter((c) => c.out.state === "error").length;
-  el("out-state").textContent =
-    `${done} / ${list.length} 本を出力しました` +
-    (failed ? `　失敗 ${failed} 本` : "") +
-    (abort ? "　（中止されました）" : "") +
-    `　経過 ${clock((Date.now() - began) / 1000)}`;
+  el("out-state").textContent = t("out.summary", {
+    done,
+    all: list.length,
+    failed: failed ? t("out.summaryFailed", { n: failed }) : "",
+    aborted: abort ? t("out.summaryAborted") : "",
+    elapsed: clock((Date.now() - began) / 1000),
+  });
   paintOutProgress(1);
   paused = false;
   pump();
   renderOutScreen();
 }
+
+// --- プロジェクト ---------------------------------------------------------
+//
+// An evening's work is a list of recordings, what has been cut out of each of
+// them, and where the results are to go. None of that is on disc: close the
+// program and it is gone. That is no loss for one clip in one sitting, and a
+// real one for twenty over a weekend -- so it can be written down and picked
+// up again.
+//
+// **Only what could not be worked out again is written.** A recording's
+// length, shape and frame rate come back with its seek index; the index and
+// the commercial detections are already cached beside the recording by the
+// backend. So the file holds paths, cuts, marks and the output settings, and
+// opening it re-reads the list exactly as adding the same files would --
+// which also means a project opened on another machine, or after the caches
+// have been cleared, is a project that still opens. It simply reads again.
+//
+// It does not hold the pictures, the plan or anything else the screens work
+// out for themselves, and it never will: a project that carried a copy of
+// what is on disc would be a project that could disagree with it.
+
+const PROJECT_EXT = "scproj";
+
+/// The format's own number, which is not the program's. It goes up when a
+/// file written by an older version would be read *wrongly* rather than
+/// merely incompletely -- a field added is not a new format, since a reader
+/// that has never heard of it leaves it alone.
+const PROJECT_VERSION = 1;
+
+/// The file this list is currently in, or "" for work that has never been
+/// saved. What 保存 writes over without asking.
+let projectPath = "";
+
+/// Everything worth keeping, in the shape it goes on disc.
+function captureProject() {
+  return {
+    smartcut: PROJECT_VERSION,
+    saved: new Date().toISOString(),
+    settings: { ...settings },
+    clips: clips.map((c) => ({
+      path: c.path,
+      // What the editor handed back the last time this row was in it: the
+      // cuts, the marks, and where the playhead was left. Null for a row
+      // nobody has opened yet, which is not the same as a row cut to nothing.
+      edit: c.edit,
+      // Blocks a detection found that the timeline has not been shown yet.
+      // The blocks are not written -- they are beside the recording -- but
+      // whether they are still owed to the editor is this list's own
+      // knowledge, and the cache cannot answer it.
+      cmPending: c.cmPending,
+    })),
+  };
+}
+
+/// Where the picker opens for a list that has no name yet: beside the output
+/// if one has been chosen, and otherwise beside the recordings, because that
+/// is where the work is.
+function defaultProjectPath() {
+  const dir = settings.dir
+    ? settings.dir.replace(/[/\\]*$/, "/")
+    : dirOf(clips[0] ? clips[0].path : "");
+  return `${dir}${t("project.untitled")}.${PROJECT_EXT}`;
+}
+
+/// What the project would be if it were written this instant, as one string.
+///
+/// The saved timestamp is left out -- it changes every time and says nothing
+/// about the work -- and so is `cmPending`, which is written to the file but
+/// is not something that can be *lost*: a detection is cached beside the
+/// recording, and opening the project again works the flag out from it.
+function shapeOf() {
+  return JSON.stringify({
+    settings,
+    clips: clips.map((c) => ({ path: c.path, edit: c.edit })),
+  });
+}
+
+/// The shape the file on disc has. Set when one is written or read, and
+/// compared against rather than raised as a flag: a flag has to be lowered
+/// again by everything that puts the work back where it was -- cancelling
+/// out of the editor, a clip added and removed -- and the one place that
+/// forgets leaves a program insisting there is something to lose when there
+/// is not.
+let savedShape = shapeOf();
+
+/// Whether there is work here that is not on disc.
+///
+/// An empty list with no project open is nothing to lose, whatever it held
+/// a moment ago: there is no work in an empty list, and there is no file it
+/// belongs to. Without that, emptying a list left a `*` in the title that
+/// nothing could clear -- there was nothing to save, so saving could not
+/// clear it.
+const dirty = () => (!clips.length && !projectPath ? false : shapeOf() !== savedShape);
+
+/// The last title and the last answer sent down, so that neither is sent
+/// twice: this runs after every repaint, and most repaints change neither.
+let shownTitle = null;
+let shownDirty = null;
+
+/// The list window's title bar. The only place the open project is readable
+/// without opening a menu, and the reason the title bar is worth writing to
+/// at all -- two SmartCut windows on a taskbar are otherwise the same word
+/// twice. A `*` in front is work that is not on disc.
+///
+/// An empty list that has never been saved is not called 無題: there is
+/// nothing there to be a draft of, and the program's own name is the honest
+/// thing to have in the corner.
+function retitleMain() {
+  if (!invoke) return;
+  const unsaved = dirty();
+  const title =
+    !projectPath && !clips.length && !unsaved
+      ? "SmartCut"
+      : t("project.windowTitle", {
+          mark: unsaved ? "*" : "",
+          name: projectPath ? nameOf(projectPath) : t("project.untitled"),
+        });
+  if (title !== shownTitle) {
+    shownTitle = title;
+    invoke("retitle_main", { title });
+  }
+  // The window must not close on work that is not on disc, and stopping it
+  // is the one thing this side cannot do for itself.
+  if (unsaved !== shownDirty) {
+    shownDirty = unsaved;
+    invoke("set_dirty", { dirty: unsaved });
+  }
+}
+
+/// Say that something that goes into a project may have changed.
+///
+/// Called from the two places everything funnels through -- the repaint of
+/// the whole list, and the editor reporting a cut -- rather than from each
+/// of the dozen things that can change it. Working the answer out is a
+/// `JSON.stringify` of a few hundred bytes; remembering to raise a flag in
+/// twelve places is a bug waiting for the thirteenth.
+function touch() {
+  retitleMain();
+}
+
+async function writeProject(path) {
+  try {
+    // Indented, and with the paths first in every row: a project is a plain
+    // file about files, and someone who opens one in an editor to see which
+    // recordings it names should be able to read it.
+    await invoke("write_project", {
+      path,
+      body: JSON.stringify(captureProject(), null, 2),
+    });
+  } catch (e) {
+    note(`${e}`);
+    return false;
+  }
+  projectPath = path;
+  savedShape = shapeOf();
+  retitleMain();
+  note(t("project.saved", { name: nameOf(path) }));
+  return true;
+}
+
+/// 保存 and 名前を付けて保存, which differ only in whether the name is
+/// already settled.
+///
+/// An empty list that has never been saved has nothing to write down. An
+/// empty list that *is* a project is another matter -- emptying one is a
+/// change like any other, and it has to be recordable or the `*` it puts in
+/// the title could never be cleared.
+async function saveProject(rename = false) {
+  if (!clips.length && !projectPath) {
+    note(t("project.nothingToSave"));
+    return false;
+  }
+  if (!rename && projectPath) return writeProject(projectPath);
+  const picked = await dialog.save({
+    defaultPath: projectPath || defaultProjectPath(),
+    filters: [{ name: t("dialog.project"), extensions: [PROJECT_EXT] }],
+  });
+  if (!picked) return false;
+  // The picker hands back what was typed, and what was typed is often a name
+  // without an extension -- which would make a file its own filter would not
+  // show again. So it is put on here rather than trusted to the dialog.
+  return writeProject(extOf(picked) === PROJECT_EXT ? picked : `${picked}.${PROJECT_EXT}`);
+}
+
+/// Whether it is all right to put the current list down.
+///
+/// Only over work that is not on disc. A project opened, looked at and
+/// closed again has nothing to lose, and a dialog that comes up anyway is a
+/// dialog that gets dismissed without being read.
+async function askReplace() {
+  if (!dirty()) return true;
+  return dialog.ask(t("project.replaceBody"), {
+    title: t("project.replaceTitle"),
+    kind: "warning",
+  });
+}
+
+async function openProject() {
+  // Asked before the picker rather than after it: the question is whether to
+  // put this list down, and someone who answers no has been spared choosing
+  // a file for nothing.
+  if (!(await askReplace())) return;
+  const picked = await dialog.open({
+    multiple: false,
+    filters: [{ name: t("dialog.project"), extensions: [PROJECT_EXT] }],
+  });
+  if (!picked) return;
+  await loadProject(Array.isArray(picked) ? picked[0] : picked);
+}
+
+/// Put a project file's list up, in place of whatever is there.
+///
+/// A recording the file names that is no longer where it was is not stopped
+/// on: the row goes up like any other and the index pass says what happened
+/// to it, in the row itself, where it can be looked at next to the ones that
+/// were fine. Refusing the whole project over one moved file would be the
+/// worse trade -- the other nineteen rows are still exactly right.
+async function loadProject(path) {
+  let doc;
+  try {
+    doc = JSON.parse(await invoke("read_project", { path }));
+  } catch (e) {
+    note(t("project.cannotOpen", { name: nameOf(path), e }));
+    return;
+  }
+  // A number this program has never heard of is a file from a later one, and
+  // what it would lose on the way in is exactly the part it does not
+  // recognise. Dropping somebody's cuts quietly is worse than not opening.
+  if (!doc || typeof doc.smartcut !== "number" || doc.smartcut > PROJECT_VERSION) {
+    note(t("project.wrongFormat", { name: nameOf(path) }));
+    return;
+  }
+  // Not merely emptied: a lane reading a row has to be told to stop, and the
+  // editor open on one has nothing left to be about. All of which `remove`
+  // already knows how to do.
+  await remove(clips.slice());
+  // Key by key rather than wholesale, so that a file cannot put anything in
+  // `settings` that the output screen has no control for.
+  for (const key of Object.keys(settings)) {
+    if (doc.settings && key in doc.settings) settings[key] = doc.settings[key];
+  }
+  showSettings();
+  const taken = [];
+  for (const saved of Array.isArray(doc.clips) ? doc.clips : []) {
+    if (!saved || typeof saved.path !== "string") continue;
+    const clip = makeClip(saved.path);
+    // The row's id is this session's counting, so the saved edit is
+    // readdressed to the row it has just become. Everything else in it is
+    // source time and travels unchanged.
+    if (saved.edit) clip.edit = { ...saved.edit, id: clip.id, path: clip.path };
+    clips.push(clip);
+    taken.push([clip, !!saved.cmPending]);
+  }
+  projectPath = path;
+  savedShape = shapeOf();
+  retitleMain();
+  show("input");
+  renderList();
+  note(t("project.opened", { name: nameOf(path), n: taken.length }));
+  (async () => {
+    for (const [clip, pending] of taken) await restoreCm(clip, pending);
+  })();
+  pump();
+}
+
+// The window's cross, over work that is not on disc. Rust holds the close
+// while this is asked -- a page cannot stop its own window from going away --
+// and lets it through only when `quit` is called. Cancelling answers it by
+// doing nothing at all, which is why nothing here is remembered about having
+// been asked.
+if (listen) {
+  listen("close-requested", async () => {
+    const go = await dialog.ask(t("project.quitBody"), {
+      title: t("project.quitTitle"),
+      kind: "warning",
+      okLabel: t("project.quitOk"),
+      cancelLabel: t("project.quitCancel"),
+    });
+    if (go) invoke("quit");
+  });
+}
+
+/// A project arriving by drag and drop, which skips the picker but not the
+/// question the picker's caller asks first.
+async function openDroppedProject(path) {
+  if (!(await askReplace())) return;
+  await loadProject(path);
+}
+
+// The three items the menu carries about the work rather than about the
+// program. `showMenu(false)` first in each: the file picker is a window of
+// its own, and a menu left standing behind it is still there when it closes.
+el("menu-open").addEventListener("click", () => {
+  showMenu(false);
+  openProject();
+});
+el("menu-save").addEventListener("click", () => {
+  showMenu(false);
+  saveProject();
+});
+el("menu-save-as").addEventListener("click", () => {
+  showMenu(false);
+  saveProject(true);
+});
+
+// Ctrl+S, Ctrl+Shift+S and Ctrl+O, on every screen rather than only on the
+// list: they are about the program's work as a whole, and the output
+// settings are as much a part of a project as the cuts are. Kept out of the
+// list's own key handler for that reason.
+window.addEventListener("keydown", (ev) => {
+  if (!(ev.ctrlKey || ev.metaKey) || ev.altKey) return;
+  const key = ev.key.toLowerCase();
+  if (key === "s") {
+    ev.preventDefault();
+    saveProject(ev.shiftKey);
+  } else if (key === "o" && !ev.shiftKey) {
+    ev.preventDefault();
+    openProject();
+  }
+});
+
+// --- the program's own menu ----------------------------------------------
+//
+// One button in the corner and one item under it. It is not a menu bar and
+// should not grow into one: everything about the *clips* is on the screens,
+// and this is for the few things that are about the program.
+
+const brand = el("brand");
+const brandMenu = el("brand-menu");
+
+function showMenu(on) {
+  brandMenu.hidden = !on;
+  brand.setAttribute("aria-expanded", String(!!on));
+  brand.classList.toggle("open", !!on);
+}
+
+brand.addEventListener("click", (ev) => {
+  ev.stopPropagation();
+  showMenu(brandMenu.hidden);
+});
+// Anywhere else, and Escape: a menu left standing over the list is a menu
+// that has to be dismissed before anything can be clicked, and the button
+// that opened it is not always the one the eye goes back to.
+window.addEventListener("click", () => showMenu(false));
+window.addEventListener("keydown", (ev) => {
+  if (ev.key === "Escape") showMenu(false);
+});
+
+// --- 環境設定 -------------------------------------------------------------
+
+const prefs = el("prefs");
+
+function showPrefs(on) {
+  prefs.hidden = !on;
+  if (on) el("pref-lang").value = preference();
+}
+
+el("menu-prefs").addEventListener("click", () => {
+  showMenu(false);
+  showPrefs(true);
+});
+el("prefs-close").addEventListener("click", () => showPrefs(false));
+// The dark ground behind the panel, but not the panel itself.
+prefs.addEventListener("click", (ev) => {
+  if (ev.target === prefs) showPrefs(false);
+});
+window.addEventListener("keydown", (ev) => {
+  if (ev.key === "Escape" && !prefs.hidden) showPrefs(false);
+});
+
+el("pref-lang").addEventListener("change", async (ev) => {
+  setLang(ev.target.value);
+  // Going back to "follow the machine" has to ask the machine again, and the
+  // webview's own answer is not it: WebKitGTK reports the browser's idea of
+  // a preferred language, which on a Japanese desktop is still en-US. Same
+  // correction as at startup, and for the same reason.
+  await confirmWithOs(invoke);
+  await tellBackend(invoke);
+  // The cut editor is a window of its own with its own copy of the
+  // catalogue, and it does not read the store again while it is up.
+  // The language it resolved to, not the preference: "auto" is answered
+  // from the webview's own idea of the machine, and this window may already
+  // have been corrected by the backend's.
+  if (emit) emit("lang-changed", currentLang());
+});
+
+// --- バージョン情報 --------------------------------------------------------
+//
+// The other panel under the name in the corner. What it shows is asked of
+// the backend, which is the only side that knows any of it: the version is
+// stamped into the binary, and the libav numbers belong to the libraries
+// this process loaded rather than the ones it was written against.
+//
+// Asked once and kept. None of it can change while the program is running,
+// and a panel that has to wait for a round trip before it says anything is a
+// panel that opens empty.
+
+const about = el("about");
+
+/// What the backend said, or nothing until it has been asked.
+let versions = null;
+
+/// Put the answer on the panel. Called again on a language change, because
+/// three of these lines are sentences rather than values.
+function paintAbout() {
+  const unknown = t("about.unknown");
+  const v = versions;
+  el("about-version").textContent = t("about.version", { v: v ? v.app : unknown });
+  el("about-core").textContent = v ? v.core : unknown;
+  el("about-libav").textContent = v
+    ? t("about.libav", { f: v.avformat, c: v.avcodec, u: v.avutil })
+    : unknown;
+  el("about-libav-license").textContent = v ? v.ffmpeg_license : unknown;
+  el("about-platform").textContent = v ? v.platform : unknown;
+}
+
+async function showAbout(on) {
+  about.hidden = !on;
+  if (!on) return;
+  // Whatever is known now, so the panel is never blank; then the answer,
+  // which on every open after the first is already in hand.
+  paintAbout();
+  if (versions || !invoke) return;
+  try {
+    versions = await invoke("versions");
+  } catch (e) {
+    // An older backend without the command. 不明 on every line is a truthful
+    // answer and a legible one; there is nothing here worth an error for.
+    jlog(`versions ${e}`);
+    return;
+  }
+  paintAbout();
+}
+
+el("menu-about").addEventListener("click", () => {
+  showMenu(false);
+  showAbout(true);
+});
+el("about-close").addEventListener("click", () => showAbout(false));
+about.addEventListener("click", (ev) => {
+  if (ev.target === about) showAbout(false);
+});
+window.addEventListener("keydown", (ev) => {
+  if (ev.key === "Escape" && !about.hidden) showAbout(false);
+});
+
+/// Say everything this window has already said, in the language now in
+/// force.
+///
+/// `applyStatic` has done the markup by the time this runs; what is left is
+/// everything built out of `t` at the moment it was shown. Most of it is
+/// simply redrawn. The sentences that were *stored* rather than drawn --
+/// what a commercial detection found, how a clip's index was come by -- are
+/// worked out again from what they were worked out from, which is why the
+/// row remembers where its note came from. A note the editor wrote is left
+/// alone: this window does not hold what it was made of.
+function relocalise() {
+  for (const c of clips) {
+    if (c.state === "ready" && c.info) {
+      c.phase = c.info.cached
+        ? t("phase.indexReused")
+        : t("phase.indexBuilt", { s: c.info.seconds.toFixed(0) });
+    }
+    if (c.cmState === "done" && c.cm && c.cmSource) {
+      const note = cmNote(c.cm);
+      c.cmPhase = c.cmSource === "cache" ? t("cm.previous", { note }) : note;
+    }
+  }
+  renderList();
+  renderOutset();
+  renderOutScreen();
+  paintQueueNote();
+  paintAbout();
+  // The editor's window title is this window's doing -- it names the clip,
+  // which only the list knows how to name -- so it is this window that has to
+  // put it right.
+  if (editing) {
+    invoke("retitle_editor", { title: t("editor.windowTitle", { clip: clipLabel(editing) }) });
+  }
+}
+onLangChange(relocalise);
 
 // --- keys on the list ---------------------------------------------------
 //
@@ -1503,6 +2413,10 @@ async function runExport() {
 
 window.addEventListener("keydown", (ev) => {
   if (screen !== "input") return;
+  // A panel is over the list: the ground behind it says the rest of the
+  // program is not listening, and Delete deleting a clip out from under it
+  // would be the list listening anyway.
+  if (!prefs.hidden || !about.hidden) return;
   if (ev.target.tagName === "INPUT" || ev.target.tagName === "SELECT") return;
   const key = ev.key.toLowerCase();
   if ((ev.ctrlKey || ev.metaKey) && key === "a") {
@@ -1541,9 +2455,24 @@ window.addEventListener("keydown", (ev) => {
 
 jlog("app wired");
 noBrowserMenu();
+applyStatic();
+el("pref-lang").value = preference();
+// The three readouts on the output screen that stand at rest until something
+// is written. Set here rather than marked up, so that a language change
+// during a run does not blank a summary that has just been printed.
+el("out-state").textContent = t("out.waiting");
+el("out-elapsed").textContent = t("out.elapsed", { t: clock(0) });
+el("out-left").textContent = t("out.leftUnknown");
 renderList();
 show("input");
-invoke("initial_paths")
+// The backend writes its own sentences -- the phases under a progress bar,
+// and what comes back when a recording will not open -- so it is told the
+// language before anything is asked of it, and told again if the machine
+// turns out to disagree with what the webview said it was set to.
+tellBackend(invoke)
+  .then(() => confirmWithOs(invoke))
+  .then((changed) => (changed ? tellBackend(invoke) : null))
+  .then(() => invoke("initial_paths"))
   .then(async (paths) => {
     if (!paths || !paths.length) return;
     // Launched on files, from a file manager or the command line. They go
@@ -1551,7 +2480,21 @@ invoke("initial_paths")
     // editor, which is what happened before there was a list. Several do
     // not -- being handed a batch is a reason to be shown the batch.
     jlog(`initial_paths -> ${paths.join(", ")}`);
+    // Launched on a project rather than on recordings -- from the command
+    // line, or from a file manager that has been told what a .scproj is.
+    // Nothing to ask about: the list it is replacing is empty.
+    if (paths.length === 1 && extOf(paths[0]) === PROJECT_EXT) {
+      await loadProject(paths[0]);
+      return;
+    }
     const taken = await addPaths(paths);
+    // The list as the command line handed it over is not work anybody did:
+    // it is how the program was started, and starting it the same way again
+    // would give the same list back. So it is what the title compares
+    // against, and a program launched on a folder does not open with a `*`
+    // over a list nobody has touched.
+    savedShape = shapeOf();
+    retitleMain();
     const one = taken.length === 1 && taken[0];
     if (!one) return;
     one.selected = true;

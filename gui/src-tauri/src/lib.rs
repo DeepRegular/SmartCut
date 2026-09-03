@@ -18,8 +18,11 @@
 //! (see [`background_threads`]), because the picture under the pointer is
 //! the one somebody is waiting for.
 
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Mutex;
+
+#[macro_use]
+mod lang;
 
 use base64::Engine as _;
 use serde::{Deserialize, Serialize};
@@ -101,6 +104,9 @@ struct SourceInfo {
     interlaced: bool,
     pulldown: bool,
     has_audio: bool,
+    /// Channels in the recording's audio, so the output settings can say
+    /// whether there is anything to downmix. 0 when there is no audio.
+    audio_channels: u16,
     index_name: String,
     /// Presentation times of every random access point: the places a cut
     /// costs nothing.
@@ -128,6 +134,7 @@ struct ClipInfo {
     interlaced: bool,
     pulldown: bool,
     has_audio: bool,
+    audio_channels: u16,
     index_name: String,
     points: usize,
     unusable_points: usize,
@@ -233,13 +240,19 @@ fn files_at(input: &str) -> Result<Vec<String>, String> {
     let path = local_path(input)?;
     let meta = std::fs::metadata(&path).map_err(|e| {
         let shown = netpath::parse(input).map_or_else(|| path.display().to_string(), |s| s.unc());
-        format!("開けません: {shown} ({e})")
+        format!("{}: {shown} ({e})", tr!("開けません", "Cannot open"))
     })?;
     if !meta.is_dir() {
         return Ok(vec![path.to_string_lossy().into_owned()]);
     }
     let mut files: Vec<String> = std::fs::read_dir(&path)
-        .map_err(|e| format!("フォルダーを読めません: {} ({e})", path.display()))?
+        .map_err(|e| {
+            format!(
+                "{}: {} ({e})",
+                tr!("フォルダーを読めません", "Cannot read the folder"),
+                path.display()
+            )
+        })?
         .flatten()
         .filter(|e| e.file_type().map(|t| !t.is_dir()).unwrap_or(false))
         .map(|e| e.path().to_string_lossy().into_owned())
@@ -263,16 +276,17 @@ fn local_path(input: &str) -> Result<std::path::PathBuf, String> {
         } else {
             let list = mounted.iter().map(|m| format!(r"\\{}\{}", m.host, m.share))
                 .collect::<Vec<_>>().join("、");
-            format!("（今つながっている共有: {list}）")
+            trf!("（今つながっている共有: {list}）", " (shares connected now: {list})")
         };
         // Named by the share and not by the file: the share is what is not
         // connected, and it is what the file manager is asked to open.
         let root = netpath::Share { rest: String::new(), ..share.clone() };
-        format!(
-            "{} につながっていません。ファイルマネージャーで {} を開いてから、\
+        let unc = root.unc();
+        let url = root.url();
+        trf!(
+            "{unc} につながっていません。ファイルマネージャーで {url} を開いてから、\
              もう一度追加してください。{seen}",
-            root.unc(),
-            root.url()
+            "Not connected to {unc}. Open {url} in the file manager and add it again.{seen}",
         )
     })
 }
@@ -333,7 +347,9 @@ fn index_dir(app: &tauri::AppHandle) -> Result<std::path::PathBuf, String> {
     let dir = app
         .path()
         .app_cache_dir()
-        .map_err(|e| format!("キャッシュの置き場が分かりません: {e}"))?
+        .map_err(|e| {
+            format!("{}: {e}", tr!("キャッシュの置き場が分かりません", "No cache directory"))
+        })?
         .join("index");
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
     Ok(dir)
@@ -405,6 +421,7 @@ fn info_of(src: &Source) -> SourceInfo {
         interlaced: src.video.interlaced(),
         pulldown: src.video.pulldown,
         has_audio: src.audio.is_some(),
+        audio_channels: src.audio.as_ref().map_or(0, |a| a.channels),
         index_name: src.index_name.to_string(),
         points: src.points.iter().map(|p| p.time).collect(),
         unusable_points: src.points.iter().filter(|p| p.open_gop() && !p.droppable).count(),
@@ -712,7 +729,7 @@ fn without_proxy(
         src,
         thumb_opts,
         Some(Box::new(move |f| {
-            let _ = reporter.emit("prepare-progress", ("シーク用インデックス", f));
+            let _ = reporter.emit("prepare-progress", (phase_index(), f));
         })),
         Some(Box::new(move |batch| hold(&sharer, batch, generation))),
         Some(Box::new(move || {
@@ -785,8 +802,17 @@ fn index_info(app: &tauri::AppHandle, src: &Source, cached: bool) -> Option<Inde
 /// The window is made here rather than from the page so that its size and
 /// title are not the webview's business, and so no capability has to be
 /// opened up for building windows out of JavaScript.
+///
+/// `async` and not for any awaiting it does -- there is none. Tauri runs a
+/// synchronous command on the main thread, and building a webview there is
+/// the one thing WebView2 will not do: the creation waits on the message
+/// loop that the command is standing in, and on Windows the window comes up
+/// and stays blank (wry#583). An async command is spawned off the main
+/// thread instead, which is what Tauri's own doc for the builder tells you
+/// to do. It costs nothing on Linux -- `build` hands itself back to the main
+/// thread there either way -- so the two platforms take the same path.
 #[tauri::command]
-fn open_editor(title: String, app: tauri::AppHandle) -> Result<(), String> {
+async fn open_editor(title: String, app: tauri::AppHandle) -> Result<(), String> {
     if let Some(w) = app.get_webview_window(EDITOR) {
         // Already up: this is a second double-click, not a second editor.
         let _ = w.set_title(&title);
@@ -813,6 +839,20 @@ fn open_editor(title: String, app: tauri::AppHandle) -> Result<(), String> {
     Ok(())
 }
 
+/// Retitle the editor window without touching it otherwise.
+///
+/// [`open_editor`] would do this too, but it also raises and focuses the
+/// window, which is right for a second double-click and wrong for the one
+/// caller here: the title carries the word カット編集 in it, so it goes stale
+/// when the language changes, and correcting it is not a reason to pull the
+/// window to the front of somebody's screen.
+#[tauri::command]
+fn retitle_editor(title: String, app: tauri::AppHandle) {
+    if let Some(w) = app.get_webview_window(EDITOR) {
+        let _ = w.set_title(&title);
+    }
+}
+
 #[tauri::command]
 fn close_editor(app: tauri::AppHandle) {
     if let Some(w) = app.get_webview_window(EDITOR) {
@@ -820,10 +860,32 @@ fn close_editor(app: tauri::AppHandle) {
     }
 }
 
+/// Name the open project in the list window's own title bar.
+///
+/// The one thing about a project that ought to be readable without opening a
+/// menu: which one is open. Work that has never been saved leaves the plain
+/// program name, which is what the window is called in the configuration.
+#[tauri::command]
+fn retitle_main(title: String, app: tauri::AppHandle) {
+    if let Some(w) = app.get_webview_window(MAIN) {
+        let _ = w.set_title(&title);
+    }
+}
+
+/// The pass both windows call the seek index, said in one place because both
+/// of them print it and a phase named two ways is two phases on screen.
+fn phase_index() -> &'static str {
+    tr!("シーク用インデックス", "the seek index")
+}
+
 /// The label the editor window goes by. One at a time: there is one opened
 /// recording in [`Opened`], so a second editor would be a second view of the
 /// first one's material with the first one's marks.
 const EDITOR: &str = "editor";
+
+/// The clip list, which Tauri labels for us: a window declared in the
+/// configuration without a label of its own is `main`.
+const MAIN: &str = "main";
 
 /// The last path component, which is what the list shows.
 fn clip_name(path: &str) -> String {
@@ -901,7 +963,7 @@ fn index_clip_now(path: &str, app: &tauri::AppHandle) -> Result<ClipInfo, String
     if stopped() {
         return Err("cancelled".into());
     }
-    say("読み込み中", 0.0);
+    say(tr!("読み込み中", "Reading"), 0.0);
     let (src, held) = scan_cached(app, path)?;
 
     // An index from an earlier session carries the pictures it was built
@@ -922,7 +984,7 @@ fn index_clip_now(path: &str, app: &tauri::AppHandle) -> Result<ClipInfo, String
                 Some(Box::new(move |f| {
                     let _ = reporter.emit(
                         "clip-progress",
-                        (owned.clone(), "シーク用インデックス".to_string(), f),
+                        (owned.clone(), phase_index().to_string(), f),
                     );
                 })),
                 // Nothing is looking at this recording, so there is nobody to
@@ -955,7 +1017,7 @@ fn index_clip_now(path: &str, app: &tauri::AppHandle) -> Result<ClipInfo, String
         .nearest(src.duration * 0.1)
         .or_else(|| track.thumbs.first())
         .map(|t| as_url(&t.jpeg));
-    say("完了", 1.0);
+    say(tr!("完了", "Done"), 1.0);
     Ok(ClipInfo {
         name: clip_name(path),
         path: src.path.clone(),
@@ -968,6 +1030,7 @@ fn index_clip_now(path: &str, app: &tauri::AppHandle) -> Result<ClipInfo, String
         interlaced: src.video.interlaced(),
         pulldown: src.video.pulldown,
         has_audio: src.audio.is_some(),
+        audio_channels: src.audio.as_ref().map_or(0, |a| a.channels),
         index_name: src.index_name.to_string(),
         points: src.points.len(),
         unusable_points: src.points.iter().filter(|p| p.open_gop() && !p.droppable).count(),
@@ -991,7 +1054,9 @@ fn make_proxy(
     let dir = app
         .path()
         .app_cache_dir()
-        .map_err(|e| format!("キャッシュの置き場が分かりません: {e}"))?
+        .map_err(|e| {
+            format!("{}: {e}", tr!("キャッシュの置き場が分かりません", "No cache directory"))
+        })?
         .join("proxy");
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
     let path = proxy::cache_path(&dir, &src.path, opts).map_err(|e| e.to_string())?;
@@ -1021,7 +1086,7 @@ fn make_proxy(
             opts,
             thumb_opts,
             Some(Box::new(move |f| {
-                let _ = reporter.emit("prepare-progress", ("プロキシ", f));
+                let _ = reporter.emit("prepare-progress", (tr!("プロキシ", "the proxy"), f));
             })),
             Some(Box::new(move |batch| hold(&sharer, batch, generation))),
             Some(Box::new(move || {
@@ -1147,7 +1212,7 @@ fn load_cached(
         &psrc,
         thumb_opts,
         Some(Box::new(move |f| {
-            let _ = reporter.emit("prepare-progress", ("サムネイル", f));
+            let _ = reporter.emit("prepare-progress", (tr!("サムネイル", "thumbnails"), f));
         })),
     )
     .map_err(|e| e.to_string())?;
@@ -1297,6 +1362,77 @@ async fn clip_plan(
     .await
 }
 
+/// One stream of a recording, as the track menu lists it.
+#[derive(Serialize)]
+struct StreamInfo {
+    /// What names it to the engine. `drop_streams` is a list of these.
+    index: usize,
+    /// "audio", "caption", or "dropped" for what a cut cannot carry.
+    kind: String,
+    /// The PID it arrived on, which is what a broadcast names it by and what
+    /// the output puts it back on.
+    pid: i32,
+    language: Option<String>,
+    /// Filled in for sound: the codec, the rate and the channel count.
+    detail: String,
+    /// Whether this is the track everything that reads one track reads.
+    main: bool,
+    /// Whether it can be switched off at all. A recording's only sound track
+    /// can be, its data broadcast cannot -- that one is listed to say it is
+    /// going, not to offer a choice about it.
+    optional: bool,
+}
+
+/// What a recording carries, for the track menu to lay out.
+///
+/// Reads the cached scan, so opening the menu on a clip the list has already
+/// read costs nothing. What it does not do is decide anything: which of these
+/// are written is the window's answer, sent back with the export.
+#[tauri::command]
+async fn tracks(path: String, app: tauri::AppHandle) -> Result<Vec<StreamInfo>, String> {
+    off_thread(move || {
+        let (src, _) = scan_cached(&app, &path)?;
+        let main = src.audio.as_ref().map(|a| a.stream_index);
+        let mut out = Vec::new();
+        for a in &src.audios {
+            out.push(StreamInfo {
+                index: a.stream_index,
+                kind: "audio".into(),
+                pid: a.pid,
+                language: a.language.clone(),
+                detail: format!("{} {}Hz {}ch", a.codec, a.sample_rate, a.channels),
+                main: main == Some(a.stream_index),
+                optional: true,
+            });
+        }
+        for c in &src.captions {
+            out.push(StreamInfo {
+                index: c.stream_index,
+                kind: "caption".into(),
+                pid: c.pid,
+                language: c.language.clone(),
+                detail: "ARIB STD-B24".into(),
+                main: false,
+                optional: true,
+            });
+        }
+        // Listed but not offered: see `StreamInfo::optional`.
+        for d in &src.dropped {
+            out.push(StreamInfo {
+                index: usize::MAX,
+                kind: "dropped".into(),
+                pid: d.pid,
+                language: None,
+                detail: d.what.to_string(),
+                main: false,
+                optional: false,
+            });
+        }
+        Ok(out)
+    })
+    .await
+}
+
 /// Pictures out of a clip of the list, at the instants asked for.
 ///
 /// One open for the lot: the seek index makes opening cheap but not free,
@@ -1353,7 +1489,9 @@ fn detect_now(src: &Source, pictures: &Source, say: Say) -> Result<CmResult, Str
     let reporter = say.clone();
     let resets = smartcut_core::caption::resets_with(
         src,
-        Some(Box::new(move |f| (*reporter)("字幕を調べています", f * CAPTION_SHARE))),
+        Some(Box::new(move |f| {
+            (*reporter)(tr!("字幕を調べています", "Reading the captions"), f * CAPTION_SHARE)
+        })),
     )
     .ok();
 
@@ -1370,7 +1508,10 @@ fn detect_now(src: &Source, pictures: &Source, say: Say) -> Result<CmResult, Str
                 src,
                 &opts,
                 Some(Box::new(move |f| {
-                    (*reporter)("音声を調べています", CAPTION_SHARE + f * audio_share)
+                    (*reporter)(
+                        tr!("音声を調べています", "Reading the audio"),
+                        CAPTION_SHARE + f * audio_share,
+                    )
                 })),
             )
             .map_err(|e| e.to_string())?
@@ -1387,7 +1528,7 @@ fn detect_now(src: &Source, pictures: &Source, say: Say) -> Result<CmResult, Str
             &Default::default(),
             Some(Box::new(move |f| {
                 (*reporter)(
-                    "ロゴを探しています",
+                    tr!("ロゴを探しています", "Looking for the logo"),
                     CAPTION_SHARE + audio_share + f * (rest - audio_share),
                 )
             })),
@@ -1396,7 +1537,7 @@ fn detect_now(src: &Source, pictures: &Source, say: Say) -> Result<CmResult, Str
     } else {
         None
     };
-    (*say)("まとめています", 1.0);
+    (*say)(tr!("まとめています", "Putting it together"), 1.0);
     let blocks = match (&resets, &logo) {
         (Some(r), _) => smartcut_core::cm_blocks_from_resets(r, src.duration),
         (None, Some(l)) if !l.absent.is_empty() => {
@@ -1448,7 +1589,9 @@ fn cm_dir(app: &tauri::AppHandle) -> Result<std::path::PathBuf, String> {
     let dir = app
         .path()
         .app_cache_dir()
-        .map_err(|e| format!("キャッシュの置き場が分かりません: {e}"))?
+        .map_err(|e| {
+            format!("{}: {e}", tr!("キャッシュの置き場が分かりません", "No cache directory"))
+        })?
         .join("cm");
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
     Ok(dir)
@@ -1670,16 +1813,26 @@ async fn detect_cm_at(path: String, app: tauri::AppHandle) -> Result<CmResult, S
 /// list of clips without opening each one into the editor first -- the seek
 /// index built when the clip was added makes that open cheap.
 #[tauri::command]
+// The arguments are the command's interface -- what the window sends is what
+// the engine takes -- so there is nothing here to group into a struct that
+// would not have to be taken apart again on the other side.
+#[allow(clippy::too_many_arguments)]
 async fn export(
     app: tauri::AppHandle,
     ranges: Vec<(f64, f64)>,
     output: String,
     path: Option<String>,
-    // All switchable from the CLI; the window offers the audio mode on the
+    // All switchable from the CLI; the window offers the audio settings on the
     // output settings screen and leaves the rest at the engine's defaults.
     audio_reencode: Option<bool>,
     audio_copy: Option<bool>,
+    audio_channels: Option<u16>,
+    audio_bitrate: Option<usize>,
     audio_es: Option<bool>,
+    // Streams the track menu switched off, by source stream index. Nothing
+    // sent means nothing dropped, which is what a clip nobody opened the
+    // menu on amounts to.
+    drop_streams: Option<Vec<usize>>,
 ) -> Result<(), String> {
     // Cutting is minutes of I/O on a broadcast recording; keeping it off the
     // UI thread is what lets the progress bar move at all.
@@ -1730,6 +1883,14 @@ async fn export(
             } else {
                 smartcut_core::AudioMode::Smart
             },
+            // A channel count that is not the recording's is a downmix, and
+            // the engine answers one with a whole-track re-encode whatever
+            // the mode above says. Zero and nothing mean the same thing here
+            // -- follow the recording -- so the screen can send its "as it
+            // is" the way it sends every other empty control.
+            audio_channels: audio_channels.filter(|&c| c > 0),
+            audio_bit_rate: audio_bitrate.filter(|&b| b > 0),
+            drop_streams: drop_streams.unwrap_or_default(),
             ..Default::default()
         };
         smartcut_core::cut_with_progress(
@@ -1920,6 +2081,111 @@ fn read_keyframes(path: String) -> Result<Option<Vec<u32>>, String> {
     ))
 }
 
+/// Write a project file.
+///
+/// The list window builds the text: a project is the rows, what has been cut
+/// out of each of them and where the results are to go, and all of that is up
+/// there. Same division as [`write_keyframes`] -- whoever holds the state
+/// owns the shape of the file, and this side owns the disc.
+#[tauri::command]
+fn write_project(path: String, body: String) -> Result<(), String> {
+    std::fs::write(&path, body)
+        .map_err(|e| trf!("保存できません: {} ({})", "Cannot save: {} ({})", path, e))
+}
+
+/// Read one back.
+///
+/// A missing file is an error here, unlike the keyframe sidecar's: that one
+/// is looked for on the off-chance, and this one was named by the user out of
+/// a file picker and is expected to be there.
+#[tauri::command]
+fn read_project(path: String) -> Result<String, String> {
+    std::fs::read_to_string(&path)
+        .map_err(|e| trf!("開けません: {} ({})", "Cannot open: {} ({})", path, e))
+}
+
+/// Whether the list is holding work that is not on disc, as the frontend
+/// last said.
+///
+/// Worked out up there, where the work is; kept down here for the one thing
+/// that cannot be done from a page -- refusing to let the window close on it.
+static DIRTY: AtomicBool = AtomicBool::new(false);
+
+/// Told whenever the answer changes, the same way the language is: the
+/// frontend is the side that knows, and this side is only ever informed.
+#[tauri::command]
+fn set_dirty(dirty: bool) {
+    DIRTY.store(dirty, Ordering::Relaxed);
+}
+
+/// Close for good, once the question about unsaved work has been answered.
+///
+/// The flag goes down first, or the close this asks for would be stopped by
+/// the very check that asked the question.
+#[tauri::command]
+fn quit(app: tauri::AppHandle) {
+    DIRTY.store(false, Ordering::Relaxed);
+    app.exit(0);
+}
+
+/// The language this side should write in, as the frontend settled it.
+///
+/// Said once at startup and again whenever it is changed in 環境設定. The
+/// frontend holds the preference -- it is the one with somewhere to keep it
+/// and the one that knows what "follow the machine" came to -- so this is
+/// only ever told, never asked.
+#[tauri::command]
+fn set_lang(lang: String) {
+    lang::set(&lang);
+}
+
+/// What the machine is set to, for the frontend to check its own answer
+/// against. Nothing on the platforms where the webview knows better.
+#[tauri::command]
+fn os_locale() -> Option<String> {
+    lang::from_os()
+}
+
+/// What the バージョン情報 panel prints.
+///
+/// Asked for rather than written into the frontend, because two of these
+/// three are only knowable from here: the version is the one the binary was
+/// stamped with at build time, and the libav numbers are the ones of the
+/// libraries this process actually loaded. A version the About box holds a
+/// copy of is a version that goes stale the first time a release forgets to
+/// update it, and the report it came back in is then wrong about the build
+/// it is reporting.
+#[derive(Serialize)]
+struct Versions {
+    /// The application's, from the manifest the window was built from.
+    app: String,
+    /// The cutting engine's. The same number today -- one workspace, one
+    /// version -- and named separately anyway, because the engine is also
+    /// the CLI's and need not stay in step forever.
+    core: String,
+    avformat: String,
+    avcodec: String,
+    avutil: String,
+    /// libav's licence, which is not this program's.
+    ffmpeg_license: String,
+    /// The machine this build is for, as a bug report would have to say it.
+    platform: String,
+}
+
+#[tauri::command]
+fn versions() -> Versions {
+    let av = smartcut_core::libav();
+    Versions {
+        app: env!("CARGO_PKG_VERSION").to_string(),
+        core: smartcut_core::VERSION.to_string(),
+        avformat: av.avformat,
+        avcodec: av.avcodec,
+        avutil: av.avutil,
+        ffmpeg_license: av.license,
+        platform: format!("{} {}", std::env::consts::OS, std::env::consts::ARCH),
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     // WebKitGTK's compositor draws nothing on a machine without a GPU: the
@@ -1930,6 +2196,13 @@ pub fn run() {
     }
     if std::env::var_os("WEBKIT_DISABLE_DMABUF_RENDERER").is_none() {
         std::env::set_var("WEBKIT_DISABLE_DMABUF_RENDERER", "1");
+    }
+
+    // Whatever the desktop is set to, until the frontend says otherwise.
+    // Anything said before then -- a file named on the command line that
+    // cannot be opened, most of all -- is already in the right language.
+    if let Some(tag) = lang::from_os() {
+        lang::set(&tag);
     }
 
     let argv = Argv(std::env::args().skip(1).filter(|a| !a.starts_with('-')).collect());
@@ -1943,6 +2216,27 @@ pub fn run() {
         .manage(Playing::default())
         .manage(BatchStop::default())
         .manage(argv)
+        // The list window is declared in the configuration rather than built
+        // here, so `setup` is the first moment there is one to attach
+        // anything to.
+        .setup(|app| {
+            if let Some(w) = app.get_webview_window(MAIN) {
+                let asker = app.handle().clone();
+                w.on_window_event(move |event| {
+                    if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                        // Held open while the question is put. The frontend
+                        // answers by calling `quit`, or by doing nothing --
+                        // there is no third thing to wait for, so nothing is
+                        // remembered about having asked.
+                        if DIRTY.load(Ordering::Relaxed) {
+                            api.prevent_close();
+                            let _ = asker.emit("close-requested", ());
+                        }
+                    }
+                });
+            }
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![
             log,
             initial_paths,
@@ -1965,9 +2259,19 @@ pub fn run() {
             cm_cached,
             stop_batch,
             clip_plan,
+            tracks,
             clip_thumbs,
             open_editor,
-            close_editor
+            retitle_editor,
+            retitle_main,
+            close_editor,
+            write_project,
+            read_project,
+            set_dirty,
+            quit,
+            set_lang,
+            os_locale,
+            versions
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

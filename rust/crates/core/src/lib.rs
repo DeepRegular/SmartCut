@@ -23,6 +23,7 @@ pub mod playback_audio;
 pub mod preview;
 pub mod proxy;
 pub mod seek_index;
+pub mod si;
 pub mod thumbs;
 
 pub use cm::{
@@ -121,6 +122,15 @@ impl VideoInfo {
 #[derive(Debug, Clone)]
 pub struct AudioInfo {
     pub stream_index: usize,
+    /// The PID this arrived on, when the recording is a transport stream.
+    ///
+    /// Written back out as it was. A broadcast names its tracks by PID and
+    /// by the component tag beside it in the map -- 0x10 the main sound,
+    /// 0x11 the second -- and a bilingual recording whose two tracks come
+    /// back on fresh PIDs has lost which was which.
+    pub pid: i32,
+    /// The language the map declared, when it declared one.
+    pub language: Option<String>,
     pub codec: String,
     pub sample_rate: u32,
     pub channels: u16,
@@ -128,11 +138,67 @@ pub struct AudioInfo {
     pub bit_rate: Option<usize>,
 }
 
+/// A caption stream: the subtitles the broadcast itself sends.
+///
+/// Kept as its own thing rather than as one more elementary stream, because
+/// it is the one non-audio stream that can be put on a cut timeline. Its
+/// packets carry a presentation time each, so they shift with the pictures
+/// the way audio frames do -- and unlike audio there is nothing to splice,
+/// since a caption statement is whole in one packet.
+#[derive(Debug, Clone)]
+pub struct CaptionInfo {
+    pub stream_index: usize,
+    pub pid: i32,
+    pub language: Option<String>,
+    pub time_base: f64,
+}
+
+/// A stream the recording carries that a cut cannot take with it.
+///
+/// Superimposed crawls and the data broadcast sit on their own PIDs, and
+/// neither can be moved onto a new timeline: the demuxer hands over the
+/// crawls with no presentation time at all, and the data broadcast is a
+/// carousel of sections rather than a stream of timed packets. Naming them
+/// is so the tool can say what it left behind instead of quietly dropping
+/// it.
+#[derive(Debug, Clone)]
+pub struct DroppedStream {
+    pub pid: i32,
+    /// Which of them it is: `"superimpose"` or `"data"`. A name rather than
+    /// a sentence, because the window says this in the language it is set to
+    /// and the command line says it in English.
+    pub what: &'static str,
+}
+
+impl DroppedStream {
+    /// What to call it in English, which is what the command line prints.
+    pub fn describe(&self) -> &'static str {
+        match self.what {
+            "superimpose" => "superimposed text",
+            _ => "data broadcast",
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct Source {
     pub path: String,
     pub video: VideoInfo,
+    /// The main sound, which is the track everything that reads one track
+    /// reads: commercial detection, the preview player, the sidecar.
     pub audio: Option<AudioInfo>,
+    /// Every audio track, in the order the recording carries them.
+    ///
+    /// A bilingual broadcast sends two -- the original and the dub, or the
+    /// commentary and the crowd -- on separate PIDs, and until this existed
+    /// the second one was simply not looked at. `audio` is the first of
+    /// these unless the container nominated another.
+    pub audios: Vec<AudioInfo>,
+    /// Every caption stream. More than one means more than one language.
+    pub captions: Vec<CaptionInfo>,
+    /// What the recording carries that the output cannot; see
+    /// [`DroppedStream`].
+    pub dropped: Vec<DroppedStream>,
     pub duration: f64,
     /// Container start time. MPEG-TS does not begin at zero.
     pub start_time: f64,
@@ -166,6 +232,46 @@ pub struct Source {
 
 pub fn init() -> Result<()> {
     ff::init().map_err(|e| anyhow!("ffmpeg init failed: {e}"))
+}
+
+/// This crate's own version, which is the version of the cutting engine --
+/// the workspace carries one number and the CLI, the engine and the windows
+/// all take it.
+pub const VERSION: &str = env!("CARGO_PKG_VERSION");
+
+/// What libav says about itself.
+///
+/// The versions of the libraries actually loaded, not the ones this was
+/// compiled against: the AppImage carries its own and a distribution build
+/// takes the system's, and which of them answered is the first thing worth
+/// knowing about a recording that decoded differently on one machine than on
+/// another.
+#[derive(Debug, Clone)]
+pub struct Libav {
+    /// `major.minor.micro` of libavformat, the demuxer and muxer.
+    pub avformat: String,
+    /// ...of libavcodec, the decoders and the one encoder.
+    pub avcodec: String,
+    /// ...of libavutil, which the other two are versioned alongside.
+    pub avutil: String,
+    /// What the build was licensed under -- "LGPL version 2.1 or later",
+    /// or GPL for one built with the GPL-only parts turned on. It is not
+    /// this program's licence and it need not agree with it.
+    pub license: String,
+}
+
+/// Read the loaded libraries' version numbers.
+pub fn libav() -> Libav {
+    /// libav packs a version into one word, a byte per part.
+    fn triple(v: u32) -> String {
+        format!("{}.{}.{}", v >> 16, (v >> 8) & 0xff, v & 0xff)
+    }
+    Libav {
+        avformat: triple(ff::format::version()),
+        avcodec: triple(ff::codec::version()),
+        avutil: triple(ff::util::version()),
+        license: ff::util::license().to_string(),
+    }
 }
 
 /// A video decoder allowed to use every core.
@@ -271,7 +377,7 @@ pub fn scan_with(path: &str, source: &dyn index::IndexSource) -> Result<Source> 
     let framing = bitstream::framing_from_extradata(&codec, &extradata);
     let frame_rate = f64::from(stream.avg_frame_rate());
 
-    let audio = ictx.streams().best(ff::media::Type::Audio).map(|a| {
+    let read_audio = |a: &ff::format::stream::Stream| {
         let p = a.parameters();
         let (sample_rate, channels, bit_rate) = unsafe {
             let raw = p.as_ptr();
@@ -283,13 +389,65 @@ pub fn scan_with(path: &str, source: &dyn index::IndexSource) -> Result<Source> 
         };
         AudioInfo {
             stream_index: a.index(),
+            pid: a.id(),
+            language: a.metadata().get("language").map(str::to_string),
             codec: format!("{:?}", p.id()).to_lowercase(),
             sample_rate,
             channels,
             time_base: f64::from(a.time_base()),
             bit_rate,
         }
-    });
+    };
+    let audios: Vec<AudioInfo> = ictx
+        .streams()
+        .filter(|s| s.parameters().medium() == ff::media::Type::Audio)
+        .map(|s| read_audio(&s))
+        .collect();
+    // Which of them is the main sound. libav's own answer, since it weighs
+    // the disposition flags a container may carry; the first track when it
+    // has no opinion, which is what a broadcast recording amounts to.
+    let audio = ictx
+        .streams()
+        .best(ff::media::Type::Audio)
+        .map(|a| a.index())
+        .and_then(|i| audios.iter().find(|a| a.stream_index == i).cloned())
+        .or_else(|| audios.first().cloned());
+
+    // Captions are subtitles here only in the sense libav means it: an ARIB
+    // caption stream is not decoded, it is carried. Any other subtitle codec
+    // in a broadcast recording is not one of these and is left alone.
+    let captions: Vec<CaptionInfo> = ictx
+        .streams()
+        .filter(|s| s.parameters().id() == ff::codec::Id::ARIB_CAPTION)
+        .map(|s| CaptionInfo {
+            stream_index: s.index(),
+            pid: s.id(),
+            language: s.metadata().get("language").map(str::to_string),
+            time_base: f64::from(s.time_base()),
+        })
+        .collect();
+
+    // What is being left behind, so it can be said out loud. See
+    // [`DroppedStream`].
+    let dropped: Vec<DroppedStream> = ictx
+        .streams()
+        .filter_map(|s| {
+            let p = s.parameters();
+            match (p.medium(), p.id()) {
+                // Not dropped at all: this is the event information table,
+                // and where it belongs is not in a stream. See [`si`], which
+                // puts it back on the PID a broadcast keeps it on.
+                (_, ff::codec::Id::EPG) => None,
+                (ff::media::Type::Data, ff::codec::Id::BIN_DATA) => {
+                    Some(DroppedStream { pid: s.id(), what: "superimpose" })
+                }
+                (ff::media::Type::Unknown, _) | (ff::media::Type::Data, _) => {
+                    Some(DroppedStream { pid: s.id(), what: "data" })
+                }
+                _ => None,
+            }
+        })
+        .collect();
 
     let (duration, start_time) = unsafe {
         let p = ictx.as_ptr();
@@ -347,6 +505,9 @@ pub fn scan_with(path: &str, source: &dyn index::IndexSource) -> Result<Source> 
     Ok(Source {
         path: path.to_string(),
         audio,
+        audios,
+        captions,
+        dropped,
         seek_margin,
         byte_seekable,
         video,

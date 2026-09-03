@@ -219,6 +219,90 @@ through `aac_adtstoasc` exactly as it does the source's own frames.
 are all MPEG-2 LC, and counts how many are the recording's own bytes. Neither
 question can be put to a decoder; both are about the bytes.
 
+## Downmixing (`--audio-channels`)
+
+Some recordings carry 5.1, and a good many of the places they end up do not
+want it: a television that folds it badly, a player that puts the dialogue in
+the centre channel and never plays it, a phone. Asking for stereo is asking for
+the track to be rebuilt, and this is the one audio setting that **decides the
+mode rather than living under it**. No frame of a 5.1 recording can be spliced
+into a stereo track, so `smart` and `copy` have nothing to offer here: a
+channel count that is not the recording's makes the cut a whole-track
+re-encode, and says so on the way past.
+
+The fold itself is swresample's, which means the rematrixing coefficients are
+libav's own -- centre at -3 dB into both, the surrounds into their own side,
+the LFE dropped. What comes out is what a player downmixing the recording would
+have produced, which is the point: the recording is being fixed, not
+reinterpreted.
+
+- **In and out at the same rate**, which is what keeps it a per-frame
+  operation. swresample hands a frame's samples back one for one and holds
+  nothing over, so the sample window each keep-range is trimmed against still
+  means what it meant on the source's own clock, and the boundaries stay
+  sample-accurate.
+- **The ADTS header has to be rewritten too.** A transport stream says how many
+  channels a frame has in the frame's own header, and the header these frames
+  inherit is the recording's. Left alone it announces 5.1 over a stereo
+  payload, and a decoder that believes the header ahead of the payload gets
+  neither. `AdtsFormat::with_channels` puts the `channel_config` right;
+  a count with no configuration of its own (7 channels, say) is left alone,
+  because such a stream describes itself in a program config element inside the
+  frame instead.
+- **The output stream's parameters come from the encoder** once the channels
+  have changed, framed output or not -- the recording's parameters describe a
+  track the file no longer contains. This costs the framing nothing: a packet
+  that already begins with a sync word is passed through whatever the extradata
+  says.
+- **A derived bitrate comes down with the channel count.** 384 kbit/s is what
+  the 5.1 cost, not what the stereo it was folded into is worth, so the rate
+  taken from the recording is scaled by the fold and floored at 128 kbit/s.
+  `--audio-bitrate` is taken as given.
+
+`tests/run_downmix_tests.sh` — a 5.1 fixture with a different tone in every
+channel, so the fold is read out of the spectrum rather than off the metadata:
+the centre has to arrive in both output channels, the left surround in the left
+only, and the LFE nowhere. It checks the ADTS `channel_config` as well, and
+finishes by measuring A/V sync through the fold on a 5.1 impulse fixture --
+0.83 ms at worst, against the 1 ms bar a whole-track re-encode is held to.
+
+## Multi-audio broadcasts -- all of them, not one
+
+A bilingual broadcast sends its sound on **two separate PIDs**. Only one used
+to be picked up, by `best(Type::Audio)`, so the second language was never
+even read.
+
+`Source.audios` now lists every sound track the recording carries.
+`Source.audio` stays, as the *main* one: commercial detection, preview
+playback and the `.aac` sidecar each read a single track, and which one that
+is remains a real question.
+
+On the way out, **each track is cut on its own**. That is the whole point,
+and the reason the writer's state was split from one set into one set per
+track: two tracks have their frames at different instants, so
+
+- a boundary falls inside a different frame on each (a different number of
+  frames get re-encoded),
+- each accumulates a different drift from range to range,
+- and they need not even be framed the same way -- one MPEG-2 AAC, the other
+  MPEG-4.
+
+Use one track's answer for the other and the other slips a frame per range.
+So an `AudioTrack` holds everything true of one track alone -- its output
+stream index, how far it has been written, the previous frame's `pts`, its
+table of re-encoded boundary frames, its re-encoder -- and the `Writer` holds
+a list of them.
+
+Options like `--audio-channels` apply to every track, but the *decision* is
+per track: only a track that actually has to be folded becomes a whole-track
+re-encode, and a track that was already stereo is still copied.
+
+A track that is not wanted is dropped with `--drop-stream <stream index>`
+(in the GUI, the cut editor's track menu). The default is to **write them
+all**: a track nobody asked about is a track that was in the recording, and
+dropping it silently would be this program deciding what the recording is
+for.
+
 ## The encoder knows its own delay
 
 The re-encoding path was a frame out, and had been all along. It counted the

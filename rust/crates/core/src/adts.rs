@@ -91,6 +91,24 @@ impl AdtsFormat {
         self
     }
 
+    /// The same format, for a frame carrying `channels` channels.
+    ///
+    /// Only for frames whose channel count is not the recording's -- a
+    /// downmix. The header is where a transport stream says how many channels
+    /// a frame has, so leaving the recording's count on a downmixed frame
+    /// would announce 5.1 over a stereo payload, and a decoder that believes
+    /// the header ahead of the payload gets neither.
+    ///
+    /// A count with no `channel_config` of its own is left alone: such a
+    /// stream describes itself in a program config element inside the frame,
+    /// which is the encoder's business and not this header's.
+    pub fn with_channels(mut self, channels: u16) -> Self {
+        if let Some(config) = channel_config(channels) {
+            self.channel_config = config;
+        }
+        self
+    }
+
     /// A 7-byte header for a payload of `payload` bytes.
     ///
     /// `protection_absent` is set, so no CRC follows -- it is a per-frame
@@ -168,6 +186,19 @@ pub fn of_source(src: &crate::Source) -> Option<AdtsFormat> {
     framing(&mut ictx, audio.stream_index)
 }
 
+/// The `channel_config` a channel count is written as, where there is one.
+///
+/// The configurations run 1..=6 for mono through 5.1 and 7 for 7.1; anything
+/// else -- 5.1 rear, say -- is `None`, and carries a program config element
+/// instead.
+pub fn channel_config(channels: u16) -> Option<u8> {
+    match channels {
+        1..=6 => Some(channels as u8),
+        8 => Some(7),
+        _ => None,
+    }
+}
+
 /// The sampling frequency index a rate is written as.
 pub fn sampling_index(rate: u32) -> Option<u8> {
     const RATES: [u32; 13] = [
@@ -206,6 +237,19 @@ mod tests {
         let len = ((h[3] as u32 & 0x03) << 11) | ((h[4] as u32) << 3) | (h[5] as u32 >> 5);
         assert_eq!(len, 675 + 7);
         assert_eq!(h[6] & 0x03, 0, "one raw data block");
+    }
+
+    #[test]
+    fn rewrites_the_channel_count() {
+        let f = AdtsFormat::parse(&BROADCAST).unwrap();
+        assert_eq!(f.with_channels(1).channel_config, 1);
+        assert_eq!(f.with_channels(6).channel_config, 6);
+        assert_eq!(f.with_channels(8).channel_config, 7);
+        // No configuration of its own, so the header keeps what it had.
+        assert_eq!(f.with_channels(7).channel_config, f.channel_config);
+        // And it survives a round trip through a header.
+        let h = f.with_channels(2).header(675);
+        assert_eq!(AdtsFormat::parse(&h).unwrap().channel_config, 2);
     }
 
     #[test]

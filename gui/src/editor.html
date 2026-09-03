@@ -1,9 +1,9 @@
 <!doctype html>
-<html lang="ja">
+<html>
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>カット編集</title>
+    <title data-i18n="editor.title">カット編集</title>
     <link rel="stylesheet" href="styles.css" />
   </head>
   <!-- The cut editor, in its own window. Opened on one clip out of the list
@@ -11,15 +11,18 @@
        clip, and what becomes of the cuts afterwards. -->
   <body>
     <header class="tabs">
-      <span class="tab active still">カット編集</span>
-      <span class="title" id="title">読み込み中…</span>
-      <span class="brand">SmartCut</span>
+      <span class="tab active still" data-i18n="editor.title">カット編集</span>
+      <span class="title" id="title" data-i18n="editor.loading">読み込み中…</span>
     </header>
 
     <div class="infobar">
       <span id="info">—</span>
       <span class="spacer"></span>
-      <button id="detect-cm" class="mini wide" title="CM らしい区間を探してキーフレームを立てる (Ctrl+D)">CM を検出</button>
+      <!-- Its label counts a detection up while one is running, so it is
+           `main.js` that writes it and not `applyStatic`. -->
+      <button id="tracks" class="mini wide" data-i18n="tracks.button"
+              data-i18n-title="tracks.button.title">トラック</button>
+      <button id="detect-cm" class="mini wide" data-i18n-title="editor.detectCm.title">CM を検出</button>
     </div>
 
     <main>
@@ -27,7 +30,7 @@
            marks you navigate by, not the edit itself. -->
       <aside class="clips">
         <div class="clips-head">
-          キーフレーム <span id="key-count" class="dim"></span>
+          <span data-i18n="editor.keyframes">キーフレーム</span> <span id="key-count" class="dim"></span>
         </div>
         <ol id="keyframes"></ol>
       </aside>
@@ -42,10 +45,10 @@
             </div>
             <div class="ovl-sub">
               <span id="ovl-kind">—</span>
-              <span id="ovl-sel">選択 —</span>
+              <span id="ovl-sel" data-i18n="editor.selectionNone">選択 —</span>
             </div>
           </div>
-          <div id="searching" class="searching" hidden>サーチ中</div>
+          <div id="searching" class="searching" data-i18n="editor.searching" hidden>サーチ中</div>
         </div>
 
         <div class="strip-wrap">
@@ -54,16 +57,16 @@
             <div id="playline" class="playline" hidden></div>
           </div>
           <div class="strip-foot">
-            <span class="dim">クリックで移動／<b>右ドラッグ</b>で前後にサーチ（右へ＝送り・左へ＝戻し）／中クリックで次のシーン／ホイールで 1 フレーム送り（Shift で GOP 単位）／Space で再生</span>
+            <span class="dim" data-i18n-html="editor.stripHint"></span>
             <span class="spacer"></span>
             <span id="warm" class="warm"></span>
-            <label class="opt">表示
+            <label class="opt"><span data-i18n="editor.stripShow">表示</span>
               <select id="strip-step">
-                <option value="gop:3">GOP・3 秒</option>
-                <option value="gop:6" selected>GOP・6 秒</option>
-                <option value="gop:30">GOP・30 秒</option>
-                <option value="gop:180">GOP・3 分</option>
-                <option value="frame">フレーム</option>
+                <option value="gop:3" data-i18n="strip.gop3">GOP・3 秒</option>
+                <option value="gop:6" selected data-i18n="strip.gop6">GOP・6 秒</option>
+                <option value="gop:30" data-i18n="strip.gop30">GOP・30 秒</option>
+                <option value="gop:180" data-i18n="strip.gop180">GOP・3 分</option>
+                <option value="frame" data-i18n="strip.frame">フレーム</option>
               </select>
             </label>
           </div>
@@ -89,37 +92,39 @@
              the clicks meant for them. At the window's own default width. -->
         <div class="transport">
           <div class="tgroup">
-            <button id="add-key" class="flag" title="いまのフレームをキーフレームに登録 (K)">⚑ キーフレーム</button>
-            <button id="prev-scene" class="tool" title="前のシーンの変わり目へ (Shift+S)" disabled>⇤ シーン</button>
-            <button id="next-scene" class="tool" title="次のシーンの変わり目へ (S)" disabled>シーン ⇥</button>
+            <button id="add-key" class="flag" data-i18n="t.addKey" data-i18n-title="t.addKey.title">⚑ キーフレーム</button>
+            <button id="prev-scene" class="tool" data-i18n="t.prevScene" data-i18n-title="t.prevScene.title" disabled>⇤ シーン</button>
+            <button id="next-scene" class="tool" data-i18n="t.nextScene" data-i18n-title="t.nextScene.title" disabled>シーン ⇥</button>
           </div>
 
           <div class="tgroup">
-            <button id="play" class="play" title="ここから再生 (Space)">▶ 再生</button>
-            <button id="go-start" title="先頭へ">|◀</button>
-            <button id="prev-kf" title="前の無劣化点へ">◀|</button>
-            <button id="step-back" title="1 フレーム戻る (←) ─ 押しっぱなしで連続">◀</button>
-            <button id="goto-in" title="選択の開始位置へ移動">⇤|</button>
-            <button id="set-in" class="mark" title="ここを選択の開始に (I)">[ IN</button>
-            <button id="cut-range" class="cut" title="いまの選択を出力から取り除く">✂ カット</button>
-            <button id="set-out" class="mark" title="ここを選択の終わりに (O)">OUT ]</button>
-            <button id="goto-out" title="選択の終わり位置へ移動">|⇥</button>
-            <button id="step-fwd" title="1 フレーム進む (→) ─ 押しっぱなしで連続">▶</button>
-            <button id="next-kf" title="次の無劣化点へ">|▶</button>
-            <button id="go-end" title="末尾へ">▶|</button>
+            <!-- The play button's label swaps to ■ 停止 while it is playing,
+                 so `setPlaying` writes it. -->
+            <button id="play" class="play" data-i18n-title="t.play.title">▶ 再生</button>
+            <button id="go-start" data-i18n-title="t.goStart">|◀</button>
+            <button id="prev-kf" data-i18n-title="t.prevKf">◀|</button>
+            <button id="step-back" data-i18n-title="t.stepBack">◀</button>
+            <button id="goto-in" data-i18n-title="t.gotoIn">⇤|</button>
+            <button id="set-in" class="mark" data-i18n-title="t.setIn">[ IN</button>
+            <button id="cut-range" class="cut" data-i18n="t.cut" data-i18n-title="t.cutRange">✂ カット</button>
+            <button id="set-out" class="mark" data-i18n-title="t.setOut">OUT ]</button>
+            <button id="goto-out" data-i18n-title="t.gotoOut">|⇥</button>
+            <button id="step-fwd" data-i18n-title="t.stepFwd">▶</button>
+            <button id="next-kf" data-i18n-title="t.nextKf">|▶</button>
+            <button id="go-end" data-i18n-title="t.goEnd">▶|</button>
           </div>
 
           <div class="tgroup">
-            <button id="cut-outside" class="tool" title="選択の外側をすべて取り除く">外側をカット</button>
-            <button id="snap" class="tool" title="選択の両端をいちばん近い無劣化点へ寄せる">無劣化点へ吸着</button>
-            <button id="undo-cut" class="tool" title="直前のカットを取り消す" disabled>↺ 取消</button>
-            <button id="clear-all" class="tool" title="カットとキーフレームをすべて消す">全消去</button>
+            <button id="cut-outside" class="tool" data-i18n="t.cutOutside" data-i18n-title="t.cutOutside.title">外側をカット</button>
+            <button id="snap" class="tool" data-i18n="t.snap" data-i18n-title="t.snap.title">無劣化点へ吸着</button>
+            <button id="undo-cut" class="tool" data-i18n="t.undo" data-i18n-title="t.undo.title" disabled>↺ 取消</button>
+            <button id="clear-all" class="tool" data-i18n="t.clearAll" data-i18n-title="t.clearAll.title">全消去</button>
           </div>
         </div>
 
         <div class="statusbar">
           <span class="counter" id="counter">— / —</span>
-          <span class="dim" id="selection">選択 —</span>
+          <span class="dim" id="selection" data-i18n="editor.selectionNone">選択 —</span>
           <span class="spacer"></span>
           <span class="dim" id="cm-note"></span>
         </div>
@@ -127,7 +132,7 @@
         <footer class="output">
           <div class="panel">
             <div class="bar"><span id="copied-bar"></span></div>
-            <div class="plan-text" id="plan-text">ファイルを開いてください</div>
+            <div class="plan-text" id="plan-text" data-i18n="plan.openFile">ファイルを開いてください</div>
             <ul id="segments"></ul>
           </div>
           <!-- No 出力 button here. What gets written, where, and in what
@@ -141,12 +146,33 @@
             <span class="badge" id="smart-badge">—</span>
             <span class="dim" id="status"></span>
             <span class="spacer"></span>
-            <button id="editor-ok" class="primary wide">OK</button>
-            <button id="editor-cancel" class="secondary">キャンセル</button>
+            <button id="editor-ok" class="primary wide" data-i18n="editor.ok">OK</button>
+            <button id="editor-cancel" class="secondary" data-i18n="editor.cancel">キャンセル</button>
           </div>
         </footer>
       </div>
     </main>
+    <!-- 書き出すトラック. Built the same way the list window's panels are,
+         out of plain elements rather than <dialog>: what a released build's
+         webview does with that is not something to find out afterwards.
+
+         It is a menu and not a screen because what it settles is about one
+         clip and is settled rarely -- a bilingual recording whose dub is not
+         wanted says so once. The cuts are what this window is for, and the
+         tracks must not be in front of them. -->
+    <div id="tracks-modal" class="modal" hidden>
+      <div class="modal-box" role="dialog" aria-modal="true" aria-labelledby="tracks-title">
+        <div class="modal-head" id="tracks-title" data-i18n="tracks.title">書き出すトラック</div>
+        <div class="modal-body">
+          <ul id="tracks-list" class="tracks"></ul>
+          <p class="dim" data-i18n="tracks.note"></p>
+        </div>
+        <div class="modal-foot">
+          <button id="tracks-close" class="primary" data-i18n="tracks.close">閉じる</button>
+        </div>
+      </div>
+    </div>
+
     <script src="main.js" type="module"></script>
   </body>
 </html>

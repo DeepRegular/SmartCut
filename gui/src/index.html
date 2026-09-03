@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="ja">
+<html>
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
@@ -18,11 +18,45 @@
          its own (`editor.html`) that you come back out of with OK. -->
     <header class="tabs">
       <nav class="screens">
-        <button class="tab active" data-screen="input">入力設定</button>
-        <button class="tab" data-screen="outset">出力設定</button>
-        <button class="tab" data-screen="out">出力</button>
+        <button class="tab active" data-screen="input" data-i18n="tab.input">入力設定</button>
+        <button class="tab" data-screen="outset" data-i18n="tab.outset">出力設定</button>
+        <button class="tab" data-screen="out" data-i18n="tab.out">出力</button>
       </nav>
-      <span class="brand">SmartCut</span>
+
+      <!-- The program's name, and the only place it is a control: everything
+           that is about the program rather than about the clips hangs off it.
+           A menu bar for one item would be a bar mostly made of nothing, and
+           the name was already sitting in the corner a menu wants to be in.
+
+           In the header, so it stands on all three screens: a project is the
+           output settings as much as it is the cuts, and 環境設定 and the
+           about box are about the program wherever you happen to be. -->
+      <div class="brandmenu" id="brandmenu">
+        <!-- Named for a screen reader rather than given a tooltip: the
+             tooltip would come up over the menu the click just opened. -->
+        <button id="brand" class="brand" aria-haspopup="true" aria-expanded="false"
+                data-i18n-aria="ui.menu.title">SmartCut</button>
+        <!-- The work, and then the program. A project is the one thing
+             about the clips that is not on a screen: it is the whole list at
+             once, and there is no screen for that. -->
+        <div id="brand-menu" class="menu" hidden>
+          <button class="menu-item" id="menu-open">
+            <span data-i18n="menu.open">プロジェクトを開く…</span>
+            <span class="menu-key">Ctrl+O</span>
+          </button>
+          <button class="menu-item" id="menu-save">
+            <span data-i18n="menu.save">プロジェクトを保存</span>
+            <span class="menu-key">Ctrl+S</span>
+          </button>
+          <button class="menu-item" id="menu-save-as">
+            <span data-i18n="menu.saveAs">名前を付けて保存…</span>
+            <span class="menu-key">Ctrl+Shift+S</span>
+          </button>
+          <div class="menu-sep"></div>
+          <button class="menu-item" id="menu-prefs" data-i18n="menu.prefs">環境設定…</button>
+          <button class="menu-item" id="menu-about" data-i18n="menu.about">SmartCut について</button>
+        </div>
+      </div>
     </header>
 
     <!-- ===== 入力画面 ============================================== -->
@@ -40,39 +74,38 @@
         <div id="droptarget" class="cliplist-wrap">
           <ol id="cliplist"></ol>
           <div id="drop-hint" class="drop-hint">
-            <b>クリップ（映像ファイル）を追加してください</b>
-            <p>
-              「ファイルを追加」で選ぶか、ここへドラッグ＆ドロップしてください。<br />
-              読み込んだ順にシーク用インデックスを作ります。
-            </p>
-            <p class="keys">
-              ダブルクリックで編集　／　ドラッグで並べ替え　／　Ctrl+A 全選択　／　Ctrl+D 選択した動画の CM 検出　／　Delete 削除
-            </p>
+            <b data-i18n="input.dropHint.title">クリップ（映像ファイル）を追加してください</b>
+            <p data-i18n-html="input.dropHint.body"></p>
+            <p class="keys" data-i18n="input.dropHint.keys"></p>
           </div>
         </div>
 
         <aside class="side">
-          <div class="side-head">ファイル入力</div>
-          <button id="add-files" class="side-btn hot">＋　ファイルを追加</button>
+          <div class="side-head" data-i18n="side.fileInput">ファイル入力</div>
+          <button id="add-files" class="side-btn hot" data-i18n="side.addFiles">＋　ファイルを追加</button>
 
-          <div class="side-head">クリップ編集</div>
-          <button id="edit-clip" class="side-btn" disabled>✂　カット編集</button>
-          <button id="duplicate-clip" class="side-btn" disabled>⧉　クリップを複製</button>
-          <button id="detect-selected" class="side-btn" disabled>CM を検出</button>
+          <div class="side-head" data-i18n="side.clipEdit">クリップ編集</div>
+          <button id="edit-clip" class="side-btn" data-i18n="side.editClip" disabled>✂　カット編集</button>
+          <button id="duplicate-clip" class="side-btn" data-i18n="side.duplicate" disabled>⧉　クリップを複製</button>
+          <button id="detect-selected" class="side-btn" data-i18n="side.detect" disabled>CM を検出</button>
+          <!-- Its label is the one thing on this side that says what would
+               happen rather than what the button is, so `paintButtons` writes
+               it and no `data-i18n` may: a re-translation on a language change
+               would put 解析を中止 back over a paused list's 解析を再開. -->
           <button id="stop-batch" class="side-btn" disabled>解析を中止</button>
 
-          <div class="side-head">その他</div>
-          <button id="move-up" class="side-btn" disabled>上に移動</button>
-          <button id="move-down" class="side-btn" disabled>下に移動</button>
-          <button id="select-all" class="side-btn" disabled>全選択</button>
-          <button id="remove-clip" class="side-btn" disabled>クリップ削除</button>
-          <button id="remove-all" class="side-btn" disabled>全削除</button>
+          <div class="side-head" data-i18n="side.other">その他</div>
+          <button id="move-up" class="side-btn" data-i18n="side.moveUp" disabled>上に移動</button>
+          <button id="move-down" class="side-btn" data-i18n="side.moveDown" disabled>下に移動</button>
+          <button id="select-all" class="side-btn" data-i18n="side.selectAll" disabled>全選択</button>
+          <button id="remove-clip" class="side-btn" data-i18n="side.removeClip" disabled>クリップ削除</button>
+          <button id="remove-all" class="side-btn" data-i18n="side.removeAll" disabled>全削除</button>
         </aside>
       </div>
 
       <div class="props">
-        <div class="props-head">クイックプロパティ</div>
-        <div id="props" class="props-body dim">クリップが選択されていません</div>
+        <div class="props-head" data-i18n="props.head">クイックプロパティ</div>
+        <div id="props" class="props-body dim"></div>
       </div>
     </section>
 
@@ -80,53 +113,85 @@
     <!-- ===== 出力設定画面 ========================================== -->
     <section id="screen-outset" class="screen" hidden>
       <div class="infobar">
-        <span>ファイル出力</span>
+        <span data-i18n="outset.bar">ファイル出力</span>
         <span class="spacer"></span>
-        <span class="dim">ここでの設定は一覧のすべてのクリップに使われます</span>
+        <span class="dim" data-i18n="outset.barNote">ここでの設定は一覧のすべてのクリップに使われます</span>
       </div>
 
       <div class="outset-body">
         <div class="panel grow">
-          <div class="panel-head">設定出力フォーマット</div>
+          <div class="panel-head" data-i18n="outset.formatHead">設定出力フォーマット</div>
           <div class="row">
-            <span>クリップ選択:</span>
+            <span data-i18n="outset.clipPick">クリップ選択:</span>
             <select id="outset-clip"></select>
           </div>
-          <pre id="outset-format" class="format">クリップがありません</pre>
+          <pre id="outset-format" class="format" data-i18n="outset.noClips"></pre>
         </div>
 
         <div class="panel">
-          <div class="panel-head">ファイル設定</div>
+          <div class="panel-head" data-i18n="outset.fileHead">ファイル設定</div>
           <div class="row">
-            <span>出力先フォルダー(F):</span>
-            <input id="out-dir" type="text" placeholder="（入力ファイルと同じ場所）" />
-            <button id="browse-dir" class="mini">参照</button>
+            <span data-i18n="outset.outDir">出力先フォルダー(F):</span>
+            <input id="out-dir" type="text" data-i18n-ph="outset.sameAsInput" />
+            <button id="browse-dir" class="mini" data-i18n="outset.browse">参照</button>
           </div>
           <div class="row">
-            <span>ファイル名の接頭辞:</span>
+            <span data-i18n="outset.prefix">ファイル名の接頭辞:</span>
             <input id="out-prefix" type="text" value="cut_" />
           </div>
           <div class="row">
-            <span>コンテナタイプ(Y):</span>
-            <select id="out-container">
-              <option value="" selected>入力と同じ</option>
-              <option value="ts">MPEG-2 トランスポート (.ts)</option>
-              <option value="m2ts">M2TS (.m2ts)</option>
-              <option value="mp4">MP4 (.mp4)</option>
-              <option value="mkv">Matroska (.mkv)</option>
-              <option value="mov">QuickTime (.mov)</option>
-            </select>
+            <span data-i18n="outset.container">コンテナタイプ(Y):</span>
+            <span class="drop">
+              <select id="out-container">
+                <option value="" selected data-i18n="container.same">入力と同じ</option>
+                <option value="ts" data-i18n="container.ts">MPEG-2 トランスポート (.ts)</option>
+                <option value="m2ts">M2TS (.m2ts)</option>
+                <option value="mp4">MP4 (.mp4)</option>
+                <option value="mkv">Matroska (.mkv)</option>
+                <option value="mov">QuickTime (.mov)</option>
+              </select>
+            </span>
           </div>
           <div class="row">
-            <span>音声(A):</span>
-            <select id="out-audio">
-              <option value="smart" selected>スマートレンダリング（既定）</option>
-              <option value="copy">そのままコピー</option>
-              <option value="reencode">すべて再エンコード</option>
-            </select>
+            <span data-i18n="outset.audio">音声(A):</span>
+            <span class="drop">
+              <select id="out-audio">
+                <option value="smart" selected data-i18n="audio.smart">スマートレンダリング（既定）</option>
+                <option value="copy" data-i18n="audio.copy">そのままコピー</option>
+                <option value="reencode" data-i18n="audio.reencode">すべて再エンコード</option>
+              </select>
+            </span>
+          </div>
+          <!-- Under the mode, and greyed out unless it is すべて再エンコード:
+               these two describe an encode, and the other two modes do not
+               run one over the whole track. -->
+          <div class="row">
+            <span data-i18n="outset.audioChannels">音声チャンネル(C):</span>
+            <span class="drop">
+              <!-- Named by the count and not by the direction: which way it
+                   goes depends on the recording, and a list can hold both. -->
+              <select id="out-audio-channels">
+                <option value="" selected data-i18n="channels.same">入力と同じ</option>
+                <option value="1" data-i18n="channels.mono">1ch（モノラル）</option>
+                <option value="2" data-i18n="channels.stereo">2ch（ステレオ）</option>
+                <option value="6" data-i18n="channels.surround51">5.1ch（6ch）</option>
+              </select>
+            </span>
+          </div>
+          <div class="row">
+            <span data-i18n="outset.audioBitrate">音声ビットレート:</span>
+            <span class="drop">
+              <!-- Filled in by `fillBitrates`: which rungs of the ladder are
+                   worth offering depends on how many channels they have to
+                   carry, so the list is not the same list from clip to clip. -->
+              <select id="out-audio-bitrate">
+                <option value="" selected data-i18n="bitrate.auto">おまかせ</option>
+              </select>
+            </span>
           </div>
           <div class="opts">
-            <label class="opt"><input id="out-keyframes" type="checkbox" /> キーフレーム情報を別ファイル (.keyframe) で出力する</label>
+            <label class="opt"><input id="out-keyframes" type="checkbox" />
+              <span data-i18n="outset.keyframeSidecar">キーフレーム情報を別ファイル (.keyframe) で出力する</span></label>
           </div>
         </div>
       </div>
@@ -155,32 +220,102 @@
             <span id="out-ovl-note"></span>
           </div>
         </div>
-        <div id="out-idle" class="out-idle">出力するクリップを一覧に追加してください</div>
+        <div id="out-idle" class="out-idle" data-i18n="out.idle">出力するクリップを一覧に追加してください</div>
       </div>
 
       <div class="panel">
-        <div class="row"><span>出力先フォルダー(F):</span>
+        <div class="row"><span data-i18n="outset.outDir">出力先フォルダー(F):</span>
           <input id="out-dir-shown" type="text" readonly /></div>
       </div>
 
       <div class="out-run">
         <div class="out-buttons">
-          <button id="run-export" class="primary big">出力開始</button>
-          <button id="abort-export" class="mini" disabled>出力中止</button>
+          <button id="run-export" class="primary big" data-i18n="out.run">出力開始</button>
+          <button id="abort-export" class="mini" data-i18n="out.abort" disabled>出力中止</button>
         </div>
         <div class="out-status">
-          <div class="row"><span class="lbl">状況:</span><span id="out-state" class="grow">待機中</span></div>
-          <div class="row"><span class="lbl">再エンコード:</span><span id="out-shots-note" class="grow dim"></span></div>
-          <div class="row"><span class="lbl">進捗:</span>
+          <div class="row"><span class="lbl" data-i18n="out.stateLbl">状況:</span>
+            <span id="out-state" class="grow"></span></div>
+          <div class="row"><span class="lbl" data-i18n="out.reencodeLbl">再エンコード:</span>
+            <span id="out-shots-note" class="grow dim"></span></div>
+          <div class="row"><span class="lbl" data-i18n="out.progressLbl">進捗:</span>
             <div class="progress grow"><span id="progress-bar"></span></div>
             <span id="out-pct" class="num">0%</span>
-            <span id="out-elapsed" class="num">経過 00:00:00</span>
-            <span id="out-left" class="num">残り --:--:--</span>
+            <span id="out-elapsed" class="num"></span>
+            <span id="out-left" class="num"></span>
           </div>
           <ol id="out-list"></ol>
         </div>
       </div>
     </section>
+
+    <!-- 環境設定. A panel of its own rather than a screen in the tab bar:
+         the three screens are stages the work goes through, and what language
+         the program speaks is not one of them. Built out of plain elements
+         rather than <dialog>, whose support in the webviews this ships
+         against is not something to find out about in a released build. -->
+    <div id="prefs" class="modal" hidden>
+      <div class="modal-box" role="dialog" aria-modal="true" aria-labelledby="prefs-title">
+        <div class="modal-head" id="prefs-title" data-i18n="prefs.title">環境設定</div>
+        <div class="modal-body">
+          <div class="row">
+            <span data-i18n="prefs.language">表示言語:</span>
+            <select id="pref-lang">
+              <option value="auto" data-i18n="prefs.lang.auto"></option>
+              <option value="ja" data-i18n="prefs.lang.ja"></option>
+              <option value="en" data-i18n="prefs.lang.en"></option>
+            </select>
+          </div>
+          <p class="dim" data-i18n="prefs.langNote"></p>
+        </div>
+        <div class="modal-foot">
+          <button id="prefs-close" class="primary" data-i18n="prefs.close">閉じる</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- バージョン情報. Beside 環境設定 and built the same way, for the same
+         reason: it is shorter than the preferences are, and a window of its
+         own would be a window to find and then close again.
+
+         What it prints is asked of the backend rather than written in here.
+         The version is stamped into the binary at build time and the libav
+         numbers belong to the libraries this process loaded, so a copy kept
+         on this side would be a copy that can disagree with the build it is
+         claiming to describe -- which is the one thing an About box must not
+         do, since what it is for is being quoted in a bug report. -->
+    <div id="about" class="modal" hidden>
+      <div class="modal-box" role="dialog" aria-modal="true" aria-labelledby="about-title">
+        <div class="modal-head" id="about-title" data-i18n="about.title">バージョン情報</div>
+        <div class="modal-body">
+          <div class="about-mark">
+            <div class="about-name">SmartCut</div>
+            <div class="about-ver" id="about-version">—</div>
+          </div>
+          <p class="dim" data-i18n="about.tagline"></p>
+          <!-- Selectable, unlike the rest of the window: every line here
+               exists to be pasted into a bug report, and one that has to be
+               copied off the screen by hand is one that gets copied wrong. -->
+          <dl class="about-facts">
+            <dt data-i18n="about.engineLbl">エンジン:</dt>
+            <dd id="about-core">—</dd>
+            <dt data-i18n="about.libavLbl">FFmpeg ライブラリ:</dt>
+            <dd id="about-libav">—</dd>
+            <dt data-i18n="about.libavLicenseLbl">FFmpeg ライセンス:</dt>
+            <dd id="about-libav-license">—</dd>
+            <dt data-i18n="about.platformLbl">実行環境:</dt>
+            <dd id="about-platform">—</dd>
+            <dt data-i18n="about.licenseLbl">ライセンス:</dt>
+            <dd>GPL-3.0</dd>
+            <dt data-i18n="about.repoLbl">リポジトリ:</dt>
+            <dd>github.com/DeepRegular/SmartCut</dd>
+          </dl>
+        </div>
+        <div class="modal-foot">
+          <button id="about-close" class="primary" data-i18n="about.close">閉じる</button>
+        </div>
+      </div>
+    </div>
 
     <script src="app.js" type="module"></script>
   </body>

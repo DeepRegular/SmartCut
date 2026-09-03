@@ -59,6 +59,12 @@ fn main() -> Result<()> {
     // Whatever the engine has as its default, which is smart rendering.
     let mut audio_mode = smartcut_core::AudioMode::default();
     let mut aac = smartcut_core::AacVersion::Auto;
+    // Both follow the recording unless they are asked not to.
+    let mut audio_channels: Option<u16> = None;
+    let mut audio_bit_rate: Option<usize> = None;
+    // Everything the recording carries is written unless it is named here.
+    let mut drop_streams: Vec<usize> = Vec::new();
+    let mut keep_tables = true;
 
     let mut i = 0;
     while i < args.len() {
@@ -89,6 +95,32 @@ fn main() -> Result<()> {
                     other => bail!("--audio-mode wants copy, smart or reencode, got {other:?}"),
                 };
             }
+            "--audio-channels" => {
+                i += 1;
+                let v = args.get(i).context("--audio-channels needs a count")?;
+                audio_channels = Some(
+                    v.parse::<u16>()
+                        .ok()
+                        .filter(|c| (1..=8).contains(c))
+                        .with_context(|| format!("--audio-channels wants 1..8, got {v:?}"))?,
+                );
+            }
+            "--audio-bitrate" => {
+                i += 1;
+                let v = args.get(i).context("--audio-bitrate needs a rate")?;
+                // Written either way round -- 192k as it is spoken, or the
+                // bits per second the engine actually takes.
+                let bits = match v.strip_suffix(['k', 'K']) {
+                    Some(n) => n.parse::<f64>().map(|n| n * 1000.0),
+                    None => v.parse::<f64>(),
+                };
+                audio_bit_rate = Some(
+                    bits.ok()
+                        .filter(|b| (8000.0..=2_000_000.0).contains(b))
+                        .map(|b| b as usize)
+                        .with_context(|| format!("--audio-bitrate wants 8k..2000k, got {v:?}"))?,
+                );
+            }
             "--aac" => {
                 i += 1;
                 aac = match args.get(i).map(String::as_str) {
@@ -111,6 +143,15 @@ fn main() -> Result<()> {
                 seek_index =
                     Some(args.get(i).context("--seek-index needs a path")?.clone());
             }
+            "--drop-stream" => {
+                i += 1;
+                let v = args.get(i).context("--drop-stream needs a stream index")?;
+                drop_streams.push(
+                    v.parse::<usize>()
+                        .with_context(|| format!("--drop-stream wants a number, got {v:?}"))?,
+                );
+            }
+            "--no-tables" => keep_tables = false,
             "--proxy" => make_proxy = true,
             "--as-proxy" => as_proxy = true,
             "--analyze" => analyze = true,
@@ -124,7 +165,10 @@ fn main() -> Result<()> {
         i += 1;
     }
     let Some(input) = input else {
-        bail!("usage: smartcut <input> [--keep START-END]... [--cut START-END]... [--no-open-gop]");
+        bail!(
+            "usage: smartcut <input> [--keep START-END]... [--cut START-END]... \
+             [--drop-stream INDEX]... [--no-tables] [--no-open-gop]"
+        );
     };
     // A share the machine has already mounted may be named the way it is
     // written down -- `smb://nas/rec/a.ts` or `\\nas\rec\a.ts` -- rather than
@@ -172,19 +216,43 @@ fn main() -> Result<()> {
         v.codec, v.width, v.height, v.frame_rate, v.has_b_frames, src.duration, src.start_time
     );
 
-    if let Some(a) = src.audio.as_ref() {
-        // Which AAC the recording carries is the thing to know before a cut
-        // re-encodes any of it: a broadcast is MPEG-2 AAC, and a frame this
-        // tool writes has to say the same.
-        let form = match smartcut_core::adts::of_source(&src) {
-            Some(f) if f.mpeg2 => "  MPEG-2 ADTS".to_string(),
-            Some(_) => "  MPEG-4 ADTS".to_string(),
-            None => String::new(),
+    // Which AAC the recording carries is the thing to know before a cut
+    // re-encodes any of it: a broadcast is MPEG-2 AAC, and a frame this tool
+    // writes has to say the same. Read off the main track; a recording does
+    // not mix the two within itself.
+    let form = match smartcut_core::adts::of_source(&src) {
+        Some(f) if f.mpeg2 => "  MPEG-2 ADTS".to_string(),
+        Some(_) => "  MPEG-4 ADTS".to_string(),
+        None => String::new(),
+    };
+    for (n, a) in src.audios.iter().enumerate() {
+        // The stream index is what names a track to `--drop-stream`, so it
+        // is printed even when there is only one.
+        let main = if src.audio.as_ref().is_some_and(|m| m.stream_index == a.stream_index) {
+            "  main"
+        } else {
+            ""
         };
+        let lang = a.language.as_deref().map(|l| format!("  {l}")).unwrap_or_default();
         println!(
-            "audio : {} {}Hz {}ch{form}",
-            a.codec, a.sample_rate, a.channels
+            "audio{}: {} {}Hz {}ch{lang}{}{main}   [stream {} pid 0x{:04x}]",
+            if src.audios.len() > 1 { format!(" {}", n + 1) } else { "  ".to_string() },
+            a.codec,
+            a.sample_rate,
+            a.channels,
+            if n == 0 { form.as_str() } else { "" },
+            a.stream_index,
+            a.pid,
         );
+    }
+    for c in &src.captions {
+        let lang = c.language.as_deref().map(|l| format!(" {l}")).unwrap_or_default();
+        println!("caption:{lang} ARIB STD-B24   [stream {} pid 0x{:04x}]", c.stream_index, c.pid);
+    }
+    // Said out loud rather than dropped in silence: these are streams a cut
+    // has no way to carry. See `smartcut_core::DroppedStream`.
+    for d in &src.dropped {
+        println!("        not carried: {} on pid 0x{:04x}", d.describe(), d.pid);
     }
 
     let open = src.points.iter().filter(|p| p.open_gop()).count();
@@ -491,8 +559,52 @@ fn main() -> Result<()> {
         return Ok(());
     }
     let out = output.unwrap();
-    println!("\nrender:  audio {}", audio_mode.as_str());
-    cut(&src, &plans, &out, &CutOptions { audio_mode, aac, ..Default::default() })?;
+    // What the audio will be, which is not always what was asked for: a
+    // downmix has no copy path, and the engine says so and re-encodes.
+    let asked = audio_channels.filter(|&c| src.audio.as_ref().is_some_and(|a| a.channels != c));
+    println!(
+        "\nrender:  audio {}{}{}",
+        if asked.is_some() { "reencode" } else { audio_mode.as_str() },
+        asked.map_or(String::new(), |c| format!(", downmixed to {c}ch")),
+        audio_bit_rate.map_or(String::new(), |b| format!(", {} kbit/s", b / 1000)),
+    );
+    // What is going out beside the pictures, and what is not.
+    let to_ts = std::path::Path::new(&out)
+        .extension()
+        .and_then(|e| e.to_str())
+        .is_some_and(|e| matches!(e.to_ascii_lowercase().as_str(), "ts" | "m2ts" | "mts" | "m2t"));
+    let kept_audio = src.audios.iter().filter(|a| !drop_streams.contains(&a.stream_index)).count();
+    let kept_caps = if to_ts {
+        src.captions.iter().filter(|c| !drop_streams.contains(&c.stream_index)).count()
+    } else {
+        0
+    };
+    println!(
+        "         {kept_audio} of {} sound track(s), {kept_caps} of {} caption stream(s){}",
+        src.audios.len(),
+        src.captions.len(),
+        if to_ts && keep_tables {
+            ", the broadcast's own tables"
+        } else if to_ts {
+            ", tables left to the muxer"
+        } else {
+            ""
+        },
+    );
+    cut(
+        &src,
+        &plans,
+        &out,
+        &CutOptions {
+            audio_mode,
+            aac,
+            audio_channels,
+            audio_bit_rate,
+            drop_streams,
+            keep_tables,
+            ..Default::default()
+        },
+    )?;
     if audio_es {
         let beside = std::path::Path::new(&out).with_extension("aac");
         let n = smartcut_core::write_audio_es(&out, &beside.to_string_lossy(), aac)?;

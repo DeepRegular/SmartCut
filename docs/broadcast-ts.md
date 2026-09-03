@@ -24,6 +24,78 @@ produced a 0-byte output.
 `0x52` (component_tag) is the one thing that does not get written, because
 ffmpeg's muxer does not write it.
 
+### Every stream now goes back on the PID it arrived on
+
+The table above is as far as "number from the video's PID" gets you. The
+muxer reads `AVStream.id` as **the PID to write the stream on** -- anything
+16 or over is used as it stands rather than numbered from `mpegts_start_pid`
+-- so handing each stream the PID it had in the recording puts the sound and
+the captions back where they were. That the audio matched under the old
+scheme was luck: 0x1100 plus one happens to be 0x1101. A recording whose
+PIDs are spread out (0x100f / 0x104f / 0x120f) did not match at all.
+
+The descriptors are a different matter -- the muxer will not write those --
+and they are restored by the pass below.
+
+## Putting the recording's own tables back
+
+A broadcast also talks about itself. Which service this is, what the station
+is called, what is on now and what follows, what time it is -- PAT, PMT, SDT,
+EIT, TOT. **That is what a recorder's library view, a player's channel
+display and every downstream tool actually read.**
+
+None of it survives a mux. libavformat writes its own PAT, PMT and SDT out of
+what it knows, which is the streams and nothing else: the captions come out
+with their ARIB descriptors because the muxer knows that codec, and
+everything else -- the audio's component tag, the copy-control descriptor,
+the superimpose stream's identity -- is simply **not written**. EIT and TOT
+are worse than lost: ask the muxer to copy PID 0x12 and it accepts it as an
+anonymous private stream and **puts it on a PID of its own choosing**, where
+nothing will ever look for it.
+
+So they are put back afterwards, by one pass over the finished file:
+
+- **the PMT is rebuilt** with the recording's own descriptors,
+- **the SDT is replaced with the recording's own section** -- which is how
+  the service name arrives in ARIB's own character encoding without this
+  program having to understand a byte of it,
+- **EIT present/following and TOT are injected** on the PIDs they belong on,
+- and every continuity counter is renumbered.
+
+Where an injected section goes is decided by the output's own clock. Each
+kept range uses a snapshot read at **the source byte** its opening picture
+arrives at -- which the access-point index knows, and which is what makes
+this cheap on a file of several gigabytes -- so a cut spanning a programme
+boundary describes both programmes. The clock in the TOT is moved on as the
+output runs; left as the snapshot it would name the same second for the
+length of the file.
+
+The conditional access descriptor (0x09) is the one thing not carried across.
+The output is not scrambled and has no ECM stream, so restating it would be
+describing a file that does not exist.
+
+The pass runs whenever the output is a `.ts` and the recording had tables of
+its own to read; **`--no-tables` turns it off** and leaves the muxer's own PAT,
+PMT and SDT standing. It is there for the tool that wants a plain stream rather
+than a recording — and for telling, when something downstream disagrees, which
+of the two descriptions it was reading. The `--analyze` line says which it will
+be, `the broadcast's own tables` or `tables left to the muxer`, and a recording
+whose tables cannot be read says so and carries the streams anyway. In the GUI
+there is no switch: writing a `.ts` puts the tables back.
+
+Which *streams* are written is the other half, and that is `--drop-stream`
+(the cut editor's **Tracks** menu). A caption stream left out is one the
+finished file does not describe either — the tables are rebuilt around what was
+actually written, not around what arrived.
+
+Captions are a stream and not a table, so they travel with the cut rather
+than with this pass. A caption statement is whole inside one packet with a
+time on it, so unlike an audio frame there is nothing at a seam to re-encode
+-- it only has to be moved by what its range moved. Superimposed text and the
+data broadcast cannot travel at all: the demuxer hands over the first with no
+timestamp, so there is nowhere to put it on a new timeline, and the second is
+not a stream of timed packets in the first place.
+
 ### The muxer options had never been arriving
 
 This came out while fixing the above. `output_with()` in `ffmpeg-next` passes the

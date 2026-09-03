@@ -14,10 +14,10 @@ its own**.
 
 | Screen | Where | What it is for |
 |---|---|---|
-| **入力設定 (Input)** | List window | The list of clips. Drop files on it or use ファイルを追加; each one is read in turn and its seek index left on disc |
-| **カット編集 (Cut editor)** | **Its own window** | Open one clip out of the list, cut it, and come back with **OK**. Nearly all of this document is about this one |
-| **出力設定 (Output settings)** | List window | Folder, filename prefix, container, what to do with the audio, whether to write a `.keyframe` sidecar. **One answer for the whole list** |
-| **出力 (Output)** | List window | Write the list out, top to bottom |
+| **Input** | List window | The list of clips. Drop files on it or use **Add files**; each one is read in turn and its seek index left on disc |
+| **Cut editor** | **Its own window** | Open one clip out of the list, cut it, and come back with **OK**. Nearly all of this document is about this one |
+| **Output settings** | List window | Folder, filename prefix, container, what to do with the audio (mode, channels, bitrate), whether to write a `.keyframe` sidecar. **One answer for the whole list** |
+| **Export** | List window | Write the list out, top to bottom |
 
 The list window's three are tabs, and only one is up at a time — they are
 **stages you pass through**, not panels laid side by side.
@@ -62,7 +62,7 @@ Clips: 3   Total: 14 min 41 s                       [x use logo]
   events rather than an HTML5 drag -- Tauri takes those first, as above, so
   a `dragstart` inside the page is not something to build on. `Esc` puts
   them back.
-- **クリップを複製** puts the same recording in the list a second time.
+- **Duplicate clip** puts the same recording in the list a second time.
 
 ### SMB shares
 
@@ -80,8 +80,8 @@ belongs to the desktop's keyring rather than to a cut editor. A share that is
 not connected is refused with the place to open instead:
 
 ```
-\\nas\rec につながっていません。ファイルマネージャーで smb://nas/rec を
-開いてから、もう一度追加してください。（今つながっている共有: \\nas\録画）
+Not connected to \\nas\rec. Open smb://nas/rec in the file manager and add
+it again. (shares connected now: \\nas\録画)
 ```
 
 After the translation it is an ordinary path, so the packet scan, the seek
@@ -100,7 +100,7 @@ the same file's answer — so a duplicate costs no pass over the disc.
 
 That made **a row and a recording different things**, so a row now carries an
 `id`. Everything about a row — the round trip to the editor window, what
-キャンセル puts back, which row an export's progress belongs to — is addressed
+Cancel puts back, which row an export's progress belongs to — is addressed
 by that; `path` is left to mean the file. Looking a row up by path with two of
 them in the list can hand you the one that is not running.
 
@@ -155,7 +155,7 @@ commercials and writing it out all reopen the recording from the seek index on
 disc (`scan_cached`), touching neither [`Opened`] nor [`Thumbs`] nor
 [`Proxy`]. So a long pass over clip 12 costs the clip you are cutting nothing.
 
-解析を中止 stops both lanes, and pressing it again resumes them. The index
+**Stop analysis** stops both lanes, and pressing it again resumes them. The index
 pass can stop mid-file; the three passes a commercial detection makes have no
 stop in them, so a stop lands **between clips** rather than inside one.
 
@@ -178,10 +178,10 @@ Separate documents, so nothing passes between them but events. Three steps:
 **Reporting as it goes rather than at the end is the point of it.** By the
 time the window goes away the list already has everything, so closing it by
 the title bar's cross loses nothing — it is the same as OK. Undoing, on the
-other hand, has to be said out loud: only キャンセル emits `editor-cancel`,
+other hand, has to be said out loud: only Cancel emits `editor-cancel`,
 and the list puts back the snapshot it took before opening.
 
-**A commercial detection is not undone by キャンセル, though.** It is minutes
+**A commercial detection is not undone by Cancel, though.** It is minutes
 of reading the recording, started from the list as readily as from the editor,
 and the marks it leaves are **its answer** rather than something anybody did
 to the clip in this session. So the state the marks landed in becomes what
@@ -196,6 +196,92 @@ so itself.
 
 The output settings and output screens read the same kept state, which is
 what lets you cut all eighteen clips and then write the lot.
+
+### Projects — writing the list down
+
+An evening's work is a list of recordings, what has been cut out of each, and
+where the results are to go. None of it was on disc: closing the program threw
+it away, which costs nothing for one clip in one sitting and a great deal for
+twenty over a weekend. `Ctrl+S` writes it to a `.scproj`, `Ctrl+O` reads one
+back, and the same three items sit in the corner menu, which is where the
+things that are about the program rather than about one clip already live.
+
+**Only what could not be worked out again is written.** A recording's length,
+shape and frame rate arrive with its seek index; the index and the commercial
+detections are kept by the backend in the program's own cache directory —
+not beside the recording, which is usually on a share other things read. So the file holds
+paths, cuts, marks and the output settings and nothing else — a few hundred
+bytes for a list of twenty — and opening it re-reads the list exactly as
+adding the same files would. Which is the point rather than a saving: a
+project opened on another machine, or after the caches have been cleared, is
+a project that still opens. It simply reads again.
+
+The one thing in the file that is neither a path nor an edit is `cmPending`,
+a flag per row saying whether a detection's blocks are still owed to the
+timeline. The cache cannot answer that — it can only say that a detection was
+once run — and getting it wrong either loses marks or puts back marks somebody
+deleted on purpose.
+
+Row ids are not carried across. They are this session's counting, and a saved
+edit is readdressed to the row it has just become; everything else in an edit
+is source time and travels unchanged. Settings are copied key by key rather
+than wholesale, so a file cannot put anything in `settings` that the output
+screen has no control for, and a `<select>` handed a value it has no option
+for is put back on its first one — what is on screen and what will be written
+have to be one answer.
+
+A recording the file names that has since moved is not a reason to refuse the
+project. The row goes up like any other and the index pass says what happened
+to it, in the row, next to the nineteen that were fine.
+
+The format carries its own version number, and one from the future is refused
+rather than read: what a newer file would lose on the way in is exactly the
+part this program does not recognise, and dropping somebody's cuts quietly is
+worse than not opening at all. A field *added* is not a new version — a reader
+that has never heard of it leaves it alone.
+
+#### Saved or not, worked out rather than remembered
+
+The title bar carries a `*` while there is work that is not on disc, and the
+window cannot be closed on it without a question. Both need one answer: is
+this list the file?
+
+It is answered by **comparing**, not by raising a flag. `shapeOf()` is what
+the project would be if it were written this instant — the settings and, per
+row, the path and the edit — as one string, and what was last written or read
+is kept beside it. A flag would have to be lowered again by everything that
+puts the work back where it was: cancelling out of the editor, a clip added
+and then removed. The one place that forgets is a program insisting there is
+something to lose when there is not, which is the state in which people stop
+reading the question.
+
+Two things are deliberately outside the comparison. The saved timestamp,
+which changes every time and says nothing about the work. And `cmPending`,
+which is written to the file but cannot be *lost*: the detection it stands for
+is in the cache, and opening the project again works the flag out from that.
+
+The comparison runs from the two places everything funnels through —
+`paintList`, which every add, removal, reorder and duplication ends in, and
+the `editor-state` handler, which repaints one row rather than the list — plus
+the output settings as they are typed. A `JSON.stringify` of a few hundred
+bytes at each of three call sites, against remembering to raise a flag at
+twelve.
+
+Two exemptions keep the answer honest at the edges. **An empty list with no
+project open is nothing to lose**, whatever it held a moment ago — without
+that, emptying a list left a `*` that nothing could clear, since there was
+nothing to save and so saving could not clear it. And **the list as the
+command line handed it over is not work anybody did**: starting the program
+the same way again gives the same list, so it becomes what the title compares
+against, and a program launched on a folder does not open with a `*` over a
+list nobody has touched.
+
+Closing is the one part a page cannot do for itself. Rust keeps the answer in
+a `DIRTY` flag — told, never asked, the same way the language is — and the
+list window's `CloseRequested` calls `prevent_close` and emits
+`close-requested` when it is up. The frontend puts the question and calls
+`quit` if it is answered; cancelling answers it by doing nothing, which is why
+nothing is remembered about having asked.
 
 ### The output screen shows the frames that get re-encoded
 
@@ -225,7 +311,8 @@ recording's: this screen is about that file, so it shows output times and
 output frame numbers.
 
 A clip whose cuts all landed on access points shows its own poster frame with
-"再エンコードなし — 全編を無劣化コピー" under it. Showing a poster there is not
+"Nothing re-encoded — the whole clip is copied losslessly" under it. Showing
+a poster there is not
 a false claim: directly beneath it says that not one frame is being made
 again.
 
@@ -263,7 +350,43 @@ Lossless points: 3607  1440x1080  29.97 fps  interlaced (TFF)  audio  [x logo] [
 └──────────────┴─────────────────────────────────────────────┘
 ```
 
-**The screen layout follows TMPGEnc MPEG Smart Renderer 6's cut editor.** What
+**The screen layout follows TMPGEnc MPEG Smart Renderer 6's cut editor.**
+
+### Tracks -- what gets written
+
+A small menu, opened from **[Tracks]** on the information bar. A broadcast
+recording is more than a picture and a sound, and this is where you say which
+of it goes into the output.
+
+```
+Tracks to write
+  [x] Sound / aac 48000Hz 2ch / main / PID 0x104f
+  [x] Sound / aac 48000Hz 2ch / PID 0x1050
+  [x] Captions / ARIB STD-B24 / PID 0x120f
+  not carried: superimposed text   PID 0x1c02
+  not carried: data broadcast   PID 0x1e01
+```
+
+**The default is everything.** The case it is here for is a bilingual
+recording whose dub is not wanted -- a track nobody asked about is a track
+that was in the recording, and dropping it silently would be the program
+deciding what the recording is for.
+
+**It is here rather than on the output settings** because it is an answer
+about one clip. The audio mode and the output folder are one answer for the
+whole list; which of a recording's own streams are wanted is a fact about
+that recording, and two copies of the same clip may want different ones. So
+the choice stays with the clip as part of its edit, and is saved with the
+project.
+
+Things that cannot be switched on are listed too. Superimposed text and the
+data broadcast cannot be put on a cut timeline -- the demuxer hands the first
+over with no timestamp, so there is nowhere to put it, and the second is not
+a stream of timed packets at all -- so they appear as "not carried" rather
+than as a choice. The programme information, the station name and the
+broadcast clock are not tracks and so are not listed, but they are carried
+across when writing a .ts.
+ What
 was borrowed is not the look but **the movements of the hand**, and above all not
 mixing two ideas together:
 
@@ -353,7 +476,7 @@ when several go up at once, as with commercial detection, is the selection left
 alone, since there is no reason to prefer any one of them.
 
 **Keyframes can be written out alongside the output.** Tick
-「キーフレーム情報を別ファイル (.keyframe) で出力する」 on the output settings
+“Write the keyframes to a separate .keyframe file” on the output settings
 screen and a `.keyframe` file appears beside the video with the same name. It is
 a setting of the output, so it holds for every clip in the list. The contents
 are **line numbers only, CRLF, no header** — the shape the tools that read this
@@ -1264,6 +1387,209 @@ by a single byte is confirmed by `examples/keysdiag.rs`.
 While building, the strip is now **0 seconds for anything already passed and
 0.24 s beyond it**. `examples/proxydiag.rs` runs a build while hammering the strip
 and measures both.
+
+## Audio settings on the output settings screen
+
+Three controls, one above two. **Audio** picks the mode -- smart rendering,
+copy through, re-encode everything -- and under it **Audio channels** and
+**Audio bitrate** say what that encode should be. The case they exist for is a
+5.1 recording that has to play somewhere that will not have it.
+
+**Audio channels** offers the recording's own count, 1ch, 2ch or 5.1ch, and names
+them by the count rather than by the direction: which way it goes is the
+recording's to say, not the setting's, and one list can hold a 5.1 recording
+and a stereo one, where 2ch folds the first and spreads the second. The
+readouts say which happened. (The engine takes any count from 1 to 8, and
+`--audio-channels` will do 7.1; the window offers the three that get asked
+for.)
+
+**Both are greyed out unless the mode is “Re-encode everything”**, because they
+describe an encode and the other two modes do not run one over the whole track:
+`copy` runs none at all, and `smart` runs one on two frames per boundary, where
+the whole point is that they come out the same shape as the frames they are
+spliced between. Greyed out rather than cleared -- what they hold is still
+readable, and still there when the mode comes back round to wanting it -- and
+what they hold **does not reach the cut** while they are: the window sends the
+two settings only when it is re-encoding, so the screen and the file agree.
+
+The engine takes the harder line, and has to: `audio_channels` there forces a
+whole-track re-encode whatever the mode says, because a stereo frame cannot be
+spliced among a recording's 5.1 ones and there is no honest way to half-do it
+(see [the Rust core](rust-core.md#downmixing---audio-channels)). The window
+never puts it in that position; the CLI can, and gets a note saying so.
+
+**Audio bitrate** on “Leave it to the engine” is the engine deriving one from
+the recording --
+and bringing it down with the channel count, since what 5.1 cost is not what
+the stereo it was folded into is worth.
+
+**Where the ladder stops moves with the channel count**: 384 kbit/s for stereo
+and 640 for 5.1, which is where a broadcast puts them with room over the top,
+and half the stereo figure for mono. Nothing above 640 is offered at all.
+
+| Channels | Ladder stops at |
+|---|---|
+| 1 | 192 kbit/s |
+| 2 | 384 kbit/s |
+| 5.1 | 640 kbit/s |
+
+The top of the stereo ladder is headroom rather than a promise, because the
+encoder has a ceiling of its own and does not announce it: asked for more than
+it can spend it simply writes less, and asked for a good deal more it writes
+*less than it would have* -- the rate control overshoots and backs off. Driven
+with noise at 48 kHz, so that the encoder and not the material is what runs
+out, mono walls near 218 kbit/s and stereo near 250. Ask for 384 of stereo and
+what comes back is whatever the encoder found worth spending.
+
+“Same as the input” has no count of its own, and the setting is one answer for
+a whole
+list, so the widest track in the list decides -- the widest the ceiling could
+have to cover; a count with no ceiling of its own takes the next one up, a
+4-channel recording being nearer 5.1 than stereo. A rate the list stops
+offering, because the channel count came down under it or a project was
+written when the rungs were different, is taken to the nearest rung at or
+below it rather than thrown away.
+
+**The panel's drop-downs open upward.** File settings are the bottom panel of
+the window, so a native popup there has nowhere to go: the bitrate ladder,
+sixteen rungs of it, ran off the bottom of the screen with most of itself out
+of reach. Where a native popup opens is the platform's to decide and not ours,
+so the popup is ours instead (`opensUpward`) -- but only the popup. The
+`<select>` stays where it was and goes on holding the answer, so reading a
+setting off a control, putting one back when a project opens, and translating
+the options all keep working untouched. What is drawn carries two marks rather
+than one: the answer the control holds, and the cursor, which the mouse and the
+arrow keys move together. The one thing to remember is that suppressing the
+native popup costs the click its focus, so the focus is handed back by hand --
+a control that cannot be reached by the keyboard after being clicked would be
+worse than a popup in the wrong place.
+
+Two places say what will happen, because the screens are two:
+
+- The format panel names it as part of the audio line —
+  `Audio: re-encoded (5.1ch → 2ch, 192 kbps)`, and `Audio: yes (5.1ch)` in
+  quick properties and in the editor's info bar, so a 5.1 clip can be picked
+  out of a list of stereo ones **before** the output has been written rather
+  than after.
+- The output screen is about pictures, and its best line is "nothing
+  re-encoded, the whole clip is copied losslessly". That stops being true of
+  the file as soon as the audio is re-encoded end to end, so the audio's own
+  fate is appended to it: `(the audio is downmixed 5.1ch → 2ch and
+  re-encoded)`.
+
+Both settings travel in the project file, which needs no code: the file carries
+whatever keys `settings` has.
+
+## Two languages, settled before the first paint (`i18n.js`, `lang.rs`)
+
+The program was written in Japanese throughout — the wording follows TMPGEnc
+MPEG Smart Renderer 6, which is where the shape of these screens comes from —
+and the strings stayed where they were used. That is fine until the same
+sentence has to exist twice, at which point **the place a line is written down
+has to stop being the place it is printed**.
+
+So every line either window shows lives in one catalogue (`gui/src/i18n.js`),
+under a name, and is fetched with `t("row.cuts", { n, kept })`. Nothing else
+about the code changed: the callers still build their sentences where they
+built them, they merely ask for the words rather than holding them. The markup
+asks for itself — `data-i18n` on an element is its text, and `applyStatic()`
+fills in every one of them, with `-html`, `-title`, `-aria` and `-ph` for the
+markup, the tooltip, the screen-reader name and the placeholder of the few
+that need one of those instead.
+
+A name with nothing to fill it is left standing rather than blanked. A line
+printing `{clip}` is a bug you can see and read; a line that quietly lost half
+its sentence is one you cannot. Japanese is what a missing line falls back to,
+since it is the language every string is guaranteed to exist in — a
+half-translated screen is worth more than a key printed on it.
+
+### Where the answer comes from, and when
+
+**Synchronously, before anything is drawn.** What the user chose in
+Preferences if they chose anything, and otherwise what `navigator.languages`
+says the machine is set to, in order, passing over any language the program
+has no words for — a machine set to German should come out in English rather
+than in whatever its first entry happened to be. An answer that arrived a tick
+later would mean every window painting in Japanese and then correcting itself,
+which is exactly the flicker a preference is supposed to spare you.
+
+The one asynchronous part is a **second opinion** (`confirmWithOs`), because
+the webview's idea of the machine is not the same answer on every platform:
+WebKitGTK's comes from the process locale and WebView2's from the browser's
+preferred languages, and neither need agree with what the desktop is set to.
+The backend can read `LC_ALL`, `LC_MESSAGES` and `LANG` directly — the order
+the C library reads them in, with `C` and `POSIX` passed over as naming no
+language — so it gets the last word. Only ever while the preference is
+"Automatic", though: a user who chose English on a Japanese machine meant it.
+
+### Both windows, one choice
+
+The preference lives in the webview's own store (`localStorage`,
+`smartcut.lang`) rather than in a file behind a command. Both windows are the
+same origin, so the editor reads what the list window wrote without anything
+crossing the wire, and a preference this small is not worth a round trip on
+every window that opens.
+
+A window already up does not read the store again, so changing the language
+emits `lang-changed` and the editor follows. What is carried is the language
+this window **resolved to**, not the preference: "Automatic" is answered from
+the webview's own idea of the machine, and this window may already have been
+put right by the backend's.
+
+Redrawing is `onLangChange`. The static markup is not its business —
+`applyStatic` has run by then — and what is left is everything built out of
+`t` at the moment it was shown. Most of it is simply drawn again. The
+sentences that were **stored** rather than drawn — what a commercial detection
+found, how a clip's index was come by — are worked out again from what they
+were worked out from, which is why a row remembers where its note came from.
+A note the editor wrote is left alone, since the list does not hold what it
+was made of. And the editor window's *title* is the list window's doing (it
+names the clip, which only the list knows how to name), so the list window
+puts that right too, through `retitle_editor`.
+
+### The half that is Rust's
+
+Most of what is read is the webview's. What is left is what only that side can
+say: why a recording would not open, why a share is not there, and the phase
+names that go under a progress bar while a pass runs.
+
+`lang.rs` keeps one `AtomicU8` — one user looking at one program, so a
+language is not a property of a window or of a call — and `set_lang` is
+**told, never asked**, the same way `DIRTY` is. It starts at whatever the
+machine is set to, so that anything said before the frontend has finished
+starting up is already right, and the frontend settles it for good the moment
+it knows.
+
+The strings themselves stay at the point they are printed, in a `tr!` / `trf!`
+macro pair rather than in a table somewhere else that goes stale: a sentence
+and its translation read together. `format!` wants a literal, so the choice is
+made around the call rather than inside it, and both wordings name the same
+holes and are filled from the scope the way `format!` does — which makes **a
+translation that forgets one a compile error** rather than a blank on screen.
+
+### Preferences and About
+
+The two panels under the program's name in the corner of the list window,
+where the things that are about the program rather than about one clip
+already live.
+
+**Preferences** is the language and, so far, nothing else: Japanese, English,
+or Automatic, which is the default. A change takes effect at once in both
+windows and is remembered for next time.
+
+**About SmartCut** prints what a bug report has to carry, all of it asked of
+the backend because that is the only side that knows any of it: the version
+stamped into the binary at build time, the cutting engine's own (the same
+number today, one workspace and one version, and named separately anyway
+because the engine is also the CLI's), **the libav numbers of the libraries
+this process actually loaded** and the licence they came under, and the
+platform. A copy the frontend held would go stale the first release that
+forgot to update it, and the report would then be wrong about the build it was
+reporting. Those lines are also **the one part of either window whose text can
+be selected** — everything else has selection off, apart from the fields that
+are there to be typed into, because a window that highlights whatever you drag
+across looks broken — since a version read off the screen and typed back in is
+a version that comes back wrong.
 
 ## Engine-side additions the GUI needed
 
