@@ -12,6 +12,7 @@ how the release artifacts are produced is in
 [`docs/distribution.md`](../docs/distribution.md).
 
 ```bash
-cd src-tauri && cargo build --release   # -> target/release/smartcut
+cd src-tauri && cargo build --release   # -> target/release/gui
+cd src-tauri && cargo tauri build       # -> target/release/smartcut
 ./build-windows.sh                      # cross-build for Windows
 ```

@@ -4,7 +4,7 @@
 
 決定: **Rust コア + Tauri GUI**
 
-- コア: `rsmpeg` / `ffmpeg-next`（libavformat / libavcodec バインディング）で
+- コア: `ffmpeg-next`（libavformat / libavcodec バインディング）で
   デマルチプレクス〜パケット選別〜マルチプレクスを自前制御。
   - タイムスタンプを自分で振れるので継ぎ目の問題が原理的に消える
   - `nal_ref_idc` をパケットから直接読めるので #3 のサンプリングが不要

@@ -345,12 +345,19 @@ There are two costs.
   the logo, which costs 30 seconds of decoding for 3.4 seconds of commercial, so
   it is not paid. A miss is the cheap error.
 
-## In the GUI it takes two clicks
+## In the GUI it goes as far as the marks
 
-"Detect commercials" → "Keep everything but the commercials". The boundaries are
-**snapped to an access point within ±0.5 s** before becoming intervals. On a
-30-minute commercial-broadcast recording, 22.6 minutes of programme remain as
-five intervals, **100.0 % lossless copy**. For a single-interval example:
+"Detect commercials" places the start of each commercial block and each return
+to the programme **as keyframes**; the cutting is a person's. A "keep
+everything but the commercials" button was added once and taken out again --
+as long as the boundaries are worth checking by eye first, the one-press route
+goes unused (see [the GUI](gui.md#the-cut-editor-its-own-window)).
+
+Cut on those marks with the ends **snapped to an access point** (`Snap to
+lossless`, or a boundary that already landed on one) and the whole commercial
+cut is a copy. On a 30-minute commercial-broadcast recording, 22.6 minutes of
+programme remain as five intervals, **100.0 % lossless copy**. For a
+single-interval example:
 
 ```
 output 1506.005s — lossless copy 1505.971s (100.0%) / re-encoded 0.033s (0.0%)

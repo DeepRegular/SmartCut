@@ -100,7 +100,7 @@
   1 枚の復号自体が重い素材のためのもので、放送の 1440x1080 MPEG-2 には要らない。
 - **放送素材への対応** — インターレース保持、2:3 プルダウン（フィールド単位の
   タイムライン）、フレーム欠落、非ゼロの `start_time`、ARIB の ADTS レイアウト。
-- **出力の器** — MPEG-TS / MP4 / Matroska。既定は入力と同じ器・同じ場所。
+- **出力の器** — MPEG-TS / M2TS / MP4 / Matroska / QuickTime。既定は入力と同じ器・同じ場所。
 - **日本語と English** — 表示言語は OS の設定に従い、環境設定で上書きできる。
   変更は両方のウィンドウに即座に反映され、次回起動時も引き継がれる。
 
@@ -114,7 +114,7 @@
 | | |
 |---|---|
 | Linux | `SmartCut_0.3.1_amd64.AppImage`、または `SmartCut-0.3.1-linux-x86_64.tar.gz`（解凍して `./smartcut`）。どちらも FFmpeg 同梱、glibc 2.39 以上（Ubuntu 24.04 / Debian 13 / Fedora 40 以降） |
-| Linux（deb） | `smartcut_0.3.1_amd64.deb` — `sudo apt install ./smartcut_0.3.1_amd64.deb`。FFmpeg を抱えずシステムの 7.1 にリンクするので 2.6MB で済むかわりに Debian 13 / Ubuntu 25.04 以降が要る。GUI が `smartcut`、コマンドライン版が `smartcut-cli` |
+| Linux（deb） | `smartcut_0.3.1_amd64.deb` — `sudo apt install ./smartcut_0.3.1_amd64.deb`。FFmpeg を抱えずシステムの 7.1 にリンクするので 2.7MB で済むかわりに Debian 13 / Ubuntu 25.04 以降が要る。GUI が `smartcut`、コマンドライン版が `smartcut-cli` |
 | Windows | `SmartCut_0.3.1_x64-setup.exe`（インストーラ）または `smartcut-portable-x64-0.3.1.zip`（解凍して実行）。x64 のみ、WebView2 ランタイムが要る |
 
 自分でビルドする場合は [ビルドと開発](docs/development.ja.md)。
@@ -216,7 +216,7 @@ smartcut input.ts --analyze --scenes            # シーンの変わり目を出
 rust/     Rust コア（smartcut_core）と CLI    ← 本体
 gui/      Tauri v2 + バニラ JS の GUI
 smartcut/ Python リファレンス実装             ← テストオラクル
-tests/    E2E テスト 11 スイート・112 チェック
+tests/    E2E テスト 13 スイート・134 チェック
 docs/     ドキュメント
 ```
 

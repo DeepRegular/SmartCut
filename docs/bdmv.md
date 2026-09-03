@@ -22,8 +22,10 @@ verified:
    straightforward, a list of PlayItems (clip reference plus IN/OUT times), but it
    still has to be written.
 4. **BD-specific streams** — LPCM conversion, PGS subtitles, TrueHD/DTS-HD, VC-1.
-   Right now only "one video track plus one audio track" is handled, so BD's
-   multiple audio tracks and subtitles presuppose generalising track selection.
+   Multiple sound tracks are handled now, each cut on its own, and so is the
+   ARIB caption stream, so what BD adds is the codecs and a subtitle format
+   that is a stream of pictures rather than of text. One video track only,
+   still.
 5. **Writing BDMV/BDAV out** — that is authoring, a different problem. Large.
 
 ## The index source is swappable (implemented)

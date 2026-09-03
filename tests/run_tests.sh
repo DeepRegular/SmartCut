@@ -67,7 +67,7 @@ t "matroska output"  h264.mp4    r10.mkv --keep 5.3-12.7
 t "mpeg2 ts open-GOP" mpeg2.ts   r11.mp4 --keep 3.3-14.7
 # known limitation: this range's edges land at an unlucky frame phase, so the
 # idealised grid loses the picture that should end the second range. See
-# README, "既知の制限".
+# docs/validation.ja.md, "既知の制限".
 XFAIL=1 t "mpeg2 ts multi"    mpeg2.ts   r12.mp4 --keep 2.0-6.0 --keep 11.0-17.0
 t "mpeg2 ts to end"   mpeg2.ts   r13.mp4 --cut 4.0-9.0
 

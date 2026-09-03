@@ -261,10 +261,12 @@ and writes the audio out as ADTS. What ends up next to the video is by
 construction the very audio inside it, and it has been confirmed to pass through
 L-SMASH's `muxer` (`Track 1: MPEG-4 Audio`, 48 kHz stereo, matching duration).
 
-This too is **kept out of the window**: the GUI offers neither it nor the audio
-modes, and leaves the audio smart-rendered as the engine's own default has it.
-What made the workaround worth having — a seam declaring itself MPEG-4 in the
-middle of an MPEG-2 stream — is dealt with where it arises now.
+The sidecar itself is **kept out of the window**: the GUI does not offer it,
+and what made the workaround worth having — a seam declaring itself MPEG-4 in
+the middle of an MPEG-2 stream — is dealt with where it arises now. The audio
+*modes* are on the output settings screen, where they arrived alongside the
+channel count and the bitrate ([the GUI](gui.md#audio-settings-on-the-output-settings-screen)),
+and they start on the engine's own default, which is smart rendering.
 
 ## To hand it to L-SMASH, use the bare stream
 

@@ -165,8 +165,12 @@ These only surfaced on real material:
   of it.
 - Supported codecs are H.264 / HEVC / MPEG-2 / MPEG-4 Part 2. VP9 and AV1 have no
   ES-concatenation form and would need a different design.
-- One video track and one audio track only. Subtitles and multiple audio tracks
-  are not supported.
+- **One video track only**, and in the Python reference implementation one audio
+  track only. The Rust engine reads every sound track the recording carries and
+  writes them all, and carries the ARIB caption stream across when writing a
+  `.ts` (see [the Rust core](rust-core.md#multi-audio-broadcasts----all-of-them-not-one)
+  and [broadcast workflow compatibility](broadcast-ts.md)); other subtitle
+  formats, PGS among them, are not handled.
 - **The audio boundary is still rounded to a whole frame in every mode but
   `reencode`.** What `smart` removes is the audio from the far side of a cut
   being left in the seam; it does not change an interval being a whole number

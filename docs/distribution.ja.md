@@ -7,7 +7,7 @@
 ```bash
 cargo install tauri-cli --version ^2 --locked   # 一度だけ
 cd gui/src-tauri && NO_STRIP=1 cargo tauri build --bundles appimage
-# -> target/release/bundle/appimage/SmartCut_0.2.0_amd64.AppImage
+# -> target/release/bundle/appimage/SmartCut_0.3.1_amd64.AppImage
 ```
 
 **`NO_STRIP=1` を付けている。** かつては付けないと linuxdeploy が同梱する
@@ -43,7 +43,7 @@ glibc だけは同梱できない（AppImage の原理的な制約）ので、�
 してある。同梱されているかどうかは展開して確かめられる：
 
 ```bash
-./SmartCut_0.2.0_amd64.AppImage --appimage-extract >/dev/null
+./SmartCut_0.3.1_amd64.AppImage --appimage-extract >/dev/null
 ldd squashfs-root/usr/bin/smartcut | grep -E 'asound|jack|pulse'
 # libasound.so.2 / libjack.so.0 -> /lib/x86_64-linux-gnu/...   (システム側)
 # libpulse.so.0                 -> squashfs-root/usr/bin/../lib/...  (同梱)
@@ -64,8 +64,8 @@ ldd squashfs-root/usr/bin/smartcut | grep -E 'asound|jack|pulse'
 
 ```bash
 ./gui/build-linux.sh
-# -> gui/src-tauri/target/release/bundle/linux/SmartCut-0.2.0-linux-x86_64.tar.gz
-# -> gui/src-tauri/target/release/bundle/linux/smartcut_0.2.0_amd64.deb
+# -> gui/src-tauri/target/release/bundle/linux/SmartCut-0.3.1-linux-x86_64.tar.gz
+# -> gui/src-tauri/target/release/bundle/linux/smartcut_0.3.1_amd64.deb
 ```
 
 同じビルドの詰め方を 2 通り。どちらも **GUI を `smartcut`、コマンドライン版を
@@ -74,13 +74,13 @@ smartcut。** cargo のクレート名は `gui` なので、放っておくと T
 `/usr/bin/gui` に入れてしまう——占めてよい名前ではない。`tauri.conf.json` の
 `mainBinaryName` で `smartcut` に固定してある（0.2.0 から。それ以前は Windows
 だけで指定していた）。Tauri が作るバンドルのファイル名のほうは `productName` に
-従うので `SmartCut_0.2.0_amd64.deb` などになる——deb のパッケージ名 `smartcut` と
+従うので `SmartCut_0.3.1_amd64.deb` などになる——deb のパッケージ名 `smartcut` と
 違うのはそのため。`build-linux.sh` は両方を `tauri.conf.json` から読む。
 
 | 成果物 | サイズ | FFmpeg | 要るもの |
 |---|---|---|---|
-| `SmartCut-0.2.0-linux-x86_64.tar.gz` | 208.1MB | 同梱 | glibc 2.39 以上。FUSE は不要 |
-| `smartcut_0.2.0_amd64.deb` | 2.6MB | システムのものを使う | FFmpeg 7.1（Debian 13 / Ubuntu 25.04 以降） |
+| `SmartCut-0.3.1-linux-x86_64.tar.gz` | 208.2MB | 同梱 | glibc 2.39 以上。FUSE は不要 |
+| `smartcut_0.3.1_amd64.deb` | 2.7MB | システムのものを使う | FFmpeg 7.1（Debian 13 / Ubuntu 25.04 以降） |
 
 **tar.gz の中身は AppImage と同じ AppDir を展開したもの。** linuxdeploy が `ldd` を
 辿って集めた 745 ライブラリがそのまま `app/` に入っていて、`./smartcut` は AppRun を
@@ -128,14 +128,14 @@ Linux の開発 VM から `x86_64-pc-windows-msvc` へクロスビルドする�
 
 ```bash
 ./gui/build-windows.sh
-# -> gui/src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis/SmartCut_0.2.0_x64-setup.exe
+# -> gui/src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis/SmartCut_0.3.1_x64-setup.exe
 # -> gui/src-tauri/target/x86_64-pc-windows-msvc/release/bundle/portable/smartcut-portable-x64.zip
 ```
 
 | 成果物 | サイズ | 中身 |
 |---|---|---|
-| NSIS インストーラ | 52.8MB | 展開後 168.9MB（exe 10.6MB + FFmpeg DLL 8 個） |
-| 可搬 zip | 66.0MB | 同じ一式。解凍して `smartcut.exe` を叩くだけ |
+| NSIS インストーラ | 52.9MB | 展開後 168.9MB（exe 10.6MB + FFmpeg DLL 8 個） |
+| 可搬 zip | 66.1MB | 同じ一式。解凍して `smartcut.exe` を叩くだけ |
 
 **移植のために書き換えたコードは、音声出力の 1 箇所だけ。** コードは全部
 libav 越しなので `Command::new` も POSIX パスも出てこない。要ったのは

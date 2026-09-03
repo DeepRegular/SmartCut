@@ -43,6 +43,12 @@ cd rust && cargo build --release
 
 # GUI
 cd gui/src-tauri && cargo build --release
+# -> gui/src-tauri/target/release/gui
+
+# The GUI under the name it ships as. The cargo crate is called `gui`, and it
+# is `mainBinaryName` in tauri.conf.json that renames the binary, so the name
+# `smartcut` only appears on a bundling build.
+cd gui/src-tauri && cargo tauri build
 # -> gui/src-tauri/target/release/smartcut
 ```
 
@@ -59,13 +65,13 @@ bash tests/run_rust_tests.sh          # Rust E2E (+9 with the container index)  
 bash tests/run_audio_tests.sh         # A/V sync (+10 with copy and reencode)      5
 bash tests/run_audio_content_tests.sh # is real material's audio in the right place 6
 bash tests/run_aac_tests.sh           # what the output's AAC frames are made of    8
-bash tests/run_downmix_tests.sh       # where 5.1 goes when it is folded to stereo  8
+bash tests/run_downmix_tests.sh       # where 5.1 goes when it is folded to stereo  9
 bash tests/run_preview_tests.sh       # does a scrub show the time you asked for    7
 bash tests/run_index_tests.sh         # does the index answer as the walk did      27
 bash tests/run_proxy_tests.sh         # can the proxy stand in for the recording   22
 bash tests/run_scene_tests.sh         # scene detection vs commercial boundaries    1
 bash tests/run_ts_layout_tests.sh     # TS provenance and sequence headers          5
-bash tests/run_broadcast_tests.sh     # captions, programme information, multi-audio 10
+bash tests/run_broadcast_tests.sh     # captions, programme information, multi-audio 13
 bash tests/run_cm_tests.sh            # commercial detection vs a human's answer    5
 ```
 
@@ -79,7 +85,7 @@ the same directory -- an impulse train and a 5.1 track with a tone per channel,
 neither of which any other suite wants.
 
 Every suite writes its output next to the fixtures, under `$TMPDIR`. The proxy
-suite needs several GB of it on real material -- one proxy of an hour of
+suite needs several GB of it on real material -- one proxy of half an hour of
 broadcast TS is 2.3 GB -- which is more than a small `/tmp` tmpfs holds. If it
 fails with `No space left on device`, point `TMPDIR` at a directory on disk:
 

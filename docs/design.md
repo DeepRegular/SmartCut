@@ -5,7 +5,7 @@
 Decision: **a Rust core with a Tauri GUI**.
 
 - Core: demux, packet selection and mux are all driven directly through
-  `rsmpeg` / `ffmpeg-next` (the libavformat / libavcodec bindings).
+  `ffmpeg-next` (the libavformat / libavcodec bindings).
   - Timestamps are assigned by us, so the seam problem disappears by construction
   - `nal_ref_idc` can be read straight off the packet, so the sampling of #3 is
     not needed

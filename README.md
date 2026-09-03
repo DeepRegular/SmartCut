@@ -112,8 +112,8 @@ out **bit-identical across all 40589 frames**.
 - **Built for broadcast material** — interlacing is preserved, 2:3 pulldown is
   handled on a field-level timeline, and dropped frames, non-zero `start_time`,
   and ARIB ADTS layout are all accounted for.
-- **Output containers** — MPEG-TS / MP4 / Matroska, defaulting to the same
-  container and directory as the input.
+- **Output containers** — MPEG-TS / M2TS / MP4 / Matroska / QuickTime,
+  defaulting to the same container and directory as the input.
 - **English or Japanese** — the interface follows whatever the machine is set
   to, and Preferences overrides it. The change lands at once, in both windows,
   and is remembered for next time.
@@ -129,7 +129,7 @@ Grab a build from [Releases](https://github.com/DeepRegular/SmartCut/releases).
 | | |
 |---|---|
 | Linux | `SmartCut_0.3.1_amd64.AppImage`, or `SmartCut-0.3.1-linux-x86_64.tar.gz` (unpack it, run `./smartcut`). Both carry FFmpeg and need glibc 2.39+ (Ubuntu 24.04 / Debian 13 / Fedora 40 or newer) |
-| Linux (deb) | `smartcut_0.3.1_amd64.deb` — `sudo apt install ./smartcut_0.3.1_amd64.deb`. 2.6MB, because it links the system FFmpeg 7.1 instead of carrying one; that means Debian 13 / Ubuntu 25.04 or newer. Installs the GUI as `smartcut` and the cutter as `smartcut-cli` |
+| Linux (deb) | `smartcut_0.3.1_amd64.deb` — `sudo apt install ./smartcut_0.3.1_amd64.deb`. 2.7MB, because it links the system FFmpeg 7.1 instead of carrying one; that means Debian 13 / Ubuntu 25.04 or newer. Installs the GUI as `smartcut` and the cutter as `smartcut-cli` |
 | Windows | `SmartCut_0.3.1_x64-setup.exe` (installer) or `smartcut-portable-x64-0.3.1.zip` (unzip and run). x64 only; needs the WebView2 runtime |
 
 To build it yourself, see [Building and development](docs/development.md).
@@ -238,7 +238,7 @@ were hit.
 rust/     Rust core (smartcut_core) and CLI   <- the real implementation
 gui/      Tauri v2 + vanilla JS GUI
 smartcut/ Python reference implementation     <- test oracle
-tests/    11 end-to-end suites, 112 checks
+tests/    13 end-to-end suites, 134 checks
 docs/     Documentation
 ```
 

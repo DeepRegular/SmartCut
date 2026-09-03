@@ -124,11 +124,11 @@ TS のタイムスタンプは 0 から始まらない（検証素材では 1.42
 
 Rust コアには 3 つ目の `smart` があり、そちらが既定になっている——境界が
 またがるフレームだけを焼き直し、残りはコピーする。
-[Rust コアの実装](rust-core.ja.md#音声のスマートレンダリングaudio-mode-smart)を参照。
+[Rust コアの実装](rust-core.ja.md#音声のスマートレンダリング--audio-mode-smart)を参照。
 
 チャンネル数（`--audio-channels`）も取る。5.1ch をステレオへ畳むためのもので、
 これにはコピーの経路が無いので、モードが何であれ全編の焼き直しになる。
-[Rust コアの実装](rust-core.ja.md#ダウンミックスaudio-channels)を参照。
+[Rust コアの実装](rust-core.ja.md#ダウンミックス--audio-channels)を参照。
 
 AAC の encoder delay / priming を edit list で厳密に処理する実装は未着手。
 

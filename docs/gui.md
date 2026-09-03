@@ -386,9 +386,11 @@ a stream of timed packets at all -- so they appear as "not carried" rather
 than as a choice. The programme information, the station name and the
 broadcast clock are not tracks and so are not listed, but they are carried
 across when writing a .ts.
- What
-was borrowed is not the look but **the movements of the hand**, and above all not
-mixing two ideas together:
+
+### Keyframes and cuts -- two ideas kept apart
+
+What was borrowed from TMSR6 is not the look but **the movements of the hand**,
+and above all not mixing two ideas together:
 
 - A **keyframe** is a *mark*, not an edit. They line up on the left with a
   picture, and pressing one jumps there. `⚑ Keyframe` (or `K`) registers the
@@ -635,9 +637,10 @@ sits a **2-second cap**: even regular 14-second spacing ("GOP · 3 min") would,
 with the run kept whole, decode three whole minutes to keep 13 pictures — see
 [the five reasons it froze while building](#five-reasons-it-froze-while-building).
 
-**It plays (`▶ Play` / `Space`).** Video is 640 px wide, at 24 pictures a second
-from the proxy or 15 reading the recording directly — each one becomes a JPEG and
-a data URL, so how many are requested depends on what is being read. **The audio
+**It plays (`▶ Play` / `Space`).** The pictures come at the stage's own width,
+capped at 1280, at 24 a second from the proxy or 15 reading the recording
+directly — each one becomes a JPEG and a data URL, so how many are requested
+depends on what is being read. **The audio
 plays with it.** This is playback for **checking that the seams are right**, not
 for watching the programme, and that is enough for it. The clock runs on **the
 edited timeline**, so cuts take no time — playback continues straight across an
@@ -680,14 +683,16 @@ the same container as the original with `cut_` prefixed to the name — open
 `cut_2026年08月20日00時00分-ＢＳフジ…#8.ts`. Broadcast recording names carry the
 date, the station and the episode number, and that is the only handle for finding
 them later. Collapsing that to `cut.ts` is a loss. The container follows the input
-too (`.ts` gives `.ts`) — nobody wants everything moved to MP4 every time. The
-file dialog completes with the first extension in its list, so the input's own is
-sorted to the front.
+too (`.ts` gives `.ts`) — nobody wants everything moved to MP4 every time.
 
-The container can be chosen in the dialog's type field (`MPEG-2 TS (.ts)` /
-`MP4 (.mp4)` / …). They are **separate entries per container** rather than one
-"video" filter, because selecting one swaps the extension; without that, the
-container would become "an extension you have to remember".
+All three are settings on the output settings screen rather than a question
+asked once per file: the folder (empty meaning the input's own), the prefix
+(`cut_`), and the container, which is a list naming a container and its
+extension together — **Same as the input** / `MPEG-2 TS (.ts)` / `M2TS
+(.m2ts)` / `MP4 (.mp4)` / `Matroska (.mkv)` / `QuickTime (.mov)`. **A container
+per entry** rather than one "video" line, because choosing one is what swaps
+the extension; without that, the container would become "an extension you have
+to remember".
 
 TS output is verified on real material too (60 seconds of terrestrial,
 **1798/1798 frames, 99.2 % lossless, interlacing preserved**). The engine branches
@@ -1216,7 +1221,7 @@ bitstream parsing, not the IDCT.
 
 It tries `h264_nvenc` → `h264_videotoolbox` → `h264_amf` → `h264_qsv` →
 `libx264` → `mpeg4` and **uses whichever opens**. Hardware is tried first for the
-reasons in the [design notes](design.md#licence-and-patents-decide-before-shipping),
+reasons in the [design notes](design.md#licence-and-patents),
 and `mpeg4` is always present in libavcodec, which makes it the last resort.
 
 **"It opened" is not "it works".** A hardware encoder that is merely present in
