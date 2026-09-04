@@ -1,0 +1,261 @@
+# Distribution
+
+[← Documentation](../README.md) ・ [← SmartCut](../../README.md) ・ [日本語](distribution.ja.md)
+
+## AppImage
+
+```bash
+cargo install tauri-cli --version ^2 --locked   # once
+cd gui/src-tauri && NO_STRIP=1 cargo tauri build --bundles appimage
+# -> target/release/bundle/appimage/SmartCut_0.3.1_amd64.AppImage
+```
+
+The artifact is **184 MB and carries all 745 shared libraries**. WebKitGTK 4.1 is in
+there, and so are `libavcodec`, `libavformat`, `libavutil`, `libavfilter`, `libswscale`
+and `libswresample` — so **the machine running it does not need ffmpeg installed**.
+SmartCut links dynamically against the system FFmpeg 7.1, so whether that could be
+bundled was the whole question of whether it could be distributed at all. linuxdeploy
+follows `ldd` and picks it up.
+
+| Condition | Value |
+|---|---|
+| glibc required | **2.39 or newer** (Ubuntu 24.04 / Debian 13 / Fedora 40 and later) |
+| FUSE required | Yes, or `--appimage-extract-and-run` |
+| ALSA required | `libasound.so.2` (not bundled; see below) |
+| Build environment | Debian 13, glibc 2.41 |
+
+glibc is the one thing that cannot be bundled — an inherent AppImage constraint — so it
+sets the floor.
+
+### Why `NO_STRIP=1`
+
+Without it, linuxdeploy used to die with `Strip call failed` on every library it bundles
+(`failed to run linuxdeploy`). **As of 2026-08-28 that no longer reproduces**, and a
+plain build works.
+
+**The artifact is the same size either way.** Building v0.1.1 under both conditions gave
+184,515,064 bytes both times; the md5 differs because of squashfs timestamps, but there
+are no bytes for strip to remove. Debian's shared libraries ship stripped already. Since
+there is no price to pay, `NO_STRIP=1` stays.
+
+### ALSA is not bundled
+
+Adding audio playback (cpal) made the binary require `libasound.so.2` and `libjack.so.0`
+**directly through DT_NEEDED** rather than dlopen. Both are on the AppImage exclude list
+that linuxdeploy consults, so they fall outside the `ldd`-following bundling and **the
+running system's copies are used**.
+
+libasound2 is present on essentially any desktop Linux, and dragging ALSA in tends to
+make things *more* fragile across environments, so the exclusion stays. What is bundled
+can be checked by extracting:
+
+```bash
+./SmartCut_0.3.1_amd64.AppImage --appimage-extract >/dev/null
+ldd squashfs-root/usr/bin/smartcut | grep -E 'asound|jack|pulse'
+# libasound.so.2 / libjack.so.0 -> /lib/x86_64-linux-gnu/...   (system)
+# libpulse.so.0                 -> squashfs-root/usr/bin/../lib/...  (bundled)
+```
+
+### What was verified
+
+Behaviour has been checked on the AppImage itself: opening material, scanning (266
+thumbnails, 55 scene points), `Ctrl+D` commercial detection, cutting, and the lossless
+badge switching all work.
+
+Library resolution can be confirmed on another machine too. Start it with `DISPLAY`
+unset and it gets as far as "cannot initialise GTK" before dying. A missing library would
+stop it earlier, so getting that far means the dependencies are satisfied.
+
+On a build made after audio playback was added, the AppImage itself was used to open
+`mpeg2.ts` (41 lossless points, 720x480, 29.97 fps, audio present), scan 41 thumbnails
+and play with `Space`. Playback advanced 117 frames in 4 seconds, with no ALSA-related
+errors and no panics.
+
+## tar.gz and deb
+
+```bash
+./gui/build-linux.sh
+# -> gui/src-tauri/target/release/bundle/linux/SmartCut-0.3.1-linux-x86_64.tar.gz
+# -> gui/src-tauri/target/release/bundle/linux/smartcut_0.3.1_amd64.deb
+```
+
+Two ways of packing the same build. Both install **the GUI as `smartcut` and the
+command-line version as `smartcut-cli`**. The program is called SmartCut; what you type
+is `smartcut`.
+
+The cargo crate is named `gui`, so left alone Tauri installs it straight to
+`/usr/bin/gui` — not a name anyone should be occupying. `mainBinaryName` in
+`tauri.conf.json` pins it to `smartcut` (since 0.2.0; before that it was set for Windows
+only). The bundle *files* Tauri writes are named after `productName` instead —
+`SmartCut_0.3.1_amd64.deb` and the like — which is why they and the deb's package name
+`smartcut` differ. `build-linux.sh` reads both out of `tauri.conf.json`.
+
+| Artifact | Size | FFmpeg | Requires |
+|---|---|---|---|
+| `SmartCut-0.3.1-linux-x86_64.tar.gz` | 208.2 MB | Bundled | glibc 2.39 or newer. No FUSE needed |
+| `smartcut_0.3.1_amd64.deb` | 2.7 MB | Uses the system's | FFmpeg 7.1 (Debian 13 / Ubuntu 25.04 and later) |
+
+**The tar.gz contains the same AppDir as the AppImage, extracted.** The 745 libraries
+linuxdeploy gathered by following `ldd` sit in `app/` as they are, `./smartcut` is a
+four-line script that calls AppRun, and `./smartcut-cli` points `LD_LIBRARY_PATH` at
+`app/usr/lib` and calls the CLI. It runs anywhere the AppImage runs, and removes the need
+to care about FUSE. Being gzip, it is 23 MB larger than the squashfs+zstd AppImage.
+
+**The deb, conversely, carries nothing.** Dependencies are generated by feeding both
+binaries to `dpkg-shlibdeps`, so the libav* libraries are listed:
+
+```
+Depends: libasound2t64 (>= 1.0.29), libavcodec61 (>= 7:7.1.5), libavdevice61 (>= 7:7.1.5),
+ libavformat61 (>= 7:7.1.5), libavutil59 (>= 7:7.1.5), libc6 (>= 2.39), libcairo2 (>= 1.10.0),
+ libdbus-1-3 (>= 1.10), libgcc-s1 (>= 4.2), libgdk-pixbuf-2.0-0 (>= 2.36.9),
+ libglib2.0-0t64 (>= 2.66.0), libgtk-3-0t64 (>= 3.21.5), libjavascriptcoregtk-4.1-0,
+ libsoup-3.0-0 (>= 3.0.3), libswresample5 (>= 7:7.1.5), libswscale8 (>= 7:7.1.5),
+ libwebkit2gtk-4.1-0 (>= 2.41.90)
+```
+
+Tauri's own deb stops at two entries, `libwebkit2gtk-4.1-0, libgtk-3-0`, and **FFmpeg
+never appears in the dependencies**. That alone is reason enough to rebuild it. Also
+added: a `.desktop` file (`Exec=smartcut %f`, `StartupWMClass=smartcut`, MimeTypes for
+MPEG-2 TS and MP4), hicolor icons at 32/128/256, `copyright` and `changelog.Debian.gz`.
+
+**The binary is taken from a different place for each bundle.** Tauri stamps the bundle
+type into the binary just before packing (`UNKNOWN` → `DEB` / `APPIMAGE`), so
+`target/release/smartcut` carries only the stamp of the last bundle built. The deb's
+binary comes from Tauri's deb, and the tar.gz's from the AppDir.
+
+### What was verified (the Debian 13 development VM)
+
+- `smartcut-cli`'s output **matches to the md5 between the deb and the tar.gz**
+  (`mpeg2.ts --cut 5-10`, 99.7% lossless copy). `ldd` confirms they are using different
+  libraries: the tar.gz build uses `app/usr/lib/libavcodec.so.61`, the deb build
+  `/lib/x86_64-linux-gnu/libavcodec.so.61`.
+- Both GUIs start on real hardware and open `mpeg2.ts` (41 lossless points, proxy
+  852x478, 41 thumbnails). The deb build shows up in the taskbar as `smartcut`, not
+  `gui`.
+- `apt-get -s install ./smartcut_0.1.1_amd64.deb` resolves its dependencies.
+  `desktop-file-validate` is warning-free, and all 8 entries in `md5sums` match.
+- The only thing not exercised is an actual `dpkg -i`, because sudo on the VM needs a
+  password.
+
+## Windows
+
+Cross-built from the Linux development VM to `x86_64-pc-windows-msvc`.
+
+```bash
+./gui/build-windows.sh
+# -> gui/src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis/SmartCut_0.3.1_x64-setup.exe
+# -> gui/src-tauri/target/x86_64-pc-windows-msvc/release/bundle/portable/smartcut-portable-x64.zip
+```
+
+| Artifact | Size | Contents |
+|---|---|---|
+| NSIS installer | 52.9 MB | 168.9 MB installed (10.6 MB exe plus 8 FFmpeg DLLs) |
+| Portable zip | 66.1 MB | The same set. Unzip and run `smartcut.exe` |
+
+**Exactly one piece of code had to be rewritten for the port: audio output.** Everything
+else goes through libav, so there is no `Command::new` and no POSIX path. All that was
+needed was *the FFmpeg to link against*, plus two additions: `tauri.windows.conf.json`
+and the build script. The sound card, however, lives on the far side of libav, and there
+the local conventions had to be followed — see "Where it got stuck".
+
+### Where the FFmpeg comes from
+
+`ffmpeg-sys-next` looks at `include/` and `lib/*.lib` under `FFMPEG_DIR`. gyan's shared
+build ships both the MSVC-format import libraries and the DLLs, so extracting it and
+pointing at it is enough.
+
+**It has to be the 7.1 series.** The VM's system FFmpeg is 7.1.5, and
+`ffmpeg-sys-next 7.1.3` selects its bindings by version, so a different series gives a
+mismatched API. But upstream stopped distributing Windows builds of 7.1 when 8.1 came
+out, and neither BtbN nor gyan's own site carries anything but 8.1 and 9.0. gyan's GitHub
+releases (`GyanD/codexffmpeg`) still have 7.1.1, so that is where it comes from.
+
+Eight DLLs are needed. `avfilter` opens `postproc`, so `postproc-58.dll` is needed too,
+even though its name never appears in the exe's import table.
+
+### What the running machine needs
+
+| Item | Status |
+|---|---|
+| FFmpeg | **Not needed** — the DLLs ship alongside the exe |
+| VC++ redistributable | **Not needed.** The only C runtime the exe pulls is UCRT (`api-ms-win-crt-*`), which ships with Windows 10 and later |
+| WebView2 runtime | Needed. Standard on Windows 11, and present on nearly all Windows 10 machines via Edge. Without it the NSIS installer fetches the bootstrapper by default; the portable zip leaves it to you |
+| Architecture | x64 only |
+
+### Verification
+
+Checked under wine 10.0 on the VM.
+
+- **The CLI's output does not differ from the Linux build by a single byte.** `--cut
+  5-10` on the same `mpeg2.ts` matches to the md5. The index (41 access points, 39 open
+  GOPs) is identical, as is the 0.3% re-encoded for the partial GOPs at the boundaries.
+  Note that **the `smartcut.exe` in the portable zip is the GUI**, so the CLI has to be
+  built separately:
+
+  ```bash
+  cd rust && FFMPEG_DIR=~/win-deps/ffmpeg-7.1.1-full_build-shared \
+    XWIN_ACCEPT_LICENSE=1 cargo xwin build --release \
+    --target x86_64-pc-windows-msvc -p smartcut-cli
+  ```
+
+  Put the same DLLs as the GUI next to the exe. Right now this is effectively the only
+  route left for confirming that the FFmpeg DLLs resolve — see the next point.
+
+- **The GUI no longer starts under wine** (as of 2026-08-27). `tao`'s
+  `event_loop.rs:709` hits `assertion failed: subclass_result.as_bool()`, meaning
+  `SetWindowSubclass` is failing. That is before WebView2 initialises, so what was
+  documented here previously — "a 1180x800 window appears and stops at 'Could not find
+  the WebView2 Runtime'" — is no longer reached.
+
+  **This is not a build regression.** The already-published v0.1.0 exe (the portable zip
+  in Releases) panics on the same line under the same wine. The cause is on the wine side
+  (comctl32 subclassing). So the argument "let the GUI reach WebView2 and thereby confirm
+  DLL resolution" — the same argument as starting the AppImage without `DISPLAY` and
+  letting it reach GTK initialisation — is unavailable for now, and its stand-in is the
+  CLI, which loads the same set of DLLs and matches Linux to the md5.
+
+That is as far as wine goes. **The first bug to appear when it was run on real Windows
+was that preview audio was silent** (see below). Wine's WASAPI accepts any format, so it
+is not the kind of thing the verification above can hit.
+
+The installer's payload and the standalone exe differ by exactly 3 bytes, because Tauri
+stamps the bundle type into the exe: `NSIS` on the installer side, `UNKNOWN` in the
+portable zip.
+
+### Where it got stuck
+
+- **Preview audio was silent on Windows only.** The material's sample rate and channel
+  count were being requested from the sound card as they were. On Linux that works —
+  cpal's default output is ALSA's `default`, which is really a chain of `plug`, and `plug`
+  takes on any conversion the card cannot do. **WASAPI's shared mode does not.** Shared
+  mode mixes every application into one format, so `IAudioClient` can only be initialised
+  with that format, and `IsFormatSupported` answers a different format with `S_FALSE` plus
+  "the closest format". cpal treats that as unsupported (`is_format_supported` collapses
+  `S_FALSE` to `Ok(false)`), so it ends at `StreamConfigNotSupported` without opening.
+
+  The mixing format is whatever the sound settings say, so **a PC with its output at
+  44.1 kHz was completely silent on 48 kHz broadcasts**, and the same happened sending a
+  5.1 broadcast to a stereo output. Fixed by asking the device what it mixes in and
+  matching that, and adding rate and channel-layout conversion via swresample
+  (`playback_audio::candidates`). **The material's own format is kept as the first
+  candidate**, so Linux still plays unconverted as before. A candidate with the fixed
+  period removed was appended at the end too — ALSA's
+  `snd_pcm_hw_params_set_buffer_size` rejects sizes that do not divide evenly, so 882
+  frames at 44.1 kHz fails on some cards.
+
+- **`resampling::Context::run`'s output frame only holds as many samples as the input.**
+  Going up in rate (48 kHz → 96 kHz, say) that is not enough, and swresample banks the
+  overflow internally. Nothing crashes or breaks, but what is banked never comes out
+  again, so latency and memory grow for as long as playback continues. The output frame is
+  now allocated here as `input.samples() × output rate ÷ input rate`.
+
+- **Static CRT linking (`+crt-static`) did not work.** Invoking `cargo xwin build`
+  directly works, but going through `cargo tauri build --runner cargo-xwin`, cargo-xwin
+  mishandles the flag and produces a link line mixing static and dynamic CRT libraries
+  (`libucrt.lib` drops out and `strlen` goes undefined). Neither the environment variable
+  nor `.cargo/config.toml` helps. Dynamic linking produces no VC++ redistributable
+  dependency anyway, so this was not pursued further.
+
+- **By default it is `gui.exe`**, because the cargo binary takes the crate name `gui`.
+  `mainBinaryName` makes it `smartcut.exe`; it was set in `tauri.windows.conf.json` until
+  0.2.0 moved it into `tauri.conf.json`, where it names the Linux binary as well.

@@ -1,33 +1,38 @@
-# ドキュメント
+# 技術ドキュメント
 
 [← SmartCut](../README.ja.md) ・ [English](README.md)
 
-## 仕組み
+以下の各ページには英語版と日本語版があり、切り替えは各ページの冒頭にあります。
+
+使い方を知りたい場合は [GUI ガイド](user-guide/gui.ja.md)から読んでください。
+仕組みを知りたい場合は[アルゴリズム](technical/algorithm.ja.md)から、とくに
+「GOP 単位で切って繋ぐだけ」では済まない 8 つの理由を挙げた
+[実装上の難所](technical/algorithm.ja.md#実装上の難所)から読むのがおすすめです。
+
+## ユーザーガイド
 
 | | |
 |---|---|
-| [アルゴリズムと実装上の難所](algorithm.ja.md) | head / body / tail の切り分けと、「GOP 単位で切って繋ぐだけ」では済まない 8 つの理由 |
-| [Rust コアの実装](rust-core.ja.md) | タイムスタンプの生成、SPS/PPS 混在の解決、音声境界の扱い、5.1 のダウンミックス、複数音声の全トラック出力 |
-| [検証結果と既知の制限](validation.ja.md) | フレームハッシュ照合の結果、実放送録画での検証、原理的な制約 |
+| [GUI](user-guide/gui.ja.md) | 全画面の操作手順（スクリーンショット付き）。録画の追加、カット、出力設定、書き出しまで |
+| [CM 検出](user-guide/cm-detection.ja.md) | CM の切れ目をどう見つけているか、精度はどのくらいか、外したときにどうするか |
+| [プロジェクト](user-guide/projects.ja.md) | 一晩ぶんの作業を `.scproj` に保存し、あとから再開する |
+| [バッチ処理](user-guide/batch.ja.md) | 一晩ぶんの録画をまとめて扱う。クリップ一覧、裏で動くキュー、書き出し |
 
-## 機能
-
-| | |
-|---|---|
-| [GUI](gui.ja.md) | クリップ一覧とカット編集画面、フィルムストリップ、シーク用インデックス、サムネイル軌道とシーン検出、再生、プロキシ、プロジェクト、2 言語対応 |
-| [CM 境界の検出](cm-detection.ja.md) | 字幕リセット・無音・ロゴの 3 つ、15 秒格子、誤検出を出さないための設計 |
-| [放送録画ワークフローとの互換](broadcast-ts.ja.md) | 出力 TS の PID レイアウト、放送自身のテーブル、字幕と番組情報、シーケンスヘッダ、ADTS、L-SMASH / DGIndex |
-
-## 作る・配る
+## 技術解説
 
 | | |
 |---|---|
-| [ビルドと開発](development.ja.md) | 必要なライブラリ、ビルド手順、テストの走らせ方 |
-| [配布](distribution.ja.md) | AppImage・tar.gz・deb と Windows インストーラ、同梱される依存 |
+| [アルゴリズム](technical/algorithm.ja.md) | カットを head / body / tail に切り分ける原理と、見た目より難しくしている 8 つの落とし穴 |
+| [検証](technical/validation.ja.md) | フレームハッシュ照合の結果、実際の放送録画での検証、既知の制限 |
+| [放送 TS](technical/broadcast-ts.ja.md) | PID 配置、録画自身のテーブル、字幕と番組情報、部分 TS、ADTS、L-SMASH と DGIndex |
+| [音声](technical/audio.ja.md) | 音声へのスマートレンダリング適用、境界誤差、MPEG-2 AAC のフレーミング、ダウンミックス、音声多重放送 |
 
-## そのほか
+## 開発者向け
 
 | | |
 |---|---|
-| [BDMV / BDAV への拡張](bdmv.ja.md) | 調査結果と段階的な作業量 |
-| [移植方針](design.ja.md) | Rust コア + Tauri GUI を選んだ理由、ライセンスと特許 |
+| [Rust コア](developers/rust-core.ja.md) | タイムスタンプの生成、SPS/PPS 混在の解決、Rust 実装が Python を追い越した点 |
+| [設計](developers/design.ja.md) | なぜ Rust コア + Tauri GUI なのか。GUI の作り: フィルムストリップ、シーク用インデックス、プロキシ、再生、多言語対応 |
+| [ビルド](developers/building.ja.md) | 必要なライブラリ、ビルド方法、テストの走らせ方 |
+| [配布](developers/distribution.ja.md) | AppImage・tar.gz・deb、Windows インストーラ、それぞれが何を同梱しているか |
+| [BDMV 調査](developers/bdmv.ja.md) | Blu-ray 素材へ広げるとしたら何が要るか、段階ごとに |

@@ -39,7 +39,7 @@ GUI_BIN=$OUT/bundle/deb/${PRODUCT}_${VERSION}_amd64/data/usr/bin/smartcut
 
 # ------------------------------------------------------------------ build
 cargo build --release --manifest-path ../rust/Cargo.toml -p smartcut-cli
-# NO_STRIP is explained in docs/distribution.md. The AppImage run is also what
+# NO_STRIP is explained in docs/developers/distribution.md. The AppImage run is also what
 # produces the AppDir, which is the payload the tar.gz wants; the deb run is
 # here for its correctly stamped binary, not for the package it makes.
 (cd src-tauri && NO_STRIP=1 cargo tauri build --bundles deb,appimage)

@@ -1,33 +1,40 @@
-# Documentation
+# Technical documentation
 
 [← SmartCut](../README.md) ・ [日本語](README.ja.md)
 
-## How it works
+Every page below exists in English and Japanese, and the switch is at the top of
+each one.
+
+If you are here to use the program, start with [the GUI guide](user-guide/gui.md).
+If you are here to understand how it works, start with
+[the algorithm](technical/algorithm.md) — and in particular with
+[the pitfalls](technical/algorithm.md#pitfalls), the eight reasons why "just cut
+on GOP boundaries and concatenate" does not work.
+
+## User Guide
 
 | | |
 |---|---|
-| [Algorithm and pitfalls](algorithm.md) | How head / body / tail are split, and the eight reasons "just cut on GOP boundaries and join" is not enough |
-| [The Rust core](rust-core.md) | Generating timestamps, resolving mixed SPS/PPS, handling audio boundaries, folding 5.1 down, carrying every sound track |
-| [Validation and known limits](validation.md) | Frame-hash verification results, testing against real broadcast recordings, the limits inherent in the approach |
+| [GUI](user-guide/gui.md) | A walkthrough of every screen, with screenshots: adding recordings, cutting, output settings, writing the files |
+| [Commercial detection](user-guide/cm-detection.md) | How the commercial breaks are found, how accurate it is, and what to do when it gets one wrong |
+| [Projects](user-guide/projects.md) | Saving a night's work to a `.scproj` and picking it up later |
+| [Batch processing](user-guide/batch.md) | Handling a whole evening of recordings at once: the clip list, the background queues, and the export |
 
-## Features
-
-| | |
-|---|---|
-| [GUI](gui.md) | The clip list and the cut editor, the filmstrip, the seek index, the thumbnail track and scene detection, playback, the proxy, projects, and the two languages |
-| [Commercial boundary detection](cm-detection.md) | Subtitle resets, silence and logo presence, the 15-second grid, and the design that keeps false positives out |
-| [Broadcast workflow compatibility](broadcast-ts.md) | PID layout of the output TS, the recording's own tables, captions and programme information, sequence headers, ADTS, L-SMASH / DGIndex |
-
-## Building and shipping
+## Technical
 
 | | |
 |---|---|
-| [Building and development](development.md) | Required libraries, how to build, how to run the tests |
-| [Distribution](distribution.md) | AppImage, tar.gz and deb, the Windows installer, and the bundled dependencies |
+| [Algorithm](technical/algorithm.md) | How a cut is split into head, body and tail — and the eight pitfalls that make it harder than it looks |
+| [Validation](technical/validation.md) | Frame-hash verification results, testing against real broadcast recordings, and the known limits |
+| [Broadcast TS](technical/broadcast-ts.md) | PID layout, the recording's own tables, captions and programme information, partial transport streams, ADTS, L-SMASH and DGIndex |
+| [Audio](technical/audio.md) | Smart rendering applied to audio, boundary error, MPEG-2 AAC framing, downmixing, and multi-track broadcasts |
 
-## Also
+## Developers
 
 | | |
 |---|---|
-| [Extending to BDMV / BDAV](bdmv.md) | Research notes and the work involved, stage by stage |
-| [Design notes](design.md) | Why a Rust core plus a Tauri GUI, and the licence and patent situation |
+| [Rust core](developers/rust-core.md) | Timestamp generation, mixed SPS/PPS, and where the Rust implementation overtook the Python one |
+| [Design](developers/design.md) | Why a Rust core with a Tauri GUI, and how the GUI is built: the filmstrip, the seek index, the proxy, playback, and the two languages |
+| [Building](developers/building.md) | Required libraries, how to build, how to run the tests |
+| [Distribution](developers/distribution.md) | AppImage, tar.gz and deb, the Windows installer, and what each one bundles |
+| [BDMV research](developers/bdmv.md) | What it would take to extend this to Blu-ray material, stage by stage |

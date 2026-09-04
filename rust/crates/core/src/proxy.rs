@@ -38,7 +38,7 @@ use crate::{thumbs, Source};
 pub const VERSION: u32 = 2;
 
 /// Encoders to try, in order, when none is named. Hardware first: the design
-/// note in `docs/design.md` keeps x264 at arm's length because it is GPL, and
+/// note in `docs/developers/design.md` keeps x264 at arm's length because it is GPL, and
 /// `mpeg4` is the fallback that is always there in any libavcodec build.
 pub const ENCODERS: [&str; 6] =
     ["h264_nvenc", "h264_videotoolbox", "h264_amf", "h264_qsv", "libx264", "mpeg4"];

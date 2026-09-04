@@ -2,33 +2,75 @@
 
 # SmartCut
 
-**Cut the commercials out of a broadcast recording without re-encoding it.**
+**Cut commercials out of a TV recording without re-encoding it.**
 
 [![Release](https://img.shields.io/github/v/release/DeepRegular/SmartCut?style=flat-square&color=1f883d)](https://github.com/DeepRegular/SmartCut/releases)
 [![License](https://img.shields.io/badge/license-GPL--3.0-blue?style=flat-square)](LICENSE)
-[![Platform](https://img.shields.io/badge/platform-Linux%20%C2%B7%20Windows-lightgrey?style=flat-square)](#install)
+[![Platform](https://img.shields.io/badge/platform-Linux%20%C2%B7%20Windows-lightgrey?style=flat-square)](#download)
 [![Core](https://img.shields.io/badge/core-Rust-dea584?style=flat-square)](rust/)
 
 English ・ [日本語](README.ja.md)
 
 <img src="docs/images/demo.gif" width="880"
-     alt="Two commercial blocks being taken out of a recording in the SmartCut editor">
+     alt="Two commercial blocks being removed from a recording in the SmartCut editor">
 
 </div>
 
-Above: two commercial blocks taken out of a 3:45 recording — **133.91 s copied
-bit-for-bit, 0.57 s re-encoded. 17 frames out of 6743 were touched at all.**
+## What is SmartCut?
 
-*The clip is a synthetic test recording, built by*
-[`tests/make_demo_media.sh`](tests/make_demo_media.sh)
-*from nothing but ffmpeg's own sources: colour cards, a fake station logo, and a
-15-second commercial grid.*
+SmartCut is a desktop application for cutting Japanese TV recordings. You drop a
+night's worth of `.ts` files onto it, it finds the commercial breaks
+automatically, you check the boundaries and cut, and it writes the results out.
 
-## How
+The important part is *how* it writes them out. A normal video editor decodes the
+whole file and encodes it again, which costs time and quality. SmartCut re-encodes
+only the few frames that sit inside a partial GOP at each cut point, and copies
+everything else byte for byte. On real broadcast recordings, more than 99% of the
+output is an exact copy of the input — and when the cuts land on keyframes, which
+commercial breaks usually do, nothing is re-encoded at all.
 
-Cutting video normally means decoding and re-encoding the whole file. SmartCut
-**re-encodes only the partial GOPs that the cut points fall inside, and copies
-everything else bit-for-bit.**
+This technique is called **smart rendering**. SmartCut applies it to the video, to
+the audio, and to the subtitle and programme-information streams that a Japanese
+broadcast carries alongside them.
+
+## Why SmartCut?
+
+**Nothing is lost that does not have to be.** Re-encoding a two-hour recording
+degrades every frame of it. SmartCut touches at most a couple of dozen frames, and
+often none.
+
+**It is fast.** Copying bytes is limited by your disk, not your CPU. A 30-minute
+recording is written out in well under a minute.
+
+**Broadcast recordings survive intact.** Captions, programme information, the
+station name, both tracks of a bilingual broadcast, interlacing, 2:3 pulldown, and
+the original PID layout all come through. The output opens in the tools you
+already use for recordings, because it still looks like a recording.
+
+**Commercial breaks are found for you.** Three independent signals — the marks the
+broadcaster puts in its own subtitle stream, runs of silence, and the presence of
+the station logo — are combined to locate the breaks. SmartCut places the marks;
+you decide what to cut.
+
+**It handles a whole evening at once.** Drop twenty recordings in, press
+`Ctrl+A` then `Ctrl+D`, and come back later. Reading, detecting and editing all
+run at the same time, so the batch never blocks you from working.
+
+## 30-second demo
+
+The animation at the top of this page shows two commercial blocks being removed
+from a 3 minute 45 second recording:
+
+- **133.91 seconds copied bit-for-bit, 0.57 seconds re-encoded**
+- **17 frames out of 6743 were touched at all**
+
+That clip is a synthetic test recording, built by
+[`tests/make_demo_media.sh`](tests/make_demo_media.sh) out of nothing but ffmpeg's
+own test sources: colour cards, a fake station logo, and a 15-second commercial
+grid. No broadcast material is involved.
+
+Here is the same idea as a diagram. For each range you keep, only the parts either
+side of the keyframes have to be rebuilt:
 
 ```
 ... I ....... I=========================I ....... I ...
@@ -37,202 +79,147 @@ everything else bit-for-bit.**
       re-encode        stream copy       re-encode
 ```
 
-On real terrestrial recordings **over 99% of the output is a lossless copy**.
-A 22-minute, 5-range export driven by the automatic commercial detector came
-out **bit-identical across all 40589 frames**.
+Cut exactly on a keyframe and even the head and tail disappear. A 22-minute,
+5-range export driven by the automatic commercial detector came out
+**bit-identical across all 40589 frames**.
 
-## What it does
+## Download
 
-- **Smart rendering** — H.264 / HEVC / MPEG-2 / MPEG-4 Part 2. Cutting exactly
-  on an access point re-encodes nothing at all. **The audio works the same
-  way** (`--audio-mode smart`, the default): only the AAC frames a boundary falls inside
-  are re-encoded, so nothing from the far side of a cut is heard -- 4 frames
-  out of 5606, measured, and **none at all when the seam falls in silence**,
-  as a commercial cut does -- where the output is byte-identical to a copy. And it stays **MPEG-2 AAC**, which left to FFmpeg it
-  would not: the ADTS headers are written here so a seam is not one MPEG-4
-  frame in an MPEG-2 stream.
-- **5.1 folded down when it has to be** (`--audio-channels 2`, or the output
-  settings screen). A surround recording that has to play somewhere that will
-  not have it is the one case where copying the audio is not the answer, so
-  this re-encodes the track -- with libav's own downmix coefficients, and with
-  the ADTS headers rewritten to say stereo, which is where a transport stream
-  states its channel count.
-- **Captions and programme information come through** (writing a .ts). The
-  ARIB STD-B24 caption stream the broadcast sends is carried across, shifted
-  by exactly what the pictures were shifted by -- a caption statement is
-  whole inside one packet, so there is nothing at a seam to re-encode and it
-  arrives **byte for byte**. So do the programme on now and the one after
-  (EIT), the station name (SDT) and the broadcast clock (TOT): the muxer
-  writes a description of the streams and stops there, so the finished file
-  is walked once more and **the recording's own tables are put back**. Every
-  stream returns to **the PID it arrived on**, which is where a tool built
-  around broadcast recordings looks for it. Superimposed text and the data
-  broadcast cannot come -- the first arrives with no time on its packets and
-  the second is a carousel of sections rather than a stream -- and the tool
-  says so rather than dropping them quietly.
-- **Multi-audio broadcasts** are read, and **both tracks are written**. A
-  bilingual broadcast sends its two sound tracks on separate PIDs, and only
-  one of them used to be looked at. Smart rendering runs on each track
-  independently: two tracks have their frames at different instants and drift
-  by different amounts, so one track's answer cannot stand in for the other's.
-  The one you do not want is switched off in the cut editor's **track** menu.
-- **Automatic commercial-boundary detection** — reads the junction marks the
-  broadcast puts in its own caption stream, runs of silence, and the presence
-  of the station logo, and reports the runs that land on the 15-second grid.
-  Boundaries snap to access points, so **cutting commercials stays entirely
-  lossless**.
-- **Cut-editing GUI** — film strip, scene detection, scroll search, and preview
-  playback with audio. What you see is always the *edited* timeline.
-- **A clip list, and a batch behind it** — drop a night's recordings on the
-  input screen and they are read in the background, each leaving its seek
-  index on disc; `Ctrl+A` then `Ctrl+D` sets a commercial detection running on
-  all of them. Reading, detecting and cutting **run at the same time**: the
-  batch does not stop for the editor, and a clip the batch has not reached can
-  be opened anyway. The whole list — recordings, cuts and output settings — saves
-  as a **project** with `Ctrl+S` and comes back the next evening. The cut editor
-  opens on one clip in a window of its
-  own and closes with OK; cuts stay with the clip, so you can work through the
-  list and then write the lot out in one go. A clip can be **duplicated**,
-  cuts and marks and all — one recording cut two ways, both written out, sat
-  side by side in the list. What the output screen shows is
-  not a poster frame but **the frames that will actually be re-encoded** —
-  everything else is copied byte for byte.
-- **A seek index** — the two passes that used to be repeated on every open
-  (walking the packets for the access points, decoding the key pictures for
-  the thumbnail track) are done once and written down. **Opening a half-hour
-  recording a second time goes from 18 seconds to 0.1.** The index also
-  carries the byte offset of every access point, which takes the guesswork
-  out of seeking.
-- **Proxy editing** (off by default; `SMARTCUT_PROXY=1`) — a small stand-in is
-  built from the recording, and the preview, the film strip and playback read
-  from it. It carries the recording's own timestamps and access points, so
-  cutting still works from the recording itself. It is for material where
-  decoding a single picture is itself too slow to scrub, which broadcast
-  1440x1080 MPEG-2 is not.
-- **Built for broadcast material** — interlacing is preserved, 2:3 pulldown is
-  handled on a field-level timeline, and dropped frames, non-zero `start_time`,
-  and ARIB ADTS layout are all accounted for.
-- **Output containers** — MPEG-TS / M2TS / MP4 / Matroska / QuickTime,
-  defaulting to the same container and directory as the input.
-- **English or Japanese** — the interface follows whatever the machine is set
-  to, and Preferences overrides it. The change lands at once, in both windows,
-  and is remembered for next time.
+Builds are on the [Releases page](https://github.com/DeepRegular/SmartCut/releases).
+Every build except the `.deb` includes FFmpeg, so there is nothing else to install.
 
-Codec and track-layout limits apply; see
-[known limitations](docs/validation.md#known-limitations).
+| Platform | File | Notes |
+|---|---|---|
+| **Linux** | `SmartCut_0.3.1_amd64.AppImage` | Make it executable and run it |
+| **Linux** | `SmartCut-0.3.1-linux-x86_64.tar.gz` | Unpack and run `./smartcut`. Use this if you would rather not deal with FUSE |
+| **Linux (Debian/Ubuntu)** | `smartcut_0.3.1_amd64.deb` | `sudo apt install ./smartcut_0.3.1_amd64.deb`. Only 2.7 MB, because it links against your system FFmpeg |
+| **Windows** | `SmartCut_0.3.1_x64-setup.exe` | Installer |
+| **Windows** | `smartcut-portable-x64-0.3.1.zip` | Unzip and run `smartcut.exe` |
 
-## Install
+**Requirements.** The AppImage and tar.gz need glibc 2.39 or newer, which means
+Ubuntu 24.04, Debian 13, Fedora 40 or later. The `.deb` needs FFmpeg 7.1, which
+means Debian 13 or Ubuntu 25.04 or later; it installs the GUI as `smartcut` and
+the command-line tool as `smartcut-cli`. The Windows builds are x64 only and need
+the WebView2 runtime, which is already present on Windows 11 and on nearly all
+Windows 10 machines.
 
-Grab a build from [Releases](https://github.com/DeepRegular/SmartCut/releases).
-**Only the .deb asks for FFmpeg on the system** — every other build bundles it.
+To build from source, see [Building](docs/developers/building.md).
 
-| | |
-|---|---|
-| Linux | `SmartCut_0.3.1_amd64.AppImage`, or `SmartCut-0.3.1-linux-x86_64.tar.gz` (unpack it, run `./smartcut`). Both carry FFmpeg and need glibc 2.39+ (Ubuntu 24.04 / Debian 13 / Fedora 40 or newer) |
-| Linux (deb) | `smartcut_0.3.1_amd64.deb` — `sudo apt install ./smartcut_0.3.1_amd64.deb`. 2.7MB, because it links the system FFmpeg 7.1 instead of carrying one; that means Debian 13 / Ubuntu 25.04 or newer. Installs the GUI as `smartcut` and the cutter as `smartcut-cli` |
-| Windows | `SmartCut_0.3.1_x64-setup.exe` (installer) or `smartcut-portable-x64-0.3.1.zip` (unzip and run). x64 only; needs the WebView2 runtime |
+## Quick Start
 
-To build it yourself, see [Building and development](docs/development.md).
+### With the GUI
 
-## Usage
+1. **Add your recordings.** Drag them onto the window, or use **＋ Add files**.
+   Each one is read in the background and indexed, so it will open instantly
+   later.
+2. **Find the commercials.** Press `Ctrl+A` to select everything, then `Ctrl+D`.
+   SmartCut works through the list and marks the start of every commercial block
+   and every return to the programme.
+3. **Cut.** Double-click a recording to open the cut editor. The marks are already
+   there: click the one at the start of a break, press `I`, click the one where
+   the programme returns, press `←` then `O`, and press **✂ Cut**. Press **OK**
+   when you are done with that recording.
+4. **Check the settings.** The output settings tab covers the whole list: where to
+   write, which container, what to do with the audio.
+5. **Write it out.** The export tab writes the whole list, top to bottom.
 
-Drop a file onto the GUI, or use the command line:
+Save the list at any point with `Ctrl+S` and it comes back next time, cuts and
+all. There is a full walkthrough with screenshots in
+[the user guide](docs/user-guide/gui.md).
+
+### From the command line
 
 ```bash
-smartcut input.ts --keep 5.3-12.7 -o out.ts   # keep the given range
-smartcut input.ts --cut 8.0-20.0  -o out.ts   # drop the given range
+smartcut input.ts --keep 5.3-12.7 -o out.ts   # keep this range
+smartcut input.ts --cut 8.0-20.0  -o out.ts   # drop this range
 smartcut input.ts --analyze                   # show the plan, write nothing
 
-smartcut input.ts --analyze --detect-cm --logo  # commercial candidates
-smartcut input.ts --analyze --scenes            # scene changes
+smartcut input.ts --analyze --detect-cm --logo  # list the commercial candidates
+smartcut input.ts --analyze --scenes            # list the scene changes
 ```
 
-| Option | Meaning |
+`--keep` and `--cut` can be repeated, and accept `1:23:45.6` as well as plain
+seconds. The full option list is in
+[the command-line reference](docs/user-guide/gui.md#command-line-reference).
+
+## Supported formats
+
+**Input containers:** `.ts` `.m2ts` `.mts` `.m2t` `.mp4` `.mkv` `.mov` `.m4v`
+
+**Output containers:** MPEG-TS, M2TS, MP4, Matroska, QuickTime. The default is the
+same container and directory as the input.
+
+**Video:** H.264, HEVC, MPEG-2, MPEG-4 Part 2. Interlaced material keeps its
+interlacing, and 2:3 pulldown is handled on a field-level timeline. VP9 and AV1
+are not supported — they have no elementary-stream form that can be concatenated,
+so they would need a different design.
+
+**Audio:** AAC is smart-rendered. Every track in the file is cut independently, so
+a bilingual broadcast keeps both languages. 5.1 can be folded down to stereo when
+you need it. AC-3 and MP2 are copied through rather than smart-rendered, and
+SmartCut tells you when that happens.
+
+**Broadcast streams (when writing a `.ts`):** ARIB STD-B24 captions are carried
+across byte for byte. Programme information (EIT), station name (SDT) and
+broadcast clock (TOT) are restored after muxing, and every stream goes back on the
+PID it arrived on. Superimposed text and data broadcasting cannot be carried on a
+cut timeline; SmartCut says so rather than dropping them quietly.
+
+One video track per file. See [known limitations](docs/technical/validation.md#known-limitations)
+for the full list.
+
+## How safe is it?
+
+**Your original file is never modified.** SmartCut only ever reads it. Output goes
+to a new file, by default in the same directory with `cut_` in front of the name.
+
+**Most of the output is provably identical to the input.** The copied regions are
+byte-for-byte the same bytes. That is not an estimate; it is what stream copying
+means.
+
+**The parts that are re-encoded are measured, not assumed.** The test suite decodes
+the output and compares it against the source frame by frame, by hash. Against real
+broadcast recordings:
+
+| Material | Result |
 |---|---|
-| `--keep START-END` / `--cut START-END` | Ranges; repeatable. `1:23:45.6` form also accepted |
-| `--audio-mode smart\|copy\|reencode` | `smart` (default) re-encodes only the frames a boundary falls inside, so nothing from the far side of a cut is heard -- and nothing at all when the seam falls in silence. `copy` is lossless to the byte; `reencode` is sample-accurate |
-| `--audio-channels N` | Channels to write, 1..8. Anything but the recording's own is a downmix -- 5.1 folded to stereo for the players that make a mess of surround -- and there is no copying through one, so it re-encodes the whole track whatever `--audio-mode` says |
-| `--audio-bitrate RATE` | Bits per second for re-encoded audio, `192k` or `192000`. Left out, it follows the recording, and comes down with the channel count when there is a fold |
-| `--aac auto\|mpeg2\|mpeg4` | Which AAC the frames this tool writes announce themselves as. `auto` follows the recording, which for a broadcast means MPEG-2 AAC |
-| `--index scan\|container` | How access points are indexed. `container` is faster but unavailable for TS |
-| `--seek-index PATH` | Where to keep the seek index. Written on the first run, read on the next, which skips the walk over the packets |
-| `--detect-cm` / `--logo` / `--scenes` | Commercial candidates, logo assist, scene detection |
-| `--drop-stream INDEX` | Leave one of the recording's streams out of the output; repeatable. The same thing the cut editor's **Tracks** menu does |
-| `--tables partial\|broadcast\|muxer` | How a `.ts` describes itself. The default `partial` writes a partial transport stream (one SIT, per DVB EN 300 468 Annex C / ARIB TR-B15); `broadcast` puts the recording's own PMT, SDT, EIT and TOT back; `muxer` leaves the muxer's own tables standing (once `--no-tables`) |
-| `--no-open-gop` | Never start a copy at an open GOP |
-| `-o OUTPUT` | Output path; the extension picks the container |
+| Terrestrial NHK E-Tele (MPEG-2 1440x1080i) | 899/899 frames, 98.2% lossless, interlacing preserved |
+| BS11 (MPEG-2 1920x1080i) | 899/899 frames, 98.2% lossless |
+| AT-X (MPEG-2 1440x1080, 2:3 pulldown) | 719/719 frames, 99.9% lossless, pulldown pattern preserved |
+| A 22-minute commercial cut, 5 ranges | 40589/40589 frames, **100% bit-identical** |
 
-## The clip list
+**The GUI tells you before you commit.** The status line under the timeline is the
+plan the engine will actually execute: which ranges get copied, which get
+re-encoded, and how many frames that is. If the badge says "Video completely
+lossless", not one frame will be re-encoded.
 
-![The SmartCut clip list](docs/images/list.png)
+**"100%" is never rounded up.** Two re-encoded frames out of 40000 rounds to 100.0%
+in ordinary arithmetic, and that is exactly the number a smart renderer must never
+print. SmartCut shows the frame count instead, and refuses to write 100% unless it
+means it.
 
-Where a night's worth of recordings goes. **Each one is read in the background
-as it arrives**, leaving a seek index behind; `Ctrl+A` then `Ctrl+D` runs
-commercial detection over everything selected. The row carries what is known
-about that recording — length, resolution, the commercial blocks found, the cuts
-made, the length it will be written at. Cuts live with the clip, so the list can
-be cut through one at a time and **written out in one go**. The cut editor opens
-on one clip in a window of its own and comes back with OK.
+Full results, including the bugs found along the way and the limits inherent in
+the approach, are in [Validation](docs/technical/validation.md).
 
-The **SmartCut** button in the corner of this screen opens Preferences, where the
-interface language is set: English, Japanese, or whatever the machine is set to,
-which is the default. The change takes effect at once — both windows — and is
-remembered for next time.
+## Technical documentation
 
-**About SmartCut**, in the same menu, prints the versions: the program's and the
-cutting engine's, the FFmpeg libraries this process actually loaded and what they
-are licensed under, and the platform. It is the one part of either window whose
-text can be selected, so it can go straight into a bug report.
+Every page is available in English and Japanese; the switch is at the top of each
+one.
 
-The same menu saves and opens **projects** (`Ctrl+S` / `Ctrl+O`). What is written
-is the list itself — the paths, the cuts and marks made in each recording, and the
-output settings. Nothing that can be worked out again goes in: the seek indexes and
-the commercial detections live in the program's own cache directory, so opening a
-project simply reads them again. That keeps a `.scproj` at a few hundred bytes, and it
-means a project still opens on another machine, or after the caches have been
-cleared. A `.scproj` dropped on the window opens too, as does
-`smartcut friday-night.scproj`.
-
-The title bar names the project that is open and puts a `*` in front of it
-while there is work that is not on disc — and closing the window on that work
-asks first. Being on disc is *compared*, not tracked: cancelling out of the
-editor, or removing a clip that was just added, takes the `*` off again by
-itself.
-
-## The editor
-
-![The SmartCut cut editor](docs/images/editor.png)
-
-Cuts are subtractive: the timeline you see is **the recording minus the cuts**,
-never the original. A cut region does not turn grey — it *disappears*. The
-seek bar shrinks, the film strip closes over the hole, and the frame counter
-counts the length that will actually be written. All that is left of a cut is
-a red vertical line at the join.
-
-The status line at the bottom is the plan the engine will execute, before you
-commit to it: which ranges get copied, which get re-encoded, and how many
-frames that is.
-
-## Documentation
-
-Every page is available in English and in Japanese; the switch is at the top
-of each one. The part worth reading first is
-[the pitfalls](docs/algorithm.md#pitfalls) — the eight reasons why
-"just cut on GOP boundaries and concatenate" does not work, in the order they
-were hit.
+**[→ Technical documentation](docs/README.md)**
 
 | | |
 |---|---|
-| [Algorithm and pitfalls](docs/algorithm.md) | How the cut is split, and the eight traps |
-| [Rust core](docs/rust-core.md) | Timestamps, mixed SPS/PPS, audio boundaries |
-| [Validation and limits](docs/validation.md) | Frame-hash verification, real-material results |
-| [GUI](docs/gui.md) | Editor, the seek index, thumbnail track, scene detection, playback, the proxy |
-| [Commercial detection](docs/cm-detection.md) | Silence plus logo, the 15-second grid, avoiding false positives |
-| [Broadcast workflow compatibility](docs/broadcast-ts.md) | PID layout, ADTS, L-SMASH / DGIndex |
-| [Building](docs/development.md) ・ [Distribution](docs/distribution.md) | How to build and ship it |
-| [BDMV / BDAV](docs/bdmv.md) ・ [Design notes](docs/design.md) | Research and design decisions |
+| **User Guide** | [GUI](docs/user-guide/gui.md) ・ [Commercial detection](docs/user-guide/cm-detection.md) ・ [Projects](docs/user-guide/projects.md) ・ [Batch processing](docs/user-guide/batch.md) |
+| **Technical** | [Algorithm](docs/technical/algorithm.md) ・ [Validation](docs/technical/validation.md) ・ [Broadcast TS](docs/technical/broadcast-ts.md) ・ [Audio](docs/technical/audio.md) |
+| **Developers** | [Rust core](docs/developers/rust-core.md) ・ [Design](docs/developers/design.md) ・ [Building](docs/developers/building.md) ・ [Distribution](docs/developers/distribution.md) ・ [BDMV research](docs/developers/bdmv.md) |
 
-## Layout
+If you only read one page, make it
+[the pitfalls](docs/technical/algorithm.md#pitfalls): the eight reasons why "just
+cut on GOP boundaries and concatenate the pieces" does not work, in the order they
+were hit.
+
+## Repository layout
 
 ```
 rust/     Rust core (smartcut_core) and CLI   <- the real implementation
@@ -242,16 +229,16 @@ tests/    13 end-to-end suites, 134 checks
 docs/     Documentation
 ```
 
-The Python implementation is kept as the **reference implementation and test
-oracle** that pinned down the algorithm and its pitfalls. It shares the same
-frame-hash verification with the Rust core, and `tests/run_tests.sh` and
+The Python implementation is kept as a reference implementation and test oracle.
+It is what pinned down the algorithm and its pitfalls in the first place. It shares
+the same frame-hash verification as the Rust core, and `tests/run_tests.sh` and
 `tests/run_rust_tests.sh` report identical lossless ratios.
 
 ## License
 
 [GPL-3.0](LICENSE).
 
-x264 and x265 are GPL, and linking against them makes the whole application
-GPL. Re-encoding can also be switched to a hardware encoder (NVENC / QSV /
-VideoToolbox / AMF). Patent licensing for H.264 / HEVC needs separate
-consideration for commercial distribution.
+x264 and x265 are GPL, and linking against them makes the whole application GPL.
+Re-encoding can also be switched to a hardware encoder (NVENC, QSV, VideoToolbox,
+AMF). Patent licensing for H.264 and HEVC needs separate consideration if you
+intend to distribute commercially.
