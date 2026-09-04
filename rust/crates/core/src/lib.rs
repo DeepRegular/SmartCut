@@ -10,12 +10,15 @@ use anyhow::{anyhow, Result};
 use ffmpeg_next as ff;
 
 pub mod adts;
+pub mod arib;
 pub mod audio;
+pub mod bdav;
 pub mod bitstream;
 pub mod caption;
 pub mod cm;
 pub mod cut;
 pub mod index;
+pub mod input;
 pub mod logo;
 pub mod netpath;
 pub mod plan;
@@ -25,6 +28,7 @@ pub mod proxy;
 pub mod seek_index;
 pub mod si;
 pub mod thumbs;
+pub mod udf;
 
 pub use cm::{
     blocks as cm_blocks, blocks_from_logo as cm_blocks_from_logo,
@@ -182,7 +186,14 @@ impl DroppedStream {
 
 #[derive(Debug, Clone)]
 pub struct Source {
+    /// The name the recording is known by: a path, or a path into a disc
+    /// image. What the list shows, what the caches are keyed on, and what
+    /// the output is named beside.
     pub path: String,
+    /// How that name is opened. Everything that hands the recording to
+    /// libavformat gives it [`input::Input::url`], which for a clip inside
+    /// an image is the range of the image it occupies.
+    pub input: input::Input,
     pub video: VideoInfo,
     /// The main sound, which is the track everything that reads one track
     /// reads: commercial detection, the preview player, the sidecar.
@@ -341,7 +352,9 @@ const BYTE_SEEKABLE: [&str; 5] = ["mpegts", "mpeg", "h264", "hevc", "mpegvideo"]
 /// Probe the source and build its access-point index with the given strategy.
 pub fn scan_with(path: &str, source: &dyn index::IndexSource) -> Result<Source> {
     init()?;
-    let ictx = ff::format::input(&path).map_err(|e| anyhow!("cannot open {path}: {e}"))?;
+    let input = input::Input::parse(path)?;
+    let ictx =
+        ff::format::input(&input.url).map_err(|e| anyhow!("cannot open {path}: {e}"))?;
     // Read before the demuxer is handed to the index source, which takes it.
     let byte_seekable = ictx
         .format()
@@ -504,6 +517,7 @@ pub fn scan_with(path: &str, source: &dyn index::IndexSource) -> Result<Source> 
 
     Ok(Source {
         path: path.to_string(),
+        input,
         audio,
         audios,
         captions,

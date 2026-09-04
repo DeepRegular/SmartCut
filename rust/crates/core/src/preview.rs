@@ -359,7 +359,7 @@ fn walk(
     keys: bool,
     mut visit: impl FnMut(f64, &ff::frame::Video) -> bool,
 ) -> Result<Option<f64>> {
-    let mut ictx = ff::format::input(&src.path)?;
+    let mut ictx = ff::format::input(&src.input.url)?;
     let idx = src.video.stream_index;
     let in_tb = src.video.time_base;
     // The index knows the byte `from` begins at, so on the first attempt

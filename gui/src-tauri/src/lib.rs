@@ -61,6 +61,16 @@ struct Generation(AtomicU64);
 #[derive(Default)]
 struct Thumbs(Mutex<Option<smartcut_core::Track>>);
 
+/// Which recording [`Thumbs`] holds the track of.
+///
+/// A lock of its own rather than a read of [`Opened`]: `detect_cm` keeps that
+/// one for the whole of a pass that runs into minutes, and the list window
+/// asking whether the open track speaks for the row it is drawing must not
+/// queue behind it. Written where `Thumbs` is emptied, so the two cannot
+/// come apart.
+#[derive(Default)]
+struct OpenPath(Mutex<Option<String>>);
+
 /// The seek index read off disc for the open recording, when there was one.
 ///
 /// Held between [`open_source`] and [`prepare`] because it answers both: the
@@ -114,6 +124,12 @@ struct SourceInfo {
     /// How many of those cannot start a copy because their leading pictures
     /// are referenced.
     unusable_points: usize,
+    /// Where the container's clock begins. Everything else here is already
+    /// rebased to it, and this is carried for the one thing that is not: a
+    /// time that came from outside the file. A disc's chapter marks are
+    /// written on the stream's own clock, and this is what puts them on the
+    /// timeline the editor draws.
+    start_time: f64,
 }
 
 /// One row of the clip list, once the recording behind it has been read.
@@ -211,11 +227,56 @@ fn initial_paths(argv: State<Argv>) -> Vec<String> {
 #[derive(Serialize)]
 struct Resolved {
     input: String,
-    files: Vec<String>,
+    files: Vec<Found>,
     /// Japanese, and shown as it stands: this is the one place the user is
     /// talking about a path they typed, and the reason it did not work is the
     /// whole of the answer.
     error: Option<String>,
+}
+
+/// One thing to put in the list.
+///
+/// A file is only its path: the name in the list is the file's name and a cut
+/// of it is written beside it, and there is nothing to say. A recording on a
+/// disc is not, which is what the other three fields are for -- the programme
+/// is named in the disc's index rather than by any filename, and the folder
+/// its stream is in cannot be written to, being inside an image or inside the
+/// structure of a copied disc.
+#[derive(Serialize)]
+struct Found {
+    path: String,
+    /// What to call it, when that is not the file's name.
+    name: Option<String>,
+    /// What to name a cut of it, when that is not the file's name either.
+    stem: Option<String>,
+    /// Where a cut of it goes when no output folder has been chosen.
+    home: Option<String>,
+    /// The chapter points the recorder wrote, on the stream's own clock.
+    ///
+    /// The disc's index is the only place they exist -- nothing in the stream
+    /// says where a chapter is -- so they are read once, here, and travel
+    /// with the row until the editor can put them down as marks. Empty for an
+    /// ordinary file, and for a disc whose marks could not be believed.
+    chapters: Vec<f64>,
+}
+
+impl Found {
+    fn file(path: String) -> Found {
+        Found { path, name: None, stem: None, home: None, chapters: Vec::new() }
+    }
+
+    fn on_a_disc(e: smartcut_core::bdav::Entry) -> Found {
+        // Off the title's own clock and onto the clip's, which is the clock
+        // the demuxer reports and the only one the editor can rebase.
+        let chapters = e.marks.iter().map(|m| e.start + m).collect();
+        Found {
+            path: e.path,
+            name: Some(e.label),
+            stem: Some(e.stem),
+            home: Some(e.home),
+            chapters,
+        }
+    }
 }
 
 /// Turn what was dropped, picked or pasted into paths that can be opened.
@@ -234,18 +295,57 @@ fn resolve_paths(paths: Vec<String>) -> Vec<Resolved> {
         .collect()
 }
 
-/// The files one input names: itself, or everything in it when it is a
-/// directory.
-fn files_at(input: &str) -> Result<Vec<String>, String> {
+/// The files one input names: itself, everything in it when it is a
+/// directory, or the recordings on it when it is a disc.
+fn files_at(input: &str) -> Result<Vec<Found>, String> {
     let path = local_path(input)?;
     let meta = std::fs::metadata(&path).map_err(|e| {
         let shown = netpath::parse(input).map_or_else(|| path.display().to_string(), |s| s.unc());
         format!("{}: {shown} ({e})", tr!("開けません", "Cannot open"))
     })?;
-    if !meta.is_dir() {
-        return Ok(vec![path.to_string_lossy().into_owned()]);
+    // A BDAV disc -- a folder holding one, or an `.iso` of one -- is a list of
+    // recordings rather than one recording, and its own index is the only
+    // place their names are written down. Tried before the directory walk,
+    // because a disc *is* a directory and walking it would find three
+    // subdirectories and nothing to open.
+    if smartcut_core::bdav::looks_like_bdav(&path) {
+        return match smartcut_core::bdav::entries(&path) {
+            Ok(entries) if !entries.is_empty() => {
+                Ok(entries.into_iter().map(Found::on_a_disc).collect())
+            }
+            // An `.iso` that is not a disc of recordings is not an error
+            // worth stopping for when it was one file among a hundred, but
+            // it is the whole answer when it is what was dropped.
+            Ok(_) | Err(_) if meta.is_dir() => files_in(&path),
+            Err(e) => Err(format!(
+                "{}: {} ({e})",
+                tr!("ディスクを読めません", "Cannot read the disc"),
+                path.display()
+            )),
+            Ok(_) => Err(format!(
+                "{}: {}",
+                tr!("録画が入っていません", "No recordings on it"),
+                path.display()
+            )),
+        };
     }
-    let mut files: Vec<String> = std::fs::read_dir(&path)
+    if !meta.is_dir() {
+        return Ok(vec![Found::file(path.to_string_lossy().into_owned())]);
+    }
+    files_in(&path)
+}
+
+/// Everything in a directory, in name order -- which for recordings named by
+/// date is the order they were made, and in any case an order, which
+/// `read_dir` is not.
+///
+/// A disc inside the folder stands for the recordings on it, the same as a
+/// disc that was dropped on its own: a folder of `.iso` files, or of copied
+/// discs, is one evening's worth of recordings named one way rather than a
+/// hundred files named another. Anything else that is a folder is passed
+/// over, as it always was.
+fn files_in(path: &std::path::Path) -> Result<Vec<Found>, String> {
+    let mut names: Vec<std::path::PathBuf> = std::fs::read_dir(path)
         .map_err(|e| {
             format!(
                 "{}: {} ({e})",
@@ -254,13 +354,24 @@ fn files_at(input: &str) -> Result<Vec<String>, String> {
             )
         })?
         .flatten()
-        .filter(|e| e.file_type().map(|t| !t.is_dir()).unwrap_or(false))
-        .map(|e| e.path().to_string_lossy().into_owned())
+        .map(|e| e.path())
         .collect();
-    // In name order, which for recordings named by date is the order they
-    // were made -- and in any case an order, which `read_dir` is not.
-    files.sort();
-    Ok(files)
+    names.sort();
+
+    let mut out = Vec::new();
+    for name in names {
+        if smartcut_core::bdav::looks_like_bdav(&name) {
+            if let Ok(entries) = smartcut_core::bdav::entries(&name) {
+                out.extend(entries.into_iter().map(Found::on_a_disc));
+                continue;
+            }
+        }
+        if name.is_dir() {
+            continue;
+        }
+        out.push(Found::file(name.to_string_lossy().into_owned()));
+    }
+    Ok(out)
 }
 
 /// The local path for something the user named, translating a share the
@@ -425,6 +536,7 @@ fn info_of(src: &Source) -> SourceInfo {
         index_name: src.index_name.to_string(),
         points: src.points.iter().map(|p| p.time).collect(),
         unusable_points: src.points.iter().filter(|p| p.open_gop() && !p.droppable).count(),
+        start_time: src.start_time,
     }
 }
 
@@ -436,6 +548,10 @@ fn open_now(path: &str, app: &tauri::AppHandle) -> Result<SourceInfo, String> {
     // now; the count going up is what tells it so.
     app.state::<Generation>().0.fetch_add(1, Ordering::SeqCst);
     *app.state::<Thumbs>().0.lock().unwrap() = None;
+    // Named by what was asked for rather than by what came back: this is
+    // compared against a path the list window holds, and that is the string
+    // it handed over.
+    *app.state::<OpenPath>().0.lock().unwrap() = Some(path.to_string());
     *app.state::<Proxy>().0.lock().unwrap() = None;
     *app.state::<Held>().0.lock().unwrap() = held;
     let info = info_of(&src);
@@ -935,6 +1051,59 @@ fn background_threads(app: &tauri::AppHandle) -> usize {
 /// commercial detection. See [`BatchStop`].
 const LANES: usize = 2;
 
+/// How far into a clip its poster is taken from.
+const POSTER_AT: f64 = 0.1;
+
+/// The picture a row shows for a clip, out of the track already built for it.
+///
+/// A little way in rather than at the head, because broadcast recordings open
+/// on black or on the tail of the programme before -- and a little way into
+/// *what survives* rather than into the file, because a tenth of the way into
+/// a recording is as likely as not inside the first commercial break, which
+/// is exactly the stretch the cuts took out. A row showing the advertisement
+/// it was cut to remove is the one picture that cannot be right.
+///
+/// `keeps` is what survives, in source time: the same ranges the plan is made
+/// from. The instant is worked out on the output clock and put back on the
+/// recording's, and the held picture nearest it is then taken from inside the
+/// same stretch -- [`Track::nearest`] alone would happily answer with the one
+/// on the far side of a join, which is a frame the finished file does not
+/// contain.
+fn poster_of<'a>(
+    track: &'a smartcut_core::Track,
+    keeps: &[(f64, f64)],
+) -> Option<&'a smartcut_core::thumbs::Thumb> {
+    let kept: f64 = keeps.iter().map(|(a, b)| (b - a).max(0.0)).sum();
+    if kept <= 0.0 {
+        return None;
+    }
+    let mut want = kept * POSTER_AT;
+    let mut at = keeps[0].0;
+    for &(a, b) in keeps {
+        let len = (b - a).max(0.0);
+        at = a + want.min(len);
+        if want < len {
+            break;
+        }
+        want -= len;
+    }
+    // A track still being built speaks only for what it has decoded, and
+    // `nearest` answers past that with its last picture -- the wrong picture,
+    // where none is the honest answer and the caller can look elsewhere.
+    if at > track.covered + 1e-6 {
+        return None;
+    }
+    track
+        .thumbs
+        .iter()
+        .filter(|t| keeps.iter().any(|&(a, b)| t.time >= a - 1e-6 && t.time < b))
+        .min_by(|x, y| (x.time - at).abs().total_cmp(&(y.time - at).abs()))
+        // Keeps shorter than the spacing of the held pictures: there is no
+        // frame of what survives to show, so the nearest one there is stands
+        // for the clip rather than the row going blank.
+        .or_else(|| track.nearest(at))
+}
+
 /// Read one clip of the list and leave its seek index on disc.
 ///
 /// The same work [`prepare`] does for the recording being edited, done ahead
@@ -1011,10 +1180,11 @@ fn index_clip_now(path: &str, app: &tauri::AppHandle) -> Result<ClipInfo, String
         }
     };
 
-    // A little way in rather than at the head: broadcast recordings open on
-    // black, or on the tail of the programme before.
-    let poster = track
-        .nearest(src.duration * 0.1)
+    // The whole of the recording is what this row is so far: a clip that
+    // arrived with cuts already on it -- out of a project file -- asks for
+    // its picture again through [`clip_poster`] once it has one to ask with.
+    let first_point = src.points.first().map_or(0.0, |p| p.time);
+    let poster = poster_of(&track, &[(first_point, src.duration)])
         .or_else(|| track.thumbs.first())
         .map(|t| as_url(&t.jpeg));
     say(tr!("完了", "Done"), 1.0);
@@ -1034,7 +1204,7 @@ fn index_clip_now(path: &str, app: &tauri::AppHandle) -> Result<ClipInfo, String
         index_name: src.index_name.to_string(),
         points: src.points.len(),
         unusable_points: src.points.iter().filter(|p| p.open_gop() && !p.droppable).count(),
-        first_point: src.points.first().map_or(0.0, |p| p.time),
+        first_point,
         scenes: track.scenes.len(),
         poster,
         cached,
@@ -1459,6 +1629,43 @@ async fn clip_thumbs(
     .await
 }
 
+/// The row's picture again, for a clip whose cuts have changed what it is.
+///
+/// `keeps` is what survives, in source time. Nothing is decoded: the answer
+/// comes out of the track the editor already has where this is the clip open
+/// in it -- which is the case that matters, since the row repaints as the cut
+/// is being made -- and out of the seek index on disc otherwise. `None` where
+/// there is neither, and the row keeps the picture it had.
+#[tauri::command]
+async fn clip_poster(
+    path: String,
+    keeps: Vec<(f64, f64)>,
+    app: tauri::AppHandle,
+) -> Result<Option<String>, String> {
+    off_thread(move || {
+        let open_here = {
+            let state = app.state::<OpenPath>();
+            let guard = state.0.lock().unwrap();
+            guard.as_deref() == Some(path.as_str())
+        };
+        if open_here {
+            let state = app.state::<Thumbs>();
+            let guard = state.0.lock().unwrap();
+            let url = guard.as_ref().and_then(|t| poster_of(t, &keeps)).map(|t| as_url(&t.jpeg));
+            if url.is_some() {
+                return Ok(url);
+            }
+        }
+        // Not the scan: only the pictures are wanted, and an index whose key
+        // no longer fits the recording is not found at all.
+        let Some(track) = held_index(&app, &path).and_then(|mut ix| ix.track.take()) else {
+            return Ok(None);
+        };
+        Ok(poster_of(&track, &keeps).map(|t| as_url(&t.jpeg)))
+    })
+    .await
+}
+
 /// Where a long pass reports the phase it is in and how far through it is.
 ///
 /// Shared rather than borrowed because each of the three passes wants its own
@@ -1609,7 +1816,12 @@ const CM_VERSION: u32 = 1;
 /// a recording that has since been replaced, so the size and the modification
 /// time are in the key and a changed file simply misses.
 fn cm_path(app: &tauri::AppHandle, src_path: &str) -> Result<std::path::PathBuf, String> {
-    let meta = std::fs::metadata(src_path).map_err(|e| e.to_string())?;
+    // Asked of the file the recording is in, which for one on a disc is the
+    // disc: a path into an image is not a path the operating system knows.
+    // The key is still the recording's own name, so two on one disc do not
+    // share a detection.
+    let file = smartcut_core::input::Input::parse(src_path).map_err(|e| e.to_string())?.file;
+    let meta = std::fs::metadata(file).map_err(|e| e.to_string())?;
     let mtime = meta
         .modified()
         .ok()
@@ -2198,6 +2410,32 @@ pub fn run() {
         std::env::set_var("WEBKIT_DISABLE_DMABUF_RENDERER", "1");
     }
 
+    // The same freeze from the other end, and this one waits until a text
+    // field is clicked: with GTK's XIM input-method module in the window,
+    // WebKitGTK stops painting the moment an `<input>` takes focus. The page
+    // is alive underneath -- scripts run, clicks land, the screen behind the
+    // stale pixels goes on changing -- and resizing the window brings it all
+    // back at once, which is what says it is the painting and not the
+    // program. The output settings screen is where it was found, because its
+    // filename prefix is the first field in the program you can click into.
+    //
+    // XIM is not chosen here; it is what GTK falls back to. With
+    // `GTK_IM_MODULE` unset -- which is every desktop where an IME was never
+    // set up -- GTK picks a module by locale, and `im-xim.so` claims
+    // ja:ko:th:zh. So a Japanese desktop with no IME configured is exactly
+    // the machine this lands on, which is most of the ones this is for.
+    //
+    // `gtk-im-context-simple` is the answer rather than a real IME because it
+    // is the one module built into GTK: naming a module that is not installed
+    // does not fall back to it, it falls back to XIM, which is the freeze
+    // again. It cannot compose Japanese, and on these machines nothing could
+    // -- there was no IME to lose. Anyone who has one has `GTK_IM_MODULE` set
+    // already, and an explicit choice is left alone.
+    let im = std::env::var("GTK_IM_MODULE").unwrap_or_default();
+    if im.is_empty() || im == "xim" {
+        std::env::set_var("GTK_IM_MODULE", "gtk-im-context-simple");
+    }
+
     // Whatever the desktop is set to, until the frontend says otherwise.
     // Anything said before then -- a file named on the command line that
     // cannot be opened, most of all -- is already in the right language.
@@ -2212,6 +2450,7 @@ pub fn run() {
         .manage(Proxy::default())
         .manage(Generation::default())
         .manage(Thumbs::default())
+        .manage(OpenPath::default())
         .manage(Held::default())
         .manage(Playing::default())
         .manage(BatchStop::default())
@@ -2261,6 +2500,7 @@ pub fn run() {
             clip_plan,
             tracks,
             clip_thumbs,
+            clip_poster,
             open_editor,
             retitle_editor,
             retitle_main,

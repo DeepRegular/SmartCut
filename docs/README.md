@@ -37,4 +37,4 @@ on GOP boundaries and concatenate" does not work.
 | [Design](developers/design.md) | Why a Rust core with a Tauri GUI, and how the GUI is built: the filmstrip, the seek index, the proxy, playback, and the two languages |
 | [Building](developers/building.md) | Required libraries, how to build, how to run the tests |
 | [Distribution](developers/distribution.md) | AppImage, tar.gz and deb, the Windows installer, and what each one bundles |
-| [BDMV research](developers/bdmv.md) | What it would take to extend this to Blu-ray material, stage by stage |
+| [BDAV discs](developers/bdav.md) | Reading a recorded Blu-ray from a folder or an `.iso`: UDF, ARIB text, one row per programme |

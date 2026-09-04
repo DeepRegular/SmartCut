@@ -599,6 +599,21 @@ struct TsLayout {
     service_id: i32,
 }
 
+/// The one transport stream extension the muxer writes differently.
+///
+/// Asked for a `.m2ts`, libavformat writes Blu-ray's own shape: 192 byte
+/// packets, and the PID numbering a Blu-ray uses rather than the one the
+/// recording arrived with. Both are the muxer's to decide and neither is
+/// what the tables this program puts back describe, so a cut written as
+/// `.m2ts` is a cut with the muxer's tables -- which is worth saying out
+/// loud rather than discovering afterwards.
+fn writing_m2ts(path: &str) -> bool {
+    std::path::Path::new(path)
+        .extension()
+        .and_then(|e| e.to_str())
+        .is_some_and(|e| e.eq_ignore_ascii_case("m2ts"))
+}
+
 fn writing_ts(path: &str) -> bool {
     matches!(
         std::path::Path::new(path).extension().and_then(|e| e.to_str()).map(str::to_ascii_lowercase).as_deref(),
@@ -676,7 +691,7 @@ fn copy_segment(
     writer: &mut Writer,
 ) -> Result<Span> {
     let (display_base, reframe, first_segment) = (ctx.display_base, ctx.reframe, ctx.first);
-    let (mut ictx, ist_index) = open_input(&src.path)?;
+    let (mut ictx, ist_index) = open_input(&src.input.url)?;
     let in_tb = f64::from(ictx.stream(ist_index).unwrap().time_base());
     let fd = src.video.frame_duration();
     let field = fd / 2.0;
@@ -933,7 +948,7 @@ fn reencode_segment(
     writer: &mut Writer,
 ) -> Result<Span> {
     let (display_base, reframe, first_segment) = (ctx.display_base, ctx.reframe, ctx.first);
-    let (mut ictx, ist_index) = open_input(&src.path)?;
+    let (mut ictx, ist_index) = open_input(&src.input.url)?;
     let stream = ictx.stream(ist_index).unwrap();
     let in_tb = f64::from(stream.time_base());
     let params = stream.parameters();
@@ -1214,7 +1229,7 @@ fn graft_tables(
                 .rfind(|p| p.time <= plan.t_in + 1e-6 && p.pos >= 0)
                 .map_or(0, |p| p.pos);
             let snapshot =
-                crate::si::snapshot_at(&src.path, pos, service.service_id).unwrap_or_default();
+                crate::si::snapshot_at(&src.input, pos, service.service_id).unwrap_or_default();
             crate::si::GraftRange { start, snapshot }
         })
         .collect();
@@ -1239,7 +1254,7 @@ pub fn cut_with_progress(
 ) -> Result<()> {
     crate::init()?;
 
-    let (ictx, ist_index) = open_input(&src.path)?;
+    let (ictx, ist_index) = open_input(&src.input.url)?;
     let params = ictx.stream(ist_index).unwrap().parameters();
     let extradata = unsafe {
         let p = params.as_ptr();
@@ -1294,7 +1309,7 @@ pub fn cut_with_progress(
     // parameters describe.
     let setups: Vec<AudioSetup> = audios
         .iter()
-        .map(|a| plan_audio(&src.path, a, opts, to_ts, audios.len() > 1))
+        .map(|a| plan_audio(&src.input.url, a, opts, to_ts, audios.len() > 1))
         .collect::<Result<Vec<_>>>()?;
 
     // What the recording says about itself. Read here rather than after the
@@ -1302,8 +1317,16 @@ pub fn cut_with_progress(
     // with it: an event information section names its service by transport
     // stream and by network, and a player that finds those disagreeing with
     // the tables around them is right to believe neither.
-    let wants_tables = to_ts && opts.tables != crate::si::Tables::Muxer;
-    let tables = match wants_tables.then(|| crate::si::read_service(&src.path)) {
+    let blu_ray = writing_m2ts(output);
+    if to_ts && blu_ray && opts.tables != crate::si::Tables::Muxer {
+        eprintln!(
+            "note: a .m2ts is written in Blu-ray's own framing and PID numbering, which is \
+             the muxer's to decide, so the broadcast's own tables are left to it. Write a \
+             .ts to keep them."
+        );
+    }
+    let wants_tables = to_ts && !blu_ray && opts.tables != crate::si::Tables::Muxer;
+    let tables = match wants_tables.then(|| crate::si::read_service(&src.input)) {
         Some(Ok(t)) => Some(t),
         Some(Err(e)) => {
             eprintln!("note: {e}. The streams are kept; the broadcast's own tables are not.");

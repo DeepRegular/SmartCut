@@ -262,7 +262,11 @@ fn clone_track(t: &thumbs::Track) -> thumbs::Track {
 /// Keyed by the recording's path, size and modification time, so a file
 /// re-recorded under the same name gets a new index rather than the old one.
 pub fn cache_path(dir: &Path, src_path: &str) -> Result<PathBuf> {
-    let meta = std::fs::metadata(src_path)
+    // What is asked about is the file the bytes are in, which for a clip
+    // inside a disc image is the image: a path into an image is not a path
+    // the operating system knows. What is *keyed* on is still the name the
+    // clip goes by, so two clips on one disc do not share an entry.
+    let meta = std::fs::metadata(&crate::input::Input::parse(src_path)?.file)
         .with_context(|| format!("cannot stat {src_path}"))?;
     let mtime = meta
         .modified()

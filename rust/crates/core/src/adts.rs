@@ -182,7 +182,7 @@ pub fn framing(
 /// As [`framing`], for a recording that is not open.
 pub fn of_source(src: &crate::Source) -> Option<AdtsFormat> {
     let audio = src.audio.as_ref()?;
-    let mut ictx = ffmpeg_next::format::input(&src.path).ok()?;
+    let mut ictx = ffmpeg_next::format::input(&src.input.url).ok()?;
     framing(&mut ictx, audio.stream_index)
 }
 

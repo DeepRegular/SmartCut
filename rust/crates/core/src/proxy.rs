@@ -244,7 +244,11 @@ pub struct Built {
 /// width and the quality are in the key too: changing either changes what
 /// the file is, and the old one must not be picked up in its place.
 pub fn cache_path(dir: &Path, src_path: &str, opts: &ProxyOptions) -> Result<PathBuf> {
-    let meta = std::fs::metadata(src_path)
+    // What is asked about is the file the bytes are in, which for a clip
+    // inside a disc image is the image: a path into an image is not a path
+    // the operating system knows. What is *keyed* on is still the name the
+    // clip goes by, so two clips on one disc do not share an entry.
+    let meta = std::fs::metadata(&crate::input::Input::parse(src_path)?.file)
         .with_context(|| format!("cannot stat {src_path}"))?;
     let mtime = meta
         .modified()
@@ -533,7 +537,7 @@ pub fn build(
     // interrupted must not be picked up next time as if it were whole.
     let part = out_path.with_extension("part.mp4");
 
-    let mut ictx = ff::format::input(&src.path)?;
+    let mut ictx = ff::format::input(&src.input.url)?;
     let idx = src.video.stream_index;
     let stream = ictx.stream(idx).ok_or_else(|| anyhow!("video stream vanished"))?;
     let tb_in = stream.time_base();

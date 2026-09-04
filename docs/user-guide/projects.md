@@ -36,6 +36,8 @@ A project holds only what could not be worked out again:
 - the path of each recording, in list order
 - the cuts and the keyframes you placed in each one
 - which tracks you chose to write
+- what a disc's index said about a recording on it — its programme name and its
+  chapters — so that reopening the list does not need the disc back in the drive
 - the output settings
 
 Everything else is left out. A recording's length, shape and frame rate arrive with

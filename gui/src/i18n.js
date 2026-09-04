@@ -142,6 +142,7 @@ const CATALOG = {
     "list.stopping": "中止しています…",
     "list.stopped": "解析を止めました。残りは「解析を再開」で続けられます",
     "dialog.video": "動画",
+    "dialog.disc": "BDAV ディスクイメージ",
     "dialog.project": "SmartCut プロジェクト",
     "queue.indexing": "シーク用インデックスを作成中: {clip}",
     "queue.detecting": "CM を検出中: {clip}",
@@ -359,6 +360,7 @@ const CATALOG = {
     "plan.failed": "計画できません: {e}",
     "keyframes.readFailed": "キーフレームを読めません: {e}",
     "keyframes.read": "キーフレーム {n} 個を {file} から読み込みました",
+    "keyframes.chapters": "ディスクのチャプター {n} 個をキーフレームにしました",
   },
 
   en: {
@@ -477,6 +479,7 @@ const CATALOG = {
     "list.stopping": "Stopping…",
     "list.stopped": "Analysis stopped. “Resume analysis” picks up the rest",
     "dialog.video": "Video",
+    "dialog.disc": "BDAV disc image",
     "dialog.project": "SmartCut project",
     "queue.indexing": "Building seek index: {clip}",
     "queue.detecting": "Detecting commercials: {clip}",
@@ -694,6 +697,7 @@ const CATALOG = {
     "plan.failed": "Cannot plan: {e}",
     "keyframes.readFailed": "Cannot read the keyframes: {e}",
     "keyframes.read": "Read {n} keyframes from {file}",
+    "keyframes.chapters": "Read {n} chapters off the disc as keyframes",
   },
 };
 

@@ -311,7 +311,7 @@ pub fn play_audio(
     let cap = capacity(rate, channels);
     out.stream.play().map_err(|e| anyhow!("cannot start audio output: {e}"))?;
 
-    let mut ictx = ff::format::input(&src.path)?;
+    let mut ictx = ff::format::input(&src.input.url)?;
     let idx = audio.stream_index;
     let in_tb = audio.time_base;
     let params = ictx.stream(idx).ok_or_else(|| anyhow!("stream {idx} vanished"))?.parameters();

@@ -72,6 +72,7 @@ bash tests/run_scene_tests.sh         # scene detection vs commercial boundaries
 bash tests/run_ts_layout_tests.sh     # TS provenance and sequence headers               5
 bash tests/run_broadcast_tests.sh     # captions, programme information, multi-audio    13
 bash tests/run_cm_tests.sh            # commercial detection vs a human's answer         5
+bash tests/run_bdav_tests.sh          # a BDAV disc, as a folder and as an .iso         12
 ```
 
 ### Fixtures
@@ -81,6 +82,10 @@ by `run_tests.sh` into `/tmp/smartcut-fixtures/`, so **run that first**. The sui
 reuse them (`run_rust_tests.sh`, `run_index_tests.sh`, `run_proxy_tests.sh`) stop with
 `run tests/run_tests.sh first to generate fixtures` rather than quietly skipping half
 their checks.
+
+`run_bdav_tests.sh` builds a whole BDAV disc out of `mpeg2.ts` -- the stream remuxed into
+192 byte packets, index files written around it, and a UDF image wrapped over the lot by
+`genisoimage`, which it needs installed.
 
 `run_audio_tests.sh` and `run_downmix_tests.sh` build their own fixtures into the same
 directory: an impulse train, and a 5.1 track with a tone per channel. Neither is wanted
@@ -153,5 +158,12 @@ WebKitGTK's compositor draws nothing on a machine without a GPU, and never updat
 the first paint — which looks exactly like a freeze. The app defaults
 `WEBKIT_DISABLE_COMPOSITING_MODE=1`, so normally you do not have to think about it.
 
-If you drive the GUI mechanically with `xdotool`, DOM updates sometimes fail to reach X
-and the screenshot goes stale. Resizing the window by 1px forces a repaint.
+The same freeze arrives a second way, and this one waits for a click into a text field:
+with GTK's XIM input-method module in the window, WebKitGTK stops painting the moment an
+`<input>` takes focus. The program keeps running underneath — the screen behind the stale
+pixels goes on changing, and a 1px resize brings it all back at once. (Screenshots that
+went stale while driving the GUI with `xdotool` were this, not `xdotool`.) XIM is what GTK
+falls back to when `GTK_IM_MODULE` is unset, which is every desktop where an IME was never
+set up, so the app defaults `GTK_IM_MODULE=gtk-im-context-simple`. That module cannot
+compose Japanese; on a machine with a working IME, set `GTK_IM_MODULE` to it (`fcitx`,
+`ibus`) and the app leaves the choice alone.

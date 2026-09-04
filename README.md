@@ -90,11 +90,11 @@ Every build except the `.deb` includes FFmpeg, so there is nothing else to insta
 
 | Platform | File | Notes |
 |---|---|---|
-| **Linux** | `SmartCut_0.3.1_amd64.AppImage` | Make it executable and run it |
-| **Linux** | `SmartCut-0.3.1-linux-x86_64.tar.gz` | Unpack and run `./smartcut`. Use this if you would rather not deal with FUSE |
-| **Linux (Debian/Ubuntu)** | `smartcut_0.3.1_amd64.deb` | `sudo apt install ./smartcut_0.3.1_amd64.deb`. Only 2.7 MB, because it links against your system FFmpeg |
-| **Windows** | `SmartCut_0.3.1_x64-setup.exe` | Installer |
-| **Windows** | `smartcut-portable-x64-0.3.1.zip` | Unzip and run `smartcut.exe` |
+| **Linux** | `SmartCut_0.3.2_amd64.AppImage` | Make it executable and run it |
+| **Linux** | `SmartCut-0.3.2-linux-x86_64.tar.gz` | Unpack and run `./smartcut`. Use this if you would rather not deal with FUSE |
+| **Linux (Debian/Ubuntu)** | `smartcut_0.3.2_amd64.deb` | `sudo apt install ./smartcut_0.3.2_amd64.deb`. Only 3.0 MB, because it links against your system FFmpeg |
+| **Windows** | `SmartCut_0.3.2_x64-setup.exe` | Installer |
+| **Windows** | `smartcut-portable-x64-0.3.2.zip` | Unzip and run `smartcut.exe` |
 
 **Requirements.** The AppImage and tar.gz need glibc 2.39 or newer, which means
 Ubuntu 24.04, Debian 13, Fedora 40 or later. The `.deb` needs FFmpeg 7.1, which
@@ -127,6 +127,23 @@ Save the list at any point with `Ctrl+S` and it comes back next time, cuts and
 all. There is a full walkthrough with screenshots in
 [the user guide](docs/user-guide/gui.md).
 
+### From a recorded Blu-ray
+
+A BDAV disc opens as it is -- as a folder, or as an `.iso` that is never mounted.
+Drop it on the window and its recordings arrive as one row each, named by the
+programme rather than by `00001.m2ts`, because the disc's own index says what
+each one is. Cuts are written beside the disc under the programme's name, and the
+chapters the recorder set are already on the timeline as keyframes -- on a Japanese
+recording those are frequently the commercial breaks themselves.
+
+```bash
+smartcut Anime.iso                      # what is on it
+smartcut Anime.iso --title 2 --cut 8.0-20.0 -o out.ts
+```
+
+Encrypted discs are out of scope. See [BDAV discs](docs/developers/bdav.md) for
+how it is read and what it does not do.
+
 ### From the command line
 
 ```bash
@@ -144,7 +161,8 @@ seconds. The full option list is in
 
 ## Supported formats
 
-**Input containers:** `.ts` `.m2ts` `.mts` `.m2t` `.mp4` `.mkv` `.mov` `.m4v`
+**Input containers:** `.ts` `.m2ts` `.mts` `.m2t` `.mp4` `.mkv` `.mov` `.m4v`,
+and BDAV discs -- a folder or an unencrypted `.iso`, read in place
 
 **Output containers:** MPEG-TS, M2TS, MP4, Matroska, QuickTime. The default is the
 same container and directory as the input.
@@ -212,7 +230,7 @@ one.
 |---|---|
 | **User Guide** | [GUI](docs/user-guide/gui.md) ・ [Commercial detection](docs/user-guide/cm-detection.md) ・ [Projects](docs/user-guide/projects.md) ・ [Batch processing](docs/user-guide/batch.md) |
 | **Technical** | [Algorithm](docs/technical/algorithm.md) ・ [Validation](docs/technical/validation.md) ・ [Broadcast TS](docs/technical/broadcast-ts.md) ・ [Audio](docs/technical/audio.md) |
-| **Developers** | [Rust core](docs/developers/rust-core.md) ・ [Design](docs/developers/design.md) ・ [Building](docs/developers/building.md) ・ [Distribution](docs/developers/distribution.md) ・ [BDMV research](docs/developers/bdmv.md) |
+| **Developers** | [Rust core](docs/developers/rust-core.md) ・ [Design](docs/developers/design.md) ・ [Building](docs/developers/building.md) ・ [Distribution](docs/developers/distribution.md) ・ [BDAV discs](docs/developers/bdav.md) |
 
 If you only read one page, make it
 [the pitfalls](docs/technical/algorithm.md#pitfalls): the eight reasons why "just

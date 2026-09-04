@@ -148,7 +148,7 @@ fn walk_keyframes(
     mut progress: Option<&mut dyn FnMut(f64)>,
     mut visit: impl FnMut(f64, &[Vec<u8>]),
 ) -> Result<()> {
-    let mut ictx = ff::format::input(&src.path)?;
+    let mut ictx = ff::format::input(&src.input.url)?;
     let idx = src.video.stream_index;
     let params = ictx.stream(idx).ok_or_else(|| anyhow!("video stream vanished"))?.parameters();
     let mut decoder = ff::codec::context::Context::from_parameters(params)?.decoder().video()?;

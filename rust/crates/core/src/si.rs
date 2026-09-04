@@ -45,6 +45,12 @@ use std::io::{BufReader, Read, Seek, SeekFrom, Write};
 /// One transport packet. The whole format is built on this being fixed.
 pub const PACKET: usize = 188;
 
+/// What one packet occupies on a Blu-ray. BDAV writes the same 188 bytes
+/// behind four more that hold the time the packet arrived, so the packets are
+/// where they always were and the spacing between them is not. Only the
+/// reading side ever meets this: what is written out is a transport stream.
+pub const M2TS_PACKET: usize = 192;
+
 const PID_PAT: u16 = 0x0000;
 const PID_SDT: u16 = 0x0011;
 const PID_EIT: u16 = 0x0012;
@@ -116,13 +122,27 @@ impl Tables {
 ///
 /// One sync byte proves nothing -- 0x47 is a perfectly ordinary payload byte.
 /// A run of them at exactly the packet spacing does.
-fn sync_at(buf: &[u8], at: usize) -> bool {
-    (0..5).all(|k| buf.get(at + k * PACKET) == Some(&0x47))
+fn sync_at(buf: &[u8], at: usize, stride: usize) -> bool {
+    (0..5).all(|k| buf.get(at + k * stride) == Some(&0x47))
 }
 
-/// Find the first packet boundary in `buf`.
-fn find_sync(buf: &[u8]) -> Option<usize> {
-    (0..buf.len().min(PACKET * 8)).find(|&i| sync_at(buf, i))
+/// Find the first packet boundary in `buf`, for a stream already known to be
+/// spaced `stride` apart.
+fn find_sync(buf: &[u8], stride: usize) -> Option<usize> {
+    (0..buf.len().min(stride * 8)).find(|&i| sync_at(buf, i, stride))
+}
+
+/// Where the packets start and how far apart they are.
+///
+/// Five in a row at the same spacing is what settles it. A recording is
+/// either a transport stream, packet after packet, or the same packets with
+/// four bytes of arrival time in front of each -- which is what a Blu-ray
+/// recording is, and what a `.m2ts` taken off one still is. Nothing else
+/// gets this far: libavformat has already agreed the file is MPEG-TS.
+fn framing(buf: &[u8]) -> Option<(usize, usize)> {
+    [PACKET, M2TS_PACKET]
+        .into_iter()
+        .find_map(|stride| find_sync(buf, stride).map(|at| (at, stride)))
 }
 
 fn pid_of(p: &[u8]) -> u16 {
@@ -412,13 +432,15 @@ fn keep_descriptors(loop_bytes: &[u8]) -> Vec<u8> {
 /// hundred milliseconds, so a few megabytes is many copies of each; a
 /// recording that does not carry them in its first stretch does not carry
 /// them at all.
-pub fn read_service(path: &str) -> Result<Service> {
+pub fn read_service(input: &crate::input::Input) -> Result<Service> {
     const WINDOW: usize = 8 << 20;
-    let mut f = std::fs::File::open(path).with_context(|| format!("cannot open {path}"))?;
+    let mut f = input.open()?;
     let mut buf = vec![0u8; WINDOW];
     let n = read_fully(&mut f, &mut buf)?;
     buf.truncate(n);
-    let base = find_sync(&buf).ok_or_else(|| anyhow!("{path} is not a transport stream"))?;
+    let path = &input.spec;
+    let (base, stride) =
+        framing(&buf).ok_or_else(|| anyhow!("{path} is not a transport stream"))?;
 
     let mut pat = SectionReader::default();
     let mut pmt = SectionReader::default();
@@ -435,11 +457,11 @@ pub fn read_service(path: &str) -> Result<Service> {
     let mut at = base;
     while at + PACKET <= buf.len() {
         let p = &buf[at..at + PACKET];
-        at += PACKET;
+        at += stride;
         if p[0] != 0x47 {
             // A recording can be cut short mid-packet or carry a bad read;
             // re-find the grid rather than giving up on the file.
-            match find_sync(&buf[at..]) {
+            match find_sync(&buf[at..], stride) {
                 Some(off) => at += off,
                 None => break,
             }
@@ -583,7 +605,7 @@ impl Snapshot {
     }
 }
 
-fn read_fully(f: &mut std::fs::File, buf: &mut [u8]) -> Result<usize> {
+fn read_fully<R: Read>(f: &mut R, buf: &mut [u8]) -> Result<usize> {
     let mut got = 0;
     while got < buf.len() {
         match f.read(&mut buf[got..])? {
@@ -600,19 +622,19 @@ fn read_fully(f: &mut std::fs::File, buf: &mut [u8]) -> Result<usize> {
 /// picture a kept range opens on. Present-and-following changes only when
 /// the programme does, so reading it beside each range's own first picture
 /// is what makes a cut spanning two programmes describe both.
-pub fn snapshot_at(path: &str, pos: i64, service_id: u16) -> Result<Snapshot> {
+pub fn snapshot_at(input: &crate::input::Input, pos: i64, service_id: u16) -> Result<Snapshot> {
     // Long enough to hold several repetitions. Event information goes out
     // about every two seconds and time every five, which at broadcast rates
     // is a few megabytes.
     const WINDOW: usize = 24 << 20;
-    let mut f = std::fs::File::open(path)?;
+    let mut f = input.open()?;
     if pos > 0 {
         f.seek(SeekFrom::Start(pos as u64))?;
     }
     let mut buf = vec![0u8; WINDOW];
     let n = read_fully(&mut f, &mut buf)?;
     buf.truncate(n);
-    let Some(base) = find_sync(&buf) else { return Ok(Snapshot::default()) };
+    let Some((base, stride)) = framing(&buf) else { return Ok(Snapshot::default()) };
 
     let mut eit = SectionReader::default();
     let mut tdt = SectionReader::default();
@@ -624,9 +646,9 @@ pub fn snapshot_at(path: &str, pos: i64, service_id: u16) -> Result<Snapshot> {
     let mut at = base;
     while at + PACKET <= buf.len() {
         let p = &buf[at..at + PACKET];
-        at += PACKET;
+        at += stride;
         if p[0] != 0x47 {
-            match find_sync(&buf[at..]) {
+            match find_sync(&buf[at..], stride) {
                 Some(off) => at += off,
                 None => break,
             }
@@ -1080,7 +1102,7 @@ fn output_layout(path: &str) -> Result<(u16, u16)> {
     let mut buf = vec![0u8; 4 << 20];
     let n = read_fully(&mut f, &mut buf)?;
     buf.truncate(n);
-    let base = find_sync(&buf).ok_or_else(|| anyhow!("{path} is not a transport stream"))?;
+    let base = find_sync(&buf, PACKET).ok_or_else(|| anyhow!("{path} is not a transport stream"))?;
 
     let mut pat = SectionReader::default();
     let mut pmt = SectionReader::default();

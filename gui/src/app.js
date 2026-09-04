@@ -76,7 +76,14 @@ function clipLabel(clip) {
 /// back to the list is not throwing the work away.
 let nextId = 1;
 
-function makeClip(path) {
+/// `found` is what `resolve_paths` gave back: a path, and for a recording on
+/// a BDAV disc the four things a path cannot say -- what the programme is
+/// called, what to name a cut of it, where that cut can be written, and where
+/// the recorder set its chapter points, none of which is derivable from
+/// `…/Anime.iso/BDAV/STREAM/00001.m2ts`.
+function makeClip(found) {
+  const { path, name, stem, home, chapters } =
+    typeof found === "string" ? { path: found } : found;
   return {
     // A row's own identity, which its path is not: the same recording can be
     // in the list more than once, cut two different ways. Everything about a
@@ -84,7 +91,16 @@ function makeClip(path) {
     // stopped being the same thing when clips became duplicable.
     id: nextId++,
     path,
-    name: nameOf(path),
+    name: name || nameOf(path),
+    /// What a cut of it is called and where it goes, when the recording's own
+    /// path cannot answer either. Null for an ordinary file.
+    stem: stem || null,
+    home: home || null,
+    /// The chapter points the disc's index carried, on the recording's own
+    /// clock. Held here rather than turned into marks on the spot: only the
+    /// editor knows where the container's clock begins, and it is the one
+    /// that owns marks. Empty for an ordinary file.
+    chapters: chapters || [],
     info: null,
     state: "queued", // queued | indexing | ready | error
     phase: t("phase.queued"),
@@ -104,6 +120,13 @@ function makeClip(path) {
     /// knows where the material begins and can turn them into marks.
     cmPending: false,
     edit: null,
+    /// The row's own picture, taken against its cuts. Null until there are
+    /// cuts to take one against, and `info.poster` -- the recording's, which
+    /// duplicates share -- stands for the clip until then.
+    poster: null,
+    /// The ranges `poster` was taken for, so that a state arriving from the
+    /// editor twice a second does not ask for the same picture again.
+    posterSig: null,
     selected: false,
     out: { state: "idle", progress: 0, note: "" }, // idle|waiting|running|done|error|skipped
     /// The plan's re-encoded segments and a frame out of each, worked out
@@ -210,6 +233,19 @@ function tellEditor() {
   emit("editor-open", {
     id: editing.id,
     path: editing.path,
+    // What the row is called, which for a recording on a disc is the
+    // programme rather than `00001.m2ts`.
+    name: editing.name,
+    // Where a keyframe list beside the recording would be, without the
+    // extension. Beside the disc for a recording on one -- inside an image
+    // there is nothing to be beside -- and under the same name a cut of it
+    // is written under, which is where the export writes one.
+    side: sidecarBase(editing),
+    // The disc's chapter points, which only the editor can turn into marks --
+    // it is the one that knows where the recording's clock begins. Sent
+    // whether or not this row has been in there before; the editor puts them
+    // down on a first visit only, the same as the marks beside the file.
+    chapters: editing.chapters,
     saved: editing.edit,
     // Blocks a batch detection found that the timeline has not been shown
     // yet. Only the editor can turn them into marks -- it is the one that
@@ -250,6 +286,10 @@ if (listen) {
     // handed over and would not be offered again.
     if (landed && clip === editing) before = JSON.parse(JSON.stringify(state));
     paintRow(clip);
+    // The row's picture is about the cuts as much as the line under the name
+    // is. It repaints the row itself when it has one, and says nothing when
+    // the cuts have not moved.
+    refreshPoster(clip);
     // The other way a project changes: a cut made in the other window. It
     // repaints one row rather than the list, so it says so itself.
     touch();
@@ -261,6 +301,8 @@ if (listen) {
     const clip = byId(ev.payload) || editing;
     if (clip) clip.edit = before;
     paintList();
+    // Put back the picture the cuts being put back are of.
+    if (clip) refreshPoster(clip);
   });
 
   // The editor window has gone -- by OK, by キャンセル, or by its own cross.
@@ -292,16 +334,16 @@ async function addPaths(inputs) {
     return [];
   }
   const failed = resolved.filter((r) => r.error);
-  const paths = resolved.flatMap((r) => r.files);
+  const found = resolved.flatMap((r) => r.files);
   const taken = [];
   const skipped = [];
-  for (const p of paths) {
-    if (!VIDEO_EXT.includes(extOf(p))) {
-      skipped.push(nameOf(p));
+  for (const f of found) {
+    if (!VIDEO_EXT.includes(extOf(f.path))) {
+      skipped.push(nameOf(f.path));
       continue;
     }
-    if (byPath(p)) continue;
-    const clip = makeClip(p);
+    if (byPath(f.path)) continue;
+    const clip = makeClip(f);
     clips.push(clip);
     taken.push(clip);
   }
@@ -329,7 +371,13 @@ async function addPaths(inputs) {
 el("add-files").addEventListener("click", async () => {
   const picked = await dialog.open({
     multiple: true,
-    filters: [{ name: t("dialog.video"), extensions: VIDEO_EXT }],
+    filters: [
+      { name: t("dialog.video"), extensions: VIDEO_EXT },
+      // A disc image is one line in the picker and several in the list: what
+      // is added is the recordings on it. A folder holding a disc is added
+      // by dropping it, the same as a folder of recordings.
+      { name: t("dialog.disc"), extensions: ["iso"] },
+    ],
   });
   if (!picked) return;
   await addPaths(Array.isArray(picked) ? picked : [picked]);
@@ -462,6 +510,15 @@ async function runIndex(clip) {
     clip.phase = clip.info.cached
       ? t("phase.indexReused")
       : t("phase.indexBuilt", { s: clip.info.seconds.toFixed(0) });
+    // What came back is a picture of the recording, which is the right one
+    // for a clip nothing has been cut out of. A clip that arrived with cuts
+    // already on it -- out of a project file -- wants the other picture, and
+    // this is the first moment there is a track to take it from.
+    clip.posterSig = JSON.stringify(rangesOf(clip));
+    if (clip.edit && clip.edit.cuts.length) {
+      clip.posterSig = null;
+      refreshPoster(clip);
+    }
   } catch (e) {
     if (String(e).includes("cancelled")) {
       // Put back, not failed: 中止 means "not now", and the pass left
@@ -648,6 +705,47 @@ function setText(node, text) {
   if (node.textContent !== text) node.textContent = text;
 }
 
+/// The picture standing for a clip: the one taken against its own cuts where
+/// there is one, and otherwise the one the index pass took of the recording.
+///
+/// On the row rather than in `info`, because `info` is the *file's* answer and
+/// duplicates share it -- two cuts of one recording are two pictures.
+const posterOf = (clip) => clip.poster || (clip.info && clip.info.poster) || null;
+
+/// Take the row's picture again, against what the cuts leave.
+///
+/// A tenth of the way into a broadcast recording is as often as not inside the
+/// first commercial break, so a clip that has had its commercials cut and
+/// still shows one of them is a row lying about what it holds. Nothing is
+/// decoded -- the frame comes out of the thumbnail track, from the editor's
+/// own copy of it while that window is open -- so this can follow a cut as it
+/// is being made.
+///
+/// Keyed on the ranges it was taken for: `editor-state` arrives on every
+/// playhead move, and the picture only changes when the cuts do.
+async function refreshPoster(clip) {
+  if (!clip.info) return;
+  const keeps = rangesOf(clip);
+  const sig = JSON.stringify(keeps);
+  if (clip.posterSig === sig) return;
+  clip.posterSig = sig;
+  // Everything cut away: there is no frame of this clip left to show it with,
+  // so the last one stands until there is.
+  if (!keeps.length) return;
+  try {
+    const url = await invoke("clip_poster", { path: clip.path, keeps });
+    // Nothing where there is no track to take it from, and the row keeps what
+    // it had. And the cuts may have moved on while this was in flight, in
+    // which case the later answer is the one that speaks for the row.
+    if (url && clip.posterSig === sig) {
+      clip.poster = url;
+      paintRow(clip);
+    }
+  } catch (e) {
+    jlog(`clip_poster: ${e}`);
+  }
+}
+
 function paintRow(clip) {
   const li = clip.row;
   if (!li) return;
@@ -655,7 +753,7 @@ function paintRow(clip) {
   li.classList.toggle("bad", clip.state === "error");
   setText(li.querySelector(".n"), String(clips.indexOf(clip) + 1));
   const img = li.querySelector(".poster");
-  const poster = clip.info && clip.info.poster;
+  const poster = posterOf(clip);
   if (poster && img.src !== poster) img.src = poster;
   img.classList.toggle("blank", !poster);
   setText(li.querySelector(".nm"), clipLabel(clip));
@@ -1200,6 +1298,12 @@ const settings = {
   keyframes: false,
 };
 
+/// The path a sidecar of this clip has, without the extension.
+function sidecarBase(clip) {
+  const dir = clip.home ? `${clip.home.replace(/[/\\]*$/, "")}/` : dirOf(clip.path);
+  return `${dir}${clip.stem || stemOf(clip.path)}`;
+}
+
 /// Where a clip will be written, given the settings.
 ///
 /// Named after the recording it came from, in the folder chosen or beside
@@ -1212,11 +1316,29 @@ const settings = {
 /// the second cut landing on top of the first. Counted off the list rather
 /// than fixed at the moment of duplication, so deleting one copy gives the
 /// survivor its plain name back.
+/// A `.m2ts` is a transport stream in Blu-ray's clothing: 192 byte packets
+/// and Blu-ray's own PID numbering, both of them the muxer's to decide. The
+/// tables a broadcast carries cannot be put back into one, so "the same as
+/// the input" means a `.ts` for a recording that came off a disc -- which is
+/// the same stream, in the shape the rest of this program is about. Asking
+/// for M2TS on the output settings screen still gets one.
+const TS_LIKE = ["m2ts", "mts", "m2t"];
+
+function containerFor(clip) {
+  if (settings.container) return settings.container;
+  const ext = extOf(clip.path);
+  return TS_LIKE.includes(ext) ? "ts" : ext || "mp4";
+}
+
 function outputPath(clip) {
-  const ext = settings.container || extOf(clip.path) || "mp4";
-  const dir = settings.dir ? settings.dir.replace(/[/\\]*$/, "/") : dirOf(clip.path);
+  const ext = containerFor(clip);
+  // A recording on a disc has nowhere beside it to be written -- inside an
+  // image there is no folder at all -- so the disc says where instead, and
+  // what to call it: the programme's own name, not `00001`.
+  const beside = clip.home ? `${clip.home.replace(/[/\\]*$/, "")}/` : dirOf(clip.path);
+  const dir = settings.dir ? settings.dir.replace(/[/\\]*$/, "/") : beside;
   const n = copyNo(clip);
-  return `${dir}${settings.prefix}${stemOf(clip.path)}${n ? `_${n}` : ""}.${ext}`;
+  return `${dir}${settings.prefix}${clip.stem || stemOf(clip.path)}${n ? `_${n}` : ""}.${ext}`;
 }
 
 /// Which control stands for which setting. Kept because the flow is
@@ -1690,7 +1812,7 @@ async function showReencode(clip) {
       // contradict what this screen is for: the line under it says there is
       // nothing to re-encode, so the picture is standing for the clip about
       // to be written and not for a frame being made again.
-      stageShot(null, t("out.losslessStage"), clip.info.poster);
+      stageShot(null, t("out.losslessStage"), posterOf(clip));
       return;
     }
     onShow.note = {
@@ -1964,6 +2086,16 @@ function captureProject() {
     settings: { ...settings },
     clips: clips.map((c) => ({
       path: c.path,
+      // What a disc's index said about it. Written down because reopening the
+      // project must not have to read the disc again -- it may not be in the
+      // drive -- and because a row that came back called `00001.m2ts` would
+      // not be the row that was saved.
+      name: c.stem ? c.name : undefined,
+      stem: c.stem || undefined,
+      home: c.home || undefined,
+      // Written for the same reason as the name: reopening the project must
+      // not need the disc back in the drive to know where the chapters were.
+      chapters: c.chapters.length ? c.chapters : undefined,
       // What the editor handed back the last time this row was in it: the
       // cuts, the marks, and where the playhead was left. Null for a row
       // nobody has opened yet, which is not the same as a row cut to nothing.
@@ -1981,9 +2113,11 @@ function captureProject() {
 /// if one has been chosen, and otherwise beside the recordings, because that
 /// is where the work is.
 function defaultProjectPath() {
-  const dir = settings.dir
-    ? settings.dir.replace(/[/\\]*$/, "/")
-    : dirOf(clips[0] ? clips[0].path : "");
+  const first = clips[0];
+  const beside = first && first.home
+    ? `${first.home.replace(/[/\\]*$/, "")}/`
+    : dirOf(first ? first.path : "");
+  const dir = settings.dir ? settings.dir.replace(/[/\\]*$/, "/") : beside;
   return `${dir}${t("project.untitled")}.${PROJECT_EXT}`;
 }
 
@@ -2168,7 +2302,7 @@ async function loadProject(path) {
   const taken = [];
   for (const saved of Array.isArray(doc.clips) ? doc.clips : []) {
     if (!saved || typeof saved.path !== "string") continue;
-    const clip = makeClip(saved.path);
+    const clip = makeClip(saved);
     // The row's id is this session's counting, so the saved edit is
     // readdressed to the row it has just become. Everything else in it is
     // source time and travels unchanged.

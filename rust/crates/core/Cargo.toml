@@ -7,3 +7,4 @@ edition.workspace = true
 ffmpeg-next.workspace = true
 anyhow.workspace = true
 cpal.workspace = true
+encoding_rs.workspace = true

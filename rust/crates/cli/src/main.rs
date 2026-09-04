@@ -38,6 +38,56 @@ fn complement(cuts: &mut [(f64, f64)], duration: f64) -> Vec<(f64, f64)> {
     keeps.into_iter().filter(|(a, b)| b - a > 1e-6).collect()
 }
 
+/// The recordings on `input`, when it is a disc rather than a recording.
+///
+/// A directory of `.ts` files is not a disc and a `.iso` that holds no BDAV
+/// is not one either; both are simply not this, and the caller carries on
+/// with what it was given.
+fn on_a_disc(input: &str) -> Result<Option<Vec<smartcut_core::bdav::Entry>>> {
+    let at = std::path::Path::new(input);
+    if !smartcut_core::bdav::looks_like_bdav(at) {
+        return Ok(None);
+    }
+    smartcut_core::bdav::entries(at).map(Some)
+}
+
+/// The recording `--title` names: its number in the list, or a piece of the
+/// programme's name.
+///
+/// A number is a number: `--title 7` on a disc of three is a mistake, not a
+/// search for the digit 7 in the names.
+fn pick<'a>(
+    entries: &'a [smartcut_core::bdav::Entry],
+    want: Option<&str>,
+) -> Result<Option<&'a smartcut_core::bdav::Entry>> {
+    let Some(want) = want else { return Ok(None) };
+    if let Ok(n) = want.parse::<usize>() {
+        return match entries.get(n.wrapping_sub(1)).filter(|_| n >= 1) {
+            Some(e) => Ok(Some(e)),
+            None => bail!("--title {n}: this disc holds {} recording(s)", entries.len()),
+        };
+    }
+    entries
+        .iter()
+        .find(|e| e.label.contains(want) || e.path.contains(want))
+        .map(Some)
+        .ok_or_else(|| anyhow::anyhow!("--title {want:?}: no recording on this disc is called that"))
+}
+
+fn list_disc(input: &str, entries: &[smartcut_core::bdav::Entry]) {
+    println!("disc  : {input}");
+    println!("        {} recording(s)\n", entries.len());
+    for (i, e) in entries.iter().enumerate() {
+        let marks = if e.marks.is_empty() {
+            String::new()
+        } else {
+            format!("  {} mark(s)", e.marks.len())
+        };
+        println!("{:3}  {}  {}{marks}", i + 1, fmt_hms(e.duration), e.label);
+    }
+    println!("\nname one with --title N to open it");
+}
+
 fn main() -> Result<()> {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let mut input = None;
@@ -50,6 +100,8 @@ fn main() -> Result<()> {
     let mut seek_index: Option<String> = None;
     let mut preview_at: Option<f64> = None;
     let mut make_proxy = false;
+    // Which recording on a disc. Nothing else takes one.
+    let mut title: Option<String> = None;
     let mut as_proxy = false;
     let mut detect_cm = false;
     let mut scenes = false;
@@ -88,6 +140,10 @@ fn main() -> Result<()> {
                 cut_near = Some(parse_time(args.get(i).context("--cut-near needs a time")?)?);
             }
             "--logo" => use_logo = true,
+            "--title" => {
+                i += 1;
+                title = Some(args.get(i).context("--title needs a number or a name")?.clone());
+            }
             "--audio-mode" => {
                 i += 1;
                 audio_mode = match args.get(i).map(String::as_str) {
@@ -180,7 +236,10 @@ fn main() -> Result<()> {
     let Some(input) = input else {
         bail!(
             "usage: smartcut <input> [--keep START-END]... [--cut START-END]... \
-             [--drop-stream INDEX]... [--tables partial|broadcast|muxer] [--no-open-gop]"
+             [--drop-stream INDEX]... [--tables partial|broadcast|muxer] [--no-open-gop] \
+             [--title N]\n\
+             <input> is a recording, or a BDAV disc -- a folder or an .iso -- \
+             whose recordings are listed when no --title is given"
         );
     };
     // A share the machine has already mounted may be named the way it is
@@ -189,6 +248,26 @@ fn main() -> Result<()> {
     let input = smartcut_core::netpath::resolve(&input)?
         .to_string_lossy()
         .into_owned();
+    // A disc holds several recordings and is opened by naming one of them.
+    // Without a name it is a question rather than a job: say what is on it.
+    // The chapter points the disc's index carried, on the clip's own clock.
+    // Held until the recording is open: saying where a mark *is* means
+    // rebasing it by the container's start, and nothing knows that yet.
+    let mut chapters: Vec<f64> = Vec::new();
+    let input = match on_a_disc(&input)? {
+        None => input,
+        Some(entries) => match pick(&entries, title.as_deref())? {
+            Some(entry) => {
+                println!("title : {}", entry.label);
+                chapters = entry.marks.iter().map(|m| entry.start + m).collect();
+                entry.path.clone()
+            }
+            None => {
+                list_disc(&input, &entries);
+                return Ok(());
+            }
+        },
+    };
     if !keeps.is_empty() && !cuts.is_empty() {
         bail!("use --keep or --cut, not both");
     }
@@ -228,6 +307,23 @@ fn main() -> Result<()> {
         "        {} {}x{} {:.3}fps  has_b_frames={}  dur={:.3}s  start={:.3}s",
         v.codec, v.width, v.height, v.frame_rate, v.has_b_frames, src.duration, src.start_time
     );
+    // Where the recorder set its chapters, in the recording's own seconds --
+    // which is what the editor draws them at, and what `--cut` would take.
+    if !chapters.is_empty() {
+        let shown: Vec<String> = chapters
+            .iter()
+            .take(8)
+            .map(|c| c - src.start_time)
+            // A mark on the first picture lands a rounding away from zero,
+            // the playlist counting in 45 kHz and the container in
+            // microseconds. Printed as `-0.000` it reads like a mark before
+            // the recording, which it is not.
+            .map(|t| if t.abs() < 0.0005 { 0.0 } else { t })
+            .map(|t| format!("{t:.3}"))
+            .collect();
+        let more = if chapters.len() > 8 { ", ..." } else { "" };
+        println!("marks : {} [{}{more}]", chapters.len(), shown.join(", "));
+    }
 
     // Which AAC the recording carries is the thing to know before a cut
     // re-encodes any of it: a broadcast is MPEG-2 AAC, and a frame this tool
@@ -453,6 +549,11 @@ fn main() -> Result<()> {
     }
 
     if make_proxy {
+        // A recording inside a disc image has nothing to be written beside,
+        // so the name has to be given rather than derived.
+        if output.is_none() && src.input.nested() {
+            bail!("--make-proxy on a recording inside a disc needs -o");
+        }
         let out = output.clone().unwrap_or_else(|| {
             std::path::Path::new(&src.path)
                 .with_extension("proxy.mp4")

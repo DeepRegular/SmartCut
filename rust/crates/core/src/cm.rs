@@ -131,7 +131,7 @@ pub fn find_silences_with(
 ) -> Result<Vec<Silence>> {
     crate::init()?;
     let audio = src.audio.as_ref().ok_or_else(|| anyhow!("{} has no audio", src.path))?;
-    let mut ictx = ff::format::input(&src.path)?;
+    let mut ictx = ff::format::input(&src.input.url)?;
     let params = ictx
         .stream(audio.stream_index)
         .ok_or_else(|| anyhow!("audio stream vanished"))?

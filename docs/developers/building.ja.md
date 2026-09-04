@@ -73,6 +73,7 @@ bash tests/run_scene_tests.sh         # シーン検出と CM 境界の照合   
 bash tests/run_ts_layout_tests.sh     # TS の出自とシーケンスヘッダ                       5
 bash tests/run_broadcast_tests.sh     # 字幕・番組情報・音声多重                         13
 bash tests/run_cm_tests.sh            # CM 検出と人間の答えの照合                         5
+bash tests/run_bdav_tests.sh          # BDAV ディスクをフォルダーと .iso から読む       12
 ```
 
 ### フィクスチャ
@@ -82,6 +83,10 @@ bash tests/run_cm_tests.sh            # CM 検出と人間の答えの照合    
 これを再利用するスイート（`run_rust_tests.sh`、`run_index_tests.sh`、
 `run_proxy_tests.sh`）は、黙って検査の半分を飛ばすのではなく
 `run tests/run_tests.sh first to generate fixtures` と表示して止まる。
+
+`run_bdav_tests.sh` は `mpeg2.ts` から BDAV ディスクを丸ごと組み立てる。ストリームを
+192 バイトパケットに詰め直し、索引ファイルを書き、`genisoimage` で UDF イメージに
+包む（`genisoimage` が要る）。
 
 `run_audio_tests.sh` と `run_downmix_tests.sh` は同じディレクトリに自前の
 フィクスチャを作る。インパルス列と、チャンネルごとに音の違う 5.1ch トラックであり、
@@ -154,5 +159,12 @@ WebKitGTK のコンポジタは GPU の無いマシンでは何も描画せず�
 しない。見た目はフリーズと区別がつかない。アプリは
 `WEBKIT_DISABLE_COMPOSITING_MODE=1` を既定で設定するので、通常は意識しなくてよい。
 
-`xdotool` で GUI を機械的に操作する場合、DOM の更新が X に届かず、スクリーンショットが
-古いままになることがある。ウィンドウを 1px リサイズすると再描画が強制される。
+同じフリーズがもう一口あり、こちらはテキスト欄をクリックするまで待っている。GTK の XIM
+入力メソッドモジュールが入っていると、`<input>` がフォーカスを取った瞬間に WebKitGTK が
+描画をやめる。プログラムは裏で動き続けていて、古い絵の裏で画面は変わっている。ウィンドウを
+1px リサイズすると一気に追いつく。（`xdotool` で操作したときにスクリーンショットが古いまま
+になっていたのは `xdotool` のせいではなく、これである。）`GTK_IM_MODULE` が未設定のときに
+GTK が落ちてくる先が XIM で、それは IME を設定していないデスクトップすべてに当たる。そこで
+アプリは既定で `GTK_IM_MODULE=gtk-im-context-simple` を設定する。このモジュールでは日本語は
+打てないので、IME が使えるマシンでは `GTK_IM_MODULE` をそれに設定すればよい（`fcitx`、
+`ibus` など）。明示されていればアプリは触らない。

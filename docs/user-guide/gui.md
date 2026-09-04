@@ -43,12 +43,29 @@ recording on disk.
 
 | How | |
 |---|---|
-| **Drag and drop** | Anywhere in the window works. Drop files, not folders |
+| **Drag and drop** | Anywhere in the window works. A folder stands for the files in it |
 | **＋ Add files** | Top right. Accepts a multiple selection |
 | **Command-line arguments** | `smartcut recording1.ts recording2.ts`. A `.scproj` project file opens the same way |
 
 SmartCut reads `.ts` `.m2ts` `.mts` `.m2t` `.mp4` `.mkv` `.mov` and `.m4v`.
 Anything else is ignored, with a line saying so, and the list is left as it was.
+
+### Recorded Blu-rays (BDAV)
+
+**A disc is not one row but one row per recording on it.** A folder holding a
+`BDAV` directory, an `.iso`, or a folder holding several of either -- all the
+same. An `.iso` is not mounted: the streams inside it are read where they lie.
+
+Rows are named by the **programme**, not by `00001.m2ts`. The disc's own index
+(the `.rpls` files) carries the name, the time it was recorded and the chapter
+marks, and that is where they come from.
+
+Cuts are written **beside the disc** unless the output settings say otherwise,
+under the programme's name (`cut_2026年08月17日01時00分-BS11….ts`) -- there is
+nowhere to write inside a disc. "The same as the input" means `.ts` here.
+
+Encrypted discs cannot be opened, and commercial Blu-rays (BDMV) are not
+supported. How it works is in [BDAV discs](../developers/bdav.md).
 
 Network (SMB) shares work as command-line arguments, as drops from a file manager,
 and in the output folder box. **SmartCut does not mount anything.** If you hand it
@@ -71,6 +88,11 @@ Each row shows the filename; then the length in frames, the time range, the
 resolution, the frame rate and the codec; and then whatever commercial detection
 and your own cuts have to say. On the right, `Smart` means smart rendering applies
 to this material, and `CM 2` means two commercial blocks were found.
+
+**The picture on the left follows the cuts.** Recordings tend to open on black or
+on the tail of the programme before, so it is taken a little way in rather than at
+the head -- and once there are cuts, a little way into *what survives*. A row whose
+commercials have been cut never goes on showing one of them.
 
 **You can drag rows into a different order.** The export runs down the list, so
 move whatever you want written first to the top. A multiple selection moves
@@ -176,6 +198,12 @@ the frame counter counts the length that will actually be written.
   jump there, or click its `×` to remove it.
 - A **cut** is the edit. Set IN and OUT, press `✂ Cut`, and that range leaves the
   output.
+
+Marks also arrive without your placing any: from a detection, from a `.keyframe`
+file beside the recording, and — for a recording opened off a **BDAV disc** — from
+the chapters the recorder itself set, which on a Japanese recording are frequently
+the commercial breaks. Those are read on the first visit only, and the `.keyframe`
+file wins where there is one.
 
 ### Selecting with IN and OUT
 
@@ -422,6 +450,7 @@ smartcut input.ts --analyze --scenes            # list the scene changes
 | `--seek-index PATH` | Where to keep the seek index. Written on the first run and read on the next, which skips the walk over the packets |
 | `--detect-cm` / `--logo` / `--scenes` | Commercial candidates, logo assist, scene detection |
 | `--drop-stream INDEX` | Leave one of the recording's streams out of the output. Repeatable. The same thing the cut editor's **Tracks** menu does |
+| `--title N` | Which recording on a BDAV disc (a folder or an `.iso`) to open. Part of the programme's name works in place of the number. Without it, the disc's recordings are listed and nothing else happens |
 | `--tables partial\|broadcast\|muxer` | How a `.ts` describes itself. The default `partial` writes a partial transport stream (one SIT, per DVB EN 300 468 Annex C / ARIB TR-B15); `broadcast` puts the recording's own PMT, SDT, EIT and TOT back; `muxer` leaves the muxer's own tables standing |
 | `--no-open-gop` | Never start a copy at an open GOP |
 | `-o OUTPUT` | Output path. The extension picks the container |

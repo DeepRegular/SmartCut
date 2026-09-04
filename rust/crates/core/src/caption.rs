@@ -181,7 +181,7 @@ pub fn resets_with(
     mut progress: Option<Box<dyn FnMut(f64) + Send>>,
 ) -> Result<Vec<f64>> {
     crate::init()?;
-    let mut ictx = ff::format::input(&src.path)?;
+    let mut ictx = ff::format::input(&src.input.url)?;
     let streams: Vec<(usize, f64)> = ictx
         .streams()
         .filter(|s| s.parameters().medium() == ff::media::Type::Subtitle)

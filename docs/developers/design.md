@@ -113,6 +113,21 @@ it again. (shares connected now: \\nas\録画)
 After the translation it is an ordinary path, so the packet scan, the seek index and the
 output all go on without knowing a network was involved.
 
+### BDAV discs (`bdav.rs`, `udf.rs`, `input.rs`)
+
+A recorded Blu-ray arrives the same way a share does. **This program hangs
+everything off one string**: the list holds it, the seek index and the proxy are
+cached against it, the output is named beside it, and the demuxer is handed it.
+A recording inside a disc should not break that.
+
+So a recording inside an image is named as though the image were a directory:
+`/rec/Anime.iso/BDAV/STREAM/00001.m2ts`. `input.rs` walks that path back to the
+point where it stops being a directory and answers with three things -- the URL
+to hand libavformat (a byte range, through the `subfile` protocol), the real
+file to ask the operating system about, and the range itself. Nothing is
+mounted. What a row is called, what a cut of it is called and where it goes are
+all decided by the disc's own index. See [BDAV discs](bdav.md).
+
 ### Duplicates made a row and a recording different things
 
 [Duplicating a clip](../user-guide/batch.md#duplicating-a-clip) puts the same recording
@@ -383,6 +398,21 @@ elsewhere carry them, and failing to open the recording over one unreadable line
 the worse trade. The selection is left alone, as with commercial detection. The number read
 shows in the status line.
 
+### Chapters off a disc
+
+A recording opened from a BDAV disc has a third source of marks: the chapter points the
+recorder wrote into the playlist, which on a Japanese recording are frequently the
+commercial breaks themselves. They are read once, by the list, and travel with the row —
+the editor is the only place that can put them down, because a mark on the disc is on the
+stream's own clock and this timeline is rebased to the container's start.
+
+They are placed under the same rule as the sidecar, and behind it: on a first visit only,
+and only where there was no `.keyframe` beside the recording. That file is somebody's
+answer; the disc's is the answer when nobody has given one. Marks landing outside the
+material are dropped rather than clamped, and nothing is snapped to an access point — a
+mark says where the chapter is, and moving it onto the nearest lossless point is a separate
+decision with its own button. See [BDAV discs](bdav.md).
+
 ### Detection progress, and the claim of "fully lossless"
 
 **Detection progress shows on the button.** A 30-minute recording with the logo takes a
@@ -565,6 +595,16 @@ container as the original with `cut_` prefixed to the name — open
 station and the episode number, and that is the only handle for finding them later.
 Collapsing that to `cut.ts` is a loss. The container follows the input too, since nobody
 wants everything moved to MP4 every time.
+
+**A recording on a disc has neither a name nor a folder to inherit.** Its path is
+`…/Anime.iso/BDAV/STREAM/00001.m2ts`: a folder that does not exist, and a file called
+`00001`. So the disc's index answers instead — the cut is written beside the disc, under
+the programme's name, with the characters a filesystem will not take turned into their
+full width forms the way a Japanese recorder writes them. And "the same as the input"
+means `.ts` rather than `.m2ts`: asked for a `.m2ts`, the muxer writes Blu-ray's own
+framing and PID numbering, which is not what [the tables put back after
+muxing](../technical/broadcast-ts.md) describe. Choosing M2TS explicitly still gets one,
+and says that the tables are being left to the muxer. See [BDAV discs](bdav.md).
 
 All three are settings on the output settings screen rather than a question asked once per
 file: the folder (empty meaning the input's own), the prefix (`cut_`), and the container,
@@ -1287,6 +1327,18 @@ in is a version that comes back wrong.
   never updates after the first paint, which looks exactly like a freeze.
   `WEBKIT_DISABLE_COMPOSITING_MODE=1` fixes it. This UI does not need compositing, so the app sets it
   by default.
+- **Clicking the filename prefix froze the window.** The same freeze from the other end, and this
+  one waits for a text field: with GTK's XIM input-method module in the window, WebKitGTK stops
+  painting the moment an `<input>` takes focus. The program is alive underneath — scripts run,
+  clicks land, the screen behind the stale pixels goes on changing — and a resize brings it all
+  back at once, which is what says it is the painting and not the program. The output settings
+  screen is where it showed, because its prefix field is the first one in the program you can click
+  into. XIM is not chosen: it is what GTK falls back to when `GTK_IM_MODULE` is unset, because
+  `im-xim.so` claims ja:ko:th:zh — so a Japanese desktop with no IME set up is exactly the machine
+  it lands on. The app now defaults `GTK_IM_MODULE=gtk-im-context-simple`, that being the one module
+  built into GTK: naming one that is not installed falls back to XIM again, not to simple. It
+  cannot compose Japanese, and on these machines nothing could — there was no IME to lose. An
+  explicit `GTK_IM_MODULE` is left alone.
 - **`sync.sh`'s `--delete` was deleting the GUI build artifacts**, because the exclusion was only
   `rust/target`. Fixed to exclude `target/` generally.
 - **Real material (a byte-sliced TS) produced `no pictures decoded`.** Nothing before the file's

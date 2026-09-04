@@ -36,6 +36,10 @@ const track = el("track");
 const ctx = track.getContext("2d");
 
 let src = null;
+/// What the recording is called, when that is not its file name: a
+/// recording on a BDAV disc is named by the disc's index, and the file it
+/// is in is called `00001.m2ts`.
+let shownName = null;
 let playhead = 0; // source time, always on material that still exists
 let selA = 0; // selection, in output time
 let selB = 0;
@@ -1552,27 +1556,60 @@ function setOut(o) {
 /// Marks past the end are dropped -- a list written for a different cut of
 /// the same recording is the likely reason, and `outToSrc` would otherwise
 /// clamp them all onto the last picture.
-async function loadSidecarKeyframes(path) {
-  const side = path.replace(/\.[^./\\]*$/, "") + ".keyframe";
-  if (side === path) return;
+/// How many marks it put down, so that the caller knows whether there was a
+/// list beside the recording at all: a disc's chapters are the answer when
+/// there was not, and would be noise on top of a list somebody has kept.
+async function loadSidecarKeyframes(base) {
+  if (!base) return 0;
+  const side = `${base}.keyframe`;
   let frames;
   try {
     frames = await invoke("read_keyframes", { path: side });
   } catch (e) {
     el("status").textContent = tr("keyframes.readFailed", { e });
-    return;
+    return 0;
   }
-  if (!frames) return;
+  if (!frames) return 0;
   const times = frames
     .map((n) => n / src.fps)
     .filter((o) => o <= outDur + 1e-6)
     .map(outToSrc);
-  if (!times.length) return;
+  if (!times.length) return 0;
   addKeyframes(times);
   el("status").textContent = tr("keyframes.read", {
     n: liveKeyframes().length,
     file: side.split(/[/\\]/).pop(),
   });
+  return times.length;
+}
+
+/// The chapter points a recorder wrote on a BDAV disc, as marks.
+///
+/// On a Japanese recording these are frequently the commercial breaks
+/// themselves, which is the same thing the detection spends minutes looking
+/// for -- and here it is written down, exactly, by the machine that made the
+/// recording. So a disc opens with its own chapters already on the timeline.
+///
+/// They arrive on the stream's own clock, because that is the clock the
+/// playlist counts in. Everything in this window is rebased to the
+/// container's start, so that subtraction is the whole of the conversion.
+///
+/// Not snapped to an access point, the same as the detection's marks: a mark
+/// says where the chapter is, and moving it onto the nearest lossless point
+/// is a separate decision with its own button. Marks that land outside the
+/// material are dropped rather than clamped -- a mark in the wrong place is
+/// worse than no mark, which is what the disc reader says about them too.
+function applyDiscChapters(chapters) {
+  if (!src || !chapters || !chapters.length) return 0;
+  const first = src.points.length ? src.points[0] : 0;
+  const times = chapters
+    .map((t) => t - src.start_time)
+    .filter((t) => t >= first - 0.5 && t <= src.duration + 1e-6)
+    .map((t) => Math.max(t, first));
+  if (!times.length) return 0;
+  addKeyframes(times);
+  el("status").textContent = tr("keyframes.chapters", { n: times.length });
+  return times.length;
 }
 
 /// The recording's name in the title bar of the window's own header, and its
@@ -1586,7 +1623,7 @@ function paintSourceInfo() {
     tr(src.interlaced ? "media.interlaced" : "media.progressive"),
     src.pulldown ? tr("media.pulldown") : null,
   ].filter(Boolean);
-  el("title").textContent = src.path.split(/[/\\]/).pop();
+  el("title").textContent = shownName || src.path.split(/[/\\]/).pop();
   el("info").textContent = tr("editor.info", {
     points: src.points.length,
     w: src.width,
@@ -1611,10 +1648,14 @@ function paintSourceInfo() {
 ///
 /// The sidecar marks are read only on a first visit. On a return the list
 /// already holds marks that have been worked on, and re-reading the file
-/// beside the recording would add its own on top of them.
-async function openPath(picked, saved) {
+/// beside the recording would add its own on top of them. The disc's own
+/// chapter points are put down under the same rule, and only where there was
+/// no list beside the recording: a `.keyframe` file is somebody's answer,
+/// and the disc's is the answer when nobody has given one.
+async function openPath(picked, saved, side, name, chapters) {
   jlog(`openPath ${picked}`);
   if (!picked) return;
+  shownName = name || null;
   el("title").textContent = tr("editor.analysing");
   try {
     src = await invoke("open_source", { path: picked });
@@ -1640,7 +1681,10 @@ async function openPath(picked, saved) {
     selA = saved ? Math.min(saved.selA, outDur) : 0;
     selB = saved ? Math.min(saved.selB, outDur) : outDur;
     el("status").textContent = "";
-    if (!saved) await loadSidecarKeyframes(picked);
+    if (!saved) {
+      const beside = await loadSidecarKeyframes(side || picked.replace(/\.[^./\\]*$/, ""));
+      if (!beside) applyDiscChapters(chapters);
+    }
     await showFrame(saved ? saved.playhead : 0);
     schedulePlan();
     prepare();
@@ -2184,7 +2228,7 @@ if (listen) {
   // The list's answer to `editor-ready`: which recording, and what was done
   // to it the last time it was in here.
   listen("editor-open", async (ev) => {
-    const { id, path, saved, cm } = ev.payload;
+    const { id, path, name, side, saved, cm, chapters } = ev.payload;
     // The list sends this twice for a window it had to build; the second is
     // the one that usually lands, but both can. Opening the same row twice
     // over would throw away whatever the first open had got to.
@@ -2196,7 +2240,7 @@ if (listen) {
       opening = id;
       editId = id;
       try {
-        await openPath(path, saved);
+        await openPath(path, saved, side, name, chapters);
       } finally {
         opening = null;
       }

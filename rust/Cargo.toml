@@ -3,7 +3,7 @@ resolver = "2"
 members = ["crates/core", "crates/cli"]
 
 [workspace.package]
-version = "0.3.1"
+version = "0.3.2"
 edition = "2021"
 rust-version = "1.82"
 
@@ -11,3 +11,7 @@ rust-version = "1.82"
 ffmpeg-next = "7.1"
 anyhow = "1"
 cpal = "0.15"
+# For the one table this program cannot write down itself: JIS X 0208 to
+# Unicode, which is how a broadcaster's own text becomes a programme name.
+# See `core/src/arib.rs`.
+encoding_rs = "0.8"

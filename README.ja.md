@@ -86,11 +86,11 @@ deb 以外はすべて FFmpeg を同梱しているので、ほかに入れる�
 
 | プラットフォーム | ファイル | 備考 |
 |---|---|---|
-| **Linux** | `SmartCut_0.3.1_amd64.AppImage` | 実行権限を付けて起動します |
-| **Linux** | `SmartCut-0.3.1-linux-x86_64.tar.gz` | 展開して `./smartcut` を実行します。FUSE を避けたい場合はこちらです |
-| **Linux (Debian/Ubuntu)** | `smartcut_0.3.1_amd64.deb` | `sudo apt install ./smartcut_0.3.1_amd64.deb`。システムの FFmpeg にリンクするので 2.7 MB で済みます |
-| **Windows** | `SmartCut_0.3.1_x64-setup.exe` | インストーラ |
-| **Windows** | `smartcut-portable-x64-0.3.1.zip` | 展開して `smartcut.exe` を実行します |
+| **Linux** | `SmartCut_0.3.2_amd64.AppImage` | 実行権限を付けて起動します |
+| **Linux** | `SmartCut-0.3.2-linux-x86_64.tar.gz` | 展開して `./smartcut` を実行します。FUSE を避けたい場合はこちらです |
+| **Linux (Debian/Ubuntu)** | `smartcut_0.3.2_amd64.deb` | `sudo apt install ./smartcut_0.3.2_amd64.deb`。システムの FFmpeg にリンクするので 3.0 MB で済みます |
+| **Windows** | `SmartCut_0.3.2_x64-setup.exe` | インストーラ |
+| **Windows** | `smartcut-portable-x64-0.3.2.zip` | 展開して `smartcut.exe` を実行します |
 
 **動作条件。** AppImage と tar.gz は glibc 2.39 以上が必要です（Ubuntu 24.04 /
 Debian 13 / Fedora 40 以降）。deb は FFmpeg 7.1 が必要なので Debian 13 /
@@ -123,6 +123,23 @@ Ubuntu 25.04 以降になります。deb は GUI を `smartcut`、コマンド�
 スクリーンショット付きの詳しい手順は[ユーザーガイド](docs/user-guide/gui.ja.md)に
 あります。
 
+### 録画した Blu-ray を開く
+
+BDAV ディスクはそのまま開けます。フォルダーでも、マウントしない `.iso` でも同じです。
+窓に落とすと、中の録画が 1 件ずつ行になります。名前は `00001.m2ts` ではなく番組名です
+——ディスク自身の索引がそう書いているからです。カットはディスクの隣に、番組名で
+書き出されます。レコーダーが打ったチャプターは、そのままキーフレームとして
+タイムラインに並びます——日本の録画では、それが CM の境目そのものであることが
+多いからです。
+
+```bash
+smartcut Anime.iso                      # 何が入っているか
+smartcut Anime.iso --title 2 --cut 8.0-20.0 -o out.ts
+```
+
+暗号化されたディスクは対象外です。読み方と、できないことは
+[BDAV ディスク](docs/developers/bdav.ja.md)にあります。
+
 ### コマンドラインを使う
 
 ```bash
@@ -139,7 +156,8 @@ smartcut input.ts --analyze --scenes            # シーンの変わり目を一
 
 ## 対応形式
 
-**入力コンテナ:** `.ts` `.m2ts` `.mts` `.m2t` `.mp4` `.mkv` `.mov` `.m4v`
+**入力コンテナ:** `.ts` `.m2ts` `.mts` `.m2t` `.mp4` `.mkv` `.mov` `.m4v`、
+および BDAV ディスク（フォルダー、または暗号化されていない `.iso` をそのまま）
 
 **出力コンテナ:** MPEG-TS / M2TS / MP4 / Matroska / QuickTime。既定は入力と同じ
 コンテナ・同じディレクトリです。
@@ -205,7 +223,7 @@ smartcut input.ts --analyze --scenes            # シーンの変わり目を一
 |---|---|
 | **ユーザーガイド** | [GUI](docs/user-guide/gui.ja.md) ・ [CM 検出](docs/user-guide/cm-detection.ja.md) ・ [プロジェクト](docs/user-guide/projects.ja.md) ・ [バッチ処理](docs/user-guide/batch.ja.md) |
 | **技術解説** | [アルゴリズム](docs/technical/algorithm.ja.md) ・ [検証](docs/technical/validation.ja.md) ・ [放送 TS](docs/technical/broadcast-ts.ja.md) ・ [音声](docs/technical/audio.ja.md) |
-| **開発者向け** | [Rust コア](docs/developers/rust-core.ja.md) ・ [設計](docs/developers/design.ja.md) ・ [ビルド](docs/developers/building.ja.md) ・ [配布](docs/developers/distribution.ja.md) ・ [BDMV 調査](docs/developers/bdmv.ja.md) |
+| **開発者向け** | [Rust コア](docs/developers/rust-core.ja.md) ・ [設計](docs/developers/design.ja.md) ・ [ビルド](docs/developers/building.ja.md) ・ [配布](docs/developers/distribution.ja.md) ・ [BDAV ディスク](docs/developers/bdav.ja.md) |
 
 1 ページだけ読むなら[実装上の難所](docs/technical/algorithm.ja.md#実装上の難所)を
 おすすめします。「GOP 単位で切って繋ぐだけ」では済まない 8 つの理由を、実際に
