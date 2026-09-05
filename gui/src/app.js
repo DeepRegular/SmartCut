@@ -144,6 +144,12 @@ function makeClip(found) {
     /// The ranges `poster` was taken for, so that a state arriving from the
     /// editor twice a second does not ask for the same picture again.
     posterSig: null,
+    /// A picture taken the cheap way when the row was added, so that the row
+    /// is not blank for as long as the queue in front of it takes. Null until
+    /// it has been asked for, "" once it has been asked for and there was
+    /// none. Last of the three in `posterOf`: the other two come out of the
+    /// thumbnail track and know where the cuts are, and this does not.
+    glance: null,
     selected: false,
     out: { state: "idle", progress: 0, note: "" }, // idle|waiting|running|done|error|skipped
     /// The plan's re-encoded segments and a frame out of each, worked out
@@ -388,6 +394,7 @@ async function addPaths(inputs) {
   (async () => {
     for (const clip of taken) await restoreCm(clip);
   })();
+  fillGlances();
   // A path that could not be reached at all is the more useful thing to say,
   // so it wins the one line there is.
   if (failed.length) {
@@ -1018,7 +1025,44 @@ function setText(node, text) {
 ///
 /// On the row rather than in `info`, because `info` is the *file's* answer and
 /// duplicates share it -- two cuts of one recording are two pictures.
-const posterOf = (clip) => clip.poster || (clip.info && clip.info.poster) || null;
+const posterOf = (clip) =>
+  clip.poster || (clip.info && clip.info.poster) || clip.glance || null;
+
+/// Put a picture on the rows that have none yet.
+///
+/// The index pass gives a row its picture, and it is the pass the row is
+/// queued for: a folder of an evening's recordings is a screen of blank
+/// rows, and the last of them is blank until the ones above it have all been
+/// read. What this asks for costs a seek and a GOP, so the list can look
+/// like what was dropped on it a moment after it was.
+///
+/// One at a time and lowest row first, in front of nothing: the passes have
+/// the cores and this is only worth having while they are still working.
+/// Asked once per row -- a recording that will not answer is not asked again
+/// every time another one is added.
+let glancing = false;
+async function fillGlances() {
+  if (glancing) return;
+  glancing = true;
+  try {
+    for (;;) {
+      const clip = clips.find((c) => c.glance === null && !posterOf(c));
+      if (!clip) break;
+      let url = null;
+      try {
+        url = await invoke("clip_glance", { path: clip.path });
+      } catch (e) {
+        jlog(`clip_glance: ${e}`);
+      }
+      // "" and not null, so that a recording nothing could be decoded out of
+      // is asked about once rather than on every pass through the list.
+      clip.glance = url || "";
+      if (url && !clip.poster && !(clip.info && clip.info.poster)) paintRow(clip);
+    }
+  } finally {
+    glancing = false;
+  }
+}
 
 /// Take the row's picture again, against what the cuts leave.
 ///
@@ -3176,6 +3220,7 @@ async function loadProject(path) {
   (async () => {
     for (const [clip, pending] of taken) await restoreCm(clip, pending);
   })();
+  fillGlances();
   pump();
 }
 

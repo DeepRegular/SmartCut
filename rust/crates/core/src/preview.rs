@@ -153,7 +153,11 @@ fn collect_run(
     got.into_iter()
         .map(|slot| match slot {
             Some((t, kind, f)) => {
-                Ok(Some(Shot { jpeg: encode_jpeg(&f, src, width)?, time: t, kind }))
+                Ok(Some(Shot {
+                    jpeg: encode_jpeg(&f, src.video.sample_aspect_ratio, width)?,
+                    time: t,
+                    kind,
+                }))
             }
             None => Ok(None),
         })
@@ -206,7 +210,7 @@ pub fn play_from(
                 }
                 Pace::Skip => true,
                 Pace::Show => {
-                    if let Ok(jpeg) = encode_jpeg(frame, src, width) {
+                    if let Ok(jpeg) = encode_jpeg(frame, src.video.sample_aspect_ratio, width) {
                         show(t, jpeg);
                     }
                     true
@@ -266,7 +270,136 @@ pub fn shot_at(src: &Source, time: f64, width: u32) -> Result<Shot> {
 
     let (at, picture) = picture.ok_or_else(|| anyhow!("no picture at {time:.3}s"))?;
     let kind = kind_of(&picture);
-    Ok(Shot { jpeg: encode_jpeg(&picture, src, width)?, time: at, kind })
+    Ok(Shot {
+        jpeg: encode_jpeg(&picture, src.video.sample_aspect_ratio, width)?,
+        time: at,
+        kind,
+    })
+}
+
+/// One picture out of a recording nothing has been read of yet.
+///
+/// Everything else here works off a [`Source`], which is a pass over the
+/// whole file: the packets are walked to find the entry points, and only
+/// then can a picture be asked for by time. That is the honest way to reach
+/// an *exact* frame, and it is why the clip list has nothing to show for a
+/// row until the pass over it has finished -- a minute of blank rows for a
+/// folder dropped on the window, and the queued ones stay blank until their
+/// turn comes.
+///
+/// A poster is not an exact frame. It stands for the recording, and any
+/// picture from around the right part of it will do. So this asks
+/// libavformat for its own approximate seek -- `into` of the way through by
+/// the container's clock -- and takes the first picture that decodes after
+/// it, which costs one seek and one GOP rather than a pass. What comes back
+/// may be a second or two off, and on a transport stream it usually is: the
+/// seek is by byte position there and lands near the instant asked for
+/// rather than on it.
+///
+/// The picture the index pass eventually produces replaces this one, and
+/// that is the picture the row keeps -- it is taken from the thumbnail track
+/// and follows the cuts, which this cannot do.
+pub fn glance(spec: &str, into: f64, width: u32) -> Result<Vec<u8>> {
+    crate::init()?;
+    let input = crate::input::Input::parse(spec)?;
+    let mut ictx =
+        ff::format::input(&input.url).map_err(|e| anyhow!("cannot open {spec}: {e}"))?;
+    let stream = ictx
+        .streams()
+        .best(ff::media::Type::Video)
+        .ok_or_else(|| anyhow!("no video stream in {spec}"))?;
+    let idx = stream.index();
+    let params = stream.parameters();
+    let sar = unsafe {
+        let s = (*params.as_ptr()).sample_aspect_ratio;
+        if s.num > 0 && s.den > 0 { s.num as f64 / s.den as f64 } else { 1.0 }
+    };
+    let (duration, start) = unsafe {
+        let p = ictx.as_ptr();
+        let tb = ff::ffi::AV_TIME_BASE as f64;
+        let d = (*p).duration;
+        let s = (*p).start_time;
+        (
+            if d == ff::ffi::AV_NOPTS_VALUE { 0.0 } else { d as f64 / tb },
+            if s == ff::ffi::AV_NOPTS_VALUE { 0.0 } else { s as f64 / tb },
+        )
+    };
+
+    // A recording whose length the container will not say is read from the
+    // beginning: there is no fraction to take of nothing.
+    let want = start + duration.max(0.0) * into.clamp(0.0, 1.0);
+    if want > start + 1e-6 {
+        let ts = (want * ff::ffi::AV_TIME_BASE as f64) as i64;
+        // A seek that fails leaves the file where it was, which is the start
+        // -- a picture from the wrong place, and not a reason to have none.
+        let _ = ictx.seek(ts, ..ts);
+    }
+
+    // One core, because this runs beside the passes that want the rest of
+    // them, and because frame threading holds the first pictures back until
+    // its pipeline fills -- and the first picture is the whole of what this
+    // wants. See [`crate::video_decoder_with`].
+    let mut decoder = crate::video_decoder_with(params, 1)?;
+    let mut frame = ff::frame::Video::empty();
+    // The picture to answer with, which is the first I picture: what comes
+    // out before it references pictures the seek skipped past, and decodes to
+    // a grey field with the corner of a logo in it. Nothing is fed to the
+    // decoder until a key packet has arrived for the same reason -- the seek
+    // lands near the entry point on a transport stream rather than on it.
+    //
+    // What was decoded anyway is kept as the answer of last resort, for a
+    // recording whose pictures are not typed at all: a poster that is a
+    // little wrong beats a row that stays blank.
+    let mut spare: Option<Vec<u8>> = None;
+    let mut started = false;
+    let mut waiting = 0;
+    // Enough to carry a landing that fell inside an open GOP, and to give up
+    // on a stretch of the file that decodes to nothing rather than reading to
+    // the end of it.
+    let mut left = 900;
+    for (s, packet) in ictx.packets() {
+        if s.index() != idx {
+            continue;
+        }
+        started = started || packet.is_key();
+        if !started {
+            // A recording that flags no key packet at all -- and there are
+            // containers that flag none -- is read from wherever the seek
+            // put it rather than to the end and answered with nothing.
+            waiting += 1;
+            started = waiting > 300;
+            if !started {
+                continue;
+            }
+        }
+        left -= 1;
+        if left <= 0 {
+            break;
+        }
+        if decoder.send_packet(&packet).is_err() {
+            continue;
+        }
+        while decoder.receive_frame(&mut frame).is_ok() {
+            if kind_of(&frame) == "I" {
+                return encode_jpeg(&frame, sar, width);
+            }
+            if spare.is_none() {
+                spare = Some(encode_jpeg(&frame, sar, width)?);
+            }
+        }
+    }
+    // Whatever the decoder was still holding: a recording shorter than the
+    // reorder depth has all of its pictures in there.
+    let _ = decoder.send_eof();
+    while decoder.receive_frame(&mut frame).is_ok() {
+        if kind_of(&frame) == "I" {
+            return encode_jpeg(&frame, sar, width);
+        }
+        if spare.is_none() {
+            spare = Some(encode_jpeg(&frame, sar, width)?);
+        }
+    }
+    spare.ok_or_else(|| anyhow!("no picture {:.0}% into {spec}", into * 100.0))
 }
 
 /// The latest access point at or before `time`, so the decode has references.
@@ -279,8 +412,15 @@ fn entry_before(points: &[AccessPoint], time: f64) -> f64 {
         .unwrap_or(0.0)
 }
 
-pub(crate) fn encode_jpeg(picture: &ff::frame::Video, src: &Source, width: u32) -> Result<Vec<u8>> {
-    let sar = src.video.sample_aspect_ratio.max(0.01);
+/// `sar` is the recording's pixel aspect ratio -- see [`crate::VideoInfo`].
+/// Taken as a number rather than off a [`Source`], because a picture can be
+/// wanted before there is one; see [`glance`].
+pub(crate) fn encode_jpeg(
+    picture: &ff::frame::Video,
+    sar: f64,
+    width: u32,
+) -> Result<Vec<u8>> {
+    let sar = sar.max(0.01);
     // What the picture is worth, in square pixels. Not its coded width: 1440
     // samples across shown at 16:9 needs 1920 to keep all 1080 of its lines,
     // and stopping at 1440 would throw a quarter of them away. Past that

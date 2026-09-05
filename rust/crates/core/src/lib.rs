@@ -43,7 +43,7 @@ pub use cut::{
 };
 pub use index::{ContainerIndex, IndexSource, PacketScan};
 pub use seek_index::SeekIndex;
-pub use preview::{frame_at, play_from, shot_at, shots_at, Pace, Shot};
+pub use preview::{frame_at, glance, play_from, shot_at, shots_at, Pace, Shot};
 pub use proxy::{Marks, ProxyOptions};
 pub use thumbs::{ThumbOptions, Track};
 pub use plan::{plan, plan_range, PlanOptions, RangePlan, Segment, SegmentKind};

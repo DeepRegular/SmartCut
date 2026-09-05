@@ -290,7 +290,11 @@ impl<'a> Collector<'a> {
         self.prev = Some(sig);
 
         if time >= self.keep_from {
-            let jpeg = crate::preview::encode_jpeg(frame, self.src, self.opts.width)?;
+            let jpeg = crate::preview::encode_jpeg(
+                frame,
+                self.src.video.sample_aspect_ratio,
+                self.opts.width,
+            )?;
             if let Some(prev) = self.last_kept {
                 self.gaps.push(time - prev);
             }

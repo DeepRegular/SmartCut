@@ -1763,6 +1763,35 @@ async fn clip_thumbs(
     .await
 }
 
+/// A picture for a row that has not been read yet.
+///
+/// The index pass is what gives a row its picture, and until it has run there
+/// is nothing to show: a folder of twenty recordings dropped on the window is
+/// twenty blank rows, and the last of them stays blank for as long as the
+/// nineteen ahead of it take. This is the same row's picture arrived at the
+/// cheap way -- one seek and one GOP, tens of milliseconds -- so that the list
+/// looks like what was dropped on it while the passes get on with the reading.
+///
+/// Taken a tenth of the way in, which is where the real poster comes from, so
+/// that the picture the row settles on is the one it started with. `None`
+/// rather than an error when nothing decodes: the row is no worse off than it
+/// was, and the pass behind this one will say what is actually wrong with the
+/// recording.
+#[tauri::command]
+async fn clip_glance(path: String) -> Result<Option<String>, String> {
+    off_thread(move || {
+        let width = smartcut_core::ThumbOptions::default().width;
+        match smartcut_core::glance(&path, POSTER_AT, width) {
+            Ok(jpeg) => Ok(Some(as_url(&jpeg))),
+            Err(e) => {
+                eprintln!("glance: {path}: {e}");
+                Ok(None)
+            }
+        }
+    })
+    .await
+}
+
 /// The row's picture again, for a clip whose cuts have changed what it is.
 ///
 /// `keeps` is what survives, in source time. Nothing is decoded: the answer
@@ -2811,6 +2840,7 @@ pub fn run() {
             tracks,
             clip_thumbs,
             clip_poster,
+            clip_glance,
             open_editor,
             retitle_editor,
             retitle_main,
