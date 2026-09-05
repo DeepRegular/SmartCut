@@ -103,6 +103,37 @@ struct BatchStop {
     cm: AtomicU64,
 }
 
+/// One of the recording's sound tracks, as the window needs to know it.
+///
+/// The list is here because a recording can hold more than one and the window
+/// is the only side that knows which of them survives. A pressed disc's
+/// Japanese track sits beside an English 5.1 one; libavformat calls the wider
+/// of the two the main track, and a count taken from that is the wrong count
+/// for a cut that keeps only the other. Named by both index and PID for the
+/// same reason [`streams_to_drop`] takes both: the editor answers in indices,
+/// the disc chooser answers in PIDs.
+#[derive(Serialize, Clone)]
+struct AudioTrackInfo {
+    index: usize,
+    pid: i32,
+    channels: u16,
+    sample_rate: u32,
+    bits: u8,
+}
+
+fn audio_tracks_of(src: &Source) -> Vec<AudioTrackInfo> {
+    src.audios
+        .iter()
+        .map(|a| AudioTrackInfo {
+            index: a.stream_index,
+            pid: a.pid,
+            channels: a.channels,
+            sample_rate: a.sample_rate,
+            bits: a.bits,
+        })
+        .collect()
+}
+
 #[derive(Serialize)]
 struct SourceInfo {
     path: String,
@@ -117,6 +148,14 @@ struct SourceInfo {
     /// Channels in the recording's audio, so the output settings can say
     /// whether there is anything to downmix. 0 when there is no audio.
     audio_channels: u16,
+    /// The other two numbers an uncompressed track's size is made of, so the
+    /// output settings can multiply them out: linear PCM has no bitrate to
+    /// choose, only one to be told. 0 when there is no audio.
+    audio_sample_rate: u32,
+    audio_bits: u8,
+    /// Every sound track, so the window can answer for the one it is keeping
+    /// rather than for the one above. See [`AudioTrackInfo`].
+    audio_tracks: Vec<AudioTrackInfo>,
     index_name: String,
     /// Presentation times of every random access point: the places a cut
     /// costs nothing.
@@ -151,6 +190,11 @@ struct ClipInfo {
     pulldown: bool,
     has_audio: bool,
     audio_channels: u16,
+    audio_sample_rate: u32,
+    audio_bits: u8,
+    /// Every sound track, so the window can answer for the one it is keeping
+    /// rather than for the one above. See [`AudioTrackInfo`].
+    audio_tracks: Vec<AudioTrackInfo>,
     index_name: String,
     points: usize,
     unusable_points: usize,
@@ -611,6 +655,9 @@ fn info_of(src: &Source) -> SourceInfo {
         pulldown: src.video.pulldown,
         has_audio: src.audio.is_some(),
         audio_channels: src.audio.as_ref().map_or(0, |a| a.channels),
+        audio_sample_rate: src.audio.as_ref().map_or(0, |a| a.sample_rate),
+        audio_bits: src.audio.as_ref().map_or(0, |a| a.bits),
+        audio_tracks: audio_tracks_of(src),
         index_name: src.index_name.to_string(),
         points: src.points.iter().map(|p| p.time).collect(),
         unusable_points: src.points.iter().filter(|p| p.open_gop() && !p.droppable).count(),
@@ -1279,6 +1326,9 @@ fn index_clip_now(path: &str, app: &tauri::AppHandle) -> Result<ClipInfo, String
         pulldown: src.video.pulldown,
         has_audio: src.audio.is_some(),
         audio_channels: src.audio.as_ref().map_or(0, |a| a.channels),
+        audio_sample_rate: src.audio.as_ref().map_or(0, |a| a.sample_rate),
+        audio_bits: src.audio.as_ref().map_or(0, |a| a.bits),
+        audio_tracks: audio_tracks_of(&src),
         index_name: src.index_name.to_string(),
         points: src.points.len(),
         unusable_points: src.points.iter().filter(|p| p.open_gop() && !p.droppable).count(),
@@ -2154,8 +2204,17 @@ async fn export(
     // output settings screen and leaves the rest at the engine's defaults.
     audio_reencode: Option<bool>,
     audio_copy: Option<bool>,
+    // What the sound is written as. Nothing sent, or an empty name, is the
+    // recording's own codec -- the screen sends its "as it is" the way it
+    // sends every other empty control.
+    audio_codec: Option<String>,
     audio_channels: Option<u16>,
     audio_bitrate: Option<usize>,
+    // The other two things a sample has. Zero and nothing mean the same
+    // thing for both -- follow the recording -- so the screen can send its
+    // "as it is" the way it sends every other empty control.
+    audio_sample_rate: Option<u32>,
+    audio_bits: Option<u8>,
     audio_es: Option<bool>,
     // Streams the track menu switched off, by source stream index. Nothing
     // sent means nothing dropped, which is what a clip nobody opened the
@@ -2218,6 +2277,17 @@ async fn export(
             } else {
                 smartcut_core::AudioMode::Smart
             },
+            // Like a downmix, a codec that is not the recording's has no
+            // copy path, and the engine answers one with a whole-track
+            // re-encode whatever the mode above says. A name the engine does
+            // not know is not something to fail a cut over: it can only come
+            // from a project file written by a version that had it, and the
+            // recording's own codec is the honest answer to a name that no
+            // longer means anything.
+            audio_codec: audio_codec
+                .as_deref()
+                .and_then(smartcut_core::AudioCodec::parse)
+                .unwrap_or_default(),
             // A channel count that is not the recording's is a downmix, and
             // the engine answers one with a whole-track re-encode whatever
             // the mode above says. Zero and nothing mean the same thing here
@@ -2225,6 +2295,11 @@ async fn export(
             // is" the way it sends every other empty control.
             audio_channels: audio_channels.filter(|&c| c > 0),
             audio_bit_rate: audio_bitrate.filter(|&b| b > 0),
+            // A rate or a width that is not the recording's leaves no frame
+            // to copy either, and the engine answers both the same way it
+            // answers a downmix: by re-encoding the whole track.
+            audio_sample_rate: audio_sample_rate.filter(|&r| r > 0),
+            audio_bits: audio_bits.filter(|&b| b > 0),
             drop_streams: streams_to_drop(&src, drop_streams, drop_pids),
             ..Default::default()
         };

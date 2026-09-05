@@ -25,7 +25,7 @@
 | [アルゴリズム](technical/algorithm.ja.md) | カットを head / body / tail に切り分ける原理と、見た目より難しくしている 8 つの落とし穴 |
 | [検証](technical/validation.ja.md) | フレームハッシュ照合の結果、実際の放送録画での検証、既知の制限 |
 | [放送 TS](technical/broadcast-ts.ja.md) | PID 配置、録画自身のテーブル、字幕と番組情報、部分 TS、ADTS、L-SMASH と DGIndex |
-| [音声](technical/audio.ja.md) | 音声へのスマートレンダリング適用、境界誤差、MPEG-2 AAC のフレーミング、ダウンミックス、音声多重放送 |
+| [音声](technical/audio.ja.md) | 音声へのスマートレンダリング適用、境界誤差、MPEG-2 AAC のフレーミング、ダウンミックス、出力コーデックの選択、音声多重放送 |
 
 ## 開発者向け
 

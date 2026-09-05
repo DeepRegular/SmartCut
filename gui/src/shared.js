@@ -99,3 +99,26 @@ export const esc = (t) =>
 export function noBrowserMenu() {
   window.addEventListener("contextmenu", (ev) => ev.preventDefault());
 }
+
+/// Take native drag and drop away from the webview.
+///
+/// A picture in a page is draggable by default, and a dragged <img> is not
+/// the page's drag but the system's: WebKit hands it to the compositor, and
+/// from there it is offered to every other window on the screen. Under
+/// KDE on Wayland that is plainly visible -- a press-and-move on the film
+/// strip, the preview or a keyframe thumbnail lights up whatever it passes
+/// over, and a VirtualBox window under the pointer answers as if a file
+/// were being dropped into the guest.
+///
+/// Nothing in either window is meant to be dragged out of it. Every drag
+/// this program has -- the clip list's reordering, the scrubber, the film
+/// strip's search -- is carried with plain mouse events, so refusing the
+/// native one costs nothing. `-webkit-user-drag: none` says the same thing
+/// in the stylesheet and is honoured unevenly; this is the part that holds.
+///
+/// Drops coming the other way are untouched: those are Tauri's, taken at
+/// the window before the page is asked, and `dragstart` is only ever a drag
+/// that began in here.
+export function noNativeDrag() {
+  window.addEventListener("dragstart", (ev) => ev.preventDefault());
+}

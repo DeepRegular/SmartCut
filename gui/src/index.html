@@ -163,8 +163,27 @@
             </span>
           </div>
           <!-- Under the mode, and greyed out unless it is すべて再エンコード:
-               these two describe an encode, and the other two modes do not
-               run one over the whole track. -->
+               these describe an encode, and the other two modes do not run
+               one over the whole track. The last two are a pair -- リニア PCM
+               has no bitrate to choose, since its size is the samples' own
+               arithmetic, and every other codec has no width to choose, since
+               it writes a description of the sound rather than the sound --
+               so exactly one of them is grey at any time. -->
+          <div class="row">
+            <span data-i18n="outset.audioCodec">音声コーデック:</span>
+            <span class="drop">
+              <!-- 入力と同じ is not a codec but the absence of a choice: the
+                   whole-track re-encode writes the recording's own codec
+                   back, which is what makes this row skippable. -->
+              <select id="out-audio-codec">
+                <option value="" selected data-i18n="codec.same">入力と同じ</option>
+                <option value="aac" data-i18n="codec.aac">AAC</option>
+                <option value="ac3" data-i18n="codec.ac3">AC-3（ドルビーデジタル）</option>
+                <option value="dts" data-i18n="codec.dts">DTS</option>
+                <option value="lpcm" data-i18n="codec.lpcm">リニア PCM（非圧縮）</option>
+              </select>
+            </span>
+          </div>
           <div class="row">
             <span data-i18n="outset.audioChannels">音声チャンネル(C):</span>
             <span class="drop">
@@ -175,6 +194,36 @@
                 <option value="1" data-i18n="channels.mono">1ch（モノラル）</option>
                 <option value="2" data-i18n="channels.stereo">2ch（ステレオ）</option>
                 <option value="6" data-i18n="channels.surround51">5.1ch（6ch）</option>
+              </select>
+            </span>
+          </div>
+          <div class="row">
+            <span data-i18n="outset.audioRate">サンプリング周波数:</span>
+            <span class="drop">
+              <!-- 入力と同じ is the absence of a choice; anything else is a
+                   resample, which like a downmix leaves no frame that can be
+                   copied. Only the three rates anyone asks for: a broadcast
+                   is 48 kHz, a CD is 44.1, and 32 is what a small file gets
+                   away with. -->
+              <select id="out-audio-rate">
+                <option value="" selected data-i18n="rate.same">入力と同じ</option>
+                <option value="48000" data-i18n="rate.48">48 kHz</option>
+                <option value="44100" data-i18n="rate.441">44.1 kHz</option>
+                <option value="32000" data-i18n="rate.32">32 kHz</option>
+              </select>
+            </span>
+          </div>
+          <div class="row">
+            <span data-i18n="outset.audioBits">量子化ビット数:</span>
+            <span class="drop">
+              <!-- Greyed out unless リニア PCM is what is being written: a
+                   lossy encoder takes a float and spends a bitrate, and how
+                   many bits the sound had before it is not a number it has
+                   anywhere to put. -->
+              <select id="out-audio-bits">
+                <option value="" selected data-i18n="bits.same">入力と同じ</option>
+                <option value="16" data-i18n="bits.16">16 bit</option>
+                <option value="24" data-i18n="bits.24">24 bit</option>
               </select>
             </span>
           </div>

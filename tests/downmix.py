@@ -53,8 +53,12 @@ def channels(path, n):
 
 
 # Below this a channel is empty, whatever its own noise floor looks like once
-# a spectrum is normalised against it.
+# a spectrum is normalised against it. Absolute, and also relative to the
+# loudest channel there is: an encoder can leave a little of its own noise in
+# a channel the material had nothing in -- FFmpeg's DTS encoder does, in the
+# LFE -- and 30 dB under everything else is not sound anyone is listening to.
 SILENT = 1e-3
+SILENT_REL = 0.03
 
 
 def tones(x, sr):
@@ -103,6 +107,10 @@ got = channels(path, ch_count or 1)
 if got.shape[1] < sr:
     bad.append(f"only {got.shape[1]} sample(s) came out")
 print(f"  {'channel':>8} {'rms':>8}  tones")
+loudest = max(
+    (float(np.sqrt((ch[sr : sr * 3] ** 2).mean())) for ch in got if len(ch) > sr),
+    default=0.0,
+)
 for i, (ch, want) in enumerate(zip(got, wanted)):
     # A window well inside the file, clear of the seams and of the fade the
     # encoder's priming leaves at either end.
@@ -110,7 +118,8 @@ for i, (ch, want) in enumerate(zip(got, wanted)):
     rms = float(np.sqrt((seg ** 2).mean())) if len(seg) else 0.0
     # A spectrum is normalised against its own strongest bin, so an empty
     # channel's noise would come back looking like tones. It is empty.
-    found = sorted(tones(seg, sr)) if rms >= SILENT else []
+    quiet = rms < SILENT or rms < loudest * SILENT_REL
+    found = [] if quiet else sorted(tones(seg, sr))
     print(f"  {i:>8} {rms:8.4f}  {[round(f) for f in found]}")
     missing = [f for f in want if not any(abs(f - g) <= SLACK for g in found)]
     extra = [g for g in found if not any(abs(f - g) <= SLACK for f in want)]

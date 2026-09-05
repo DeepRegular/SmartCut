@@ -86,11 +86,11 @@ deb 以外はすべて FFmpeg を同梱しているので、ほかに入れる�
 
 | プラットフォーム | ファイル | 備考 |
 |---|---|---|
-| **Linux** | `SmartCut_0.3.3_amd64.AppImage` | 実行権限を付けて起動します |
-| **Linux** | `SmartCut-0.3.3-linux-x86_64.tar.gz` | 展開して `./smartcut` を実行します。FUSE を避けたい場合はこちらです |
-| **Linux (Debian/Ubuntu)** | `smartcut_0.3.3_amd64.deb` | `sudo apt install ./smartcut_0.3.3_amd64.deb`。システムの FFmpeg にリンクするので 3.0 MB で済みます |
-| **Windows** | `SmartCut_0.3.3_x64-setup.exe` | インストーラ |
-| **Windows** | `smartcut-portable-x64-0.3.3.zip` | 展開して `smartcut.exe` を実行します |
+| **Linux** | `SmartCut_0.3.4_amd64.AppImage` | 実行権限を付けて起動します |
+| **Linux** | `SmartCut-0.3.4-linux-x86_64.tar.gz` | 展開して `./smartcut` を実行します。FUSE を避けたい場合はこちらです |
+| **Linux (Debian/Ubuntu)** | `smartcut_0.3.4_amd64.deb` | `sudo apt install ./smartcut_0.3.4_amd64.deb`。システムの FFmpeg にリンクするので 3.0 MB で済みます |
+| **Windows** | `SmartCut_0.3.4_x64-setup.exe` | インストーラ |
+| **Windows** | `smartcut-portable-x64-0.3.4.zip` | 展開して `smartcut.exe` を実行します |
 
 **動作条件。** AppImage と tar.gz は glibc 2.39 以上が必要です（Ubuntu 24.04 /
 Debian 13 / Fedora 40 以降）。deb は FFmpeg 7.1 が必要なので Debian 13 /
@@ -172,10 +172,15 @@ smartcut input.ts --analyze --scenes            # シーンの変わり目を一
 扱われます。VP9 と AV1 は非対応です。連結できるエレメンタリストリーム形式を
 持たないため、別の設計が必要になります。
 
-**音声:** AAC はスマートレンダリングの対象です。ファイル内の全トラックが
-独立にカットされるので、二か国語放送は両方の言語が残ります。必要なら 5.1ch を
-ステレオに畳めます。AC-3 と MP2 はスマートレンダリングではなくコピーで通し、
-その旨を明示します。
+**音声:** AAC と Blu-ray の LPCM はスマートレンダリングの対象です。ファイル内の
+全トラックが独立にカットされるので、二か国語放送は両方の言語が残ります。必要なら
+5.1ch をステレオに畳めます。出力する音声コーデックも選べます——AAC・AC-3・DTS・
+リニア PCM——ただしコピーできるフレームが無くなるので、その場合は全編を焼き直します。
+サンプリング周波数も同じように選べ、リニア PCM なら量子化ビット数も選べます。
+AC-3・E-AC-3・MP2 はスマートレンダリングではなく
+コピーで通し、その旨を明示します。ディスクのロスレス音声——DTS-HD と TrueHD——は
+バイト単位でそのまま運び、再エンコードしません。MP4 には Blu-ray の LPCM を
+入れる箱が無いので、同じサンプルをそのまま素の PCM として書きます。
 
 **放送ストリーム（`.ts` 出力時）:** ARIB STD-B24 の字幕をバイト単位でそのまま
 引き継ぎます。番組情報（EIT）・放送局名（SDT）・放送時刻（TOT）は多重化のあとで
@@ -240,7 +245,7 @@ smartcut input.ts --analyze --scenes            # シーンの変わり目を一
 rust/     Rust コア（smartcut_core）と CLI    ← 本体
 gui/      Tauri v2 + バニラ JS の GUI
 smartcut/ Python リファレンス実装             ← テストオラクル
-tests/    E2E テスト 14 スイート・167 チェック
+tests/    E2E テスト 17 スイート・267 チェック
 docs/     ドキュメント
 ```
 

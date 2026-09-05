@@ -70,6 +70,61 @@ impl AudioMode {
     }
 }
 
+/// What the sound is written as.
+///
+/// The default is the recording's own codec, which is what every mode but
+/// [`AudioMode::Reencode`] can offer: a copied frame is a frame of whatever
+/// it already was. Naming one of the others asks for the track to be built
+/// again from its samples, and that is a whole-track re-encode however the
+/// mode was set -- the same way a downmix is.
+///
+/// Which four these are is a question of what a cut of a recording is
+/// afterwards *for*. AAC is what the broadcast carried and what every player
+/// on a phone takes. AC-3 is what a disc player expects and what a receiver
+/// decodes without being asked twice. DTS is the other one a receiver knows.
+/// LPCM is no codec at all -- the samples, written down -- which is what an
+/// editor further down the line would rather be handed than a second
+/// generation of something lossy.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub enum AudioCodec {
+    /// The recording's own, wherever the container has a box for it.
+    #[default]
+    Source,
+    Aac,
+    /// Linear PCM. Blu-ray's flavour of it into a transport stream, because
+    /// that is the only one a transport stream can declare; big-endian PCM
+    /// anywhere else. See [`carriage`].
+    Lpcm,
+    Ac3,
+    Dts,
+}
+
+impl AudioCodec {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            AudioCodec::Source => "source",
+            AudioCodec::Aac => "aac",
+            AudioCodec::Lpcm => "lpcm",
+            AudioCodec::Ac3 => "ac3",
+            AudioCodec::Dts => "dts",
+        }
+    }
+
+    /// The name as it is written on a command line or sent down from the
+    /// window. `None` for anything else, so the caller can say what it
+    /// wanted rather than silently taking the recording's own.
+    pub fn parse(s: &str) -> Option<Self> {
+        match s {
+            "" | "source" | "same" => Some(AudioCodec::Source),
+            "aac" => Some(AudioCodec::Aac),
+            "lpcm" | "pcm" => Some(AudioCodec::Lpcm),
+            "ac3" | "ac-3" => Some(AudioCodec::Ac3),
+            "dts" => Some(AudioCodec::Dts),
+            _ => None,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct CutOptions {
     /// Reorder depth used when deriving DTS from decode order.
@@ -79,7 +134,13 @@ pub struct CutOptions {
     /// source, with a little headroom so the splice does not visibly soften.
     pub bit_rate: Option<usize>,
     pub audio_mode: AudioMode,
-    /// Bits per second for re-encoded audio. `None` follows the source.
+    /// What the sound is written as. The default is the recording's own
+    /// codec; anything else is a whole-track re-encode, whatever
+    /// `audio_mode` says. See [`AudioCodec`].
+    pub audio_codec: AudioCodec,
+    /// Bits per second for re-encoded audio. `None` follows the source --
+    /// or, where the codec is not the source's, what that codec is worth at
+    /// the channel count being written. See [`derived_bit_rate`].
     pub audio_bit_rate: Option<usize>,
     /// Channels the audio is written with. `None` follows the source.
     ///
@@ -89,6 +150,28 @@ pub struct CutOptions {
     /// among the recording's 5.1 ones, so asking for one asks for the whole
     /// track, and [`AudioMode::Reencode`] is what actually runs.
     pub audio_channels: Option<u16>,
+    /// Samples per second the audio is written at. `None` follows the source.
+    ///
+    /// A rate that is not the source's is a resample, and like a downmix it
+    /// leaves no frame of the recording's that can be copied through: the
+    /// samples land on a different grid, so the whole track is built again
+    /// and [`AudioMode::Reencode`] is what actually runs.
+    ///
+    /// Not every codec speaks every rate -- AC-3 has three -- so what is
+    /// asked for here is taken to the nearest the codec being written can
+    /// name. See [`crate::audio::writable_rate`].
+    pub audio_sample_rate: Option<u32>,
+    /// Bits per sample the audio is written with. `None` follows the source.
+    ///
+    /// Only means anything where what is being written carries samples
+    /// rather than a description of them -- linear PCM, in other words. A
+    /// lossy encoder takes a float and spends a bitrate; how many bits the
+    /// sound had before it is not a number it has anywhere to put, and one
+    /// asked for is declined out loud.
+    ///
+    /// 16 or 24. Like a rate, a width that is not the source's leaves no
+    /// frame to copy and runs [`AudioMode::Reencode`].
+    pub audio_bits: Option<u8>,
     /// Which AAC the frames this tool encodes announce themselves as.
     /// The default follows the recording, which for a Japanese broadcast
     /// means MPEG-2 AAC.
@@ -260,6 +343,10 @@ struct AudioTrack {
     /// Where it came from.
     in_index: usize,
     info: crate::AudioInfo,
+    /// The rate the track is written at -- the recording's own unless one
+    /// was asked for. What a re-encoded packet's sample count is turned into
+    /// a time with, which is not the recording's rate once the two differ.
+    out_rate: u32,
     /// How this track is produced, which is not always how the caller asked:
     /// a downmix is a whole-track re-encode however it was requested.
     mode: AudioMode,
@@ -277,6 +364,9 @@ struct AudioTrack {
     /// Frames re-encoded because a boundary falls inside them, by the source
     /// packet's `pts`.
     patches: std::collections::HashMap<i64, crate::audio::Patch>,
+    /// Set while the track is still waiting for a frame it may open on. See
+    /// [`opens_a_truehd_track`]; cleared as soon as one is written.
+    need_sync: bool,
 }
 
 /// One caption track being written.
@@ -329,7 +419,7 @@ impl Writer {
 
     fn push_audio_encoded(&mut self, track: usize, mut packet: ff::Packet, pts: i64) -> Result<()> {
         let Some(t) = self.audio.get(track) else { return Ok(()) };
-        let (index, tb, rate) = (t.out_index, t.out_tb, t.info.sample_rate);
+        let (index, tb, rate) = (t.out_index, t.out_tb, t.out_rate);
         packet.set_stream(index);
         // `pts` counts samples, because that is the encoder's own clock. The
         // container keeps time in whatever it likes -- MP4 happens to use the
@@ -472,6 +562,12 @@ fn take_audio(
     // a whole audio frame, or -- in smart mode -- the frame it lands inside
     // was re-encoded beforehand with the far side faded out, and stands here
     // in place of the recording's own.
+    if writer.audio[audio.track].need_sync {
+        if !opens_a_truehd_track(packet.data()) {
+            return Ok(past_end);
+        }
+        writer.audio[audio.track].need_sync = false;
+    }
     let track = &writer.audio[audio.track];
     let patch = track.patches.get(&pts).filter(|p| p.after.is_none() || p.after == track.prev);
     let packet = match patch {
@@ -486,6 +582,25 @@ fn take_audio(
     writer.audio[audio.track].prev = Some(pts);
     writer.push_audio(audio.track, packet, t + audio.offset, dur)?;
     Ok(past_end)
+}
+
+/// Whether a TrueHD packet is one a track may open on.
+///
+/// TrueHD carries its format in a *major sync* that recurs through the
+/// stream -- every 16 access units in the streams measured here, and no
+/// rarer than the format requires. Everything between two of them is read
+/// against the last one, so a track opening anywhere else is a track whose
+/// first frames say nothing about themselves.
+///
+/// A transport stream does not care: it declares the track in its programme
+/// map and a decoder joining mid-stream waits for the next sync, which is
+/// what a decoder joining a broadcast does anyway. An MP4 does care -- it
+/// builds the track's `dmlp` box out of the first packet it is handed, and
+/// refuses the file outright when that packet has no sync in it. So a cut
+/// into an MP4 opens its TrueHD on the first sync inside the range: up to a
+/// sync interval later than the pictures, and the alternative is no file.
+fn opens_a_truehd_track(data: Option<&[u8]>) -> bool {
+    data.is_some_and(|d| d.len() >= 8 && d[4..8] == [0xF8, 0x72, 0x6F, 0xBA])
 }
 
 /// Emit a caption statement if it falls inside this segment's stretch.
@@ -1087,8 +1202,24 @@ struct AudioSetup {
     /// How the track is produced, which is not always how it was asked for:
     /// a downmix is a whole-track re-encode however it was requested.
     mode: AudioMode,
+    /// The codec the track is written as. The recording's own, except where
+    /// one was asked for by name or the container has no box for it -- see
+    /// [`carriage`].
+    target: ff::codec::Id,
+    /// Whether that is a different codec from the one that arrived. What
+    /// the output says about the track then has to be said afresh: the
+    /// recording's own map describes a stream this file does not contain.
+    recoded: bool,
+    /// What to ask the encoder to take, where the recording's own answer is
+    /// not the one meant. `None` follows the recording -- see `like` in
+    /// [`crate::audio`].
+    like: Option<ff::format::Sample>,
     /// Channels out.
     channels: u16,
+    /// The rate out, which is the encoder's last word rather than the
+    /// caller's: the stream is declared at it and its packets are timed
+    /// against it.
+    sample_rate: u32,
     /// The fold, when there is one: what it was, and what it became.
     downmix: Option<(u16, u16)>,
     /// What the recording's own frames of this track look like from outside.
@@ -1100,6 +1231,98 @@ struct AudioSetup {
     frame_as: Option<crate::adts::AdtsFormat>,
     aac: AacVersion,
     bit_rate: usize,
+}
+
+/// What a track is written as, given where it is going.
+///
+/// A cut copies the recording's own frames, so the codec on the way out is
+/// the codec on the way in -- with one exception, and it comes off a Blu-ray.
+/// **Blu-ray LPCM** (`pcm_bluray`, and DVD's `pcm_dvd` beside it) is carried
+/// in a private stream that only a transport stream describes: an MP4 asked
+/// to declare one stops the whole cut with *"could not find tag for codec
+/// pcm_bluray"*, and an MKV does no better.
+///
+/// What it holds, though, is plain PCM samples, and every container has a box
+/// for those. So the track is written as big-endian PCM -- `ipcm` in an MP4,
+/// `twos` or `in24` in a QuickTime file -- at the width the recording's own
+/// samples have. Nothing is lost on the way: the samples pass through a
+/// 32 bit float, whose 24 bit mantissa holds every value a 24 bit recording
+/// can carry, and Blu-ray LPCM goes no deeper than 24.
+///
+/// Everything else a Blu-ray carries goes out as it came in. DTS and TrueHD
+/// have boxes of their own in MP4; TrueHD's is one libavformat will write
+/// only when asked to write outside the standard, which is done -- and said
+/// -- where the muxer is opened.
+///
+/// A codec asked for by name answers before any of that: it is the whole
+/// point of the setting, and the only question left is which box the
+/// container has for it. Only LPCM has two -- see [`AudioCodec::Lpcm`].
+/// `bits` is how wide the recording's own samples are -- 24 or 16, as
+/// [`crate::audio::pcm_bits`] settles it -- which is the width an LPCM track
+/// is written at whether the recording's own or a caller's choice put it
+/// there.
+fn carriage(source: ff::codec::Id, to_ts: bool, bits: u8, want: AudioCodec) -> ff::codec::Id {
+    let pcm = || {
+        if to_ts {
+            // The one shape a transport stream can declare, and the reason
+            // the note above exists in the first place.
+            ff::codec::Id::PCM_BLURAY
+        } else if bits > 16 {
+            ff::codec::Id::PCM_S24BE
+        } else {
+            ff::codec::Id::PCM_S16BE
+        }
+    };
+    match want {
+        AudioCodec::Aac => ff::codec::Id::AAC,
+        AudioCodec::Ac3 => ff::codec::Id::AC3,
+        AudioCodec::Dts => ff::codec::Id::DTS,
+        AudioCodec::Lpcm => pcm(),
+        AudioCodec::Source => match (to_ts, source) {
+            (false, ff::codec::Id::PCM_BLURAY | ff::codec::Id::PCM_DVD) => pcm(),
+            _ => source,
+        },
+    }
+}
+
+/// What a codec is worth at this many channels, in bits per second.
+///
+/// Only consulted where the recording's own rate says nothing about the
+/// track being written -- a 192 kbit/s AAC broadcast asked for as DTS is not
+/// a 192 kbit/s DTS track, it is a DTS track that would not decode. Each
+/// figure is what the format is ordinarily carried at: AAC as a broadcast
+/// sends it, AC-3 as a disc holds it, DTS at its own two rates.
+///
+/// LPCM has no rate to choose. Its size is the samples' own -- channels
+/// times bits times the sample rate -- and the encoder ignores what it is
+/// handed, which is why the window greys the control out.
+fn derived_bit_rate(target: ff::codec::Id, channels: u16) -> usize {
+    use ff::codec::Id::*;
+    match target {
+        AC3 => match channels {
+            0 | 1 => 96_000,
+            2 => 192_000,
+            _ => 448_000,
+        },
+        DTS => {
+            if channels > 2 {
+                1_536_000
+            } else {
+                768_000
+            }
+        }
+        MP2 | MP3 => match channels {
+            0 | 1 => 128_000,
+            _ => 256_000,
+        },
+        _ if crate::audio::uncompressed(target) => 0,
+        // AAC and anything else that reaches here.
+        _ => match channels {
+            0 | 1 => 96_000,
+            2 => 192_000,
+            n => 64_000 * n as usize,
+        },
+    }
 }
 
 /// Decide what will be done to one sound track.
@@ -1118,27 +1341,173 @@ fn plan_audio(
     many: bool,
 ) -> Result<AudioSetup> {
     let named = if many { format!(" on PID 0x{:04x}", info.pid) } else { String::new() };
-    let source_adts = {
-        let mut probe = ff::format::input(&path)?;
-        crate::adts::framing(&mut probe, info.stream_index)
+    let mut probe = ff::format::input(&path)?;
+    // What the recording's own frames are, and how wide their samples come
+    // out -- read off the probe that is opened here anyway.
+    let (source_id, source_bits) = {
+        let params = probe
+            .stream(info.stream_index)
+            .ok_or_else(|| anyhow!("audio stream {} vanished", info.stream_index))?
+            .parameters();
+        (params.id(), crate::audio::pcm_bits(&params))
     };
+    // How wide the samples are written. The recording's own unless a width
+    // was asked for -- and `carriage` is the only thing below that reads it
+    // before the codec is settled, which is exactly where it means
+    // something: an LPCM track is 16 bit or it is 24, and that is the choice.
+    let bits = opts.audio_bits.unwrap_or(source_bits);
+    let source_adts = crate::adts::framing(&mut probe, info.stream_index);
+    drop(probe);
+    // What the track is written as. Settled before the mode, because it can
+    // decide it: there is no copying a frame into a codec it is not in.
+    let target = carriage(source_id, to_ts, bits, opts.audio_codec);
+    // Whether the codec on the way out is one the caller named rather than
+    // the one that came in. `carriage` can arrive at the same answer either
+    // way -- AAC asked of an AAC recording is the recording's own codec --
+    // and where it does there is nothing here to explain or force.
+    let recoded = target != source_id;
+    let asked_for = recoded && opts.audio_codec != AudioCodec::Source;
+    // Lossless sound is never re-encoded here -- see `carried_whole` in
+    // [`crate::audio`]. A whole-track re-encode of one, or a downmix, which
+    // is a re-encode by another name, is not something to fail the cut over
+    // ("no encoder for TRUEHD"): it is something to decline out loud and
+    // carry the recording's own frames instead.
+    //
+    // Naming a codec is the one thing that overrules it. Declining to take
+    // a recording's last bit away is a kindness only while nobody has asked
+    // for AAC by name; asked, it is a program refusing to do what it was
+    // told, and the encoder it would have refused to open is not the
+    // recording's own but the one that was named.
+    let lossless = crate::audio::carried_whole(source_id) && !asked_for;
+    let asked_channels = opts.audio_channels.unwrap_or(info.channels);
+    // Everything about the samples themselves that was asked for and cannot
+    // be given, said in one breath: a lossless track is carried through as
+    // it is, and each of these is a way of asking for it not to be.
+    let declined: Vec<String> = if lossless {
+        [
+            (asked_channels != info.channels)
+                .then(|| format!("{} channels, not the {asked_channels} asked for", info.channels)),
+            opts.audio_sample_rate
+                .filter(|&r| r != info.sample_rate)
+                .map(|r| format!("{} Hz, not the {r} asked for", info.sample_rate)),
+            opts.audio_bits
+                .filter(|&b| b != source_bits)
+                .map(|b| format!("{source_bits} bit samples, not the {b} bit asked for")),
+        ]
+        .into_iter()
+        .flatten()
+        .collect()
+    } else {
+        Vec::new()
+    };
+    if lossless && (!declined.is_empty() || opts.audio_mode == AudioMode::Reencode) {
+        eprintln!(
+            "note: {source_id:?}{named} is lossless sound and every encoder here would take \
+             that away from it, so it is carried through as it is{}. Its boundaries land on \
+             whole frames.",
+            if declined.is_empty() {
+                String::new()
+            } else {
+                format!(" -- {}", declined.join(", "))
+            },
+        );
+    }
     // Channels out, and whether that is a downmix. A downmix is the one audio
     // setting that decides the mode rather than living under it: there is no
     // copying a 5.1 frame into a stereo track, so it is a whole-track
     // re-encode or it is nothing.
-    let channels = opts.audio_channels.unwrap_or(info.channels);
+    let channels = if lossless { info.channels } else { asked_channels };
     let downmix = (channels != info.channels).then_some((info.channels, channels));
-    let mode = match downmix {
-        Some((from, to)) if opts.audio_mode != AudioMode::Reencode => {
+    // The rate the track is written at. What was asked for, taken to the
+    // nearest the codec being written can actually speak -- AC-3 has three
+    // and MP2 six, and an encoder handed a rate it does not list refuses to
+    // open at all.
+    let asked_rate =
+        if lossless { info.sample_rate } else { opts.audio_sample_rate.unwrap_or(info.sample_rate) };
+    let sample_rate = crate::audio::writable_rate(target, asked_rate);
+    if sample_rate != asked_rate {
+        eprintln!(
+            "note: {asked_rate} Hz was asked for{named} and {target:?} is not written at that \
+             rate, so the track is written at {sample_rate} Hz, which is the nearest it can be."
+        );
+    }
+    let resampled = (sample_rate != info.sample_rate).then_some((info.sample_rate, sample_rate));
+    // A width asked for only reaches a codec that carries samples. Every
+    // lossy encoder here takes a float and writes a description of the
+    // sound; how many bits the sound had before it is not a number one of
+    // them has anywhere to put.
+    let requantised = if crate::audio::uncompressed(target) {
+        // Only where the recording carries samples of its own for the new
+        // width to be a change *from*, and only where the codec was not
+        // named: a codec asked for by name is already a whole-track
+        // re-encode and already says so below, and the width it is written
+        // at is part of that one answer rather than a second one.
+        (!lossless && !asked_for && bits != source_bits).then_some((source_bits, bits))
+    } else {
+        if let Some(b) = opts.audio_bits.filter(|_| !lossless) {
             eprintln!(
-                "note: {from} channels were asked for as {to}{named}, which no frame of the \
-                 recording's own can be copied through, so the whole track is re-encoded \
-                 rather than {}.",
+                "note: {b} bit samples were asked for{named} and {target:?} does not carry \
+                 samples but a description of them, so there is nowhere in it to put a width. \
+                 The setting is left aside; --audio-bitrate is what decides the size of a \
+                 lossy track."
+            );
+        }
+        None
+    };
+    // The three ways of asking for a sample that is not the recording's
+    // sample. Each one leaves nothing to copy -- there is no putting a
+    // stereo frame among 5.1 ones, and no more putting a 44.1 kHz frame
+    // among 48 kHz ones -- so any of them is a whole-track re-encode or it
+    // is nothing.
+    let rebuild = downmix
+        .map(|(from, to)| format!("{from} channels were asked for as {to}"))
+        .or_else(|| resampled.map(|(from, to)| format!("{from} Hz was asked for as {to} Hz")))
+        .or_else(|| {
+            requantised.map(|(from, to)| format!("{from} bit samples were asked for as {to} bit"))
+        });
+    let mode = match rebuild {
+        Some(what) if opts.audio_mode != AudioMode::Reencode => {
+            eprintln!(
+                "note: {what}{named}, which no frame of the recording's own can be copied \
+                 through, so the whole track is re-encoded rather than {}.",
                 opts.audio_mode.as_str(),
             );
             AudioMode::Reencode
         }
+        Some(_) => AudioMode::Reencode,
+        // The one mode a lossless track cannot be given. The other two copy
+        // its frames already, and smart mode says for itself why it did.
+        _ if lossless && opts.audio_mode == AudioMode::Reencode => AudioMode::Copy,
         _ => opts.audio_mode,
+    };
+    // Where the codec on the way out is not the codec on the way in there is
+    // nothing to copy: every frame is written afresh, whatever was asked for.
+    let mode = match (recoded, asked_for) {
+        (false, _) => mode,
+        // Asked for by name. Worth a note only where it overrules something
+        // the caller also said -- a mode that copies frames cannot be run
+        // on frames that have to be built.
+        (true, true) => {
+            if opts.audio_mode != AudioMode::Reencode {
+                eprintln!(
+                    "note: {target:?} was asked for{named} and the recording carries \
+                     {source_id:?}, which no frame of can be copied through, so the whole \
+                     track is re-encoded rather than {}.",
+                    opts.audio_mode.as_str(),
+                );
+            }
+            AudioMode::Reencode
+        }
+        // Not asked for: the container has no box for what the recording
+        // carries, which is a thing to say out loud.
+        (true, false) => {
+            eprintln!(
+                "note: {source_id:?}{named} is written as {target:?}, because only a transport \
+                 stream can declare a Blu-ray LPCM track. The samples are the recording's own; \
+                 what changes is the box around them. Write a .ts to keep it as it was."
+            );
+            AudioMode::Reencode
+        }
     };
     // Asking for the AAC the recording does not carry only reaches the frames
     // written here -- the copied ones keep the headers they came with -- so
@@ -1174,36 +1543,115 @@ fn plan_audio(
     // stream, where framing them here is the only way to say MPEG-2.
     //
     // A downmixed frame is also a frame with a different channel count, and
-    // the header is where a transport stream says so.
+    // a resampled one a frame at a different rate; the header is where a
+    // transport stream says both, so both have to be said again there.
+    //
+    // And only where AAC is what is being written. ADTS is AAC's framing and
+    // nothing else's: a header in front of an AC-3 frame is six bytes of
+    // nonsense that a decoder will try to read as a frame.
     let frame_as = match (mode, source_adts) {
+        _ if target != ff::codec::Id::AAC => None,
         (AudioMode::Smart, Some(f)) => Some(f.as_version(aac)),
-        (AudioMode::Reencode, Some(f)) if to_ts => Some(match downmix {
-            Some((_, to)) => f.as_version(aac).with_channels(to),
-            None => f.as_version(aac),
-        }),
+        (AudioMode::Reencode, Some(f)) if to_ts => {
+            let mut f = f.as_version(aac);
+            if let Some((_, to)) = downmix {
+                f = f.with_channels(to);
+            }
+            if resampled.is_some() {
+                f = f.with_rate(sample_rate);
+            }
+            Some(f)
+        }
         _ => None,
     };
     // Following the recording's own rate is right until the channels stop
     // being the recording's: 384 kbit/s is what 5.1 cost, not what the stereo
     // it was folded into is worth, so the derived rate comes down with the
     // channel count. An explicit rate is taken as given.
+    //
+    // Following it says nothing at all once the codec is not the recording's:
+    // what a broadcast spent on AAC is not what the same programme is worth
+    // as AC-3, and as DTS it is a rate the format does not have. There the
+    // codec's own figure for the channel count is the derived one.
     let bit_rate = opts.audio_bit_rate.unwrap_or_else(|| {
+        if recoded {
+            return derived_bit_rate(target, channels);
+        }
         let src_rate = info.bit_rate.unwrap_or(192_000);
         match downmix {
             Some((from, to)) if from > 0 => (src_rate * to as usize / from as usize).max(128_000),
             _ => src_rate,
         }
     });
+    // What the encoder is asked to take. Ordinarily the recording's own
+    // samples, which is what keeps a Blu-ray's frames the length they were.
+    // Two things are the exception, and a width asked for outright is the
+    // plainer of them. The other is a codec asked for by name: a lossy
+    // recording decodes to a float, which says nothing about how many bits
+    // it had, and the LPCM encoder handed one reaches for the widest width
+    // it has -- 24 bits of a recording that never had 16, half again the
+    // size and not one sample better. The width settled on above is the one
+    // meant in both cases.
+    let width = if bits > 16 {
+        ff::format::Sample::I32(ff::format::sample::Type::Packed)
+    } else {
+        ff::format::Sample::I16(ff::format::sample::Type::Packed)
+    };
+    let chose_width = asked_for || opts.audio_bits.is_some();
+    let like = (chose_width && crate::audio::uncompressed(target)).then_some(width);
     Ok(AudioSetup {
         info: info.clone(),
         mode,
+        target,
+        recoded,
+        like,
         channels,
+        sample_rate,
         downmix,
         source_adts,
         frame_as,
         aac,
         bit_rate,
     })
+}
+
+/// How a transport stream declares a codec, for the map the graft writes.
+///
+/// The same answers the muxer gives -- these are read off what it wrote,
+/// codec by codec -- except for LPCM, where the muxer has two answers and
+/// only one of them can be read back. See [`crate::si::Declared`].
+///
+/// `None` for a codec that is not written into a transport stream at all,
+/// which is most of them: the big-endian PCM a cut writes into an MP4 has no
+/// business in this table, because nothing that reaches this function is
+/// going anywhere but a transport stream.
+fn declared_as(target: ff::codec::Id) -> Option<crate::si::Declared> {
+    let plain = |stream_type| {
+        Some(crate::si::Declared { stream_type, descriptors: Vec::new(), program_info: Vec::new() })
+    };
+    match target {
+        // ADTS AAC, which is what everything here frames it as.
+        ff::codec::Id::AAC => plain(0x0F),
+        // 0x81 and a registration descriptor saying AC-3, which is what a
+        // receiver looks for.
+        ff::codec::Id::AC3 => Some(crate::si::Declared {
+            stream_type: 0x81,
+            descriptors: vec![0x05, 0x04, b'A', b'C', b'-', b'3'],
+            program_info: Vec::new(),
+        }),
+        ff::codec::Id::EAC3 => plain(0x87),
+        ff::codec::Id::DTS => plain(0x82),
+        // 0x80 is HDMV LPCM only in a stream that has registered itself as
+        // HDMV, and means other things in one that has not -- so the
+        // registration goes in with it or neither does.
+        ff::codec::Id::PCM_BLURAY => Some(crate::si::Declared {
+            stream_type: 0x80,
+            descriptors: Vec::new(),
+            program_info: vec![0x05, 0x04, b'H', b'D', b'M', b'V'],
+        }),
+        ff::codec::Id::MP2 => plain(0x04),
+        _ => None,
+    }
 }
 
 /// Put the recording's own tables into the finished cut.
@@ -1225,18 +1673,25 @@ fn graft_tables(
     output: &str,
     tables: crate::si::Tables,
 ) -> Result<crate::si::Stats> {
-    let mut streams = vec![crate::si::GraftStream { pid: video_pid as u16, faithful: true }];
+    let mut streams =
+        vec![crate::si::GraftStream { pid: video_pid as u16, faithful: true, declared: None }];
     for setup in setups {
         streams.push(crate::si::GraftStream {
             pid: setup.info.pid as u16,
             // A folded track no longer has the channels the recording's own
             // audio component descriptor names, and saying it does is worse
-            // than saying nothing.
-            faithful: setup.downmix.is_none(),
+            // than saying nothing. A track in another codec is further from
+            // the description again.
+            faithful: setup.downmix.is_none() && !setup.recoded,
+            declared: setup.recoded.then(|| declared_as(setup.target)).flatten(),
         });
     }
     for c in captions {
-        streams.push(crate::si::GraftStream { pid: c.pid as u16, faithful: true });
+        streams.push(crate::si::GraftStream {
+            pid: c.pid as u16,
+            faithful: true,
+            declared: None,
+        });
     }
 
     let ranges = plans
@@ -1404,6 +1859,25 @@ pub fn cut_with_progress(
         let name = octx.format().name().to_string();
         name.contains("mp4") || name.contains("mov")
     };
+    // TrueHD in an MP4 is a box libavformat will write but will not vouch
+    // for: it is outside the standard, and asked for one without being told
+    // that is wanted the muxer stops the cut outright -- "truehd in MP4
+    // support is experimental". A Blu-ray's lossless sound is worth more than
+    // the refusal, so it is asked for, and said out loud.
+    let outside = setups
+        .iter()
+        .any(|s| matches!(s.target, ff::codec::Id::TRUEHD | ff::codec::Id::MLP));
+    if mp4ish && outside {
+        unsafe {
+            (*octx.as_mut_ptr()).strict_std_compliance = ff::ffi::FF_COMPLIANCE_EXPERIMENTAL;
+        }
+        eprintln!(
+            "note: TrueHD in an MP4 is outside the standard, not every player will find it, \
+             and the track has to open on one of the stream's own sync points -- so its \
+             sound starts up to a sync interval after the pictures, which is about 13 ms in \
+             the streams measured. It is written all the same; a .ts carries it as it was."
+        );
+    }
     // Only MP4-family containers need the reframing dance; Annex-B containers
     // already carry parameter sets in-band, and their muxers convert as needed.
     let reframe = match (mp4ish, src.video.framing, src.video.codec.as_str()) {
@@ -1443,8 +1917,11 @@ pub fn cut_with_progress(
         let reencoder = match setup.mode {
             AudioMode::Reencode => Some(crate::audio::Reencoder::new(
                 params.clone(),
+                setup.target,
+                setup.like,
                 &setup.info,
                 setup.channels,
+                setup.sample_rate,
                 setup.bit_rate,
                 setup.frame_as,
             )?),
@@ -1465,7 +1942,9 @@ pub fn cut_with_progress(
             }
             _ => ost.set_parameters(params),
         }
-        ost.set_time_base(ff::Rational::new(1, setup.info.sample_rate as i32));
+        // The rate the track is written at, which is the recording's own
+        // unless one was asked for.
+        ost.set_time_base(ff::Rational::new(1, setup.sample_rate as i32));
         // Carried across so the muxer writes the language descriptor the
         // recording had; without it the audio arrives anonymous -- and on a
         // bilingual recording, anonymous twice over.
@@ -1581,12 +2060,15 @@ pub fn cut_with_progress(
             out_tb: octx.stream(out_index).map_or(1.0 / 90_000.0, |s| f64::from(s.time_base())),
             in_index: setup.info.stream_index,
             info: setup.info.clone(),
+            out_rate: setup.sample_rate,
             mode: setup.mode,
             written: 0,
             prev: None,
             end: None,
             reencoder,
             patches,
+            need_sync: mp4ish
+                && matches!(setup.target, ff::codec::Id::TRUEHD | ff::codec::Id::MLP),
         })
         .collect();
     let caption_tracks: Vec<CaptionTrack> = captions
@@ -1717,6 +2199,13 @@ pub fn cut_with_progress(
         bail!("segments reported {pictures} pictures, wrote {}", writer.written);
     }
 
+    // Close the output before the tables go in. `write_trailer` flushes the
+    // muxer, but the file handle is the output context's and only dropping it
+    // gives it up -- and the graft finishes by renaming its rewritten copy
+    // over this file, which Windows refuses to do while the file is open.
+    let progress = writer.progress.take();
+    drop(writer);
+
     // The file is complete and correct as a file; what it does not yet have
     // is the broadcast's own account of itself. See [`crate::si`].
     if let Some(service) = tables.as_ref() {
@@ -1747,7 +2236,7 @@ pub fn cut_with_progress(
         }
     }
 
-    if let Some(report) = &writer.progress {
+    if let Some(report) = &progress {
         report(1.0);
     }
     Ok(())

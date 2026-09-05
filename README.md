@@ -90,11 +90,11 @@ Every build except the `.deb` includes FFmpeg, so there is nothing else to insta
 
 | Platform | File | Notes |
 |---|---|---|
-| **Linux** | `SmartCut_0.3.3_amd64.AppImage` | Make it executable and run it |
-| **Linux** | `SmartCut-0.3.3-linux-x86_64.tar.gz` | Unpack and run `./smartcut`. Use this if you would rather not deal with FUSE |
-| **Linux (Debian/Ubuntu)** | `smartcut_0.3.3_amd64.deb` | `sudo apt install ./smartcut_0.3.3_amd64.deb`. Only 3.0 MB, because it links against your system FFmpeg |
-| **Windows** | `SmartCut_0.3.3_x64-setup.exe` | Installer |
-| **Windows** | `smartcut-portable-x64-0.3.3.zip` | Unzip and run `smartcut.exe` |
+| **Linux** | `SmartCut_0.3.4_amd64.AppImage` | Make it executable and run it |
+| **Linux** | `SmartCut-0.3.4-linux-x86_64.tar.gz` | Unpack and run `./smartcut`. Use this if you would rather not deal with FUSE |
+| **Linux (Debian/Ubuntu)** | `smartcut_0.3.4_amd64.deb` | `sudo apt install ./smartcut_0.3.4_amd64.deb`. Only 3.0 MB, because it links against your system FFmpeg |
+| **Windows** | `SmartCut_0.3.4_x64-setup.exe` | Installer |
+| **Windows** | `smartcut-portable-x64-0.3.4.zip` | Unzip and run `smartcut.exe` |
 
 **Requirements.** The AppImage and tar.gz need glibc 2.39 or newer, which means
 Ubuntu 24.04, Debian 13, Fedora 40 or later. The `.deb` needs FFmpeg 7.1, which
@@ -179,10 +179,15 @@ interlacing, and 2:3 pulldown is handled on a field-level timeline. VP9 and AV1
 are not supported — they have no elementary-stream form that can be concatenated,
 so they would need a different design.
 
-**Audio:** AAC is smart-rendered. Every track in the file is cut independently, so
-a bilingual broadcast keeps both languages. 5.1 can be folded down to stereo when
-you need it. AC-3 and MP2 are copied through rather than smart-rendered, and
-SmartCut tells you when that happens.
+**Audio:** AAC is smart-rendered, and so is a Blu-ray's LPCM. Every track in the file
+is cut independently, so a bilingual broadcast keeps both languages. 5.1 can be folded
+down to stereo when you need it, and the sound can be written as another codec
+entirely — AAC, AC-3, DTS or linear PCM — which leaves no frame to copy and so
+re-encodes the whole track. The sample rate goes the same way, and for linear PCM
+so does the bit depth. AC-3, E-AC-3 and MP2 are copied through rather than
+smart-rendered, and SmartCut tells you when that happens. A disc's lossless sound —
+DTS-HD and TrueHD — is carried byte for byte and never re-encoded. Writing an MP4, where
+there is no box for Blu-ray LPCM, the same samples go in as plain PCM.
 
 **Broadcast streams (when writing a `.ts`):** ARIB STD-B24 captions are carried
 across byte for byte. Programme information (EIT), station name (SDT) and
@@ -250,7 +255,7 @@ were hit.
 rust/     Rust core (smartcut_core) and CLI   <- the real implementation
 gui/      Tauri v2 + vanilla JS GUI
 smartcut/ Python reference implementation     <- test oracle
-tests/    14 end-to-end suites, 167 checks
+tests/    17 end-to-end suites, 267 checks
 docs/     Documentation
 ```
 

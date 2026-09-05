@@ -133,10 +133,15 @@ fn main() -> Result<()> {
     let mut use_logo = false;
     // Whatever the engine has as its default, which is smart rendering.
     let mut audio_mode = smartcut_core::AudioMode::default();
+    // And the recording's own codec, which is what every mode but a
+    // whole-track re-encode can offer.
+    let mut audio_codec = smartcut_core::AudioCodec::default();
     let mut aac = smartcut_core::AacVersion::Auto;
-    // Both follow the recording unless they are asked not to.
+    // All of these follow the recording unless they are asked not to.
     let mut audio_channels: Option<u16> = None;
     let mut audio_bit_rate: Option<usize> = None;
+    let mut audio_sample_rate: Option<u32> = None;
+    let mut audio_bits: Option<u8> = None;
     // Everything the recording carries is written unless it is named here.
     let mut drop_streams: Vec<usize> = Vec::new();
     // A cut of a broadcast is a partial transport stream unless asked for
@@ -176,6 +181,13 @@ fn main() -> Result<()> {
                     other => bail!("--audio-mode wants copy, smart or reencode, got {other:?}"),
                 };
             }
+            "--audio-codec" => {
+                i += 1;
+                let v = args.get(i).context("--audio-codec needs a name")?;
+                audio_codec = smartcut_core::AudioCodec::parse(v).with_context(|| {
+                    format!("--audio-codec wants source, aac, lpcm, ac3 or dts, got {v:?}")
+                })?;
+            }
             "--audio-channels" => {
                 i += 1;
                 let v = args.get(i).context("--audio-channels needs a count")?;
@@ -200,6 +212,34 @@ fn main() -> Result<()> {
                         .filter(|b| (8000.0..=2_000_000.0).contains(b))
                         .map(|b| b as usize)
                         .with_context(|| format!("--audio-bitrate wants 8k..2000k, got {v:?}"))?,
+                );
+            }
+            "--audio-samplerate" => {
+                i += 1;
+                let v = args.get(i).context("--audio-samplerate needs a rate")?;
+                // Written either way round -- 48k as it is spoken, or the
+                // samples per second the engine actually takes.
+                let hz = match v.strip_suffix(['k', 'K']) {
+                    Some(n) => n.parse::<f64>().map(|n| n * 1000.0),
+                    None => v.parse::<f64>(),
+                };
+                audio_sample_rate = Some(
+                    hz.ok()
+                        .filter(|r| (8000.0..=192_000.0).contains(r))
+                        .map(|r| r as u32)
+                        .with_context(|| {
+                            format!("--audio-samplerate wants 8000..192000, got {v:?}")
+                        })?,
+                );
+            }
+            "--audio-bits" => {
+                i += 1;
+                let v = args.get(i).context("--audio-bits needs a width")?;
+                audio_bits = Some(
+                    v.parse::<u8>()
+                        .ok()
+                        .filter(|b| matches!(b, 16 | 24))
+                        .with_context(|| format!("--audio-bits wants 16 or 24, got {v:?}"))?,
                 );
             }
             "--aac" => {
@@ -700,10 +740,25 @@ fn main() -> Result<()> {
     // What the audio will be, which is not always what was asked for: a
     // downmix has no copy path, and the engine says so and re-encodes.
     let asked = audio_channels.filter(|&c| src.audio.as_ref().is_some_and(|a| a.channels != c));
+    // A rate the recording does not have is the same story told about the
+    // other axis of a sample, and so is a width.
+    let resampled =
+        audio_sample_rate.filter(|&r| src.audio.as_ref().is_some_and(|a| a.sample_rate != r));
+    let requantised = audio_bits.filter(|&b| src.audio.as_ref().is_some_and(|a| a.bits != b));
+    // As is naming a codec: there is no copying a frame into one it is not
+    // already in.
+    let recoded = audio_codec != smartcut_core::AudioCodec::Source;
     println!(
-        "\nrender:  audio {}{}{}",
-        if asked.is_some() { "reencode" } else { audio_mode.as_str() },
+        "\nrender:  audio {}{}{}{}{}{}",
+        if asked.is_some() || resampled.is_some() || requantised.is_some() || recoded {
+            "reencode"
+        } else {
+            audio_mode.as_str()
+        },
+        if recoded { format!(", as {}", audio_codec.as_str()) } else { String::new() },
         asked.map_or(String::new(), |c| format!(", downmixed to {c}ch")),
+        resampled.map_or(String::new(), |r| format!(", at {r} Hz")),
+        requantised.map_or(String::new(), |b| format!(", {b} bit")),
         audio_bit_rate.map_or(String::new(), |b| format!(", {} kbit/s", b / 1000)),
     );
     // What is going out beside the pictures, and what is not.
@@ -734,18 +789,33 @@ fn main() -> Result<()> {
         &out,
         &CutOptions {
             audio_mode,
+            audio_codec,
             aac,
             audio_channels,
             audio_bit_rate,
+            audio_sample_rate,
+            audio_bits,
             drop_streams,
             tables,
             ..Default::default()
         },
     )?;
-    if audio_es {
+    // The sidecar exists for the ARIB workflow, where what is wanted beside
+    // the video is an AAC elementary stream. A cut written in another codec
+    // has no AAC in it to put there, and a `.aac` holding AC-3 would be worse
+    // than no file at all.
+    let es_is_aac =
+        matches!(audio_codec, smartcut_core::AudioCodec::Source | smartcut_core::AudioCodec::Aac);
+    if audio_es && es_is_aac {
         let beside = std::path::Path::new(&out).with_extension("aac");
         let n = smartcut_core::write_audio_es(&out, &beside.to_string_lossy(), aac)?;
         println!("wrote {} ({n} packets)", beside.display());
+    } else if audio_es {
+        eprintln!(
+            "note: --audio-es writes the sound out as an AAC elementary stream, and this cut's \
+             sound is {}. No sidecar was written.",
+            audio_codec.as_str(),
+        );
     }
     println!("wrote {out}");
     Ok(())

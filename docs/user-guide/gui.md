@@ -329,8 +329,11 @@ will be written to.
 | **Filename prefix** | `cut_` by default, so `cut_recording.ts` |
 | **Container** | `Same as the input`, or a specific one. The extension is what decides the container |
 | **Audio** | `Smart rendering (default)` / `Copy through` / `Re-encode everything` |
+| **Audio codec** | `Same as the input`, or AAC, AC-3, DTS, linear PCM. Asking for a codec the recording does not carry **re-encodes the whole track** |
 | **Audio channels** | `Same as the input`, or 1ch, 2ch, 5.1ch. Asking for a different count is a downmix, and **re-encodes the whole track** |
-| **Audio bitrate** | For the frames that are rebuilt. `Leave it to the engine` follows the material |
+| **Sample rate** | `Same as the input`, or 48 / 44.1 / 32 kHz. A different rate is a resample, and **re-encodes the whole track**. A codec that cannot speak the rate asked for is written at the nearest it can |
+| **Bit depth** | `Same as the input`, 16 or 24 bit. Only live under `Linear PCM`: every other codec writes a description of the sound rather than the sound, and has nowhere to put a width. It decides an uncompressed track's size outright — channels x width x rate — which is the figure shown in place of the bitrate |
+| **Audio bitrate** | For the frames that are rebuilt. `Leave it to the engine` picks what the codec is worth at that channel count |
 | **Write the keyframes to a separate .keyframe file** | Puts a `.keyframe` file next to the video, under the same name |
 
 **What the three audio modes differ on.** The default, `Smart rendering`, rebuilds
@@ -340,7 +343,38 @@ is lossless to the byte, but a little of the cut-away side survives at the join.
 `Re-encode everything` cuts to sample precision, at the price of rebuilding the
 whole track. There is more detail in [audio](../technical/audio.md).
 
-**Audio channels and bitrate are greyed out unless the mode is
+**Sound that came off a disc.** Blu-ray LPCM is smart rendered, the same as AAC.
+DTS-HD and TrueHD are lossless, and nothing here rebuilds a frame of one: they are
+copied whichever mode is set, boundaries and all, and SmartCut says so. Writing an
+MP4, where there is no box for Blu-ray LPCM, the same samples go in as plain PCM --
+nothing is lost -- and TrueHD goes in as well, outside the standard and starting a
+few milliseconds after the pictures. A `.ts` or an `.m2ts` carries all of it exactly
+as the disc had it, which is what `Same as the input` gives you.
+
+**What choosing a codec does.** The only frame that can be copied is a frame that
+is already in the codec being written, so asking for another one is asking for the
+whole track to be rebuilt -- the same reasoning as a downmix. Choose by what the
+file is for afterwards: AAC is what the broadcast carried and what plays on a
+phone; AC-3 is what a disc player and an AV receiver decode without being asked
+twice, and DTS is the other one a receiver knows; linear PCM is uncompressed, which
+is what to hand to an editor that will encode again later.
+
+The bitrates on offer change with the codec. AC-3 and DTS both carry the rate as a
+number out of a table the format defines, so only the rates in that table are
+offered. **For linear PCM the bitrate is greyed out and shows what the track will
+actually cost** -- an uncompressed track's size is channels times bit depth times the
+sample rate, so there is nothing to choose and everything to be told. A list whose clips
+do not all cost the same is given the range; the audio line in the panel above, which
+describes one clip, always shows that clip's own figure.
+
+One surprise the figure accounts for: Blu-ray's LPCM writes its channels in pairs, so a
+mono track in a `.ts` costs two channels' worth of bytes -- 1536 kbit/s, not 768.
+
+Linear PCM written into a `.ts` registers the transport stream itself as HDMV --
+Blu-ray's flavour -- because that is the only way a transport stream can declare
+LPCM at all. In a `.mp4` or `.mkv` it becomes plain big-endian PCM.
+
+**Audio codec, channels and bitrate are greyed out unless the mode is
 `Re-encode everything`**, because they describe an encode that the other two modes
 do not run over the whole track. They keep their values while greyed out, so they
 are still there when you switch back.
@@ -464,8 +498,11 @@ smartcut input.ts --analyze --scenes            # list the scene changes
 |---|---|
 | `--keep START-END` / `--cut START-END` | Ranges to keep or drop. Repeatable. `1:23:45.6` form is also accepted |
 | `--audio-mode smart\|copy\|reencode` | `smart` (the default) re-encodes only the frames a boundary falls inside, so nothing from the far side of a cut is heard — and nothing at all when the seam falls in silence. `copy` is lossless to the byte; `reencode` is sample-accurate |
+| `--audio-codec source\|aac\|lpcm\|ac3\|dts` | What the sound is written as. `source`, the default, is the recording's own. Anything else leaves no frame that can be copied, so it re-encodes the whole track whatever `--audio-mode` says. Without `--audio-bitrate` it takes what that codec is worth at that channel count -- LPCM has no bitrate at all |
 | `--audio-channels N` | Channels to write, 1 to 8. Anything but the recording's own count is a downmix — 5.1 folded to stereo, for players that make a mess of surround — and a downmix has no copy path, so it re-encodes the whole track whatever `--audio-mode` says |
 | `--audio-bitrate RATE` | Bits per second for re-encoded audio, as `192k` or `192000`. Left out, it follows the recording, and comes down with the channel count when there is a fold |
+| `--audio-samplerate RATE` | Samples per second for re-encoded audio, as `48k` or `48000`. Left out, it follows the recording. A rate that is not the recording's is a resample, and like a downmix it has no copy path, so it re-encodes the whole track whatever `--audio-mode` says. Not every codec speaks every rate — AC-3 has three, Blu-ray LPCM three others — and a rate the codec does not have is taken to the nearest it does, with a note saying which |
+| `--audio-bits 16\|24` | How wide the samples are written. Only means anything where linear PCM is what is being written: a lossy codec takes a float and spends a bitrate, and a width asked of one is declined out loud. Left out, it follows the recording |
 | `--aac auto\|mpeg2\|mpeg4` | Which flavour of AAC the frames SmartCut writes announce themselves as. `auto` follows the recording, which for a broadcast means MPEG-2 AAC |
 | `--index scan\|container` | How access points are indexed. `container` is faster but unavailable for TS |
 | `--seek-index PATH` | Where to keep the seek index. Written on the first run and read on the next, which skips the walk over the packets |

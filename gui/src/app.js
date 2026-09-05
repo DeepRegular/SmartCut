@@ -20,7 +20,7 @@
 // lanes here and a window of its own, and the passes hold themselves to part
 // of the machine while that window is up.
 
-import { fmt, clock, coarse, chLabel, cmNote, esc, size, noBrowserMenu } from "./shared.js";
+import { fmt, clock, coarse, chLabel, cmNote, esc, size, noBrowserMenu, noNativeDrag } from "./shared.js";
 import { t, applyStatic, preference, currentLang, setLang, onLangChange, tellBackend, confirmWithOs }
   from "./i18n.js";
 
@@ -1218,6 +1218,7 @@ function paintProps() {
     .filter(Boolean)
     .join(", ");
   const n = copyNo(c);
+  const sound = audioOf(c);
   box.textContent = t("props.body", {
     name: c.name,
     copy: n ? t("props.copyOf", { n }) : "",
@@ -1230,8 +1231,10 @@ function paintProps() {
     // With the channel count, because that is what says whether there is
     // anything to downmix -- and a 5.1 clip in a list of stereo ones is
     // otherwise indistinguishable until the output has already been written.
-    audio: i.has_audio
-      ? `${t("media.audioYes")}${i.audio_channels ? ` (${chLabel(i.audio_channels)})` : ""}`
+    // The count belongs to the track this clip keeps, not to whichever one
+    // the demuxer thinks is the main one. See [`audioOf`].
+    audio: sound
+      ? `${t("media.audioYes")}${sound.channels ? ` (${chLabel(sound.channels)})` : ""}`
       : t("media.audioNo"),
     len: coarse(i.duration),
     frames: i.frames,
@@ -1597,12 +1600,26 @@ const settings = {
   prefix: "cut_",
   container: "",
   audio: "smart",
+  /// Empty writes the recording's own codec back; anything else is a
+  /// conversion, which like a downmix decides the mode instead of living
+  /// under it -- there is no copying a frame into a codec it is not in.
+  audioCodec: "",
   /// Empty follows the recording; anything else is a downmix, which is the
   /// one audio setting that decides the mode instead of living under it.
   audioChannels: "",
   /// Empty lets the engine derive one from the recording -- and bring it down
   /// with the channel count when there is a fold.
   audioBitrate: "",
+  /// Empty follows the recording; anything else is a resample, which like a
+  /// downmix decides the mode instead of living under it -- samples on a
+  /// different grid are samples no frame of the recording's can be copied
+  /// alongside.
+  audioRate: "",
+  /// Empty follows the recording. Only reaches the cut where リニア PCM is
+  /// what is being written: a lossy encoder takes a float and spends a
+  /// bitrate, and how many bits the sound had before it is not a number it
+  /// has anywhere to put.
+  audioBits: "",
   keyframes: false,
 };
 
@@ -1689,8 +1706,11 @@ bindSetting("out-dir", "dir");
 bindSetting("out-prefix", "prefix");
 bindSetting("out-container", "container");
 bindSetting("out-audio", "audio");
+bindSetting("out-audio-codec", "audioCodec");
 bindSetting("out-audio-channels", "audioChannels");
 bindSetting("out-audio-bitrate", "audioBitrate");
+bindSetting("out-audio-rate", "audioRate");
+bindSetting("out-audio-bits", "audioBits");
 bindSetting("out-keyframes", "keyframes", "checked");
 
 // --- drop-downs that open upward -----------------------------------------
@@ -1831,8 +1851,9 @@ window.addEventListener("wheel", closeDrop, true);
 
 /// Whether the audio is being rebuilt rather than carried through.
 ///
-/// The two controls under the mode -- channels and bitrate -- only describe
-/// an encode, and the other two modes do not run one over the whole track:
+/// The controls under the mode -- codec, channels, rate, width, bitrate --
+/// only describe an encode, and the other two modes do not run one over the
+/// whole track:
 /// `copy` runs none at all, and `smart` runs one on two frames per boundary,
 /// where the whole point is that they come out the same shape as the frames
 /// they are spliced between. So they answer to the mode.
@@ -1840,32 +1861,187 @@ function reencodingAudio() {
   return settings.audio === "reencode";
 }
 
-/// Grey out what the chosen mode has no use for.
-function lockAudioDetail() {
-  el("out-audio-channels").disabled = !reencodingAudio();
-  el("out-audio-bitrate").disabled = !reencodingAudio();
+/// Whether what is being written has no bitrate to choose.
+///
+/// Linear PCM is not an encode but a transcription: its size is arithmetic
+/// -- channels times bits times the sample rate -- and nothing about it is a
+/// rate anyone can pick. The engine ignores the figure; the control says so
+/// by going grey and showing the arithmetic instead.
+///
+/// The mode is part of the question. A codec left set to リニア PCM while
+/// the mode is smart rendering is a setting the cut never reaches, and an
+/// uncompressed size shown against a track that is being copied through
+/// would be a number about a file nobody is writing.
+function codecHasNoBitrate() {
+  return reencodingAudio() && settings.audioCodec === "lpcm";
 }
 
-/// The ladder AAC is spoken in, in bits per second.
-const AUDIO_RUNGS = [
-  64, 80, 96, 112, 128, 144, 160, 192, 224, 256, 320, 384, 448, 512, 640,
-].map((k) => k * 1000);
+/// Grey out what the chosen mode has no use for.
+function lockAudioDetail() {
+  el("out-audio-codec").disabled = !reencodingAudio();
+  el("out-audio-channels").disabled = !reencodingAudio();
+  el("out-audio-rate").disabled = !reencodingAudio();
+  // The mirror image of the bitrate: a width belongs to the codec that
+  // writes samples down, a bitrate to the codecs that describe them, and
+  // each control is grey exactly where the other is not.
+  el("out-audio-bits").disabled = !codecHasNoBitrate();
+  el("out-audio-bitrate").disabled = !reencodingAudio() || codecHasNoBitrate();
+}
 
-/// How high the ladder goes, by channel count.
+/// The rates each codec is spoken in, and how high its ladder goes at a
+/// given channel count.
 ///
-/// 384 kbit/s for stereo and 640 for 5.1, which is where a broadcast puts
-/// them with room over the top; mono at half the stereo figure. Nothing above
-/// 640 is offered at all.
+/// The rungs are the rates the format itself has: AAC's are conventional and
+/// the encoder will take anything, but AC-3 and DTS both carry the rate as a
+/// number in a table, and a figure between two of them is one the encoder
+/// rounds to whichever it pleases. Offering the table is offering what will
+/// actually be written.
 ///
-/// Worth knowing, though it is not what sets these: the encoder has a ceiling
+/// The ceilings are what the rate is worth at that many channels. 384 kbit/s
+/// for stereo AAC and 640 for 5.1 is where a broadcast puts them with room
+/// over the top; AC-3 is carried at 192 for stereo and 448 for 5.1 on a
+/// disc, with 640 its own limit; DTS has two rates anyone uses, 768 and
+/// 1536, and the ladder is the way between them.
+///
+/// Worth knowing, though it is not what sets these: an encoder has a ceiling
 /// of its own and does not announce it. Asked for more than it can spend,
 /// FFmpeg's AAC encoder writes less -- driven with noise at 48 kHz so that it
 /// and not the material runs out first, mono walls near 218 kbit/s and stereo
 /// near 250. So the top of the stereo ladder is headroom rather than a
 /// promise: ask for 384 of stereo and what comes back is what the encoder
 /// found worth spending.
-const BITRATE_CEILING = { 1: 192_000, 2: 384_000, 6: 640_000 };
-const BITRATE_MAX = 640_000;
+///
+/// 入力と同じ is not in the table: what the recording carries is not known
+/// until each clip is read, and for a broadcast it is AAC, so AAC's ladder
+/// is the one to show.
+const AUDIO_LADDERS = {
+  aac: {
+    rungs: [64, 80, 96, 112, 128, 144, 160, 192, 224, 256, 320, 384, 448, 512, 640],
+    ceiling: { 1: 192_000, 2: 384_000, 6: 640_000 },
+  },
+  ac3: {
+    rungs: [64, 80, 96, 112, 128, 160, 192, 224, 256, 320, 384, 448, 512, 576, 640],
+    ceiling: { 1: 192_000, 2: 384_000, 6: 640_000 },
+  },
+  dts: {
+    rungs: [384, 512, 768, 960, 1024, 1152, 1280, 1408, 1536],
+    ceiling: { 1: 768_000, 2: 1_536_000, 6: 1_536_000 },
+  },
+};
+for (const l of Object.values(AUDIO_LADDERS)) {
+  l.rungs = l.rungs.map((k) => k * 1000);
+  l.max = l.rungs[l.rungs.length - 1];
+}
+
+/// The ladder the chosen codec is spoken in. LPCM has none: what it costs is
+/// arithmetic rather than a choice, and `lpcmBitRate` does the sum.
+function ladder() {
+  return AUDIO_LADDERS[settings.audioCodec] || AUDIO_LADDERS.aac;
+}
+
+/// The sound track a clip's figures are to be taken from: the first one the
+/// cut will keep.
+///
+/// Not the main track. libavformat calls the widest track the main one, and
+/// on a pressed disc that is the English 5.1 sitting beside the Japanese
+/// stereo -- so a clip that keeps only the second would still be shown as
+/// 5.1, offered a downmix from it, and costed at six channels. The first
+/// *kept* track is the one the output opens with, and that is what the one
+/// figure these lines have room for should speak for.
+///
+/// Which tracks are kept is answered in stream indices once the editor has
+/// been in (`edit.dropStreams`) and in PIDs until then (`dropPids`) -- the
+/// same two answers the export sends, resolved here the same way round.
+///
+/// Null for a clip with no sound, and for one whose every sound track was
+/// switched off: both come out of the cut the same way.
+function audioOf(clip) {
+  const i = clip.info;
+  if (!i || !i.has_audio) return null;
+  const tracks = i.audio_tracks || [];
+  // Read by a version that did not list the tracks: the main track is all
+  // there is to go on, and it is the right answer wherever nothing was
+  // switched off -- which is every recording that carries one track.
+  if (!tracks.length) {
+    return {
+      channels: i.audio_channels || 0,
+      sample_rate: i.audio_sample_rate || 0,
+      bits: i.audio_bits || 0,
+    };
+  }
+  const dropped = clip.edit ? clip.edit.dropStreams || [] : null;
+  const kept = dropped
+    ? tracks.filter((a) => !dropped.includes(a.index))
+    : tracks.filter((a) => !(clip.dropPids || []).includes(a.pid));
+  return kept[0] || null;
+}
+
+/// What one clip's sound will cost per second written as linear PCM.
+///
+/// Channels times bit depth times the sample rate, and the only thing to
+/// know beyond that is where each of the three comes from. The channels are
+/// the output's, so a fold halves the figure. The depth is the recording's
+/// -- 24 bits only where it has more than 16 in it, which off a broadcast it
+/// never does -- and the engine settles it in `pcm_bits`.
+///
+/// The wrinkle is the container. Blu-ray's LPCM is the only shape a
+/// transport stream can carry, and it writes its channels in pairs: an odd
+/// count is padded with a silent one, so a mono track in a `.ts` costs two
+/// channels' worth of bytes. Everywhere else the count is the count.
+///
+/// 0 for a clip with no sound, or one read by a version that did not say.
+function lpcmBitRate(clip, container) {
+  const sound = audioOf(clip);
+  if (!sound) return 0;
+  const channels = audioChannelsOut() || sound.channels || 0;
+  const bits = audioBitsOut() || sound.bits || 0;
+  const rate = writableRate(audioRateOut() || sound.sample_rate || 0, container);
+  if (!channels || !bits || !rate) return 0;
+  const paid = isTsContainer(container) ? channels + (channels % 2) : channels;
+  return paid * bits * rate;
+}
+
+function isTsContainer(container) {
+  return container === "ts" || TS_LIKE.includes(container);
+}
+
+/// The rate a track will actually be written at, given the rate asked for
+/// and where it is going.
+///
+/// Not every codec speaks every rate, and of the three this window offers
+/// exactly one case falls outside a codec's list: Blu-ray's LPCM -- the only
+/// shape a transport stream can carry -- has 48, 96 and 192 kHz and nothing
+/// between, so 44.1 asked of a `.ts` comes back as 48. AAC, AC-3 and DTS all
+/// speak the three that are offered, and the plain big-endian PCM every other
+/// container gets lists no rates at all and takes anything.
+///
+/// The engine settles this in `audio::writable_rate` and the window has to
+/// arrive at the same answer, because what this decides is the figure shown
+/// in place of an uncompressed track's bitrate -- and a figure about a file
+/// nobody is writing would be worse than no figure at all.
+function writableRate(hz, container) {
+  if (hz && settings.audioCodec === "lpcm" && isTsContainer(container)) return 48000;
+  return hz;
+}
+
+/// What to write in the bitrate control for linear PCM, which is told rather
+/// than asked.
+///
+/// The setting is one answer for a whole list, and the clips in it need not
+/// cost the same -- a stereo recording beside a 5.1 one, read as 入力と同じ,
+/// is two figures. Naming a range says that honestly; naming one of them
+/// would be picking a clip at random and calling it the answer.
+function lpcmLabel() {
+  const rates = ready()
+    .map((c) => lpcmBitRate(c, containerFor(c)))
+    .filter((b) => b > 0);
+  const distinct = [...new Set(rates)].sort((a, b) => a - b);
+  if (!distinct.length) return t("bitrate.none");
+  const kbps = (b) => b / 1000;
+  return distinct.length === 1
+    ? t("bitrate.fixed", { rate: kbps(distinct[0]) })
+    : t("bitrate.fixedRange", { from: kbps(distinct[0]), to: kbps(distinct[distinct.length - 1]) });
+}
 
 /// The ceiling for any channel count, named or not.
 ///
@@ -1873,11 +2049,12 @@ const BITRATE_MAX = 640_000;
 /// can be any count at all, and one of those takes the ceiling of the next
 /// count up -- a 4-channel recording is nearer 5.1 than it is stereo.
 function bitrateCap(channels) {
-  if (!channels) return BITRATE_MAX;
-  const key = Object.keys(BITRATE_CEILING)
+  const l = ladder();
+  if (!channels) return l.max;
+  const key = Object.keys(l.ceiling)
     .map(Number)
     .find((n) => n >= channels);
-  return key ? BITRATE_CEILING[key] : BITRATE_MAX;
+  return key ? l.ceiling[key] : l.max;
 }
 
 /// How many channels the ceiling should be worked out for.
@@ -1889,7 +2066,10 @@ function bitrateCap(channels) {
 /// nothing and the whole ladder is offered.
 function channelsForCap() {
   if (settings.audioChannels) return Number(settings.audioChannels);
-  const counts = ready().map((c) => (c.info && c.info.audio_channels) || 0);
+  const counts = ready().map((c) => {
+    const sound = audioOf(c);
+    return (sound && sound.channels) || 0;
+  });
   return counts.length ? Math.max(...counts) : 0;
 }
 
@@ -1897,23 +2077,36 @@ function channelsForCap() {
 /// it is holding inside them.
 function fillBitrates() {
   const select = el("out-audio-bitrate");
+  // A codec with no rate to choose gets a dash and nothing else, and the
+  // setting goes with it: a figure left standing behind a greyed-out control
+  // would come back the moment the codec changed, as an answer nobody gave.
+  const none = codecHasNoBitrate();
   const cap = bitrateCap(channelsForCap());
-  const rungs = cap ? AUDIO_RUNGS.filter((b) => b <= cap) : AUDIO_RUNGS;
+  const rungs = none ? [] : ladder().rungs.filter((b) => b <= cap);
+  if (none) settings.audioBitrate = "";
+  // What a greyed-out LPCM control says: not a dash, which would leave the
+  // one question it is there to answer unanswered, but the figure the file
+  // will actually be written at.
+  const told = none ? lpcmLabel() : "";
   // Rebuilt only when it would come out different -- which the language is
-  // part of, since おまかせ is a word and not a number.
-  const sig = `${currentLang()}|${rungs.length}`;
+  // part of, since おまかせ is a word and not a number, the codec is, since
+  // two of them count in different numbers, and the told figure is, since it
+  // moves with the clips in the list and the channels asked of them.
+  const sig = `${currentLang()}|${settings.audioCodec}|${rungs.length}|${told}`;
   if (select.dataset.sig !== sig) {
     select.dataset.sig = sig;
-    select.innerHTML =
-      `<option value="" data-i18n="bitrate.auto">${esc(t("bitrate.auto"))}</option>` +
-      rungs.map((b) => `<option value="${b}">${b / 1000} kbps</option>`).join("");
+    select.innerHTML = none
+      ? `<option value="">${esc(told)}</option>`
+      : `<option value="" data-i18n="bitrate.auto">${esc(t("bitrate.auto"))}</option>` +
+        rungs.map((b) => `<option value="${b}">${b / 1000} kbps</option>`).join("");
   }
   // A rate the list no longer offers -- the channel count came down under it,
-  // or a project was written by a version whose ladder had other rungs -- is
-  // taken to the nearest rung at or below it rather than thrown away.
+  // the codec changed to one that counts in other numbers, or a project was
+  // written by a version whose ladder had other rungs -- is taken to the
+  // nearest rung at or below it rather than thrown away.
   const want = Number(settings.audioBitrate) || 0;
   if (want && !rungs.includes(want)) {
-    settings.audioBitrate = String(rungs.filter((b) => b <= want).pop() ?? rungs[0]);
+    settings.audioBitrate = String(rungs.filter((b) => b <= want).pop() ?? rungs[0] ?? "");
   }
   select.value = settings.audioBitrate;
 }
@@ -1927,7 +2120,34 @@ function audioChannelsOut() {
 }
 
 function audioBitrateOut() {
-  return reencodingAudio() && settings.audioBitrate ? Number(settings.audioBitrate) : null;
+  if (!reencodingAudio() || codecHasNoBitrate()) return null;
+  return settings.audioBitrate ? Number(settings.audioBitrate) : null;
+}
+
+function audioRateOut() {
+  return reencodingAudio() && settings.audioRate ? Number(settings.audioRate) : null;
+}
+
+/// Only where samples are what is being written. Everywhere else the control
+/// is grey, and what a grey control is holding must not reach the cut behind
+/// the screen's back.
+function audioBitsOut() {
+  return codecHasNoBitrate() && settings.audioBits ? Number(settings.audioBits) : null;
+}
+
+function audioCodecOut() {
+  return reencodingAudio() && settings.audioCodec ? settings.audioCodec : null;
+}
+
+/// What a chosen codec is called on screen. Empty for 入力と同じ, which is
+/// not a codec but the absence of a choice.
+function codecLabel() {
+  const want = audioCodecOut();
+  if (!want) return "";
+  // The list's own names, except that リニア PCM（非圧縮） is a label for a
+  // menu and too long for a line that also has to hold the channels and the
+  // rate.
+  return want === "lpcm" ? t("codec.lpcm.short") : t(`codec.${want}`);
 }
 
 /// What is happening to the audio, when it is not being copied.
@@ -1936,9 +2156,10 @@ function audioBitrateOut() {
 /// -- and "the whole clip is copied losslessly" stops being true of the file
 /// the moment the audio is re-encoded from end to end, which a downmix always
 /// is. So the picture's own claim carries this after it.
-function audioNote(info) {
-  if (!info.has_audio || !reencodingAudio()) return "";
-  const from = info.audio_channels || 0;
+function audioNote(clip) {
+  const sound = audioOf(clip);
+  if (!sound || !reencodingAudio()) return "";
+  const from = sound.channels || 0;
   const to = audioChannelsOut() || from;
   if (from && to && to !== from) {
     // Which way it goes is the recording's to decide, not the setting's: one
@@ -1947,18 +2168,41 @@ function audioNote(info) {
     const key = to < from ? "out.audioDownmixed" : "out.audioUpmixed";
     return " " + t(key, { from: chLabel(from), to: chLabel(to) });
   }
-  return " " + t("out.audioReencoded");
+  const codec = codecLabel();
+  return " " + (codec ? t("out.audioAsCodec", { codec }) : t("out.audioReencoded"));
+}
+
+/// A sample rate as it is spoken: 48 kHz, 44.1 kHz.
+function khzLabel(hz) {
+  return `${hz % 1000 ? (hz / 1000).toFixed(1) : hz / 1000} kHz`;
 }
 
 /// What the output's audio will be, in the one line the format panel has.
-function audioSummary(info) {
-  if (!info.has_audio) return t("media.audioNo");
-  const from = info.audio_channels || 0;
+function audioSummary(clip, container) {
+  const sound = audioOf(clip);
+  if (!sound) return t("media.audioNo");
+  const from = sound.channels || 0;
   const to = audioChannelsOut() || from;
   const down = !!(from && to && to !== from);
-  const rate = audioBitrateOut();
+  // Here the figure can be exact, because here there is one clip: the
+  // control above has a whole list to answer for and may only be able to
+  // name a range.
+  const rate = codecHasNoBitrate() ? lpcmBitRate(clip, container) : audioBitrateOut();
   const detail = [];
+  const codec = codecLabel();
+  if (codec) detail.push(codec);
   if (from) detail.push(down ? `${chLabel(from)} → ${chLabel(to)}` : chLabel(from));
+  // The rate only when it is changing. The line has room for what the
+  // settings are doing to the sound, not for restating what the recording
+  // already was -- the format panel above says that.
+  const hzFrom = sound.sample_rate || 0;
+  const hzTo = writableRate(audioRateOut() || hzFrom, container);
+  if (hzFrom && hzTo !== hzFrom) detail.push(`${khzLabel(hzFrom)} → ${khzLabel(hzTo)}`);
+  // The width, on the other hand, only exists as a choice: it is grey unless
+  // linear PCM is what is being written, and then it is the whole story of
+  // what the track will cost.
+  const bits = audioBitsOut();
+  if (bits) detail.push(`${bits} bit`);
   if (rate) detail.push(`${rate / 1000} kbps`);
   const mode = t(`audio.${settings.audio}.short`);
   return detail.length ? t("outset.audioLine", { mode, detail: detail.join(", ") }) : mode;
@@ -2000,7 +2244,7 @@ function renderOutset() {
     h: i.height,
     fps: i.fps.toFixed(2),
     scan: t(i.interlaced ? "outset.interlaced" : "media.progressive"),
-    audio: audioSummary(i),
+    audio: audioSummary(clip, containerFor(clip)),
     keeps: keeps.length,
     kept: fmt(kept),
     dur: fmt(i.duration),
@@ -2077,7 +2321,7 @@ function paintShotsNote() {
   if (!onShow || !onShow.note) return;
   const box = el("out-shots-note");
   box.className = onShow.note.className;
-  box.textContent = onShow.note.text + audioNote(onShow.clip.info);
+  box.textContent = onShow.note.text + audioNote(onShow.clip);
 }
 /// Keyed on the clip *and its cuts*, so coming back after changing one looks
 /// at the new joins rather than the ones that were there before.
@@ -2300,8 +2544,11 @@ async function runExport() {
         output: out,
         audioCopy: settings.audio === "copy",
         audioReencode: settings.audio === "reencode",
+        audioCodec: audioCodecOut(),
         audioChannels: audioChannelsOut(),
         audioBitrate: audioBitrateOut(),
+        audioSampleRate: audioRateOut(),
+        audioBits: audioBitsOut(),
         // What the editor's track menu switched off for this clip. Per clip
         // and not per list: the audio settings above are one answer for the
         // whole run, but which of a recording's own streams are wanted is a
@@ -2906,6 +3153,7 @@ window.addEventListener("keydown", (ev) => {
 
 jlog("app wired");
 noBrowserMenu();
+noNativeDrag();
 applyStatic();
 el("pref-lang").value = preference();
 // The three readouts on the output screen that stand at rest until something

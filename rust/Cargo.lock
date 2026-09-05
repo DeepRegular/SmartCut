@@ -707,7 +707,7 @@ checksum = "0c790de23124f9ab44544d7ac05d60440adc586479ce501c1d6d7da3cd8c9cf5"
 
 [[package]]
 name = "smartcut-cli"
-version = "0.3.3"
+version = "0.3.4"
 dependencies = [
  "anyhow",
  "smartcut-core",
@@ -715,7 +715,7 @@ dependencies = [
 
 [[package]]
 name = "smartcut-core"
-version = "0.3.3"
+version = "0.3.4"
 dependencies = [
  "anyhow",
  "cpal",

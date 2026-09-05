@@ -65,6 +65,8 @@ bash tests/run_audio_tests.sh         # A/V sync (+10 with copy and reencode)   
 bash tests/run_audio_content_tests.sh # is real material's audio in the right place      6
 bash tests/run_aac_tests.sh           # what the output's AAC frames are made of         8
 bash tests/run_downmix_tests.sh       # where 5.1 goes when it is folded to stereo       9
+bash tests/run_audio_codec_tests.sh   # writing the sound as another codec entirely     36
+bash tests/run_audio_format_tests.sh  # the rate and the width the samples are written  23
 bash tests/run_preview_tests.sh       # does a scrub show the time you asked for         7
 bash tests/run_index_tests.sh         # does the index answer as the walk did           27
 bash tests/run_proxy_tests.sh         # can the proxy stand in for the recording        22
@@ -73,6 +75,7 @@ bash tests/run_ts_layout_tests.sh     # TS provenance and sequence headers      
 bash tests/run_broadcast_tests.sh     # captions, programme information, multi-audio    13
 bash tests/run_cm_tests.sh            # commercial detection vs a human's answer         5
 bash tests/run_disc_tests.sh          # a BDAV and a BDMV disc, as folders and as .isos 35
+bash tests/run_bd_audio_tests.sh      # the sound a disc carries, written out             39
 ```
 
 ### Fixtures
@@ -87,9 +90,26 @@ their checks.
 remuxed into 192 byte packets, index files written around it by `disc_index.py`, and a UDF
 image wrapped over each by `genisoimage`, which it needs installed.
 
+`run_bd_audio_tests.sh` builds one clip per codec a disc carries -- LPCM at 16 and at
+24 bits, DTS, TrueHD, E-AC-3 -- out of the same `mpeg2.ts`, and cuts each into a `.ts`,
+an `.m2ts` and an `.mp4`.
+
+`run_audio_codec_tests.sh` asks for each of the four codecs the window offers -- AAC,
+AC-3, DTS, LPCM -- into each of four containers, and checks three things of each: the
+track is the codec that was asked for, every channel still carries the tone it went in
+with, and a transport stream's own programme map declares the codec that is actually
+in it.
+
+`run_audio_format_tests.sh` asks for the other two things a sample is -- the rate it is
+taken at and the width it is written with. A resample has to reach the samples, the
+stream's declaration and, for AAC in a transport stream, the ADTS header on every frame;
+a rate the codec does not have has to come back as the nearest it does, out loud. A width
+only means anything where samples are written down, so it is honoured for LPCM -- where
+it decides the file's size outright -- and declined out loud for everything else.
+
 `run_audio_tests.sh` and `run_downmix_tests.sh` build their own fixtures into the same
-directory: an impulse train, and a 5.1 track with a tone per channel. Neither is wanted
-by any other suite.
+directory: an impulse train, and a 5.1 track with a tone per channel. The codec and
+format suites reuse the second of those; nothing else wants either.
 
 Every suite writes its output next to the fixtures, under `$TMPDIR`. The proxy suite
 needs several GB of that on real material — one proxy of half an hour of broadcast TS is

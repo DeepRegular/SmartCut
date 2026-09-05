@@ -410,6 +410,41 @@ fn keep_carried(loop_bytes: &[u8], components: &Components) -> Vec<u8> {
     out
 }
 
+/// Add descriptors to a loop, leaving out any that are already in it.
+///
+/// A recording that already registers itself as HDMV -- one off a disc,
+/// written back out as a transport stream -- says so once, not twice. The
+/// comparison is of the whole descriptor and not of its tag alone: a
+/// recording that registers itself as something else has said a different
+/// thing, and the format identifier the cut's own stream types are to be
+/// read by still has to be in there.
+fn add_descriptors(into: &mut Vec<u8>, extra: &[u8]) {
+    // Walked rather than searched for as a byte sequence: a descriptor's
+    // body can hold anything, this one included, and a match that straddles
+    // two of them is not a match at all.
+    let holds = |loop_bytes: &[u8], want: &[u8]| {
+        let mut i = 0;
+        while i + 2 <= loop_bytes.len() {
+            let len = loop_bytes[i + 1] as usize;
+            let Some(whole) = loop_bytes.get(i..i + 2 + len) else { return false };
+            if whole == want {
+                return true;
+            }
+            i += 2 + len;
+        }
+        false
+    };
+    let mut i = 0;
+    while i + 2 <= extra.len() {
+        let len = extra[i + 1] as usize;
+        let Some(whole) = extra.get(i..i + 2 + len) else { break };
+        if !holds(into, whole) {
+            into.extend_from_slice(whole);
+        }
+        i += 2 + len;
+    }
+}
+
 /// Copy a descriptor loop, leaving out the tags that must not travel.
 fn keep_descriptors(loop_bytes: &[u8]) -> Vec<u8> {
     let mut out = Vec::with_capacity(loop_bytes.len());
@@ -713,6 +748,36 @@ pub fn snapshot_at(input: &crate::input::Input, pos: i64, service_id: u16) -> Re
     Ok(out)
 }
 
+/// How a stream the cut wrote in another codec is to be declared.
+///
+/// A downmixed track is still the codec it was, so the recording's own entry
+/// for it says the true thing about everything but the channels. A track
+/// re-encoded as AC-3 is not: the entry says MPEG-2 AAC, and a player that
+/// believes it will hand AC-3 frames to an AAC decoder. Nothing in the
+/// recording's tables can be repaired into the truth here, so the entry is
+/// written from what the cut actually produced instead.
+///
+/// The muxer knows all of this and writes it into its own map -- which the
+/// graft then replaces. These are the same answers, restated where the
+/// replacement is built, with one correction: asked for a plain transport
+/// stream the muxer declares LPCM as private data of no stated kind, which
+/// nothing reads back as sound. Asked for Blu-ray's own framing it declares
+/// the same bytes as HDMV LPCM, which everything does. The bytes do not
+/// differ, so the second declaration is the true one either way.
+#[derive(Debug, Clone)]
+pub struct Declared {
+    /// The stream type byte for the codec the cut wrote.
+    pub stream_type: u8,
+    /// What the map has to say about the stream, in place of the
+    /// recording's own -- an AC-3 registration descriptor, or nothing.
+    pub descriptors: Vec<u8>,
+    /// What the *programme* has to say about it, for a codec that is only
+    /// legible in a transport stream that has announced itself: HDMV's
+    /// registration descriptor, which is what makes stream type 0x80 mean
+    /// LPCM rather than one of the other things 0x80 has meant.
+    pub program_info: Vec<u8>,
+}
+
 /// One elementary stream as it is to be described in the rebuilt map.
 #[derive(Debug, Clone)]
 pub struct GraftStream {
@@ -725,6 +790,9 @@ pub struct GraftStream {
     /// so only the identity of the stream survives and the description of
     /// its contents is dropped.
     pub faithful: bool,
+    /// Set where the codec itself changed, which the recording's own entry
+    /// cannot be trimmed into describing. See [`Declared`].
+    pub declared: Option<Declared>,
 }
 
 /// A stretch of the output, and what was being broadcast where it came from.
@@ -807,7 +875,14 @@ fn build_pmt(g: &Graft, pcr_pid: u16, components: &Components) -> Vec<u8> {
     // descriptor sits there as readily as in an event. The per-stream loops
     // below are not filtered this way: a stream's own descriptors are about
     // that stream, and it is in the output or it is not written at all.
-    let program_info = keep_carried(&s.program_info, components);
+    let mut program_info = keep_carried(&s.program_info, components);
+    // What a re-encoded track needs the programme to say about it, added
+    // once however many tracks ask for it.
+    for gs in &g.streams {
+        if let Some(d) = &gs.declared {
+            add_descriptors(&mut program_info, &d.program_info);
+        }
+    }
     let mut sec = vec![
         TABLE_PMT,
         0xB0, // syntax indicator, then the length, filled in below
@@ -827,17 +902,26 @@ fn build_pmt(g: &Graft, pcr_pid: u16, components: &Components) -> Vec<u8> {
         // A stream the source's own map did not describe is written the way
         // the muxer would have: the type it was given, and nothing said
         // about it. Nothing here can invent a descriptor.
-        let (stream_type, desc) = match s.stream(gs.pid) {
-            Some(es) if gs.faithful => (es.stream_type, es.descriptors.clone()),
+        // Which stream it is survives everything: the tag is how the rest of
+        // the tables point at it, and a re-encoded track is still the track
+        // the programme described.
+        let identity = |es: &ElementaryStream| match descriptor(&es.descriptors, 0x52) {
+            Some(body) => vec![0x52, body.len() as u8, body[0]],
+            None => Vec::new(),
+        };
+        let (stream_type, desc) = match (s.stream(gs.pid), &gs.declared) {
+            // Written in another codec, so nothing the recording says about
+            // the contents of this stream is true of the file. See
+            // `Declared`.
+            (es, Some(d)) => {
+                let mut desc = es.map(identity).unwrap_or_default();
+                desc.extend_from_slice(&d.descriptors);
+                (d.stream_type, desc)
+            }
+            (Some(es), None) if gs.faithful => (es.stream_type, es.descriptors.clone()),
             // Only the stream's identity survives; see `GraftStream`.
-            Some(es) => (
-                es.stream_type,
-                match descriptor(&es.descriptors, 0x52) {
-                    Some(body) => vec![0x52, body.len() as u8, body[0]],
-                    None => Vec::new(),
-                },
-            ),
-            None => continue,
+            (Some(es), None) => (es.stream_type, identity(es)),
+            (None, None) => continue,
         };
         sec.push(stream_type);
         sec.push(0xE0 | ((gs.pid >> 8) as u8 & 0x1F));

@@ -27,7 +27,7 @@ on GOP boundaries and concatenate" does not work.
 | [Algorithm](technical/algorithm.md) | How a cut is split into head, body and tail — and the eight pitfalls that make it harder than it looks |
 | [Validation](technical/validation.md) | Frame-hash verification results, testing against real broadcast recordings, and the known limits |
 | [Broadcast TS](technical/broadcast-ts.md) | PID layout, the recording's own tables, captions and programme information, partial transport streams, ADTS, L-SMASH and DGIndex |
-| [Audio](technical/audio.md) | Smart rendering applied to audio, boundary error, MPEG-2 AAC framing, downmixing, and multi-track broadcasts |
+| [Audio](technical/audio.md) | Smart rendering applied to audio, boundary error, MPEG-2 AAC framing, downmixing, choosing the output codec, and multi-track broadcasts |
 
 ## Developers
 

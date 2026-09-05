@@ -28,7 +28,7 @@ const emit = T.event && T.event.emit;
 const jlog = (m) => invoke && invoke("log", { msg: String(m) });
 jlog("main.js start");
 
-import { fmt, chLabel, cmNote, noBrowserMenu } from "./shared.js";
+import { fmt, chLabel, cmNote, noBrowserMenu, noNativeDrag } from "./shared.js";
 import { t as tr, applyStatic, setLang, onLangChange, confirmWithOs } from "./i18n.js";
 
 const el = (id) => document.getElementById(id);
@@ -1612,6 +1612,26 @@ function applyDiscChapters(chapters) {
   return times.length;
 }
 
+/// The sound track this window's line speaks for: the first one the track
+/// menu has left switched on.
+///
+/// Not the main track. libavformat calls the widest track the main one, and
+/// on a pressed disc that is the English 5.1 sitting beside the Japanese
+/// stereo -- so a recording opened with only the second kept would still read
+/// 5.1 here. The clip list asks the same question of a row it has not opened;
+/// see `audioOf` there.
+///
+/// Null where there is no sound, and where every track of it was switched
+/// off.
+function keptAudio() {
+  if (!src || !src.has_audio) return null;
+  const tracks = src.audio_tracks || [];
+  // Read by a version that did not list the tracks: the main track is all
+  // there is to go on.
+  if (!tracks.length) return { channels: src.audio_channels || 0 };
+  return tracks.find((a) => !dropStreams.includes(a.index)) || null;
+}
+
 /// The recording's name in the title bar of the window's own header, and its
 /// shape on the line under it.
 ///
@@ -1623,6 +1643,7 @@ function paintSourceInfo() {
     tr(src.interlaced ? "media.interlaced" : "media.progressive"),
     src.pulldown ? tr("media.pulldown") : null,
   ].filter(Boolean);
+  const sound = keptAudio();
   el("title").textContent = shownName || src.path.split(/[/\\]/).pop();
   el("info").textContent = tr("editor.info", {
     points: src.points.length,
@@ -1630,9 +1651,8 @@ function paintSourceInfo() {
     h: src.height,
     fps: src.fps.toFixed(2),
     flags: flags.join(" "),
-    audio: src.has_audio
-      ? tr("editor.infoAudioYes") +
-        (src.audio_channels ? ` (${chLabel(src.audio_channels)})` : "")
+    audio: sound
+      ? tr("editor.infoAudioYes") + (sound.channels ? ` (${chLabel(sound.channels)})` : "")
       : tr("editor.infoAudioNo"),
     codec: src.codec,
     unusable: src.unusable_points ? tr("editor.infoUnusable", { n: src.unusable_points }) : "",
@@ -1689,6 +1709,10 @@ async function openPath(picked, saved, side, name, chapters, dropPids) {
       }
     }
     paintTrackButton();
+    // Said again now the tracks are settled: the line above was drawn before
+    // the disc's answer had been turned into stream indices, and which track
+    // it speaks for depends on that.
+    paintSourceInfo();
     stripCache = null;
     stripShots = [];
     shownTime = -1;
@@ -2014,6 +2038,9 @@ function renderTracks() {
         ? dropStreams.filter((i) => i !== track.index)
         : dropStreams.concat([track.index]);
       paintTrackButton();
+      // Switching the wider track off makes the narrower one the track the
+      // line speaks for.
+      paintSourceInfo();
       sync();
     });
     const label = document.createElement("label");
@@ -2322,6 +2349,7 @@ onLangChange(() => {
 });
 
 noBrowserMenu();
+noNativeDrag();
 applyStatic();
 // The two labels that say what would happen rather than what the button is,
 // and are therefore written from here rather than by `applyStatic`.

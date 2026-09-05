@@ -24,6 +24,10 @@
    input you cannot type in. The output settings screen is the first one to
    have any, which is why this never came up. */
 input, textarea { user-select: text; -webkit-user-select: text; accent-color: var(--sel); }
+/* No picture in either window is draggable. Left as it comes, an <img> is
+   dragged out of the program and into whatever is behind it -- see
+   `noNativeDrag`, which is the half of this that WebKitGTK always honours. */
+img { -webkit-user-drag: none; user-drag: none; }
 body {
   margin: 0; background: var(--bg); color: var(--text);
   font: 12.5px/1.55 system-ui, "Noto Sans JP", sans-serif;
@@ -510,10 +514,10 @@ input[type="text"]::placeholder { color: var(--dim); }
 .clip .kill:hover { color: #ff8a80; }
 
 /* 並べ替え中。A row being carried is dimmed where it still is, and the line
-   between two rows is where the carried ones would land. The pictures are
-   told not to start a drag of their own: a dragged <img> is a native drag,
-   and a native drag is Tauri's rather than the list's. */
-.clip .poster { -webkit-user-drag: none; user-drag: none; }
+   between two rows is where the carried ones would land. The pictures being
+   told not to start a drag of their own is up with the rest of them, at the
+   top of the file: a dragged <img> is a native drag, and a native drag
+   belongs to the desktop rather than to the list. */
 .cliplist-wrap.reordering, .cliplist-wrap.reordering .clip { cursor: grabbing; }
 .clip.dragging { opacity: 0.45; }
 .clip.dropbefore { box-shadow: inset 0 3px 0 var(--sel); }

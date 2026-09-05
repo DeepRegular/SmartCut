@@ -37,7 +37,7 @@ pub use cm::{
     DetectOptions,
 };
 pub use adts::{AacVersion, AdtsFormat};
-pub use cut::{cut, cut_with_progress, write_audio_es, AudioMode, CutOptions};
+pub use cut::{cut, cut_with_progress, write_audio_es, AudioCodec, AudioMode, CutOptions};
 pub use index::{ContainerIndex, IndexSource, PacketScan};
 pub use seek_index::SeekIndex;
 pub use preview::{frame_at, play_from, shot_at, shots_at, Pace, Shot};
@@ -138,6 +138,15 @@ pub struct AudioInfo {
     pub codec: String,
     pub sample_rate: u32,
     pub channels: u16,
+    /// How wide this track's samples are once they are written as linear
+    /// PCM: 24 for a recording that has more than 16 bits in it, 16 for
+    /// everything else. See [`audio::pcm_bits`].
+    ///
+    /// Not a description of the recording so much as of what it costs: an
+    /// uncompressed track's size is channels times this times the sample
+    /// rate, which is the figure the output settings screen shows in place
+    /// of a bitrate nobody can choose.
+    pub bits: u8,
     pub time_base: f64,
     pub bit_rate: Option<usize>,
 }
@@ -453,6 +462,7 @@ pub fn scan_with(path: &str, source: &dyn index::IndexSource) -> Result<Source> 
             codec: format!("{:?}", p.id()).to_lowercase(),
             sample_rate,
             channels,
+            bits: audio::pcm_bits(&p),
             time_base: f64::from(a.time_base()),
             bit_rate,
         }
@@ -614,6 +624,7 @@ mod tests {
             codec: codec.to_string(),
             sample_rate: 48_000,
             channels,
+            bits: 16,
             time_base: 1.0 / 90_000.0,
             bit_rate: None,
         }

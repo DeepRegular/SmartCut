@@ -66,6 +66,8 @@ bash tests/run_audio_tests.sh         # A/V 同期（copy と reencode で +10�
 bash tests/run_audio_content_tests.sh # 実素材の音声が正しい位置にあるか                  6
 bash tests/run_aac_tests.sh           # 出力の AAC フレームが何でできているか             8
 bash tests/run_downmix_tests.sh       # 5.1ch をステレオに畳んだとき各成分がどこへ行くか  9
+bash tests/run_audio_codec_tests.sh   # 音声を別のコーデックで書き出せるか               36
+bash tests/run_audio_format_tests.sh  # 音声のサンプリングレートと量子化ビット数         23
 bash tests/run_preview_tests.sh       # スクラブで指定した時刻の絵が出るか                7
 bash tests/run_index_tests.sh         # 索引が走査と同じ答えを返すか                     27
 bash tests/run_proxy_tests.sh         # プロキシが録画の代役になれるか                   22
@@ -74,6 +76,7 @@ bash tests/run_ts_layout_tests.sh     # TS の出自とシーケンスヘッダ 
 bash tests/run_broadcast_tests.sh     # 字幕・番組情報・音声多重                         13
 bash tests/run_cm_tests.sh            # CM 検出と人間の答えの照合                         5
 bash tests/run_disc_tests.sh          # BDAV と BDMV をフォルダーと .iso から読む       35
+bash tests/run_bd_audio_tests.sh      # ディスクの音声が書き出せるか                    39
 ```
 
 ### フィクスチャ
@@ -88,9 +91,27 @@ bash tests/run_disc_tests.sh          # BDAV と BDMV をフォルダーと .iso
 ストリームを 192 バイトパケットに詰め直し、`disc_index.py` が索引ファイルを書き、
 `genisoimage` でそれぞれを UDF イメージに包む（`genisoimage` が要る）。
 
+`run_bd_audio_tests.sh` は同じ `mpeg2.ts` から、ディスクが持つコーデックごとに
+クリップを 1 本ずつ組み立て——16 ビットと 24 ビットの LPCM、DTS、TrueHD、E-AC-3——
+それぞれを `.ts`・`.m2ts`・`.mp4` に切り出す。
+
+`run_audio_codec_tests.sh` は、画面が出す 4 つのコーデック——AAC・AC-3・DTS・LPCM——
+それぞれを 4 種類のコンテナへ書き出し、3 つのことを確かめる。指定したコーデックに
+なっているか、各チャンネルが入れたときの音を保っているか、そしてトランスポート
+ストリームの番組マップが実際に入っているコーデックを宣言しているか。
+
+`run_audio_format_tests.sh` は、サンプルのもう 2 つの側面——どれだけの間隔で取るか
+（サンプリングレート）と、どれだけの幅で書くか（量子化ビット数）——を確かめる。
+リサンプルはサンプル自体・ストリームの宣言・トランスポートストリームなら全フレームの
+ADTS ヘッダの 3 か所に届かなければならず、コーデックが持たないレートを頼まれたら
+持っているうちで最も近いものに直したうえでそう言わなければならない。量子化ビット数は
+サンプルをそのまま書くコーデックでしか意味を持たないので、LPCM では従い——そこでは
+ファイルの大きさそのものを決める——ほかでは断ったうえでそう言う。
+
 `run_audio_tests.sh` と `run_downmix_tests.sh` は同じディレクトリに自前の
-フィクスチャを作る。インパルス列と、チャンネルごとに音の違う 5.1ch トラックであり、
-どちらもほかのスイートは使わない。
+フィクスチャを作る。インパルス列と、チャンネルごとに音の違う 5.1ch トラックである。
+後者はコーデックのスイートとフォーマットのスイートも使うが、ほかのスイートは
+どちらも使わない。
 
 各スイートは出力をフィクスチャの隣、つまり `$TMPDIR` の下に書く。プロキシのスイートは
 実素材では数 GB を必要とする（放送 TS 30 分ぶんのプロキシ 1 つで 2.3 GB）。小さな

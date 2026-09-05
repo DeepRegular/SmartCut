@@ -47,6 +47,138 @@ use crate::{AudioInfo, Source};
 /// costs nothing anyone can hear and keeps the frame long.
 const FADE: usize = 48;
 
+/// The sample format a set of stream parameters names.
+///
+/// `AVCodecParameters` keeps it as a plain integer rather than as the enum,
+/// so it is matched against the formats rather than cast into one.
+pub fn sample_format(params: &ff::codec::Parameters) -> ff::format::Sample {
+    use ff::format::sample::Type::{Packed, Planar};
+    use ff::format::Sample::{F32, F64, I16, I32, I64, U8};
+    let raw = unsafe { (*params.as_ptr()).format };
+    [
+        U8(Packed),
+        U8(Planar),
+        I16(Packed),
+        I16(Planar),
+        I32(Packed),
+        I32(Planar),
+        I64(Packed),
+        I64(Planar),
+        F32(Packed),
+        F32(Planar),
+        F64(Packed),
+        F64(Planar),
+    ]
+    .into_iter()
+    .find(|f| ff::ffi::AVSampleFormat::from(*f) as i32 == raw)
+    .unwrap_or(ff::format::Sample::None)
+}
+
+/// The sample format to hand an encoder, given what the recording's own
+/// samples are.
+///
+/// Planar float is what everything here holds and what the AAC and AC-3
+/// encoders want, so for a broadcast recording this answers itself. Not every
+/// encoder takes it: Blu-ray LPCM wants 16 or 32 bit integers, MP2 wants 16.
+/// Handed a format it does not list, `avcodec_open2` refuses to open at all --
+/// which is the whole reason an LPCM track used to come out of a cut copied,
+/// boundaries and all.
+///
+/// So ask the encoder, and ask for the recording's own width first. That is
+/// not only about keeping the samples: an encoder's *frame* can hang off it.
+/// The Blu-ray LPCM encoder frames 16 bit sound 240 samples at a time and
+/// 24 bit sound 360, so a 16 bit recording asked for as 24 comes back framed
+/// differently from itself -- and a frame that does not line up with the
+/// recording's own is a frame that cannot stand in for one.
+fn encoder_format(
+    codec: &ff::codec::codec::Codec,
+    like: ff::format::Sample,
+) -> ff::format::Sample {
+    let Ok(audio) = codec.audio() else { return PLANAR_F32 };
+    let Some(listed) = audio.formats() else { return PLANAR_F32 };
+    let listed: Vec<ff::format::Sample> = listed.collect();
+    if listed.is_empty() {
+        return PLANAR_F32;
+    }
+    let offered = |f: ff::format::Sample| listed.contains(&f);
+    // The recording's own, laid out either way; then planar float, which is
+    // what these buffers hold; then the widest on the list, because narrowing
+    // is the one conversion that costs the recording something.
+    [like, like.planar(), like.packed(), PLANAR_F32, PLANAR_F32.packed()]
+        .into_iter()
+        .find(|f| *f != ff::format::Sample::None && offered(*f))
+        .or_else(|| {
+            listed.iter().copied().max_by_key(|f| f.bytes() * 2 + usize::from(f.is_planar()))
+        })
+        .unwrap_or(PLANAR_F32)
+}
+
+/// The channel layout to open an encoder with, given how many channels the
+/// output is to have.
+///
+/// Six channels are not one arrangement but several, and an encoder that
+/// takes 5.1 need not take the one libav hands back as the default for six:
+/// the DTS encoder wants the surrounds at the sides and the Blu-ray LPCM
+/// encoder has a list of its own. Handed a layout it does not list,
+/// `avcodec_open2` refuses to open -- the same failure as a sample format it
+/// does not list, and answered the same way, by asking the encoder.
+///
+/// The default is preferred where it is on the list, because it is the
+/// arrangement the rest of libav assumes; otherwise the first the encoder
+/// names with the right number of channels. An encoder that lists nothing
+/// takes anything.
+fn encoder_layout(
+    codec: &ff::codec::codec::Codec,
+    channels: u16,
+) -> ff::channel_layout::ChannelLayout {
+    let want = ff::channel_layout::ChannelLayout::default(channels as i32);
+    let Ok(audio) = codec.audio() else { return want };
+    let Some(listed) = audio.channel_layouts() else { return want };
+    let listed: Vec<ff::channel_layout::ChannelLayout> = listed.collect();
+    if listed.is_empty() || listed.contains(&want) {
+        return want;
+    }
+    listed.into_iter().find(|l| l.channels() == channels as i32).unwrap_or(want)
+}
+
+/// The sample rate to open an encoder with, given the rate the output is to
+/// run at.
+///
+/// An encoder need not take every rate. AC-3 has three -- 32, 44.1 and
+/// 48 kHz -- and MP2 those three and their halves; handed anything else,
+/// `avcodec_open2` refuses to open. That is the same failure as a sample
+/// format or a channel layout it does not list, and it is answered the same
+/// way, by asking the encoder.
+///
+/// The nearest rate it does list, and the higher of two equally near, since
+/// coming down is the direction that costs the recording its top octave.
+/// An encoder that lists nothing takes anything.
+fn encoder_rate(codec: &ff::codec::codec::Codec, want: u32) -> u32 {
+    let Ok(audio) = codec.audio() else { return want };
+    let Some(listed) = audio.rates() else { return want };
+    let listed: Vec<i32> = listed.filter(|&r| r > 0).collect();
+    if listed.is_empty() || listed.contains(&(want as i32)) {
+        return want;
+    }
+    listed
+        .into_iter()
+        .min_by_key(|&r| ((i64::from(r) - i64::from(want)).abs(), -i64::from(r)))
+        .map_or(want, |r| r as u32)
+}
+
+/// The rate a track will actually be written at, given the rate that was
+/// asked for and the codec it is going into.
+///
+/// The same answer [`open_encoder`] arrives at, asked before anything is
+/// opened -- which is what lets the cut settle the output's rate once, say
+/// so where it is not what was asked for, and then declare a stream that
+/// matches the packets it will be fed. A codec with no encoder here answers
+/// with the rate it was given; opening one is where that is complained
+/// about, and this is not that place.
+pub fn writable_rate(id: ff::codec::Id, want: u32) -> u32 {
+    ff::encoder::find(id).map_or(want, |codec| encoder_rate(&codec, want))
+}
+
 /// Build the encoder that stands in for the recording's own.
 ///
 /// Perceptual noise substitution is off: it is an MPEG-4 tool, and a stream
@@ -55,26 +187,44 @@ const FADE: usize = 48;
 /// this is a frame an MPEG-2 decoder is entitled to refuse.
 ///
 /// `channels` is what comes *out*, which is the recording's own count except
-/// where a downmix was asked for.
+/// where a downmix was asked for. `rate` is likewise the recording's own
+/// unless a rate was asked for. `id` is what is written, which is the
+/// recording's own codec except where the container has no box for it -- see
+/// [`crate::cut`] and Blu-ray LPCM. `like` is the width the samples are
+/// wanted at, which is where the encoder's format is picked from -- the
+/// recording's own unless a width was asked for.
 fn open_encoder(
-    params: &ff::codec::Parameters,
-    audio: &AudioInfo,
+    id: ff::codec::Id,
+    like: ff::format::Sample,
+    rate: u32,
     channels: u16,
     bit_rate: usize,
 ) -> Result<ff::encoder::Audio> {
-    let id = params.id();
     let codec = ff::encoder::find(id).ok_or_else(|| anyhow!("no encoder for {id:?}"))?;
     let mut enc = ff::codec::context::Context::new_with_codec(codec).encoder().audio()?;
-    enc.set_rate(audio.sample_rate as i32);
-    enc.set_channel_layout(ff::channel_layout::ChannelLayout::default(channels as i32));
-    enc.set_format(ff::format::Sample::F32(ff::format::sample::Type::Planar));
-    enc.set_bit_rate(bit_rate);
-    enc.set_time_base(ff::Rational::new(1, audio.sample_rate as i32));
+    let rate = encoder_rate(&codec, rate);
+    enc.set_rate(rate as i32);
+    enc.set_channel_layout(encoder_layout(&codec, channels));
+    enc.set_format(encoder_format(&codec, like));
+    // Nothing for LPCM to spend: its size is the samples' own, and a figure
+    // handed to it is a figure the encoder throws away.
+    if bit_rate > 0 && !uncompressed(id) {
+        enc.set_bit_rate(bit_rate);
+    }
+    enc.set_time_base(ff::Rational::new(1, rate as i32));
     let mut eopts = ff::Dictionary::new();
     if id == ff::codec::Id::AAC {
         eopts.set("aac_pns", "0");
         eopts.set("aac_ltp", "0");
         eopts.set("aac_pred", "0");
+    }
+    // libavcodec's DTS encoder is marked experimental and refuses to open
+    // without being told that is understood. It is the only encoder here
+    // that does, and what it produces is a DTS stream a receiver decodes;
+    // "experimental" is libav's account of how much attention the encoder
+    // has had, not of whether its output is DTS.
+    if id == ff::codec::Id::DTS {
+        eopts.set("strict", "experimental");
     }
     enc.open_as_with(codec, eopts).map_err(|e| anyhow!("cannot open audio encoder: {e}"))
 }
@@ -103,7 +253,7 @@ type Pcm = Vec<Vec<f32>>;
 /// What the encoder is fed and what the buffers below hold.
 const PLANAR_F32: ff::format::Sample = ff::format::Sample::F32(ff::format::sample::Type::Planar);
 
-/// A decoded frame in the shape the encoder wants it: planar float, with the
+/// A frame in the shape it is wanted in: the given sample format, with the
 /// channels the output is to have.
 ///
 /// The frame is handed straight back when it is already that, which is the
@@ -116,29 +266,39 @@ const PLANAR_F32: ff::format::Sample = ff::format::Sample::F32(ff::format::sampl
 /// operation: swresample returns a frame's samples one for one and holds
 /// nothing back between frames, so the sample window the caller trims
 /// against still means what it meant on the source's own clock.
-fn rematrix<'a>(
+fn conform<'a>(
     resampler: &mut Option<ff::software::resampling::Context>,
     out: &'a mut ff::frame::Audio,
     frame: &'a ff::frame::Audio,
-    channels: u16,
+    layout: ff::channel_layout::ChannelLayout,
+    format: ff::format::Sample,
 ) -> Result<&'a ff::frame::Audio> {
-    if frame.channels() == channels && frame.format() == PLANAR_F32 {
+    // A decoder that names no layout at all is not a frame to rematrix --
+    // swresample cannot be told where its channels are, and with the right
+    // number of them there is nothing to move anyway.
+    let same = frame.channel_layout() == layout
+        || (frame.channel_layout().is_empty() && frame.channels() as i32 == layout.channels());
+    if same && frame.format() == format {
         return Ok(frame);
     }
-    let layout = ff::channel_layout::ChannelLayout::default(channels as i32);
     let ctx = match resampler {
         Some(ctx) => ctx,
         None => resampler.insert(ff::software::resampling::Context::get(
             frame.format(),
             frame.channel_layout(),
             frame.rate(),
-            PLANAR_F32,
+            format,
             layout,
             frame.rate(),
         )?),
     };
-    *out = ff::frame::Audio::new(PLANAR_F32, frame.samples().max(1), layout);
+    *out = ff::frame::Audio::new(format, frame.samples().max(1), layout);
     ctx.run(frame, out)?;
+    // Carried across rather than left to swresample: an encoder reads the
+    // frame's own timestamp, and a frame that arrives without one is a frame
+    // it has to guess at.
+    out.set_pts(frame.pts());
+    out.set_rate(frame.rate());
     Ok(out)
 }
 
@@ -168,7 +328,28 @@ pub struct Reencoder {
     /// already the shape the encoder wants.
     resampler: Option<ff::software::resampling::Context>,
     remixed: ff::frame::Audio,
+    /// The recording's own rate. The window a range is trimmed against is
+    /// counted in the recording's samples, so this is what `take` measures
+    /// with, whatever rate the track is written at.
     sample_rate: u32,
+    /// The rate the track is written at, which is the encoder's own -- the
+    /// recording's unless a rate was asked for, and then the nearest the
+    /// codec can speak. Everything after the resampler is counted in these
+    /// samples, `fed` included.
+    out_rate: u32,
+    /// Set only when those two differ: the samples kept at the recording's
+    /// rate, on their way to the output's.
+    ///
+    /// Stateful, and deliberately one context for the whole track rather
+    /// than one per frame like the two above. A resampler holds part of a
+    /// sample back between calls -- the output grid does not land on the
+    /// input grid -- and a context rebuilt per frame would drop that
+    /// remainder every time, which is a click at every frame boundary
+    /// instead of a track.
+    resample: Option<ff::software::resampling::Context>,
+    /// Samples waiting at the *output's* rate, which is what `drain` frames
+    /// from. The same buffer as `pending` where nothing is resampled.
+    ready: Pcm,
     /// Samples handed to the encoder so far -- the output timeline.
     fed: i64,
     /// Last source packet consumed, so a frame offered twice is ignored.
@@ -176,22 +357,67 @@ pub struct Reencoder {
     /// Set when the frames are to leave here already framed, which is what
     /// keeps a re-encoded transport stream MPEG-2 AAC throughout.
     adts: Option<AdtsFormat>,
+    /// What the encoder takes, and the conversion into it -- both idle when
+    /// that is the planar float these buffers already hold, which is AAC's
+    /// and AC-3's; LPCM, MP2 and DTS all want integers.
+    enc_format: ff::format::Sample,
+    to_encoder: Option<ff::software::resampling::Context>,
+    feeding: ff::frame::Audio,
+    /// Whether the encoder has a frame length of its own. LPCM has none: it
+    /// writes back whatever it is handed, whole frames or not.
+    fixed: bool,
+    /// How the encoder wants its channels arranged, which is not always the
+    /// arrangement libav hands back as the default for that many. See
+    /// [`encoder_layout`].
+    layout: ff::channel_layout::ChannelLayout,
 }
 
 impl Reencoder {
     /// `channels` is what the track is written with: `audio.channels` to
-    /// follow the recording, fewer to downmix it.
+    /// follow the recording, fewer to downmix it. `rate` is likewise what it
+    /// is written at: `audio.sample_rate` to follow the recording, anything
+    /// else to resample it -- and the encoder has the last word, since not
+    /// every codec speaks every rate. `like` is the sample format to ask the
+    /// encoder for; `None` asks for the recording's own, which is right
+    /// wherever the codec is also the recording's.
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         params: ff::codec::Parameters,
+        target: ff::codec::Id,
+        like: Option<ff::format::Sample>,
         audio: &AudioInfo,
         channels: u16,
+        rate: u32,
         bit_rate: usize,
         adts: Option<AdtsFormat>,
     ) -> Result<Self> {
         let decoder =
             ff::codec::context::Context::from_parameters(params.clone())?.decoder().audio()?;
-        let encoder = open_encoder(&params, audio, channels, bit_rate)?;
+        let like = like.unwrap_or_else(|| sample_format(&params));
+        let encoder = open_encoder(target, like, rate, channels, bit_rate)?;
         let frame_size = frame_size_of(&encoder);
+        let enc_format = encoder.format();
+        let fixed = encoder.frame_size() > 0;
+        let layout = encoder.channel_layout();
+        // What the encoder settled on, which is the rate asked for wherever
+        // the codec has it and the nearest it does have otherwise.
+        let out_rate = encoder.rate();
+        // Planar float in and planar float out: the resampler is here to
+        // change the rate and nothing else, because the channels have
+        // already been put right per frame on the way in and the encoder's
+        // own format is put on at the other end.
+        let resample = (out_rate != audio.sample_rate)
+            .then(|| {
+                ff::software::resampling::Context::get(
+                    PLANAR_F32,
+                    layout,
+                    audio.sample_rate,
+                    PLANAR_F32,
+                    layout,
+                    out_rate,
+                )
+            })
+            .transpose()?;
         Ok(Self {
             decoder,
             encoder,
@@ -201,9 +427,17 @@ impl Reencoder {
             resampler: None,
             remixed: ff::frame::Audio::empty(),
             sample_rate: audio.sample_rate,
+            out_rate,
+            resample,
+            ready: vec![Vec::new(); channels as usize],
             fed: 0,
             last_pts: None,
             adts,
+            enc_format,
+            to_encoder: None,
+            feeding: ff::frame::Audio::empty(),
+            fixed,
+            layout,
         })
     }
 
@@ -256,11 +490,12 @@ impl Reencoder {
             if hi <= lo {
                 continue;
             }
-            let src = rematrix(
+            let src = conform(
                 &mut self.resampler,
                 &mut self.remixed,
                 &frame,
-                self.channels as u16,
+                self.layout,
+                PLANAR_F32,
             )?;
             // Same rate in and out, so the window still counts in the frame's
             // own samples; clamped all the same, so a shorter frame than was
@@ -273,22 +508,96 @@ impl Reencoder {
         Ok(())
     }
 
+    /// The rate the track is written at, which is not always the rate it was
+    /// asked for: the encoder has the last word. What the output stream says
+    /// about itself, and what its packets are timed against, both come from
+    /// here.
+    pub fn rate(&self) -> u32 {
+        self.out_rate
+    }
+
+    /// Move what is waiting at the recording's rate over to the output's.
+    ///
+    /// A no-op but a move where the two rates agree, which is the ordinary
+    /// case: `ready` is then simply where `pending` ends up.
+    fn convert(&mut self) -> Result<()> {
+        if self.pending[0].is_empty() {
+            return Ok(());
+        }
+        let Some(ctx) = self.resample.as_mut() else {
+            for ch in 0..self.channels {
+                let taken = std::mem::take(&mut self.pending[ch]);
+                self.ready[ch].extend(taken);
+            }
+            return Ok(());
+        };
+        let n = self.pending[0].len();
+        let mut input = ff::frame::Audio::new(PLANAR_F32, n, self.layout);
+        input.set_rate(self.sample_rate);
+        for ch in 0..self.channels {
+            let taken = std::mem::take(&mut self.pending[ch]);
+            input.plane_mut::<f32>(ch)[..n].copy_from_slice(&taken);
+        }
+        // Room for everything the resampler is still holding as well as
+        // everything it is about to be handed. Asked for less it keeps the
+        // remainder rather than losing it, but keeping it is a buffer that
+        // only grows, so the sum is done properly: the delay is asked for in
+        // output samples, and the input is scaled into them.
+        let held = unsafe { ff::ffi::swr_get_delay(ctx.as_mut_ptr(), i64::from(self.out_rate)) };
+        let room = held.max(0) as usize
+            + (n as u64 * u64::from(self.out_rate) / u64::from(self.sample_rate).max(1)) as usize
+            + 32;
+        let mut resampled = ff::frame::Audio::new(PLANAR_F32, room, self.layout);
+        ctx.run(&input, &mut resampled)?;
+        let made = resampled.samples();
+        if made > 0 {
+            take_samples(&resampled, self.channels, &mut self.ready, (0, made));
+        }
+        Ok(())
+    }
+
+    /// Push the resampler's own tail out, once nothing more is coming.
+    ///
+    /// A resampler runs a filter over its input and so is always a little
+    /// behind it; what that filter still holds is the last few milliseconds
+    /// of the track, and without this they are simply missing from the end.
+    fn flush_resampler(&mut self) -> Result<()> {
+        let Some(ctx) = self.resample.as_mut() else { return Ok(()) };
+        loop {
+            let held = unsafe { ff::ffi::swr_get_delay(ctx.as_mut_ptr(), i64::from(self.out_rate)) };
+            if held <= 0 {
+                return Ok(());
+            }
+            let mut resampled = ff::frame::Audio::new(PLANAR_F32, held as usize + 32, self.layout);
+            ctx.flush(&mut resampled)?;
+            let made = resampled.samples();
+            if made == 0 {
+                return Ok(());
+            }
+            take_samples(&resampled, self.channels, &mut self.ready, (0, made));
+        }
+    }
+
     /// Hand the encoder every full frame that has accumulated.
     pub fn drain(&mut self, out: &mut Vec<(ff::Packet, i64)>) -> Result<()> {
-        while self.pending[0].len() >= self.frame_size {
-            let mut frame = ff::frame::Audio::new(
-                PLANAR_F32,
-                self.frame_size,
-                ff::channel_layout::ChannelLayout::default(self.channels as i32),
-            );
-            frame.set_rate(self.sample_rate);
+        self.convert()?;
+        while self.ready[0].len() >= self.frame_size {
+            let mut frame = ff::frame::Audio::new(PLANAR_F32, self.frame_size, self.layout);
+            frame.set_rate(self.out_rate);
             for ch in 0..self.channels {
-                let taken: Vec<f32> = self.pending[ch].drain(..self.frame_size).collect();
+                let taken: Vec<f32> = self.ready[ch].drain(..self.frame_size).collect();
                 frame.plane_mut::<f32>(ch)[..self.frame_size].copy_from_slice(&taken);
             }
             frame.set_pts(Some(self.fed));
             self.fed += self.frame_size as i64;
-            self.encoder.send_frame(&frame)?;
+            let feed = conform(
+                &mut self.to_encoder,
+                &mut self.feeding,
+                &frame,
+                self.layout,
+                self.enc_format,
+            )?;
+            self.encoder.send_frame(feed)?;
             self.collect(out)?;
         }
         Ok(())
@@ -296,10 +605,23 @@ impl Reencoder {
 
     /// Finish: pad the tail to a whole frame and flush the encoder.
     pub fn finish(&mut self, out: &mut Vec<(ff::Packet, i64)>) -> Result<()> {
-        if !self.pending[0].is_empty() {
-            let short = self.frame_size - self.pending[0].len();
-            for ch in 0..self.channels {
-                self.pending[ch].extend(std::iter::repeat_n(0.0, short));
+        // Everything still on the input side, and then the resampler's own
+        // tail after it -- in that order, or the last few milliseconds of
+        // the track arrive in front of the samples they follow.
+        self.convert()?;
+        self.flush_resampler()?;
+        self.drain(out)?;
+        if !self.ready[0].is_empty() {
+            if self.fixed {
+                let short = self.frame_size - self.ready[0].len();
+                for ch in 0..self.channels {
+                    self.ready[ch].extend(std::iter::repeat_n(0.0, short));
+                }
+            } else {
+                // Nothing to pad up to. The tail goes out at its own length,
+                // so the track ends where the recording did rather than up to
+                // a frame of silence later.
+                self.frame_size = self.ready[0].len();
             }
             self.drain(out)?;
         }
@@ -327,6 +649,92 @@ impl Reencoder {
             out.push((packet, pts));
         }
     }
+}
+
+/// The codecs a cut carries through byte for byte rather than re-encoding a
+/// frame of.
+///
+/// DTS-HD and TrueHD are lossless extensions wrapped around a lossy core, and
+/// libavformat's encoders for them write something else: `dca` writes the
+/// core alone, `truehd` and `mlp` are experimental. A frame from either in
+/// the middle of a lossless track is a hole in it, not a trim. So a boundary
+/// on one of these lands on a whole frame -- about 20 ms out -- and the
+/// recording's own bytes reach the output unaltered, which for lossless sound
+/// is the answer that matters.
+pub fn carried_whole(id: ff::codec::Id) -> bool {
+    matches!(id, ff::codec::Id::DTS | ff::codec::Id::TRUEHD | ff::codec::Id::MLP)
+}
+
+/// How wide a track's samples are once they are written as linear PCM.
+///
+/// 24 bits only where the recording has more than 16 bits in it, which is
+/// two questions and not one. The codec has to be one that carries samples
+/// rather than a description of them -- everything lossy decodes to a 32 bit
+/// float, and a float is a wide number holding a narrow recording, so a
+/// broadcast written out at 24 bits would be half again the size and not one
+/// sample better. And the recording itself has to be the wide kind: Blu-ray
+/// LPCM is 16, 20 or 24 bit, and libavformat hands the widest two over as 32
+/// bit samples and the narrowest as 16.
+///
+/// This is the one place that decides it. The window multiplies it out to
+/// say what an uncompressed track will cost, and the cut asks the encoder
+/// for exactly this width -- which matters beyond the size, because the
+/// Blu-ray LPCM encoder frames 16 bit sound 240 samples at a time and 24 bit
+/// sound 360.
+pub fn pcm_bits(params: &ff::codec::Parameters) -> u8 {
+    use ff::codec::Id::*;
+    let carries_samples = matches!(
+        params.id(),
+        PCM_BLURAY
+            | PCM_DVD
+            | PCM_S16BE
+            | PCM_S16LE
+            | PCM_S24BE
+            | PCM_S24LE
+            | PCM_S32BE
+            | PCM_S32LE
+            | PCM_F32BE
+            | PCM_F32LE
+            | FLAC
+            | ALAC
+            | TRUEHD
+            | MLP
+            | DTS
+    );
+    let wide = !matches!(
+        sample_format(params),
+        ff::format::Sample::I16(_) | ff::format::Sample::U8(_)
+    );
+    if carries_samples && wide {
+        24
+    } else {
+        16
+    }
+}
+
+/// Whether a codec writes the samples down rather than describing them.
+///
+/// What this decides is whether a bit rate means anything: LPCM's size is
+/// the arithmetic of the recording -- channels times bits times the sample
+/// rate -- and the encoder ignores the figure it is handed. Everything else
+/// here spends what it is given.
+pub fn uncompressed(id: ff::codec::Id) -> bool {
+    use ff::codec::Id::*;
+    matches!(
+        id,
+        PCM_BLURAY
+            | PCM_DVD
+            | PCM_S16BE
+            | PCM_S16LE
+            | PCM_S24BE
+            | PCM_S24LE
+            | PCM_S32BE
+            | PCM_S32LE
+            | PCM_F32BE
+            | PCM_F32LE
+            | PCM_U8
+            | PCM_S8
+    )
 }
 
 /// A frame to write in place of one of the recording's own.
@@ -388,18 +796,40 @@ pub fn boundary_patches(
     let rate = audio.sample_rate as f64;
     let adts = adts.map(|f| f.as_version(aac));
 
-    // A frame this encoder produces can only stand in for one of the
-    // recording's if the two are framed alike, and the encoder's delay is
-    // what says whether they are. AAC's is a whole frame, so its packets land
-    // on the same grid the recording's frames sit on. AC-3's is 256 samples,
-    // which puts every packet 256 samples off that grid -- its frames cover
-    // the wrong samples to be swapped in for the recording's, however well
-    // they are encoded. Better to say so and copy than to quietly do nothing.
-    // No encoder for this audio, or none that will take what we would feed
-    // it: MP2 wants signed 16-bit and is handed planar float here. Smart
-    // rendering is an improvement on copying, not a condition of it, so this
-    // says so and copies rather than failing the cut.
-    let probe = match open_encoder(&params, audio, audio.channels, bit_rate) {
+    // Three ways a track can turn out not to be one whose frames this
+    // rewrites, and all three end the same way: say so and copy. Smart
+    // rendering is an improvement on copying, not a condition of it, and
+    // none of these is worth failing a cut over.
+    //
+    // The first is that re-encoding the codec at all would be the wrong
+    // thing -- lossless sound, below.
+    //
+    // The second is that there is no encoder for it, or none that will open.
+    //
+    // The third is that a frame this encoder produces cannot stand in for one
+    // of the recording's, because the two are not framed alike, and the
+    // encoder's delay is what says whether they are. AAC's is a whole frame,
+    // so its packets land on the same grid the recording's frames sit on.
+    // AC-3's is 256 samples and MP2's is 481, which puts every packet off
+    // that grid -- their frames cover the wrong samples to be swapped in,
+    // however well they are encoded.
+    if carried_whole(params.id()) {
+        eprintln!(
+            "note: {:?} is lossless sound and is carried through byte for byte -- no encoder \
+             here writes it without losing what makes it lossless, so a re-encoded frame \
+             would be worse than the one it replaced. The cut's boundaries land on whole \
+             frames of it.",
+            params.id(),
+        );
+        return Ok(out);
+    }
+    let probe = match open_encoder(
+        params.id(),
+        sample_format(&params),
+        audio.sample_rate,
+        audio.channels,
+        bit_rate,
+    ) {
         Ok(e) => e,
         Err(e) => {
             eprintln!(
@@ -481,6 +911,12 @@ fn decode_around(
     let mut frames: Vec<Decoded> = Vec::new();
     let mut frame = ff::frame::Audio::empty();
     let mut past = 0usize;
+    // What comes out of the decoder is planar float for everything a
+    // broadcast carries, and 16 or 32 bit integers for Blu-ray LPCM. What is
+    // kept here is float either way, because that is what the mask and the
+    // fade are written in.
+    let mut resampler = None;
+    let mut floated = ff::frame::Audio::empty();
 
     for (stream, packet) in ictx.packets() {
         if stream.index() != audio.stream_index {
@@ -493,9 +929,20 @@ fn decode_around(
             let Some(pts) = frame.pts() else { continue };
             let t = pts as f64 * audio.time_base - src.start_time;
             let first = (t * rate).round() as i64;
-            let n = frame.samples();
+            // These frames go back among the recording's own, so nothing
+            // here may move a channel: the layout asked for is the layout
+            // that arrived, and the only conversion is one of format. A
+            // frame that names no layout falls back to the default for its
+            // count, which is what swresample can be told about.
+            let want = if frame.channel_layout().channels() == channels as i32 {
+                frame.channel_layout()
+            } else {
+                ff::channel_layout::ChannelLayout::default(channels as i32)
+            };
+            let floats = conform(&mut resampler, &mut floated, &frame, want, PLANAR_F32)?;
+            let n = floats.samples();
             let mut pcm: Pcm = vec![Vec::with_capacity(n); channels];
-            take_samples(&frame, channels, &mut pcm, (0, n));
+            take_samples(floats, channels, &mut pcm, (0, n));
             frames.push(Decoded { pts, first, pcm });
             if t > at {
                 past += 1;
@@ -568,13 +1015,23 @@ fn patch_run(
         return Ok(());
     }
 
-    let mut encoder = open_encoder(params, audio, audio.channels, bit_rate)?;
-    if frame_size_of(&encoder) != size {
+    let mut encoder =
+        open_encoder(params.id(), sample_format(params), audio.sample_rate, audio.channels, bit_rate)?;
+    // A frame written here has to cover exactly the samples the frame it
+    // replaces covered. Most encoders have a frame length of their own, and
+    // it has to be the recording's; LPCM has none -- it writes back whatever
+    // it is handed -- so it fits any recording's.
+    let fixed = encoder.frame_size() as usize;
+    if fixed != 0 && fixed != size {
         // The encoder frames the audio differently from the recording, so a
         // frame it produces cannot stand in for one of the recording's.
         return Ok(());
     }
     let channels = audio.channels as usize;
+    let enc_format = encoder.format();
+    let enc_layout = encoder.channel_layout();
+    let mut to_encoder = None;
+    let mut feeding = ff::frame::Audio::empty();
 
     let mut fed = 0i64;
     let mut got: Vec<(usize, Vec<u8>)> = Vec::new();
@@ -582,7 +1039,7 @@ fn patch_run(
         let mut frame = ff::frame::Audio::new(
             ff::format::Sample::F32(ff::format::sample::Type::Planar),
             size,
-            ff::channel_layout::ChannelLayout::default(channels as i32),
+            enc_layout,
         );
         frame.set_rate(audio.sample_rate);
         for ch in 0..channels {
@@ -592,7 +1049,8 @@ fn patch_run(
         }
         frame.set_pts(Some(fed));
         fed += size as i64;
-        encoder.send_frame(&frame)?;
+        let feed = conform(&mut to_encoder, &mut feeding, &frame, enc_layout, enc_format)?;
+        encoder.send_frame(feed)?;
         // Between sends, not only at the end: an encoder holding a full
         // output queue refuses the next frame outright.
         collect_patch(&mut encoder, size, &mut got)?;

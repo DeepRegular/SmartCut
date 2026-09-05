@@ -109,6 +109,24 @@ impl AdtsFormat {
         self
     }
 
+    /// The same format, for a frame whose samples run at `rate`.
+    ///
+    /// Only for frames whose rate is not the recording's. The header is where
+    /// a transport stream says what rate a frame runs at, so leaving the
+    /// recording's index on a resampled frame would announce 48 kHz over
+    /// 44.1 kHz samples, and a decoder that believes the header ahead of the
+    /// payload plays the whole track at the wrong speed.
+    ///
+    /// A rate with no index of its own is left alone: AAC has thirteen it can
+    /// name, and one it cannot name is one the encoder will have refused
+    /// long before this header is written.
+    pub fn with_rate(mut self, rate: u32) -> Self {
+        if let Some(index) = sampling_index(rate) {
+            self.sampling_index = index;
+        }
+        self
+    }
+
     /// A 7-byte header for a payload of `payload` bytes.
     ///
     /// `protection_absent` is set, so no CRC follows -- it is a per-frame

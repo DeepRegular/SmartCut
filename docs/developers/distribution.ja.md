@@ -7,7 +7,7 @@
 ```bash
 cargo install tauri-cli --version ^2 --locked   # 初回のみ
 cd gui/src-tauri && NO_STRIP=1 cargo tauri build --bundles appimage
-# -> target/release/bundle/appimage/SmartCut_0.3.3_amd64.AppImage
+# -> target/release/bundle/appimage/SmartCut_0.3.4_amd64.AppImage
 ```
 
 成果物は **185 MB で、共有ライブラリ 745 個をすべて抱えている**。WebKitGTK 4.1 も、
@@ -49,7 +49,7 @@ libasound2 はデスクトップ Linux ならほぼ確実に入っているし�
 展開して確認できる。
 
 ```bash
-./SmartCut_0.3.3_amd64.AppImage --appimage-extract >/dev/null
+./SmartCut_0.3.4_amd64.AppImage --appimage-extract >/dev/null
 ldd squashfs-root/usr/bin/smartcut | grep -E 'asound|jack|pulse'
 # libasound.so.2 / libjack.so.0 -> /lib/x86_64-linux-gnu/...   (システム側)
 # libpulse.so.0                 -> squashfs-root/usr/bin/../lib/...  (同梱)
@@ -72,8 +72,8 @@ AppImage 自体で動作を確認している。素材を開く、走査する�
 
 ```bash
 ./gui/build-linux.sh
-# -> gui/src-tauri/target/release/bundle/linux/SmartCut-0.3.3-linux-x86_64.tar.gz
-# -> gui/src-tauri/target/release/bundle/linux/smartcut_0.3.3_amd64.deb
+# -> gui/src-tauri/target/release/bundle/linux/SmartCut-0.3.4-linux-x86_64.tar.gz
+# -> gui/src-tauri/target/release/bundle/linux/smartcut_0.3.4_amd64.deb
 ```
 
 同じビルドの詰め方が 2 通りある。どちらも **GUI を `smartcut`、コマンドライン版を
@@ -84,13 +84,13 @@ cargo のクレート名は `gui` なので、放っておくと Tauri はその
 インストールする。誰かが占有してよい名前ではない。`tauri.conf.json` の
 `mainBinaryName` で `smartcut` に固定してある（0.2.0 以降。それ以前は Windows 用
 だけに設定されていた）。一方 Tauri が書き出すバンドル*ファイル*の名前は `productName`
-に従うので `SmartCut_0.3.3_amd64.deb` のようになる。deb のパッケージ名 `smartcut` と
+に従うので `SmartCut_0.3.4_amd64.deb` のようになる。deb のパッケージ名 `smartcut` と
 食い違うのはそのためである。`build-linux.sh` は両方を `tauri.conf.json` から読む。
 
 | 成果物 | サイズ | FFmpeg | 必要条件 |
 |---|---|---|---|
-| `SmartCut-0.3.3-linux-x86_64.tar.gz` | 208.7 MB | 同梱 | glibc 2.39 以上。FUSE 不要 |
-| `smartcut_0.3.3_amd64.deb` | 3.0 MB | システムのものを使用 | FFmpeg 7.1（Debian 13 / Ubuntu 25.04 以降） |
+| `SmartCut-0.3.4-linux-x86_64.tar.gz` | 208.7 MB | 同梱 | glibc 2.39 以上。FUSE 不要 |
+| `smartcut_0.3.4_amd64.deb` | 3.0 MB | システムのものを使用 | FFmpeg 7.1（Debian 13 / Ubuntu 25.04 以降） |
 
 **tar.gz の中身は AppImage と同じ AppDir を展開したものである。** linuxdeploy が
 `ldd` を辿って集めた 745 個のライブラリがそのまま `app/` にあり、`./smartcut` は
@@ -140,7 +140,7 @@ Linux の開発 VM から `x86_64-pc-windows-msvc` へクロスビルドして�
 
 ```bash
 ./gui/build-windows.sh
-# -> gui/src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis/SmartCut_0.3.3_x64-setup.exe
+# -> gui/src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis/SmartCut_0.3.4_x64-setup.exe
 # -> gui/src-tauri/target/x86_64-pc-windows-msvc/release/bundle/portable/smartcut-portable-x64.zip
 ```
 

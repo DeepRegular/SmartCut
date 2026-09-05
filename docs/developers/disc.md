@@ -316,6 +316,37 @@ for the row -- otherwise a track switched back *on* in the editor would be
 switched off again on the way out by an answer given before anybody had seen
 the recording.
 
+### The sound a disc carries
+
+A broadcast recording carries AAC and nothing else. A disc carries five other
+things, and each of them is a different problem on the way out.
+
+| On the disc | What a cut does with it |
+|---|---|
+| **LPCM** (`pcm_bluray`) | Copied into a transport stream, and **smart rendered**: LPCM has no encoder delay and no window overlap, so the frame a boundary lands inside is rewritten with the far side silenced and nothing else moves. Into an MP4 or an MKV it is written as big-endian PCM -- `ipcm`, or `twos`/`in24` in a QuickTime file -- at the recording's own width, because neither container has a box for Blu-ray's own framing |
+| **DTS**, **DTS-HD**, **DTS-HD MA** | Copied, byte for byte, into every container |
+| **TrueHD** | Copied, byte for byte. Written without the AC-3 core folded into its PID (above). In an MP4 it needs two allowances, and says so: the `mlpa` box is outside the standard, and the track has to open on one of the stream's own sync points -- about 13 ms of head, in the streams measured here |
+| **E-AC-3** | Copied |
+
+**Nothing lossless is ever re-encoded.** The encoders libavformat has for DTS
+and TrueHD write the lossy core and drop what makes them lossless, so a
+"patched" boundary frame would be a hole in the track rather than a trim.
+Asked for a whole-track re-encode of one, or for a downmix, which is a
+re-encode by another name, a cut declines and says so rather than obeying or
+failing.
+
+**LPCM into an MP4 loses nothing.** The samples pass through a 32 bit float,
+whose 24 bit mantissa holds every value Blu-ray LPCM can carry -- and Blu-ray
+LPCM goes no deeper than 24 bits. What comes out of the MP4 is what went into
+it, sample for sample; only the box around it changed.
+
+The stream types are the disc's own. libavformat's own transport stream muxer
+knows none of the first three -- asked to write LPCM it declares "private
+data", and asked to write E-AC-3 it reaches for ATSC's `0x87` rather than
+Blu-ray's `0x84` -- but a cut written as a `.ts` keeps
+[the recording's own tables](../technical/broadcast-ts.md), and that is what
+the numbers come from.
+
 ### The marks
 
 Chapter marks are read **only when they can be believed**. The size of a mark
@@ -433,7 +464,7 @@ the broadcast's tables the same as a cut taken from a `.ts`.
 | **Joining clips** | Not supported. A multi-clip playlist is shown as a row per clip (above) |
 | **BDMV titles** | `index.bdmv` names titles and a title is a navigation program. Which playlist "T05 Extra 01" plays is not worked out; rows are named by the disc and the clip |
 | **The CLPI EP map** | Not used for seeking. The stream list beside it is read, for the chooser; the index is still built by scanning packets. Adding the EP map to `IndexSource` in [`index.rs`](../../rust/crates/core/src/index.rs) would save that pass |
-| **Blu-ray's own streams** | PGS and IGS cannot go on a cut timeline and are dropped, which the chooser says. A TrueHD track is written without the AC-3 core folded into its PID (above). LPCM (`pcm_bluray`) survives neither MP4 nor MKV and degrades to `bin_data` in TS; DTS-HD and VC-1 are read and listed but their cuts are untested |
+| **Blu-ray's own streams** | PGS and IGS cannot go on a cut timeline and are dropped, which the chooser says. The sound is all carried -- LPCM, DTS-HD, TrueHD, E-AC-3, [above](#the-sound-a-disc-carries). VC-1 video is read and listed, but a cut of one is untested |
 
 ## What was checked
 
@@ -465,3 +496,14 @@ around it, and genisoimage wraps each in a UDF 1.02 image. Then all four shapes
 are asked the same questions, the cut each of them produces is compared **byte
 for byte** -- against each other and against the plain stream -- and the tables
 are checked to have gone back in. Thirty-five checks, all passing.
+
+**The sound, codec by codec** —
+[`tests/run_bd_audio_tests.sh`](../../tests/run_bd_audio_tests.sh) builds a
+clip of each: LPCM at 16 and at 24 bits, DTS, TrueHD, E-AC-3. Each is cut into
+a `.ts`, an `.m2ts` and an `.mp4`, and what is checked is the claim that codec
+makes -- that the stream types the disc used come back out, that LPCM into an
+MP4 is the same samples with **nothing differing at all**, that the frame an
+LPCM boundary lands inside comes out with its far side silenced and its near
+side intact, and that the audio of a DTS or TrueHD cut is a stretch of the
+recording's own bytes, found in it by search. Thirty-nine checks, all
+passing.

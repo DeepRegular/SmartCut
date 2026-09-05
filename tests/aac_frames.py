@@ -7,7 +7,11 @@ bytes, unchanged? A smart-rendered cut has to answer "all of them" and
 "all but the handful the boundaries land inside".
 
     python3 tests/aac_frames.py out.aac [source.aac] [--mpeg 2]
-        [--max-reencoded N] [--profile 1] [--payload-only 1]
+        [--max-reencoded N] [--profile 1] [--payload-only 1] [--hz 48000]
+
+`--hz` requires every frame's header to name that sample rate, which is the
+rate a transport stream's decoder actually reads -- an encoder resampled to
+44.1 kHz whose frames still say 48 plays the whole track at the wrong speed.
 
 `--payload-only` compares what is inside the frames rather than the frames
 themselves, which is the only comparison an MP4 can answer: its muxer keeps
@@ -17,6 +21,12 @@ of one were written by the demuxer and say nothing about the cut.
 import sys
 
 HEADER = 7
+
+# What a header's four-bit sampling frequency index stands for. 13 is the
+# highest one defined; the three above it are reserved and would be a header
+# nothing wrote on purpose.
+RATES = [96000, 88200, 64000, 48000, 44100, 32000, 24000, 22050,
+         16000, 12000, 11025, 8000, 7350, None, None, None]
 
 
 def start_of(data):
@@ -102,14 +112,18 @@ def main(argv):
         kinds[key] = kinds.get(key, 0) + 1
     for key, n in sorted(kinds.items(), key=lambda kv: -kv[1]):
         head = dict(key)
-        print("   MPEG-%(mpeg)d  profile %(profile)d  rate %(rate)d  "
-              "%(channels)dch  %(blocks)d block  crc %(crc)d" % head, "x%d" % n)
+        print("   MPEG-%(mpeg)d  profile %(profile)d  %(hz)s Hz  "
+              "%(channels)dch  %(blocks)d block  crc %(crc)d"
+              % dict(head, hz=RATES[head["rate"]]), "x%d" % n)
         if "mpeg" in flags and head["mpeg"] != int(flags["mpeg"]):
             bad.append("%d frame(s) are MPEG-%d, wanted MPEG-%s"
                        % (n, head["mpeg"], flags["mpeg"]))
         if "profile" in flags and head["profile"] != int(flags["profile"]):
             bad.append("%d frame(s) are profile %d, wanted %s"
                        % (n, head["profile"], flags["profile"]))
+        if "hz" in flags and RATES[head["rate"]] != int(flags["hz"]):
+            bad.append("%d frame(s) say %s Hz, wanted %s"
+                       % (n, RATES[head["rate"]], flags["hz"]))
         if head["blocks"] != 1:
             bad.append("%d frame(s) carry %d raw data blocks" % (n, head["blocks"]))
 
