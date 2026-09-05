@@ -35,4 +35,4 @@
 | [設計](developers/design.ja.md) | なぜ Rust コア + Tauri GUI なのか。GUI の作り: フィルムストリップ、シーク用インデックス、プロキシ、再生、多言語対応 |
 | [ビルド](developers/building.ja.md) | 必要なライブラリ、ビルド方法、テストの走らせ方 |
 | [配布](developers/distribution.ja.md) | AppImage・tar.gz・deb、Windows インストーラ、それぞれが何を同梱しているか |
-| [Blu-ray を読む](developers/disc.ja.md) | BDAV も BDMV も、フォルダーからも `.iso` からも読む。UDF、ARIB のテキスト、クリップごとの一覧、選択ダイアログ |
+| [ディスクを読む](developers/disc.ja.md) | Blu-ray（BDAV / BDMV）も DVD-Video も、フォルダーからも `.iso` からも読む。UDF、IFO のテーブル、ARIB のテキスト、クリップごとの一覧、選択ダイアログ |

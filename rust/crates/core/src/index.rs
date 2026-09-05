@@ -23,6 +23,17 @@ pub struct Index {
     pub leading_known: bool,
     /// Whether the stream uses 2:3 pulldown, when the source could tell.
     pub pulldown: Option<bool>,
+    /// Where the last picture is, in rebased seconds, when the source read
+    /// far enough to know.
+    ///
+    /// A container usually says how long it is and is usually right. A
+    /// program stream is the exception: nothing in it records the length, so
+    /// libavformat works one out from the timestamps at either end of the
+    /// file, and on a DVD -- four gigabytes written in one run with the
+    /// timestamps counting straight through -- it has been seen to come back
+    /// with eight seconds for an hour. A pass that read every packet has the
+    /// better answer and this is where it says so.
+    pub end: Option<f64>,
 }
 
 /// What an index source is given to work with.
@@ -81,10 +92,18 @@ impl IndexSource for PacketScan {
             });
         }
 
+        // The last picture to be shown, which is not the last to arrive.
+        let end = packets
+            .iter()
+            .map(|p| p.pts)
+            .fold(f64::NEG_INFINITY, f64::max)
+            .into_finite()
+            .map(|t| t + video.frame_duration());
         Ok(Index {
             points: points_from(&packets),
             leading_known: true,
             pulldown: Some(pulldown),
+            end,
         })
     }
 }
@@ -128,7 +147,19 @@ impl IndexSource for ContainerIndex {
             return Err(anyhow!("the container has no seek table for this stream"));
         }
         points.sort_by(|a, b| a.time.partial_cmp(&b.time).unwrap_or(std::cmp::Ordering::Equal));
-        Ok(Index { points, leading_known: false, pulldown: None })
+        Ok(Index { points, leading_known: false, pulldown: None, end: None })
+    }
+}
+
+/// `f64::max` over an empty run gives negative infinity, which is not an
+/// answer about where a recording ends.
+trait Finite {
+    fn into_finite(self) -> Option<f64>;
+}
+
+impl Finite for f64 {
+    fn into_finite(self) -> Option<f64> {
+        self.is_finite().then_some(self)
     }
 }
 
@@ -240,7 +271,7 @@ pub fn refine_leading(
     points: &mut [AccessPoint],
     ranges: &[(f64, f64)],
 ) -> Result<()> {
-    let mut ictx = ff::format::input(&path)?;
+    let mut ictx = crate::input::demux(&path)?;
     for (t_in, t_out) in ranges {
         for slot in points.iter_mut() {
             if slot.time < *t_in - 1.0 || slot.time > *t_out + 1.0 {

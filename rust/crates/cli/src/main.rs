@@ -301,7 +301,7 @@ fn main() -> Result<()> {
             "usage: smartcut <input> [--keep START-END]... [--cut START-END]... \
              [--drop-stream INDEX]... [--tables partial|broadcast|muxer] [--no-open-gop] \
              [--title N]\n\
-             <input> is a recording, or a Blu-ray -- a BDAV or BDMV folder, \
+             <input> is a recording, or a disc -- a BDAV, BDMV or VIDEO_TS folder, \
              or an .iso of one -- whose recordings are listed when no --title \
              is given"
         );

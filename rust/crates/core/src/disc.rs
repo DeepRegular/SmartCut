@@ -62,8 +62,16 @@
 //! problem and this program has none of it. A pressed disc copied by a tool
 //! that removed the encryption -- which is what the `MAKEMKV/` directory
 //! beside `BDMV/` on some images is a sign of -- reads like any other.
+//!
+//! **A DVD arrives by the same door and is read elsewhere.** It shares the
+//! folder and the `.iso` with a Blu-ray and nothing else -- no playlists, no
+//! clip index, a different filesystem layout and a program stream instead of
+//! a transport stream -- so [`crate::dvd`] reads it, and [`read`] here asks
+//! both and lets the one that recognises the disc answer. What comes back is
+//! the same [`Disc`] either way.
 
 use crate::arib;
+use crate::dvd;
 use crate::udf;
 use anyhow::{anyhow, bail, Context, Result};
 use std::path::{Path, PathBuf};
@@ -82,13 +90,19 @@ const TICK: f64 = 45_000.0;
 /// over the longest thing a menu is made of.
 const WORTH_TICKING: f64 = 300.0;
 
-/// Which half of the Blu-ray specification wrote this disc.
+/// What wrote this disc.
+///
+/// Two of the three are the halves of the Blu-ray specification and are read
+/// here; the third is a DVD, which shares nothing with them but the door it
+/// arrives by and is read by [`crate::dvd`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Shape {
     /// A disc of recordings. See the module documentation.
     Bdav,
     /// A film, or a copy of one.
     Bdmv,
+    /// A DVD-Video.
+    Dvd,
 }
 
 impl Shape {
@@ -97,6 +111,7 @@ impl Shape {
         match self {
             Shape::Bdav => "BDAV",
             Shape::Bdmv => "BDMV",
+            Shape::Dvd => "VIDEO_TS",
         }
     }
 
@@ -105,6 +120,7 @@ impl Shape {
         match self {
             Shape::Bdav => ".rpls",
             Shape::Bdmv => ".mpls",
+            Shape::Dvd => ".ifo",
         }
     }
 
@@ -113,6 +129,7 @@ impl Shape {
         match self {
             Shape::Bdav => b"PLST",
             Shape::Bdmv => b"MPLS",
+            Shape::Dvd => b"DVDV",
         }
     }
 
@@ -121,6 +138,7 @@ impl Shape {
         match self {
             Shape::Bdav => "bdav",
             Shape::Bdmv => "bdmv",
+            Shape::Dvd => "dvd",
         }
     }
 }
@@ -292,7 +310,7 @@ pub struct Disc {
 /// answer for a `.ts` file has to cost nothing.
 pub fn looks_like_disc(at: &Path) -> bool {
     if at.is_dir() {
-        return disc_dir(at).is_some();
+        return disc_dir(at).is_some() || dvd::looks_like_dvd(at);
     }
     at.extension().is_some_and(|e| e.eq_ignore_ascii_case("iso"))
 }
@@ -322,7 +340,28 @@ pub fn titles(at: &Path) -> Result<(Shape, Vec<Title>)> {
 }
 
 /// Everything on a disc that can be opened, once and not once per playlist.
+///
+/// A Blu-ray and a DVD arrive by the same door -- a folder, or an `.iso` --
+/// and nothing about the door says which one it is. So both readers are
+/// asked, and the one that recognises the disc answers. Blu-ray goes first
+/// because its test is the cheaper of the two: a directory listing, against
+/// reading a table.
 pub fn read(at: &Path) -> Result<Disc> {
+    let bluray = read_bluray(at);
+    if bluray.is_ok() {
+        return bluray;
+    }
+    match dvd::read(at) {
+        Ok(disc) => Ok(disc),
+        // Neither reader knew it. Whichever of them got as far as opening the
+        // disc has the complaint worth showing; a disc that is not a DVD at
+        // all is better described by the reader that was tried first.
+        Err(err) if dvd::is_dvd(at) => Err(err),
+        Err(_) => bluray,
+    }
+}
+
+fn read_bluray(at: &Path) -> Result<Disc> {
     let mut vol = Volume::open(at)?;
     let shape = vol.shape();
     let label = vol.label(at);
@@ -451,7 +490,7 @@ fn beside(at: &Path) -> String {
 /// are characters a filesystem will not take. They are turned into their full
 /// width forms rather than dropped, which is what a Japanese recorder does
 /// with the same problem: `?` becomes `？` and the name still reads.
-fn filename(name: &str) -> String {
+pub(crate) fn filename(name: &str) -> String {
     /// What a name is cut to. The limit is on bytes rather than characters
     /// because that is what a filesystem counts, and a title in Japanese is
     /// three bytes a character.
@@ -845,7 +884,8 @@ fn playlist(raw: &[u8], file: &str, shape: Shape, vol: &mut Volume) -> Result<Ti
     // reading two numbers as a sentence.
     let (name, made) = match shape {
         Shape::Bdav => (app_info_name(raw, list_at), app_info_made(raw)),
-        Shape::Bdmv => (None, None),
+        // A DVD never reaches here: it has no playlists to read.
+        Shape::Bdmv | Shape::Dvd => (None, None),
     };
 
     Ok(Title { playlist: file.to_string(), name, made, duration, clips })

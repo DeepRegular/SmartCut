@@ -537,7 +537,7 @@ pub fn build(
     // interrupted must not be picked up next time as if it were whole.
     let part = out_path.with_extension("part.mp4");
 
-    let mut ictx = ff::format::input(&src.input.url)?;
+    let mut ictx = crate::input::demux(&src.input.url)?;
     let idx = src.video.stream_index;
     let stream = ictx.stream(idx).ok_or_else(|| anyhow!("video stream vanished"))?;
     let tb_in = stream.time_base();

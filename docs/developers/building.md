@@ -75,6 +75,7 @@ bash tests/run_ts_layout_tests.sh     # TS provenance and sequence headers      
 bash tests/run_broadcast_tests.sh     # captions, programme information, multi-audio    13
 bash tests/run_cm_tests.sh            # commercial detection vs a human's answer         5
 bash tests/run_disc_tests.sh          # a BDAV and a BDMV disc, as folders and as .isos 35
+bash tests/run_dvd_tests.sh           # a DVD-Video disc, as a folder and as an .iso    23
 bash tests/run_bd_audio_tests.sh      # the sound a disc carries, written out             39
 ```
 
@@ -89,6 +90,13 @@ their checks.
 `run_disc_tests.sh` builds a whole disc of each dialect out of `mpeg2.ts` -- the stream
 remuxed into 192 byte packets, index files written around it by `disc_index.py`, and a UDF
 image wrapped over each by `genisoimage`, which it needs installed.
+
+`run_dvd_tests.sh` builds two DVDs out of the same stream, muxed to MPEG program
+streams by ffmpeg's `dvd` muxer: an ordinary one, whose title set is written in two
+files the way the format made discs write it, and one whose title was multiplexed in
+two halves, so that its clock starts again in the middle. `dvd_index.py` fills in the
+navigation packs -- ffmpeg leaves their presentation times at zero -- and writes the
+`.IFO` tables around them.
 
 `run_bd_audio_tests.sh` builds one clip per codec a disc carries -- LPCM at 16 and at
 24 bits, DTS, TrueHD, E-AC-3 -- out of the same `mpeg2.ts`, and cuts each into a `.ts`,

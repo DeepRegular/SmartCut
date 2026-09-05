@@ -86,11 +86,11 @@ deb 以外はすべて FFmpeg を同梱しているので、ほかに入れる�
 
 | プラットフォーム | ファイル | 備考 |
 |---|---|---|
-| **Linux** | `SmartCut_0.3.4_amd64.AppImage` | 実行権限を付けて起動します |
-| **Linux** | `SmartCut-0.3.4-linux-x86_64.tar.gz` | 展開して `./smartcut` を実行します。FUSE を避けたい場合はこちらです |
-| **Linux (Debian/Ubuntu)** | `smartcut_0.3.4_amd64.deb` | `sudo apt install ./smartcut_0.3.4_amd64.deb`。システムの FFmpeg にリンクするので 3.0 MB で済みます |
-| **Windows** | `SmartCut_0.3.4_x64-setup.exe` | インストーラ |
-| **Windows** | `smartcut-portable-x64-0.3.4.zip` | 展開して `smartcut.exe` を実行します |
+| **Linux** | `SmartCut_0.3.5_amd64.AppImage` | 実行権限を付けて起動します |
+| **Linux** | `SmartCut-0.3.5-linux-x86_64.tar.gz` | 展開して `./smartcut` を実行します。FUSE を避けたい場合はこちらです |
+| **Linux (Debian/Ubuntu)** | `smartcut_0.3.5_amd64.deb` | `sudo apt install ./smartcut_0.3.5_amd64.deb`。システムの FFmpeg にリンクするので 3.1 MB で済みます |
+| **Windows** | `SmartCut_0.3.5_x64-setup.exe` | インストーラ |
+| **Windows** | `smartcut-portable-x64-0.3.5.zip` | 展開して `smartcut.exe` を実行します |
 
 **動作条件。** AppImage と tar.gz は glibc 2.39 以上が必要です（Ubuntu 24.04 /
 Debian 13 / Fedora 40 以降）。deb は FFmpeg 7.1 が必要なので Debian 13 /
@@ -123,10 +123,12 @@ Ubuntu 25.04 以降になります。deb は GUI を `smartcut`、コマンド�
 スクリーンショット付きの詳しい手順は[ユーザーガイド](docs/user-guide/gui.ja.md)に
 あります。
 
-### Blu-ray を開く
+### ディスクを開く
 
 ディスクはそのまま開けます。フォルダーでも、マウントしない `.iso` でも同じです。
-規格の両半分——レコーダーが書く **BDAV** と、市販ソフトの **BDMV**——を読みます。
+Blu-ray は規格の両半分——レコーダーが書く **BDAV** と、市販ソフトの **BDMV**——を
+読みます。**DVD-Video** も読みます。`VIDEO_TS` の `.IFO` から、タイトル、その長さ、
+打たれたチャプター、そして収録されている音声・字幕トラックを読み取ります。
 
 窓に落とすと、中のどれを読むのか、そしてどのトラックを取るのかを訊いてきます。
 これは訊く値打ちのある問いです。市販の 1 期ボックスには、ロゴ・警告・メニューの
@@ -143,7 +145,7 @@ smartcut Anime.iso --title 2 --cut 8.0-20.0 -o out.ts
 ```
 
 暗号化されたディスクは対象外です。読み方と、できないことは
-[Blu-ray を読む](docs/developers/disc.ja.md)にあります。
+[ディスクを読む](docs/developers/disc.ja.md)にあります。
 
 ### コマンドラインを使う
 
@@ -161,8 +163,15 @@ smartcut input.ts --analyze --scenes            # シーンの変わり目を一
 
 ## 対応形式
 
-**入力コンテナ:** `.ts` `.m2ts` `.mts` `.m2t` `.mp4` `.mkv` `.mov` `.m4v`、
-および Blu-ray（BDAV / BDMV、フォルダーまたは暗号化されていない `.iso` をそのまま）
+**入力コンテナ:** `.ts` `.m2ts` `.mts` `.m2t` `.mp4` `.mkv` `.mov` `.m4v`
+`.vob` `.mpg` `.mpeg` `.m2p`、およびディスク（Blu-ray の BDAV / BDMV、
+DVD-Video。フォルダーでも暗号化されていない `.iso` でもそのまま）
+
+DVD のタイトルは、1 本のプログラムストリームを 1GB ずつに切り分けた断片に
+またがる連続セクタです。展開もコピーもせずに断片をつなぎ、その範囲だけを
+取り出します。カットの書き出しは MPEG-TS です。DVD の形に戻すには VOBU と
+ナビゲーションパック、そして書き直した `.IFO` が要りますが、本プログラムは
+そのいずれも書きません。
 
 **出力コンテナ:** MPEG-TS / M2TS / MP4 / Matroska / QuickTime。既定は入力と同じ
 コンテナ・同じディレクトリです。
@@ -236,7 +245,7 @@ AC-3・E-AC-3・MP2 はスマートレンダリングではなく
 |---|---|
 | **ユーザーガイド** | [GUI](docs/user-guide/gui.ja.md) ・ [CM 検出](docs/user-guide/cm-detection.ja.md) ・ [プロジェクト](docs/user-guide/projects.ja.md) ・ [バッチ処理](docs/user-guide/batch.ja.md) |
 | **技術解説** | [アルゴリズム](docs/technical/algorithm.ja.md) ・ [検証](docs/technical/validation.ja.md) ・ [放送 TS](docs/technical/broadcast-ts.ja.md) ・ [音声](docs/technical/audio.ja.md) |
-| **開発者向け** | [Rust コア](docs/developers/rust-core.ja.md) ・ [設計](docs/developers/design.ja.md) ・ [ビルド](docs/developers/building.ja.md) ・ [配布](docs/developers/distribution.ja.md) ・ [Blu-ray を読む](docs/developers/disc.ja.md) |
+| **開発者向け** | [Rust コア](docs/developers/rust-core.ja.md) ・ [設計](docs/developers/design.ja.md) ・ [ビルド](docs/developers/building.ja.md) ・ [配布](docs/developers/distribution.ja.md) ・ [ディスクを読む](docs/developers/disc.ja.md) |
 
 1 ページだけ読むなら[実装上の難所](docs/technical/algorithm.ja.md#実装上の難所)を
 おすすめします。「GOP 単位で切って繋ぐだけ」では済まない 8 つの理由を、実際に

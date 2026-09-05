@@ -1,11 +1,12 @@
-# Reading a Blu-ray
+# Reading a disc
 
 [← Documentation](../README.md) ・ [← SmartCut](../../README.md) ・ [日本語](disc.ja.md)
 
-**A Blu-ray opens as a folder or as an `.iso`, either way, and both halves of
-the specification are read: BDAV, the recording format, and BDMV, the format
-of a film you buy.** What the list shows is the name of the programme, not
-`00001.m2ts`.
+**A disc opens as a folder or as an `.iso`, either way.** Both halves of the
+Blu-ray specification are read -- BDAV, the recording format, and BDMV, the
+format of a film you buy -- and so is DVD-Video, which is
+[further down](#dvd-video). What the list shows is the name of the programme,
+not `00001.m2ts`.
 
 ```
 $ smartcut Anime_Test.iso
@@ -455,6 +456,149 @@ directly, so it has to open a **range inside an image** and to find packets
 **192 bytes apart**. Both are in, which is why a cut taken from a disc carries
 the broadcast's tables the same as a cut taken from a `.ts`.
 
+## DVD-Video
+
+A DVD arrives by the same door and shares nothing else with a Blu-ray, so it is
+read by [`dvd.rs`](../../rust/crates/core/src/dvd.rs) and not by
+[`disc.rs`](../../rust/crates/core/src/disc.rs). `disc::read` asks both and the
+one that recognises the disc answers; everything downstream is handed the same
+`Disc`, `Entry` and `Track` as before.
+
+```
+$ smartcut nhk-denshi-rikkoku-01.iso
+disc  : nhk-denshi-rikkoku-01.iso
+        dvd -- nhk-denshi-rikkoku-01
+        2 recording(s)
+
+  1  00:59:51.400  nhk-denshi-rikkoku-01 1 (1/2)  18 mark(s)
+       0x01e0  MPEG-2 720x480 NTSC 4:3
+       0x0080  AC-3 2ch 48kHz  ja
+  2  00:00:08.342  nhk-denshi-rikkoku-01 1 (2/2)  1 mark(s)
+```
+
+Three things about a DVD decide the shape of the reader.
+
+### The stream is one stream, not nine
+
+`VTS_01_1.VOB` through `VTS_01_9.VOB` are **one** MPEG program stream that the
+format made the disc write in pieces of no more than a gigabyte, because ISO
+9660 could not address more than that. The disc addresses it as one run of
+sectors numbered from zero, so a cell beginning at sector 536,000 is 400 MB
+into the *third* file.
+
+The pieces are laid down one after another with nothing between them. On the
+disc this was written against that is exact:
+
+| | offset | end |
+|---|---|---|
+| `VTS_01_1.VOB` | 24,727,552 | 1,098,182,656 |
+| `VTS_01_2.VOB` | 1,098,182,656 | 2,171,582,464 |
+| `VTS_01_3.VOB` | 2,171,582,464 | 3,244,935,168 |
+| `VTS_01_4.VOB` | 3,244,935,168 | 4,289,400,832 |
+
+So inside an image the whole title set is **one byte range**, and a title is
+one `subfile` the same as a Blu-ray clip. On a folder the pieces are nine
+files, and libavformat's `concat` protocol joins them -- with `subfile` around
+the join to take the title out of it. Nothing is unpacked and nothing is copied
+first, either way.
+
+Nesting one protocol inside another needs saying: whatever is allowed at the
+top level, the protocol *inside* one is checked against a whitelist holding
+`file` and nothing else. `input::demux` sets `protocol_whitelist` for the URLs
+this program writes, and never for a plain path.
+
+### A title is a run of cells
+
+Where a Blu-ray gives an episode a stream of its own, a DVD gives it a stretch
+of the one stream, and the `.IFO` tables are the only thing that says where:
+
+| table | what is taken from it |
+|---|---|
+| `VIDEO_TS.IFO`, `TT_SRPT` | the disc's titles in the order a player numbers them, and which title set each is in |
+| `VTS_NN_0.IFO`, `VTS_PTT_SRPT` | for each of the set's titles, the `(chain, program)` pairs that are its chapters |
+| `VTS_NN_0.IFO`, `VTS_PGCIT` | each program chain: its cells, their lengths, the sectors they play, and which cell each program starts at |
+| `VTS_NN_0.IFO`, `VTSI_MAT` | the picture, and the sound and subpicture tracks the set declares |
+
+A chapter is where it is because of the cells before it, so it is the sum of
+their lengths -- which is why the cells have to lie end to end for any of this
+to mean anything. A chain whose cells do not is an angle block, or one
+assembled out of pieces of several titles, and it is not read at all: the span
+its cells happen to lie inside is not the title, and saying nothing is better
+than offering that.
+
+Since a title is a stretch and not a file, its name has to say which stretch:
+
+```
+/rec/nhk-denshi-rikkoku-01.iso/VIDEO_TS/VTS_01_1.VOB@0-2081904
+```
+
+The sectors are the disc's own, counted from the start of the title set's
+stream. A name that said only `VTS_01_1.VOB` would name four gigabytes of
+everything the disc holds and no episode in particular.
+
+### The clock is in the stream, not the index
+
+Cell times are durations counted from the start of the title. The program
+stream's timestamps begin wherever the author's multiplexer began them -- on
+this disc, at 0.281 seconds. A chapter "twelve minutes in" is not a time on
+that clock until something joins the two.
+
+The navigation pack does. Every VOBU opens with one: 2048 bytes a player reads
+and does not show, holding `VOBU_S_PTM` -- when the pictures behind it are to
+be presented -- and `VOBU_E_PTM`, when they stop. Reading the one at a title's
+first sector costs a single 2048 byte read and gives exactly the number the
+editor needs, which is why `Entry::start` for a DVD is a real measurement and
+not the index's guess.
+
+**And it is what says where a title has more than one clock.** A DVD is allowed
+to assemble a title out of pieces that were multiplexed separately, and the
+timestamps start again at the seam. The disc this was written against does it:
+
+```
+cell 18 ends at   323,571,480  (3595.24 s)
+cell 19 begins at      36,010  (   0.40 s)
+```
+
+Splicing two clocks is not the same operation as cutting one -- which is
+already why a Blu-ray playlist of several clips is a row each. So a DVD title
+is cut at its seams too, and the disc above comes out as an hour with eighteen
+chapters and an eight second tail beside it, rather than as one row whose
+second half sits on top of its first. Two cells belong to the same run when the
+second begins where the first left off; the cell's own last VOBU, which the
+index points at, is the one asked where that was.
+
+The disc's two titles are the same nineteen cells and the same nineteen less
+the last, which between them are two things and not three, so rows are
+deduplicated on the stretch of stream they name.
+
+### Program streams leave the timestamps out
+
+A program stream does not carry a presentation time on every picture. Where
+the display order can be worked out from the pictures around it, the
+multiplexer leaves it off -- on this disc, one picture in four:
+
+```
+pts=31263  dts=22254  K     pts=N/A    dts=31263
+pts=25257  dts=25257        pts=34266  dts=34266
+pts=28260  dts=28260        pts=N/A    dts=40272
+```
+
+Every pass here is keyed on presentation time, so a picture without one used to
+be skipped, and a lossless copy came out with three quarters of its frames.
+libavformat will work them out -- `fflags +genpts`, which reorders from the
+decode timestamps and is exact -- and will only do it if it is asked before the
+file is opened. `input::demux` asks, for program streams and nothing else: a
+transport stream times every picture it carries, and a flag that changes
+nothing is still a flag on the path every recording goes down.
+
+The other thing a program stream does not carry is **its own length.**
+libavformat works one out from the timestamps at either end of the file, and on
+a DVD -- four gigabytes with a discontinuity in the tail -- it came back with
+8.3 seconds for an hour. The pass that reads every packet has the better answer
+and now reports it, as `index::Index::end`; the container's own answer is kept
+wherever it is the longer of the two, so a container that knows its length
+keeps it.
+
 ## What this does not do
 
 | | |
@@ -465,6 +609,10 @@ the broadcast's tables the same as a cut taken from a `.ts`.
 | **BDMV titles** | `index.bdmv` names titles and a title is a navigation program. Which playlist "T05 Extra 01" plays is not worked out; rows are named by the disc and the clip |
 | **The CLPI EP map** | Not used for seeking. The stream list beside it is read, for the chooser; the index is still built by scanning packets. Adding the EP map to `IndexSource` in [`index.rs`](../../rust/crates/core/src/index.rs) would save that pass |
 | **Blu-ray's own streams** | PGS and IGS cannot go on a cut timeline and are dropped, which the chooser says. The sound is all carried -- LPCM, DTS-HD, TrueHD, E-AC-3, [above](#the-sound-a-disc-carries). VC-1 video is read and listed, but a cut of one is untested |
+| **DVD subpictures** | A DVD subtitle is a run-length coded picture with its own display commands, the same kind of thing a Blu-ray's graphics are. Listed, so the chooser can say it is being left behind; not carried |
+| **DVD angles** | A chain whose cells are an angle block or an interleaved unit is not offered, [above](#a-title-is-a-run-of-cells) |
+| **Writing a DVD** | A cut of a DVD title is a transport stream. A DVD's own shape is VOBUs of a bounded size, a navigation pack opening each of them and an `.IFO` describing every cell -- authoring, and a different problem |
+| **Encrypted DVDs** | Out of scope, the same as AACS. Nothing here decrypts CSS |
 
 ## What was checked
 
@@ -496,6 +644,29 @@ around it, and genisoimage wraps each in a UDF 1.02 image. Then all four shapes
 are asked the same questions, the cut each of them produces is compared **byte
 for byte** -- against each other and against the plain stream -- and the tables
 are checked to have gone back in. Thirty-five checks, all passing.
+
+**A real DVD-Video disc** — an NHK documentary mastered by Sonic Scenarist in
+2009: 4.1 GB, UDF 1.02 over ISO 9660, one title set in four VOB files, MPEG-2
+720x480 with AC-3. The two titles and their nineteen and eighteen chapters read
+out of the `.IFO` tables and agreed with an independently written Python reader;
+the byte range came out at 24,727,552–4,289,400,832, which is the four VOB
+files exactly; the discontinuity before the last cell was found and the rows cut
+at it; `VOBU_S_PTM` came out as 0.280633 s, which is what libavformat reports
+for the container's start to the microsecond. A 480 second cut of two ranges
+came out **14,386 frames, 99.8% copied**, with the copied frames matching the
+source's **md5 for md5, consecutively**, and video and audio within 13 ms of
+each other. The same title read out of a `VIDEO_TS` folder, cut across the seam
+between two VOB files, came out at 1798 frames for 60 seconds.
+
+**A synthetic DVD** — [`tests/run_dvd_tests.sh`](../../tests/run_dvd_tests.sh) builds
+two out of the ordinary fixtures: an ordinary disc, whose title set's stream is written
+in two files, and one whose title was multiplexed in two halves so that its clock starts
+again in the middle. [`tests/dvd_index.py`](../../tests/dvd_index.py) fills in the
+navigation packs and writes the `.IFO` tables. Then the rows, the lengths, the chapters,
+the tracks and the sector ranges are checked against what was written, the awkward disc
+is checked to have come out as two rows on two clocks, and the cut is checked to be the
+same cut **md5 for md5** whether it was taken from the folder, from the image, or from
+the program stream with no disc around it at all. Twenty-three checks, all passing.
 
 **The sound, codec by codec** —
 [`tests/run_bd_audio_tests.sh`](../../tests/run_bd_audio_tests.sh) builds a

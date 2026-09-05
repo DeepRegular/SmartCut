@@ -838,7 +838,7 @@ pub fn boundary_patches(
     if windows.is_empty() {
         return Ok(out);
     }
-    let mut ictx = ff::format::input(&src.input.url)?;
+    let mut ictx = crate::input::demux(&src.input.url)?;
     let stream = ictx
         .stream(audio.stream_index)
         .ok_or_else(|| anyhow!("audio stream {} vanished", audio.stream_index))?;

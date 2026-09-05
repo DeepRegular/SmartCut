@@ -635,7 +635,7 @@ fn take_caption(
 }
 
 fn open_input(path: &str) -> Result<(ff::format::context::Input, usize)> {
-    let ictx = ff::format::input(&path)?;
+    let ictx = crate::input::demux(&path)?;
     let index = ictx
         .streams()
         .best(ff::media::Type::Video)
@@ -667,7 +667,7 @@ fn open_input(path: &str) -> Result<(ff::format::context::Input, usize)> {
 /// what audio taken back out of an MP4 amounts to.
 pub fn write_audio_es(cut: &str, output: &str, aac: AacVersion) -> Result<usize> {
     crate::init()?;
-    let mut ictx = ff::format::input(&cut)?;
+    let mut ictx = crate::input::demux(&cut)?;
     let ist = ictx
         .streams()
         .best(ff::media::Type::Audio)
@@ -1506,7 +1506,7 @@ fn plan_audio(
     many: bool,
 ) -> Result<AudioSetup> {
     let named = if many { format!(" on PID 0x{:04x}", info.pid) } else { String::new() };
-    let mut probe = ff::format::input(&path)?;
+    let mut probe = crate::input::demux(&path)?;
     // What the recording's own frames are, and how wide their samples come
     // out -- read off the probe that is opened here anyway.
     let (source_id, source_bits) = {

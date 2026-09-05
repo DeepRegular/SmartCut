@@ -136,7 +136,7 @@ playlists naming 62 clips, twelve of which are episodes and fifty of which are
 logos and menu loops. So its rows are deduplicated -- one clip, one row -- and
 the window asks which of them were meant, and which of their tracks to take,
 before anything is opened. That answer is in PIDs, since a stream index does
-not exist until something is. See [Reading a Blu-ray](disc.md).
+not exist until something is. See [Reading a disc](disc.md).
 
 ### Duplicates made a row and a recording different things
 
@@ -421,7 +421,7 @@ and only where there was no `.keyframe` beside the recording. That file is someb
 answer; the disc's is the answer when nobody has given one. Marks landing outside the
 material are dropped rather than clamped, and nothing is snapped to an access point — a
 mark says where the chapter is, and moving it onto the nearest lossless point is a separate
-decision with its own button. See [Reading a Blu-ray](disc.md).
+decision with its own button. See [Reading a disc](disc.md).
 
 ### Detection progress, and the claim of "fully lossless"
 
@@ -614,7 +614,7 @@ full width forms the way a Japanese recorder writes them. And "the same as the i
 means `.ts` rather than `.m2ts`: asked for a `.m2ts`, the muxer writes Blu-ray's own
 framing and PID numbering, which is not what [the tables put back after
 muxing](../technical/broadcast-ts.md) describe. Choosing M2TS explicitly still gets one,
-and says that the tables are being left to the muxer. See [Reading a Blu-ray](disc.md).
+and says that the tables are being left to the muxer. See [Reading a disc](disc.md).
 
 All three are settings on the output settings screen rather than a question asked once per
 file: the folder (empty meaning the input's own), the prefix (`cut_`), and the container,

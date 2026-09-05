@@ -303,7 +303,7 @@ pub fn glance(spec: &str, into: f64, width: u32) -> Result<Vec<u8>> {
     crate::init()?;
     let input = crate::input::Input::parse(spec)?;
     let mut ictx =
-        ff::format::input(&input.url).map_err(|e| anyhow!("cannot open {spec}: {e}"))?;
+        crate::input::demux(&input.url).map_err(|e| anyhow!("cannot open {spec}: {e}"))?;
     let stream = ictx
         .streams()
         .best(ff::media::Type::Video)
@@ -499,7 +499,7 @@ fn walk(
     keys: bool,
     mut visit: impl FnMut(f64, &ff::frame::Video) -> bool,
 ) -> Result<Option<f64>> {
-    let mut ictx = ff::format::input(&src.input.url)?;
+    let mut ictx = crate::input::demux(&src.input.url)?;
     let idx = src.video.stream_index;
     let in_tb = src.video.time_base;
     // The index knows the byte `from` begins at, so on the first attempt

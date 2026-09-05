@@ -38,7 +38,13 @@ const el = (id) => document.getElementById(id);
 window.addEventListener("error", (e) => jlog(`error ${e.message} @${e.filename}:${e.lineno}`));
 window.addEventListener("unhandledrejection", (e) => jlog(`reject ${e.reason}`));
 
-const VIDEO_EXT = ["ts", "m2ts", "mts", "m2t", "mp4", "mkv", "mov", "m4v"];
+const VIDEO_EXT = [
+  "ts", "m2ts", "mts", "m2t", "mp4", "mkv", "mov", "m4v",
+  // A program stream: what a DVD is written in, and what a `.mpg` from an
+  // older recorder is. Read like any other file; written out as a transport
+  // stream, for the reason `PS_LIKE` gives.
+  "vob", "mpg", "mpeg", "m2p",
+];
 const extOf = (p) => (p.match(/\.([A-Za-z0-9]+)$/)?.[1] || "").toLowerCase();
 const nameOf = (p) => p.split(/[/\\]/).pop();
 const dirOf = (p) => p.slice(0, Math.max(p.lastIndexOf("/"), p.lastIndexOf("\\")) + 1);
@@ -452,9 +458,10 @@ function askAboutDisc(disc) {
       // tracks are on show.
       state: disc.clips.map((c) => ({ take: !!c.wanted, drop: [], open: false })),
       // A disc of recordings is a disc of things somebody chose to record, so
-      // there is nothing to hide; a pressed disc is mostly not the film, and
-      // opening on all sixty-two rows would bury the twelve that were meant.
-      showAll: disc.kind !== "bdmv",
+      // there is nothing to hide; a pressed disc -- Blu-ray or DVD -- is
+      // mostly not the film, and opening on all sixty-two rows would bury the
+      // twelve that were meant.
+      showAll: disc.kind === "bdav",
     };
     el("disc-show-all").checked = chooser.showAll;
     el("disc-show-all-row").hidden = disc.kind === "bdav";
@@ -1693,10 +1700,28 @@ function sidecarBase(clip) {
 /// for M2TS on the output settings screen still gets one.
 const TS_LIKE = ["m2ts", "mts", "m2t"];
 
+/// The other family that comes out as a transport stream, for a different
+/// reason.
+///
+/// A program stream cannot be written back as one that is worth having. A
+/// DVD's own shape is not simply MPEG-PS: it is VOBUs of a bounded size, a
+/// navigation pack opening each of them, and an `.IFO` beside the stream
+/// describing every cell in it -- and a cut whose stream no longer matches
+/// the index beside it is a disc that will not play. Writing a plain program
+/// stream instead would be writing a file that is neither a DVD nor the shape
+/// the rest of this program is about. So a cut of one is a transport stream,
+/// carrying the same pictures and the same sound. Asking for something else
+/// on the output settings screen still gets it.
+const PS_LIKE = ["vob", "mpg", "mpeg", "m2p"];
+
+/// A DVD title's name carries the sectors it plays -- `VTS_01_1.VOB@0-2081904`
+/// -- and what it is written in is the part in front of that.
+const streamOf = (p) => p.replace(/@\d+-\d+$/, "");
+
 function containerFor(clip) {
   if (settings.container) return settings.container;
-  const ext = extOf(clip.path);
-  return TS_LIKE.includes(ext) ? "ts" : ext || "mp4";
+  const ext = extOf(streamOf(clip.path));
+  return TS_LIKE.includes(ext) || PS_LIKE.includes(ext) ? "ts" : ext || "mp4";
 }
 
 function outputPath(clip) {

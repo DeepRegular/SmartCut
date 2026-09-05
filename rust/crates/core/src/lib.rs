@@ -17,6 +17,7 @@ pub mod caption;
 pub mod cm;
 pub mod cut;
 pub mod disc;
+pub mod dvd;
 pub mod index;
 pub mod input;
 pub mod logo;
@@ -410,7 +411,7 @@ pub fn scan_with(path: &str, source: &dyn index::IndexSource) -> Result<Source> 
     init()?;
     let input = input::Input::parse(path)?;
     let ictx =
-        ff::format::input(&input.url).map_err(|e| anyhow!("cannot open {path}: {e}"))?;
+        crate::input::demux(&input.url).map_err(|e| anyhow!("cannot open {path}: {e}"))?;
     // Read before the demuxer is handed to the index source, which takes it.
     let byte_seekable = ictx
         .format()
@@ -596,6 +597,15 @@ pub fn scan_with(path: &str, source: &dyn index::IndexSource) -> Result<Source> 
 
     let mut video = video;
     video.pulldown = idx.pulldown.unwrap_or(false);
+
+    // A container that says it is shorter than the pictures it holds is a
+    // program stream; see [`index::Index::end`]. Only ever longer, so that a
+    // container which knows its own length keeps it: trailing sound after the
+    // last picture is part of a recording, and the pictures do not bound it.
+    let duration = match idx.end {
+        Some(end) if end > duration => end,
+        _ => duration,
+    };
 
     Ok(Source {
         path: path.to_string(),

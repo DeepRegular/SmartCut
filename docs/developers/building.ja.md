@@ -76,6 +76,7 @@ bash tests/run_ts_layout_tests.sh     # TS の出自とシーケンスヘッダ 
 bash tests/run_broadcast_tests.sh     # 字幕・番組情報・音声多重                         13
 bash tests/run_cm_tests.sh            # CM 検出と人間の答えの照合                         5
 bash tests/run_disc_tests.sh          # BDAV と BDMV をフォルダーと .iso から読む       35
+bash tests/run_dvd_tests.sh           # DVD-Video をフォルダーと .iso から読む          23
 bash tests/run_bd_audio_tests.sh      # ディスクの音声が書き出せるか                    39
 ```
 
@@ -90,6 +91,13 @@ bash tests/run_bd_audio_tests.sh      # ディスクの音声が書き出せる�
 `run_disc_tests.sh` は `mpeg2.ts` から方言ごとにディスクを 1 枚ずつ丸ごと組み立てる。
 ストリームを 192 バイトパケットに詰め直し、`disc_index.py` が索引ファイルを書き、
 `genisoimage` でそれぞれを UDF イメージに包む（`genisoimage` が要る）。
+
+`run_dvd_tests.sh` は同じストリームを ffmpeg の `dvd` マルチプレクサで MPEG
+プログラムストリームにして DVD を 2 枚組み立てる。1 枚はふつうの DVD で、
+タイトルセットのストリームが規格どおり複数ファイルに分かれている。もう 1 枚は
+タイトルが 2 回に分けて多重化されていて、途中で時計が振り出しに戻る。
+`dvd_index.py` がナビゲーションパック（ffmpeg は提示時刻を 0 のままにする）を
+埋め、その周りに `.IFO` のテーブルを書く。
 
 `run_bd_audio_tests.sh` は同じ `mpeg2.ts` から、ディスクが持つコーデックごとに
 クリップを 1 本ずつ組み立て——16 ビットと 24 ビットの LPCM、DTS、TrueHD、E-AC-3——

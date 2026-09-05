@@ -394,7 +394,7 @@ pub fn build_with(
     stop: Option<Box<dyn Fn() -> bool + Send>>,
 ) -> Result<Track> {
     crate::init()?;
-    let mut ictx = ff::format::input(&src.input.url)?;
+    let mut ictx = crate::input::demux(&src.input.url)?;
     let idx = src.video.stream_index;
     let params = ictx.stream(idx).ok_or_else(|| anyhow!("video stream vanished"))?.parameters();
     let mut decoder = crate::video_decoder_with(params, opts.threads)?;
@@ -526,7 +526,7 @@ pub fn cut_near(src: &Source, at: f64, window: f64, floor: f64) -> Result<f64> {
         .unwrap_or(0.0);
     let until = at + window;
 
-    let mut ictx = ff::format::input(&src.input.url)?;
+    let mut ictx = crate::input::demux(&src.input.url)?;
     let idx = src.video.stream_index;
     // Straight to the byte the entry point starts at where the index has it.
     // Failing that, a transport stream seeks by byte position of its own
@@ -604,7 +604,7 @@ pub fn refine(src: &Source, at: f64) -> Result<f64> {
         return Ok(at);
     }
 
-    let mut ictx = ff::format::input(&src.input.url)?;
+    let mut ictx = crate::input::demux(&src.input.url)?;
     let idx = src.video.stream_index;
     // Straight to the byte the entry point starts at where the index has it;
     // otherwise start well before the picture wanted and read forward, since

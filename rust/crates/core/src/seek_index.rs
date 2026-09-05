@@ -35,7 +35,7 @@ static SERIAL: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(
 
 /// Bumped when a change here would make an existing file wrong. It goes into
 /// the cache key, so older ones are simply never looked at again.
-pub const VERSION: u32 = 1;
+pub const VERSION: u32 = 2;
 
 const MAGIC: &[u8; 4] = b"SCIX";
 
@@ -43,12 +43,16 @@ const FLAG_LEADING_KNOWN: u32 = 1 << 0;
 const FLAG_PULLDOWN_KNOWN: u32 = 1 << 1;
 const FLAG_PULLDOWN: u32 = 1 << 2;
 const FLAG_HAS_TRACK: u32 = 1 << 3;
+const FLAG_END_KNOWN: u32 = 1 << 4;
 
 /// Everything a previous open worked out about a recording.
 pub struct SeekIndex {
     pub points: Vec<AccessPoint>,
     /// Whether the leading-picture fields were measured or merely assumed.
     pub leading_known: bool,
+    /// Where the last picture is, when the pass that made this read far
+    /// enough to know. See [`index::Index::end`].
+    pub end: Option<f64>,
     /// Whether the stream uses 2:3 pulldown, when the pass that made this
     /// could tell.
     pub pulldown: Option<bool>,
@@ -79,6 +83,7 @@ impl index::IndexSource for SeekIndex {
             points: self.points.clone(),
             leading_known: self.leading_known,
             pulldown: self.pulldown,
+            end: self.end,
         })
     }
 }
@@ -90,6 +95,10 @@ impl SeekIndex {
             points: src.points.clone(),
             leading_known: src.leading_known,
             pulldown: Some(src.video.pulldown),
+            // The duration a `Source` carries is the pass's own answer where
+            // the container had none worth having, so it is the answer to
+            // keep.
+            end: Some(src.duration),
             track: track.map(clone_track),
         }
     }
@@ -112,7 +121,11 @@ impl SeekIndex {
         if self.track.is_some() {
             flags |= FLAG_HAS_TRACK;
         }
+        if self.end.is_some() {
+            flags |= FLAG_END_KNOWN;
+        }
         w.u32(flags);
+        w.f64(self.end.unwrap_or(0.0));
 
         w.u64(self.points.len() as u64);
         for p in &self.points {
@@ -175,6 +188,8 @@ impl SeekIndex {
             bail!("{} was written by another version", path.display());
         }
         let flags = r.u32()?;
+        let end = r.f64()?;
+        let end = (flags & FLAG_END_KNOWN != 0).then_some(end);
 
         let n = r.u64()? as usize;
         let mut points = Vec::with_capacity(n);
@@ -233,6 +248,7 @@ impl SeekIndex {
             leading_known: flags & FLAG_LEADING_KNOWN != 0,
             pulldown: (flags & FLAG_PULLDOWN_KNOWN != 0)
                 .then_some(flags & FLAG_PULLDOWN != 0),
+            end,
             track,
         })
     }
