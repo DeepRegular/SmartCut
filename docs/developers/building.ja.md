@@ -66,7 +66,7 @@ bash tests/run_audio_tests.sh         # A/V 同期（copy と reencode で +10�
 bash tests/run_audio_content_tests.sh # 実素材の音声が正しい位置にあるか                  6
 bash tests/run_aac_tests.sh           # 出力の AAC フレームが何でできているか             8
 bash tests/run_downmix_tests.sh       # 5.1ch をステレオに畳んだとき各成分がどこへ行くか  9
-bash tests/run_audio_codec_tests.sh   # 音声を別のコーデックで書き出せるか               36
+bash tests/run_audio_codec_tests.sh   # 音声を別のコーデックで書き出せるか               39
 bash tests/run_audio_format_tests.sh  # 音声のサンプリングレートと量子化ビット数         23
 bash tests/run_preview_tests.sh       # スクラブで指定した時刻の絵が出るか                7
 bash tests/run_index_tests.sh         # 索引が走査と同じ答えを返すか                     27
@@ -99,6 +99,10 @@ bash tests/run_bd_audio_tests.sh      # ディスクの音声が書き出せる�
 それぞれを 4 種類のコンテナへ書き出し、3 つのことを確かめる。指定したコーデックに
 なっているか、各チャンネルが入れたときの音を保っているか、そしてトランスポート
 ストリームの番組マップが実際に入っているコーデックを宣言しているか。
+加えて、書けない要求を 2 つ出す。下限を下回る 5.1ch DTS と、DTS に配置の無い
+3 チャンネルである。前者は DTS が通常運ばれる値まで上がること、後者は理由を述べて
+断られることを確かめる。どちらも `writable_sound` が出力設定画面に伝えて灰色にする
+組み合わせである。
 
 `run_audio_format_tests.sh` は、サンプルのもう 2 つの側面——どれだけの間隔で取るか
 （サンプリングレート）と、どれだけの幅で書くか（量子化ビット数）——を確かめる。

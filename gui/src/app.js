@@ -1763,6 +1763,10 @@ function opensUpward(select) {
       // The answer the control is holding, marked whether or not the cursor
       // is on it -- which is what makes a list of sixteen rungs readable.
       if (opt.value === select.value) li.className = "on";
+      // One that cannot be written stays on the list and cannot be reached:
+      // the cursor steps over it and a click on it does nothing. See
+      // `lockUnwritable` for why it is shown at all.
+      if (opt.disabled) li.classList.add("off");
       menu.appendChild(li);
       return li;
     });
@@ -1772,8 +1776,21 @@ function opensUpward(select) {
     paint();
   };
 
+  /// Whether the cursor may not stand on this row.
+  const off = (i) => !items[i] || items[i].classList.contains("off");
+
+  /// The next row `dir` away that it may, if there is one.
+  const step = (dir) => {
+    for (let i = at + dir; i >= 0 && i < items.length; i += dir) {
+      if (!off(i)) {
+        at = i;
+        return;
+      }
+    }
+  };
+
   const commit = (i) => {
-    if (items[i]) {
+    if (items[i] && !off(i)) {
       select.value = items[i].dataset.value;
       // What a click on a real option would have raised, which is what every
       // setting on this screen is bound to.
@@ -1786,12 +1803,13 @@ function opensUpward(select) {
     switch (ev.key) {
       case "ArrowDown":
       case "ArrowUp":
-        at = Math.max(0, Math.min(items.length - 1, at + (ev.key === "ArrowUp" ? -1 : 1)));
+        step(ev.key === "ArrowUp" ? -1 : 1);
         paint();
         break;
       case "Home":
       case "End":
-        at = ev.key === "Home" ? 0 : items.length - 1;
+        at = ev.key === "Home" ? -1 : items.length;
+        step(ev.key === "Home" ? 1 : -1);
         paint();
         break;
       case "Enter":
@@ -1829,7 +1847,7 @@ function opensUpward(select) {
 
   menu.addEventListener("mousemove", (ev) => {
     const li = ev.target.closest("li");
-    if (li && items.indexOf(li) !== at) {
+    if (li && items.indexOf(li) !== at && !li.classList.contains("off")) {
       at = items.indexOf(li);
       paint();
     }
@@ -1837,7 +1855,10 @@ function opensUpward(select) {
 
   menu.addEventListener("click", (ev) => {
     const li = ev.target.closest("li");
-    if (li) commit(items.indexOf(li));
+    // A row that cannot be chosen swallows the click and leaves the menu up,
+    // which is what the platform's own popup does with a disabled option:
+    // nothing happened, and a menu that shut would say something had.
+    if (li && !li.classList.contains("off")) commit(items.indexOf(li));
   });
 }
 
@@ -1876,16 +1897,28 @@ function codecHasNoBitrate() {
   return reencodingAudio() && settings.audioCodec === "lpcm";
 }
 
-/// Grey out what the chosen mode has no use for.
+/// Put on screen what the chosen mode has a use for, and grey the rest.
+///
+/// The five rows under the mode all describe an encode, and two of the three
+/// modes do not run one: kept on screen they would be five grey rows to read
+/// past every time the panel is opened, so they are absent until すべて再エン
+/// コード asks for them. They keep their values while away -- the settings
+/// are the same fields either way, and nothing reads them into a cut that is
+/// not re-encoding.
+///
+/// Inside the encode the last pair stays a matter of grey rather than
+/// absence. Both rows belong to the encode being written and which of the two
+/// is live moves with the codec, so hiding them would shuffle the panel under
+/// the hand of whoever is choosing a codec.
 function lockAudioDetail() {
-  el("out-audio-codec").disabled = !reencodingAudio();
-  el("out-audio-channels").disabled = !reencodingAudio();
-  el("out-audio-rate").disabled = !reencodingAudio();
+  for (const row of document.querySelectorAll(".audio-detail")) {
+    row.hidden = !reencodingAudio();
+  }
   // The mirror image of the bitrate: a width belongs to the codec that
   // writes samples down, a bitrate to the codecs that describe them, and
   // each control is grey exactly where the other is not.
   el("out-audio-bits").disabled = !codecHasNoBitrate();
-  el("out-audio-bitrate").disabled = !reencodingAudio() || codecHasNoBitrate();
+  el("out-audio-bitrate").disabled = codecHasNoBitrate();
 }
 
 /// The rates each codec is spoken in, and how high its ladder goes at a
@@ -1939,6 +1972,39 @@ function ladder() {
   return AUDIO_LADDERS[settings.audioCodec] || AUDIO_LADDERS.aac;
 }
 
+/// Every sound track a clip's cut will carry.
+///
+/// Which tracks are kept is answered in stream indices once the editor has
+/// been in (`edit.dropStreams`) and in PIDs until then (`dropPids`) -- the
+/// same two answers the export sends, resolved here the same way round.
+///
+/// Empty for a clip with no sound, and for one whose every sound track was
+/// switched off: both come out of the cut the same way.
+function keptAudio(clip) {
+  const i = clip.info;
+  if (!i || !i.has_audio) return [];
+  const tracks = i.audio_tracks || [];
+  // Read by a version that did not list the tracks: the main track is all
+  // there is to go on, and it is the right answer wherever nothing was
+  // switched off -- which is every recording that carries one track. Its
+  // codec was not sent either, and an unnamed track is one nothing can be
+  // decided about -- see `writableSound`.
+  if (!tracks.length) {
+    return [
+      {
+        codec: "",
+        channels: i.audio_channels || 0,
+        sample_rate: i.audio_sample_rate || 0,
+        bits: i.audio_bits || 0,
+      },
+    ];
+  }
+  const dropped = clip.edit ? clip.edit.dropStreams || [] : null;
+  return dropped
+    ? tracks.filter((a) => !dropped.includes(a.index))
+    : tracks.filter((a) => !(clip.dropPids || []).includes(a.pid));
+}
+
 /// The sound track a clip's figures are to be taken from: the first one the
 /// cut will keep.
 ///
@@ -1949,31 +2015,10 @@ function ladder() {
 /// *kept* track is the one the output opens with, and that is what the one
 /// figure these lines have room for should speak for.
 ///
-/// Which tracks are kept is answered in stream indices once the editor has
-/// been in (`edit.dropStreams`) and in PIDs until then (`dropPids`) -- the
-/// same two answers the export sends, resolved here the same way round.
-///
 /// Null for a clip with no sound, and for one whose every sound track was
-/// switched off: both come out of the cut the same way.
+/// switched off.
 function audioOf(clip) {
-  const i = clip.info;
-  if (!i || !i.has_audio) return null;
-  const tracks = i.audio_tracks || [];
-  // Read by a version that did not list the tracks: the main track is all
-  // there is to go on, and it is the right answer wherever nothing was
-  // switched off -- which is every recording that carries one track.
-  if (!tracks.length) {
-    return {
-      channels: i.audio_channels || 0,
-      sample_rate: i.audio_sample_rate || 0,
-      bits: i.audio_bits || 0,
-    };
-  }
-  const dropped = clip.edit ? clip.edit.dropStreams || [] : null;
-  const kept = dropped
-    ? tracks.filter((a) => !dropped.includes(a.index))
-    : tracks.filter((a) => !(clip.dropPids || []).includes(a.pid));
-  return kept[0] || null;
+  return keptAudio(clip)[0] || null;
 }
 
 /// What one clip's sound will cost per second written as linear PCM.
@@ -2005,23 +2050,36 @@ function isTsContainer(container) {
   return container === "ts" || TS_LIKE.includes(container);
 }
 
+/// The rates Blu-ray LPCM -- the only linear PCM a transport stream can
+/// declare -- is written at. Nothing between them, and nothing below 48.
+const BLURAY_LPCM_RATES = [48000, 96000, 192000];
+
 /// The rate a track will actually be written at, given the rate asked for
 /// and where it is going.
 ///
-/// Not every codec speaks every rate, and of the three this window offers
-/// exactly one case falls outside a codec's list: Blu-ray's LPCM -- the only
-/// shape a transport stream can carry -- has 48, 96 and 192 kHz and nothing
-/// between, so 44.1 asked of a `.ts` comes back as 48. AAC, AC-3 and DTS all
-/// speak the three that are offered, and the plain big-endian PCM every other
-/// container gets lists no rates at all and takes anything.
+/// Not every codec speaks every rate, and of the four this window offers one
+/// codec falls short of the list: Blu-ray's LPCM has 48, 96 and 192 kHz and
+/// nothing between, so 44.1 and 32 asked of a `.ts` come back as 48, while 96
+/// -- which reaches here off a disc that was recorded at it, since that is
+/// what the ceiling lets be chosen -- is written as asked, and so is a 96 kHz
+/// recording carried through as 入力と同じ. AAC speaks all four; AC-3 and DTS
+/// have neither 96 nor anything above 48, and there the window is told so by
+/// the engine and greys the rate out rather than moving it. The plain
+/// big-endian PCM every other container gets lists no rates at all and takes
+/// anything.
 ///
 /// The engine settles this in `audio::writable_rate` and the window has to
 /// arrive at the same answer, because what this decides is the figure shown
 /// in place of an uncompressed track's bitrate -- and a figure about a file
-/// nobody is writing would be worse than no figure at all.
+/// nobody is writing would be worse than no figure at all. The nearest rate
+/// the encoder lists, and the higher of two equally near, which is the same
+/// tie the engine breaks in `encoder_rate`.
 function writableRate(hz, container) {
-  if (hz && settings.audioCodec === "lpcm" && isTsContainer(container)) return 48000;
-  return hz;
+  if (!hz || settings.audioCodec !== "lpcm" || !isTsContainer(container)) return hz;
+  return BLURAY_LPCM_RATES.reduce((best, r) => {
+    const near = Math.abs(r - hz) - Math.abs(best - hz);
+    return near < 0 || (near === 0 && r > best) ? r : best;
+  });
 }
 
 /// What to write in the bitrate control for linear PCM, which is told rather
@@ -2073,6 +2131,229 @@ function channelsForCap() {
   return counts.length ? Math.max(...counts) : 0;
 }
 
+// --- what may actually be written ----------------------------------------
+//
+// The five controls above offer what these formats are ordinarily asked for,
+// and not every one of those can be written. Blu-ray LPCM -- the only linear
+// PCM a transport stream can declare -- has 48, 96 and 192 kHz and nothing
+// between, so 44.1 kHz asked of a `.ts` is a rate that will not come out.
+// DTS is written mono, stereo, quad, 5.0 or 5.1 and in no other count, and
+// its frame has to be long enough to describe every channel in it, which
+// puts a floor under the bitrate that moves with the channels and with the
+// rate: 5.1 at 48 kHz is not written under about 670 kbit/s, and 384 kbit/s
+// asked of it is a cut that stops where the encoder is opened.
+//
+// So the window offers what can be written and greys the rest. What can be
+// is not a table kept here: the answers are libav's encoders' own, the
+// encoders are whatever FFmpeg the build was linked against, and a table
+// here would go quietly out of date. The engine is asked instead, and
+// answers by opening encoders and seeing.
+
+/// Every sound track this list will write, as the engine wants it described.
+///
+/// Every track and not the first: the cut writes them all, each through an
+/// encoder of its own, and a screen that answered for the first would offer
+/// a codec the second cannot be written in.
+function writtenTracks() {
+  return ready().flatMap((c) =>
+    keptAudio(c).map((a) => ({
+      codec: a.codec || "",
+      channels: a.channels || 0,
+      rate: a.sample_rate || 0,
+      bits: a.bits || 0,
+      ts: isTsContainer(containerFor(c)),
+    })),
+  );
+}
+
+/// The recording's own codec, in the engine's spelling of it: an empty
+/// control is the absence of a choice here and `source` there.
+const asCodec = (v) => v || "source";
+
+/// The lists being asked about, which are the controls' own.
+///
+/// Read off the controls rather than written out again, so that a codec
+/// added to the window is a codec asked about. The bitrate control is the
+/// exception: its options are built from the answer to this, so what is
+/// asked about there is the ladder the answer will be drawn from.
+function audioOffer() {
+  const values = (id) => [...el(id).options].map((o) => o.value);
+  return {
+    // 入力と同じ is an empty control and a named codec in the engine.
+    codecs: values("out-audio-codec").map(asCodec),
+    channels: values("out-audio-channels").map(Number),
+    rates: values("out-audio-rate").map(Number),
+    bits: values("out-audio-bits").map(Number),
+    bitrates: ladder().rungs.filter((b) => b <= bitrateCap(channelsForCap())),
+  };
+}
+
+/// What the engine has said can be written, kept by the question it answers.
+///
+/// The answer takes a few dozen encoder opens, which is why it is asked for
+/// off the UI thread and why it is kept: the panel is redrawn on every
+/// keystroke in the prefix field, and none of those change the answer. Null
+/// while there is no answer yet -- the first draw after a setting changes
+/// offers everything, and the answer, when it lands, draws the panel again.
+const soundLimits = new Map();
+const soundAsked = new Set();
+
+function writableSound() {
+  // The controls are only on screen while the whole track is being rebuilt,
+  // and only then does anything reach an encoder. There is nothing to refuse
+  // in a mode that copies frames.
+  if (!reencodingAudio()) return null;
+  const tracks = writtenTracks();
+  // A list with nothing in it yet, or nothing with sound in it: no track to
+  // answer for, and no answer worth greying a control on.
+  if (!tracks.length) return null;
+  const held = {
+    codec: asCodec(settings.audioCodec),
+    channels: Number(settings.audioChannels) || 0,
+    rate: Number(settings.audioRate) || 0,
+    bits: Number(settings.audioBits) || 0,
+    bitrate: Number(settings.audioBitrate) || 0,
+  };
+  const offer = audioOffer();
+  const ask = { tracks, held, offer };
+  const key = JSON.stringify(ask);
+  if (soundLimits.has(key)) return soundLimits.get(key);
+  if (invoke && !soundAsked.has(key)) {
+    soundAsked.add(key);
+    invoke("audio_limits", ask)
+      .then((can) => {
+        soundLimits.set(key, can);
+        soundAsked.delete(key);
+        renderOutset();
+      })
+      .catch((e) => {
+        soundAsked.delete(key);
+        jlog(`audio_limits: ${e}`);
+      });
+  }
+  return null;
+}
+
+/// Where a control goes when what it was holding cannot be written.
+///
+/// 入力と同じ, which is not an answer but the absence of one, and so is
+/// always somewhere to fall back to. The rate is the exception: a rate a
+/// codec cannot speak is one the engine would write at the nearest it can,
+/// so the control is put where the file would have gone rather than made to
+/// forget the question was asked.
+///
+/// Except when the rate is over the ceiling, which is the other reason it
+/// can be refused. A rate above what the recording was sampled at is not one
+/// the engine would move -- it would write it, and that is the whole point
+/// of refusing it -- so there is no place the file was going to fall to.
+/// Nearest would be a resample of every other clip in the list, chosen by
+/// nobody, so it goes to 入力と同じ with the other two.
+function insteadOf(key, was, allowed, ceiling) {
+  if (key === "audioRate" && was && !(ceiling && Number(was) > ceiling)) {
+    const want = Number(was);
+    const near = allowed
+      .filter((v) => v)
+      .map(Number)
+      .sort((a, b) => Math.abs(a - want) - Math.abs(b - want) || b - a)[0];
+    if (near) return String(near);
+  }
+  return allowed.includes("") ? "" : allowed[0] || "";
+}
+
+/// The most each of the three sample settings may be offered at: what the
+/// recording already has in it.
+///
+/// A re-encode can write more channels than were sent, a faster grid than
+/// was sampled, or wider samples than were recorded, and each of those is a
+/// bigger file holding exactly the sound that went in. An upmix invents the
+/// channels it spreads into; a resample upwards draws the same curve through
+/// more points; a 16 bit recording written 24 bits wide pads every sample
+/// with zeroes. None of the three is a thing to offer someone shortening a
+/// broadcast, so these controls offer the way down and `入力と同じ`, and
+/// nothing above what came in.
+///
+/// 96 kHz is on the rate's list for the recordings that have it -- a Blu-ray
+/// carrying LPCM or lossless sound at 96 -- and is greyed out under a
+/// broadcast for the same reason 24 bit is: 48 kHz sampled and written at 96
+/// is the same curve drawn through more points.
+///
+/// The least of the tracks rather than the most. The setting is one answer
+/// for the whole list and every track in it is written through it, so an
+/// answer above the narrowest track's own would raise that one -- and a
+/// pressed disc that carries English 5.1 beside Japanese stereo is a single
+/// recording with both in it. A zero is a track that never said, which
+/// decides nothing, and a list with nothing readable in it yet decides
+/// nothing either: there the whole list is offered, as it was before there
+/// was anything to ask.
+function soundCeiling() {
+  // The mode is part of the question, as it is everywhere else on this
+  // panel: the rows are off the screen while frames are being copied, and
+  // nothing reads what they hold into a cut that is not re-encoding.
+  if (!reencodingAudio()) return { channels: 0, rate: 0, bits: 0 };
+  const tracks = writtenTracks();
+  const least = (of) => {
+    const said = tracks.map(of).filter((v) => v > 0);
+    return said.length ? Math.min(...said) : 0;
+  };
+  return {
+    channels: least((t) => t.channels),
+    rate: least((t) => t.rate),
+    bits: least((t) => t.bits),
+  };
+}
+
+/// What a control is holding, unless that is more than the recording has.
+///
+/// `lockUnwritable` takes a control off such an answer as soon as the panel
+/// is drawn, and it is drawn again whenever a clip finishes being read. This
+/// is the same arithmetic done where the answer is used, so that a count
+/// chosen against a 5.1 recording cannot reach the cut of a stereo one that
+/// joined the list after it. A ceiling of zero is a list that decides
+/// nothing, and there what is held stands.
+function under(want, ceiling) {
+  if (!want) return null;
+  return ceiling && want > ceiling ? null : want;
+}
+
+/// Grey out every answer that cannot be written or would be more than the
+/// recording has, and take a control off one it is already holding.
+///
+/// Greyed rather than dropped from the list. Which answers are missing is
+/// the one thing a shortened list cannot say, and a codec that is absent
+/// because of the recording in the list looks like a codec this program does
+/// not have.
+function lockUnwritable() {
+  const can = writableSound();
+  const cap = soundCeiling();
+  // A zero and a `source` are the engine's way of saying the recording's
+  // own, which is the empty option at the top of every one of these lists.
+  const named = (v) => (!v || v === "source" ? "" : String(v));
+  for (const [id, key, told, ceiling] of [
+    ["out-audio-codec", "audioCodec", can && can.codecs.map(named), 0],
+    ["out-audio-channels", "audioChannels", can && can.channels.map(named), cap.channels],
+    ["out-audio-rate", "audioRate", can && can.rates.map(named), cap.rate],
+    ["out-audio-bits", "audioBits", can && can.bits.map(named), cap.bits],
+  ]) {
+    const select = el(id);
+    // Two questions asked of the same list, and an answer has to pass both:
+    // whether an encoder will write it, which is null until the engine has
+    // said, and whether it is more than the recording has, which is
+    // arithmetic and needs nobody asked. 入力と同じ passes every ceiling --
+    // it is the recording's own figure by definition.
+    const offered = [...select.options].map((o) => o.value);
+    const allowed =
+      told || ceiling
+        ? offered.filter((v) => (!told || told.includes(v)) && (!ceiling || Number(v) <= ceiling))
+        : null;
+    // No answer, or none yet: everything is on offer again rather than left
+    // grey on the strength of a question that is no longer being asked.
+    for (const opt of select.options) opt.disabled = !!allowed && !allowed.includes(opt.value);
+    if (!allowed || allowed.includes(settings[key])) continue;
+    settings[key] = insteadOf(key, settings[key], allowed, ceiling);
+    select.value = settings[key];
+  }
+}
+
 /// Put the rungs worth offering in the bitrate control, and bring the answer
 /// it is holding inside them.
 function fillBitrates() {
@@ -2082,7 +2363,15 @@ function fillBitrates() {
   // would come back the moment the codec changed, as an answer nobody gave.
   const none = codecHasNoBitrate();
   const cap = bitrateCap(channelsForCap());
-  const rungs = none ? [] : ladder().rungs.filter((b) => b <= cap);
+  // Under the ceiling, and above whatever floor the codec has at this many
+  // channels and this rate: DTS has one and it moves with both, so which
+  // rungs are worth offering is the engine's answer rather than the
+  // ladder's. No answer yet means the ladder, which is what was offered
+  // before there was anything to ask.
+  const can = writableSound();
+  const rungs = none
+    ? []
+    : ladder().rungs.filter((b) => b <= cap && (!can || can.bitrates.includes(b)));
   if (none) settings.audioBitrate = "";
   // What a greyed-out LPCM control says: not a dash, which would leave the
   // one question it is there to answer unanswered, but the figure the file
@@ -2092,7 +2381,7 @@ function fillBitrates() {
   // part of, since おまかせ is a word and not a number, the codec is, since
   // two of them count in different numbers, and the told figure is, since it
   // moves with the clips in the list and the channels asked of them.
-  const sig = `${currentLang()}|${settings.audioCodec}|${rungs.length}|${told}`;
+  const sig = `${currentLang()}|${settings.audioCodec}|${rungs.join(",")}|${told}`;
   if (select.dataset.sig !== sig) {
     select.dataset.sig = sig;
     select.innerHTML = none
@@ -2116,7 +2405,8 @@ function fillBitrates() {
 /// out rather than clearing it -- and what it holds must not reach the cut
 /// behind the screen's back.
 function audioChannelsOut() {
-  return reencodingAudio() && settings.audioChannels ? Number(settings.audioChannels) : null;
+  if (!reencodingAudio()) return null;
+  return under(Number(settings.audioChannels), soundCeiling().channels);
 }
 
 function audioBitrateOut() {
@@ -2125,14 +2415,16 @@ function audioBitrateOut() {
 }
 
 function audioRateOut() {
-  return reencodingAudio() && settings.audioRate ? Number(settings.audioRate) : null;
+  if (!reencodingAudio()) return null;
+  return under(Number(settings.audioRate), soundCeiling().rate);
 }
 
 /// Only where samples are what is being written. Everywhere else the control
 /// is grey, and what a grey control is holding must not reach the cut behind
 /// the screen's back.
 function audioBitsOut() {
-  return codecHasNoBitrate() && settings.audioBits ? Number(settings.audioBits) : null;
+  if (!codecHasNoBitrate()) return null;
+  return under(Number(settings.audioBits), soundCeiling().bits);
 }
 
 function audioCodecOut() {
@@ -2221,6 +2513,7 @@ el("browse-dir").addEventListener("click", async (ev) => {
 
 function renderOutset() {
   lockAudioDetail();
+  lockUnwritable();
   fillBitrates();
   const list = ready();
   const select = el("outset-clip");

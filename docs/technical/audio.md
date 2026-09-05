@@ -376,10 +376,62 @@ caller says that is understood, which the cut does, once, for that codec. "Exper
 is libav's account of how much attention the encoder has had; what comes out is a DTS
 stream a receiver decodes.
 
+## What can be written, asked before anything is
+
+Not every combination of codec, channels, rate, width and bitrate is a file. Blu-ray
+LPCM has 48, 96 and 192 kHz and nothing between. DTS is written mono, stereo, quad, 5.0
+or 5.1 and in no other count, because those are the arrangements its encoder lists, and a
+DTS frame carries a fixed number of samples and has to be long enough to describe every
+channel in it — which puts a *floor* under the bitrate that moves with the channel count
+and with the sample rate. 5.1 at 48 kHz is not written under about 670 kbit/s; the same
+track at 32 kHz is, because there the frame covers more of a second.
+
+None of that is worth discovering at the end of an export, and none of it is worth
+keeping a table of either: the answers belong to whatever FFmpeg the build was linked
+against, and a table here would go quietly out of date. So the question is asked by
+opening an encoder and seeing.
+
+[`audio::opens_at`] is that question. Everything an encoder can refuse over is settled
+before it by asking the encoder — the rate in `encoder_rate`, the arrangement in
+`encoder_layout`, the sample format in `encoder_format` — and each either finds something
+the encoder listed or has nothing to find, which is now said plainly rather than left to
+`avcodec_open2` and its "Invalid argument". What is left after all three is the bitrate,
+which no encoder lists, and that is what `opens_at` is for.
+
+Two things read it. [`cut::writable_sound`] answers for a whole screen: given the sound
+tracks a list of clips will write, the settings being held and the lists the window
+offers, it says which of those answers a cut could actually be given — one list at a
+time, each judged with the others as they stand, and every track having to agree. The
+output settings screen greys out the rest. Where the settings being held cannot
+themselves be written — a project from before there was a floor to know of — they are
+let go of one at a time, bitrate first and the codec last, so that the lists are judged
+against something writable rather than all coming back empty.
+
+The window adds one refusal of its own, and it is not a question for an encoder: no more
+than the recording has. Channels, a rate and a width can all be written above what came
+in — an encoder opens perfectly well at six channels handed two — and none of the three
+brings anything with it but size. `soundCeiling` in `app.js` takes the least of each
+across every track the list will write, greys out everything above it, and takes a
+control off an answer that no longer fits; `audioChannelsOut`, `audioRateOut` and
+`audioBitsOut` do the same arithmetic again where the answers are handed to the cut, so
+that a count chosen against a 5.1 recording cannot reach the cut of a stereo one that
+joined the list after it. Being arithmetic and not an encoder open, it is answered on
+the spot rather than off the thread. And it is the window's rule rather than the
+engine's: the command line still resamples upwards for whoever asks in those words.
+
+The cut reads it too, for the callers a window does not cover. A bitrate the encoder will
+not open at is not a cut to stop over: what the codec is ordinarily carried at is above
+every one of these floors and is a figure the format has, so that is written instead and
+said on the way past — the same shape of answer `writable_rate` gives a rate a codec
+cannot speak.
+
 `tests/run_audio_codec_tests.sh` asks for each of the four into each of four containers,
 and checks the track is the codec asked for, that every channel of a 5.1 fixture still
 carries the tone it went in with, and that a transport stream's map declares the codec
-that is in it.
+that is in it. It also asks for 384 kbit/s of 5.1 DTS, which is under the floor, and for
+three channels of it, which is a count DTS has no arrangement for: the first is written
+at 1536 kbit/s with a note and the second is refused in a sentence that mentions
+channels. The unit tests beside `writable_sound` cover the lists themselves.
 
 ## Multi-audio broadcasts
 
@@ -475,9 +527,10 @@ so `--audio-mode reencode` is there if it is needed.
 
 ## The output settings screen
 
-Six controls, one above five. **Audio** picks the mode — smart rendering, copy through,
-re-encode everything — and under it **Audio codec**, **Audio channels**, **Sample rate**,
-**Bit depth** and **Audio bitrate** say what that encode should be. The cases they exist
+Six controls, one above five — though five of them are on screen only some of the time.
+**Audio** picks the mode — smart rendering, copy through, re-encode everything — and under
+it **Audio codec**, **Audio channels**, **Sample rate**, **Bit depth** and **Audio
+bitrate** say what that encode should be. The cases they exist
 for are a 5.1 recording that has to play somewhere that will not have it, and a cut that
 has somewhere to go after this program is done with it.
 
@@ -492,15 +545,24 @@ first and spreads the second. The readouts say which happened. (The engine takes
 from 1 to 8, and `--audio-channels` will do 7.1; the window offers the three that get
 asked for.)
 
-**Sample rate** offers the recording's own, 48, 44.1 and 32 kHz — a broadcast, a CD, and
-what a small file gets away with. Like a downmix it is a whole-track re-encode or it is
-nothing; unlike a downmix the codec may not have the rate at all, in which case the cut
-writes the nearest it does have and says which. Of the three offered, only one case falls
-outside a codec's list — Blu-ray LPCM has 48, 96 and 192 kHz and nothing between, so 44.1
-asked of a `.ts` comes back as 48 — and the window does that arithmetic too (`writableRate`),
-because the figure it shows in place of an uncompressed track's bitrate has to be the size
-of the file that will actually be written. See
+**Sample rate** offers the recording's own, 96, 48, 44.1 and 32 kHz — what a Blu-ray's
+LPCM is carried at, a broadcast, a CD, and what a small file gets away with. Like a downmix
+it is a whole-track re-encode or it is nothing; unlike a downmix the codec may not have the
+rate at all, in which case the cut writes the nearest it does have and says which. Of the
+four offered, two cases fall outside a codec's list. Blu-ray LPCM has 48, 96 and 192 kHz
+and nothing between, so 44.1 asked of a `.ts` comes back as 48 while 96 is written as asked
+— and the window does that arithmetic too (`writableRate`), because the figure it shows in
+place of an uncompressed track's bitrate has to be the size of the file that will actually
+be written. And 96 kHz is AAC's and Blu-ray LPCM's alone: AC-3 has 32, 44.1 and 48, DTS
+goes no higher either, and there the window is told so by the engine and greys the rate out
+rather than moving it — a rate asked for outright and written as something else is the
+screen saying something untrue. See
 [The rate and the width](#the-rate-and-the-width---audio-samplerate---audio-bits).
+
+96 kHz is on the list for the recordings that have it, and the ceiling below decides which
+those are: a Blu-ray carrying LPCM or lossless sound at 96 can be asked for 96, and a
+broadcast sampled at 48 has it grey, alongside the channel counts and the widths it never
+had either.
 
 **Bit depth** offers the recording's own, 16 and 24 bit, and is the one control here that
 does not answer to the mode alone: **it is greyed out unless linear PCM is what is being
@@ -509,14 +571,20 @@ has nowhere to put a width. That makes it the mirror image of the bitrate below 
 exactly one of the two is grey at any time, because an uncompressed track's size is
 arithmetic nobody chooses and a lossy track's width is a number nobody can name.
 
-**All of them are greyed out unless the mode is "Re-encode everything"**, because they describe
+**None of them is on screen unless the mode is "Re-encode everything"**, because they describe
 an encode and the other two modes do not run one over the whole track. `copy` runs none at
 all, and `smart` runs one on two frames per boundary, where the whole point is that they
-come out the same shape as the frames they are spliced between. They are greyed out rather
-than cleared — what they hold is still readable, and still there when the mode comes back
-round to wanting it — and what they hold does not reach the cut while they are greyed: the
-window sends the two settings only when it is re-encoding, so the screen and the file
-agree.
+come out the same shape as the frames they are spliced between. Five dead rows under a mode
+that has no use for any of them are five rows to read past every time the panel is opened,
+and the panel has grown, so under the other two modes they are simply not there. They are
+put away rather than cleared — what they hold is still there when the mode comes back round
+to wanting it — and what they hold does not reach the cut while they are away: the window
+sends these settings only when it is re-encoding, so the screen and the file agree.
+
+The bit depth and the bitrate are the exception inside the encode, and stay a matter of
+grey rather than absence. Both belong to the encode that is being written, and which of the
+two is live moves with the codec, so coming and going would shuffle the panel under the
+hand of whoever is choosing a codec.
 
 The engine takes the harder line, and has to: `audio_channels`, `audio_sample_rate` and
 `audio_bits` there each force a whole-track re-encode whatever the mode says, because a

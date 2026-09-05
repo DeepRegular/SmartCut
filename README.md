@@ -184,7 +184,9 @@ is cut independently, so a bilingual broadcast keeps both languages. 5.1 can be 
 down to stereo when you need it, and the sound can be written as another codec
 entirely — AAC, AC-3, DTS or linear PCM — which leaves no frame to copy and so
 re-encodes the whole track. The sample rate goes the same way, and for linear PCM
-so does the bit depth. AC-3, E-AC-3 and MP2 are copied through rather than
+so does the bit depth. The output settings screen offers only what can actually be
+written: a rate a codec does not have, or a bitrate below the floor its frames need,
+is greyed out there rather than found out at the end of an export. AC-3, E-AC-3 and MP2 are copied through rather than
 smart-rendered, and SmartCut tells you when that happens. A disc's lossless sound —
 DTS-HD and TrueHD — is carried byte for byte and never re-encoded. Writing an MP4, where
 there is no box for Blu-ray LPCM, the same samples go in as plain PCM.

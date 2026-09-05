@@ -162,14 +162,19 @@
               </select>
             </span>
           </div>
-          <!-- Under the mode, and greyed out unless it is すべて再エンコード:
+          <!-- Under the mode, and on screen only while it is すべて再エンコード:
                these describe an encode, and the other two modes do not run
-               one over the whole track. The last two are a pair -- リニア PCM
-               has no bitrate to choose, since its size is the samples' own
+               one over the whole track. Five grey rows under every mode are
+               five rows to read past, so they are absent instead until the
+               mode asks for them. The last two are a pair -- リニア PCM has
+               no bitrate to choose, since its size is the samples' own
                arithmetic, and every other codec has no width to choose, since
                it writes a description of the sound rather than the sound --
-               so exactly one of them is grey at any time. -->
-          <div class="row">
+               and that pair stays a matter of grey: both belong to the encode
+               that is being written, and which one is live moves with the
+               codec, so the panel would jump under the hand if they came and
+               went. -->
+          <div class="row audio-detail" hidden>
             <span data-i18n="outset.audioCodec">音声コーデック:</span>
             <span class="drop">
               <!-- 入力と同じ is not a codec but the absence of a choice: the
@@ -184,11 +189,15 @@
               </select>
             </span>
           </div>
-          <div class="row">
+          <div class="row audio-detail" hidden>
             <span data-i18n="outset.audioChannels">音声チャンネル(C):</span>
             <span class="drop">
-              <!-- Named by the count and not by the direction: which way it
-                   goes depends on the recording, and a list can hold both. -->
+              <!-- Named by the count and not by the direction, since which
+                   way it goes depends on the recording -- but only downwards
+                   is offered: a count above the narrowest track in the list
+                   is greyed out, because spreading a recording into channels
+                   it was never sent with adds a file's worth of size and not
+                   a sound. See `soundCeiling`. -->
               <select id="out-audio-channels">
                 <option value="" selected data-i18n="channels.same">入力と同じ</option>
                 <option value="1" data-i18n="channels.mono">1ch（モノラル）</option>
@@ -197,29 +206,37 @@
               </select>
             </span>
           </div>
-          <div class="row">
+          <div class="row audio-detail" hidden>
             <span data-i18n="outset.audioRate">サンプリング周波数:</span>
             <span class="drop">
               <!-- 入力と同じ is the absence of a choice; anything else is a
                    resample, which like a downmix leaves no frame that can be
-                   copied. Only the three rates anyone asks for: a broadcast
-                   is 48 kHz, a CD is 44.1, and 32 is what a small file gets
-                   away with. -->
+                   copied. The four rates anyone asks for: 96 kHz is what a
+                   Blu-ray's LPCM is carried at, a broadcast is 48, a CD is
+                   44.1, and 32 is what a small file gets away with -- and of
+                   those, only the ones at or under what the recording was
+                   sampled at, since drawing the same curve through more
+                   points recovers nothing that was not sampled. So 96 is
+                   there for the recordings that have it and grey under a
+                   broadcast. See `soundCeiling`. -->
               <select id="out-audio-rate">
                 <option value="" selected data-i18n="rate.same">入力と同じ</option>
+                <option value="96000" data-i18n="rate.96">96 kHz</option>
                 <option value="48000" data-i18n="rate.48">48 kHz</option>
                 <option value="44100" data-i18n="rate.441">44.1 kHz</option>
                 <option value="32000" data-i18n="rate.32">32 kHz</option>
               </select>
             </span>
           </div>
-          <div class="row">
+          <div class="row audio-detail" hidden>
             <span data-i18n="outset.audioBits">量子化ビット数:</span>
             <span class="drop">
               <!-- Greyed out unless リニア PCM is what is being written: a
                    lossy encoder takes a float and spends a bitrate, and how
                    many bits the sound had before it is not a number it has
-                   anywhere to put. -->
+                   anywhere to put. 24 bit is greyed out as well wherever the
+                   recording has 16 in it -- the extra eight are zeroes, and
+                   they cost half again the size. See `soundCeiling`. -->
               <select id="out-audio-bits">
                 <option value="" selected data-i18n="bits.same">入力と同じ</option>
                 <option value="16" data-i18n="bits.16">16 bit</option>
@@ -227,7 +244,7 @@
               </select>
             </span>
           </div>
-          <div class="row">
+          <div class="row audio-detail" hidden>
             <span data-i18n="outset.audioBitrate">音声ビットレート:</span>
             <span class="drop">
               <!-- Filled in by `fillBitrates`: which rungs of the ladder are

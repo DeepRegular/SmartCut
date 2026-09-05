@@ -127,18 +127,26 @@ fn encoder_format(
 /// arrangement the rest of libav assumes; otherwise the first the encoder
 /// names with the right number of channels. An encoder that lists nothing
 /// takes anything.
+///
+/// `None` where the encoder lists layouts and not one of them has this many
+/// channels at all: DTS is written mono, stereo, quad, 5.0 or 5.1 and in no
+/// other count, so a three channel recording asked for as DTS has no answer
+/// here. That is not a layout to guess at -- a guess is a refusal from
+/// `avcodec_open2` a moment later, with nothing in it about channels -- so
+/// it is said here instead, and [`opens_at`] is how the window asks the
+/// question before anyone chooses.
 fn encoder_layout(
     codec: &ff::codec::codec::Codec,
     channels: u16,
-) -> ff::channel_layout::ChannelLayout {
+) -> Option<ff::channel_layout::ChannelLayout> {
     let want = ff::channel_layout::ChannelLayout::default(channels as i32);
-    let Ok(audio) = codec.audio() else { return want };
-    let Some(listed) = audio.channel_layouts() else { return want };
+    let Ok(audio) = codec.audio() else { return Some(want) };
+    let Some(listed) = audio.channel_layouts() else { return Some(want) };
     let listed: Vec<ff::channel_layout::ChannelLayout> = listed.collect();
     if listed.is_empty() || listed.contains(&want) {
-        return want;
+        return Some(want);
     }
-    listed.into_iter().find(|l| l.channels() == channels as i32).unwrap_or(want)
+    listed.into_iter().find(|l| l.channels() == channels as i32)
 }
 
 /// The sample rate to open an encoder with, given the rate the output is to
@@ -199,12 +207,26 @@ fn open_encoder(
     rate: u32,
     channels: u16,
     bit_rate: usize,
+    quiet: bool,
 ) -> Result<ff::encoder::Audio> {
     let codec = ff::encoder::find(id).ok_or_else(|| anyhow!("no encoder for {id:?}"))?;
     let mut enc = ff::codec::context::Context::new_with_codec(codec).encoder().audio()?;
+    // An encoder opened to be looked at rather than fed says a word about
+    // itself on the way out -- "Qavg: nan", the average of the frames it was
+    // never given -- and a probe that says it every time a control is
+    // touched buries whatever the log was being kept for. The offset moves
+    // what this one context logs a step up the scale, which leaves nothing
+    // below `error` audible and `error` itself where it was.
+    if quiet {
+        unsafe {
+            (*enc.as_mut_ptr()).log_level_offset = ff::ffi::AV_LOG_ERROR;
+        }
+    }
     let rate = encoder_rate(&codec, rate);
     enc.set_rate(rate as i32);
-    enc.set_channel_layout(encoder_layout(&codec, channels));
+    enc.set_channel_layout(encoder_layout(&codec, channels).ok_or_else(|| {
+        anyhow!("{id:?} is not written with {channels} channels, whichever way they are arranged")
+    })?);
     enc.set_format(encoder_format(&codec, like));
     // Nothing for LPCM to spend: its size is the samples' own, and a figure
     // handed to it is a figure the encoder throws away.
@@ -227,6 +249,34 @@ fn open_encoder(
         eopts.set("strict", "experimental");
     }
     enc.open_as_with(codec, eopts).map_err(|e| anyhow!("cannot open audio encoder: {e}"))
+}
+
+/// Whether a track can be written this way at all.
+///
+/// Everything an encoder can refuse over is asked of the encoder itself
+/// before it is opened -- the rate in [`encoder_rate`], the arrangement of
+/// the channels in [`encoder_layout`], the width of the samples in
+/// [`encoder_format`] -- and each of those either finds an answer the
+/// encoder listed or has none to find. What is left after all three is the
+/// bitrate, which no encoder lists at all and which DTS has a floor for:
+/// its frame carries a fixed number of samples, a frame has to be long
+/// enough to describe every channel in it, and below that length
+/// `avcodec_open2` refuses. The floor moves with the channel count and with
+/// the sample rate -- 5.1 at 48 kHz cannot be written under about
+/// 670 kbit/s, and the same track at 32 kHz can -- so it is not a number to
+/// keep a table of. It is asked for by opening an encoder and seeing.
+///
+/// Which is what this is for: the window greys out an answer the cut could
+/// not have given rather than letting it be discovered when the cut is run,
+/// and the cut raises a bitrate rather than failing on one. A rate the codec
+/// does not speak is *not* refused here -- [`open_encoder`] takes it to the
+/// nearest the encoder lists, as [`writable_rate`] says it will -- so that
+/// question is asked separately, by comparing the two.
+///
+/// `bit_rate` of 0 asks about the encoder's own default, which is what a
+/// codec with nothing to spend gets.
+pub fn opens_at(id: ff::codec::Id, rate: u32, channels: u16, bit_rate: usize) -> bool {
+    open_encoder(id, PLANAR_F32, rate, channels, bit_rate, true).is_ok()
 }
 
 /// Where a packet's samples begin, relative to the first sample fed in.
@@ -394,7 +444,7 @@ impl Reencoder {
         let decoder =
             ff::codec::context::Context::from_parameters(params.clone())?.decoder().audio()?;
         let like = like.unwrap_or_else(|| sample_format(&params));
-        let encoder = open_encoder(target, like, rate, channels, bit_rate)?;
+        let encoder = open_encoder(target, like, rate, channels, bit_rate, false)?;
         let frame_size = frame_size_of(&encoder);
         let enc_format = encoder.format();
         let fixed = encoder.frame_size() > 0;
@@ -829,6 +879,7 @@ pub fn boundary_patches(
         audio.sample_rate,
         audio.channels,
         bit_rate,
+        true,
     ) {
         Ok(e) => e,
         Err(e) => {
@@ -1016,7 +1067,7 @@ fn patch_run(
     }
 
     let mut encoder =
-        open_encoder(params.id(), sample_format(params), audio.sample_rate, audio.channels, bit_rate)?;
+        open_encoder(params.id(), sample_format(params), audio.sample_rate, audio.channels, bit_rate, false)?;
     // A frame written here has to cover exactly the samples the frame it
     // replaces covered. Most encoders have a frame length of their own, and
     // it has to be the recording's; LPCM has none -- it writes back whatever

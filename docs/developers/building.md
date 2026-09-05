@@ -65,7 +65,7 @@ bash tests/run_audio_tests.sh         # A/V sync (+10 with copy and reencode)   
 bash tests/run_audio_content_tests.sh # is real material's audio in the right place      6
 bash tests/run_aac_tests.sh           # what the output's AAC frames are made of         8
 bash tests/run_downmix_tests.sh       # where 5.1 goes when it is folded to stereo       9
-bash tests/run_audio_codec_tests.sh   # writing the sound as another codec entirely     36
+bash tests/run_audio_codec_tests.sh   # writing the sound as another codec entirely     39
 bash tests/run_audio_format_tests.sh  # the rate and the width the samples are written  23
 bash tests/run_preview_tests.sh       # does a scrub show the time you asked for         7
 bash tests/run_index_tests.sh         # does the index answer as the walk did           27
@@ -98,7 +98,11 @@ an `.m2ts` and an `.mp4`.
 AC-3, DTS, LPCM -- into each of four containers, and checks three things of each: the
 track is the codec that was asked for, every channel still carries the tone it went in
 with, and a transport stream's own programme map declares the codec that is actually
-in it.
+in it. It also asks for two things that cannot be written -- 5.1 DTS under its bitrate
+floor, and three channels of DTS, which is a count it has no arrangement for -- and
+checks that the first is raised to what DTS is ordinarily carried at and the second is
+refused in a sentence that says why. Those are the answers the output settings screen
+greys out, told to it by `writable_sound`.
 
 `run_audio_format_tests.sh` asks for the other two things a sample is -- the rate it is
 taken at and the width it is written with. A resample has to reach the samples, the

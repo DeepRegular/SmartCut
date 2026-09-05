@@ -577,6 +577,10 @@ input[type="text"]::placeholder { color: var(--dim); }
   font: 12px/1.9 ui-monospace, "Noto Sans Mono", monospace; white-space: pre-wrap;
 }
 .row { display: flex; align-items: center; gap: 8px; margin: 5px 0; }
+/* A flex row outranks the browser's own rule for `hidden`, so a row that
+   is put away has to be told again: the audio detail comes and goes with
+   the mode. */
+.row[hidden] { display: none; }
 
 /* A `<select>` whose popup is drawn here rather than by the platform, so that
    it can go upward: see `opensUpward`. The wrapper is what the popup is
@@ -602,6 +606,10 @@ input[type="text"]::placeholder { color: var(--dim); }
    wins when they are the same row. */
 .drop-menu li.on { background: #2c4a50; }
 .drop-menu li.at { background: var(--sel); color: #10262b; }
+/* An answer this recording cannot be written with: on the list, so that what
+   is missing can be seen, and out of reach -- the cursor steps over it and a
+   click on it does nothing. */
+.drop-menu li.off { color: #5c5c5c; cursor: default; }
 .drop-menu[hidden] { display: none; }
 .row > span:first-child { color: var(--dim); min-width: 132px; }
 .row .lbl { color: var(--dim); min-width: 48px; }

@@ -37,7 +37,10 @@ pub use cm::{
     DetectOptions,
 };
 pub use adts::{AacVersion, AdtsFormat};
-pub use cut::{cut, cut_with_progress, write_audio_es, AudioCodec, AudioMode, CutOptions};
+pub use cut::{
+    cut, cut_with_progress, writable_sound, write_audio_es, AudioCodec, AudioMode, CutOptions,
+    SoundAsIs, SoundChoices,
+};
 pub use index::{ContainerIndex, IndexSource, PacketScan};
 pub use seek_index::SeekIndex;
 pub use preview::{frame_at, play_from, shot_at, shots_at, Pace, Shot};

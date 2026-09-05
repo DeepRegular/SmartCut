@@ -138,6 +138,32 @@ same "dts at 5.1 is given 1536 kbit/s" "1536000" "$(field "$OUT/dts.ts" bit_rate
 render ac3rate ts --audio-codec ac3 --audio-bitrate 256k
 same "an explicit rate is obeyed" "256000" "$(field "$OUT/ac3rate.ts" bit_rate)"
 
+# --- except where the encoder will not open at it ---------------------------
+# A DTS frame carries a fixed number of samples and has to be long enough to
+# describe every channel in it, which puts a floor under the bitrate that
+# moves with the channels and with the rate: 5.1 at 48 kHz is not written
+# under about 670 kbit/s. Asked for less, the cut used to stop where the
+# encoder was opened. It writes what the codec is ordinarily carried at
+# instead, and says so on the way past. The window never gets here -- it is
+# told which rungs will open before anyone chooses one (`writable_sound`).
+render dtsfloor ts --audio-codec dts --audio-bitrate 384k
+same "a rate under the codec's floor is raised" "1536000" \
+  "$(field "$OUT/dtsfloor.ts" bit_rate)"
+same "and says so" "1" \
+  "$(grep -c "is not written at that rate with 6 channels" "$OUT/dtsfloor.ts.log")"
+
+# --- a channel count the codec has no arrangement for -----------------------
+# DTS is written mono, stereo, quad, 5.0 or 5.1 and in no other count, and
+# `avcodec_open2` handed anything else refuses with nothing in its message
+# about channels. Said here instead -- and the window, told the same thing by
+# `writable_sound`, greys the codec out rather than reaching this at all.
+if render dts3 ts --audio-codec dts --audio-channels 3; then
+  bad "a count the codec cannot arrange is refused" "the cut ran"
+else
+  same "a count the codec cannot arrange is refused" "1" \
+    "$(grep -c "is not written with 3 channels" "$OUT/dts3.ts.log")"
+fi
+
 # --- and LPCM's, which is not a rate but a size ----------------------------
 # Nobody chooses it: channels times bit depth times the sample rate. The
 # depth is the recording's own, and a lossy recording has none -- it decodes

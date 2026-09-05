@@ -1325,6 +1325,171 @@ fn derived_bit_rate(target: ff::codec::Id, channels: u16) -> usize {
     }
 }
 
+/// One sound track as it stands, for [`writable_sound`].
+///
+/// What a screen knows about a recording's sound before anything is asked of
+/// it, which is everything the answer below turns on.
+#[derive(Debug, Clone, Default)]
+pub struct SoundAsIs {
+    /// The codec the recording carries, by libav's own name for it -- `aac`,
+    /// `ac3`, `truehd`. Empty, or a name libav does not know, leaves the
+    /// track unjudged: what cannot be named cannot be answered for, and a
+    /// silence is a better answer there than a list greyed out on a guess.
+    pub codec: String,
+    pub channels: u16,
+    pub sample_rate: u32,
+    /// How wide its samples are once they are written as linear PCM. See
+    /// [`crate::audio::pcm_bits`].
+    pub bits: u8,
+    /// Whether this track's cut is going into a transport stream, which is
+    /// the one thing about the container that decides a codec. See
+    /// [`carriage`].
+    pub to_ts: bool,
+}
+
+/// Answers about the sound: the ones a screen offers, and the ones it may.
+///
+/// A zero stands for the recording's own -- the `入力と同じ` at the top of
+/// every one of these lists -- which is [`CutOptions`]'s `None` written as a
+/// number, since these are lists rather than single answers.
+#[derive(Debug, Clone, Default)]
+pub struct SoundChoices {
+    pub codecs: Vec<AudioCodec>,
+    pub channels: Vec<u16>,
+    pub sample_rates: Vec<u32>,
+    pub bits: Vec<u8>,
+    pub bit_rates: Vec<usize>,
+}
+
+/// Whether one set of answers is one every track could be written with.
+///
+/// The same reasoning [`plan_audio`] runs, with nothing opened and no file
+/// read: what codec the track would come out as, at what rate, how many
+/// channels, and how much to spend -- and then whether an encoder for that
+/// exists and will open. Anything not asked for follows the recording, which
+/// is what the cut does.
+///
+/// A track nobody can name, one whose count or rate the recording never
+/// said, and lossless sound that is carried through rather than encoded are
+/// all true here: none of them is a question about an encoder.
+fn sound_writes(tracks: &[SoundAsIs], opts: &CutOptions) -> bool {
+    tracks.iter().all(|t| {
+        let Some(source_id) = ff::decoder::find_by_name(&t.codec).map(|c| c.id()) else {
+            return true;
+        };
+        // See `plan_audio`: an encoder is only reached here where the codec
+        // was named, because otherwise the recording's own frames go out as
+        // they came in.
+        if crate::audio::carried_whole(source_id) && opts.audio_codec == AudioCodec::Source {
+            return true;
+        }
+        let bits = opts.audio_bits.unwrap_or(t.bits);
+        let target = carriage(source_id, t.to_ts, bits, opts.audio_codec);
+        let channels = opts.audio_channels.unwrap_or(t.channels);
+        let asked_rate = opts.audio_sample_rate.unwrap_or(t.sample_rate);
+        if channels == 0 || asked_rate == 0 {
+            return true;
+        }
+        let rate = crate::audio::writable_rate(target, asked_rate);
+        // The one thing here the cut does not refuse: a rate the codec does
+        // not speak is written at the nearest it does, with a note. Asked
+        // for outright it is still not an answer a screen should offer --
+        // 44.1 kHz chosen and 48 written is the screen saying something
+        // untrue -- while a recording's own rate that has to be moved is
+        // nobody's choice to withdraw.
+        if opts.audio_sample_rate.is_some_and(|_| rate != asked_rate) {
+            return false;
+        }
+        let bit_rate = opts.audio_bit_rate.unwrap_or_else(|| derived_bit_rate(target, channels));
+        crate::audio::opens_at(target, rate, channels, bit_rate)
+    })
+}
+
+/// The answers to judge the lists against.
+///
+/// Ordinarily the ones being held. Where those cannot be written between
+/// them -- a project written before a floor was known of, a recording added
+/// to the list that the settings do not suit -- judging every list against
+/// them would grey out every list at once and leave nothing to choose. So
+/// they are let go of one at a time until what is left can be written, in
+/// the order they are worth least: a bitrate before a width, a width before
+/// a rate, and the codec last of all, since it is the choice the rest of
+/// them hang off.
+fn settled(tracks: &[SoundAsIs], opts: &CutOptions) -> CutOptions {
+    let mut o = opts.clone();
+    for give_up in 0..5 {
+        if sound_writes(tracks, &o) {
+            break;
+        }
+        match give_up {
+            0 => o.audio_bit_rate = None,
+            1 => o.audio_bits = None,
+            2 => o.audio_sample_rate = None,
+            3 => o.audio_channels = None,
+            _ => o.audio_codec = AudioCodec::Source,
+        }
+    }
+    o
+}
+
+/// Which of the answers a screen offers a cut could actually be given.
+///
+/// Some of them it could not. Blu-ray LPCM is written at 48, 96 and 192 kHz
+/// and nowhere between, so 44.1 asked of it in a transport stream is a rate
+/// that will not be written; DTS is written in five channel arrangements and
+/// no others, and has a bitrate floor that moves with the channels and the
+/// rate, so 384 kbit/s of 5.1 is a cut that would stop where the encoder is
+/// opened. None of that is worth discovering at the end of an export, and
+/// none of it is worth a table in the window either -- the answers are the
+/// encoders' own, and the encoders are whatever FFmpeg this build was linked
+/// against. So the window sends what it offers and is told what of it can be
+/// written, one list at a time, each judged with the other answers as they
+/// stand.
+pub fn writable_sound(
+    tracks: &[SoundAsIs],
+    opts: &CutOptions,
+    offered: &SoundChoices,
+) -> SoundChoices {
+    let base = settled(tracks, opts);
+    let asked = |f: &dyn Fn(&mut CutOptions)| {
+        let mut o = base.clone();
+        f(&mut o);
+        sound_writes(tracks, &o)
+    };
+    SoundChoices {
+        codecs: offered
+            .codecs
+            .iter()
+            .copied()
+            .filter(|&c| asked(&|o| o.audio_codec = c))
+            .collect(),
+        channels: offered
+            .channels
+            .iter()
+            .copied()
+            .filter(|&n| asked(&|o| o.audio_channels = (n > 0).then_some(n)))
+            .collect(),
+        sample_rates: offered
+            .sample_rates
+            .iter()
+            .copied()
+            .filter(|&r| asked(&|o| o.audio_sample_rate = (r > 0).then_some(r)))
+            .collect(),
+        bits: offered
+            .bits
+            .iter()
+            .copied()
+            .filter(|&b| asked(&|o| o.audio_bits = (b > 0).then_some(b)))
+            .collect(),
+        bit_rates: offered
+            .bit_rates
+            .iter()
+            .copied()
+            .filter(|&b| asked(&|o| o.audio_bit_rate = (b > 0).then_some(b)))
+            .collect(),
+    }
+}
+
 /// Decide what will be done to one sound track.
 ///
 /// Every question here used to be asked once, of the one track there was.
@@ -1583,6 +1748,29 @@ fn plan_audio(
             _ => src_rate,
         }
     });
+    // A figure the encoder will not open at is not a cut to stop over. DTS
+    // has a floor -- its frame carries a fixed number of samples and has to
+    // be long enough to describe every channel in it -- and the floor moves
+    // with the channels and the rate, so a rate that was right for the
+    // recording can be under it once the channels are the output's: 5.1 at
+    // 48 kHz is not written under about 670 kbit/s. What the codec is
+    // ordinarily carried at is above every such floor, and is a figure the
+    // format actually has, so that is written instead and said. The window
+    // does not reach this -- it is told what will open before anyone
+    // chooses, by [`writable_sound`] -- but a command line and a project
+    // written before any of this both can.
+    let ordinary = derived_bit_rate(target, channels);
+    let refused = bit_rate > 0 && !crate::audio::opens_at(target, sample_rate, channels, bit_rate);
+    let bit_rate = if refused && crate::audio::opens_at(target, sample_rate, channels, ordinary) {
+        eprintln!(
+            "note: {bit_rate} bit/s was asked for{named} and {target:?} is not written at that \
+             rate with {channels} channels at {sample_rate} Hz, so the track is written at \
+             {ordinary} bit/s, which is what it is ordinarily carried at."
+        );
+        ordinary
+    } else {
+        bit_rate
+    };
     // What the encoder is asked to take. Ordinarily the recording's own
     // samples, which is what keeps a Blu-ray's frames the length they were.
     // Two things are the exception, and a width asked for outright is the
@@ -2240,4 +2428,139 @@ pub fn cut_with_progress(
         report(1.0);
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// What the output settings screen offers, which is what it asks about.
+    /// A zero is its `入力と同じ`.
+    fn offered() -> SoundChoices {
+        SoundChoices {
+            codecs: vec![
+                AudioCodec::Source,
+                AudioCodec::Aac,
+                AudioCodec::Ac3,
+                AudioCodec::Dts,
+                AudioCodec::Lpcm,
+            ],
+            channels: vec![0, 1, 2, 6],
+            sample_rates: vec![0, 96_000, 48_000, 44_100, 32_000],
+            bits: vec![0, 16, 24],
+            bit_rates: vec![384_000, 512_000, 768_000, 1_536_000],
+        }
+    }
+
+    /// A 5.1 broadcast, going where the container argument says.
+    fn surround(to_ts: bool) -> SoundAsIs {
+        SoundAsIs {
+            codec: "aac".into(),
+            channels: 6,
+            sample_rate: 48_000,
+            bits: 16,
+            to_ts,
+        }
+    }
+
+    #[test]
+    fn offers_only_the_rates_the_codec_is_written_at() {
+        let opts = CutOptions { audio_codec: AudioCodec::Lpcm, ..Default::default() };
+        // Blu-ray LPCM -- the only linear PCM a transport stream can declare
+        // -- has 48, 96 and 192 kHz and nothing between.
+        let can = writable_sound(&[surround(true)], &opts, &offered());
+        assert_eq!(can.sample_rates, vec![0, 96_000, 48_000]);
+        // Into an MP4 the same samples go in as plain big-endian PCM, which
+        // lists no rates at all and takes whatever it is handed.
+        let can = writable_sound(&[surround(false)], &opts, &offered());
+        assert_eq!(can.sample_rates, vec![0, 96_000, 48_000, 44_100, 32_000]);
+        // The window asks about every rate on its list, the ceiling that
+        // decides which of them a given recording may be offered being its
+        // own arithmetic and not this. So which codecs have 96 kHz is a
+        // question that reaches here: AAC does; AC-3 has 32, 44.1 and 48 and
+        // nothing above.
+        let opts = CutOptions { audio_codec: AudioCodec::Aac, ..Default::default() };
+        let can = writable_sound(&[surround(true)], &opts, &offered());
+        assert!(can.sample_rates.contains(&96_000));
+        let opts = CutOptions { audio_codec: AudioCodec::Ac3, ..Default::default() };
+        let can = writable_sound(&[surround(true)], &opts, &offered());
+        assert_eq!(can.sample_rates, vec![0, 48_000, 44_100, 32_000]);
+    }
+
+    #[test]
+    fn offers_only_the_rungs_above_the_codecs_floor() {
+        let opts = CutOptions { audio_codec: AudioCodec::Dts, ..Default::default() };
+        // A DTS frame carries a fixed number of samples and has to be long
+        // enough to describe every channel in it, so 5.1 at 48 kHz has a
+        // floor between 640 and 768 kbit/s.
+        let can = writable_sound(&[surround(true)], &opts, &offered());
+        assert_eq!(can.bit_rates, vec![768_000, 1_536_000]);
+        // The floor comes down with the rate, since the same frame then
+        // covers more of a second.
+        let opts = CutOptions { audio_sample_rate: Some(32_000), ..opts };
+        let can = writable_sound(&[surround(true)], &opts, &offered());
+        assert_eq!(can.bit_rates, vec![512_000, 768_000, 1_536_000]);
+        // And AAC has no floor at all.
+        let opts = CutOptions { audio_codec: AudioCodec::Aac, ..Default::default() };
+        let can = writable_sound(&[surround(true)], &opts, &offered());
+        assert_eq!(can.bit_rates, offered().bit_rates);
+    }
+
+    #[test]
+    fn withholds_a_codec_the_channels_cannot_be_written_in() {
+        // DTS is written mono, stereo, quad, 5.0 or 5.1 and in no other
+        // count, so a three channel recording carried through as it is has
+        // nowhere to put its middle channel.
+        let three = SoundAsIs { channels: 3, ..surround(true) };
+        let can = writable_sound(&[three], &CutOptions::default(), &offered());
+        assert!(!can.codecs.contains(&AudioCodec::Dts));
+        assert!(can.codecs.contains(&AudioCodec::Ac3));
+        // Folded to stereo on the way it is a count DTS does have, so the
+        // codec is on offer again the moment the channels are chosen.
+        let three = SoundAsIs { channels: 3, ..surround(true) };
+        let opts = CutOptions { audio_channels: Some(2), ..Default::default() };
+        let can = writable_sound(&[three], &opts, &offered());
+        assert!(can.codecs.contains(&AudioCodec::Dts));
+    }
+
+    #[test]
+    fn answers_for_every_track_that_will_be_written() {
+        // One recording DTS can be written from and one it cannot: the
+        // second is enough to take the codec off the list, because the cut
+        // writes both.
+        let tracks = [surround(true), SoundAsIs { channels: 3, ..surround(true) }];
+        let can = writable_sound(&tracks, &CutOptions::default(), &offered());
+        assert!(!can.codecs.contains(&AudioCodec::Dts));
+    }
+
+    #[test]
+    fn judges_the_lists_against_answers_that_could_themselves_be_written() {
+        // A bitrate under the floor -- out of a project written before there
+        // was a floor to know of. Judged against it, every rate and every
+        // channel count would come back refused and the screen would have
+        // nothing on it to choose.
+        let opts = CutOptions {
+            audio_codec: AudioCodec::Dts,
+            audio_bit_rate: Some(384_000),
+            ..Default::default()
+        };
+        let can = writable_sound(&[surround(true)], &opts, &offered());
+        // 96 kHz is not among them: DTS is written at 48 and no higher.
+        assert_eq!(can.sample_rates, vec![0, 48_000, 44_100, 32_000]);
+        assert_eq!(can.channels, vec![0, 1, 2, 6]);
+        // And the rung itself is not on offer, which is what puts the
+        // setting back inside the list.
+        assert_eq!(can.bit_rates, vec![768_000, 1_536_000]);
+    }
+
+    #[test]
+    fn says_nothing_about_a_track_it_cannot_name() {
+        // A recording read by a version that did not send the codec down.
+        // Nothing here can say what it could be written as, and a list
+        // greyed out on a guess is worse than one that was not.
+        let unnamed = SoundAsIs { codec: String::new(), ..surround(true) };
+        let can = writable_sound(&[unnamed], &CutOptions::default(), &offered());
+        assert_eq!(can.codecs.len(), offered().codecs.len());
+        assert_eq!(can.bit_rates, offered().bit_rates);
+    }
 }

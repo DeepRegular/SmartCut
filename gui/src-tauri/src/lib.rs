@@ -116,6 +116,11 @@ struct BatchStop {
 struct AudioTrackInfo {
     index: usize,
     pid: i32,
+    /// What the track is, by libav's own name for it -- `aac` off the air,
+    /// `truehd` off a disc. The output settings screen sends it back when it
+    /// asks what may be written (see [`audio_limits`]): what a track can be
+    /// re-encoded into is partly a question of what it already is.
+    codec: String,
     channels: u16,
     sample_rate: u32,
     bits: u8,
@@ -127,6 +132,7 @@ fn audio_tracks_of(src: &Source) -> Vec<AudioTrackInfo> {
         .map(|a| AudioTrackInfo {
             index: a.stream_index,
             pid: a.pid,
+            codec: a.codec.clone(),
             channels: a.channels,
             sample_rate: a.sample_rate,
             bits: a.bits,
@@ -2184,6 +2190,111 @@ fn resolve_pids(
     out
 }
 
+/// One sound track the output settings screen is answering for: what it is
+/// now, and where its cut is going.
+#[derive(Deserialize)]
+struct TrackAsk {
+    /// libav's own name for the codec, as [`AudioTrackInfo`] sent it out.
+    codec: String,
+    channels: u16,
+    rate: u32,
+    bits: u8,
+    /// Whether this clip's output is a transport stream, which is the one
+    /// thing about the container that decides a codec.
+    ts: bool,
+}
+
+/// The answers the screen is holding for the sound. Zero, and an empty name,
+/// mean the recording's own -- the `入力と同じ` at the top of every one of
+/// those lists.
+#[derive(Deserialize)]
+struct SoundHeld {
+    codec: String,
+    channels: u16,
+    rate: u32,
+    bits: u8,
+    bitrate: usize,
+}
+
+/// The lists the screen offers, and -- the same shape, since the answer to
+/// "which of these may be chosen" is a list of the same kind -- which of
+/// them may be.
+#[derive(Deserialize, Serialize, Default)]
+struct SoundList {
+    codecs: Vec<String>,
+    channels: Vec<u16>,
+    rates: Vec<u32>,
+    bits: Vec<u8>,
+    bitrates: Vec<usize>,
+}
+
+/// Which of the audio settings on offer this list of clips could be written
+/// with.
+///
+/// Not every combination can be. Blu-ray LPCM -- the only linear PCM a
+/// transport stream can declare -- is written at 48, 96 and 192 kHz and
+/// nowhere between; DTS is written in five channel arrangements and no
+/// others, and has a bitrate floor that moves with the channels and the
+/// rate. A window that offers those anyway is a window whose answer is found
+/// out at the end of an export.
+///
+/// The engine answers rather than the window, because the answers are
+/// libav's encoders' own and a table kept here would drift from whatever
+/// FFmpeg the build was linked against. Off the UI thread because answering
+/// means opening encoders -- a few dozen of them, none of which writes
+/// anything.
+#[tauri::command]
+async fn audio_limits(
+    tracks: Vec<TrackAsk>,
+    held: SoundHeld,
+    offer: SoundList,
+) -> Result<SoundList, String> {
+    off_thread(move || {
+        let tracks: Vec<smartcut_core::SoundAsIs> = tracks
+            .into_iter()
+            .map(|t| smartcut_core::SoundAsIs {
+                codec: t.codec,
+                channels: t.channels,
+                sample_rate: t.rate,
+                bits: t.bits,
+                to_ts: t.ts,
+            })
+            .collect();
+        // The mode is not asked about: these five controls describe an
+        // encode, the screen only shows them while one is being asked for,
+        // and what an encoder will open at is the same question whether one
+        // frame goes through it or all of them.
+        let opts = smartcut_core::CutOptions {
+            audio_mode: smartcut_core::AudioMode::Reencode,
+            audio_codec: smartcut_core::AudioCodec::parse(&held.codec).unwrap_or_default(),
+            audio_channels: (held.channels > 0).then_some(held.channels),
+            audio_sample_rate: (held.rate > 0).then_some(held.rate),
+            audio_bits: (held.bits > 0).then_some(held.bits),
+            audio_bit_rate: (held.bitrate > 0).then_some(held.bitrate),
+            ..Default::default()
+        };
+        let offered = smartcut_core::SoundChoices {
+            // A name this build does not know is not on offer at all: it can
+            // only have come from a newer window, and nothing here can say
+            // whether it could be written.
+            codecs: offer.codecs.iter().filter_map(|c| smartcut_core::AudioCodec::parse(c)).collect(),
+            channels: offer.channels,
+            sample_rates: offer.rates,
+            bits: offer.bits,
+            bit_rates: offer.bitrates,
+        };
+        let can = smartcut_core::writable_sound(&tracks, &opts, &offered);
+        Ok(SoundList {
+            codecs: can.codecs.iter().map(|c| c.as_str().to_string()).collect(),
+            channels: can.channels,
+            rates: can.sample_rates,
+            bits: can.bits,
+            bitrates: can.bit_rates,
+        })
+    })
+    .await
+}
+
 /// Write one clip out.
 ///
 /// `path` names the recording to cut; without it the one that is open in the
@@ -2691,6 +2802,7 @@ pub fn run() {
             play,
             stop_play,
             export,
+            audio_limits,
             index_clip,
             detect_cm_at,
             cm_cached,
