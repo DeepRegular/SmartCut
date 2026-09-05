@@ -90,11 +90,11 @@ Every build except the `.deb` includes FFmpeg, so there is nothing else to insta
 
 | Platform | File | Notes |
 |---|---|---|
-| **Linux** | `SmartCut_0.3.2_amd64.AppImage` | Make it executable and run it |
-| **Linux** | `SmartCut-0.3.2-linux-x86_64.tar.gz` | Unpack and run `./smartcut`. Use this if you would rather not deal with FUSE |
-| **Linux (Debian/Ubuntu)** | `smartcut_0.3.2_amd64.deb` | `sudo apt install ./smartcut_0.3.2_amd64.deb`. Only 3.0 MB, because it links against your system FFmpeg |
-| **Windows** | `SmartCut_0.3.2_x64-setup.exe` | Installer |
-| **Windows** | `smartcut-portable-x64-0.3.2.zip` | Unzip and run `smartcut.exe` |
+| **Linux** | `SmartCut_0.3.3_amd64.AppImage` | Make it executable and run it |
+| **Linux** | `SmartCut-0.3.3-linux-x86_64.tar.gz` | Unpack and run `./smartcut`. Use this if you would rather not deal with FUSE |
+| **Linux (Debian/Ubuntu)** | `smartcut_0.3.3_amd64.deb` | `sudo apt install ./smartcut_0.3.3_amd64.deb`. Only 3.0 MB, because it links against your system FFmpeg |
+| **Windows** | `SmartCut_0.3.3_x64-setup.exe` | Installer |
+| **Windows** | `smartcut-portable-x64-0.3.3.zip` | Unzip and run `smartcut.exe` |
 
 **Requirements.** The AppImage and tar.gz need glibc 2.39 or newer, which means
 Ubuntu 24.04, Debian 13, Fedora 40 or later. The `.deb` needs FFmpeg 7.1, which
@@ -127,22 +127,29 @@ Save the list at any point with `Ctrl+S` and it comes back next time, cuts and
 all. There is a full walkthrough with screenshots in
 [the user guide](docs/user-guide/gui.md).
 
-### From a recorded Blu-ray
+### From a Blu-ray
 
-A BDAV disc opens as it is -- as a folder, or as an `.iso` that is never mounted.
-Drop it on the window and its recordings arrive as one row each, named by the
-programme rather than by `00001.m2ts`, because the disc's own index says what
-each one is. Cuts are written beside the disc under the programme's name, and the
-chapters the recorder set are already on the timeline as keyframes -- on a Japanese
-recording those are frequently the commercial breaks themselves.
+A disc opens as it is -- as a folder, or as an `.iso` that is never mounted --
+and both halves of the specification are read: **BDAV**, what a recorder
+writes, and **BDMV**, what a pressed disc is.
+
+Drop one on the window and it asks which of the recordings on it you meant, and
+which of their tracks to take. That question is worth asking: a pressed season
+set holds twelve episodes among fifty logos, warnings and menu loops, and the
+disc calls all sixty-two of them `000NN`. The ones worth a look come already
+ticked.
+
+Cuts are written beside the disc under the programme's name, and the chapters
+the disc set are already on the timeline as keyframes -- on a Japanese recording
+those are frequently the commercial breaks themselves.
 
 ```bash
 smartcut Anime.iso                      # what is on it
 smartcut Anime.iso --title 2 --cut 8.0-20.0 -o out.ts
 ```
 
-Encrypted discs are out of scope. See [BDAV discs](docs/developers/bdav.md) for
-how it is read and what it does not do.
+Encrypted discs are out of scope. See [Reading a Blu-ray](docs/developers/disc.md)
+for how it is read and what it does not do.
 
 ### From the command line
 
@@ -162,7 +169,7 @@ seconds. The full option list is in
 ## Supported formats
 
 **Input containers:** `.ts` `.m2ts` `.mts` `.m2t` `.mp4` `.mkv` `.mov` `.m4v`,
-and BDAV discs -- a folder or an unencrypted `.iso`, read in place
+and Blu-rays -- BDAV or BDMV, a folder or an unencrypted `.iso`, read in place
 
 **Output containers:** MPEG-TS, M2TS, MP4, Matroska, QuickTime. The default is the
 same container and directory as the input.
@@ -230,7 +237,7 @@ one.
 |---|---|
 | **User Guide** | [GUI](docs/user-guide/gui.md) ・ [Commercial detection](docs/user-guide/cm-detection.md) ・ [Projects](docs/user-guide/projects.md) ・ [Batch processing](docs/user-guide/batch.md) |
 | **Technical** | [Algorithm](docs/technical/algorithm.md) ・ [Validation](docs/technical/validation.md) ・ [Broadcast TS](docs/technical/broadcast-ts.md) ・ [Audio](docs/technical/audio.md) |
-| **Developers** | [Rust core](docs/developers/rust-core.md) ・ [Design](docs/developers/design.md) ・ [Building](docs/developers/building.md) ・ [Distribution](docs/developers/distribution.md) ・ [BDAV discs](docs/developers/bdav.md) |
+| **Developers** | [Rust core](docs/developers/rust-core.md) ・ [Design](docs/developers/design.md) ・ [Building](docs/developers/building.md) ・ [Distribution](docs/developers/distribution.md) ・ [Reading a Blu-ray](docs/developers/disc.md) |
 
 If you only read one page, make it
 [the pitfalls](docs/technical/algorithm.md#pitfalls): the eight reasons why "just
@@ -243,7 +250,7 @@ were hit.
 rust/     Rust core (smartcut_core) and CLI   <- the real implementation
 gui/      Tauri v2 + vanilla JS GUI
 smartcut/ Python reference implementation     <- test oracle
-tests/    13 end-to-end suites, 134 checks
+tests/    14 end-to-end suites, 167 checks
 docs/     Documentation
 ```
 

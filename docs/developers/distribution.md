@@ -7,7 +7,7 @@
 ```bash
 cargo install tauri-cli --version ^2 --locked   # once
 cd gui/src-tauri && NO_STRIP=1 cargo tauri build --bundles appimage
-# -> target/release/bundle/appimage/SmartCut_0.3.2_amd64.AppImage
+# -> target/release/bundle/appimage/SmartCut_0.3.3_amd64.AppImage
 ```
 
 The artifact is **185 MB and carries all 745 shared libraries**. WebKitGTK 4.1 is in
@@ -50,7 +50,7 @@ make things *more* fragile across environments, so the exclusion stays. What is 
 can be checked by extracting:
 
 ```bash
-./SmartCut_0.3.2_amd64.AppImage --appimage-extract >/dev/null
+./SmartCut_0.3.3_amd64.AppImage --appimage-extract >/dev/null
 ldd squashfs-root/usr/bin/smartcut | grep -E 'asound|jack|pulse'
 # libasound.so.2 / libjack.so.0 -> /lib/x86_64-linux-gnu/...   (system)
 # libpulse.so.0                 -> squashfs-root/usr/bin/../lib/...  (bundled)
@@ -75,8 +75,8 @@ errors and no panics.
 
 ```bash
 ./gui/build-linux.sh
-# -> gui/src-tauri/target/release/bundle/linux/SmartCut-0.3.2-linux-x86_64.tar.gz
-# -> gui/src-tauri/target/release/bundle/linux/smartcut_0.3.2_amd64.deb
+# -> gui/src-tauri/target/release/bundle/linux/SmartCut-0.3.3-linux-x86_64.tar.gz
+# -> gui/src-tauri/target/release/bundle/linux/smartcut_0.3.3_amd64.deb
 ```
 
 Two ways of packing the same build. Both install **the GUI as `smartcut` and the
@@ -87,13 +87,13 @@ The cargo crate is named `gui`, so left alone Tauri installs it straight to
 `/usr/bin/gui` — not a name anyone should be occupying. `mainBinaryName` in
 `tauri.conf.json` pins it to `smartcut` (since 0.2.0; before that it was set for Windows
 only). The bundle *files* Tauri writes are named after `productName` instead —
-`SmartCut_0.3.2_amd64.deb` and the like — which is why they and the deb's package name
+`SmartCut_0.3.3_amd64.deb` and the like — which is why they and the deb's package name
 `smartcut` differ. `build-linux.sh` reads both out of `tauri.conf.json`.
 
 | Artifact | Size | FFmpeg | Requires |
 |---|---|---|---|
-| `SmartCut-0.3.2-linux-x86_64.tar.gz` | 208.7 MB | Bundled | glibc 2.39 or newer. No FUSE needed |
-| `smartcut_0.3.2_amd64.deb` | 3.0 MB | Uses the system's | FFmpeg 7.1 (Debian 13 / Ubuntu 25.04 and later) |
+| `SmartCut-0.3.3-linux-x86_64.tar.gz` | 208.7 MB | Bundled | glibc 2.39 or newer. No FUSE needed |
+| `smartcut_0.3.3_amd64.deb` | 3.0 MB | Uses the system's | FFmpeg 7.1 (Debian 13 / Ubuntu 25.04 and later) |
 
 **The tar.gz contains the same AppDir as the AppImage, extracted.** The 745 libraries
 linuxdeploy gathered by following `ldd` sit in `app/` as they are, `./smartcut` is a
@@ -143,7 +143,7 @@ Cross-built from the Linux development VM to `x86_64-pc-windows-msvc`.
 
 ```bash
 ./gui/build-windows.sh
-# -> gui/src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis/SmartCut_0.3.2_x64-setup.exe
+# -> gui/src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis/SmartCut_0.3.3_x64-setup.exe
 # -> gui/src-tauri/target/x86_64-pc-windows-msvc/release/bundle/portable/smartcut-portable-x64.zip
 ```
 

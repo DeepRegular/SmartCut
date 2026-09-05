@@ -73,7 +73,7 @@ bash tests/run_scene_tests.sh         # シーン検出と CM 境界の照合   
 bash tests/run_ts_layout_tests.sh     # TS の出自とシーケンスヘッダ                       5
 bash tests/run_broadcast_tests.sh     # 字幕・番組情報・音声多重                         13
 bash tests/run_cm_tests.sh            # CM 検出と人間の答えの照合                         5
-bash tests/run_bdav_tests.sh          # BDAV ディスクをフォルダーと .iso から読む       12
+bash tests/run_disc_tests.sh          # BDAV と BDMV をフォルダーと .iso から読む       35
 ```
 
 ### フィクスチャ
@@ -84,9 +84,9 @@ bash tests/run_bdav_tests.sh          # BDAV ディスクをフォルダーと .
 `run_proxy_tests.sh`）は、黙って検査の半分を飛ばすのではなく
 `run tests/run_tests.sh first to generate fixtures` と表示して止まる。
 
-`run_bdav_tests.sh` は `mpeg2.ts` から BDAV ディスクを丸ごと組み立てる。ストリームを
-192 バイトパケットに詰め直し、索引ファイルを書き、`genisoimage` で UDF イメージに
-包む（`genisoimage` が要る）。
+`run_disc_tests.sh` は `mpeg2.ts` から方言ごとにディスクを 1 枚ずつ丸ごと組み立てる。
+ストリームを 192 バイトパケットに詰め直し、`disc_index.py` が索引ファイルを書き、
+`genisoimage` でそれぞれを UDF イメージに包む（`genisoimage` が要る）。
 
 `run_audio_tests.sh` と `run_downmix_tests.sh` は同じディレクトリに自前の
 フィクスチャを作る。インパルス列と、チャンネルごとに音の違う 5.1ch トラックであり、

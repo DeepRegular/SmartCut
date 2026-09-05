@@ -50,22 +50,43 @@ recording on disk.
 SmartCut reads `.ts` `.m2ts` `.mts` `.m2t` `.mp4` `.mkv` `.mov` and `.m4v`.
 Anything else is ignored, with a line saying so, and the list is left as it was.
 
-### Recorded Blu-rays (BDAV)
+### Blu-rays (BDAV and BDMV)
 
 **A disc is not one row but one row per recording on it.** A folder holding a
-`BDAV` directory, an `.iso`, or a folder holding several of either -- all the
-same. An `.iso` is not mounted: the streams inside it are read where they lie.
+`BDAV` or `BDMV` directory, an `.iso`, or a folder holding several of either --
+all the same. An `.iso` is not mounted: the streams inside it are read where
+they lie.
 
-Rows are named by the **programme**, not by `00001.m2ts`. The disc's own index
-(the `.rpls` files) carries the name, the time it was recorded and the chapter
-marks, and that is where they come from.
+Dropping one opens **Reading a disc**, which asks two things.
+
+![Reading a disc](../images/usage-disc.png)
+
+**Which clips.** A recorded disc is all offered. A pressed disc is mostly not
+the film -- a season set is twelve episodes among fifty logos, warnings and
+menu loops, all called `000NN` -- so the ones over five minutes come already
+ticked and the rest are behind *Show the short clips too*. Each row shows how
+long it runs and how much of the disc it takes, which is what tells an episode
+from a logo.
+
+**Which tracks.** Open a row's *tracks* and you get what the disc says that
+clip carries: the video, the sound tracks with their language, and the
+subtitles and menus. The video cannot be left out. Subtitles and menus on a
+pressed disc are always left out -- a cut cannot carry them, and the row says
+so rather than dropping them quietly. Everything else is yours to switch off,
+and *Use these tracks for every clip like this one* copies the answer across
+the whole disc, which is what a season set wants.
+
+Rows on a recorded disc are named by the **programme**, not by `00001.m2ts`:
+the disc's own index carries the name, the time it was recorded and the chapter
+marks. A pressed disc carries no programme names, so its rows are the disc's
+name and the clip number.
 
 Cuts are written **beside the disc** unless the output settings say otherwise,
-under the programme's name (`cut_2026年08月17日01時00分-BS11….ts`) -- there is
-nowhere to write inside a disc. "The same as the input" means `.ts` here.
+under that name (`cut_2026年08月17日01時00分-BS11….ts`) -- there is nowhere to
+write inside a disc. "The same as the input" means `.ts` here.
 
-Encrypted discs cannot be opened, and commercial Blu-rays (BDMV) are not
-supported. How it works is in [BDAV discs](../developers/bdav.md).
+Encrypted discs cannot be opened. How it works is in
+[Reading a Blu-ray](../developers/disc.md).
 
 Network (SMB) shares work as command-line arguments, as drops from a file manager,
 and in the output folder box. **SmartCut does not mount anything.** If you hand it
@@ -200,7 +221,7 @@ the frame counter counts the length that will actually be written.
   output.
 
 Marks also arrive without your placing any: from a detection, from a `.keyframe`
-file beside the recording, and — for a recording opened off a **BDAV disc** — from
+file beside the recording, and — for a recording opened off a **disc** — from
 the chapters the recorder itself set, which on a Japanese recording are frequently
 the commercial breaks. Those are read on the first visit only, and the `.keyframe`
 file wins where there is one.
@@ -450,7 +471,7 @@ smartcut input.ts --analyze --scenes            # list the scene changes
 | `--seek-index PATH` | Where to keep the seek index. Written on the first run and read on the next, which skips the walk over the packets |
 | `--detect-cm` / `--logo` / `--scenes` | Commercial candidates, logo assist, scene detection |
 | `--drop-stream INDEX` | Leave one of the recording's streams out of the output. Repeatable. The same thing the cut editor's **Tracks** menu does |
-| `--title N` | Which recording on a BDAV disc (a folder or an `.iso`) to open. Part of the programme's name works in place of the number. Without it, the disc's recordings are listed and nothing else happens |
+| `--title N` | Which recording on a Blu-ray (a folder or an `.iso`) to open. Part of the programme's name works in place of the number. Without it, the disc's recordings are listed and nothing else happens |
 | `--tables partial\|broadcast\|muxer` | How a `.ts` describes itself. The default `partial` writes a partial transport stream (one SIT, per DVB EN 300 468 Annex C / ARIB TR-B15); `broadcast` puts the recording's own PMT, SDT, EIT and TOT back; `muxer` leaves the muxer's own tables standing |
 | `--no-open-gop` | Never start a copy at an open GOP |
 | `-o OUTPUT` | Output path. The extension picks the container |

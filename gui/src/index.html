@@ -274,6 +274,36 @@
       </div>
     </div>
 
+    <!-- ディスクの読み込み. What a disc holds, for the one question a disc
+         asks that a file does not: which of these did you mean?
+
+         A pressed Blu-ray is fifty menus, logos and transitions with twelve
+         episodes among them, and nothing but its length and what it carries
+         tells them apart -- the disc names all sixty-two of them `000NN`. So
+         the list is the disc's own index laid out to be read, with the ones
+         worth a look already ticked and the rest a click away. -->
+    <div id="disc" class="modal" hidden>
+      <div class="modal-box wide" role="dialog" aria-modal="true" aria-labelledby="disc-title">
+        <div class="modal-head" id="disc-title" data-i18n="disc.title">ディスクの読み込み</div>
+        <div class="modal-body">
+          <div class="row"><span id="disc-what" class="grow"></span></div>
+          <div class="row">
+            <button id="disc-all" class="mini" data-i18n="disc.all">全選択</button>
+            <button id="disc-none" class="mini" data-i18n="disc.none">全解除</button>
+            <label class="opt" id="disc-show-all-row">
+              <input id="disc-show-all" type="checkbox" />
+              <span data-i18n="disc.showAll">短いクリップも表示</span></label>
+          </div>
+          <ol id="disc-list" class="disc-list"></ol>
+        </div>
+        <div class="modal-foot">
+          <span id="disc-count" class="dim grow"></span>
+          <button id="disc-cancel" class="mini" data-i18n="disc.cancel">キャンセル</button>
+          <button id="disc-ok" class="primary" data-i18n="disc.ok">読み込む</button>
+        </div>
+      </div>
+    </div>
+
     <!-- バージョン情報. Beside 環境設定 and built the same way, for the same
          reason: it is shorter than the preferences are, and a window of its
          own would be a window to find and then close again.

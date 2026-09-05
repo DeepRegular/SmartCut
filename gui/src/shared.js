@@ -37,6 +37,24 @@ export function coarse(secs) {
   );
 }
 
+/// "2.9 GB", how much of a disc a clip takes.
+///
+/// Powers of two, which is what every file manager on both platforms this
+/// ships to reports, so that a number read here and a number read there are
+/// the same number.
+export function size(bytes) {
+  if (!isFinite(bytes) || bytes < 0) return "—";
+  const units = ["B", "KB", "MB", "GB", "TB"];
+  let n = bytes;
+  let at = 0;
+  while (n >= 1024 && at < units.length - 1) {
+    n /= 1024;
+    at += 1;
+  }
+  // Whole bytes are whole; anything scaled is worth one decimal and no more.
+  return at === 0 ? `${n} ${units[at]}` : `${n.toFixed(1)} ${units[at]}`;
+}
+
 /// How a channel count is written: 5.1 rather than 6, because that is what
 /// the recording calls itself and what a player will call it back.
 export function chLabel(n) {

@@ -41,14 +41,14 @@ fn complement(cuts: &mut [(f64, f64)], duration: f64) -> Vec<(f64, f64)> {
 /// The recordings on `input`, when it is a disc rather than a recording.
 ///
 /// A directory of `.ts` files is not a disc and a `.iso` that holds no BDAV
-/// is not one either; both are simply not this, and the caller carries on
-/// with what it was given.
-fn on_a_disc(input: &str) -> Result<Option<Vec<smartcut_core::bdav::Entry>>> {
+/// or BDMV is not one either; both are simply not this, and the caller
+/// carries on with what it was given.
+fn on_a_disc(input: &str) -> Result<Option<smartcut_core::disc::Disc>> {
     let at = std::path::Path::new(input);
-    if !smartcut_core::bdav::looks_like_bdav(at) {
+    if !smartcut_core::disc::looks_like_disc(at) {
         return Ok(None);
     }
-    smartcut_core::bdav::entries(at).map(Some)
+    smartcut_core::disc::read(at).map(Some)
 }
 
 /// The recording `--title` names: its number in the list, or a piece of the
@@ -57,9 +57,9 @@ fn on_a_disc(input: &str) -> Result<Option<Vec<smartcut_core::bdav::Entry>>> {
 /// A number is a number: `--title 7` on a disc of three is a mistake, not a
 /// search for the digit 7 in the names.
 fn pick<'a>(
-    entries: &'a [smartcut_core::bdav::Entry],
+    entries: &'a [smartcut_core::disc::Entry],
     want: Option<&str>,
-) -> Result<Option<&'a smartcut_core::bdav::Entry>> {
+) -> Result<Option<&'a smartcut_core::disc::Entry>> {
     let Some(want) = want else { return Ok(None) };
     if let Ok(n) = want.parse::<usize>() {
         return match entries.get(n.wrapping_sub(1)).filter(|_| n >= 1) {
@@ -74,16 +74,39 @@ fn pick<'a>(
         .ok_or_else(|| anyhow::anyhow!("--title {want:?}: no recording on this disc is called that"))
 }
 
-fn list_disc(input: &str, entries: &[smartcut_core::bdav::Entry]) {
+fn list_disc(input: &str, disc: &smartcut_core::disc::Disc) {
     println!("disc  : {input}");
-    println!("        {} recording(s)\n", entries.len());
-    for (i, e) in entries.iter().enumerate() {
+    println!("        {} -- {}", disc.shape.as_str(), disc.label);
+    println!("        {} recording(s)\n", disc.entries.len());
+    // What a pressed disc mostly holds is not the film, so the ones worth a
+    // look are pointed at rather than left to be found by their length. A
+    // disc of recordings is all worth a look, and a column of stars beside
+    // every row would be a column saying nothing.
+    let some = disc.entries.iter().any(|e| !e.wanted);
+    for (i, e) in disc.entries.iter().enumerate() {
         let marks = if e.marks.is_empty() {
             String::new()
         } else {
             format!("  {} mark(s)", e.marks.len())
         };
-        println!("{:3}  {}  {}{marks}", i + 1, fmt_hms(e.duration), e.label);
+        let tick = match (some, e.wanted) {
+            (true, true) => "*",
+            (true, false) => " ",
+            (false, _) => "",
+        };
+        println!("{tick}{:3}  {}  {}{marks}", i + 1, fmt_hms(e.duration), e.label);
+        // Only where there is a choice to make. A clip with one sound track
+        // and nothing else is a clip the list has already described.
+        if e.tracks.iter().filter(|t| t.kind != "video").count() > 1 {
+            for t in &e.tracks {
+                if t.kind == "video" {
+                    continue;
+                }
+                let lang = t.language.as_deref().map(|l| format!(" {l}")).unwrap_or_default();
+                let gone = if t.carried { "" } else { " -- a cut cannot carry this" };
+                println!("       0x{:04x}  {}{lang}{gone}", t.pid, t.detail);
+            }
+        }
     }
     println!("\nname one with --title N to open it");
 }
@@ -238,8 +261,9 @@ fn main() -> Result<()> {
             "usage: smartcut <input> [--keep START-END]... [--cut START-END]... \
              [--drop-stream INDEX]... [--tables partial|broadcast|muxer] [--no-open-gop] \
              [--title N]\n\
-             <input> is a recording, or a BDAV disc -- a folder or an .iso -- \
-             whose recordings are listed when no --title is given"
+             <input> is a recording, or a Blu-ray -- a BDAV or BDMV folder, \
+             or an .iso of one -- whose recordings are listed when no --title \
+             is given"
         );
     };
     // A share the machine has already mounted may be named the way it is
@@ -256,14 +280,14 @@ fn main() -> Result<()> {
     let mut chapters: Vec<f64> = Vec::new();
     let input = match on_a_disc(&input)? {
         None => input,
-        Some(entries) => match pick(&entries, title.as_deref())? {
+        Some(disc) => match pick(&disc.entries, title.as_deref())? {
             Some(entry) => {
                 println!("title : {}", entry.label);
                 chapters = entry.marks.iter().map(|m| entry.start + m).collect();
                 entry.path.clone()
             }
             None => {
-                list_disc(&input, &entries);
+                list_disc(&input, &disc);
                 return Ok(());
             }
         },

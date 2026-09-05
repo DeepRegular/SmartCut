@@ -234,47 +234,125 @@ struct Resolved {
     error: Option<String>,
 }
 
-/// One thing to put in the list.
+/// One thing an input named: a recording, or a whole disc.
 ///
 /// A file is only its path: the name in the list is the file's name and a cut
-/// of it is written beside it, and there is nothing to say. A recording on a
-/// disc is not, which is what the other three fields are for -- the programme
-/// is named in the disc's index rather than by any filename, and the folder
-/// its stream is in cannot be written to, being inside an image or inside the
-/// structure of a copied disc.
+/// of it is written beside it, and there is nothing to say.
+///
+/// A disc is not one recording but a list of them, and it is not the window's
+/// business to decide which of them were meant -- a pressed disc holds twelve
+/// episodes among fifty menus, logos and eight second transitions. So it
+/// arrives whole, with everything its own index says about each row, and the
+/// window asks.
+///
+/// The two travel in one list rather than two so that a folder of recordings
+/// with a disc image sitting in it comes back in the order the folder is in,
+/// which is the order somebody named their files to be read in.
 #[derive(Serialize)]
-struct Found {
-    path: String,
-    /// What to call it, when that is not the file's name.
-    name: Option<String>,
-    /// What to name a cut of it, when that is not the file's name either.
-    stem: Option<String>,
-    /// Where a cut of it goes when no output folder has been chosen.
-    home: Option<String>,
-    /// The chapter points the recorder wrote, on the stream's own clock.
-    ///
-    /// The disc's index is the only place they exist -- nothing in the stream
-    /// says where a chapter is -- so they are read once, here, and travel
-    /// with the row until the editor can put them down as marks. Empty for an
-    /// ordinary file, and for a disc whose marks could not be believed.
-    chapters: Vec<f64>,
+#[serde(tag = "what", rename_all = "lowercase")]
+enum Found {
+    File {
+        path: String,
+    },
+    Disc {
+        /// The image or folder itself, which is what the chooser is titled by
+        /// and what a second drop of the same disc is recognised by.
+        path: String,
+        /// `"bdav"` or `"bdmv"`; the window says which kind of disc it is
+        /// asking about.
+        kind: String,
+        /// What the disc calls itself.
+        label: String,
+        clips: Vec<DiscClip>,
+    },
 }
 
 impl Found {
     fn file(path: String) -> Found {
-        Found { path, name: None, stem: None, home: None, chapters: Vec::new() }
+        Found::File { path }
     }
 
-    fn on_a_disc(e: smartcut_core::bdav::Entry) -> Found {
-        // Off the title's own clock and onto the clip's, which is the clock
-        // the demuxer reports and the only one the editor can rebase.
-        let chapters = e.marks.iter().map(|m| e.start + m).collect();
-        Found {
+    fn disc(at: &std::path::Path, disc: smartcut_core::disc::Disc) -> Found {
+        Found::Disc {
+            path: at.to_string_lossy().into_owned(),
+            kind: disc.shape.as_str().to_string(),
+            label: disc.label,
+            clips: disc.entries.into_iter().map(DiscClip::from).collect(),
+        }
+    }
+}
+
+/// One row of the chooser: a recording on a disc, and everything the disc's
+/// index knows about it.
+#[derive(Serialize)]
+struct DiscClip {
+    /// What to open, which is what everything downstream is keyed on.
+    path: String,
+    /// What to call it in the list.
+    label: String,
+    /// What to name a cut of it.
+    stem: String,
+    /// Where a cut of it goes when no output folder has been chosen. The
+    /// folder the disc is in: inside an image there is nowhere to write.
+    home: String,
+    /// The chapter points the disc wrote, on the stream's own clock.
+    ///
+    /// The disc's index is the only place they exist -- nothing in the stream
+    /// says where a chapter is -- so they are read once, here, and travel
+    /// with the row until the editor can put them down as marks.
+    chapters: Vec<f64>,
+    duration: f64,
+    /// How much of the disc it occupies. On a disc whose index names
+    /// everything `000NN`, length and size are what tell an episode from a
+    /// logo.
+    bytes: u64,
+    /// Whether to offer it already ticked.
+    wanted: bool,
+    tracks: Vec<DiscTrack>,
+}
+
+impl From<smartcut_core::disc::Entry> for DiscClip {
+    fn from(e: smartcut_core::disc::Entry) -> DiscClip {
+        DiscClip {
+            // Off the title's own clock and onto the clip's, which is the
+            // clock the demuxer reports and the only one the editor can
+            // rebase.
+            chapters: e.marks.iter().map(|m| e.start + m).collect(),
             path: e.path,
-            name: Some(e.label),
-            stem: Some(e.stem),
-            home: Some(e.home),
-            chapters,
+            label: e.label,
+            stem: e.stem,
+            home: e.home,
+            duration: e.duration,
+            bytes: e.bytes,
+            wanted: e.wanted,
+            tracks: e.tracks.into_iter().map(DiscTrack::from).collect(),
+        }
+    }
+}
+
+/// One stream a clip carries, as the disc's own index describes it.
+///
+/// Named by PID and not by a stream index, because a stream index does not
+/// exist until something has been opened -- and the whole point of the
+/// chooser is to be answerable before anything is. See
+/// [`smartcut_core::disc::Track`].
+#[derive(Serialize)]
+struct DiscTrack {
+    kind: String,
+    pid: i32,
+    detail: String,
+    language: Option<String>,
+    carried: bool,
+}
+
+impl From<smartcut_core::disc::Track> for DiscTrack {
+    fn from(t: smartcut_core::disc::Track) -> DiscTrack {
+        DiscTrack {
+            kind: t.kind.to_string(),
+            pid: t.pid,
+            detail: t.detail,
+            language: t.language,
+            carried: t.carried,
         }
     }
 }
@@ -295,24 +373,22 @@ fn resolve_paths(paths: Vec<String>) -> Vec<Resolved> {
         .collect()
 }
 
-/// The files one input names: itself, everything in it when it is a
-/// directory, or the recordings on it when it is a disc.
+/// What one input names: itself, everything in it when it is a directory, or
+/// the disc when it is one.
 fn files_at(input: &str) -> Result<Vec<Found>, String> {
     let path = local_path(input)?;
     let meta = std::fs::metadata(&path).map_err(|e| {
         let shown = netpath::parse(input).map_or_else(|| path.display().to_string(), |s| s.unc());
         format!("{}: {shown} ({e})", tr!("開けません", "Cannot open"))
     })?;
-    // A BDAV disc -- a folder holding one, or an `.iso` of one -- is a list of
+    // A Blu-ray -- a folder holding one, or an `.iso` of one -- is a list of
     // recordings rather than one recording, and its own index is the only
     // place their names are written down. Tried before the directory walk,
     // because a disc *is* a directory and walking it would find three
     // subdirectories and nothing to open.
-    if smartcut_core::bdav::looks_like_bdav(&path) {
-        return match smartcut_core::bdav::entries(&path) {
-            Ok(entries) if !entries.is_empty() => {
-                Ok(entries.into_iter().map(Found::on_a_disc).collect())
-            }
+    if smartcut_core::disc::looks_like_disc(&path) {
+        return match smartcut_core::disc::read(&path) {
+            Ok(disc) if !disc.entries.is_empty() => Ok(vec![Found::disc(&path, disc)]),
             // An `.iso` that is not a disc of recordings is not an error
             // worth stopping for when it was one file among a hundred, but
             // it is the whole answer when it is what was dropped.
@@ -339,11 +415,11 @@ fn files_at(input: &str) -> Result<Vec<Found>, String> {
 /// date is the order they were made, and in any case an order, which
 /// `read_dir` is not.
 ///
-/// A disc inside the folder stands for the recordings on it, the same as a
-/// disc that was dropped on its own: a folder of `.iso` files, or of copied
-/// discs, is one evening's worth of recordings named one way rather than a
-/// hundred files named another. Anything else that is a folder is passed
-/// over, as it always was.
+/// A disc inside the folder stands for itself, the same as a disc that was
+/// dropped on its own: a folder of `.iso` files, or of copied discs, is one
+/// evening's worth of recordings named one way rather than a hundred files
+/// named another. Anything else that is a folder is passed over, as it always
+/// was.
 fn files_in(path: &std::path::Path) -> Result<Vec<Found>, String> {
     let mut names: Vec<std::path::PathBuf> = std::fs::read_dir(path)
         .map_err(|e| {
@@ -360,10 +436,12 @@ fn files_in(path: &std::path::Path) -> Result<Vec<Found>, String> {
 
     let mut out = Vec::new();
     for name in names {
-        if smartcut_core::bdav::looks_like_bdav(&name) {
-            if let Ok(entries) = smartcut_core::bdav::entries(&name) {
-                out.extend(entries.into_iter().map(Found::on_a_disc));
-                continue;
+        if smartcut_core::disc::looks_like_disc(&name) {
+            if let Ok(disc) = smartcut_core::disc::read(&name) {
+                if !disc.entries.is_empty() {
+                    out.push(Found::disc(&name, disc));
+                    continue;
+                }
             }
         }
         if name.is_dir() {
@@ -2018,6 +2096,44 @@ async fn detect_cm_at(path: String, app: tauri::AppHandle) -> Result<CmResult, S
     .await
 }
 
+/// Which of a recording's streams to leave out, from the two ways of naming
+/// one.
+///
+/// A PID can name more than one stream. A Blu-ray's lossless sound arrives as
+/// a TrueHD track with an AC-3 track folded into it, both on the one PID and
+/// both handed over separately by the demuxer -- so switching that track off
+/// has to switch off both halves of it, which is what asking by PID means.
+fn streams_to_drop(
+    src: &Source,
+    by_index: Option<Vec<usize>>,
+    by_pid: Option<Vec<i32>>,
+) -> Vec<usize> {
+    let on = src
+        .audios
+        .iter()
+        .map(|a| (a.pid, a.stream_index))
+        .chain(src.captions.iter().map(|c| (c.pid, c.stream_index)));
+    resolve_pids(on, by_index.unwrap_or_default(), &by_pid.unwrap_or_default())
+}
+
+/// The indices `named` gives for the PIDs asked for, added to those already
+/// asked for by index.
+fn resolve_pids(
+    named: impl Iterator<Item = (i32, usize)>,
+    mut out: Vec<usize>,
+    pids: &[i32],
+) -> Vec<usize> {
+    if pids.is_empty() {
+        return out;
+    }
+    for (pid, index) in named {
+        if pids.contains(&pid) && !out.contains(&index) {
+            out.push(index);
+        }
+    }
+    out
+}
+
 /// Write one clip out.
 ///
 /// `path` names the recording to cut; without it the one that is open in the
@@ -2045,6 +2161,13 @@ async fn export(
     // sent means nothing dropped, which is what a clip nobody opened the
     // menu on amounts to.
     drop_streams: Option<Vec<usize>>,
+    // Streams switched off in the chooser when a disc was read, by PID.
+    //
+    // A PID and not an index because the chooser answers before anything is
+    // open: the disc's index names a track by the PID it sits on, and a
+    // stream index is a thing libavformat makes up once it has read the
+    // recording. Resolved here, where the recording *is* open.
+    drop_pids: Option<Vec<i32>>,
 ) -> Result<(), String> {
     // Cutting is minutes of I/O on a broadcast recording; keeping it off the
     // UI thread is what lets the progress bar move at all.
@@ -2102,7 +2225,7 @@ async fn export(
             // is" the way it sends every other empty control.
             audio_channels: audio_channels.filter(|&c| c > 0),
             audio_bit_rate: audio_bitrate.filter(|&b| b > 0),
-            drop_streams: drop_streams.unwrap_or_default(),
+            drop_streams: streams_to_drop(&src, drop_streams, drop_pids),
             ..Default::default()
         };
         smartcut_core::cut_with_progress(
@@ -2515,4 +2638,32 @@ pub fn run() {
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A Blu-ray's sound, as the demuxer hands it over: the lossless track
+    /// and the AC-3 it is wrapped around arrive as two streams on one PID.
+    /// Switching that track off has to switch off both halves of it, or the
+    /// cut carries the sound the chooser was told to leave out.
+    #[test]
+    fn a_track_switched_off_by_pid_takes_both_halves_of_itself() {
+        let streams = [(0x1100, 1), (0x1100, 2), (0x1101, 3), (0x1101, 4)];
+        assert_eq!(
+            resolve_pids(streams.into_iter(), Vec::new(), &[0x1100]),
+            vec![1, 2]
+        );
+        // Both ways of naming a stream, and neither said twice.
+        assert_eq!(
+            resolve_pids(streams.into_iter(), vec![2], &[0x1100]),
+            vec![2, 1]
+        );
+        // A PID the recording does not carry drops nothing, and nothing asked
+        // for leaves what the editor asked for alone.
+        let none: Vec<usize> = Vec::new();
+        assert_eq!(resolve_pids(streams.into_iter(), Vec::new(), &[0x1200]), none);
+        assert_eq!(resolve_pids(streams.into_iter(), vec![3], &[]), vec![3]);
+    }
 }

@@ -113,9 +113,12 @@ it again. (shares connected now: \\nas\録画)
 After the translation it is an ordinary path, so the packet scan, the seek index and the
 output all go on without knowing a network was involved.
 
-### BDAV discs (`bdav.rs`, `udf.rs`, `input.rs`)
+### Blu-ray discs (`disc.rs`, `udf.rs`, `input.rs`)
 
-A recorded Blu-ray arrives the same way a share does. **This program hangs
+A Blu-ray arrives the same way a share does. Both halves of the specification
+are read -- BDAV, what a recorder writes, and BDMV, what a pressed disc is --
+by one reader that is told which dialect it is looking at, because the two
+differ in four places and agree everywhere else. **This program hangs
 everything off one string**: the list holds it, the seek index and the proxy are
 cached against it, the output is named beside it, and the demuxer is handed it.
 A recording inside a disc should not break that.
@@ -126,7 +129,14 @@ point where it stops being a directory and answers with three things -- the URL
 to hand libavformat (a byte range, through the `subfile` protocol), the real
 file to ask the operating system about, and the range itself. Nothing is
 mounted. What a row is called, what a cut of it is called and where it goes are
-all decided by the disc's own index. See [BDAV discs](bdav.md).
+all decided by the disc's own index.
+
+A pressed disc is a list rather than a recording, and mostly not the film: 45
+playlists naming 62 clips, twelve of which are episodes and fifty of which are
+logos and menu loops. So its rows are deduplicated -- one clip, one row -- and
+the window asks which of them were meant, and which of their tracks to take,
+before anything is opened. That answer is in PIDs, since a stream index does
+not exist until something is. See [Reading a Blu-ray](disc.md).
 
 ### Duplicates made a row and a recording different things
 
@@ -400,8 +410,8 @@ shows in the status line.
 
 ### Chapters off a disc
 
-A recording opened from a BDAV disc has a third source of marks: the chapter points the
-recorder wrote into the playlist, which on a Japanese recording are frequently the
+A recording opened from a disc has a third source of marks: the chapter points the
+disc wrote into the playlist, which on a Japanese recording are frequently the
 commercial breaks themselves. They are read once, by the list, and travel with the row —
 the editor is the only place that can put them down, because a mark on the disc is on the
 stream's own clock and this timeline is rebased to the container's start.
@@ -411,7 +421,7 @@ and only where there was no `.keyframe` beside the recording. That file is someb
 answer; the disc's is the answer when nobody has given one. Marks landing outside the
 material are dropped rather than clamped, and nothing is snapped to an access point — a
 mark says where the chapter is, and moving it onto the nearest lossless point is a separate
-decision with its own button. See [BDAV discs](bdav.md).
+decision with its own button. See [Reading a Blu-ray](disc.md).
 
 ### Detection progress, and the claim of "fully lossless"
 
@@ -597,14 +607,14 @@ Collapsing that to `cut.ts` is a loss. The container follows the input too, sinc
 wants everything moved to MP4 every time.
 
 **A recording on a disc has neither a name nor a folder to inherit.** Its path is
-`…/Anime.iso/BDAV/STREAM/00001.m2ts`: a folder that does not exist, and a file called
-`00001`. So the disc's index answers instead — the cut is written beside the disc, under
+`…/Anime.iso/BDMV/STREAM/00014.m2ts`: a folder that does not exist, and a file called
+`00014`. So the disc's index answers instead — the cut is written beside the disc, under
 the programme's name, with the characters a filesystem will not take turned into their
 full width forms the way a Japanese recorder writes them. And "the same as the input"
 means `.ts` rather than `.m2ts`: asked for a `.m2ts`, the muxer writes Blu-ray's own
 framing and PID numbering, which is not what [the tables put back after
 muxing](../technical/broadcast-ts.md) describe. Choosing M2TS explicitly still gets one,
-and says that the tables are being left to the muxer. See [BDAV discs](bdav.md).
+and says that the tables are being left to the muxer. See [Reading a Blu-ray](disc.md).
 
 All three are settings on the output settings screen rather than a question asked once per
 file: the folder (empty meaning the input's own), the prefix (`cut_`), and the container,

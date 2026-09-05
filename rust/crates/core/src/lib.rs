@@ -12,11 +12,11 @@ use ffmpeg_next as ff;
 pub mod adts;
 pub mod arib;
 pub mod audio;
-pub mod bdav;
 pub mod bitstream;
 pub mod caption;
 pub mod cm;
 pub mod cut;
+pub mod disc;
 pub mod index;
 pub mod input;
 pub mod logo;
@@ -162,9 +162,13 @@ pub struct CaptionInfo {
 /// Superimposed crawls and the data broadcast sit on their own PIDs, and
 /// neither can be moved onto a new timeline: the demuxer hands over the
 /// crawls with no presentation time at all, and the data broadcast is a
-/// carousel of sections rather than a stream of timed packets. Naming them
-/// is so the tool can say what it left behind instead of quietly dropping
-/// it.
+/// carousel of sections rather than a stream of timed packets.
+///
+/// A `"substream"` is the third kind and the odd one: a piece the demuxer
+/// split out of a track that *is* being carried. See [`one_track_per_pid`].
+///
+/// Naming them is so the tool can say what it left behind instead of quietly
+/// dropping it.
 #[derive(Debug, Clone)]
 pub struct DroppedStream {
     pub pid: i32,
@@ -179,6 +183,7 @@ impl DroppedStream {
     pub fn describe(&self) -> &'static str {
         match self.what {
             "superimpose" => "superimposed text",
+            "substream" => "a compatibility stream folded into the track written",
             _ => "data broadcast",
         }
     }
@@ -349,6 +354,45 @@ pub fn scan(path: &str) -> Result<Source> {
 /// [`Source::byte_seekable`].
 const BYTE_SEEKABLE: [&str; 5] = ["mpegts", "mpeg", "h264", "hevc", "mpegvideo"];
 
+/// One sound track per PID, and what that leaves out.
+///
+/// A PID is how a transport stream names a track, and a cut puts each stream
+/// back on the PID it arrived on. Two streams cannot share one: ask the
+/// muxer for that and it says so and stops -- `Duplicate stream id 4352`.
+///
+/// They do share one on a Blu-ray. Its lossless sound is a TrueHD track with
+/// an AC-3 core folded into the same PES for a player that cannot decode the
+/// rest, and libavformat hands the two halves over as separate streams
+/// carrying the same PID.
+///
+/// The first is the stream the programme map named; anything after it on the
+/// same PID is a piece the demuxer split out of it. So the first is kept --
+/// which for a Blu-ray is the TrueHD, and a TrueHD elementary stream on its
+/// own is a track a player decodes -- and the rest are named as left behind,
+/// because what goes is real: the fallback that was folded inside it.
+fn one_track_per_pid(
+    audios: Vec<AudioInfo>,
+    on_a_ts: bool,
+) -> (Vec<AudioInfo>, Vec<DroppedStream>) {
+    // Only a transport stream names its streams by PID. Every other container
+    // numbers them however it likes, and more than one of them numbers them
+    // all the same -- which would fold a whole recording's sound into its
+    // first track.
+    if !on_a_ts {
+        return (audios, Vec::new());
+    }
+    let mut kept: Vec<AudioInfo> = Vec::with_capacity(audios.len());
+    let mut folded = Vec::new();
+    for a in audios {
+        if kept.iter().any(|k| k.pid == a.pid) {
+            folded.push(DroppedStream { pid: a.pid, what: "substream" });
+        } else {
+            kept.push(a);
+        }
+    }
+    (kept, folded)
+}
+
 /// Probe the source and build its access-point index with the given strategy.
 pub fn scan_with(path: &str, source: &dyn index::IndexSource) -> Result<Source> {
     init()?;
@@ -361,6 +405,8 @@ pub fn scan_with(path: &str, source: &dyn index::IndexSource) -> Result<Source> 
         .name()
         .split(',')
         .any(|n| BYTE_SEEKABLE.contains(&n.trim()));
+    // Whether a stream's id is a PID. See [`one_track_per_pid`].
+    let on_a_ts = ictx.format().name().split(',').any(|n| n.trim() == "mpegts");
 
     let stream = ictx
         .streams()
@@ -415,7 +461,29 @@ pub fn scan_with(path: &str, source: &dyn index::IndexSource) -> Result<Source> 
         .streams()
         .filter(|s| s.parameters().medium() == ff::media::Type::Audio)
         .map(|s| read_audio(&s))
+        // A track the container never managed to describe is not a track
+        // this program can carry. It happens on a broadcast recording whose
+        // service changes its map part-way through: the map names a second
+        // set of PIDs, the probe at the head of the file finds no frame on
+        // them, and what comes back is a stream with no sample rate and no
+        // channels. Nothing can be done with one -- the muxer refuses to
+        // declare it ("sample rate not set"), and there is no rate to
+        // re-encode it at either -- so it is left out here rather than
+        // carried as far as the write and failing the whole cut there.
+        .filter(|a| {
+            let described = a.sample_rate > 0 && a.channels > 0;
+            if !described {
+                eprintln!(
+                    "note: the sound on pid 0x{:04x} is named by this recording's map but \
+                     never appears in it, so there is nothing to describe it with. It is \
+                     left out; the rest of the recording is unaffected.",
+                    a.pid,
+                );
+            }
+            described
+        })
         .collect();
+    let (audios, folded) = one_track_per_pid(audios, on_a_ts);
     // Which of them is the main sound. libav's own answer, since it weighs
     // the disposition flags a container may carry; the first track when it
     // has no opinion, which is what a broadcast recording amounts to.
@@ -442,7 +510,7 @@ pub fn scan_with(path: &str, source: &dyn index::IndexSource) -> Result<Source> 
 
     // What is being left behind, so it can be said out loud. See
     // [`DroppedStream`].
-    let dropped: Vec<DroppedStream> = ictx
+    let mut dropped: Vec<DroppedStream> = ictx
         .streams()
         .filter_map(|s| {
             let p = s.parameters();
@@ -461,6 +529,7 @@ pub fn scan_with(path: &str, source: &dyn index::IndexSource) -> Result<Source> 
             }
         })
         .collect();
+    dropped.extend(folded);
 
     let (duration, start_time) = unsafe {
         let p = ictx.as_ptr();
@@ -531,4 +600,56 @@ pub fn scan_with(path: &str, source: &dyn index::IndexSource) -> Result<Source> 
         leading_known: idx.leading_known,
         index_name: source.name(),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn sound(stream_index: usize, pid: i32, codec: &str, channels: u16) -> AudioInfo {
+        AudioInfo {
+            stream_index,
+            pid,
+            language: None,
+            codec: codec.to_string(),
+            sample_rate: 48_000,
+            channels,
+            time_base: 1.0 / 90_000.0,
+            bit_rate: None,
+        }
+    }
+
+    #[test]
+    fn a_blu_rays_lossless_sound_is_one_track_and_not_two() {
+        // What libavformat hands over for a disc with a 5.1 and a stereo
+        // TrueHD track: each is the MLP itself and the AC-3 core folded
+        // inside it, split into two streams carrying the one PID.
+        let handed = vec![
+            sound(1, 0x1100, "truehd", 6),
+            sound(2, 0x1100, "ac3", 6),
+            sound(3, 0x1101, "truehd", 2),
+            sound(4, 0x1101, "ac3", 2),
+        ];
+        let (kept, folded) = one_track_per_pid(handed.clone(), true);
+        // The track the programme map named, which is the one the disc
+        // advertises and the one worth keeping.
+        assert_eq!(kept.iter().map(|a| a.stream_index).collect::<Vec<_>>(), [1, 3]);
+        assert!(kept.iter().all(|a| a.codec == "truehd"));
+        // And what went, said out loud rather than dropped in silence.
+        assert_eq!(folded.iter().map(|d| d.pid).collect::<Vec<_>>(), [0x1100, 0x1101]);
+        assert!(folded.iter().all(|d| d.what == "substream"));
+
+        // A broadcast's two sound tracks are two PIDs and stay two tracks.
+        let bilingual = vec![sound(1, 0x0110, "aac", 2), sound(2, 0x0111, "aac", 2)];
+        let (kept, folded) = one_track_per_pid(bilingual.clone(), true);
+        assert_eq!(kept.len(), 2);
+        assert!(folded.is_empty());
+
+        // Off a transport stream a stream's id is not a PID, and more than
+        // one container numbers every stream the same. Folding there would
+        // throw away a recording's sound.
+        let (kept, folded) = one_track_per_pid(handed, false);
+        assert_eq!(kept.len(), 4);
+        assert!(folded.is_empty());
+    }
 }

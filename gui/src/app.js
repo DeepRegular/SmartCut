@@ -20,7 +20,7 @@
 // lanes here and a window of its own, and the passes hold themselves to part
 // of the machine while that window is up.
 
-import { fmt, clock, coarse, chLabel, cmNote, esc, noBrowserMenu } from "./shared.js";
+import { fmt, clock, coarse, chLabel, cmNote, esc, size, noBrowserMenu } from "./shared.js";
 import { t, applyStatic, preference, currentLang, setLang, onLangChange, tellBackend, confirmWithOs }
   from "./i18n.js";
 
@@ -76,13 +76,16 @@ function clipLabel(clip) {
 /// back to the list is not throwing the work away.
 let nextId = 1;
 
-/// `found` is what `resolve_paths` gave back: a path, and for a recording on
-/// a BDAV disc the four things a path cannot say -- what the programme is
-/// called, what to name a cut of it, where that cut can be written, and where
-/// the recorder set its chapter points, none of which is derivable from
-/// `…/Anime.iso/BDAV/STREAM/00001.m2ts`.
+/// `found` is a path, and for a recording on a disc the five things a path
+/// cannot say -- what the programme is called, what to name a cut of it,
+/// where that cut can be written, where the disc set its chapter points, and
+/// which of its tracks were switched off in the chooser. None of those is
+/// derivable from `…/Anime.iso/BDMV/STREAM/00014.m2ts`.
+///
+/// A path for a file, one of those for a recording on a disc, and a saved row
+/// out of a project, which is the same shape written down.
 function makeClip(found) {
-  const { path, name, stem, home, chapters } =
+  const { path, name, stem, home, chapters, dropPids } =
     typeof found === "string" ? { path: found } : found;
   return {
     // A row's own identity, which its path is not: the same recording can be
@@ -101,6 +104,20 @@ function makeClip(found) {
     /// editor knows where the container's clock begins, and it is the one
     /// that owns marks. Empty for an ordinary file.
     chapters: chapters || [],
+    /// Streams switched off when the disc was read, by PID.
+    ///
+    /// A PID rather than a stream index because this answer was given before
+    /// anything was opened -- the disc's index names a track by the PID it
+    /// sits on, and a stream index is something libavformat makes up once it
+    /// has read the recording. Resolved on the far side: by the editor when
+    /// this row is opened in it, and by the backend when it is written out.
+    ///
+    /// It is the answer only until the editor gives one. The track menu
+    /// there writes `edit.dropStreams`, and from that moment the edit is what
+    /// speaks for this row -- otherwise a track switched back *on* in the
+    /// editor would be switched off again on the way out by an answer given
+    /// before anybody had seen the recording.
+    dropPids: dropPids || [],
     info: null,
     state: "queued", // queued | indexing | ready | error
     phase: t("phase.queued"),
@@ -246,6 +263,10 @@ function tellEditor() {
     // whether or not this row has been in there before; the editor puts them
     // down on a first visit only, the same as the marks beside the file.
     chapters: editing.chapters,
+    // Tracks switched off in the chooser when the disc was read, by PID. The
+    // editor turns them into its own answer on a first visit and owns it from
+    // then on -- see `makeClip`.
+    dropPids: editing.dropPids,
     saved: editing.edit,
     // Blocks a batch detection found that the timeline has not been shown
     // yet. Only the editor can turn them into marks -- it is the one that
@@ -338,6 +359,19 @@ async function addPaths(inputs) {
   const taken = [];
   const skipped = [];
   for (const f of found) {
+    // A disc is a question rather than a file: which of the sixty-two things
+    // on it did you mean, and which of their tracks. Asked one disc at a
+    // time, in the order the discs turned up, and the list is left alone
+    // until it has been answered.
+    if (f.what === "disc") {
+      for (const chosen of await chooseFromDisc(f)) {
+        if (byPath(chosen.path)) continue;
+        const clip = makeClip(chosen);
+        clips.push(clip);
+        taken.push(clip);
+      }
+      continue;
+    }
     if (!VIDEO_EXT.includes(extOf(f.path))) {
       skipped.push(nameOf(f.path));
       continue;
@@ -367,6 +401,280 @@ async function addPaths(inputs) {
   if (taken.length) pump();
   return taken;
 }
+
+// --- ディスクの読み込み --------------------------------------------------
+//
+// A file is one recording and needs no question asked about it. A disc is
+// not: a pressed Blu-ray holds twelve episodes among fifty logos, warnings,
+// menu loops and eight second transitions, and its own index calls all
+// sixty-two of them `000NN`. Adding them all would make the list a thing to
+// prune; adding the ones this program guessed at would be guessing.
+//
+// So the disc's index is laid out and the question is asked once, before
+// anything is opened -- which is why every answer here is in terms the index
+// can give: a length, a size, and a track named by the PID it sits on.
+
+/// What the chooser is looking at, or null when it is not open.
+let chooser = null;
+/// The discs already waiting to be asked about. Two drops can be in flight at
+/// once -- a folder being walked while a second is dropped on top of it -- and
+/// there is one dialog, so they queue rather than the second one taking the
+/// first one's window out from under it.
+let asking = Promise.resolve();
+
+/// Ask which of a disc's recordings to add, and which of their tracks.
+///
+/// Resolves to the rows that were ticked, ready for `makeClip`. Cancelling
+/// resolves to none of them, which is the same as never having dropped the
+/// disc.
+function chooseFromDisc(disc) {
+  const answered = asking.then(() => askAboutDisc(disc));
+  // The queue only sequences; a failure in one dialog is not the next one's
+  // business.
+  asking = answered.catch(() => {});
+  return answered;
+}
+
+function askAboutDisc(disc) {
+  return new Promise((resolve) => {
+    chooser = {
+      disc,
+      resolve,
+      // Per clip, and beside the disc's own row rather than in it: whether it
+      // is coming, which of its tracks are switched off, and whether its
+      // tracks are on show.
+      state: disc.clips.map((c) => ({ take: !!c.wanted, drop: [], open: false })),
+      // A disc of recordings is a disc of things somebody chose to record, so
+      // there is nothing to hide; a pressed disc is mostly not the film, and
+      // opening on all sixty-two rows would bury the twelve that were meant.
+      showAll: disc.kind !== "bdmv",
+    };
+    el("disc-show-all").checked = chooser.showAll;
+    el("disc-show-all-row").hidden = disc.kind === "bdav";
+    el("disc-what").textContent = t("disc.what", {
+      label: disc.label,
+      kind: t(`disc.kind.${disc.kind}`),
+      n: disc.clips.length,
+    });
+    renderChooser();
+    el("disc").hidden = false;
+    el("disc-ok").focus();
+  });
+}
+
+/// Put the chooser away, answering what was ticked.
+function closeChooser(take) {
+  if (!chooser) return;
+  const { disc, state, resolve } = chooser;
+  chooser = null;
+  el("disc").hidden = true;
+  el("disc-list").innerHTML = "";
+  if (!take) {
+    resolve([]);
+    return;
+  }
+  resolve(
+    disc.clips
+      .map((c, i) => ({ clip: c, st: state[i] }))
+      .filter(({ st }) => st.take)
+      .map(({ clip, st }) => ({
+        path: clip.path,
+        name: clip.label,
+        stem: clip.stem,
+        home: clip.home,
+        chapters: clip.chapters,
+        dropPids: st.drop.slice(),
+      }))
+  );
+}
+
+/// Which rows are on show. A short clip nobody has ticked is out of the way
+/// until it is asked for; one that *is* ticked stays visible however short it
+/// is, because a row that vanished when it was chosen would be a row that
+/// could not be unchosen.
+function shownRows() {
+  const { disc, state, showAll } = chooser;
+  return disc.clips
+    .map((_, i) => i)
+    .filter((i) => showAll || disc.clips[i].wanted || state[i].take);
+}
+
+function renderChooser() {
+  if (!chooser) return;
+  const { disc, state } = chooser;
+  const list = el("disc-list");
+  list.innerHTML = "";
+  const shown = shownRows();
+  for (const i of shown) {
+    const clip = disc.clips[i];
+    const st = state[i];
+    const li = document.createElement("li");
+    const row = document.createElement("div");
+    row.className = "disc-row";
+
+    const box = document.createElement("input");
+    box.type = "checkbox";
+    box.checked = st.take;
+    box.id = `disc-take-${i}`;
+    box.addEventListener("change", () => {
+      st.take = box.checked;
+      paintChooserCount();
+    });
+    const label = document.createElement("label");
+    label.className = "name";
+    label.htmlFor = box.id;
+    label.textContent = clip.label;
+    // The path is the one thing the row cannot show and somebody will want:
+    // which of the disc's streams this actually is.
+    label.title = clip.path;
+    const len = document.createElement("span");
+    len.className = "num";
+    len.textContent = clock(clip.duration);
+    const bytes = document.createElement("span");
+    bytes.className = "num";
+    bytes.textContent = size(clip.bytes);
+    row.append(box, label, len, bytes);
+
+    if (clip.tracks.length) {
+      const more = document.createElement("button");
+      more.type = "button";
+      more.className = "more";
+      more.textContent = `${st.open ? "▾" : "▸"} ${t("disc.tracks", { n: clip.tracks.length })}`;
+      more.addEventListener("click", () => {
+        st.open = !st.open;
+        renderChooser();
+      });
+      row.append(more);
+    } else {
+      const none = document.createElement("span");
+      none.className = "dim";
+      none.textContent = t("disc.noTracks");
+      row.append(none);
+    }
+    li.append(row);
+    if (st.open && clip.tracks.length) li.append(trackPanel(i));
+    list.append(li);
+  }
+
+  const hidden = disc.clips.length - shown.length;
+  if (hidden > 0) {
+    const li = document.createElement("li");
+    const row = document.createElement("div");
+    row.className = "disc-row dim";
+    row.textContent = t("disc.hidden", { n: hidden });
+    li.append(row);
+    list.append(li);
+  }
+  paintChooserCount();
+}
+
+/// The tracks under one row.
+function trackPanel(at) {
+  const { disc, state } = chooser;
+  const clip = disc.clips[at];
+  const st = state[at];
+  const ul = document.createElement("ul");
+  ul.className = "disc-tracks";
+
+  clip.tracks.forEach((track, n) => {
+    const li = document.createElement("li");
+    const box = document.createElement("input");
+    box.type = "checkbox";
+    box.id = `disc-track-${at}-${n}`;
+    // Three cases, and only one of them is a choice. The video is what a cut
+    // is *of*; the graphics a Blu-ray's subtitles and menus are made of
+    // cannot go on a cut timeline at all, and are listed to say they are
+    // being left behind rather than to offer anything about them.
+    const fixed = track.kind === "video" || !track.carried;
+    box.checked = track.carried && !st.drop.includes(track.pid);
+    box.disabled = fixed;
+    if (!fixed) {
+      box.addEventListener("change", () => {
+        st.drop = box.checked
+          ? st.drop.filter((pid) => pid !== track.pid)
+          : st.drop.concat([track.pid]);
+      });
+    }
+    const label = document.createElement("label");
+    label.htmlFor = box.id;
+    const bits = [t(`disc.${track.kind}`), track.detail];
+    if (track.language) bits.push(track.language);
+    bits.push(t("disc.pid", { pid: track.pid.toString(16).padStart(4, "0") }));
+    if (!track.carried) bits.push(t("disc.gone"));
+    else if (track.kind === "video") bits.push(t("disc.needed"));
+    label.textContent = bits.join(t("sep"));
+    if (fixed) label.className = "gone";
+    li.append(box, label);
+    ul.append(li);
+  });
+
+  // Every episode on a disc carries the same tracks, and answering the same
+  // question twelve times is not answering it once. Offered only where there
+  // is more than one row it would apply to and something on them to switch
+  // off, so that a disc of one recording -- or one whose only tracks are the
+  // video and the graphics beside it -- does not grow a button that does
+  // nothing.
+  const like = sameTracks(at);
+  const choosable = clip.tracks.some((k) => k.carried && k.kind !== "video");
+  if (like.length > 1 && choosable) {
+    const apply = document.createElement("button");
+    apply.type = "button";
+    apply.className = "mini apply";
+    apply.textContent = t("disc.apply");
+    apply.addEventListener("click", () => {
+      for (const other of like) state[other].drop = st.drop.slice();
+      renderChooser();
+      el("disc-count").textContent = t("disc.applied", { n: like.length });
+    });
+    ul.append(apply);
+  }
+  return ul;
+}
+
+/// Which rows carry the same tracks as this one, this one included.
+///
+/// The same by what the disc says about them -- the kind, the PID, the codec
+/// and the language -- because that is the whole of what a track choice was
+/// made against.
+function sameTracks(at) {
+  const { disc } = chooser;
+  const shape = (c) =>
+    c.tracks.map((k) => `${k.kind}:${k.pid}:${k.detail}:${k.language || ""}`).join("|");
+  const want = shape(disc.clips[at]);
+  return disc.clips.map((_, i) => i).filter((i) => shape(disc.clips[i]) === want);
+}
+
+function paintChooserCount() {
+  if (!chooser) return;
+  const n = chooser.state.filter((st) => st.take).length;
+  el("disc-count").textContent = n ? t("disc.count", { n }) : t("disc.countNone");
+  // Nothing ticked and 読み込む would mean the same as キャンセル, which is a
+  // button that says one thing and does another.
+  el("disc-ok").disabled = n === 0;
+}
+
+el("disc-all").addEventListener("click", () => {
+  if (!chooser) return;
+  // What is on show, and not the whole disc: ticking fifty rows nobody can
+  // see is not what a button beside them says it does.
+  for (const i of shownRows()) chooser.state[i].take = true;
+  renderChooser();
+});
+el("disc-none").addEventListener("click", () => {
+  if (!chooser) return;
+  for (const st of chooser.state) st.take = false;
+  renderChooser();
+});
+el("disc-show-all").addEventListener("change", () => {
+  if (!chooser) return;
+  chooser.showAll = el("disc-show-all").checked;
+  renderChooser();
+});
+el("disc-ok").addEventListener("click", () => closeChooser(true));
+el("disc-cancel").addEventListener("click", () => closeChooser(false));
+window.addEventListener("keydown", (ev) => {
+  if (ev.key === "Escape" && chooser) closeChooser(false);
+});
 
 el("add-files").addEventListener("click", async () => {
   const picked = await dialog.open({
@@ -1999,6 +2307,11 @@ async function runExport() {
         // whole run, but which of a recording's own streams are wanted is a
         // fact about that recording.
         dropStreams: clip.edit ? clip.edit.dropStreams || [] : [],
+        // And what the chooser switched off when the disc was read, for a row
+        // nobody has opened the editor on. Only then: once there is an edit,
+        // the track menu's answer is the answer, and sending both would let a
+        // track switched back on in the editor be switched off again here.
+        dropPids: clip.edit ? [] : clip.dropPids,
       });
       let extra = "";
       if (settings.keyframes) {
@@ -2096,6 +2409,10 @@ function captureProject() {
       // Written for the same reason as the name: reopening the project must
       // not need the disc back in the drive to know where the chapters were.
       chapters: c.chapters.length ? c.chapters : undefined,
+      // And for the same reason again: the tracks switched off when the disc
+      // was read are an answer given to a question the disc asked, and
+      // asking it again would mean reading the disc again.
+      dropPids: c.dropPids.length ? c.dropPids : undefined,
       // What the editor handed back the last time this row was in it: the
       // cuts, the marks, and where the playhead was left. Null for a row
       // nobody has opened yet, which is not the same as a row cut to nothing.
@@ -2130,7 +2447,7 @@ function defaultProjectPath() {
 function shapeOf() {
   return JSON.stringify({
     settings,
-    clips: clips.map((c) => ({ path: c.path, edit: c.edit })),
+    clips: clips.map((c) => ({ path: c.path, dropPids: c.dropPids, edit: c.edit })),
   });
 }
 

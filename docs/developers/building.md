@@ -72,7 +72,7 @@ bash tests/run_scene_tests.sh         # scene detection vs commercial boundaries
 bash tests/run_ts_layout_tests.sh     # TS provenance and sequence headers               5
 bash tests/run_broadcast_tests.sh     # captions, programme information, multi-audio    13
 bash tests/run_cm_tests.sh            # commercial detection vs a human's answer         5
-bash tests/run_bdav_tests.sh          # a BDAV disc, as a folder and as an .iso         12
+bash tests/run_disc_tests.sh          # a BDAV and a BDMV disc, as folders and as .isos 35
 ```
 
 ### Fixtures
@@ -83,9 +83,9 @@ reuse them (`run_rust_tests.sh`, `run_index_tests.sh`, `run_proxy_tests.sh`) sto
 `run tests/run_tests.sh first to generate fixtures` rather than quietly skipping half
 their checks.
 
-`run_bdav_tests.sh` builds a whole BDAV disc out of `mpeg2.ts` -- the stream remuxed into
-192 byte packets, index files written around it, and a UDF image wrapped over the lot by
-`genisoimage`, which it needs installed.
+`run_disc_tests.sh` builds a whole disc of each dialect out of `mpeg2.ts` -- the stream
+remuxed into 192 byte packets, index files written around it by `disc_index.py`, and a UDF
+image wrapped over each by `genisoimage`, which it needs installed.
 
 `run_audio_tests.sh` and `run_downmix_tests.sh` build their own fixtures into the same
 directory: an impulse train, and a 5.1 track with a tone per channel. Neither is wanted

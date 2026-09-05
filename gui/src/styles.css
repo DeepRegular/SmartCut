@@ -121,6 +121,37 @@ button.brand:hover, button.brand.open { background: #3a3a3a; border-color: #5c5c
   padding: 10px 12px; border-top: 1px solid var(--line);
 }
 
+/* --- ディスクの読み込み --------------------------------------------------
+   A row per clip, and under each the streams the disc says it carries. Wider
+   than the other two dialogs because a disc of sixty-two clips is a list to
+   read rather than a setting to change, and the tracks under a row are two
+   columns of their own. */
+.modal-box.wide { min-width: min(760px, 94vw); max-width: min(860px, 94vw); }
+.disc-list {
+  list-style: none; margin: 0; padding: 0;
+  max-height: min(58vh, 520px); overflow-y: auto;
+  border: 1px solid var(--line); background: #1c1c1c;
+}
+.disc-list > li { border-bottom: 1px solid #2a2a2a; }
+.disc-list > li:last-child { border-bottom: 0; }
+.disc-row { display: flex; align-items: baseline; gap: 8px; padding: 5px 8px; }
+.disc-row .name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.disc-row .num { font-variant-numeric: tabular-nums; color: var(--dim); }
+/* The disclosure sits at the end of the row it opens, and says how many
+   tracks are under it so that a row nobody opens has still answered. */
+.disc-row .more {
+  background: none; border: 0; color: var(--dim); cursor: pointer;
+  font: inherit; padding: 0 2px;
+}
+.disc-row .more:hover { color: var(--text); }
+.disc-tracks {
+  margin: 0; padding: 2px 8px 8px 30px; display: flex; flex-direction: column; gap: 4px;
+  list-style: none; background: #191919;
+}
+.disc-tracks li { display: flex; align-items: baseline; gap: 8px; }
+.disc-tracks .gone { color: var(--dim); }
+.disc-tracks .apply { align-self: flex-start; margin-top: 2px; }
+
 /* --- 書き出すトラック ----------------------------------------------------
    A list of what the recording carries, one row each, the box in front of
    the words so the column of boxes reads as the choice being made. */
@@ -378,6 +409,8 @@ main { flex: 1; min-height: 0; display: flex; gap: 0; }
 .progress { flex: 1; height: 9px; background: var(--sunken); border: 1px solid var(--line); overflow: hidden; }
 .progress span { display: block; height: 100%; width: 0; background: var(--sel); transition: width .15s; }
 .opt { color: var(--dim); display: flex; align-items: center; gap: 5px; white-space: nowrap; }
+/* The display above is what a bare `hidden` would otherwise lose against. */
+.opt[hidden] { display: none; }
 .mini.wide { min-width: 96px; }
 .mini { background: #333; color: var(--text); border: 1px solid #4a4a4a; border-radius: 2px; padding: 3px 10px; cursor: pointer; }
 button:disabled { opacity: .45; cursor: default; }

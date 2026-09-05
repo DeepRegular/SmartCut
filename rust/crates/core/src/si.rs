@@ -428,11 +428,15 @@ fn keep_descriptors(loop_bytes: &[u8]) -> Vec<u8> {
 
 /// Read the recording's own description of itself.
 ///
+/// `video_pid` is the PID the pictures arrive on, and is how the recording's
+/// own service is told apart from the others its PAT may name. Pass 0 when
+/// it is not known; the first service whose map arrives is then taken.
+///
 /// Only the head of the file is read. PAT, PMT and SDT repeat every few
 /// hundred milliseconds, so a few megabytes is many copies of each; a
 /// recording that does not carry them in its first stretch does not carry
 /// them at all.
-pub fn read_service(input: &crate::input::Input) -> Result<Service> {
+pub fn read_service(input: &crate::input::Input, video_pid: u16) -> Result<Service> {
     const WINDOW: usize = 8 << 20;
     let mut f = input.open()?;
     let mut buf = vec![0u8; WINDOW];
@@ -443,16 +447,24 @@ pub fn read_service(input: &crate::input::Input) -> Result<Service> {
         framing(&buf).ok_or_else(|| anyhow!("{path} is not a transport stream"))?;
 
     let mut pat = SectionReader::default();
-    let mut pmt = SectionReader::default();
+    // One per candidate map. A section is reassembled from the packets of
+    // its own PID and no other, so several maps being followed at once means
+    // several readers.
+    let mut pmts: HashMap<u16, SectionReader> = HashMap::new();
     let mut sdt = SectionReader::default();
 
     let mut transport_stream_id = 0u16;
-    let mut pmt_pid = 0u16;
-    let mut service_id = 0u16;
+    // Every service the PAT names, and the PID its map is on.
+    let mut services: Vec<(u16, u16)> = Vec::new();
     let mut found: Option<Service> = None;
-    let mut sdt_section: Option<Vec<u8>> = None;
-    let mut original_network_id = 0u16;
-    let mut service_type = 0u8;
+    // The first map that was one of the PAT's, whichever service it was for.
+    // What answers when the pictures cannot be matched to a service -- see
+    // the fallback below.
+    let mut any: Option<Service> = None;
+    // The whole multiplex's, as it arrived. Which entry in it is this
+    // recording's is not known until its map has been read, so the section
+    // is kept whole and cut down afterwards.
+    let mut sdt_whole: Option<Vec<u8>> = None;
 
     let mut at = base;
     while at + PACKET <= buf.len() {
@@ -467,8 +479,9 @@ pub fn read_service(input: &crate::input::Input) -> Result<Service> {
             }
             continue;
         }
-        match pid_of(p) {
-            PID_PAT if pmt_pid == 0 => pat.feed(p, |sec| {
+        let pid = pid_of(p);
+        match pid {
+            PID_PAT if services.is_empty() => pat.feed(p, |sec| {
                 if sec[0] != TABLE_PAT || sec.len() < 12 {
                     return;
                 }
@@ -478,92 +491,111 @@ pub fn read_service(input: &crate::input::Input) -> Result<Service> {
                     let number = ((sec[i] as u16) << 8) | sec[i + 1] as u16;
                     let pid = (((sec[i + 2] & 0x1F) as u16) << 8) | sec[i + 3] as u16;
                     // Programme 0 is the network information table, not a
-                    // service. The first real entry is the recording's own:
-                    // a recorder writing one service writes one entry.
+                    // service. Every other entry is a candidate: a recorder
+                    // that keeps the multiplex's own table writes the whole
+                    // of it, and the services it names that were not
+                    // recorded are as real in here as the one that was.
                     if number != 0 {
-                        service_id = number;
-                        pmt_pid = pid;
-                        break;
+                        services.push((number, pid));
+                        pmts.entry(pid).or_default();
                     }
                     i += 4;
                 }
             }),
-            pid if pid != 0 && pid == pmt_pid && found.is_none() => pmt.feed(p, |sec| {
-                if sec[0] != TABLE_PMT || sec.len() < 16 {
-                    return;
-                }
-                let number = ((sec[3] as u16) << 8) | sec[4] as u16;
-                if number != service_id {
-                    return;
-                }
-                let pcr_pid = (((sec[8] & 0x1F) as u16) << 8) | sec[9] as u16;
-                let info_len = (((sec[10] & 0x0F) as usize) << 8) | sec[11] as usize;
-                let Some(info) = sec.get(12..12 + info_len) else { return };
-                let program_info = keep_descriptors(info);
-                let mut streams = Vec::new();
-                let mut i = 12 + info_len;
-                let end = sec.len() - 4;
-                while i + 5 <= end {
-                    let stream_type = sec[i];
-                    let pid = (((sec[i + 1] & 0x1F) as u16) << 8) | sec[i + 2] as u16;
-                    let len = (((sec[i + 3] & 0x0F) as usize) << 8) | sec[i + 4] as usize;
-                    let Some(desc) = sec.get(i + 5..i + 5 + len) else { break };
-                    streams.push(ElementaryStream {
-                        pid,
-                        stream_type,
-                        descriptors: keep_descriptors(desc),
-                    });
-                    i += 5 + len;
-                }
-                found = Some(Service {
-                    transport_stream_id,
-                    original_network_id: 0,
-                    service_id,
-                    service_type: 0,
-                    pmt_pid,
-                    pcr_pid,
-                    program_info,
-                    streams,
-                    sdt: None,
-                });
-            }),
-            PID_SDT if sdt_section.is_none() => sdt.feed(p, |sec| {
-                if sec[0] != TABLE_SDT_ACTUAL || sec.len() < 15 || service_id == 0 {
-                    return;
-                }
-                let onid = ((sec[8] as u16) << 8) | sec[9] as u16;
-                // Keep the one service this recording is of, and drop the
-                // rest of the multiplex: the others are not in this file.
-                let mut i = 11;
-                let end = sec.len() - 4;
-                while i + 5 <= end {
-                    let sid = ((sec[i] as u16) << 8) | sec[i + 1] as u16;
-                    let len = (((sec[i + 3] & 0x0F) as usize) << 8) | sec[i + 4] as usize;
-                    let Some(body) = sec.get(i..i + 5 + len) else { break };
-                    if sid == service_id {
-                        original_network_id = onid;
-                        service_type = descriptor(&body[5..], 0x48)
-                            .and_then(|d| d.first().copied())
-                            .unwrap_or(0);
-                        sdt_section = Some(one_service_sdt(sec, body));
-                        break;
+            map_pid if found.is_none() && pmts.contains_key(&map_pid) => {
+                let reader = pmts.get_mut(&map_pid).expect("just checked");
+                reader.feed(p, |sec| {
+                    if sec[0] != TABLE_PMT || sec.len() < 16 {
+                        return;
                     }
-                    i += 5 + len;
+                    let number = ((sec[3] as u16) << 8) | sec[4] as u16;
+                    if !services.contains(&(number, map_pid)) {
+                        return;
+                    }
+                    let pcr_pid = (((sec[8] & 0x1F) as u16) << 8) | sec[9] as u16;
+                    let info_len = (((sec[10] & 0x0F) as usize) << 8) | sec[11] as usize;
+                    let Some(info) = sec.get(12..12 + info_len) else { return };
+                    let program_info = keep_descriptors(info);
+                    let mut streams = Vec::new();
+                    let mut i = 12 + info_len;
+                    let end = sec.len() - 4;
+                    while i + 5 <= end {
+                        let stream_type = sec[i];
+                        let pid = (((sec[i + 1] & 0x1F) as u16) << 8) | sec[i + 2] as u16;
+                        let len = (((sec[i + 3] & 0x0F) as usize) << 8) | sec[i + 4] as usize;
+                        let Some(desc) = sec.get(i + 5..i + 5 + len) else { break };
+                        streams.push(ElementaryStream {
+                            pid,
+                            stream_type,
+                            descriptors: keep_descriptors(desc),
+                        });
+                        i += 5 + len;
+                    }
+                    // Which service this recording is *of*: the one whose map
+                    // names the pictures the file actually carries. On a
+                    // recording of a single service that is the only map
+                    // there is, and this decides nothing; on one that kept
+                    // the whole PAT it is the difference between the
+                    // recording's own tables and a neighbour's.
+                    let ours = video_pid != 0 && streams.iter().any(|s| s.pid == video_pid);
+                    let service = Service {
+                        transport_stream_id,
+                        original_network_id: 0,
+                        service_id: number,
+                        service_type: 0,
+                        pmt_pid: map_pid,
+                        pcr_pid,
+                        program_info,
+                        streams,
+                        sdt: None,
+                    };
+                    if ours {
+                        found = Some(service);
+                    } else if any.is_none() {
+                        any = Some(service);
+                    }
+                });
+            }
+            PID_SDT if sdt_whole.is_none() => sdt.feed(p, |sec| {
+                if sec[0] == TABLE_SDT_ACTUAL && sec.len() >= 15 {
+                    sdt_whole = Some(sec.to_vec());
                 }
             }),
             _ => {}
         }
-        if found.is_some() && sdt_section.is_some() {
+        if found.is_some() && sdt_whole.is_some() {
             break;
         }
     }
 
-    let mut service = found.ok_or_else(|| {
+    // Nothing here matched the pictures. That is a recording whose map does
+    // not name the video PID libav read them off -- a remux, or a file whose
+    // PAT and PMT disagree -- and the map that did arrive still describes it
+    // better than the muxer's defaults would.
+    let mut service = found.or(any).ok_or_else(|| {
         anyhow!("{path} carries no program map table; there are no broadcast tables to keep")
     })?;
-    service.original_network_id = original_network_id;
-    service.service_type = service_type;
-    service.sdt = sdt_section;
+    if let Some(sec) = sdt_whole {
+        // Keep the one service this recording is of, and drop the rest of
+        // the multiplex: the others are not in this file.
+        let onid = ((sec[8] as u16) << 8) | sec[9] as u16;
+        let mut i = 11;
+        let end = sec.len() - 4;
+        while i + 5 <= end {
+            let sid = ((sec[i] as u16) << 8) | sec[i + 1] as u16;
+            let len = (((sec[i + 3] & 0x0F) as usize) << 8) | sec[i + 4] as usize;
+            let Some(body) = sec.get(i..i + 5 + len) else { break };
+            if sid == service.service_id {
+                service.original_network_id = onid;
+                service.service_type = descriptor(&body[5..], 0x48)
+                    .and_then(|d| d.first().copied())
+                    .unwrap_or(0);
+                service.sdt = Some(one_service_sdt(&sec, body));
+                break;
+            }
+            i += 5 + len;
+        }
+    }
     Ok(service)
 }
 

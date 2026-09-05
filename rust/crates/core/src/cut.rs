@@ -644,11 +644,31 @@ fn ts_layout(ictx: &ff::format::context::Input, video_index: usize) -> Option<Ts
         }
         let video_pid = ictx.stream(video_index).map(|s| s.id()).unwrap_or(0);
         let first_pid = if (PID_MIN..=PID_MAX).contains(&video_pid) { video_pid } else { 0 };
-        let (mut pmt_pid, service_id) = if (*ic).nb_programs > 0 {
-            let p = *(*ic).programs;
-            ((*p).pmt_pid, (*p).id)
+        // The service this recording is of, which is the one whose map names
+        // the pictures. A recorder that keeps the multiplex's own PAT names
+        // the neighbouring services too, and the first of them is as likely
+        // to be one that was never recorded as the one that was -- taking it
+        // would label the output with somebody else's service number.
+        let programs: &[*mut ff::ffi::AVProgram] = if (*ic).nb_programs > 0 {
+            std::slice::from_raw_parts((*ic).programs, (*ic).nb_programs as usize)
         } else {
-            (0, 0)
+            &[]
+        };
+        // The first is the answer only when none of them names the video,
+        // which is a container that groups its streams some other way.
+        let mut ours = programs.first().copied();
+        for &p in programs {
+            let n = (*p).nb_stream_indexes as usize;
+            let in_it: &[u32] =
+                if n > 0 { std::slice::from_raw_parts((*p).stream_index, n) } else { &[] };
+            if in_it.contains(&(video_index as u32)) {
+                ours = Some(p);
+                break;
+            }
+        }
+        let (mut pmt_pid, service_id) = match ours {
+            Some(p) => ((*p).pmt_pid, (*p).id),
+            None => (0, 0),
         };
         if !(0x0010..=PID_MAX).contains(&pmt_pid) {
             pmt_pid = 0;
@@ -1326,7 +1346,8 @@ pub fn cut_with_progress(
         );
     }
     let wants_tables = to_ts && !blu_ray && opts.tables != crate::si::Tables::Muxer;
-    let tables = match wants_tables.then(|| crate::si::read_service(&src.input)) {
+    let ours = u16::try_from(video_pid).unwrap_or(0);
+    let tables = match wants_tables.then(|| crate::si::read_service(&src.input, ours)) {
         Some(Ok(t)) => Some(t),
         Some(Err(e)) => {
             eprintln!("note: {e}. The streams are kept; the broadcast's own tables are not.");

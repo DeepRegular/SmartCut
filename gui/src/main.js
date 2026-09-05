@@ -1652,7 +1652,7 @@ function paintSourceInfo() {
 /// chapter points are put down under the same rule, and only where there was
 /// no list beside the recording: a `.keyframe` file is somebody's answer,
 /// and the disc's is the answer when nobody has given one.
-async function openPath(picked, saved, side, name, chapters) {
+async function openPath(picked, saved, side, name, chapters, dropPids) {
   jlog(`openPath ${picked}`);
   if (!picked) return;
   shownName = name || null;
@@ -1668,6 +1668,26 @@ async function openPath(picked, saved, side, name, chapters) {
     cmSummary = saved ? saved.cmNote || "" : "";
     dropStreams = saved ? (saved.dropStreams || []).slice() : [];
     trackList = null;
+    // A first visit to a recording that came off a disc starts from the
+    // answer given when the disc was read. That answer is in PIDs, because it
+    // was given before anything was open; here something is, so it becomes
+    // what the rest of this window speaks in -- and from now on this window's
+    // answer is the one that counts.
+    //
+    // A PID can name more than one stream. A Blu-ray's lossless sound arrives
+    // as a TrueHD track with an AC-3 track folded into it, both on the one
+    // PID and both handed over separately, so switching that track off has to
+    // switch off both halves of it.
+    if (!saved && dropPids && dropPids.length) {
+      try {
+        trackList = await invoke("tracks", { path: picked });
+        dropStreams = trackList
+          .filter((k) => k.optional && dropPids.includes(k.pid))
+          .map((k) => k.index);
+      } catch (e) {
+        jlog(`tracks for the disc's choice: ${e}`);
+      }
+    }
     paintTrackButton();
     stripCache = null;
     stripShots = [];
@@ -2008,19 +2028,31 @@ function renderTracks() {
     li.appendChild(label);
     list.appendChild(li);
   }
+  /// What the engine calls each kind, and what this window calls it back.
+  const named = {
+    superimpose: "tracks.superimpose",
+    data: "tracks.data",
+    substream: "tracks.substream",
+  };
   for (const track of dropped) {
     const li = document.createElement("li");
     li.className = "dim";
     li.textContent = tr("tracks.dropped", {
-      what: tr(track.detail === "superimpose" ? "tracks.superimpose" : "tracks.data"),
+      what: tr(named[track.detail] || "tracks.data"),
       pid: track.pid.toString(16).padStart(4, "0"),
     });
     list.appendChild(li);
   }
-  if (dropped.length) {
+  // Two reasons, each said only where it applies: what cannot go on a cut
+  // timeline at all, and what could have but has nowhere to be written.
+  for (const [key, when] of [
+    ["tracks.droppedNote", (k) => k.detail !== "substream"],
+    ["tracks.substreamNote", (k) => k.detail === "substream"],
+  ]) {
+    if (!dropped.some(when)) continue;
     const note = document.createElement("li");
     note.className = "dim small";
-    note.textContent = tr("tracks.droppedNote");
+    note.textContent = tr(key);
     list.appendChild(note);
   }
   // The other half of the answer, and the half nobody would think to ask
@@ -2228,7 +2260,7 @@ if (listen) {
   // The list's answer to `editor-ready`: which recording, and what was done
   // to it the last time it was in here.
   listen("editor-open", async (ev) => {
-    const { id, path, name, side, saved, cm, chapters } = ev.payload;
+    const { id, path, name, side, saved, cm, chapters, dropPids } = ev.payload;
     // The list sends this twice for a window it had to build; the second is
     // the one that usually lands, but both can. Opening the same row twice
     // over would throw away whatever the first open had got to.
@@ -2240,7 +2272,7 @@ if (listen) {
       opening = id;
       editId = id;
       try {
-        await openPath(path, saved, side, name, chapters);
+        await openPath(path, saved, side, name, chapters, dropPids);
       } finally {
         opening = null;
       }
