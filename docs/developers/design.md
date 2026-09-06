@@ -34,8 +34,8 @@ frame-hash comparison.
 
 ## Licence and patents
 
-**SmartCut ships under GPL-3.0.** Of the two ways out described below, the software
-encoders are the side that was taken.
+**SmartCut ships under GPL-3.0.** Of the two options described below, the software
+encoders are the side that was chosen.
 
 - **x264 and x265 are GPL.** Linking them makes the whole application GPL.
 - The way around that is a **hardware encoder** — NVENC, QSV, VideoToolbox, AMF. Only
@@ -53,11 +53,11 @@ own**.
 The list window's three screens are tabs, and only one is up at a time. They are
 **stages you pass through**, not panels laid side by side.
 
-**Cutting is not among them because it is not something settled once for the list; it
-is done to one clip.** As a tab it made the same window both the list and the thing
-being edited, and there was no moment anywhere that said "done with this one". That
-moment is the OK button, and the window it sits in — `editor.html`, built by
-`open_editor` on the Rust side — is where it belongs.
+**Cutting is not among them, because it is not something settled once for the whole
+list; it is done to one clip at a time.** As a tab it made the same window both the
+list and the thing being edited, and there was no moment anywhere that meant "done with
+this one". That moment is the OK button, and it belongs in a window of its own —
+`editor.html`, built by `open_editor` on the Rust side.
 
 ### The input screen
 
@@ -77,19 +77,19 @@ Clips: 3   Total: 14 min 41 s                       [x use logo]
 │   │ ▤  │ /home/kaz/media/terrestrial_nhke.ts         │ Remove clip  │
 │   └────┘ seek index 63% ▓▓▓▓▓▓░░░░                   │ Remove all   │
 └───────────────────────────────────────┴──────────────┘
- Quick properties -- what the one selected clip is made of
+ Quick properties — details of the one selected clip
 ```
 
-Two things about it are worth recording, because both are consequences of Tauri rather
+Two things about it are worth noting, because both are consequences of Tauri rather
 than of design:
 
 - **Drag and drop is a Tauri event, not an HTML5 one.** Tauri intercepts the drag
   before the page sees it, so what is listened for is `tauri://drag-drop` and not the
   HTML5 `drop` event. That is also what makes a drop anywhere in the window count.
 - **Reordering rows is built on the page's own mouse events**, for the same reason: a
-  `dragstart` inside the page is not something to build on when Tauri takes those first.
-  The rows being carried go dim and a line shows where they would land; the whole
-  selection moves, so five rows go to the top in one drag. `Esc` puts them back.
+  `dragstart` inside the page is no use when Tauri takes those first. The rows being
+  carried go dim and a line shows where they would land; the whole selection moves, so
+  five rows go to the top in one drag. `Esc` puts them back.
 
 ### SMB shares
 
@@ -101,9 +101,9 @@ the desktop's gvfs ones, which are directories named `smb-share:server=nas,share
 under the session's runtime directory. On Windows the UNC path is already the path, and
 nothing is translated.
 
-**Nothing is mounted here.** Mounting is where the password lives, and that belongs to
-the desktop's keyring rather than to a cut editor. A share that is not connected is
-refused, with the place to open instead:
+**Nothing is mounted here.** Mounting means handling a password, which belongs in the
+desktop's keyring rather than in a cut editor. A share that is not connected is refused,
+and SmartCut says where to connect it:
 
 ```
 Not connected to \\nas\rec. Open smb://nas/rec in the file manager and add
@@ -116,16 +116,17 @@ output all go on without knowing a network was involved.
 ### Blu-ray discs (`disc.rs`, `udf.rs`, `input.rs`)
 
 A Blu-ray arrives the same way a share does. Both halves of the specification
-are read -- BDAV, what a recorder writes, and BDMV, what a pressed disc is --
+are read — BDAV, what a recorder writes, and BDMV, what a pressed disc is —
 by one reader that is told which dialect it is looking at, because the two
-differ in four places and agree everywhere else. **This program hangs
-everything off one string**: the list holds it, the seek index and the proxy are
-cached against it, the output is named beside it, and the demuxer is handed it.
-A recording inside a disc should not break that.
+differ in four places and agree everywhere else.
+
+**This program identifies a recording by one string**: the list holds it, the
+seek index and the proxy are cached against it, the output is written beside it,
+and the demuxer is handed it. A recording inside a disc should not break that.
 
 So a recording inside an image is named as though the image were a directory:
 `/rec/Anime.iso/BDAV/STREAM/00001.m2ts`. `input.rs` walks that path back to the
-point where it stops being a directory and answers with three things -- the URL
+point where it stops being a directory and answers with three things — the URL
 to hand libavformat (a byte range, through the `subfile` protocol), the real
 file to ask the operating system about, and the range itself. Nothing is
 mounted. What a row is called, what a cut of it is called and where it goes are
@@ -133,10 +134,10 @@ all decided by the disc's own index.
 
 A pressed disc is a list rather than a recording, and mostly not the film: 45
 playlists naming 62 clips, twelve of which are episodes and fifty of which are
-logos and menu loops. So its rows are deduplicated -- one clip, one row -- and
-the window asks which of them were meant, and which of their tracks to take,
-before anything is opened. That answer is in PIDs, since a stream index does
-not exist until something is. See [Reading a disc](disc.md).
+logos and menu loops. So its rows are deduplicated — one clip, one row — and the
+window asks which of them were meant, and which of their tracks to take, before
+anything is opened. That answer is given in PIDs, since a stream index does not
+exist until a stream has been opened. See [Reading a disc](disc.md).
 
 ### Duplicates made a row and a recording different things
 
@@ -164,19 +165,19 @@ decodes the key pictures into thumbnails and scenes, and one detects commercials
 user-level description is in [batch processing](../user-guide/batch.md); what follows is
 why they are shaped that way.
 
-They are split because **they do not weigh the same.** The walk is the disk: one core
-reading at a gigabyte a second and touching no decoder at all. The thumbnails are the
-cores: every key picture through libavcodec, around four seconds a gigabyte. A detection
-is one core and a great deal of waiting, because libavcodec threads none of what it
-reads — neither captions, nor audio, nor a logo.
+They are split because **their costs are different in kind.** The walk is disk-bound:
+one core reading at a gigabyte a second and touching no decoder at all. The thumbnails
+are CPU-bound: every key picture through libavcodec, around four seconds a gigabyte. A
+detection is one core and a great deal of waiting, because libavcodec threads none of
+what it reads — neither captions, nor audio, nor a logo.
 
 **Running the walk and the thumbnails side by side rather than one after the other is
 what makes the list quick.** Serially they added up: the walk read the whole recording,
 and then the thumbnail pass read the whole recording again, and neither was doing what
 the other was waiting on. Side by side, the walk runs ahead through the list while the
-thumbnails follow it clip by clip — so **every row becomes real at disk speed**, and the
-decoding costs almost nothing on the clock because it happens during reads it is not
-waiting for.
+thumbnails follow it clip by clip, so **every row is filled in at disk speed** and the
+decoding costs almost nothing on the clock, because it happens during reads it is not
+holding up.
 
 **The thumbnails follow the walk closely, on purpose.** They read a recording the walk
 has just pulled through, so the second read comes out of the page cache rather than off
@@ -184,10 +185,10 @@ the disk again. Sweeping all the walks first and all the thumbnails afterwards w
 and lost that: by the time a clip's pictures came up, three other recordings had washed
 the cache through, and **the thumbnail passes ran 18% slower.**
 
-There is a third lane because it is not a decoder. A second decoder on the same cores
-would not be worth having; the walk reads packet headers, and a detection threads
-nothing. What contends for cores is the thumbnail pass and the filmstrip, and that is
-what `LANES` is really about.
+There is room for a third lane because it is not a decoder. A second decoder on the
+same cores would not be worth having; the walk reads packet headers, and a detection
+threads nothing. What contends for cores is the thumbnail pass and the filmstrip, and
+that is what `LANES` is really limiting.
 
 **No lane stops for the cut editor.** Sharing nothing is what makes that possible;
 what makes it bearable is that the background passes take **only part of the machine** —
@@ -235,7 +236,7 @@ hits. And the measurement is a pessimistic one: server and client are the same m
 here and share one pool of memory, so a real NAS on the other end of the wire leaves the
 client roughly twice the cache to work with.
 
-Against that, what two passes buy is **every row becoming real three to four times
+Against that, what two passes buy is **every row filling in three to four times
 sooner** — the index at disk speed, a second a gigabyte, rather than at decoder speed,
 around four. On a local disk they are the faster of the two on total time as well.
 
@@ -288,7 +289,7 @@ That the window has gone at all is reported from Rust, by `on_window_event` as
 ### Projects: saved or not, worked out rather than remembered
 
 What a project file contains, and why, is in [projects](../user-guide/projects.md). The
-implementation detail worth recording here is how "is there unsaved work" is decided.
+implementation detail worth noting here is how "is there unsaved work" is decided.
 
 It is answered by **comparing**, not by raising a flag. `shapeOf()` is what the project
 would be if it were written this instant — the settings and, per row, the path and the
@@ -634,16 +635,30 @@ the centre and the pictures move" and "it moves one frame at a time" are the sam
 Outside the recording stays grey, because closing the gap would take the mark off centre.
 
 The view width is chosen from GOP · 3 s / 6 s / 30 s / 3 min. Since the width is constant,
-the number of cells that fit (13 at 1400 px) is known in advance. **The number of GOPs
-grouped per cell is chosen so that each cell covers the chosen duration divided by that
-count** — for 3 minutes, 28 half-second GOPs per cell, 14 seconds per cell. Even grouped, a
-cell's head is a real GOP head, so picture and timecode always agree.
+the number of cells that fit (13 at 1400 px) is known in advance. **Each cell is asked for
+the chosen duration divided by that count, and begins at the GOP boundary nearest to where
+that falls** — for 3 minutes, about 14 seconds a cell, which on broadcast material comes to
+28 half-second GOPs. A cell's head is always a real GOP head, so picture and timecode agree.
 
 A cell is never shorter than one GOP, since there is only one picture. So "3 s" really shows
-about 6 seconds; it means "draw every boundary", the finest view available. The grouping
-count comes from **the average GOP length across the whole recording**. Counting around the
-playhead instead halves the answer at the ends of the recording, where only one side exists,
-and "3 min" showed only 1 minute 15.
+about 6 seconds; it means "draw every boundary", the finest view available.
+
+**Cells are measured in time, not counted in GOPs.** The two are the same thing only where
+the GOPs are evenly spaced, which broadcast material is and a disc is not: a Blu-ray puts an
+entry point at every scene change on top of one every second or so, and on a VC-1 disc they
+run from 0.067 s to 0.801 s apart. One cell per GOP drew those as cells of equal width
+standing for stretches of time twelve times apart — a window of nine covering 0.6 s in an
+action scene and 7.2 s in a quiet one, both labelled "6 s". The strip stopped being a ruler:
+the playhead crawled across one cell and then jumped four of the next, and clicking a place
+on it landed nowhere near where it looked. Going by time brings that same window to
+5.5–7.9 s and leaves evenly spaced broadcast material exactly as it was. The boundary taken
+is the nearest one either side — never one that would leave the cell less than half the
+width asked for, since rounding always upwards hands a recording with 0.5 s GOPs a window
+half as wide again as the menu says, and nearest on its own draws a sliver wherever a dense
+run of boundaries stops. Counting GOPs also had to be done off **the whole recording's
+average**, because counting around the playhead halved the answer at either end, where only
+one side exists, and drew 1 minute 15 under "3 min"; going by time does not raise the
+question.
 
 **There is also a frame view.** That is the one for closing in on a cut point frame by
 frame, and reusing a 41-frame window gets it to a measured 27 ms per frame. One wheel notch
@@ -842,7 +857,11 @@ Two consequences, both in `thumbs_at`:
   enough to caption the picture beside a hole with the hole's own time. Thirty minutes of AT-X
   is where that showed: 25 of its 1889 entry points are closer together than the floor and so
   are not held, and a tolerance of 0.45 s let each of those cells be answered by the picture
-  next to it.
+  next to it. Two frames is itself too wide on a disc, so the tolerance is capped at **half
+  the distance to the entry point either side**: a Blu-ray puts one at every scene change,
+  and on a VC-1 disc a pair can be 0.067 s apart — the tolerance exactly — so a cell asking
+  for one of the pair was answered with the picture from the other, a different shot under
+  this one's caption.
 
 Frame mode, meanwhile, was only saved from answering a 0.033 s request with pictures 0.50 s
 apart by 0.033 falling narrowly under 0.038. It is now 0.033 against 0.45, which is not a
@@ -1556,3 +1575,37 @@ so an approximate seek leaves its start a second or two adrift — but it could 
 with that drift accepted. It gains the least, which is why it is last. The track list and
 the detection were held back for the same reason and are both done; see
 [It comes up in three stages](#it-comes-up-in-three-stages).
+
+### The thumbnail track thins out on a long recording
+
+`ThumbOptions::max_thumbs` is 4000, so the floor under the spacing is the recording's length
+divided by 4000: 0.36 s on a 24-minute episode, which keeps every entry point, and 2.1 s on a
+2 h 20 m film, which keeps one in four. The strip asks at each cell's own boundary, so on a
+long film most cells miss the track and fall through to a decode. That is not a hole — a run
+of cells is decoded together, in a few hundred milliseconds — but it is the difference
+between a strip that answers instantly and one that does not.
+
+Raising the cap is the obvious move, and the only question is the cost: a 192 px JPEG runs
+3–8 KB, so a film's 14 000 entry points come to 50–100 MB of held pictures against the 20 MB
+the cap allows now. A cap in bytes rather than in pictures would at least say what is being
+protected.
+
+### Building the track over VC-1 is slow
+
+Eight minutes of 1080p VC-1 takes 47 s to walk and decode into a thumbnail track — a tenth
+of real time — so a 2 h 20 m film would take a quarter of an hour, and until the pass has
+been there the strip is answered by decoding. Two things make it: VC-1 costs more to decode
+than MPEG-2, and a disc carries about twice the entry points a broadcast does.
+
+A third of that work is thrown away: the pictures the floor above drops are decoded first —
+874 of 2793 on the disc measured. Skipping them would want scene detection to stop needing
+them, and it compares *every* entry picture, which is where the signatures come from.
+Deciding what the detection actually needs at 0.067 s spacing would settle it.
+
+### The disc path has not been watched doing this
+
+The strip reads the same `Source` whether the recording is a file or a title inside an
+`.iso`, so what is written above holds for both — but it was measured and watched on `.m2ts`
+pieces cut out of the discs rather than on the discs themselves, because the dev VM has 3 GB
+free and the images are 20 and 30 GB. Worth confirming on a real disc, on a machine with the
+room for one.

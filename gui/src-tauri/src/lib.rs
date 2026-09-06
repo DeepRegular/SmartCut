@@ -872,6 +872,20 @@ async fn thumbs_at(
     off_thread(move || thumbs_now(&times, width, exact, &app)).await
 }
 
+/// How far it is from `at` to the nearest access point on either side of it,
+/// not counting one standing on `at` itself. Infinite where there is none.
+///
+/// The ground a film strip cell has to itself. A held picture further off
+/// than half of it is nearer to the neighbouring entry point than to the one
+/// it is meant to answer for, and a disc's entry points are close enough
+/// together for that to happen.
+fn to_neighbour(points: &[smartcut_core::AccessPoint], at: f64) -> f64 {
+    let i = points.partition_point(|p| p.time < at - 1e-6);
+    let after = points[i..].iter().find(|p| p.time > at + 1e-6).map(|p| p.time - at);
+    let before = points[..i].last().map(|p| at - p.time);
+    after.into_iter().chain(before).fold(f64::INFINITY, f64::min)
+}
+
 fn thumbs_now(
     times: &[f64],
     width: u32,
@@ -913,16 +927,25 @@ fn thumbs_now(
         // the tolerance a hundredth of a second on a three-minute recording and
         // half a second on a half-hour one -- the same hole caught on one and
         // papered over on the other, for no reason to do with either.
+        //
+        // ...and never as far as the next entry point, whichever side it lies.
+        // A disc puts one at every scene change, and on a VC-1 Blu-ray they
+        // come as close as two frames -- which is the slack itself, so a cell
+        // asking for one of them was answered with the picture from the other:
+        // a different shot entirely, under this one's caption. Half way to the
+        // neighbour is the furthest a picture can be and still be nearer to
+        // what was asked for than to anything else.
         let held: Option<Vec<Option<Shot>>> = {
             let guard = thumbs.0.lock().unwrap();
             guard
                 .as_ref()
                 .filter(|t| !exact.unwrap_or(false) && gap >= t.interval * 0.9)
                 .map(|track| {
-                    let tol = src.video.frame_duration() * 2.0;
+                    let fd = src.video.frame_duration();
                     times
                         .iter()
                         .map(|&t| {
+                            let tol = (fd * 2.0).min(to_neighbour(&src.points, t) / 2.0);
                             track.nearest(t).filter(|h| (h.time - t).abs() <= tol).map(|h| Shot {
                                 url: as_url(&h.jpeg),
                                 time: h.time,

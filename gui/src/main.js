@@ -836,17 +836,29 @@ function markHere(o) {
   reelWin.here = i;
 }
 
-/// The cells a GOP-divided reel is made of: `slots` of them, each covering a
-/// run of `every` GOPs, centred on the one the playhead stands in. `at` is
-/// the picture to show and the time to caption; `a` and `b` are the stretch
-/// the cell speaks for, which is what the playhead is placed against.
+/// The cells a GOP-divided reel is made of: `slots` of them, each beginning
+/// on a GOP boundary and covering about `span / vis` of the recording,
+/// centred on the GOP the playhead stands in. `at` is the picture to show and
+/// the time to caption; `a` and `b` are the stretch the cell speaks for,
+/// which is what the playhead is placed against.
 ///
-/// `every` is chosen so that the cells the *window* can hold cover about the
-/// span the menu asked for. That is what "GOP・3 分" means once the widths are
-/// fixed: three minutes across the window, at however many GOPs per cell that
-/// comes to. At the short end a cell cannot hold less than one GOP, so the
-/// window covers rather more than it says and every boundary is drawn -- the
-/// honest answer, and the one that reads.
+/// A cell is as long as the menu asked for, rounded to the nearest boundary
+/// either side. That is what "GOP・3 分" means once the widths are fixed:
+/// three minutes across the window, near enough, with every cell still
+/// standing on a place a cut is free. At the short end a cell cannot hold
+/// less than one GOP, so the window covers rather more than it says and every
+/// boundary is drawn -- the honest answer, and the one that reads.
+///
+/// **Chosen by time, not by counting boundaries.** Giving each cell a fixed
+/// number of GOPs is the same thing only where the GOPs are evenly spaced,
+/// which broadcast material is and a disc is not: a Blu-ray puts an entry
+/// point at every scene change as well as every second or so, and on one
+/// VC-1 disc they run from 0.067 s to 0.801 s apart. One cell per GOP drew
+/// those as cells of equal width standing for stretches of time twelve times
+/// apart -- a window of nine cells covering 0.6 s in an action scene and
+/// 7.2 s in a quiet one, both labelled "6 秒". The strip stopped being a
+/// ruler: the playhead crawled across a cell and then jumped four of them,
+/// and clicking a place on it landed nowhere near where it looked.
 ///
 /// Slots that fall outside the recording are kept, as blanks. They are what
 /// lets the reel slide far enough to hold the playhead at the middle when it
@@ -863,29 +875,66 @@ function gopCells(o, span, slots, vis) {
   // the GOP the playhead is standing in
   let i0 = 0;
   while (i0 + 1 < n && gops[i0 + 1] <= o + 1e-9) i0++;
-  // How many GOPs one cell has to swallow for `vis` of them to reach across
-  // the span the menu asked for. Off the whole recording's average rather
-  // than off the boundaries around the playhead, because at either end only
-  // half the span is there to count and the answer would come out half what
-  // it should be -- which drew a minute and a quarter under "3 分".
-  const every = Math.max(1, Math.round((span / vis) * (n / Math.max(outDur, 1e-9))));
+  // What one cell is meant to cover.
+  const d = Math.max(span / Math.max(vis, 1), 1e-3);
 
+  // The boundary each cell begins on: the playhead's, then the one nearest
+  // `d` further on, and so outwards in both directions. Nearest rather than
+  // the first one past it, which would round every cell up and hand a
+  // recording with 0.5 s GOPs a window half as wide again as the menu says.
+  // `-1` where the recording has run out, which the loops below leave blank.
   const half = slots >> 1;
+  const marks = new Array(slots).fill(-1);
+  marks[half] = i0;
+  for (let k = half + 1, j = i0; k < slots; k++) {
+    const want = gops[j] + d;
+    let m = j + 1;
+    while (m < n && gops[m] < want - 1e-9) m++;
+    if (m >= n) break;
+    // The boundary before it is nearer as often as not -- but never the
+    // cell's own, which would give it no width at all, and never one that
+    // would leave the cell less than half the width it was asked for. Where
+    // the boundaries are dense and then stop, nearest on its own picks the
+    // last of the dense run and draws a sliver beside a full-width cell,
+    // which is the unevenness this is here to stop.
+    if (m - 1 > j && gops[m - 1] - gops[j] >= d / 2 && want - gops[m - 1] < gops[m] - want) {
+      m--;
+    }
+    marks[k] = m;
+    j = m;
+  }
+  for (let k = half - 1, j = i0; k >= 0; k--) {
+    const want = gops[j] - d;
+    let m = j - 1;
+    while (m >= 0 && gops[m] > want + 1e-9) m--;
+    if (m < 0) break;
+    if (m + 1 < j && gops[j] - gops[m + 1] >= d / 2 && gops[m + 1] - want < want - gops[m]) {
+      m++;
+    }
+    marks[k] = m;
+    j = m;
+  }
+
   const cells = [];
-  for (let k = -half; k < slots - half; k++) {
-    const j = i0 + k * every;
-    if (j < 0 || j >= n) {
+  for (let k = 0; k < slots; k++) {
+    const j = marks[k];
+    if (j < 0) {
       cells.push({ live: false });
       continue;
     }
     const a = gops[j];
-    const b = Math.min(gops[j + every] ?? outDur, outDur);
+    // A cell runs to where the next one begins, so that the reel tiles the
+    // recording without a gap or an overlap. The outermost one has no next
+    // cell to end at and takes the width it was asked for -- not the rest of
+    // the recording, which would make the reel's last cell stand for half an
+    // hour and drag the playhead across it at a crawl.
+    const next = marks[k + 1];
+    const b = Math.min(next >= 0 ? gops[next] : a + d, outDur);
     cells.push({ at: a, a, b: Math.max(b, a + 1e-3), live: true });
   }
   // A blank has no time of its own, so it takes over where the cell beside it
   // leaves off. The reel stays continuous in time that way, and the playhead
   // can be found on it whichever slot it happens to fall in.
-  const d = Math.max(span / vis, 1e-3);
   for (let k = 1; k < cells.length; k++) {
     if (!cells[k].live && cells[k - 1].b !== undefined) {
       cells[k].a = cells[k - 1].b;
