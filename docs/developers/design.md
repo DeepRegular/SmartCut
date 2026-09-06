@@ -212,25 +212,48 @@ nothing else: the walk and the thumbnails run **at the same time on different
 recordings**, and a stop meant for one of them must not throw away the other's minutes
 of work.
 
-### A recording on a share is read once, not twice
+### One read only where the second one would really be a read
 
-The walk and the thumbnails read the same file twice, both of them end to end. On a local
-disk the second read is nearly free — it comes out of what the first one left in the page
-cache, and measured across the pair it is worth about a tenth. **A share has no such
-cache.** The second read is the file coming down the wire again, and at a hundred
-megabytes a second that is the whole of the wait.
+The walk and the thumbnails read the same file twice, both of them end to end.
+**Usually the second one is not a read at all.** The thumbnails follow the walk by about a
+clip, so they read a recording the machine has just pulled through, and it comes out of
+the page cache. Counted at the block layer, a list holding one 2.65 GB recording read
+1.00x its own size; two of them, 1.00x. **A read that hits the cache reaches neither the
+disk nor the wire.**
 
-So **where the recording lives decides how it is read** (`one_read`). A recording on a
-network filesystem is read once by `scan_with_pictures`, which builds the index and the
-pictures in the same pass. The test is a longest-prefix lookup in `/proc/self/mounts`
-(`netpath::is_remote`), because mounts nest: a share at `/mnt/rec` inside a local `/mnt`
-is a network path, and the shorter prefix would say it was not.
+So a share is not by itself a reason to read once. What is a reason is **a working set the
+cache cannot hold.** The same list with 9.02 GB in it, on a machine with 6.8 GB to spare,
+read 1.71x: by the time a clip's pictures came up, the walk had pulled the next recording
+through and evicted it. Across a share that 0.71 is the file coming down the wire again,
+and at a hundred megabytes a second it is the whole of the wait. On a local disk it is
+about a second a gigabyte, and the split path still finishes sooner.
 
-What is given up is **when the index arrives.** Two reads can hand it over after the
-first of them, at disk speed — a second a gigabyte. One read has it only when the pass is
-over, at decoder speed — around four. A row becomes *legible* within a second either way
-(see below), so what moves later is only the moment its lossless points, its cut editor
-and its commercial detection become available.
+| Working set | Memory to spare | Read at the block layer |
+|---|---|---|
+| 2.65 GB (one recording) | 6.8 GB | 1.00x |
+| 5.27 GB (two) | 6.8 GB | 1.00x |
+| 9.02 GB (three) | 6.8 GB | 1.71x |
+
+So `one_read` is true only where **both** hold: the recording is on a share
+(`netpath::is_remote`, a longest-prefix lookup in `/proc/self/mounts`, because mounts nest
+— a share at `/mnt/rec` inside a local `/mnt` is a network path) and the cache cannot hold
+it (`cache_can_hold`).
+
+Holding it is measured as **twice the recording** against the memory to spare, because
+that is what has to fit: the recording the picture pass still wants, and the next one the
+walk is pulling through behind it. The next one's size is not known there — which row
+follows which is the list's business — so its own size stands in for it.
+
+The comparison is against `MemAvailable`, not free memory. The question is how much the
+page cache can be counted on to keep, and that memory is almost all cache already. Free
+memory would have a machine with 6.8 GB of reclaimable cache answer 0.3 GB, and every
+recording would look too big for it.
+
+What is given up is **when the index arrives.** Two reads can hand it over after the first
+of them, at disk speed — a second a gigabyte. One read has it only when the pass is over,
+at decoder speed — around four. A row becomes *legible* within a second either way (see
+below), so what moves later is only the moment its lossless points, its cut editor and its
+commercial detection become available.
 
 `SMARTCUT_ONE_READ=1` / `=0` forces either path, for measuring the two against each other
 on one machine.
@@ -1548,13 +1571,20 @@ with that drift accepted. It gains the least, which is why it is last. The track
 the detection were held back for the same reason and are both done; see
 [It comes up in three stages](#it-comes-up-in-three-stages).
 
-### Choosing the one-read path by measurement rather than by where the file is
+### Making the one-read guess less of a guess
 
-`one_read` decides on the filesystem type today (`netpath::is_remote`). What it actually
-wants to know is whether the second read will come out of the page cache, and that is as
-much about **the size of the recording against free memory** as it is about the mount: a
-recording larger than RAM is read cold the second time on a local disk too. Measuring the
-effective rate over the first few hundred megabytes is one way to decide.
+`one_read` now turns on where both hold: the recording is on a share, and the cache cannot
+hold it (see [One read only where the second one would really be a
+read](#one-read-only-where-the-second-one-would-really-be-a-read)). What is left is that
+holding it rests on two approximations.
 
-Being wrong either way is cheap — a local recording read once costs about a tenth more in
-total, and a shared one read twice doubles the transfer — so this is not urgent.
+- **The next recording's size is stood in for by this one's.** What actually pushes it out
+  of the cache is whichever recording the walk takes next, and a much larger one would
+  make the guess wrong. Which row follows which is something the list knows and could
+  pass down.
+- **`MemAvailable` is read once, as the walk starts.** It moves while three lanes are at
+  work, and nothing follows it.
+
+Guessing wrong either way is cheap — reading once when the cache would have held it makes
+the index arrive later, and reading twice when it would not adds a transfer on a share —
+so this is not urgent.

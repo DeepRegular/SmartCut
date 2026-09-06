@@ -1525,16 +1525,28 @@ fn clip_info_of(path: &str, src: &Source, cached: bool, seconds: f64) -> ClipInf
 /// Whether this recording is worth reading once rather than twice.
 ///
 /// The index and the pictures are two passes over the same file, and both
-/// read all of it. On a local disc the second pass is nearly free -- the
-/// machine still has the file in memory from the first, measured at a tenth
-/// of the pair -- and taking them apart is what lets every row in the list
-/// become real at disc speed while the pictures follow behind.
+/// read all of it. Taking them apart is what lets every row in the list
+/// become real at disc speed while the pictures follow behind, so the split
+/// path is the one to want -- unless the second read actually costs
+/// something.
 ///
-/// Over a share there is no page cache big enough to make the second read
-/// free; it is the file coming down the wire a second time, and at a hundred
-/// megabytes a second that is the whole of the wait. So there the two are
-/// done in one read, at the price of the index arriving at the end of it
-/// rather than a quarter of the way through.
+/// It usually does not. The pictures follow the walk by about one clip, so
+/// they read a recording the machine has just pulled through and the second
+/// read is served out of the page cache. Counted at the block layer, a list
+/// of one 2.65 GB recording read 1.00x its own size, and two of them 1.00x;
+/// **a page-cache hit never reaches the disc, and never reaches the wire
+/// either.** So a share is not by itself a reason to read once.
+///
+/// What is a reason is a working set the cache cannot hold. The same list
+/// with 9.02 GB in it, on a machine with 6.8 GB to spare, read 1.71x: by the
+/// time a clip's pictures came up, the walk had pulled the next recording
+/// through and evicted it. Over a share that 0.71 is the file coming down the
+/// wire again, and at a hundred megabytes a second it is the whole of the
+/// wait. On a local disc it is a second or so a gigabyte and the split path
+/// still finishes sooner, which is why this asks about the share as well.
+///
+/// So: one read only where both are true. See [`cache_can_hold`] for the
+/// memory half.
 ///
 /// The environment switch is for measuring the two against each other on one
 /// machine: `SMARTCUT_ONE_READ=1` forces it on, `=0` off.
@@ -1549,7 +1561,62 @@ fn one_read(app: &tauri::AppHandle, path: &str) -> bool {
     if held_index(app, path).is_some() {
         return false;
     }
-    smartcut_core::netpath::is_remote(std::path::Path::new(path))
+    smartcut_core::netpath::is_remote(std::path::Path::new(path)) && !cache_can_hold(path)
+}
+
+/// Whether the machine can be expected to still hold this recording when its
+/// pictures are wanted, a clip's walk later.
+///
+/// Twice its size, because that is what has to fit: the recording itself,
+/// still wanted by the picture pass, while the walk pulls the *next* one
+/// through behind it. The next one's size is not known here -- it is the
+/// list's business which row comes after which -- and its own size is the
+/// best guess available for it.
+///
+/// `MemAvailable` and not free memory. What this wants to know is how much
+/// the page cache can be counted on to keep, and almost all of it is cache
+/// already; the kernel's own estimate of what a new allocation could have is
+/// the closest thing to an answer. Free memory would say 0.3 GB on a machine
+/// with 6.8 GB of reclaimable cache, and every recording would look too big.
+///
+/// `false` where the machine will not say, which puts a share back on the
+/// one-read path -- the answer this had before it asked about memory at all.
+fn cache_can_hold(path: &str) -> bool {
+    // The file the bytes are in, which for a clip inside a disc image is the
+    // image -- the same thing [`seek_index::cache_path`] asks about, and for
+    // the same reason: a path into an image is not a path to stat.
+    let file = smartcut_core::input::Input::parse(path)
+        .map_or_else(|_| std::path::PathBuf::from(path), |i| i.file);
+    let Ok(meta) = std::fs::metadata(file) else { return false };
+    mem_available().is_some_and(|free| meta.len().saturating_mul(2) <= free)
+}
+
+/// What the kernel reckons is available for a new allocation, in bytes.
+#[cfg(target_os = "linux")]
+fn mem_available() -> Option<u64> {
+    mem_available_in(&std::fs::read_to_string("/proc/meminfo").ok()?)
+}
+
+#[cfg(not(target_os = "linux"))]
+fn mem_available() -> Option<u64> {
+    None
+}
+
+/// `MemAvailable` out of the shape `/proc/meminfo` has, in bytes.
+///
+/// By its whole name, because `MemFree` comes first in that file and starts
+/// the same way -- and it is the wrong number by an order of magnitude on any
+/// machine that has been up long enough to fill its cache, which is every
+/// machine this question is asked on.
+#[cfg(any(target_os = "linux", test))]
+fn mem_available_in(meminfo: &str) -> Option<u64> {
+    meminfo
+        .lines()
+        .find_map(|l| l.strip_prefix("MemAvailable:"))
+        // `MemAvailable:   6814336 kB`
+        .and_then(|rest| rest.split_whitespace().next())
+        .and_then(|n| n.parse::<u64>().ok())
+        .map(|kb| kb * 1024)
 }
 
 /// The walk and the pictures in one read, for a recording it would cost twice
@@ -3285,5 +3352,29 @@ mod tests {
         let none: Vec<usize> = Vec::new();
         assert_eq!(resolve_pids(streams.into_iter(), Vec::new(), &[0x1200]), none);
         assert_eq!(resolve_pids(streams.into_iter(), vec![3], &[]), vec![3]);
+    }
+
+    /// How much of the machine the page cache can be counted on for, which is
+    /// what decides whether a recording on a share is read once or twice.
+    /// See [`cache_can_hold`].
+    #[test]
+    fn the_memory_left_is_what_can_be_reclaimed_not_what_is_free() {
+        let meminfo = "\
+MemTotal:        8118848 kB
+MemFree:          310000 kB
+MemAvailable:    6814336 kB
+Buffers:            2048 kB
+Cached:          6500000 kB
+";
+        // The one that counts, and not the 0.3 GB sitting above it: almost
+        // all of this machine's memory is cache, and cache is exactly what
+        // the second read wants to come out of.
+        assert_eq!(mem_available_in(meminfo), Some(6_814_336 * 1024));
+
+        // A kernel that does not report it at all -- `MemAvailable` arrived
+        // in Linux 3.14 -- says nothing rather than guessing.
+        assert_eq!(mem_available_in("MemTotal: 8118848 kB\nMemFree: 310000 kB\n"), None);
+        assert_eq!(mem_available_in(""), None);
+        assert_eq!(mem_available_in("MemAvailable:\n"), None);
     }
 }
