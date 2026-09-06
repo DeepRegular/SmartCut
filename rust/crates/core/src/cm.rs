@@ -293,6 +293,15 @@ pub fn blocks(candidates: &[Candidate], opts: &DetectOptions, min_score: f64) ->
 /// off. The cut itself is a change between consecutive pictures, and
 /// [`crate::thumbs::cut_near`] finds which one.
 pub fn refine_boundaries(src: &crate::Source, blocks: &mut [Block], window: f64, floor: f64) {
+    // Nothing to refine against. A recording whose access points have not been
+    // found yet -- see [`crate::Outline`] -- would send [`crate::thumbs::cut_near`]
+    // looking for the entry point before each boundary, find none, and read the
+    // file from its beginning to get there: twenty minutes of video decoded to
+    // move one mark by a frame, and again for the next mark. The estimate the
+    // block arrived with is a great deal better than that.
+    if src.points.is_empty() {
+        return;
+    }
     for b in blocks.iter_mut() {
         // The head of the recording is not a cut; it is where the file starts.
         if b.start > 0.0 {

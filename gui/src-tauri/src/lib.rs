@@ -2026,13 +2026,21 @@ struct StreamInfo {
 
 /// What a recording carries, for the track menu to lay out.
 ///
-/// Reads the cached scan, so opening the menu on a clip the list has already
-/// read costs nothing. What it does not do is decide anything: which of these
-/// are written is the window's answer, sent back with the export.
+/// Answered from the container alone, which is where every one of these
+/// actually comes from: the streams, their PIDs, their languages, what each
+/// one is, and what a cut cannot carry are all things the recording *names*.
+/// None of it is in the access points, so none of it waits for the walk --
+/// the menu opens on a recording nothing has read yet, in the time one open
+/// takes. It used to go through `scan_cached`, which on a recording with no
+/// index on disc meant **a second walk over a file already being walked** by
+/// the window that was asking.
+///
+/// What it does not do is decide anything: which of these are written is the
+/// window's answer, sent back with the export.
 #[tauri::command]
-async fn tracks(path: String, app: tauri::AppHandle) -> Result<Vec<StreamInfo>, String> {
+async fn tracks(path: String) -> Result<Vec<StreamInfo>, String> {
     off_thread(move || {
-        let (src, _) = scan_cached(&app, &path)?;
+        let src = smartcut_core::outline(&path).map_err(|e| e.to_string())?;
         let main = src.audio.as_ref().map(|a| a.stream_index);
         let mut out = Vec::new();
         for a in &src.audios {
@@ -2177,11 +2185,18 @@ type Say = std::sync::Arc<dyn Fn(&str, f64) + Send + Sync>;
 ///
 /// `src` is what the bitstream is read out of -- captions, audio, logo --
 /// and `pictures` what a boundary is refined against, which is the proxy
-/// where there is one and `src` itself otherwise. `say` carries the phase
+/// where there is one and the recording itself otherwise. It is a closure
+/// rather than a recording because it is wanted at the *end* of a pass that
+/// runs for minutes, and what is available then is not what was available at
+/// the start; `None` leaves the blocks with the times they were found at. `say` carries the phase
 /// and how far through it back to whoever asked, because the same pass
 /// serves the editor's own button and the clip list's batch, and the two
 /// report to different places.
-fn detect_now(src: &Source, pictures: &Source, say: Say) -> Result<CmResult, String> {
+fn detect_now(
+    src: &Source,
+    pictures: impl FnOnce() -> Option<Source>,
+    say: Say,
+) -> Result<CmResult, String> {
     let opts = smartcut_core::DetectOptions::default();
 
     // Reading the audio is a few seconds; the logo is two passes over the
@@ -2258,8 +2273,15 @@ fn detect_now(src: &Source, pictures: &Source, say: Say) -> Result<CmResult, Str
     // Neither is a picture. The cut itself is a scene change, so a
     // boundary within reach of one is moved onto the exact frame it
     // happens on.
+    //
+    // Asked for only now: see the note where this is passed in. Where there
+    // is nothing to refine against -- no recording walked yet -- the blocks
+    // keep their estimates, and `refine_boundaries` makes the same check
+    // itself for a recording whose points have not been found.
     let mut blocks = blocks;
-    smartcut_core::cm_refine_boundaries(pictures, &mut blocks, 0.5, 0.08);
+    if let Some(pictures) = pictures() {
+        smartcut_core::cm_refine_boundaries(&pictures, &mut blocks, 0.5, 0.08);
+    }
 
     Ok(CmResult {
         logo_found: logo.is_some(),
@@ -2448,35 +2470,74 @@ async fn cm_cached(path: String, app: tauri::AppHandle) -> Result<Option<CmResul
 
 /// The editor's own detection, against the recording that is open.
 #[tauri::command]
-async fn detect_cm(app: tauri::AppHandle) -> Result<CmResult, String> {
+async fn detect_cm(path: String, app: tauri::AppHandle) -> Result<CmResult, String> {
     // Reads the whole audio track, so it belongs off the UI thread.
     tauri::async_runtime::spawn_blocking(move || {
-        // Taken before the recording's lock and kept for the whole pass:
-        // refining a boundary is a picture comparison and nothing more, so it
-        // reads from the proxy where there is one.
-        let pictures = with_pictures(&app, |s, _| Ok(s.clone()))?;
-        let state = app.state::<Opened>();
-        let guard = state.0.lock().unwrap();
-        let src = guard.as_ref().ok_or("no file open")?;
+        // What the three reading passes need is the recording's streams, and
+        // the container names those. So this does not wait for the walk: on a
+        // recording nothing has read yet the container's own answer is worn as
+        // a `Source` and the captions, the audio and the logo are read out of
+        // it exactly as they would be otherwise. See
+        // [`smartcut_core::Outline::into_source`].
+        //
+        // Cloned rather than borrowed, and the lock let go before the pass
+        // starts. This runs for minutes; holding [`Opened`] for that long
+        // would stop the film strip and the stage, which read through the
+        // same lock.
+        let src = match opened_clone(&app, &path) {
+            Some(src) => src,
+            None => smartcut_core::outline(&path).map_err(|e| e.to_string())?.into_source(),
+        };
         let reporter = app.clone();
+        let watcher = app.clone();
+        let owned = path.clone();
         let res = detect_now(
-            src,
-            &pictures,
+            &src,
+            // Asked for at the end rather than at the start, because that is
+            // when it is wanted and a great deal happens in between. A
+            // detection begun while the recording was still being walked
+            // finds the walk long finished by the time it has a boundary to
+            // move: the reading is minutes and the walk is seconds. Where it
+            // is somehow still not, the blocks keep the times they were found
+            // at -- an estimate, and a better one than nothing.
+            move || opened_clone(&watcher, &owned),
             std::sync::Arc::new(move |phase: &str, done: f64| {
                 let _ = reporter.emit("cm-progress", (phase.to_string(), done));
             }),
         )?;
         // Written down whichever window asked for it: it is the recording's
         // answer, not the window's, and the list is where it will be wanted
-        // next. Out from under the recording's lock first -- the editor has
-        // to keep answering, and this is a file being written.
-        let path = src.path.clone();
-        drop(guard);
+        // next.
         remember_cm(&app, &path, &res);
         Ok(res)
     })
     .await
     .map_err(|e| e.to_string())?
+}
+
+/// A copy of the recording the editor has open, when that is `path`.
+///
+/// Copied so the caller can let the lock go: everything the editor draws
+/// reads through it, and a pass that keeps it for minutes is a window that
+/// has stopped redrawing for minutes.
+///
+/// The proxy first, where there is one, for the same reason [`with_pictures`]
+/// prefers it -- refining a boundary is a picture comparison and nothing
+/// more. `None` where nothing is open, or where what is open is a different
+/// recording: the clip list asks about clips the editor is not on.
+fn opened_clone(app: &tauri::AppHandle, path: &str) -> Option<Source> {
+    {
+        let state = app.state::<Proxy>();
+        let guard = state.0.lock().unwrap();
+        if let Some(p) = guard.as_ref() {
+            if p.src.path == path {
+                return Some(p.src.clone());
+            }
+        }
+    }
+    let state = app.state::<Opened>();
+    let guard = state.0.lock().unwrap();
+    guard.as_ref().filter(|s| s.path == path).cloned()
 }
 
 /// The clip list's detection, against a recording nothing is looking at.
@@ -2501,9 +2562,10 @@ async fn detect_cm_at(path: String, app: tauri::AppHandle) -> Result<CmResult, S
         let (src, _) = scan_cached(&app, &path)?;
         let reporter = app.clone();
         let owned = path.clone();
+        let refine = src.clone();
         let res = detect_now(
             &src,
-            &src,
+            move || Some(refine),
             std::sync::Arc::new(move |phase: &str, done: f64| {
                 let _ =
                     reporter.emit("clip-cm-progress", (owned.clone(), phase.to_string(), done));

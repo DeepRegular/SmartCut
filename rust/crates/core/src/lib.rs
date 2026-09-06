@@ -611,6 +611,48 @@ pub struct Outline {
     pub byte_seekable: bool,
 }
 
+impl Outline {
+    /// The container's answer wearing a [`Source`]'s shape, with no index in
+    /// it.
+    ///
+    /// For the passes that *read* a recording rather than seek about in it --
+    /// the captions, the audio, the logo -- every one of which takes a
+    /// `Source` and none of which so much as looks at `points`. That is what
+    /// lets a commercial detection start on a recording the walk has not
+    /// finished: those three passes are minutes long, and the walk that would
+    /// have gated them is seconds.
+    ///
+    /// **Not a `Source` to plan, cut or take an exact picture from.** Anything
+    /// that seeks by access point finds none here and falls back to reading
+    /// from the beginning of the file, which is not wrong but is not
+    /// affordable either. Those want [`scan`]. `points` being empty is the
+    /// test, and the passes that cannot do without them make it --
+    /// [`cm::refine_boundaries`] is the one that has to.
+    pub fn into_source(self) -> Source {
+        Source {
+            path: self.path,
+            input: self.input,
+            video: self.video,
+            audio: self.audio,
+            audios: self.audios,
+            captions: self.captions,
+            dropped: self.dropped,
+            duration: self.duration,
+            start_time: self.start_time,
+            byte_seekable: self.byte_seekable,
+            points: Vec::new(),
+            // Nothing was measured, so nothing is known: a caller that cares
+            // about leading pictures must refine before it believes any.
+            leading_known: false,
+            index_name: "no index",
+            // The floor `scan` would clamp to. There are no gaps to take a
+            // mean of, and this is only ever used as a "read from a little
+            // earlier" margin.
+            seek_margin: 1.0,
+        }
+    }
+}
+
 /// The container's own answer about a recording. See [`Outline`].
 pub fn outline(path: &str) -> Result<Outline> {
     outline_of(path).map(|(o, _)| o)

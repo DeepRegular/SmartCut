@@ -367,6 +367,64 @@ The screen layout follows TMPGEnc MPEG Smart Renderer 6's cut editor. What was b
 is not the look but **the movements of the hand**, and above all not mixing two ideas
 together.
 
+### It comes up in three stages
+
+This window used to show **its own name and nothing else** until the walk had finished.
+The walk reads the whole recording — a second a gigabyte, and over half a minute for four
+gigabytes across a share — and there was nothing to do for the length of it.
+
+It comes up in three stages now, and each one waits only for what it actually needs.
+
+| Stage | Waits for | Brings |
+|---|---|---|
+| 1 | `open_outline` (thirty milliseconds) | Length, size, rate, sound, codec; the timeline, the scrubber, the cards, the marks, **cutting itself**, the track list and commercial detection. The stage's picture comes from `glimpse`, an approximate seek |
+| 2 | The walk (a second a gigabyte) | The lossless points, snapping, a GOP-divided filmstrip, exact stage pictures, the plan, playback |
+| 3 | The picture pass (four seconds a gigabyte) | The filmstrip's pictures, the scenes, the hover |
+
+**Cuts are held as times.** A cut made before the walk finished stands at the instant it
+was made, and the points arriving never move it. What changes is only the answer to what
+it *costs*: a cut that missed an access point re-encodes the few frames at its join, and
+無劣化点へ吸着 — enabled once the points are in — makes it lossless. Measured, a cut made
+during the walk came out as sixteen re-encoded frames, 99.9% lossless.
+
+**Only two things are switched off in stage one.** 無劣化点へ吸着 has nothing to snap to,
+and 再生 decodes continuously, so an approximate seek gives it no reliable start. Nothing
+else waits.
+
+**The track list and the detection turned out not to need the wait at all.** Both were
+shaped as "read the recording through the opened `Source`", which is what held them back —
+but what they wanted out of a `Source` was never the access points. Everything the track
+list lays out — stream index, PID, language, codec, channels, what cannot be carried — is
+**named by the container**, so `outline()` answers it. (It went through `scan_cached`
+before, which on a recording with no index meant **a second walk over a file the very
+window asking was already walking**.) And the three reading passes a detection makes —
+captions, audio, logo — never look at `points` once.
+
+### A detection is a reading half and a refining half
+
+What a detection needs the index for is **moving a boundary it has already found**. The
+caption resets, the silences and the logo all come out of reading the recording from the
+front. Only `cm::refine_boundaries`, which puts a boundary on the frame a scene actually
+changes, needs the key pictures.
+
+So the recording to refine against is asked for at the **end** of the pass rather than at
+the start — which is why `detect_now` takes a closure for `pictures` rather than a
+recording. The reading is minutes and the walk is seconds, so **by the time there is a
+boundary to move, the walk is long finished.** Measured, a detection started during the
+walk wrote out refined values.
+
+Where it somehow is not, the blocks keep the times they were found at: an estimate, and a
+better one than nothing. `refine_boundaries` makes the same check itself for a recording
+with no points — without it `thumbs::cut_near` would look for the entry point before each
+boundary, find none, and **read the file from its beginning to get there**: twenty minutes
+decoded to move one mark by a frame, and again for the next mark.
+
+**The lock is let go before the pass starts.** A detection runs for minutes, and the
+filmstrip and the stage read through the same `Opened`. It used to be held for the whole
+of it. The recording is copied out first now (`opened_clone`), which also picks the path:
+the proxy where there is one — refining a boundary is a picture comparison and nothing
+more — and **`None` where what is open is a different recording.**
+
 ### Output time and source time
 
 **What is on screen is the edited timeline, not the original recording.** A cut region
@@ -1481,31 +1539,14 @@ in is a version that comes back wrong.
 Things that have **not been decided against, only not done yet**. What follows is why, and
 where to start if they are taken up.
 
-### Commercial detection and the track list, without waiting for the walk
+### Playback in stage one
 
-The cut editor comes up in three stages. The container's own answer (thirty milliseconds)
-brings the timeline and cutting; the walk (a second a gigabyte) brings the lossless
-points, snapping and the plan; the thumbnail pass (four seconds a gigabyte) fills the
-filmstrip and the scenes.
-
-Four buttons are switched off in stage one. 無劣化点へ吸着 has nothing to snap to, which settles
-that one. The other three — 再生, トラック and CM を検出 — are held back by one thing only: **they
-read the recording through the opened `Source`**, which does not exist yet. What they
-actually want out of a `Source` is not the access points.
-
-- **The track list is the closest.** Everything `tracks` returns — stream index, PID,
-  language, codec, channels, what is being left out — is **named by the container**, and
-  `Outline` already holds all of it. It calls `scan_cached` today, which with no index on
-  disk **starts a second walk over the same file** — a reason to keep it switched off, not
-  a reason it cannot be done. Built from `outline()` it would answer in stage one.
-- **Commercial detection splits in two.** Reading the captions, the audio and the logo is
-  demuxing and decoding, and needs no access points. What needs them is the half that
-  *refines* a boundary once it is found, against the key pictures
-  (`cm::refine_boundaries`, which calls `thumbs::cut_near`). The boundaries could be found
-  first and refined when the points land — the same shape as a cut, which is held as a
-  time and becomes snappable when the points arrive.
-- **Playback can be last.** It decodes continuously, so an approximate seek gives it no
-  reliable start, and it gains the least.
+`再生` is one of the two things still switched off in stage one, and unlike 無劣化点へ吸着
+(which has nothing to snap to) it is not impossible in principle. It decodes continuously,
+so an approximate seek leaves its start a second or two adrift — but it could be started
+with that drift accepted. It gains the least, which is why it is last. The track list and
+the detection were held back for the same reason and are both done; see
+[It comes up in three stages](#it-comes-up-in-three-stages).
 
 ### Choosing the one-read path by measurement rather than by where the file is
 

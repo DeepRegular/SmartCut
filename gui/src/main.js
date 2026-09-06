@@ -1716,18 +1716,27 @@ function keptAudio() {
 /// Switch off what the walk has not made possible yet, and on again when it
 /// has.
 ///
-/// Four things need the access points and nothing else does. Playback, the
-/// track list and the commercial detection all read the recording through
-/// the opened [`Source`], which does not exist until the walk has built one;
-/// 無劣化点へ吸着 has nothing to snap to. Everything else in the window --
-/// the timeline, the cards, the marks, cutting itself -- works on times, and
-/// times are known from the moment the container was opened.
+/// Two things, now. 無劣化点へ吸着 has nothing to snap to until there are
+/// access points, and playback decodes continuously, so an approximate seek
+/// gives it no reliable place to start.
+///
+/// The track list and the commercial detection used to be here too, for a
+/// reason that turned out not to be one: they were reading the recording
+/// through the opened [`Source`], not through anything in it that the walk
+/// produces. The tracks are named by the container, and the three passes a
+/// detection makes -- captions, audio, logo -- never look at an access point.
+/// Both answer from the container's own answer now, so both work from the
+/// moment the window opens.
+///
+/// Everything else in the window -- the timeline, the cards, the marks,
+/// cutting itself -- works on times, and times are known from the moment the
+/// container was opened.
 ///
 /// The scene buttons are not here: they wait on the pictures rather than on
 /// the points, and `prepare` turns them on.
 function paintReadiness() {
   const yet = walked();
-  for (const id of ["play", "tracks", "detect-cm", "snap"]) el(id).disabled = !yet;
+  for (const id of ["play", "snap"]) el(id).disabled = !yet;
 }
 
 function paintSourceInfo() {
@@ -2278,7 +2287,7 @@ el("detect-cm").addEventListener("click", async () => {
   el("detect-cm").disabled = true;
   el("cm-note").textContent = tr("editor.detecting");
   try {
-    const res = await invoke("detect_cm");
+    const res = await invoke("detect_cm", { path: src.path });
     cmSummary = cmNote(res);
     el("cm-note").textContent = cmSummary;
     applyCmBlocks(res.blocks);
