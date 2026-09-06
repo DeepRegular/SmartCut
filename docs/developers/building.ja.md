@@ -78,6 +78,7 @@ bash tests/run_cm_tests.sh            # CM 検出と人間の答えの照合    
 bash tests/run_disc_tests.sh          # BDAV と BDMV をフォルダーと .iso から読む       35
 bash tests/run_dvd_tests.sh           # DVD-Video をフォルダーと .iso から読む          23
 bash tests/run_bd_audio_tests.sh      # ディスクの音声が書き出せるか                    39
+bash tests/run_vc1_tests.sh           # VC-1 エンコーダをデコーダに通す                  4
 ```
 
 ### フィクスチャ
@@ -143,6 +144,24 @@ TMPDIR=~/tmp bash tests/run_proxy_tests.sh
 
 既定では `~/media` を見る。`SMARTCUT_MEDIA` で変更できる。音声の比較には numpy が
 必要で、無い場合は SKIP になる。
+
+`run_vc1_tests.sh` も実素材を読むが、要るものが特殊なので別に挙げておく。**VC-1** で
+書かれた録画——実際には 2010 年頃までにプレスされた Blu-ray——が必要で、`SMARTCUT_VC1`
+でその `.m2ts`（あるいはその一部）を指定する。指定が無ければ、通ったふりをせずに
+終了する。さらに、通常の `cargo build --release` では作られないエンコーダ側の
+example バイナリも要る。
+
+```bash
+cd rust && cargo build --release --examples          # -> target/release/examples/vc1enc
+SMARTCUT_VC1=~/media/disc.m2ts bash tests/run_vc1_tests.sh
+```
+
+4 つのうち 3 つは、その録画のピクチャを粗い・中くらい・細かい量子化ステップで
+符号化し、libavcodec で復号して戻ってきたものを測る。残る 1 つは、両端がアクセス
+ポイントの間に落ちる 10 秒のカット——head と tail の両方を書くことになる——を行い、
+その間のコピー部分が録画自身のバイト列としてそのまま現れることを確かめる。
+参照ピクチャをどこから取るかは `SMARTCUT_VC1_AT`（既定は 20 秒）で動かせる。
+冒頭が平坦すぎて測れないディスク向けである。
 
 ### 実装を差し替えて結果を比べる
 

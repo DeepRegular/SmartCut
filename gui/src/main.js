@@ -1531,7 +1531,14 @@ async function refreshPlan() {
   // that is a question about where the access points are. Until the walk has
   // found them there is no answer to give, and asking for one would only get
   // "no file open" back.
-  if (src && !walked()) {
+  //
+  // `opening` is that same wait one step earlier: the window is up and a
+  // recording is on its way into it, but `open_outline` has not answered yet,
+  // so `src` is either still null or -- on a reopen -- still the last
+  // recording's. Either way the band read 「ファイルを開いてください」 over a
+  // window that was reading a file. Only the genuinely empty editor asks for
+  // one.
+  if (opening || (src && !walked())) {
     el("plan-text").textContent = tr("plan.reading");
     el("segments").innerHTML = "";
     el("copied-bar").style.width = "0%";
@@ -1783,6 +1790,9 @@ async function openPath(picked, saved, side, name, chapters, dropPids) {
   if (!picked) return;
   shownName = name || null;
   el("title").textContent = tr("editor.analysing");
+  // The band comes up out of the markup saying 「ファイルを開いてください」,
+  // which stops being true here rather than when `src` lands.
+  schedulePlan();
   try {
     // The container's own answer first, which costs one open. It has
     // everything this window draws with except where the access points are --

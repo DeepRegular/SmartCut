@@ -140,6 +140,7 @@ fn main() -> Result<()> {
     // All of these follow the recording unless they are asked not to.
     let mut audio_channels: Option<u16> = None;
     let mut audio_bit_rate: Option<usize> = None;
+    let mut vc1_quant: Option<u8> = None;
     let mut audio_sample_rate: Option<u32> = None;
     let mut audio_bits: Option<u8> = None;
     // Everything the recording carries is written unless it is named here.
@@ -196,6 +197,16 @@ fn main() -> Result<()> {
                         .ok()
                         .filter(|c| (1..=8).contains(c))
                         .with_context(|| format!("--audio-channels wants 1..8, got {v:?}"))?,
+                );
+            }
+            "--vc1-quant" => {
+                i += 1;
+                let v = args.get(i).context("--vc1-quant needs a step")?;
+                vc1_quant = Some(
+                    v.parse::<u8>()
+                        .ok()
+                        .filter(|&q| (3..=31).contains(&q))
+                        .with_context(|| format!("--vc1-quant wants 3..31, got {v:?}"))?,
                 );
             }
             "--audio-bitrate" => {
@@ -300,7 +311,7 @@ fn main() -> Result<()> {
         bail!(
             "usage: smartcut <input> [--keep START-END]... [--cut START-END]... \
              [--drop-stream INDEX]... [--tables partial|broadcast|muxer] [--no-open-gop] \
-             [--title N]\n\
+             [--vc1-quant 3..31] [--title N]\n\
              <input> is a recording, or a disc -- a BDAV, BDMV or VIDEO_TS folder, \
              or an .iso of one -- whose recordings are listed when no --title \
              is given"
@@ -748,6 +759,17 @@ fn main() -> Result<()> {
     // As is naming a codec: there is no copying a frame into one it is not
     // already in.
     let recoded = audio_codec != smartcut_core::AudioCodec::Source;
+    // Whose encoder writes the partial GOPs. Worth saying for the one codec
+    // libavcodec cannot encode, because the answer is "this program's own"
+    // and because the step it writes at is the one setting that changes what
+    // comes out of it.
+    if matches!(src.video.codec.as_str(), "vc1" | "wmv3") {
+        println!(
+            "\nvideo :  partial GOPs written as VC-1 intra pictures at quantizer {} \
+             (this program's own encoder; libavcodec has none)",
+            vc1_quant.unwrap_or(smartcut_core::cut::VC1_DEFAULT_QUANT),
+        );
+    }
     println!(
         "\nrender:  audio {}{}{}{}{}{}",
         if asked.is_some() || resampled.is_some() || requantised.is_some() || recoded {
@@ -797,6 +819,7 @@ fn main() -> Result<()> {
             audio_bits,
             drop_streams,
             tables,
+            vc1_quant,
             ..Default::default()
         },
     )?;

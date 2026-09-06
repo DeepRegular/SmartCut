@@ -90,11 +90,11 @@ Every build except the `.deb` includes FFmpeg, so there is nothing else to insta
 
 | Platform | File | Notes |
 |---|---|---|
-| **Linux** | `SmartCut_0.3.5_amd64.AppImage` | Make it executable and run it |
-| **Linux** | `SmartCut-0.3.5-linux-x86_64.tar.gz` | Unpack and run `./smartcut`. Use this if you would rather not deal with FUSE |
-| **Linux (Debian/Ubuntu)** | `smartcut_0.3.5_amd64.deb` | `sudo apt install ./smartcut_0.3.5_amd64.deb`. Only 3.1 MB, because it links against your system FFmpeg |
-| **Windows** | `SmartCut_0.3.5_x64-setup.exe` | Installer |
-| **Windows** | `smartcut-portable-x64-0.3.5.zip` | Unzip and run `smartcut.exe` |
+| **Linux** | `SmartCut_0.4.0_amd64.AppImage` | Make it executable and run it |
+| **Linux** | `SmartCut-0.4.0-linux-x86_64.tar.gz` | Unpack and run `./smartcut`. Use this if you would rather not deal with FUSE |
+| **Linux (Debian/Ubuntu)** | `smartcut_0.4.0_amd64.deb` | `sudo apt install ./smartcut_0.4.0_amd64.deb`. Only 3.2 MB, because it links against your system FFmpeg |
+| **Windows** | `SmartCut_0.4.0_x64-setup.exe` | Installer |
+| **Windows** | `smartcut-portable-x64-0.4.0.zip` | Unzip and run `smartcut.exe` |
 
 **Requirements.** The AppImage and tar.gz need glibc 2.39 or newer, which means
 Ubuntu 24.04, Debian 13, Fedora 40 or later. The `.deb` needs FFmpeg 7.1, which
@@ -185,10 +185,20 @@ writes none of those.
 **Output containers:** MPEG-TS, M2TS, MP4, Matroska, QuickTime. The default is the
 same container and directory as the input.
 
-**Video:** H.264, HEVC, MPEG-2, MPEG-4 Part 2. Interlaced material keeps its
+**Video:** H.264, HEVC, MPEG-2, MPEG-4 Part 2, VC-1. Interlaced material keeps its
 interlacing, and 2:3 pulldown is handled on a field-level timeline. VP9 and AV1
 are not supported — they have no elementary-stream form that can be concatenated,
 so they would need a different design.
+
+VC-1 — the codec most Blu-rays pressed before about 2010 were written in — is the
+odd one out, because there is no VC-1 encoder anywhere: not in FFmpeg, not on a
+graphics card. So SmartCut carries one of its own, for the partial GOPs at the ends
+of a range. It writes intra pictures only, which is all a spliced fragment needs and
+a fraction of the format; the pictures cost more bits than the ones they stand in
+for, and a fragment is a fraction of a second, so the trade is worth making. The rest
+of the recording is copied byte for byte as always. `--vc1-quant` sets how finely
+those pictures are written, 3 (finest) to 31; the default lands around 46dB against
+the pictures it replaces.
 
 **Audio:** AAC is smart-rendered, and so is a Blu-ray's LPCM. Every track in the file
 is cut independently, so a bilingual broadcast keeps both languages. 5.1 can be folded
@@ -230,6 +240,8 @@ broadcast recordings:
 | BS11 (MPEG-2 1920x1080i) | 899/899 frames, 98.2% lossless |
 | AT-X (MPEG-2 1440x1080, 2:3 pulldown) | 719/719 frames, 99.9% lossless, pulldown pattern preserved |
 | A 22-minute commercial cut, 5 ranges | 40589/40589 frames, **100% bit-identical** |
+| A Blu-ray in VC-1 (1920x1080i animation), 10s mid-GOP to mid-GOP | 308/308 frames, 90% of the video byte-identical, the rest written afresh at 48dB |
+| A Blu-ray in VC-1 (1920x1080p film, heavy grain), 10s mid-GOP to mid-GOP | 246/246 frames, 90% byte-identical, the rest at 45dB with the grain intact |
 
 **The GUI tells you before you commit.** The status line under the timeline is the
 plan the engine will actually execute: which ranges get copied, which get
@@ -265,10 +277,10 @@ were hit.
 ## Repository layout
 
 ```
-rust/     Rust core (smartcut_core) and CLI   <- the real implementation
+rust/     Rust core (smartcut_core), the VC-1 encoder and the CLI   <- the real implementation
 gui/      Tauri v2 + vanilla JS GUI
 smartcut/ Python reference implementation     <- test oracle
-tests/    17 end-to-end suites, 267 checks
+tests/    19 end-to-end suites, 297 checks
 docs/     Documentation
 ```
 

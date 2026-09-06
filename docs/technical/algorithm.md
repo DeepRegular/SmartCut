@@ -18,6 +18,14 @@ decode from the previous access point and rebuild them. The `body` between them 
 emitted as the input's own bytes. Cut exactly on access points and there is no
 re-encoding at all.
 
+Rebuilding assumes there is an encoder to rebuild with, and for one codec there is
+not: **VC-1**, which most Blu-rays pressed before about 2010 are written in, has no
+encoder in libavcodec, on a graphics card, or in any free implementation. SmartCut
+writes those pictures itself — intra pictures only, which is all a `head` or a `tail`
+needs, since nothing outside the fragment may be referenced. What that costs, and what
+it is measured against, is in
+[the Rust core](../developers/rust-core.md#vc-1-the-codec-with-no-encoder).
+
 The Python reference implementation is split as follows:
 
 | File | What it does |
@@ -76,6 +84,13 @@ itself a reference picture**:
 - **H.264 / HEVC** (x264's `open-gop` and equivalents): B pyramids mean a leading
   picture can be a reference picture. Drop it and every later frame that referenced
   it breaks, taking the whole GOP with it.
+- **VC-1**: B pictures are never referenced either, so it behaves as MPEG-2 does —
+  but its picture header cannot be read on its own. Whether a picture even states its
+  type in three bits or in one is settled in the *sequence* header, which a transport
+  stream restates in front of every entry point and libavformat hands over as
+  extradata. A stream that never produced one is answered conservatively: every
+  picture is taken for a reference, which costs only the chance to start a copy at an
+  open GOP.
 
 This was confirmed by measurement. Dropping leading pictures on x264 open-gop
 material made all 60 frames of the first GOP of the copy region mismatch; keeping

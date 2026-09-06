@@ -279,7 +279,8 @@ fn split_at_image(path: &Path) -> Option<(PathBuf, String)> {
 /// recording named by a URL of somebody else's is none of this module's
 /// business -- the same rule [`Input::parse`] follows.
 ///
-/// The other thing said here is for program streams, and is below.
+/// The other two things said here are for program streams and for a
+/// container that could not say how often pictures arrive; both are below.
 pub fn demux(url: &str) -> Result<ff::format::context::Input> {
     let ictx = open(url, false)?;
     // A program stream -- which on a DVD is every stream -- leaves the
@@ -293,10 +294,34 @@ pub fn demux(url: &str) -> Result<ff::format::context::Input> {
     // than always set, because a transport stream times every picture it
     // carries and a flag that changes nothing is still a flag on the path
     // every recording goes down.
-    if is_program_stream(&ictx) {
-        return open(url, true);
+    //
+    // The second reopening is for a recording whose frame rate the container
+    // could not work out, and reads every program map to get it. Same
+    // reasoning: it is asked for where it is needed rather than always. See
+    // [`states_frame_rate`].
+    let (genpts, all_maps) = (is_program_stream(&ictx), !states_frame_rate(&ictx));
+    if genpts || all_maps {
+        return open_with(url, genpts, all_maps);
     }
     Ok(ictx)
+}
+
+/// Did the container come back knowing how often pictures arrive?
+///
+/// libavformat works this out while it probes, and stops probing at the
+/// first program map unless it is told otherwise. On a Blu-ray written in
+/// VC-1 that is too early: the answer comes back unset, and a frame rate of
+/// "not a number" makes nonsense of every duration derived from it. Reading
+/// every map fixes it, but it also turns up the second program a Japanese
+/// broadcast carries -- the phone-sized copy of the same material, on its own
+/// pids -- which is a different recording than the one that was asked for.
+/// So the thorough read is kept for the recordings that need it, which is
+/// what this asks.
+fn states_frame_rate(ictx: &ff::format::context::Input) -> bool {
+    ictx.streams()
+        .best(ff::media::Type::Video)
+        .map(|s| s.avg_frame_rate())
+        .is_some_and(|r| r.numerator() > 0 && r.denominator() > 0)
 }
 
 /// Whether what is open is an MPEG program stream: a `.vob`, a `.mpg`, or a
@@ -306,11 +331,22 @@ fn is_program_stream(ictx: &ff::format::context::Input) -> bool {
 }
 
 fn open(url: &str, generate_pts: bool) -> Result<ff::format::context::Input> {
+    open_with(url, generate_pts, false)
+}
+
+fn open_with(
+    url: &str,
+    generate_pts: bool,
+    all_maps: bool,
+) -> Result<ff::format::context::Input> {
     let nested = url.starts_with("subfile,") || url.starts_with("concat:");
-    if !nested && !generate_pts {
+    if !nested && !generate_pts && !all_maps {
         return Ok(ff::format::input(&url)?);
     }
     let mut opts = ff::Dictionary::new();
+    if all_maps {
+        opts.set("scan_all_pmts", "1");
+    }
     if nested {
         opts.set("protocol_whitelist", "file,subfile,concat");
     }

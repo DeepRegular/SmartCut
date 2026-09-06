@@ -77,6 +77,7 @@ bash tests/run_cm_tests.sh            # commercial detection vs a human's answer
 bash tests/run_disc_tests.sh          # a BDAV and a BDMV disc, as folders and as .isos 35
 bash tests/run_dvd_tests.sh           # a DVD-Video disc, as a folder and as an .iso    23
 bash tests/run_bd_audio_tests.sh      # the sound a disc carries, written out             39
+bash tests/run_vc1_tests.sh           # the VC-1 encoder, put through a decoder          4
 ```
 
 ### Fixtures
@@ -141,6 +142,26 @@ suites also run on synthetic material.)
 
 They look in `~/media` by default, which `SMARTCUT_MEDIA` overrides. The audio comparison
 needs numpy, and SKIPs without it.
+
+`run_vc1_tests.sh` reads real material too, and is named separately because what it
+needs is particular: a recording written in **VC-1**, which in practice means a Blu-ray
+pressed before about 2010. It is named by `SMARTCUT_VC1` — a whole `.m2ts` or a piece of
+one — and the suite exits rather than pretending to pass without it. It also wants the
+encoder's own example binary, which an ordinary `cargo build --release` does not
+produce:
+
+```bash
+cd rust && cargo build --release --examples          # -> target/release/examples/vc1enc
+SMARTCUT_VC1=~/media/disc.m2ts bash tests/run_vc1_tests.sh
+```
+
+Three of the four checks encode pictures out of that recording at a coarse, a middle
+and a fine quantizer, decode each with libavcodec and measure what comes back; the
+fourth takes a ten second cut whose ends fall between access points, so that a head and
+a tail both have to be written, and checks that the copied stretch between them is a
+verbatim run of the recording's own bytes. `SMARTCUT_VC1_AT` moves where the reference
+pictures are taken from (20 s in by default), for a disc that opens on something too
+flat to measure.
 
 ### Swapping implementations
 

@@ -104,6 +104,7 @@ pub fn walk(
     let time_base = video.time_base;
     let codec = video.codec.clone();
     let framing = video.framing;
+    let vc1 = video.vc1.as_ref();
 
     // How far there is to read. Asked of the byte stream rather than of
     // the file, because what is open is not always a file: a DVD title is
@@ -153,9 +154,16 @@ pub fn walk(
         }
         let Some(pts) = p.pts() else { continue };
         let reference =
-            p.data().map(|d| bitstream::is_reference(d, &codec, framing)).unwrap_or(true);
-        if codec == "mpeg2video" && !pulldown {
-            pulldown = p.data().map(bitstream::mpeg2_repeats_field).unwrap_or(false);
+            p.data().map(|d| bitstream::is_reference(d, &codec, framing, vc1)).unwrap_or(true);
+        if !pulldown {
+            // A picture shown for anything other than two fields is a
+            // stream that is not constant frame rate, whatever its
+            // container says. Asked of every picture until one says so,
+            // because the pattern does not start at the first one.
+            pulldown = p
+                .data()
+                .map(|d| bitstream::display_fields(d, &codec, vc1) != 2)
+                .unwrap_or(false);
         }
         if p.is_key() {
             key(&p)?;
@@ -400,8 +408,10 @@ fn window_at(
         if target.is_none() && key && ((t - at).abs() < half || (d - at).abs() < half) {
             target = Some(out.len());
         }
-        let reference =
-            p.data().map(|d| bitstream::is_reference(d, &video.codec, video.framing)).unwrap_or(true);
+        let reference = p
+            .data()
+            .map(|d| bitstream::is_reference(d, &video.codec, video.framing, video.vc1.as_ref()))
+            .unwrap_or(true);
         out.push(PacketView { pts: t, dts: d, key, reference, pos: p.position() as i64 });
         // Stop at the *next* access point: everything between it and the
         // target is what the target's leading pictures could be. Matching on

@@ -589,7 +589,9 @@ libavformat will work them out -- `fflags +genpts`, which reorders from the
 decode timestamps and is exact -- and will only do it if it is asked before the
 file is opened. `input::demux` asks, for program streams and nothing else: a
 transport stream times every picture it carries, and a flag that changes
-nothing is still a flag on the path every recording goes down.
+nothing is still a flag on the path every recording goes down. (It reopens a
+recording for one other reason, [below](#a-disc-that-does-not-say-how-often-pictures-arrive),
+and on the same principle.)
 
 The other thing a program stream does not carry is **its own length.**
 libavformat works one out from the timestamps at either end of the file, and on
@@ -598,6 +600,24 @@ a DVD -- four gigabytes with a discontinuity in the tail -- it came back with
 and now reports it, as `index::Index::end`; the container's own answer is kept
 wherever it is the longer of the two, so a container that knows its length
 keeps it.
+
+### A disc that does not say how often pictures arrive
+
+libavformat works the frame rate out while it probes, and stops probing at the
+first program map unless it is told otherwise. On a pressed Blu-ray written in
+**VC-1** that is too early: `avg_frame_rate` came back unset, and a frame rate
+of "not a number" makes nonsense of every duration derived from it -- the
+length of the recording, the position of a mark, the number of pictures a range
+holds.
+
+`scan_all_pmts` reads every map and fixes it, and is not simply switched on for
+everything, for a reason that is particular to what this program reads: on a
+Japanese broadcast the thorough read also turns up the **second programme** the
+transport stream carries -- the phone-sized copy of the same material, on its
+own pids -- which is a different recording than the one that was asked for. So
+`input::demux` asks the container first and reopens only where the answer came
+back missing (`states_frame_rate`), which is the same rule the `+genpts`
+reopening follows.
 
 ## What this does not do
 
@@ -608,7 +628,7 @@ keeps it.
 | **Joining clips** | Not supported. A multi-clip playlist is shown as a row per clip (above) |
 | **BDMV titles** | `index.bdmv` names titles and a title is a navigation program. Which playlist "T05 Extra 01" plays is not worked out; rows are named by the disc and the clip |
 | **The CLPI EP map** | Not used for seeking. The stream list beside it is read, for the chooser; the index is still built by scanning packets. Adding the EP map to `IndexSource` in [`index.rs`](../../rust/crates/core/src/index.rs) would save that pass |
-| **Blu-ray's own streams** | PGS and IGS cannot go on a cut timeline and are dropped, which the chooser says. The sound is all carried -- LPCM, DTS-HD, TrueHD, E-AC-3, [above](#the-sound-a-disc-carries). VC-1 video is read and listed, but a cut of one is untested |
+| **Blu-ray's own streams** | PGS and IGS cannot go on a cut timeline and are dropped, which the chooser says. The sound is all carried -- LPCM, DTS-HD, TrueHD, E-AC-3, [above](#the-sound-a-disc-carries). VC-1 video is read, listed and cut, the partial GOPs written by [SmartCut's own encoder](rust-core.md#vc-1-the-codec-with-no-encoder) |
 | **DVD subpictures** | A DVD subtitle is a run-length coded picture with its own display commands, the same kind of thing a Blu-ray's graphics are. Listed, so the chooser can say it is being left behind; not carried |
 | **DVD angles** | A chain whose cells are an angle block or an interleaved unit is not offered, [above](#a-title-is-a-run-of-cells) |
 | **Writing a DVD** | A cut of a DVD title is a transport stream. A DVD's own shape is VOBUs of a bounded size, a navigation pack opening each of them and an `.IFO` describing every cell -- authoring, and a different problem |
@@ -616,7 +636,7 @@ keeps it.
 
 ## What was checked
 
-Two real discs and a synthetic one.
+Real discs, and synthetic ones built out of the ordinary fixtures.
 
 **A real BDAV disc** — written by TMSR6, made into a UDF 2.60 image by ImgBurn:
 3.4 GB, three clips, 1920x1080 MPEG-2 with AAC and ARIB captions, a partial
@@ -635,6 +655,18 @@ through `subfile` and demuxed -- H.264 on 0x1011, TrueHD with its AC-3 on
 0x1100 and 0x1101, PGS on 0x1200 and 0x1201. A ten second cut of one episode
 came out at 91.8% copied, with both TrueHD tracks on their own PIDs and every
 sample of them decoding.
+
+**Two pressed Blu-rays written in VC-1** — the codec most discs of that age carry,
+and between them most of the ways an advanced-profile stream can differ: one
+1920x1080i at 29.97, coded as interlaced frames, non-uniform quantizer, every GOP
+closed; the other 1920x1080 progressive at 23.976, uniform quantizer, every GOP open,
+skipped pictures in the run and heavy film grain. Each was read, listed and cut, ten
+seconds mid-GOP to mid-GOP: **308/308 and 246/246 pictures, with 90% of the video
+byte-identical to the disc** and the partial GOPs at the ends written by SmartCut's
+own encoder. Neither container stated a frame rate until every program map was read
+([above](#a-disc-that-does-not-say-how-often-pictures-arrive)). What the encoder
+costs, and how it is known to be right, is in
+[the Rust core](rust-core.md#vc-1-the-codec-with-no-encoder).
 
 **A synthetic disc** — [`tests/run_disc_tests.sh`](../../tests/run_disc_tests.sh)
 builds one of each dialect out of the ordinary fixtures: the transport stream

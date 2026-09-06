@@ -1248,10 +1248,21 @@ fn retitle_main(title: String, app: tauri::AppHandle) {
     }
 }
 
-/// The pass both windows call the seek index, said in one place because both
-/// of them print it and a phase named two ways is two phases on screen.
+/// What the editor calls the pass while it runs, said in one place because
+/// the summary that window writes afterwards calls it that too and a phase
+/// named two ways is two phases on screen.
 fn phase_index() -> &'static str {
     tr!("シーク用インデックス", "the seek index")
+}
+
+/// The same pass under the name the clip list gives it, which is the lane's
+/// name and not this pass's: the list runs it for the pictures, and says so
+/// over the lane and in the queue line. The row's own progress is the third
+/// place that name is printed, so it is printed here rather than the
+/// editor's -- "the seek index 4%" in a row headed 「サムネイルを作成中」
+/// is the same two-phases-on-screen the other one avoids.
+fn phase_pictures() -> &'static str {
+    tr!("サムネイル", "Thumbnails")
 }
 
 /// The label the editor window goes by. One at a time: there is one opened
@@ -1655,7 +1666,7 @@ fn clip_pictures_now(
             let _ =
                 reporter.emit(
                     "clip-progress",
-                    (owned.clone(), "pics", phase_index().to_string(), f),
+                    (owned.clone(), "pics", phase_pictures().to_string(), f),
                 );
         })),
         // Nothing is looking at this recording, so there is nobody to hand

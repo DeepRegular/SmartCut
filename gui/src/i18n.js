@@ -207,7 +207,7 @@ const CATALOG = {
     // --- 出力設定画面 ----------------------------------------------------
     "outset.bar": "ファイル出力",
     "outset.barNote": "ここでの設定は一覧のすべてのクリップに使われます",
-    "outset.formatHead": "設定出力フォーマット",
+    "outset.formatHead": "出力フォーマット",
     "outset.clipPick": "クリップ選択:",
     "outset.noClips": "クリップがありません",
     "outset.noReady": "解析の済んだクリップがありません",

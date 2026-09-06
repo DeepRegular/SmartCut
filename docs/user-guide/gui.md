@@ -92,6 +92,14 @@ that were multiplexed separately -- which is what the timestamps starting again
 partway through a title means -- it becomes a row per piece, marked `(1/2)` and
 `(2/2)`, because joining two clocks is not the same operation as cutting one.
 
+**A disc written in VC-1 is cut like any other.** Most Blu-rays pressed before
+about 2010 are, and there is no VC-1 encoder in FFmpeg or on a graphics card to
+rebuild the ends of a range with, so SmartCut writes those pictures itself. The
+window has nothing to set for it: cutting works the same, and the few dozen
+pictures at the ends of each range are written finely enough that the join
+cannot be seen. From the command line `--vc1-quant` sets how finely. What it
+costs is in [the Rust core](../developers/rust-core.md#vc-1-the-codec-with-no-encoder).
+
 Encrypted discs cannot be opened, DVD and Blu-ray alike. How it works is in
 [Reading a disc](../developers/disc.md).
 
@@ -116,8 +124,8 @@ same recording it is not built again.
 
 ![The list part-way through reading](../images/usage-loading.png)
 
-The bottom right of each row says where it got to. `Reading` is the walk, `the seek
-index` is the decoding pass that makes the pictures and the scenes, and a row whose
+The bottom right of each row says where it got to. `Reading` is the walk, `Thumbnails`
+is the decoding pass that makes the pictures and the scenes, and a row whose
 turn has not come says `Queued`. When the walk finishes it becomes `Indexed in 2s`
 (built just now) or `Index from an earlier run` (the answer was already on disk).
 The top right of the window says which lane is on which clip: above, the second
@@ -387,6 +395,14 @@ read: pick a clip and it shows what that recording will become under the current
 settings — video, audio, how many ranges, how long the output is, and the path it
 will be written to.
 
+**What the sound is written as appears when it is being written.** Five of the rows
+below — the codec, the channels, the rate, the width and the bitrate — all describe an
+encode, and the other two audio modes do not run one over the whole track, so they are
+absent until `Re-encode everything` asks for them rather than sitting there grey under
+every mode:
+
+![The audio settings, under Re-encode everything](../images/usage-output-audio.png)
+
 | Field | |
 |---|---|
 | **Output folder** | Empty means alongside the input. Use `Browse`, or type a path (an SMB path is fine) |
@@ -396,7 +412,7 @@ will be written to.
 | **Audio codec** | `Same as the input`, or AAC, AC-3, DTS, linear PCM. Asking for a codec the recording does not carry **re-encodes the whole track** |
 | **Audio channels** | `Same as the input`, or 1ch, 2ch, 5.1ch. Asking for a different count is a downmix, and **re-encodes the whole track**. Counts above what the recording carries are greyed out |
 | **Sample rate** | `Same as the input`, or 96 / 48 / 44.1 / 32 kHz -- 96 kHz being what a Blu-ray's LPCM is carried at. A different rate is a resample, and **re-encodes the whole track**. A rate the codec being written cannot speak is greyed out rather than offered -- AC-3 and DTS have nothing above 48 kHz -- and so is one above what the recording was sampled at; the recording's own rate, where a codec cannot speak that either, is written at the nearest it can |
-| **Bit depth** | `Same as the input`, 16 or 24 bit, and 24 is greyed out for a recording that has 16 bits in it. Only live under `Linear PCM`: every other codec writes a description of the sound rather than the sound, and has nowhere to put a width. It decides an uncompressed track's size outright — channels x width x rate — which is the figure shown in place of the bitrate |
+| **Bit depth** | `Same as the input`, 16 or 24 bit, and 24 is greyed out for a recording that has 16 bits in it. Grey unless `Linear PCM` is what is being written: every other codec writes a description of the sound rather than the sound, and has nowhere to put a width. It decides an uncompressed track's size outright — channels x width x rate — which is the figure shown in place of the bitrate |
 | **Audio bitrate** | For the frames that are rebuilt. `Leave it to the engine` picks what the codec is worth at that channel count. Only rungs the encoder will actually open at are listed -- DTS has a floor as well as a ceiling |
 | **Write the keyframes to a separate .keyframe file** | Puts a `.keyframe` file next to the video, under the same name |
 
@@ -601,6 +617,7 @@ smartcut input.ts --analyze --scenes            # list the scene changes
 | `--audio-samplerate RATE` | Samples per second for re-encoded audio, as `48k` or `48000`. Left out, it follows the recording. A rate that is not the recording's is a resample, and like a downmix it has no copy path, so it re-encodes the whole track whatever `--audio-mode` says. Not every codec speaks every rate — AC-3 has three, Blu-ray LPCM three others — and a rate the codec does not have is taken to the nearest it does, with a note saying which |
 | `--audio-bits 16\|24` | How wide the samples are written. Only means anything where linear PCM is what is being written: a lossy codec takes a float and spends a bitrate, and a width asked of one is declined out loud. Left out, it follows the recording |
 | `--aac auto\|mpeg2\|mpeg4` | Which flavour of AAC the frames SmartCut writes announce themselves as. `auto` follows the recording, which for a broadcast means MPEG-2 AAC |
+| `--vc1-quant 3..31` | How finely the partial GOPs of a VC-1 recording are written, 3 being the finest. Only VC-1 has this setting, and only because it is the one codec with no encoder in libavcodec: SmartCut writes those pictures itself, and what it writes them at is a step rather than a bitrate. Left out, it uses 4, which lands around 46dB against the pictures it replaces |
 | `--index scan\|container` | How access points are indexed. `container` is faster but unavailable for TS |
 | `--seek-index PATH` | Where to keep the seek index. Written on the first run and read on the next, which skips the walk over the packets |
 | `--detect-cm` / `--logo` / `--scenes` | Commercial candidates, logo assist, scene detection |

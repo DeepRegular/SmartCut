@@ -37,8 +37,22 @@ go.
 | Terrestrial NHK E-Tele (MPEG-2 1440x1080i, true 29.97) | **899/899, 98.2% lossless, timeline matches, interlacing preserved, A/V 2.0 ms** |
 | BS11 (MPEG-2 1920x1080i) | **899/899, 98.2% lossless, same as above** |
 | AT-X (MPEG-2 1440x1080, **2:3 pulldown**) | **719/719, 99.9% lossless, 2:3 pattern preserved, A/V 2.0 ms** |
+| A pressed Blu-ray in **VC-1** (1920x1080i animation), 10 s mid-GOP to mid-GOP | **308/308, 90% of the video byte-identical**, the partial GOPs written afresh at 48 dB |
+| A pressed Blu-ray in **VC-1** (1920x1080p film, heavy grain), the same 10 s | **246/246, 90% byte-identical**, written afresh at 45 dB with the grain intact |
 | H.264 720p from YouTube (29.24 fps) | 878 frames, A/V 2.6 ms |
 | VP9 + Opus (webm→mp4) | Passes if the plan is copy-only |
+
+**A VC-1 cut is checked differently, and has to be.** `verify_real.py` lines the two
+files up by frame number, and a frame number is what a piece of a Blu-ray does not
+have: it begins mid-GOP, the decoder drops what it cannot decode, and everything after
+that is off by however many that was. So
+[`tests/run_vc1_tests.sh`](../../tests/run_vc1_tests.sh) asks of the bytes instead —
+that a long run of the cut appears **verbatim** in the recording, which needs no
+alignment at all — and of the pictures it wrote itself, that they come back out of the
+decoder every player uses at a measured distance from the ones they replaced. Both
+halves are needed: a subtly malformed bitstream still decodes, and a transform scaled
+wrongly decodes without complaint into a picture of the wrong brightness. The encoder
+and what it costs are in [the Rust core](../developers/rust-core.md#vc-1-the-codec-with-no-encoder).
 
 Everything a real transport stream can throw at you turned up in the process:
 
@@ -160,8 +174,15 @@ These only surfaced on real material:
 - **The Python reference implementation still snaps to the ideal grid** and therefore
   still has the phase problem (`mpeg2 ts multi` in `tests/run_tests.sh` is an xfail).
   It still serves as a test oracle, but the Rust implementation is ahead of it.
-- **Supported codecs are H.264 / HEVC / MPEG-2 / MPEG-4 Part 2.** VP9 and AV1 have no
-  elementary-stream concatenation form and would need a different design.
+- **Supported codecs are H.264 / HEVC / MPEG-2 / MPEG-4 Part 2 / VC-1.** VP9 and AV1
+  have no elementary-stream concatenation form and would need a different design.
+- **A VC-1 partial GOP is written by SmartCut's own encoder, and it writes intra
+  pictures only** ([the Rust core](../developers/rust-core.md#vc-1-the-codec-with-no-encoder)).
+  There is no VC-1 encoder in libavcodec to use instead. Pictures cost more bits than
+  the predicted ones they stand in for — still fewer than the disc's own I pictures —
+  and two things in the format are refused by name rather than written wrongly: a
+  pan-scan window, and a quantizer that varies at the picture edges (`DQUANT=2`).
+  Field pictures are read but written back as interlaced frames.
 - **One video track only**, and in the Python reference implementation one audio track
   only. The Rust engine reads every sound track the recording carries and writes them
   all, and carries the ARIB caption stream across when writing a `.ts` (see

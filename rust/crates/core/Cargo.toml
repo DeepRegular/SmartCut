@@ -4,6 +4,7 @@ version.workspace = true
 edition.workspace = true
 
 [dependencies]
+smartcut-vc1 = { path = "../vc1" }
 ffmpeg-next.workspace = true
 anyhow.workspace = true
 cpal.workspace = true

@@ -84,8 +84,26 @@ const HEVC_LEADING_NONREF: [u8; 2] = [6, 8]; // RADL_N, RASL_N
 /// segment. MPEG-2 B pictures never reference-back, but H.264/HEVC encoders
 /// routinely build B-pyramids whose leading pictures *are* references -- drop
 /// one of those and every picture that depended on it decodes to garbage.
-pub fn is_reference(data: &[u8], codec: &str, framing: NalFraming) -> bool {
+///
+/// `vc1` is the pair of headers a VC-1 stream declares itself with. It is the
+/// one codec here whose pictures cannot be read without them -- whether a
+/// picture even states its type in three bits or in one is settled in the
+/// sequence header -- and a stream that never produced them is answered for
+/// conservatively.
+pub fn is_reference(
+    data: &[u8],
+    codec: &str,
+    framing: NalFraming,
+    vc1: Option<&smartcut_vc1::Shape>,
+) -> bool {
     match codec {
+        "vc1" | "wmv3" => match vc1.and_then(|shape| shape.picture(data)) {
+            Some(picture) => picture.reference(),
+            // Taking a picture for a reference costs only the chance to
+            // enter an open GOP at it; taking a reference for a B picture
+            // would cut away something the rest of the GOP is decoded from.
+            None => true,
+        },
         "mpeg2video" | "mpeg4" => {
             // picture_coding_type sits just past the 10-bit temporal_reference
             // of a picture header: 1=I, 2=P, 3=B. Only B is never referenced.
@@ -224,12 +242,16 @@ pub fn prepend_parameter_sets(data: &[u8], sets: &[Vec<u8>], n: usize) -> Vec<u8
 }
 
 
-/// How many fields this picture occupies: two normally, three under pulldown.
-pub fn display_fields(data: &[u8], codec: &str) -> i64 {
-    if codec == "mpeg2video" && mpeg2_repeats_field(data) {
-        3
-    } else {
-        2
+/// How many fields this picture occupies: two normally, more under pulldown.
+pub fn display_fields(data: &[u8], codec: &str, vc1: Option<&smartcut_vc1::Shape>) -> i64 {
+    match codec {
+        "mpeg2video" if mpeg2_repeats_field(data) => 3,
+        // VC-1 says it in the picture header: a repeated field, or -- where
+        // the stream is progressive or segmented -- a whole repeated frame.
+        "vc1" | "wmv3" => {
+            vc1.and_then(|shape| shape.picture(data)).map_or(2, |p| p.display_fields())
+        }
+        _ => 2,
     }
 }
 

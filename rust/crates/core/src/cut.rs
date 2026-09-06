@@ -133,6 +133,10 @@ pub struct CutOptions {
     /// Bits per second for re-encoded pictures. `None` derives it from the
     /// source, with a little headroom so the splice does not visibly soften.
     pub bit_rate: Option<usize>,
+    /// The quantizer step VC-1 pictures are written at, 3 (fine) to 31
+    /// (coarse). `None` takes [`VC1_DEFAULT_QUANT`]. Nothing else uses it:
+    /// every other codec is given a bit rate and left to spend it.
+    pub vc1_quant: Option<u8>,
     pub audio_mode: AudioMode,
     /// What the sound is written as. The default is the recording's own
     /// codec; anything else is a whole-track re-encode, whatever
@@ -915,7 +919,9 @@ fn copy_segment(
         let display = display_base + ((t - a) / field).round() as i64;
         let fields = packet
             .data()
-            .map(|d| crate::bitstream::display_fields(d, &src.video.codec))
+            .map(|d| {
+                crate::bitstream::display_fields(d, &src.video.codec, src.video.vc1.as_ref())
+            })
             .unwrap_or(2);
         span.fields = span.fields.max(display - display_base + fields);
         span.pictures += 1;
@@ -942,6 +948,95 @@ fn copy_segment(
         bail!("could not find the entry point at {:.3}s", seg.start);
     }
     Ok(span)
+}
+
+/// How the pictures of a re-encoded segment are produced.
+///
+/// Every codec this program cuts has an encoder in libavcodec, bar one.
+/// There is no VC-1 encoder anywhere -- not in libavcodec, not on a graphics
+/// card -- so a Blu-ray written in VC-1 had nothing to build its partial
+/// GOPs with, and a cut of one could only ever be a copy that began and
+/// ended where the recording's own entry points happened to fall. See
+/// [`smartcut_vc1`], which writes the few dozen pictures such a cut needs.
+enum Pictures {
+    Libav(Box<ff::encoder::video::Encoder>),
+    Vc1(Box<smartcut_vc1::Encoder>),
+}
+
+/// The quantizer step VC-1 pictures are written at when nothing says
+/// otherwise.
+///
+/// Fine. What this encoder writes is intra pictures, which are several times
+/// the size of the predicted ones they stand in for, so a step that would be
+/// extravagant over a whole recording costs a fraction of a second of it
+/// here -- and what it buys is that the splice cannot be seen. Measured
+/// against the pictures it replaces, this lands around 46dB.
+pub const VC1_DEFAULT_QUANT: u8 = 4;
+
+impl Pictures {
+    fn open(src: &Source, params: &ff::codec::Parameters, opts: &CutOptions) -> Result<Self> {
+        if matches!(src.video.codec.as_str(), "vc1" | "wmv3") {
+            let shape = src.video.vc1.as_ref().ok_or_else(|| {
+                anyhow!(
+                    "this recording never states an advanced-profile sequence header, which is \
+                     what a picture has to be written against, so the partial GOPs at the ends \
+                     of a range cannot be re-encoded. A range whose ends fall on the \
+                     recording's own entry points can still be cut"
+                )
+            })?;
+            let step = opts.vc1_quant.unwrap_or(VC1_DEFAULT_QUANT);
+            let encoder =
+                smartcut_vc1::Encoder::new(shape, src.video.width, src.video.height, step)
+                    .map_err(|e| anyhow!("cannot write VC-1 for this recording: {e}"))?;
+            return Ok(Pictures::Vc1(Box::new(encoder)));
+        }
+        Ok(Pictures::Libav(Box::new(open_encoder(src, params, opts)?)))
+    }
+}
+
+/// Turn a decoded picture into a VC-1 one.
+///
+/// The pulldown flags come back off the frame the decoder handed over, so
+/// the re-encoded pictures are shown for exactly as long as the ones they
+/// replace -- which is what keeps a 2:3 pattern intact across the splice.
+fn encode_vc1(
+    encoder: &smartcut_vc1::Encoder,
+    frame: &ff::frame::Video,
+    fields: i64,
+) -> Result<ff::Packet> {
+    if frame.format() != ff::format::Pixel::YUV420P {
+        bail!("a VC-1 picture came back as {:?}, which is not 4:2:0", frame.format());
+    }
+    let (width, height) = (frame.width() as usize, frame.height() as usize);
+    let (cw, ch) = (width.div_ceil(2), height.div_ceil(2));
+    let plane = |i: usize, w: usize, h: usize| smartcut_vc1::Plane {
+        data: frame.data(i),
+        stride: frame.stride(i),
+        width: w,
+        height: h,
+    };
+    let tff = unsafe {
+        (*frame.as_ptr()).flags & ff::ffi::AV_FRAME_FLAG_TOP_FIELD_FIRST as i32 != 0
+    };
+    // A picture shown for three fields is one whose first field is repeated;
+    // anything longer is a whole frame shown again, which only a progressive
+    // stream says.
+    let (rff, rptfrm) = match fields {
+        3 => (true, 0),
+        n if n > 3 => (false, ((n - 2) / 2) as u8),
+        _ => (false, 0),
+    };
+    let picture = smartcut_vc1::Frame {
+        y: plane(0, width, height),
+        u: plane(1, cw, ch),
+        v: plane(2, cw, ch),
+        tff,
+        rff,
+        rptfrm,
+    };
+    let mut packet = ff::Packet::copy(&encoder.encode(&picture));
+    packet.set_flags(ff::packet::Flags::KEY);
+    Ok(packet)
 }
 
 /// Build an encoder whose output splices onto the copied pictures.
@@ -1096,7 +1191,7 @@ fn reencode_segment(
 
     let mut decoder =
         ff::codec::context::Context::from_parameters(params.clone())?.decoder().video()?;
-    let mut encoder = open_encoder(src, &params, opts)?;
+    let mut encoder = Pictures::open(src, &params, opts)?;
 
     seek_to(&mut ictx, src, seg.seek_from)?;
 
@@ -1134,8 +1229,19 @@ fn reencode_segment(
                 fed += 1;
                 frame.set_kind(ff::picture::Type::None);
                 mark_interlacing(&mut frame, &src.video);
-                encoder.send_frame(&frame)?;
-                drain_encoder(&mut encoder, reframe, &placed, writer)?;
+                match &mut encoder {
+                    Pictures::Libav(enc) => {
+                        enc.send_frame(&frame)?;
+                        drain_encoder(enc, reframe, &placed, writer)?;
+                    }
+                    // Nothing is held back: a picture that references
+                    // nothing is finished the moment it is written, so it
+                    // goes straight out with the timing worked out above.
+                    Pictures::Vc1(enc) => {
+                        let packet = encode_vc1(enc, &frame, fields)?;
+                        writer.push(Emitted { packet, display, fields })?;
+                    }
+                }
             }
         };
     }
@@ -1173,8 +1279,10 @@ fn reencode_segment(
     decoder.send_eof()?;
     feed!();
     let _ = past_end; // only the loop above acts on it
-    encoder.send_eof()?;
-    drain_encoder(&mut encoder, reframe, &placed, writer)?;
+    if let Pictures::Libav(enc) = &mut encoder {
+        enc.send_eof()?;
+        drain_encoder(enc, reframe, &placed, writer)?;
+    }
 
     if span.pictures == 0 {
         bail!("segment {:.3}-{:.3}: no pictures decoded", seg.start, seg.end);

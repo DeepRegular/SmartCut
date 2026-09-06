@@ -33,7 +33,7 @@ on GOP boundaries and concatenate" does not work.
 
 | | |
 |---|---|
-| [Rust core](developers/rust-core.md) | Timestamp generation, mixed SPS/PPS, and where the Rust implementation overtook the Python one |
+| [Rust core](developers/rust-core.md) | Timestamp generation, mixed SPS/PPS, the VC-1 encoder written because libavcodec has none, and where the Rust implementation overtook the Python one |
 | [Design](developers/design.md) | Why a Rust core with a Tauri GUI, and how the GUI is built: the filmstrip, the seek index, the proxy, playback, and the two languages |
 | [Building](developers/building.md) | Required libraries, how to build, how to run the tests |
 | [Distribution](developers/distribution.md) | AppImage, tar.gz and deb, the Windows installer, and what each one bundles |

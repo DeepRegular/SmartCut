@@ -103,6 +103,17 @@ pub struct VideoInfo {
     /// encoder told nothing about that quietly produces progressive pictures
     /// -- which comb against the copied ones at every splice.
     pub field_order: i32,
+    /// The sequence and entry-point headers a VC-1 stream declares itself
+    /// with, when it is one.
+    ///
+    /// Every other codec here can be read a packet at a time. VC-1 cannot:
+    /// the shape of a picture header depends on flags that appear only in
+    /// the sequence header, which a transport stream restates in front of
+    /// every entry point and libavformat hands over as extradata. They are
+    /// also what an encoded picture has to be introduced by, so that the
+    /// copied pictures across the splice are decoded against the parameters
+    /// they were coded with. See [`smartcut_vc1`].
+    pub vc1: Option<smartcut_vc1::Shape>,
 }
 
 /// Field orders that mean "interlaced" (AV_FIELD_TT/BB/TB/BT).
@@ -824,6 +835,12 @@ fn outline_of(path: &str) -> Result<(Outline, ff::format::context::Input)> {
         framing,
         field_order,
         pulldown: false, // the index source reports this, when it can
+        // Read once, here, rather than hunted for in every packet: a
+        // transport stream restates these in front of each entry point, so
+        // libavformat has them before a packet has been asked for.
+        vc1: matches!(codec.as_str(), "vc1" | "wmv3")
+            .then(|| smartcut_vc1::Shape::read(&extradata))
+            .flatten(),
     };
 
     Ok((

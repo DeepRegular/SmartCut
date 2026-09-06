@@ -31,7 +31,7 @@
 
 | | |
 |---|---|
-| [Rust コア](developers/rust-core.ja.md) | タイムスタンプの生成、SPS/PPS 混在の解決、Rust 実装が Python を追い越した点 |
+| [Rust コア](developers/rust-core.ja.md) | タイムスタンプの生成、SPS/PPS 混在の解決、libavcodec に無いので自分で書いた VC-1 エンコーダ、Rust 実装が Python を追い越した点 |
 | [設計](developers/design.ja.md) | なぜ Rust コア + Tauri GUI なのか。GUI の作り: フィルムストリップ、シーク用インデックス、プロキシ、再生、多言語対応 |
 | [ビルド](developers/building.ja.md) | 必要なライブラリ、ビルド方法、テストの走らせ方 |
 | [配布](developers/distribution.ja.md) | AppImage・tar.gz・deb、Windows インストーラ、それぞれが何を同梱しているか |
