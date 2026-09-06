@@ -25,17 +25,17 @@ also carries a great deal that is not the film, so the ones worth a look are
 starred:
 
 ```
-$ smartcut IsekaiQuartet_Season1.iso
-disc  : IsekaiQuartet_Season1.iso
-        bdmv -- Isekai Quartet Season 1
+$ smartcut AnimeBox_Season1.iso
+disc  : AnimeBox_Season1.iso
+        bdmv -- Anime Box Season 1
         62 recording(s)
 
-   1  00:00:43.543  Isekai Quartet Season 1 00008  1 mark(s)
+   1  00:00:43.543  Anime Box Season 1 00008  1 mark(s)
        0x1100  AC-3 stereo 48kHz eng
        0x1200  PGS eng -- a cut cannot carry this
-   2  00:00:11.511  Isekai Quartet Season 1 00002  1 mark(s)
+   2  00:00:11.511  Anime Box Season 1 00002  1 mark(s)
    …
-*  8  00:11:52.003  Isekai Quartet Season 1 00014  4 mark(s)
+*  8  00:11:52.003  Anime Box Season 1 00014  4 mark(s)
        0x1100  TrueHD multi 48kHz eng
        0x1101  TrueHD stereo 48kHz jpn
        0x1200  PGS eng -- a cut cannot carry this
@@ -187,7 +187,7 @@ Two things are worth getting right:
 
 A `.mpls` carries no name at all -- a film's titles live in the menu, which is
 a Java application -- so a pressed disc's rows are named by the disc and the
-clip: `Isekai Quartet Season 1 00014`. What the disc calls itself comes out of
+clip: `Anime Box Season 1 00014`. What the disc calls itself comes out of
 `META/DL/bdmt_*.xml`, scraped rather than parsed: the file is a document with a
 dozen namespaces declared and one interesting element in it, and pulling in an
 XML parser to reach `<di:name>` would be the largest dependency in the program
@@ -465,15 +465,15 @@ one that recognises the disc answers; everything downstream is handed the same
 `Disc`, `Entry` and `Track` as before.
 
 ```
-$ smartcut nhk-denshi-rikkoku-01.iso
-disc  : nhk-denshi-rikkoku-01.iso
-        dvd -- nhk-denshi-rikkoku-01
+$ smartcut documentary-01.iso
+disc  : documentary-01.iso
+        dvd -- documentary-01
         2 recording(s)
 
-  1  00:59:51.400  nhk-denshi-rikkoku-01 1 (1/2)  18 mark(s)
+  1  00:59:51.400  documentary-01 1 (1/2)  18 mark(s)
        0x01e0  MPEG-2 720x480 NTSC 4:3
        0x0080  AC-3 2ch 48kHz  ja
-  2  00:00:08.342  nhk-denshi-rikkoku-01 1 (2/2)  1 mark(s)
+  2  00:00:08.342  documentary-01 1 (2/2)  1 mark(s)
 ```
 
 Three things about a DVD decide the shape of the reader.
@@ -529,7 +529,7 @@ than offering that.
 Since a title is a stretch and not a file, its name has to say which stretch:
 
 ```
-/rec/nhk-denshi-rikkoku-01.iso/VIDEO_TS/VTS_01_1.VOB@0-2081904
+/rec/documentary-01.iso/VIDEO_TS/VTS_01_1.VOB@0-2081904
 ```
 
 The sectors are the disc's own, counted from the start of the title set's

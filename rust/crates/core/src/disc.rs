@@ -1478,12 +1478,12 @@ mod tests {
     fn takes_the_disc_its_own_name() {
         let xml = r#"<disclib xmlns="urn:BDA:bdmv;disclib">
           <di:discinfo xmlns:di="urn:BDA:bdmv;discinfo">
-            <di:title><di:name>Isekai Quartet Season 1</di:name></di:title>
+            <di:title><di:name>Anime Box Season 1</di:name></di:title>
             <di:description><di:tableOfContents>
               <di:titleName titleNumber="1">T01 Feature</di:titleName>
             </di:tableOfContents></di:description>
           </di:discinfo></disclib>"#;
-        assert_eq!(disc_name(xml).as_deref(), Some("Isekai Quartet Season 1"));
+        assert_eq!(disc_name(xml).as_deref(), Some("Anime Box Season 1"));
         // A table of contents on its own is not a name for the disc.
         assert_eq!(disc_name("<di:titleName>T01 Feature</di:titleName>"), None);
         assert_eq!(disc_name(""), None);

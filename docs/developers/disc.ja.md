@@ -23,17 +23,17 @@ disc  : Anime_Test.iso
 また、入っているものの大半は本編ではないので、見る値打ちのあるものには印が付く:
 
 ```
-$ smartcut IsekaiQuartet_Season1.iso
-disc  : IsekaiQuartet_Season1.iso
-        bdmv -- Isekai Quartet Season 1
+$ smartcut AnimeBox_Season1.iso
+disc  : AnimeBox_Season1.iso
+        bdmv -- Anime Box Season 1
         62 recording(s)
 
-   1  00:00:43.543  Isekai Quartet Season 1 00008  1 mark(s)
+   1  00:00:43.543  Anime Box Season 1 00008  1 mark(s)
        0x1100  AC-3 stereo 48kHz eng
        0x1200  PGS eng -- a cut cannot carry this
-   2  00:00:11.511  Isekai Quartet Season 1 00002  1 mark(s)
+   2  00:00:11.511  Anime Box Season 1 00002  1 mark(s)
    …
-*  8  00:11:52.003  Isekai Quartet Season 1 00014  4 mark(s)
+*  8  00:11:52.003  Anime Box Season 1 00014  4 mark(s)
        0x1100  TrueHD multi 48kHz eng
        0x1101  TrueHD stereo 48kHz jpn
        0x1200  PGS eng -- a cut cannot carry this
@@ -170,7 +170,7 @@ genisoimage が書く UDF 1.02 は使わない。両方読める。
 
 `.mpls` のほうは名前をまったく持っていない——映画のタイトルはメニュー、つまり Java
 アプリケーションの中にある——ので、市販ディスクの行はディスク名とクリップ番号で
-名付ける。`Isekai Quartet Season 1 00014` のように。ディスクが自分を何と呼んでいるかは
+名付ける。`Anime Box Season 1 00014` のように。ディスクが自分を何と呼んでいるかは
 `META/DL/bdmt_*.xml` から取る。解析ではなく拾い読みである: あのファイルは名前空間が
 十数個宣言された文書で、面白い要素はひとつしかない。`<di:name>` に届くためだけに XML
 パーサを抱え込めば、このプログラム最大の依存になる。
@@ -419,15 +419,15 @@ DVD は Blu-ray と同じ入口から来るが、共通点はそれだけであ�
 `Track` である。
 
 ```
-$ smartcut nhk-denshi-rikkoku-01.iso
-disc  : nhk-denshi-rikkoku-01.iso
-        dvd -- nhk-denshi-rikkoku-01
+$ smartcut documentary-01.iso
+disc  : documentary-01.iso
+        dvd -- documentary-01
         2 recording(s)
 
-  1  00:59:51.400  nhk-denshi-rikkoku-01 1 (1/2)  18 mark(s)
+  1  00:59:51.400  documentary-01 1 (1/2)  18 mark(s)
        0x01e0  MPEG-2 720x480 NTSC 4:3
        0x0080  AC-3 2ch 48kHz  ja
-  2  00:00:08.342  nhk-denshi-rikkoku-01 1 (2/2)  1 mark(s)
+  2  00:00:08.342  documentary-01 1 (2/2)  1 mark(s)
 ```
 
 DVD の性質のうち 3 つが、この読み取りの形を決めている。
@@ -480,7 +480,7 @@ Blu-ray が 1 話に 1 本のストリームを与えるのに対し、DVD が�
 タイトルがファイルではなく区間である以上、名前がどの区間かを言う必要がある。
 
 ```
-/rec/nhk-denshi-rikkoku-01.iso/VIDEO_TS/VTS_01_1.VOB@0-2081904
+/rec/documentary-01.iso/VIDEO_TS/VTS_01_1.VOB@0-2081904
 ```
 
 このセクタ番号はディスク自身のもので、タイトルセットのストリームの先頭から
