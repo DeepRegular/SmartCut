@@ -110,8 +110,9 @@ To build from source, see [Building](docs/developers/building.md).
 ### With the GUI
 
 1. **Add your recordings.** Drag them onto the window, or use **＋ Add files**.
-   Each one is read in the background and indexed, so it will open instantly
-   later.
+   A row is filled in the moment it lands, and the reading, the thumbnails and the
+   commercial detection all run behind it at once. A recording that has not been
+   read yet opens without waiting.
 2. **Find the commercials.** Press `Ctrl+A` to select everything, then `Ctrl+D`.
    SmartCut works through the list and marks the start of every commercial block
    and every return to the programme.

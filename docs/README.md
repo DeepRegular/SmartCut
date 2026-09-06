@@ -18,7 +18,7 @@ on GOP boundaries and concatenate" does not work.
 | [GUI](user-guide/gui.md) | A walkthrough of every screen, with screenshots: adding recordings, cutting, output settings, writing the files |
 | [Commercial detection](user-guide/cm-detection.md) | How the commercial breaks are found, how accurate it is, and what to do when it gets one wrong |
 | [Projects](user-guide/projects.md) | Saving a night's work to a `.scproj` and picking it up later |
-| [Batch processing](user-guide/batch.md) | Handling a whole evening of recordings at once: the clip list, the background queues, and the export |
+| [Batch processing](user-guide/batch.md) | Handling a whole evening of recordings at once: the clip list, the three background lanes, and the export |
 
 ## Technical
 

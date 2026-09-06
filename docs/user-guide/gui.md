@@ -102,13 +102,36 @@ open `smb://…` in your file manager first, then add the file again.
 
 ### What happens as soon as a clip lands
 
-Clips are read in the order they arrive, and a seek index is left on disk. This is
-exactly the work the engine would otherwise have to do the moment you open the cut
-editor, done in advance — so a clip the list has finished reading **opens
-instantly**.
+**A row is filled in the moment it lands.** The length, the range, the resolution,
+the frame rate, the codec and whether there is sound are what the container says
+about itself, and that comes back in thirty milliseconds however long the file is.
+The picture on the left arrives at the same moment, taken with an approximate seek.
+Drop twenty recordings in and the last row is never a path and an empty square for
+minutes.
 
-The bottom right of each row says where it got to. `Indexed in 2s` means the index
-was just built; `Index from an earlier run` means the answer was already on disk.
+Behind that, **three lanes** run at once: one walks the packets and builds the seek
+index, one decodes the key pictures into thumbnails and scene changes, and one
+detects commercials. The index is left on disk, so the second time you open the
+same recording it is not built again.
+
+![The list part-way through reading](../images/usage-loading.png)
+
+The bottom right of each row says where it got to. `Reading` is the walk, `the seek
+index` is the decoding pass that makes the pictures and the scenes, and a row whose
+turn has not come says `Queued`. When the walk finishes it becomes `Indexed in 2s`
+(built just now) or `Index from an earlier run` (the answer was already on disk).
+The top right of the window says which lane is on which clip: above, the second
+recording is being walked while the first one's thumbnails are built, and the last
+two are still waiting — and all four rows already show what they are, with a
+picture.
+
+The walk's answer replaces the container's on the row as it arrives. Where the two
+disagree is the length: a DVD's program stream does not record its own, so the
+container's answer can be wrong.
+
+**No lane makes the editor wait.** A clip that is still being read opens on a
+double-click like any other; [Usable the moment it
+opens](#usable-the-moment-it-opens) says what waits and what does not.
 
 ![The input screen with four clips](../images/usage-list.png)
 
@@ -154,7 +177,13 @@ index. With several clips selected it just says how many.
 `Ctrl+A` then `Ctrl+D` (or the **Detect commercials** button on the right) runs
 detection over everything selected. Dropping a night's recordings in and pressing
 `Ctrl+D` once is what this was built for: detection works through them one at a
-time, running alongside the indexing queue rather than behind it.
+time, alongside the indexing and thumbnail lanes rather than behind them.
+
+**Detection does not wait for the index.** The three reading passes that look for
+the signals — captions, audio, logo — only need the recording read from the start.
+The index is wanted for the last step alone, moving each boundary it found onto a
+real scene change, so that step asks for it at the end of the pass. The reading
+takes minutes and the walk takes seconds, so by then the walk is long done.
 
 Progress appears on the row: `Detecting commercials 84% — Looking for the logo`.
 Rows whose turn has not come say `Commercial detection queued`. The audio pass
@@ -183,6 +212,34 @@ There is more about running a whole evening's worth at once in
 Double-click a row and it opens in its own window.
 
 ![The cut editor](../images/usage-editor.png)
+
+### Usable the moment it opens
+
+The editor does not wait for the recording to be read. What you can do grows in
+three stages.
+
+| When | What becomes available |
+|---|---|
+| **The moment it opens** (30 ms) | Length, resolution, fps, scan type, audio, codec; the timeline, the scrubber, keyframes, **cutting itself**, tracks, commercial detection. The preview is a picture found by approximate seek |
+| **When the walk finishes** (about 1 s per GB) | How many lossless points there are, `Snap to lossless`, the GOP-by-GOP filmstrip, a frame-accurate preview, the export plan, playback |
+| **When the thumbnails are built** (about 4 s per GB) | The pictures in the filmstrip, scene changes, the scrubber's hover preview |
+
+**Only two things wait.** `Snap to lossless` has nothing to snap to yet, and
+`Play` decodes continuously, which an approximate seek gives no fixed start for.
+Everything else works from the first stage.
+
+A cut made before the walk finishes stands exactly where you put it, and no
+lossless point arriving later moves it. What changes is only the answer to **what
+it costs**: a join that does not land on an access point shows up in the plan as a
+few re-encoded frames, and `Snap to lossless` can take those to zero once it lights
+up.
+
+![The cut editor before the recording has been read](../images/usage-stages.png)
+
+The band underneath says how far it has got. While it reads `Reading the recording.
+What copies losslessly is known once it has been read`, you are in the first stage:
+the filmstrip is still empty and `Snap to lossless` is greyed out, but the preview
+is there and cuts can already be made.
 
 ### What is where
 
@@ -511,10 +568,10 @@ it straight into a bug report.
 
 | Problem | What to do |
 |---|---|
-| **Dropping a file does nothing** | Check the extension (`.ts` `.m2ts` `.mts` `.m2t` `.mp4` `.mkv` `.mov` `.m4v`). Folders are not accepted |
+| **Dropping a file does nothing** | Check the extension (`.ts` `.m2ts` `.mts` `.m2t` `.mp4` `.mkv` `.mov` `.m4v` `.vob` `.mpg` `.mpeg` `.m2p`). A folder brings in the supported files inside it, and nothing else |
 | **"Not connected to `\\nas\rec`"** | Open that share in your file manager first. SmartCut does not mount shares itself |
 | **The captions are not in the output** | Captions survive only into a `.ts`. Check the container in the output settings |
-| **The editor's picture is coarse, or slow to arrive** | The first time round it is building the index and the thumbnails; the line underneath says how far it has got. There is no second time |
+| **The editor's picture is coarse, or slow to arrive** | It is still being read. The first stage's preview comes from an approximate seek; it becomes frame-accurate when the walk finishes, and the filmstrip fills in when the thumbnails are built (see [Usable the moment it opens](#usable-the-moment-it-opens)). The index is built the first time only |
 | **I want zero re-encoding** | Select the range and press `Snap to lossless`. If that does not do it, this material's cut points do not fall on access points |
 | **An unsupported codec or track layout** | See [known limits](../technical/validation.md#known-limitations) |
 

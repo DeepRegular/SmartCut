@@ -149,8 +149,8 @@ Cross-built from the Linux development VM to `x86_64-pc-windows-msvc`.
 
 | Artifact | Size | Contents |
 |---|---|---|
-| NSIS installer | 53.1 MB | 169.5 MB installed (11.2 MB exe plus 8 FFmpeg DLLs) |
-| Portable zip | 66.3 MB | The same set. Unzip and run `smartcut.exe` |
+| NSIS installer | 53.2 MB | 170.1 MB installed (11.8 MB exe plus 8 FFmpeg DLLs) |
+| Portable zip | 66.5 MB | The same set. Unzip and run `smartcut.exe` |
 
 **Exactly one piece of code had to be rewritten for the port: audio output.** Everything
 else goes through libav, so there is no `Command::new` and no POSIX path. All that was

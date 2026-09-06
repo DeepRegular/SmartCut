@@ -146,8 +146,8 @@ Linux の開発 VM から `x86_64-pc-windows-msvc` へクロスビルドして�
 
 | 成果物 | サイズ | 内容 |
 |---|---|---|
-| NSIS インストーラ | 53.1 MB | インストール後 169.5 MB（exe 11.2 MB ＋ FFmpeg の DLL 8 個） |
-| ポータブル zip | 66.3 MB | 同じ一式。展開して `smartcut.exe` を実行する |
+| NSIS インストーラ | 53.2 MB | インストール後 170.1 MB（exe 11.8 MB ＋ FFmpeg の DLL 8 個） |
+| ポータブル zip | 66.5 MB | 同じ一式。展開して `smartcut.exe` を実行する |
 
 **移植のために書き直す必要があったコードは 1 か所だけ、音声出力である。** ほかは
 すべて libav を通るので `Command::new` も POSIX パスも無い。必要だったのは

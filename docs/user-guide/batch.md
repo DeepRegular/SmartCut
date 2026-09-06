@@ -12,48 +12,63 @@ does not get in your way.
 ## The shape of the work
 
 ```
-Add files  →  indexed in the background  →  Ctrl+D detects commercials
+Add files  →  indexed and pictured in the background  →  Ctrl+D detects commercials
               →  cut each one in the editor  →  export the whole list
 ```
 
 Cuts live with the clip, not with the editor window, so you can go down the list
 cutting one recording after another and only then write everything out.
 
-## Two queues, running side by side
+## Three lanes, running side by side
 
-There are two background queues: **one builds seek indexes, the other detects
-commercials.** One pass of each kind runs at a time, and two of different kinds run
-at once.
+There are three background lanes: **one walks the packets and builds the seek index,
+one decodes the key pictures into thumbnails and scene changes, and one detects
+commercials.** One pass of each kind runs at a time, and three of different kinds
+run at once.
 
-They are separate because they do not weigh the same. Building an index decodes
-every key picture and takes all the cores. A commercial detection reads the caption
-stream, or the audio and the logo, none of which libavcodec threads at all — that is
-one core and a great deal of waiting for the disk. What the index pass loses by
-sharing is far less than what the detection gains, and it is what gets an evening's
-`Ctrl+D` finished by morning.
+They are separate because they do not weigh the same. The walk is the disk — one
+core reading about a gigabyte a second, touching no decoder at all. The thumbnails
+are the cores — every key picture through libavcodec, around four seconds a
+gigabyte. A commercial detection reads the caption stream, or the audio and the
+logo, none of which libavcodec threads at all: one core and a great deal of waiting
+for the disk. What the background loses by sharing is far less than what `Ctrl+D`
+gains, and it is what gets an evening's detection finished by morning.
 
-There is no third queue. A third pass would be a second decoder on the same cores,
-and past that point the disk is the limit anyway. Three answers late is not better
-than two answers early with a third behind them.
+**Running the walk and the thumbnails side by side, rather than one after the other,
+is why the list is quick.** In series they simply added up: the walk read a
+recording end to end, and then the thumbnails read the same recording end to end
+again, neither of them waiting on anything the other did. Side by side, the walk
+runs ahead through the list while the thumbnails follow it a clip behind, so **every
+row becomes real at disk speed** and the decoding happens during reads it is not
+holding up.
 
-## The editor never waits for the queues
+The thumbnails follow the walk closely on purpose: they read a recording the machine
+has just pulled through, so the second read comes back from the page cache rather
+than off the disk. That holds on a share too — a read that hits the cache never
+reaches the network either.
 
-An index, a detection and an open cut editor all run at the same time. Nothing is
-shared between them: indexing, detecting and exporting all reopen the recording from
-the seek index on disk, so a long pass over clip 12 costs the clip you are editing
-nothing.
+There is no fourth lane. A fourth pass would be a second decoder on the same cores,
+and past that point the disk is the limit anyway.
 
-While the editor window is up, the two background queues divide only **half the
+## The editor never waits for the lanes
+
+The walk, the thumbnails, a detection and an open cut editor all run at the same
+time. Nothing is shared between them: the lanes and the export alike reopen the
+recording from the seek index on disk, so a long pass over clip 12 costs the clip
+you are editing nothing.
+
+While the editor window is up, the three background lanes divide only **half the
 machine** between them. The picture under your pointer is the one somebody is
 waiting for, and a background pass finishing a few seconds later is a good trade for
 that.
 
 **You can open a clip the list has not read yet.** The editor makes that pass
-itself, showing the recording as far as it has got, so waiting for the queue's turn
-buys you nothing. While the editor has the clip, the index queue walks past that row
-— reading one file twice over is the one thing worth avoiding, and it is the queue
-that gives way. The index the editor writes stays on disk, so when the editor closes
-and the queue takes the row up, it costs one read.
+itself and becomes usable as far as it has got (see [Usable the moment it
+opens](gui.md#usable-the-moment-it-opens)), so waiting for the lane's turn buys you
+nothing. While the editor has the clip, the index lane walks past that row — reading
+one file twice over is the one thing worth avoiding, and it is the lane that gives
+way. The index the editor writes stays on disk, so when the editor closes and the
+lane takes the row up, it costs one read.
 
 ## Detecting commercials across the list
 
@@ -65,9 +80,10 @@ carry on being read alongside.
 Progress appears on each row (`Detecting commercials 84% — Looking for the logo`),
 and rows whose turn has not come say `Commercial detection queued`.
 
-**Stop analysis** stops both queues, and pressing it again resumes them. An index
-pass can stop part-way through a file. The three passes that make up a commercial
-detection cannot, so a stop lands **between clips** rather than inside one.
+**Stop analysis** stops all three lanes, and pressing it again resumes them. The
+walk and the thumbnails can stop part-way through a file. The three passes that make
+up a commercial detection cannot, so a stop lands **between clips** rather than
+inside one.
 
 Stopping affects what is running and nothing after it, so you can stop a batch and
 immediately start a different one.
