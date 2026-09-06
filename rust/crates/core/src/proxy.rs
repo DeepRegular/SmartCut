@@ -696,7 +696,7 @@ pub fn build(
         bytes: std::fs::metadata(&out_path).map(|m| m.len()).unwrap_or(0),
         seconds: began.elapsed().as_secs_f64(),
         marks,
-        track: collector.finish(),
+        track: collector.finish(src.duration),
     })
 }
 

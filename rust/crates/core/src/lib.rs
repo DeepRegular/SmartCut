@@ -44,7 +44,7 @@ pub use cut::{
 };
 pub use index::{ContainerIndex, IndexSource, PacketScan};
 pub use seek_index::SeekIndex;
-pub use preview::{frame_at, glance, play_from, shot_at, shots_at, Pace, Shot};
+pub use preview::{frame_at, glance, glance_at, play_from, shot_at, shots_at, Pace, Shot};
 pub use proxy::{Marks, ProxyOptions};
 pub use thumbs::{ThumbOptions, Track};
 pub use plan::{plan, plan_range, PlanOptions, RangePlan, Segment, SegmentKind};
@@ -408,6 +408,220 @@ fn one_track_per_pid(
 
 /// Probe the source and build its access-point index with the given strategy.
 pub fn scan_with(path: &str, source: &dyn index::IndexSource) -> Result<Source> {
+    scan_reporting(path, source, None)
+}
+
+/// As [`scan_with`], saying how far through the read is as it goes.
+///
+/// Worth having only for [`index::PacketScan`], and worth having *there*
+/// because the walk is the whole of the wait before anything else can begin:
+/// around a second a gigabyte from a local disc and as long again over a
+/// share. Whoever asked for the scan is otherwise looking at a bar that does
+/// not move until the pass after this one starts reporting.
+pub fn scan_reporting(
+    path: &str,
+    source: &dyn index::IndexSource,
+    on: Option<index::OnProgress>,
+) -> Result<Source> {
+    let (outline, ictx) = outline_of(path)?;
+    let idx = source.build(index::IndexInput {
+        path,
+        video: &outline.video,
+        start_time: outline.start_time,
+        ictx,
+        on,
+    })?;
+    assemble(path, outline, idx, source.name())
+}
+
+/// Read a recording once and come back with both its index and its pictures.
+///
+/// Otherwise these are two passes over the same file: [`scan`] walks every
+/// packet and decodes none of them, and [`thumbs::build`] walks every packet
+/// again to decode the key ones. The second read is nearly free where the
+/// machine still holds the file in its page cache -- measured at a tenth of
+/// the pair on a local disc -- and is a second transfer where it does not,
+/// which a recording on a share always is. There the pair costs twice what
+/// this does.
+///
+/// What is given up is when the index arrives. Two passes can hand it over
+/// after the first of them, at disc speed; this has it only when the read is
+/// over, which is decoder speed -- around four seconds a gigabyte against
+/// one. So it is worth choosing between the two rather than doing one of them
+/// always, and the thing to choose on is where the recording is.
+///
+/// `on` is told how far through the read it is; `stop` is asked the same
+/// question the passes are asked, and gives up where it stands.
+pub fn scan_with_pictures(
+    path: &str,
+    opts: &thumbs::ThumbOptions,
+    on: Option<index::OnProgress>,
+    stop: Option<&(dyn Fn() -> bool + Sync)>,
+) -> Result<(Source, thumbs::Track)> {
+    let (outline, ictx) = outline_of(path)?;
+    let params = ictx
+        .stream(outline.video.stream_index)
+        .ok_or_else(|| anyhow!("video stream vanished"))?
+        .parameters();
+    let mut decoder = video_decoder_with(params, opts.threads)?;
+    // The container's length is all there is to go on here, and on a program
+    // stream it can be wildly wrong. The collector corrects itself as the
+    // read goes on, and the real length goes in at the end; see
+    // [`thumbs::Collector::about`].
+    let mut collector =
+        thumbs::Collector::about(outline.duration, outline.video.sample_aspect_ratio, opts);
+    let mut frame = ff::frame::Video::empty();
+    let time_base = outline.video.time_base;
+    let start_time = outline.start_time;
+
+    let idx = {
+        // Non-key packets never reach the decoder: it would still have to
+        // parse them to throw them away. Skipping is done here rather than
+        // with `skip_frame`, which would be wrong -- see the note in
+        // [`thumbs::build_with`], which learned it the hard way on a field
+        // coded entry point.
+        let mut take = |packet: &ff::Packet| -> Result<()> {
+            if decoder.send_packet(packet).is_err() {
+                return Ok(());
+            }
+            while decoder.receive_frame(&mut frame).is_ok() {
+                if let Some(pts) = frame.pts() {
+                    collector.feed(pts as f64 * time_base - start_time, &frame)?;
+                }
+            }
+            Ok(())
+        };
+        index::walk(&outline.video, start_time, ictx, on, &mut take, stop)?
+    };
+    // The decoder holds a picture back for reordering, so the last entry
+    // point only comes out on a flush. Without it the strip's final cell has
+    // a hole in it.
+    let _ = decoder.send_eof();
+    while decoder.receive_frame(&mut frame).is_ok() {
+        if let Some(pts) = frame.pts() {
+            collector.feed(pts as f64 * time_base - start_time, &frame)?;
+        }
+    }
+
+    // The real length, which only the read knows, before the scenes are
+    // spaced against it.
+    let duration = match idx.end {
+        Some(end) if end > outline.duration => end,
+        _ => outline.duration,
+    };
+    let track = collector.finish(duration);
+    let src = assemble(path, outline, idx, "packet scan")?;
+    Ok((src, track))
+}
+
+/// Put a [`Source`] together out of the container's answer and an index.
+fn assemble(
+    path: &str,
+    outline: Outline,
+    idx: index::Index,
+    index_name: &'static str,
+) -> Result<Source> {
+    let Outline {
+        path: _,
+        input,
+        mut video,
+        audio,
+        audios,
+        captions,
+        dropped,
+        duration,
+        start_time,
+        byte_seekable,
+    } = outline;
+    let mut points = idx.points;
+    if points.is_empty() {
+        return Err(anyhow!("no random access points found in {path}"));
+    }
+    // Times are rebased by the container's start time, and the first picture
+    // can land a fraction of a microsecond below zero when the two disagree
+    // in the last bit. Nothing can be seeked to before the file begins, and
+    // a range clamped to a negative entry point simply fails, so the floor
+    // goes in here rather than at every call site.
+    for p in points.iter_mut() {
+        p.time = p.time.max(0.0);
+        p.lead_start = p.lead_start.max(0.0);
+    }
+
+    let gaps: Vec<f64> = points.windows(2).map(|w| w[1].time - w[0].time).collect();
+    let mean_gop =
+        if gaps.is_empty() { 1.0 } else { gaps.iter().sum::<f64>() / gaps.len() as f64 };
+    let seek_margin = (3.0 * mean_gop).clamp(1.0, 30.0);
+
+    video.pulldown = idx.pulldown.unwrap_or(false);
+
+    // A container that says it is shorter than the pictures it holds is a
+    // program stream; see [`index::Index::end`]. Only ever longer, so that a
+    // container which knows its own length keeps it: trailing sound after the
+    // last picture is part of a recording, and the pictures do not bound it.
+    let duration = match idx.end {
+        Some(end) if end > duration => end,
+        _ => duration,
+    };
+
+    Ok(Source {
+        path: path.to_string(),
+        input,
+        audio,
+        audios,
+        captions,
+        dropped,
+        seek_margin,
+        byte_seekable,
+        video,
+        duration,
+        start_time,
+        points,
+        leading_known: idx.leading_known,
+        index_name,
+    })
+}
+
+/// What the container itself says about a recording, before a byte of it has
+/// been walked.
+///
+/// All of this comes out of libavformat's own probe -- a few megabytes off
+/// the head of the file -- so it costs tens of milliseconds whether the
+/// recording is a hundred megabytes or four gigabytes. What it cannot say is
+/// where the access points are: that is [`scan`], and that is a pass over
+/// every byte at around a second a gigabyte.
+///
+/// Which makes this the answer a list can put on a row the instant a file is
+/// dropped on it -- how long, how big, how fast, what it is written in, what
+/// sound it carries -- with the walk filling in the rest behind it.
+pub struct Outline {
+    pub path: String,
+    pub input: input::Input,
+    pub video: VideoInfo,
+    pub audio: Option<AudioInfo>,
+    pub audios: Vec<AudioInfo>,
+    pub captions: Vec<CaptionInfo>,
+    pub dropped: Vec<DroppedStream>,
+    /// The container's own length, which is usually right and on a program
+    /// stream can be wildly wrong -- a DVD's four gigabytes have been seen
+    /// to come back as eight seconds. Only the walk can correct that; see
+    /// [`index::Index::end`].
+    pub duration: f64,
+    /// Container start time. MPEG-TS does not begin at zero.
+    pub start_time: f64,
+    pub byte_seekable: bool,
+}
+
+/// The container's own answer about a recording. See [`Outline`].
+pub fn outline(path: &str) -> Result<Outline> {
+    outline_of(path).map(|(o, _)| o)
+}
+
+/// As [`outline`], handing back the demuxer it opened along with it.
+///
+/// [`scan_reporting`] wants both: the answer, and the open file to walk. An
+/// index source takes the demuxer, so it has to come out of here rather than
+/// be opened a second time.
+fn outline_of(path: &str) -> Result<(Outline, ff::format::context::Input)> {
     init()?;
     let input = input::Input::parse(path)?;
     let ictx =
@@ -570,59 +784,21 @@ pub fn scan_with(path: &str, source: &dyn index::IndexSource) -> Result<Source> 
         pulldown: false, // the index source reports this, when it can
     };
 
-    let idx = source.build(index::IndexInput {
-        path,
-        video: &video,
-        start_time,
+    Ok((
+        Outline {
+            path: path.to_string(),
+            input,
+            video,
+            audio,
+            audios,
+            captions,
+            dropped,
+            duration,
+            start_time,
+            byte_seekable,
+        },
         ictx,
-    })?;
-    let mut points = idx.points;
-    if points.is_empty() {
-        return Err(anyhow!("no random access points found in {path}"));
-    }
-    // Times are rebased by the container's start time, and the first picture
-    // can land a fraction of a microsecond below zero when the two disagree
-    // in the last bit. Nothing can be seeked to before the file begins, and
-    // a range clamped to a negative entry point simply fails, so the floor
-    // goes in here rather than at every call site.
-    for p in points.iter_mut() {
-        p.time = p.time.max(0.0);
-        p.lead_start = p.lead_start.max(0.0);
-    }
-
-    let gaps: Vec<f64> = points.windows(2).map(|w| w[1].time - w[0].time).collect();
-    let mean_gop =
-        if gaps.is_empty() { 1.0 } else { gaps.iter().sum::<f64>() / gaps.len() as f64 };
-    let seek_margin = (3.0 * mean_gop).clamp(1.0, 30.0);
-
-    let mut video = video;
-    video.pulldown = idx.pulldown.unwrap_or(false);
-
-    // A container that says it is shorter than the pictures it holds is a
-    // program stream; see [`index::Index::end`]. Only ever longer, so that a
-    // container which knows its own length keeps it: trailing sound after the
-    // last picture is part of a recording, and the pictures do not bound it.
-    let duration = match idx.end {
-        Some(end) if end > duration => end,
-        _ => duration,
-    };
-
-    Ok(Source {
-        path: path.to_string(),
-        input,
-        audio,
-        audios,
-        captions,
-        dropped,
-        seek_margin,
-        byte_seekable,
-        video,
-        duration,
-        start_time,
-        points,
-        leading_known: idx.leading_known,
-        index_name: source.name(),
-    })
+    ))
 }
 
 #[cfg(test)]

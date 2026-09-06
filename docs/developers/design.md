@@ -157,22 +157,39 @@ Output filenames gain `_1` and `_2` in list order when a recording is in the lis
 than once. Remove one copy and the survivor gets its plain name back, because the number
 is counted off the list each time rather than stamped on at duplication.
 
-### Two lanes, and an editor that stays open
+### Three lanes, and an editor that stays open
 
-There are two background lanes: **one builds indexes, the other detects commercials.**
-The user-level description is in [batch processing](../user-guide/batch.md); what
-follows is why they are shaped that way.
+There are three background lanes: **one walks the packets and builds the index, one
+decodes the key pictures into thumbnails and scenes, and one detects commercials.** The
+user-level description is in [batch processing](../user-guide/batch.md); what follows is
+why they are shaped that way.
 
-They are split because **they do not weigh the same.** An index decodes every key
-picture and takes the cores, while a detection reads the caption stream, or the audio
-and a logo, none of which libavcodec threads at all. That is one core and a great deal
-of waiting for the disk. What the index pass loses by sharing is far less than what the
-detection gains.
+They are split because **they do not weigh the same.** The walk is the disk: one core
+reading at a gigabyte a second and touching no decoder at all. The thumbnails are the
+cores: every key picture through libavcodec, around four seconds a gigabyte. A detection
+is one core and a great deal of waiting, because libavcodec threads none of what it
+reads — neither captions, nor audio, nor a logo.
 
-There is no third lane, because a third pass is a second decoder on the same cores, and
-beyond that the disk is the wall anyway.
+**Running the walk and the thumbnails side by side rather than one after the other is
+what makes the list quick.** Serially they added up: the walk read the whole recording,
+and then the thumbnail pass read the whole recording again, and neither was doing what
+the other was waiting on. Side by side, the walk runs ahead through the list while the
+thumbnails follow it clip by clip — so **every row becomes real at disk speed**, and the
+decoding costs almost nothing on the clock because it happens during reads it is not
+waiting for.
 
-**Neither lane stops for the cut editor.** Sharing nothing is what makes that possible;
+**The thumbnails follow the walk closely, on purpose.** They read a recording the walk
+has just pulled through, so the second read comes out of the page cache rather than off
+the disk again. Sweeping all the walks first and all the thumbnails afterwards was tried
+and lost that: by the time a clip's pictures came up, three other recordings had washed
+the cache through, and **the thumbnail passes ran 18% slower.**
+
+There is a third lane because it is not a decoder. A second decoder on the same cores
+would not be worth having; the walk reads packet headers, and a detection threads
+nothing. What contends for cores is the thumbnail pass and the filmstrip, and that is
+what `LANES` is really about.
+
+**No lane stops for the cut editor.** Sharing nothing is what makes that possible;
 what makes it bearable is that the background passes take **only part of the machine** —
 while that window is up the two lanes divide half of it between them
 (`background_threads`, on the Rust side).
@@ -189,9 +206,48 @@ touching neither `Opened` nor `Thumbs` nor `Proxy`.
 
 **`BatchStop` is a count per lane, not a flag.** A pass takes the number as it starts and
 gives up when it sees a larger one. A flag would have to be lowered before the next pass
-could start, and there is no moment to lower it in, because the other lane is still
-watching it. The counter is also what lets the editor stop the one pass the index lane is
-making over the clip being opened, and nothing else.
+could start, and there is no moment to lower it in, because the other lanes are still
+watching it. There are three counts, one per lane, so that stopping one pass stops
+nothing else: the walk and the thumbnails run **at the same time on different
+recordings**, and a stop meant for one of them must not throw away the other's minutes
+of work.
+
+### A recording on a share is read once, not twice
+
+The walk and the thumbnails read the same file twice, both of them end to end. On a local
+disk the second read is nearly free — it comes out of what the first one left in the page
+cache, and measured across the pair it is worth about a tenth. **A share has no such
+cache.** The second read is the file coming down the wire again, and at a hundred
+megabytes a second that is the whole of the wait.
+
+So **where the recording lives decides how it is read** (`one_read`). A recording on a
+network filesystem is read once by `scan_with_pictures`, which builds the index and the
+pictures in the same pass. The test is a longest-prefix lookup in `/proc/self/mounts`
+(`netpath::is_remote`), because mounts nest: a share at `/mnt/rec` inside a local `/mnt`
+is a network path, and the shorter prefix would say it was not.
+
+What is given up is **when the index arrives.** Two reads can hand it over after the
+first of them, at disk speed — a second a gigabyte. One read has it only when the pass is
+over, at decoder speed — around four. A row becomes *legible* within a second either way
+(see below), so what moves later is only the moment its lossless points, its cut editor
+and its commercial detection become available.
+
+`SMARTCUT_ONE_READ=1` / `=0` forces either path, for measuring the two against each other
+on one machine.
+
+### The container's own answer comes first
+
+What `find_stream_info` can answer costs **thirty milliseconds whatever the file's
+length**: how long, how big, how fast, what it is written in, what sound it carries —
+everything on a row's own line. That used to sit behind the walk and the thumbnails, so a
+folder of twenty recordings left its last row showing a path and a blank rectangle for
+minutes. Now a sweep of `clip_outline` runs the moment the rows are made, and fills them
+in alongside the picture from `clip_glance` (`fillFirstLook`).
+
+**The walk's answer is always the better one.** Where the two differ is the length: a
+program stream does not record its own, and libavformat has been seen to work out eight
+seconds for an hour of DVD. `factsOf` takes the walk's answer where there is one and the
+container's only until then, never the other way round.
 
 ### Between the two windows
 
@@ -1419,3 +1475,45 @@ in is a version that comes back wrong.
   and coordinates derived from them are wrong. Resizing the window by 1px forces a repaint, so that has
   to be interleaved before every check. It does not happen on real hardware, but it is worth knowing
   when driving the GUI mechanically with `xdotool`.
+
+## Still to consider
+
+Things that have **not been decided against, only not done yet**. What follows is why, and
+where to start if they are taken up.
+
+### Commercial detection and the track list, without waiting for the walk
+
+The cut editor comes up in three stages. The container's own answer (thirty milliseconds)
+brings the timeline and cutting; the walk (a second a gigabyte) brings the lossless
+points, snapping and the plan; the thumbnail pass (four seconds a gigabyte) fills the
+filmstrip and the scenes.
+
+Four buttons are switched off in stage one. 無劣化点へ吸着 has nothing to snap to, which settles
+that one. The other three — 再生, トラック and CM を検出 — are held back by one thing only: **they
+read the recording through the opened `Source`**, which does not exist yet. What they
+actually want out of a `Source` is not the access points.
+
+- **The track list is the closest.** Everything `tracks` returns — stream index, PID,
+  language, codec, channels, what is being left out — is **named by the container**, and
+  `Outline` already holds all of it. It calls `scan_cached` today, which with no index on
+  disk **starts a second walk over the same file** — a reason to keep it switched off, not
+  a reason it cannot be done. Built from `outline()` it would answer in stage one.
+- **Commercial detection splits in two.** Reading the captions, the audio and the logo is
+  demuxing and decoding, and needs no access points. What needs them is the half that
+  *refines* a boundary once it is found, against the key pictures
+  (`cm::refine_boundaries`, which calls `thumbs::cut_near`). The boundaries could be found
+  first and refined when the points land — the same shape as a cut, which is held as a
+  time and becomes snappable when the points arrive.
+- **Playback can be last.** It decodes continuously, so an approximate seek gives it no
+  reliable start, and it gains the least.
+
+### Choosing the one-read path by measurement rather than by where the file is
+
+`one_read` decides on the filesystem type today (`netpath::is_remote`). What it actually
+wants to know is whether the second read will come out of the page cache, and that is as
+much about **the size of the recording against free memory** as it is about the mount: a
+recording larger than RAM is read cold the second time on a local disk too. Measuring the
+effective rate over the first few hundred megabytes is one way to decide.
+
+Being wrong either way is cheap — a local recording read once costs about a tenth more in
+total, and a shared one read twice doubles the transfer — so this is not urgent.

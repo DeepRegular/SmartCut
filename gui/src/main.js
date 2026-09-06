@@ -572,6 +572,24 @@ function stageWidth(cap = 1920) {
   return clamp(Math.round(want / STAGE_STEP) * STAGE_STEP, 320, cap);
 }
 
+/// Whether the walk has been over this recording, so the access points are
+/// known and everything that needs them can be exact.
+const walked = () => !!src && src.points.length > 0;
+
+/// A picture for the stage.
+///
+/// `preview` is the exact one and needs the access points: it seeks to the
+/// entry point before the instant and decodes forward to it. Before the walk
+/// there are no entry points, so the container is asked for its own guess
+/// instead -- one open, one GOP, and a landing that can be a second or two
+/// out on a transport stream. The picture answers with its own instant, and
+/// the frame counter follows that rather than the pointer, so what is on
+/// screen and what is written under it always agree.
+const stagePicture = (at) =>
+  walked()
+    ? invoke("preview", { time: at, width: stageWidth() })
+    : invoke("glimpse", { path: src.path, time: at, width: stageWidth() });
+
 async function showFrame(t) {
   if (!src) return;
   if (playing && t !== playhead) stopPlay();
@@ -587,7 +605,7 @@ async function showFrame(t) {
     // frame earlier until the picture is one that survived.
     let shot = null;
     for (let ask = playhead, i = 0; i < 3; i++, ask -= frame()) {
-      shot = await invoke("preview", { time: ask, width: stageWidth() });
+      shot = await stagePicture(ask);
       if (token !== previewToken) return;
       if (srcToOut(shot.time) !== null) break;
     }
@@ -836,7 +854,12 @@ function markHere(o) {
 /// would drift off the picture it is meant to be standing on.
 function gopCells(o, span, slots, vis) {
   const n = gops.length;
-  if (!n) return [{ at: 0, a: 0, b: Math.max(outDur, span), live: true }];
+  // Before the walk there are no boundaries to divide on, so the reel is cut
+  // on an even grid instead: the same cells at the same widths, standing for
+  // stretches of time rather than for runs of GOPs. It reads the same and it
+  // scrolls the same; what it cannot do is show where a cut would be free,
+  // and neither can anything else until the points arrive.
+  if (!n) return evenCells(o, span, slots, vis);
   // the GOP the playhead is standing in
   let i0 = 0;
   while (i0 + 1 < n && gops[i0 + 1] <= o + 1e-9) i0++;
@@ -878,6 +901,24 @@ function gopCells(o, span, slots, vis) {
   return cells;
 }
 
+/// The reel cut on an even grid, for a recording whose GOP boundaries are not
+/// known yet. Same shape of answer as [`gopCells`]: `slots` cells centred on
+/// the one the playhead stands in, blanks past either end.
+function evenCells(o, span, slots, vis) {
+  const step = Math.max(span / Math.max(vis, 1), 1e-3);
+  const i0 = Math.floor(o / step);
+  const half = slots >> 1;
+  const cells = [];
+  for (let k = -half; k < slots - half; k++) {
+    const a = (i0 + k) * step;
+    const b = a + step;
+    // Past either end of the material: kept as blanks so the reel can still
+    // slide far enough to hold the playhead in the middle.
+    cells.push(a < -1e-9 || a >= outDur ? { a, b, live: false } : { at: a, a, b, live: true });
+  }
+  return cells;
+}
+
 /// Draw a reel centred on `at`, or on the playhead when it is not given.
 async function refreshStrip(at) {
   if (!src || outDur <= 0) return;
@@ -898,6 +939,28 @@ async function refreshStrip(at) {
   const live = cells.filter((c) => c.live);
   if (!live.length) return;
 
+  // Nothing to ask for yet: the pictures are made by a pass that has not
+  // started, and before the walk there is not even an opened recording to
+  // decode one out of. The reel is drawn anyway, empty -- which is what its
+  // cells look like for any stretch the pass has not reached, so the strip
+  // fills in rather than appearing.
+  if (!walked()) {
+    const empty = cells.map((c) => ({
+      url: null,
+      time: null,
+      at: c.live ? c.at : c.a,
+      a: c.a,
+      b: c.b,
+      px,
+    }));
+    const mid = live[live.length >> 1];
+    renderStrip(empty, mid.b - mid.a, {
+      vis: vis * (mid.b - mid.a),
+      rest: o,
+      byNearest: false,
+    });
+    return;
+  }
   const times = live.map((c) => outToSrc(c.at));
   // Cells that begin on a GOP are already in memory; a cell that begins on a
   // join is not, and asking the held pictures for it would hand back the
@@ -1464,6 +1527,19 @@ function pctText(pct, redone) {
 }
 
 async function refreshPlan() {
+  // What a plan says is which stretches copy and which are re-encoded, and
+  // that is a question about where the access points are. Until the walk has
+  // found them there is no answer to give, and asking for one would only get
+  // "no file open" back.
+  if (src && !walked()) {
+    el("plan-text").textContent = tr("plan.reading");
+    el("segments").innerHTML = "";
+    el("copied-bar").style.width = "0%";
+    el("copied-bar").parentElement.classList.add("unknown");
+    el("smart-badge").textContent = "—";
+    return;
+  }
+  el("copied-bar").parentElement.classList.remove("unknown");
   const ranges = outputRanges();
   if (!src || !ranges.length) {
     el("plan-text").textContent = tr(src ? "plan.allCut" : "plan.openFile");
@@ -1637,8 +1713,26 @@ function keptAudio() {
 ///
 /// Its own function because it is said twice: once when the recording is
 /// opened, and again if the language changes while it is up.
+/// Switch off what the walk has not made possible yet, and on again when it
+/// has.
+///
+/// Four things need the access points and nothing else does. Playback, the
+/// track list and the commercial detection all read the recording through
+/// the opened [`Source`], which does not exist until the walk has built one;
+/// 無劣化点へ吸着 has nothing to snap to. Everything else in the window --
+/// the timeline, the cards, the marks, cutting itself -- works on times, and
+/// times are known from the moment the container was opened.
+///
+/// The scene buttons are not here: they wait on the pictures rather than on
+/// the points, and `prepare` turns them on.
+function paintReadiness() {
+  const yet = walked();
+  for (const id of ["play", "tracks", "detect-cm", "snap"]) el(id).disabled = !yet;
+}
+
 function paintSourceInfo() {
   if (!src) return;
+  paintReadiness();
   const flags = [
     tr(src.interlaced ? "media.interlaced" : "media.progressive"),
     src.pulldown ? tr("media.pulldown") : null,
@@ -1646,7 +1740,10 @@ function paintSourceInfo() {
   const sound = keptAudio();
   el("title").textContent = shownName || src.path.split(/[/\\]/).pop();
   el("info").textContent = tr("editor.info", {
-    points: src.points.length,
+    // A dash rather than zero while the walk is still counting them: "無劣化
+    //点: 0" about a recording with three thousand of them is worse than
+    // saying nothing.
+    points: walked() ? src.points.length : "—",
     w: src.width,
     h: src.height,
     fps: src.fps.toFixed(2),
@@ -1678,7 +1775,22 @@ async function openPath(picked, saved, side, name, chapters, dropPids) {
   shownName = name || null;
   el("title").textContent = tr("editor.analysing");
   try {
-    src = await invoke("open_source", { path: picked });
+    // The container's own answer first, which costs one open. It has
+    // everything this window draws with except where the access points are --
+    // the length, the picture size, the sound, the clock -- so the timeline,
+    // the scrubber and the cards can all be up while the walk that finds the
+    // points is still reading the recording. That walk is a second a
+    // gigabyte, and over a share it is the difference between a window you
+    // can work in and half a minute of its own name.
+    //
+    // `open_source` is the same question asked properly, and it is started
+    // here and picked up at the end of this: everything between is set up
+    // that does not depend on the answer.
+    const exact = invoke("open_source", { path: picked });
+    // A failure has to be somebody's, or the promise is unhandled and the
+    // window gets a console error instead of a message. Answered again below.
+    exact.catch(() => {});
+    src = await invoke("open_outline", { path: picked });
     paintSourceInfo();
     cuts = saved ? saved.cuts.map((c) => ({ a: c.a, b: c.b })) : [];
     cutHistory = [];
@@ -1731,12 +1843,59 @@ async function openPath(picked, saved, side, name, chapters, dropPids) {
     }
     await showFrame(saved ? saved.playhead : 0);
     schedulePlan();
+    // And now the walk, which has been running behind all of the above.
+    // Everything on screen is right without it; what it adds is exactness --
+    // where a cut is free, how the strip divides, and a stage picture that is
+    // the frame asked for rather than the nearest one a container seek could
+    // find.
+    await pointsArrived(exact, picked);
     prepare();
   } catch (e) {
     el("title").textContent = "";
     el("status").textContent = tr("editor.openFailed", { e });
     throw e;
   }
+}
+
+/// Take the walk's answer when it lands, and redraw what only it can settle.
+///
+/// The cuts are not touched. They are times, and they were times before this;
+/// what changes is that the timeline now knows which of those times are free
+/// and can snap to them. A cut made during the wait is a cut at the instant
+/// it was made -- the planner clamps it to an access point when the output is
+/// written, exactly as it would for one made after.
+///
+/// `picked` is checked against what came back because a second recording can
+/// be opened in this window while the first one's walk is still running, and
+/// the answer then belongs to nobody.
+async function pointsArrived(exact, picked) {
+  let full;
+  try {
+    full = await exact;
+  } catch (e) {
+    // The walk is where a recording that cannot be read says so. The outline
+    // opened it, so this is rare -- a file removed under the window, a disc
+    // ejected -- but it is not a window to go on cutting in.
+    el("status").textContent = tr("editor.openFailed", { e });
+    throw e;
+  }
+  if (!src || src.path !== picked) return;
+  const at = playhead;
+  src = full;
+  paintSourceInfo();
+  rebuildTimeline();
+  renderKeyframes();
+  stripCache = null;
+  stripShots = [];
+  shownTime = -1;
+  draw();
+  scheduleStrip();
+  // And the plan, which had nothing to say until now: what copies and what
+  // is re-encoded is entirely a question of where the access points are.
+  schedulePlan();
+  // The picture on the stage came from a container seek and is a second or
+  // two out. Now that the points are here it can be the frame it says it is.
+  await showFrame(at);
 }
 
 // --- scrubber pointer ---------------------------------------------------

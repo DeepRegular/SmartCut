@@ -380,6 +380,11 @@ main { flex: 1; min-height: 0; display: flex; gap: 0; }
 .output { flex: none; display: flex; flex-direction: column; gap: 5px; }
 .panel { background: var(--panel); border: 1px solid var(--line); padding: 6px 10px; }
 .bar { height: 13px; background: var(--encode); border-radius: 2px; overflow: hidden; }
+/* The ground is the re-encode colour and the bar over it is the copy, so an
+   empty bar reads as "all of this is being re-encoded". While the recording
+   is still being read that is not what is being said -- nothing is -- so the
+   ground goes neutral until there is a plan to show. */
+.bar.unknown { background: var(--line); }
 .bar span { display: block; height: 100%; width: 0; background: var(--copy); }
 .plan-text { margin-top: 5px; font-variant-numeric: tabular-nums; }
 /* Fixed, not max-height: the editor above must not shuffle up and down as
@@ -476,8 +481,16 @@ input[type="text"]::placeholder { color: var(--dim); }
 .clip.bad { background: #4a2b2b; }
 .clip .n { color: var(--dim); text-align: right; font-variant-numeric: tabular-nums; }
 .clip.on .n { color: #cfefff; }
+/* One box for every row, and the picture shown whole inside it.
+   `contain` rather than `cover`: the poster carries the recording's display
+   shape -- the encoder applies the sample aspect, so 1440x1080 at 16:9 comes
+   back 16:9 and a 720x480 disc at 4:3 comes back 4:3 -- and cropping to fill
+   a 16:9 box would throw away the sides of the 4:3 one and quietly lie about
+   what shape the recording is. The box stays the same size for all of them,
+   so the rows still line up; a 4:3 poster sits in the middle of it with the
+   black showing down either side. */
 .clip .poster {
-  width: 96px; height: 54px; object-fit: cover; display: block;
+  width: 96px; height: 54px; object-fit: contain; display: block;
   background: #000; border: 1px solid #000;
 }
 .clip .poster.blank { background: repeating-linear-gradient(45deg, #1a1a1a 0 6px, #141414 6px 12px); }

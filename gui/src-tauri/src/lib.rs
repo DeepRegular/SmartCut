@@ -84,22 +84,25 @@ struct Held(Mutex<Option<SeekIndex>>);
 #[derive(Default)]
 struct Playing(std::sync::atomic::AtomicBool);
 
-/// How many times each of the clip list's two background lanes has been
-/// asked to give up.
+/// How many times each of the clip list's background lanes has been asked to
+/// give up.
 ///
-/// Two counts because there are two lanes -- one seek index and one
-/// commercial detection run alongside each other -- and stopping one of them
-/// may not touch the other: opening the cut editor on a clip the index lane
-/// is reading stops that pass and nothing else.
+/// One count per lane, because stopping one of them may not touch the others:
+/// opening the cut editor on a clip stops whichever lane is on *that* clip
+/// and leaves the other two working. The walk and the pictures are counted
+/// apart for that reason -- they run at the same time now, on different
+/// recordings, and a stop meant for one of them would otherwise throw away
+/// the other's minutes of work.
 ///
 /// A count rather than a flag. A pass takes the number as it starts and
 /// gives up as soon as it sees a larger one, so a stop lands on exactly the
 /// passes that were running when it was asked for. A flag would have to be
 /// lowered again before the next pass could start, and there is no moment to
-/// lower it in: the other lane is still watching it.
+/// lower it in: the other lanes are still watching it.
 #[derive(Default)]
 struct BatchStop {
-    index: AtomicU64,
+    walk: AtomicU64,
+    pics: AtomicU64,
     cm: AtomicU64,
 }
 
@@ -126,8 +129,11 @@ struct AudioTrackInfo {
     bits: u8,
 }
 
-fn audio_tracks_of(src: &Source) -> Vec<AudioTrackInfo> {
-    src.audios
+/// Takes the tracks rather than the recording, because the cheap first look
+/// at a file has them before there is a [`Source`] to hold them. See
+/// [`clip_outline`].
+fn audio_tracks_of(audios: &[smartcut_core::AudioInfo]) -> Vec<AudioTrackInfo> {
+    audios
         .iter()
         .map(|a| AudioTrackInfo {
             index: a.stream_index,
@@ -209,12 +215,58 @@ struct ClipInfo {
     /// the output's own clock starts from -- and broadcast recordings often
     /// open most of a second in.
     first_point: f64,
-    scenes: usize,
+    /// The pictures, where this read produced them. Present only on the
+    /// one-read path -- a recording on a share, where reading it twice would
+    /// be transferring it twice -- and `None` where the list is to ask for
+    /// them separately through [`clip_pictures`]. See [`one_read`].
+    pictures: Option<ClipPictures>,
+    /// Whether the seek index was already on disc from an earlier session,
+    /// in which case this cost a read and not a pass over the recording.
+    cached: bool,
+    seconds: f64,
+}
+
+/// What the container itself says about a recording, had in tens of
+/// milliseconds however long the file is.
+///
+/// Every field here comes out of libavformat's probe -- a few megabytes off
+/// the head of the file -- and not out of the walk, which is a pass over
+/// every byte at around a second a gigabyte. So it is what a row can be given
+/// the instant a file is dropped on the list, instead of a path and a blank
+/// rectangle for as long as the queue in front of it takes.
+///
+/// What is *not* here is everything the walk answers for: where the lossless
+/// points are, how many of them cannot start a cut, and whether the stream
+/// carries pulldown. A row says those are not known yet until [`index_clip`]
+/// has been over it. The length is here but is the container's own, which on
+/// a program stream can be wildly wrong -- see [`smartcut_core::Outline`].
+#[derive(Serialize)]
+struct ClipOutline {
+    path: String,
+    name: String,
+    codec: String,
+    width: u32,
+    height: u32,
+    fps: f64,
+    duration: f64,
+    frames: u64,
+    interlaced: bool,
+    has_audio: bool,
+    audio_channels: u16,
+    audio_sample_rate: u32,
+    audio_bits: u8,
+    audio_tracks: Vec<AudioTrackInfo>,
+}
+
+/// What the picture pass leaves behind: the row's own picture and the scenes.
+#[derive(Serialize)]
+struct ClipPictures {
     /// A picture from a little way in, for the row to show. Absent only when
     /// the pass produced no pictures at all.
     poster: Option<String>,
-    /// Whether the seek index was already on disc from an earlier session,
-    /// in which case this cost a read and not a pass over the recording.
+    scenes: usize,
+    /// Whether the pictures were already on disc, in which case this cost a
+    /// read of one file and no decoding at all.
     cached: bool,
     seconds: f64,
 }
@@ -581,6 +633,69 @@ async fn open_source(path: String, app: tauri::AppHandle) -> Result<SourceInfo, 
     off_thread(move || open_now(&path, &app)).await
 }
 
+/// What the container says about a recording, for a window that has not read
+/// it yet -- the same answer [`clip_outline`] gives the list, in the shape
+/// the editor speaks.
+///
+/// `points` is empty, and that is the whole of what is missing. Only the walk
+/// finds the access points, and the walk reads every byte of the recording:
+/// tens of seconds over a share, during which the editor used to show its own
+/// name and nothing else. What it can show without them is everything except
+/// where a cut is free -- the length, the picture, the timeline, the marks --
+/// so it shows that, and the points arrive behind it. See `openPath`.
+///
+/// Nothing is stored: there is no [`Source`] here to store, and every command
+/// that wants one still has to wait for [`open_source`]. This answers a
+/// question, it does not open anything.
+#[tauri::command]
+async fn open_outline(path: String) -> Result<SourceInfo, String> {
+    off_thread(move || {
+        let o = smartcut_core::outline(&path).map_err(|e| e.to_string())?;
+        Ok(SourceInfo {
+            path: o.path.clone(),
+            codec: o.video.codec.clone(),
+            width: o.video.width,
+            height: o.video.height,
+            fps: o.video.frame_rate,
+            duration: o.duration,
+            interlaced: o.video.interlaced(),
+            // Only the walk sees pulldown -- it is a flag on the pictures and
+            // not in the container -- so this says nothing rather than saying
+            // the recording is free of it.
+            pulldown: false,
+            has_audio: o.audio.is_some(),
+            audio_channels: o.audio.as_ref().map_or(0, |a| a.channels),
+            audio_sample_rate: o.audio.as_ref().map_or(0, |a| a.sample_rate),
+            audio_bits: o.audio.as_ref().map_or(0, |a| a.bits),
+            audio_tracks: audio_tracks_of(&o.audios),
+            index_name: String::new(),
+            points: Vec::new(),
+            unusable_points: 0,
+            start_time: o.start_time,
+        })
+    })
+    .await
+}
+
+/// A picture from around `time`, out of a recording nothing has been read of.
+///
+/// The stage's picture while the walk is still running. Approximate on
+/// purpose: with no access points there is nothing to seek by but the
+/// container's own guess, which on a transport stream lands near the instant
+/// rather than on it. The instant that comes back is the picture's own, so
+/// the frame counter follows the picture rather than the pointer.
+///
+/// Costs one open and one GOP. [`preview`] is the exact answer and needs the
+/// walk to have finished.
+#[tauri::command]
+async fn glimpse(path: String, time: f64, width: u32) -> Result<Shot, String> {
+    off_thread(move || {
+        let s = smartcut_core::glance_at(&path, time, width).map_err(|e| e.to_string())?;
+        Ok(Shot { url: as_url(&s.jpeg), time: s.time, kind: s.kind.to_string() })
+    })
+    .await
+}
+
 /// Where seek indexes are kept.
 fn index_dir(app: &tauri::AppHandle) -> Result<std::path::PathBuf, String> {
     let dir = app
@@ -625,14 +740,28 @@ fn held_index(app: &tauri::AppHandle, path: &str) -> Option<SeekIndex> {
 /// background while another one is being edited, and neither pass may stand
 /// on the other's [`Opened`], [`Thumbs`] or [`Held`].
 fn scan_cached(app: &tauri::AppHandle, path: &str) -> Result<(Source, Option<SeekIndex>), String> {
+    scan_cached_reporting(app, path, None)
+}
+
+/// As [`scan_cached`], with somewhere to say how far through the walk is.
+///
+/// Said only by the walk, and the walk only happens where there is no index
+/// to pick up -- so a row that finds one goes straight past this and the bar
+/// never shows the phase at all, which is the honest picture of what
+/// happened.
+fn scan_cached_reporting(
+    app: &tauri::AppHandle,
+    path: &str,
+    on: Option<smartcut_core::index::OnProgress>,
+) -> Result<(Source, Option<SeekIndex>), String> {
     // The pass over the packets is the same answer every time, so a previous
     // session's is taken where there is one: about a second per gigabyte
     // saved, which on a half-hour recording is the whole of the wait between
     // choosing a file and being able to move the pointer.
     let mut held = held_index(app, path);
     let mut src = match &held {
-        Some(ix) => smartcut_core::scan_with(path, ix),
-        None => smartcut_core::scan(path),
+        Some(ix) => smartcut_core::scan_reporting(path, ix, on),
+        None => smartcut_core::scan_reporting(path, &smartcut_core::PacketScan, on),
     };
     // An index that the key could not tell was stale is still an index that
     // does not fit. Out it goes, and this open reads the file.
@@ -644,7 +773,7 @@ fn scan_cached(app: &tauri::AppHandle, path: &str) -> Result<(Source, Option<See
             }
         }
         held = None;
-        src = smartcut_core::scan(path);
+        src = smartcut_core::scan_reporting(path, &smartcut_core::PacketScan, on);
     }
     Ok((src.map_err(|e| e.to_string())?, held))
 }
@@ -663,7 +792,7 @@ fn info_of(src: &Source) -> SourceInfo {
         audio_channels: src.audio.as_ref().map_or(0, |a| a.channels),
         audio_sample_rate: src.audio.as_ref().map_or(0, |a| a.sample_rate),
         audio_bits: src.audio.as_ref().map_or(0, |a| a.bits),
-        audio_tracks: audio_tracks_of(src),
+        audio_tracks: audio_tracks_of(&src.audios),
         index_name: src.index_name.to_string(),
         points: src.points.iter().map(|p| p.time).collect(),
         unusable_points: src.points.iter().filter(|p| p.open_gop() && !p.droppable).count(),
@@ -1149,10 +1278,12 @@ fn clip_name(path: &str) -> String {
 #[tauri::command]
 fn stop_batch(lane: Option<String>, stop: State<BatchStop>) {
     match lane.as_deref() {
-        Some("index") => stop.index.fetch_add(1, Ordering::SeqCst),
+        Some("walk") => stop.walk.fetch_add(1, Ordering::SeqCst),
+        Some("pics") => stop.pics.fetch_add(1, Ordering::SeqCst),
         Some("cm") => stop.cm.fetch_add(1, Ordering::SeqCst),
         _ => {
-            stop.index.fetch_add(1, Ordering::SeqCst);
+            stop.walk.fetch_add(1, Ordering::SeqCst);
+            stop.pics.fetch_add(1, Ordering::SeqCst);
             stop.cm.fetch_add(1, Ordering::SeqCst)
         }
     };
@@ -1178,8 +1309,15 @@ fn background_threads(app: &tauri::AppHandle) -> usize {
     (cores / (2 * LANES)).max(1)
 }
 
-/// How many background passes the clip list runs at once: an index and a
-/// commercial detection. See [`BatchStop`].
+/// How many background passes the clip list runs at once: a walk over the
+/// packets, a pass over the key pictures, and a commercial detection. See
+/// [`BatchStop`].
+///
+/// The divisor is 2 rather than 3 because only one of the three decodes at
+/// width: the walk touches no decoder at all -- it reads packet headers --
+/// and libavcodec threads none of what a detection reads. So the cores are
+/// split between the picture pass and the film strip, which is what this
+/// number is really about.
 const LANES: usize = 2;
 
 /// How far into a clip its poster is taken from.
@@ -1235,91 +1373,129 @@ fn poster_of<'a>(
         .or_else(|| track.nearest(at))
 }
 
+/// The cheap first look at a recording: what the container says about it,
+/// without reading it. See [`ClipOutline`].
+///
+/// Costs one open and libavformat's probe -- tens of milliseconds -- so the
+/// list asks this of every row it has just been handed, in order, before any
+/// of the long passes start. `Err` rather than `None` where the file will not
+/// open at all: that is worth saying on the row, and it is the one thing this
+/// can find out that the passes behind it would only find out later.
+#[tauri::command]
+async fn clip_outline(path: String) -> Result<ClipOutline, String> {
+    off_thread(move || {
+        let o = smartcut_core::outline(&path).map_err(|e| e.to_string())?;
+        Ok(ClipOutline {
+            name: clip_name(&path),
+            path: o.path.clone(),
+            codec: o.video.codec.clone(),
+            width: o.video.width,
+            height: o.video.height,
+            fps: o.video.frame_rate,
+            duration: o.duration,
+            frames: (o.duration * o.video.frame_rate).round().max(0.0) as u64,
+            interlaced: o.video.interlaced(),
+            has_audio: o.audio.is_some(),
+            audio_channels: o.audio.as_ref().map_or(0, |a| a.channels),
+            audio_sample_rate: o.audio.as_ref().map_or(0, |a| a.sample_rate),
+            audio_bits: o.audio.as_ref().map_or(0, |a| a.bits),
+            audio_tracks: audio_tracks_of(&o.audios),
+        })
+    })
+    .await
+}
+
 /// Read one clip of the list and leave its seek index on disc.
 ///
-/// The same work [`prepare`] does for the recording being edited, done ahead
-/// of time and for a recording nothing is looking at: the pass over the
-/// packets and the pass over the key pictures, written down under the same
-/// cache key. So opening this clip for editing later finds both already made
-/// and returns at once.
+/// The walk over the packets, and only that: where the lossless points are,
+/// which of them can start a cut, whether the stream carries pulldown, and
+/// how long the recording really is. Written down at once, so a later session
+/// -- or the editor, opened on this clip a moment from now -- finds it made.
+///
+/// The key pictures are *not* decoded here. They used to be, in the same
+/// call, and that put three quarters of the wait in front of the quarter that
+/// makes a row real: a folder of an evening's recordings had its last row
+/// showing a path and nothing else for minutes, when everything that row
+/// needed had been readable since the fourth second. They are their own pass
+/// now, behind every walk rather than behind each one; see [`clip_pictures`].
 ///
 /// Deliberately shares nothing with the editing session -- no [`Opened`], no
 /// [`Thumbs`], no [`Generation`] -- because it runs while another recording
 /// is open and being cut.
+/// `keeps` is only wanted where this ends up doing the pictures as well --
+/// see [`ClipInfo::pictures`] -- and is what the poster is taken from then.
 #[tauri::command]
-async fn index_clip(path: String, app: tauri::AppHandle) -> Result<ClipInfo, String> {
-    off_thread(move || index_clip_now(&path, &app)).await
+async fn index_clip(
+    path: String,
+    keeps: Vec<(f64, f64)>,
+    app: tauri::AppHandle,
+) -> Result<ClipInfo, String> {
+    off_thread(move || index_clip_now(&path, &keeps, &app)).await
 }
 
-fn index_clip_now(path: &str, app: &tauri::AppHandle) -> Result<ClipInfo, String> {
+fn index_clip_now(
+    path: &str,
+    keeps: &[(f64, f64)],
+    app: &tauri::AppHandle,
+) -> Result<ClipInfo, String> {
     let began = std::time::Instant::now();
     // What the lane had been asked to stop before this pass existed is not
     // about this pass. See [`BatchStop`].
-    let mine = app.state::<BatchStop>().index.load(Ordering::SeqCst);
-    let stopped = move || app.state::<BatchStop>().index.load(Ordering::SeqCst) != mine;
+    let mine = app.state::<BatchStop>().walk.load(Ordering::SeqCst);
+    let stopped = move || app.state::<BatchStop>().walk.load(Ordering::SeqCst) != mine;
+    // Named by the lane as well as by the clip. The two index lanes run at
+    // the same time on different recordings, and a recording can be in the
+    // list twice -- so the path alone no longer says which row a number is
+    // about.
     let say = |phase: &str, done: f64| {
-        let _ = app.emit("clip-progress", (path.to_string(), phase.to_string(), done));
+        let _ = app.emit("clip-progress", (path.to_string(), "walk", phase.to_string(), done));
     };
     if stopped() {
         return Err("cancelled".into());
     }
     say(tr!("読み込み中", "Reading"), 0.0);
-    let (src, held) = scan_cached(app, path)?;
+    // The walk over the packets is a quarter of the whole pass on a local
+    // disc and more than that over a share -- a gigabyte a second is what a
+    // disc gives, and this reads every byte of the recording. It used to say
+    // nothing while it did, so the row sat at 読み込み中 0% for the first
+    // several seconds and the work looked as though it had not begun. It has;
+    // this is it saying so.
+    let reading = tr!("読み込み中", "Reading");
+    let on = |f: f64| say(reading, f);
 
-    // An index from an earlier session carries the pictures it was built
-    // with, so there is nothing left to do for this clip at all.
-    let kept = held.and_then(|mut ix| ix.track.take());
-    let (track, cached) = match kept {
-        Some(track) => (track, true),
-        None => {
-            let reporter = app.clone();
-            let owned = path.to_string();
-            let watcher = app.clone();
-            let track = smartcut_core::thumbs::build_with(
-                &src,
-                &smartcut_core::ThumbOptions {
-                    threads: background_threads(app),
-                    ..Default::default()
-                },
-                Some(Box::new(move |f| {
-                    let _ = reporter.emit(
-                        "clip-progress",
-                        (owned.clone(), phase_index().to_string(), f),
-                    );
-                })),
-                // Nothing is looking at this recording, so there is nobody to
-                // hand pictures to as they are made.
-                None,
-                Some(Box::new(move || {
-                    watcher.state::<BatchStop>().index.load(Ordering::SeqCst) != mine
-                })),
-            )
-            // A pass that was asked to stop does not come back with what it
-            // had; it gives up where it stands and says so. Said in the one
-            // word the list watches for, because a stop is not a failure --
-            // the row goes back to 解析待ち rather than red.
-            .map_err(|e| if stopped() { "cancelled".to_string() } else { e.to_string() })?;
-            // And a pass that was asked between finishing and returning is
-            // the same thing. Writing its track down would leave an index
-            // claiming to speak for the whole file, and every later session
-            // would believe it.
-            if stopped() {
-                return Err("cancelled".into());
-            }
-            remember(app, &src, Some(&track));
-            (track, false)
-        }
-    };
+    // Where the recording is decides how it is read. See [`one_read`].
+    if one_read(app, path) {
+        return merged_clip_now(path, keeps, app, began, &on, &stopped);
+    }
 
-    // The whole of the recording is what this row is so far: a clip that
-    // arrived with cuts already on it -- out of a project file -- asks for
-    // its picture again through [`clip_poster`] once it has one to ask with.
-    let first_point = src.points.first().map_or(0.0, |p| p.time);
-    let poster = poster_of(&track, &[(first_point, src.duration)])
-        .or_else(|| track.thumbs.first())
-        .map(|t| as_url(&t.jpeg));
+    let (src, held) = scan_cached_reporting(app, path, Some(&on))?;
+    if stopped() {
+        return Err("cancelled".into());
+    }
+
+    // The pictures, if an earlier session left any, are not looked at here:
+    // [`clip_pictures`] reads them off the same file a moment from now, and
+    // carrying a whole thumbnail track back through this call only for the
+    // list to drop it would be tens of megabytes moved for nothing.
+    let cached = held.is_some();
+    // Written down now, with no pictures in it. The walk is the expensive
+    // half and it is finished; leaving it unwritten until the pictures are
+    // made would mean a list stopped part-way through had to walk every one
+    // of these files again. A trackless index is a case the reader already
+    // knows -- it is what one written by an interrupted session looks like --
+    // and the pass behind this one fills it in.
+    if !cached {
+        remember(app, &src, None);
+    }
+
     say(tr!("完了", "Done"), 1.0);
-    Ok(ClipInfo {
+    Ok(clip_info_of(path, &src, cached, began.elapsed().as_secs_f64()))
+}
+
+/// What the list is told about a recording it has now read. Shared by the two
+/// ways of reading one; see [`one_read`].
+fn clip_info_of(path: &str, src: &Source, cached: bool, seconds: f64) -> ClipInfo {
+    ClipInfo {
         name: clip_name(path),
         path: src.path.clone(),
         codec: src.video.codec.clone(),
@@ -1334,16 +1510,177 @@ fn index_clip_now(path: &str, app: &tauri::AppHandle) -> Result<ClipInfo, String
         audio_channels: src.audio.as_ref().map_or(0, |a| a.channels),
         audio_sample_rate: src.audio.as_ref().map_or(0, |a| a.sample_rate),
         audio_bits: src.audio.as_ref().map_or(0, |a| a.bits),
-        audio_tracks: audio_tracks_of(&src),
+        audio_tracks: audio_tracks_of(&src.audios),
         index_name: src.index_name.to_string(),
         points: src.points.len(),
         unusable_points: src.points.iter().filter(|p| p.open_gop() && !p.droppable).count(),
-        first_point,
+        // Where the material actually begins; nothing before it decodes.
+        first_point: src.points.first().map_or(0.0, |p| p.time),
+        pictures: None,
+        cached,
+        seconds,
+    }
+}
+
+/// Whether this recording is worth reading once rather than twice.
+///
+/// The index and the pictures are two passes over the same file, and both
+/// read all of it. On a local disc the second pass is nearly free -- the
+/// machine still has the file in memory from the first, measured at a tenth
+/// of the pair -- and taking them apart is what lets every row in the list
+/// become real at disc speed while the pictures follow behind.
+///
+/// Over a share there is no page cache big enough to make the second read
+/// free; it is the file coming down the wire a second time, and at a hundred
+/// megabytes a second that is the whole of the wait. So there the two are
+/// done in one read, at the price of the index arriving at the end of it
+/// rather than a quarter of the way through.
+///
+/// The environment switch is for measuring the two against each other on one
+/// machine: `SMARTCUT_ONE_READ=1` forces it on, `=0` off.
+fn one_read(app: &tauri::AppHandle, path: &str) -> bool {
+    match std::env::var("SMARTCUT_ONE_READ").as_deref() {
+        Ok("1") | Ok("on") | Ok("yes") => return true,
+        Ok("0") | Ok("off") | Ok("no") => return false,
+        _ => {}
+    }
+    // A recording whose index is already on disc is not read at all, so there
+    // is nothing to save and the split path is the one that reports better.
+    if held_index(app, path).is_some() {
+        return false;
+    }
+    smartcut_core::netpath::is_remote(std::path::Path::new(path))
+}
+
+/// The walk and the pictures in one read, for a recording it would cost twice
+/// to read twice. See [`one_read`].
+fn merged_clip_now(
+    path: &str,
+    keeps: &[(f64, f64)],
+    app: &tauri::AppHandle,
+    began: std::time::Instant,
+    on: &(dyn Fn(f64) + Sync),
+    stopped: &(dyn Fn() -> bool + Sync),
+) -> Result<ClipInfo, String> {
+    let opts = smartcut_core::ThumbOptions {
+        threads: background_threads(app),
+        ..Default::default()
+    };
+    let (src, track) = smartcut_core::scan_with_pictures(path, &opts, Some(on), Some(stopped))
+        // A pass that was asked to stop does not come back with what it had.
+        // Said in the one word the list watches for, because a stop is not a
+        // failure -- the row goes back to 解析待ち rather than red.
+        .map_err(|e| if stopped() { "cancelled".to_string() } else { e.to_string() })?;
+    if stopped() {
+        return Err("cancelled".into());
+    }
+    remember(app, &src, Some(&track));
+    let mut info = clip_info_of(path, &src, false, began.elapsed().as_secs_f64());
+    // Empty is what the list sends for a clip nothing has been cut out of,
+    // because before this pass it had no exact length or first picture to
+    // work the ranges out from. It has both now.
+    let whole = [(info.first_point, src.duration)];
+    let keeps = if keeps.is_empty() { &whole[..] } else { keeps };
+    info.pictures = Some(ClipPictures {
+        poster: poster_of(&track, keeps)
+            .or_else(|| track.thumbs.first())
+            .map(|t| as_url(&t.jpeg)),
         scenes: track.scenes.len(),
-        poster,
+        cached: false,
+        seconds: 0.0,
+    });
+    Ok(info)
+}
+
+/// Decode the clip's key pictures and put them with its index.
+///
+/// The other half of what [`index_clip`] used to do in one call, run behind
+/// every walk rather than behind each one. It is the expensive half -- around
+/// four seconds a gigabyte against the walk's one, and on the machine's cores
+/// rather than on its disc -- and nothing a row *says* waits on it: what it
+/// gives is the row's own picture and the scene marks, and the scrub track
+/// the editor would otherwise build on opening.
+///
+/// `keeps` is what survives this clip's cuts, in source time, so the picture
+/// is taken from a part of the recording that is actually being kept. Nearly
+/// always the whole of it; a clip out of a project file arrives already cut.
+///
+/// Costs a read and no decoding where an earlier session already made them.
+#[tauri::command]
+async fn clip_pictures(
+    path: String,
+    keeps: Vec<(f64, f64)>,
+    app: tauri::AppHandle,
+) -> Result<ClipPictures, String> {
+    off_thread(move || clip_pictures_now(&path, &keeps, &app)).await
+}
+
+fn clip_pictures_now(
+    path: &str,
+    keeps: &[(f64, f64)],
+    app: &tauri::AppHandle,
+) -> Result<ClipPictures, String> {
+    let began = std::time::Instant::now();
+    let mine = app.state::<BatchStop>().pics.load(Ordering::SeqCst);
+    let stopped = move || app.state::<BatchStop>().pics.load(Ordering::SeqCst) != mine;
+    if stopped() {
+        return Err("cancelled".into());
+    }
+
+    let answer = |track: &smartcut_core::Track, cached| ClipPictures {
+        poster: poster_of(track, keeps)
+            .or_else(|| track.thumbs.first())
+            .map(|t| as_url(&t.jpeg)),
+        scenes: track.scenes.len(),
         cached,
         seconds: began.elapsed().as_secs_f64(),
-    })
+    };
+
+    // Already made, by this session's earlier run or by an earlier session.
+    // Nothing is opened and nothing is decoded: the pictures come off the
+    // index file they were written into.
+    if let Some(track) = held_index(app, path).and_then(|mut ix| ix.track.take()) {
+        return Ok(answer(&track, true));
+    }
+
+    // The walk has been over this file already, so its index is on disc and
+    // this open is a read of that rather than another pass over the
+    // recording -- which is what makes the two halves affordable as two.
+    let (src, _) = scan_cached(app, path)?;
+    let reporter = app.clone();
+    let owned = path.to_string();
+    let watcher = app.clone();
+    let track = smartcut_core::thumbs::build_with(
+        &src,
+        &smartcut_core::ThumbOptions { threads: background_threads(app), ..Default::default() },
+        Some(Box::new(move |f| {
+            let _ =
+                reporter.emit(
+                    "clip-progress",
+                    (owned.clone(), "pics", phase_index().to_string(), f),
+                );
+        })),
+        // Nothing is looking at this recording, so there is nobody to hand
+        // pictures to as they are made.
+        None,
+        Some(Box::new(move || {
+            watcher.state::<BatchStop>().pics.load(Ordering::SeqCst) != mine
+        })),
+    )
+    // A pass that was asked to stop does not come back with what it had; it
+    // gives up where it stands and says so. Said in the one word the list
+    // watches for, because a stop is not a failure -- the row keeps its index
+    // and goes back to waiting for its pictures rather than turning red.
+    .map_err(|e| if stopped() { "cancelled".to_string() } else { e.to_string() })?;
+    // And a pass that was asked between finishing and returning is the same
+    // thing. Writing a half-made track down would leave an index claiming to
+    // hold pictures for the whole file, and every later session would believe
+    // it.
+    if stopped() {
+        return Err("cancelled".into());
+    }
+    remember(app, &src, Some(&track));
+    Ok(answer(&track, false))
 }
 
 /// The proxy half of [`prepare`]. `Ok(None)` means another file was opened
@@ -2819,6 +3156,8 @@ pub fn run() {
             initial_paths,
             resolve_paths,
             open_source,
+            open_outline,
+            glimpse,
             detect_cm,
             thumbs_at,
             preview,
@@ -2833,6 +3172,8 @@ pub fn run() {
             export,
             audio_limits,
             index_clip,
+            clip_outline,
+            clip_pictures,
             detect_cm_at,
             cm_cached,
             stop_batch,

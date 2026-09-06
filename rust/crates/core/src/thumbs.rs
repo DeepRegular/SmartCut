@@ -217,12 +217,14 @@ fn distance(a: &[u8; SIG], b: &[u8; SIG]) -> f64 {
 /// a proxy runs [`build`] over the proxy instead. Either way the track is
 /// made the same, which is what lets the two be used interchangeably.
 pub struct Collector<'a> {
-    src: &'a Source,
     opts: &'a ThumbOptions,
-    /// Nothing is kept closer together than this. A floor only -- see
-    /// [`Track::interval`] for why it is not the answer to "how far apart
-    /// are the pictures".
-    min_gap: f64,
+    /// The recording's sample aspect, applied when a picture is encoded so
+    /// that a 4:3 recording comes back 4:3 whatever its coded width says.
+    sar: f64,
+    /// How long the recording is, as well as it is known -- which at the head
+    /// of a one-pass read is only what the container claimed. See
+    /// [`Self::min_gap`].
+    duration: f64,
     /// The gap between each kept picture and the one before it, which is
     /// what the spacing is measured from. Kept here rather than read back
     /// off the pictures because [`Self::take_new`] moves those out.
@@ -240,10 +242,20 @@ pub struct Collector<'a> {
 
 impl<'a> Collector<'a> {
     pub fn new(src: &'a Source, opts: &'a ThumbOptions) -> Self {
+        Self::about(src.duration, src.video.sample_aspect_ratio, opts)
+    }
+
+    /// As [`Self::new`], for a caller that has no [`Source`] yet.
+    ///
+    /// The one-pass read has none: the index is what a `Source` is mostly
+    /// made of, and it does not exist until the read that this is collecting
+    /// during has finished. What the collector actually wants of a recording
+    /// is these two numbers. See [`crate::scan_with_pictures`].
+    pub fn about(duration: f64, sar: f64, opts: &'a ThumbOptions) -> Self {
         Self {
-            src,
             opts,
-            min_gap: opts.interval.max(src.duration / opts.max_thumbs.max(1) as f64),
+            sar,
+            duration,
             gaps: Vec::new(),
             last_kept: None,
             thumbs: Vec::new(),
@@ -254,10 +266,27 @@ impl<'a> Collector<'a> {
         }
     }
 
+    /// Nothing is kept closer together than this. A floor only -- see
+    /// [`Track::interval`] for why it is not the answer to "how far apart
+    /// are the pictures".
+    ///
+    /// Worked out afresh each time rather than once, because the length it
+    /// divides may still be wrong. A program stream does not record its own,
+    /// and libavformat has been seen to work out eight seconds for an hour of
+    /// DVD -- which as a fixed floor would mean keeping every key picture of
+    /// the whole recording. Taking the longer of what the container claimed
+    /// and what has actually gone past makes the floor correct itself as the
+    /// read goes on: the first few seconds are held too finely and everything
+    /// after them is held right.
+    fn min_gap(&self) -> f64 {
+        let known = self.duration.max(self.seen);
+        self.opts.interval.max(known / self.opts.max_thumbs.max(1) as f64)
+    }
+
     /// The spacing images are actually being kept at, falling back to the
     /// floor while there are too few of them to have measured anything.
     pub fn interval(&self) -> f64 {
-        median_gap(&self.gaps).unwrap_or(self.min_gap)
+        median_gap(&self.gaps).unwrap_or(self.min_gap())
     }
 
     /// The pictures collected since this was last called.
@@ -290,25 +319,24 @@ impl<'a> Collector<'a> {
         self.prev = Some(sig);
 
         if time >= self.keep_from {
-            let jpeg = crate::preview::encode_jpeg(
-                frame,
-                self.src.video.sample_aspect_ratio,
-                self.opts.width,
-            )?;
+            let jpeg = crate::preview::encode_jpeg(frame, self.sar, self.opts.width)?;
             if let Some(prev) = self.last_kept {
                 self.gaps.push(time - prev);
             }
             self.last_kept = Some(time);
-            self.keep_from = time + self.min_gap;
+            self.keep_from = time + self.min_gap();
             self.thumbs.push(Thumb { time, jpeg });
         }
         Ok(())
     }
 
-    pub fn finish(self) -> Track {
+    /// The finished track. `duration` is the recording's real length, which
+    /// the one-pass read only learns when the read is over -- see
+    /// [`index::Index::end`] -- and which is what the scene marks are spaced
+    /// against.
+    pub fn finish(self, duration: f64) -> Track {
         let interval = self.interval();
-        let (scenes, threshold, typical) =
-            mark_scenes(&self.diffs, self.src.duration, self.opts);
+        let (scenes, threshold, typical) = mark_scenes(&self.diffs, duration, self.opts);
         Track {
             width: self.opts.width,
             interval,
@@ -467,7 +495,7 @@ pub fn build_with(
         f(1.0);
     }
 
-    Ok(collector.finish())
+    Ok(collector.finish(src.duration))
 }
 
 /// Turn the per-key-picture differences into a list of scene starts.

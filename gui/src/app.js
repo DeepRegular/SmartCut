@@ -125,7 +125,23 @@ function makeClip(found) {
     /// before anybody had seen the recording.
     dropPids: dropPids || [],
     info: null,
+    /// What the container said about the recording, had for the cost of an
+    /// open the moment the row was made. Everything the row's own line shows
+    /// is in here, so the row is legible long before `info` exists; what is
+    /// not in here is what only the walk can answer -- the lossless points,
+    /// the pulldown, and a program stream's real length. Null until asked,
+    /// and stays null for a file that would not open at all.
+    ///
+    /// Never replaces `info`. Once the walk has been over the recording its
+    /// answer is the better one on every field the two share.
+    outline: null,
     state: "queued", // queued | indexing | ready | error
+    /// Where the clip's key pictures are: null before the walk has finished,
+    /// then queued | running | done | error. Its own state because it is its
+    /// own pass -- the row is Smart and can be cut and detected without it,
+    /// and it runs behind every row's walk rather than behind each row's.
+    pics: null,
+    scenes: null,
     phase: t("phase.queued"),
     progress: 0,
     error: "",
@@ -143,9 +159,9 @@ function makeClip(found) {
     /// knows where the material begins and can turn them into marks.
     cmPending: false,
     edit: null,
-    /// The row's own picture, taken against its cuts. Null until there are
-    /// cuts to take one against, and `info.poster` -- the recording's, which
-    /// duplicates share -- stands for the clip until then.
+    /// The row's picture, out of the thumbnail track and taken against
+    /// whatever the cuts leave. Null until the picture pass has been over the
+    /// clip; `glance` stands for it until then.
     poster: null,
     /// The ranges `poster` was taken for, so that a state arriving from the
     /// editor twice a second does not ask for the same picture again.
@@ -153,8 +169,8 @@ function makeClip(found) {
     /// A picture taken the cheap way when the row was added, so that the row
     /// is not blank for as long as the queue in front of it takes. Null until
     /// it has been asked for, "" once it has been asked for and there was
-    /// none. Last of the three in `posterOf`: the other two come out of the
-    /// thumbnail track and know where the cuts are, and this does not.
+    /// none. Second in `posterOf`: `poster` comes out of the thumbnail track
+    /// and knows where the cuts are, and this does not.
     glance: null,
     selected: false,
     out: { state: "idle", progress: 0, note: "" }, // idle|waiting|running|done|error|skipped
@@ -232,7 +248,8 @@ async function edit(clip) {
   // film strip as it makes them. The row falls back to 解析待ち, is left
   // alone while the editor has it, and when the editor gives it back the
   // index the editor wrote is on disc, so the lane's pass is a read.
-  if (clip.state === "indexing") await invoke("stop_batch", { lane: "index" });
+  if (clip.state === "indexing") await invoke("stop_batch", { lane: "walk" });
+  if (clip.pics === "running") await invoke("stop_batch", { lane: "pics" });
   try {
     await invoke("open_editor", { title: t("editor.windowTitle", { clip: clipLabel(clip) }) });
     // Lost if the window is still starting up, which is what `editor-ready`
@@ -400,7 +417,7 @@ async function addPaths(inputs) {
   (async () => {
     for (const clip of taken) await restoreCm(clip);
   })();
-  fillGlances();
+  fillFirstLook();
   // A path that could not be reached at all is the more useful thing to say,
   // so it wins the one line there is.
   if (failed.length) {
@@ -733,35 +750,52 @@ if (listen) {
 
 // --- the queue ----------------------------------------------------------
 //
-// Two lanes, each working down the list in order: one builds seek indexes,
-// the other detects commercials. One pass of each kind at a time, and the
-// two of them run together.
+// Three lanes, each working down the list in order, one pass at a time, all
+// three running together:
 //
-// Two rather than one because they are not the same load. Building an index
-// decodes every key picture, which is the machine's cores; a detection reads
-// the caption stream, or the audio and a logo, and libavcodec threads none of
-// those -- so the detection is one core and a great deal of waiting for the
-// disc. Running them side by side costs the index pass much less than the
-// detection gains, which is what makes an evening's Ctrl+D finish overnight.
+//   walk  -- reads every packet and writes the seek index. This is what makes
+//            a row real: its length, its lossless points, its Smart badge.
+//   pics  -- decodes the key pictures of a clip the walk has been over: the
+//            row's picture, the scenes, and the scrub track the editor would
+//            otherwise build when it opened.
+//   cm    -- looks for commercial breaks.
 //
-// Two rather than more because a third pass would be a second decoder on the
-// same cores, and beyond that the disc is the wall anyway: three answers
-// later is not better than two answers sooner and the third one after them.
+// Three because they are three different loads and the machine has room for
+// all of them at once. The walk is the disc: one core reading a gigabyte a
+// second and touching no decoder. The pictures are the cores: every key
+// picture through libavcodec at around four seconds a gigabyte. A detection
+// is one core and a great deal of waiting -- libavcodec threads none of what
+// it reads.
+//
+// Running the walk and the pictures side by side rather than one after the
+// other is what makes the list quick. Serially they added up: the walk read
+// the whole recording, and then the picture pass read the whole recording
+// again, and neither was doing what the other was waiting on. Side by side
+// the walk runs ahead through the list while the pictures follow it clip by
+// clip -- so every row is real at disc speed, and the decoding costs almost
+// nothing on the clock because it happens during reads it is not waiting for.
+//
+// The pictures follow the walk *closely* on purpose. They read the same
+// recording the walk has just been through, so the second read is served out
+// of what the first one left in the page cache rather than off the disc
+// again. Sweeping all the walks first and all the pictures afterwards lost
+// that -- measured at 18% off the picture passes -- because by the time a
+// clip's pictures came up, three other recordings had been through the cache.
 //
 // The lanes run whether or not the cut editor is open. What gives way to the
 // editor is not the work but its share of the machine -- `background_threads`
 // on the Rust side hands the passes part of it while that window is up.
 
-/// Which lanes have a pass in flight, so neither is started twice.
-const lanes = { index: false, cm: false };
-const running = () => lanes.index || lanes.cm;
+/// Which lanes have a pass in flight, so none is started twice.
+const lanes = { walk: false, pics: false, cm: false };
+const running = () => lanes.walk || lanes.pics || lanes.cm;
 
 /// Raised by 解析を中止 and while an export is running. Not the same as an
 /// empty queue: the work is still queued, it is just not being taken.
 let paused = false;
 
 /// The last thing worth saying that was not a lane saying it -- an error, or
-/// what 中止 did. Shown when neither lane has anything to report.
+/// what 中止 did. Shown when no lane has anything to report.
 let sticky = "";
 
 function note(text) {
@@ -769,35 +803,46 @@ function note(text) {
   paintQueueNote();
 }
 
-/// One line, two lanes. Composed from what is running rather than written by
-/// whichever pass spoke last, because both want this line and neither may
-/// have it to itself.
+/// One line, three lanes. Composed from what is running rather than written
+/// by whichever pass spoke last, because all three want this line and none
+/// may have it to itself.
 function paintQueueNote() {
   const bits = [];
   const ix = clips.find((c) => c.state === "indexing");
+  const pic = clips.find((c) => c.pics === "running");
   const cm = clips.find((c) => c.cmState === "running");
   if (ix) bits.push(t("queue.indexing", { clip: clipLabel(ix) }));
+  if (pic) bits.push(t("queue.picturing", { clip: clipLabel(pic) }));
   if (cm) bits.push(t("queue.detecting", { clip: clipLabel(cm) }));
   el("queue-note").textContent = bits.length ? bits.join(t("sep")) : sticky;
 }
 
-/// The next clip for a lane, or nothing.
+/// The next clip for a lane, or nothing. Each lane works down the list in
+/// order and takes only its own kind of work.
 ///
-/// The clip in the editor is passed over by the index lane: the editor is
-/// making that pass itself. Nothing is passed over by the detection lane --
-/// it reads a different part of the file, and detecting the commercials of
+/// A clip is owed its pictures the moment its walk is done, so the two index
+/// lanes end up one clip apart: the walk runs ahead through the list, the
+/// pictures follow it. That is both the fast order and the cheap one -- the
+/// row is real as soon as the walk passes it, and the pictures read a
+/// recording the walk has just pulled through the page cache.
+///
+/// The clip in the editor is passed over by both index lanes: the editor is
+/// making those passes itself. Nothing is passed over by the detection lane
+/// -- it reads a different part of the file, and detecting the commercials of
 /// the clip you are cutting while you cut it is the point of Ctrl+D.
 function nextFor(lane) {
-  if (lane === "index") {
-    return clips.find((c) => c.state === "queued" && c !== editing);
-  }
+  if (lane === "walk") return clips.find((c) => c.state === "queued" && c !== editing);
+  if (lane === "pics") return clips.find((c) => c.pics === "queued" && c !== editing);
   return clips.find((c) => c.cmState === "queued");
 }
 
 function pump() {
-  pumpLane("index");
+  pumpLane("walk");
+  pumpLane("pics");
   pumpLane("cm");
 }
+
+const RUN = { walk: runIndex, pics: runPictures, cm: runCm };
 
 async function pumpLane(lane) {
   if (lanes[lane] || paused) return;
@@ -809,8 +854,7 @@ async function pumpLane(lane) {
       if (!next) break;
       // Whatever the note last said, this lane is working now.
       sticky = "";
-      if (lane === "index") await runIndex(next);
-      else await runCm(next);
+      await RUN[lane](next);
     }
   } finally {
     lanes[lane] = false;
@@ -819,27 +863,50 @@ async function pumpLane(lane) {
   }
 }
 
+/// The row's resting note: how its seek index was come by.
+///
+/// Written again after the picture pass as well as after the walk, because
+/// what a pass leaves on the row while it runs is about the pass, and what
+/// the row says when nothing is running should be about the clip.
+const indexNote = (clip) =>
+  clip.info.cached
+    ? t("phase.indexReused")
+    : t("phase.indexBuilt", { s: clip.info.seconds.toFixed(0) });
+
 async function runIndex(clip) {
   clip.state = "indexing";
   clip.phase = t("phase.reading");
   clip.progress = 0;
   paintRow(clip);
   paintQueueNote();
+  // Sent because this may turn out to be the pass that makes the pictures
+  // too, in which case the poster is taken against what the cuts leave. See
+  // `one_read` on the Rust side.
+  //
+  // Empty where nothing has been cut, which is nearly always: the ranges
+  // would have to be worked out from the container's length and from a first
+  // access point nothing has looked for yet, and the pass being asked is
+  // about to know both exactly. Empty means "the whole of it, as you find
+  // it", and the Rust side fills it in.
+  const keeps = clip.edit && clip.edit.cuts.length ? rangesOf(clip) : [];
+  const was = cutsSig(clip);
   try {
-    clip.info = await invoke("index_clip", { path: clip.path });
+    clip.info = await invoke("index_clip", { path: clip.path, keeps });
     clip.state = "ready";
     clip.progress = 1;
-    clip.phase = clip.info.cached
-      ? t("phase.indexReused")
-      : t("phase.indexBuilt", { s: clip.info.seconds.toFixed(0) });
-    // What came back is a picture of the recording, which is the right one
-    // for a clip nothing has been cut out of. A clip that arrived with cuts
-    // already on it -- out of a project file -- wants the other picture, and
-    // this is the first moment there is a track to take it from.
-    clip.posterSig = JSON.stringify(rangesOf(clip));
-    if (clip.edit && clip.edit.cuts.length) {
-      clip.posterSig = null;
-      refreshPoster(clip);
+    clip.phase = indexNote(clip);
+    if (clip.info.pictures) {
+      // A recording it would cost twice to read twice: the pictures came
+      // back with the index, out of the one read, and the other lane has
+      // nothing left to do for this row.
+      takePictures(clip, clip.info.pictures, was);
+    } else {
+      // The ordinary case. The pictures are the other lane's work, and that
+      // lane has usually run dry waiting for this -- the walk is a quarter of
+      // what the pictures cost, so it gets ahead -- so it has to be started
+      // again.
+      clip.pics = "queued";
+      pumpLane("pics");
     }
   } catch (e) {
     if (String(e).includes("cancelled")) {
@@ -854,6 +921,80 @@ async function runIndex(clip) {
   }
   paintRow(clip);
   paintTotals();
+  paintButtons();
+  paintQueueNote();
+  if (clip.selected) paintProps();
+}
+
+/// What a clip's cuts are, for telling whether they moved while a pass that
+/// depended on them was in flight.
+///
+/// The cuts and not the ranges they work out to. The ranges are the cuts
+/// measured against the recording's length and first access point, and the
+/// walk changes both of those -- so a range string taken before a walk and
+/// one taken after it differ for a clip nobody has touched.
+const cutsSig = (clip) => JSON.stringify(clip.edit ? clip.edit.cuts : []);
+
+/// Put a finished picture pass on the row, whichever pass produced it: the
+/// pictures lane, or the walk itself where the recording was read only once.
+///
+/// `was` is what the cuts were when the pictures were asked for. They can
+/// have moved on since -- the editor is open on this clip and somebody is
+/// working in it -- and then this picture is of a clip that no longer exists.
+/// Same test [`refreshPoster`] makes, for the same reason.
+function takePictures(clip, got, was) {
+  clip.pics = "done";
+  clip.progress = 1;
+  clip.scenes = got.scenes;
+  clip.phase = indexNote(clip);
+  if (got.poster && cutsSig(clip) === was) {
+    clip.poster = got.poster;
+    // The ranges as they are *now*, which is what `refreshPoster` compares
+    // against -- and which the walk has just made exact.
+    clip.posterSig = JSON.stringify(rangesOf(clip));
+  }
+}
+
+/// Decode the clip's key pictures: its own picture, and its scenes.
+///
+/// Nothing the row *says* waits on this -- the walk in front of it settled
+/// all of that -- so it is the last thing the lane does and the first thing
+/// it gives up when 中止 is pressed. What it buys is the row's picture taken
+/// against the cuts rather than the cheap one from `glance`, the scene count,
+/// and a scrub track the editor would otherwise build when it opened.
+///
+/// The ranges are sent because the picture is taken from what survives: a
+/// clip out of a project file arrives already cut, and a tenth of the way
+/// into a broadcast recording is as often as not inside a commercial break.
+/// So the answer is a poster that is already cut-aware, and `posterSig` is
+/// set to what it was taken for -- exactly as [`refreshPoster`] would.
+///
+/// Not run at all for a recording the walk already made the pictures of; see
+/// `one_read` on the Rust side.
+async function runPictures(clip) {
+  clip.pics = "running";
+  clip.phase = t("phase.pictures");
+  clip.progress = 0;
+  paintRow(clip);
+  paintQueueNote();
+  const keeps = rangesOf(clip);
+  const was = cutsSig(clip);
+  try {
+    takePictures(clip, await invoke("clip_pictures", { path: clip.path, keeps }), was);
+  } catch (e) {
+    if (String(e).includes("cancelled")) {
+      clip.pics = "queued";
+      clip.phase = t("phase.stopped");
+    } else {
+      // Not the row's state: the recording has been read and can be cut, and
+      // a row that could not be decorated is not a row that failed. Said in
+      // the line under the name and nowhere louder.
+      clip.pics = "error";
+      clip.phase = t("phase.noPictures");
+      jlog(`clip_pictures: ${e}`);
+    }
+  }
+  paintRow(clip);
   paintButtons();
   paintQueueNote();
   if (clip.selected) paintProps();
@@ -937,10 +1078,12 @@ async function runCm(clip) {
 
 if (listen) {
   listen("clip-progress", (ev) => {
-    const [path, phase, done] = ev.payload;
-    // The row that is being read, not merely the first one holding that
-    // path: the same recording can be in the list twice.
-    const clip = clips.find((c) => c.path === path && c.state === "indexing");
+    const [path, lane, phase, done] = ev.payload;
+    // The row that lane is on, not merely the first one holding that path:
+    // the same recording can be in the list twice, and the two index lanes
+    // run at once on different rows.
+    const on = lane === "walk" ? (c) => c.state === "indexing" : (c) => c.pics === "running";
+    const clip = clips.find((c) => c.path === path && on(c));
     if (!clip) return;
     clip.phase = phase;
     clip.progress = done;
@@ -1027,34 +1170,62 @@ function setText(node, text) {
   if (node.textContent !== text) node.textContent = text;
 }
 
-/// The picture standing for a clip: the one taken against its own cuts where
-/// there is one, and otherwise the one the index pass took of the recording.
+/// The picture standing for a clip: the one out of the thumbnail track,
+/// taken against the clip's own cuts, and the cheap one from `glance` until
+/// there is a track to take the other from.
 ///
 /// On the row rather than in `info`, because `info` is the *file's* answer and
 /// duplicates share it -- two cuts of one recording are two pictures.
-const posterOf = (clip) =>
-  clip.poster || (clip.info && clip.info.poster) || clip.glance || null;
+const posterOf = (clip) => clip.poster || clip.glance || null;
 
-/// Put a picture on the rows that have none yet.
+/// What the row shows about the recording: the walk's answer where there is
+/// one, and the container's own until then.
 ///
-/// The index pass gives a row its picture, and it is the pass the row is
-/// queued for: a folder of an evening's recordings is a screen of blank
-/// rows, and the last of them is blank until the ones above it have all been
-/// read. What this asks for costs a seek and a GOP, so the list can look
-/// like what was dropped on it a moment after it was.
+/// Never the other way round. The two agree on most fields, and where they
+/// differ the walk is right: a program stream does not record its own length
+/// and libavformat has been seen to work out eight seconds for an hour of
+/// DVD, which is a number no row should keep once something better exists.
+const factsOf = (clip) => clip.info || clip.outline || null;
+
+/// Give the rows that were just added everything that can be had cheaply:
+/// what the container says about each recording, and a picture out of it.
+///
+/// Both cost one open apiece -- a probe of the head of the file, and a seek
+/// and a GOP -- so tens of milliseconds each however long the recording is.
+/// The long passes cost a second a gigabyte and four again, and until this
+/// existed a row had nothing at all until they had both been over it: a
+/// folder of an evening's recordings was a screen of paths and blank
+/// rectangles, and the last row stayed that way until the nineteen above it
+/// had been read through twice.
 ///
 /// One at a time and lowest row first, in front of nothing: the passes have
 /// the cores and this is only worth having while they are still working.
 /// Asked once per row -- a recording that will not answer is not asked again
 /// every time another one is added.
-let glancing = false;
-async function fillGlances() {
-  if (glancing) return;
-  glancing = true;
+let firstLooking = false;
+async function fillFirstLook() {
+  if (firstLooking) return;
+  firstLooking = true;
   try {
     for (;;) {
       const clip = clips.find((c) => c.glance === null && !posterOf(c));
       if (!clip) break;
+      // The text before the picture: it is what the row is mostly made of,
+      // and it is the cheaper of the two.
+      if (!clip.outline && !clip.info) {
+        try {
+          clip.outline = await invoke("clip_outline", { path: clip.path });
+          paintRow(clip);
+          paintTotals();
+          if (clip.selected) paintProps();
+        } catch (e) {
+          // Not the row's error. A file that will not open is worth saying
+          // so about, but the walk behind this says it better and says it in
+          // the one place the row shows an error; this is only the first of
+          // the two to find out.
+          jlog(`clip_outline: ${e}`);
+        }
+      }
       let url = null;
       try {
         url = await invoke("clip_glance", { path: clip.path });
@@ -1064,10 +1235,10 @@ async function fillGlances() {
       // "" and not null, so that a recording nothing could be decoded out of
       // is asked about once rather than on every pass through the list.
       clip.glance = url || "";
-      if (url && !clip.poster && !(clip.info && clip.info.poster)) paintRow(clip);
+      if (url && !clip.poster) paintRow(clip);
     }
   } finally {
-    glancing = false;
+    firstLooking = false;
   }
 }
 
@@ -1117,7 +1288,10 @@ function paintRow(clip) {
   img.classList.toggle("blank", !poster);
   setText(li.querySelector(".nm"), clipLabel(clip));
 
-  const i = clip.info;
+  // Everything on this line is something the container itself knows, so it
+  // is filled in from the cheap first look and corrected by the walk. See
+  // [`factsOf`].
+  const i = factsOf(clip);
   setText(
     li.querySelector(".sub"),
     i
@@ -1197,15 +1371,19 @@ function paintRow(clip) {
     cmBadge.className = `cmbadge ${blocks ? "found" : "empty"}`;
   }
 
-  const running = clip.state === "indexing" || clip.cmState === "running";
-  const pct = clip.state === "indexing" ? clip.progress : clip.cmProgress;
+  // The bar serves whichever of the three passes is on this row. The two in
+  // the index lane share `progress` because only one of them can be running
+  // -- they are the same lane -- and `phase` says which it is.
+  const mine = clip.state === "indexing" || clip.pics === "running";
+  const running = mine || clip.cmState === "running";
+  const pct = mine ? clip.progress : clip.cmProgress;
   li.querySelector(".pbar").hidden = !running;
   li.querySelector(".pbar span").style.width = `${Math.round(pct * 100)}%`;
   setText(
     li.querySelector(".ptext"),
     running
       ? t("ptext.running", {
-          phase: clip.phase && clip.state === "indexing" ? clip.phase : t("ptext.cm"),
+          phase: clip.phase && mine ? clip.phase : t("ptext.cm"),
           pct: Math.round(pct * 100),
         })
       : clip.state === "queued"
@@ -1215,8 +1393,12 @@ function paintRow(clip) {
 }
 
 function paintTotals() {
-  const known = clips.filter((c) => c.info);
-  const total = known.reduce((n, c) => n + c.info.duration, 0);
+  // The container's own length counts here. It is right on everything but a
+  // program stream and the walk corrects it there, and a total that waits
+  // for every walk to finish says "未解析 20 本を除く" over a list whose
+  // every row is already showing its length.
+  const known = clips.map(factsOf).filter(Boolean);
+  const total = known.reduce((n, i) => n + i.duration, 0);
   const pending = clips.length - known.length;
   el("clip-total").textContent =
     t("input.total", { n: clips.length, t: coarse(total) }) +
@@ -1231,7 +1413,9 @@ function paintButtons() {
   el("edit-clip").disabled = n !== 1 || selected()[0].state === "error";
   el("duplicate-clip").disabled = n === 0;
   el("detect-selected").disabled = !selected().some((c) => c.state === "ready");
-  const queued = clips.some((c) => c.state === "queued" || c.cmState === "queued");
+  const queued = clips.some(
+    (c) => c.state === "queued" || c.pics === "queued" || c.cmState === "queued"
+  );
   el("stop-batch").disabled = !busy && !(paused && queued);
   el("stop-batch").textContent = t(paused && queued && !busy ? "side.resumeBatch" : "side.stopBatch");
   el("move-up").disabled = n === 0;
@@ -1254,17 +1438,27 @@ function paintProps() {
   }
   const c = picked[0];
   box.className = "props-body";
-  if (!c.info) {
+  const i = factsOf(c);
+  if (!i) {
     box.textContent =
       c.state === "error"
         ? t("props.error", { name: c.name, error: c.error })
         : t("props.queued", { name: c.name });
     return;
   }
-  const i = c.info;
+  // Three of the lines here are the walk's alone -- where the lossless points
+  // are, how many cannot start a cut, which index the answer came from -- and
+  // a fourth is the picture pass's. Shown as not yet known rather than as
+  // zero: "無劣化点 0 個" about a recording that has plenty is worse than
+  // saying nothing, and this panel is up while the passes are still running.
+  const walked = !!c.info;
+  const pending = t("props.pending");
   const flags = [
     t(i.interlaced ? "media.interlaced" : "media.progressive"),
-    i.pulldown ? t("media.pulldown") : null,
+    // Only the walk can see pulldown -- it is a flag on the pictures, not in
+    // the container -- so before it has run this says nothing rather than
+    // saying the recording is free of it.
+    walked && i.pulldown ? t("media.pulldown") : null,
   ]
     .filter(Boolean)
     .join(", ");
@@ -1289,10 +1483,11 @@ function paintProps() {
       : t("media.audioNo"),
     len: coarse(i.duration),
     frames: i.frames,
-    points: i.points,
-    unusable: i.unusable_points ? t("props.unusable", { n: i.unusable_points }) : "",
-    scenes: i.scenes,
-    index: i.index_name,
+    points: walked ? i.points : pending,
+    unusable:
+      walked && i.unusable_points ? t("props.unusable", { n: i.unusable_points }) : "",
+    scenes: c.scenes === null ? pending : c.scenes,
+    index: walked ? i.index_name : pending,
     cm: c.cmPhase ? t("props.cm", { note: c.cmPhase }) : "",
   });
 }
@@ -1334,6 +1529,12 @@ function duplicate(sources) {
     const copy = {
       ...src,
       id: nextId++,
+      // A pass in flight belongs to the row it was started on. The copy has
+      // none, so it takes its place in the queue rather than inheriting a
+      // state that nothing is ever going to finish.
+      state: src.state === "indexing" ? "queued" : src.state,
+      pics: src.pics === "running" ? "queued" : src.pics,
+      cmState: src.cmState === "running" ? "queued" : src.cmState,
       edit: src.edit ? JSON.parse(JSON.stringify(src.edit)) : null,
       cm: src.cm ? JSON.parse(JSON.stringify(src.cm)) : null,
       out: { state: "idle", progress: 0, note: "" },
@@ -1371,9 +1572,13 @@ async function remove(doomed) {
   const gone = new Set(doomed.map((c) => c.id));
   // A clip being read right now has a pass behind it that has to be told to
   // stop, or it would go on reading a file nothing is listed against. Only
-  // the lane that is on it: the other one is reading a clip that is staying.
+  // the lanes that are on one of these clips: the others are working on clips
+  // that are staying, and the three lanes are stopped apart for that reason.
   if (doomed.some((c) => c.state === "indexing")) {
-    await invoke("stop_batch", { lane: "index" });
+    await invoke("stop_batch", { lane: "walk" });
+  }
+  if (doomed.some((c) => c.pics === "running")) {
+    await invoke("stop_batch", { lane: "pics" });
   }
   if (doomed.some((c) => c.cmState === "running")) {
     await invoke("stop_batch", { lane: "cm" });
@@ -1618,10 +1823,18 @@ function normalise(list) {
 /// Starts at the first access point rather than at zero, as the editor's
 /// timeline does: nothing before it can be decoded, the planner clamps to it,
 /// and the output's own clock therefore starts there.
+///
+/// Empty for a clip nothing is known about at all. Before the walk the first
+/// access point is not one of the things known -- only the walk finds those
+/// -- so the ranges start at zero and are the container's length: near enough
+/// for the one thing that asks this early, which is where to take the row's
+/// picture from.
 function keepsOf(clip) {
-  const dur = clip.info.duration;
+  const facts = factsOf(clip);
+  if (!facts) return [];
+  const dur = facts.duration;
   const keeps = [];
-  let pos = clip.info.first_point;
+  let pos = clip.info ? clip.info.first_point : 0;
   for (const c of normalise(clip.edit ? clip.edit.cuts : [])) {
     if (c.a > pos + 1e-6) keeps.push({ a: pos, b: Math.min(c.a, dur) });
     pos = Math.max(pos, c.b);
@@ -2050,7 +2263,11 @@ function ladder() {
 /// Empty for a clip with no sound, and for one whose every sound track was
 /// switched off: both come out of the cut the same way.
 function keptAudio(clip) {
-  const i = clip.info;
+  // The container names the sound tracks, so this is answerable from the
+  // cheap first look and does not wait for the walk. It matters: the
+  // properties panel would otherwise say 音声: なし about a recording that
+  // has sound, for as long as the walk in front of it takes.
+  const i = factsOf(clip);
   if (!i || !i.has_audio) return [];
   const tracks = i.audio_tracks || [];
   // Read by a version that did not list the tracks: the main track is all
@@ -3245,7 +3462,7 @@ async function loadProject(path) {
   (async () => {
     for (const [clip, pending] of taken) await restoreCm(clip, pending);
   })();
-  fillGlances();
+  fillFirstLook();
   pump();
 }
 
@@ -3442,11 +3659,13 @@ window.addEventListener("keydown", (ev) => {
 /// alone: this window does not hold what it was made of.
 function relocalise() {
   for (const c of clips) {
-    if (c.state === "ready" && c.info) {
-      c.phase = c.info.cached
-        ? t("phase.indexReused")
-        : t("phase.indexBuilt", { s: c.info.seconds.toFixed(0) });
+    // Not while the picture pass is on this row or has just failed on it:
+    // the sentence there is that pass's and this one would talk over it.
+    if (c.state === "ready" && c.info && c.pics !== "running" && c.pics !== "error") {
+      c.phase = indexNote(c);
     }
+    if (c.pics === "running") c.phase = t("phase.pictures");
+    if (c.pics === "error") c.phase = t("phase.noPictures");
     if (c.cmState === "done" && c.cm && c.cmSource) {
       const note = cmNote(c.cm);
       c.cmPhase = c.cmSource === "cache" ? t("cm.previous", { note }) : note;

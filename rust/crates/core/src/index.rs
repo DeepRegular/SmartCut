@@ -12,7 +12,7 @@
 //! answer says so, and [`refine_leading`] fills the gaps by inspecting only
 //! the handful of access points a cut actually uses.
 
-use anyhow::{anyhow, Result};
+use anyhow::{anyhow, bail, Result};
 use ffmpeg_next as ff;
 
 use crate::{bitstream, AccessPoint, Source, VideoInfo};
@@ -36,6 +36,9 @@ pub struct Index {
     pub end: Option<f64>,
 }
 
+/// How far through a source is, as a fraction, told to whoever is waiting.
+pub type OnProgress<'a> = &'a (dyn Fn(f64) + Sync);
+
 /// What an index source is given to work with.
 pub struct IndexInput<'a> {
     pub path: &'a str,
@@ -44,6 +47,11 @@ pub struct IndexInput<'a> {
     pub start_time: f64,
     /// A demuxer already open on the source.
     pub ictx: ff::format::context::Input,
+    /// Where to say how far through the read is, if anyone is listening.
+    ///
+    /// Only the walk has anything to report: the sources that read a table
+    /// the container already holds are done before a bar could be drawn.
+    pub on: Option<OnProgress<'a>>,
 }
 
 pub trait IndexSource {
@@ -65,47 +73,115 @@ impl IndexSource for PacketScan {
     }
 
     fn build(&self, input: IndexInput) -> Result<Index> {
-        let IndexInput { video, start_time, mut ictx, .. } = input;
-        let stream_index = video.stream_index;
-        let time_base = video.time_base;
-        let codec = video.codec.clone();
-        let framing = video.framing;
-
-        let mut packets: Vec<PacketView> = Vec::new();
-        let mut pulldown = false;
-        for (s, p) in ictx.packets() {
-            if s.index() != stream_index {
-                continue;
-            }
-            let Some(pts) = p.pts() else { continue };
-            let reference =
-                p.data().map(|d| bitstream::is_reference(d, &codec, framing)).unwrap_or(true);
-            if codec == "mpeg2video" && !pulldown {
-                pulldown = p.data().map(bitstream::mpeg2_repeats_field).unwrap_or(false);
-            }
-            packets.push(PacketView {
-                pts: pts as f64 * time_base - start_time,
-                dts: p.dts().unwrap_or(pts) as f64 * time_base - start_time,
-                key: p.is_key(),
-                reference,
-                pos: p.position() as i64,
-            });
-        }
-
-        // The last picture to be shown, which is not the last to arrive.
-        let end = packets
-            .iter()
-            .map(|p| p.pts)
-            .fold(f64::NEG_INFINITY, f64::max)
-            .into_finite()
-            .map(|t| t + video.frame_duration());
-        Ok(Index {
-            points: points_from(&packets),
-            leading_known: true,
-            pulldown: Some(pulldown),
-            end,
-        })
+        let IndexInput { video, start_time, ictx, on, .. } = input;
+        walk(video, start_time, ictx, on, |_| Ok(()), None)
     }
+}
+
+/// The walk itself, with each key packet offered to `key` as it goes by.
+///
+/// One read where there would otherwise be two. The index needs every packet
+/// and decodes none of them; the thumbnail track needs only the key ones and
+/// decodes all of those -- so run apart they are two full sequential reads of
+/// the same recording. The second one is nearly free where the machine still
+/// has the file in its page cache and is a second transfer where it does not,
+/// which a recording on a share always is. Handing the key packets out from
+/// here lets a caller that wants both pay for one read; see
+/// [`crate::scan_with_pictures`].
+///
+/// `key` is offered the packet, not the picture: what to do with it -- decode
+/// it, count it, ignore it -- is the caller's business, and this file has no
+/// decoder in it.
+pub fn walk(
+    video: &VideoInfo,
+    start_time: f64,
+    mut ictx: ff::format::context::Input,
+    on: Option<OnProgress>,
+    mut key: impl FnMut(&ff::Packet) -> Result<()>,
+    stop: Option<&(dyn Fn() -> bool + Sync)>,
+) -> Result<Index> {
+    let stream_index = video.stream_index;
+    let time_base = video.time_base;
+    let codec = video.codec.clone();
+    let framing = video.framing;
+
+    // How far there is to read. Asked of the byte stream rather than of
+    // the file, because what is open is not always a file: a DVD title is
+    // a range of sectors inside a VOB, or several VOBs joined, and only
+    // the demuxer's own reader knows how long that adds up to. `None`
+    // where it cannot say -- a pipe, a stream -- and then nothing is
+    // reported rather than a fraction of an unknown.
+    let total = on.and_then(|_| unsafe {
+        let pb = (*ictx.as_ptr()).pb;
+        if pb.is_null() {
+            return None;
+        }
+        match ff::ffi::avio_size(pb) {
+            n if n > 0 => Some(n as f64),
+            _ => None,
+        }
+    });
+
+    let mut packets: Vec<PacketView> = Vec::new();
+    let mut pulldown = false;
+    // Said on a count rather than on every packet: a gigabyte is on the
+    // order of a hundred thousand of them and the bar has 100 steps, so
+    // the rest of the calls would draw nothing. One in a couple of
+    // thousand works out at a dozen or so a second on a broadcast
+    // recording, which is a bar that moves without being a bar that is
+    // redrawn for nothing.
+    let mut seen: u64 = 0;
+    for (s, p) in ictx.packets() {
+        seen += 1;
+        if seen.is_multiple_of(2048) {
+            // Asked on the same count as the progress, but not behind it: a
+            // pass with nobody watching still has to be stoppable.
+            if let Some(f) = stop {
+                if f() {
+                    bail!("abandoned");
+                }
+            }
+            if let (Some(on), Some(total)) = (on, total) {
+                let pos = p.position();
+                if pos > 0 {
+                    on((pos as f64 / total).clamp(0.0, 1.0));
+                }
+            }
+        }
+        if s.index() != stream_index {
+            continue;
+        }
+        let Some(pts) = p.pts() else { continue };
+        let reference =
+            p.data().map(|d| bitstream::is_reference(d, &codec, framing)).unwrap_or(true);
+        if codec == "mpeg2video" && !pulldown {
+            pulldown = p.data().map(bitstream::mpeg2_repeats_field).unwrap_or(false);
+        }
+        if p.is_key() {
+            key(&p)?;
+        }
+        packets.push(PacketView {
+            pts: pts as f64 * time_base - start_time,
+            dts: p.dts().unwrap_or(pts) as f64 * time_base - start_time,
+            key: p.is_key(),
+            reference,
+            pos: p.position() as i64,
+        });
+    }
+
+    // The last picture to be shown, which is not the last to arrive.
+    let end = packets
+        .iter()
+        .map(|p| p.pts)
+        .fold(f64::NEG_INFINITY, f64::max)
+        .into_finite()
+        .map(|t| t + video.frame_duration());
+    Ok(Index {
+        points: points_from(&packets),
+        leading_known: true,
+        pulldown: Some(pulldown),
+        end,
+    })
 }
 
 /// Take the entry points from the container's own seek table.

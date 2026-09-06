@@ -125,6 +125,10 @@ const CATALOG = {
       "\nシーン {scenes} 箇所　索引 {index}{cm}",
     "props.copyOf": "（同じ録画の {n} 本目）",
     "props.unusable": "（うち {n} 個は開始に使えません）",
+    // Sits inside "無劣化点 {points} 個" and two lines like it, so it has
+    // to read as a missing number rather than as a word: 無劣化点 解析待ち
+    // 個 is not a sentence anybody wants to read.
+    "props.pending": "—",
     "props.cm": "\nCM:　{note}",
     "media.interlaced": "インターレース (TFF)",
     "media.progressive": "プログレッシブ",
@@ -170,6 +174,7 @@ const CATALOG = {
     "disc.hidden": "ほか {n} クリップは短いため隠れています",
     "dialog.project": "SmartCut プロジェクト",
     "queue.indexing": "シーク用インデックスを作成中: {clip}",
+    "queue.picturing": "サムネイルを作成中: {clip}",
     "queue.detecting": "CM を検出中: {clip}",
     "row.sub":
       "{len} ({frames} フレーム)　00:00:00.00-{end}　{w}x{h}　{fps} fps　{codec}{audio}",
@@ -190,6 +195,8 @@ const CATALOG = {
     "ptext.cm": "CM 検出",
     "phase.queued": "待機中",
     "phase.reading": "読み込み中",
+    "phase.pictures": "サムネイル",
+    "phase.noPictures": "サムネイルは作成できず（切り出しには影響しません）",
     "phase.detecting": "検出中",
     "phase.stopped": "中止しました",
     "phase.indexReused": "前回の索引を再利用",
@@ -399,6 +406,7 @@ const CATALOG = {
     "warm.thumbs": "サムネイル {n} 枚 {gap}s 間隔",
     "warm.scenes": "シーン {n} 箇所",
     "plan.openFile": "ファイルを開いてください",
+    "plan.reading": "録画を読み込み中です。無劣化で残る範囲は読み終えてから分かります",
     "plan.allCut": "すべてカットされています",
     "plan.text":
       "出力 {total}（{ranges} 区間、カット {cuts} 箇所）— 無劣化コピー {copied}s ({pct})" +
@@ -512,6 +520,7 @@ const CATALOG = {
       "\n{scenes} scenes   index {index}{cm}",
     "props.copyOf": " (copy {n} of this recording)",
     "props.unusable": " ({n} of them cannot start a cut)",
+    "props.pending": "—",
     "props.cm": "\nCommercials:  {note}",
     "media.interlaced": "interlaced (TFF)",
     "media.progressive": "progressive",
@@ -557,6 +566,7 @@ const CATALOG = {
     "disc.hidden": "{n} more clip(s) are hidden for being short",
     "dialog.project": "SmartCut project",
     "queue.indexing": "Building seek index: {clip}",
+    "queue.picturing": "Building thumbnails: {clip}",
     "queue.detecting": "Detecting commercials: {clip}",
     "row.sub":
       "{len} ({frames} frames)   00:00:00.00-{end}   {w}x{h}   {fps} fps   {codec}{audio}",
@@ -577,6 +587,8 @@ const CATALOG = {
     "ptext.cm": "Detecting",
     "phase.queued": "Queued",
     "phase.reading": "Reading",
+    "phase.pictures": "Thumbnails",
+    "phase.noPictures": "No thumbnails (cutting is unaffected)",
     "phase.detecting": "Detecting",
     "phase.stopped": "Stopped",
     "phase.indexReused": "Index from an earlier run",
@@ -786,6 +798,7 @@ const CATALOG = {
     "warm.thumbs": "{n} thumbnails every {gap}s",
     "warm.scenes": "{n} scenes",
     "plan.openFile": "Open a file",
+    "plan.reading": "Reading the recording. What copies losslessly is known once it has been read",
     "plan.allCut": "Everything has been cut",
     "plan.text":
       "Output {total} ({ranges} ranges, {cuts} cuts) — copied losslessly {copied}s ({pct})" +

@@ -304,6 +304,95 @@ fn eq_ci(a: &str, b: &str) -> bool {
     a.len() == b.len() && a.to_lowercase() == b.to_lowercase()
 }
 
+/// Filesystems the machine reaches over a network. What they have in common
+/// is the only thing being asked about here: reading a file on one of them
+/// twice costs twice, where reading a local file twice usually costs once
+/// because the page cache kept the first read.
+const REMOTE_FS: [&str; 13] = [
+    "cifs", "smb3", "smbfs", "smbfs2", "nfs", "nfs4", "9p", "afs", "ncpfs", "ceph", "glusterfs",
+    "fuse.sshfs", "fuse.gvfsd-fuse",
+];
+
+/// Whether `path` lives on something reached over a network.
+///
+/// Asked about cost, not about correctness -- everything works either way.
+/// The index and the pictures can be had in one read of a recording or in
+/// two, and which is cheaper depends on whether the second read comes off the
+/// wire or out of the machine's own memory. See [`crate::scan_with_pictures`].
+///
+/// Answered from the longest mount point the path sits under, because mounts
+/// nest: a share at `/mnt/rec` inside a local `/mnt` is a network path, and
+/// the shorter prefix would say it was not.
+///
+/// A path that does not exist is answered for by the nearest ancestor that
+/// does. That is not a fallback but the ordinary case: a DVD title is named
+/// `…/VTS_01_1.VOB@0-2082359`, which is a real file with a range of sectors
+/// written after it, and no such name is ever on disc.
+///
+/// `false` where the machine will not say. Two reads of a local recording is
+/// what the program did for its whole life before this was asked, so being
+/// wrong that way costs a fraction; being wrong the other way costs a
+/// transfer.
+#[cfg(target_os = "linux")]
+pub fn is_remote(path: &std::path::Path) -> bool {
+    let Some(known) = nearest_existing(path) else { return false };
+    let Ok(full) = known.canonicalize() else { return false };
+    let Ok(table) = std::fs::read_to_string("/proc/self/mounts") else { return false };
+    holding(&table, &full).is_some_and(|kind| REMOTE_FS.contains(&kind.as_str()))
+}
+
+/// The filesystem type of the mount `full` sits on, out of a mount table in
+/// the shape `/proc/self/mounts` has: source, mount point, type, and options.
+///
+/// The longest matching mount point wins, and it has to match at a path
+/// boundary: `/mnt/recordings` is not under `/mnt/rec`, and comparing the
+/// strings alone would say it was.
+#[cfg(any(target_os = "linux", test))]
+fn holding(table: &str, full: &std::path::Path) -> Option<String> {
+    let mut best: Option<(usize, String)> = None;
+    for line in table.lines() {
+        let mut fields = line.split_whitespace();
+        let Some(_source) = fields.next() else { continue };
+        let Some(at) = fields.next().map(unescape) else { continue };
+        let Some(kind) = fields.next() else { continue };
+        if !full.starts_with(&at) {
+            continue;
+        }
+        if best.as_ref().is_none_or(|(len, _)| at.len() > *len) {
+            best = Some((at.len(), kind.to_string()));
+        }
+    }
+    best.map(|(_, kind)| kind)
+}
+
+/// On Windows a share is named by the path itself and there is no table to
+/// consult. A mapped drive letter hides that it is one, and is answered for
+/// as local -- the cost of being wrong there is one extra read.
+#[cfg(windows)]
+pub fn is_remote(path: &std::path::Path) -> bool {
+    let s = path.to_string_lossy();
+    s.starts_with(r"\\") && !s.starts_with(r"\\?\")
+}
+
+#[cfg(not(any(target_os = "linux", windows)))]
+pub fn is_remote(_path: &std::path::Path) -> bool {
+    false
+}
+
+/// The path itself if it exists, else the nearest ancestor that does.
+#[cfg(target_os = "linux")]
+fn nearest_existing(path: &std::path::Path) -> Option<PathBuf> {
+    let mut at = path.to_path_buf();
+    loop {
+        if at.exists() {
+            return Some(at);
+        }
+        if !at.pop() || at.as_os_str().is_empty() {
+            return None;
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -372,5 +461,48 @@ mod tests {
     fn matches_a_mount_case_insensitively() {
         assert!(eq_ci("NAS", "nas"));
         assert!(!eq_ci("nas2", "nas"));
+    }
+
+    #[test]
+    fn a_recording_is_placed_on_the_mount_it_is_actually_under() {
+        // Four mounts, two of them nested, and one whose name is a prefix of
+        // another's without being its parent.
+        let table = "\
+/dev/sda2 / ext4 rw,relatime 0 0
+//nas/rec /mnt/rec cifs rw,relatime 0 0
+/dev/sdb1 /mnt ext4 rw,relatime 0 0
+nas:/export /mnt/nfs nfs4 rw,relatime 0 0
+/dev/sdc1 /mnt/recordings ext4 rw,relatime 0 0
+";
+        let kind = |p: &str| holding(table, std::path::Path::new(p));
+        // The share, not the local disc it is nested inside.
+        assert_eq!(kind("/mnt/rec/2026-09-01.ts").as_deref(), Some("cifs"));
+        assert_eq!(kind("/mnt/nfs/a.ts").as_deref(), Some("nfs4"));
+        // A longer name that merely starts the same way is a different mount.
+        assert_eq!(kind("/mnt/recordings/a.ts").as_deref(), Some("ext4"));
+        assert_eq!(kind("/mnt/other/a.ts").as_deref(), Some("ext4"));
+        assert_eq!(kind("/home/kaz/a.ts").as_deref(), Some("ext4"));
+
+        // And what the answer is used for: whether reading the file twice
+        // costs twice.
+        let remote = |p: &str| {
+            holding(table, std::path::Path::new(p))
+                .is_some_and(|k| REMOTE_FS.contains(&k.as_str()))
+        };
+        assert!(remote("/mnt/rec/2026-09-01.ts"));
+        assert!(remote("/mnt/nfs/a.ts"));
+        assert!(!remote("/mnt/recordings/a.ts"));
+        assert!(!remote("/home/kaz/a.ts"));
+    }
+
+    #[test]
+    fn a_mount_point_with_a_space_in_it_is_read_back_whole() {
+        // `/proc/self/mounts` writes a space as \040, and a mount point that
+        // came back split in two would match nothing.
+        let table = "//nas/my\\040share /mnt/my\\040share cifs rw 0 0\n";
+        assert_eq!(
+            holding(table, std::path::Path::new("/mnt/my share/a.ts")).as_deref(),
+            Some("cifs")
+        );
     }
 }

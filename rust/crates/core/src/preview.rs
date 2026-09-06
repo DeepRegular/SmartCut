@@ -300,6 +300,35 @@ pub fn shot_at(src: &Source, time: f64, width: u32) -> Result<Shot> {
 /// that is the picture the row keeps -- it is taken from the thumbnail track
 /// and follows the cuts, which this cannot do.
 pub fn glance(spec: &str, into: f64, width: u32) -> Result<Vec<u8>> {
+    glance_now(spec, Landing::Fraction(into), width).map(|s| s.jpeg)
+}
+
+/// As [`glance`], asked for an instant rather than for a fraction of the way
+/// in, and answering with the instant it actually landed on.
+///
+/// What the cut editor shows while the walk over the packets is still
+/// running. A recording nothing has been read of has no access points to seek
+/// by, so this asks libavformat for its own approximate seek and takes the
+/// first picture that decodes after it -- which on a transport stream lands
+/// near the instant asked for rather than on it, and can be a second or two
+/// out. The time that comes back is the picture's own, so the frame counter
+/// says where the picture really is rather than where it was asked for.
+///
+/// Costs one open, one seek and one GOP: tens of milliseconds, against the
+/// second a gigabyte the walk takes to make an exact answer possible.
+pub fn glance_at(spec: &str, at: f64, width: u32) -> Result<Shot> {
+    glance_now(spec, Landing::At(at), width)
+}
+
+/// Where a glance is to land: a fraction of the way in, for a picture that
+/// only has to stand for the recording, or a given instant in rebased
+/// seconds, for one that has to stand for a moment in it.
+enum Landing {
+    Fraction(f64),
+    At(f64),
+}
+
+fn glance_now(spec: &str, landing: Landing, width: u32) -> Result<Shot> {
     crate::init()?;
     let input = crate::input::Input::parse(spec)?;
     let mut ictx =
@@ -309,6 +338,7 @@ pub fn glance(spec: &str, into: f64, width: u32) -> Result<Vec<u8>> {
         .best(ff::media::Type::Video)
         .ok_or_else(|| anyhow!("no video stream in {spec}"))?;
     let idx = stream.index();
+    let time_base = f64::from(stream.time_base());
     let params = stream.parameters();
     let sar = unsafe {
         let s = (*params.as_ptr()).sample_aspect_ratio;
@@ -327,7 +357,11 @@ pub fn glance(spec: &str, into: f64, width: u32) -> Result<Vec<u8>> {
 
     // A recording whose length the container will not say is read from the
     // beginning: there is no fraction to take of nothing.
-    let want = start + duration.max(0.0) * into.clamp(0.0, 1.0);
+    let want = match landing {
+        Landing::Fraction(into) => start + duration.max(0.0) * into.clamp(0.0, 1.0),
+        // Rebased seconds in, container time out, as everywhere else.
+        Landing::At(at) => start + at.max(0.0),
+    };
     if want > start + 1e-6 {
         let ts = (want * ff::ffi::AV_TIME_BASE as f64) as i64;
         // A seek that fails leaves the file where it was, which is the start
@@ -350,13 +384,18 @@ pub fn glance(spec: &str, into: f64, width: u32) -> Result<Vec<u8>> {
     // What was decoded anyway is kept as the answer of last resort, for a
     // recording whose pictures are not typed at all: a poster that is a
     // little wrong beats a row that stays blank.
-    let mut spare: Option<Vec<u8>> = None;
+    let mut spare: Option<Shot> = None;
     let mut started = false;
     let mut waiting = 0;
     // Enough to carry a landing that fell inside an open GOP, and to give up
     // on a stretch of the file that decodes to nothing rather than reading to
     // the end of it.
     let mut left = 900;
+    // The picture's own instant, rebased, so the caller can say where what it
+    // is looking at actually is.
+    let when = |frame: &ff::frame::Video| {
+        frame.pts().map_or(0.0, |pts| pts as f64 * time_base - start)
+    };
     for (s, packet) in ictx.packets() {
         if s.index() != idx {
             continue;
@@ -380,11 +419,16 @@ pub fn glance(spec: &str, into: f64, width: u32) -> Result<Vec<u8>> {
             continue;
         }
         while decoder.receive_frame(&mut frame).is_ok() {
-            if kind_of(&frame) == "I" {
-                return encode_jpeg(&frame, sar, width);
+            let kind = kind_of(&frame);
+            if kind == "I" {
+                return Ok(Shot { jpeg: encode_jpeg(&frame, sar, width)?, time: when(&frame), kind });
             }
             if spare.is_none() {
-                spare = Some(encode_jpeg(&frame, sar, width)?);
+                spare = Some(Shot {
+                    jpeg: encode_jpeg(&frame, sar, width)?,
+                    time: when(&frame),
+                    kind,
+                });
             }
         }
     }
@@ -392,14 +436,19 @@ pub fn glance(spec: &str, into: f64, width: u32) -> Result<Vec<u8>> {
     // reorder depth has all of its pictures in there.
     let _ = decoder.send_eof();
     while decoder.receive_frame(&mut frame).is_ok() {
-        if kind_of(&frame) == "I" {
-            return encode_jpeg(&frame, sar, width);
+        let kind = kind_of(&frame);
+        if kind == "I" {
+            return Ok(Shot { jpeg: encode_jpeg(&frame, sar, width)?, time: when(&frame), kind });
         }
         if spare.is_none() {
-            spare = Some(encode_jpeg(&frame, sar, width)?);
+            spare =
+                Some(Shot { jpeg: encode_jpeg(&frame, sar, width)?, time: when(&frame), kind });
         }
     }
-    spare.ok_or_else(|| anyhow!("no picture {:.0}% into {spec}", into * 100.0))
+    spare.ok_or_else(|| match landing {
+        Landing::Fraction(into) => anyhow!("no picture {:.0}% into {spec}", into * 100.0),
+        Landing::At(at) => anyhow!("no picture at {at:.3}s in {spec}"),
+    })
 }
 
 /// The latest access point at or before `time`, so the decode has references.
