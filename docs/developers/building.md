@@ -88,7 +88,7 @@ reuse them (`run_rust_tests.sh`, `run_index_tests.sh`, `run_proxy_tests.sh`) sto
 `run tests/run_tests.sh first to generate fixtures` rather than quietly skipping half
 their checks.
 
-`run_disc_tests.sh` builds a whole disc of each dialect out of `mpeg2.ts` -- the stream
+`run_disc_tests.sh` builds a whole disc of each dialect out of `mpeg2.ts` — the stream
 remuxed into 192 byte packets, index files written around it by `disc_index.py`, and a UDF
 image wrapped over each by `genisoimage`, which it needs installed.
 
@@ -96,29 +96,30 @@ image wrapped over each by `genisoimage`, which it needs installed.
 streams by ffmpeg's `dvd` muxer: an ordinary one, whose title set is written in two
 files the way the format made discs write it, and one whose title was multiplexed in
 two halves, so that its clock starts again in the middle. `dvd_index.py` fills in the
-navigation packs -- ffmpeg leaves their presentation times at zero -- and writes the
+navigation packs — ffmpeg leaves their presentation times at zero — and writes the
 `.IFO` tables around them.
 
-`run_bd_audio_tests.sh` builds one clip per codec a disc carries -- LPCM at 16 and at
-24 bits, DTS, TrueHD, E-AC-3 -- out of the same `mpeg2.ts`, and cuts each into a `.ts`,
+`run_bd_audio_tests.sh` builds one clip per codec a disc carries — LPCM at 16 and at
+24 bits, DTS, TrueHD, E-AC-3 — out of the same `mpeg2.ts`, and cuts each into a `.ts`,
 an `.m2ts` and an `.mp4`.
 
-`run_audio_codec_tests.sh` asks for each of the four codecs the window offers -- AAC,
-AC-3, DTS, LPCM -- into each of four containers, and checks three things of each: the
+`run_audio_codec_tests.sh` asks for each of the four codecs the window offers — AAC,
+AC-3, DTS, LPCM — into each of four containers, and checks three things of each: the
 track is the codec that was asked for, every channel still carries the tone it went in
 with, and a transport stream's own programme map declares the codec that is actually
-in it. It also asks for two things that cannot be written -- 5.1 DTS under its bitrate
-floor, and three channels of DTS, which is a count it has no arrangement for -- and
+in it. It also asks for two things that cannot be written — 5.1 DTS under its bitrate
+floor, and three channels of DTS, which is a count it has no arrangement for — and
 checks that the first is raised to what DTS is ordinarily carried at and the second is
 refused in a sentence that says why. Those are the answers the output settings screen
 greys out, told to it by `writable_sound`.
 
-`run_audio_format_tests.sh` asks for the other two things a sample is -- the rate it is
+`run_audio_format_tests.sh` covers the other two properties of a sample: the rate it is
 taken at and the width it is written with. A resample has to reach the samples, the
 stream's declaration and, for AAC in a transport stream, the ADTS header on every frame;
-a rate the codec does not have has to come back as the nearest it does, out loud. A width
-only means anything where samples are written down, so it is honoured for LPCM -- where
-it decides the file's size outright -- and declined out loud for everything else.
+a rate the codec does not have must come back as the nearest one it does, with a message
+saying so. A width only means anything where samples are written down, so it is honoured
+for LPCM — where it decides the file's size outright — and declined with a message
+everywhere else.
 
 `run_audio_tests.sh` and `run_downmix_tests.sh` build their own fixtures into the same
 directory: an impulse train, and a 5.1 track with a tone per channel. The codec and
@@ -146,7 +147,7 @@ needs numpy, and SKIPs without it.
 `run_vc1_tests.sh` reads real material too, and is named separately because what it
 needs is particular: a recording written in **VC-1**, which in practice means a Blu-ray
 pressed before about 2010. It is named by `SMARTCUT_VC1` — a whole `.m2ts` or a piece of
-one — and the suite exits rather than pretending to pass without it. It also wants the
+one — and without it the suite exits rather than pretending to pass. It also wants the
 encoder's own example binary, which an ordinary `cargo build --release` does not
 produce:
 
@@ -211,12 +212,12 @@ WebKitGTK's compositor draws nothing on a machine without a GPU, and never updat
 the first paint — which looks exactly like a freeze. The app defaults
 `WEBKIT_DISABLE_COMPOSITING_MODE=1`, so normally you do not have to think about it.
 
-The same freeze arrives a second way, and this one waits for a click into a text field:
-with GTK's XIM input-method module in the window, WebKitGTK stops painting the moment an
-`<input>` takes focus. The program keeps running underneath — the screen behind the stale
-pixels goes on changing, and a 1px resize brings it all back at once. (Screenshots that
-went stale while driving the GUI with `xdotool` were this, not `xdotool`.) XIM is what GTK
-falls back to when `GTK_IM_MODULE` is unset, which is every desktop where an IME was never
-set up, so the app defaults `GTK_IM_MODULE=gtk-im-context-simple`. That module cannot
-compose Japanese; on a machine with a working IME, set `GTK_IM_MODULE` to it (`fcitx`,
-`ibus`) and the app leaves the choice alone.
+The same freeze arrives a second way, this time on a click into a text field. With GTK's
+XIM input-method module in the window, WebKitGTK stops painting the moment an `<input>`
+takes focus. The program keeps running underneath: the state behind the stale pixels goes
+on changing, and a 1px resize brings it all back at once. (Screenshots that went stale
+while driving the GUI with `xdotool` were this, not `xdotool`.) XIM is what GTK falls back
+to when `GTK_IM_MODULE` is unset, which is every desktop where an IME was never set up, so
+the app defaults `GTK_IM_MODULE=gtk-im-context-simple`. That module cannot compose
+Japanese, so on a machine with a working IME, set `GTK_IM_MODULE` to it (`fcitx`, `ibus`);
+where it is set explicitly, the app leaves it alone.

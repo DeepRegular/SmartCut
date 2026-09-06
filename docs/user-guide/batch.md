@@ -26,20 +26,20 @@ one decodes the key pictures into thumbnails and scene changes, and one detects
 commercials.** One pass of each kind runs at a time, and three of different kinds
 run at once.
 
-They are separate because they do not weigh the same. The walk is the disk — one
-core reading about a gigabyte a second, touching no decoder at all. The thumbnails
-are the cores — every key picture through libavcodec, around four seconds a
-gigabyte. A commercial detection reads the caption stream, or the audio and the
-logo, none of which libavcodec threads at all: one core and a great deal of waiting
-for the disk. What the background loses by sharing is far less than what `Ctrl+D`
-gains, and it is what gets an evening's detection finished by morning.
+They are separate because their costs are different in kind. The walk is
+disk-bound: one core reading about a gigabyte a second, touching no decoder at all.
+The thumbnails are CPU-bound: every key picture through libavcodec, around four
+seconds a gigabyte. A commercial detection reads the caption stream, or the audio
+and the logo, and libavcodec threads none of that: one core and a great deal of
+waiting for the disk. The background loses far less by sharing than `Ctrl+D` gains,
+and that is what gets an evening's detection finished by morning.
 
 **Running the walk and the thumbnails side by side, rather than one after the other,
 is why the list is quick.** In series they simply added up: the walk read a
 recording end to end, and then the thumbnails read the same recording end to end
 again, neither of them waiting on anything the other did. Side by side, the walk
-runs ahead through the list while the thumbnails follow it a clip behind, so **every
-row becomes real at disk speed** and the decoding happens during reads it is not
+runs ahead through the list while the thumbnails follow a clip behind, so **every
+row is filled in at disk speed** and the decoding happens during reads it is not
 holding up.
 
 The thumbnails follow the walk closely on purpose: they read a recording the machine
@@ -57,7 +57,7 @@ time. Nothing is shared between them: the lanes and the export alike reopen the
 recording from the seek index on disk, so a long pass over clip 12 costs the clip
 you are editing nothing.
 
-While the editor window is up, the three background lanes divide only **half the
+While the editor window is up, the three background lanes share only **half the
 machine** between them. The picture under your pointer is the one somebody is
 waiting for, and a background pass finishing a few seconds later is a good trade for
 that.
@@ -65,17 +65,17 @@ that.
 **You can open a clip the list has not read yet.** The editor makes that pass
 itself and becomes usable as far as it has got (see [Usable the moment it
 opens](gui.md#usable-the-moment-it-opens)), so waiting for the lane's turn buys you
-nothing. While the editor has the clip, the index lane walks past that row — reading
-one file twice over is the one thing worth avoiding, and it is the lane that gives
-way. The index the editor writes stays on disk, so when the editor closes and the
-lane takes the row up, it costs one read.
+nothing. While the editor has the clip, the index lane skips that row: reading one file
+twice over is the thing most worth avoiding, so the lane is the one that gives way.
+The index the editor writes stays on disk, so when the editor closes and the lane
+picks the row up, it costs one read.
 
 ## Detecting commercials across the list
 
 `Ctrl+A` then `Ctrl+D` queues a detection for every selected clip. Selecting
-eighteen recordings and pressing `Ctrl+D` once is a night's work asked for in one
-keystroke, which is what this is for. Meanwhile the clips that have no index yet
-carry on being read alongside.
+eighteen recordings and pressing `Ctrl+D` once starts a night's work with one
+keystroke, which is exactly what this is for. Meanwhile the clips that have no index
+yet carry on being read alongside.
 
 Progress appears on each row (`Detecting commercials 84% — Looking for the logo`),
 and rows whose turn has not come say `Commercial detection queued`.
@@ -111,8 +111,8 @@ The export tab writes the list out from the top down, one clip at a time. Each r
 carries its own progress and result; above them are the overall state, the elapsed
 time and the time remaining.
 
-`Stop export` finishes writing the clip currently under the head and then stops, so
-you never end up with a half-written file.
+`Stop export` finishes writing the clip currently in progress and then stops, so you
+never end up with a half-written file.
 
 Because the export order is the list order, dragging a row to the top is how you say
 "write this one first".
@@ -125,9 +125,9 @@ this machine has already mounted it, and after that it is an ordinary path — t
 packet scan, the seek index and the output all proceed without knowing a network was
 involved.
 
-**SmartCut does not mount anything itself.** Mounting is where the password lives,
-and that belongs to your desktop's keyring rather than to a cut editor. A share that
-is not connected is refused, with the place to open instead:
+**SmartCut does not mount anything itself.** Mounting means handling a password,
+which belongs in your desktop's keyring rather than in a cut editor. A share that is
+not connected is refused, and SmartCut tells you where to connect it:
 
 ```
 Not connected to \\nas\rec. Open smb://nas/rec in the file manager and add

@@ -3,8 +3,8 @@
 [← Documentation](../README.md) ・ [← SmartCut](../../README.md) ・ [日本語](disc.ja.md)
 
 **A disc opens as a folder or as an `.iso`, either way.** Both halves of the
-Blu-ray specification are read -- BDAV, the recording format, and BDMV, the
-format of a film you buy -- and so is DVD-Video, which is
+Blu-ray specification are read — BDAV, the recording format, and BDMV, the
+format of a film you buy — and so is DVD-Video, which is
 [further down](#dvd-video). What the list shows is the name of the programme,
 not `00001.m2ts`.
 
@@ -20,9 +20,9 @@ disc  : Anime_Test.iso
   2  00:08:30.010  …
 ```
 
-A pressed disc carries no names, so its rows are the disc and the clip. It
-also carries a great deal that is not the film, so the ones worth a look are
-starred:
+A pressed disc carries no names, so its rows are the disc name and the clip
+number. It also carries a great deal that is not the film, so the ones likely to
+be worth watching are starred:
 
 ```
 $ smartcut AnimeBox_Season1.iso
@@ -42,7 +42,7 @@ disc  : AnimeBox_Season1.iso
        0x1201  PGS eng -- a cut cannot carry this
 ```
 
-A pressed disc is asked about rather than swallowed whole -- see
+SmartCut asks about a pressed disc rather than swallowing it whole — see
 [the chooser](#the-chooser), below.
 
 In the window, drop an `.iso` or a disc folder and it asks which of the
@@ -51,7 +51,7 @@ so an evening's worth of them becomes one list.
 
 ## The two dialects
 
-**BDAV** is the **recording** format -- what a set-top recorder writes, and
+**BDAV** is the **recording** format — what a set-top recorder writes, and
 what an authoring tool produces when it is asked for a disc of recordings.
 
 ```
@@ -64,8 +64,8 @@ BDAV/
 
 **BDMV** is the format of a film you buy: a pressed disc, or a copy of one.
 The shape is the same and the names are not, and there is a great deal more of
-it -- menus, a Java application, a second copy of the whole index under
-`BACKUP` -- none of which is a recording.
+it — menus, a Java application, a second copy of the whole index under
+`BACKUP` — none of which is a recording.
 
 ```
 BDMV/
@@ -77,9 +77,9 @@ BDMV/
   BACKUP/                all of the above again
 ```
 
-The two differ in four places -- the directory's name, the playlist's extension
+The two differ in four places — the directory's name, the playlist's extension
 and magic, where the list of playlists comes from, and whether a playlist
-carries a programme name -- and agree everywhere else, **including the byte
+carries a programme name — and agree everywhere else, **including the byte
 layout of a play item and of a chapter mark**. So
 [`disc.rs`](../../rust/crates/core/src/disc.rs) is one reader that is told
 which dialect it is looking at, rather than two readers that would be the same
@@ -88,13 +88,12 @@ reader twice.
 There is one thing BDMV has that cannot be read here. `index.bdmv` names
 **titles**, and a title is a navigation or Java program rather than a playlist:
 working out which playlist "T05 Extra 01" plays means running the disc's own
-menu code, which is a Blu-ray player and not this. So the playlists are taken
-from the directory, sorted -- which is the order the authoring tool numbered
-them in, and on every disc looked at that is the order a person would have
-chosen anyway.
+menu code, which is a Blu-ray player and not this. So the playlists are taken from the directory in sorted order. That is the order
+the authoring tool numbered them in, and on every disc looked at so far it is
+also the order a person would have chosen.
 
-The stream is an ordinary MPEG-2 transport stream in 192 byte packets -- 188 of
-packet behind four bytes saying when it arrived -- which libavformat reads
+The stream is an ordinary MPEG-2 transport stream in 192 byte packets — a 188
+byte packet behind four bytes saying when it arrived — which libavformat reads
 without being told anything. **So the streams were never the difficulty.** What
 was missing was the index: a directory of `00001.m2ts`, `00002.m2ts`,
 `00003.m2ts` says nothing about which programme is which, and a disc holding a
@@ -116,7 +115,7 @@ question:
 > it?**
 
 A `.m2ts` written by a burner is one unbroken run of bytes, so the answer is a
-**byte range** -- and a byte range is something libavformat can be handed
+**byte range** — and a byte range is something libavformat can be handed
 directly, through its `subfile` protocol:
 
 ```
@@ -124,8 +123,8 @@ subfile,,start,747520,end,1232594944,,:file:/rec/Anime_Test.iso
 ```
 
 The demuxer reads that as a stream and never learns there is a filesystem
-around it. Everything downstream -- the packet scan, the seek to an access
-point, the copy -- is the same code it was for a plain file.
+around it. Everything downstream — the packet scan, the seek to an access
+point, the copy — is the same code it was for a plain file.
 
 > The inner name is given as `file:` because the option list ends at the
 > **first colon**: a Windows path would otherwise be read as the protocol `c`.
@@ -142,10 +141,10 @@ len=158107648   lbn=524364  -> byte 1074487296
 
 747520 + 1073739776 = 1074487296. **They follow each other exactly.** A burner
 lays the pieces down back to back, so what is fragmented is the bookkeeping and
-not the file. [`Entry::contiguous`](../../rust/crates/core/src/udf.rs) joins the
-runs that follow each other and returns `None` for a file genuinely written in
-pieces -- which a burnt disc does not produce, and which is better refused than
-read at the wrong offset.
+not the file. [`Entry::contiguous`](../../rust/crates/core/src/udf.rs) joins the runs that
+follow each other and returns `None` for a file genuinely written in pieces.
+A burnt disc does not produce one, and refusing is better than reading at the
+wrong offset.
 
 ### The metadata partition
 
@@ -162,40 +161,40 @@ problem and this program has none of it.
 ## The programme's name is ARIB text
 
 **On BDAV.** A `.rpls` does not carry the name in UTF-8. It is written in the ARIB STD-B24
-eight-unit code -- a descendant of ISO 2022 that holds four graphic sets at
+eight-unit code — a descendant of ISO 2022 that holds four graphic sets at
 once (kanji, alphanumerics, hiragana, katakana) and moves between them with
 shifts and escapes, with the size and colour controls in the same byte stream.
 
 [`arib.rs`](../../rust/crates/core/src/arib.rs) **reads** it; it does not render
 it. The sizes and colours are dropped and the characters come out in order. The
 JIS X 0208 to Unicode table is not written down here: EUC-JP is JIS X 0208 with
-the high bit set on both bytes, so the table a UTF-8 world already has is the
-table this needs. One dependency, `encoding_rs`.
+the high bit set on both bytes, so the table a UTF-8 world already has is the one
+this needs. That leaves a single dependency, `encoding_rs`.
 
 Two things are worth getting right:
 
 - **Rows 85 and up of JIS are ARIB's own symbols.** JIS leaves them
   unassigned and ARIB fills them with the bracketed markers a listing carries,
   `[新]`, `[字]`, `[終]`. Sending those through the mapping table of an
-  encoding that *does* fill those rows -- which is where a general purpose
-  decoder would send them -- produces entirely different characters. So they
+  encoding that *does* fill those rows — which is where a general purpose
+  decoder would send them — produces entirely different characters. So they
   come out as `〓`, which is what a receiver with no glyph for them shows.
 - **The last eight cells of a kana set are punctuation, not kana.** Rows 4 and
   5 of JIS are not full, and ARIB spends what is left on `ー` `。` `「` `」`
   `、` `・`. Miss them and a programme name reads
   `#07〓神様的休息日の過ごし方。」`.
 
-A `.mpls` carries no name at all -- a film's titles live in the menu, which is
-a Java application -- so a pressed disc's rows are named by the disc and the
-clip: `Anime Box Season 1 00014`. What the disc calls itself comes out of
+A `.mpls` carries no name at all, because a film's titles live in the menu,
+which is a Java application. So a pressed disc's rows are named by the disc and
+the clip: `Anime Box Season 1 00014`. What the disc calls itself comes out of
 `META/DL/bdmt_*.xml`, scraped rather than parsed: the file is a document with a
 dozen namespaces declared and one interesting element in it, and pulling in an
-XML parser to reach `<di:name>` would be the largest dependency in the program
-by some way.
+XML parser just to reach `<di:name>` would be by far the largest dependency in
+the program.
 
 ## What a row is
 
-**One clip, one row** -- not one playlist, one row.
+**One clip, one row** — not one playlist, one row.
 
 On BDAV those are the same thing until a playlist plays more than one clip,
 which is what a recorder writes when a programme ran past the length it splits
@@ -208,19 +207,19 @@ was written against, **45 playlists name 328 play items between them, and there
 are 62 distinct clips.** One row per play item would offer the same episode
 three times.
 
-So a row is keyed on the part of a clip a playlist plays -- the clip's number
-and its IN and OUT to the tick -- and the first playlist to name it makes the
+So a row is keyed on the part of a clip a playlist plays — the clip's number
+and its IN and OUT to the tick — and the first playlist to name it makes the
 row. Keyed on the part and not on the clip alone because a recorder can write
 two programmes into one stream and a playlist for each half, and those are two
 recordings.
 
-Joining a multi-clip playlist into one timeline is a different piece of work:
+Joining a multi-clip playlist into one timeline is a separate piece of work:
 each clip carries its own clock, and splicing two of them is not the same
 operation as cutting one. Until that exists, showing the pieces is the honest
-thing -- every second of the disc is reachable, and the list says plainly that
-it is in pieces. A pressed disc's "play all" is *not* a recording in pieces,
-which is why its rows are not numbered `(1/15)`: the disc never asserted that
-relationship, and claiming it would be inventing one.
+thing to do — every second of the disc is reachable, and the list says plainly
+that it is in pieces. A pressed disc's "play all" is *not* a recording in
+pieces, which is why its rows are not numbered `(1/15)`: the disc never
+asserted that relationship, and claiming it would be inventing one.
 
 ### The chooser
 
@@ -229,8 +228,8 @@ is not: those 62 rows are twelve episodes among fifty logos, warnings, menu
 loops and eight second transitions, and the disc calls all of them `000NN`.
 
 So the index is laid out and the question is asked once, before anything is
-opened -- which is why every answer in it is in terms the index can give: a
-length, a size, and a track named by the PID it sits on.
+opened. That is why everything in the dialog is something the index can answer:
+a length, a size, and a track named by the PID it sits on.
 
 Clips over **five minutes** are offered already ticked, which on that disc is
 exactly the twelve episodes; the rest are folded away behind one checkbox. The
@@ -242,9 +241,9 @@ all offered: it is a disc of things somebody chose to record.
 ### What a clip carries
 
 The tracks under each row come out of that clip's `.clpi`, which is the only
-source cheap enough: a chooser that had to demux thirty gigabytes to draw
-itself would not be a chooser anybody waited for. What the demuxer says later
-is the authority at cutting time; this is what the disc says it wrote.
+source cheap enough: nobody would wait for a chooser that had to demux thirty
+gigabytes to draw itself. What the demuxer says later is the authority at
+cutting time; this is what the disc says it wrote.
 
 ```
 Video      / H.264 1080p 23.976fps / PID 0x1011 / the video cannot be left out
@@ -255,30 +254,30 @@ Menu       / IGS                   / eng / PID 0x1400 / a cut cannot carry this
 ```
 
 The two dialects sign that file differently and write the same thing after it
--- a pressed disc's opens `HDMV`, a recorder's opens `M2TS` -- and a recorder
+— a pressed disc's opens `HDMV`, a recorder's opens `M2TS` — and a recorder
 cuts the language field short, so a BDAV row shows `AAC stereo 48kHz` with no
 language rather than three bytes of whatever followed. A broadcast's private
 streams, the captions among them, are named by their number: what a private
-stream holds is not something the disc's index says, and the editor's own
-track menu -- which reads the recording rather than the index -- names them
-properly.
+stream holds is not something the disc's index says, and the editor's own track
+menu — which reads the recording rather than the index — names them properly.
 
-Three cases, and only one of them is a choice. The video is what a cut is *of*.
-The graphics a Blu-ray's subtitles and menus are made of are each a little
-display list rather than a run of timed packets, and there is nowhere on a cut
-timeline to put one -- they are listed to say they are being left behind, not
-to offer anything about them.
+Three kinds of track are listed, and only one of them is a choice. The video is
+what a cut is *of*. The graphics a Blu-ray's subtitles and menus are made of are
+each a little display list rather than a run of timed packets, and there is
+nowhere on a cut timeline to put one. They are listed to say they are being left
+behind, not to offer a choice about them.
 
 Every episode on a disc carries the same tracks, so there is a button that
-copies one row's answer to every row with the same track list. Answering the
-same question twelve times is not answering it once.
+copies one row's answer to every row with the same track list. Being made to
+answer the same question twelve times is not the same as answering it once.
 
 ### A track is named by its PID
 
-The chooser answers **before anything is open**, and a stream index is
-something libavformat makes up once it has read the recording. So the answer
-travels as a list of PIDs and is resolved on the far side: by the editor when
-the row is opened in it, and by the backend when it is written out.
+The chooser answers **before anything is open**, whereas a stream index is
+something libavformat only produces once it has read the recording. So the
+answer travels as a list of PIDs and is resolved by whoever opens the streams:
+the editor when the row is opened in it, and the backend when it is written
+out.
 
 A PID can name more than one stream. A Blu-ray's lossless sound arrives as a
 TrueHD track with an AC-3 track folded into it, **both on the one PID**, and
@@ -289,12 +288,12 @@ stream|index=1|codec_name=truehd|channels=6|id=0x1100
 stream|index=2|codec_name=ac3   |channels=6|id=0x1100
 ```
 
-Switching that track off has to switch off both halves of it, which is what
-asking by PID means and what asking by index would have got wrong.
+Switching that track off has to switch off both halves of it. Asking by PID
+does that; asking by stream index would have switched off only one of them.
 
 It is also why **only the first stream on a PID is written**. A cut puts each
-stream back on the PID it arrived on, and two cannot share one -- ask the
-muxer for that and it says so and stops:
+stream back on the PID it arrived on, and two streams cannot share one — ask the
+muxer for that and it stops with:
 
 ```
 [mpegts] Duplicate stream id 4352
@@ -302,8 +301,8 @@ Error: Invalid argument
 ```
 
 The first stream on a PID is the one the programme map named; anything after
-it is a piece the demuxer split out. So the TrueHD is written -- a TrueHD
-elementary stream on its own is a track a player decodes -- and the AC-3 core
+it is a piece the demuxer split out. So the TrueHD is written — a TrueHD
+elementary stream on its own is a track a player decodes — and the AC-3 core
 folded inside it is left out, and said to have been left out, in the track
 menu and in what the command line prints:
 
@@ -313,7 +312,7 @@ menu and in what the command line prints:
 
 The chooser's answer holds only until the editor gives one. The track menu
 there writes stream indices into the edit, and from that moment the edit speaks
-for the row -- otherwise a track switched back *on* in the editor would be
+for the row — otherwise a track switched back *on* in the editor would be
 switched off again on the way out by an answer given before anybody had seen
 the recording.
 
@@ -324,9 +323,9 @@ things, and each of them is a different problem on the way out.
 
 | On the disc | What a cut does with it |
 |---|---|
-| **LPCM** (`pcm_bluray`) | Copied into a transport stream, and **smart rendered**: LPCM has no encoder delay and no window overlap, so the frame a boundary lands inside is rewritten with the far side silenced and nothing else moves. Into an MP4 or an MKV it is written as big-endian PCM -- `ipcm`, or `twos`/`in24` in a QuickTime file -- at the recording's own width, because neither container has a box for Blu-ray's own framing |
+| **LPCM** (`pcm_bluray`) | Copied into a transport stream, and **smart rendered**: LPCM has no encoder delay and no window overlap, so the frame a boundary lands inside is rewritten with the far side silenced and nothing else moves. Into an MP4 or an MKV it is written as big-endian PCM — `ipcm`, or `twos`/`in24` in a QuickTime file — at the recording's own width, because neither container has a box for Blu-ray's own framing |
 | **DTS**, **DTS-HD**, **DTS-HD MA** | Copied, byte for byte, into every container |
-| **TrueHD** | Copied, byte for byte. Written without the AC-3 core folded into its PID (above). In an MP4 it needs two allowances, and says so: the `mlpa` box is outside the standard, and the track has to open on one of the stream's own sync points -- about 13 ms of head, in the streams measured here |
+| **TrueHD** | Copied, byte for byte. Written without the AC-3 core folded into its PID (above). In an MP4 it needs two allowances, and says so: the `mlpa` box is outside the standard, and the track has to open on one of the stream's own sync points — about 13 ms of head, in the streams measured here |
 | **E-AC-3** | Copied |
 
 **Nothing lossless is ever re-encoded.** The encoders libavformat has for DTS
@@ -337,14 +336,14 @@ re-encode by another name, a cut declines and says so rather than obeying or
 failing.
 
 **LPCM into an MP4 loses nothing.** The samples pass through a 32 bit float,
-whose 24 bit mantissa holds every value Blu-ray LPCM can carry -- and Blu-ray
+whose 24 bit mantissa holds every value Blu-ray LPCM can carry — and Blu-ray
 LPCM goes no deeper than 24 bits. What comes out of the MP4 is what went into
 it, sample for sample; only the box around it changed.
 
 The stream types are the disc's own. libavformat's own transport stream muxer
-knows none of the first three -- asked to write LPCM it declares "private
+knows none of the first three — asked to write LPCM it declares "private
 data", and asked to write E-AC-3 it reaches for ATSC's `0x87` rather than
-Blu-ray's `0x84` -- but a cut written as a `.ts` keeps
+Blu-ray's `0x84` — but a cut written as a `.ts` keeps
 [the recording's own tables](../technical/broadcast-ts.md), and that is what
 the numbers come from.
 
@@ -352,8 +351,8 @@ the numbers come from.
 
 Chapter marks are read **only when they can be believed**. The size of a mark
 is given away by the section's own length, but what sits where inside one is
-not the same in both dialects: BDMV's mark is fourteen bytes -- a byte
-reserved, the mark's kind, the play item it belongs to, then the time -- and
+not the same in both dialects: BDMV's mark is fourteen bytes — a byte
+reserved, the mark's kind, the play item it belongs to, then the time — and
 the marks a BDAV recorder writes are longer and carry a name and a thumbnail
 reference beside the time. So the layout is not assumed. Each candidate is
 tried and the one whose times **all land inside the clip they claim** is the
@@ -364,9 +363,9 @@ Reading **which play item a mark belongs to** is what makes a "play all"
 usable. Without it every mark is a number with no clock under it: the fifth
 episode's chapter points are on the fifth episode's own timeline, which shares
 nothing with the first's beyond both starting near eleven seconds. A layout
-that cannot say which clip it meant is believed only on a playlist that plays
-one -- otherwise every episode's chapters would land on episode one, and
-putting down none is better.
+that cannot say which clip it meant is believed only on a playlist that plays a
+single clip. Otherwise every episode's chapters would land on episode one, and
+placing none at all is better than that.
 
 That is also why the marks on a row are taken from the **shortest** playlist
 that offers them. A disc names an episode both in a playlist of its own and
@@ -377,7 +376,7 @@ which episode it meant.
 
 A recording opened off a disc arrives in the cut editor with those chapters
 already marked. On a Japanese recording they are frequently the commercial
-breaks themselves -- written down, exactly, by the machine that made the
+breaks themselves — written down, exactly, by the machine that made the
 recording, which is the same answer [commercial
 detection](../user-guide/cm-detection.md) spends minutes looking for.
 
@@ -390,16 +389,16 @@ entry.start + mark - src.start_time
 ```
 
 `entry.start` being the playlist's IN point, carried beside the marks for
-exactly this. Nothing on the disc-reading side knows `start_time` -- that comes
-from opening the stream -- which is why the marks travel with the row as far as
+exactly this. Nothing on the disc-reading side knows `start_time` — that comes
+from opening the stream — which is why the marks travel with the row as far as
 the editor rather than being turned into times where they are read.
 
 They are placed on a first visit only, and a `.keyframe` file beside the
-recording wins over them: that file is somebody's answer, and the disc's is the
-answer when nobody has given one. Marks landing outside the material are
-dropped rather than clamped, for the reason above. The times can be seen
-without the window: `smartcut <disc> --title N` prints them on the recording's
-own clock.
+recording wins over them: that file is somebody's answer, while the disc's marks
+are only the default when nobody has given one. Marks landing outside the
+material are dropped rather than clamped, for the reason above. The times can be
+seen without opening the window: `smartcut <disc> --title N` prints them on the
+recording's own clock.
 
 ## Where a cut goes, and what it is called
 
@@ -423,14 +422,15 @@ muxer's to decide and neither is the layout that
 [the broadcast's own tables](../technical/broadcast-ts.md) describe, so "the
 same as the input" means a `.ts` for a recording that came off a disc. It is
 the same stream. Ask for M2TS on the output settings screen and that is still
-what you get -- and it says, there and then, that the tables are being left to
+what you get — and it says, there and then, that the tables are being left to
 the muxer.
 
 ## One name for everything
 
-This program hangs everything off **one string**: the list holds it, the seek
-index and the proxy are cached against it, the output is named beside it, and
-the demuxer is handed it. A recording inside a disc should not change that.
+This program identifies a recording by **one string**: the list holds it, the
+seek index and the proxy are cached against it, the output is written beside it,
+and the demuxer is handed it. Supporting recordings inside a disc should not
+change that.
 
 So a recording inside an image is named as though the image were a directory:
 
@@ -438,9 +438,9 @@ So a recording inside an image is named as though the image were a directory:
 /rec/Anime_Test.iso/BDAV/STREAM/00001.m2ts
 ```
 
-Nothing there is invented -- the image really does hold a file of that name.
-The one unusual thing about it is that `/rec/Anime_Test.iso` is a file rather
-than a directory, and that is exactly what
+Nothing there is invented: the image really does hold a file of that name. The
+one unusual thing about it is that `/rec/Anime_Test.iso` is a file rather than a
+directory, and that is exactly what
 [`input.rs`](../../rust/crates/core/src/input.rs) notices. Splitting the path
 where it stops being a directory gives three answers at once:
 
@@ -498,7 +498,7 @@ disc this was written against that is exact:
 
 So inside an image the whole title set is **one byte range**, and a title is
 one `subfile` the same as a Blu-ray clip. On a folder the pieces are nine
-files, and libavformat's `concat` protocol joins them -- with `subfile` around
+files, and libavformat's `concat` protocol joins them — with `subfile` around
 the join to take the title out of it. Nothing is unpacked and nothing is copied
 first, either way.
 
@@ -519,12 +519,11 @@ of the one stream, and the `.IFO` tables are the only thing that says where:
 | `VTS_NN_0.IFO`, `VTS_PGCIT` | each program chain: its cells, their lengths, the sectors they play, and which cell each program starts at |
 | `VTS_NN_0.IFO`, `VTSI_MAT` | the picture, and the sound and subpicture tracks the set declares |
 
-A chapter is where it is because of the cells before it, so it is the sum of
-their lengths -- which is why the cells have to lie end to end for any of this
-to mean anything. A chain whose cells do not is an angle block, or one
-assembled out of pieces of several titles, and it is not read at all: the span
-its cells happen to lie inside is not the title, and saying nothing is better
-than offering that.
+A chapter's position is the sum of the lengths of the cells before it, which is
+why the cells have to lie end to end for any of this to mean anything. A chain
+whose cells do not is an angle block, or one assembled out of pieces of several
+titles, and it is not read at all: the span its cells happen to lie inside is
+not the title, and saying nothing is better than offering that.
 
 Since a title is a stretch and not a file, its name has to say which stretch:
 
@@ -539,13 +538,13 @@ everything the disc holds and no episode in particular.
 ### The clock is in the stream, not the index
 
 Cell times are durations counted from the start of the title. The program
-stream's timestamps begin wherever the author's multiplexer began them -- on
+stream's timestamps begin wherever the author's multiplexer began them — on
 this disc, at 0.281 seconds. A chapter "twelve minutes in" is not a time on
 that clock until something joins the two.
 
 The navigation pack does. Every VOBU opens with one: 2048 bytes a player reads
-and does not show, holding `VOBU_S_PTM` -- when the pictures behind it are to
-be presented -- and `VOBU_E_PTM`, when they stop. Reading the one at a title's
+and does not show, holding `VOBU_S_PTM` — when the pictures behind it are to
+be presented — and `VOBU_E_PTM`, when they stop. Reading the one at a title's
 first sector costs a single 2048 byte read and gives exactly the number the
 editor needs, which is why `Entry::start` for a DVD is a real measurement and
 not the index's guess.
@@ -559,13 +558,13 @@ cell 18 ends at   323,571,480  (3595.24 s)
 cell 19 begins at      36,010  (   0.40 s)
 ```
 
-Splicing two clocks is not the same operation as cutting one -- which is
-already why a Blu-ray playlist of several clips is a row each. So a DVD title
-is cut at its seams too, and the disc above comes out as an hour with eighteen
-chapters and an eight second tail beside it, rather than as one row whose
+Splicing two clocks is not the same operation as cutting one, which is already
+why a Blu-ray playlist of several clips becomes a row each. So a DVD title is
+cut at its seams too, and the disc above comes out as an hour with eighteen
+chapters plus an eight second tail beside it, rather than as one row whose
 second half sits on top of its first. Two cells belong to the same run when the
-second begins where the first left off; the cell's own last VOBU, which the
-index points at, is the one asked where that was.
+second begins where the first left off, and where the first left off is read
+from that cell's own last VOBU, which the index points at.
 
 The disc's two titles are the same nineteen cells and the same nineteen less
 the last, which between them are two things and not three, so rows are
@@ -575,7 +574,7 @@ deduplicated on the stretch of stream they name.
 
 A program stream does not carry a presentation time on every picture. Where
 the display order can be worked out from the pictures around it, the
-multiplexer leaves it off -- on this disc, one picture in four:
+multiplexer leaves it off — on this disc, one picture in four:
 
 ```
 pts=31263  dts=22254  K     pts=N/A    dts=31263
@@ -585,17 +584,18 @@ pts=28260  dts=28260        pts=N/A    dts=40272
 
 Every pass here is keyed on presentation time, so a picture without one used to
 be skipped, and a lossless copy came out with three quarters of its frames.
-libavformat will work them out -- `fflags +genpts`, which reorders from the
-decode timestamps and is exact -- and will only do it if it is asked before the
-file is opened. `input::demux` asks, for program streams and nothing else: a
-transport stream times every picture it carries, and a flag that changes
-nothing is still a flag on the path every recording goes down. (It reopens a
-recording for one other reason, [below](#a-disc-that-does-not-say-how-often-pictures-arrive),
-and on the same principle.)
+libavformat will work them out — `fflags +genpts` reorders from the decode
+timestamps and is exact — but only if it is asked before the file is opened.
+`input::demux` asks for program streams and nothing else: a transport stream
+times every picture it carries, so the flag would change nothing there, and a
+flag that changes nothing is still a flag on the path every recording goes down.
+(It reopens a recording for one other reason,
+[below](#a-disc-that-does-not-say-how-often-pictures-arrive), on the same
+principle.)
 
 The other thing a program stream does not carry is **its own length.**
 libavformat works one out from the timestamps at either end of the file, and on
-a DVD -- four gigabytes with a discontinuity in the tail -- it came back with
+a DVD — four gigabytes with a discontinuity in the tail — it came back with
 8.3 seconds for an hour. The pass that reads every packet has the better answer
 and now reports it, as `index::Index::end`; the container's own answer is kept
 wherever it is the longer of the two, so a container that knows its length
@@ -606,15 +606,15 @@ keeps it.
 libavformat works the frame rate out while it probes, and stops probing at the
 first program map unless it is told otherwise. On a pressed Blu-ray written in
 **VC-1** that is too early: `avg_frame_rate` came back unset, and a frame rate
-of "not a number" makes nonsense of every duration derived from it -- the
+of "not a number" makes nonsense of every duration derived from it — the
 length of the recording, the position of a mark, the number of pictures a range
 holds.
 
-`scan_all_pmts` reads every map and fixes it, and is not simply switched on for
-everything, for a reason that is particular to what this program reads: on a
-Japanese broadcast the thorough read also turns up the **second programme** the
-transport stream carries -- the phone-sized copy of the same material, on its
-own pids -- which is a different recording than the one that was asked for. So
+`scan_all_pmts` reads every map and fixes that. It is not simply switched on
+everywhere, for a reason particular to what this program reads: on a Japanese
+broadcast, the thorough read also turns up the **second programme** the
+transport stream carries — the phone-sized copy of the same material, on its own
+pids — which is a different recording from the one that was asked for. So
 `input::demux` asks the container first and reopens only where the answer came
 back missing (`states_frame_rate`), which is the same rule the `+genpts`
 reopening follows.
@@ -628,10 +628,10 @@ reopening follows.
 | **Joining clips** | Not supported. A multi-clip playlist is shown as a row per clip (above) |
 | **BDMV titles** | `index.bdmv` names titles and a title is a navigation program. Which playlist "T05 Extra 01" plays is not worked out; rows are named by the disc and the clip |
 | **The CLPI EP map** | Not used for seeking. The stream list beside it is read, for the chooser; the index is still built by scanning packets. Adding the EP map to `IndexSource` in [`index.rs`](../../rust/crates/core/src/index.rs) would save that pass |
-| **Blu-ray's own streams** | PGS and IGS cannot go on a cut timeline and are dropped, which the chooser says. The sound is all carried -- LPCM, DTS-HD, TrueHD, E-AC-3, [above](#the-sound-a-disc-carries). VC-1 video is read, listed and cut, the partial GOPs written by [SmartCut's own encoder](rust-core.md#vc-1-the-codec-with-no-encoder) |
+| **Blu-ray's own streams** | PGS and IGS cannot go on a cut timeline and are dropped, which the chooser says. The sound is all carried — LPCM, DTS-HD, TrueHD, E-AC-3, [above](#the-sound-a-disc-carries). VC-1 video is read, listed and cut, the partial GOPs written by [SmartCut's own encoder](rust-core.md#vc-1-the-codec-with-no-encoder) |
 | **DVD subpictures** | A DVD subtitle is a run-length coded picture with its own display commands, the same kind of thing a Blu-ray's graphics are. Listed, so the chooser can say it is being left behind; not carried |
 | **DVD angles** | A chain whose cells are an angle block or an interleaved unit is not offered, [above](#a-title-is-a-run-of-cells) |
-| **Writing a DVD** | A cut of a DVD title is a transport stream. A DVD's own shape is VOBUs of a bounded size, a navigation pack opening each of them and an `.IFO` describing every cell -- authoring, and a different problem |
+| **Writing a DVD** | A cut of a DVD title is a transport stream. A DVD's own shape is VOBUs of a bounded size, a navigation pack opening each of them and an `.IFO` describing every cell — authoring, and a different problem |
 | **Encrypted DVDs** | Out of scope, the same as AACS. Nothing here decrypts CSS |
 
 ## What was checked
@@ -651,7 +651,7 @@ into a UDF 2.50 image by ImgBurn: 33 GB, 45 playlists, 328 play items, 62
 distinct clips. The disc's own name came out of `META`, the 62 rows came out
 deduplicated, the twelve episodes were the twelve offered ticked, each carried
 the four chapter points its own playlist wrote, and the byte ranges opened
-through `subfile` and demuxed -- H.264 on 0x1011, TrueHD with its AC-3 on
+through `subfile` and demuxed — H.264 on 0x1011, TrueHD with its AC-3 on
 0x1100 and 0x1101, PGS on 0x1200 and 0x1201. A ten second cut of one episode
 came out at 91.8% copied, with both TrueHD tracks on their own PIDs and every
 sample of them decoding.
@@ -674,7 +674,7 @@ is remuxed into 192 byte packets,
 [`tests/disc_index.py`](../../tests/disc_index.py) writes the index files
 around it, and genisoimage wraps each in a UDF 1.02 image. Then all four shapes
 are asked the same questions, the cut each of them produces is compared **byte
-for byte** -- against each other and against the plain stream -- and the tables
+for byte** — against each other and against the plain stream — and the tables
 are checked to have gone back in. Thirty-five checks, all passing.
 
 **A real DVD-Video disc** — an NHK documentary mastered by Sonic Scenarist in
@@ -704,7 +704,7 @@ the program stream with no disc around it at all. Twenty-three checks, all passi
 [`tests/run_bd_audio_tests.sh`](../../tests/run_bd_audio_tests.sh) builds a
 clip of each: LPCM at 16 and at 24 bits, DTS, TrueHD, E-AC-3. Each is cut into
 a `.ts`, an `.m2ts` and an `.mp4`, and what is checked is the claim that codec
-makes -- that the stream types the disc used come back out, that LPCM into an
+makes — that the stream types the disc used come back out, that LPCM into an
 MP4 is the same samples with **nothing differing at all**, that the frame an
 LPCM boundary lands inside comes out with its far side silenced and its near
 side intact, and that the audio of a DTS or TrueHD cut is a stretch of the

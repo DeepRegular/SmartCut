@@ -13,8 +13,8 @@ cd gui/src-tauri && NO_STRIP=1 cargo tauri build --bundles appimage
 成果物は **185 MB で、共有ライブラリ 745 個をすべて抱えている**。WebKitGTK 4.1 も、
 `libavcodec` / `libavformat` / `libavutil` / `libavfilter` / `libswscale` /
 `libswresample` も入っているので、**動かす側に ffmpeg は不要**である。SmartCut は
-システムの FFmpeg 7.1 に動的リンクしているので、それを同梱できるかどうかが、そもそも
-配布できるかどうかの全問題だった。linuxdeploy は `ldd` を辿って拾ってくれる。
+システムの FFmpeg 7.1 に動的リンクしているため、これを同梱できるかどうかが配布の
+成否そのものだった。linuxdeploy が `ldd` を辿って拾ってくれる。
 
 | 条件 | 値 |
 |---|---|
@@ -81,7 +81,7 @@ AppImage 自体で動作を確認している。素材を開く、走査する�
 `smartcut` である。
 
 cargo のクレート名は `gui` なので、放っておくと Tauri はそのまま `/usr/bin/gui` に
-インストールする。誰かが占有してよい名前ではない。`tauri.conf.json` の
+インストールしてしまう。1 つのアプリが占有してよい名前ではない。`tauri.conf.json` の
 `mainBinaryName` で `smartcut` に固定してある（0.2.0 以降。それ以前は Windows 用
 だけに設定されていた）。一方 Tauri が書き出すバンドル*ファイル*の名前は `productName`
 に従うので `SmartCut_0.4.0_amd64.deb` のようになる。deb のパッケージ名 `smartcut` と

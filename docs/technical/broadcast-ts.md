@@ -31,10 +31,11 @@ muxer does not write it.
 
 ### Every stream goes back on the PID it arrived on
 
-The table above is as far as "number from the video's PID" gets you. The muxer reads
-`AVStream.id` as **the PID to write the stream on** — anything 16 or over is used as
-it stands rather than numbered from `mpegts_start_pid` — so handing each stream the
-PID it had in the recording puts the sound and the captions back where they were.
+Numbering from the video's PID gets you as far as the table above, and no further.
+The muxer reads `AVStream.id` as **the PID to write the stream on** — anything 16 or
+over is used as it stands rather than numbered from `mpegts_start_pid` — so handing
+each stream the PID it had in the recording puts the sound and the captions back where
+they were.
 
 That the audio matched under the old scheme was luck: 0x1100 plus one happens to be
 0x1101. A recording whose PIDs are spread out (0x100f / 0x104f / 0x120f) did not match
@@ -56,11 +57,11 @@ downstream tool actually read.**
 
 None of it survives a mux. libavformat writes its own PAT, PMT and SDT out of what it
 knows, which is the streams and nothing else. The captions come out with their ARIB
-descriptors because the muxer knows that codec, and everything else — the audio's
+descriptors because the muxer knows that codec; everything else — the audio's
 component tag, the copy-control descriptor, the superimpose stream's identity — is
-simply not written. EIT and TOT are worse than lost: ask the muxer to copy PID 0x12
-and it accepts it as an anonymous private stream and **puts it on a PID of its own
-choosing**, where nothing will ever look for it.
+simply not written. With EIT and TOT, something worse than loss happens: ask the muxer
+to copy PID 0x12 and it accepts it as an anonymous private stream and **puts it on a
+PID of its own choosing**, where nothing will ever look for it.
 
 So they are put back afterwards, by one pass over the finished file:
 
@@ -105,11 +106,11 @@ A downmixed track counts as not carried. A folded track no longer has the channe
 arrangement its audio component descriptor names, so it comes out of the programme
 description for the same reason it comes out of the map.
 
-**Only the programme on now is trimmed.** Present and following arrive as two sections
-and only the first is about this file; the second is a note about what came next on the
-air, a programme whose streams were never going to be in here. Judging its tags against
-what this file carries would answer a question nobody asked, and would throw away the
-one true thing it says.
+**Only the description of the programme on now is trimmed.** Present and following
+arrive as two sections, and only the first is about this file. The second is a note
+about what came next on the air, a programme whose streams were never going to be in
+here. Judging its tags against what this file carries would be meaningless, and would
+throw away the one true thing it says.
 
 ## Written as a partial transport stream (the default)
 
@@ -130,11 +131,11 @@ PID 0x001F, table 0x7F — and everything goes in it:
 in ARIB's own character encoding without this program having to understand any of it.
 Only the frame around them is written here.
 
-The peak rate is the one number that cannot be copied across: the recording never
-described itself as a partial stream, because it was not one, so nobody wrote that
-number down. So the output is measured, in one pass, over a one-second window. Measured
-tighter, a single large picture reads as a burst the file never sustains, and the table
-would name a rate no device needs to provide.
+The peak rate is the one number that cannot be copied across: the recording was not a
+partial stream and never described itself as one, so nobody wrote that number down.
+The output is therefore measured, in one pass, over a one-second window. Measured over
+a shorter window, a single large picture reads as a burst the file never sustains, and
+the table would name a rate no device needs to provide.
 
 The programme that followed does not go in. Present and following arrive as two
 sections and only the first is about this file; the SIT says what this file *is*.
@@ -162,8 +163,8 @@ jumps at every cut — which is what keeping the broadcast's own wall clock mean
 
 `--tables muxer` (formerly `--no-tables`) leaves the muxer's own PAT, PMT and SDT
 standing. It is there for the tool that wants a plain stream rather than a recording,
-and for telling apart which account a downstream tool was reading when it disagrees.
-Which one you get is on the `--analyze` line.
+and for working out which description a downstream tool was reading when tools
+disagree. Which one you get is on the `--analyze` line.
 
 ## The PIDs are the recording's; the clock rides with the video
 
@@ -178,10 +179,11 @@ fields.
 
 The PMT says so, correctly, and the file is consistent with itself: it is legal MPEG-2
 and legal ARIB, and anything that reads PCR_PID out of the PMT is unaffected. A dedicated
-PID could be synthesised, but the video would then carry a second copy of the clock, and
+PID could be synthesised, but then the video would carry a second copy of the clock, and
 the gap between where an inserted packet lands and the time it claims — about 63
 microseconds at 24 Mbit/s — is outside what MPEG allows a PCR to be out by. A correctly
-placed clock on the video beats an invented one that meets the letter of the spec.
+placed clock on the video beats an invented one that only meets the letter of the
+spec.
 
 ## The re-encoded head claimed to be "59.94 fps"
 
@@ -252,17 +254,16 @@ the frames a boundary falls inside — four out of 5606 on a two-interval cut, a
 all when the seam falls in silence, as a commercial cut does. Under `reencode` it is all
 of them, and under `copy` none.
 
-`write_audio_es()` (`--audio-es` on the CLI) **reads the finished output back** and writes
-the audio out as ADTS. What ends up next to the video is by construction the very audio
-inside it, and it has been confirmed to pass through L-SMASH's `muxer` (`Track 1: MPEG-4
-Audio`, 48 kHz stereo, matching duration).
+`write_audio_es()` (`--audio-es` on the CLI) **reads the finished output back** and
+writes the audio out as ADTS, so what ends up next to the video is, by construction, the
+very audio inside it. It has been confirmed to pass through L-SMASH's `muxer`
+(`Track 1: MPEG-4 Audio`, 48 kHz stereo, matching duration).
 
-The sidecar itself is kept out of the GUI. What made the workaround worth having — a seam
-declaring itself MPEG-4 in the middle of an MPEG-2 stream — is dealt with where it arises
-now. The audio *modes* are on the output settings screen, where they arrived alongside the
-channel count and the bitrate (see
-[audio](audio.md#the-output-settings-screen)), and they start on the engine's own default,
-which is smart rendering.
+The sidecar itself is kept out of the GUI, because what made the workaround worth having
+— a seam declaring itself MPEG-4 in the middle of an MPEG-2 stream — is now dealt with
+where it arises. The audio *modes* are on the output settings screen, alongside the
+channel count and the bitrate (see [audio](audio.md#the-output-settings-screen)), and
+they start on the engine's own default, which is smart rendering.
 
 ## To hand it to L-SMASH, use the bare stream
 

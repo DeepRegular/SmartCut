@@ -90,12 +90,13 @@ That matters because of what is written in VC-1: most Blu-rays pressed before
 about 2010. Reading them was already done ([discs](disc.md)); cutting them was
 not.
 
-So `rust/crates/vc1` is an encoder of the format's intra pictures, and nothing
-else. What makes that a reasonable thing to write rather than a research project
-is what a smart cut actually asks for. A range's ends need a fragment of a GOP
-apiece — a few dozen pictures — spliced in front of a copy of the recording's own
-bytes. Nothing outside the fragment may be referenced, so every picture in it can
-be intra, and an intra-only encoder is a fraction of the format:
+So `rust/crates/vc1` is an encoder for the format's intra pictures, and nothing
+else. What makes that a reasonable thing to write, rather than a research project,
+is how little a smart cut actually asks for. Each end of a range needs one
+fragment of a GOP — a few dozen pictures — spliced in front of a copy of the
+recording's own bytes. Nothing outside the fragment may be referenced, so every
+picture in it can be intra, and an intra-only encoder is only a fraction of the
+format:
 
 | Not needed | Why |
 |---|---|
@@ -144,28 +145,27 @@ given:
 | 16 | 42.4 dB, 50 KB | 37.3 dB, 74 KB |
 
 Grain costs twice the bits for three decibels less, which is what grain does to
-any encoder. It is worth knowing what that means in context: the grainy disc's
-own I pictures average **327 KB**, over half as large again as the 205 KB
-written here -- and the animation disc's average 166 KB against 109 KB. An
-intra picture out of this encoder is smaller than the ones the disc puts in the
-same places, so no player is being asked for anything it was not already being
-asked for.
+any encoder. The context is what makes that figure meaningful: the grainy disc's
+own I pictures average **327 KB**, over half as large again as the 205 KB written
+here, and the animation disc's average 166 KB against 109 KB. An intra picture out
+of this encoder is smaller than the ones the disc puts in the same places, so no
+player is being asked for anything it was not already being asked for.
 
-Whole cuts of both, ten seconds mid-GOP to mid-GOP, came out with 90% of the
-video byte-identical to the source and the rest written afresh — and the
-grainy one, examined at 1:1 against the picture it replaced, keeps the grain.
+Real cuts of both discs, ten seconds mid-GOP to mid-GOP, came out with 90% of the
+video byte-identical to the source and the rest written afresh. The grainy one,
+examined at 1:1 against the picture it replaced, keeps its grain.
 
 ### What is refused
 
-Pan-scan windows, and a quantizer that varies at the picture edges
-(`DQUANT=2`). Both sit in the middle of the picture header and would have to be
-mirrored exactly, and neither has turned up on a disc; a recording that carries
-either is refused by name rather than written wrongly.
+Pan-scan windows, and a quantiser that varies at the picture edges (`DQUANT=2`).
+Both sit in the middle of the picture header and would have to be mirrored
+exactly, and neither has turned up on a disc, so a recording that carries either
+is refused by name rather than written wrongly.
 
-Field pictures (`FCM=11`) are read but never written: where a stream is
-interlaced this writes interlaced frames, whichever of the two the pictures
-around it used. VC-1 states that per picture, so the two may sit side by side in
-one stream.
+Field pictures (`FCM=11`) are read but never written. Where a stream is
+interlaced, this encoder writes interlaced frames, whichever of the two the
+pictures around it used. VC-1 states that per picture, so the two may sit side by
+side in one stream.
 
 ### Left for later
 
@@ -176,9 +176,9 @@ next person to open this file will wonder what was intended.
 | | |
 |---|---|
 | **The window offers no step** | `--vc1-quant` exists on the command line and nowhere else. The window has no video settings at all — every control on the output screen describes the sound — so this would be the first, and where it belongs is a question about that screen rather than about the encoder. Until then a cut from the window uses the default |
-| **Field pictures are not written** | Where a stream is interlaced this writes interlaced frames, which is legal beside field pairs but has never been put in front of a decoder that was reading field pairs on either side of it. Both discs to hand code frames. A stream that codes fields wants a run of pictures written both ways and looked at |
+| **Field pictures are not written** | Where a stream is interlaced, this writes interlaced frames. That is legal beside field pairs, but it has never been put in front of a decoder that was reading field pairs on either side of it. Both discs to hand code frames; a stream that codes fields would want a run of pictures written both ways and compared |
 | **The pictures cost more bits than they need** | Three things were left out for being optional: AC prediction, the two escape forms that write a coefficient as a difference from a table entry rather than in full, and any choice among the AC tables — one pair is picked from the quantizer and used throughout. Each would take a few percent off, and a fragment is short enough that none of it has mattered yet |
-| **A fragment is all intra** | The largest saving on the bit rate is not in any of the above: it is P pictures, which would need motion estimation and the whole of the syntax that carries a motion vector. That is a different project, and the reason this one was worth doing is that it is not that |
+| **A fragment is all intra** | The largest saving on the bit rate is not in any of the above: it is P pictures, which would need motion estimation and the whole of the syntax that carries a motion vector. That is a different project, and what made this one feasible was being able to avoid it |
 
 ## Audio
 
