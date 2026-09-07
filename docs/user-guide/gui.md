@@ -259,6 +259,10 @@ strip is showing, which fills what the seeks could not. A cell shows a picture o
 belongs to the stretch that cell covers, so a few cells at the left edge stay black, and
 at the closest setting on a recording with long GOPs a few more do.
 
+**While you are moving the playhead the strip keeps to the quick way.** Searching,
+dragging, stepping: the strip follows the hand, and it completes itself the moment you
+stop. That is why a strip can look thin while you search and fill in when you let go.
+
 Each cell is captioned with the time of the picture actually in it rather than with the
 time the cell stands for, so the captions can step unevenly and what you click is what
 you were looking at. Both settle down the moment the walk lands.

@@ -453,14 +453,21 @@ is only done on a reel covering at most `SWEEP_MAX`, eight seconds. What is left
 the reading is the front of the reel: nothing is decoded until a key packet has arrived, so
 the first cells go without.*
 
-**Which way a span gets is settled by trying it, once, on that span.** The numbers above are
-a property of the recording as much as of the setting, and there is no way to know a
-recording's GOP length before the walk. So the seeks go first, being cheap and all a wide
-reel needs; a reel they leave gaps in is read through, and if that comes back full the span
-is read through from then on. Where it does not — a disc whose entry points run from 0.067s
-to 0.801s apart leaves cells nothing can fill, and `GOP・3 秒` asks for two cells per GOP —
-the reading is not repeated: those gaps belong to the recording, and the walk is about to
-close them anyway. A span neither way fills half of is dropped altogether.
+**The reading is never done while the hand is on the playhead.** A search on the strip, a
+drag on the scrubber, a run of wheel notches, playback — `moving()` — and the strip is filled
+by the seeks alone, which are a tenth of the cost and keep up. A third of a second is an age
+when the strip is meant to be following the hand, and the reel it was read for is gone by the
+time it arrives. Every one of those movements ends by asking for the picture it stopped on,
+which asks for the strip again, so the reading happens as soon as the hand comes off — and
+what is on screen until then is the same strip, a few cells short.
+
+**Which way a span gets is settled by trying it.** The numbers above are a property of the
+recording as much as of the setting, and there is no way to know a recording's GOP length
+before the walk. So the seeks go first, being cheap and all a wide reel needs; a reel they
+leave gaps in is read through, and a span the reading fills better than the seeks did goes
+straight to the reading from then on. One it does not is left to the seeks for good. Nothing
+is settled on a reel the reading was held off on — a moving hand says nothing about what
+reading it would have found.
 
 What comes back is kept under **the picture's own instant** rather than under the instant
 asked for, which is what lets the two ways share one store and what makes scrubbing back

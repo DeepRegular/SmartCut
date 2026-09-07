@@ -981,15 +981,13 @@ const glances = new Map();
 /// stands on the recording's own clock rather than on the playhead, so
 /// scrubbing back over a stretch asks for the very same things again.
 const asked = new Set();
-/// How each span turned out to be worth filling, once it has been tried:
+/// Which spans have been found to want the reel read through rather than
+/// sought cell by cell -- `read` -- and which have been found not to, `no
+/// read`. A span nothing is known about yet is missing from this, and gets the
+/// seeks first and the reading after if they left gaps.
 ///
-///   * `seek`  -- a seek per cell fills it as well as anything will
-///   * `sweep` -- reading the reel through fills cells the seeks cannot, and
-///                the reel is short enough for that to be worth doing
-///   * `off`   -- neither fills enough of the reel to be worth the decodes
-///
-/// Kept per span because it is the *cell's* width against the recording's own
-/// spacing that decides all three, and the menu is what sets the cell width.
+/// Per span because it is the *cell's* width against the recording's own
+/// spacing that decides it, and the menu is what sets the cell width.
 const ways = new Map();
 /// How many pictures to keep. They are 200px JPEGs, so a few hundred is a
 /// megabyte or two, and the walk is over long before that fills.
@@ -1000,6 +998,20 @@ const GLANCE_KEEP = 400;
 /// covering 30s in a second and a half. See `examples/glancecost.rs`.
 const SWEEP_MAX = 8;
 
+/// Is the playhead being moved right now?
+///
+/// A search on the strip, a drag on the scrubber, a run of wheel notches or a
+/// held step button, or playback. **While it is, the strip is filled the cheap
+/// way only.** Reading a reel through takes a third of a second on broadcast
+/// material and two on a disc, which is an age when the strip is meant to be
+/// following the hand -- and the reel it was read for is gone by the time it
+/// arrives. The seeks are a tenth of that and they keep up.
+///
+/// Every one of these ends by asking for the picture it stopped on, and that
+/// asks for the strip again (`showFrame` -> `scheduleStrip`), so the reading
+/// happens as soon as the hand comes off.
+const moving = () => !!search || !!dragging || scrubBusy || playing;
+
 function forgetGlances() {
   glances.clear();
   asked.clear();
@@ -1008,39 +1020,39 @@ function forgetGlances() {
 
 /// Draw the reel, and fill it with what can be found without the walk.
 ///
-/// Two ways of finding a picture, and which one a span gets is settled by
-/// trying them on it. Both are approximate in the same way -- with no access
-/// points to seek by, the container's own seek lands on the entry point at or
-/// before the instant asked for, a GOP out -- so **a picture goes under the
-/// cell it fell in, not under the cell that asked for it**, and the caption
-/// and the click follow the picture rather than the instant. The cell keeps
-/// its place and its width: the strip is a ruler, and a ruler with uneven
-/// marks is worse than a blank one.
+/// Two ways of finding a picture. Both are approximate in the same way -- with
+/// no access points to seek by, the container's own seek lands on the entry
+/// point at or before the instant asked for, a GOP out -- so **a picture goes
+/// under the cell it fell in, not under the cell that asked for it**, and the
+/// caption and the click follow the picture rather than the instant. The cell
+/// keeps its place and its width: the strip is a ruler, and a ruler with
+/// uneven marks is worse than a blank one.
 ///
 /// **A seek per cell** (`glimpses`) is the cheap way and is all a wide reel
-/// needs. What it cannot do is fill two cells that fall between the same pair
-/// of entry points: one ask, one picture, and the other cell stays black. At
-/// `GOP・30 秒` a cell is five GOPs wide and that never happens; at
-/// `GOP・6 秒` it happens to one cell in eight; at `GOP・3 秒` a cell is half
-/// a GOP wide and there are only pictures enough for half of them.
+/// needs. What it cannot do is answer a cell narrower than the recording's
+/// GOP, or two cells lying between the same pair of entry points: one ask, one
+/// picture, and the other cell stays black. That is where the gaps in a
+/// stage-one strip come from, and it is a question of the cell's width against
+/// the recording's own spacing -- half a second between entry points on most
+/// broadcast material, a whole second on some stations, against cells 0.55s
+/// wide at the default setting and 0.27s at the closest.
 ///
-/// **A read through the reel** (`glimpse_sweep`) answers with every entry
-/// point in it, so the only empty cells left are the ones the recording has
-/// nothing for. It costs in proportion to the stretch -- three times the
-/// seeks over six seconds of broadcast material, fifteen times over thirty --
-/// so it is only tried on a reel short enough to be worth reading, and only
-/// kept where it fills the reel bar a cell. Anything less and the gaps are
-/// the material's, not the method's, and reading it again would not close
-/// them.
+/// **A read through the reel** (`glimpse_sweep`) decodes the stretch and keeps
+/// the first picture in each cell, entry point or not, so every cell of it is
+/// answered. It costs in proportion to the stretch rather than to the number
+/// of cells, so it is only worth it on a short reel, and it is never done
+/// while the hand is on the playhead. See [`moving`].
 ///
-/// A span that neither way fills half of is not asked about again until the
-/// span changes or the walk lands.
+/// Which way a span gets is settled by trying them: the seeks first, and the
+/// reading after if they left gaps. A span the reading fills better than the
+/// seeks did goes straight to the reading from then on; one it does not is
+/// left to the seeks for good.
 async function fillByGlance(shots, cells, unit, win, span) {
-  const way = ways.get(span);
-  if (way === "off" || !src) {
+  if (!src) {
     renderStrip(shots, unit, win);
     return;
   }
+  const way = ways.get(span);
   const idx = cells.map((c, i) => (c.live ? i : -1)).filter((i) => i >= 0);
   const key = (t) => Math.round(t * 1000);
   const keep = (g) => g && glances.set(key(g.time), { url: g.url, time: g.time });
@@ -1086,9 +1098,11 @@ async function fillByGlance(shots, cells, unit, win, span) {
   let filled = place();
   renderStrip(shots, unit, win);
 
-  // The cheap way. Skipped where the reel has already been found to want the
-  // thorough one, which finds everything this would and more.
-  if (way !== "sweep") {
+  const quiet = !moving();
+  // The cheap way. Skipped only where the reel has already been found to want
+  // the reading *and* there is time to do it: with a hand on the playhead the
+  // reading is off, and then these are the only pictures there are.
+  if (way !== "read" || !quiet) {
     // The middle of each cell rather than its edge. A landing lands at or
     // before its ask, so asking on the edges would put half of them in the
     // cell before the reel begins.
@@ -1115,55 +1129,53 @@ async function fillByGlance(shots, cells, unit, win, span) {
     }
   }
 
-  // The thorough way, on a reel short enough to read through. The stretch is
-  // the reel's own, in source time: a reel that walks over a cut covers two
-  // pieces of the recording and everything between them, which is why the
-  // length is measured here rather than taken from the menu.
+  // The thorough way, on a reel short enough to read through and only while
+  // nothing is moving. The stretch is the reel's own, in source time: a reel
+  // that walks over a cut covers two pieces of the recording and everything
+  // between them, which is why the length is measured here rather than taken
+  // from the menu.
   const from = outToSrc(cells[idx[0]].a);
   const to = outToSrc(cells[idx[idx.length - 1]].b);
-  const worth = to - from > 0 && to - from <= SWEEP_MAX;
-  const swept = way === "sweep" || (way === undefined && filled < idx.length && worth);
-  if (swept) {
-    const k = `s${key(from)}-${key(to)}`;
-    if (!asked.has(k)) {
-      const token = ++stripToken;
-      let got;
-      try {
-        got = await invoke("glimpse_sweep", {
-          path: src.path,
-          from,
-          to,
-          width: 200,
-          // How the reel is divided, so that a stretch carrying entry points
-          // ten to the cell is not encoded ten times over. Nothing to divide
-          // on where a cut falls inside the reel: the cells tile the *edited*
-          // timeline, and this stretch is a run of the recording.
-          cell: outRangeToSrc(cells[idx[0]].a, cells[idx[idx.length - 1]].b).length > 1 ? 0 : unit,
-          // Room well above one per cell: the thinning above is what keeps
-          // the count down, and this is only a ceiling.
-          most: idx.length * 3,
-        });
-      } catch (e) {
-        jlog(`glimpse_sweep: ${e}`);
-        return;
-      }
-      if (token !== stripToken) return;
-      room();
-      asked.add(k);
-      for (const g of got) keep(g);
-      const after = place();
-      if (after > filled) renderStrip(shots, unit, win);
-      filled = after;
-    }
+  const roomy = to - from > 0 && to - from <= SWEEP_MAX;
+  // Nothing to gain where every cell already has a picture, whichever way
+  // this span is usually filled.
+  if (way === "no read" || !roomy || !quiet || filled >= idx.length) return;
+  const k = `s${key(from)}-${key(to)}`;
+  if (asked.has(k)) return;
+  const token = ++stripToken;
+  let got;
+  try {
+    got = await invoke("glimpse_sweep", {
+      path: src.path,
+      from,
+      to,
+      width: 200,
+      // How the reel is divided, so that a stretch carrying entry points ten
+      // to the cell is not encoded ten times over. Nothing to divide on where
+      // a cut falls inside the reel: the cells tile the *edited* timeline, and
+      // this stretch is a run of the recording.
+      cell: outRangeToSrc(cells[idx[0]].a, cells[idx[idx.length - 1]].b).length > 1 ? 0 : unit,
+      // Room well above one per cell: the thinning above is what keeps the
+      // count down, and this is only a ceiling.
+      most: idx.length * 3,
+    });
+  } catch (e) {
+    jlog(`glimpse_sweep: ${e}`);
+    return;
   }
-
-  if (way === undefined) {
-    // What this span is worth doing from now on. A reel that comes out full
-    // bar a cell is a strip; one that does not is as full as the recording
-    // will let it be, and reading it through again would only cost more.
-    const full = filled + 1 >= idx.length;
-    ways.set(span, swept && full ? "sweep" : filled * 2 >= idx.length ? "seek" : "off");
-  }
+  if (token !== stripToken) return;
+  room();
+  asked.add(k);
+  for (const g of got) keep(g);
+  const after = place();
+  if (after > filled) renderStrip(shots, unit, win);
+  // What the reading is worth on this span, from the one reel it was tried
+  // on: more cells than the seeks managed and it is worth doing again;
+  // nothing more and it never will be.
+  //
+  // Only from a reel it was actually run on. A reel it was held off for --
+  // the hand was moving, or it was too long to read -- says nothing about it.
+  if (way === undefined) ways.set(span, after > filled ? "read" : "no read");
 }
 
 /// Draw a reel centred on `at`, or on the playhead when it is not given.
