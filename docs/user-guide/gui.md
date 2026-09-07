@@ -539,6 +539,12 @@ For a clip whose cuts all landed on lossless points, you get its representative
 frame instead, with `Nothing re-encoded — the whole clip is copied losslessly`
 written underneath.
 
+While the list is being written the picture follows along, showing the part being
+written at that moment. **When the run ends it stays on the last frame encoded**
+rather than going back to the top of the list, so the frame you were watching is
+still there once it is over. Open the screen again and it goes back to speaking for
+the clip about to be written first.
+
 ---
 
 ## Saving your work

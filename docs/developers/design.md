@@ -339,6 +339,16 @@ A clip whose cuts all landed on access points shows its own poster frame with "N
 re-encoded — the whole clip is copied losslessly" under it. Showing a poster there is not
 a false claim: directly beneath it says that not one frame is being made again.
 
+**When the run ends the stage stays where the head left it.** Idle, this screen speaks for
+the clip about to be written first — and the moment the last clip is finished that is the
+top of the list again, so the frame somebody had been watching the encoder make would be
+swapped, at the very instant it was finished, for one from a clip written minutes ago. So
+the last frame of the run is held: the clip finishing catches the stage up with the head
+(`followWrite(1)`), and `renderOutScreen` leaves it there. It goes back to speaking for the
+list at the next reason to — another run, or the screen being opened again — and the hold
+drops by itself if the clip leaves the list or its cuts move, since the picture was worked
+out for joins that would no longer be made.
+
 ## The cut editor
 
 ```

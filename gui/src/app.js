@@ -208,7 +208,13 @@ function show(name) {
   // menu would leave it to reappear later.
   showMenu(false);
   if (name === "outset") renderOutset();
-  if (name === "out") renderOutScreen();
+  // Coming to the screen is asking it what it has to say, so it goes back to
+  // speaking for the list. A run's last frame is held for whoever watched the
+  // run end, not kept over the top of the next question.
+  if (name === "out") {
+    heldAfterRun = false;
+    renderOutScreen();
+  }
 }
 
 for (const b of document.querySelectorAll(".screens .tab")) {
@@ -2923,6 +2929,25 @@ function paintShotsNote() {
 let shownReencode = null;
 let shotsToken = 0;
 
+/// Set when a run ends, to keep the stage where the writing head left it.
+///
+/// Idle, this screen speaks for the clip about to be written first -- and the
+/// moment a run is over that is the top of the list again, so the frame
+/// somebody had been watching the encoder make would be swapped, at the very
+/// instant it was finished, for one from a clip written minutes ago. The last
+/// frame of the run is what the run ended on, and it stays up.
+let heldAfterRun = false;
+
+/// Whether that held frame is still about something true. It stops standing
+/// for the run the moment the clip leaves the list or its cuts move: the
+/// picture was worked out for joins that would no longer be made, and this
+/// screen would be showing a plan the program has already dropped.
+function stillHeld() {
+  if (!heldAfterRun || !onShow) return false;
+  const clip = onShow.clip;
+  return ready().includes(clip) && shownReencode === JSON.stringify([clip.id, rangesOf(clip)]);
+}
+
 async function showReencode(clip) {
   const token = ++shotsToken;
   if (!clip) {
@@ -3035,8 +3060,9 @@ function renderOutScreen() {
   const list = ready();
   el("out-idle").hidden = list.length > 0;
   // Idle, the screen speaks for whichever clip is about to be written first;
-  // running, `runExport` points it at the one under the head.
-  if (!exporting) showReencode(list[0] || null);
+  // running, `runExport` points it at the one under the head. Just finished,
+  // it stays on the frame the head stopped at.
+  if (!exporting && !stillHeld()) showReencode(list[0] || null);
   // The picture half of the note is cached against the clip and its cuts;
   // this puts the audio half back on it, which the settings can have changed
   // since.
@@ -3105,6 +3131,7 @@ async function runExport() {
   exporting = true;
   abort = false;
   began = Date.now();
+  heldAfterRun = false;
   list.forEach((c) => (c.out = { state: "waiting", progress: 0, note: t("out.waiting") }));
   el("abort-export").disabled = false;
   paintButtons();
@@ -3155,6 +3182,10 @@ async function runExport() {
         // track switched back on in the editor be switched off again here.
         dropPids: clip.edit ? [] : clip.dropPids,
       });
+      // The head is past everything now, so the stage catches up with it: the
+      // frame left standing is the last one the encoder made, rather than
+      // whichever one the last progress report happened to fall short of.
+      followWrite(1);
       let extra = "";
       if (settings.keyframes) {
         // Numbered against the file being written, not the recording.
@@ -3198,6 +3229,8 @@ async function runExport() {
   paintOutProgress(1);
   paused = false;
   pump();
+  // Whatever is on the stage now is the last frame the run made: hold it.
+  heldAfterRun = !!onShow;
   renderOutScreen();
 }
 
