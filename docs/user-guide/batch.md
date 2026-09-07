@@ -65,10 +65,16 @@ that.
 **You can open a clip the list has not read yet.** The editor makes that pass
 itself and becomes usable as far as it has got (see [Usable the moment it
 opens](gui.md#usable-the-moment-it-opens)), so waiting for the lane's turn buys you
-nothing. While the editor has the clip, the index lane skips that row: reading one file
-twice over is the thing most worth avoiding, so the lane is the one that gives way.
-The index the editor writes stays on disk, so when the editor closes and the lane
-picks the row up, it costs one read.
+nothing.
+
+**Opening the editor stops nothing.** A pass already running on that clip runs on to
+the end: what it has read stays read, and the row keeps the progress, the picture and
+the scene marks it had rather than falling back to `Analysis queued` because a window
+was opened. The editor's own read of the same file follows the lane's through the page
+cache instead of going back to the disk for it. What the lanes do skip is *starting* a
+fresh pass on the clip the editor has, which would only repeat work that window is
+already doing -- and the index the editor writes stays on disk, so when the editor
+closes and the lane picks the row up, it costs one read.
 
 ## Detecting commercials across the list
 

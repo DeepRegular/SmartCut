@@ -242,14 +242,30 @@ async function edit(clip) {
   }
   editing = clip;
   before = clip.edit ? JSON.parse(JSON.stringify(clip.edit)) : null;
-  // The index lane may be on this very clip. Two passes over one file at
-  // once is the one thing worth avoiding, and it is the lane's that goes:
-  // the editor is about to make the same pass and hands its pictures to the
-  // film strip as it makes them. The row falls back to 解析待ち, is left
-  // alone while the editor has it, and when the editor gives it back the
-  // index the editor wrote is on disc, so the lane's pass is a read.
-  if (clip.state === "indexing") await invoke("stop_batch", { lane: "walk" });
-  if (clip.pics === "running") await invoke("stop_batch", { lane: "pics" });
+  // A lane in flight on this very clip is left alone. It used to be stopped
+  // here -- the editor is about to make the same pass, and reading one file
+  // twice at once is the thing most worth avoiding -- but that traded a real
+  // loss for a notional saving. What it threw away was however far the pass
+  // had got: a row four minutes into a five-minute walk fell back to 解析待ち,
+  // and the editor then started the same walk from zero. What it saved was
+  // less than it looked, because the two reads are not two trips to the disc.
+  // The editor's read follows the lane's through the page cache the lane is
+  // filling, and the index writer has expected the pair since it was written
+  // -- it renames a temporary named apart from every other one into place for
+  // exactly this case, the list indexing a row while the editor opens that
+  // same file.
+  //
+  // The pictures lane is the one this costs anything real: its pass and the
+  // editor's decode the same key pictures at the same time, on a machine the
+  // editor has already cut the lanes back to a share of. It is left running
+  // all the same. What it has decoded stays decoded, the row keeps its own
+  // picture and its scene marks rather than losing both to a window being
+  // opened, and the track it writes is what the next open of this clip reads
+  // instead of decoding again.
+  //
+  // What is still passed over is *starting* a pass on this clip; see
+  // `nextFor`. Beginning work the editor is already doing duplicates it with
+  // nothing part-finished to save.
   try {
     await invoke("open_editor", { title: t("editor.windowTitle", { clip: clipLabel(clip) }) });
     // Lost if the window is still starting up, which is what `editor-ready`
