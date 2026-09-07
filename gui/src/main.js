@@ -1142,15 +1142,14 @@ async function fillByGlance(shots, cells, unit, win, span) {
         jlog(`glimpses: ${e}`);
         return;
       }
-      if (token !== stripToken) return;
+      if (token !== stripToken || walked()) return;
       room();
       want.forEach((t, i) => {
         asked.add(`a${key(t)}`);
         keep(got[i]);
       });
-      const after = place();
-      if (after > filled) renderStrip(shots, unit, win);
-      filled = after;
+      filled = place();
+      renderStrip(shots, unit, win);
     }
   }
 
@@ -1188,19 +1187,33 @@ async function fillByGlance(shots, cells, unit, win, span) {
     jlog(`glimpse_sweep: ${e}`);
     return;
   }
-  if (token !== stripToken) return;
+  // A walk that landed while this was in flight has rebased the output clock --
+  // the timeline begins at the first access point now -- so these instants no
+  // longer fall in the cells they were asked for. The reel is about to be drawn
+  // from the access points themselves; leave it to that.
+  if (token !== stripToken || walked()) return;
   room();
   asked.add(k);
   for (const g of got) keep(g);
-  const after = place();
-  if (after > filled) renderStrip(shots, unit, win);
-  // What the reading is worth on this span, from the one reel it was tried
-  // on: more cells than the seeks managed and it is worth doing again;
-  // nothing more and it never will be.
+  // Drawn again whatever the count says. A cell can only gain a picture here,
+  // and the count is of the cells *this* pass filled: where two pictures fall
+  // in one cell only one of them counts, so it can come back lower than the
+  // reel is actually showing.
+  place();
+  renderStrip(shots, unit, win);
+  // Whether this span wants the reading from now on -- which is to say whether
+  // the seeks can be skipped, the reading finding everything they do and more.
   //
-  // Only from a reel it was actually run on. A reel it was held off for --
-  // the hand was moving, or it was too long to read -- says nothing about it.
-  if (way === undefined) ways.set(span, after > filled ? "read" : "no read");
+  // **Not "did it fill more cells than the seeks did".** That was tried, and it
+  // locks the wrong spans out. The reel drawn as the editor opens sits at the
+  // head of the recording, where the cells before the first entry point cannot
+  // be filled by anything at all, so on a recording whose seeks already answer
+  // nine cells in ten the reading has nothing to add on that one reel -- and
+  // two of five broadcast recordings settled "no read" there and spent the rest
+  // of the walk with a gap in every reel, which is the whole of what this is
+  // here to close. What says the reading is not worth repeating is the reading
+  // coming back with nothing at all.
+  if (way === undefined) ways.set(span, got.length ? "read" : "no read");
 }
 
 /// Draw a reel centred on `at`, or on the playhead when it is not given.

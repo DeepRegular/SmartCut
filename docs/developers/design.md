@@ -478,10 +478,24 @@ what is on screen until then is the same strip, a few cells short.
 **Which way a span gets is settled by trying it.** The numbers above are a property of the
 recording as much as of the setting, and there is no way to know a recording's GOP length
 before the walk. So the seeks go first, being cheap and all a wide reel needs; a reel they
-leave gaps in is read through, and a span the reading fills better than the seeks did goes
-straight to the reading from then on. One it does not is left to the seeks for good. Nothing
-is settled on a reel the reading was held off on — a moving hand says nothing about what
-reading it would have found.
+leave gaps in is read through, and from then on that span goes straight to the reading,
+which finds everything the seeks do and more. Nothing is settled on a reel the reading was
+held off on — a moving hand says nothing about what reading it would have found.
+
+**What is not asked is "did the reading beat the seeks on that reel".** It was, and it
+locked the wrong spans out. The reel drawn as the editor opens sits at the head of the
+recording, where the cells before the first entry point cannot be filled by anything at all;
+on a recording whose seeks already answer nine cells in ten, the reading has nothing left to
+add *there*, and the span was written off on the strength of the one reel least able to show
+what it is worth. Two of five broadcast recordings did exactly that and then spent the rest
+of the walk with a gap in every reel. What marks the reading as not worth repeating is the
+reading coming back with nothing at all.
+
+**An answer that arrives after the walk has landed is dropped.** The output clock rebases
+when the access points arrive — the timeline begins at the first of them — so instants
+asked for before that no longer fall in the cells they were asked for, and placing them
+would move pictures a cell to the left. The reel is redrawn from the access points
+themselves a moment later; that is the one to wait for.
 
 What comes back is kept under **the picture's own instant** rather than under the instant
 asked for, which is what lets the two ways share one store and what makes scrubbing back
