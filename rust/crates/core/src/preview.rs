@@ -328,100 +328,244 @@ enum Landing {
     At(f64),
 }
 
-fn glance_now(spec: &str, landing: Landing, width: u32) -> Result<Shot> {
-    crate::init()?;
-    let input = crate::input::Input::parse(spec)?;
-    let mut ictx =
-        crate::input::demux(&input.url).map_err(|e| anyhow!("cannot open {spec}: {e}"))?;
-    let stream = ictx
-        .streams()
-        .best(ff::media::Type::Video)
-        .ok_or_else(|| anyhow!("no video stream in {spec}"))?;
-    let idx = stream.index();
-    let time_base = f64::from(stream.time_base());
-    let params = stream.parameters();
-    let sar = unsafe {
-        let s = (*params.as_ptr()).sample_aspect_ratio;
-        if s.num > 0 && s.den > 0 { s.num as f64 / s.den as f64 } else { 1.0 }
-    };
-    let (duration, start) = unsafe {
-        let p = ictx.as_ptr();
-        let tb = ff::ffi::AV_TIME_BASE as f64;
-        let d = (*p).duration;
-        let s = (*p).start_time;
-        (
-            if d == ff::ffi::AV_NOPTS_VALUE { 0.0 } else { d as f64 / tb },
-            if s == ff::ffi::AV_NOPTS_VALUE { 0.0 } else { s as f64 / tb },
-        )
-    };
+/// Several glances out of one recording, at the times asked for and in that
+/// order.
+///
+/// What the film strip draws with while the walk is still running. A glance
+/// is an open, a seek and a GOP, and over a share the open is the dear part
+/// of that -- a cell each would pay for it a dozen times over a single
+/// refresh, against a recording the walk is already reading. So the open is
+/// paid for once and the seeks happen inside it.
+///
+/// A time with no picture near it comes back empty rather than shifting the
+/// ones after it along, exactly as in [`shots_at`]: the strip keeps the
+/// playhead in its middle cell, and that only holds if the cells stay where
+/// they were put.
+pub fn glance_run(spec: &str, times: &[f64], width: u32) -> Result<Vec<Option<Shot>>> {
+    if times.is_empty() {
+        return Ok(Vec::new());
+    }
+    let mut g = Glancer::open(spec)?;
+    Ok(times.iter().map(|&t| g.at(Landing::At(t), width).ok()).collect())
+}
 
-    // A recording whose length the container will not say is read from the
-    // beginning: there is no fraction to take of nothing.
-    let want = match landing {
-        Landing::Fraction(into) => start + duration.max(0.0) * into.clamp(0.0, 1.0),
-        // Rebased seconds in, container time out, as everywhere else.
-        Landing::At(at) => start + at.max(0.0),
-    };
-    if want > start + 1e-6 {
-        let ts = (want * ff::ffi::AV_TIME_BASE as f64) as i64;
-        // A seek that fails leaves the file where it was, which is the start
-        // -- a picture from the wrong place, and not a reason to have none.
-        let _ = ictx.seek(ts, ..ts);
+/// Every entry picture between two instants, out of one seek and one read.
+///
+/// The other half of [`glance_run`], for a film strip drawn so close in that
+/// the whole reel is a few seconds of the recording. A seek per cell answers
+/// each cell with the entry point at or before it, so where two cells fall
+/// between the same pair of entry points one of them is answered twice and
+/// the other not at all -- and a reel three seconds wide over half-second
+/// GOPs is half gaps for that reason alone. Reading the stretch through
+/// instead hands back *every* entry point in it, so every cell that has one
+/// gets it.
+///
+/// Dearer per second of recording than a seek is -- this decodes the pictures
+/// between the entry points and throws them away -- and only worth it while
+/// the stretch is short. The caller picks; see `fillByGlance`.
+///
+/// `cell` is how the caller has divided the stretch up: a picture landing in
+/// the same cell as the one before it is skipped, since the caller has nowhere
+/// to put a second one. A disc puts an entry point at every scene change, and
+/// on one of them they come as close as 0.067s apart -- a hundred and twenty
+/// pictures to encode across a reel with room for eleven. Zero keeps every
+/// one; `most` is the ceiling either way.
+///
+/// **Cells, not a minimum spacing.** Skipping a picture that came within some
+/// distance of the last one looks like the same thing and is not: entry points
+/// half a second apart, thinned to "no closer than 0.54s", come back one
+/// second apart -- and a strip whose cells are 0.6s wide is then empty every
+/// other cell, which is the very thing this is here to fix.
+pub fn glance_sweep(
+    spec: &str,
+    from: f64,
+    to: f64,
+    width: u32,
+    cell: f64,
+    most: usize,
+) -> Result<Vec<Shot>> {
+    if to <= from || most == 0 {
+        return Ok(Vec::new());
+    }
+    Glancer::open(spec)?.sweep(from, to, width, cell, most)
+}
+
+fn glance_now(spec: &str, landing: Landing, width: u32) -> Result<Shot> {
+    Glancer::open(spec)?.at(landing, width)
+}
+
+/// A recording nothing has been read of, open and ready to be asked for a
+/// picture from around an instant.
+struct Glancer {
+    /// The name it was asked for by, for what the failures say.
+    spec: String,
+    ictx: ff::format::context::Input,
+    decoder: ff::decoder::Video,
+    idx: usize,
+    time_base: f64,
+    sar: f64,
+    /// The container's own clock, which is what a landing is measured
+    /// against: where the recording says it begins, and how long it says it
+    /// runs.
+    start: f64,
+    duration: f64,
+    /// Whether a glance has been taken out of this one already, which is what
+    /// says the file has to be wound back before one is taken from the front.
+    used: bool,
+}
+
+impl Glancer {
+    fn open(spec: &str) -> Result<Self> {
+        crate::init()?;
+        let input = crate::input::Input::parse(spec)?;
+        let ictx =
+            crate::input::demux(&input.url).map_err(|e| anyhow!("cannot open {spec}: {e}"))?;
+        let stream = ictx
+            .streams()
+            .best(ff::media::Type::Video)
+            .ok_or_else(|| anyhow!("no video stream in {spec}"))?;
+        let idx = stream.index();
+        let time_base = f64::from(stream.time_base());
+        let params = stream.parameters();
+        let sar = unsafe {
+            let s = (*params.as_ptr()).sample_aspect_ratio;
+            if s.num > 0 && s.den > 0 { s.num as f64 / s.den as f64 } else { 1.0 }
+        };
+        let (duration, start) = unsafe {
+            let p = ictx.as_ptr();
+            let tb = ff::ffi::AV_TIME_BASE as f64;
+            let d = (*p).duration;
+            let s = (*p).start_time;
+            (
+                if d == ff::ffi::AV_NOPTS_VALUE { 0.0 } else { d as f64 / tb },
+                if s == ff::ffi::AV_NOPTS_VALUE { 0.0 } else { s as f64 / tb },
+            )
+        };
+        // One core, because this runs beside the passes that want the rest of
+        // them, and because frame threading holds the first pictures back
+        // until its pipeline fills -- and the first picture after a seek is
+        // the whole of what this wants. See [`crate::video_decoder_with`].
+        let decoder = crate::video_decoder_with(params, 1)?;
+        Ok(Glancer {
+            spec: spec.to_string(),
+            ictx,
+            decoder,
+            idx,
+            time_base,
+            sar,
+            start,
+            duration,
+            used: false,
+        })
     }
 
-    // One core, because this runs beside the passes that want the rest of
-    // them, and because frame threading holds the first pictures back until
-    // its pipeline fills -- and the first picture is the whole of what this
-    // wants. See [`crate::video_decoder_with`].
-    let mut decoder = crate::video_decoder_with(params, 1)?;
-    let mut frame = ff::frame::Video::empty();
-    // The picture to answer with, which is the first I picture: what comes
-    // out before it references pictures the seek skipped past, and decodes to
-    // a grey field with the corner of a logo in it. Nothing is fed to the
-    // decoder until a key packet has arrived for the same reason -- the seek
-    // lands near the entry point on a transport stream rather than on it.
-    //
-    // What was decoded anyway is kept as the answer of last resort, for a
-    // recording whose pictures are not typed at all: a poster that is a
-    // little wrong beats a row that stays blank.
-    let mut spare: Option<Shot> = None;
-    let mut started = false;
-    let mut waiting = 0;
-    // Enough to carry a landing that fell inside an open GOP, and to give up
-    // on a stretch of the file that decodes to nothing rather than reading to
-    // the end of it.
-    let mut left = 900;
-    // The picture's own instant, rebased, so the caller can say where what it
-    // is looking at actually is.
-    let when = |frame: &ff::frame::Video| {
-        frame.pts().map_or(0.0, |pts| pts as f64 * time_base - start)
-    };
-    for (s, packet) in ictx.packets() {
-        if s.index() != idx {
-            continue;
+    /// Seek, decode the first picture that stands on its own, and answer with
+    /// it and the instant it turned out to be at.
+    fn at(&mut self, landing: Landing, width: u32) -> Result<Shot> {
+        // Field by field, so that the packet loop can hold the demuxer while
+        // the decoder is fed: they are separate places and the borrow checker
+        // will only see that if it is told them separately.
+        let Glancer { spec, ictx, decoder, idx, time_base, sar, start, duration, used } = self;
+        let (idx, time_base, sar, start) = (*idx, *time_base, *sar, *start);
+        let again = std::mem::replace(used, true);
+
+        // A recording whose length the container will not say is read from the
+        // beginning: there is no fraction to take of nothing.
+        let want = match landing {
+            Landing::Fraction(into) => start + duration.max(0.0) * into.clamp(0.0, 1.0),
+            // Rebased seconds in, container time out, as everywhere else.
+            Landing::At(at) => start + at.max(0.0),
+        };
+        // Whatever the last glance left in the pipeline belongs to wherever it
+        // landed, and is a picture from the wrong place if it comes out here.
+        decoder.flush();
+        if want > start + 1e-6 {
+            let ts = (want * ff::ffi::AV_TIME_BASE as f64) as i64;
+            // A seek that fails leaves the file where it was, which is the
+            // start -- a picture from the wrong place, and not a reason to
+            // have none.
+            let _ = ictx.seek(ts, ..ts);
+        } else if again {
+            // A landing at the very front needs no seek out of a file that has
+            // only just been opened -- but on a second glance the file is
+            // wherever the first one left it, and has to be wound back.
+            let _ = ictx.seek(0, ..0);
         }
-        started = started || packet.is_key();
-        if !started {
-            // A recording that flags no key packet at all -- and there are
-            // containers that flag none -- is read from wherever the seek
-            // put it rather than to the end and answered with nothing.
-            waiting += 1;
-            started = waiting > 300;
-            if !started {
+
+        let mut frame = ff::frame::Video::empty();
+        // The picture to answer with, which is the first I picture: what comes
+        // out before it references pictures the seek skipped past, and decodes
+        // to a grey field with the corner of a logo in it. Nothing is fed to
+        // the decoder until a key packet has arrived for the same reason --
+        // the seek lands near the entry point on a transport stream rather
+        // than on it.
+        //
+        // What was decoded anyway is kept as the answer of last resort, for a
+        // recording whose pictures are not typed at all: a poster that is a
+        // little wrong beats a row that stays blank.
+        let mut spare: Option<Shot> = None;
+        let mut started = false;
+        let mut waiting = 0;
+        // Enough to carry a landing that fell inside an open GOP, and to give
+        // up on a stretch of the file that decodes to nothing rather than
+        // reading to the end of it.
+        let mut left = 900;
+        // The picture's own instant, rebased, so the caller can say where what
+        // it is looking at actually is.
+        let when = |frame: &ff::frame::Video| {
+            frame.pts().map_or(0.0, |pts| pts as f64 * time_base - start)
+        };
+        for (s, packet) in ictx.packets() {
+            if s.index() != idx {
                 continue;
             }
+            started = started || packet.is_key();
+            if !started {
+                // A recording that flags no key packet at all -- and there are
+                // containers that flag none -- is read from wherever the seek
+                // put it rather than to the end and answered with nothing.
+                waiting += 1;
+                started = waiting > 300;
+                if !started {
+                    continue;
+                }
+            }
+            left -= 1;
+            if left <= 0 {
+                break;
+            }
+            if decoder.send_packet(&packet).is_err() {
+                continue;
+            }
+            while decoder.receive_frame(&mut frame).is_ok() {
+                let kind = kind_of(&frame);
+                if kind == "I" {
+                    return Ok(Shot {
+                        jpeg: encode_jpeg(&frame, sar, width)?,
+                        time: when(&frame),
+                        kind,
+                    });
+                }
+                if spare.is_none() {
+                    spare = Some(Shot {
+                        jpeg: encode_jpeg(&frame, sar, width)?,
+                        time: when(&frame),
+                        kind,
+                    });
+                }
+            }
         }
-        left -= 1;
-        if left <= 0 {
-            break;
-        }
-        if decoder.send_packet(&packet).is_err() {
-            continue;
-        }
+        // Whatever the decoder was still holding: a recording shorter than the
+        // reorder depth has all of its pictures in there.
+        let _ = decoder.send_eof();
         while decoder.receive_frame(&mut frame).is_ok() {
             let kind = kind_of(&frame);
             if kind == "I" {
-                return Ok(Shot { jpeg: encode_jpeg(&frame, sar, width)?, time: when(&frame), kind });
+                return Ok(Shot {
+                    jpeg: encode_jpeg(&frame, sar, width)?,
+                    time: when(&frame),
+                    kind,
+                });
             }
             if spare.is_none() {
                 spare = Some(Shot {
@@ -431,24 +575,93 @@ fn glance_now(spec: &str, landing: Landing, width: u32) -> Result<Shot> {
                 });
             }
         }
+        spare.ok_or_else(|| match landing {
+            Landing::Fraction(into) => anyhow!("no picture {:.0}% into {spec}", into * 100.0),
+            Landing::At(at) => anyhow!("no picture at {at:.3}s in {spec}"),
+        })
     }
-    // Whatever the decoder was still holding: a recording shorter than the
-    // reorder depth has all of its pictures in there.
-    let _ = decoder.send_eof();
-    while decoder.receive_frame(&mut frame).is_ok() {
-        let kind = kind_of(&frame);
-        if kind == "I" {
-            return Ok(Shot { jpeg: encode_jpeg(&frame, sar, width)?, time: when(&frame), kind });
+
+    /// Seek to `from` and read through to `to`, keeping every entry picture on
+    /// the way. See [`glance_sweep`].
+    fn sweep(
+        &mut self,
+        from: f64,
+        to: f64,
+        width: u32,
+        cell: f64,
+        most: usize,
+    ) -> Result<Vec<Shot>> {
+        let Glancer { ictx, decoder, idx, time_base, sar, start, used, .. } = self;
+        let (idx, time_base, sar, start) = (*idx, *time_base, *sar, *start);
+        *used = true;
+
+        decoder.flush();
+        let want = start + from.max(0.0);
+        let ts = (want * ff::ffi::AV_TIME_BASE as f64) as i64;
+        let _ = ictx.seek(ts, ..ts);
+
+        let mut out: Vec<Shot> = Vec::new();
+        // Which of the caller's cells the last answer went into.
+        let mut held = i64::MIN;
+        let cell_of = |t: f64| {
+            if cell > 1e-9 { ((t - from) / cell).floor() as i64 } else { i64::MIN + 1 }
+        };
+        let mut frame = ff::frame::Video::empty();
+        // Nothing is fed to the decoder until a key packet has arrived: what
+        // comes out before one references pictures the seek skipped past.
+        let mut started = false;
+        // A ceiling on the read, for a recording whose pictures carry no time
+        // to stop at. The stretch this is asked for is seconds long, and a
+        // second is tens of packets.
+        let mut left = 4000;
+        let when = |frame: &ff::frame::Video| {
+            frame.pts().map_or(0.0, |pts| pts as f64 * time_base - start)
+        };
+        'read: for (s, packet) in ictx.packets() {
+            if s.index() != idx {
+                continue;
+            }
+            started = started || packet.is_key();
+            if !started {
+                continue;
+            }
+            left -= 1;
+            if left <= 0 {
+                break;
+            }
+            if decoder.send_packet(&packet).is_err() {
+                continue;
+            }
+            while decoder.receive_frame(&mut frame).is_ok() {
+                let at = when(&frame);
+                // Pictures come out of the decoder in presentation order, so
+                // the first one past the far end says the stretch is done.
+                if at > to + 1e-6 {
+                    break 'read;
+                }
+                if at < from - 1e-6 || kind_of(&frame) != "I" {
+                    continue;
+                }
+                // One picture per cell is all the caller can show, and the
+                // decoding is done either way -- what this saves is the
+                // encoding of the ones that would land on top of each other.
+                let k = cell_of(at);
+                if k == held {
+                    continue;
+                }
+                held = k;
+                out.push(Shot {
+                    jpeg: encode_jpeg(&frame, sar, width)?,
+                    time: at,
+                    kind: "I",
+                });
+                if out.len() >= most {
+                    break 'read;
+                }
+            }
         }
-        if spare.is_none() {
-            spare =
-                Some(Shot { jpeg: encode_jpeg(&frame, sar, width)?, time: when(&frame), kind });
-        }
+        Ok(out)
     }
-    spare.ok_or_else(|| match landing {
-        Landing::Fraction(into) => anyhow!("no picture {:.0}% into {spec}", into * 100.0),
-        Landing::At(at) => anyhow!("no picture at {at:.3}s in {spec}"),
-    })
 }
 
 /// The latest access point at or before `time`, so the decode has references.

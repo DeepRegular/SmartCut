@@ -387,7 +387,7 @@ It comes up in three stages now, and each one waits only for what it actually ne
 
 | Stage | Waits for | Brings |
 |---|---|---|
-| 1 | `open_outline` (thirty milliseconds) | Length, size, rate, sound, codec; the timeline, the scrubber, the cards, the marks, **cutting itself**, the track list and commercial detection. The stage's picture comes from `glimpse`, an approximate seek |
+| 1 | `open_outline` (thirty milliseconds) | Length, size, rate, sound, codec; the timeline, the scrubber, the cards, the marks, **cutting itself**, the track list and commercial detection. The stage's picture comes from `glimpse` and the film strip's from `glimpses`, both approximate seeks |
 | 2 | The walk (a second a gigabyte) | The lossless points, snapping, a GOP-divided filmstrip, exact stage pictures, the plan, playback |
 | 3 | The picture pass (four seconds a gigabyte) | The filmstrip's pictures, the scenes, the hover |
 
@@ -400,6 +400,58 @@ during the walk came out as sixteen re-encoded frames, 99.9% lossless.
 **Only two things are switched off in stage one.** 無劣化点へ吸着 has nothing to snap to,
 and 再生 decodes continuously, so an approximate seek gives it no reliable start. Nothing
 else waits.
+
+**The film strip fills in stage one as well, and its own shape says how far to trust it.**
+There are no access points to divide the reel on yet, so it is cut on an even grid
+(`evenCells`) and every cell is filled by the seek the stage is already using — one open
+for the whole reel (`glance_run`), not one per cell. A landing is the entry point at or
+before the instant asked for, which on broadcast material is 0.31s away at the median and
+0.56s at the worst: **one GOP.** So a landing is put under the cell it fell in rather than
+under the cell that asked for it, and where two landings fall in one cell the second is
+dropped rather than moved. That is the whole difference between a strip that fills and one
+that does not — at `GOP・6 秒`, four cells of eleven under "the cell that asked keeps it"
+against nine under "the cell it landed in keeps it".
+
+**What a seek per cell cannot do is fill two cells that lie between the same pair of entry
+points.** One ask, one picture, and the other cell stays black — which is where the gaps in
+a stage-one strip come from, and it is entirely a question of the cell's width against the
+recording's own spacing. So there is a second way: **read the reel through**
+(`glance_sweep`), one seek and a straight decode, which finds *every* entry point in the
+stretch. It costs in proportion to the stretch rather than to the number of cells, so it is
+only tried on a reel short enough to read (`SWEEP_MAX`, eight seconds) and only kept where
+it comes back with the reel full bar a cell.
+
+| Span | A cell covers | Filled, seeking | Filled, reading through | Seeks | Read through |
+|---|---|---|---|---|---|
+| `GOP・3 秒` | 0.27s | 51% | 54% | 0.11s | 0.17s |
+| `GOP・6 秒` | 0.55s | 84% | **100%** | 0.10s | 0.32s |
+| `GOP・30 秒` | 2.73s | 100% | 100% | 0.11s | 1.5s |
+| `GOP・3 分` | 16.36s | 100% | — | 0.10s | 6.8s |
+
+*Eleven cells of a 28-minute MPEG-2 recording; `examples/glancecost.rs`, which measures this
+on any recording and reports why each unfilled cell was unfilled. The times are what a warm
+cache and a quiet machine give and vary by half as much again either way; what does not vary
+is the ratio between the columns.*
+
+**Which way a span gets is settled by trying it, once, on that span.** The numbers above are
+a property of the recording as much as of the setting, and there is no way to know a
+recording's GOP length before the walk. So the seeks go first, being cheap and all a wide
+reel needs; a reel they leave gaps in is read through, and if that comes back full the span
+is read through from then on. Where it does not — a disc whose entry points run from 0.067s
+to 0.801s apart leaves cells nothing can fill, and `GOP・3 秒` asks for two cells per GOP —
+the reading is not repeated: those gaps belong to the recording, and the walk is about to
+close them anyway. A span neither way fills half of is dropped altogether.
+
+What comes back is kept under **the picture's own instant** rather than under the instant
+asked for, which is what lets the two ways share one store and what makes scrubbing back
+over a stretch free: the grid stands on the recording's clock rather than on the playhead,
+so it comes back asking about the very same pictures.
+
+**The cell's caption and its click follow the picture, not the instant asked for.** The
+reel is a ruler and its marks stay evenly spaced, but what a cell says underneath it is
+when the picture over it actually is. The stage has always worked this way — the frame
+counter follows the picture that came back — and the strip agreeing with it is what keeps
+a click landing where it looked.
 
 **The track list and the detection turned out not to need the wait at all.** Both were
 shaped as "read the recording through the opened `Source`", which is what held them back —

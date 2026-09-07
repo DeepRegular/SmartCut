@@ -230,7 +230,7 @@ three stages.
 
 | When | What becomes available |
 |---|---|
-| **The moment it opens** (30 ms) | Length, resolution, fps, scan type, audio, codec; the timeline, the scrubber, keyframes, **cutting itself**, tracks, commercial detection. The preview is a picture found by approximate seek |
+| **The moment it opens** (30 ms) | Length, resolution, fps, scan type, audio, codec; the timeline, the scrubber, keyframes, **cutting itself**, tracks, commercial detection. The preview and the filmstrip are pictures found by approximate seek |
 | **When the walk finishes** (about 1 s per GB) | How many lossless points there are, `Snap to lossless`, the GOP-by-GOP filmstrip, a frame-accurate preview, the export plan, playback |
 | **When the thumbnails are built** (about 4 s per GB) | The pictures in the filmstrip, scene changes, the scrubber's hover preview |
 
@@ -248,8 +248,21 @@ up.
 
 The band underneath shows how far it has got. While it reads `Reading the
 recording. What copies losslessly is known once it has been read`, you are in the
-first stage: the filmstrip is still empty and `Snap to lossless` is greyed out, but
-the preview is there and you can already make cuts.
+first stage: `Snap to lossless` is greyed out, but the preview is there, the
+filmstrip has pictures in it, and you can already make cuts.
+
+**The first stage's filmstrip is approximate, and says so by what it leaves out.**
+With nothing read yet there are no lossless points to divide the strip on, so its cells
+are cut on an even grid and filled with pictures found by the same approximate seek the
+preview uses. A cell takes a picture only if it belongs to the stretch that cell covers,
+so how much of the strip fills depends on how much time a cell covers against how often
+the recording carries a picture that can be found this way: at `GOP / 6 s` and wider,
+all or nearly all of it; at `GOP / 3 s`, where a cell is shorter than the gap between
+two such pictures, about half. The rest stay black until the walk finishes.
+
+Each cell is captioned with the time of the picture actually in it rather than with the
+time the cell stands for, so the captions can step unevenly and what you click is what
+you were looking at. Both settle down the moment the walk lands.
 
 ### What is where
 
@@ -592,7 +605,7 @@ it straight into a bug report.
 | **Dropping a file does nothing** | Check the extension (`.ts` `.m2ts` `.mts` `.m2t` `.mp4` `.mkv` `.mov` `.m4v` `.vob` `.mpg` `.mpeg` `.m2p`). A folder brings in the supported files inside it, and nothing else |
 | **"Not connected to `\\nas\rec`"** | Open that share in your file manager first. SmartCut does not mount shares itself |
 | **The captions are not in the output** | Captions survive only into a `.ts`. Check the container in the output settings |
-| **The editor's picture is coarse, or slow to arrive** | It is still being read. The first stage's preview comes from an approximate seek; it becomes frame-accurate when the walk finishes, and the filmstrip fills in when the thumbnails are built (see [Usable the moment it opens](#usable-the-moment-it-opens)). The index is built the first time only |
+| **The editor's picture is coarse, or slow to arrive** | It is still being read. The first stage's preview and filmstrip come from approximate seeks; they become frame-accurate when the walk finishes, and the filmstrip fills in completely when the thumbnails are built (see [Usable the moment it opens](#usable-the-moment-it-opens)). The index is built the first time only |
 | **I want zero re-encoding** | Select the range and press `Snap to lossless`. If that does not do it, this material's cut points do not fall on access points |
 | **An unsupported codec or track layout** | See [known limits](../technical/validation.md#known-limitations) |
 

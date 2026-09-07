@@ -696,6 +696,72 @@ async fn glimpse(path: String, time: f64, width: u32) -> Result<Shot, String> {
     .await
 }
 
+/// Pictures for the film strip, out of a recording nothing has been read of.
+///
+/// The strip's answer while the walk is still running, and approximate for
+/// the same reason [`glimpse`] is: with no access points there is nothing to
+/// seek by but the container's own guess. Each shot carries the instant it
+/// actually landed on, which is the whole of what makes it usable -- the
+/// window puts a picture under the cell it landed in rather than under the
+/// cell that asked for it, and captions that cell with the instant it came
+/// back with. A time nothing could be decoded near comes back empty rather
+/// than shifting the rest along.
+///
+/// One open for the lot, rather than the open apiece [`glimpse`] would cost.
+/// The walk is reading the same recording while this runs, and over a share
+/// that is the difference between a strip that fills and a walk that stalls.
+#[tauri::command]
+async fn glimpses(path: String, times: Vec<f64>, width: u32) -> Result<Vec<Option<Shot>>, String> {
+    if times.is_empty() {
+        return Ok(Vec::new());
+    }
+    off_thread(move || {
+        let shots = smartcut_core::glance_run(&path, &times, width).map_err(|e| e.to_string())?;
+        Ok(shots
+            .into_iter()
+            .map(|o| {
+                o.map(|s| Shot { url: as_url(&s.jpeg), time: s.time, kind: s.kind.to_string() })
+            })
+            .collect())
+    })
+    .await
+}
+
+/// Every entry picture in a stretch of a recording nothing has been read of.
+///
+/// The other way of filling the strip before the walk, for a reel drawn so
+/// close in that the whole of it is a few seconds of the recording. [`glimpses`]
+/// answers each cell with the entry point at or before it, which leaves a gap
+/// wherever two cells fall between the same pair of entry points; this reads
+/// the stretch through and finds every one of them, so a cell is empty only
+/// where the recording genuinely has nothing to put in it.
+///
+/// Dear in proportion to the stretch -- it decodes what lies between the entry
+/// points and throws it away -- so the window asks for this only while the
+/// reel is short, and only where it has seen it fill cells the seeks could
+/// not. See `fillByGlance`.
+#[tauri::command]
+async fn glimpse_sweep(
+    path: String,
+    from: f64,
+    to: f64,
+    width: u32,
+    // Named as the window names it: an argument is looked up in the call by
+    // this very ident, so a synonym here is a call that never arrives.
+    cell: f64,
+    most: usize,
+) -> Result<Vec<Shot>, String> {
+    off_thread(move || {
+        let shots = smartcut_core::glance_sweep(&path, from, to, width, cell, most)
+            .map_err(|e| e.to_string())?;
+        Ok(shots
+            .into_iter()
+            .map(|s| Shot { url: as_url(&s.jpeg), time: s.time, kind: s.kind.to_string() })
+            .collect())
+    })
+    .await
+}
+
 /// Where seek indexes are kept.
 fn index_dir(app: &tauri::AppHandle) -> Result<std::path::PathBuf, String> {
     let dir = app
@@ -3288,6 +3354,8 @@ pub fn run() {
             open_source,
             open_outline,
             glimpse,
+            glimpses,
+            glimpse_sweep,
             detect_cm,
             thumbs_at,
             preview,

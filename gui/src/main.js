@@ -866,11 +866,10 @@ function markHere(o) {
 /// would drift off the picture it is meant to be standing on.
 function gopCells(o, span, slots, vis) {
   const n = gops.length;
-  // Before the walk there are no boundaries to divide on, so the reel is cut
-  // on an even grid instead: the same cells at the same widths, standing for
-  // stretches of time rather than for runs of GOPs. It reads the same and it
-  // scrolls the same; what it cannot do is show where a cut would be free,
-  // and neither can anything else until the points arrive.
+  // A recording with nothing in it to divide on. The reel is cut on an even
+  // grid instead -- the same cells at the same widths, standing for stretches
+  // of time rather than for runs of GOPs. See `refreshStrip`, which sends
+  // every unwalked recording the same way.
   if (!n) return evenCells(o, span, slots, vis);
   // the GOP the playhead is standing in
   let i0 = 0;
@@ -968,6 +967,205 @@ function evenCells(o, span, slots, vis) {
   return cells;
 }
 
+/// Pictures found before the walk, keyed by their own instant in milliseconds.
+///
+/// By the picture's instant rather than by the instant asked for, because the
+/// two are not the same and because two ways of asking share this: a seek per
+/// cell (`glimpses`) and a read through the whole reel (`glimpse_sweep`). What
+/// a cell wants to know is "is there a picture from inside me", and that is a
+/// question about where the pictures are.
+const glances = new Map();
+/// What has already been asked for, so that a strip redrawn where it stood
+/// does not pay for it twice: `a<ms>` for a cell's own seek, `s<ms>-<ms>` for
+/// a stretch read through. The grid the cells are cut on before the walk
+/// stands on the recording's own clock rather than on the playhead, so
+/// scrubbing back over a stretch asks for the very same things again.
+const asked = new Set();
+/// How each span turned out to be worth filling, once it has been tried:
+///
+///   * `seek`  -- a seek per cell fills it as well as anything will
+///   * `sweep` -- reading the reel through fills cells the seeks cannot, and
+///                the reel is short enough for that to be worth doing
+///   * `off`   -- neither fills enough of the reel to be worth the decodes
+///
+/// Kept per span because it is the *cell's* width against the recording's own
+/// spacing that decides all three, and the menu is what sets the cell width.
+const ways = new Map();
+/// How many pictures to keep. They are 200px JPEGs, so a few hundred is a
+/// megabyte or two, and the walk is over long before that fills.
+const GLANCE_KEEP = 400;
+/// The most of the recording worth reading through to fill one reel. Beyond
+/// this the read costs more than the gaps are worth: measured on broadcast
+/// material, a reel covering 6s reads through in a third of a second and one
+/// covering 30s in a second and a half. See `examples/glancecost.rs`.
+const SWEEP_MAX = 8;
+
+function forgetGlances() {
+  glances.clear();
+  asked.clear();
+  ways.clear();
+}
+
+/// Draw the reel, and fill it with what can be found without the walk.
+///
+/// Two ways of finding a picture, and which one a span gets is settled by
+/// trying them on it. Both are approximate in the same way -- with no access
+/// points to seek by, the container's own seek lands on the entry point at or
+/// before the instant asked for, a GOP out -- so **a picture goes under the
+/// cell it fell in, not under the cell that asked for it**, and the caption
+/// and the click follow the picture rather than the instant. The cell keeps
+/// its place and its width: the strip is a ruler, and a ruler with uneven
+/// marks is worse than a blank one.
+///
+/// **A seek per cell** (`glimpses`) is the cheap way and is all a wide reel
+/// needs. What it cannot do is fill two cells that fall between the same pair
+/// of entry points: one ask, one picture, and the other cell stays black. At
+/// `GOP・30 秒` a cell is five GOPs wide and that never happens; at
+/// `GOP・6 秒` it happens to one cell in eight; at `GOP・3 秒` a cell is half
+/// a GOP wide and there are only pictures enough for half of them.
+///
+/// **A read through the reel** (`glimpse_sweep`) answers with every entry
+/// point in it, so the only empty cells left are the ones the recording has
+/// nothing for. It costs in proportion to the stretch -- three times the
+/// seeks over six seconds of broadcast material, fifteen times over thirty --
+/// so it is only tried on a reel short enough to be worth reading, and only
+/// kept where it fills the reel bar a cell. Anything less and the gaps are
+/// the material's, not the method's, and reading it again would not close
+/// them.
+///
+/// A span that neither way fills half of is not asked about again until the
+/// span changes or the walk lands.
+async function fillByGlance(shots, cells, unit, win, span) {
+  const way = ways.get(span);
+  if (way === "off" || !src) {
+    renderStrip(shots, unit, win);
+    return;
+  }
+  const idx = cells.map((c, i) => (c.live ? i : -1)).filter((i) => i >= 0);
+  const key = (t) => Math.round(t * 1000);
+  const keep = (g) => g && glances.set(key(g.time), { url: g.url, time: g.time });
+
+  /// Put the pictures now in hand onto the reel, and say how many cells that
+  /// filled. Run after every answer, and once before the first, so that a
+  /// redraw blanks only the cells it has never had a picture for.
+  ///
+  /// Earliest first, so that a cell holding two of them shows the one its
+  /// stretch begins with -- which is what the strip shows once the walk has
+  /// landed, and keeps the two from disagreeing.
+  const place = () => {
+    let filled = 0;
+    const taken = new Array(cells.length).fill(false);
+    const held = [...glances.values()].sort((a, b) => a.time - b.time);
+    for (const g of held) {
+      const at = srcToOut(g.time);
+      // A picture out of material the cuts took away belongs to nobody, and
+      // one from outside the drawn reel has no cell to go in.
+      if (at === null) continue;
+      const j = cells.findIndex((c) => c.live && at >= c.a - 1e-9 && at < c.b);
+      if (j < 0 || taken[j]) continue;
+      taken[j] = true;
+      shots[j].url = g.url;
+      shots[j].time = g.time;
+      shots[j].at = at;
+      filled++;
+    }
+    return filled;
+  };
+
+  const room = () => {
+    // Whatever is held is worth more than what is about to be asked for --
+    // the reel on screen is drawn from it -- but a session that scrubbed a
+    // recording end to end would fill memory with pictures it will never show
+    // again. Emptied wholesale rather than by age: the asks go with them, and
+    // pairing the two up is more bookkeeping than a rebuild costs.
+    if (glances.size <= GLANCE_KEEP) return;
+    glances.clear();
+    asked.clear();
+  };
+
+  let filled = place();
+  renderStrip(shots, unit, win);
+
+  // The cheap way. Skipped where the reel has already been found to want the
+  // thorough one, which finds everything this would and more.
+  if (way !== "sweep") {
+    // The middle of each cell rather than its edge. A landing lands at or
+    // before its ask, so asking on the edges would put half of them in the
+    // cell before the reel begins.
+    const times = idx.map((i) => outToSrc((cells[i].a + cells[i].b) / 2));
+    const want = times.filter((t) => !asked.has(`a${key(t)}`));
+    if (want.length) {
+      const token = ++stripToken;
+      let got;
+      try {
+        got = await invoke("glimpses", { path: src.path, times: want, width: 200 });
+      } catch (e) {
+        jlog(`glimpses: ${e}`);
+        return;
+      }
+      if (token !== stripToken) return;
+      room();
+      want.forEach((t, i) => {
+        asked.add(`a${key(t)}`);
+        keep(got[i]);
+      });
+      const after = place();
+      if (after > filled) renderStrip(shots, unit, win);
+      filled = after;
+    }
+  }
+
+  // The thorough way, on a reel short enough to read through. The stretch is
+  // the reel's own, in source time: a reel that walks over a cut covers two
+  // pieces of the recording and everything between them, which is why the
+  // length is measured here rather than taken from the menu.
+  const from = outToSrc(cells[idx[0]].a);
+  const to = outToSrc(cells[idx[idx.length - 1]].b);
+  const worth = to - from > 0 && to - from <= SWEEP_MAX;
+  const swept = way === "sweep" || (way === undefined && filled < idx.length && worth);
+  if (swept) {
+    const k = `s${key(from)}-${key(to)}`;
+    if (!asked.has(k)) {
+      const token = ++stripToken;
+      let got;
+      try {
+        got = await invoke("glimpse_sweep", {
+          path: src.path,
+          from,
+          to,
+          width: 200,
+          // How the reel is divided, so that a stretch carrying entry points
+          // ten to the cell is not encoded ten times over. Nothing to divide
+          // on where a cut falls inside the reel: the cells tile the *edited*
+          // timeline, and this stretch is a run of the recording.
+          cell: outRangeToSrc(cells[idx[0]].a, cells[idx[idx.length - 1]].b).length > 1 ? 0 : unit,
+          // Room well above one per cell: the thinning above is what keeps
+          // the count down, and this is only a ceiling.
+          most: idx.length * 3,
+        });
+      } catch (e) {
+        jlog(`glimpse_sweep: ${e}`);
+        return;
+      }
+      if (token !== stripToken) return;
+      room();
+      asked.add(k);
+      for (const g of got) keep(g);
+      const after = place();
+      if (after > filled) renderStrip(shots, unit, win);
+      filled = after;
+    }
+  }
+
+  if (way === undefined) {
+    // What this span is worth doing from now on. A reel that comes out full
+    // bar a cell is a strip; one that does not is as full as the recording
+    // will let it be, and reading it through again would only cost more.
+    const full = filled + 1 >= idx.length;
+    ways.set(span, swept && full ? "sweep" : filled * 2 >= idx.length ? "seek" : "off");
+  }
+}
+
 /// Draw a reel centred on `at`, or on the playhead when it is not given.
 async function refreshStrip(at) {
   if (!src || outDur <= 0) return;
@@ -984,17 +1182,25 @@ async function refreshStrip(at) {
   // slide across while playback runs
   const vis = Math.max(1, Math.ceil(el("strip").clientWidth / px));
   const slots = Math.max(vis + 1, Math.min(vis * overscan() + 1, MAX_CELLS));
-  const cells = gopCells(o, view.span, slots, vis);
+  // Before the walk there are no access points to divide the reel on, so it
+  // is cut on an even grid instead. Asked here rather than inside `gopCells`,
+  // which cannot tell the difference: `gops` carries the start of every
+  // surviving segment whether the walk has been over the recording or not, so
+  // an unwalked recording arrives there looking like one with a single
+  // boundary at zero -- and a reel cut on that is one cell wide.
+  const cells = walked()
+    ? gopCells(o, view.span, slots, vis)
+    : evenCells(o, view.span, slots, vis);
   const live = cells.filter((c) => c.live);
   if (!live.length) return;
 
-  // Nothing to ask for yet: the pictures are made by a pass that has not
-  // started, and before the walk there is not even an opened recording to
-  // decode one out of. The reel is drawn anyway, empty -- which is what its
-  // cells look like for any stretch the pass has not reached, so the strip
-  // fills in rather than appearing.
+  // Before the walk there are no held pictures and no opened recording to
+  // decode an exact one out of. What there is is the container's own seek,
+  // which is what the stage has been drawing with all along -- so the reel is
+  // drawn as it stands, and filled with what that seek can reach. See
+  // `fillByGlance`.
   if (!walked()) {
-    const empty = cells.map((c) => ({
+    const shots = cells.map((c) => ({
       url: null,
       time: null,
       at: c.live ? c.at : c.a,
@@ -1003,11 +1209,9 @@ async function refreshStrip(at) {
       px,
     }));
     const mid = live[live.length >> 1];
-    renderStrip(empty, mid.b - mid.a, {
-      vis: vis * (mid.b - mid.a),
-      rest: o,
-      byNearest: false,
-    });
+    const unit = mid.b - mid.a;
+    const win = { vis: vis * unit, rest: o, byNearest: false };
+    await fillByGlance(shots, cells, unit, win, view.span);
     return;
   }
   const times = live.map((c) => outToSrc(c.at));
@@ -1895,8 +2099,13 @@ async function openPath(picked, saved, side, name, chapters, dropPids) {
     paintSourceInfo();
     stripCache = null;
     stripShots = [];
+    forgetGlances();
     shownTime = -1;
     hideHover();
+    // What the line under the strip says is about a recording that has been
+    // read through, so on the way into another one it is about the wrong
+    // recording. `prepare` writes it again on the far side of the walk.
+    el("warm").textContent = "";
     rebuildTimeline();
     el("undo-cut").disabled = true;
     el("cm-note").textContent = cmSummary;
@@ -1955,6 +2164,9 @@ async function pointsArrived(exact, picked) {
   renderKeyframes();
   stripCache = null;
   stripShots = [];
+  // The pictures they hold are approximate, and there is now an exact answer
+  // for every one of them.
+  forgetGlances();
   shownTime = -1;
   draw();
   scheduleStrip();
