@@ -251,14 +251,13 @@ recording. What copies losslessly is known once it has been read`, you are in th
 first stage: `Snap to lossless` is greyed out, but the preview is there, the
 filmstrip has pictures in it, and you can already make cuts.
 
-**The first stage's filmstrip is approximate, and says so by what it leaves out.**
-With nothing read yet there are no lossless points to divide the strip on, so its cells
-are cut on an even grid and filled with pictures found by the same approximate seek the
-preview uses. A cell takes a picture only if it belongs to the stretch that cell covers,
-so how much of the strip fills depends on how much time a cell covers against how often
-the recording carries a picture that can be found this way: at `GOP / 6 s` and wider,
-all or nearly all of it; at `GOP / 3 s`, where a cell is shorter than the gap between
-two such pictures, about half. The rest stay black until the walk finishes.
+**The first stage's filmstrip is approximate, and fills in two goes.** With nothing read
+yet there are no lossless points to divide the strip on, so its cells are cut on an even
+grid. The pictures arrive first from the same approximate seek the preview uses -- quick,
+and on some recordings that leaves gaps -- and then from a read through the stretch the
+strip is showing, which fills what the seeks could not. A cell shows a picture only if it
+belongs to the stretch that cell covers, so a few cells at the left edge stay black, and
+at the closest setting on a recording with long GOPs a few more do.
 
 Each cell is captioned with the time of the picture actually in it rather than with the
 time the cell stands for, so the captions can step unevenly and what you click is what

@@ -179,5 +179,42 @@ fn main() -> Result<()> {
         "{:>7} {:>8} {:>8} {:>9} {:>9} {:>9}\n{costs}",
         "span", "median", "worst", "seeks", "sweep", "one by one"
     );
+
+    // What the walk says is there, which is what all of the above is an
+    // approximation of -- and the only way to tell "the sweep missed a
+    // picture" from "there was no picture to find". Behind a switch because
+    // it reads the whole recording, and everything above this is about not
+    // having to.
+    if std::env::var("SC_WALK").is_ok() {
+        let src = sc::scan(&path)?;
+        let pts: Vec<f64> = src.points.iter().map(|p| p.time).collect();
+        let mut gaps: Vec<f64> = pts.windows(2).map(|w| w[1] - w[0]).collect();
+        let widest = gaps.iter().cloned().fold(0.0, f64::max);
+        println!(
+            "the walk: {} entry points, {:.3}s apart at the median, {:.3}s at the widest",
+            pts.len(),
+            median(&mut gaps),
+            widest
+        );
+        // And over one reel: what is really there against what a read through
+        // it came back with.
+        for span in [6.0, 30.0] {
+            let step = span / cells as f64;
+            let at = o.duration / 2.0;
+            let starts = even_cells(at, step, cells, o.duration);
+            let (a, b) = (starts[0], starts[starts.len() - 1] + step);
+            let there = pts.iter().filter(|&&t| t >= a && t < b).count();
+            let found = sc::glance_sweep(&path, a, b, 200, step, cells * 3)?.len();
+            let cellsful = starts
+                .iter()
+                .filter(|&&c| pts.iter().any(|&t| t >= c && t < c + step))
+                .count();
+            println!(
+                "  {span:>4.0}s reel {a:.1}-{b:.1}s: {there} entry points in it, {cellsful} of \
+                 {} cells have one, the sweep came back with {found}",
+                starts.len()
+            );
+        }
+    }
     Ok(())
 }

@@ -422,26 +422,36 @@ dropped rather than moved. That is the whole difference between a strip that fil
 that does not — at `GOP・6 秒`, four cells of eleven under "the cell that asked keeps it"
 against nine under "the cell it landed in keeps it".
 
-**What a seek per cell cannot do is fill two cells that lie between the same pair of entry
-points.** One ask, one picture, and the other cell stays black — which is where the gaps in
-a stage-one strip come from, and it is entirely a question of the cell's width against the
-recording's own spacing. So there is a second way: **read the reel through**
-(`glance_sweep`), one seek and a straight decode, which finds *every* entry point in the
-stretch. It costs in proportion to the stretch rather than to the number of cells, so it is
-only tried on a reel short enough to read (`SWEEP_MAX`, eight seconds) and only kept where
-it comes back with the reel full bar a cell.
+**What a seek per cell cannot do is answer a cell the recording has no entry point in.**
+A seek can only land on one, so two cells lying between the same pair of entry points share
+a single answer and one of them stays black — and a cell narrower than the GOP cannot be
+answered at all. That is where the gaps in a stage-one strip come from, and it is entirely
+a question of the cell's width against the recording's own spacing: half a second between
+entry points on most broadcast material, **a whole second on some stations**, against cells
+0.55s wide at the default setting and 0.27s at the closest.
 
-| Span | A cell covers | Filled, seeking | Filled, reading through | Seeks | Read through |
+So there is a second way: **read the reel through** (`glance_sweep`), one seek and a straight
+decode, keeping **the first picture in each cell whatever its kind**. Every cell of the reel
+is answered that way, whatever the GOP length. Taking any picture rather than only the entry
+ones is free — they are decoded either way, on the path to the ones that were wanted — and
+it is no less honest, because a strip drawn before the walk cannot say where a cut is free
+in any case. What a cell promises is a picture out of the stretch it covers.
+
+| Span | A cell covers | Seeking, 0.5s GOPs | Reading | Seeking, 1.0s GOPs | Reading |
 |---|---|---|---|---|---|
-| `GOP・3 秒` | 0.27s | 51% | 54% | 0.11s | 0.17s |
-| `GOP・6 秒` | 0.55s | 84% | **100%** | 0.10s | 0.32s |
-| `GOP・30 秒` | 2.73s | 100% | 100% | 0.11s | 1.5s |
-| `GOP・3 分` | 16.36s | 100% | — | 0.10s | 6.8s |
+| `GOP・3 秒` | 0.27s | 51% | 93% | 21% | 81% |
+| `GOP・6 秒` | 0.55s | 84% | **100%** | 54% | **96%** |
+| `GOP・30 秒` | 2.73s | 100% | — | 100% | — |
+| `GOP・3 分` | 16.36s | 100% | — | 100% | — |
 
-*Eleven cells of a 28-minute MPEG-2 recording; `examples/glancecost.rs`, which measures this
-on any recording and reports why each unfilled cell was unfilled. The times are what a warm
-cache and a quiet machine give and vary by half as much again either way; what does not vary
-is the ratio between the columns.*
+*Eleven cells of two half-hour MPEG-2 recordings, one carrying an entry point every half
+second and one every whole second; `examples/glancecost.rs`, which measures this on any
+recording and reports why each unfilled cell was unfilled (`SC_WALK=1` adds what the walk
+says is really there). A reel reads through in 0.17s at `GOP・3 秒` and 0.31s at
+`GOP・6 秒` against 0.11s for the seeks, and in 1.4s at `GOP・30 秒` — which is why reading
+is only done on a reel covering at most `SWEEP_MAX`, eight seconds. What is left unfilled by
+the reading is the front of the reel: nothing is decoded until a key packet has arrived, so
+the first cells go without.*
 
 **Which way a span gets is settled by trying it, once, on that span.** The numbers above are
 a property of the recording as much as of the setting, and there is no way to know a

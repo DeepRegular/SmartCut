@@ -349,30 +349,37 @@ pub fn glance_run(spec: &str, times: &[f64], width: u32) -> Result<Vec<Option<Sh
     Ok(times.iter().map(|&t| g.at(Landing::At(t), width).ok()).collect())
 }
 
-/// Every entry picture between two instants, out of one seek and one read.
+/// One picture out of each cell of a stretch, from a single seek and a read.
 ///
 /// The other half of [`glance_run`], for a film strip drawn so close in that
-/// the whole reel is a few seconds of the recording. A seek per cell answers
-/// each cell with the entry point at or before it, so where two cells fall
-/// between the same pair of entry points one of them is answered twice and
-/// the other not at all -- and a reel three seconds wide over half-second
-/// GOPs is half gaps for that reason alone. Reading the stretch through
-/// instead hands back *every* entry point in it, so every cell that has one
-/// gets it.
+/// the whole reel is a few seconds of the recording. A seek can only land on
+/// an entry point, so a cell narrower than the recording's GOP cannot be
+/// answered by seeking at all: broadcast material carries an entry point
+/// every half second and some stations every whole second, against cells that
+/// are a quarter of a second wide at the strip's closest setting. Reading the
+/// stretch through decodes every picture in it, entry point or not, and **the
+/// first picture in each cell is kept** -- so every cell of the reel is
+/// answered, whatever the GOP length.
 ///
-/// Dearer per second of recording than a seek is -- this decodes the pictures
-/// between the entry points and throws them away -- and only worth it while
-/// the stretch is short. The caller picks; see `fillByGlance`.
+/// Taking any picture rather than only the entry ones is free: they are
+/// decoded either way, on the path to the ones that are wanted. And it is no
+/// less honest, because a strip drawn before the walk cannot say where a cut
+/// is free in any case -- what a cell promises is a picture out of the stretch
+/// it covers, and that is what this gives it. The picture's own kind comes
+/// back alongside for a caller that cares.
 ///
-/// `cell` is how the caller has divided the stretch up: a picture landing in
-/// the same cell as the one before it is skipped, since the caller has nowhere
-/// to put a second one. A disc puts an entry point at every scene change, and
-/// on one of them they come as close as 0.067s apart -- a hundred and twenty
-/// pictures to encode across a reel with room for eleven. Zero keeps every
-/// one; `most` is the ceiling either way.
+/// Dear in proportion to the stretch rather than to the number of cells, so it
+/// is only worth asking for while the stretch is short. The caller picks; see
+/// `fillByGlance`.
+///
+/// `cell` is how the caller has divided the stretch up, and a picture landing
+/// in a cell already answered is skipped: the caller has nowhere to put a
+/// second one, and a disc puts an entry point at every scene change -- on one
+/// of them they come 0.067s apart, a hundred and twenty pictures across a reel
+/// with room for eleven. Zero divides the stretch into `most` of them instead.
 ///
 /// **Cells, not a minimum spacing.** Skipping a picture that came within some
-/// distance of the last one looks like the same thing and is not: entry points
+/// distance of the last one looks like the same thing and is not: pictures
 /// half a second apart, thinned to "no closer than 0.54s", come back one
 /// second apart -- and a strip whose cells are 0.6s wide is then empty every
 /// other cell, which is the very thing this is here to fix.
@@ -603,9 +610,8 @@ impl Glancer {
         let mut out: Vec<Shot> = Vec::new();
         // Which of the caller's cells the last answer went into.
         let mut held = i64::MIN;
-        let cell_of = |t: f64| {
-            if cell > 1e-9 { ((t - from) / cell).floor() as i64 } else { i64::MIN + 1 }
-        };
+        let wide = if cell > 1e-9 { cell } else { (to - from) / most as f64 };
+        let cell_of = move |t: f64| ((t - from) / wide).floor() as i64;
         let mut frame = ff::frame::Video::empty();
         // Nothing is fed to the decoder until a key packet has arrived: what
         // comes out before one references pictures the seek skipped past.
@@ -639,7 +645,7 @@ impl Glancer {
                 if at > to + 1e-6 {
                     break 'read;
                 }
-                if at < from - 1e-6 || kind_of(&frame) != "I" {
+                if at < from - 1e-6 {
                     continue;
                 }
                 // One picture per cell is all the caller can show, and the
@@ -653,7 +659,7 @@ impl Glancer {
                 out.push(Shot {
                     jpeg: encode_jpeg(&frame, sar, width)?,
                     time: at,
-                    kind: "I",
+                    kind: kind_of(&frame),
                 });
                 if out.len() >= most {
                     break 'read;
