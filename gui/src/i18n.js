@@ -316,6 +316,7 @@ const CATALOG = {
     "editor.counter": "{at} / {all}   {t}",
     "editor.frameKind": "{kind} フレーム",
     "editor.frameKindPoint": "{kind} フレーム — 無劣化点",
+    "editor.frameKindNear": "{kind} フレーム — 近くの絵（解析中）",
     "editor.previewFailed": "プレビュー失敗: {e}",
     "editor.stripHint":
       "クリックで移動／<b>右ドラッグ</b>で前後にサーチ（右へ＝送り・左へ＝戻し）／中クリックで次のシーン／ホイールで 1 フレーム送り（Shift で GOP 単位）／Space で再生",
@@ -708,6 +709,7 @@ const CATALOG = {
     "editor.counter": "{at} / {all}   {t}",
     "editor.frameKind": "{kind} frame",
     "editor.frameKindPoint": "{kind} frame — lossless point",
+    "editor.frameKindNear": "{kind} frame — nearest picture, still reading",
     "editor.previewFailed": "Preview failed: {e}",
     "editor.stripHint":
       "Click to move  /  <b>right-drag</b> to search back and forth (right = forwards, left = back)  /  middle-click for the next scene  /  wheel steps a frame (Shift for a GOP)  /  Space plays",

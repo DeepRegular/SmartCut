@@ -612,16 +612,41 @@ async function showFrame(t) {
     // Snap to the picture that actually came back, so the frame counter and
     // the picture never disagree. They would under 2:3 pulldown, where the
     // pictures do not sit on the 29.97 fps grid the playhead moves along.
-    if (srcToOut(shot.time) !== null) playhead = shot.time;
+    //
+    // **Only where the picture is the frame that was asked for**, which is to
+    // say only once the walk has found the access points. Before that the
+    // stage is filled by `glimpse`, and a glimpse lands on an entry point
+    // near the instant rather than on it: measured a hundred seconds into
+    // four recordings, five to fifteen frames past the frame asked for on
+    // broadcast material and thirty-nine on the one with the longest GOPs.
+    //
+    // Snapping the pointer onto that is what stepping a frame at a time ran
+    // into during the walk. Forward, the press asked for one frame on, got
+    // the entry point a GOP further on and moved the pointer *there*, so a
+    // press was fifteen frames and the press after it another fifteen. Back
+    // was worse: the entry point nearest the frame behind is the same one
+    // ahead, so the button that means "one frame back" went forwards.
+    //
+    // So during the walk the pointer keeps the frame it was moved to and the
+    // stage carries the nearest picture there is, which the overlay says in
+    // as many words. `pointsArrived` asks again for the frame the pointer is
+    // really on, and from there the two agree exactly.
+    const exact = walked();
+    if (exact && srcToOut(shot.time) !== null) playhead = shot.time;
     updateReadouts();
     draw();
     el("preview").src = shot.url;
     shownTime = shot.time;
+    const onPoint = exact && atPoint(shot.time);
     el("ovl-kind").textContent = tr(
-      atPoint(shot.time) ? "editor.frameKindPoint" : "editor.frameKind",
+      onPoint
+        ? "editor.frameKindPoint"
+        : exact
+          ? "editor.frameKind"
+          : "editor.frameKindNear",
       { kind: shot.kind }
     );
-    el("ovl-kind").className = atPoint(shot.time) ? "key" : "";
+    el("ovl-kind").className = onPoint ? "key" : "";
   } catch (e) {
     if (token === previewToken) el("status").textContent = tr("editor.previewFailed", { e });
   }

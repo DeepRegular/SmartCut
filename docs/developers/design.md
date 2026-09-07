@@ -411,6 +411,20 @@ during the walk came out as sixteen re-encoded frames, 99.9% lossless.
 and 再生 decodes continuously, so an approximate seek gives it no reliable start. Nothing
 else waits.
 
+**The pointer steps by frames in stage one; the picture under it does not.** `showFrame`
+snaps the playhead onto the instant the picture that came back turned out to be at, so that
+the counter and the picture can never disagree — and **that snap is only made once the walk
+has been over the recording**. Before it, the stage is filled by a container seek
+(`glimpse`), which lands on an entry point near the instant rather than on it: measured a
+hundred seconds into four recordings, five to fifteen frames past the frame asked for on
+broadcast material and thirty-nine on the one with the longest GOPs. Snapping to that turned
+every press of 1 フレーム送り into a jump of a GOP — six presses during the walk landed on
+frame 49 instead of frame 6 — and 1 フレーム戻る went *forwards*, because the entry point
+nearest the frame behind is the same one ahead. So during the walk the pointer keeps the
+frame it was moved to, the stage carries the nearest picture there is, and the overlay says
+which it is (「I フレーム — 近くの絵（解析中）」). `pointsArrived` asks again for the frame the
+pointer is really on, and from there the two agree exactly.
+
 **The film strip fills in stage one as well, and its own shape says how far to trust it.**
 There are no access points to divide the reel on yet, so it is cut on an even grid
 (`evenCells`) and every cell is filled by the seek the stage is already using — one open
