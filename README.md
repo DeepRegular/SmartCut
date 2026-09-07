@@ -46,6 +46,14 @@ station name, both tracks of a bilingual broadcast, interlacing, 2:3 pulldown an
 the original PID layout are all preserved. The output still looks like a recording,
 so it opens in the tools you already use for recordings.
 
+**A night's cuts can leave as a disc.** Not only as files: SmartCut writes a
+BDAV folder — the shape a recorder writes to a BD-RE — with each programme
+under the name it went out under, the channel it came off, the night it was
+recorded, what the broadcaster said it was about, and a chapter point at every
+place a commercial break was taken out. A recording read off a disc keeps
+everything its playlist said; a broadcast recording is read for its own
+programme information. See [Writing a disc](docs/developers/bdav.md).
+
 **Commercial breaks are found for you.** SmartCut combines three independent
 signals: the break marks the broadcaster puts in its own subtitle stream, runs of
 silence, and whether the station logo is on screen. It places the marks; you decide
@@ -89,11 +97,11 @@ Every build except the `.deb` bundles FFmpeg, so there is nothing else to instal
 
 | Platform | File | Notes |
 |---|---|---|
-| **Linux** | `SmartCut_0.4.1_amd64.AppImage` | Make it executable and run it |
-| **Linux** | `SmartCut-0.4.1-linux-x86_64.tar.gz` | Unpack and run `./smartcut`. Use this if you would rather not deal with FUSE |
-| **Linux (Debian/Ubuntu)** | `smartcut_0.4.1_amd64.deb` | `sudo apt install ./smartcut_0.4.1_amd64.deb`. Only 3.2 MB, because it links against your system FFmpeg |
-| **Windows** | `SmartCut_0.4.1_x64-setup.exe` | Installer |
-| **Windows** | `smartcut-portable-x64-0.4.1.zip` | Unzip and run `smartcut.exe` |
+| **Linux** | `SmartCut_0.5.0_amd64.AppImage` | Make it executable and run it |
+| **Linux** | `SmartCut-0.5.0-linux-x86_64.tar.gz` | Unpack and run `./smartcut`. Use this if you would rather not deal with FUSE |
+| **Linux (Debian/Ubuntu)** | `smartcut_0.5.0_amd64.deb` | `sudo apt install ./smartcut_0.5.0_amd64.deb`. Only 3.2 MB, because it links against your system FFmpeg |
+| **Windows** | `SmartCut_0.5.0_x64-setup.exe` | Installer |
+| **Windows** | `smartcut-portable-x64-0.5.0.zip` | Unzip and run `smartcut.exe` |
 
 **Requirements.** The AppImage and the tar.gz need glibc 2.39 or newer, which
 means Ubuntu 24.04, Debian 13, Fedora 40 or later. The `.deb` needs FFmpeg 7.1,
@@ -163,6 +171,8 @@ smartcut input.ts --analyze                   # show the plan, write nothing
 
 smartcut input.ts --analyze --detect-cm --logo  # list the commercial candidates
 smartcut input.ts --analyze --scenes            # list the scene changes
+
+smartcut input.ts --cut 8.0-20.0 --bdav ~/disc  # onto a disc rather than into a file
 ```
 
 `--keep` and `--cut` can be repeated, and accept `1:23:45.6` as well as plain
@@ -182,8 +192,10 @@ first. The cut is written as a transport stream: putting it back into a DVD's ow
 shape would mean writing VOBUs, navigation packs and a rewritten `.IFO`, and
 SmartCut writes none of those.
 
-**Output containers:** MPEG-TS, M2TS, MP4, Matroska, QuickTime. By default the
-output uses the same container and directory as the input.
+**Output containers:** MPEG-TS, M2TS, MP4, Matroska, QuickTime — or a **BDAV
+disc**, a folder of recordings with an index a player reads as a list of
+programmes. By default the output uses the same container and directory as the
+input.
 
 **Video:** H.264, HEVC, MPEG-2, MPEG-4 Part 2, VC-1. Interlaced material stays
 interlaced, and 2:3 pulldown is handled on a field-level timeline. VP9 and AV1 are

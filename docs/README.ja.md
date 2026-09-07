@@ -36,3 +36,4 @@
 | [ビルド](developers/building.ja.md) | 必要なライブラリ、ビルド方法、テストの走らせ方 |
 | [配布](developers/distribution.ja.md) | AppImage・tar.gz・deb と Windows インストーラ、それぞれが何を同梱しているか |
 | [ディスクを読む](developers/disc.ja.md) | Blu-ray（BDAV / BDMV）と DVD-Video を、フォルダーからも `.iso` からも読む方法。UDF、IFO のテーブル、ARIB のテキスト、クリップごとの一覧、選択ダイアログ |
+| [ディスクを書く](developers/bdav.ja.md) | 一晩ぶんのカットを BDAV フォルダーとして書き出す。到着時刻、エントリーポイントマップ、番組名の出どころ、意味が分からないので実物から写した欄 |

@@ -91,7 +91,8 @@ let nextId = 1;
 /// A path for a file, one of those for a recording on a disc, and a saved row
 /// out of a project, which is the same shape written down.
 function makeClip(found) {
-  const { path, name, stem, home, chapters, dropPids } =
+  const { path, name, stem, home, chapters, dropPids, made, description, channel,
+          channelNumber, programme } =
     typeof found === "string" ? { path: found } : found;
   return {
     // A row's own identity, which its path is not: the same recording can be
@@ -124,6 +125,23 @@ function makeClip(found) {
     /// editor would be switched off again on the way out by an answer given
     /// before anybody had seen the recording.
     dropPids: dropPids || [],
+    /// What the disc this came off said about the recording: when it was
+    /// made, as `2026-08-17 01:00:00`, what it was about, and the channel it
+    /// came off with the three digits a viewer knows that channel by. Null
+    /// for a file, whose own answer is in the recording and is asked for
+    /// when it is needed -- see `programmeOf`.
+    made: made || null,
+    description: description || null,
+    channel: channel || null,
+    channelNumber: channelNumber || 0,
+    /// What to call this recording in a disc's index, when the name it
+    /// arrived with is not the one wanted. Null until somebody types one,
+    /// which is the difference between "no answer yet" and "called nothing".
+    programme: programme === undefined ? null : programme,
+    /// What the recording itself says about its programme: the name, the
+    /// channel and when it went out. Null until asked, `{}` where the
+    /// recording says nothing -- which is not the same question.
+    said: null,
     info: null,
     /// What the container said about the recording, had for the cost of an
     /// open the moment the row was made. Everything the row's own line shows
@@ -537,6 +555,10 @@ function closeChooser(take) {
         stem: clip.stem,
         home: clip.home,
         chapters: clip.chapters,
+        made: clip.made,
+        description: clip.description,
+        channel: clip.channel,
+        channelNumber: clip.channel_number,
         dropPids: st.drop.slice(),
       }))
   );
@@ -1998,7 +2020,17 @@ function srcToOut(keeps, s) {
 // --- output settings ----------------------------------------------------
 
 const settings = {
+  /// Which of the two things a run produces: files, or a disc of recordings.
+  ///
+  /// One answer for the whole list, like every other setting on the screen:
+  /// a disc is one disc, and half a list written onto it and half beside it
+  /// is not something anybody asked for.
+  mode: "file",
   dir: "",
+  /// What the disc is called -- the name a recorder shows over the list of
+  /// what is on it. Only means anything in `bdav` mode; empty is filled in
+  /// from the first recording when the screen is drawn.
+  discTitle: "",
   prefix: "cut_",
   container: "",
   audio: "smart",
@@ -2048,12 +2080,13 @@ function sidecarBase(clip) {
 /// the second cut landing on top of the first. Counted off the list rather
 /// than fixed at the moment of duplication, so deleting one copy gives the
 /// survivor its plain name back.
-/// A `.m2ts` is a transport stream in Blu-ray's clothing: 192 byte packets
-/// and Blu-ray's own PID numbering, both of them the muxer's to decide. The
-/// tables a broadcast carries cannot be put back into one, so "the same as
-/// the input" means a `.ts` for a recording that came off a disc -- which is
-/// the same stream, in the shape the rest of this program is about. Asking
-/// for M2TS on the output settings screen still gets one.
+/// A `.m2ts` is a transport stream in Blu-ray's clothing: the same packets
+/// with four bytes of arrival time in front of each, and Blu-ray's own PID
+/// numbering. It carries everything a `.ts` carries, the recording's own
+/// tables included -- it is what a recording written onto a disc is -- but
+/// "the same as the input" still means a `.ts` for a recording that came off
+/// a disc, which is the shape the rest of this program is about. Asking for
+/// M2TS on the output settings screen still gets one.
 const TS_LIKE = ["m2ts", "mts", "m2t"];
 
 /// The other family that comes out as a transport stream, for a different
@@ -2075,6 +2108,10 @@ const PS_LIKE = ["vob", "mpg", "mpeg", "m2p"];
 const streamOf = (p) => p.replace(/@\d+-\d+$/, "");
 
 function containerFor(clip) {
+  // A disc's recordings are `.m2ts` whatever the recording arrived as, so
+  // that is what the audio has to be writable into -- which is not the same
+  // question as what an `.mp4` can hold.
+  if (bdavMode()) return "m2ts";
   if (settings.container) return settings.container;
   const ext = extOf(streamOf(clip.path));
   return TS_LIKE.includes(ext) || PS_LIKE.includes(ext) ? "ts" : ext || "mp4";
@@ -2128,6 +2165,7 @@ function showSettings() {
   renderOutScreen();
 }
 bindSetting("out-dir", "dir");
+bindSetting("out-disc-title", "discTitle");
 bindSetting("out-prefix", "prefix");
 bindSetting("out-container", "container");
 bindSetting("out-audio", "audio");
@@ -2929,6 +2967,130 @@ function audioSummary(clip, container) {
   return detail.length ? t("outset.audioLine", { mode, detail: detail.join(", ") }) : mode;
 }
 
+// --- what a disc's index will say ----------------------------------------
+//
+// A file's name is the whole of what a cut of a recording is called: put
+// `cut_2026年08月17日01時00分-BS11...ts` in a folder and everything about it
+// is on the row. A disc is not like that. Its streams are called `00001.m2ts`
+// and everything a person reads -- the programme, the night it went out, the
+// name of the disc itself -- is in the index beside them, which is a place
+// that has to be *filled in*.
+//
+// So the answer is gathered rather than derived. A recording read off a disc
+// arrived with the name and the moment its own playlist carried; a broadcast
+// recording carries them in its own tables and is asked. Either can be typed
+// over, because a name nobody can correct is a name that is wrong forever.
+
+/// Whether a disc is what this run will produce.
+///
+/// Written as a declaration rather than as a name bound to an arrow because
+/// the screen is drawn once on the way past this point in the file, and a
+/// name that is not bound yet is an error rather than a false.
+function bdavMode() {
+  return settings.mode === "bdav";
+}
+
+/// What the recording says about its own programme, asked once per clip.
+///
+/// Cheap -- it is a read of the first few megabytes -- but not free, and the
+/// answer cannot change while the file does not. `{}` for a recording that
+/// says nothing, so that "asked and it said nothing" is not asked again.
+async function askProgramme(clip) {
+  if (clip.said) return clip.said;
+  try {
+    clip.said = (await invoke("programme", { path: clip.path })) || {};
+  } catch {
+    clip.said = {};
+  }
+  return clip.said;
+}
+
+/// What a disc's index will call this recording.
+///
+/// In order: what somebody typed, what the disc it came off called it, what
+/// the broadcast says it is, and -- for a recording that has been through
+/// tools that kept none of that -- the name of the file, which is at least
+/// something a person chose once.
+function programmeOf(clip) {
+  if (clip.programme) return clip.programme;
+  if (clip.stem) return clip.name;
+  const said = clip.said || {};
+  return said.name || stemOf(clip.path);
+}
+
+/// And when it says the recording was made. The disc's answer first: it is
+/// the one a person has already seen in a list of recordings.
+function madeOf(clip) {
+  return clip.made || (clip.said || {}).made || null;
+}
+
+/// What the broadcaster said the programme was: the sentence a listing
+/// carries, and the cast and staff under it. A recorder writes this into the
+/// playlist beside the name, and shows it when the programme is selected.
+function descriptionOf(clip) {
+  return clip.description || (clip.said || {}).description || null;
+}
+
+/// The channel it came off, and the three digits a viewer knows that channel
+/// by -- 0 for a terrestrial recording, whose three digits are in a table
+/// this does not read. Field by field, so a disc that named the programme
+/// and not the channel still takes the channel from the stream.
+function channelOf(clip) {
+  return clip.channel || (clip.said || {}).channel || null;
+}
+
+function channelNumberOf(clip) {
+  return clip.channelNumber || (clip.said || {}).channel_number || 0;
+}
+
+/// Where the chapter points of a recording written onto a disc go.
+///
+/// Every kept range begins one. That is where the cuts are, and skipping to
+/// the far side of a commercial break is the whole of what a chapter point on
+/// a recording is for. The marks made in the editor go in beside them --
+/// somebody put those down deliberately -- and a mark that lands on a range
+/// boundary is one chapter and not two.
+function chaptersFor(clip) {
+  const keeps = keepsOf(clip);
+  const out = keeps.map((k) => k.at);
+  for (const at of clip.edit ? clip.edit.keyframes : []) {
+    const mapped = srcToOut(keeps, at);
+    if (mapped !== null) out.push(mapped);
+  }
+  out.sort((a, b) => a - b);
+  return out.filter((at, i) => i === 0 || at - out[i - 1] > 0.5);
+}
+
+/// What to call the disc, when nobody has said.
+///
+/// The channel the first recording came off, which for an evening of
+/// recordings off one channel is exactly right and for a mixed disc is at
+/// least a name somebody will recognise. Then the first programme.
+/// The channel as the panel shows it: what it calls itself, and the three
+/// digits beside it where the recording knew them.
+function channelLine(clip) {
+  const name = channelOf(clip);
+  if (!name) return t("outset.channelUnknown");
+  const n = channelNumberOf(clip);
+  return n ? t("outset.channelNumbered", { name, n }) : name;
+}
+
+/// And what the broadcaster said the programme was, flattened to the one
+/// line the panel has room for.
+function aboutLine(clip) {
+  const about = descriptionOf(clip);
+  if (!about) return t("outset.aboutNone");
+  const flat = about.replace(/\s+/g, " ").trim();
+  return flat.length > 78 ? `${flat.slice(0, 78)}…` : flat;
+}
+
+function discTitleFor(list) {
+  if (settings.discTitle) return settings.discTitle;
+  const first = list[0];
+  if (!first) return "";
+  return channelOf(first) || programmeOf(first);
+}
+
 el("browse-dir").addEventListener("click", async (ev) => {
   ev.preventDefault();
   const picked = await dialog.open({ directory: true, multiple: false });
@@ -2940,10 +3102,45 @@ el("browse-dir").addEventListener("click", async (ev) => {
   touch();
 });
 
+/// Put the screen into the shape the output method asks for.
+///
+/// A disc names its own files, so a prefix and a container have nothing to
+/// choose; its chapter points go into its playlist, so the sidecar has
+/// nothing to write; and it has a title and a programme name, which a folder
+/// of files has nowhere to put.
+function paintMode() {
+  const disc = bdavMode();
+  for (const b of document.querySelectorAll(".modes .tab")) {
+    b.classList.toggle("active", (b.dataset.mode === "bdav") === disc);
+  }
+  el("row-prefix").hidden = disc;
+  el("row-container").hidden = disc;
+  el("row-keyframes").hidden = disc;
+  el("row-disc-title").hidden = !disc;
+  el("row-programme").hidden = !disc;
+  el("outset-file-head").textContent = t(disc ? "outset.discHead" : "outset.fileHead");
+  el("out-dir-label").textContent = t(disc ? "outset.discFolder" : "outset.outDir");
+  el("out-dir").placeholder = t(disc ? "outset.discHere" : "outset.sameAsInput");
+}
+
+// Chosen the way the screens themselves are chosen. The settings on either
+// side of the switch are kept, not cleared: coming back to a tab should find
+// what was left there.
+for (const b of document.querySelectorAll(".modes .tab")) {
+  b.addEventListener("click", () => {
+    if (settings.mode === b.dataset.mode) return;
+    settings.mode = b.dataset.mode;
+    renderOutset();
+    renderOutScreen();
+    touch();
+  });
+}
+
 function renderOutset() {
   lockAudioDetail();
   lockUnwritable();
   fillBitrates();
+  paintMode();
   const list = ready();
   const select = el("outset-clip");
   const was = select.value;
@@ -2957,10 +3154,22 @@ function renderOutset() {
     box.textContent = t("outset.noReady");
     return;
   }
+  if (bdavMode()) {
+    // Asked here rather than when the row was added: it is only this screen
+    // that has anything to do with the answer, and a list of forty
+    // recordings would otherwise read forty files to draw a list nobody has
+    // reached yet. The answer redraws the screen when it arrives.
+    if (!clip.said) askProgramme(clip).then(() => renderOutset());
+    el("out-programme").value = programmeOf(clip);
+    // A title nobody has typed is shown as the one that will be used, so
+    // that what is on screen is what will be written -- and typing over it
+    // is then editing rather than guessing.
+    if (!settings.discTitle) el("out-disc-title").value = discTitleFor(list);
+  }
   const i = clip.info;
   const keeps = keepsOf(clip);
   const kept = keeps.reduce((n, k) => n + (k.b - k.a), 0);
-  box.textContent = t("outset.format", {
+  box.textContent = t(bdavMode() ? "outset.formatBdav" : "outset.format", {
     codec: i.codec,
     w: i.width,
     h: i.height,
@@ -2971,7 +3180,18 @@ function renderOutset() {
     kept: fmt(kept),
     dur: fmt(i.duration),
     cuts: clip.edit ? clip.edit.cuts.length : 0,
-    out: outputPath(clip),
+    made: madeOf(clip) || t("outset.madeUnknown"),
+    channel: channelLine(clip),
+    // One line of it. A description runs to several hundred characters and
+    // this panel is a check of what will be written, not the programme
+    // guide -- the whole of it goes onto the disc either way.
+    about: aboutLine(clip),
+    marks: chaptersFor(clip).length,
+    out: bdavMode()
+      ? settings.dir
+        ? t("outset.discPath", { dir: settings.dir.replace(/[/\\]*$/, "") })
+        : t("outset.discHere")
+      : outputPath(clip),
     side:
       settings.keyframes && clip.edit && clip.edit.keyframes.length
         ? t("outset.sidecar", {
@@ -2981,6 +3201,16 @@ function renderOutset() {
   });
 }
 el("outset-clip").addEventListener("change", renderOutset);
+// Per clip and not per list, unlike everything in the panel beside it: what
+// a recording is called is a fact about that recording. Emptied, it goes
+// back to what the recording says about itself rather than staying empty --
+// a nameless row in a recorder's list is the one outcome nobody wants.
+el("out-programme").addEventListener("input", (ev) => {
+  const clip = byId(Number(el("outset-clip").value));
+  if (!clip) return;
+  clip.programme = ev.target.value.trim() ? ev.target.value : null;
+  touch();
+});
 
 // --- what will actually be re-encoded -------------------------------------
 //
@@ -3177,7 +3407,11 @@ let writing = null;
 let began = 0;
 
 function renderOutScreen() {
-  el("out-dir-shown").value = settings.dir || t("outset.sameAsInput");
+  el("out-dir-shown").value = bdavMode()
+    ? settings.dir
+      ? t("outset.discPath", { dir: settings.dir.replace(/[/\\]*$/, "") })
+      : t("outset.discHere")
+    : settings.dir || t("outset.sameAsInput");
   const list = ready();
   el("out-idle").hidden = list.length > 0;
   // Idle, the screen speaks for whichever clip is about to be written first;
@@ -3230,6 +3464,18 @@ if (listen) {
   });
 }
 
+if (listen) {
+  // The pass that writes the disc's index reads every stream back, which on
+  // a disc's worth of recordings is minutes. It says which recording it is
+  // on and how far through; there is no room on the bar for it, because the
+  // bar is about the cuts, so it goes where the state is said.
+  listen("bdav-progress", (ev) => {
+    const [clip, done] = ev.payload;
+    if (!exporting) return;
+    el("out-state").textContent = `${t("out.bdavIndexing", { clip })} ${Math.round(done * 100)}%`;
+  });
+}
+
 el("abort-export").addEventListener("click", () => {
   abort = true;
   el("out-state").textContent = t("out.aborting");
@@ -3243,11 +3489,40 @@ async function runExport() {
   // makes it, so what the list holds is already what is on screen in there.
   const list = ready();
   if (!list.length) return;
+  // A disc is built somewhere. There is no "beside the input" for one: the
+  // recordings in a list can come from four folders and a disc is one place.
+  const disc = bdavMode();
+  if (disc && !settings.dir) {
+    note(t("out.needDiscFolder"));
+    show("outset");
+    el("out-dir").focus();
+    return;
+  }
   // A pass over another recording would be competing for the same disc, and
   // unlike the editor this is work with an end in sight that somebody is
   // watching. Both lanes stand aside until the list is written out.
   paused = true;
   await invoke("stop_batch", { lane: null });
+
+  // What each recording will be called on the disc, and under which number.
+  // Both are settled before anything is written: the numbering depends on
+  // what the disc already holds, and asking a recording what programme it
+  // holds is a read of it that should not happen between two cuts.
+  let slots = null;
+  if (disc) {
+    for (const clip of list) await askProgramme(clip);
+    try {
+      slots = await invoke("bdav_prepare", { dir: settings.dir, n: list.length });
+    } catch (e) {
+      // Nothing has been written yet, so this is a run that did not start
+      // rather than one that failed part way: the lanes get their turn back
+      // and the list is as it was.
+      note(t("out.bdavFailed", { e: String(e) }));
+      paused = false;
+      pump();
+      return;
+    }
+  }
 
   exporting = true;
   abort = false;
@@ -3259,12 +3534,14 @@ async function runExport() {
   renderOutScreen();
 
   let done = 0;
-  for (const clip of list) {
+  for (const [i, clip] of list.entries()) {
     if (abort) {
       clip.out = { state: "skipped", progress: 0, note: t("out.skipped") };
       continue;
     }
-    const out = outputPath(clip);
+    // A recording on a disc is `BDAV/STREAM/00001.m2ts`; which number it is
+    // was settled above. What it is *called* goes in the index, not here.
+    const out = disc ? slots[i].path : outputPath(clip);
     if (out === clip.path) {
       clip.out = { state: "error", progress: 0, note: t("out.sameName") };
       renderOutScreen();
@@ -3308,7 +3585,10 @@ async function runExport() {
       // whichever one the last progress report happened to fall short of.
       followWrite(1);
       let extra = "";
-      if (settings.keyframes) {
+      // A disc carries its chapter points in its own playlist, which is
+      // where a player looks for them; a file beside the stream would be the
+      // same list written twice, in the one place nothing reads.
+      if (settings.keyframes && !disc) {
         // Numbered against the file being written, not the recording.
         const keeps = keepsOf(clip);
         const frames = (clip.edit ? clip.edit.keyframes : [])
@@ -3334,6 +3614,43 @@ async function runExport() {
     writing = null;
     renderOutScreen();
     paintOutProgress(done / list.length);
+  }
+
+  // The streams are written; a disc is what they are written *into*, and
+  // that is this pass. Only the recordings that actually landed: a slot
+  // whose cut failed has no stream to be a playlist about.
+  if (disc && !abort) {
+    const wrote = list
+      .map((clip, i) => ({ clip, slot: slots[i] }))
+      .filter(({ clip }) => clip.out.state === "done");
+    if (wrote.length) {
+      el("out-state").textContent = t("out.bdavIndexing", { clip: wrote[0].slot.clip });
+      try {
+        await invoke("bdav_finish", {
+          dir: settings.dir,
+          title: discTitleFor(list),
+          entries: wrote.map(({ clip, slot }) => ({
+            clip: slot.clip,
+            name: programmeOf(clip),
+            made: madeOf(clip),
+            description: descriptionOf(clip),
+            channel: channelOf(clip),
+            // Named the way the engine names it: the fields of a payload go
+            // across as they are written, unlike a command's own arguments.
+            channel_number: channelNumberOf(clip),
+            marks: chaptersFor(clip),
+          })),
+        });
+        note(
+          t("out.bdavDone", {
+            path: `${settings.dir.replace(/[/\\]*$/, "")}/BDAV`,
+            n: wrote.length,
+          })
+        );
+      } catch (e) {
+        note(t("out.bdavFailed", { e: String(e) }));
+      }
+    }
   }
 
   exporting = false;
@@ -3409,6 +3726,14 @@ function captureProject() {
       // was read are an answer given to a question the disc asked, and
       // asking it again would mean reading the disc again.
       dropPids: c.dropPids.length ? c.dropPids : undefined,
+      // What a disc this program writes will say about the recording: what
+      // the disc it came off said about it, and the name somebody typed over
+      // the one it arrived with.
+      made: c.made || undefined,
+      description: c.description || undefined,
+      channel: c.channel || undefined,
+      channelNumber: c.channelNumber || undefined,
+      programme: c.programme || undefined,
       // What the editor handed back the last time this row was in it: the
       // cuts, the marks, and where the playhead was left. Null for a row
       // nobody has opened yet, which is not the same as a row cut to nothing.
@@ -3443,7 +3768,12 @@ function defaultProjectPath() {
 function shapeOf() {
   return JSON.stringify({
     settings,
-    clips: clips.map((c) => ({ path: c.path, dropPids: c.dropPids, edit: c.edit })),
+    clips: clips.map((c) => ({
+      path: c.path,
+      dropPids: c.dropPids,
+      programme: c.programme,
+      edit: c.edit,
+    })),
   });
 }
 

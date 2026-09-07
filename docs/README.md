@@ -38,3 +38,4 @@ on GOP boundaries and concatenate" does not work.
 | [Building](developers/building.md) | Required libraries, how to build, how to run the tests |
 | [Distribution](developers/distribution.md) | AppImage, tar.gz and deb, the Windows installer, and what each one bundles |
 | [Reading a disc](developers/disc.md) | Blu-ray (BDAV and BDMV) and DVD-Video, from a folder or an `.iso`: UDF, IFO tables, ARIB text, one row per clip, and the chooser dialog |
+| [Writing a disc](developers/bdav.md) | A night's cuts as a BDAV folder: the arrival times, the entry point map, where the programme's name comes from, and what is copied from a real disc rather than understood |

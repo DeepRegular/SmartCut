@@ -201,6 +201,12 @@ button.brand:hover, button.brand.open { background: #3a3a3a; border-color: #5c5c
 }
 .spacer { flex: 1; }
 
+/* The two shapes of the output settings screen, chosen the way the screens
+   themselves are. A level in, so a size down: the same control, not a second
+   row of the same weight. */
+.modes { display: flex; gap: 6px; margin: -1px 0; }
+.modes .tab { padding: 2px 14px; font-size: 12px; }
+
 main { flex: 1; min-height: 0; display: flex; gap: 0; }
 .editor {
   flex: 1; min-width: 0; min-height: 0; overflow: hidden;
@@ -641,6 +647,11 @@ input[type="text"]::placeholder { color: var(--dim); }
 .row input[type="text"], .row select, .row .drop { flex: 1; min-width: 0; }
 .row input[readonly] { color: var(--dim); }
 .opts { display: flex; flex-direction: column; gap: 5px; margin-top: 8px; }
+/* A block laid out by a rule of its own does not go away when it is hidden:
+   `display: flex` is more specific than the browser's own `[hidden]`. The
+   sidecar row is hidden where a disc is being written, since a disc keeps
+   its chapter points in its playlist. */
+.opts[hidden] { display: none; }
 
 /* ======================================================================
    出力画面

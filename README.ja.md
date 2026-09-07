@@ -47,6 +47,13 @@ CM の切れ目のようにカット位置がキーフレームに一致する�
 出力も録画ファイルの形のままなので、普段使っている録画向けのツールでそのまま
 開けます。
 
+**一晩ぶんをディスクとして出せます。** ファイルとしてだけではありません。
+BDAV フォルダー——レコーダーが BD-RE に書くのと同じ形——を書き出します。番組は
+放送されたときの名前・チャンネル・録画日時・番組内容を持ち、CM を抜いた場所ごとに
+チャプターが入ります。ディスクから読んだ録画はそのプレイリストが持っていた情報を、
+放送録画は自身の番組情報を、そのまま持っていきます。詳しくは
+[ディスクを書く](docs/developers/bdav.ja.md)にあります。
+
 **CM の切れ目を自動で探します。** 手がかりは 3 つあります。放送局が字幕
 ストリームに入れる切り替えの印、無音区間の並び、局ロゴの有無です。この 3 つを
 組み合わせて位置を絞り込みます。SmartCut は候補に印を置くところまでを担当し、
@@ -90,11 +97,11 @@ deb 以外はすべて FFmpeg を同梱しているので、ほかに用意す�
 
 | プラットフォーム | ファイル | 備考 |
 |---|---|---|
-| **Linux** | `SmartCut_0.4.1_amd64.AppImage` | 実行権限を付けて起動します |
-| **Linux** | `SmartCut-0.4.1-linux-x86_64.tar.gz` | 展開して `./smartcut` を実行します。FUSE を使いたくない場合はこちらです |
-| **Linux (Debian/Ubuntu)** | `smartcut_0.4.1_amd64.deb` | `sudo apt install ./smartcut_0.4.1_amd64.deb`。システムの FFmpeg にリンクするので 3.2 MB で済みます |
-| **Windows** | `SmartCut_0.4.1_x64-setup.exe` | インストーラ |
-| **Windows** | `smartcut-portable-x64-0.4.1.zip` | 展開して `smartcut.exe` を実行します |
+| **Linux** | `SmartCut_0.5.0_amd64.AppImage` | 実行権限を付けて起動します |
+| **Linux** | `SmartCut-0.5.0-linux-x86_64.tar.gz` | 展開して `./smartcut` を実行します。FUSE を使いたくない場合はこちらです |
+| **Linux (Debian/Ubuntu)** | `smartcut_0.5.0_amd64.deb` | `sudo apt install ./smartcut_0.5.0_amd64.deb`。システムの FFmpeg にリンクするので 3.2 MB で済みます |
+| **Windows** | `SmartCut_0.5.0_x64-setup.exe` | インストーラ |
+| **Windows** | `smartcut-portable-x64-0.5.0.zip` | 展開して `smartcut.exe` を実行します |
 
 **動作条件。** AppImage と tar.gz には glibc 2.39 以降が必要です（Ubuntu 24.04、
 Debian 13、Fedora 40 以降）。deb は FFmpeg 7.1 を使うので、Debian 13 または
@@ -163,6 +170,8 @@ smartcut input.ts --analyze                   # 計画だけ表示し、書き�
 
 smartcut input.ts --analyze --detect-cm --logo  # CM 候補を一覧する
 smartcut input.ts --analyze --scenes            # シーンの変わり目を一覧する
+
+smartcut input.ts --cut 8.0-20.0 --bdav ~/disc  # ファイルではなくディスクに書く
 ```
 
 `--keep` と `--cut` は複数回指定できます。秒数のほか `1:23:45.6` の形式も使えます。
@@ -179,8 +188,9 @@ DVD のタイトルは、1 本のプログラムストリームを 1GB 前後の
 カットの書き出しは MPEG-TS です。DVD の形に戻すには VOBU とナビゲーションパック、
 それに書き換えた `.IFO` が必要になりますが、SmartCut はそのいずれも出力しません。
 
-**出力コンテナ:** MPEG-TS / M2TS / MP4 / Matroska / QuickTime。既定では、入力と
-同じコンテナ・同じディレクトリに書き出します。
+**出力コンテナ:** MPEG-TS / M2TS / MP4 / Matroska / QuickTime、または **BDAV
+ディスク**（プレーヤーが番組の一覧として読む索引の付いた録画フォルダー）。
+既定では、入力と同じコンテナ・同じディレクトリに書き出します。
 
 **映像:** H.264 / HEVC / MPEG-2 / MPEG-4 Part 2 / VC-1。インターレース素材は
 インターレースのまま保たれ、2:3 プルダウンはフィールド単位のタイムラインで

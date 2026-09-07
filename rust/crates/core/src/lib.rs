@@ -12,6 +12,7 @@ use ffmpeg_next as ff;
 pub mod adts;
 pub mod arib;
 pub mod audio;
+pub mod bdav;
 pub mod bitstream;
 pub mod caption;
 pub mod cm;

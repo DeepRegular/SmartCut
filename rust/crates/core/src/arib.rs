@@ -96,7 +96,10 @@ pub fn decode(bytes: &[u8]) -> String {
                 0x0E => gl = 1,               // LS1
                 0x19 => at = one(&mut out, bytes, at, sets[2]), // SS2
                 0x1D => at = one(&mut out, bytes, at, sets[3]), // SS3
-                0x0D => out.push('\n'),       // APR, a line break
+                // A line break. Both are written: a recorder's own playlists
+                // separate the lines of a programme description with 0x0A,
+                // and a broadcast's text uses 0x0D.
+                0x0A | 0x0D => out.push('\n'),
                 0x1B => at = escape(bytes, at, &mut sets, &mut gl, &mut gr),
                 _ => {}
             },
@@ -312,6 +315,160 @@ pub fn one_line(text: &str) -> String {
     out
 }
 
+// --- writing it back -----------------------------------------------------
+//
+// One place needs the other direction. A disc this program *writes* names
+// its recordings and itself where a recorder would have, and that field is
+// this code rather than UTF-8: a name written there as UTF-8 is a name a
+// recorder draws as mojibake. See [`crate::bdav`].
+
+/// What a receiver starts with, which is also what this writes against: the
+/// kanji set invoked over the graphic-left range, the alphanumerics one
+/// locking shift away.
+///
+/// Two sets are enough for a name. The kanji set holds the kana as well, so
+/// the only thing the other is for is ASCII, and both are already designated
+/// when the text begins -- nothing has to be escaped into a slot, and the
+/// whole of the state is which of the two is invoked.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Writing {
+    Kanji,
+    Alnum,
+}
+
+/// The half-width katakana, in the order [`Set::HalfKatakana`] reads them,
+/// as the characters the kanji set has.
+///
+/// JIS X 0201's katakana are not in JIS X 0208, so a name carrying them
+/// cannot be written in the two sets above. They are widened rather than
+/// refused: a receiver draws the wide form of `ｱ` as `ア`, which is what the
+/// name said, and the alternative is a name with holes in it. The voicing
+/// marks stay separate characters, which is where they already were.
+const WIDENED: &str = "。「」、・ヲァィゥェォャュョッーアイウエオカキクケコサシスセソタチツテトナニヌネノハヒフヘホマミムメモヤユヨラリルレロワン゛゜";
+
+/// Write text as an ARIB eight-unit string.
+///
+/// The reverse of [`decode`], and deliberately a smaller thing: a decoder
+/// has to read whatever a broadcaster sent, while a writer only has to be
+/// read correctly. So this uses the two sets a receiver already has invoked
+/// and the two locking shifts between them, and no escape sequence appears
+/// in the output at all.
+///
+/// The sizes go in as a recorder writes them -- half width over the
+/// alphanumerics, normal over the kanji -- because that is what makes a name
+/// read on a television the way it read on air. A decoder that drops them,
+/// this one included, sees the same characters either way.
+pub fn encode(text: &str) -> Vec<u8> {
+    encode_within(text, usize::MAX)
+}
+
+/// As [`encode`], stopping before the output would pass `limit` bytes.
+///
+/// The field a name goes in is a length byte and 255 bytes at most, and a
+/// Japanese title reaches that at 85 characters. What is cut is cut at a
+/// character, never inside one: half a JIS pair is a different character
+/// rather than a shorter name.
+pub fn encode_within(text: &str, limit: usize) -> Vec<u8> {
+    let mut out: Vec<u8> = Vec::new();
+    let mut mode: Option<Writing> = None;
+    for c in text.chars() {
+        // Which set the character is written against, and the bytes it is
+        // written as. A line break and a space are neither: both mean the
+        // same thing whichever set is invoked, so they are written where
+        // they are and leave the state alone.
+        let (against, body): (Option<Writing>, [u8; 2]) = match c {
+            '\n' => (None, [0x0D, 0]),
+            ' ' => (None, [0x20, 0]),
+            _ => match narrow(c) {
+                Some(b) => (Some(Writing::Alnum), [b, 0]),
+                None => match wide(c) {
+                    Some(pair) => (Some(Writing::Kanji), pair),
+                    // Neither set has it. What a receiver shows for a
+                    // character it cannot draw is written instead, so the
+                    // name keeps its shape and says plainly where it could
+                    // not be carried.
+                    None => (Some(Writing::Kanji), [0x22, 0x2E]),
+                },
+            },
+        };
+        let wide_char = matches!(against, Some(Writing::Kanji));
+        // Built to one side and only then accepted, so what is measured
+        // against the limit is what the character actually costs -- the
+        // shift and the size in front of it included.
+        let mut piece: Vec<u8> = Vec::new();
+        if let Some(to) = against.filter(|to| mode != Some(*to)) {
+            piece.extend_from_slice(match to {
+                Writing::Kanji => &[0x0F, 0x8A], // LS0, and the normal size
+                Writing::Alnum => &[0x0E, 0x89], // LS1, and the half width
+            });
+        }
+        piece.push(body[0]);
+        if wide_char {
+            piece.push(body[1]);
+        }
+        if out.len() + piece.len() > limit {
+            break;
+        }
+        out.extend_from_slice(&piece);
+        if let Some(to) = against {
+            mode = Some(to);
+        }
+    }
+    out
+}
+
+/// The alphanumeric set's byte for a character, when it has one.
+fn narrow(c: char) -> Option<u8> {
+    match c {
+        // The two cells JIS X 0201 spends differently from ASCII.
+        '¥' => Some(0x5C),
+        '‾' => Some(0x7E),
+        // And the two ASCII spends there instead, which the set does not
+        // have at all. They go through the kanji set as their wide forms
+        // rather than as the money and the overline they would otherwise
+        // be read as.
+        '\\' | '~' => None,
+        c if c.is_ascii_graphic() => Some(c as u8),
+        _ => None,
+    }
+}
+
+/// The kanji set's two bytes for a character, when it has them.
+///
+/// By way of EUC-JP, which is JIS X 0208 with the high bit set on both
+/// bytes -- the same table [`jis`] reads, run the other way, and the same
+/// single dependency.
+fn wide(c: char) -> Option<[u8; 2]> {
+    let c = widen(c);
+    let mut buf = [0u8; 8];
+    let text = c.encode_utf8(&mut buf);
+    let (euc, _, bad) = encoding_rs::EUC_JP.encode(text);
+    if bad || euc.len() != 2 {
+        return None;
+    }
+    let (hi, lo) = (euc[0] & 0x7F, euc[1] & 0x7F);
+    // Rows 85 and up are ARIB's own symbols and are not reached this way:
+    // EUC-JP fills them with characters of its own, and writing one of those
+    // cells would be writing a different character. See [`FIRST_ARIB_ROW`].
+    (hi < FIRST_ARIB_ROW && (0x21..=0x7E).contains(&hi) && (0x21..=0x7E).contains(&lo))
+        .then_some([hi, lo])
+}
+
+/// The wide form of a half-width katakana. Anything else is itself.
+fn widen(c: char) -> char {
+    // The two ASCII cells JIS X 0201 spends on something else; see
+    // [`narrow`].
+    match c {
+        '\\' => return '＼',
+        '~' => return '～',
+        _ => {}
+    }
+    match c as u32 {
+        n @ 0xFF61..=0xFF9F => WIDENED.chars().nth((n - 0xFF61) as usize).unwrap_or(c),
+        _ => c,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -363,6 +520,55 @@ mod tests {
         assert_eq!(decode(&[0xFC]), "」");
         // The kana themselves are still kana.
         assert_eq!(decode(&[0xCB, 0xC3]), "にっ");
+    }
+
+    #[test]
+    fn writes_the_name_a_disc_carries() {
+        // The volume name of the same real `info.bdav` the reader is tested
+        // against, written from the text it decoded to. The sizes are where
+        // the disc has them: half width over the alphanumerics, normal over
+        // the kanji.
+        assert_eq!(
+            encode("アニメ テスト"),
+            vec![
+                0x0F, 0x8A, 0x25, 0x22, 0x25, 0x4B, 0x25, 0x61, 0x20, 0x25, 0x46, 0x25, 0x39,
+                0x25, 0x48,
+            ]
+        );
+    }
+
+    #[test]
+    fn comes_back_as_what_went_in() {
+        // A programme name of the shape a listing actually carries: the date
+        // in digits, the channel in ASCII, the title in kanji and kana, and
+        // the brackets that are a kana set's last cells.
+        for text in [
+            "2026年08月17日01時00分-衛星第一-サンプル番組",
+            "てすとばんぐみ!にっ!! #07「架空の休息日の過ごし方。」",
+            "アニメ テスト",
+            "Anime Test",
+        ] {
+            assert_eq!(decode(&encode(text)), text);
+        }
+    }
+
+    #[test]
+    fn widens_what_the_two_sets_do_not_hold() {
+        // Half-width katakana are JIS X 0201's, which JIS X 0208 does not
+        // have; they are written as the wide characters they are read as.
+        assert_eq!(decode(&encode("ｱｲｳ")), "アイウ");
+        // And a character neither set holds comes back as what a receiver
+        // shows for one it cannot draw.
+        assert_eq!(decode(&encode("A🙂")), "A〓");
+    }
+
+    #[test]
+    fn stops_at_a_character_and_not_inside_one() {
+        // Eleven bytes is the shift, the size, and four kanji; the fifth
+        // would be two more and does not go in.
+        let raw = encode_within("時時時時時", 11);
+        assert_eq!(raw.len(), 10);
+        assert_eq!(decode(&raw), "時時時時");
     }
 
     #[test]

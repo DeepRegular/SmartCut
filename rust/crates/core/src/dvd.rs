@@ -172,6 +172,12 @@ pub fn read(at: &Path) -> Result<Disc> {
             stem: crate::disc::filename(&label_row),
             label: label_row,
             bytes: sectors * SECTOR,
+            // A DVD's index has nowhere to write any of this: the format
+            // predates the question.
+            made: None,
+            description: None,
+            channel: None,
+            channel_number: 0,
             tracks: t.tracks,
             // Filled in below, once the whole disc is known.
             wanted: false,

@@ -116,8 +116,18 @@
 
     <!-- ===== 出力設定画面 ========================================== -->
     <section id="screen-outset" class="screen" hidden>
+      <!-- Two things can come out of a run, and they are two shapes of this
+           screen rather than two settings on it: what a disc has that a
+           folder of files has not is a name of its own and a programme name
+           per recording, and what a folder has that a disc has not is a
+           prefix, a container and a sidecar. So the choice is a tab and not
+           a dropdown -- the same gesture as the three at the top of the
+           window, one level in. -->
       <div class="infobar">
-        <span data-i18n="outset.bar">ファイル出力</span>
+        <nav class="modes">
+          <button class="tab active" data-mode="file" data-i18n="outset.tabFile">ファイル出力</button>
+          <button class="tab" data-mode="bdav" data-i18n="outset.tabBdav">BDAV 出力</button>
+        </nav>
         <span class="spacer"></span>
         <span class="dim" data-i18n="outset.barNote">ここでの設定は一覧のすべてのクリップに使われます</span>
       </div>
@@ -125,25 +135,49 @@
       <div class="outset-body">
         <div class="panel grow">
           <div class="panel-head" data-i18n="outset.formatHead">出力フォーマット</div>
+          <!-- Above the clip picker, because it is the one thing here that is
+               not about a clip: it names the disc the whole list is going
+               onto. Filled in from the first recording's channel, and typed
+               over from there. -->
+          <div class="row" id="row-disc-title" hidden>
+            <span data-i18n="outset.discTitle">ディスクタイトル:</span>
+            <input id="out-disc-title" type="text" />
+          </div>
           <div class="row">
             <span data-i18n="outset.clipPick">クリップ選択:</span>
             <select id="outset-clip"></select>
+          </div>
+          <!-- What a disc's index will say about this recording. On screen
+               only where a disc is what is being written: in a file the
+               programme's name is the file's name, which the row below the
+               format already shows. The name is filled in from what the
+               recording says about itself and can be typed over; the moment
+               it went out is what the recording said and nothing else, so it
+               is shown rather than offered. -->
+          <div class="row" id="row-programme" hidden>
+            <span data-i18n="outset.programme">番組名:</span>
+            <input id="out-programme" type="text" />
           </div>
           <pre id="outset-format" class="format" data-i18n="outset.noClips"></pre>
         </div>
 
         <div class="panel">
-          <div class="panel-head" data-i18n="outset.fileHead">ファイル設定</div>
+          <div class="panel-head" id="outset-file-head" data-i18n="outset.fileHead">ファイル設定</div>
+          <!-- The rows that only mean something for one of the two shapes
+               are on screen only for that one. A disc names its own files, so
+               a prefix and a container have nothing to choose there, and its
+               chapter points go in its playlist rather than in a file beside
+               the stream. -->
           <div class="row">
-            <span data-i18n="outset.outDir">出力先フォルダー(F):</span>
+            <span id="out-dir-label" data-i18n="outset.outDir">出力先フォルダー(F):</span>
             <input id="out-dir" type="text" data-i18n-ph="outset.sameAsInput" />
             <button id="browse-dir" class="mini" data-i18n="outset.browse">参照</button>
           </div>
-          <div class="row">
+          <div class="row" id="row-prefix">
             <span data-i18n="outset.prefix">ファイル名の接頭辞:</span>
             <input id="out-prefix" type="text" value="cut_" />
           </div>
-          <div class="row">
+          <div class="row" id="row-container">
             <span data-i18n="outset.container">コンテナタイプ(Y):</span>
             <span class="drop">
               <select id="out-container">
@@ -259,7 +293,7 @@
               </select>
             </span>
           </div>
-          <div class="opts">
+          <div class="opts" id="row-keyframes">
             <label class="opt"><input id="out-keyframes" type="checkbox" />
               <span data-i18n="outset.keyframeSidecar">キーフレーム情報を別ファイル (.keyframe) で出力する</span></label>
           </div>

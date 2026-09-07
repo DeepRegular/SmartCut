@@ -410,6 +410,16 @@ struct DiscClip {
     bytes: u64,
     /// Whether to offer it already ticked.
     wanted: bool,
+    /// What the disc's own playlist said about the recording: when it was
+    /// made, what it was about, and which channel it came off.
+    ///
+    /// Travels with the row for the same reason the label does: a cut of
+    /// this recording written onto a disc of its own says the programme was
+    /// what this disc says it was.
+    made: Option<String>,
+    description: Option<String>,
+    channel: Option<String>,
+    channel_number: u16,
     tracks: Vec<DiscTrack>,
 }
 
@@ -427,6 +437,10 @@ impl From<smartcut_core::disc::Entry> for DiscClip {
             duration: e.duration,
             bytes: e.bytes,
             wanted: e.wanted,
+            made: e.made.map(|m| m.to_string()),
+            description: e.description,
+            channel: e.channel,
+            channel_number: e.channel_number,
             tracks: e.tracks.into_iter().map(DiscTrack::from).collect(),
         }
     }
@@ -3004,6 +3018,129 @@ async fn export(
     .map_err(|e| e.to_string())?
 }
 
+/// Where one recording is to be written on a disc being built.
+#[derive(Serialize)]
+struct BdavSlot {
+    /// The five digits the recording's three files share.
+    clip: String,
+    /// The file the cut is to be written into, which is the disc's to name.
+    path: String,
+}
+
+/// What the disc's index will say about one recording it holds.
+#[derive(Deserialize)]
+struct BdavEntry {
+    clip: String,
+    name: String,
+    /// `2026-08-17 01:00:00`, or nothing where the recording never said.
+    made: Option<String>,
+    /// What the broadcaster said the programme was, and the channel it came
+    /// off: the rest of what a recorder writes into a playlist.
+    description: Option<String>,
+    channel: Option<String>,
+    channel_number: Option<u16>,
+    /// Chapter points, in seconds on the written stream's own timeline.
+    marks: Vec<f64>,
+}
+
+/// What a recording says about the programme in it.
+#[derive(Serialize)]
+struct ProgrammeInfo {
+    name: Option<String>,
+    description: Option<String>,
+    channel: Option<String>,
+    channel_number: u16,
+    made: Option<String>,
+}
+
+/// Read what a recording says about its own programme.
+///
+/// For the output settings screen, which shows what would be written into a
+/// disc's index beside each recording -- and for the export, which writes
+/// it. A recording that says nothing about itself is not an error: plenty of
+/// files have been through tools that kept none of it.
+#[tauri::command]
+async fn programme(path: String) -> Result<ProgrammeInfo, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let input = smartcut_core::input::Input::parse(&path).map_err(|e| e.to_string())?;
+        let said = smartcut_core::si::programme(&input, 0).unwrap_or_default();
+        Ok(ProgrammeInfo {
+            name: said.name,
+            description: said.description,
+            channel: said.channel,
+            channel_number: said.channel_number,
+            made: said.began.map(|m| m.to_string()),
+        })
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// Make the disc's directories and say what the next `n` recordings on it
+/// are to be called.
+///
+/// Asked before the run rather than during it, because the numbering depends
+/// on what the disc already holds: a second evening's cuts are added to the
+/// disc rather than written over it.
+#[tauri::command]
+async fn bdav_prepare(dir: String, n: usize) -> Result<Vec<BdavSlot>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let at = local_path(&dir)?;
+        let clips = smartcut_core::bdav::prepare(&at, n).map_err(|e| e.to_string())?;
+        Ok(clips
+            .into_iter()
+            .map(|clip| BdavSlot {
+                path: smartcut_core::bdav::stream_of(&at, &clip).to_string_lossy().into_owned(),
+                clip,
+            })
+            .collect())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// Write the index around the streams the run has just written.
+///
+/// This is the pass that makes a folder of `00001.m2ts` into a disc: each
+/// stream is read back for its arrival times and its entry points, and the
+/// playlists and the clip indexes are written around them. Minutes on a
+/// disc's worth of material, so it says how far along it is.
+#[tauri::command]
+async fn bdav_finish(
+    app: tauri::AppHandle,
+    dir: String,
+    title: String,
+    entries: Vec<BdavEntry>,
+) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let at = local_path(&dir)?;
+        let recordings: Vec<smartcut_core::bdav::Recording> = entries
+            .into_iter()
+            .map(|e| smartcut_core::bdav::Recording {
+                clip: e.clip,
+                name: e.name,
+                made: e.made.as_deref().and_then(smartcut_core::si::Began::parse),
+                description: e.description,
+                channel: e.channel,
+                channel_number: e.channel_number.unwrap_or(0),
+                marks: e.marks,
+            })
+            .collect();
+        let reporter = app.clone();
+        smartcut_core::bdav::write(
+            &at,
+            &title,
+            &recordings,
+            Some(&move |clip: &str, done: f64| {
+                let _ = reporter.emit("bdav-progress", (clip.to_string(), done));
+            }),
+        )
+        .map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
 /// Play the edited timeline back from `from`, as a stream of pictures.
 ///
 /// Paced against a wall clock on the *edited* timeline, so a cut costs no
@@ -3368,6 +3505,9 @@ pub fn run() {
             play,
             stop_play,
             export,
+            programme,
+            bdav_prepare,
+            bdav_finish,
             audio_limits,
             index_clip,
             clip_outline,

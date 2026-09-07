@@ -152,10 +152,24 @@ pub struct Title {
     /// carry no name -- a film's titles live in the menu, which is a Java
     /// application -- so this is `None` on a pressed disc.
     pub name: Option<String>,
-    /// When the playlist says it was made, `2026-08-17 01:00`. A recorder
-    /// writes the moment the recording started; an authoring tool writes the
-    /// moment it wrote the disc. `None` on BDMV, which does not record it.
-    pub made: Option<String>,
+    /// When the playlist says it was made. A recorder writes the moment the
+    /// recording started; an authoring tool writes the moment it wrote the
+    /// disc. `None` on BDMV, which does not record it.
+    ///
+    /// Carried as the moment rather than as a sentence about it, because it
+    /// goes back out again: a cut of this recording written onto a disc of
+    /// its own says the recording was made when this one says it was. See
+    /// [`crate::bdav`].
+    pub made: Option<crate::si::Began>,
+    /// What the recorder wrote down about the programme beside its name:
+    /// the sentence a listing carries, and the cast and staff under it. A
+    /// recorder fills this in from the broadcast's own event information;
+    /// an authoring tool leaves it empty.
+    pub description: Option<String>,
+    /// The channel it was recorded off, as the recorder wrote it: the name,
+    /// and the three digits a viewer knows it by.
+    pub channel: Option<String>,
+    pub channel_number: u16,
     /// Playing time, which is the IN to OUT of the clips it names.
     pub duration: f64,
     pub clips: Vec<Clip>,
@@ -284,6 +298,16 @@ pub struct Entry {
     /// a disc whose index names everything `000NN`, size and length are what
     /// tell an episode from a logo.
     pub bytes: u64,
+    /// What the disc's own playlist said about the programme: when it was
+    /// recorded, what it was about, and which channel it came off.
+    ///
+    /// Carried for the same reason the name is: a cut of this recording can
+    /// be written onto a disc of its own, and a recording that arrived with
+    /// all of this should leave with the same. See [`crate::bdav`].
+    pub made: Option<crate::si::Began>,
+    pub description: Option<String>,
+    pub channel: Option<String>,
+    pub channel_number: u16,
     /// What the disc says the clip carries. Empty when the clip has no
     /// `CLIPINF` beside it, or one this could not read -- in which case
     /// nothing is claimed rather than something guessed.
@@ -423,6 +447,10 @@ fn read_bluray(at: &Path) -> Result<Disc> {
                 home: home.clone(),
                 stem: filename(&label_row),
                 label: label_row,
+                made: title.made,
+                description: title.description.clone(),
+                channel: title.channel.clone(),
+                channel_number: title.channel_number,
                 bytes: vol.bytes(&c.name),
                 tracks: vol.tracks(&c.name),
                 // Filled in below, once the whole disc is known.
@@ -666,7 +694,16 @@ impl Volume {
             .map(|s| s.to_string_lossy().into_owned())
             .unwrap_or_else(|| self.shape().root().to_string());
         if self.shape() != Shape::Bdmv {
-            return fallback;
+            // A disc of recordings says what it is called in its own index,
+            // where a recorder puts the name somebody typed into it. The
+            // folder or the image is named by whoever copied it, which is
+            // the same thing at second hand and is what is left when the
+            // disc says nothing.
+            return self
+                .read("info.bdav")
+                .ok()
+                .and_then(|raw| info_name(&raw))
+                .unwrap_or(fallback);
         }
         // The disc may carry the same file in several languages. Japanese
         // first, because this is a tool for Japanese recordings and a
@@ -834,6 +871,24 @@ fn disc_name(xml: &str) -> Option<String> {
     None
 }
 
+/// What a disc of recordings calls itself, out of `info.bdav`.
+///
+/// ARIB text, like every other name a recorder writes, in a fixed field that
+/// is padded with zeroes rather than counted -- so it runs to the first of
+/// them, or to the list of playlists that follows it. Where the disc has
+/// been given no name the field is empty, and that is not a name either.
+fn info_name(raw: &[u8]) -> Option<String> {
+    const NAME_AT: usize = 64;
+    if raw.len() < 12 || &raw[..4] != b"BDAV" {
+        return None;
+    }
+    let end = (u32be(raw, 8) as usize).min(raw.len());
+    let field = raw.get(NAME_AT..end)?;
+    let text = field.iter().position(|b| *b == 0).map_or(field, |at| &field[..at]);
+    let name = arib::one_line(&arib::decode(text));
+    (!name.is_empty()).then_some(name)
+}
+
 /// The playlist names `info.bdav` lists.
 fn table_of_playlists(raw: &[u8]) -> Vec<String> {
     if raw.len() < 12 || &raw[..4] != b"BDAV" {
@@ -882,13 +937,22 @@ fn playlist(raw: &[u8], file: &str, shape: Shape, vol: &mut Volume) -> Result<Ti
     // playback type and a play-all flag where a recorder writes the name of
     // the programme and the night it went out, so reading them there would be
     // reading two numbers as a sentence.
-    let (name, made) = match shape {
-        Shape::Bdav => (app_info_name(raw, list_at), app_info_made(raw)),
+    let said = match shape {
+        Shape::Bdav => app_info(raw, list_at),
         // A DVD never reaches here: it has no playlists to read.
-        Shape::Bdmv | Shape::Dvd => (None, None),
+        Shape::Bdmv | Shape::Dvd => AppInfo::default(),
     };
 
-    Ok(Title { playlist: file.to_string(), name, made, duration, clips })
+    Ok(Title {
+        playlist: file.to_string(),
+        name: said.name,
+        made: said.made,
+        description: said.description,
+        channel: said.channel,
+        channel_number: said.channel_number,
+        duration,
+        clips,
+    })
 }
 
 /// The PlayItems: which clip, and the part of it to play.
@@ -1022,25 +1086,68 @@ fn play_marks(raw: &[u8], at: usize, clips: &[Clip]) -> Vec<Vec<f64>> {
     none()
 }
 
-/// The programme name, which sits after everything the playlist says about
-/// itself and before the items it plays.
+/// Everything a recorder writes into a playlist about the recording, as
+/// against about the stream.
 ///
-/// A length byte and then ARIB text. The length is checked against where the
-/// items begin, so that a field this has misread cannot swallow the file.
-fn app_info_name(raw: &[u8], list_at: usize) -> Option<String> {
+/// The four fields sit at fixed offsets in the description a playlist opens
+/// with, one after another with room left after each:
+///
+/// ```text
+///  50  when it was recorded    7 bytes, binary coded decimal, century first
+///  64  the channel's number    2 bytes  -- the three digits a viewer knows
+///  67  the channel's name      1 + 20   -- ARIB text
+///  88  the programme's name    1 + 255  -- ARIB text
+/// 344  what it was about       2 + …    -- ARIB text, lines and all
+/// ```
+///
+/// The offsets are the ones read off two discs written eighteen years apart
+/// by unrelated tools -- a Japanese recorder's, and an authoring tool's --
+/// which agree on all of them. The recorder fills all four in; the authoring
+/// tool writes the name and the date and leaves the channel and the
+/// description empty, which is what it knows.
+///
+/// Every length is checked against where the play items begin, so that a
+/// field this has misread cannot swallow the rest of the file.
+#[derive(Default)]
+struct AppInfo {
+    name: Option<String>,
+    made: Option<crate::si::Began>,
+    description: Option<String>,
+    channel: Option<String>,
+    channel_number: u16,
+}
+
+fn app_info(raw: &[u8], list_at: usize) -> AppInfo {
+    const CHANNEL_AT: usize = 64;
+    const CHANNEL_NAME_AT: usize = 67;
     const NAME_LEN_AT: usize = 88;
-    let len = *raw.get(NAME_LEN_AT)? as usize;
-    let at = NAME_LEN_AT + 1;
-    if len == 0 || at + len > list_at.min(raw.len()) {
-        return None;
+    const DESCRIPTION_AT: usize = 344;
+    let end = list_at.min(raw.len());
+    // A length and then that many bytes of ARIB text, if they are all still
+    // inside the description.
+    let text = |at: usize, len: usize| -> Option<String> {
+        if len == 0 || at + len > end {
+            return None;
+        }
+        let read = arib::decode(raw.get(at..at + len)?);
+        let read = read.trim().to_string();
+        (!read.is_empty()).then_some(read)
+    };
+    let counted = |len_at: usize| text(len_at + 1, *raw.get(len_at)? as usize);
+    AppInfo {
+        name: counted(NAME_LEN_AT).map(|t| arib::one_line(&t)),
+        made: app_info_made(raw),
+        // The only one of the four counted in two bytes: a description runs
+        // to hundreds of them where a name runs to tens.
+        description: text(DESCRIPTION_AT + 2, u16be(raw, DESCRIPTION_AT) as usize),
+        channel: counted(CHANNEL_NAME_AT).map(|t| arib::one_line(&t)),
+        channel_number: u16be(raw, CHANNEL_AT),
     }
-    let text = arib::one_line(&arib::decode(&raw[at..at + len]));
-    (!text.is_empty()).then_some(text)
 }
 
 /// When the playlist says it was made: seven bytes of binary coded decimal,
 /// century first.
-fn app_info_made(raw: &[u8]) -> Option<String> {
+fn app_info_made(raw: &[u8]) -> Option<crate::si::Began> {
     const MADE_AT: usize = 50;
     let b = raw.get(MADE_AT..MADE_AT + 7)?;
     let d = |i: usize| -> Option<u32> {
@@ -1048,16 +1155,24 @@ fn app_info_made(raw: &[u8]) -> Option<String> {
         (hi <= 9 && lo <= 9).then_some(hi as u32 * 10 + lo as u32)
     };
     let year = d(0)? * 100 + d(1)?;
-    let (month, day, hour, min) = (d(2)?, d(3)?, d(4)?, d(5)?);
+    let (month, day, hour, min, sec) = (d(2)?, d(3)?, d(4)?, d(5)?, d(6)?);
     if !(1970..=2200).contains(&year)
         || !(1..=12).contains(&month)
         || !(1..=31).contains(&day)
         || hour > 23
         || min > 59
+        || sec > 59
     {
         return None;
     }
-    Some(format!("{year:04}-{month:02}-{day:02} {hour:02}:{min:02}"))
+    Some(crate::si::Began {
+        year: year as u16,
+        month: month as u8,
+        day: day as u8,
+        hour: hour as u8,
+        minute: min as u8,
+        second: sec as u8,
+    })
 }
 
 fn u32be(b: &[u8], at: usize) -> u32 {
@@ -1263,7 +1378,10 @@ mod tests {
         let mut raw = vec![0u8; 100];
         assert_eq!(app_info_made(&raw), None);
         raw[50..57].copy_from_slice(&[0x20, 0x26, 0x09, 0x04, 0x18, 0x33, 0x57]);
-        assert_eq!(app_info_made(&raw).as_deref(), Some("2026-09-04 18:33"));
+        assert_eq!(
+            app_info_made(&raw).map(|m| m.to_string()).as_deref(),
+            Some("2026-09-04 18:33:57")
+        );
         // A month of 19 is a field read from the wrong place.
         raw[52] = 0x19;
         assert_eq!(app_info_made(&raw), None);
@@ -1472,6 +1590,51 @@ mod tests {
         // index does not say what is in one, so neither does this.
         assert_eq!((found[2].kind, found[2].detail.as_str()), ("other", "stream type 0x06"));
         assert!(found.iter().all(|t| t.carried));
+    }
+
+    /// What a recorder writes into a playlist about the recording rather
+    /// than about the stream, at the offsets read off its own disc: the
+    /// channel and its number, the programme's name, when it was recorded,
+    /// and what the broadcaster said it was about.
+    #[test]
+    fn reads_what_a_playlist_says_about_the_programme() {
+        let list_at = 1546;
+        let mut raw = vec![0u8; list_at];
+        raw[..8].copy_from_slice(b"PLST0100");
+        raw[50..57].copy_from_slice(&[0x20, 0x10, 0x01, 0x31, 0x00, 0x30, 0x00]);
+        raw[64..66].copy_from_slice(&161u16.to_be_bytes());
+        let channel = crate::arib::encode("衛星第一");
+        raw[67] = channel.len() as u8;
+        raw[68..68 + channel.len()].copy_from_slice(&channel);
+        let name = crate::arib::encode("アニメ 第03話");
+        raw[88] = name.len() as u8;
+        raw[89..89 + name.len()].copy_from_slice(&name);
+        let about = crate::arib::encode("美術科に入学した主人公が、ひとり暮らしを始める。");
+        raw[344..346].copy_from_slice(&(about.len() as u16).to_be_bytes());
+        raw[346..346 + about.len()].copy_from_slice(&about);
+
+        let said = app_info(&raw, list_at);
+        assert_eq!(said.name.as_deref(), Some("アニメ 第03話"));
+        assert_eq!(said.channel.as_deref(), Some("衛星第一"));
+        assert_eq!(said.channel_number, 161);
+        assert_eq!(
+            said.description.as_deref(),
+            Some("美術科に入学した主人公が、ひとり暮らしを始める。")
+        );
+        assert_eq!(said.made.map(|m| m.to_string()).as_deref(), Some("2010-01-31 00:30:00"));
+
+        // A playlist that says none of it -- which is what an authoring tool
+        // writes -- says none of it rather than saying something empty.
+        let bare = vec![0u8; list_at];
+        let said = app_info(&bare, list_at);
+        assert!(said.name.is_none() && said.channel.is_none() && said.description.is_none());
+        assert_eq!(said.channel_number, 0);
+
+        // And a length that would run past the play items is a field this
+        // has misread, so it is not read at all.
+        let mut wild = raw.clone();
+        wild[88] = 255;
+        assert!(app_info(&wild, 100).name.is_none());
     }
 
     #[test]

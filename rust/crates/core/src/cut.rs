@@ -718,14 +718,10 @@ struct TsLayout {
     service_id: i32,
 }
 
-/// The one transport stream extension the muxer writes differently.
+/// Whether the output is Blu-ray's own shape of transport stream.
 ///
-/// Asked for a `.m2ts`, libavformat writes Blu-ray's own shape: 192 byte
-/// packets, and the PID numbering a Blu-ray uses rather than the one the
-/// recording arrived with. Both are the muxer's to decide and neither is
-/// what the tables this program puts back describe, so a cut written as
-/// `.m2ts` is a cut with the muxer's tables -- which is worth saying out
-/// loud rather than discovering afterwards.
+/// The two differ in the framing -- a `.m2ts` puts four bytes of arrival
+/// time in front of every packet -- and in the numbering: see [`Pids`].
 fn writing_m2ts(path: &str) -> bool {
     std::path::Path::new(path)
         .extension()
@@ -733,6 +729,14 @@ fn writing_m2ts(path: &str) -> bool {
         .is_some_and(|e| e.eq_ignore_ascii_case("m2ts"))
 }
 
+/// Whether the output is a transport stream, in either of the two shapes one
+/// is written in.
+///
+/// Asked for a `.m2ts`, libavformat writes Blu-ray's own framing: the same
+/// packets with four bytes of arrival time in front of each. The recording's
+/// own tables go into that as they go into a `.ts` -- the pass that puts
+/// them back reads whichever framing it finds -- which is what lets a cut be
+/// written straight onto a disc. See [`crate::bdav`].
 fn writing_ts(path: &str) -> bool {
     matches!(
         std::path::Path::new(path).extension().and_then(|e| e.to_str()).map(str::to_ascii_lowercase).as_deref(),
@@ -1290,14 +1294,65 @@ fn reencode_segment(
     Ok(span)
 }
 
-/// Ask the muxer to put a stream back on the PID it arrived on.
+/// Where the streams go on the way out.
+///
+/// A cut of a broadcast puts every stream back on the PID it arrived on. The
+/// tools downstream of a recording look for the sound and the captions where
+/// the broadcast put them, and a fresh numbering makes the output look like
+/// something else entirely.
+///
+/// A cut written in Blu-ray's own framing cannot do that. The map of a
+/// `.m2ts` is on PID 0x0100 whatever else is on it, and a Japanese broadcast
+/// puts its pictures there often enough for the two to meet -- at which
+/// point the muxer stops the cut outright:
+///
+/// ```text
+/// [mpegts] PID 256 cannot be both elementary and PMT PID
+/// ```
+///
+/// So a `.m2ts` is numbered the way a Blu-ray is numbered: the pictures on
+/// 0x1011, the sound from 0x1100, and everything else from 0x1200. That is
+/// where a disc player looks, it is what the disc's index will say the clip
+/// carries ([`crate::bdav`]), and the recording's own tables still describe
+/// each stream -- they are written over the muxer's with the streams named
+/// by where they went rather than where they came from.
+struct Pids {
+    moved: Vec<(i32, i32)>,
+}
+
+impl Pids {
+    /// The recording's own numbering, which is what a `.ts` keeps.
+    fn kept() -> Pids {
+        Pids { moved: Vec::new() }
+    }
+
+    /// Blu-ray's numbering, in the order the streams will be written.
+    fn bluray(video: i32, audios: &[i32], others: &[i32]) -> Pids {
+        let mut moved = vec![(video, 0x1011)];
+        for (i, pid) in audios.iter().enumerate() {
+            moved.push((*pid, 0x1100 + i as i32));
+        }
+        for (i, pid) in others.iter().enumerate() {
+            moved.push((*pid, 0x1200 + i as i32));
+        }
+        Pids { moved }
+    }
+
+    /// Where the stream that arrived on `was` is written.
+    fn out(&self, was: i32) -> i32 {
+        self.moved.iter().find(|(from, _)| *from == was).map_or(was, |(_, to)| *to)
+    }
+}
+
+/// Ask the muxer to put a stream on a particular PID.
 ///
 /// The MPEG-TS muxer reads a stream's id as the PID to write it on, and only
 /// numbers from `mpegts_start_pid` the streams that do not name one. Which
-/// is what lets a recording come back out on its own PIDs: the sound where
+/// is what lets a recording come back out on its own PIDs -- the sound where
 /// the tools downstream expect sound, the captions where a caption decoder
-/// looks. Anything below 16 is not a PID a stream can sit on and is how
-/// libav says it has no opinion.
+/// looks -- and what lets a cut written for a disc be numbered the way a
+/// disc is numbered instead; see [`Pids`]. Anything below 16 is not a PID a
+/// stream can sit on and is how libav says it has no opinion.
 unsafe fn set_pid(ost: &mut ff::format::stream::StreamMut, to_ts: bool, pid: i32) {
     if to_ts && (0x0010..=0x1FFA).contains(&pid) {
         (*ost.as_mut_ptr()).id = pid;
@@ -1964,16 +2019,22 @@ fn graft_tables(
     setups: &[AudioSetup],
     captions: &[crate::CaptionInfo],
     video_pid: i32,
+    pids: &Pids,
     range_starts: &[f64],
     plans: &[RangePlan],
     output: &str,
     tables: crate::si::Tables,
 ) -> Result<crate::si::Stats> {
-    let mut streams =
-        vec![crate::si::GraftStream { pid: video_pid as u16, faithful: true, declared: None }];
+    let mut streams = vec![crate::si::GraftStream {
+        pid: pids.out(video_pid) as u16,
+        was: video_pid as u16,
+        faithful: true,
+        declared: None,
+    }];
     for setup in setups {
         streams.push(crate::si::GraftStream {
-            pid: setup.info.pid as u16,
+            pid: pids.out(setup.info.pid) as u16,
+            was: setup.info.pid as u16,
             // A folded track no longer has the channels the recording's own
             // audio component descriptor names, and saying it does is worse
             // than saying nothing. A track in another codec is further from
@@ -1984,7 +2045,8 @@ fn graft_tables(
     }
     for c in captions {
         streams.push(crate::si::GraftStream {
-            pid: c.pid as u16,
+            pid: pids.out(c.pid) as u16,
+            was: c.pid as u16,
             faithful: true,
             declared: None,
         });
@@ -2007,7 +2069,13 @@ fn graft_tables(
 
     crate::si::graft(
         output,
-        &crate::si::Graft { service, streams, pcr_pid: video_pid as u16, ranges, tables },
+        &crate::si::Graft {
+            service,
+            streams,
+            pcr_pid: pids.out(video_pid) as u16,
+            ranges,
+            tables,
+        },
     )
 }
 
@@ -2074,6 +2142,17 @@ pub fn cut_with_progress(
             src.captions.len(),
         );
     }
+    // And where each of them goes. The recording's own PIDs, unless what is
+    // being written is a Blu-ray's own framing; see [`Pids`].
+    let pids = if writing_m2ts(output) {
+        Pids::bluray(
+            video_pid,
+            &audios.iter().map(|a| a.pid).collect::<Vec<_>>(),
+            &captions.iter().map(|c| c.pid).collect::<Vec<_>>(),
+        )
+    } else {
+        Pids::kept()
+    };
     // What each sound track is and what will become of it. Settled before
     // anything is declared, because a stream has to be declared as the thing
     // it will contain and a downmixed track is not what the recording's own
@@ -2088,15 +2167,7 @@ pub fn cut_with_progress(
     // with it: an event information section names its service by transport
     // stream and by network, and a player that finds those disagreeing with
     // the tables around them is right to believe neither.
-    let blu_ray = writing_m2ts(output);
-    if to_ts && blu_ray && opts.tables != crate::si::Tables::Muxer {
-        eprintln!(
-            "note: a .m2ts is written in Blu-ray's own framing and PID numbering, which is \
-             the muxer's to decide, so the broadcast's own tables are left to it. Write a \
-             .ts to keep them."
-        );
-    }
-    let wants_tables = to_ts && !blu_ray && opts.tables != crate::si::Tables::Muxer;
+    let wants_tables = to_ts && opts.tables != crate::si::Tables::Muxer;
     let ours = u16::try_from(video_pid).unwrap_or(0);
     let tables = match wants_tables.then(|| crate::si::read_service(&src.input, ours)) {
         Some(Ok(t)) => Some(t),
@@ -2107,7 +2178,9 @@ pub fn cut_with_progress(
         None => None,
     };
 
-    let pids;
+    // The muxer's options are strings, and have to outlive the dictionary
+    // they go into.
+    let first_pid;
     let pmt;
     let service;
     let tsid;
@@ -2115,17 +2188,27 @@ pub fn cut_with_progress(
     let service_type;
     if to_ts {
         if let Some(l) = layout {
-            pids = l.first_pid.to_string();
+            first_pid = l.first_pid.to_string();
             pmt = l.pmt_pid.to_string();
             service = l.service_id.to_string();
-            if l.first_pid > 0 {
-                muxer_opts.set("mpegts_start_pid", &pids);
-            }
-            if l.pmt_pid > 0 {
-                muxer_opts.set("mpegts_pmt_start_pid", &pmt);
-            }
+            // Which service this is, always: the table this program writes
+            // over the muxer's names the recording's own service, and a
+            // program number in the map that the list of programmes does not
+            // have is a file a player cannot follow from one to the other.
             if l.service_id > 0 {
                 muxer_opts.set("mpegts_service_id", &service);
+            }
+            // Where the streams go, only where the recording's own numbering
+            // is being kept. Blu-ray's numbering is asked for stream by
+            // stream, and its map has a PID of its own that the muxer
+            // decides; see [`Pids`].
+            if pids.moved.is_empty() {
+                if l.first_pid > 0 {
+                    muxer_opts.set("mpegts_start_pid", &first_pid);
+                }
+                if l.pmt_pid > 0 {
+                    muxer_opts.set("mpegts_pmt_start_pid", &pmt);
+                }
             }
         }
         // Where this service sits in its network, which only the recording's
@@ -2197,7 +2280,7 @@ pub fn cut_with_progress(
                 (Some(_), "hevc") => u32::from_le_bytes(*b"hev1"),
                 _ => 0,
             };
-            set_pid(&mut ost, to_ts, video_pid);
+            set_pid(&mut ost, to_ts, pids.out(video_pid));
         }
     }
     // Sound rides along beside the pictures: one output track for each the
@@ -2252,7 +2335,7 @@ pub fn cut_with_progress(
         let out_index = ost.index();
         unsafe {
             (*ost.parameters().as_mut_ptr()).codec_tag = 0;
-            set_pid(&mut ost, to_ts, setup.info.pid);
+            set_pid(&mut ost, to_ts, pids.out(setup.info.pid));
         }
         audio_pending.push((out_index, reencoder));
     }
@@ -2278,7 +2361,7 @@ pub fn cut_with_progress(
         let out_index = ost.index();
         unsafe {
             (*ost.parameters().as_mut_ptr()).codec_tag = 0;
-            set_pid(&mut ost, to_ts, info.pid);
+            set_pid(&mut ost, to_ts, pids.out(info.pid));
         }
         caption_pending.push(out_index);
     }
@@ -2511,6 +2594,7 @@ pub fn cut_with_progress(
             &setups,
             &captions,
             video_pid,
+            &pids,
             &range_starts,
             plans,
             output,

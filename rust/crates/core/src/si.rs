@@ -365,7 +365,7 @@ impl Components {
             // arrangement the output no longer has, so the tag counts as
             // uncarried and the descriptor goes with it.
             .filter(|gs| gs.faithful)
-            .filter_map(|gs| g.service.stream(gs.pid).and_then(|es| es.component_tag()))
+            .filter_map(|gs| g.service.stream(gs.was).and_then(|es| es.component_tag()))
             .collect();
         Components { described, carried }
     }
@@ -748,6 +748,360 @@ pub fn snapshot_at(input: &crate::input::Input, pos: i64, service_id: u16) -> Re
     Ok(out)
 }
 
+// --- what the recording says the programme was ---------------------------
+//
+// Everywhere else in this module the broadcast's own text is carried across
+// as the bytes it arrived as, because a player decodes them and this does
+// not have to. Here it does: a disc names its recordings in its own index,
+// and a name has to be a name before it can be written into one. See
+// [`crate::bdav`].
+
+/// When a programme began, as a broadcast writes it down.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Began {
+    pub year: u16,
+    pub month: u8,
+    pub day: u8,
+    pub hour: u8,
+    pub minute: u8,
+    pub second: u8,
+}
+
+/// What a recording says about the programme in it.
+///
+/// Every field is optional and independently so: a recording cut from the
+/// middle of the night can carry a service name and no event, and a stream
+/// that has been through a tool with no idea of any of this carries neither.
+///
+/// The shape is the one a recorder writes into a disc's own playlist -- the
+/// programme, what it said about itself, when it went out, and which channel
+/// it came off -- because that is where this goes. See [`crate::bdav`].
+#[derive(Debug, Clone, Default)]
+pub struct Programme {
+    /// The event name, as a listing would print it.
+    pub name: Option<String>,
+    /// What the broadcaster said the programme was: the summary a listing
+    /// carries, and the cast and staff behind it.
+    pub description: Option<String>,
+    /// What the channel calls itself.
+    pub channel: Option<String>,
+    /// The three digits a viewer knows the channel by, or 0 where the
+    /// recording does not say. See [`three_digit`].
+    pub channel_number: u16,
+    pub began: Option<Began>,
+}
+
+/// The number a viewer knows a channel by, from the service it is.
+///
+/// On satellite the two are the same: a service numbered 161 is channel 161,
+/// and every BS and CS service is numbered in that range. A terrestrial
+/// service is not -- its identifier is 1024 and up, and the three digits a
+/// remote control shows are built from a key number that only the network
+/// information table carries. So a terrestrial recording comes back as 0,
+/// which is the field saying it does not know, rather than as a number that
+/// would be wrong.
+fn three_digit(service_id: u16) -> u16 {
+    if (100..1000).contains(&service_id) {
+        service_id
+    } else {
+        0
+    }
+}
+
+impl Began {
+    /// Read one back off a line of text, as the window sends it.
+    ///
+    /// `2026-08-17 01:00:00`, and the same without the seconds, which is
+    /// what a recorder's own list shows.
+    pub fn parse(text: &str) -> Option<Began> {
+        let (date, clock) = text.trim().split_once(' ')?;
+        let mut date = date.split('-');
+        let mut clock = clock.split(':');
+        let next = |it: &mut std::str::Split<char>| it.next()?.parse::<u16>().ok();
+        let began = Began {
+            year: next(&mut date)?,
+            month: next(&mut date)? as u8,
+            day: next(&mut date)? as u8,
+            hour: next(&mut clock)? as u8,
+            minute: next(&mut clock)? as u8,
+            second: clock.next().and_then(|s| s.parse().ok()).unwrap_or(0),
+        };
+        // A date a field was misread out of is not a date. The year is the
+        // one bound worth stating: everything else is bounded by its own
+        // width.
+        ((1970..=2200).contains(&began.year)
+            && (1..=12).contains(&began.month)
+            && (1..=31).contains(&began.day)
+            && began.hour < 24
+            && began.minute < 60
+            && began.second < 60)
+            .then_some(began)
+    }
+}
+
+impl std::fmt::Display for Began {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let Began { year, month, day, hour, minute, second } = self;
+        write!(f, "{year:04}-{month:02}-{day:02} {hour:02}:{minute:02}:{second:02}")
+    }
+}
+
+impl Programme {
+    pub fn is_empty(&self) -> bool {
+        self.name.is_none()
+            && self.description.is_none()
+            && self.channel.is_none()
+            && self.began.is_none()
+    }
+}
+
+/// Read what the recording says about its programme.
+///
+/// Two shapes are read, because this program writes one of them. A
+/// broadcast recording carries an event information table and a service
+/// description, each on its own PID; a cut this program has already made
+/// carries [`Tables::Partial`], which is the same facts in the one table a
+/// partial transport stream has -- and a cut of a cut should not lose the
+/// name it was carrying.
+pub fn programme(input: &crate::input::Input, service_id: u16) -> Result<Programme> {
+    // A programme description repeats about every two seconds and a service
+    // description every ten, which at broadcast rates is a few megabytes.
+    // The same window the snapshot uses, for the same reason.
+    const WINDOW: usize = 24 << 20;
+    let mut f = input.open()?;
+    let mut buf = vec![0u8; WINDOW];
+    let n = read_fully(&mut f, &mut buf)?;
+    buf.truncate(n);
+    let Some((base, stride)) = framing(&buf) else { return Ok(Programme::default()) };
+
+    let mut eit = SectionReader::default();
+    let mut sdt = SectionReader::default();
+    let mut sit = SectionReader::default();
+    let mut out = Programme::default();
+
+    let mut at = base;
+    while at + PACKET <= buf.len() {
+        let p = &buf[at..at + PACKET];
+        at += stride;
+        if p[0] != 0x47 {
+            match find_sync(&buf[at..], stride) {
+                Some(off) => at += off,
+                None => break,
+            }
+            continue;
+        }
+        match pid_of(p) {
+            PID_EIT => eit.feed(p, |sec| {
+                // Present and following arrive as two sections and only the
+                // first describes this file; the following one names a
+                // programme that is not here.
+                if sec[0] != TABLE_EIT_PF_ACTUAL || sec.len() < 26 || sec[6] != 0 {
+                    return;
+                }
+                let whose = ((sec[3] as u16) << 8) | sec[4] as u16;
+                if service_id != 0 && whose != service_id {
+                    return;
+                }
+                let Some(event) = sec.get(14..sec.len() - 4) else { return };
+                out.began = out.began.or_else(|| began_at(&event[2..7]));
+                if out.channel_number == 0 {
+                    out.channel_number = three_digit(whose);
+                }
+                let len = (((event[10] & 0x0F) as usize) << 8) | event[11] as usize;
+                if let Some(loop_bytes) = event.get(12..12 + len) {
+                    out.name = out.name.take().or_else(|| event_name(loop_bytes));
+                    out.description =
+                        out.description.take().or_else(|| event_description(loop_bytes));
+                }
+            }),
+            PID_SDT => sdt.feed(p, |sec| {
+                if sec[0] != TABLE_SDT_ACTUAL {
+                    return;
+                }
+                if let Some(d) = service_descriptor(sec) {
+                    out.channel = out.channel.take().or_else(|| service_name(d));
+                }
+            }),
+            PID_SIT => sit.feed(p, |sec| {
+                if sec[0] != TABLE_SIT {
+                    return;
+                }
+                let Some((whose, described)) = sit_service(sec) else { return };
+                out.began = out
+                    .began
+                    .or_else(|| descriptor(described, 0xC3).and_then(|d| began_at(d.get(1..6)?)));
+                if out.channel_number == 0 {
+                    out.channel_number = three_digit(whose);
+                }
+                out.name = out.name.take().or_else(|| event_name(described));
+                out.description = out.description.take().or_else(|| event_description(described));
+                out.channel = out.channel.take().or_else(|| {
+                    let whole = descriptor(described, 0x48)?;
+                    service_name(&[&[0x48, whole.len() as u8], whole].concat())
+                });
+            }),
+            _ => {}
+        }
+        if out.name.is_some()
+            && out.description.is_some()
+            && out.channel.is_some()
+            && out.began.is_some()
+        {
+            break;
+        }
+    }
+    Ok(out)
+}
+
+/// The one service a partial transport stream's own table describes: which
+/// it is, and what it says about itself.
+///
+/// One service, since a partial stream is one recording; what follows the
+/// transmission information the table opens with is its loop.
+fn sit_service(sec: &[u8]) -> Option<(u16, &[u8])> {
+    let body = sec.get(..sec.len().checked_sub(4)?)?;
+    let transmission = ((((body.get(8)? & 0x0F) as usize) << 8) | *body.get(9)? as usize) + 10;
+    let service = body.get(transmission..)?;
+    let id = ((*service.first()? as u16) << 8) | *service.get(1)? as u16;
+    let len = (((service.get(2)? & 0x0F) as usize) << 8) | *service.get(3)? as usize;
+    Some((id, service.get(4..4 + len)?))
+}
+
+/// The event name out of a descriptor loop.
+///
+/// A short event descriptor names the programme and then describes it; only
+/// the first is wanted, and it is ARIB text like everything else a
+/// broadcaster writes.
+fn event_name(loop_bytes: &[u8]) -> Option<String> {
+    let d = descriptor(loop_bytes, 0x4D)?;
+    let len = *d.get(3)? as usize;
+    let text = crate::arib::one_line(&crate::arib::decode(d.get(4..4 + len)?));
+    (!text.is_empty()).then_some(text)
+}
+
+/// What the broadcaster said the programme was, out of a descriptor loop.
+///
+/// Two descriptors carry it and both are taken. The short event descriptor
+/// holds the sentence a listing prints under the title; the extended event
+/// descriptors hold what is under *that* -- the cast, the staff, the
+/// episode's own summary -- as a list of named items, which is written out
+/// the way a recorder writes it into a disc: `【item】text`, a line each.
+///
+/// An item whose name is empty is the previous item continued: the list is
+/// spread over as many descriptors as it needs, and one item may straddle
+/// two of them.
+fn event_description(loop_bytes: &[u8]) -> Option<String> {
+    let mut out = String::new();
+    if let Some(d) = descriptor(loop_bytes, 0x4D) {
+        let name = *d.get(3)? as usize;
+        let at = 4 + name;
+        let len = *d.get(at)? as usize;
+        if let Some(text) = d.get(at + 1..at + 1 + len) {
+            out.push_str(&crate::arib::decode(text));
+        }
+    }
+
+    let mut items: Vec<(String, String)> = Vec::new();
+    for d in every_descriptor(loop_bytes, 0x4E) {
+        // The number this descriptor is of the run, the language, and then
+        // how many bytes of items follow.
+        let Some(&len) = d.get(4) else { continue };
+        let mut at = 5;
+        while at < 5 + len as usize {
+            let Some(&name_len) = d.get(at) else { break };
+            let name = at + 1;
+            let Some(&text_len) = d.get(name + name_len as usize) else { break };
+            let text = name + name_len as usize + 1;
+            let (Some(name), Some(text)) = (
+                d.get(name..name + name_len as usize),
+                d.get(text..text + text_len as usize),
+            ) else {
+                break;
+            };
+            let (name, text) = (crate::arib::decode(name), crate::arib::decode(text));
+            match (name.is_empty(), items.last_mut()) {
+                (true, Some(last)) => last.1.push_str(&text),
+                _ => items.push((name, text)),
+            }
+            // The two length bytes, the name, and the text.
+            at += 2 + name_len as usize + text_len as usize;
+        }
+    }
+    for (name, text) in items {
+        if !out.is_empty() {
+            out.push('\n');
+        }
+        if name.is_empty() {
+            out.push_str(&text);
+        } else {
+            out.push_str(&format!("【{name}】{text}"));
+        }
+    }
+    (!out.is_empty()).then_some(out)
+}
+
+/// Every descriptor in a loop with this tag, in the order they were sent.
+///
+/// [`descriptor`] finds the first, which is all a loop with one of anything
+/// needs. A programme's own description is the exception: it is spread over
+/// as many descriptors as it takes.
+fn every_descriptor(loop_bytes: &[u8], tag: u8) -> Vec<&[u8]> {
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i + 2 <= loop_bytes.len() {
+        let len = loop_bytes[i + 1] as usize;
+        let Some(body) = loop_bytes.get(i + 2..i + 2 + len) else { break };
+        if loop_bytes[i] == tag {
+            out.push(body);
+        }
+        i += 2 + len;
+    }
+    out
+}
+
+/// What a service calls itself, out of the descriptor that says so.
+///
+/// The provider comes first and is not it: on a Japanese broadcast that
+/// field is usually empty and never what a listing shows.
+fn service_name(whole: &[u8]) -> Option<String> {
+    let body = whole.get(2..)?;
+    let provider = *body.get(1)? as usize;
+    let len = *body.get(2 + provider)? as usize;
+    let at = 3 + provider;
+    let text = crate::arib::one_line(&crate::arib::decode(body.get(at..at + len)?));
+    (!text.is_empty()).then_some(text)
+}
+
+/// The five bytes a broadcast writes a moment in: a modified Julian day and
+/// then the hours, minutes and seconds in binary coded decimal.
+///
+/// The day is turned into a date by the arithmetic in the specification's
+/// own annex, which is exact for every date this will ever see.
+fn began_at(raw: &[u8]) -> Option<Began> {
+    let mjd = ((*raw.first()? as u32) << 8) | *raw.get(1)? as u32;
+    // All ones is how a broadcaster says the time is not known.
+    if mjd == 0 || mjd == 0xFFFF {
+        return None;
+    }
+    let d = |i: usize| -> Option<u8> {
+        let b = *raw.get(i)?;
+        let (hi, lo) = (b >> 4, b & 0x0F);
+        (hi <= 9 && lo <= 9).then_some(hi * 10 + lo)
+    };
+    let yp = ((mjd as f64 - 15078.2) / 365.25) as u32;
+    let mp = ((mjd as f64 - 14956.1 - (yp as f64 * 365.25).trunc()) / 30.6001) as u32;
+    let day = mjd - 14956 - (yp as f64 * 365.25).trunc() as u32 - (mp as f64 * 30.6001).trunc() as u32;
+    let k = u32::from(mp == 14 || mp == 15);
+    Some(Began {
+        year: (yp + k + 1900) as u16,
+        month: (mp - 1 - k * 12) as u8,
+        day: day as u8,
+        hour: d(2)?,
+        minute: d(3)?,
+        second: d(4)?,
+    })
+}
+
 /// How a stream the cut wrote in another codec is to be declared.
 ///
 /// A downmixed track is still the codec it was, so the recording's own entry
@@ -781,9 +1135,18 @@ pub struct Declared {
 /// One elementary stream as it is to be described in the rebuilt map.
 #[derive(Debug, Clone)]
 pub struct GraftStream {
-    /// The PID it was written on, which is the PID it arrived on -- the
-    /// muxer takes an explicit stream id and honours it.
+    /// The PID it was written on.
+    ///
+    /// Usually the PID it arrived on -- the muxer takes an explicit stream
+    /// id and honours it -- and not always: a cut written in Blu-ray's own
+    /// framing is numbered the way a Blu-ray is numbered, because the map of
+    /// one of those is on a PID a broadcast may already be using. See
+    /// `cut::Pids`.
     pub pid: u16,
+    /// The PID it arrived on, which is how the recording's own tables name
+    /// it. What the map to be written says about a stream is looked up
+    /// under this and written under [`GraftStream::pid`].
+    pub was: u16,
     /// Whether the stream in the output is still the stream that was
     /// described. A track that was downmixed is not: its audio component
     /// descriptor names a channel arrangement the file no longer contains,
@@ -909,7 +1272,7 @@ fn build_pmt(g: &Graft, pcr_pid: u16, components: &Components) -> Vec<u8> {
             Some(body) => vec![0x52, body.len() as u8, body[0]],
             None => Vec::new(),
         };
-        let (stream_type, desc) = match (s.stream(gs.pid), &gs.declared) {
+        let (stream_type, desc) = match (s.stream(gs.was), &gs.declared) {
             // Written in another codec, so nothing the recording says about
             // the contents of this stream is true of the file. See
             // `Declared`.
@@ -1218,7 +1581,8 @@ fn output_layout(path: &str) -> Result<(u16, u16)> {
     let mut buf = vec![0u8; 4 << 20];
     let n = read_fully(&mut f, &mut buf)?;
     buf.truncate(n);
-    let base = find_sync(&buf, PACKET).ok_or_else(|| anyhow!("{path} is not a transport stream"))?;
+    let (base, stride) =
+        framing(&buf).ok_or_else(|| anyhow!("{path} is not a transport stream"))?;
 
     let mut pat = SectionReader::default();
     let mut pmt = SectionReader::default();
@@ -1228,7 +1592,7 @@ fn output_layout(path: &str) -> Result<(u16, u16)> {
     let mut at = base;
     while at + PACKET <= buf.len() {
         let p = &buf[at..at + PACKET];
-        at += PACKET;
+        at += stride;
         if p[0] != 0x47 {
             break;
         }
@@ -1281,25 +1645,30 @@ fn output_layout(path: &str) -> Result<(u16, u16)> {
 ///
 /// This is a whole extra pass over the output, which is why it is only asked
 /// for when a partial stream is being written.
-fn peak_rate(path: &str, pcr_pid: u16, added: f64) -> Result<u32> {
+fn peak_rate(path: &str, pcr_pid: u16, stride: usize, added: f64) -> Result<u32> {
     let mut src = BufReader::with_capacity(1 << 20, std::fs::File::open(path)?);
-    let mut packet = [0u8; PACKET];
+    let mut frame = vec![0u8; stride];
     let mut at: u64 = 0;
     let mut base: Option<i64> = None;
     let mut window: std::collections::VecDeque<(u64, f64)> = std::collections::VecDeque::new();
     let mut peak = 0f64;
     let mut last = 0f64;
     loop {
-        match src.read_exact(&mut packet) {
+        match src.read_exact(&mut frame) {
             Ok(()) => {}
             Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => break,
             Err(e) => return Err(e).context("measuring the rate of the cut"),
         }
+        // The rate the descriptor states is the transport stream's own, so
+        // the arrival times a Blu-ray puts in front of the packets are not
+        // counted into it: they are how the stream is stored, not how much
+        // of it there is.
         at += PACKET as u64;
-        if pid_of(&packet) != pcr_pid {
+        let packet = &frame[stride - PACKET..];
+        if pid_of(packet) != pcr_pid {
             continue;
         }
-        let Some(pcr) = pcr_of(&packet) else { continue };
+        let Some(pcr) = pcr_of(packet) else { continue };
         let start = *base.get_or_insert(pcr);
         let mut ticks = pcr - start;
         if ticks < 0 {
@@ -1327,6 +1696,28 @@ fn peak_rate(path: &str, pcr_pid: u16, added: f64) -> Result<u32> {
     Ok((((peak + added) / 400.0).ceil() as u64).min(0x3F_FFFF) as u32)
 }
 
+/// How a file this program has already written is framed.
+///
+/// A cut written as a `.ts` is packet after packet; one written for a
+/// Blu-ray is the same packets with four bytes of arrival time in front of
+/// each. A pass that puts tables into the second has to leave those four
+/// bytes where they are and put four of its own in front of anything it
+/// adds -- so everything below reads a *frame*, which is a packet and
+/// whatever is in front of it.
+fn framing_of(path: &str) -> Result<usize> {
+    let mut f = std::fs::File::open(path)?;
+    let mut buf = vec![0u8; M2TS_PACKET * 16];
+    let n = read_fully(&mut f, &mut buf)?;
+    buf.truncate(n);
+    match framing(&buf) {
+        // A `.ts` opens on a sync byte and a `.m2ts` four bytes past one.
+        // Anything else is a file with something in front of the stream,
+        // which is not something this program writes.
+        Some((base, stride)) if base == stride - PACKET => Ok(stride),
+        _ => bail!("{path} is not packet aligned; the cut was not written as a transport stream"),
+    }
+}
+
 /// Put the recording's own tables back into a finished cut.
 ///
 /// One pass, packet by packet. The map and the service description are
@@ -1341,6 +1732,11 @@ pub fn graft(output: &str, g: &Graft) -> Result<Stats> {
     }
     let (out_pmt_pid, out_pcr_pid) = output_layout(output)?;
     let pcr_pid = if out_pcr_pid > 0 { out_pcr_pid } else { g.pcr_pid };
+    // 188 or 192: see [`framing_of`]. Everything below reads and writes a
+    // frame, whose last 188 bytes are the packet and whose first `lead` are
+    // the arrival time a Blu-ray keeps in front of it.
+    let stride = framing_of(output)?;
+    let lead = stride - PACKET;
     // Beside the output rather than in a temporary directory: the two are
     // renamed into each other at the end, and a rename across filesystems is
     // a copy of the whole file.
@@ -1365,7 +1761,8 @@ pub fn graft(output: &str, g: &Graft) -> Result<Stats> {
             // The largest a section can be, since which range holds the
             // largest table is not known before the rate they all carry is.
             let biggest = SECTION_MAX.div_ceil(PACKET - 5) as f64;
-            let rate = peak_rate(output, pcr_pid, biggest * PACKET as f64 * 8.0 / SDT_PERIOD)?;
+            let rate =
+                peak_rate(output, pcr_pid, stride, biggest * PACKET as f64 * 8.0 / SDT_PERIOD)?;
             let mut sections: Vec<Vec<u8>> = Vec::with_capacity(g.ranges.len());
             let mut version = 0u8;
             for r in &g.ranges {
@@ -1409,19 +1806,35 @@ pub fn graft(output: &str, g: &Graft) -> Result<Stats> {
         // describes each of them over its own stretch.
         let mut range = 0usize;
 
-        let mut packet = [0u8; PACKET];
+        let mut frame = vec![0u8; stride];
+        // A section this pass writes goes out behind the arrival time of the
+        // packet it is standing in for, or of the one it is being inserted
+        // in front of: a table arrives when the packet it displaces did.
+        // Two packets sharing an arrival time is a burst, which is a thing a
+        // recorder writes; an arrival time out of order is not.
+        let put = |dst: &mut std::io::BufWriter<std::fs::File>,
+                       at: &[u8],
+                       packets: &[u8]|
+         -> std::io::Result<()> {
+            for one in packets.chunks(PACKET) {
+                dst.write_all(at)?;
+                dst.write_all(one)?;
+            }
+            Ok(())
+        };
         loop {
-            match src.read_exact(&mut packet) {
+            match src.read_exact(&mut frame) {
                 Ok(()) => {}
                 Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => break,
                 Err(e) => return Err(e).context("reading the cut back"),
             }
+            let (arrival, packet) = frame.split_at(lead);
             if packet[0] != 0x47 {
                 bail!("{output} is not packet aligned; the cut was not written as a transport stream");
             }
-            let pid = pid_of(&packet);
+            let pid = pid_of(packet);
             if pid == pcr_pid {
-                if let Some(pcr) = pcr_of(&packet) {
+                if let Some(pcr) = pcr_of(packet) {
                     let base = *first_pcr.get_or_insert(pcr);
                     // The clock is 33 bits and wraps every 26.5 hours. A
                     // recording that long is not the case worth handling
@@ -1446,7 +1859,7 @@ pub fn graft(output: &str, g: &Graft) -> Result<Stats> {
                     let c = cc.entry(p).or_default();
                     scratch.clear();
                     packetize(p, &pmt_section, c, &mut scratch);
-                    dst.write_all(&scratch)?;
+                    put(&mut dst, arrival, &scratch)?;
                     stats.pmt += 1;
                     continue;
                 }
@@ -1459,7 +1872,7 @@ pub fn graft(output: &str, g: &Graft) -> Result<Stats> {
                     let c = cc.entry(PID_SIT).or_default();
                     scratch.clear();
                     packetize(PID_SIT, &sit[range], c, &mut scratch);
-                    dst.write_all(&scratch)?;
+                    put(&mut dst, arrival, &scratch)?;
                     stats.sit += 1;
                     continue;
                 }
@@ -1467,13 +1880,13 @@ pub fn graft(output: &str, g: &Graft) -> Result<Stats> {
                     let c = cc.entry(PID_SDT).or_default();
                     scratch.clear();
                     packetize(PID_SDT, sdt_section.as_ref().unwrap(), c, &mut scratch);
-                    dst.write_all(&scratch)?;
+                    put(&mut dst, arrival, &scratch)?;
                     stats.sdt += 1;
                     continue;
                 }
                 _ => {}
             }
-            dst.write_all(&packet)?;
+            dst.write_all(&frame)?;
 
             // A partial stream has said everything it has to say in the one
             // table; the tables below are the ones it exists instead of.
@@ -1488,7 +1901,7 @@ pub fn graft(output: &str, g: &Graft) -> Result<Stats> {
                 for sec in &eit[range] {
                     packetize(PID_EIT, sec, c, &mut scratch);
                 }
-                dst.write_all(&scratch)?;
+                put(&mut dst, arrival, &scratch)?;
                 stats.eit += 1;
             }
             if now >= next_tot {
@@ -1499,7 +1912,7 @@ pub fn graft(output: &str, g: &Graft) -> Result<Stats> {
                         let c = cc.entry(PID_TDT).or_default();
                         scratch.clear();
                         packetize(PID_TDT, &moved, c, &mut scratch);
-                        dst.write_all(&scratch)?;
+                        put(&mut dst, arrival, &scratch)?;
                         stats.tot += 1;
                     }
                 }

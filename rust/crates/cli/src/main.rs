@@ -148,6 +148,15 @@ fn main() -> Result<()> {
     // A cut of a broadcast is a partial transport stream unless asked for
     // in one of the other two shapes. See `smartcut_core::si::Tables`.
     let mut tables = smartcut_core::si::Tables::default();
+    // Where a disc of recordings is being built, and what to call it and the
+    // recording going onto it. See `smartcut_core::bdav`.
+    let mut bdav: Option<String> = None;
+    let mut disc_title: Option<String> = None;
+    let mut programme: Option<String> = None;
+    let mut given_channel: Option<String> = None;
+    let mut given_number: Option<u16> = None;
+    let mut about: Option<String> = None;
+    let mut given_made: Option<smartcut_core::si::Began> = None;
 
     let mut i = 0;
     while i < args.len() {
@@ -302,6 +311,51 @@ fn main() -> Result<()> {
                 i += 1;
                 output = Some(args.get(i).context("-o needs a path")?.clone());
             }
+            // Onto a disc rather than into a file. The name of the file is
+            // the disc's to decide -- a recording on one is `00001.m2ts` --
+            // and what the programme is called goes in the index beside it.
+            "--bdav" => {
+                i += 1;
+                bdav = Some(args.get(i).context("--bdav needs a folder")?.clone());
+            }
+            "--disc-title" => {
+                i += 1;
+                disc_title = Some(args.get(i).context("--disc-title needs a name")?.clone());
+            }
+            "--programme" => {
+                i += 1;
+                programme = Some(args.get(i).context("--programme needs a name")?.clone());
+            }
+            // The other two things a disc's index says about a recording,
+            // for a stream that no longer carries them: a recording that has
+            // been through tools that kept none of its tables still belongs
+            // on a disc under the channel it came off.
+            "--channel" => {
+                i += 1;
+                let v = args.get(i).context("--channel needs a name")?.clone();
+                // `衛星第一` or `衛星第一,161`: the number is what a viewer
+                // knows the channel by, and is optional because only
+                // satellite has one this can be sure of.
+                match v.split_once(',') {
+                    Some((name, n)) => {
+                        given_channel = Some(name.to_string());
+                        given_number = n.trim().parse().ok();
+                    }
+                    None => given_channel = Some(v),
+                }
+            }
+            "--about" => {
+                i += 1;
+                about = Some(args.get(i).context("--about needs some text")?.clone());
+            }
+            "--made" => {
+                i += 1;
+                let v = args.get(i).context("--made needs a date and time")?;
+                given_made = Some(
+                    smartcut_core::si::Began::parse(v)
+                        .with_context(|| format!("--made wants 2026-08-17 01:00:00, got {v:?}"))?,
+                );
+            }
             a if a.starts_with('-') => bail!("unknown option {a}"),
             a => input = Some(a.to_string()),
         }
@@ -311,10 +365,14 @@ fn main() -> Result<()> {
         bail!(
             "usage: smartcut <input> [--keep START-END]... [--cut START-END]... \
              [--drop-stream INDEX]... [--tables partial|broadcast|muxer] [--no-open-gop] \
-             [--vc1-quant 3..31] [--title N]\n\
+             [--vc1-quant 3..31] [--title N] [-o OUTPUT | --bdav FOLDER]\n\
              <input> is a recording, or a disc -- a BDAV, BDMV or VIDEO_TS folder, \
              or an .iso of one -- whose recordings are listed when no --title \
-             is given"
+             is given\n\
+             --bdav writes the cut onto a disc of recordings in FOLDER rather than \
+             into a file; --disc-title, --programme, --channel, --about and --made \
+             fill in what its index says, which is otherwise taken from what the \
+             recording says about itself"
         );
     };
     // A share the machine has already mounted may be named the way it is
@@ -329,12 +387,43 @@ fn main() -> Result<()> {
     // Held until the recording is open: saying where a mark *is* means
     // rebasing it by the container's start, and nothing knows that yet.
     let mut chapters: Vec<f64> = Vec::new();
+    // What the disc this came off said the programme was, for a cut of it
+    // being written onto a disc of its own.
+    let mut off_a_disc: Option<smartcut_core::disc::Entry> = None;
     let input = match on_a_disc(&input)? {
         None => input,
         Some(disc) => match pick(&disc.entries, title.as_deref())? {
             Some(entry) => {
                 println!("title : {}", entry.label);
+                // What the disc's own playlist says about the recording
+                // beside its name. Worth printing because it is what a cut
+                // of this recording carries onto a disc of its own -- see
+                // `--bdav` -- and because a disc is the only place a
+                // recording is described at all.
+                let mut about: Vec<String> = Vec::new();
+                if let Some(channel) = &entry.channel {
+                    about.push(match entry.channel_number {
+                        0 => channel.clone(),
+                        n => format!("{channel} ({n})"),
+                    });
+                }
+                if let Some(made) = entry.made {
+                    about.push(made.to_string());
+                }
+                if !about.is_empty() {
+                    println!("        {}", about.join("  "));
+                }
+                if let Some(text) = &entry.description {
+                    // One line of it: a description runs to several hundred
+                    // characters and this is a heading, not the programme
+                    // guide.
+                    let flat = text.replace('\n', " ");
+                    let short: String = flat.chars().take(100).collect();
+                    let more = if flat.chars().count() > 100 { "…" } else { "" };
+                    println!("        {short}{more}");
+                }
                 chapters = entry.marks.iter().map(|m| entry.start + m).collect();
+                off_a_disc = Some(entry.clone());
                 entry.path.clone()
             }
             None => {
@@ -741,6 +830,20 @@ fn main() -> Result<()> {
             100.0 * enc / total
         );
     }
+    // A recording on a disc is `BDAV/STREAM/00001.m2ts`, and which number it
+    // is depends on what is on the disc already. So the name is the disc's
+    // to give, not `-o`'s.
+    let onto = match &bdav {
+        Some(at) => {
+            let at = std::path::PathBuf::from(at);
+            let clip = smartcut_core::bdav::prepare(&at, 1)?.remove(0);
+            let stream = smartcut_core::bdav::stream_of(&at, &clip);
+            println!("\ndisc  : {} -- recording {clip}", at.display());
+            output = Some(stream.to_string_lossy().into_owned());
+            Some((at, clip))
+        }
+        None => None,
+    };
     if analyze || output.is_none() {
         if output.is_none() && !analyze {
             eprintln!("\n(no -o given; nothing written)");
@@ -839,6 +942,59 @@ fn main() -> Result<()> {
              sound is {}. No sidecar was written.",
             audio_codec.as_str(),
         );
+    }
+    if let Some((at, clip)) = onto {
+        // What the recording knew about itself. The disc it came off first,
+        // where there was one -- a playlist's name is a name somebody has
+        // already read and accepted -- and otherwise what the broadcast
+        // itself carried. Each field on its own: a disc that named the
+        // programme and not the channel should still take the channel from
+        // the stream.
+        let said = smartcut_core::si::programme(&src.input, 0).unwrap_or_default();
+        let was = off_a_disc.as_ref();
+        let name = programme
+            .or_else(|| was.map(|e| e.label.clone()))
+            .or_else(|| said.name.clone())
+            .unwrap_or_else(|| {
+                std::path::Path::new(&input)
+                    .file_stem()
+                    .map(|s| s.to_string_lossy().into_owned())
+                    .unwrap_or_else(|| clip.clone())
+            });
+        let made = given_made.or_else(|| was.and_then(|e| e.made)).or(said.began);
+        let description = about.or_else(|| was.and_then(|e| e.description.clone())).or(said.description);
+        let channel = given_channel.or_else(|| was.and_then(|e| e.channel.clone())).or(said.channel);
+        let channel_number = given_number
+            .or_else(|| was.map(|e| e.channel_number).filter(|n| *n > 0))
+            .unwrap_or(said.channel_number);
+        // A chapter point where each kept range begins, which is where the
+        // cuts are: the one place a viewer would want to skip to.
+        let mut at_out = 0.0;
+        let mut marks = Vec::new();
+        for plan in &plans {
+            marks.push(at_out);
+            at_out += plan.t_out - plan.t_in;
+        }
+        // What to call the disc, when nobody said: the channel this came
+        // off, which for an evening of one channel's recordings is exactly
+        // right, and otherwise the programme.
+        let title = disc_title.or_else(|| channel.clone()).unwrap_or_else(|| name.clone());
+        smartcut_core::bdav::write(
+            &at,
+            &title,
+            &[smartcut_core::bdav::Recording {
+                clip: clip.clone(),
+                name: name.clone(),
+                made,
+                description,
+                channel,
+                channel_number,
+                marks,
+            }],
+            None,
+        )?;
+        println!("wrote {} -- {name}", at.join("BDAV").display());
+        return Ok(());
     }
     println!("wrote {out}");
     Ok(())

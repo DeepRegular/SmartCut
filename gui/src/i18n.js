@@ -224,7 +224,6 @@ const CATALOG = {
     "cm.failed": "検出できません: {e}",
 
     // --- 出力設定画面 ----------------------------------------------------
-    "outset.bar": "ファイル出力",
     "outset.barNote": "ここでの設定は一覧のすべてのクリップに使われます",
     "outset.formatHead": "出力フォーマット",
     "outset.clipPick": "クリップ選択:",
@@ -278,11 +277,35 @@ const CATALOG = {
     "outset.format":
       "映像:　{codec}, {w}x{h}, {fps} fps, {scan}\n音声:　{audio}\n" +
       "区間:　{keeps} 区間 / 出力 {kept}（元 {dur}、カット {cuts} 箇所）\n出力先:　{out}{side}",
+    // 同じ 3 行に、ディスクの索引へ書かれるものを足したもの。ファイル名の
+    // 代わりに、この録画がディスクのどこに入るかを言う。
+    "outset.formatBdav":
+      "映像:　{codec}, {w}x{h}, {fps} fps, {scan}\n音声:　{audio}\n" +
+      "区間:　{keeps} 区間 / 出力 {kept}（元 {dur}、カット {cuts} 箇所）\n" +
+      "チャンネル:　{channel}\n記録日時:　{made}\n番組内容:　{about}\n" +
+      "チャプター:　{marks} 個\nディスク:　{out}",
+    "outset.channelNumbered": "{name}（{n}）",
+    "outset.channelUnknown": "（録画にチャンネル情報がありません）",
+    "outset.aboutNone": "（録画に番組内容がありません）",
+    "outset.tabFile": "ファイル出力",
+    "outset.tabBdav": "BDAV 出力",
+    "outset.discHead": "ディスク設定",
+    "outset.discTitle": "ディスクタイトル:",
+    "outset.discFolder": "ディスクの場所(F):",
+    "outset.discHere": "（フォルダーを選んでください）",
+    "outset.programme": "番組名:",
+    "outset.madeUnknown": "（録画に記録日時がありません）",
+    "outset.discPath": "{dir}/BDAV",
     "outset.interlaced": "インターレース (トップフィールド優先)",
     "outset.sidecar": "\n　　　　{path}",
 
     // --- 出力画面 --------------------------------------------------------
     "out.idle": "出力するクリップを一覧に追加してください",
+    "out.needDiscFolder":
+      "BDAV 出力にはディスクを作る場所が要ります。出力先フォルダーを選んでください",
+    "out.bdavIndexing": "ディスクの索引を作成中: 録画 {clip}",
+    "out.bdavDone": "ディスクを作成しました: {path}（録画 {n} 本）",
+    "out.bdavFailed": "ディスクの索引を作成できませんでした: {e}",
     "out.run": "出力開始",
     "out.abort": "出力中止",
     "out.stateLbl": "状況:",
@@ -630,7 +653,6 @@ const CATALOG = {
     "cm.failed": "Cannot detect: {e}",
 
     // --- output settings screen ------------------------------------------
-    "outset.bar": "File output",
     "outset.barNote": "These settings are used for every clip in the list",
     "outset.formatHead": "Output format",
     "outset.clipPick": "Clip:",
@@ -684,11 +706,32 @@ const CATALOG = {
     "outset.format":
       "Video:  {codec}, {w}x{h}, {fps} fps, {scan}\nAudio:  {audio}\n" +
       "Ranges:  {keeps} kept / {kept} out (of {dur}, {cuts} cuts)\nWritten to:  {out}{side}",
+    "outset.formatBdav":
+      "Video:  {codec}, {w}x{h}, {fps} fps, {scan}\nAudio:  {audio}\n" +
+      "Ranges:  {keeps} kept / {kept} out (of {dur}, {cuts} cuts)\n" +
+      "Channel:  {channel}\nRecorded:  {made}\nAbout:  {about}\n" +
+      "Chapters:  {marks}\nDisc:  {out}",
+    "outset.channelNumbered": "{name} ({n})",
+    "outset.channelUnknown": "(the recording does not say)",
+    "outset.aboutNone": "(the recording does not say)",
+    "outset.tabFile": "Files",
+    "outset.tabBdav": "BDAV disc",
+    "outset.discHead": "Disc settings",
+    "outset.discTitle": "Disc title:",
+    "outset.discFolder": "Disc folder (F):",
+    "outset.discHere": "(choose a folder)",
+    "outset.programme": "Programme name:",
+    "outset.madeUnknown": "(the recording does not say)",
+    "outset.discPath": "{dir}/BDAV",
     "outset.interlaced": "interlaced (top field first)",
     "outset.sidecar": "\n             {path}",
 
     // --- export screen ---------------------------------------------------
     "out.idle": "Add clips to the list to export them",
+    "out.needDiscFolder": "A BDAV disc needs somewhere to be built: choose an output folder",
+    "out.bdavIndexing": "Writing the disc index: recording {clip}",
+    "out.bdavDone": "Wrote the disc: {path} ({n} recording(s))",
+    "out.bdavFailed": "The disc index could not be written: {e}",
     "out.run": "Start export",
     "out.abort": "Stop export",
     "out.stateLbl": "Status:",

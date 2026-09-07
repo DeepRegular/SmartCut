@@ -76,6 +76,7 @@ bash tests/run_ts_layout_tests.sh     # TS の出自とシーケンスヘッダ 
 bash tests/run_broadcast_tests.sh     # 字幕・番組情報・音声多重                         13
 bash tests/run_cm_tests.sh            # CM 検出と人間の答えの照合                         5
 bash tests/run_disc_tests.sh          # BDAV と BDMV をフォルダーと .iso から読む       35
+bash tests/run_bdav_tests.sh          # ディスクを書く。索引と、そこに書かれるもの     40
 bash tests/run_dvd_tests.sh           # DVD-Video をフォルダーと .iso から読む          23
 bash tests/run_bd_audio_tests.sh      # ディスクの音声が書き出せるか                    39
 bash tests/run_vc1_tests.sh           # VC-1 エンコーダをデコーダに通す                  4
@@ -92,6 +93,12 @@ bash tests/run_vc1_tests.sh           # VC-1 エンコーダをデコーダに�
 `run_disc_tests.sh` は `mpeg2.ts` から方言ごとにディスクを 1 枚ずつ丸ごと組み立てる。
 ストリームを 192 バイトパケットに詰め直し、`disc_index.py` が索引ファイルを書き、
 `genisoimage` でそれぞれを UDF イメージに包む（`genisoimage` が要る）。
+
+`run_bdav_tests.sh` は逆方向で、同じフィクスチャから録画 2 本のディスクを書き、
+SmartCut 自身の読み手で開いたうえで、索引の全数値を `bdav_index.py` が対象の
+ストリームと突き合わせる。エントリーポイントマップを 1 点ずつファイルまで追いかけ、
+到着時刻を測り、クリップ索引が言うストリームの内訳を確かめる。`~/media` に実際の
+放送録画があれば、番組名と放送日時がディスクを往復しても残ることも確かめる。
 
 `run_dvd_tests.sh` は同じストリームを ffmpeg の `dvd` マルチプレクサで MPEG
 プログラムストリームにして DVD を 2 枚組み立てる。1 枚はふつうの DVD で、

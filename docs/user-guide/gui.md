@@ -22,7 +22,7 @@ The screens follow the order of the work.
 |---|---|---|
 | **Input** | List window, first tab | Line the recordings up. Seek indexes are built in the order the files arrive |
 | **Cut editor** | **Its own window** | Open one recording from the list, cut it, and leave with **OK** |
-| **Output settings** | List window, second tab | Where to write, which container, what to do with the audio. **Applies to every clip in the list** |
+| **Output settings** | List window, second tab | Where to write, which container, what to do with the audio, and whether the run produces files or a BDAV disc. **Applies to every clip in the list** |
 | **Export** | List window, third tab | Write the list out, top to bottom |
 
 The cut editor is the only screen that is not a tab. The other three are settings
@@ -420,6 +420,16 @@ read: pick a clip and it shows what that recording will become under the current
 settings — video, audio, how many ranges, how long the output is, and the path it
 will be written to.
 
+**Two things can come out of a run**, and the two tabs under the screen's own
+tab choose which: files, or a **BDAV disc** — a folder a recorder or a player
+opens as a list of programmes. They are two shapes of this screen rather than
+one setting on it. A disc names its own files, so a prefix and a container
+have nothing to choose there; its chapter points go into its own playlist, so
+the sidecar has nothing to write; and it has a name of its own and a programme
+name per recording, which a folder of files has nowhere to put — both of those
+are typed in the top half, above and below the clip picker. What is set on
+either tab stays there when you switch. See [BDAV output](#bdav-output) below.
+
 **The audio encoding settings appear only when something is being encoded.** Five
 of the rows below — the codec, the channels, the rate, the bit depth and the
 bitrate — all describe an encode, and the other two audio modes do not run one over
@@ -430,7 +440,9 @@ appear when `Re-encode everything` asks for them:
 
 | Field | |
 |---|---|
-| **Output folder** | Empty means alongside the input. Use `Browse`, or type a path (an SMB path is fine) |
+| **Disc title** | Writing a disc, in the top half above the clip picker: the name a recorder shows over the list of what is on it. Filled in from the channel the first recording came off, and typed over from there |
+| **Programme name** | Writing a disc, in the top half below the clip picker, and per clip rather than per list: what this recording is called in the disc's index. Filled in from what the recording says about itself — the playlist of the disc it came off, or the broadcast's own programme information — and typed over from there. Emptied, it goes back to what the recording said |
+| **Output folder** | Empty means alongside the input. Use `Browse`, or type a path (an SMB path is fine). Writing a disc it is `Disc folder` instead, and has to be filled in: a disc is one place, and the recordings in a list can have come from four |
 | **Filename prefix** | `cut_` by default, so `cut_recording.ts` |
 | **Container** | `Same as the input`, or a specific one. The extension is what decides the container |
 | **Audio** | `Smart rendering (default)` / `Copy through` / `Re-encode everything` |
@@ -525,6 +537,76 @@ numbers are on the written file's clock. A `.keyframe` file sitting next to a vi
 is read back automatically when that video is opened in SmartCut.
 
 ---
+
+### BDAV output
+
+![The output settings screen, writing a disc](../images/usage-output-bdav.png)
+
+A night's cuts can go out as a folder of files, or as a disc:
+
+```
+BDAV/
+  info.bdav              which playlists there are, and what the disc is called
+  PLAYLIST/00001.rpls    one recording: which clip, from when to when, and its name
+  CLIPINF/00001.clpi     that clip's own index
+  STREAM/00001.m2ts      the transport stream itself
+```
+
+That folder is what a recorder writes to a BD-RE, and what an authoring tool
+or ImgBurn will turn into an image or burn as it stands. SmartCut does not
+burn discs and does not build the image: a disc that has to be built before it
+can be looked at is a disc nobody checks before they burn it.
+
+**The whole list becomes one disc**, in list order, and the run is the same
+run: each recording is smart rendered exactly as it would have been into a
+file — over 99% of it copied byte for byte — and then written into
+`BDAV/STREAM` as `00001.m2ts`, `00002.m2ts`. When every stream is written,
+one more pass reads each of them back to build the index around it, which is
+where the progress line says `Writing the disc index`. It costs about a second
+a gigabyte.
+
+**The programme information comes with the recording.** This is the point of
+writing a disc rather than a folder: `00001.m2ts` is not a name anybody wants
+a recording called, and the index beside it is where everything a person reads
+lives — the programme's name, the channel it came off and its three-digit
+number, the night it was recorded, and what the broadcaster said it was about.
+All of it is filled in from what the recording already knows —
+
+* a recording read off a BDAV disc keeps everything its playlist said;
+* a broadcast recording is read for its own programme information: the name
+  and the sentence under it, the cast and staff behind it, when it went out,
+  and the channel — which is also what the disc is called until you say
+  otherwise;
+* a cut this program made earlier still carries all of that, in the one table
+  a partial transport stream has, so a cut of a cut does not arrive nameless.
+
+Whatever it found is on screen before anything is written — the top half shows
+the channel, the moment and the first line of the description — and the name
+can be typed over.
+
+**The chapter points are the cuts.** One at the start of every kept range —
+which is where the commercial breaks were — plus any marks put down in the cut
+editor. On a recorder's disc that is the one thing a viewer uses every time,
+which is why the `.keyframe` sidecar is not offered here: the same list would
+be written twice, and only one of the two is somewhere a player looks.
+
+**A second run adds to the disc.** The numbering carries on from what is
+already in `BDAV/STREAM`, and nothing already on the disc is removed or
+rewritten — so an evening's second batch belongs beside the first, and a disc
+can be filled over a week. The disc's own name is the exception: there is one
+of those, so what is on screen wins.
+
+**What goes on the disc.** The streams are written in Blu-ray's own framing
+and numbering — pictures on PID 0x1011, sound from 0x1100, captions from
+0x1200 — with the broadcast's own tables inside them, so a Japanese player
+finds the sound, the captions and the programme information where it looks for
+them. Everything a `.ts` cut carries is carried here too. What a disc will not
+hold is what no transport stream holds: a data broadcast, and superimposed
+text.
+
+There is a great deal more of this in
+[Writing a disc](../developers/bdav.md), including what is copied from a real
+disc rather than understood.
 
 ## 4. Write
 
@@ -643,6 +725,8 @@ smartcut input.ts --analyze                   # show the plan, write nothing
 
 smartcut input.ts --analyze --detect-cm --logo  # list the commercial candidates
 smartcut input.ts --analyze --scenes            # list the scene changes
+
+smartcut input.ts --cut 8.0-20.0 --bdav ~/disc  # onto a disc rather than into a file
 ```
 
 | Option | Meaning |
@@ -664,3 +748,9 @@ smartcut input.ts --analyze --scenes            # list the scene changes
 | `--tables partial\|broadcast\|muxer` | How a `.ts` describes itself. The default, `partial`, writes a partial transport stream (one SIT, per DVB EN 300 468 Annex C / ARIB TR-B15); `broadcast` puts the recording's own PMT, SDT, EIT and TOT back; `muxer` leaves the muxer's own tables standing |
 | `--no-open-gop` | Never start a copy at an open GOP |
 | `-o OUTPUT` | Output path. The extension picks the container |
+| `--bdav FOLDER` | Write the cut onto a BDAV disc in `FOLDER` instead of into a file. The disc names the file — a recording on one is `BDAV/STREAM/00001.m2ts` — and the index beside it is written afterwards, so `-o` is not used. A disc that is already there is added to |
+| `--disc-title NAME` | What the disc is called. Left out, the channel the recording came off, and its programme name where the recording does not say |
+| `--programme NAME` | What this recording is called in the disc's index. Left out, the name its playlist gave it if it came off a disc, and otherwise what the broadcast's own programme information says |
+| `--channel NAME[,N]` | The channel the recording came off, and optionally the three digits a viewer knows it by — `--channel "衛星第一,161"`. Left out, both come from the recording: the playlist it arrived with, or the service description in its own tables. A terrestrial recording has no number this can be sure of and writes none |
+| `--about TEXT` | What the disc's index says the programme was. Left out, the description the recording carries: the sentence a listing prints and the cast and staff under it |
+| `--made "Y-M-D H:M:S"` | When the recording was made. Left out, the moment the programme went out, where the recording still says |
