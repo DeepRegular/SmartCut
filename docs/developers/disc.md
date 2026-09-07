@@ -2,6 +2,9 @@
 
 [← Documentation](../README.md) ・ [← SmartCut](../../README.md) ・ [日本語](disc.ja.md)
 
+*The other direction — a night's cuts written back out as a disc — is
+[Writing a disc](bdav.md).*
+
 **A disc opens as a folder or as an `.iso`, either way.** Both halves of the
 Blu-ray specification are read — BDAV, the recording format, and BDMV, the
 format of a film you buy — and so is DVD-Video, which is
@@ -14,7 +17,7 @@ disc  : Anime_Test.iso
         bdav -- Anime_Test
         3 recording(s)
 
-  1  00:08:30.010  2026年08月17日01時00分-BS11イレブン-アズールレーン びそくぜんしんっ!にっ!! #07「神様的休息日の過ごし方。」  2 mark(s)
+  1  00:08:30.010  2026年08月17日01時00分-衛星第一-サンプル番組 てすとばんぐみ!にっ!! #07「架空の休息日の過ごし方。」  2 mark(s)
        0x1101  AAC stereo 48kHz
        0x1102  stream type 0x06
   2  00:08:30.010  …
@@ -158,6 +161,26 @@ Both are read.
 **Encrypted discs are not handled and will not be.** AACS is a decryption
 problem and this program has none of it.
 
+## What a playlist says about the recording
+
+**On BDAV, a playlist is where everything a person reads lives.** Not only the
+programme's name: a recorder writes the channel it came off and the three
+digits that channel is known by, the moment the recording started, and several
+hundred bytes of what the broadcaster said the programme was — the sentence a
+listing prints, and the cast and staff under it. All of it at fixed offsets in
+the description the playlist opens with, and all of it read here, because a
+cut of that recording written onto a disc of its own should say the same
+things. The offsets, and which tool writes which of them, are in
+[Writing a disc](bdav.md#what-the-playlist-says).
+
+`smartcut <disc> --title N` prints what it found:
+
+```
+title : アニメ 第03話「はじめての遠出」ほか
+        衛星第一 (161)  2010-02-14 00:30:00
+        美術科に入学した主人公が、学校の前のアパートでひとり暮らしを始める。…
+```
+
 ## The programme's name is ARIB text
 
 **On BDAV.** A `.rpls` does not carry the name in UTF-8. It is written in the ARIB STD-B24
@@ -182,7 +205,7 @@ Two things are worth getting right:
 - **The last eight cells of a kana set are punctuation, not kana.** Rows 4 and
   5 of JIS are not full, and ARIB spends what is left on `ー` `。` `「` `」`
   `、` `・`. Miss them and a programme name reads
-  `#07〓神様的休息日の過ごし方。」`.
+  `#07〓架空の休息日の過ごし方。」`.
 
 A `.mpls` carries no name at all, because a film's titles live in the menu,
 which is a Java application. So a pressed disc's rows are named by the disc and
@@ -409,7 +432,7 @@ name**.
 
 ```
 /rec/Anime_Test.iso
-/rec/cut_2026年08月17日01時00分-BS11イレブン-アズールレーン ….ts
+/rec/cut_2026年08月17日01時00分-衛星第一-サンプル番組 ….ts
 ```
 
 The characters a filesystem will not take (`\ / : * ? " < > |`) become their

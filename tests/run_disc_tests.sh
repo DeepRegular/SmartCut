@@ -59,8 +59,8 @@ STARTS=$(start_of "$AV/BDAV/STREAM/a.m2ts")
 LOGO=$(start_of "$MV/BDMV/STREAM/logo.m2ts")
 
 python3 tests/disc_index.py bdav "$AV" \
-  "テスト録画 その1 #07「神様的休息日の過ごし方。」=a.m2ts,20,$STARTS" \
-  "テスト録画 その2 BS11=b.m2ts,20,$STARTS" >/dev/null || exit 2
+  "テスト録画 その1 #07「架空の休息日の過ごし方。」=a.m2ts,20,$STARTS" \
+  "テスト録画 その2 衛星第一=b.m2ts,20,$STARTS" >/dev/null || exit 2
 python3 tests/disc_index.py bdmv "$MV" \
   "a.m2ts,20,$STARTS" "b.m2ts,20,$STARTS" "logo.m2ts,3,$LOGO" >/dev/null || exit 2
 
@@ -95,7 +95,7 @@ has "BDMV: which dialect" "bdmv --" "$mv_iso"
 has "BDMV: the disc names itself" "Smartcut Test Disc" "$mv_iso"
 
 names_of() { grep -oP '^[* ]?\s*\d+\s+\S+\s+\K.*?(?=\s+\d+ mark|$)' <<<"$1"; }
-want=$'テスト録画 その1 #07「神様的休息日の過ごし方。」\nテスト録画 その2 BS11'
+want=$'テスト録画 その1 #07「架空の休息日の過ごし方。」\nテスト録画 その2 衛星第一'
 same "BDAV folder: the programmes are named" "$want" "$(names_of "$av_folder")"
 same "BDAV image: the programmes are named"  "$want" "$(names_of "$av_iso")"
 # A pressed disc names nothing, so the rows are the disc and the clip.
@@ -185,7 +185,7 @@ done
 
 # --- naming --------------------------------------------------------------
 same "BDAV: the title is announced" \
-  "title : テスト録画 その2 BS11" "$(grep '^title :' "$OUT/av-iso.log")"
+  "title : テスト録画 その2 衛星第一" "$(grep '^title :' "$OUT/av-iso.log")"
 same "BDAV: the recording is named by its path" \
   "input : $AV_ISO/BDAV/STREAM/00002.m2ts" "$(grep '^input :' "$OUT/av-iso.log")"
 same "BDMV: the recording is named by its path" \
