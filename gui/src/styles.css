@@ -91,6 +91,17 @@ button.brand:hover, button.brand.open { background: #3a3a3a; border-color: #5c5c
   font: inherit; color: var(--text); cursor: pointer;
 }
 .menu-item:hover { background: #3a3a3a; }
+/* A command that could not run on what is chosen, left in place and greyed
+   rather than taken out: a menu whose items move about between openings is a
+   menu that has to be read every time. It swallows its own click, so picking
+   one leaves the menu standing -- nothing happened, and a menu that shut
+   would say something had. */
+.menu-item:disabled { color: var(--dim); cursor: default; }
+.menu-item:disabled:hover { background: none; }
+/* The same menu put where the pointer is instead of under the button it
+   hangs from -- a context menu has no button. `right` is the brand menu's,
+   and has to be let go of before `left` can be given. */
+.menu.at-pointer { position: fixed; top: 0; left: 0; right: auto; }
 /* The key that does the same thing, held to the right of the label it
    belongs to. Dim: it is a reminder for next time, not part of the name. */
 .menu-key { margin-left: auto; color: var(--dim); font-size: 11px; }

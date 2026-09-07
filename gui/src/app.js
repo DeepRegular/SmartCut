@@ -207,6 +207,7 @@ function show(name) {
   // it is the cuts. Shut on the way across, or a screen change under an open
   // menu would leave it to reappear later.
   showMenu(false);
+  closeRowMenu();
   if (name === "outset") renderOutset();
   // Coming to the screen is asking it what it has to say, so it goes back to
   // speaking for the list. A run's last frame is held for whoever watched the
@@ -1130,6 +1131,10 @@ function renderList() {
   // The rows a drag is holding are about to be thrown away, so it ends here
   // whether or not it had landed.
   clearDrag();
+  // And so is the row the menu was opened over. Every structural change to
+  // the list comes through here -- rows added, removed, reordered -- and a
+  // menu still standing after one is a menu pointing at nothing.
+  closeRowMenu();
   const list = el("cliplist");
   list.innerHTML = "";
   for (const clip of clips) {
@@ -1158,6 +1163,15 @@ function renderList() {
       pressRow(clip, ev);
     });
     li.addEventListener("dblclick", () => edit(clip));
+    li.addEventListener("contextmenu", (ev) => {
+      ev.preventDefault();
+      // The menu is about the selection, and a row nobody had chosen becomes
+      // the selection by being right-clicked. A row already in one is left
+      // alone: collapsing five rows to the one under the pointer would leave
+      // the menu doing its work to a row nobody asked it about.
+      if (!clip.selected) pick(clip, {});
+      openRowMenu(ev.clientX, ev.clientY);
+    });
     li.querySelector(".kill").addEventListener("click", (ev) => {
       ev.stopPropagation();
       remove([clip]);
@@ -1427,23 +1441,40 @@ function paintTotals() {
     (pending ? t("input.totalPending", { n: pending }) : "");
 }
 
+/// What the clip commands could do to what is chosen right now.
+///
+/// One answer for the two places that ask -- the buttons down the side and
+/// the menu on the right button -- because a command that is grey in one of
+/// them and live in the other is the program disagreeing with itself about
+/// what it is willing to do.
+function clipActions() {
+  const picked = selected();
+  return {
+    // Anything but a clip that could not be read: the editor makes its own
+    // way through one the list has not got to yet.
+    edit: picked.length === 1 && picked[0].state !== "error",
+    duplicate: picked.length > 0,
+    detect: picked.some((c) => c.state === "ready"),
+    move: picked.length > 0,
+    remove: picked.length > 0,
+  };
+}
+
 function paintButtons() {
-  const n = selected().length;
   const busy = running();
-  // Anything but a clip that could not be read: the editor makes its own way
-  // through one the list has not got to yet.
-  el("edit-clip").disabled = n !== 1 || selected()[0].state === "error";
-  el("duplicate-clip").disabled = n === 0;
-  el("detect-selected").disabled = !selected().some((c) => c.state === "ready");
+  const can = clipActions();
+  el("edit-clip").disabled = !can.edit;
+  el("duplicate-clip").disabled = !can.duplicate;
+  el("detect-selected").disabled = !can.detect;
   const queued = clips.some(
     (c) => c.state === "queued" || c.pics === "queued" || c.cmState === "queued"
   );
   el("stop-batch").disabled = !busy && !(paused && queued);
   el("stop-batch").textContent = t(paused && queued && !busy ? "side.resumeBatch" : "side.stopBatch");
-  el("move-up").disabled = n === 0;
-  el("move-down").disabled = n === 0;
+  el("move-up").disabled = !can.move;
+  el("move-down").disabled = !can.move;
   el("select-all").disabled = clips.length === 0;
-  el("remove-clip").disabled = n === 0;
+  el("remove-clip").disabled = !can.remove;
   el("remove-all").disabled = clips.length === 0;
   el("run-export").disabled = ready().length === 0 || exporting;
 }
@@ -1650,6 +1681,90 @@ function move(dir) {
 el("move-up").addEventListener("click", () => move(-1));
 el("move-down").addEventListener("click", () => move(1));
 
+// --- the menu on the right button ---------------------------------------
+//
+// The clip commands again, under the pointer instead of down the side. Only
+// the ones that are about a clip: ファイルを追加, 全選択, 全削除 and
+// 解析を中止 are about the list or about the program, and a row is not what
+// they would be answering.
+//
+// Each item does exactly what the button of the same name does, by calling
+// the same function -- there is no second version of 複製 or of 削除 here to
+// drift away from the first.
+
+const rowMenu = el("row-menu");
+
+// A declaration rather than a `const`, because `show` and `renderList` are
+// above this and both put the menu away.
+function closeRowMenu() {
+  rowMenu.hidden = true;
+}
+
+/// Put the menu up at the pointer, greyed to what the selection allows.
+function openRowMenu(x, y) {
+  const can = clipActions();
+  el("row-edit").disabled = !can.edit;
+  el("row-duplicate").disabled = !can.duplicate;
+  el("row-detect").disabled = !can.detect;
+  el("row-up").disabled = !can.move;
+  el("row-down").disabled = !can.move;
+  el("row-remove").disabled = !can.remove;
+  // The one in the corner is a menu too, and two menus standing at once is
+  // one of them left over from a click that was meant for something else.
+  showMenu(false);
+  rowMenu.style.left = `${x}px`;
+  rowMenu.style.top = `${y}px`;
+  rowMenu.hidden = false;
+  // Measured only now: a menu is as wide as its longest label, and the
+  // labels are not in it until the language is. Held inside the window on
+  // both axes, so a right click near the bottom edge does not open a menu
+  // whose last item is off the screen.
+  const box = rowMenu.getBoundingClientRect();
+  const left = Math.max(0, Math.min(x, window.innerWidth - box.width - 2));
+  const top = Math.max(0, Math.min(y, window.innerHeight - box.height - 2));
+  rowMenu.style.left = `${left}px`;
+  rowMenu.style.top = `${top}px`;
+}
+
+el("row-edit").addEventListener("click", () => {
+  closeRowMenu();
+  const one = selected();
+  if (one.length === 1) edit(one[0]);
+});
+el("row-duplicate").addEventListener("click", () => {
+  closeRowMenu();
+  duplicate(selected());
+});
+el("row-detect").addEventListener("click", () => {
+  closeRowMenu();
+  detectSelected();
+});
+el("row-up").addEventListener("click", () => {
+  closeRowMenu();
+  move(-1);
+});
+el("row-down").addEventListener("click", () => {
+  closeRowMenu();
+  move(1);
+});
+el("row-remove").addEventListener("click", () => {
+  closeRowMenu();
+  remove(selected());
+});
+
+// A press anywhere else shuts it -- `mousedown` rather than `click`, because
+// the press that opened this one was a right button and a right button
+// elsewhere is a click that never arrives. Not on the menu itself: hiding it
+// under the finger would take the button out from under the click that was
+// about to land on it.
+window.addEventListener("mousedown", (ev) => {
+  if (!ev.target.closest("#row-menu")) closeRowMenu();
+});
+window.addEventListener("wheel", closeRowMenu, true);
+window.addEventListener("keydown", (ev) => {
+  if (ev.key === "Escape") closeRowMenu();
+});
+
 // --- 並べ替え（ドラッグ） -----------------------------------------------
 //
 // Rows are carried with plain mouse events rather than with HTML5 drag and
@@ -1674,10 +1789,11 @@ let drag = null;
 const SLOP = 4;
 
 function pressRow(clip, ev) {
-  if (ev.button !== 0) {
-    pick(clip, ev);
-    return;
-  }
+  // The right button's selection belongs to the menu it is opening -- see the
+  // `contextmenu` handler on the row -- and settling it here on the way down
+  // would collapse the very selection that menu is about. A middle click is
+  // not a selection at all.
+  if (ev.button !== 0) return;
   const plain = !ev.shiftKey && !ev.ctrlKey && !ev.metaKey;
   press = { clip, x: ev.clientX, y: ev.clientY, collapse: clip.selected && plain };
   if (!press.collapse) pick(clip, ev);

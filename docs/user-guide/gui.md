@@ -168,7 +168,14 @@ together.
 | `Delete` | Remove it from the list (the file itself is not touched) |
 | `↑` `↓` | Move the selection. Hold `Shift` to extend it |
 | **Drag a row** | Reorder. `Esc` cancels |
+| **Right-click a row** | The commands for that row, as a menu |
 | **⧉ Duplicate clip** | Put the same recording in the list twice. Cuts and marks come with it |
+
+The **right-click menu** carries the commands from the side of the screen that are
+about a clip — the cut editor, duplicate, detect commercials, move up and down, and
+remove. Right-clicking a row that was not selected selects it; right-clicking one
+that was leaves the selection alone, so the command applies to all of it. Commands
+that cannot run on what is selected stay in place, greyed.
 
 **Duplicating** is for a two-hour recording that contains two programmes: the same
 file on two rows, each written out over a different range. The output filenames get

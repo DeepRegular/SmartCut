@@ -119,6 +119,20 @@ const CATALOG = {
     "side.selectAll": "全選択",
     "side.removeClip": "クリップ削除",
     "side.removeAll": "全削除",
+
+    // --- 右クリックメニュー ------------------------------------------------
+    //
+    // The same commands as the buttons down the side, and deliberately not
+    // the same strings: two of those carry a mark in front of the words
+    // (`✂　カット編集`), which is furniture for a column of buttons. Seven
+    // menu items of which two are marked would read as though those two were
+    // the special ones.
+    "rowmenu.edit": "カット編集",
+    "rowmenu.duplicate": "クリップを複製",
+    "rowmenu.detect": "CM を検出",
+    "rowmenu.moveUp": "上に移動",
+    "rowmenu.moveDown": "下に移動",
+    "rowmenu.remove": "クリップ削除",
     "props.head": "クイックプロパティ",
     "props.none": "クリップが選択されていません",
     "props.many": "{n} 個のクリップを選択中",
@@ -520,6 +534,14 @@ const CATALOG = {
     "side.selectAll": "Select all",
     "side.removeClip": "Remove clip",
     "side.removeAll": "Remove all",
+
+    // --- the menu on the right button --------------------------------------
+    "rowmenu.edit": "Cut editor",
+    "rowmenu.duplicate": "Duplicate clip",
+    "rowmenu.detect": "Detect commercials",
+    "rowmenu.moveUp": "Move up",
+    "rowmenu.moveDown": "Move down",
+    "rowmenu.remove": "Remove clip",
     "props.head": "Quick properties",
     "props.none": "No clip selected",
     "props.many": "{n} clips selected",

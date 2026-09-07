@@ -417,6 +417,40 @@
       </div>
     </div>
 
+    <!-- 右クリックメニュー. The clip commands, under the pointer.
+
+         The same commands are down the side of the input screen, where they
+         are a column to read through; here they are the ones already known,
+         next to the row they were meant for. Only the ones that are about a
+         clip: ファイルを追加, 全選択, 全削除 and 解析を中止 are about the
+         list or about the program, and a row is not what they would be
+         answering.
+
+         Outside the screens rather than in the list, because it is put where
+         the pointer is: a `position: fixed` box has no business being nested
+         inside the thing it is drawn over. -->
+    <div id="row-menu" class="menu at-pointer" hidden>
+      <button class="menu-item" id="row-edit">
+        <span data-i18n="rowmenu.edit">カット編集</span>
+        <span class="menu-key">Enter</span>
+      </button>
+      <button class="menu-item" id="row-duplicate" data-i18n="rowmenu.duplicate">
+        クリップを複製
+      </button>
+      <button class="menu-item" id="row-detect">
+        <span data-i18n="rowmenu.detect">CM を検出</span>
+        <span class="menu-key">Ctrl+D</span>
+      </button>
+      <div class="menu-sep"></div>
+      <button class="menu-item" id="row-up" data-i18n="rowmenu.moveUp">上に移動</button>
+      <button class="menu-item" id="row-down" data-i18n="rowmenu.moveDown">下に移動</button>
+      <div class="menu-sep"></div>
+      <button class="menu-item" id="row-remove">
+        <span data-i18n="rowmenu.remove">クリップ削除</span>
+        <span class="menu-key">Delete</span>
+      </button>
+    </div>
+
     <script src="app.js" type="module"></script>
   </body>
 </html>
