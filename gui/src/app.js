@@ -1909,6 +1909,11 @@ const settings = {
   keyframes: false,
 };
 
+/// The settings as the program starts with them, kept because 新規作成 has to
+/// put them back. A project carries its output settings, so starting a new
+/// one from the last one's folder and prefix would be starting it half open.
+const SETTING_DEFAULTS = { ...settings };
+
 /// The path a sidecar of this clip has, without the extension.
 function sidecarBase(clip) {
   const dir = clip.home ? `${clip.home.replace(/[/\\]*$/, "")}/` : dirOf(clip.path);
@@ -3438,12 +3443,34 @@ async function saveProject(rename = false) {
 /// Only over work that is not on disc. A project opened, looked at and
 /// closed again has nothing to lose, and a dialog that comes up anyway is a
 /// dialog that gets dismissed without being read.
-async function askReplace() {
+///
+/// The wording is the caller's because the two things that put a list down
+/// are not the same question: one is replacing this work with another
+/// project's, the other is throwing it away for an empty list.
+async function askReplace(title = t("project.replaceTitle"), body = t("project.replaceBody")) {
   if (!dirty()) return true;
-  return dialog.ask(t("project.replaceBody"), {
-    title: t("project.replaceTitle"),
-    kind: "warning",
-  });
+  return dialog.ask(body, { title, kind: "warning" });
+}
+
+/// An empty list with nothing behind it: the state the program opens in,
+/// reached without closing it.
+///
+/// What `loadProject` does, with nothing to put back afterwards: the list
+/// emptied properly rather than merely dropped, the output settings back
+/// where they started, and no file behind the work -- so that the first 保存
+/// asks for a name instead of writing over the project this one was started
+/// from.
+async function newProject() {
+  if (!(await askReplace(t("project.newTitle"), t("project.newBody")))) return;
+  await remove(clips.slice());
+  for (const key of Object.keys(SETTING_DEFAULTS)) settings[key] = SETTING_DEFAULTS[key];
+  showSettings();
+  projectPath = "";
+  savedShape = shapeOf();
+  retitleMain();
+  show("input");
+  renderList();
+  note(t("project.newDone"));
 }
 
 async function openProject() {
@@ -3539,9 +3566,13 @@ async function openDroppedProject(path) {
   await loadProject(path);
 }
 
-// The three items the menu carries about the work rather than about the
+// The four items the menu carries about the work rather than about the
 // program. `showMenu(false)` first in each: the file picker is a window of
 // its own, and a menu left standing behind it is still there when it closes.
+el("menu-new").addEventListener("click", () => {
+  showMenu(false);
+  newProject();
+});
 el("menu-open").addEventListener("click", () => {
   showMenu(false);
   openProject();
@@ -3555,8 +3586,8 @@ el("menu-save-as").addEventListener("click", () => {
   saveProject(true);
 });
 
-// Ctrl+S, Ctrl+Shift+S and Ctrl+O, on every screen rather than only on the
-// list: they are about the program's work as a whole, and the output
+// Ctrl+N, Ctrl+S, Ctrl+Shift+S and Ctrl+O, on every screen rather than only
+// on the list: they are about the program's work as a whole, and the output
 // settings are as much a part of a project as the cuts are. Kept out of the
 // list's own key handler for that reason.
 window.addEventListener("keydown", (ev) => {
@@ -3568,6 +3599,11 @@ window.addEventListener("keydown", (ev) => {
   } else if (key === "o" && !ev.shiftKey) {
     ev.preventDefault();
     openProject();
+  } else if (key === "n" && !ev.shiftKey) {
+    // Taken off the webview, which would otherwise answer it with a browser
+    // window of its own.
+    ev.preventDefault();
+    newProject();
   }
 });
 

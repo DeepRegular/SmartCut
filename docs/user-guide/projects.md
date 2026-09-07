@@ -14,13 +14,18 @@ great deal.
 
 | | |
 |---|---|
+| `Ctrl+N` | New project |
 | `Ctrl+S` | Save the project |
 | `Ctrl+Shift+S` | Save as |
 | `Ctrl+O` | Open a project |
 
-The same three items are in the **SmartCut** menu in the corner of the list window,
+The same four items are in the **SmartCut** menu in the corner of the list window,
 alongside Preferences and About. That menu is where everything concerning the
 program as a whole, rather than one clip, already lives.
+
+**New project** empties the list, puts the output settings back where they started,
+and forgets the project file the work was in — the state the program opens in. If
+there is work you have not saved, it asks first.
 
 A `.scproj` also opens if you drop it on the window, or pass it on the command
 line:

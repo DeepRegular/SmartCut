@@ -42,6 +42,7 @@ const CATALOG = {
     "tab.outset": "出力設定",
     "tab.out": "出力",
     "ui.menu.title": "メニュー",
+    "menu.new": "新規作成",
     "menu.open": "プロジェクトを開く…",
     "menu.save": "プロジェクトを保存",
     "menu.saveAs": "名前を付けて保存…",
@@ -60,6 +61,10 @@ const CATALOG = {
     "project.replaceTitle": "プロジェクトを開く",
     "project.replaceBody":
       "現在の一覧と編集内容は置き換えられます。保存していない作業は失われます。続けますか？",
+    "project.newTitle": "新規作成",
+    "project.newBody":
+      "現在の一覧と編集内容は破棄されます。保存していない作業は失われます。続けますか？",
+    "project.newDone": "新しいプロジェクトを始めました",
     "project.quitTitle": "SmartCut を終了",
     "project.quitBody":
       "保存していない作業があります。保存せずに終了しますか？",
@@ -439,6 +444,7 @@ const CATALOG = {
     "tab.outset": "Output settings",
     "tab.out": "Export",
     "ui.menu.title": "Menu",
+    "menu.new": "New project",
     "menu.open": "Open project…",
     "menu.save": "Save project",
     "menu.saveAs": "Save project as…",
@@ -457,6 +463,10 @@ const CATALOG = {
     "project.replaceTitle": "Open project",
     "project.replaceBody":
       "The list and everything cut in it will be replaced. Any work you have not saved will be lost. Continue?",
+    "project.newTitle": "New project",
+    "project.newBody":
+      "The list and everything cut in it will be discarded. Any work you have not saved will be lost. Continue?",
+    "project.newDone": "Started a new project",
     "project.quitTitle": "Quit SmartCut",
     "project.quitBody": "There is work here that has not been saved. Quit without saving it?",
     "project.quitOk": "Quit",

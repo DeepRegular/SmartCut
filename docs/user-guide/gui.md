@@ -558,6 +558,9 @@ The **SmartCut** button at the top right saves and opens projects (`Ctrl+S` /
 `Ctrl+O`). A project holds the list itself: the paths, the cuts and marks you put
 in, the track choices, and the output settings.
 
+**New project** in the same menu (`Ctrl+N`) empties all of it, so you can start
+from an empty list and untouched output settings — where the program opens.
+
 A `.scproj` file is only a few hundred bytes, and it opens on another machine or
 after the cache has been cleared. See [projects](projects.md) for what is in one and
 why.
@@ -587,6 +590,7 @@ it straight into a bug report.
 |---|---|
 | `Ctrl+A` | Select all |
 | `Ctrl+D` | Detect commercials in the selection |
+| `Ctrl+N` | New project |
 | `Ctrl+S` / `Ctrl+Shift+S` | Save project / save as |
 | `Ctrl+O` | Open project |
 | `Enter` / double-click | Open the cut editor |
