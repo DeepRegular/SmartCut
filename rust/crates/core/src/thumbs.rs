@@ -142,6 +142,31 @@ impl Track {
             })
     }
 
+    /// The spacing the held pictures sit at *between `a` and `b`*, or `None`
+    /// where there are fewer than two of them in that stretch to measure
+    /// from.
+    ///
+    /// [`Self::interval`] is the same measurement over the whole recording,
+    /// and on broadcast material the two are the same number: a GOP is half a
+    /// second wherever you look. A disc is not like that. It puts an entry
+    /// point at every scene change on top of one a second or so, so a minute
+    /// of fast cutting holds pictures twice as thickly as a minute of
+    /// dialogue, and the recording's median says nothing about either. A
+    /// caller asking "are these fine enough to answer me with" is asking
+    /// about the stretch it is drawing, so it is that stretch that has to
+    /// answer.
+    ///
+    /// A stretch that is not one -- backwards, or either end not a number --
+    /// is nothing to measure rather than a slice to panic on.
+    pub fn spacing_over(&self, a: f64, b: f64) -> Option<f64> {
+        if !(a <= b) {
+            return None;
+        }
+        let i = self.thumbs.partition_point(|t| t.time < a - 1e-6);
+        let j = self.thumbs.partition_point(|t| t.time <= b + 1e-6);
+        spacing(&self.thumbs[i..j])
+    }
+
     pub fn scene_after(&self, time: f64) -> Option<f64> {
         self.scenes.iter().copied().find(|&s| s > time + 1e-3)
     }
@@ -787,6 +812,60 @@ mod tests {
         times.push(times.last().unwrap() + 6.5);
         let s = spacing(&at(&times)).unwrap();
         assert!((s - 0.5).abs() < 1e-9, "spacing came out {s}");
+    }
+
+    fn track_at(times: &[f64]) -> Track {
+        Track {
+            width: 192,
+            interval: spacing(&at(times)).unwrap_or(0.0),
+            covered: f64::INFINITY,
+            thumbs: at(times),
+            scenes: Vec::new(),
+            threshold: 0.0,
+            typical: 0.0,
+        }
+    }
+
+    /// The shape a disc has and broadcast material does not: a stretch of
+    /// fast cutting, where the entry points come more than twice as thickly
+    /// as they do over the recording as a whole. The film strip draws that
+    /// stretch out of pictures it holds every one of, so what it has to be
+    /// told is the spacing *there* -- the recording's own median is a number
+    /// about somewhere else.
+    #[test]
+    fn a_busy_stretch_is_measured_where_it_is() {
+        let mut times = Vec::new();
+        let mut t = 0.0;
+        for _ in 0..20 {
+            times.push(t);
+            t += 1.0;
+        }
+        for _ in 0..20 {
+            times.push(t);
+            t += 0.4;
+        }
+        for _ in 0..20 {
+            times.push(t);
+            t += 1.0;
+        }
+        let track = track_at(&times);
+        assert!((track.interval - 1.0).abs() < 1e-9, "over all it is {}", track.interval);
+        let busy = track.spacing_over(22.0, 28.0).unwrap();
+        assert!((busy - 0.4).abs() < 1e-9, "over the cutting it is {busy}");
+        let quiet = track.spacing_over(2.0, 8.0).unwrap();
+        assert!((quiet - 1.0).abs() < 1e-9, "over the dialogue it is {quiet}");
+    }
+
+    /// A stretch too short to hold two pictures cannot be measured, and says
+    /// so rather than making a number up: the caller falls back on the
+    /// recording's own, and a request that fine is one meant to be decoded.
+    #[test]
+    fn a_stretch_with_nothing_in_it_says_nothing() {
+        let track = track_at(&[0.0, 1.0, 2.0, 3.0]);
+        assert_eq!(track.spacing_over(1.1, 1.9), None);
+        assert_eq!(track.spacing_over(0.9, 2.1), Some(1.0));
+        assert_eq!(track.spacing_over(2.0, 1.0), None);
+        assert_eq!(track.spacing_over(f64::NAN, 1.0), None);
     }
 
     /// A minute into a 2 h 20 m disc title: two entry points a second, six

@@ -907,12 +907,33 @@ fn thumbs_now(
         // spacing and send the whole strip off to be decoded -- a second and a
         // half for sixty cells -- when every time it asked for is a picture
         // already in hand.
+        //
+        // ...and over the same stretch. The two medians have to be arrived at
+        // the same way to be worth comparing, and until now one of them was a
+        // window and the other the whole recording. On broadcast material that
+        // is a distinction without a difference -- a GOP is half a second
+        // wherever you look -- but a disc puts an entry point at every scene
+        // change, so a minute of cutting carries them twice as thickly as a
+        // minute of dialogue. Over a fast-cut stretch the window's own median
+        // fell below the recording's, and the whole reel was thrown to the
+        // decoder although every cell of it stood on a picture already held:
+        // on a Blu-ray episode read out of an ISO, one refresh in seven at
+        // `GOP・6 秒`, costing 0.8 s each -- which at the fastest search speed
+        // is the strip standing still while three quarters of a minute goes
+        // past. See `examples/scixdiag.rs`.
         let gaps: Vec<f64> = times
             .windows(2)
             .map(|w| (w[1] - w[0]).abs())
             .filter(|d| *d > 1e-9)
             .collect();
         let gap = smartcut_core::thumbs::median_gap(&gaps).unwrap_or(f64::INFINITY);
+        // The stretch the request covers, which is the stretch the held
+        // pictures are asked about. Taken as the extremes rather than as the
+        // ends, because a strip that walks the edited timeline hands over a
+        // run that jumps.
+        let (from, to) = times
+            .iter()
+            .fold((f64::INFINITY, f64::NEG_INFINITY), |(a, b), &t| (a.min(t), b.max(t)));
         // A held picture sits *on* a key picture, and every time asked for down
         // this path is a key picture's own, so the nearest held picture has to
         // *be* the one asked for. Further off than that means there is a hole in
@@ -939,7 +960,14 @@ fn thumbs_now(
             let guard = thumbs.0.lock().unwrap();
             guard
                 .as_ref()
-                .filter(|t| !exact.unwrap_or(false) && gap >= t.interval * 0.9)
+                .filter(|t| {
+                    // The whole recording's spacing where the stretch is too
+                    // short to hold two pictures to measure between -- which
+                    // is a request finer than anything the track can answer,
+                    // and is meant to fall through to a decode.
+                    let held = t.spacing_over(from, to).unwrap_or(t.interval);
+                    !exact.unwrap_or(false) && gap >= held * 0.9
+                })
                 .map(|track| {
                     let fd = src.video.frame_duration();
                     times

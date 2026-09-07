@@ -110,7 +110,10 @@ fn main() -> Result<()> {
         let gaps: Vec<f64> =
             cs.windows(2).map(|w| (w[1] - w[0]).abs()).filter(|d| *d > 1e-9).collect();
         let gap = med(&gaps).unwrap_or(f64::INFINITY);
-        let want: Vec<f64> = if gap < track.interval * 0.9 {
+        // Weighed against the held pictures over the stretch the cells cover,
+        // the way `thumbs_now` weighs it.
+        let held = track.spacing_over(cs[0], cs[cs.len() - 1]).unwrap_or(track.interval);
+        let want: Vec<f64> = if gap < held * 0.9 {
             fell_back += 1;
             cs.clone()
         } else {

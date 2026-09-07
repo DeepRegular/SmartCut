@@ -887,8 +887,8 @@ Half an hour of broadcast is unaffected. A film is not:
 | Material | Floor the count implied | Held | Spacing |
 |---|---|---|---|
 | BS Fuji, 28 min | 0.42 s | every entry point | 0.50 s |
-| CANAAN (VC-1 disc), 8 min | 0.12 s | 942 of 1203 | 0.80 s |
-| Letters from Iwo Jima (VC-1 disc), 2 h 20 m | **2.1 s** | about one in four | 2.1 s |
+| A VC-1 disc, 8 min | 0.12 s | 942 of 1203 | 0.80 s |
+| A VC-1 disc feature, 2 h 20 m | **2.1 s** | about one in four | 2.1 s |
 
 The film strip's cells stand on the recording's own entry points, and `thumbs_at` answers a
 cell from the track only when the held picture **is** the picture asked for. A track coarser
@@ -928,6 +928,52 @@ rather than the same twenty-five as a television programme's.
 
 `seek_index::VERSION` is bumped, because an index written under the old cap carries the thin
 track and would otherwise be picked up in place of building the right one.
+
+### A window's spacing is not the recording's
+
+**Holding every entry point was not enough on its own.** With the budget in and the pass
+finished, a Blu-ray episode read straight out of a 34 GB `.iso` still sent one refresh in
+seven off to be decoded — the whole reel of it, three quarters of a second at a time. The
+scroll search asks for a redraw every 70 ms, so at the fastest speed that is the strip
+standing about while three quarters of a minute of the recording goes past under the
+playhead. That is what "the film strip does not keep up when a Blu-ray is read from an ISO"
+was.
+
+What threw it there is the first of `thumbs_now`'s two tests: **is the caller asking for
+something finer than we hold?** [`Track::interval` is measured, not asked
+for](#trackinterval-is-measured-not-asked-for) made both sides of that comparison a median —
+the median gap the cells ask at, against the median gap the pictures are held at. What it
+left in was that the two were **measured over different stretches**: the asking side over
+the few seconds on screen, the holding side over the whole recording.
+
+On broadcast material that is a distinction without a difference. A GOP is half a second
+wherever you look, so a window's spacing and the recording's are the same number. **A disc
+is not like that.** It puts an entry point at every scene change on top of one a second or
+so, so a minute of fast cutting carries them twice as thickly as a minute of dialogue. On the
+episodes of the series disc measured, the entry points run from 0.42 s to 1.08 s apart against
+a median of 0.96 s — and over a fast-cut stretch the cells, which stand on those very entry
+points, come to ask at half a second. Under 0.9 × 0.96, so the whole reel was thrown to the
+decoder although **every cell of it stood on a picture already in hand**.
+
+`Track::spacing_over(a, b)` answers the same question about a stretch, and the gate is
+weighed against that instead. Measured on the disc itself, out of the `.iso`
+(`examples/stripcost.rs`, 40 refreshes of 16 cells at `GOP・6 秒`):
+
+| A series episode, 11 m 52 s, 810 entry points | Refreshes decoded whole | Cells decoded | Cost per refresh |
+|---|---|---|---|
+| against the recording's spacing | 6 / 40 | 96 / 640 (15%) | 119 ms (790 ms on the six) |
+| against the window's | **0 / 40** | **0 / 640** | **0 ms** |
+
+`examples/scixdiag.rs` asks the same of the seek index the last open left behind, which is a
+second rather than the minute a fresh pass costs, and says the same for five episodes of
+that disc at both close settings: 1 to 7 refreshes in 40 fell back whole, and none do now.
+Broadcast material was answering entirely from memory before and still is — the number it is
+weighed against has not moved there, because on broadcast material the two are the same.
+
+Frame view is untouched, and has to be: it asks at one frame, and what is held are key
+pictures, which no material puts one frame apart. The tightest run of them measured anywhere
+here is two frames, on a VC-1 disc — still more than 0.9 × the frame the view asks at — so
+the gate turns frame view away wherever it is measured, and it goes on decoding for real.
 
 ### Verifying scene detection without looking
 
@@ -1642,8 +1688,16 @@ twice the entry points a broadcast does.
 
 That is now the whole of what is left of "the strip does not keep up on a disc". Once the
 pass has been past, [the byte budget](#the-cap-on-held-pictures-is-a-size-not-a-count) holds
-every entry point and no cell decodes at all — but the pass is a quarter of an hour, and the
-recording is being edited during it.
+every entry point and [the gate weighs the window against
+itself](#a-windows-spacing-is-not-the-recordings), so no cell decodes at all — but the pass
+is a quarter of an hour, and the recording is being edited during it.
+
+Nothing tells the strip where the pass has got to, either. `hover_thumb` stops asking past
+`Track::covered` and shows the time instead; `thumbs_now` does not, so a cell beyond it finds
+no held picture near enough and decodes — which is the right picture at the wrong price, and
+at the fastest search speed it is easy to outrun a pass that is still reading. Whether those
+cells would read better empty, the way they do [before the walk has
+finished](#it-comes-up-in-three-stages), has not been tried.
 
 Nothing obvious is being thrown away any more. The pictures the floor used to drop before
 encoding them — 874 of 2793 on the disc measured — are now kept, and they were decoded either
@@ -1651,10 +1705,18 @@ way, because scene detection compares *every* entry picture. What is left is the
 itself, and whether libavcodec's VC-1 decoder makes any use of the cores it is given here is
 not something anyone has looked at.
 
-### The disc path has not been watched doing this
+### The disc path has been measured, not watched
 
 The strip reads the same `Source` whether the recording is a file or a title inside an
-`.iso`, so what is written above holds for both — but it was measured and watched on `.m2ts`
-pieces cut out of the discs rather than on the discs themselves, because the dev VM has 3 GB
-free and the images are 20 and 30 GB. Worth confirming on a real disc, on a machine with the
-room for one.
+`.iso`, so what is written above holds for both — and it has now been **measured** on the
+images themselves rather than on `.m2ts` pieces cut out of them: a 2 h 20 m VC-1 title out of
+a 30 GB image, and a series disc's episodes out of a 34 GB one, which is where [a window's
+spacing is not the recording's](#a-windows-spacing-is-not-the-recordings) came from. The dev
+VM has 3 GB free, so this was run on the machine the images are on, against binaries built on
+the VM.
+
+What has still not been done is **watching it** — the numbers say a refresh costs nothing on
+a disc now, and nobody has held the right button down over a real one and looked. The cost
+that is left is the round trip and the pictures themselves: a reel of thirty cells is a third
+of a megabyte of JPEG through the bridge, fourteen times a second, and that has never been
+measured on either kind of material.
