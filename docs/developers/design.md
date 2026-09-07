@@ -809,8 +809,10 @@ extra cost is a few hundred bytes of signature. The signature is luma collapsed 
 average: a scene change swaps out a wide area of the screen, and anything finer would respond
 to camera shake just as strongly.
 
-**All key pictures are retained**, capped at 4000, thinning the excess. The scroll-search
-pictures come from here, so the retention interval is the granularity of the search.
+**All key pictures are retained**, thinning only where holding them all would not fit in
+`ThumbOptions::max_bytes` — 256 MB, which no ordinary recording reaches. The scroll-search
+pictures come from here, so the retention interval is the granularity of the search. The cap
+used to be a count and is now a size; [why](#the-cap-on-held-pictures-is-a-size-not-a-count).
 
 | Material | Scan time | Thumbnails | Scenes |
 |---|---|---|---|
@@ -830,11 +832,11 @@ other two the ceiling did.
 ### `Track::interval` is measured, not asked for
 
 **It used to report the floor, and the floor was an order of magnitude out.** What the pass is
-given is "hold nothing closer together than this", worked out as the recording's length over
-the 4000-picture cap. What it holds are key pictures, and a recording puts those where it
-likes. On a 2 m 46 s BS Fuji recording the floor comes to **0.042 s** and the pictures land
-**0.50 s** apart — and 0.042 was what the track reported, what the status line printed, and
-what two decisions in `thumbs_at` were taken against.
+given is "hold nothing closer together than this", which at the time was worked out as the
+recording's length over the 4000-picture cap. What it holds are key pictures, and a recording
+puts those where it likes. On a 2 m 46 s BS Fuji recording the floor came to **0.042 s** and
+the pictures land **0.50 s** apart — and 0.042 was what the track reported, what the status
+line printed, and what two decisions in `thumbs_at` were taken against.
 
 `Track::interval` is now **the median gap between neighbouring held pictures**. The median
 rather than the mean or the smallest: on that recording the gaps run from 0.27 s (an extra
@@ -855,9 +857,11 @@ Two consequences, both in `thumbs_at`:
   reason to do with the question — a hundredth of a second on a three-minute recording, half a
   second on a half-hour one — and on the corrected spacing it would have grown to 0.50 s, wide
   enough to caption the picture beside a hole with the hole's own time. Thirty minutes of AT-X
-  is where that showed: 25 of its 1889 entry points are closer together than the floor and so
-  are not held, and a tolerance of 0.45 s let each of those cells be answered by the picture
-  next to it. Two frames is itself too wide on a disc, so the tolerance is capped at **half
+  is where that showed: 25 of its 1889 entry points were closer together than the floor of the
+  day and so were not held, and a tolerance of 0.45 s let each of those cells be answered by
+  the picture next to it. (Under the byte budget that recording has no floor at all and there
+  are no such holes; there still are wherever the budget does bite.) Two frames is itself too
+  wide on a disc, so the tolerance is capped at **half
   the distance to the entry point either side**: a Blu-ray puts one at every scene change,
   and on a VC-1 disc a pair can be 0.067 s apart — the tolerance exactly — so a cell asking
   for one of the pair was answered with the picture from the other, a different shot under
@@ -872,6 +876,58 @@ but **the value in them is not trusted**: the spacing is taken from the pictures
 carries, so an index written when the field meant the floor still loads with the right answer.
 The stored number stands in only when there are fewer than two pictures to measure anything
 from.
+
+### The cap on held pictures is a size, not a count
+
+The ceiling on the track used to be **4000 pictures**. A picture is 3–8 KB, so what that
+really said was "about 25 MB" — but said as a count it stopped being about memory and became
+about **length**, because the floor it implies is the recording's length divided by 4000.
+Half an hour of broadcast is unaffected. A film is not:
+
+| Material | Floor the count implied | Held | Spacing |
+|---|---|---|---|
+| BS Fuji, 28 min | 0.42 s | every entry point | 0.50 s |
+| CANAAN (VC-1 disc), 8 min | 0.12 s | 942 of 1203 | 0.80 s |
+| Letters from Iwo Jima (VC-1 disc), 2 h 20 m | **2.1 s** | about one in four | 2.1 s |
+
+The film strip's cells stand on the recording's own entry points, and `thumbs_at` answers a
+cell from the track only when the held picture **is** the picture asked for. A track coarser
+than the cells is therefore not a track that answers approximately — it is one that does not
+answer at all, and every cell falls through to a decode out of the recording. That is what
+"the film strip does not keep up on a VC-1 Blu-ray" was. Measured over 20 refreshes at
+`GOP・6 秒`, 12 cells each (`examples/stripcost.rs`):
+
+| | Cells decoded | Cost per refresh |
+|---|---|---|
+| 8-min VC-1 disc clip, 4000-picture cap | 61 / 240 | 137 ms |
+| the same, squeezed to the 2.1 s a film got | **240 / 240** | 313 ms |
+| either, under the byte budget | **0 / 240** | 0 ms |
+
+It shows on a disc first for two reasons that compound. A disc puts an entry point at every
+scene change on top of one every second or so, so it carries about twice the entry points a
+broadcast does and a pair of them can be 0.067 s apart — which the floor thins away even on a
+short recording, where a film's floor is nowhere near. And VC-1 is dear to decode: a refresh
+answered by decoding costs **250–780 ms** on 1080p VC-1 against **80–100 ms** on 1440×1080
+MPEG-2, so the same fallback that broadcast material survives is one a disc does not.
+
+**The budget is 256 MB and it is spent against measured pictures, not assumed ones.** The
+collector counts what it has been offered, what it has kept and what the kept ones weigh, and
+asks each time whether holding *every* entry point of the whole recording would fit. While it
+would — which is every recording anyone opens here, a 2 h 20 m disc title coming to about
+96 MB — **nothing is thinned at all**, and the strip has a picture for every cell it can ask
+for. Only when it would not does a floor appear, and then it spreads what is left of the
+budget over what is left of the recording. The projection counts the pictures *offered* rather
+than the ones kept: thinning lowers the rate they are kept at, so a projection made from that
+would report the budget safe again the moment it began thinning, and the floor would come and
+go by turns.
+
+On the 8-minute VC-1 clip the track goes from 942 pictures / 4.6 MB at 0.80 s to **1203 / 6.0
+MB at 0.20 s** — every entry point — and the seek index from 5 MB to 6 MB. The index cache's
+budget goes from 1 GB to 2 GB to match: a film's index is now around a hundred megabytes
+rather than the same twenty-five as a television programme's.
+
+`seek_index::VERSION` is bumped, because an index written under the old cap carries the thin
+track and would otherwise be picked up in place of building the right one.
 
 ### Verifying scene detection without looking
 
@@ -926,8 +982,8 @@ Two more things were fixed along the way:
 - **`Track::nearest()` does not care about distance.** With a hole in the track it returns
   *something* however far away, and the filmstrip lines that up with a caption from a different
   time. `thumbs_at` now treats "further than the retention interval" as a hole and really
-  decodes that one cell. Material thinned by the 4000 cap (25 out of 1889 on 30 minutes of
-  AT-X) is rescued by the same path.
+  decodes that one cell. Material thinned by the cap of the day (25 out of 1889 on 30 minutes
+  of AT-X) was rescued by the same path, and material thinned by the byte budget still is.
 
 ### "No audio" — only sample-accurate × TS was broken
 
@@ -1576,31 +1632,24 @@ with that drift accepted. It gains the least, which is why it is last. The track
 the detection were held back for the same reason and are both done; see
 [It comes up in three stages](#it-comes-up-in-three-stages).
 
-### The thumbnail track thins out on a long recording
-
-`ThumbOptions::max_thumbs` is 4000, so the floor under the spacing is the recording's length
-divided by 4000: 0.36 s on a 24-minute episode, which keeps every entry point, and 2.1 s on a
-2 h 20 m film, which keeps one in four. The strip asks at each cell's own boundary, so on a
-long film most cells miss the track and fall through to a decode. That is not a hole — a run
-of cells is decoded together, in a few hundred milliseconds — but it is the difference
-between a strip that answers instantly and one that does not.
-
-Raising the cap is the obvious move, and the only question is the cost: a 192 px JPEG runs
-3–8 KB, so a film's 14 000 entry points come to 50–100 MB of held pictures against the 20 MB
-the cap allows now. A cap in bytes rather than in pictures would at least say what is being
-protected.
-
 ### Building the track over VC-1 is slow
 
 Eight minutes of 1080p VC-1 takes 47 s to walk and decode into a thumbnail track — a tenth
-of real time — so a 2 h 20 m film would take a quarter of an hour, and until the pass has
-been there the strip is answered by decoding. Two things make it: VC-1 costs more to decode
-than MPEG-2, and a disc carries about twice the entry points a broadcast does.
+of real time — so a 2 h 20 m film would take a quarter of an hour, and **until the pass has
+been there the strip is answered by decoding**, at a quarter to three quarters of a second a
+refresh. Two things make it: VC-1 costs more to decode than MPEG-2, and a disc carries about
+twice the entry points a broadcast does.
 
-A third of that work is thrown away: the pictures the floor above drops are decoded first —
-874 of 2793 on the disc measured. Skipping them would want scene detection to stop needing
-them, and it compares *every* entry picture, which is where the signatures come from.
-Deciding what the detection actually needs at 0.067 s spacing would settle it.
+That is now the whole of what is left of "the strip does not keep up on a disc". Once the
+pass has been past, [the byte budget](#the-cap-on-held-pictures-is-a-size-not-a-count) holds
+every entry point and no cell decodes at all — but the pass is a quarter of an hour, and the
+recording is being edited during it.
+
+Nothing obvious is being thrown away any more. The pictures the floor used to drop before
+encoding them — 874 of 2793 on the disc measured — are now kept, and they were decoded either
+way, because scene detection compares *every* entry picture. What is left is the decode
+itself, and whether libavcodec's VC-1 decoder makes any use of the cores it is given here is
+not something anyone has looked at.
 
 ### The disc path has not been watched doing this
 

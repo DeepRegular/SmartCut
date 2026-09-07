@@ -35,7 +35,14 @@ static SERIAL: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(
 
 /// Bumped when a change here would make an existing file wrong. It goes into
 /// the cache key, so older ones are simply never looked at again.
-pub const VERSION: u32 = 2;
+///
+/// 3: the held pictures are capped by what they weigh rather than by how many
+/// there are ([`thumbs::ThumbOptions::max_bytes`]). The format did not change
+/// and an old file still reads, but the track inside one made under the old
+/// cap is thinner than the film strip needs on anything over half an hour --
+/// which is the whole of what that change was for, so an index carrying one
+/// has to be made again rather than picked up.
+pub const VERSION: u32 = 3;
 
 const MAGIC: &[u8; 4] = b"SCIX";
 

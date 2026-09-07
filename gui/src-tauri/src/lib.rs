@@ -1172,11 +1172,19 @@ fn remember(
         return None;
     }
     // An index is a thousandth of what a proxy costs -- the pictures are 192
-    // pixels wide and there is no video at all, so half an hour comes to
-    // around forty megabytes -- which is why the count is large where the
-    // proxy cache's is eight. A gigabyte holds a couple of dozen recordings,
-    // and the index for one finished last week is still worth having.
-    let _ = seek_index::prune(&dir, 32, 1 << 30);
+    // pixels wide and there is no video at all, so half an hour of broadcast
+    // comes to around forty megabytes -- which is why the count is large where
+    // the proxy cache's is eight, and the index for one finished last week is
+    // still worth having.
+    //
+    // Two gigabytes rather than one because a film's is no longer the same
+    // size as a television programme's: the held pictures are now capped by
+    // what they weigh rather than by how many there are, so a 2 h 20 m disc
+    // title keeps every one of its entry points and comes to about a hundred
+    // megabytes. A gigabyte would have held eight of those; two holds a
+    // couple of dozen broadcast recordings as before, and does not throw a
+    // film's away to make room for them.
+    let _ = seek_index::prune(&dir, 32, 2 << 30);
     index_info(app, src, false)
 }
 

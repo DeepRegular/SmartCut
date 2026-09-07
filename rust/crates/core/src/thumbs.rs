@@ -33,9 +33,24 @@ pub struct ThumbOptions {
     /// wants: dragging across the film strip shows the held pictures, so
     /// their spacing is the granularity of the scroll.
     pub interval: f64,
-    /// Ceiling on how many are held, whatever `interval` says. A long
-    /// recording widens its own spacing rather than filling memory.
-    pub max_thumbs: usize,
+    /// Ceiling on what the held pictures may come to, in bytes, whatever
+    /// `interval` says. A recording whose entry points would not fit widens
+    /// its own spacing rather than filling memory.
+    ///
+    /// **In bytes rather than in pictures**, which is what it used to be. The
+    /// two are the same thing only where a picture is always the same size,
+    /// and a 192-pixel JPEG runs from 3 KB on a disc's clean 1080p to 8 KB on
+    /// a noisy broadcast. Counted in pictures the ceiling stopped being about
+    /// memory and became about *length*: 4000 of them is a floor of the
+    /// recording's length over 4000, which is nothing on half an hour and
+    /// 2.1 s on a 2 h 20 m film -- coarser than the film strip's own cells,
+    /// so every cell of it missed the track and was decoded out of the
+    /// recording instead. Measured on a VC-1 disc that was every refresh, at
+    /// a quarter to three quarters of a second each.
+    ///
+    /// What the number is worth is therefore read off the pictures as they
+    /// are made; see [`Collector::min_gap`].
+    pub max_bytes: usize,
     /// Thumbnail width, in pixels.
     pub width: u32,
     /// Picture difference below which nothing counts as a cut, however quiet
@@ -62,7 +77,12 @@ impl Default for ThumbOptions {
     fn default() -> Self {
         Self {
             interval: 0.0,
-            max_thumbs: 4000,
+            // Enough that every entry point of anything anyone opens here is
+            // held: the longest recording in question is a disc title, and
+            // three hours of one carries around 20 000 of them. Past that the
+            // spacing widens, which is the old behaviour and the right one --
+            // it is simply no longer reached by an ordinary film.
+            max_bytes: 256 << 20,
             width: 192,
             floor: 0.055,
             over_typical: 3.0,
@@ -83,12 +103,12 @@ pub struct Track {
     /// between neighbours -- which is what a caller must assume when
     /// deciding whether they are fine enough for its purpose.
     ///
-    /// **Measured, not asked for.** [`ThumbOptions::interval`] and the
-    /// ceiling on how many to hold only set a floor; what is held are key
-    /// pictures, so the spacing is the material's. On a 2 m 46 s BS Fuji
-    /// recording the floor works out at 0.04 s and the pictures land 0.50 s
-    /// apart -- and a caller told 0.04 would answer a scrub from held
-    /// pictures that are nowhere near fine enough for it.
+    /// **Measured, not asked for.** [`ThumbOptions::interval`] and the budget
+    /// they have to fit in only set a floor -- usually none at all; what is
+    /// held are key pictures, so the spacing is the material's. On a 2 m 46 s
+    /// BS Fuji recording the floor is zero and the pictures land 0.50 s apart
+    /// -- and a caller told the floor would answer a scrub from held pictures
+    /// that are nowhere near fine enough for it.
     pub interval: f64,
     /// How far into the recording the track speaks for. A finished one speaks
     /// for the whole of it; one handed over while it is still being built
@@ -238,7 +258,25 @@ pub struct Collector<'a> {
     /// The last time fed in, which is how far the pictures held so far
     /// speak for.
     seen: f64,
+    /// How many key pictures have been offered, and how many of those were
+    /// kept and what they came to. The first is the recording's own rate of
+    /// entry points and the other two are what one of them weighs; between
+    /// them they say whether holding all of them would fit. See
+    /// [`Self::min_gap`].
+    ///
+    /// Counted here rather than read off `thumbs`, which [`Self::take_new`]
+    /// moves out from under them.
+    fed: usize,
+    kept: usize,
+    bytes: usize,
 }
+
+/// What one held picture is assumed to weigh until some have been made.
+///
+/// Only the first second or so of a read goes by on this, and what it decides
+/// is whether that second is held finely or not at all -- so it is set where
+/// a wrong guess is harmless: broadcast material, the heavier of the two.
+const SEED_BYTES: usize = 8 << 10;
 
 impl<'a> Collector<'a> {
     pub fn new(src: &'a Source, opts: &'a ThumbOptions) -> Self {
@@ -263,6 +301,18 @@ impl<'a> Collector<'a> {
             prev: None,
             keep_from: f64::NEG_INFINITY,
             seen: 0.0,
+            fed: 0,
+            kept: 0,
+            bytes: 0,
+        }
+    }
+
+    /// What one held picture weighs, as well as it is known.
+    fn each(&self) -> f64 {
+        if self.kept == 0 {
+            SEED_BYTES as f64
+        } else {
+            (self.bytes as f64 / self.kept as f64).max(1.0)
         }
     }
 
@@ -270,17 +320,42 @@ impl<'a> Collector<'a> {
     /// [`Track::interval`] for why it is not the answer to "how far apart
     /// are the pictures".
     ///
-    /// Worked out afresh each time rather than once, because the length it
-    /// divides may still be wrong. A program stream does not record its own,
-    /// and libavformat has been seen to work out eight seconds for an hour of
-    /// DVD -- which as a fixed floor would mean keeping every key picture of
-    /// the whole recording. Taking the longer of what the container claimed
-    /// and what has actually gone past makes the floor correct itself as the
-    /// read goes on: the first few seconds are held too finely and everything
-    /// after them is held right.
+    /// Worked out afresh each time rather than once, because none of the three
+    /// numbers it rests on is known at the start. The length may still be
+    /// wrong -- a program stream does not record its own, and libavformat has
+    /// been seen to work out eight seconds for an hour of DVD -- so the longer
+    /// of what the container claimed and what has actually gone past is used,
+    /// which makes the floor correct itself as the read goes on: the first few
+    /// seconds are held too finely and everything after them is held right.
+    /// What a picture weighs and how thickly the recording carries entry
+    /// points are likewise only learnt by reading it.
+    ///
+    /// **Nothing is thinned at all where holding all of it would fit.** That
+    /// is the case worth getting right, because it is the one the film strip
+    /// lives in: its cells stand on the recording's own entry points, so a
+    /// track missing any of them is a strip that has to decode. Only once the
+    /// budget will not stretch to every entry point does a floor appear, and
+    /// then it spreads what is left of the budget over what is left of the
+    /// recording.
+    ///
+    /// The projection counts the pictures *offered* rather than the ones kept.
+    /// Thinning lowers the rate they are kept at, so a projection made from
+    /// that would report the budget safe again the moment it began thinning,
+    /// and the floor would come and go by turns.
     fn min_gap(&self) -> f64 {
         let known = self.duration.max(self.seen);
-        self.opts.interval.max(known / self.opts.max_thumbs.max(1) as f64)
+        let each = self.each();
+        // Too early to have measured a rate; the first second is held whole.
+        if self.fed < 2 || self.seen < 1.0 {
+            return self.opts.interval;
+        }
+        let entry_points = self.fed as f64 * (known / self.seen);
+        if entry_points * each <= self.opts.max_bytes as f64 {
+            return self.opts.interval;
+        }
+        let left = self.opts.max_bytes.saturating_sub(self.bytes) as f64;
+        let ahead = (known - self.seen).max(0.0);
+        self.opts.interval.max(ahead / (left / each).max(1.0))
     }
 
     /// The spacing images are actually being kept at, falling back to the
@@ -312,6 +387,7 @@ impl<'a> Collector<'a> {
             return Ok(());
         }
         self.seen = time;
+        self.fed += 1;
         let sig = signature(frame);
         if let Some(p) = &self.prev {
             self.diffs.push((time, distance(p, &sig)));
@@ -324,6 +400,11 @@ impl<'a> Collector<'a> {
                 self.gaps.push(time - prev);
             }
             self.last_kept = Some(time);
+            self.kept += 1;
+            self.bytes += jpeg.len();
+            // After the picture is counted, not before: what the floor is
+            // worth depends on what the pictures have turned out to weigh,
+            // and this one is now part of that answer.
             self.keep_from = time + self.min_gap();
             self.thumbs.push(Thumb { time, jpeg });
         }
@@ -706,5 +787,53 @@ mod tests {
         times.push(times.last().unwrap() + 6.5);
         let s = spacing(&at(&times)).unwrap();
         assert!((s - 0.5).abs() < 1e-9, "spacing came out {s}");
+    }
+
+    /// A minute into a 2 h 20 m disc title: two entry points a second, six
+    /// kilobytes a picture, so holding all of them comes to around a hundred
+    /// megabytes.
+    fn a_film<'a>(opts: &'a ThumbOptions) -> Collector<'a> {
+        let mut c = Collector::about(8460.0, 1.0, opts);
+        c.seen = 60.0;
+        c.fed = 120;
+        c.kept = 120;
+        c.bytes = 120 * 6144;
+        c
+    }
+
+    /// The point of the budget: a recording whose entry points fit inside it
+    /// keeps every one of them, because every one is a cell the film strip
+    /// can be asked for. The old ceiling was a count, and 4000 of them over a
+    /// film is a floor of 2.1 s -- coarser than the strip's own cells, so
+    /// every cell missed and was decoded out of the recording.
+    #[test]
+    fn a_recording_that_fits_is_not_thinned_at_all() {
+        let opts = ThumbOptions::default();
+        assert_eq!(a_film(&opts).min_gap(), 0.0);
+    }
+
+    /// And one that does not fit spreads what is left of the budget over what
+    /// is left of the recording, rather than over the whole of it: the part
+    /// already read has been paid for.
+    #[test]
+    fn a_recording_that_does_not_fit_spreads_what_is_left() {
+        let opts = ThumbOptions { max_bytes: 8 << 20, ..ThumbOptions::default() };
+        let c = a_film(&opts);
+        let room = ((8 << 20) - 120 * 6144) as f64 / 6144.0;
+        let want = (8460.0 - 60.0) / room;
+        let got = c.min_gap();
+        assert!((got - want).abs() < 1e-9, "floor came out {got}, wanted {want}");
+    }
+
+    /// Nothing is dropped before there is anything to judge on. A rate read
+    /// off one picture is not a rate.
+    #[test]
+    fn the_first_moment_is_held_whole() {
+        let opts = ThumbOptions { max_bytes: 1 << 10, ..ThumbOptions::default() };
+        let mut c = Collector::about(8460.0, 1.0, &opts);
+        assert_eq!(c.min_gap(), 0.0);
+        c.seen = 0.5;
+        c.fed = 2;
+        assert_eq!(c.min_gap(), 0.0);
     }
 }
