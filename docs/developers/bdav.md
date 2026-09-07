@@ -270,6 +270,62 @@ recorder behaves and what makes a disc worth filling over a week.
 The disc's own name is the one exception: it is one name for the disc, so the
 one on the screen wins.
 
+## The image
+
+A folder is what a recorder writes to a disc and what an authoring tool will
+burn, but it is not what most people hand to a burner. So the disc can be
+wrapped in an image as it is finished: `disc/` becomes `disc.iso`, and the
+folder stays -- the image is made *of* it, and deleting somebody's disc
+because they asked for an image of it is not this program's decision.
+
+The image is a **UDF** filesystem, at revision 2.50 or 2.60 as the output
+settings screen asks. [`udfw.rs`](../../rust/crates/core/src/udfw.rs) writes
+it, and there is no specification in this project to write it from: every
+offset, every constant and every field was read off the two images the disc
+work was done against, and what comes out is read back by
+[`udf.rs`](../../rust/crates/core/src/udf.rs), which is the reader those two
+images are already opened with.
+
+```text
+  0..15   nothing: the system area an ISO9660 volume would use
+ 16..18   BEA01, NSR03, TEA01 -- "there is a UDF volume in here"
+ 32..47   the volume descriptors: primary, implementation use, partition,
+          logical volume, unallocated space, terminating
+ 64..65   the logical volume integrity descriptor, and a terminator
+    256   the anchor, which is the one descriptor at a fixed place
+    288   the partition, and inside it the metadata partition and the files
+   then   a reserve copy of the volume descriptors, and a second anchor in
+          the last sector
+```
+
+**The file entries live in a metadata partition**, which is what UDF 2.50
+added and what both reference images use: a partition whose blocks are the
+contents of an ordinary file on the partition beside it, so that the
+directory tree is in one place on the disc and the file data stays where the
+burner laid it down. It is also what decides how an entry names its data. A
+short allocation descriptor means "the partition this descriptor is recorded
+on", so a directory -- whose contents are in the metadata partition too --
+uses short ones, and a file uses long ones and names the partition its bytes
+are actually on.
+
+Two details are worth writing down, because getting either wrong produces an
+image this program reads and everything else refuses:
+
+* **Every descriptor records the block it is written at.** A reader that
+  finds one claiming to be somewhere else is right to stop, and other readers
+  do. The reader here never looked, which is exactly why the first images it
+  happily opened were rejected by everything else.
+* **A file identifier carries the number of the file it names**, in the six
+  bytes a long allocation descriptor keeps for the implementation, and the
+  file's own entry has to agree. Both reference images do this. The check in
+  `udfw.rs` is that the identifier this writes for a directory called `BDAV`
+  comes out **byte for byte identical** to the one on the reference image,
+  checksum and cyclic redundancy check included.
+
+A file longer than 1,073,739,776 bytes is written as several extents, because
+that is what a 30 bit length field with a 2 KB block comes to -- the same
+split the reader sees on discs written by burners.
+
 ## What was checked
 
 **Against two real discs.** The first is one a Japanese authoring tool wrote
@@ -303,4 +359,14 @@ picture at the time it claims**; that the arrival times never step backwards
 and span the recording; and that the programme's name, the channel and its
 number, the moment it went out and what the broadcaster said it was about all
 survive being written into a disc, read back out of it, and written into a
-second one — the last two compared as the bytes that went in. Forty checks, all passing.
+second one — the last two compared as the bytes that went in.
+
+**The image, three ways.** Each revision is written, and then: this program's
+own reader opens it and finds the disc; 7-Zip, whose UDF reader was written by
+somebody else, agrees it is a UDF volume of that revision and unpacks it to a
+tree `diff -r` finds identical to the folder it was made of; and a cut taken
+out of the image comes out the same md5 as the same cut taken out of the
+folder. Separately, an image of a 1.2 GB file was written and unpacked byte
+for byte, which is the extent split above.
+
+Fifty-three checks, all passing.

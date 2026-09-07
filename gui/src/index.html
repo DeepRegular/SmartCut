@@ -143,6 +143,21 @@
             <span data-i18n="outset.discTitle">ディスクタイトル:</span>
             <input id="out-disc-title" type="text" />
           </div>
+          <!-- And whether to wrap the finished disc in an image. Beside the
+               disc's name because it is the other thing that is about the
+               disc as a whole rather than about a clip -- and because the
+               two are read together: this is the name the image will carry.
+               The folder is written either way; the image is made of it. -->
+          <div class="row" id="row-image" hidden>
+            <span data-i18n="outset.image">イメージ:</span>
+            <span class="drop">
+              <select id="out-image">
+                <option value="" selected data-i18n="image.none">作らない（フォルダーのまま）</option>
+                <option value="2.50" data-i18n="image.udf250">ISO イメージ（UDF 2.50）</option>
+                <option value="2.60" data-i18n="image.udf260">ISO イメージ（UDF 2.60）</option>
+              </select>
+            </span>
+          </div>
           <div class="row">
             <span data-i18n="outset.clipPick">クリップ選択:</span>
             <select id="outset-clip"></select>

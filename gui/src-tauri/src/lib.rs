@@ -3099,6 +3099,43 @@ async fn bdav_prepare(dir: String, n: usize) -> Result<Vec<BdavSlot>, String> {
     .map_err(|e| e.to_string())?
 }
 
+/// Wrap the finished disc in an image a burner can take.
+///
+/// The folder is what was written and it stays: the image is made *of* it,
+/// and deleting somebody's disc because they asked for an image of it is not
+/// this program's decision. The image goes beside the folder, under the same
+/// name -- `disc/` becomes `disc.iso`.
+#[tauri::command]
+async fn bdav_image(
+    app: tauri::AppHandle,
+    dir: String,
+    title: String,
+    revision: String,
+) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let at = local_path(&dir)?;
+        let revision = smartcut_core::udfw::Revision::parse(&revision)
+            .ok_or_else(|| format!("{revision}: not a UDF revision this writes"))?;
+        // Appended rather than `with_extension`, which would take a folder
+        // called `2026.09` and write `2026.iso`.
+        let image = std::path::PathBuf::from(format!("{}.iso", at.display()));
+        let reporter = app.clone();
+        smartcut_core::udfw::write(
+            &at,
+            &image,
+            revision,
+            &title,
+            Some(&move |done: f64| {
+                let _ = reporter.emit("image-progress", done);
+            }),
+        )
+        .map_err(|e| e.to_string())?;
+        Ok(image.to_string_lossy().into_owned())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
 /// Write the index around the streams the run has just written.
 ///
 /// This is the pass that makes a folder of `00001.m2ts` into a disc: each
@@ -3508,6 +3545,7 @@ pub fn run() {
             programme,
             bdav_prepare,
             bdav_finish,
+            bdav_image,
             audio_limits,
             index_clip,
             clip_outline,

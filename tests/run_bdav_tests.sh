@@ -180,6 +180,75 @@ else
   done
 fi
 
+# --- and the image a burner takes -----------------------------------------
+
+echo
+echo "the disc, wrapped in an image"
+
+# The image is made of the folder and read back three ways: by this program's
+# own UDF reader, which is what opens a disc; by 7-Zip, which has a UDF
+# reader written by somebody else and is the only independent opinion
+# available here; and by comparing what 7-Zip extracts against what went in.
+have7z=$(command -v 7z || command -v 7za || true)
+for udf in 2.50 2.60; do
+  out="$OUT/image${udf/./}"
+  rm -rf "$out" "$out.iso"
+  "$BIN" "$FX/mpeg2.ts" --keep 0-4 --bdav "$out" --disc-title DISCTEST \
+    --programme "一本目の番組" --iso "$udf" >"$OUT/iso$udf.log" 2>&1
+  if [ ! -f "$out.iso" ]; then
+    bad "UDF $udf: an image is written" "$(tail -2 "$OUT/iso$udf.log")"
+    continue
+  fi
+  bytes=$(stat -c %s "$out.iso")
+  same "UDF $udf: the image is whole blocks" "0" "$((bytes % 2048))"
+  # The reader that opens every other disc opens this one.
+  read=$("$BIN" "$out.iso" 2>/dev/null)
+  has "UDF $udf: it opens as a disc" "DISCTEST" "$read"
+  has "UDF $udf: with the recording on it" "一本目の番組" "$read"
+  if [ -n "$have7z" ]; then
+    listed=$("$have7z" l "$out.iso" 2>&1)
+    has "UDF $udf: another reader agrees it is UDF" "Version = $udf" "$listed"
+    rm -rf "$OUT/unpacked"
+    if "$have7z" x -o"$OUT/unpacked" "$out.iso" >/dev/null 2>&1 \
+       && diff -r "$OUT/unpacked" "$out" >/dev/null; then
+      ok "UDF $udf: and unpacks to the folder it was made of"
+    else
+      bad "UDF $udf: and unpacks to the folder it was made of"
+    fi
+  else
+    skip "UDF $udf: another reader agrees it is UDF" "no 7z"
+    skip "UDF $udf: and unpacks to the folder it was made of" "no 7z"
+  fi
+done
+
+# And the disc of two recordings from the top of this file, which is the case
+# a directory with more than one thing in it -- and a second image beside a
+# folder that already had one.
+"$BIN" "$FX/mpeg2.ts" --keep 0-2 --bdav "$OUT/disc" --disc-title "テストディスク" \
+  --programme "三本目の番組" --iso 2.60 >"$OUT/three.log" 2>&1
+if [ -f "$OUT/disc.iso" ]; then
+  read=$("$BIN" "$OUT/disc.iso" 2>/dev/null)
+  same "a disc of three is three in the image" "3 recording(s)" \
+    "$(echo "$read" | sed -n 's/.*\(3 recording(s)\).*/\1/p' | head -1)"
+  has "and the newest of them is on it" "三本目の番組" "$read"
+else
+  bad "a disc of three is three in the image" "no image was written"
+  bad "and the newest of them is on it"
+fi
+
+# A cut taken out of the image has to be the same cut as one taken out of the
+# folder: the image is a container around the bytes, not a copy of them.
+"$BIN" "$OUT/image260/BDAV/STREAM/00001.m2ts" --keep 0-2 -o "$OUT/from-folder.ts" \
+  >"$OUT/folder.log" 2>&1
+"$BIN" "$OUT/image260.iso" --title 1 --keep 0-2 -o "$OUT/from-image.ts" \
+  >"$OUT/image.log" 2>&1
+if [ -f "$OUT/from-image.ts" ] && [ -f "$OUT/from-folder.ts" ]; then
+  same "a cut out of the image is the cut out of the folder" \
+    "$(md5sum < "$OUT/from-folder.ts")" "$(md5sum < "$OUT/from-image.ts")"
+else
+  bad "a cut out of the image is the cut out of the folder" "one of them was not written"
+fi
+
 echo
 echo "=== $pass passed, $fail failed ==="
 [ "$fail" -eq 0 ]

@@ -2031,6 +2031,10 @@ const settings = {
   /// what is on it. Only means anything in `bdav` mode; empty is filled in
   /// from the first recording when the screen is drawn.
   discTitle: "",
+  /// Whether the finished disc is wrapped in an image, and to which UDF
+  /// revision: "" for a folder and nothing else, "2.50" or "2.60" for one.
+  /// The folder is written either way -- the image is made of it.
+  image: "",
   prefix: "cut_",
   container: "",
   audio: "smart",
@@ -2166,6 +2170,7 @@ function showSettings() {
 }
 bindSetting("out-dir", "dir");
 bindSetting("out-disc-title", "discTitle");
+bindSetting("out-image", "image");
 bindSetting("out-prefix", "prefix");
 bindSetting("out-container", "container");
 bindSetting("out-audio", "audio");
@@ -3061,11 +3066,17 @@ function chaptersFor(clip) {
   return out.filter((at, i) => i === 0 || at - out[i - 1] > 0.5);
 }
 
-/// What to call the disc, when nobody has said.
-///
-/// The channel the first recording came off, which for an evening of
-/// recordings off one channel is exactly right and for a mixed disc is at
-/// least a name somebody will recognise. Then the first programme.
+/// Where the image will be written, for the panel to show under the disc.
+/// Empty when none was asked for, which is most of the time: an image is
+/// what you make when the disc is finished and about to be burnt.
+function imageLine() {
+  if (!settings.image || !settings.dir) return "";
+  return t("outset.imageLine", {
+    path: `${settings.dir.replace(/[/\\]*$/, "")}.iso`,
+    udf: settings.image,
+  });
+}
+
 /// The channel as the panel shows it: what it calls itself, and the three
 /// digits beside it where the recording knew them.
 function channelLine(clip) {
@@ -3084,6 +3095,11 @@ function aboutLine(clip) {
   return flat.length > 78 ? `${flat.slice(0, 78)}…` : flat;
 }
 
+/// What to call the disc, when nobody has said.
+///
+/// The channel the first recording came off, which for an evening of
+/// recordings off one channel is exactly right and for a mixed disc is at
+/// least a name somebody will recognise. Then the first programme.
 function discTitleFor(list) {
   if (settings.discTitle) return settings.discTitle;
   const first = list[0];
@@ -3117,6 +3133,7 @@ function paintMode() {
   el("row-container").hidden = disc;
   el("row-keyframes").hidden = disc;
   el("row-disc-title").hidden = !disc;
+  el("row-image").hidden = !disc;
   el("row-programme").hidden = !disc;
   el("outset-file-head").textContent = t(disc ? "outset.discHead" : "outset.fileHead");
   el("out-dir-label").textContent = t(disc ? "outset.discFolder" : "outset.outDir");
@@ -3189,7 +3206,7 @@ function renderOutset() {
     marks: chaptersFor(clip).length,
     out: bdavMode()
       ? settings.dir
-        ? t("outset.discPath", { dir: settings.dir.replace(/[/\\]*$/, "") })
+        ? t("outset.discPath", { dir: settings.dir.replace(/[/\\]*$/, "") }) + imageLine()
         : t("outset.discHere")
       : outputPath(clip),
     side:
@@ -3465,6 +3482,16 @@ if (listen) {
 }
 
 if (listen) {
+  // The image is one long write with nothing else happening, so it says how
+  // far through it is where the state is said rather than on the bar.
+  listen("image-progress", (ev) => {
+    if (!exporting) return;
+    el("out-state").textContent = t("out.imaging", {
+      udf: settings.image,
+      pct: Math.round(ev.payload * 100),
+    });
+  });
+
   // The pass that writes the disc's index reads every stream back, which on
   // a disc's worth of recordings is minutes. It says which recording it is
   // on and how far through; there is no room on the bar for it, because the
@@ -3647,6 +3674,22 @@ async function runExport() {
             n: wrote.length,
           })
         );
+        // The image, if one was asked for. After the index and not instead
+        // of it: the image is made of the folder, which has to be finished
+        // before there is anything to wrap.
+        if (settings.image) {
+          try {
+            el("out-state").textContent = t("out.imaging", { udf: settings.image, pct: 0 });
+            const path = await invoke("bdav_image", {
+              dir: settings.dir,
+              title: discTitleFor(list),
+              revision: settings.image,
+            });
+            note(t("out.imageDone", { path }));
+          } catch (e) {
+            note(t("out.imageFailed", { e: String(e) }));
+          }
+        }
       } catch (e) {
         note(t("out.bdavFailed", { e: String(e) }));
       }

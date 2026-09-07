@@ -75,7 +75,7 @@ bash tests/run_ts_layout_tests.sh     # TS provenance and sequence headers      
 bash tests/run_broadcast_tests.sh     # captions, programme information, multi-audio    13
 bash tests/run_cm_tests.sh            # commercial detection vs a human's answer         5
 bash tests/run_disc_tests.sh          # a BDAV and a BDMV disc, as folders and as .isos 35
-bash tests/run_bdav_tests.sh          # writing a disc: the index, and what it says      40
+bash tests/run_bdav_tests.sh          # writing a disc: the index, the image, and both   53
 bash tests/run_dvd_tests.sh           # a DVD-Video disc, as a folder and as an .iso    23
 bash tests/run_bd_audio_tests.sh      # the sound a disc carries, written out             39
 bash tests/run_vc1_tests.sh           # the VC-1 encoder, put through a decoder          4
@@ -98,7 +98,10 @@ same fixture, opens it with SmartCut's own reader, and then has `bdav_index.py` 
 every number in the index against the stream it is about — the entry point map
 followed into the file point by point, the arrival times, and what the clip index says
 the streams are. With a real broadcast recording in `~/media` it also checks that the
-programme's name and the moment it went out survive a round trip through a disc.
+programme's name, the channel and the moment it went out survive a round trip through a
+disc. The last of it is the image: each UDF revision is written, opened again by this
+program, and -- where 7-Zip is installed -- unpacked by a reader written by somebody
+else and compared against the folder it was made of.
 
 `run_dvd_tests.sh` builds two DVDs out of the same stream, muxed to MPEG program
 streams by ffmpeg's `dvd` muxer: an ordinary one, whose title set is written in two

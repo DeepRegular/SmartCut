@@ -31,6 +31,7 @@ pub mod seek_index;
 pub mod si;
 pub mod thumbs;
 pub mod udf;
+pub mod udfw;
 
 pub use cm::{
     blocks as cm_blocks, blocks_from_logo as cm_blocks_from_logo,

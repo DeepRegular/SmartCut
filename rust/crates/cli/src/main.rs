@@ -152,6 +152,7 @@ fn main() -> Result<()> {
     // recording going onto it. See `smartcut_core::bdav`.
     let mut bdav: Option<String> = None;
     let mut disc_title: Option<String> = None;
+    let mut iso: Option<smartcut_core::udfw::Revision> = None;
     let mut programme: Option<String> = None;
     let mut given_channel: Option<String> = None;
     let mut given_number: Option<u16> = None;
@@ -318,6 +319,17 @@ fn main() -> Result<()> {
                 i += 1;
                 bdav = Some(args.get(i).context("--bdav needs a folder")?.clone());
             }
+            // And whether to wrap the finished disc in an image. The
+            // folder is what is written either way; this is the burner's
+            // copy of it.
+            "--iso" => {
+                i += 1;
+                let v = args.get(i).context("--iso needs a UDF revision")?;
+                iso = Some(
+                    smartcut_core::udfw::Revision::parse(v)
+                        .with_context(|| format!("--iso wants 2.50 or 2.60, got {v:?}"))?,
+                );
+            }
             "--disc-title" => {
                 i += 1;
                 disc_title = Some(args.get(i).context("--disc-title needs a name")?.clone());
@@ -372,7 +384,8 @@ fn main() -> Result<()> {
              --bdav writes the cut onto a disc of recordings in FOLDER rather than \
              into a file; --disc-title, --programme, --channel, --about and --made \
              fill in what its index says, which is otherwise taken from what the \
-             recording says about itself"
+             recording says about itself; --iso 2.50|2.60 wraps the finished disc \
+             in a UDF image beside it"
         );
     };
     // A share the machine has already mounted may be named the way it is
@@ -994,6 +1007,22 @@ fn main() -> Result<()> {
             None,
         )?;
         println!("wrote {} -- {name}", at.join("BDAV").display());
+        if let Some(revision) = iso {
+            // Beside the folder and named after it. The folder stays: it is
+            // what the image was made of, and deleting somebody's disc
+            // because they asked for an image of it is not this program's
+            // decision.
+            // Appended rather than `with_extension`, which would take a
+            // folder called `2026.09` and write `2026.iso`.
+            let image = std::path::PathBuf::from(format!("{}.iso", at.display()));
+            let bytes = smartcut_core::udfw::write(&at, &image, revision, &title, None)?;
+            println!(
+                "wrote {} ({:.1} MB, UDF {})",
+                image.display(),
+                bytes as f64 / 1e6,
+                revision.as_str()
+            );
+        }
         return Ok(());
     }
     println!("wrote {out}");

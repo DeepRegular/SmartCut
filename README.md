@@ -52,7 +52,9 @@ under the name it went out under, the channel it came off, the night it was
 recorded, what the broadcaster said it was about, and a chapter point at every
 place a commercial break was taken out. A recording read off a disc keeps
 everything its playlist said; a broadcast recording is read for its own
-programme information. See [Writing a disc](docs/developers/bdav.md).
+programme information. Asked for one, the finished disc is wrapped in a
+**UDF 2.50 or 2.60 `.iso`** a burner can take. See
+[Writing a disc](docs/developers/bdav.md).
 
 **Commercial breaks are found for you.** SmartCut combines three independent
 signals: the break marks the broadcaster puts in its own subtitle stream, runs of
@@ -97,11 +99,11 @@ Every build except the `.deb` bundles FFmpeg, so there is nothing else to instal
 
 | Platform | File | Notes |
 |---|---|---|
-| **Linux** | `SmartCut_0.5.0_amd64.AppImage` | Make it executable and run it |
-| **Linux** | `SmartCut-0.5.0-linux-x86_64.tar.gz` | Unpack and run `./smartcut`. Use this if you would rather not deal with FUSE |
-| **Linux (Debian/Ubuntu)** | `smartcut_0.5.0_amd64.deb` | `sudo apt install ./smartcut_0.5.0_amd64.deb`. Only 3.2 MB, because it links against your system FFmpeg |
-| **Windows** | `SmartCut_0.5.0_x64-setup.exe` | Installer |
-| **Windows** | `smartcut-portable-x64-0.5.0.zip` | Unzip and run `smartcut.exe` |
+| **Linux** | `SmartCut_0.5.1_amd64.AppImage` | Make it executable and run it |
+| **Linux** | `SmartCut-0.5.1-linux-x86_64.tar.gz` | Unpack and run `./smartcut`. Use this if you would rather not deal with FUSE |
+| **Linux (Debian/Ubuntu)** | `smartcut_0.5.1_amd64.deb` | `sudo apt install ./smartcut_0.5.1_amd64.deb`. Only 3.2 MB, because it links against your system FFmpeg |
+| **Windows** | `SmartCut_0.5.1_x64-setup.exe` | Installer |
+| **Windows** | `smartcut-portable-x64-0.5.1.zip` | Unzip and run `smartcut.exe` |
 
 **Requirements.** The AppImage and the tar.gz need glibc 2.39 or newer, which
 means Ubuntu 24.04, Debian 13, Fedora 40 or later. The `.deb` needs FFmpeg 7.1,
@@ -194,7 +196,7 @@ SmartCut writes none of those.
 
 **Output containers:** MPEG-TS, M2TS, MP4, Matroska, QuickTime — or a **BDAV
 disc**, a folder of recordings with an index a player reads as a list of
-programmes. By default the output uses the same container and directory as the
+programmes, optionally wrapped in a UDF 2.50 or 2.60 image. By default the output uses the same container and directory as the
 input.
 
 **Video:** H.264, HEVC, MPEG-2, MPEG-4 Part 2, VC-1. Interlaced material stays

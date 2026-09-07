@@ -51,7 +51,8 @@ CM の切れ目のようにカット位置がキーフレームに一致する�
 BDAV フォルダー——レコーダーが BD-RE に書くのと同じ形——を書き出します。番組は
 放送されたときの名前・チャンネル・録画日時・番組内容を持ち、CM を抜いた場所ごとに
 チャプターが入ります。ディスクから読んだ録画はそのプレイリストが持っていた情報を、
-放送録画は自身の番組情報を、そのまま持っていきます。詳しくは
+放送録画は自身の番組情報を、そのまま持っていきます。頼めば、書き終えたディスクを
+**UDF 2.50 / 2.60 の `.iso`** に包んで、そのまま焼けるようにします。詳しくは
 [ディスクを書く](docs/developers/bdav.ja.md)にあります。
 
 **CM の切れ目を自動で探します。** 手がかりは 3 つあります。放送局が字幕
@@ -97,11 +98,11 @@ deb 以外はすべて FFmpeg を同梱しているので、ほかに用意す�
 
 | プラットフォーム | ファイル | 備考 |
 |---|---|---|
-| **Linux** | `SmartCut_0.5.0_amd64.AppImage` | 実行権限を付けて起動します |
-| **Linux** | `SmartCut-0.5.0-linux-x86_64.tar.gz` | 展開して `./smartcut` を実行します。FUSE を使いたくない場合はこちらです |
-| **Linux (Debian/Ubuntu)** | `smartcut_0.5.0_amd64.deb` | `sudo apt install ./smartcut_0.5.0_amd64.deb`。システムの FFmpeg にリンクするので 3.2 MB で済みます |
-| **Windows** | `SmartCut_0.5.0_x64-setup.exe` | インストーラ |
-| **Windows** | `smartcut-portable-x64-0.5.0.zip` | 展開して `smartcut.exe` を実行します |
+| **Linux** | `SmartCut_0.5.1_amd64.AppImage` | 実行権限を付けて起動します |
+| **Linux** | `SmartCut-0.5.1-linux-x86_64.tar.gz` | 展開して `./smartcut` を実行します。FUSE を使いたくない場合はこちらです |
+| **Linux (Debian/Ubuntu)** | `smartcut_0.5.1_amd64.deb` | `sudo apt install ./smartcut_0.5.1_amd64.deb`。システムの FFmpeg にリンクするので 3.2 MB で済みます |
+| **Windows** | `SmartCut_0.5.1_x64-setup.exe` | インストーラ |
+| **Windows** | `smartcut-portable-x64-0.5.1.zip` | 展開して `smartcut.exe` を実行します |
 
 **動作条件。** AppImage と tar.gz には glibc 2.39 以降が必要です（Ubuntu 24.04、
 Debian 13、Fedora 40 以降）。deb は FFmpeg 7.1 を使うので、Debian 13 または
@@ -189,7 +190,8 @@ DVD のタイトルは、1 本のプログラムストリームを 1GB 前後の
 それに書き換えた `.IFO` が必要になりますが、SmartCut はそのいずれも出力しません。
 
 **出力コンテナ:** MPEG-TS / M2TS / MP4 / Matroska / QuickTime、または **BDAV
-ディスク**（プレーヤーが番組の一覧として読む索引の付いた録画フォルダー）。
+ディスク**（プレーヤーが番組の一覧として読む索引の付いた録画フォルダー。UDF 2.50 /
+2.60 のイメージにも包めます）。
 既定では、入力と同じコンテナ・同じディレクトリに書き出します。
 
 **映像:** H.264 / HEVC / MPEG-2 / MPEG-4 Part 2 / VC-1。インターレース素材は

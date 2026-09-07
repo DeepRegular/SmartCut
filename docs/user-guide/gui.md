@@ -441,6 +441,7 @@ appear when `Re-encode everything` asks for them:
 | Field | |
 |---|---|
 | **Disc title** | Writing a disc, in the top half above the clip picker: the name a recorder shows over the list of what is on it. Filled in from the channel the first recording came off, and typed over from there |
+| **Image** | Writing a disc: whether to wrap the finished disc in a `.iso` a burner can take, and to which UDF revision — `None (leave it a folder)`, `ISO image (UDF 2.50)` or `ISO image (UDF 2.60)`. The folder is written either way; the image is made of it, and goes beside it under the same name |
 | **Programme name** | Writing a disc, in the top half below the clip picker, and per clip rather than per list: what this recording is called in the disc's index. Filled in from what the recording says about itself — the playlist of the disc it came off, or the broadcast's own programme information — and typed over from there. Emptied, it goes back to what the recording said |
 | **Output folder** | Empty means alongside the input. Use `Browse`, or type a path (an SMB path is fine). Writing a disc it is `Disc folder` instead, and has to be filled in: a disc is one place, and the recordings in a list can have come from four |
 | **Filename prefix** | `cut_` by default, so `cut_recording.ts` |
@@ -553,9 +554,15 @@ BDAV/
 ```
 
 That folder is what a recorder writes to a BD-RE, and what an authoring tool
-or ImgBurn will turn into an image or burn as it stands. SmartCut does not
-burn discs and does not build the image: a disc that has to be built before it
-can be looked at is a disc nobody checks before they burn it.
+or ImgBurn will burn as it stands.
+
+**Or it comes out as an image.** The `Image` row wraps the finished disc in a
+`.iso` — a UDF 2.50 or 2.60 filesystem, which is what a Blu-ray carries —
+written beside the folder under the same name: `disc/` and `disc.iso`. The
+folder is written either way and stays where it is; the image is made of it
+once the last recording is indexed, at about a gigabyte a second. SmartCut
+does not burn discs: what it hands you is the image, and the burner is
+whatever you already use.
 
 **The whole list becomes one disc**, in list order, and the run is the same
 run: each recording is smart rendered exactly as it would have been into a
@@ -754,3 +761,4 @@ smartcut input.ts --cut 8.0-20.0 --bdav ~/disc  # onto a disc rather than into a
 | `--channel NAME[,N]` | The channel the recording came off, and optionally the three digits a viewer knows it by — `--channel "衛星第一,161"`. Left out, both come from the recording: the playlist it arrived with, or the service description in its own tables. A terrestrial recording has no number this can be sure of and writes none |
 | `--about TEXT` | What the disc's index says the programme was. Left out, the description the recording carries: the sentence a listing prints and the cast and staff under it |
 | `--made "Y-M-D H:M:S"` | When the recording was made. Left out, the moment the programme went out, where the recording still says |
+| `--iso 2.50\|2.60` | Wrap the finished disc in a UDF image beside it: `--bdav ~/disc` writes `~/disc/BDAV` and `~/disc.iso`. The folder stays -- the image is made of it |
