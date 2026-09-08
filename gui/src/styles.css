@@ -630,6 +630,9 @@ input[type="text"]::placeholder { color: var(--dim); }
   background: var(--sunken); border: 1px solid var(--line); border-radius: 2px;
   box-shadow: 0 -8px 20px rgba(0, 0, 0, .6);
 }
+/* Opened the other way, for a control near the top of the window: the list
+   hangs below it, and the shadow falls the other way with it. */
+.drop-menu.down { top: calc(100% + 3px); bottom: auto; box-shadow: 0 8px 20px rgba(0, 0, 0, .6); }
 .drop-menu li { padding: 4px 8px; cursor: pointer; white-space: nowrap; }
 /* `on` is the answer the control is holding; `at` is the cursor, which the
    mouse and the arrow keys move together. `at` is written second so that it

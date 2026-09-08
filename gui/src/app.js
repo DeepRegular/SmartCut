@@ -2204,7 +2204,14 @@ function closeDrop() {
   openDrop = null;
 }
 
-/// Draw `select`'s options above it instead of below.
+/// How much of the window a popup leaves between itself and the edge, and
+/// the least it is worth drawing in: below that it scrolls, and a list that
+/// scrolls is still a list.
+const MENU_MARGIN = 8;
+const MENU_LEAST = 120;
+
+/// Draw `select`'s options where there is room for them, which the platform's
+/// own popup does not do here.
 function opensUpward(select) {
   const menu = document.createElement("ul");
   menu.className = "drop-menu";
@@ -2240,6 +2247,19 @@ function opensUpward(select) {
     });
     at = select.selectedIndex;
     menu.hidden = false;
+    // Which side of the control there is room on. Every one of these lists
+    // used to sit at the bottom of the window, where the room is above --
+    // hence the name of this function. The disc's own settings are at the
+    // top of the panel above, and a list opening upward from there is cut
+    // off by the head of the panel it is in.
+    const box = select.getBoundingClientRect();
+    const above = box.top - MENU_MARGIN;
+    const below = window.innerHeight - box.bottom - MENU_MARGIN;
+    const down = below > above;
+    menu.classList.toggle("down", down);
+    // And no taller than that room, so a long list scrolls inside itself
+    // rather than running off the screen.
+    menu.style.maxHeight = `${Math.max(MENU_LEAST, down ? below : above)}px`;
     openDrop = { hide: () => (menu.hidden = true), onKey };
     paint();
   };
