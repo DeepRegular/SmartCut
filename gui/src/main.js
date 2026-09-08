@@ -1829,7 +1829,27 @@ function pctText(pct, redone) {
   return pct > 99.9 ? "99.9%" : `${pct.toFixed(1)}%`;
 }
 
+/// Which recompute is the current one, and the wait before the panel admits
+/// that it is out of date.
+///
+/// An answer that arrives after a newer question was asked is thrown away:
+/// two cuts in quick succession would otherwise leave the first one's numbers
+/// standing under the second one's timeline. The fade waits a moment before
+/// it starts, so a plan that comes straight back -- which is most of them --
+/// does not blink.
+let planRun = 0;
+let planFade = null;
+
+function planSettled() {
+  clearTimeout(planFade);
+  planFade = null;
+  el("plan-panel").classList.remove("stale");
+}
+
 async function refreshPlan() {
+  // Whichever question this call asks, it is now the only one whose answer
+  // this panel will take.
+  const run = ++planRun;
   // What a plan says is which stretches copy and which are re-encoded, and
   // that is a question about where the access points are. Until the walk has
   // found them there is no answer to give, and asking for one would only get
@@ -1842,6 +1862,7 @@ async function refreshPlan() {
   // window that was reading a file. Only the genuinely empty editor asks for
   // one.
   if (opening || (src && !walked())) {
+    planSettled();
     el("plan-text").textContent = tr("plan.reading");
     el("segments").innerHTML = "";
     el("copied-bar").style.width = "0%";
@@ -1852,14 +1873,21 @@ async function refreshPlan() {
   el("copied-bar").parentElement.classList.remove("unknown");
   const ranges = outputRanges();
   if (!src || !ranges.length) {
+    planSettled();
     el("plan-text").textContent = tr(src ? "plan.allCut" : "plan.openFile");
     el("segments").innerHTML = "";
     el("copied-bar").style.width = "0%";
     el("smart-badge").textContent = "—";
     return;
   }
+  planFade = setTimeout(() => {
+    if (run === planRun) el("plan-panel").classList.add("stale");
+  }, 200);
   try {
     const p = await invoke("make_plan", { ranges });
+    // A cut made while this was out asked its own question, and that one's
+    // answer is the one this panel is waiting for.
+    if (run !== planRun) return;
     const pct = p.total > 0 ? (100 * p.copied) / p.total : 0;
     el("copied-bar").style.width = `${pct}%`;
     const redone = p.segments
@@ -1886,7 +1914,10 @@ async function refreshPlan() {
       )
       .join("");
   } catch (e) {
+    if (run !== planRun) return;
     el("plan-text").textContent = tr("plan.failed", { e });
+  } finally {
+    if (run === planRun) planSettled();
   }
 }
 

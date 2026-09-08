@@ -404,6 +404,15 @@ main { flex: 1; min-height: 0; display: flex; gap: 0; }
 .bar.unknown { background: var(--line); }
 .bar span { display: block; height: 100%; width: 0; background: var(--copy); }
 .plan-text { margin-top: 5px; font-variant-numeric: tabular-nums; }
+/* Everything else in this window is the editor's own arithmetic and lands
+   the instant a cut is made; what the cut *costs* has to be asked of the
+   engine, and on a long recording that answer takes a few seconds. The panel
+   fades while it is out of date, rather than showing the previous cut's
+   numbers as though they were this one's. */
+.output .panel,
+.output .badge { transition: opacity 0.15s ease; }
+.output.stale .panel,
+.output.stale .badge { opacity: 0.4; }
 /* Fixed, not max-height: the editor above must not shuffle up and down as
    the plan gains and loses segments. */
 #segments {
