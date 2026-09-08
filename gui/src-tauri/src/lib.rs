@@ -2922,6 +2922,15 @@ async fn export(
         // name a share: `smb://nas/rec` lands on the mount the same way an
         // input does. A plain path is handed back untouched.
         let output = local_path(&output)?.to_string_lossy().into_owned();
+        // The folder the cut goes in may not exist yet -- a run writing into
+        // a folder of its own makes one that was named on the settings
+        // screen and has never been anywhere else. Made here rather than
+        // before the run, so that a folder is made for a cut that is
+        // actually about to be written and not for one that failed to open.
+        if let Some(dir) = std::path::Path::new(&output).parent().filter(|d| !d.as_os_str().is_empty()) {
+            std::fs::create_dir_all(dir)
+                .map_err(|e| format!("making {}: {e}", dir.display()))?;
+        }
         // Owned either way, so the recording's lock is not held for the
         // minutes the cut takes: the editor has to keep answering while its
         // own output runs.

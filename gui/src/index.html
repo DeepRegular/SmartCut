@@ -188,6 +188,16 @@
             <input id="out-dir" type="text" data-i18n-ph="outset.sameAsInput" />
             <button id="browse-dir" class="mini" data-i18n="outset.browse">参照</button>
           </div>
+          <!-- A folder of its own under the one above, so that a night's
+               work does not land loose beside whatever else is in there. It
+               is filled in the first time the screen is drawn -- the disc's
+               own name, or the project's -- and is a plain field after that,
+               so emptying it means the recordings go straight into the
+               folder above. -->
+          <div class="row" id="row-subfolder">
+            <span data-i18n="outset.subfolder">サブフォルダー:</span>
+            <input id="out-subfolder" type="text" data-i18n-ph="outset.subfolderNone" />
+          </div>
           <div class="row" id="row-prefix">
             <span data-i18n="outset.prefix">ファイル名の接頭辞:</span>
             <input id="out-prefix" type="text" value="cut_" />

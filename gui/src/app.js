@@ -2027,6 +2027,14 @@ const settings = {
   /// is not something anybody asked for.
   mode: "file",
   dir: "",
+  /// A folder of its own under `dir`, or "" for none.
+  ///
+  /// `null` means nobody has settled it yet: the screen fills it in the
+  /// first time it is drawn -- the disc's name, or the project's -- and
+  /// leaves it a plain field afterwards. That is why "none" is an empty
+  /// string rather than a null: a field somebody has emptied on purpose has
+  /// been settled, and filling it back in would be arguing.
+  subfolder: null,
   /// What the disc is called -- the name a recorder shows over the list of
   /// what is on it. Only means anything in `bdav` mode; empty is filled in
   /// from the first recording when the screen is drawn.
@@ -2127,7 +2135,10 @@ function outputPath(clip) {
   // image there is no folder at all -- so the disc says where instead, and
   // what to call it: the programme's own name, not `00001`.
   const beside = clip.home ? `${clip.home.replace(/[/\\]*$/, "")}/` : dirOf(clip.path);
-  const dir = settings.dir ? settings.dir.replace(/[/\\]*$/, "/") : beside;
+  // The folder of its own goes under whichever of the two was chosen -- the
+  // one that was typed, or the one the recording came out of. A batch left
+  // to write beside its inputs is exactly the case that wants it.
+  const dir = `${beneath(settings.dir || beside)}/`;
   const n = copyNo(clip);
   return `${dir}${settings.prefix}${clip.stem || stemOf(clip.path)}${n ? `_${n}` : ""}.${ext}`;
 }
@@ -2148,13 +2159,20 @@ function bindSetting(id, key, kind = "value") {
   input.addEventListener(kind === "checked" ? "change" : "input", read);
   settingInputs.push([input, key, kind]);
   if (kind === "checked") input.checked = settings[key];
-  else input.value = settings[key];
+  else input.value = settings[key] ?? "";
 }
 
 /// Put `settings` back on screen, for when something other than the screen
 /// has changed them.
 function showSettings() {
   for (const [input, key, kind] of settingInputs) {
+    // A setting nobody has settled yet is left alone. It has no value to
+    // show and none to read back: the screen decides one when it draws, and
+    // reading the empty control here would settle it as "none" instead.
+    if (settings[key] === null) {
+      input.value = "";
+      continue;
+    }
     if (kind === "checked") input.checked = !!settings[key];
     else input.value = settings[key];
     // A `<select>` handed a value it has no option for lands on nothing at
@@ -2169,6 +2187,7 @@ function showSettings() {
   renderOutScreen();
 }
 bindSetting("out-dir", "dir");
+bindSetting("out-subfolder", "subfolder");
 bindSetting("out-disc-title", "discTitle");
 bindSetting("out-image", "image");
 bindSetting("out-prefix", "prefix");
@@ -3086,13 +3105,86 @@ function chaptersFor(clip) {
   return out.filter((at, i) => i === 0 || at - out[i - 1] > 0.5);
 }
 
+/// A name made safe to be a folder's, the way the engine makes one.
+///
+/// The same replacements `disc::filename` makes and the same 180 byte cut:
+/// this is a title somebody typed for a disc, and a title is free to hold a
+/// slash or a colon where a path is not. Full width stand-ins rather than
+/// removals, because a title that reads the same is worth more than a name
+/// that is a few characters shorter.
+const FORBIDDEN = { "\\": "＼", "/": "／", ":": "：", "*": "＊", "?": "？", '"': "＂", "<": "＜", ">": "＞", "|": "｜" };
+function filenameSafe(name) {
+  let out = "";
+  let bytes = 0;
+  for (const c of name) {
+    const safe = FORBIDDEN[c] || (c < " " ? " " : c);
+    const n = new TextEncoder().encode(safe).length;
+    if (bytes + n > 180) break;
+    out += safe;
+    bytes += n;
+  }
+  return out.replace(/^[\s.\u3000]+|[\s.\u3000]+$/g, "");
+}
+
+/// Whether this run writes into a folder of its own.
+///
+/// Always for a disc, which is a dozen files with names it chose itself and
+/// belongs nowhere near anything else. For files, only where there is more
+/// than one of them: a single cut goes where it was told to go, and burying
+/// it one level down is one more folder to open for no reason.
+function subfolderWanted() {
+  return bdavMode() || ready().length > 1;
+}
+
+/// What that folder is called when nobody has said.
+///
+/// The disc's own name where there is a disc, and the project's where there
+/// is a project. An evening's work saved as `2026-09-08.scproj` names the
+/// folder after itself; an unsaved list has only today to go on, which is
+/// still better than the cuts landing loose in the folder above.
+function autoSubfolder(list) {
+  const name = bdavMode()
+    ? discTitleFor(list)
+    : projectPath
+      ? stemOf(projectPath)
+      : new Date().toISOString().slice(0, 10);
+  return filenameSafe(name);
+}
+
+/// The name of the folder this run makes, as it stands right now.
+///
+/// The one on the screen where somebody has settled one, and otherwise the
+/// one the screen *would* fill in. Worked out here rather than read out of
+/// the setting, because a run can be started from the output screen without
+/// the settings screen ever having been drawn, and a folder that appears
+/// only for people who went and looked at it is not a folder anybody can
+/// rely on.
+function subfolderNow() {
+  if (!subfolderWanted()) return "";
+  const chosen = settings.subfolder === null ? autoSubfolder(ready()) : settings.subfolder;
+  return filenameSafe(chosen || "");
+}
+
+/// The folder above, with the one this run makes under it. No trailing
+/// separator: this is a folder's path, and the callers add their own.
+function beneath(dir) {
+  const at = dir.replace(/[/\\]*$/, "");
+  const sub = subfolderNow();
+  return sub ? `${at}/${sub}` : at;
+}
+
+/// Where the disc itself is written: the folder that will hold `BDAV`.
+function discDir() {
+  return beneath(settings.dir);
+}
+
 /// Where the image will be written, for the panel to show under the disc.
 /// Empty when none was asked for, which is most of the time: an image is
 /// what you make when the disc is finished and about to be burnt.
 function imageLine() {
   if (!settings.image || !settings.dir) return "";
   return t("outset.imageLine", {
-    path: `${settings.dir.replace(/[/\\]*$/, "")}.iso`,
+    path: `${discDir()}.iso`,
     udf: settings.image,
   });
 }
@@ -3152,6 +3244,10 @@ function paintMode() {
   el("row-prefix").hidden = disc;
   el("row-container").hidden = disc;
   el("row-keyframes").hidden = disc;
+  // Only where a run would actually use one -- a single file has nothing to
+  // be grouped with, and a row offering to make it a folder is a question
+  // nobody asked.
+  el("row-subfolder").hidden = !subfolderWanted();
   el("row-disc-title").hidden = !disc;
   el("row-image").hidden = !disc;
   el("row-programme").hidden = !disc;
@@ -3173,6 +3269,30 @@ for (const b of document.querySelectorAll(".modes .tab")) {
   });
 }
 
+/// The last name this filled in by itself.
+///
+/// What tells an untouched field from one somebody typed the same thing
+/// into. While the field still holds what was put there, it keeps following
+/// what it was made from -- rename the disc and the folder is renamed with
+/// it -- and the moment it holds anything else, including nothing, it is the
+/// answer and this stops arguing with it.
+let filledIn = null;
+
+function settleSubfolder(list) {
+  if (subfolderWanted()) {
+    const auto = autoSubfolder(list);
+    if (auto && (settings.subfolder === null || settings.subfolder === filledIn)) {
+      settings.subfolder = auto;
+      filledIn = auto;
+    }
+  }
+  // Assigned only when it differs: setting `value` to what it already holds
+  // still sends the caret to the end, and this runs on every keystroke.
+  const box = el("out-subfolder");
+  const want = settings.subfolder ?? "";
+  if (box.value !== want) box.value = want;
+}
+
 function renderOutset() {
   lockAudioDetail();
   lockUnwritable();
@@ -3186,6 +3306,7 @@ function renderOutset() {
     .join("");
   if (list.some((c) => String(c.id) === was)) select.value = was;
   const clip = byId(Number(select.value)) || list[0];
+  settleSubfolder(list);
   const box = el("outset-format");
   if (!clip) {
     box.textContent = t("outset.noReady");
@@ -3226,7 +3347,7 @@ function renderOutset() {
     marks: chaptersFor(clip).length,
     out: bdavMode()
       ? settings.dir
-        ? t("outset.discPath", { dir: settings.dir.replace(/[/\\]*$/, "") }) + imageLine()
+        ? t("outset.discPath", { dir: discDir() }) + imageLine()
         : t("outset.discHere")
       : outputPath(clip),
     side:
@@ -3444,11 +3565,16 @@ let writing = null;
 let began = 0;
 
 function renderOutScreen() {
+  // Where the files actually land, folder of their own included: this line
+  // is read while the run is watched, and a path that is one level off the
+  // one being written to is worse than no line at all.
   el("out-dir-shown").value = bdavMode()
     ? settings.dir
-      ? t("outset.discPath", { dir: settings.dir.replace(/[/\\]*$/, "") })
+      ? t("outset.discPath", { dir: discDir() })
       : t("outset.discHere")
-    : settings.dir || t("outset.sameAsInput");
+    : settings.dir
+      ? beneath(settings.dir)
+      : t("outset.sameAsInput");
   const list = ready();
   el("out-idle").hidden = list.length > 0;
   // Idle, the screen speaks for whichever clip is about to be written first;
@@ -3559,7 +3685,7 @@ async function runExport() {
   if (disc) {
     for (const clip of list) await askProgramme(clip);
     try {
-      slots = await invoke("bdav_prepare", { dir: settings.dir, n: list.length });
+      slots = await invoke("bdav_prepare", { dir: discDir(), n: list.length });
     } catch (e) {
       // Nothing has been written yet, so this is a run that did not start
       // rather than one that failed part way: the lanes get their turn back
@@ -3674,7 +3800,7 @@ async function runExport() {
       el("out-state").textContent = t("out.bdavIndexing", { clip: wrote[0].slot.clip });
       try {
         await invoke("bdav_finish", {
-          dir: settings.dir,
+          dir: discDir(),
           title: discTitleFor(list),
           entries: wrote.map(({ clip, slot }) => ({
             clip: slot.clip,
@@ -3690,7 +3816,7 @@ async function runExport() {
         });
         note(
           t("out.bdavDone", {
-            path: `${settings.dir.replace(/[/\\]*$/, "")}/BDAV`,
+            path: `${discDir()}/BDAV`,
             n: wrote.length,
           })
         );
@@ -3701,7 +3827,7 @@ async function runExport() {
           try {
             el("out-state").textContent = t("out.imaging", { udf: settings.image, pct: 0 });
             const path = await invoke("bdav_image", {
-              dir: settings.dir,
+              dir: discDir(),
               title: discTitleFor(list),
               revision: settings.image,
             });
@@ -3973,6 +4099,7 @@ async function newProject() {
   if (!(await askReplace(t("project.newTitle"), t("project.newBody")))) return;
   await remove(clips.slice());
   for (const key of Object.keys(SETTING_DEFAULTS)) settings[key] = SETTING_DEFAULTS[key];
+  filledIn = null;
   showSettings();
   projectPath = "";
   savedShape = shapeOf();
@@ -4026,6 +4153,11 @@ async function loadProject(path) {
   for (const key of Object.keys(settings)) {
     if (doc.settings && key in doc.settings) settings[key] = doc.settings[key];
   }
+  // A project written before there were folders of their own says nothing
+  // about one, and what the last list settled has nothing to do with this
+  // one: back to unsettled, so the name follows the project just opened.
+  if (!doc.settings || !("subfolder" in doc.settings)) settings.subfolder = null;
+  filledIn = null;
   showSettings();
   const taken = [];
   for (const saved of Array.isArray(doc.clips) ? doc.clips : []) {
