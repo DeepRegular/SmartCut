@@ -11,7 +11,7 @@
 
 [English](README.md) ・ 日本語
 
-<img src="docs/images/demo.ja.gif" width="880"
+<img src="docs/images/demo.ja.gif" width="1000"
      alt="SmartCut の編集画面で CM ブロックを 2 つ切り落とすところ">
 
 </div>

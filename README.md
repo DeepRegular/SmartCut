@@ -11,7 +11,7 @@
 
 English ・ [日本語](README.ja.md)
 
-<img src="docs/images/demo.gif" width="880"
+<img src="docs/images/demo.gif" width="1000"
      alt="Two commercial blocks being removed from a recording in the SmartCut editor">
 
 </div>
