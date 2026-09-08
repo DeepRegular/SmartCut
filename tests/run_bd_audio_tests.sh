@@ -95,25 +95,38 @@ for name in lpcm lpcm24; do
 done
 
 # --- LPCM is smart rendered -------------------------------------------------
-# The range ends 3.456 s in, which is 165 888 samples: 48 samples into a
-# 240 sample LPCM frame. So the last frame of the cut is 48 samples of the
-# recording and 192 samples that were on the far side of the cut -- and what
-# smart rendering does to those 192 is silence them. Copied, they would be
-# 4 ms of whatever came next.
+# The range ends part way through a 240 sample LPCM frame, so that frame is
+# some samples of the recording and then samples that were on the far side of
+# the cut -- and what smart rendering does to those is silence them. Copied,
+# they would be a few milliseconds of whatever came next. Everything before
+# that frame is the recording's own samples, byte for byte.
 #
-# That last frame is the only one that differs from the recording, and it
-# differs whole: the kept 48 samples are faded down into the silence rather
-# than stepped into it, because a step is a transient and a transient is what
-# an encoder answers with short windows.
+# Where the range ends is asked of the plan rather than assumed. It is not
+# the 3.456 that was asked for: a bound is written to the last whole picture
+# before it, which can be up to half a frame earlier, and the split inside
+# the LPCM frame moves with it.
+end=$(sed -n 's/^  keep \([0-9.]*\) -> \([0-9.]*\).*/\1 \2/p' "$OUT/cut/lpcm.ts.log" | head -1)
+kept_samples=$(python3 -c "a,b='$end'.split(); print(round((float(b)-float(a))*48000))")
 got=$(python3 tests/bd_audio.py align "$OUT/lpcm.m2ts" "$OUT/cut/lpcm.ts" 2)
 length=$(sed 's/.*length=\([0-9]*\).*/\1/' <<<"$got")
 first=$(sed 's/.*first=\([0-9]*\).*/\1/' <<<"$got")
-same "lpcm .ts differs only in its last frame" "$((length - 240))" "$first"
-kept=$(python3 tests/bd_audio.py peak "$OUT/cut/lpcm.ts" 2 "$((length - 240))" "$((length - 192))")
-gone=$(python3 tests/bd_audio.py peak "$OUT/cut/lpcm.ts" 2 "$((length - 192))" "$length")
-same "the cut-away half of that frame is silent" "0" "$gone"
-if [ "$kept" -gt 0 ]; then ok "and the kept half is not" "peak $kept"
-else bad "and the kept half is not" "peak $kept"; fi
+# Nothing before the last frame differs, and what does differ begins inside
+# the kept stretch rather than after it: the fade out is 48 samples of raised
+# cosine ending on the cut, so that the step into the silence is a slope and
+# not a cliff an encoder would answer with short windows. The plan's own end
+# is printed to the millisecond, which is 48 samples, so it is only good
+# enough to say which side of the cut the fade is on.
+if [ "$first" -gt "$((length - 288))" ] && [ "$first" -lt "$kept_samples" ]; then
+  ok "lpcm .ts differs only where it is faded out" "from $first of $kept_samples kept"
+else
+  bad "lpcm .ts differs only where it is faded out" \
+    "want $((length - 287))..$((kept_samples - 1)), got $first"
+fi
+kept=$(python3 tests/bd_audio.py peak "$OUT/cut/lpcm.ts" 2 "$((length - 240))" "$((first))")
+gone=$(python3 tests/bd_audio.py peak "$OUT/cut/lpcm.ts" 2 "$kept_samples" "$length")
+same "everything past the cut is silent" "0" "$gone"
+if [ "$kept" -gt 0 ]; then ok "and what is kept is not" "peak $kept"
+else bad "and what is kept is not" "peak $kept"; fi
 
 # --- the lossless codecs arrive as they left --------------------------------
 # Nothing here re-encodes a frame of DTS or TrueHD: the encoders libavformat

@@ -138,7 +138,10 @@ impl Input {
         })
     }
 
-    fn plain(spec: &str) -> Input {
+    /// A file, whole, under the name it is written down as. What every
+    /// ordinary recording is, and what a file this program has just written
+    /// is when it comes to be read back.
+    pub fn plain(spec: &str) -> Input {
         Input {
             spec: spec.to_string(),
             url: spec.to_string(),

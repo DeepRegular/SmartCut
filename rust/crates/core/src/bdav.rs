@@ -409,6 +409,12 @@ struct Clip {
     streams: Vec<Carried>,
     /// Every point a player may start at: when it is shown, and which source
     /// packet it begins in.
+    ///
+    /// The time here is **not** the playlist's tick. An entry point map
+    /// carries `PTS_EP_start`, which is the picture's own presentation time
+    /// stamp -- thirty-three bits at 90 kHz, the number the stream itself
+    /// carries -- and it is the one place in a disc's index that counts in
+    /// that clock rather than in the playlist's half of it.
     entries: Vec<(u64, u32)>,
 }
 
@@ -469,11 +475,19 @@ fn read_clip(stream: &Path, on: Option<(&(dyn Fn(&str, f64) + Sync), &str)>) -> 
     }
 
     let ticks = |t: f64| ((t + src.start_time) * TICK).round().max(0.0) as u32;
+    // The playlist's clock is half the stream's, and an entry point map
+    // counts in the stream's -- see [`Clip::entries`]. Written in the
+    // playlist's, every entry sat at half the time it belonged to: a player
+    // seeking into one of these discs landed twice as far in as it was
+    // asked, and this program reading its own disc back planned a cut
+    // against times half the truth, which on a short recording put a
+    // boundary between two pictures and left the segment with none.
+    let stamp = |t: f64| ((t + src.start_time) * (TICK * 2.0)).round().max(0.0) as u64;
     let entries = src
         .points
         .iter()
         .filter(|p| p.pos >= 0)
-        .map(|p| (ticks(p.time) as u64, (p.pos as u64 / SOURCE_PACKET as u64) as u32))
+        .map(|p| (stamp(p.time), (p.pos as u64 / SOURCE_PACKET as u64) as u32))
         .collect();
 
     Ok(Clip {

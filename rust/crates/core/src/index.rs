@@ -270,6 +270,19 @@ impl IndexSource for DiscIndex {
 ///
 /// MP4 and Matroska both carry one, so this skips the read entirely. It says
 /// nothing about leading pictures, hence `leading_known: false`.
+///
+/// **A container that keeps no table still hands one over.** libavformat
+/// indexes what it reads, so a program stream or a transport stream answers
+/// with whatever the probe happened to pass on its way to the first few
+/// frames -- on a DVD title measured here, eight entries covering the first
+/// four seconds of twelve and a half minutes. Nothing in the shape of the
+/// answer says which kind it is, and taken at face value that one is worse
+/// than no index at all: a cut anywhere past the fourth second finds no
+/// entry point to copy from and re-encodes the lot, and `--scenes` pulls
+/// every boundary in the recording onto the same picture. So the table is
+/// asked the one question that needs nothing read -- does it reach the end
+/// of the recording? -- and a table that stops where the probe stopped is
+/// declined, which sends the caller on to the walk.
 pub struct ContainerIndex;
 
 impl IndexSource for ContainerIndex {
@@ -279,6 +292,15 @@ impl IndexSource for ContainerIndex {
 
     fn build(&self, input: IndexInput) -> Result<Index> {
         let IndexInput { video, start_time, ictx, .. } = input;
+        // How long the recording is, by the container's own reckoning. Only
+        // used to ask whether the table below covers it, so a container that
+        // will not say how long it is simply asks nothing.
+        let duration = unsafe {
+            let d = (*ictx.as_ptr()).duration;
+            (d != ff::ffi::AV_NOPTS_VALUE)
+                .then(|| d as f64 / ff::ffi::AV_TIME_BASE as f64)
+                .filter(|d| *d > 0.0)
+        };
         let stream = ictx
             .stream(video.stream_index)
             .ok_or_else(|| anyhow!("stream {} vanished", video.stream_index))?;
@@ -305,6 +327,25 @@ impl IndexSource for ContainerIndex {
             return Err(anyhow!("the container has no seek table for this stream"));
         }
         points.sort_by(|a, b| a.time.partial_cmp(&b.time).unwrap_or(std::cmp::Ordering::Equal));
+        // Does it reach the end? Measured against the table's own spacing,
+        // which is the only figure here that knows what this recording's
+        // entry points are worth: a real table's last entry is an entry or
+        // two short of the end, a probe's is the whole recording short of
+        // it. The floor is for the short file whose every entry point sits
+        // in the first seconds anyway, and for the table of one, which has
+        // no spacing to be measured by.
+        if let Some(duration) = duration {
+            let first = points.first().expect("checked non-empty").time;
+            let last = points.last().expect("checked non-empty").time;
+            let spacing = (last - first) / (points.len() as f64 - 1.0).max(1.0);
+            let allowed = (spacing * 3.0).max(10.0);
+            if duration - last > allowed {
+                bail!(
+                    "the container's seek table stops at {last:.1}s of {duration:.1}s -- it is \
+                     what the probe read, not a table the container kept"
+                );
+            }
+        }
         Ok(Index { points, leading_known: false, pulldown: None, bit_rate: None, end: None })
     }
 }

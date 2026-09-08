@@ -204,17 +204,25 @@ pub fn candidates(silences: &[Silence], opts: &DetectOptions) -> Vec<Candidate> 
     let mut out = Vec::with_capacity(silences.len());
     for (i, s) in silences.iter().enumerate() {
         let mut run = 1usize;
-        // walk forwards then backwards along grid-aligned neighbours
+        // Walk forwards then backwards along grid-aligned neighbours, taking
+        // the *next* junction each way rather than the furthest one that
+        // happens to sit on the grid.
+        //
+        // Both searches used to run up the list from nought, so the backward
+        // one stepped straight to the earliest neighbour and skipped every
+        // junction between. On a break of three junctions a minute apart,
+        // the last one chained 60 s back to the first, found nothing before
+        // that, and counted a run of two where its neighbours counted three:
+        // it scored 0.51 against their 0.68, fell under the threshold, and
+        // the break was left with two junctions and thrown away for it.
         for dir in [1i64, -1] {
-            let mut at = i as i64;
+            let mut at = i;
             loop {
-                let next = (0..spans.len() as i64)
-                    .filter(|&j| (j - at) * dir > 0)
-                    .find(|&j| {
-                        let (p, q) = (at as usize, j as usize);
-                        let (lo, hi) = if p < q { (p, q) } else { (q, p) };
-                        on_grid(spans[lo], spans[hi], opts)
-                    });
+                let next = if dir > 0 {
+                    (at + 1..spans.len()).find(|&j| on_grid(spans[at], spans[j], opts))
+                } else {
+                    (0..at).rev().find(|&j| on_grid(spans[j], spans[at], opts))
+                };
                 match next {
                     Some(j) => {
                         run += 1;
@@ -226,13 +234,24 @@ pub fn candidates(silences: &[Silence], opts: &DetectOptions) -> Vec<Candidate> 
         }
         let long = (s.duration() / 1.0).min(1.0);
         let chained = ((run.saturating_sub(1)) as f64 / 4.0).min(1.0);
+        // Evenly weighted, which they were not while the run was being
+        // undercounted. Counted properly, a chain runs long in any talkative
+        // programme -- a pause every fifteen seconds is what conversation
+        // sounds like -- so at 0.65 the chain alone all but decided it: a
+        // 0.41 s pause, the shortest length this even looks at, chained four
+        // deep and scored 0.63, over the 0.6 a block is built from, and
+        // bridged the pauses either side of it into twenty-nine seconds of
+        // "commercial" in a recording that has none. Half and half, that
+        // pause scores 0.58 and the run it would have bridged never forms,
+        // while a real junction -- a second of silence -- clears the line on
+        // the strength of its own length.
         out.push(Candidate {
             time: s.centre(),
             silence: s.duration(),
             start: s.start,
             end: s.end,
             run,
-            score: 0.35 * long + 0.65 * chained,
+            score: 0.5 * long + 0.5 * chained,
         });
     }
     out.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));

@@ -1629,6 +1629,15 @@ struct AudioSetup {
 /// 32 bit float, whose 24 bit mantissa holds every value a 24 bit recording
 /// can carry, and Blu-ray LPCM goes no deeper than 24.
 ///
+/// A transport stream is the exception only for the Blu-ray kind. DVD LPCM
+/// is a different private stream with a different header, and no transport
+/// stream declares it: the muxer takes the frames, writes them under the
+/// stream type that means "some private data", and a player finds a track it
+/// cannot name. A cut of a DVD title written as `.ts` came out with its
+/// sound reading as `bin_data` -- carried, declared, and silent -- and onto a
+/// BDAV disc the same way. So it becomes Blu-ray LPCM, which is the shape a
+/// transport stream has for exactly these samples.
+///
 /// Everything else a Blu-ray carries goes out as it came in. DTS and TrueHD
 /// have boxes of their own in MP4; TrueHD's is one libavformat will write
 /// only when asked to write outside the standard, which is done -- and said
@@ -1658,8 +1667,11 @@ fn carriage(source: ff::codec::Id, to_ts: bool, bits: u8, want: AudioCodec) -> f
         AudioCodec::Ac3 => ff::codec::Id::AC3,
         AudioCodec::Dts => ff::codec::Id::DTS,
         AudioCodec::Lpcm => pcm(),
-        AudioCodec::Source => match (to_ts, source) {
-            (false, ff::codec::Id::PCM_BLURAY | ff::codec::Id::PCM_DVD) => pcm(),
+        // Into a transport stream `pcm()` is Blu-ray LPCM, which is what a
+        // Blu-ray track already was and what a DVD's becomes; everywhere
+        // else it is the plain big-endian samples.
+        AudioCodec::Source => match source {
+            ff::codec::Id::PCM_BLURAY | ff::codec::Id::PCM_DVD => pcm(),
             _ => source,
         },
     }
@@ -1945,6 +1957,11 @@ fn plan_audio(
             opts.audio_bits
                 .filter(|&b| b != source_bits)
                 .map(|b| format!("{source_bits} bit samples, not the {b} bit asked for")),
+            // A rate is what an encoder is told to spend, and there is no
+            // encoder here. Said with the rest rather than left to the
+            // encoder-rate check below, which no longer looks at a track
+            // that is carried through.
+            opts.audio_bit_rate.map(|r| format!("its own frames, not the {r} bit/s asked for")),
         ]
         .into_iter()
         .flatten()
@@ -2053,10 +2070,23 @@ fn plan_audio(
         // Not asked for: the container has no box for what the recording
         // carries, which is a thing to say out loud.
         (true, false) => {
+            // Two ways in and one sentence for both. A Blu-ray's LPCM sits
+            // in a private stream only a transport stream declares, so an
+            // MP4 takes the samples as plain PCM instead -- and there a
+            // transport stream really would keep the track as it was. A
+            // DVD's sits in a private stream nothing declares, so it becomes
+            // the Blu-ray's on the way into a transport stream and plain PCM
+            // anywhere else; there is no container that keeps that one, and
+            // saying otherwise would send someone to write a `.ts` for it.
+            let keep = if source_id == ff::codec::Id::PCM_BLURAY {
+                " Write a .ts to keep it as it was."
+            } else {
+                ""
+            };
             eprintln!(
-                "note: {source_id:?}{named} is written as {target:?}, because only a transport \
-                 stream can declare a Blu-ray LPCM track. The samples are the recording's own; \
-                 what changes is the box around them. Write a .ts to keep it as it was."
+                "note: {source_id:?}{named} is written as {target:?}, which is the box this \
+                 container has for linear PCM. The samples are the recording's own; what \
+                 changes is what is written around them.{keep}"
             );
             AudioMode::Reencode
         }
@@ -2146,8 +2176,18 @@ fn plan_audio(
     // does not reach this -- it is told what will open before anyone
     // chooses, by [`writable_sound`] -- but a command line and a project
     // written before any of this both can.
+    //
+    // And none of it is a question about a track no encoder is opened for.
+    // A lossless track is carried through frame by frame, so the rate above
+    // is a number nothing reads -- and where the recording never said what
+    // its own rate was, that number is the 192 kbit/s standing in for it,
+    // which no DTS encoder would open at either. A cut of a Blu-ray said so
+    // twice per track, in the same breath as saying the track was being
+    // carried through untouched.
     let ordinary = derived_bit_rate(target, channels);
-    let refused = bit_rate > 0 && !crate::audio::opens_at(target, sample_rate, channels, bit_rate);
+    let refused = bit_rate > 0
+        && !lossless
+        && !crate::audio::opens_at(target, sample_rate, channels, bit_rate);
     let bit_rate = if refused && crate::audio::opens_at(target, sample_rate, channels, ordinary) {
         eprintln!(
             "note: {bit_rate} bit/s was asked for{named} and {target:?} is not written at that \
@@ -2852,9 +2892,31 @@ pub fn cut_with_progress(
     let progress = writer.progress.take();
     drop(writer);
 
+    // A recording that never was a broadcast has no account of itself to put
+    // back -- but it can still have been written with a track the muxer
+    // cannot name. Asked for a plain `.ts` libavformat declares Blu-ray LPCM
+    // as private data of no stated kind, and everything reads that back as
+    // `bin_data`: a cut of a DVD title arrived with its sound carried,
+    // declared, and silent. (Asked for a `.m2ts` the same muxer gets it
+    // right, which is why only this shape needs the visit.) So the map is
+    // rebuilt from the one the muxer itself wrote, with that single
+    // correction and nothing else added -- no selection table, no service,
+    // no event: there was never a broadcast here to describe.
+    let unnamed = to_ts
+        && tables.is_none()
+        && !writing_m2ts(output)
+        && setups.iter().any(|s| s.recoded && s.target == ff::codec::Id::PCM_BLURAY);
+    let own_map = unnamed
+        .then(|| {
+            let at = crate::input::Input::plain(output);
+            crate::si::read_service(&at, pids.out(video_pid) as u16)
+                .map_err(|e| eprintln!("note: {output} cannot be read back to name its sound: {e}"))
+                .ok()
+        })
+        .flatten();
     // The file is complete and correct as a file; what it does not yet have
     // is the broadcast's own account of itself. See [`crate::si`].
-    if let Some(service) = tables.as_ref() {
+    if let Some(service) = tables.as_ref().or(own_map.as_ref()) {
         match graft_tables(
             src,
             service,
@@ -2865,7 +2927,9 @@ pub fn cut_with_progress(
             &range_starts,
             plans,
             output,
-            opts.tables,
+            // The recording's own tables where it had some; where it had
+            // none, only the map is being corrected.
+            if tables.is_some() { opts.tables } else { crate::si::Tables::Muxer },
         ) {
             Ok(stats) if std::env::var("SMARTCUT_DEBUG").is_ok() => {
                 eprintln!(

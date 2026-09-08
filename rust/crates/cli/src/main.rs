@@ -730,26 +730,30 @@ fn main() -> Result<()> {
             None => smartcut_core::find_silences(&src, &opts)?,
         };
         let cands = smartcut_core::cm_candidates(&silences, &opts);
-        let blocks = match (&resets, &logo) {
-            (Some(r), _) => smartcut_core::cm_blocks_from_resets(r, src.duration),
-            (None, Some(l)) if !l.absent.is_empty() => {
-                smartcut_core::cm_blocks_from_logo(&cands, &l.absent, &opts, 3.0, src.duration)
-            }
-            _ => smartcut_core::cm_blocks(&cands, &opts, 0.6),
+        // The same reading the window makes, arrived at the same way, so
+        // that the two do not answer differently about one recording. The
+        // arm that used to be missing here is the third: a logo that was
+        // found and never went away is a recording that never left the air,
+        // which is an answer -- and falling back to the silences instead
+        // gave a programme with no commercials in it a block the window
+        // would not have offered.
+        let (blocks, how) = match (&resets, &logo) {
+            (Some(r), _) => (
+                smartcut_core::cm_blocks_from_resets(r, src.duration),
+                "（字幕リセット）",
+            ),
+            (None, Some(l)) if !l.absent.is_empty() => (
+                smartcut_core::cm_blocks_from_logo(&cands, &l.absent, &opts, 3.0, src.duration),
+                "（ロゴ＋無音）",
+            ),
+            (None, Some(_)) => (Vec::new(), "（ロゴが一度も消えない）"),
+            _ => (smartcut_core::cm_blocks(&cands, &opts, 0.6), "（無音のみ）"),
         };
         // Same treatment the window gives them, so what is printed here is
         // what would be marked there.
         let mut blocks = blocks;
         smartcut_core::cm_refine_boundaries(&src, &mut blocks, 0.5, 0.08);
-        println!(
-            "\nCM ブロック : {} 個{}",
-            blocks.len(),
-            match (&resets, &logo) {
-                (Some(_), _) => "（字幕リセット）",
-                (None, Some(_)) => "（ロゴ＋無音）",
-                _ => "（無音のみ）",
-            }
-        );
+        println!("\nCM ブロック : {} 個{how}", blocks.len());
         for b in &blocks {
             println!(
                 "   {}  →  {}   ({:6.1}s, 継ぎ目 {} 箇所, score {:.2})",

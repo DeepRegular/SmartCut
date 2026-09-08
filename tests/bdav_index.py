@@ -173,9 +173,11 @@ def entries_land(m2ts, pid, ep):
                 continue
             b = payload[9:14]
             had = ((b[0] >> 1 & 7) << 30) | (b[1] << 22) | ((b[2] >> 1) << 15) | (b[3] << 7) | (b[4] >> 1)
-            # The map keeps the time to the nine bits below 45 kHz, which is
-            # a fifth of a millisecond.
-            if abs(had // 2 - pts) > 512:
+            # PTS_EP_start is the picture's own stamp, at 90 kHz -- the
+            # number just read out of the PES header, not the playlist's
+            # half of it. The map drops the bottom nine bits of it, which
+            # is a tenth of a millisecond.
+            if abs(had - pts) > 512:
                 wrong += 1
     return wrong
 
