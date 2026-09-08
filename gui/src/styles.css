@@ -414,10 +414,17 @@ main { flex: 1; min-height: 0; display: flex; gap: 0; }
 .output.stale .panel,
 .output.stale .badge { opacity: 0.4; }
 /* Fixed, not max-height: the editor above must not shuffle up and down as
-   the plan gains and loses segments. */
+   the plan gains and loses segments. Three lines of it, which is what an
+   ordinary cut costs -- copy, re-encode, copy -- and the line box is set
+   here rather than left to the font: the font asked for 17px, three of
+   those did not fit, and the third line lost its descenders to the edge.
+   Tightened rather than made taller. The Japanese layout at the sizes this
+   window is shrunk to has no room left below -- the help text under the
+   thumbnails runs to six lines there -- and every pixel this box gains
+   pushes the OK and cancel buttons off the bottom of it. */
 #segments {
   margin: 4px 0 0; padding: 0; list-style: none; color: var(--dim); font-size: 11px;
-  height: 46px; overflow-y: auto; font-variant-numeric: tabular-nums;
+  line-height: 15px; height: 45px; overflow-y: auto; font-variant-numeric: tabular-nums;
 }
 #segments .copy { color: var(--copy); }
 #segments .reencode { color: var(--encode); }
