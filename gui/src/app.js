@@ -3837,11 +3837,36 @@ async function runExport() {
 
   // The streams are written; a disc is what they are written *into*, and
   // that is this pass. Only the recordings that actually landed: a slot
-  // whose cut failed has no stream to be a playlist about.
-  if (disc && !abort) {
-    const wrote = list
-      .map((clip, i) => ({ clip, slot: slots[i] }))
-      .filter(({ clip }) => clip.out.state === "done");
+  // whose cut failed has no stream to be a playlist about. And a run that
+  // was stopped gets no index at all -- the pass reads every stream back and
+  // is minutes of work nobody asked for once they have said stop.
+  if (disc) {
+    const pairs = list.map((clip, i) => ({ clip, slot: slots[i] }));
+    const wrote = abort ? [] : pairs.filter(({ clip }) => clip.out.state === "done");
+    // Which leaves streams no playlist will ever name: gigabytes of a
+    // recording the disc does not know it has, skipped by the next run's
+    // numbering and carried into any image made of the disc afterwards.
+    // They are taken back, so a disc holds what it says it holds.
+    const dropped = pairs.filter((p) => !wrote.includes(p)).map(({ slot }) => slot.clip);
+    if (dropped.length) {
+      try {
+        const gone = await invoke("bdav_discard", { dir: discDir(), clips: dropped });
+        // And the rows are told. A recording whose stream has been taken
+        // back is not one this run wrote, whatever it said a moment ago.
+        for (const p of pairs) {
+          if (!wrote.includes(p) && p.clip.out.state === "done") {
+            p.clip.out = { state: "skipped", progress: 0, note: t("out.discarded") };
+            done--;
+          }
+        }
+        renderOutScreen();
+        if (gone) note(t("out.bdavDiscarded", { n: gone }));
+      } catch (e) {
+        // Worth saying and not worth stopping for: the disc is written
+        // either way, and what is left behind is a file somebody can delete.
+        note(t("out.bdavLeftover", { e: String(e) }));
+      }
+    }
     if (wrote.length) {
       el("out-state").textContent = t("out.bdavIndexing", { clip: wrote[0].slot.clip });
       try {

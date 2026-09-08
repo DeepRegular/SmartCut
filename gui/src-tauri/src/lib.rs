@@ -3108,6 +3108,41 @@ async fn bdav_prepare(dir: String, n: usize) -> Result<Vec<BdavSlot>, String> {
     .map_err(|e| e.to_string())?
 }
 
+/// Take back the streams of the recordings a run did not finish.
+///
+/// A slot is reserved before the cut starts, so a run that is stopped part
+/// way -- or one whose cut fails -- leaves a stream on the disc that nothing
+/// names: no clip index, no playlist, and the next run numbers past it. It is
+/// gigabytes of a recording that was never finished, and it would go into
+/// any image made of the disc afterwards. Only the numbers this run was given
+/// are passed here, and only `BDAV/STREAM/00001.m2ts` under the disc's own
+/// folder is built from one, so nothing outside the disc can be named.
+#[tauri::command]
+async fn bdav_discard(dir: String, clips: Vec<String>) -> Result<usize, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let at = local_path(&dir)?;
+        let mut gone = 0;
+        for clip in clips {
+            // A five-digit stem and nothing else: the numbering is this
+            // program's own, and a name from anywhere else is not a slot.
+            if clip.len() != 5 || !clip.bytes().all(|b| b.is_ascii_digit()) {
+                continue;
+            }
+            let path = smartcut_core::bdav::stream_of(&at, &clip);
+            // A slot that was never written to is not an error -- the run
+            // may have been stopped before it reached that recording.
+            match std::fs::remove_file(&path) {
+                Ok(()) => gone += 1,
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                Err(e) => return Err(format!("{}: {e}", path.display())),
+            }
+        }
+        Ok(gone)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
 /// Wrap the finished disc in an image a burner can take.
 ///
 /// The folder is what was written and it stays: the image is made *of* it,
@@ -3553,6 +3588,7 @@ pub fn run() {
             export,
             programme,
             bdav_prepare,
+            bdav_discard,
             bdav_finish,
             bdav_image,
             audio_limits,
