@@ -2129,7 +2129,8 @@ function containerFor(clip) {
   return TS_LIKE.includes(ext) || PS_LIKE.includes(ext) ? "ts" : ext || "mp4";
 }
 
-function outputPath(clip) {
+/// Where a clip would be written if it were the only one in the list.
+function outputBase(clip) {
   const ext = containerFor(clip);
   // A recording on a disc has nowhere beside it to be written -- inside an
   // image there is no folder at all -- so the disc says where instead, and
@@ -2138,9 +2139,32 @@ function outputPath(clip) {
   // The folder of its own goes under whichever of the two was chosen -- the
   // one that was typed, or the one the recording came out of. A batch left
   // to write beside its inputs is exactly the case that wants it.
-  const dir = `${beneath(settings.dir || beside)}/`;
-  const n = copyNo(clip);
-  return `${dir}${settings.prefix}${clip.stem || stemOf(clip.path)}${n ? `_${n}` : ""}.${ext}`;
+  const dir = `${beneath(outDir() || beside)}/`;
+  return { dir, name: `${settings.prefix}${clip.stem || stemOf(clip.path)}`, ext };
+}
+
+/// Which of the rows that would be written to the same file this one is,
+/// counting from one, or "" when no other row wants that name.
+///
+/// Two copies of one recording are the obvious case, and the one the list
+/// itself numbers. They are not the only case: two recordings of the same
+/// programme from different folders share a name, and every recording on a
+/// disc is called `00001`. Left alone, the second of them would be written
+/// over the first without a word -- the run would report two files written
+/// and one would be gone.
+function outNo(clip) {
+  const mine = outputBase(clip);
+  const twins = clips.filter((c) => {
+    const it = outputBase(c);
+    return it.dir === mine.dir && it.name === mine.name && it.ext === mine.ext;
+  });
+  return twins.length > 1 ? String(twins.indexOf(clip) + 1) : "";
+}
+
+function outputPath(clip) {
+  const { dir, name, ext } = outputBase(clip);
+  const n = outNo(clip);
+  return `${dir}${name}${n ? `_${n}` : ""}.${ext}`;
 }
 
 /// Which control stands for which setting. Kept because the flow is
@@ -3151,6 +3175,22 @@ function autoSubfolder(list) {
   return filenameSafe(name);
 }
 
+/// Where the run in progress is writing, or `null` between runs: the folder
+/// it was told to write into, and the folder of its own it makes under it.
+///
+/// Both are frozen for the length of a run. The settings screen stays open
+/// and editable while the work goes on, and a path typed into it half way
+/// through would otherwise move the output out from under the recordings
+/// already written -- fatal for a disc, whose streams would then be in one
+/// folder and its index in another.
+let runDir = null;
+let runFolder = null;
+
+/// The folder the output goes in, as this run sees it.
+function outDir() {
+  return runDir ?? settings.dir;
+}
+
 /// The name of the folder this run makes, as it stands right now.
 ///
 /// The one on the screen where somebody has settled one, and otherwise the
@@ -3160,6 +3200,7 @@ function autoSubfolder(list) {
 /// only for people who went and looked at it is not a folder anybody can
 /// rely on.
 function subfolderNow() {
+  if (runFolder !== null) return runFolder;
   if (!subfolderWanted()) return "";
   const chosen = settings.subfolder === null ? autoSubfolder(ready()) : settings.subfolder;
   return filenameSafe(chosen || "");
@@ -3175,14 +3216,14 @@ function beneath(dir) {
 
 /// Where the disc itself is written: the folder that will hold `BDAV`.
 function discDir() {
-  return beneath(settings.dir);
+  return beneath(outDir());
 }
 
 /// Where the image will be written, for the panel to show under the disc.
 /// Empty when none was asked for, which is most of the time: an image is
 /// what you make when the disc is finished and about to be burnt.
 function imageLine() {
-  if (!settings.image || !settings.dir) return "";
+  if (!settings.image || !outDir()) return "";
   return t("outset.imageLine", {
     path: `${discDir()}.iso`,
     udf: settings.image,
@@ -3346,7 +3387,7 @@ function renderOutset() {
     about: aboutLine(clip),
     marks: chaptersFor(clip).length,
     out: bdavMode()
-      ? settings.dir
+      ? outDir()
         ? t("outset.discPath", { dir: discDir() }) + imageLine()
         : t("outset.discHere")
       : outputPath(clip),
@@ -3569,11 +3610,11 @@ function renderOutScreen() {
   // is read while the run is watched, and a path that is one level off the
   // one being written to is worse than no line at all.
   el("out-dir-shown").value = bdavMode()
-    ? settings.dir
+    ? outDir()
       ? t("outset.discPath", { dir: discDir() })
       : t("outset.discHere")
-    : settings.dir
-      ? beneath(settings.dir)
+    : outDir()
+      ? beneath(outDir())
       : t("outset.sameAsInput");
   const list = ready();
   el("out-idle").hidden = list.length > 0;
@@ -3676,6 +3717,9 @@ async function runExport() {
   // watching. Both lanes stand aside until the list is written out.
   paused = true;
   await invoke("stop_batch", { lane: null });
+  // Settled before the first byte and held until the last: see `runDir`.
+  runDir = settings.dir;
+  runFolder = subfolderNow();
 
   // What each recording will be called on the disc, and under which number.
   // Both are settled before anything is written: the numbering depends on
@@ -3691,6 +3735,8 @@ async function runExport() {
       // rather than one that failed part way: the lanes get their turn back
       // and the list is as it was.
       note(t("out.bdavFailed", { e: String(e) }));
+      runDir = null;
+      runFolder = null;
       paused = false;
       pump();
       return;
@@ -3843,6 +3889,8 @@ async function runExport() {
   }
 
   exporting = false;
+  runDir = null;
+  runFolder = null;
   writing = null;
   el("abort-export").disabled = true;
   const failed = list.filter((c) => c.out.state === "error").length;

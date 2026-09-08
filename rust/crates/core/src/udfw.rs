@@ -854,23 +854,24 @@ fn dstring(d: &mut [u8], at: usize, len: usize, text: &str) {
     // Eight bits a character where the name is Latin-1, which is what a disc
     // label written by a burner is, and sixteen where it is not.
     let wide = text.chars().any(|c| c as u32 > 0xFF);
+    // What does not fit is left out, a whole character at a time: a
+    // character outside the basic plane is written as two units, and half of
+    // one is not a shorter name but a broken one. The marker stays either
+    // way, and the last byte of the field is the length.
+    let room = len - 1;
     let mut out = Vec::with_capacity(len);
     out.push(if wide { 16 } else { 8 });
+    let mut buf = [0u16; 2];
     for c in text.chars() {
-        if wide {
-            let mut buf = [0u16; 2];
-            for unit in c.encode_utf16(&mut buf) {
-                out.extend_from_slice(&unit.to_be_bytes());
-            }
+        let piece: Vec<u8> = if wide {
+            c.encode_utf16(&mut buf).iter().flat_map(|u| u.to_be_bytes()).collect()
         } else {
-            out.push(c as u8);
+            vec![c as u8]
+        };
+        if out.len() + piece.len() > room {
+            break;
         }
-    }
-    // What does not fit is cut at a character, and the marker stays.
-    let room = len - 1;
-    let step = if wide { 2 } else { 1 };
-    while out.len() > room {
-        out.truncate(out.len() - step);
+        out.extend_from_slice(&piece);
     }
     field[..out.len()].copy_from_slice(&out);
     field[len - 1] = out.len() as u8;
@@ -1088,6 +1089,14 @@ mod tests {
         assert_eq!(d[0], 8);
         assert_eq!(&d[1..7], b"ABCDEF");
         assert_eq!(d[7], 7);
+        // A character outside the basic plane is two units, and the field
+        // stops in front of it rather than keeping half of one.
+        let mut d = vec![0u8; 8];
+        dstring(&mut d, 0, 8, "アい\u{1F600}");
+        assert_eq!(d[0], 16);
+        assert_eq!(d[7], 5);
+        assert_eq!(&d[1..5], &[0x30, 0xa2, 0x30, 0x44]);
+        assert_eq!(&d[5..7], &[0, 0]);
     }
 
     /// A file longer than an extent can describe is written as several, and

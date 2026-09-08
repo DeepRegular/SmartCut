@@ -150,6 +150,15 @@ pub fn plan_range(
         for s in &mut segments {
             s.frames = (index(s.end) - index(s.start)).max(0.0) as usize;
         }
+        // A re-encode window with no picture in it is not a small piece of
+        // work, it is an error: the cutter decodes the window, finds nothing
+        // to put in it and says so, and the whole run stops. It arises where
+        // a bound lands within a rounding of an entry point -- the copy ends
+        // a hair short of the bound and the sliver left over is thinner than
+        // the gap between two pictures. The bounds below keep those out; this
+        // is the net under them, and it also keeps the plan honest, since a
+        // segment that reports no frames is not one the output needs.
+        segments.retain(|s| s.kind != SegmentKind::Reencode || s.frames > 0);
         RangePlan { t_in, t_out, segments }
     };
     let full_reencode = || {
@@ -226,7 +235,12 @@ pub fn plan_range(
         copy_until,
         seek_from: k_first.time,
     });
-    if t_out - copy_end > 1e-9 {
+    // Half a frame, for the same reason the head asks for a whole one: the
+    // pictures the tail would have to supply sit `fd` apart, so a window
+    // thinner than that holds one only if the phase is right, and one
+    // thinner than half of it is a rounding rather than a picture. The
+    // reference implementation draws the line in the same place.
+    if t_out - copy_end > eps {
         segments.push(Segment {
             kind: SegmentKind::Reencode,
             start: copy_end,
@@ -254,4 +268,77 @@ pub fn plan(
     opts: &PlanOptions,
 ) -> Vec<RangePlan> {
     ranges.iter().map(|&(a, b)| plan_range(video, duration, points, a, b, opts)).collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::bitstream::NalFraming;
+
+    /// Broadcast video: 29.97 fps, interlaced, open GOPs half a second apart.
+    fn video() -> VideoInfo {
+        VideoInfo {
+            stream_index: 0,
+            codec: "mpeg2video".into(),
+            width: 1440,
+            height: 1080,
+            frame_rate: 30000.0 / 1001.0,
+            has_b_frames: 1,
+            time_base: 1.0 / 90000.0,
+            sample_aspect_ratio: 4.0 / 3.0,
+            framing: NalFraming::AnnexB,
+            pulldown: false,
+            field_order: 2,
+            vc1: None,
+        }
+    }
+
+    /// Entry points on a half-second grid, each with one leading picture --
+    /// which is what puts `lead_start` one frame ahead of `time` and lets a
+    /// copy stop a frame short of an entry point.
+    fn points(n: usize, fd: f64) -> Vec<AccessPoint> {
+        (0..n)
+            .map(|i| {
+                let time = i as f64 * 15.0 * fd;
+                AccessPoint {
+                    time,
+                    lead_start: if i == 0 { time } else { time - fd },
+                    lead_indices: if i == 0 { Vec::new() } else { vec![1] },
+                    droppable: true,
+                    pos: -1,
+                }
+            })
+            .collect()
+    }
+
+    /// The bug this guards against: a bound landing a rounding away from
+    /// where the copy has to stop left a re-encode segment with no picture
+    /// in it, and the cutter -- rightly -- refuses a window it can decode
+    /// nothing out of, so the whole run stopped.
+    #[test]
+    fn a_bound_a_hair_past_the_copy_leaves_no_empty_segment() {
+        let video = video();
+        let fd = video.frame_duration();
+        let points = points(40, fd);
+        // Ends 1/1000 of a frame after an entry point's leading picture,
+        // which is where the copy's coverage ends.
+        let t_out = points[10].lead_start + fd / 1000.0;
+        let plan = plan_range(&video, 300.0, &points, 0.0, t_out, &PlanOptions::default());
+        assert!(plan.segments.iter().all(|s| s.frames > 0), "{:?}", plan.segments);
+        assert_eq!(plan.segments.last().unwrap().kind, SegmentKind::Copy);
+    }
+
+    /// And the tail is still written where there is a picture in it.
+    #[test]
+    fn a_bound_a_picture_past_the_copy_still_gets_its_tail() {
+        let video = video();
+        let fd = video.frame_duration();
+        let points = points(40, fd);
+        let t_out = points[10].lead_start + 2.0 * fd;
+        let plan = plan_range(&video, 300.0, &points, 0.0, t_out, &PlanOptions::default());
+        let tail = plan.segments.last().unwrap();
+        assert_eq!(tail.kind, SegmentKind::Reencode);
+        assert!(tail.frames > 0, "{tail:?}");
+        assert!((plan.t_out - t_out).abs() < 1e-9);
+    }
 }
