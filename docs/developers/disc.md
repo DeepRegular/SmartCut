@@ -294,6 +294,17 @@ Every episode on a disc carries the same tracks, so there is a button that
 copies one row's answer to every row with the same track list. Being made to
 answer the same question twelve times is not the same as answering it once.
 
+**And the language goes with the cut.** A Blu-ray's programme map carries no
+language descriptor — the language is in `CLIPINF` and nowhere else — so a
+demuxer handed the `.m2ts` alone has nothing to go on, and a cut of a disc
+that listed `eng` and `jpn` used to arrive with two sound tracks nobody could
+tell apart: none in the transport stream it was written to, and none in the
+clip index of a disc written from it either, since that index is read back off
+the stream. So `disc::carry_disc_languages` fills the tracks in when a
+recording on a disc is opened, matched on PID, and the map the cut writes
+carries an ISO 639 descriptor for each. Only where the stream itself declared
+none: a broadcast that said so said it nearer the sound than any index does.
+
 ### A track is named by its PID
 
 The chooser answers **before anything is open**, whereas a stream index is
@@ -422,6 +433,47 @@ are only the default when nobody has given one. Marks landing outside the
 material are dropped rather than clamped, for the reason above. The times can be
 seen without opening the window: `smartcut <disc> --title N` prints them on the
 recording's own clock.
+
+## The disc's own index
+
+**A Blu-ray has already made the pass.** Beside every stream, in
+`CLIPINF/000NN.clpi`, it records where each picture a player may start at is —
+on the presentation clock, and as a packet number in the file. That is the same
+list the walk over the packets — [`index::PacketScan`] — spends a read of the
+whole recording to arrive at.
+
+So it is read instead. `disc::entry_points` parses the map and
+`index::DiscIndex` presents it as an [`IndexSource`], which is the seam that
+was left for exactly this. On the UHD disc measured here — one clip, 81 GB,
+2 hours 34 minutes — opening the title went from **8 minutes 45 seconds to
+under a second**, and the plan that came out of it was identical, segment for
+segment, to the plan the walk produced.
+
+The map is two tables. A **coarse** entry carries the top of a timestamp and
+the top of a packet number and points at the first of the **fine** entries that
+fill in the rest; a time is therefore one of each, put together. The layout is
+`libbluray`'s, with one thing the format's own description leaves out: the map
+for a stream opens with a four-byte offset to its own fine table, and the
+coarse table starts after that.
+
+**What the map cannot say** is whether a GOP is open, or whether the leading
+pictures hanging off one may be thrown away — that is in the bitstream, not in
+any index. So the points arrive with `leading_known: false` and
+`index::refine_leading` measures the ones a boundary can actually land on: a
+couple of dozen either side of each end of each range, a seek and a short read
+apiece. Measuring every point inside the range instead — which is what it used
+to do, invisibly, because a walk answers for itself and this never ran — took
+ten minutes on those sixteen thousand entry points, which is to say the disc's
+own index bought nothing at all.
+
+It cannot say what the pictures weigh either, and a re-encoded stretch is
+written at [the rate the recording came in at](rust-core.md#the-splice). Where
+nothing counted them, the file's own rate less what the sound is worth stands
+in — on a Blu-ray that is most of the difference, uncompressed sound being the
+loudest thing in the file after the pictures.
+
+[`IndexSource`]: ../../rust/crates/core/src/index.rs
+[`index::PacketScan`]: ../../rust/crates/core/src/index.rs
 
 ## Where a cut goes, and what it is called
 
@@ -650,7 +702,7 @@ reopening follows.
 | **Writing a disc** | Not supported. That is authoring, and a different problem |
 | **Joining clips** | Not supported. A multi-clip playlist is shown as a row per clip (above) |
 | **BDMV titles** | `index.bdmv` names titles and a title is a navigation program. Which playlist "T05 Extra 01" plays is not worked out; rows are named by the disc and the clip |
-| **The CLPI EP map** | Not used for seeking. The stream list beside it is read, for the chooser; the index is still built by scanning packets. Adding the EP map to `IndexSource` in [`index.rs`](../../rust/crates/core/src/index.rs) would save that pass |
+| **A clip whose EP map does not read** | The map is used where there is one — see [the disc's own index](#the-discs-own-index) — and the walk over the packets is what answers where there is not |
 | **Blu-ray's own streams** | PGS and IGS cannot go on a cut timeline and are dropped, which the chooser says. The sound is all carried — LPCM, DTS-HD, TrueHD, E-AC-3, [above](#the-sound-a-disc-carries). VC-1 video is read, listed and cut, the partial GOPs written by [SmartCut's own encoder](rust-core.md#vc-1-the-codec-with-no-encoder) |
 | **DVD subpictures** | A DVD subtitle is a run-length coded picture with its own display commands, the same kind of thing a Blu-ray's graphics are. Listed, so the chooser can say it is being left behind; not carried |
 | **DVD angles** | A chain whose cells are an angle block or an interleaved unit is not offered, [above](#a-title-is-a-run-of-cells) |

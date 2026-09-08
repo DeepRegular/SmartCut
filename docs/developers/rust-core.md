@@ -37,6 +37,63 @@ mpeg2 ts open-GOP      lossless 328/342   first=0.00000 step=0.033367 jitter=0
 And on top of that the timestamps are exact in every case, where the Python version
 starts 13 ms early.
 
+## The splice
+
+A cut copies whole GOPs and re-encodes the fringes, so a few frames at each
+boundary are written by this program's encoder and the rest are the
+recording's own bytes. **What those few frames are written at is what the
+recording came in at, and a fifth again** — the pictures being replaced were
+coded by whatever made the disc or the broadcast, with as long as it liked to
+spend, and coded once and quickly at the same rate they come out visibly
+softer than the copied pictures beside them.
+
+The count comes from the index pass, which is holding every packet anyway:
+`walk` adds up the video packets and divides by the span. Nothing else can
+say. A transport stream declares no bit rate per stream, and the container's
+overall figure counts the sound and the tables in with the pictures.
+
+It used to be `width × height × fps × 0.08`, which knows nothing about the
+recording at all. On this material that was wrong by a factor of five or six:
+
+| | source | written at | after |
+|---|---|---|---|
+| Blu-ray 1080p | 27.2 Mbit/s | 4.5 Mbit/s | 32.6 Mbit/s |
+| UHD 2160p | 73.5 Mbit/s | 15.9 Mbit/s | 88.2 Mbit/s |
+| Blu-ray 1080i, at a seam | 75 kB/frame copied | 26 kB/frame | 96 kB/frame |
+
+Measured against the source, the 1080p clip above went from **29.7 dB to
+35.1 dB** PSNR. Where an index did not read the pictures — [a disc's own
+map](disc.md#the-discs-own-index), a container's seek table — the file's own
+rate less what the sound is worth stands in, and the frame size is the last
+resort behind that.
+
+### The container the pictures go into
+
+An MP4 puts a length in front of every NAL and keeps the parameter sets in
+the `hvcC`; a transport stream separates NALs with start codes and expects to
+meet the sets in the stream. Re-encoded pictures come out of the encoder
+start-coded either way, so **only the copied ones have to be re-framed** —
+`Reframe` on the way into an MP4, `Unframe` on the way out of one.
+
+The second of those was missing. A cut of an MP4 written as `.ts` carried its
+copied pictures across untouched, four bytes of length where the decoder was
+looking for `00 00 00 01`: on a ten second cut of a 4K clip, **36 pictures
+arrived out of 635**, and the 36 were the re-encoded fringes. `tests/
+run_rust_tests.sh` now counts the pictures in an MP4 cut and in the same cut
+written as a transport stream, and they have to agree.
+
+### HDR is in the pictures too
+
+HDR10 is two SEI messages — the mastering display's primaries and luminance
+range, and the brightest content in the recording — and on the files measured
+here they are in the bitstream and nowhere in the container. A copied picture
+carries its own; a re-encoded one had nothing to say, so a player changed its
+tone mapping partway through the cut. `mastering_of` decodes one picture to
+read them and hands them to the encoder as `decoded_side_data`, which is where
+libx265 looks. Done once per cut, and only when there is something to
+re-encode. The transfer says whether to look at all: PQ and HLG carry this,
+`bt2020-10` — Blu-ray's wide-gamut SDR — does not.
+
 ## Fixing the timestamp problem
 
 The Python version had no option but to hand a raw elementary stream to ffmpeg, which

@@ -44,7 +44,7 @@ pub use cut::{
     cut, cut_with_progress, writable_sound, write_audio_es, AudioCodec, AudioMode, CutOptions,
     SoundAsIs, SoundChoices,
 };
-pub use index::{ContainerIndex, IndexSource, PacketScan};
+pub use index::{ContainerIndex, DiscIndex, IndexSource, PacketScan};
 pub use seek_index::SeekIndex;
 pub use preview::{
     frame_at, glance, glance_at, glance_run, glance_sweep, play_from, shot_at, shots_at, Pace,
@@ -108,6 +108,19 @@ pub struct VideoInfo {
     /// encoder told nothing about that quietly produces progressive pictures
     /// -- which comb against the copied ones at every splice.
     pub field_order: i32,
+    /// Bits per second the pictures actually take, counted while the index
+    /// was built.
+    ///
+    /// This is what a re-encoded stretch is written at, so that the pictures
+    /// spliced in are worth about what the ones around them are worth. The
+    /// frame size alone cannot say: the same 1920x1080 is 17 Mbit/s off the
+    /// air and 27 off a Blu-ray, and a figure derived from the size gave the
+    /// Blu-ray a sixth of what it came in at.
+    ///
+    /// `None` where the index came from somewhere that never read the
+    /// pictures -- a container's own seek table -- and then there is nothing
+    /// to do but derive one from the frame size after all.
+    pub bit_rate: Option<f64>,
     /// The sequence and entry-point headers a VC-1 stream declares itself
     /// with, when it is one.
     ///
@@ -201,6 +214,9 @@ pub struct CaptionInfo {
 #[derive(Debug, Clone)]
 pub struct DroppedStream {
     pub pid: i32,
+    /// Its index among the container's streams, which is how it is named
+    /// where the `pid` beside it is not a PID. See [`track_name`].
+    pub stream_index: usize,
     /// Which of them it is: `"superimpose"` or `"data"`. A name rather than
     /// a sentence, because the window says this in the language it is set to
     /// and the command line says it in English.
@@ -264,6 +280,15 @@ pub struct Source {
     /// is spent. This is what is left for the containers and the indexes that
     /// cannot say.
     pub seek_margin: f64,
+    /// Whether a track's `pid` is really a PID.
+    ///
+    /// A transport stream names its tracks that way and a cut puts them back
+    /// on the same numbers, so a PID is what a person reading about one
+    /// should be told. **Nothing else has PIDs.** An MP4 numbers its tracks
+    /// and libavformat hands that number over in the same field, so a note
+    /// about "the sound on pid 0x0102" of an MP4 is a note using a word for
+    /// something that is not there. See [`track_name`].
+    pub on_a_ts: bool,
     /// Whether a raw byte offset may be seeked to.
     ///
     /// True of the stream formats, which are demuxed by reading forward from
@@ -275,8 +300,44 @@ pub struct Source {
     pub byte_seekable: bool,
 }
 
+/// Start libav, and stop it talking over the top of this program.
+///
+/// **What libav prints is not addressed to anyone here.** It is a running
+/// commentary from inside the decoders and muxers -- `co located POCs
+/// unavailable` from a decoder handed a GOP to re-encode, `Could not find
+/// codec parameters` for a subtitle stream a cut was never going to carry,
+/// `The encoder 'truehd' is experimental` from a probe that exists only to
+/// find that out, printed directly beside this program's own note saying the
+/// track is being carried through untouched instead. None of it is a fault,
+/// every line of it looks like one, and the program has its own words for
+/// everything it actually needs to say.
+///
+/// So the default is silence, and `SMARTCUT_FFMPEG_LOG` brings it back:
+/// `1` for the warnings, `2` for everything libav has to say. Nothing is
+/// lost by the default -- a call that fails returns its error, which is
+/// carried and reported here rather than printed there.
+/// How to name one track where a person will read it.
+///
+/// `pid 0x1100` off a transport stream, `stream 1` out of anything else. The
+/// number in [`AudioInfo::pid`] is whatever the container calls the track, and
+/// only one kind of container calls it a PID. See [`Source::on_a_ts`].
+pub fn track_name(on_a_ts: bool, pid: i32, stream_index: usize) -> String {
+    if on_a_ts {
+        format!("pid 0x{pid:04x}")
+    } else {
+        format!("stream {stream_index}")
+    }
+}
+
 pub fn init() -> Result<()> {
-    ff::init().map_err(|e| anyhow!("ffmpeg init failed: {e}"))
+    ff::init().map_err(|e| anyhow!("ffmpeg init failed: {e}"))?;
+    let level = match std::env::var("SMARTCUT_FFMPEG_LOG").as_deref() {
+        Ok("2") | Ok("all") => ff::util::log::Level::Verbose,
+        Ok("1") | Ok("on") | Ok("yes") => ff::util::log::Level::Warning,
+        _ => ff::util::log::Level::Quiet,
+    };
+    ff::util::log::set_level(level);
+    Ok(())
 }
 
 /// This crate's own version, which is the version of the cutting engine --
@@ -414,7 +475,11 @@ fn one_track_per_pid(
     let mut folded = Vec::new();
     for a in audios {
         if kept.iter().any(|k| k.pid == a.pid) {
-            folded.push(DroppedStream { pid: a.pid, what: "substream" });
+            folded.push(DroppedStream {
+                pid: a.pid,
+                stream_index: a.stream_index,
+                what: "substream",
+            });
         } else {
             kept.push(a);
         }
@@ -548,6 +613,7 @@ fn assemble(
         duration,
         start_time,
         byte_seekable,
+        on_a_ts,
     } = outline;
     let mut points = idx.points;
     if points.is_empty() {
@@ -569,6 +635,7 @@ fn assemble(
     let seek_margin = (3.0 * mean_gop).clamp(1.0, 30.0);
 
     video.pulldown = idx.pulldown.unwrap_or(false);
+    video.bit_rate = idx.bit_rate;
 
     // A container that says it is shorter than the pictures it holds is a
     // program stream; see [`index::Index::end`]. Only ever longer, so that a
@@ -579,7 +646,7 @@ fn assemble(
         _ => duration,
     };
 
-    Ok(Source {
+    let mut src = Source {
         path: path.to_string(),
         input,
         audio,
@@ -588,13 +655,20 @@ fn assemble(
         dropped,
         seek_margin,
         byte_seekable,
+        on_a_ts,
         video,
         duration,
         start_time,
         points,
         leading_known: idx.leading_known,
         index_name,
-    })
+    };
+    // A recording on a disc has its languages written beside it and nowhere
+    // in it. Done here, once, so that a cut carries them however the
+    // recording was reached -- named on the command line, chosen from the
+    // list, or opened again out of a project.
+    disc::carry_disc_languages(&mut src);
+    Ok(src)
 }
 
 /// What the container itself says about a recording, before a byte of it has
@@ -625,6 +699,8 @@ pub struct Outline {
     /// Container start time. MPEG-TS does not begin at zero.
     pub start_time: f64,
     pub byte_seekable: bool,
+    /// Whether a track's `pid` is really a PID. See [`Source::on_a_ts`].
+    pub on_a_ts: bool,
 }
 
 impl Outline {
@@ -656,6 +732,7 @@ impl Outline {
             duration: self.duration,
             start_time: self.start_time,
             byte_seekable: self.byte_seekable,
+            on_a_ts: self.on_a_ts,
             points: Vec::new(),
             // Nothing was measured, so nothing is known: a caller that cares
             // about leading pictures must refine before it believes any.
@@ -760,10 +837,10 @@ fn outline_of(path: &str) -> Result<(Outline, ff::format::context::Input)> {
             let described = a.sample_rate > 0 && a.channels > 0;
             if !described {
                 eprintln!(
-                    "note: the sound on pid 0x{:04x} is named by this recording's map but \
-                     never appears in it, so there is nothing to describe it with. It is \
-                     left out; the rest of the recording is unaffected.",
-                    a.pid,
+                    "note: the sound on {} is named by this recording's map but never \
+                     appears in it, so there is nothing to describe it with. It is left \
+                     out; the rest of the recording is unaffected.",
+                    track_name(on_a_ts, a.pid, a.stream_index),
                 );
             }
             described
@@ -805,11 +882,17 @@ fn outline_of(path: &str) -> Result<(Outline, ff::format::context::Input)> {
                 // and where it belongs is not in a stream. See [`si`], which
                 // puts it back on the PID a broadcast keeps it on.
                 (_, ff::codec::Id::EPG) => None,
-                (ff::media::Type::Data, ff::codec::Id::BIN_DATA) => {
-                    Some(DroppedStream { pid: s.id(), what: "superimpose" })
-                }
+                (ff::media::Type::Data, ff::codec::Id::BIN_DATA) => Some(DroppedStream {
+                    pid: s.id(),
+                    stream_index: s.index(),
+                    what: "superimpose",
+                }),
                 (ff::media::Type::Unknown, _) | (ff::media::Type::Data, _) => {
-                    Some(DroppedStream { pid: s.id(), what: "data" })
+                    Some(DroppedStream {
+                        pid: s.id(),
+                        stream_index: s.index(),
+                        what: "data",
+                    })
                 }
                 _ => None,
             }
@@ -839,7 +922,8 @@ fn outline_of(path: &str) -> Result<(Outline, ff::format::context::Input)> {
         sample_aspect_ratio,
         framing,
         field_order,
-        pulldown: false, // the index source reports this, when it can
+        pulldown: false,   // the index source reports this, when it can
+        bit_rate: None,    // and this, when it read the pictures to find out
         // Read once, here, rather than hunted for in every packet: a
         // transport stream restates these in front of each entry point, so
         // libavformat has them before a packet has been asked for.
@@ -860,6 +944,7 @@ fn outline_of(path: &str) -> Result<(Outline, ff::format::context::Input)> {
             duration,
             start_time,
             byte_seekable,
+            on_a_ts,
         },
         ictx,
     ))

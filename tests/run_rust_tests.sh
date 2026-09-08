@@ -81,5 +81,31 @@ t "mpeg2 ts aligned"    mpeg2.ts    "0.501-9.943"        --keep 0.511-9.953
 # README, "既知の制限".
 XFAIL=1 t "mpeg2 ts multi"      mpeg2.ts    "2.0-6.0,11.0-17.0"  --keep 2.0-6.0 --keep 11.0-17.0
 t "mpeg2 ts to end"     mpeg2.ts    "0.0-4.0,9.0-20.0"   --cut  4.0-9.0
+# --- the container the pictures are written into --------------------------
+#
+# An MP4 written as a transport stream. The two disagree about how a NAL
+# begins -- a length in front of each against a start code between them --
+# and a copied picture that crossed untouched is a picture the decoder cannot
+# find. Counted rather than compared frame by frame, because what went wrong
+# here was total: on the material this was found with, 36 pictures arrived out
+# of 635, and the 36 were the re-encoded fringes.
+frames() {
+  ffprobe -v error -count_frames -select_streams v:0 \
+    -show_entries stream=nb_read_frames -of csv=p=0 "$1" 2>/dev/null | head -1
+}
+for src in h264.mp4 hevc.mp4; do
+  name="${src%.mp4} into a transport stream"
+  "$BIN" "$FX/$src" --keep 5.3-12.7 -o "$OUT/container.mp4" >/dev/null 2>&1
+  "$BIN" "$FX/$src" --keep 5.3-12.7 -o "$OUT/container.ts"  >/dev/null 2>&1
+  a=$(frames "$OUT/container.mp4"); b=$(frames "$OUT/container.ts")
+  if [ -n "$a" ] && [ "$a" = "$b" ]; then
+    printf "  ok    %-26s %s pictures either way\n" "$name" "$a"
+    pass=$((pass+1))
+  else
+    printf "  FAIL  %-26s mp4 %s, ts %s\n" "$name" "${a:-none}" "${b:-none}"
+    fail=$((fail+1))
+  fi
+done
+
 echo "=== $pass passed, $fail failed ==="
 [ "$fail" -eq 0 ]

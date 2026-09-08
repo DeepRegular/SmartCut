@@ -231,6 +231,37 @@ pub fn annexb_to_length(data: &[u8], n: usize) -> Vec<u8> {
     out
 }
 
+/// Re-frame a length-prefixed payload with start codes, as MPEG-TS wants it.
+///
+/// The other direction from [`annexb_to_length`], and needed for the same
+/// reason: a recording read out of an MP4 carries lengths, and a transport
+/// stream carries start codes. Without this the copied pictures reach the
+/// file as they were -- four bytes of length where a decoder is looking for
+/// `00 00 00 01` -- and everything but the re-encoded fringes is unreadable.
+pub fn length_to_annexb(data: &[u8], n: usize) -> Vec<u8> {
+    let mut out = Vec::with_capacity(data.len() + 16);
+    for nal in nal_payloads(data, NalFraming::Length(n)) {
+        out.extend_from_slice(&[0, 0, 0, 1]);
+        out.extend_from_slice(nal);
+    }
+    out
+}
+
+/// Put the given parameter sets in front of a payload, with start codes.
+///
+/// An MP4 keeps its parameter sets in the `hvcC`/`avcC` and out of the
+/// pictures; a transport stream expects to meet them in the stream itself,
+/// in front of the pictures that were coded against them.
+pub fn prepend_parameter_sets_annexb(data: &[u8], sets: &[Vec<u8>]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(data.len() + sets.iter().map(|s| s.len() + 4).sum::<usize>());
+    for s in sets {
+        out.extend_from_slice(&[0, 0, 0, 1]);
+        out.extend_from_slice(s);
+    }
+    out.extend_from_slice(data);
+    out
+}
+
 /// Put the given parameter sets in front of a length-prefixed payload.
 pub fn prepend_parameter_sets(data: &[u8], sets: &[Vec<u8>], n: usize) -> Vec<u8> {
     let mut out = Vec::with_capacity(data.len() + sets.iter().map(|s| s.len() + n).sum::<usize>());

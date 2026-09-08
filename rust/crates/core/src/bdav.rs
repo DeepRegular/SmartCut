@@ -446,11 +446,18 @@ fn read_clip(stream: &Path, on: Option<(&(dyn Fn(&str, f64) + Sync), &str)>) -> 
     });
     for a in &src.audios {
         let pid = a.pid as u16;
-        streams.push(Carried {
-            pid,
-            coding: declared(pid, audio_coding(&a.codec)),
-            attributes: audio_attributes(a),
-        });
+        // The map is the authority where it names a sound coding at all.
+        // Where it says "private data" it is not naming one: a recording that
+        // came out of an MP4 has no map of its own to carry across, and the
+        // muxer that wrote this stream had no Blu-ray coding to give AAC --
+        // Blu-ray has none, whatever a Japanese recorder writes -- so it fell
+        // back on 0x06, which in a clip index means the reader cannot say
+        // what the track is. The codec is known here, so it answers instead.
+        let coding = match declared(pid, 0) {
+            0 | 0x06 => audio_coding(&a.codec),
+            named => named,
+        };
+        streams.push(Carried { pid, coding, attributes: audio_attributes(a) });
     }
     for c in &src.captions {
         let pid = c.pid as u16;

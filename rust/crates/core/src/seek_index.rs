@@ -63,6 +63,15 @@ pub struct SeekIndex {
     /// Whether the stream uses 2:3 pulldown, when the pass that made this
     /// could tell.
     pub pulldown: Option<bool>,
+    /// What the pictures weigh, when the pass that made this counted them.
+    /// See [`crate::VideoInfo::bit_rate`].
+    ///
+    /// Written after everything else, so that an index from before there was
+    /// such a figure still loads -- it simply has nothing there, and the
+    /// recording is re-encoded against its frame size as it was before. That
+    /// is worth more than the alternative, which is every held index on the
+    /// machine being thrown away and read again for one number.
+    pub bit_rate: Option<f64>,
     /// The thumbnail track and scene index, when one was built.
     ///
     /// Optional because the index is worth keeping on its own: a file whose
@@ -90,6 +99,7 @@ impl index::IndexSource for SeekIndex {
             points: self.points.clone(),
             leading_known: self.leading_known,
             pulldown: self.pulldown,
+            bit_rate: self.bit_rate,
             end: self.end,
         })
     }
@@ -102,6 +112,7 @@ impl SeekIndex {
             points: src.points.clone(),
             leading_known: src.leading_known,
             pulldown: Some(src.video.pulldown),
+            bit_rate: src.video.bit_rate,
             // The duration a `Source` carries is the pass's own answer where
             // the container had none worth having, so it is the answer to
             // keep.
@@ -162,6 +173,11 @@ impl SeekIndex {
                 w.bytes(&th.jpeg);
             }
         }
+
+        // Last, and outside the flags, so that a reader which stops before it
+        // reads a whole file and a reader which knows about it reads a whole
+        // file too. Zero says the pass never counted.
+        w.f64(self.bit_rate.unwrap_or(0.0));
 
         // Through a temporary and renamed into place. This runs to tens of
         // megabytes and the process can be closed while it is writing; a
@@ -257,6 +273,10 @@ impl SeekIndex {
                 .then_some(flags & FLAG_PULLDOWN != 0),
             end,
             track,
+            // Whatever is left after the track, if a version that wrote one
+            // put it there. Zero is how "not measured" is written, a rate of
+            // nothing being no rate at all.
+            bit_rate: r.f64().ok().filter(|r| r.is_finite() && *r > 0.0),
         })
     }
 }

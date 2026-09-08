@@ -385,6 +385,73 @@ pub fn read(at: &Path) -> Result<Disc> {
     }
 }
 
+/// Give an opened recording the languages the disc's index knows.
+///
+/// **A pressed disc says what language a track is in, and says it in
+/// `CLIPINF`.** Nothing in the stream itself does: a Blu-ray's programme map
+/// carries no language descriptor, so a demuxer handed the `.m2ts` alone has
+/// nothing to go on. The list drawn from the disc could therefore show `eng`
+/// and `jpn` while a cut of that same recording came out with two tracks
+/// nobody could tell apart -- no language in the transport stream it was
+/// written to, and none in the clip index of a disc written from it either.
+///
+/// Matched on PID, which is the one name for a track that both sides use.
+/// Only what is empty is filled: where the stream did declare a language,
+/// the stream sits nearer the sound than the disc's index does.
+/// The same, for a recording that was opened by its path on a disc rather
+/// than chosen out of a list.
+///
+/// Costs one `.clpi` -- a few kilobytes -- because the clip is named in the
+/// path and there is no need to read a playlist to find it. A path that is
+/// not on a disc costs a look at two directory names and nothing else.
+pub fn carry_disc_languages(src: &mut crate::Source) {
+    let path = src.path.clone();
+    let Some((root, clip)) = clip_on_a_disc(&path) else { return };
+    let Ok(mut vol) = Volume::open(Path::new(root)) else { return };
+    let tracks = vol.tracks(clip);
+    if !tracks.is_empty() {
+        carry_languages(src, &tracks);
+    }
+}
+
+/// Split `<disc>/BDMV/STREAM/00014.m2ts` into the disc and `00014`.
+///
+/// The shape is the same on both dialects and is the only thing being asked
+/// for: which disc, and which clip on it. Anything else is not on a disc as
+/// far as this is concerned.
+fn clip_on_a_disc(path: &str) -> Option<(&str, &str)> {
+    let (root, rest) = ["/BDMV/STREAM/", "/BDAV/STREAM/"]
+        .iter()
+        .find_map(|marker| path.split_once(marker))?;
+    let clip = rest.strip_suffix(".m2ts").or_else(|| rest.strip_suffix(".M2TS"))?;
+    (!clip.is_empty() && !clip.contains('/')).then_some((root, clip))
+}
+
+pub fn carry_languages(src: &mut crate::Source, tracks: &[Track]) {
+    let said = |pid: i32| {
+        tracks
+            .iter()
+            .find(|t| t.pid == pid && t.language.is_some())
+            .and_then(|t| t.language.clone())
+    };
+    for a in src.audios.iter_mut() {
+        if a.language.is_none() {
+            a.language = said(a.pid);
+        }
+    }
+    // The chosen track is a copy of one of those, made before this ran.
+    if let Some(a) = src.audio.as_mut() {
+        if a.language.is_none() {
+            a.language = said(a.pid);
+        }
+    }
+    for c in src.captions.iter_mut() {
+        if c.language.is_none() {
+            c.language = said(c.pid);
+        }
+    }
+}
+
 fn read_bluray(at: &Path) -> Result<Disc> {
     let mut vol = Volume::open(at)?;
     let shape = vol.shape();
@@ -1198,6 +1265,108 @@ fn u16be(b: &[u8], at: usize) -> u16 {
 /// nothing is a chooser that offers the clip whole, which is the right answer
 /// when the disc will not say what is in it; a chooser that listed a guess
 /// would have somebody switch off a track that was never there.
+/// Every point a player may start at, as the clip's own index records them.
+///
+/// **This is the walk over the packets, already done.** A Blu-ray writes an
+/// entry-point map beside each stream -- where every picture a player may
+/// begin at is, on the presentation clock and in the file -- and reading it
+/// costs a hundred kilobytes against the eighty gigabytes the same answer
+/// used to be read out of. The UHD disc this was measured on took 8 minutes
+/// 45 seconds to index and takes under a second now.
+///
+/// Returned as `(presentation time in seconds, byte offset)`, on the stream's
+/// own clock, in the order the map holds them -- which is the order they are
+/// shown in. Empty where the file is not a clip index, holds no map, or holds
+/// one this cannot make sense of: the walk is always there to fall back on,
+/// and a half-read map is worse than none.
+///
+/// The map is two tables. A **coarse** entry holds the top of a timestamp and
+/// the top of a packet number, and points at the first of the **fine**
+/// entries that fill in the rest -- so a time is one of each, put together.
+/// The layout is the one `libbluray` reads, with one thing its own
+/// description of the format leaves out: the map for a stream opens with a
+/// four-byte offset to its own fine table, and the coarse table starts after
+/// that.
+fn entry_points(raw: &[u8]) -> Vec<(f64, u64)> {
+    if raw.len() < 24 || !matches!(&raw[..4], b"HDMV" | b"M2TS") {
+        return Vec::new();
+    }
+    // The CPI section: a length, twelve reserved bits, and four that say
+    // which kind of map follows. Type 1 is the entry-point map; nothing else
+    // has ever been seen and nothing else is guessed at.
+    let cpi = u32be(raw, 16) as usize;
+    if u32be(raw, cpi) == 0 || raw.get(cpi + 5).map(|b| b & 0x0F) != Some(1) {
+        return Vec::new();
+    }
+    let map = cpi + 6;
+    let Some(&streams) = raw.get(map + 1) else { return Vec::new() };
+    // One stream's worth is enough: the pictures are what a cut is planned
+    // against, and a clip carries one picture stream.
+    for i in 0..streams.min(16) as usize {
+        let at = map + 2 + i * 12;
+        let Some(head) = raw.get(at..at + 12) else { break };
+        // Sixteen bits of PID, ten reserved, four of stream type, then the
+        // two counts -- sixteen bits and eighteen, which do not fall on byte
+        // boundaries, so the six bytes are read as one number.
+        let packed = head[2..8].iter().fold(0u64, |n, &b| (n << 8) | b as u64);
+        if (packed >> 34) & 0xF != 1 {
+            continue; // not the picture stream
+        }
+        let coarse_n = ((packed >> 18) & 0xFFFF) as usize;
+        let fine_n = (packed & 0x3_FFFF) as usize;
+        let start = map + u32be(raw, at + 8) as usize;
+        let fine_at = start + u32be(raw, start) as usize;
+        let coarse_at = start + 4;
+        if coarse_n == 0 || fine_n == 0 {
+            continue;
+        }
+        // Read the coarse table first: a fine entry means nothing without
+        // the coarse one it hangs off, and every entry is checked to be
+        // inside the file before any of it is believed.
+        let mut coarse = Vec::with_capacity(coarse_n);
+        for k in 0..coarse_n {
+            let Some(v) = raw.get(coarse_at + k * 8..coarse_at + k * 8 + 8) else {
+                return Vec::new();
+            };
+            let head = u32::from_be_bytes([v[0], v[1], v[2], v[3]]);
+            let spn = u32::from_be_bytes([v[4], v[5], v[6], v[7]]);
+            coarse.push(((head >> 14) as usize, (head & 0x3FFF) as u64, spn as u64));
+        }
+        if raw.len() < fine_at + fine_n * 4 {
+            return Vec::new();
+        }
+        let mut out = Vec::with_capacity(fine_n);
+        for (k, &(first, pts_hi, spn_hi)) in coarse.iter().enumerate() {
+            let last = coarse.get(k + 1).map_or(fine_n, |c| c.0);
+            for f in first..last.min(fine_n) {
+                let v = u32be(raw, fine_at + f * 4);
+                let pts = (pts_hi << 19) | (((v >> 17) & 0x7FF) as u64) << 9;
+                // The top of the packet number comes from the coarse entry
+                // and the bottom seventeen bits from the fine one.
+                let spn = (spn_hi & !0x1_FFFF) | (v & 0x1_FFFF) as u64;
+                // A source packet is 192 bytes: a transport packet behind the
+                // four that say when it arrived.
+                out.push((pts as f64 / 90_000.0, spn * 192));
+            }
+        }
+        return out;
+    }
+    Vec::new()
+}
+
+/// The entry points a disc holds for one of its own clips.
+///
+/// `None` for anything that is not a clip on a disc, and for a disc whose
+/// index does not answer -- both of which mean the packets get walked, which
+/// is what always used to happen. See [`entry_points`].
+pub fn clip_entry_points(path: &str) -> Option<Vec<(f64, u64)>> {
+    let (root, clip) = clip_on_a_disc(path)?;
+    let mut vol = Volume::open(Path::new(root)).ok()?;
+    let raw = vol.read(&format!("CLIPINF/{clip}.clpi")).ok()?;
+    let points = entry_points(&raw);
+    (!points.is_empty()).then_some(points)
+}
+
 fn tracks(raw: &[u8]) -> Vec<Track> {
     // The two dialects sign the file differently and write the same thing
     // after it: a pressed disc's clip index opens `HDMV`, a recorder's opens
@@ -1555,6 +1724,91 @@ mod tests {
     fn says_nothing_about_a_clip_index_it_cannot_read() {
         assert!(tracks(b"not a clpi").is_empty());
         assert!(tracks(&[]).is_empty());
+    }
+
+    /// A `.clpi` carrying an entry-point map for one picture stream.
+    ///
+    /// `coarse` is a list of (first fine entry, top of the timestamp, top of
+    /// the packet number) and `fine` a list of (bottom of the timestamp,
+    /// bottom of the packet number), which is how the two tables divide a
+    /// point between them.
+    fn clpi_with_ep_map(coarse: &[(u32, u64, u64)], fine: &[(u64, u64)]) -> Vec<u8> {
+        // The map for the stream: its own fine table's offset, then the two
+        // tables end to end.
+        let mut one = Vec::new();
+        one.extend_from_slice(&((4 + coarse.len() * 8) as u32).to_be_bytes());
+        for &(first, pts, spn) in coarse {
+            one.extend_from_slice(&((first << 14) | pts as u32).to_be_bytes());
+            one.extend_from_slice(&(spn as u32).to_be_bytes());
+        }
+        for &(pts, spn) in fine {
+            one.extend_from_slice(&(((pts as u32) << 17) | spn as u32).to_be_bytes());
+        }
+        // The map itself: a reserved byte, one stream, and where that
+        // stream's own map sits from the start of this.
+        let mut map = vec![0u8, 1];
+        map.extend_from_slice(&0x1011u16.to_be_bytes());
+        // Ten reserved bits, four of stream type, sixteen of coarse count and
+        // eighteen of fine count, packed into six bytes.
+        let packed: u64 =
+            (1 << 34) | ((coarse.len() as u64) << 18) | fine.len() as u64;
+        map.extend_from_slice(&packed.to_be_bytes()[2..]);
+        map.extend_from_slice(&(map.len() as u32 + 4).to_be_bytes());
+        map.extend_from_slice(&one);
+
+        let mut raw = vec![0u8; 40];
+        raw[..8].copy_from_slice(b"HDMV0300");
+        raw[16..20].copy_from_slice(&40u32.to_be_bytes()); // the CPI starts here
+        raw.extend_from_slice(&((map.len() + 2) as u32).to_be_bytes()); // its length
+        raw.extend_from_slice(&1u16.to_be_bytes()); // reserved, then type 1
+        raw.extend_from_slice(&map);
+        raw
+    }
+
+    #[test]
+    fn reads_the_entry_points_a_disc_recorded() {
+        // Two coarse entries, four fine ones between them. The second coarse
+        // entry carries the next step of the timestamp, which is what makes a
+        // point more than its own fine entry.
+        let raw = clpi_with_ep_map(&[(0, 0, 0), (2, 1, 0)], &[(0, 0), (90, 100), (0, 7), (90, 9)]);
+        let found = entry_points(&raw);
+        assert_eq!(found.len(), 4);
+        // The fine entry holds bits 19..9 of the timestamp: 90 << 9 is 46080
+        // ticks of 90 kHz, which is 0.512s.
+        assert_eq!(found[0], (0.0, 0));
+        assert_eq!(found[1], (46080.0 / 90_000.0, 100 * 192));
+        // And the coarse entry holds everything above that: 1 << 19 ticks.
+        assert_eq!(found[2], (524_288.0 / 90_000.0, 7 * 192));
+        assert_eq!(found[3], ((524_288.0 + 46080.0) / 90_000.0, 9 * 192));
+    }
+
+    #[test]
+    fn says_nothing_about_an_entry_point_map_it_cannot_read() {
+        assert!(entry_points(b"not a clpi").is_empty());
+        assert!(entry_points(&[]).is_empty());
+        // The stream list on its own: a clip index with no CPI section at all.
+        assert!(entry_points(&clpi()).is_empty());
+        // A map whose tables run past the end of the file is a map that is
+        // not read at all, rather than one read as far as it goes.
+        let mut truncated = clpi_with_ep_map(&[(0, 0, 0)], &[(0, 0), (90, 100)]);
+        truncated.truncate(truncated.len() - 4);
+        assert!(entry_points(&truncated).is_empty());
+    }
+
+    #[test]
+    fn names_the_clip_a_path_on_a_disc_points_at() {
+        assert_eq!(
+            clip_on_a_disc("/rec/Anime.iso/BDMV/STREAM/00014.m2ts"),
+            Some(("/rec/Anime.iso", "00014"))
+        );
+        assert_eq!(
+            clip_on_a_disc("/rec/copied/BDAV/STREAM/00001.m2ts"),
+            Some(("/rec/copied", "00001"))
+        );
+        // Anything that is not a clip on a disc is not one.
+        assert_eq!(clip_on_a_disc("/rec/programme.ts"), None);
+        assert_eq!(clip_on_a_disc("/rec/Anime.iso/BDMV/STREAM/00014.mp4"), None);
+        assert_eq!(clip_on_a_disc("/rec/BDMV/STREAM/"), None);
     }
 
     /// What a recorder writes, read off a real disc: a different magic, three

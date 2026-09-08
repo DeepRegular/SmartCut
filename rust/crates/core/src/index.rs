@@ -23,6 +23,9 @@ pub struct Index {
     pub leading_known: bool,
     /// Whether the stream uses 2:3 pulldown, when the source could tell.
     pub pulldown: Option<bool>,
+    /// Bits per second the pictures take, when the source read them all.
+    /// See [`crate::VideoInfo::bit_rate`], which is where it ends up.
+    pub bit_rate: Option<f64>,
     /// Where the last picture is, in rebased seconds, when the source read
     /// far enough to know.
     ///
@@ -125,6 +128,11 @@ pub fn walk(
 
     let mut packets: Vec<PacketView> = Vec::new();
     let mut pulldown = false;
+    // What the pictures weigh. Free here -- the walk is holding every packet
+    // already -- and there is nowhere else to learn it: a transport stream
+    // declares no bit rate per stream, and the container's overall figure
+    // counts the sound and the tables in with the pictures.
+    let mut video_bytes: u64 = 0;
     // Said on a count rather than on every packet: a gigabyte is on the
     // order of a hundred thousand of them and the bar has 100 steps, so
     // the rest of the calls would draw nothing. One in a couple of
@@ -152,6 +160,7 @@ pub fn walk(
         if s.index() != stream_index {
             continue;
         }
+        video_bytes += p.size() as u64;
         let Some(pts) = p.pts() else { continue };
         let reference =
             p.data().map(|d| bitstream::is_reference(d, &codec, framing, vc1)).unwrap_or(true);
@@ -184,12 +193,77 @@ pub fn walk(
         .fold(f64::NEG_INFINITY, f64::max)
         .into_finite()
         .map(|t| t + video.frame_duration());
+    // Over the pictures' own span, not the container's: a recording whose
+    // sound runs past its last picture would otherwise read as thinner than
+    // it is. A span of nothing gives no rate at all rather than infinity.
+    let bit_rate = end
+        .filter(|span| *span > 0.0)
+        .map(|span| video_bytes as f64 * 8.0 / span)
+        .filter(|r| r.is_finite() && *r > 0.0);
     Ok(Index {
         points: points_from(&packets),
         leading_known: true,
         pulldown: Some(pulldown),
+        bit_rate,
         end,
     })
+}
+
+/// Take the entry points from the index a Blu-ray keeps beside the stream.
+///
+/// **The pass over the packets, already made and written down.** A disc
+/// records where every picture a player may start at is, in `CLIPINF`, and
+/// reading that is a hundred kilobytes against the tens of gigabytes the walk
+/// reads to arrive at the same list. On the UHD disc measured here, opening a
+/// two-and-a-half-hour title went from 8 minutes 45 seconds to under a
+/// second.
+///
+/// Like every index that did not read the pictures, it cannot say whether a
+/// GOP is open or whether the leading pictures hanging off one may be thrown
+/// away, so `leading_known` is false and [`refine_leading`] measures the
+/// handful of points a cut actually uses. It cannot say what the pictures
+/// weigh either; a re-encode falls back on the frame size. See
+/// [`crate::VideoInfo::bit_rate`].
+///
+/// Falls back to nothing rather than to a guess: a source that is not a clip
+/// on a disc, or a disc whose map does not read, returns an error and the
+/// caller walks the packets as before.
+pub struct DiscIndex;
+
+impl IndexSource for DiscIndex {
+    fn name(&self) -> &'static str {
+        "disc index"
+    }
+
+    fn build(&self, input: IndexInput) -> Result<Index> {
+        let IndexInput { path, video, start_time, .. } = input;
+        let held = crate::disc::clip_entry_points(path)
+            .ok_or_else(|| anyhow!("no entry-point map beside this recording"))?;
+        // The map counts on the stream's own clock, the same one the demuxer
+        // reports, so a point is rebased exactly as a packet's timestamp is.
+        let points: Vec<AccessPoint> = held
+            .into_iter()
+            .map(|(t, pos)| {
+                let t = t - start_time;
+                AccessPoint {
+                    time: t,
+                    lead_start: t,
+                    lead_indices: Vec::new(),
+                    droppable: true,
+                    pos: pos as i64,
+                }
+            })
+            .filter(|p| p.time >= -1.0)
+            .collect();
+        if points.is_empty() {
+            return Err(anyhow!("the disc's entry-point map is empty for this recording"));
+        }
+        // The last picture is not in the map -- the map holds the ones a
+        // player may *start* at -- so the container's own length stands, and
+        // `end: None` is how that is said.
+        let _ = video;
+        Ok(Index { points, leading_known: false, pulldown: None, bit_rate: None, end: None })
+    }
 }
 
 /// Take the entry points from the container's own seek table.
@@ -231,7 +305,7 @@ impl IndexSource for ContainerIndex {
             return Err(anyhow!("the container has no seek table for this stream"));
         }
         points.sort_by(|a, b| a.time.partial_cmp(&b.time).unwrap_or(std::cmp::Ordering::Equal));
-        Ok(Index { points, leading_known: false, pulldown: None, end: None })
+        Ok(Index { points, leading_known: false, pulldown: None, bit_rate: None, end: None })
     }
 }
 
@@ -345,20 +419,46 @@ fn points_from(packets: &[PacketView]) -> Vec<AccessPoint> {
 
 /// Measure the leading pictures of the access points a cut will actually use.
 ///
-/// Only the entry points that fall inside the requested ranges matter, so an
-/// index that could not answer for itself costs a short read per range rather
-/// than a pass over the file.
+/// **Only the ones a boundary can land on.** A cut copies from one entry
+/// point to another and re-encodes the fringes; every point in between is
+/// carried through untouched, and nothing is ever asked about it. So what
+/// needs measuring is the run of points around each end of each range -- the
+/// planner walks forward from the start until it finds one it can open a copy
+/// on, and back from the end likewise, and `SKIRT` entry points is far more
+/// than that walk has ever needed.
+///
+/// `url` is what a demuxer is given rather than what the recording is called:
+/// a clip inside an image is a byte range of the image, and the name it goes
+/// by opens nothing. See [`crate::input::Input::url`].
+///
+/// It used to be every point inside the range, which cost a seek and a short
+/// read apiece. That was invisible while an index came from a walk over the
+/// packets, since a walk answers for itself and this never ran. Handed the
+/// sixteen thousand entry points a Blu-ray records for a two-and-a-half-hour
+/// title, it took ten minutes to do what the walk it replaced took nine to
+/// do -- which is to say the disc's own index bought nothing at all.
 pub fn refine_leading(
-    path: &str,
+    url: &str,
     video: &VideoInfo,
     start_time: f64,
     points: &mut [AccessPoint],
     ranges: &[(f64, f64)],
 ) -> Result<()> {
-    let mut ictx = crate::input::demux(&path)?;
+    /// How many entry points either side of a boundary are measured.
+    const SKIRT: usize = 24;
+    let mut ictx = crate::input::demux(url)?;
+    // How far `SKIRT` points reaches in seconds, so the test below can stay a
+    // comparison of times: the points are sorted by time and a boundary can
+    // fall between two of them.
+    let gaps: Vec<f64> = points.windows(2).map(|w| w[1].time - w[0].time).collect();
+    let mean_gop =
+        if gaps.is_empty() { 1.0 } else { gaps.iter().sum::<f64>() / gaps.len() as f64 };
+    let skirt = (mean_gop * SKIRT as f64).clamp(2.0, 60.0);
     for (t_in, t_out) in ranges {
         for slot in points.iter_mut() {
-            if slot.time < *t_in - 1.0 || slot.time > *t_out + 1.0 {
+            let near_start = (slot.time - *t_in).abs() <= skirt;
+            let near_end = (slot.time - *t_out).abs() <= skirt;
+            if !near_start && !near_end {
                 continue;
             }
             let window = window_at(&mut ictx, video, start_time, slot.time)?;

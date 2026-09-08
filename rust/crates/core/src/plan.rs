@@ -289,6 +289,7 @@ mod tests {
             framing: NalFraming::AnnexB,
             pulldown: false,
             field_order: 2,
+            bit_rate: None,
             vc1: None,
         }
     }

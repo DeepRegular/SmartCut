@@ -16,9 +16,37 @@ fn parse_time(s: &str) -> Result<f64> {
     Ok(total)
 }
 
+/// A range, checked for being one.
+///
+/// A start at or after the end is not a short range, it is a mistake -- and
+/// one that used to be carried all the way through to a nought-byte file
+/// reported as written, because nothing between here and the muxer had
+/// anything to say about a range that selects nothing.
 fn parse_range(s: &str) -> Result<(f64, f64)> {
     let (a, b) = s.split_once('-').with_context(|| format!("bad range {s:?}, want START-END"))?;
-    Ok((parse_time(a)?, parse_time(b)?))
+    let (start, end) = (parse_time(a)?, parse_time(b)?);
+    if start.is_nan() || end.is_nan() || end <= start {
+        bail!("range {s:?}: {} does not come before {}", fmt_hms(start), fmt_hms(end));
+    }
+    Ok((start, end))
+}
+
+/// Sort the kept ranges and join any that touch or overlap.
+///
+/// Two ranges that overlap describe one stretch of the recording, and asking
+/// for both wrote the shared part twice -- once per range, spliced to itself.
+/// `--cut` has always been normalised, by [`complement`] having to work out
+/// what is left; this is the same courtesy for the ranges given directly.
+fn merge_ranges(mut keeps: Vec<(f64, f64)>) -> Vec<(f64, f64)> {
+    keeps.sort_by(|x, y| x.0.partial_cmp(&y.0).unwrap_or(std::cmp::Ordering::Equal));
+    let mut out: Vec<(f64, f64)> = Vec::with_capacity(keeps.len());
+    for (start, end) in keeps {
+        match out.last_mut() {
+            Some(last) if start <= last.1 => last.1 = last.1.max(end),
+            _ => out.push((start, end)),
+        }
+    }
+    out
 }
 
 /// Keep-ranges are the complement of the cut-ranges over the whole file.
@@ -119,7 +147,7 @@ fn main() -> Result<()> {
     let mut allow_open_gop = true;
     let mut output: Option<String> = None;
     let mut analyze = false;
-    let mut index_kind = "scan".to_string();
+    let mut index_kind = "auto".to_string();
     let mut seek_index: Option<String> = None;
     let mut preview_at: Option<f64> = None;
     let mut make_proxy = false;
@@ -278,7 +306,7 @@ fn main() -> Result<()> {
             }
             "--index" => {
                 i += 1;
-                index_kind = args.get(i).context("--index needs scan|container")?.clone();
+                index_kind = args.get(i).context("--index needs auto|disc|scan|container")?.clone();
             }
             "--seek-index" => {
                 i += 1;
@@ -449,11 +477,17 @@ fn main() -> Result<()> {
         bail!("use --keep or --cut, not both");
     }
 
+    // `auto` asks whoever already knows before reading anything: the disc's
+    // own entry-point map, then the container's seek table, and the walk over
+    // the packets last. Which one answered is printed with the access points,
+    // so a run that took a second instead of nine minutes says why.
     let index_source: Box<dyn index::IndexSource> = match index_kind.as_str() {
+        "auto" | "disc" => Box::new(index::DiscIndex),
         "scan" => Box::new(index::PacketScan),
         "container" => Box::new(index::ContainerIndex),
-        other => bail!("unknown --index {other}; want scan or container"),
+        other => bail!("unknown --index {other}; want auto, disc, scan or container"),
     };
+    let fall_back_to_the_walk = index_kind == "auto";
     // A seek index written by an earlier run stands in for the walk over the
     // packets. Reading it back is the whole point: it is the same answer, and
     // it did not cost a pass over the recording to get.
@@ -469,7 +503,14 @@ fn main() -> Result<()> {
     } else if let Some(ix) = &held {
         smartcut_core::scan_with(&input, ix)?
     } else {
-        smartcut_core::scan_with(&input, index_source.as_ref())?
+        match smartcut_core::scan_with(&input, index_source.as_ref()) {
+            Ok(src) => src,
+            Err(_) if fall_back_to_the_walk => {
+                smartcut_core::scan_with(&input, &index::ContainerIndex)
+                    .or_else(|_| smartcut_core::scan_with(&input, &index::PacketScan))?
+            }
+            Err(e) => return Err(e),
+        }
     };
     // Written straight away, so that a run which never builds a thumbnail
     // track still leaves the expensive half behind. The `--scenes` path
@@ -520,32 +561,48 @@ fn main() -> Result<()> {
             ""
         };
         let lang = a.language.as_deref().map(|l| format!("  {l}")).unwrap_or_default();
+        // The PID only where there is one. A recording out of an MP4 has a
+        // track number in that field and calling it a PID would name it
+        // something it is not; the stream index names it either way, and is
+        // what `--drop-stream` takes.
+        let pid = if src.on_a_ts { format!(" pid 0x{:04x}", a.pid) } else { String::new() };
         println!(
-            "audio{}: {} {}Hz {}ch{lang}{}{main}   [stream {} pid 0x{:04x}]",
+            "audio{}: {} {}Hz {}ch{lang}{}{main}   [stream {}{pid}]",
             if src.audios.len() > 1 { format!(" {}", n + 1) } else { "  ".to_string() },
             a.codec,
             a.sample_rate,
             a.channels,
             if n == 0 { form.as_str() } else { "" },
             a.stream_index,
-            a.pid,
         );
     }
     for c in &src.captions {
         let lang = c.language.as_deref().map(|l| format!(" {l}")).unwrap_or_default();
-        println!("caption:{lang} ARIB STD-B24   [stream {} pid 0x{:04x}]", c.stream_index, c.pid);
+        let pid = if src.on_a_ts { format!(" pid 0x{:04x}", c.pid) } else { String::new() };
+        println!("caption:{lang} ARIB STD-B24   [stream {}{pid}]", c.stream_index);
     }
     // Said out loud rather than dropped in silence: these are streams a cut
     // has no way to carry. See `smartcut_core::DroppedStream`.
     for d in &src.dropped {
-        println!("        not carried: {} on pid 0x{:04x}", d.describe(), d.pid);
+        println!(
+            "        not carried: {} on {}",
+            d.describe(),
+            smartcut_core::track_name(src.on_a_ts, d.pid, d.stream_index)
+        );
     }
 
     let open = src.points.iter().filter(|p| p.open_gop()).count();
     let droppable = src.points.iter().filter(|p| p.open_gop() && p.droppable).count();
     let gaps: Vec<f64> = src.points.windows(2).map(|w| w[1].time - w[0].time).collect();
     let mean_gop = if gaps.is_empty() { 0.0 } else { gaps.iter().sum::<f64>() / gaps.len() as f64 };
-    let note = if open == 0 {
+    // An index that did not read the pictures cannot say which GOPs are open,
+    // and the points it hands over say "closed" because that is the value a
+    // field nobody filled in holds. Only the ones a boundary lands on are
+    // measured afterwards -- see `index::refine_leading` -- so "all closed"
+    // here would be a claim about a stream nothing has looked at.
+    let note = if !src.leading_known && open == 0 {
+        "open GOPs measured only where the cut lands".to_string()
+    } else if open == 0 {
         "all closed".to_string()
     } else if droppable == open {
         format!("{open} open (leading pictures, droppable)")
@@ -787,16 +844,29 @@ fn main() -> Result<()> {
     let ranges = if !cuts.is_empty() {
         complement(&mut cuts, src.duration)
     } else if !keeps.is_empty() {
-        keeps
+        merge_ranges(keeps)
     } else {
         vec![(0.0, src.duration)]
     };
+    // A range that starts after the last picture selects nothing at all.
+    // Said here, where the recording's length is finally known, rather than
+    // left to the encoder to discover: that happened after the output file
+    // had been created and a picture pushed through, and came out as
+    // "no pictures decoded", which describes the symptom and not the cause.
+    if let Some(&(start, end)) = ranges.iter().find(|(start, _)| *start >= src.duration) {
+        bail!(
+            "range {}-{} begins after the recording ends at {}",
+            fmt_hms(start),
+            fmt_hms(end),
+            fmt_hms(src.duration)
+        );
+    }
 
     // A precomputed index knows where the entry points are but not what
     // hangs off them, so measure that for the ones this cut will use.
     if !src.leading_known {
         index::refine_leading(
-            &src.path,
+            &src.input.url,
             &src.video,
             src.start_time,
             &mut src.points,
@@ -834,8 +904,11 @@ fn main() -> Result<()> {
             );
         }
     }
-    let copied: f64 = plans.iter().map(|p| p.copied()).sum();
-    let enc: f64 = plans.iter().map(|p| p.reencoded()).sum();
+    // Summed over segment ends against segment starts, so a plan that copies
+    // nothing lands a hair below zero and used to print as `-0.000s (-0.0%)`.
+    // Nought is nought.
+    let copied: f64 = plans.iter().map(|p| p.copied()).sum::<f64>().max(0.0);
+    let enc: f64 = plans.iter().map(|p| p.reencoded()).sum::<f64>().max(0.0);
     if total > 0.0 {
         println!(
             "        copied {copied:.3}s ({:.1}%), re-encoded {enc:.3}s ({:.1}%)",
@@ -1027,4 +1100,43 @@ fn main() -> Result<()> {
     }
     println!("wrote {out}");
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_range_has_to_be_one() {
+        assert_eq!(parse_range("3-9").unwrap(), (3.0, 9.0));
+        assert_eq!(parse_range("1:30-2:00").unwrap(), (90.0, 120.0));
+        // A start at or after the end selects nothing, which is not a cut.
+        assert!(parse_range("9-3").is_err());
+        assert!(parse_range("2-2").is_err());
+        assert!(parse_range("3").is_err());
+    }
+
+    #[test]
+    fn overlapping_ranges_become_one() {
+        assert_eq!(merge_ranges(vec![(1.0, 3.0), (2.0, 4.0)]), [(1.0, 4.0)]);
+        // Touching counts as overlapping: two ranges that meet describe one
+        // stretch, and splicing it to itself is not what was asked for.
+        assert_eq!(merge_ranges(vec![(0.0, 5.0), (5.0, 9.0)]), [(0.0, 9.0)]);
+        // One inside another leaves the outer one.
+        assert_eq!(merge_ranges(vec![(0.0, 9.0), (3.0, 4.0)]), [(0.0, 9.0)]);
+        // And ranges that do not meet are left alone, in order.
+        assert_eq!(
+            merge_ranges(vec![(8.0, 9.0), (1.0, 2.0)]),
+            [(1.0, 2.0), (8.0, 9.0)]
+        );
+    }
+
+    #[test]
+    fn cut_ranges_are_the_complement_of_the_kept_ones() {
+        assert_eq!(complement(&mut [(3.0, 5.0)], 10.0), [(0.0, 3.0), (5.0, 10.0)]);
+        // A cut running to the end leaves only what is in front of it.
+        assert_eq!(complement(&mut [(8.0, 20.0)], 10.0), [(0.0, 8.0)]);
+        // Overlapping cuts are one cut.
+        assert_eq!(complement(&mut [(3.0, 6.0), (5.0, 8.0)], 10.0), [(0.0, 3.0), (8.0, 10.0)]);
+    }
 }

@@ -152,6 +152,13 @@ pressed season set holds twelve episodes among fifty logos, warnings and menu
 loops, and the disc calls all sixty-two of them `000NN`. The ones likely to be
 programmes are ticked for you.
 
+**Opening one is instant.** A disc records where every picture a player may
+start at is, in its own `CLIPINF` entry-point map, so SmartCut reads that
+instead of walking the recording: a UHD title of 81 GB and 2 hours 34 minutes
+went from 8 minutes 45 seconds to under a second. The languages come off the
+same index, so cutting a bilingual disc leaves an output that still says which
+track is which.
+
 Cuts are written next to the disc under the programme's name, in a folder of
 their own where there is more than one of them. The chapters the
 disc set are already on the timeline as keyframes, and on a Japanese recording
@@ -201,7 +208,10 @@ programmes, optionally wrapped in a UDF 2.50 or 2.60 image. By default the outpu
 input.
 
 **Video:** H.264, HEVC, MPEG-2, MPEG-4 Part 2, VC-1. Interlaced material stays
-interlaced, and 2:3 pulldown is handled on a field-level timeline. VP9 and AV1 are
+interlaced, and 2:3 pulldown is handled on a field-level timeline. **4K HDR10**
+cuts too: the pictures rewritten at a boundary carry the recording's own
+mastering metadata (PQ or HLG, primaries, luminance range, content light
+level), so the tone mapping does not change partway through. VP9 and AV1 are
 not supported: they have no elementary-stream form that can be concatenated, so
 they would need a different design.
 

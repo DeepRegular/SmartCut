@@ -112,18 +112,31 @@ def clpi(magic, streams):
 # there: a shape and a rate for video, a channel arrangement, a rate and a
 # language for sound, a language alone for graphics.
 # The BDAV list is the one read off a disc TMSR6 wrote, with a second sound
-# track added: a recorder cuts the language field short, and its private
-# stream -- the captions -- says nothing about itself at all.
+# track added and with a language on each. The recorder's own disc leaves
+# those two bytes short -- no room in them for a language, which is what
+# `clpi_short` in `disc.rs` is about -- but a cut now carries what the index
+# says, so a fixture silent here would have the two dialects write different
+# files and the comparison below would be measuring the fixture rather than
+# the reader. Its private stream -- the captions -- still says nothing about
+# itself at all.
 BROADCAST = [
-    (0x1100, 0x02, bytes([0x44, 0x30])),              # MPEG-2 1080i 29.97
-    (0x1101, 0x0F, bytes([0x31, 0x00])),              # AAC stereo 48kHz
-    (0x1103, 0x0F, bytes([0x31, 0x00])),              # the dub
+    (0x1011, 0x02, bytes([0x44, 0x30])),              # MPEG-2 1080i 29.97
+    (0x1100, 0x0F, bytes([0x31, ord("j"), ord("p"), ord("n")])),  # AAC stereo
+    (0x1101, 0x0F, bytes([0x31, ord("e"), ord("n"), ord("g")])),  # the dub
     (0x1102, 0x06, b""),                              # the caption stream
 ]
+# Both lists name the PIDs the streams underneath them are really on -- which
+# for a stream remuxed into Blu-ray framing is 0x1011 and 0x1100, whatever it
+# was on the air. The codings and shapes beside them are deliberately not the
+# ones in the stream: what a clip index says a disc holds and what a demuxer
+# finds in it are separate answers, and these fixtures are where that shows.
+# The PIDs are the exception, because a language is looked up by PID and put
+# on the track it belongs to; an index naming a stream that is not there
+# would be testing nothing.
 PRESSED = [
     (0x1011, 0x1B, bytes([0x61, 0x20, 0x00])),        # H.264 1080p 23.976
-    (0x1100, 0x83, bytes([0x61, ord("e"), ord("n"), ord("g")])),  # TrueHD 5.1
-    (0x1101, 0x83, bytes([0x31, ord("j"), ord("p"), ord("n")])),  # TrueHD 2.0
+    (0x1100, 0x83, bytes([0x61, ord("j"), ord("p"), ord("n")])),  # TrueHD 5.1
+    (0x1101, 0x83, bytes([0x31, ord("e"), ord("n"), ord("g")])),  # TrueHD 2.0
     (0x1200, 0x90, bytes([ord("e"), ord("n"), ord("g")])),        # subtitles
     (0x1400, 0x91, bytes([ord("e"), ord("n"), ord("g")])),        # the menu
 ]

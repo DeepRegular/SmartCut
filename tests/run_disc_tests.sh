@@ -118,14 +118,17 @@ same "BDMV: what is offered already ticked" "1" "$(grep -cP '^\*' <<<"$mv_iso")"
 same "BDAV: a disc of recordings is all offered" "0" "$(grep -cP '^\*' <<<"$av_iso")"
 
 # --- what a clip carries -------------------------------------------------
-# A recorder cuts the language field short, so there is none to show -- and
-# none is shown, rather than three bytes of whatever followed.
-has "BDAV: the sound is listed by PID" "0x1101  AAC stereo 48kHz" "$av_iso"
-has "BDAV: the second sound track too" "0x1103  AAC stereo 48kHz" "$av_iso"
+# Each track by the PID it sits on, in whatever the index says it is -- which
+# is not what the stream underneath is, and is not meant to be. A recorder
+# that cut the language field short would show none rather than three bytes of
+# whatever followed; that case is `disc::tests::clpi_short`, because these
+# fixtures name a language on every track (see `disc_index.py`).
+has "BDAV: the sound is listed by PID" "0x1100  AAC stereo 48kHz jpn" "$av_iso"
+has "BDAV: the second sound track too" "0x1101  AAC stereo 48kHz eng" "$av_iso"
 has "BDAV: the captions are listed as what the index says" \
   "0x1102  stream type 0x06" "$av_iso"
-has "BDMV: the sound is listed by PID" "0x1100  TrueHD multi 48kHz eng" "$mv_iso"
-has "BDMV: and the dub"                "0x1101  TrueHD stereo 48kHz jpn" "$mv_iso"
+has "BDMV: the sound is listed by PID" "0x1100  TrueHD multi 48kHz jpn" "$mv_iso"
+has "BDMV: and the dub"                "0x1101  TrueHD stereo 48kHz eng" "$mv_iso"
 has "BDMV: the subtitles are named as unusable" \
   "0x1200  PGS eng -- a cut cannot carry this" "$mv_iso"
 
@@ -161,6 +164,19 @@ match "BDMV: a cut from inside the image is the same" \
 # is the same bytes whichever half of the specification described it.
 match "the dialect the disc was written in changes nothing" \
   "$OUT/mv-iso.ts" "$OUT/av-iso.ts" "$OUT/mv-iso.log"
+
+# What language a track is in is written beside a Blu-ray's streams and never
+# in them, so a cut that did not go and read the index came out with two sound
+# tracks nobody could tell apart. Asked of the written file rather than of the
+# log: the point is that it reaches the map of the output, which is where a
+# player -- and the index of any disc written from it -- goes looking.
+langs() { # <cut>
+  ffprobe -v error -select_streams a -show_entries stream_tags=language \
+    -of default=nw=1:nk=1 "$1" 2>/dev/null | paste -sd, -
+}
+for who in av mv; do
+  same "$who: the disc's language reaches the cut" "jpn" "$(langs "$OUT/$who-iso.ts")"
+done
 
 # A chapter is a time in the recording, and the recording's clock is not the
 # playlist's: the disc counts from zero and the stream does not. The marks

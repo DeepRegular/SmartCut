@@ -140,6 +140,31 @@ through untouched — see
 So smart rendering reaches **AAC** and **Blu-ray LPCM**. AC-3, E-AC-3 and MP2 are copied
 because they cannot be lined up; DTS and TrueHD are copied on purpose.
 
+### A lossless track has to be joined at a sync
+
+A copied track is bytes from the recording, and for most codecs a frame is
+readable on its own. **TrueHD's is not.** It carries its format in a *major
+sync* that recurs through the stream — about every 106 ms on the Blu-ray
+measured here — and everything between two of them is read against the last
+one seen.
+
+That matters at every seam. At the *start* of a file a decoder simply waits
+for the next sync, which is what a decoder joining a broadcast does anyway. At
+a seam it is already reading, and the frame arriving is from another part of
+the recording entirely: the restart header stops matching, the matrix count
+runs past what the format allows, and what comes out is noise or nothing. On a
+two-track Blu-ray cut in two places, each seam was worth **79 and 58
+complaints from the decoder, and 76 ms of sound that never arrived**.
+
+So a track that has to be joined at a sync waits for one at **every kept
+range**, not only at the file's start — `AudioTrack::joins_at_sync` in
+[`cut.rs`](../../rust/crates/core/src/cut.rs). The frames dropped while it
+waits are up to one sync interval, and the time they occupied is counted as
+spent, so what follows still lands where the recording had it and the muxer is
+never handed a timestamp behind the one before it. Silence at a seam is worth
+having in exchange for a decoder that stays in step; LPCM, which has no such
+state, is unaffected and measures to under a millisecond across the same cut.
+
 ## Writing MPEG-2 AAC (`--aac`)
 
 A Japanese broadcast carries **MPEG-2 AAC**: the ADTS `ID` bit is 1, profile LC,

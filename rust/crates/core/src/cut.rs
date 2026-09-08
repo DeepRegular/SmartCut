@@ -17,7 +17,8 @@ use ffmpeg_next as ff;
 
 use crate::adts::AacVersion;
 use crate::bitstream::{
-    annexb_to_length, is_annexb, parameter_sets, prepend_parameter_sets, NalFraming,
+    annexb_to_length, is_annexb, length_to_annexb, parameter_sets, prepend_parameter_sets,
+    prepend_parameter_sets_annexb, NalFraming,
 };
 use crate::{RangePlan, Segment, SegmentKind, Source};
 
@@ -30,6 +31,23 @@ use crate::{RangePlan, Segment, SegmentKind, Source};
 /// sets travel with its pictures, and the source's are restated in front of
 /// every copied keyframe to re-activate them after a splice.
 struct Reframe {
+    nal_length: usize,
+    sets: Vec<Vec<u8>>,
+}
+
+/// The other direction: a recording out of an MP4 on its way into a
+/// transport stream.
+///
+/// **Both containers hold the same pictures and disagree about how a NAL
+/// begins.** An MP4 puts a length in front of each and keeps the parameter
+/// sets in the `hvcC`; a transport stream separates them with start codes and
+/// expects the sets to arrive in the stream. Copied pictures went across
+/// untouched, so a cut of an MP4 written as `.ts` came out with four bytes of
+/// length where the decoder wanted `00 00 00 01`: everything but the
+/// re-encoded fringes was unreadable, which on a ten second cut was 599
+/// pictures out of 635. The re-encoded ones are already start-coded -- that
+/// is what the encoder writes -- so only the copies pass through here.
+struct Unframe {
     nal_length: usize,
     sets: Vec<Vec<u8>>,
 }
@@ -295,16 +313,25 @@ struct SegmentCtx<'a> {
     /// First display index this segment contributes.
     display_base: i64,
     reframe: Option<&'a Reframe>,
+    /// Set where the recording's NALs carry lengths and the container being
+    /// written wants start codes. See [`Unframe`].
+    unframe: Option<&'a Unframe>,
     audio: &'a [AudioCtx],
     captions: &'a [CaptionCtx],
     /// Whether this is the opening segment of its keep-range, which is where
     /// the range's audio boundary decision is made.
     first: bool,
+    /// What the recording says about how it was mastered, read once for the
+    /// whole cut. Empty for everything that is not HDR. See [`mastering_of`].
+    mastering: &'a Mastering,
 }
 
 /// Everything the writer needs that is shared across segments.
 struct Writer {
     octx: ff::format::context::Output,
+    /// Whether a track's `pid` is really a PID, for the messages that name
+    /// one. See [`crate::Source::on_a_ts`].
+    on_a_ts: bool,
     /// Ticks per *field*. The output timeline is measured in fields, not
     /// frames, because 2:3 pulldown shows some pictures for three fields and
     /// others for two -- a frame grid cannot express that, a field grid can,
@@ -371,6 +398,10 @@ struct AudioTrack {
     /// Set while the track is still waiting for a frame it may open on. See
     /// [`opens_a_truehd_track`]; cleared as soon as one is written.
     need_sync: bool,
+    /// Whether this is a track that has to be joined at a sync at all. Kept
+    /// beside `need_sync` because the wait comes round again at every kept
+    /// range, and by then the flag that started it has been cleared.
+    joins_at_sync: bool,
 }
 
 /// One caption track being written.
@@ -463,7 +494,16 @@ impl Writer {
         packet.set_dts(Some(pts));
         packet.set_duration((out_dur / tb).round() as i64);
         packet.set_position(-1);
-        packet.write_interleaved(&mut self.octx)?;
+        // The muxer refuses a timestamp that does not follow the last one it
+        // was given, and says only "Invalid argument" about it. Which track
+        // and which instant is the whole of what makes that answerable.
+        let named = {
+            let t = &self.audio[track].info;
+            crate::track_name(self.on_a_ts, t.pid, t.stream_index)
+        };
+        packet.write_interleaved(&mut self.octx).with_context(|| {
+            format!("writing sound on {named} at {out_start:.4}s (pts {pts})")
+        })?;
         let t = &mut self.audio[track];
         t.written += 1;
         t.end = Some(t.end.unwrap_or(out_start.max(0.0)) + out_dur);
@@ -568,6 +608,14 @@ fn take_audio(
     // in place of the recording's own.
     if writer.audio[audio.track].need_sync {
         if !opens_a_truehd_track(packet.data()) {
+            // The frame is not written, but the instant it occupied is still
+            // spent: what follows belongs where the recording had it, not a
+            // frame earlier. Counting it keeps `end` on the output clock, so
+            // the next range measures its drift against where the sound
+            // actually reaches -- and, in a transport stream, so the muxer is
+            // never handed a timestamp behind the one before it.
+            let track = &mut writer.audio[audio.track];
+            track.end = Some(track.end.unwrap_or((t + audio.offset).max(0.0)) + dur);
             return Ok(past_end);
         }
         writer.audio[audio.track].need_sync = false;
@@ -591,18 +639,28 @@ fn take_audio(
 /// Whether a TrueHD packet is one a track may open on.
 ///
 /// TrueHD carries its format in a *major sync* that recurs through the
-/// stream -- every 16 access units in the streams measured here, and no
-/// rarer than the format requires. Everything between two of them is read
+/// stream -- every 16 access units in the first streams measured here, and
+/// about every 106 ms on the Blu-ray this was measured against later, which
+/// is the figure to plan around. Everything between two of them is read
 /// against the last one, so a track opening anywhere else is a track whose
 /// first frames say nothing about themselves.
 ///
-/// A transport stream does not care: it declares the track in its programme
-/// map and a decoder joining mid-stream waits for the next sync, which is
-/// what a decoder joining a broadcast does anyway. An MP4 does care -- it
-/// builds the track's `dmlp` box out of the first packet it is handed, and
-/// refuses the file outright when that packet has no sync in it. So a cut
-/// into an MP4 opens its TrueHD on the first sync inside the range: up to a
-/// sync interval later than the pictures, and the alternative is no file.
+/// **This is why every kept range waits, not only the first.** A transport
+/// stream is forgiving about the file's own opening -- it declares the track
+/// in its programme map, and a decoder joining mid-stream waits for the next
+/// sync, which is what a decoder joining a broadcast does anyway. A seam is
+/// not that. There the decoder is already reading, and a frame from another
+/// part of the recording is read against the header it happens to be holding:
+/// the restart header stops matching, the matrix count runs past what the
+/// format allows, and what comes out is noise or nothing. Measured on a
+/// two-track Blu-ray, one seam was worth 79 complaints from the decoder and
+/// 76 ms of sound that never arrived. An MP4 cares about the opening as well
+/// -- it builds the track's `dmlp` box out of the first packet it is handed,
+/// and refuses the file outright when that packet has no sync in it.
+///
+/// The price either way is up to one sync interval of silence at each seam,
+/// which is the smallest price available while the cut lands where the
+/// pictures say. Landing it on a sync instead is a question for the planner.
 fn opens_a_truehd_track(data: Option<&[u8]>) -> bool {
     data.is_some_and(|d| d.len() >= 8 && d[4..8] == [0xF8, 0x72, 0x6F, 0xBA])
 }
@@ -929,12 +987,25 @@ fn copy_segment(
             .unwrap_or(2);
         span.fields = span.fields.max(display - display_base + fields);
         span.pictures += 1;
-        let packet = match reframe {
-            Some(r) if packet.is_key() => {
+        let packet = match (reframe, ctx.unframe) {
+            (Some(r), _) if packet.is_key() => {
                 let data = packet.data().unwrap_or(&[]);
                 let mut out =
                     ff::Packet::copy(&prepend_parameter_sets(data, &r.sets, r.nal_length));
                 out.set_flags(ff::packet::Flags::KEY);
+                out
+            }
+            (_, Some(u)) => {
+                let annexb = length_to_annexb(packet.data().unwrap_or(&[]), u.nal_length);
+                let data = if packet.is_key() {
+                    prepend_parameter_sets_annexb(&annexb, &u.sets)
+                } else {
+                    annexb
+                };
+                let mut out = ff::Packet::copy(&data);
+                if packet.is_key() {
+                    out.set_flags(ff::packet::Flags::KEY);
+                }
                 out
             }
             _ => packet,
@@ -978,7 +1049,12 @@ enum Pictures {
 pub const VC1_DEFAULT_QUANT: u8 = 4;
 
 impl Pictures {
-    fn open(src: &Source, params: &ff::codec::Parameters, opts: &CutOptions) -> Result<Self> {
+    fn open(
+        src: &Source,
+        params: &ff::codec::Parameters,
+        opts: &CutOptions,
+        mastering: &Mastering,
+    ) -> Result<Self> {
         if matches!(src.video.codec.as_str(), "vc1" | "wmv3") {
             let shape = src.video.vc1.as_ref().ok_or_else(|| {
                 anyhow!(
@@ -994,7 +1070,7 @@ impl Pictures {
                     .map_err(|e| anyhow!("cannot write VC-1 for this recording: {e}"))?;
             return Ok(Pictures::Vc1(Box::new(encoder)));
         }
-        Ok(Pictures::Libav(Box::new(open_encoder(src, params, opts)?)))
+        Ok(Pictures::Libav(Box::new(open_encoder(src, params, opts, mastering)?)))
     }
 }
 
@@ -1043,11 +1119,82 @@ fn encode_vc1(
     Ok(packet)
 }
 
+/// What a recording says about the display it was mastered on, and about the
+/// brightest thing in it.
+///
+/// **HDR10 is two SEI messages, and they travel in the pictures.** Not in the
+/// container -- the files measured here have nothing at stream level -- so a
+/// stretch written by this program's encoder arrives without them while the
+/// copied pictures on either side still carry theirs. A player reads them to
+/// decide how to fit the picture to the screen in front of it, so what that
+/// costs is the tone mapping changing partway through: on a 20 second cut of
+/// a 4K HDR clip, the first 2.8 seconds were the re-encoded ones and the only
+/// ones with nothing to say.
+///
+/// Read by decoding one picture, which is what turns the SEI into something
+/// that can be handed to an encoder. Done once per cut, and only when there
+/// is a stretch to re-encode at all.
+type Mastering = Vec<(ff::ffi::AVFrameSideDataType, Vec<u8>)>;
+
+fn mastering_of(src: &Source) -> Mastering {
+    const WANTED: [ff::ffi::AVFrameSideDataType; 2] = [
+        ff::ffi::AVFrameSideDataType::AV_FRAME_DATA_MASTERING_DISPLAY_METADATA,
+        ff::ffi::AVFrameSideDataType::AV_FRAME_DATA_CONTENT_LIGHT_LEVEL,
+    ];
+    let mut out: Mastering = Vec::new();
+    let Ok((mut ictx, ist)) = open_input(&src.input.url) else { return out };
+    let Some(params) = ictx.stream(ist).map(|s| s.parameters()) else { return out };
+    // Nothing to look for outside HDR, and a picture not decoded is a picture
+    // not paid for. `bt2020-10` is Blu-ray's wide-gamut SDR and carries none
+    // of this; PQ and HLG are the two transfers that do.
+    let hdr = unsafe {
+        matches!(
+            (*params.as_ptr()).color_trc,
+            ff::ffi::AVColorTransferCharacteristic::AVCOL_TRC_SMPTE2084
+                | ff::ffi::AVColorTransferCharacteristic::AVCOL_TRC_ARIB_STD_B67
+        )
+    };
+    if !hdr {
+        return out;
+    }
+    let Ok(mut decoder) = ff::codec::context::Context::from_parameters(params)
+        .and_then(|c| c.decoder().video())
+    else {
+        return out;
+    };
+    let mut frame = ff::frame::Video::empty();
+    // However many pictures it takes to get one out, which for a stream that
+    // reorders is the reorder depth and for anything else is one. Bounded so
+    // a stream that never decodes does not turn this into a second pass.
+    for (stream, packet) in ictx.packets().take(64) {
+        if stream.index() != ist || decoder.send_packet(&packet).is_err() {
+            continue;
+        }
+        if decoder.receive_frame(&mut frame).is_err() {
+            continue;
+        }
+        unsafe {
+            let f = frame.as_ptr();
+            for i in 0..(*f).nb_side_data {
+                let sd = *(*f).side_data.add(i as usize);
+                if sd.is_null() || !WANTED.contains(&(*sd).type_) {
+                    continue;
+                }
+                let bytes = std::slice::from_raw_parts((*sd).data, (*sd).size).to_vec();
+                out.push(((*sd).type_, bytes));
+            }
+        }
+        break;
+    }
+    out
+}
+
 /// Build an encoder whose output splices onto the copied pictures.
 fn open_encoder(
     src: &Source,
     params: &ff::codec::Parameters,
     opts: &CutOptions,
+    mastering: &Mastering,
 ) -> Result<ff::encoder::video::Encoder> {
     let id = params.id();
     let codec = ff::encoder::find(id).ok_or_else(|| anyhow!("no encoder for {id:?}"))?;
@@ -1093,6 +1240,22 @@ fn open_encoder(
         // depend on anything outside itself.
         (*e).flags |= ff::ffi::AV_CODEC_FLAG_CLOSED_GOP as i32;
         (*e).gop_size = 600;
+        // What the recording says about its own mastering, handed over the
+        // way an encoder expects to be told: libx265 reads these and writes
+        // the SEI back, so the pictures spliced in describe themselves the
+        // same way the ones around them do. See [`mastering_of`].
+        for (kind, bytes) in mastering {
+            let sd = ff::ffi::av_frame_side_data_new(
+                &mut (*e).decoded_side_data,
+                &mut (*e).nb_decoded_side_data,
+                *kind,
+                bytes.len(),
+                0,
+            );
+            if !sd.is_null() && !(*sd).data.is_null() {
+                std::ptr::copy_nonoverlapping(bytes.as_ptr(), (*sd).data, bytes.len());
+            }
+        }
     }
     enc.set_bit_rate(opts.bit_rate.unwrap_or_else(|| default_bit_rate(src)));
 
@@ -1101,6 +1264,14 @@ fn open_encoder(
     // is live; a partial GOP is short enough that losing it costs nothing.
     if matches!(v.codec.as_str(), "mpeg2video" | "mpeg4") {
         eopts.set("sc_threshold", "1000000000");
+    }
+    // x265 writes its banner and its statistics to the terminal itself,
+    // rather than through libav's logging, so quietening libav does not
+    // quieten it -- forty-odd lines about an encoder the person running this
+    // never asked for. Told here instead, and told nothing when the logging
+    // was asked for, so the two stay in step. See [`crate::init`].
+    if codec.name() == "libx265" && std::env::var("SMARTCUT_FFMPEG_LOG").is_err() {
+        eopts.set("x265-params", "log-level=none");
     }
     enc.open_as_with(codec, eopts).map_err(|e| anyhow!("cannot open encoder: {e}"))
 }
@@ -1112,10 +1283,56 @@ fn frame_rate_parts(fps: f64) -> (i64, i64) {
     (r.numerator().max(1) as i64, r.denominator().max(1) as i64)
 }
 
+/// Bits per second for the pictures written across a splice.
+///
+/// **What the recording came in at, and a fifth again.** The pictures being
+/// replaced were coded by whatever encoder made the disc or the broadcast,
+/// with as long as it liked to spend; these are coded once, quickly, and at
+/// the same rate they would come out visibly softer than the copied pictures
+/// beside them. The headroom is what buys the splice back.
+///
+/// Falling back to the frame size is only for a source nobody counted -- an
+/// index taken from a container's seek table, or one held from before the
+/// count existed. It was what every re-encode used to get, and on this
+/// material it was wrong by a factor of five or six: a 27 Mbit/s Blu-ray was
+/// re-encoded at 4.5, and 70 Mbit/s of UHD at 15.9. Where the count is there,
+/// it is the answer.
 fn default_bit_rate(src: &Source) -> usize {
     let v = &src.video;
+    if let Some(measured) = v.bit_rate.filter(|r| r.is_finite() && *r > 0.0) {
+        return (measured * 1.2) as usize;
+    }
+    if let Some(rest) = pictures_less_the_sound(src) {
+        return (rest * 1.2) as usize;
+    }
     let px = v.width as f64 * v.height as f64 * v.frame_rate.max(1.0);
     (px * 0.08) as usize
+}
+
+/// What is left of the file's own bit rate once the sound is taken off it.
+///
+/// For an index that did not read the pictures -- a disc's entry-point map,
+/// a container's seek table -- there is no count of what they weigh, and the
+/// file is still the best witness there is: its bytes over its length, less
+/// the tracks whose rate is known. On a Blu-ray that is most of the
+/// difference, since uncompressed sound is the loudest thing in the file
+/// after the pictures.
+///
+/// `None` where the file's size or length is not known, or where the sound
+/// would account for nearly all of it -- an answer that says the pictures
+/// weigh nothing is not an answer.
+fn pictures_less_the_sound(src: &Source) -> Option<f64> {
+    if src.duration <= 0.0 {
+        return None;
+    }
+    let bytes = match &src.input.range {
+        Some(r) => r.len,
+        None => std::fs::metadata(&src.input.file).ok()?.len(),
+    };
+    let whole = bytes as f64 * 8.0 / src.duration;
+    let sound: f64 = src.audios.iter().filter_map(|a| a.bit_rate).map(|b| b as f64).sum();
+    let left = whole - sound;
+    (left > whole * 0.2).then_some(left)
 }
 
 /// Restate the source's field order on a decoded frame.
@@ -1195,7 +1412,7 @@ fn reencode_segment(
 
     let mut decoder =
         ff::codec::context::Context::from_parameters(params.clone())?.decoder().video()?;
-    let mut encoder = Pictures::open(src, &params, opts)?;
+    let mut encoder = Pictures::open(src, &params, opts, ctx.mastering)?;
 
     seek_to(&mut ictx, src, seg.seek_from)?;
 
@@ -1666,9 +1883,16 @@ fn plan_audio(
     info: &crate::AudioInfo,
     opts: &CutOptions,
     to_ts: bool,
+    on_a_ts: bool,
     many: bool,
 ) -> Result<AudioSetup> {
-    let named = if many { format!(" on PID 0x{:04x}", info.pid) } else { String::new() };
+    // Which track these notes are about, said the way the recording names its
+    // tracks. See [`crate::track_name`].
+    let named = if many {
+        format!(" on {}", crate::track_name(on_a_ts, info.pid, info.stream_index))
+    } else {
+        String::new()
+    };
     let mut probe = crate::input::demux(&path)?;
     // What the recording's own frames are, and how wide their samples come
     // out -- read off the probe that is opened here anyway.
@@ -2030,6 +2254,7 @@ fn graft_tables(
         was: video_pid as u16,
         faithful: true,
         declared: None,
+        language: None,
     }];
     for setup in setups {
         streams.push(crate::si::GraftStream {
@@ -2041,6 +2266,7 @@ fn graft_tables(
             // the description again.
             faithful: setup.downmix.is_none() && !setup.recoded,
             declared: setup.recoded.then(|| declared_as(setup.target)).flatten(),
+            language: setup.info.language.clone(),
         });
     }
     for c in captions {
@@ -2049,6 +2275,7 @@ fn graft_tables(
             was: c.pid as u16,
             faithful: true,
             declared: None,
+            language: c.language.clone(),
         });
     }
 
@@ -2159,7 +2386,7 @@ pub fn cut_with_progress(
     // parameters describe.
     let setups: Vec<AudioSetup> = audios
         .iter()
-        .map(|a| plan_audio(&src.input.url, a, opts, to_ts, audios.len() > 1))
+        .map(|a| plan_audio(&src.input.url, a, opts, to_ts, src.on_a_ts, audios.len() > 1))
         .collect::<Result<Vec<_>>>()?;
 
     // What the recording says about itself. Read here rather than after the
@@ -2264,6 +2491,16 @@ pub fn cut_with_progress(
             let sets = parameter_sets(&src.video.codec, &extradata);
             if sets.is_empty() { None } else { Some(Reframe { nal_length: n, sets }) }
         }
+        _ => None,
+    };
+    // And the reverse, for the copied pictures of an MP4 being written as a
+    // transport stream. The sets ride in front of every key picture, because
+    // the container this is going into has nowhere else to keep them.
+    let unframe = match (mp4ish, src.video.framing, src.video.codec.as_str()) {
+        (false, NalFraming::Length(n), "h264" | "hevc") => Some(Unframe {
+            nal_length: n,
+            sets: parameter_sets(&src.video.codec, &extradata),
+        }),
         _ => None,
     };
     {
@@ -2448,6 +2685,7 @@ pub fn cut_with_progress(
             patches,
             need_sync: mp4ish
                 && matches!(setup.target, ff::codec::Id::TRUEHD | ff::codec::Id::MLP),
+            joins_at_sync: matches!(setup.target, ff::codec::Id::TRUEHD | ff::codec::Id::MLP),
         })
         .collect();
     let caption_tracks: Vec<CaptionTrack> = captions
@@ -2464,6 +2702,7 @@ pub fn cut_with_progress(
 
     let mut writer = Writer {
         octx,
+        on_a_ts: src.on_a_ts,
         field_ticks: den,
         our_tb: ff::Rational::new(1, 2 * num as i32),
         out_tb,
@@ -2481,12 +2720,38 @@ pub fn cut_with_progress(
     };
 
     let fps = num as f64 / den as f64;
+    // Read once, and only where there is something to write: a cut that
+    // copies every picture never opens a decoder for this.
+    let mastering: Mastering = if plans
+        .iter()
+        .flat_map(|p| &p.segments)
+        .any(|s| s.kind == SegmentKind::Reencode)
+    {
+        mastering_of(src)
+    } else {
+        Vec::new()
+    };
     let mut display_base: i64 = 0;
     let mut pictures: i64 = 0;
     // Where each kept range began in the output, which is what the tables
     // grafted on afterwards are placed against.
     let mut range_starts: Vec<f64> = Vec::with_capacity(plans.len());
-    for plan in plans {
+    for (nth, plan) in plans.iter().enumerate() {
+        // Every range after the first drops a decoder that is already reading
+        // into a stream from somewhere else. A TrueHD frame is read against
+        // the last major sync seen, so one joined anywhere else is read
+        // against a header belonging to another part of the recording: the
+        // restart header no longer matches, the matrix count runs past what
+        // the format allows, and the frames come out as noise or are thrown
+        // away. So the track waits for a sync at every seam, exactly as it
+        // does when the file is opened. What that costs is up to a sync
+        // interval of sound -- 16 access units, about 13 ms, on the discs
+        // measured here.
+        if nth > 0 {
+            for track in writer.audio.iter_mut() {
+                track.need_sync = track.joins_at_sync;
+            }
+        }
         // Anchor this range's audio to the output time its video starts at.
         // display_base counts fields, so two per frame.
         let target_start = display_base as f64 / (2.0 * fps);
@@ -2545,9 +2810,11 @@ pub fn cut_with_progress(
             let ctx = SegmentCtx {
                 display_base,
                 reframe: reframe.as_ref(),
+                unframe: unframe.as_ref(),
                 audio: &audio_ctx,
                 captions: &caption_ctx,
                 first: first_segment,
+                mastering: &mastering,
             };
             // Each segment reports the span it actually occupied, so the
             // next one starts exactly where it ended -- no reliance on the

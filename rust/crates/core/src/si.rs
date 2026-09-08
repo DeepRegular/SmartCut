@@ -1156,6 +1156,29 @@ pub struct GraftStream {
     /// Set where the codec itself changed, which the recording's own entry
     /// cannot be trimmed into describing. See [`Declared`].
     pub declared: Option<Declared>,
+    /// What language the track is in, when something outside the stream knew.
+    ///
+    /// A broadcast says so in its own map and that copy travels untouched. A
+    /// Blu-ray says so in `CLIPINF` and its map says nothing at all, so a cut
+    /// of one used to arrive with two sound tracks and no way to tell which
+    /// was which -- not in the file, and not in the index of a disc written
+    /// from the file either, since that index is read back off the stream.
+    /// See [`crate::disc::carry_languages`].
+    pub language: Option<String>,
+}
+
+/// An ISO 639 language descriptor: three letters and an audio type.
+///
+/// Type 0 is "undefined", which here means "ordinary": the other values name
+/// a clean effects track, a commentary, a track for the hard of hearing. A
+/// recording that arrived saying one of those said it in its own descriptor,
+/// which is kept as it came; this is only written where there was none.
+fn iso639(language: &str) -> Vec<u8> {
+    let mut out = vec![0x0A, 4, 0, 0, 0, 0];
+    for (slot, b) in out[2..5].iter_mut().zip(language.bytes()) {
+        *slot = b;
+    }
+    out
 }
 
 /// A stretch of the output, and what was being broadcast where it came from.
@@ -1272,7 +1295,7 @@ fn build_pmt(g: &Graft, pcr_pid: u16, components: &Components) -> Vec<u8> {
             Some(body) => vec![0x52, body.len() as u8, body[0]],
             None => Vec::new(),
         };
-        let (stream_type, desc) = match (s.stream(gs.was), &gs.declared) {
+        let (stream_type, mut desc) = match (s.stream(gs.was), &gs.declared) {
             // Written in another codec, so nothing the recording says about
             // the contents of this stream is true of the file. See
             // `Declared`.
@@ -1286,6 +1309,13 @@ fn build_pmt(g: &Graft, pcr_pid: u16, components: &Components) -> Vec<u8> {
             (Some(es), None) => (es.stream_type, identity(es)),
             (None, None) => continue,
         };
+        // Only where the recording's own map had none. Where it had one, it
+        // is already in `desc` and it is the authority.
+        if let Some(language) = &gs.language {
+            if descriptor(&desc, 0x0A).is_none() {
+                desc.extend_from_slice(&iso639(language));
+            }
+        }
         sec.push(stream_type);
         sec.push(0xE0 | ((gs.pid >> 8) as u8 & 0x1F));
         sec.push(gs.pid as u8);

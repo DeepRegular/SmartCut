@@ -841,7 +841,15 @@ fn scan_cached_reporting(
     let mut held = held_index(app, path);
     let mut src = match &held {
         Some(ix) => smartcut_core::scan_reporting(path, ix, on),
-        None => smartcut_core::scan_reporting(path, &smartcut_core::PacketScan, on),
+        // Ask whoever already knows. A recording on a disc has an index
+        // beside it -- the disc wrote one -- and reading it is the difference
+        // between opening a UHD title in under a second and reading eighty
+        // gigabytes to arrive at the same list; an MP4 or a Matroska file
+        // carries a seek table of its own. The walk is what answers for a
+        // transport stream, which has neither.
+        None => smartcut_core::scan_reporting(path, &smartcut_core::index::DiscIndex, on)
+            .or_else(|_| smartcut_core::scan_reporting(path, &smartcut_core::ContainerIndex, on))
+            .or_else(|_| smartcut_core::scan_reporting(path, &smartcut_core::PacketScan, on)),
     };
     // An index that the key could not tell was stale is still an index that
     // does not fit. Out it goes, and this open reads the file.
@@ -2090,7 +2098,7 @@ fn plan_now(ranges: &[(f64, f64)], app: &tauri::AppHandle) -> Result<PlanInfo, S
     let src = guard.as_mut().ok_or("no file open")?;
     if !src.leading_known {
         index::refine_leading(
-            &src.path.clone(),
+            &src.input.url.clone(),
             &src.video.clone(),
             src.start_time,
             &mut src.points,
@@ -2138,7 +2146,7 @@ async fn clip_plan(
         let (mut src, _) = scan_cached(&app, &path)?;
         if !src.leading_known {
             index::refine_leading(
-                &src.path.clone(),
+                &src.input.url.clone(),
                 &src.video.clone(),
                 src.start_time,
                 &mut src.points,
@@ -2951,7 +2959,7 @@ async fn export(
         // planned, and a fresh open knows nothing of it either way.
         if !src.leading_known {
             index::refine_leading(
-                &src.path.clone(),
+                &src.input.url.clone(),
                 &src.video.clone(),
                 src.start_time,
                 &mut src.points,
