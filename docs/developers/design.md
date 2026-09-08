@@ -861,8 +861,22 @@ framing and PID numbering, which is not what [the tables put back after
 muxing](../technical/broadcast-ts.md) describe. Choosing M2TS explicitly still gets one,
 and says that the tables are being left to the muxer. See [Reading a disc](disc.md).
 
-All three are settings on the output settings screen rather than a question asked once per
-file: the folder (empty meaning the input's own), the prefix (`cut_`), and the container,
+**Two rows that would be written to the same file are numbered.** The list already
+numbered the copies of one recording; two recordings of the same programme in different
+folders share a name too, and every recording read off a disc is called `00001`. What is
+numbered is therefore what would land on the same path, whatever made it collide -- the
+alternative is a run that reports two files written with one of them silently gone.
+
+**More than one output goes in a folder of its own.** A disc always does, since a disc is
+the `BDAV` folder itself and two of them cannot share one; files do where there is more
+than one of them, an evening's dozen cuts having no business landing loose beside last
+night's. The name is filled in from the disc's title, or the project's, and is a plain
+field after that -- emptied, the run writes straight into the folder above, and a single
+cut goes where it was told to go with no folder made for it.
+
+These are settings on the output settings screen rather than a question asked once per
+file: the folder (empty meaning the input's own), the subfolder, the prefix (`cut_`), and
+the container,
 which is a list naming a container and its extension together — **Same as the input** /
 `MPEG-2 TS (.ts)` / `M2TS (.m2ts)` / `MP4 (.mp4)` / `Matroska (.mkv)` / `QuickTime (.mov)`.
 **A container per entry** rather than one "video" line, because choosing one is what swaps

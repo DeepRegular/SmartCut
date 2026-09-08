@@ -162,3 +162,19 @@ implemented.
 The reference side of `--verify` must not be built with `-ss`. On open GOPs the
 reference itself shifts, for the same reason as #6, and **a correct cut gets reported
 as wrong**. Decode from the beginning and slice by frame number.
+
+### 9. Never plan a re-encode window with no picture in it
+
+The `tail` runs from where the copy's coverage ends to the end of the range, `t_out`.
+Those two are usually a few frames apart -- but where `t_out` lands just after an
+access point (60.060 s asked for on a 29.97 fps stream whose picture sits at
+60.05996 s), the gap is thinner than the spacing between two pictures.
+
+Such a window **has no picture to decode**. The cutter refuses a window it can decode
+nothing out of -- otherwise a re-encode that produced no frames would pass in silence
+-- so **the run stops**, not just that clip.
+
+A tail is therefore written only when it is at least half a frame wide, for the same
+reason the head has to be a whole one; the Python reference draws the line in the
+same place. As a net under both, a re-encode segment whose frame count works out to
+zero is not emitted at all.

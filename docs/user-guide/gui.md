@@ -559,11 +559,19 @@ or ImgBurn will burn as it stands.
 
 **Or it comes out as an image.** The `Image` row wraps the finished disc in a
 `.iso` — a UDF 2.50 or 2.60 filesystem, which is what a Blu-ray carries —
-written beside the folder under the same name: `disc/` and `disc.iso`. The
+written beside the disc's folder under the same name: `disc/An evening/BDAV`
+and `disc/An evening.iso`. The
 folder is written either way and stays where it is; the image is made of it
 once the last recording is indexed, at about a gigabyte a second. SmartCut
 does not burn discs: what it hands you is the image, and the burner is
 whatever you already use.
+
+**The disc goes in a folder of its own name.** Under the folder given as
+`Disc folder`, SmartCut makes one more named by the `Subfolder` row -- the
+disc's own title, unless you say otherwise -- and writes `BDAV` in there. A
+disc *is* the `BDAV` folder, so two of them cannot share one folder. Empty the
+subfolder row and the disc is written straight into the folder you gave, as it
+was before.
 
 **The whole list becomes one disc**, in list order, and the run is the same
 run: each recording is smart rendered exactly as it would have been into a
@@ -625,6 +633,13 @@ progress and result, and above them are the overall state, the elapsed time and 
 time remaining. At the end it says `4 of 4 written`.
 
 `Stop export` finishes writing the clip currently in progress, then stops.
+
+**Stopping part way through a disc takes back what was written to it.** The pass
+that writes the index reads every stream on the disc back, which is minutes of
+work nobody wants after saying stop, so it does not run — and a stream no
+playlist names is one the disc does not know it has, skipped by the next run's
+numbering and carried into any image made of the disc afterwards. The stream of a
+clip whose cut failed goes the same way. A run that finishes keeps everything.
 
 ### This screen shows the frames that get re-encoded
 

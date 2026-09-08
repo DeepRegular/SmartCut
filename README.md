@@ -152,7 +152,8 @@ pressed season set holds twelve episodes among fifty logos, warnings and menu
 loops, and the disc calls all sixty-two of them `000NN`. The ones likely to be
 programmes are ticked for you.
 
-Cuts are written next to the disc under the programme's name. The chapters the
+Cuts are written next to the disc under the programme's name, in a folder of
+their own where there is more than one of them. The chapters the
 disc set are already on the timeline as keyframes, and on a Japanese recording
 they are frequently the commercial breaks themselves.
 

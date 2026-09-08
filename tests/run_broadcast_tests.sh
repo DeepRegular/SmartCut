@@ -68,7 +68,7 @@ common() {
   echo "$why"
 }
 
-for name in atx.ts full_ntv.ts terrestrial_nhke.ts animax_kisekoi_01.ts; do
+for name in atx.ts full_ntv.ts terrestrial_nhke.ts animax_anime_01.ts; do
   src="$MEDIA/$name"
   if [ ! -f "$src" ]; then skip "$name" "no $name"; continue; fi
   a=$(tables "$src")

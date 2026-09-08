@@ -270,6 +270,15 @@ recorder behaves and what makes a disc worth filling over a week.
 The disc's own name is the one exception: it is one name for the disc, so the
 one on the screen wins.
 
+What a run adds it also takes back when it does not finish. A slot is reserved
+before the cut that fills it, and the index is written once at the end over
+what the run finished; stop the run and that pass does not happen, so what is
+left is a stream no playlist names, one the next run's numbering walks past
+and any image made of the disc afterwards carries. Those streams -- and the
+stream of a recording whose cut failed while the rest of the list went on --
+are removed at the end of the run. Only the numbers the run itself was given
+are ever named, so nothing another run put on the disc is touched.
+
 ## The image
 
 A folder is what a recorder writes to a disc and what an authoring tool will

@@ -106,10 +106,13 @@ edit would be useless for the thing duplicates exist for. The index, the length 
 whatever commercial detection found come across too — they are all the same file's
 answer — so a duplicate costs no extra pass over the disk.
 
-Output filenames gain `_1` and `_2` in list order when a recording appears in the
-list more than once; without that, the second cut would land on top of the first.
-Remove one copy and the survivor gets its plain name back, because the number is
-counted off the list each time rather than stamped on at duplication.
+**Rows that would be written to the same file gain `_1` and `_2` in list order.**
+Duplicates are the obvious case and not the only one: two recordings of the same
+programme in different folders share a name, and every recording read off a disc
+is called `00001`. Without the number the second cut would land on top of the
+first, and the run would report two files written with one of them gone. Remove
+one and the survivor gets its plain name back, because the number is counted off
+the list each time rather than stamped on at duplication.
 
 ## Exporting the list
 
@@ -118,7 +121,10 @@ carries its own progress and result; above them are the overall state, the elaps
 time and the time remaining.
 
 `Stop export` finishes writing the clip currently in progress and then stops, so you
-never end up with a half-written file.
+never end up with a half-written file. **Stopping part way through a disc takes back
+what was written to it**: a stopped run does not write the index, and a stream no
+playlist names is one the disc does not know it has. See the
+[GUI guide](gui.md#4-write).
 
 Because the export order is the list order, dragging a row to the top is how you say
 "write this one first".
