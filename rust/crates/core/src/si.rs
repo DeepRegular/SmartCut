@@ -461,20 +461,67 @@ fn keep_descriptors(loop_bytes: &[u8]) -> Vec<u8> {
     out
 }
 
+/// How many of `wanted` a map actually describes.
+///
+/// The measure of whether a map is the right one; see [`read_service`]. An
+/// empty `wanted` is satisfied by any map, which is what a caller that has
+/// nothing particular to look for asks for.
+fn names(service: &Service, wanted: &[u16]) -> usize {
+    wanted.iter().filter(|pid| service.streams.iter().any(|es| es.pid == **pid)).count()
+}
+
 /// Read the recording's own description of itself.
 ///
 /// `video_pid` is the PID the pictures arrive on, and is how the recording's
 /// own service is told apart from the others its PAT may name. Pass 0 when
 /// it is not known; the first service whose map arrives is then taken.
 ///
-/// Only the head of the file is read. PAT, PMT and SDT repeat every few
-/// hundred milliseconds, so a few megabytes is many copies of each; a
-/// recording that does not carry them in its first stretch does not carry
-/// them at all.
-pub fn read_service(input: &crate::input::Input, video_pid: u16) -> Result<Service> {
-    const WINDOW: usize = 8 << 20;
+/// `wanted` is the PIDs the caller is going to carry and therefore needs
+/// described. **A recording's map is not fixed for the length of the
+/// recording.** A station adds the caption stream to it when the programme
+/// starts and takes it out again when the programme ends, and the same goes
+/// for a second sound track: a recording that begins a few seconds early --
+/// which is every recording -- opens on a map that names neither. Taking the
+/// first map that arrives and asking no more of it wrote cuts whose caption
+/// packets were all there and whose map did not mention them, so nothing
+/// downstream could find them. Four of thirty-two stations sampled did this,
+/// two of them changing the map inside the first second and two around eight
+/// seconds in.
+///
+/// So the reading goes on until the map in hand names everything asked for,
+/// and a later map that names more of it replaces the one before. A caller
+/// with nothing to look for is answered by the first map, as before.
+///
+/// Only the head of the file is read: the tables repeat every few hundred
+/// milliseconds, so a few megabytes is many copies of each. The window opens
+/// further, once, when the first pass did not find everything -- a map that
+/// changes does it near the start, and a recording that never names a stream
+/// in its first minute was never going to.
+pub fn read_service(
+    input: &crate::input::Input,
+    video_pid: u16,
+    wanted: &[u16],
+) -> Result<Service> {
+    const NEAR: usize = 8 << 20;
+    const FAR: usize = 64 << 20;
+    let near = read_service_within(input, video_pid, wanted, NEAR)?;
+    if names(&near, wanted) == wanted.len() {
+        return Ok(near);
+    }
+    match read_service_within(input, video_pid, wanted, FAR) {
+        Ok(far) if names(&far, wanted) > names(&near, wanted) => Ok(far),
+        _ => Ok(near),
+    }
+}
+
+fn read_service_within(
+    input: &crate::input::Input,
+    video_pid: u16,
+    wanted: &[u16],
+    window: usize,
+) -> Result<Service> {
     let mut f = input.open()?;
-    let mut buf = vec![0u8; WINDOW];
+    let mut buf = vec![0u8; window];
     let n = read_fully(&mut f, &mut buf)?;
     buf.truncate(n);
     let path = &input.spec;
@@ -537,7 +584,13 @@ pub fn read_service(input: &crate::input::Input, video_pid: u16) -> Result<Servi
                     i += 4;
                 }
             }),
-            map_pid if found.is_none() && pmts.contains_key(&map_pid) => {
+            // Not `found.is_none()`: a map that does not yet name everything
+            // the caller has to carry is a map to keep looking past. See
+            // [`read_service`].
+            map_pid
+                if pmts.contains_key(&map_pid)
+                    && found.as_ref().is_none_or(|f| names(f, wanted) < wanted.len()) =>
+            {
                 let reader = pmts.get_mut(&map_pid).expect("just checked");
                 reader.feed(p, |sec| {
                     if sec[0] != TABLE_PMT || sec.len() < 16 {
@@ -585,7 +638,15 @@ pub fn read_service(input: &crate::input::Input, video_pid: u16) -> Result<Servi
                         sdt: None,
                     };
                     if ours {
-                        found = Some(service);
+                        // The later map wins only where it says more. A map
+                        // is replaced because it was incomplete, never
+                        // because it was earlier.
+                        if found
+                            .as_ref()
+                            .is_none_or(|had| names(&service, wanted) > names(had, wanted))
+                        {
+                            found = Some(service);
+                        }
                     } else if any.is_none() {
                         any = Some(service);
                     }
@@ -598,7 +659,9 @@ pub fn read_service(input: &crate::input::Input, video_pid: u16) -> Result<Servi
             }),
             _ => {}
         }
-        if found.is_some() && sdt_whole.is_some() {
+        if found.as_ref().is_some_and(|f| names(f, wanted) == wanted.len())
+            && sdt_whole.is_some()
+        {
             break;
         }
     }
@@ -1968,6 +2031,80 @@ pub fn graft(output: &str, g: &Graft) -> Result<Stats> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A program association table naming one service.
+    fn pat(service: u16, map_pid: u16) -> Vec<u8> {
+        let mut sec = vec![
+            TABLE_PAT, 0xB0, 0x00, 0x00, 0x01, 0xC1, 0x00, 0x00,
+            (service >> 8) as u8,
+            service as u8,
+            0xE0 | ((map_pid >> 8) as u8 & 0x1F),
+            map_pid as u8,
+        ];
+        finish_section(&mut sec);
+        sec
+    }
+
+    /// A program map table naming `pids`, at version `version`.
+    fn pmt(service: u16, version: u8, pids: &[u16]) -> Vec<u8> {
+        let mut sec = vec![
+            TABLE_PMT,
+            0xB0,
+            0x00,
+            (service >> 8) as u8,
+            service as u8,
+            0xC1 | (version << 1),
+            0x00,
+            0x00,
+            0xE0 | ((pids[0] >> 8) as u8 & 0x1F),
+            pids[0] as u8,
+            0xF0,
+            0x00,
+        ];
+        for &pid in pids {
+            sec.extend_from_slice(&[0x02, 0xE0 | ((pid >> 8) as u8 & 0x1F), pid as u8, 0xF0, 0x00]);
+        }
+        finish_section(&mut sec);
+        sec
+    }
+
+    /// A recording whose map gains a stream part way through, which is what
+    /// a station does when the programme it is about to show has captions.
+    fn a_recording_whose_map_changes(name: &str) -> std::path::PathBuf {
+        let (video, caption) = (0x200u16, 0x300u16);
+        let mut out = Vec::new();
+        let mut cc = 0u8;
+        packetize(PID_PAT, &pat(1, 0x100), &mut cc, &mut out);
+        let mut before = 0u8;
+        for _ in 0..4 {
+            packetize(0x100, &pmt(1, 5, &[video]), &mut before, &mut out);
+        }
+        let mut after = 0u8;
+        for _ in 0..4 {
+            packetize(0x100, &pmt(1, 6, &[video, caption]), &mut after, &mut out);
+        }
+        let at = std::env::temp_dir().join(name);
+        std::fs::write(&at, &out).expect("write the sample");
+        at
+    }
+
+    #[test]
+    fn follows_a_map_that_gains_a_stream() {
+        let at = a_recording_whose_map_changes("smartcut-map-change.ts");
+        let input = crate::input::Input::plain(&at.to_string_lossy());
+
+        // Asked for the caption stream, the reading goes past the map that
+        // does not name it.
+        let asked = read_service(&input, 0x200, &[0x200, 0x300]).expect("a map");
+        assert!(asked.stream(0x300).is_some(), "the later map should have been taken");
+
+        // Asked for nothing in particular, the first map still answers: a
+        // caller with nothing to look for pays for no extra reading.
+        let plain = read_service(&input, 0x200, &[]).expect("a map");
+        assert_eq!(plain.streams.len(), 1);
+
+        let _ = std::fs::remove_file(&at);
+    }
 
     /// A component descriptor, which is about one stream and says so third.
     fn component(tag: u8) -> Vec<u8> {

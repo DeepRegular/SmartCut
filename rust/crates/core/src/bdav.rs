@@ -435,7 +435,15 @@ fn read_clip(stream: &Path, on: Option<(&(dyn Fn(&str, f64) + Sync), &str)>) -> 
         told.as_ref().map(|f| f as &(dyn Fn(f64) + Sync)),
     )?;
     let video_pid = video_pid(&path, src.video.stream_index)?;
-    let service = crate::si::read_service(&src.input, video_pid).ok();
+    // The map has to describe the sound and the captions as well as the
+    // pictures: what it says about each is what this writes into the disc's
+    // own index. A recording's map is not fixed, so it is asked for by name.
+    let carried: Vec<u16> = std::iter::once(video_pid)
+        .chain(src.audios.iter().map(|a| a.pid as u16))
+        .chain(src.captions.iter().map(|c| c.pid as u16))
+        .filter(|pid| *pid != 0)
+        .collect();
+    let service = crate::si::read_service(&src.input, video_pid, &carried).ok();
 
     let mut streams = Vec::new();
     let declared = |pid: u16, fallback: u8| -> u8 {

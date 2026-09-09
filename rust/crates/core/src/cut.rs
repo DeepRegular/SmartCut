@@ -2436,7 +2436,15 @@ pub fn cut_with_progress(
     // the tables around them is right to believe neither.
     let wants_tables = to_ts && opts.tables != crate::si::Tables::Muxer;
     let ours = u16::try_from(video_pid).unwrap_or(0);
-    let tables = match wants_tables.then(|| crate::si::read_service(&src.input, ours)) {
+    // Every stream the cut is going to carry, so the map that comes back is
+    // one that describes them all rather than whichever arrived first. See
+    // [`crate::si::read_service`].
+    let carried: Vec<u16> = std::iter::once(ours)
+        .chain(audios.iter().map(|a| a.pid as u16))
+        .chain(captions.iter().map(|c| c.pid as u16))
+        .filter(|pid| *pid != 0)
+        .collect();
+    let tables = match wants_tables.then(|| crate::si::read_service(&src.input, ours, &carried)) {
         Some(Ok(t)) => Some(t),
         Some(Err(e)) => {
             eprintln!("note: {e}. The streams are kept; the broadcast's own tables are not.");
@@ -2909,7 +2917,7 @@ pub fn cut_with_progress(
     let own_map = unnamed
         .then(|| {
             let at = crate::input::Input::plain(output);
-            crate::si::read_service(&at, pids.out(video_pid) as u16)
+            crate::si::read_service(&at, pids.out(video_pid) as u16, &[])
                 .map_err(|e| eprintln!("note: {output} cannot be read back to name its sound: {e}"))
                 .ok()
         })

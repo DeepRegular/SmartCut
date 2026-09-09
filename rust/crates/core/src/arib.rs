@@ -18,9 +18,10 @@
 //! So this is a reader, not a renderer. What comes out is the text: the
 //! characters in order, with the sizes and colours dropped, because a list
 //! entry has one size and one colour anyway. A character this cannot name --
-//! ARIB's own additional symbols, which fill the rows JIS X 0208 leaves
-//! empty, and the downloaded glyphs of DRCS -- comes out as `〓`, which is
-//! what a receiver that cannot draw it shows.
+//! most of ARIB's own additional symbols, which fill the rows JIS X 0208
+//! leaves empty, and the downloaded glyphs of DRCS -- comes out as `〓`,
+//! which is what a receiver that cannot draw it shows. The markers a listing
+//! puts in front of a programme name are the exception; see [`symbol`].
 
 /// Which graphic set a byte is to be read against.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -34,13 +35,17 @@ enum Set {
     Katakana,
     /// JIS X 0201's half-width katakana.
     HalfKatakana,
+    /// ARIB's own additional symbols, designated as a set of their own.
+    /// They also appear in the rows [`Set::Kanji`] leaves to them; see
+    /// [`FIRST_ARIB_ROW`].
+    Symbols,
     /// Downloaded glyphs, or anything else there is no naming.
     Unknown { wide: bool },
 }
 
 impl Set {
     fn wide(&self) -> bool {
-        matches!(self, Set::Kanji | Set::Unknown { wide: true })
+        matches!(self, Set::Kanji | Set::Symbols | Set::Unknown { wide: true })
     }
 
     /// The graphic set a designation escape names.
@@ -50,6 +55,8 @@ impl Set {
             // The JIS compatibility planes, which are the same characters in
             // the same places for everything a programme name uses.
             (0x39 | 0x3A, true) => Set::Kanji,
+            // The additional symbols, in a slot of their own.
+            (0x3B, true) => Set::Symbols,
             (0x4A, false) => Set::Alnum,
             (0x30 | 0x36, false) => Set::Hiragana,
             (0x31 | 0x37, false) => Set::Katakana,
@@ -70,7 +77,8 @@ const UNKNOWN: char = '〓';
 /// `[終]`. They are not JIS characters and must not be decoded as though
 /// they were: the mapping tables of the encodings that *do* fill those rows,
 /// which is where a general purpose decoder would send them, hold entirely
-/// different characters.
+/// different characters. The markers themselves are named in [`symbol`]; the
+/// rest of those rows still come back as the geta mark.
 const FIRST_ARIB_ROW: u8 = 0x75;
 
 /// Decode an ARIB eight-unit string.
@@ -125,8 +133,43 @@ fn at_char(out: &mut String, bytes: &[u8], at: usize, set: Set) -> usize {
     // side of the code table the bytes arrived on.
     let hi = raw[0] & 0x7F;
     let lo = if width == 2 { raw[1] & 0x7F } else { 0 };
-    out.push(character(set, hi, lo));
+    // A symbol stands for a word rather than a letter, so it is the one
+    // thing here that is not one character wide.
+    match symbol(set, hi, lo) {
+        Some(text) => out.push_str(text),
+        None => out.push(character(set, hi, lo)),
+    }
     at + width
+}
+
+/// One of ARIB's own additional symbols, spelled the way a listing spells it.
+///
+/// **These are not JIS characters and there is no Unicode character for most
+/// of them.** They are what a broadcaster marks a programme with -- the first
+/// episode of a run, a repeat, a subtitled showing -- drawn on a television as
+/// one boxed glyph, and written down everywhere else as the bracketed word
+/// inside the box. That is what this returns, because a name is a name: a
+/// listing that says `[新]` says what the broadcast said, and one that says
+/// `〓` has thrown it away.
+///
+/// Row 90 is the row of them, and cells 48 to 84 of it are the markers. The
+/// rest of what ARIB puts in the rows above [`FIRST_ARIB_ROW`] -- the weather
+/// and sport symbols a caption uses, and the units -- is left alone: a
+/// programme name does not carry them, and a table half remembered is worse
+/// than the geta mark, which at least says plainly that something was there.
+fn symbol(set: Set, hi: u8, lo: u8) -> Option<&'static str> {
+    if !matches!(set, Set::Kanji | Set::Symbols) || hi != 0x7A {
+        return None;
+    }
+    // Cell 48 is `lo` 0x50: the cell number is the byte less the 0x20 every
+    // JIS-shaped code table begins at.
+    const MARKERS: [&str; 37] = [
+        "[HV]", "[SD]", "[P]", "[W]", "[MV]", "[手]", "[字]", "[双]", "[デ]", "[S]", "[二]",
+        "[多]", "[解]", "[SS]", "[B]", "[N]", "■", "●", "[天]", "[交]", "[映]", "[無]", "[料]",
+        "[年齢制限]", "[前]", "[後]", "[再]", "[新]", "[初]", "[終]", "[生]", "[販]", "[声]",
+        "[吹]", "[PPV]", "(秘)", "ほか",
+    ];
+    MARKERS.get(lo.checked_sub(0x50)? as usize).copied()
 }
 
 /// Read one character of `set`, for the single shifts, which name the set
@@ -165,7 +208,7 @@ fn character(set: Set, hi: u8, lo: u8) -> char {
             0x21..=0x7D => hi as char,
             _ => UNKNOWN,
         },
-        Set::Unknown { .. } => UNKNOWN,
+        Set::Symbols | Set::Unknown { .. } => UNKNOWN,
     }
 }
 
@@ -500,8 +543,24 @@ mod tests {
 
     #[test]
     fn shows_what_it_cannot_name() {
-        // Row 90 of the kanji set is ARIB's own, not JIS's.
+        // Row 90 of the kanji set is ARIB's own, not JIS's, and cell 1 of it
+        // is one of the symbols this does not name.
         assert_eq!(decode(&[0x0F, 0x7A, 0x21]), "〓");
+    }
+
+    #[test]
+    fn names_the_marker_in_front_of_a_programme() {
+        // What a recorder wrote for the first episode of a run: LS1, the
+        // additional symbols designated into G1, then row 90 cell 75.
+        let raw = [0x0E, 0x1B, 0x24, 0x29, 0x3B, 0x7A, 0x6B];
+        assert_eq!(decode(&raw), "[新]");
+        // And the same cell reached through the kanji set's own rows, which
+        // is the other way a playlist writes it.
+        assert_eq!(decode(&[0x0F, 0x7A, 0x6B]), "[新]");
+        // The ends of the block, and a cell past it that is still a geta.
+        assert_eq!(decode(&[0x0F, 0x7A, 0x50]), "[HV]");
+        assert_eq!(decode(&[0x0F, 0x7A, 0x74]), "ほか");
+        assert_eq!(decode(&[0x0F, 0x7A, 0x75]), "〓");
     }
 
     #[test]

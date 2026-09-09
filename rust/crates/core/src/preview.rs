@@ -820,6 +820,19 @@ fn walk(
         if decoder.send_packet(&packet).is_err() {
             continue;
         }
+        // An entry picture decodes on its own, which is the whole reason the
+        // packets between them may be skipped -- so each one is drained on
+        // its own too. A decoder handed a *subset* of a stream's packets
+        // cannot order what comes out of it: it orders by the picture order
+        // count, and the counts of pictures that are not consecutive say
+        // nothing about which comes first. On one disc that handed the film
+        // strip an entry picture half a second late, past the end of the run
+        // being drawn, and the run stopped there with its remaining cells
+        // empty. Drained one at a time, what comes out is what went in, in
+        // the order the file holds them.
+        if keys {
+            let _ = decoder.send_eof();
+        }
         while decoder.receive_frame(&mut frame).is_ok() {
             let Some(pts) = frame.pts() else { continue };
             let t = pts as f64 * in_tb - src.start_time;
@@ -830,6 +843,9 @@ fn walk(
                 stopped = true;
                 break 'outer;
             }
+        }
+        if keys {
+            decoder.flush();
         }
     }
     if !stopped {

@@ -586,16 +586,23 @@ pub fn build_with(
         if decoder.send_packet(&packet).is_err() {
             continue;
         }
+        // Drained on its own, because it was sent on its own. A decoder
+        // orders what it hands back by the picture order count, and the
+        // counts of pictures that were not consecutive in the stream say
+        // nothing about which of them comes first: fed the entry pictures of
+        // a Blu-ray alone, one h.264 decoder handed back 1814 of the disc's
+        // 1992, a tenth of them out of order and one of them eight seconds
+        // early. Both halves of that are damage here -- a picture arriving
+        // before one already collected is measured against the wrong
+        // neighbour, and one arriving behind the spacing is dropped for
+        // being too close to it. Draining each picture as it is sent costs
+        // nothing measurable and makes what comes out the order the file
+        // holds. See the same drain in `preview::walk`.
+        let _ = decoder.send_eof();
         while decoder.receive_frame(&mut frame).is_ok() {
             take(&frame)?;
         }
-    }
-    // The decoder holds a picture back for reordering, so the last entry
-    // point of the file only comes out on a flush. Without it the strip's
-    // final cell has a hole in it.
-    let _ = decoder.send_eof();
-    while decoder.receive_frame(&mut frame).is_ok() {
-        take(&frame)?;
+        decoder.flush();
     }
     if let Some(f) = progress.as_mut() {
         f(1.0);
