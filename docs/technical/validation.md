@@ -153,6 +153,18 @@ These only surfaced on real material:
 
 ## Known limitations
 
+- **A damaged recording loses the pictures inside the damage, and not the cut.** A
+  broadcast has holes in it — a burst of noise, a dish that lost the satellite for a
+  moment — and three things follow from one. libavcodec refuses the packets the damage
+  falls inside; the display positions of the pictures they carried are then missing,
+  which widens the gap the derived DTS has to clear; and the timestamps around the
+  damage stop climbing, so two sound frames can claim one instant. Each of the three
+  used to stop the whole cut, on a recording that was otherwise perfectly cuttable.
+  Now the packets that will not decode are dropped, a picture with nowhere to go on
+  the timeline is left out, and a sound frame that does not follow the one before it
+  is left out; each is counted and said once when the cut finishes. What is copied is
+  untouched by any of it. Measured over 82 recordings from 32 stations, one was
+  damaged badly enough to reach all three paths.
 - **The first frame is 13 ms early** (Python implementation only). A raw elementary
   stream carries no timestamps at all — every packet is `N/A` — so ffmpeg synthesises
   them from `-r` and the POC. In doing so, the first `has_b_frames` packets come out

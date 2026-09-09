@@ -958,7 +958,12 @@ pub fn programme(input: &crate::input::Input, service_id: u16) -> Result<Program
                 // Present and following arrive as two sections and only the
                 // first describes this file; the following one names a
                 // programme that is not here.
-                if sec[0] != TABLE_EIT_PF_ACTUAL || sec.len() < 26 || sec[6] != 0 {
+                // Thirty bytes is the shortest section that has an event
+                // in it: fourteen of header, twelve of event, four of CRC.
+                // Twenty-six was four short, and a section between the two
+                // read its own description length off the far side of the
+                // event and brought the program down with it.
+                if sec[0] != TABLE_EIT_PF_ACTUAL || sec.len() < 30 || sec[6] != 0 {
                     return;
                 }
                 let whose = ((sec[3] as u16) << 8) | sec[4] as u16;
@@ -2103,6 +2108,38 @@ mod tests {
         let plain = read_service(&input, 0x200, &[]).expect("a map");
         assert_eq!(plain.streams.len(), 1);
 
+        let _ = std::fs::remove_file(&at);
+    }
+
+    /// An event-information section with no room in it for an event.
+    ///
+    /// Fourteen bytes of header and four of checksum leave ten, and a whole
+    /// event needs twelve. Nothing broadcasts one -- but a section is only
+    /// as trustworthy as the recording it was read out of, and the length of
+    /// the description used to be read off the far side of the event, which
+    /// took the program down with it.
+    #[test]
+    fn an_event_section_too_short_to_hold_an_event_is_left_alone() {
+        let mut sec = vec![0u8; 24];
+        sec[0] = TABLE_EIT_PF_ACTUAL;
+        sec[1] = 0x80; // it has a checksum, and the length goes here
+        sec[4] = 0x01; // service 1
+        finish_section(&mut sec);
+        assert_eq!(sec.len(), 28, "the section this is about is 28 bytes long");
+
+        // Six copies, because the framing is only settled by a run of them.
+        let mut out = Vec::new();
+        let mut cc = 0u8;
+        for _ in 0..6 {
+            packetize(PID_EIT, &sec, &mut cc, &mut out);
+        }
+        let at = std::env::temp_dir().join("smartcut-short-eit.ts");
+        std::fs::write(&at, &out).expect("write the sample");
+
+        let input = crate::input::Input::plain(&at.to_string_lossy());
+        // The whole of the assertion is that the read returns at all.
+        let read = programme(&input, 0).expect("a reading");
+        assert!(read.name.is_none(), "there is no event here to be named by");
         let _ = std::fs::remove_file(&at);
     }
 

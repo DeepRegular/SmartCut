@@ -439,6 +439,15 @@ fn main() -> Result<()> {
     // being written onto a disc of its own.
     let mut off_a_disc: Option<smartcut_core::disc::Entry> = None;
     let input = match on_a_disc(&input)? {
+        // A recording is not a disc, and there is nothing on it to pick
+        // between. Carried silently, `--title` then named nothing and the
+        // whole recording was cut instead -- which is a different job from
+        // the one that was asked for.
+        None if title.is_some() => bail!(
+            "--title {:?}: {input} is a recording rather than a disc, so there is nothing on \
+             it to choose between",
+            title.unwrap_or_default()
+        ),
         None => input,
         Some(disc) => match pick(&disc.entries, title.as_deref())? {
             Some(entry) => {
@@ -931,6 +940,12 @@ fn main() -> Result<()> {
             100.0 * enc / total
         );
     }
+    // `--analyze` stops here, before the disc is touched. Reserving a slot on
+    // one makes its directories and takes a number the next run counts past,
+    // and asking what a cut would do is not asking for either.
+    if analyze {
+        return Ok(());
+    }
     // A recording on a disc is `BDAV/STREAM/00001.m2ts`, and which number it
     // is depends on what is on the disc already. So the name is the disc's
     // to give, not `-o`'s.
@@ -945,10 +960,8 @@ fn main() -> Result<()> {
         }
         None => None,
     };
-    if analyze || output.is_none() {
-        if output.is_none() && !analyze {
-            eprintln!("\n(no -o given; nothing written)");
-        }
+    if output.is_none() {
+        eprintln!("\n(no -o given; nothing written)");
         return Ok(());
     }
     let out = output.unwrap();
@@ -1031,17 +1044,37 @@ fn main() -> Result<()> {
     // the video is an AAC elementary stream. A cut written in another codec
     // has no AAC in it to put there, and a `.aac` holding AC-3 would be worse
     // than no file at all.
-    let es_is_aac =
-        matches!(audio_codec, smartcut_core::AudioCodec::Source | smartcut_core::AudioCodec::Aac);
+    //
+    // Asked for by name, the sound is AAC because that is what was asked for.
+    // Left as the recording's own, it is AAC only if the recording's was: a
+    // cut of a disc is AC-3 or LPCM, and `--audio-es` on one used to write a
+    // nought-byte `.aac` and then stop with "Invalid argument", the muxer
+    // having been handed a stream it has no header for.
+    let es_is_aac = match audio_codec {
+        smartcut_core::AudioCodec::Aac => true,
+        smartcut_core::AudioCodec::Source => {
+            src.audio.as_ref().is_some_and(|a| a.codec == "aac")
+        }
+        _ => false,
+    };
     if audio_es && es_is_aac {
         let beside = std::path::Path::new(&out).with_extension("aac");
         let n = smartcut_core::write_audio_es(&out, &beside.to_string_lossy(), aac)?;
         println!("wrote {} ({n} packets)", beside.display());
     } else if audio_es {
+        // Named by what it actually is, not by the setting: "source" tells
+        // nobody why the sidecar was declined.
+        let is = match audio_codec {
+            smartcut_core::AudioCodec::Source => src
+                .audio
+                .as_ref()
+                .map(|a| a.codec.clone())
+                .unwrap_or_else(|| "nothing".into()),
+            other => other.as_str().to_string(),
+        };
         eprintln!(
             "note: --audio-es writes the sound out as an AAC elementary stream, and this cut's \
-             sound is {}. No sidecar was written.",
-            audio_codec.as_str(),
+             sound is {is}. No sidecar was written.",
         );
     }
     if let Some((at, clip)) = onto {

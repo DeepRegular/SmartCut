@@ -184,13 +184,15 @@ pub fn write(
     label: &str,
     on: Option<&(dyn Fn(f64) + Sync)>,
 ) -> Result<u64> {
-    let mut tree = read_tree(from)?;
+    let mut left_out = Vec::new();
+    let mut tree = read_tree(from, &mut left_out)?;
+    say_what_was_left_out(from, &left_out);
     if tree.len() < 2 {
         bail!("{}: there is nothing here to put on a disc", from.display());
     }
     let now = Stamp::now();
     let plan = lay_out(&mut tree);
-    let meta = metadata_image(&tree, &plan, revision, &now, label);
+    let meta = metadata_image(&tree, &plan, revision, &now, label)?;
 
     let dst = std::fs::File::create(to)
         .with_context(|| format!("cannot write {}", to.display()))?;
@@ -210,24 +212,24 @@ pub fn write(
     }
     out.pad_to(MAIN_VDS)?;
     for d in volume_descriptors(&plan, revision, &now, label, MAIN_VDS) {
-        out.sector(&sized(&d))?;
+        out.sector(&sized(&d)?)?;
     }
     out.pad_to(INTEGRITY)?;
-    out.sector(&sized(&integrity(&plan, revision, &now)))?;
-    out.sector(&sized(&terminating(INTEGRITY + 1)))?;
+    out.sector(&sized(&integrity(&plan, revision, &now))?)?;
+    out.sector(&sized(&terminating(INTEGRITY + 1))?)?;
     out.pad_to(ANCHOR)?;
-    out.sector(&sized(&anchor(&plan, ANCHOR)))?;
+    out.sector(&sized(&anchor(&plan, ANCHOR))?)?;
 
     // The partition. The two entries that describe the metadata partition
     // come first, then the metadata partition itself, then the files.
     out.pad_to(PARTITION)?;
-    out.sector(&sized(&metadata_entry(FILE_METADATA, plan.meta_at, plan.meta_blocks, &now)))?;
+    out.sector(&sized(&metadata_entry(FILE_METADATA, plan.meta_at, plan.meta_blocks, &now))?)?;
     out.sector(&sized(&metadata_entry(
         FILE_METADATA_MIRROR,
         plan.mirror_at,
         plan.meta_blocks,
         &now,
-    )))?;
+    ))?)?;
     out.pad_to(PARTITION + plan.meta_at as u64)?;
     out.write_all(&meta)?;
 
@@ -260,12 +262,41 @@ pub fn write(
     out.write_all(&meta)?;
     out.pad_to(plan.reserve_vds)?;
     for d in volume_descriptors(&plan, revision, &now, label, plan.reserve_vds) {
-        out.sector(&sized(&d))?;
+        out.sector(&sized(&d)?)?;
     }
     out.pad_to(plan.sectors - 1)?;
-    out.sector(&sized(&anchor(&plan, plan.sectors - 1)))?;
+    out.sector(&sized(&anchor(&plan, plan.sectors - 1))?)?;
     out.to.flush()?;
     Ok(plan.sectors * SECTOR as u64)
+}
+
+/// Name what could not go on the volume.
+///
+/// A folder is whatever the caller named, and an image quietly missing a file
+/// out of one is worse than an image that was not made: nothing downstream
+/// will ever say which file, or that there was one.
+fn say_what_was_left_out(from: &Path, left_out: &[String]) {
+    if left_out.is_empty() {
+        return;
+    }
+    // Named the way the folder names them, rather than by the path this
+    // program happens to have been handed.
+    let named: Vec<String> = left_out
+        .iter()
+        .take(4)
+        .map(|p| {
+            Path::new(p).strip_prefix(from).unwrap_or(Path::new(p)).to_string_lossy().into_owned()
+        })
+        .chain((left_out.len() > 4).then(|| "...".to_string()))
+        .collect();
+    eprintln!(
+        "note: {} file(s) under {} are not named the way a disc names its files -- a UDF volume \
+         written here carries plain ASCII names of 200 characters or fewer -- and are not in \
+         the image: {}",
+        left_out.len(),
+        from.display(),
+        named.join(", "),
+    );
 }
 
 /// Where everything goes, in blocks.
@@ -291,7 +322,13 @@ struct Plan {
 /// Sorted case-insensitively, which is the order both reference images list
 /// a directory in -- and the order a person reading `CLIPINF`, `info.bdav`,
 /// `PLAYLIST`, `STREAM` expects.
-fn read_tree(from: &Path) -> Result<Vec<Node>> {
+///
+/// `left_out` collects what could not go on the volume, so the caller can
+/// say so. A disc of recordings has none of it -- the files on one are
+/// `00001.m2ts` and `info.bdav` -- but the folder handed over is whatever
+/// the caller named, and an image quietly missing a file is worse than one
+/// that was not made.
+fn read_tree(from: &Path, left_out: &mut Vec<String>) -> Result<Vec<Node>> {
     let mut tree = vec![Node {
         name: String::new(),
         source: None,
@@ -302,18 +339,28 @@ fn read_tree(from: &Path) -> Result<Vec<Node>> {
         blocks: 0,
         unique: 0,
     }];
-    fill(from, 0, &mut tree)?;
+    fill(from, 0, &mut tree, left_out)?;
     Ok(tree)
 }
 
-fn fill(dir: &Path, parent: usize, tree: &mut Vec<Node>) -> Result<()> {
+fn fill(
+    dir: &Path,
+    parent: usize,
+    tree: &mut Vec<Node>,
+    left_out: &mut Vec<String>,
+) -> Result<()> {
     let mut entries: Vec<(String, PathBuf, bool, u64)> = Vec::new();
     for e in std::fs::read_dir(dir).with_context(|| format!("reading {}", dir.display()))? {
         let e = e?;
         let name = e.file_name().to_string_lossy().into_owned();
         // A name that is not plain ASCII is not something a disc of
         // recordings has: the files on one are `00001.m2ts` and `info.bdav`.
+        // A dot-file is not on one either. Both are noted rather than simply
+        // skipped -- see `left_out`.
         if name.starts_with('.') || !name.is_ascii() || name.len() > 200 {
+            if !name.starts_with('.') {
+                left_out.push(dir.join(&name).to_string_lossy().into_owned());
+            }
             continue;
         }
         let meta = e.metadata()?;
@@ -334,7 +381,7 @@ fn fill(dir: &Path, parent: usize, tree: &mut Vec<Node>) -> Result<()> {
         });
         tree[parent].children.push(at);
         if is_dir {
-            fill(&path, at, tree)?;
+            fill(&path, at, tree, left_out)?;
         }
     }
     Ok(())
@@ -433,18 +480,18 @@ fn metadata_image(
     rev: Revision,
     now: &Stamp,
     label: &str,
-) -> Vec<u8> {
+) -> Result<Vec<u8>> {
     let mut out = vec![0u8; (plan.meta_blocks * SECTOR as u64) as usize];
     let put = |out: &mut Vec<u8>, block: u32, bytes: &[u8]| {
         let at = block as usize * SECTOR;
         out[at..at + bytes.len()].copy_from_slice(bytes);
     };
 
-    put(&mut out, 0, &sized(&file_set(tree[0].entry, rev, now, label)));
-    put(&mut out, 1, &sized(&terminating(1)));
+    put(&mut out, 0, &sized(&file_set(tree[0].entry, rev, now, label))?);
+    put(&mut out, 1, &sized(&terminating(1))?);
 
     for (i, node) in tree.iter().enumerate() {
-        put(&mut out, node.entry, &sized(&file_entry(node, now)));
+        put(&mut out, node.entry, &sized(&file_entry(node, now))?);
         if node.is_dir() {
             let mut dir = Vec::with_capacity(node.size as usize);
             // The parent comes first and has no name.
@@ -471,7 +518,7 @@ fn metadata_image(
             put(&mut out, node.data, &dir);
         }
     }
-    out
+    Ok(out)
 }
 
 /// One entry in a directory.
@@ -918,10 +965,25 @@ fn le64(d: &mut [u8], at: usize, v: u64) {
 }
 
 /// A descriptor padded out to the block it is written in.
-fn sized(d: &[u8]) -> Vec<u8> {
+///
+/// One that does not fit is refused rather than cut down. `resize` shortens
+/// as readily as it lengthens, so a file entry with more allocation
+/// descriptors than a block holds -- which takes a single file of about
+/// 114 GB, an extent being a gigabyte and a long descriptor sixteen bytes --
+/// used to be silently truncated and written as though it were whole. An
+/// image that says it is finished and is not is the worst of the answers
+/// available here.
+fn sized(d: &[u8]) -> Result<Vec<u8>> {
+    if d.len() > SECTOR {
+        bail!(
+            "a descriptor of {} bytes does not fit in a {SECTOR} byte block: this folder holds \
+             a file too large to describe in one entry",
+            d.len()
+        );
+    }
     let mut out = d.to_vec();
     out.resize(SECTOR, 0);
-    out
+    Ok(out)
 }
 
 // --- when ---------------------------------------------------------------
@@ -1055,6 +1117,17 @@ impl Writer {
 
 #[cfg(test)]
 mod tests {
+
+    /// A descriptor larger than the block it goes in is refused, not cut
+    /// down. `resize` shortens as readily as it lengthens, and an image
+    /// written from a truncated file entry is one that says it is finished
+    /// and is not.
+    #[test]
+    fn a_descriptor_too_large_for_its_block_is_refused() {
+        assert!(sized(&vec![0u8; 216]).is_ok());
+        assert!(sized(&vec![0u8; SECTOR]).is_ok());
+        assert!(sized(&vec![0u8; SECTOR + 1]).is_err());
+    }
     use super::*;
 
     /// The check sums in a descriptor tag, against a tag read off a real

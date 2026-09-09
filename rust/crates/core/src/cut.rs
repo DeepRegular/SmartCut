@@ -344,7 +344,14 @@ struct Writer {
     pending: std::collections::VecDeque<Emitted>,
     /// Display positions seen so far, smallest first.
     seen: std::collections::BinaryHeap<std::cmp::Reverse<i64>>,
+    /// The decode time given to the last picture written. A muxer refuses a
+    /// packet whose decode time does not come after the one before it, so
+    /// each has to be told about its predecessor.
+    last_dts: Option<i64>,
     written: i64,
+    /// Pictures left out for having nowhere to go on the timeline. See
+    /// [`Writer::emit_one`].
+    skipped: i64,
     /// The output's sound tracks, in the order they were added. A broadcast
     /// in two languages has two, and each is cut on its own -- one track's
     /// boundary frame is no business of another's.
@@ -402,6 +409,11 @@ struct AudioTrack {
     /// beside `need_sync` because the wait comes round again at every kept
     /// range, and by then the flag that started it has been cleared.
     joins_at_sync: bool,
+    /// The instant the last frame written to this track was placed at, and
+    /// how many frames were left out for not coming after it. See
+    /// [`Writer::push_audio`].
+    last_out: Option<i64>,
+    dropped: usize,
 }
 
 /// One caption track being written.
@@ -433,16 +445,55 @@ impl Writer {
     fn emit_one(&mut self) -> Result<()> {
         let Some(mut e) = self.pending.pop_front() else { return Ok(()) };
         let Some(std::cmp::Reverse(next_in_display)) = self.seen.pop() else { return Ok(()) };
-        // Three fields of lead-in per level of reordering: enough headroom
-        // for the longest picture a pulldown stream can contain.
-        let dts = next_in_display - self.depth * 3;
+        // Three fields of lead-in per level of reordering, and then the
+        // picture's own display position as a ceiling.
+        //
+        // The lead-in alone does not settle it. Three fields is generous
+        // while the pictures sit two fields apart and is nothing else: a
+        // recording with holes in it puts them further apart -- the pictures
+        // inside a damaged stretch never decode, so their display positions
+        // are simply missing -- and so does a stream that shows some pictures
+        // for three fields. There the derived time overtakes the picture it
+        // belongs to, the muxer refuses `pts < dts` outright, and the whole
+        // cut stopped over it. A picture is never decoded after it is shown,
+        // so that is the ceiling.
+        let mut dts = (next_in_display - self.depth * 3).min(e.display);
+        // And never behind the picture before it. The value above is the
+        // smallest display position still waiting, which climbs while the
+        // pictures arrive in one of the orders a coder produces and does not
+        // where a damaged stretch hands them over out of any order at all.
+        if let Some(prev) = self.last_dts {
+            dts = dts.max(prev + 1);
+        }
+        // Where the two cannot both be met the picture has nowhere to go: its
+        // display position is behind one already written, which is what a
+        // damaged stretch does to the order pictures arrive in. Left out
+        // rather than allowed to stop the cut -- the muxer would refuse it,
+        // and the stretch it belongs to is the damage.
+        if dts > e.display {
+            self.skipped += 1;
+            return Ok(());
+        }
+        self.last_dts = Some(dts);
         e.packet.set_stream(0);
         e.packet.set_pts(Some(e.display * self.field_ticks));
         e.packet.set_dts(Some(dts * self.field_ticks));
         e.packet.set_duration(e.fields * self.field_ticks);
         e.packet.set_position(-1);
         e.packet.rescale_ts(self.our_tb, self.out_tb);
-        e.packet.write_interleaved(&mut self.octx)?;
+        // The muxer refuses a picture whose timestamps it cannot place and
+        // says only "Invalid argument" about it, the same way it does for
+        // sound. Which picture, and what was wrong with it, is the whole of
+        // what makes that answerable -- and on a recording with holes in it
+        // the answer is usually the holes.
+        let (pts, dts) = (e.packet.pts().unwrap_or(0), e.packet.dts().unwrap_or(0));
+        e.packet.write_interleaved(&mut self.octx).with_context(|| {
+            format!(
+                "writing picture {} of the output (display {}, pts {pts}, dts {dts})",
+                self.written + 1,
+                e.display
+            )
+        })?;
         self.written += 1;
         if let Some(report) = &self.progress {
             if self.expected > 0 && self.written % 16 == 0 {
@@ -490,6 +541,17 @@ impl Writer {
         }
         packet.set_stream(index);
         let pts = (out_start.max(0.0) / tb).round() as i64;
+        // A frame that does not come after the last one written is a frame
+        // the muxer refuses, and refusing it stopped the whole cut. It
+        // happens where a recording is damaged: the timestamps inside a burst
+        // of noise jump about, and two frames arrive claiming the same
+        // instant or an earlier one. The frame is left out instead. The sound
+        // in that stretch is lost either way -- it is the damage -- and how
+        // much was left out is said when the cut finishes.
+        if self.audio[track].last_out.is_some_and(|last| pts <= last) {
+            self.audio[track].dropped += 1;
+            return Ok(());
+        }
         packet.set_pts(Some(pts));
         packet.set_dts(Some(pts));
         packet.set_duration((out_dur / tb).round() as i64);
@@ -506,6 +568,7 @@ impl Writer {
         })?;
         let t = &mut self.audio[track];
         t.written += 1;
+        t.last_out = Some(pts);
         t.end = Some(t.end.unwrap_or(out_start.max(0.0)) + out_dur);
         Ok(())
     }
@@ -728,6 +791,18 @@ fn open_input(path: &str) -> Result<(ff::format::context::Input, usize)> {
 /// said. `aac` only reaches the frames this has to frame itself, which is
 /// what audio taken back out of an MP4 amounts to.
 pub fn write_audio_es(cut: &str, output: &str, aac: AacVersion) -> Result<usize> {
+    let done = write_one_track_out(cut, output, aac);
+    if done.is_err() {
+        // What a refused stream leaves behind is a nought-byte file with an
+        // `.aac` on the end of it, which reads as an AAC stream and is not
+        // one. Worse than no file at all, and this is the only place that
+        // knows it is not wanted.
+        let _ = std::fs::remove_file(output);
+    }
+    done
+}
+
+fn write_one_track_out(cut: &str, output: &str, aac: AacVersion) -> Result<usize> {
     crate::init()?;
     let mut ictx = crate::input::demux(&cut)?;
     let ist = ictx
@@ -1427,6 +1502,8 @@ fn reencode_segment(
     let mut placed: std::collections::HashMap<i64, (i64, i64)> = Default::default();
     let mut fed = 0i64;
     let mut past_end = false;
+    // Packets libavcodec would not take. See where they are counted.
+    let mut damaged = 0usize;
 
     macro_rules! feed {
         () => {
@@ -1492,7 +1569,20 @@ fn reencode_segment(
                 break;
             }
         }
-        decoder.send_packet(&packet)?;
+        // A packet the decoder will not take is not a reason to stop.
+        //
+        // A recording of a broadcast has holes in it -- a burst of noise, a
+        // dish that lost the satellite for a moment -- and libavcodec refuses
+        // the packets those fall inside. Refusing the cut with them meant a
+        // fault a few frames wide made a whole recording uncuttable, while
+        // ffmpeg reading the same file drops the packet and carries on
+        // decoding from the next one. So does this: what is lost is the
+        // pictures inside the damage, which were never going to decode, and
+        // how many were lost is said at the end.
+        if decoder.send_packet(&packet).is_err() {
+            damaged += 1;
+            continue;
+        }
         // Decoded frames arrive in display order, so a simple window test
         // picks out exactly the pictures this segment owns.
         feed!();
@@ -1506,7 +1596,25 @@ fn reencode_segment(
     }
 
     if span.pictures == 0 {
+        if damaged > 0 {
+            bail!(
+                "segment {:.3}-{:.3}: no pictures decoded -- {damaged} packet(s) here are \
+                 damaged and none of what is left is a picture this can re-encode",
+                seg.start,
+                seg.end
+            );
+        }
         bail!("segment {:.3}-{:.3}: no pictures decoded", seg.start, seg.end);
+    }
+    if damaged > 0 {
+        eprintln!(
+            "note: {damaged} packet(s) between {:.3}s and {:.3}s are damaged and could not be \
+             decoded, so the pictures they carried are missing from the {} written there. \
+             What the cut copies is untouched by this.",
+            seg.start,
+            seg.end,
+            span.pictures,
+        );
     }
     Ok(span)
 }
@@ -2734,6 +2842,8 @@ pub fn cut_with_progress(
             need_sync: mp4ish
                 && matches!(setup.target, ff::codec::Id::TRUEHD | ff::codec::Id::MLP),
             joins_at_sync: matches!(setup.target, ff::codec::Id::TRUEHD | ff::codec::Id::MLP),
+            last_out: None,
+            dropped: 0,
         })
         .collect();
     let caption_tracks: Vec<CaptionTrack> = captions
@@ -2760,7 +2870,9 @@ pub fn cut_with_progress(
         depth: opts.reorder_depth.unwrap_or(src.video.has_b_frames.max(0) as i64),
         pending: Default::default(),
         seen: Default::default(),
+        last_dts: None,
         written: 0,
+        skipped: 0,
         audio: audio_tracks,
         captions: caption_tracks,
         progress,
@@ -2889,8 +3001,31 @@ pub fn cut_with_progress(
     writer.flush()?;
     writer.octx.write_trailer()?;
 
-    if writer.written != pictures {
+    if writer.written + writer.skipped != pictures {
         bail!("segments reported {pictures} pictures, wrote {}", writer.written);
+    }
+    if writer.skipped > 0 {
+        eprintln!(
+            "note: {} picture(s) could not be placed on the output timeline -- a damaged \
+             recording hands them over out of any order a decoder could restore -- and were \
+             left out of the {} written.",
+            writer.skipped, writer.written,
+        );
+    }
+
+    // What a damaged recording cost the sound, said once per track rather
+    // than once per frame.
+    for t in &writer.audio {
+        if t.dropped == 0 {
+            continue;
+        }
+        eprintln!(
+            "note: {} frame(s) of the sound on {} do not follow the frame before them -- which \
+             is what damage does to a recording's timestamps -- and were left out. The sound \
+             there was lost with the packets that carried it.",
+            t.dropped,
+            crate::track_name(writer.on_a_ts, t.info.pid, t.info.stream_index),
+        );
     }
 
     // Close the output before the tables go in. `write_trailer` flushes the
