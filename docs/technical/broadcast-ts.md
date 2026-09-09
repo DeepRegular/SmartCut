@@ -83,6 +83,36 @@ The conditional access descriptor (0x09) is the one thing not carried across. Th
 output is not scrambled and has no ECM stream, so restating it would be describing a
 file that does not exist.
 
+## The map is not fixed for the length of a recording
+
+The tables above are read out of the head of the file, because PAT, PMT and SDT
+repeat every few hundred milliseconds and a few megabytes is many copies of each.
+**That is not the same as the first copy being the right one.**
+
+A station adds the caption stream to its map when the programme starts, and a second
+sound track with it, and takes them out again when the programme ends. A recording
+that begins a few seconds early — which is every recording — therefore opens on a map
+that names neither. Taking the first map that arrives and asking no more of it wrote
+cuts whose caption packets were all there, on the right PID, and whose map did not
+mention them: nothing downstream could find them, neither a player nor this program
+reading the file back to write a disc's index, which fell through to a guessed stream
+type.
+
+Measured: of thirty-two stations sampled a recording each, **four were wrong this
+way**; of four hundred recordings sampled at random, **ninety-five change their map
+after the first copy of it**, and every stream that appears late is a caption or a
+second sound track — exactly what a cut carries. Some stations do it inside the first
+second and some a little past eight megabytes in, which is where the window this
+reads used to stop.
+
+So the map is asked for **by name**. `si::read_service` takes the PIDs the caller is
+going to carry, the reading goes on until the map in hand describes all of them, a
+later map that names more of them replaces the one before, and the window opens once
+further — to 64 MB — when the first pass came up short. A map that changes does it
+near the start, and a recording that never names a stream in its first minute was
+never going to. A caller with nothing particular to look for is still answered by the
+first map and pays for no extra reading.
+
 ## What is put back is trimmed to what was written
 
 The same reasoning is needed one step further along. The broadcast describes the data

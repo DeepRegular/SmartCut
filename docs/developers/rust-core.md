@@ -67,6 +67,25 @@ map](disc.md#the-discs-own-index), a container's seek table — the file's own
 rate less what the sound is worth stands in, and the frame size is the last
 resort behind that.
 
+### The seam, and reaching for an entry point a copy can be joined onto
+
+A decoder hands its pictures back in picture-order-count order, and the counts on the
+two sides of a seam were written by different encoders —
+[pitfall 10](../technical/algorithm.md#10-the-picture-order-counts-either-side-of-a-splice-are-not-one-anothers)
+has the whole of it. `--clean-joins` spends up to two seconds more re-encoding to
+reach an IDR, which is the entry point that settles it, and is off unless asked for
+because what it costs is exactness.
+
+Two pieces of the core came out of that. `bitstream::starts_a_sequence` says whether
+a key packet opens a coded video sequence — an IDR NAL for H.264, type 19 or 20 for
+HEVC, and `true` for everything that reorders nothing, so MPEG-2 and VC-1 never move.
+And planning gained an entry point that has the recording in hand, **`plan_on`**,
+because the reading this needs is not in the index and on a disc the index was never
+walked: it came off the disc's own table. `plan` stays the arithmetic. `plan_on` costs
+a handful of seeks rather than a pass — the byte each entry point begins at is already
+known — and `examples/idrdiag.rs` is the same reading turned into a report, printing
+the wait for a clean entry point from each of a recording's own.
+
 ### The container the pictures go into
 
 An MP4 puts a length in front of every NAL and keeps the parameter sets in

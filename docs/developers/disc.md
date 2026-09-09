@@ -197,11 +197,22 @@ this needs. That leaves a single dependency, `encoding_rs`.
 Two things are worth getting right:
 
 - **Rows 85 and up of JIS are ARIB's own symbols.** JIS leaves them
-  unassigned and ARIB fills them with the bracketed markers a listing carries,
-  `[新]`, `[字]`, `[終]`. Sending those through the mapping table of an
-  encoding that *does* fill those rows — which is where a general purpose
-  decoder would send them — produces entirely different characters. So they
-  come out as `〓`, which is what a receiver with no glyph for them shows.
+  unassigned and ARIB fills them with symbols of its own. Sending those through
+  the mapping table of an encoding that *does* fill those rows — which is where
+  a general purpose decoder would send them — produces entirely different
+  characters, so they come out as `〓`, which is what a receiver with no glyph
+  for them shows.
+
+  **Row 90 is the exception, because a programme name is full of it.** Cells 48
+  to 84 of it are the bracketed markers a listing carries — `[新]`, `[字]`,
+  `[終]`, `[再]` — drawn on a television as one boxed glyph and written down
+  everywhere else as the word inside the box, which is what comes out here. A
+  recorder writes them into the name it puts in a playlist, so turning row 90
+  away wholesale cost the first episode of a run the one thing that said so.
+  The rest of those rows — the weather and sport symbols a caption uses, and the
+  units — are still the geta mark: a programme name does not carry them, and a
+  table half remembered is worse than a mark that says plainly that something
+  was there.
 - **The last eight cells of a kana set are punctuation, not kana.** Rows 4 and
   5 of JIS are not full, and ARIB spends what is left on `ー` `。` `「` `」`
   `、` `・`. Miss them and a programme name reads
@@ -675,6 +686,37 @@ a DVD — four gigabytes with a discontinuity in the tail — it came back with
 and now reports it, as `index::Index::end`; the container's own answer is kept
 wherever it is the longer of the two, so a container that knows its length
 keeps it.
+
+### The container's seek table has to reach the end to be worth having
+
+`--index auto` asks the container for its seek table before walking the packets,
+because reading a table is free and walking four gigabytes is not. A program stream
+has no such table. What libavformat hands back for one is whatever its probe happened
+to index on the way to the first few frames — on a twelve and a half minute title,
+**eight entries covering the first four seconds**.
+
+Taken at face value that is worse than no index at all. A cut anywhere past the
+fourth second finds no entry point to copy from and re-encodes the whole title, and
+`--scenes` pulls every boundary in the recording onto the same picture.
+
+So the table is asked the one question that costs nothing: **does it reach the end of
+the recording**, measured against its own spacing? A table that stops where the probe
+stopped is declined and the walk answers instead. The same cut then copies 98.2%, and
+the scene list has 249 entries rather than one repeated.
+
+### A DVD's sound is LPCM in a stream nothing else declares
+
+DVD linear PCM rides in a private stream whose framing only a DVD describes. Written
+out under the stream type that means "some private data" — which is what the muxer
+reaches for — every reader named the track `bin_data` and played silence.
+
+It goes out as **Blu-ray LPCM** instead, which is the shape a transport stream has for
+exactly these samples. That alone fixes an `.m2ts` and a disc, where the muxer
+declares it properly. A plain `.ts` needed
+[the map written again](../technical/broadcast-ts.md#putting-the-recordings-own-tables-back),
+and a recording that never was a broadcast had no map pass at all; it gets one now,
+rebuilt from what the muxer itself wrote, with that one correction and nothing else
+added.
 
 ### A disc that does not say how often pictures arrive
 

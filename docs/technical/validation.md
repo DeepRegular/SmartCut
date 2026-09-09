@@ -178,6 +178,17 @@ These only surfaced on real material:
   bitstream and hiding them with an edit list, which the elementary-stream
   concatenation approach cannot express. It is a non-issue on material with regular
   IDRs, which covers most broadcast H.264.
+- **A copy spliced onto an entry point that is not an IDR can hand back one picture
+  out of order** (see [pitfall 10](algorithm.md#10-the-picture-order-counts-either-side-of-a-splice-are-not-one-anothers)).
+  Nothing is decoded wrongly — the pictures after a recovery point were checked
+  against the recording itself — but the counts the two sides of the seam are ordered
+  by were written by different encoders, so one picture of the outgoing scene can be
+  handed back after the incoming one. On the disc it was found on, twelve cuts
+  produced five such pictures; `--clean-joins` took that to two by reaching for an
+  IDR instead, and the two are joins with no IDR within two seconds. It is off by
+  default because it costs exactness: the stretch it re-encodes measures 51 dB
+  against a copy of the same pictures, which is bit-exact. Material that reorders
+  nothing — MPEG-2, VC-1 — is unaffected.
 - **The Python leading-picture reference test samples one place in the file** and
   applies the result to the whole thing, assuming the encoder does not change its mind
   partway. The Rust implementation does not need this, since `nal_ref_idc` can be read

@@ -259,6 +259,15 @@ program stream does not record its own, and libavformat has been seen to work ou
 seconds for an hour of DVD. `factsOf` takes the walk's answer where there is one and the
 container's only until then, never the other way round.
 
+**And the walk is not always what runs.** Opening a recording asks whoever already
+knows: a recording on a disc has an entry point map beside it — the disc wrote one —
+and an MP4 or a Matroska file carries a seek table of its own. `scan_cached_reporting`
+tries the disc's index, then the container's, then the walk over the packets, which is
+what answers for a transport stream because it has neither. On an 81 GB UHD title that
+is the difference between under a second and eight minutes forty-five. A container
+table is only taken where it reaches the end of the recording; a program stream's
+probe leftovers are declined, [as on the command line](disc.md#the-containers-seek-table-has-to-reach-the-end-to-be-worth-having).
+
 ### Between the two windows
 
 The two windows are separate documents, so nothing passes between them but events. Three
@@ -1191,6 +1200,29 @@ container had been tried**. TS × sample-accurate has been added to
   was empty during building, and `shot_at` quietly returned the picture at 0.6 s. This too now
   means "the very first", and the boundary is **the first entry point** rather than 0. Nothing
   before it can be decoded anyway, which removes an entire pass of aiming, missing and retrying.
+
+### A decoder handed a subset of a stream cannot order what comes out of it
+
+Both paths that read only the entry pictures — the strip's own decode and the
+thumbnail pass behind it — send the key packets to the decoder and nothing else, which
+is the whole point: an entry picture decodes on its own, so everything between them
+can go by unparsed. But a decoder orders its output by the picture order count, and
+**the counts of pictures that were not consecutive say nothing about which comes
+first.** Fed the entry pictures of a pressed Blu-ray alone, one H.264 decoder handed
+back 1814 of the disc's 1992, a tenth of them out of order and one of them eight
+seconds early.
+
+Both halves of that are damage. A picture arriving before one already collected is
+measured against the wrong neighbour for the scene marks, and one arriving behind the
+spacing is dropped for being too close to it — while in the strip, a picture from past
+the end of the run being drawn stopped the run there with its remaining cells empty.
+
+Each key packet is **drained on its own** now, because it was sent on its own, and
+what comes out is the order the file holds. The disc's thumbnail track goes from 1814
+pictures to all 1992, none out of order and none astray; the strip answers 40 of 40
+entry points where it answered 32, and does it in half the time. Material that
+reorders nothing — an interlaced MPEG-2 recording — is unaffected either way, at 2941
+of 2941 before and after.
 
 ### Refinement — the mark is an I picture, the cut is just before it
 

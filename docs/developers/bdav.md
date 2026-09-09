@@ -144,11 +144,22 @@ change — every twelve seconds of time or every 131,072 packets of position,
 whichever comes first. On a half-hour recording that is about 3,600 fine
 entries and 300 coarse ones.
 
-The times are the 45 kHz a playlist counts in, which is the presentation clock
-halved, and the positions come from the byte offset the packet scan recorded
-for each access point, divided by 192. `tests/bdav_index.py` follows every one
-of them into the stream and checks that the packet it names begins a picture
+**The times here are not the playlist's tick.** An entry point map carries
+`PTS_EP_start`, which is the picture's own presentation time stamp —
+thirty-three bits at 90 kHz, the number the stream itself carries — and it is
+the one place in a disc's index that counts in that clock rather than in the
+playlist's half of it. Written in the playlist's 45 kHz, as this did before
+0.5.4, every entry sat at half the time it belonged to: a player seeking into
+one of these discs landed twice as far in as it was asked, and this program
+reading its own disc back planned a cut against times half the truth, which on
+a short recording put a boundary between two pictures and left the segment with
+none. `tests/bdav_index.py` had checked the entries against the same mistake
+and so agreed with it; it reads the stamp as the stamp now, and follows every
+one of them into the stream to check that the packet it names begins a picture
 at the time it claims.
+
+The positions come from the byte offset the packet scan recorded for each
+access point, divided by 192.
 
 ## What the playlist says
 
@@ -333,7 +344,20 @@ image this program reads and everything else refuses:
 
 A file longer than 1,073,739,776 bytes is written as several extents, because
 that is what a 30 bit length field with a 2 KB block comes to -- the same
-split the reader sees on discs written by burners.
+split the reader sees on discs written by burners. **A file so large that its
+extents no longer fit in one block is refused**, rather than written as though
+it were whole: an extent is a gigabyte and a long allocation descriptor is
+sixteen bytes, so a block holds the description of about 114 GB, and the
+padding step used to `resize` a file entry past that back down to a block and
+finish the image without a word. An image that says it is done and is not is
+the worst answer available here.
+
+**A file a UDF volume cannot name is named rather than dropped.** The names
+written here are plain ASCII of 200 characters or fewer, which is what a disc
+of recordings has — the files on one are `00001.m2ts` and `info.bdav` — but the
+folder handed over is whatever the caller named. Anything else is left out of
+the image, and now said so, with up to four of the names printed the way the
+folder spells them. A dot-file is left out silently, being nobody's recording.
 
 ## What was checked
 

@@ -178,3 +178,41 @@ A tail is therefore written only when it is at least half a frame wide, for the 
 reason the head has to be a whole one; the Python reference draws the line in the
 same place. As a net under both, a re-encode segment whose frame count works out to
 zero is not emitted at all.
+
+### 10. The picture order counts either side of a splice are not one another's
+
+A decoder hands its pictures back in picture-order-count order, and the counts on
+the two sides of a seam were written by different encoders. The re-encoded `head`
+opens a coded video sequence of its own and counts from nought; the copied `body`
+spliced on after it carries the counts the recording gave it.
+
+Where the copied segment begins on an **IDR** that settles itself: the sequence
+restarts and the decoder empties what it was holding. But a pressed Blu-ray mostly
+puts the other kind of entry point there — an I picture with a recovery point, which
+restarts nothing — and where the head's last count lands above the copied picture's,
+the two come out of the decoder the wrong way round: one picture of the outgoing
+scene handed back a frame *after* the incoming one. On one disc, a set of twelve cuts
+had five such pictures.
+
+**Nothing is decoded wrongly.** The pictures after a recovery point decode exactly,
+checked against the recording itself; only the order one of them comes out in is
+wrong. `--clean-joins` spends a little more re-encoding to reach an IDR instead,
+which on that disc took the five to two — the two being joins with no IDR within
+reach. What it costs is exactness: the stretch between the two entry points stops
+being copied and becomes a re-encode, measured at 51 dB against a decode of the same
+pictures with their own references. That is a good re-encode and it is still not the
+recording, so this is off unless it is asked for.
+
+How far it is worth reaching is the other half. `examples/idrdiag.rs` walks a
+recording and prints the wait for a clean entry point from each of its own, and the
+four H.264 discs to hand disagree completely: two wait a second or three at the
+median, and one holds a **single** IDR across a twenty-six minute title, where the
+median wait is thirteen minutes. So the reach is bounded at two seconds, the plan is
+left exactly as it was wherever nothing clean is within that, and material that
+reorders nothing — MPEG-2 and VC-1, which state each picture's display order within
+its own group — never moves at all.
+
+Reading this needs the recording in hand, and on a disc the index was never walked:
+it came off the disc's own table. So planning gained an entry point that has the
+recording, `plan_on`, while `plan` stays the arithmetic. It costs a handful of seeks
+rather than a pass — the byte each entry point begins at is already known.

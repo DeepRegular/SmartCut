@@ -101,7 +101,7 @@ Every build except the `.deb` bundles FFmpeg, so there is nothing else to instal
 |---|---|---|
 | **Linux** | `SmartCut_0.5.6_amd64.AppImage` | Make it executable and run it |
 | **Linux** | `SmartCut-0.5.6-linux-x86_64.tar.gz` | Unpack and run `./smartcut`. Use this if you would rather not deal with FUSE |
-| **Linux (Debian/Ubuntu)** | `smartcut_0.5.6_amd64.deb` | `sudo apt install ./smartcut_0.5.6_amd64.deb`. Only 3.2 MB, because it links against your system FFmpeg |
+| **Linux (Debian/Ubuntu)** | `smartcut_0.5.6_amd64.deb` | `sudo apt install ./smartcut_0.5.6_amd64.deb`. Only 3.3 MB, because it links against your system FFmpeg |
 | **Windows** | `SmartCut_0.5.6_x64-setup.exe` | Installer |
 | **Windows** | `smartcut-portable-x64-0.5.6.zip` | Unzip and run `smartcut.exe` |
 
@@ -297,7 +297,7 @@ one.
 | **Developers** | [Rust core](docs/developers/rust-core.md) ・ [Design](docs/developers/design.md) ・ [Building](docs/developers/building.md) ・ [Distribution](docs/developers/distribution.md) ・ [Reading a disc](docs/developers/disc.md) |
 
 If you only read one page, make it
-[the pitfalls](docs/technical/algorithm.md#pitfalls): the eight reasons why "just
+[the pitfalls](docs/technical/algorithm.md#pitfalls): the ten reasons why "just
 cut on GOP boundaries and concatenate the pieces" does not work, in the order they
 were hit.
 
@@ -307,7 +307,7 @@ were hit.
 rust/     Rust core (smartcut_core), the VC-1 encoder and the CLI   <- the real implementation
 gui/      Tauri v2 + vanilla JS GUI
 smartcut/ Python reference implementation     <- test oracle
-tests/    19 end-to-end suites, 297 checks
+tests/    20 end-to-end suites, 352 checks
 docs/     Documentation
 ```
 

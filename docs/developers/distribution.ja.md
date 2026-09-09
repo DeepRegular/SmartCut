@@ -89,8 +89,8 @@ cargo のクレート名は `gui` なので、放っておくと Tauri はその
 
 | 成果物 | サイズ | FFmpeg | 必要条件 |
 |---|---|---|---|
-| `SmartCut-0.5.6-linux-x86_64.tar.gz` | 209.0 MB | 同梱 | glibc 2.39 以上。FUSE 不要 |
-| `smartcut_0.5.6_amd64.deb` | 3.2 MB | システムのものを使用 | FFmpeg 7.1（Debian 13 / Ubuntu 25.04 以降） |
+| `SmartCut-0.5.6-linux-x86_64.tar.gz` | 209.3 MB | 同梱 | glibc 2.39 以上。FUSE 不要 |
+| `smartcut_0.5.6_amd64.deb` | 3.3 MB | システムのものを使用 | FFmpeg 7.1（Debian 13 / Ubuntu 25.04 以降） |
 
 **tar.gz の中身は AppImage と同じ AppDir を展開したものである。** linuxdeploy が
 `ldd` を辿って集めた 745 個のライブラリがそのまま `app/` にあり、`./smartcut` は
@@ -146,8 +146,8 @@ Linux の開発 VM から `x86_64-pc-windows-msvc` へクロスビルドして�
 
 | 成果物 | サイズ | 内容 |
 |---|---|---|
-| NSIS インストーラ | 53.2 MB | インストール後 170.1 MB（exe 11.8 MB ＋ FFmpeg の DLL 8 個） |
-| ポータブル zip | 66.5 MB | 同じ一式。展開して `smartcut.exe` を実行する |
+| NSIS インストーラ | 53.4 MB | インストール後 170.1 MB（exe 11.8 MB ＋ FFmpeg の DLL 8 個） |
+| ポータブル zip | 66.7 MB | 同じ一式。展開して `smartcut.exe` を実行する |
 
 **移植のために書き直す必要があったコードは 1 か所だけ、音声出力である。** ほかは
 すべて libav を通るので `Command::new` も POSIX パスも無い。必要だったのは

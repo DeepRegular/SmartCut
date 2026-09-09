@@ -100,7 +100,7 @@ deb 以外はすべて FFmpeg を同梱しているので、ほかに用意す�
 |---|---|---|
 | **Linux** | `SmartCut_0.5.6_amd64.AppImage` | 実行権限を付けて起動します |
 | **Linux** | `SmartCut-0.5.6-linux-x86_64.tar.gz` | 展開して `./smartcut` を実行します。FUSE を使いたくない場合はこちらです |
-| **Linux (Debian/Ubuntu)** | `smartcut_0.5.6_amd64.deb` | `sudo apt install ./smartcut_0.5.6_amd64.deb`。システムの FFmpeg にリンクするので 3.2 MB で済みます |
+| **Linux (Debian/Ubuntu)** | `smartcut_0.5.6_amd64.deb` | `sudo apt install ./smartcut_0.5.6_amd64.deb`。システムの FFmpeg にリンクするので 3.3 MB で済みます |
 | **Windows** | `SmartCut_0.5.6_x64-setup.exe` | インストーラ |
 | **Windows** | `smartcut-portable-x64-0.5.6.zip` | 展開して `smartcut.exe` を実行します |
 
@@ -291,7 +291,7 @@ LPCM を入れる箱が無いので、MP4 で出力するときは同じサン�
 | **開発者向け** | [Rust コア](docs/developers/rust-core.ja.md) ・ [設計](docs/developers/design.ja.md) ・ [ビルド](docs/developers/building.ja.md) ・ [配布](docs/developers/distribution.ja.md) ・ [ディスクを読む](docs/developers/disc.ja.md) |
 
 1 ページだけ読むなら[実装上の難所](docs/technical/algorithm.ja.md#実装上の難所)を
-おすすめします。「GOP 単位で切って繋ぐだけ」では済まない 8 つの理由を、実際に
+おすすめします。「GOP 単位で切って繋ぐだけ」では済まない 10 の理由を、実際に
 踏んだ順に並べてあります。
 
 ## リポジトリの構成
@@ -300,7 +300,7 @@ LPCM を入れる箱が無いので、MP4 で出力するときは同じサン�
 rust/     Rust コア（smartcut_core）と VC-1 エンコーダと CLI  ← 本体
 gui/      Tauri v2 + バニラ JS の GUI
 smartcut/ Python リファレンス実装             ← テストオラクル
-tests/    E2E テスト 19 スイート・297 チェック
+tests/    E2E テスト 20 スイート・352 チェック
 docs/     ドキュメント
 ```
 

@@ -8,7 +8,7 @@ of each one.
 If you want to use the program, start with [the GUI guide](user-guide/gui.md).
 If you want to understand how it works, start with
 [the algorithm](technical/algorithm.md), and especially with
-[the pitfalls](technical/algorithm.md#pitfalls): the eight reasons why "just cut
+[the pitfalls](technical/algorithm.md#pitfalls): the ten reasons why "just cut
 on GOP boundaries and concatenate" does not work.
 
 ## User Guide
@@ -24,7 +24,7 @@ on GOP boundaries and concatenate" does not work.
 
 | | |
 |---|---|
-| [Algorithm](technical/algorithm.md) | How a cut is split into head, body and tail, and the eight pitfalls that make it harder than it looks |
+| [Algorithm](technical/algorithm.md) | How a cut is split into head, body and tail, and the ten pitfalls that make it harder than it looks |
 | [Validation](technical/validation.md) | Frame-hash verification results, testing against real broadcast recordings, and the known limits |
 | [Broadcast TS](technical/broadcast-ts.md) | PID layout, the recording's own tables, captions and programme information, partial transport streams, ADTS, L-SMASH and DGIndex |
 | [Audio](technical/audio.md) | Smart rendering applied to audio, boundary error, MPEG-2 AAC framing, downmixing, choosing the output codec, and multi-track broadcasts |

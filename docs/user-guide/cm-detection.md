@@ -67,6 +67,14 @@ reliable and ten times faster, so the logo pass is skipped even with "use the lo
 too" ticked. On the Nihonkai TV recording that took the analysis from 50 seconds
 to 7.
 
+**The window and the command line take the same three answers.** Subtitle resets
+where there are any; the logo with the silences where the logo goes away; and where a
+logo was found and never went away, **no commercials at all** — the programme never
+left the air, which is an answer rather than a failure to find one. `--detect-cm`
+used to be missing that last arm and fell through to the silences instead, offering a
+block on a recording the window would have left alone. It prints which of the three
+it took beside the count.
+
 ## Why the block lengths are a good sanity check
 
 All three recordings with commercials produce block lengths that are **exact
@@ -148,6 +156,32 @@ silence every 15 seconds. The BS Fuji recording has 91 silences in 1440 seconds,
 every 16 s, so landing on the grid carries almost no information by itself. What had
 to be checked was not "it lands on the grid" but "**it lands on the grid with no
 gaps**".
+
+### Then the run was being counted wrong, and the score leaned on it
+
+Both of those depend on how long a chain of grid-aligned neighbours a silence belongs
+to. The walk that counts the chain searched the list from index nought in **both**
+directions, so the backward half stepped straight to the earliest neighbour on the
+grid and skipped every junction between. On a break of three junctions a minute
+apart, the last one chained sixty seconds back to the first, found nothing before
+that, and counted a run of two where its neighbours counted three: it scored 0.51
+against their 0.68, fell under the threshold, and the break was left with two
+junctions and thrown away for having too few. On a half-hour broadcast with no logo
+and no subtitle resets, that was the whole of the detection — **nothing found where
+there is a sixty-second break**. Each direction now takes the *next* junction its own
+way, rather than the furthest one that happens to sit on the grid.
+
+**And counted properly, the chain then decided too much.** A pause every fifteen
+seconds is what conversation sounds like, so in a talkative programme the chain runs
+long everywhere and saturates. At the weights it had — 0.35 for the length of the
+silence, 0.65 for the chain — a 0.41 s pause, the shortest length this even looks at,
+chained four deep and scored 0.63, over the 0.6 a block is built from, and bridged
+the pauses either side of it into twenty-nine seconds of "commercial" in a recording
+that has none.
+
+The two halves are **evenly weighted** now, 0.5 and 0.5. That pause scores 0.58 and
+the run it would have bridged never forms, while a real junction — a second of
+silence — clears the line on the strength of its own length.
 
 ### Ideas tried and dropped
 

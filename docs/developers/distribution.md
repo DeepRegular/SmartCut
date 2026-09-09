@@ -92,8 +92,8 @@ only). The bundle *files* Tauri writes are named after `productName` instead —
 
 | Artifact | Size | FFmpeg | Requires |
 |---|---|---|---|
-| `SmartCut-0.5.6-linux-x86_64.tar.gz` | 209.0 MB | Bundled | glibc 2.39 or newer. No FUSE needed |
-| `smartcut_0.5.6_amd64.deb` | 3.2 MB | Uses the system's | FFmpeg 7.1 (Debian 13 / Ubuntu 25.04 and later) |
+| `SmartCut-0.5.6-linux-x86_64.tar.gz` | 209.3 MB | Bundled | glibc 2.39 or newer. No FUSE needed |
+| `smartcut_0.5.6_amd64.deb` | 3.3 MB | Uses the system's | FFmpeg 7.1 (Debian 13 / Ubuntu 25.04 and later) |
 
 **The tar.gz contains the same AppDir as the AppImage, extracted.** The 745 libraries
 linuxdeploy gathered by following `ldd` sit in `app/` as they are, `./smartcut` is a
@@ -149,8 +149,8 @@ Cross-built from the Linux development VM to `x86_64-pc-windows-msvc`.
 
 | Artifact | Size | Contents |
 |---|---|---|
-| NSIS installer | 53.2 MB | 170.1 MB installed (11.8 MB exe plus 8 FFmpeg DLLs) |
-| Portable zip | 66.5 MB | The same set. Unzip and run `smartcut.exe` |
+| NSIS installer | 53.4 MB | 170.1 MB installed (11.8 MB exe plus 8 FFmpeg DLLs) |
+| Portable zip | 66.7 MB | The same set. Unzip and run `smartcut.exe` |
 
 **Exactly one piece of code had to be rewritten for the port: audio output.** Everything
 else goes through libav, so there is no `Command::new` and no POSIX path. All that was
