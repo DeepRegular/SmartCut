@@ -1,5 +1,5 @@
 use anyhow::{bail, Context, Result};
-use smartcut_core::{cut, index, plan, CutOptions, PlanOptions};
+use smartcut_core::{cut, index, plan_on, CutOptions, PlanOptions};
 
 fn fmt_hms(t: f64) -> String {
     let h = (t / 3600.0).floor() as i64;
@@ -145,6 +145,7 @@ fn main() -> Result<()> {
     let mut keeps: Vec<(f64, f64)> = Vec::new();
     let mut cuts: Vec<(f64, f64)> = Vec::new();
     let mut allow_open_gop = true;
+    let mut clean_join = false;
     let mut output: Option<String> = None;
     let mut analyze = false;
     let mut index_kind = "auto".to_string();
@@ -199,6 +200,7 @@ fn main() -> Result<()> {
                 cuts.push(parse_range(args.get(i).context("--cut needs a range")?)?);
             }
             "--no-open-gop" => allow_open_gop = false,
+            "--clean-joins" => clean_join = true,
             "--detect-cm" => detect_cm = true,
             "--scenes" => scenes = true,
             "--audio-es" => audio_es = true,
@@ -405,10 +407,15 @@ fn main() -> Result<()> {
         bail!(
             "usage: smartcut <input> [--keep START-END]... [--cut START-END]... \
              [--drop-stream INDEX]... [--tables partial|broadcast|muxer] [--no-open-gop] \
+             [--clean-joins] \
              [--vc1-quant 3..31] [--title N] [-o OUTPUT | --bdav FOLDER]\n\
              <input> is a recording, or a disc -- a BDAV, BDMV or VIDEO_TS folder, \
              or an .iso of one -- whose recordings are listed when no --title \
              is given\n\
+             --clean-joins spends up to two seconds of re-encoding at the start \
+             of each range to reach an entry point the copy can be spliced onto \
+             without a picture coming out of the decoder in the wrong order; \
+             what it costs is that those seconds stop being an exact copy\n\
              --bdav writes the cut onto a disc of recordings in FOLDER rather than \
              into a file; --disc-title, --programme, --channel, --about and --made \
              fill in what its index says, which is otherwise taken from what the \
@@ -890,8 +897,12 @@ fn main() -> Result<()> {
         }
     }
 
-    let opts = PlanOptions { allow_open_gop, ..Default::default() };
-    let plans = plan(&src.video, src.duration, &src.points, &ranges, &opts);
+    let opts = PlanOptions {
+        allow_open_gop,
+        clean_join: clean_join.then_some(2.0),
+        ..Default::default()
+    };
+    let plans = plan_on(&src, &ranges, &opts);
 
     let total: f64 = plans.iter().map(|p| p.copied() + p.reencoded()).sum();
     println!("\nplan  : {} range(s), {total:.3}s output", plans.len());

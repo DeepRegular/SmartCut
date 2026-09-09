@@ -106,11 +106,17 @@ pub struct PlanOptions {
     pub allow_open_gop: bool,
     /// Shorter copies buy nothing but a seam; re-encode instead.
     pub min_copy: Option<f64>,
+    /// How much more of a range to re-encode to reach an entry point a copy
+    /// can be joined onto cleanly, in seconds.
+    ///
+    /// **Off unless asked for, because what it buys is smaller than what it
+    /// costs.** See [`clean_the_join`] for both halves of that.
+    pub clean_join: Option<f64>,
 }
 
 impl Default for PlanOptions {
     fn default() -> Self {
-        Self { allow_open_gop: true, min_copy: None }
+        Self { allow_open_gop: true, min_copy: None, clean_join: None }
     }
 }
 
@@ -268,6 +274,137 @@ pub fn plan(
     opts: &PlanOptions,
 ) -> Vec<RangePlan> {
     ranges.iter().map(|&(a, b)| plan_range(video, duration, points, a, b, opts)).collect()
+}
+
+/// As [`plan`], and then moved off the entry points a copy cannot be joined
+/// onto cleanly.
+///
+/// The reading of the recording is what [`plan`] cannot do for itself: which
+/// entry points restart the coded video sequence is not in the index, and on
+/// a disc the index was never walked at all -- it came off the disc's own
+/// table. So this is the entry point for a caller that has the recording in
+/// hand, and [`plan`] stays the arithmetic.
+pub fn plan_on(src: &crate::Source, ranges: &[(f64, f64)], opts: &PlanOptions) -> Vec<RangePlan> {
+    let mut plans = plan(&src.video, src.duration, &src.points, ranges, opts);
+    for p in &mut plans {
+        clean_the_join(src, p, opts);
+    }
+    plans
+}
+
+/// Move the start of a range's copied body onto an entry point that restarts
+/// the coded video sequence, re-encoding the little more that takes.
+///
+/// **What this fixes is a picture out of order at the seam.** A decoder hands
+/// its pictures back in picture-order-count order, and the counts either side
+/// of a splice are not one another's: the re-encoded head opens a coded video
+/// sequence of its own and counts from nought, while a copied segment that
+/// begins on an I picture with a recovery point -- which is what a Blu-ray
+/// mostly puts at an entry point -- carries the counts the recording gave it
+/// and restarts nothing. Where the head's last count lands above the copied
+/// picture's, the two come out of the decoder the wrong way round. Joining
+/// onto an IDR instead settles it, because an IDR restarts the counting. On
+/// one disc that took a set of twelve cuts from five pictures out of order to
+/// two, the two being joins with no IDR within reach.
+///
+/// **What it costs is exactness.** The stretch between the two entry points
+/// stops being copied and starts being re-encoded, and measured against a
+/// decode of the same pictures with their own references, a copy of them is
+/// bit-exact where a re-encode of them is 51 dB. That is a good re-encode and
+/// it is still not the recording. A program whose whole purpose is to copy
+/// what it can does not pay that by default -- and the picture the copy makes
+/// is *right*, checked against the recording, so the pictures after a
+/// recovery point are not mispredicted the way the seam suggests. All that is
+/// wrong is the order one of them comes out in.
+///
+/// So this is off unless the caller asks, and then only while the reach is
+/// short: see [`PlanOptions::clean_join`]. Where the next clean entry point is
+/// further off than that -- on one disc of the four measured, the whole title
+/// held a single IDR and the median wait was thirteen minutes -- the join is
+/// left as it was.
+///
+/// Only a range whose head is already being re-encoded is moved. A range the
+/// caller placed exactly on an entry point is a range the caller meant, and
+/// re-encoding where none was asked for would be a surprise.
+fn clean_the_join(src: &crate::Source, plan: &mut RangePlan, opts: &PlanOptions) {
+    let Some(budget) = opts.clean_join.filter(|b| *b > 0.0) else { return };
+    if plan.segments.len() < 2
+        || plan.segments[0].kind != SegmentKind::Reencode
+        || plan.segments[1].kind != SegmentKind::Copy
+    {
+        return;
+    }
+    let was = plan.segments[1].start;
+    let Some(clean) = clean_start(src, was, was + budget) else { return };
+    if clean <= was + 1e-6 {
+        return;
+    }
+    // A body shortened past what a copy is worth is a body that should have
+    // been re-encoded whole, and that is [`plan_range`]'s decision, not this
+    // one's. Left alone rather than second-guessed.
+    let fd = src.video.frame_duration();
+    let min_copy = opts.min_copy.unwrap_or_else(|| (2.0 * fd).max(0.5));
+    if plan.segments[1].end - clean < min_copy {
+        return;
+    }
+    let fps = if src.video.frame_rate > 0.0 { src.video.frame_rate } else { 30.0 };
+    let frames = |a: f64, b: f64| ((b * fps).round() - (a * fps).round()).max(0.0) as usize;
+    plan.segments[0].end = clean;
+    plan.segments[0].frames = frames(plan.segments[0].start, clean);
+    plan.segments[1].start = clean;
+    plan.segments[1].frames = frames(clean, plan.segments[1].end);
+}
+
+/// The first entry point in `from..=until` that a copy can be joined onto
+/// cleanly, if there is one.
+///
+/// Reads the recording, one entry point at a time and no more of it than the
+/// pictures at those points: the byte each of them begins at is in the index,
+/// so this is a handful of seeks rather than a pass. See
+/// [`crate::bitstream::starts_a_sequence`] for what makes a start clean.
+pub fn clean_start(src: &crate::Source, from: f64, until: f64) -> Option<f64> {
+    let eps = src.video.frame_duration() / 2.0;
+    let wanted: Vec<f64> = src
+        .points
+        .iter()
+        .filter(|p| p.time >= from - eps && p.time <= until + eps)
+        .map(|p| p.time)
+        .collect();
+    if wanted.is_empty() {
+        return None;
+    }
+    let mut ictx = crate::input::demux(&src.input.url).ok()?;
+    let idx = src.video.stream_index;
+    let tb = src.video.time_base;
+    for want in wanted {
+        crate::index::seek_to_entry(&mut ictx, src, want)?;
+        let mut clean = false;
+        for (stream, packet) in ictx.packets() {
+            if stream.index() != idx {
+                continue;
+            }
+            let Some(pts) = packet.pts() else { continue };
+            let t = pts as f64 * tb - src.start_time;
+            // Past the picture asked about, which means the seek landed late
+            // and this entry point cannot be judged. Judged as unclean, so
+            // that a misread never moves a boundary.
+            if t > want + eps {
+                break;
+            }
+            if (t - want).abs() <= eps && packet.is_key() {
+                clean = crate::bitstream::starts_a_sequence(
+                    packet.data().unwrap_or(&[]),
+                    &src.video.codec,
+                    src.video.framing,
+                );
+                break;
+            }
+        }
+        if clean {
+            return Some(want);
+        }
+    }
+    None
 }
 
 #[cfg(test)]

@@ -138,6 +138,39 @@ pub fn is_reference(
     }
 }
 
+/// Does the picture in this packet restart the coded video sequence?
+///
+/// **The two things a Blu-ray or a broadcast may put at an entry point are
+/// not equally good places to splice onto.** An IDR restarts everything: the
+/// pictures after it reference nothing before it, and a decoder meeting one
+/// empties what it was holding. An I picture with a recovery point is only a
+/// place to *start reading* -- the pictures after it may still reference
+/// pictures before it, which is exactly what a splice does not have. Joining
+/// a copied segment onto one of those leaves its opening pictures predicted
+/// from whatever the decoder happens to be holding, which after a re-encoded
+/// run is the pictures this program just wrote; on one disc that put a
+/// picture of the outgoing scene a frame *after* the incoming one.
+///
+/// Every codec here other than H.264 and HEVC states its pictures' display
+/// order within the group they belong to and starts each group afresh, so
+/// every entry point of one of those is already a clean start and the answer
+/// is yes.
+pub fn starts_a_sequence(data: &[u8], codec: &str, framing: NalFraming) -> bool {
+    match codec {
+        "h264" => nal_payloads(data, framing)
+            .iter()
+            .any(|nal| nal.first().is_some_and(|b| b & 0x1F == 5)),
+        // 19 and 20 are the IDRs. The other intra random access pictures --
+        // a clean random access, chiefly -- are the recovery point's
+        // equivalent here: a place to start reading whose leading pictures
+        // may reference what came before.
+        "hevc" => nal_payloads(data, framing)
+            .iter()
+            .any(|nal| nal.first().is_some_and(|b| matches!((b >> 1) & 0x3F, 19 | 20))),
+        _ => true,
+    }
+}
+
 /// Pull the parameter sets out of an `avcC` / `hvcC` extradata blob.
 ///
 /// They have to be re-inserted in front of every copied keyframe. A

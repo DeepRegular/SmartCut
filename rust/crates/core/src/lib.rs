@@ -52,7 +52,7 @@ pub use preview::{
 };
 pub use proxy::{Marks, ProxyOptions};
 pub use thumbs::{ThumbOptions, Track};
-pub use plan::{plan, plan_range, PlanOptions, RangePlan, Segment, SegmentKind};
+pub use plan::{plan, plan_on, plan_range, PlanOptions, RangePlan, Segment, SegmentKind};
 pub use playback_audio::play_audio;
 
 /// A random access point and the leading pictures that hang off it.

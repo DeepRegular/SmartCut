@@ -26,7 +26,7 @@ mod lang;
 
 use base64::Engine as _;
 use serde::{Deserialize, Serialize};
-use smartcut_core::{index, netpath, plan, proxy, seek_index, PlanOptions, SeekIndex, Source};
+use smartcut_core::{index, netpath, plan_on, proxy, seek_index, PlanOptions, SeekIndex, Source};
 use tauri::{Emitter, Manager, State, WebviewUrl, WebviewWindowBuilder};
 
 #[derive(Default)]
@@ -2082,7 +2082,7 @@ fn scene_now(from: f64, dir: i32, app: &tauri::AppHandle) -> Result<Option<f64>,
 }
 
 fn build_plan(src: &Source, ranges: &[(f64, f64)]) -> Vec<smartcut_core::RangePlan> {
-    plan(&src.video, src.duration, &src.points, ranges, &PlanOptions::default())
+    plan_on(src, ranges, &PlanOptions::default())
 }
 
 #[tauri::command]
