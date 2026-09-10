@@ -354,6 +354,23 @@
               </select>
             </span>
           </div>
+          <!-- Only where the recording has the kind of subtitle a DVD draws:
+               a transport stream has no number for one, so either it goes
+               beside the cut untouched or it is converted into the kind a
+               transport stream does carry. See `vobsub.rs` and `pgs.rs`. -->
+          <div class="row" id="row-subtitles" hidden>
+            <span data-i18n="outset.subtitles">DVD の字幕:</span>
+            <span class="drop">
+              <select id="out-subtitles">
+                <option value="beside" selected data-i18n="subtitles.beside">
+                  そのまま傍らに (.idx / .sub)
+                </option>
+                <option value="pgs" data-i18n="subtitles.pgs">
+                  変換してカットの中に (PGS)
+                </option>
+              </select>
+            </span>
+          </div>
           <div class="opts" id="row-keyframes">
             <label class="opt"><input id="out-keyframes" type="checkbox" />
               <span data-i18n="outset.keyframeSidecar">キーフレーム情報を別ファイル (.keyframe) で出力する</span></label>

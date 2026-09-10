@@ -461,6 +461,7 @@ fn read_clip(stream: &Path, on: Option<(&(dyn Fn(&str, f64) + Sync), &str)>) -> 
     let carried: Vec<u16> = std::iter::once(video_pid)
         .chain(src.audios.iter().map(|a| a.pid as u16))
         .chain(src.captions.iter().map(|c| c.pid as u16))
+        .chain(src.graphics.iter().map(|g| g.pid as u16))
         .filter(|pid| *pid != 0)
         .collect();
     let service = crate::si::read_service(&src.input, video_pid, &carried).ok();
@@ -507,6 +508,17 @@ fn read_clip(stream: &Path, on: Option<(&(dyn Fn(&str, f64) + Sync), &str)>) -> 
             pid,
             coding: declared(pid, 0x06),
             attributes: Vec::new(),
+        });
+    }
+    // And the subtitles a disc draws, which a clip index does have a field
+    // for: the coding and the language, which is all one says about a
+    // graphics stream. See [`crate::pgs`].
+    for g in &src.graphics {
+        let pid = g.pid as u16;
+        streams.push(Carried {
+            pid,
+            coding: declared(pid, 0x90),
+            attributes: language_attribute(g.language.as_deref()),
         });
     }
 
@@ -610,6 +622,19 @@ fn video_attributes(v: &crate::VideoInfo) -> Vec<u8> {
 }
 
 /// And a sound track: how many channels, at what rate, in what language.
+/// The three letters a clip index names a language with, and three zeroes
+/// where the recording never said.
+///
+/// A language filled in from nowhere would have a bilingual disc claiming
+/// both its tracks were Japanese.
+fn language_attribute(language: Option<&str>) -> Vec<u8> {
+    let mut three = [0u8; 3];
+    for (slot, b) in three.iter_mut().zip(language.unwrap_or("").bytes()) {
+        *slot = b;
+    }
+    three.to_vec()
+}
+
 fn audio_attributes(a: &crate::AudioInfo) -> Vec<u8> {
     let channels = match a.channels {
         0 | 1 => 1,
@@ -622,15 +647,7 @@ fn audio_attributes(a: &crate::AudioInfo) -> Vec<u8> {
         _ => 1,
     };
     let mut out = vec![(channels << 4) | rate];
-    // Three letters, and three zeroes where the recording never said. A
-    // language field filled in from nowhere would have a bilingual disc
-    // claiming both its tracks were Japanese.
-    let lang = a.language.as_deref().unwrap_or("");
-    let mut three = [0u8; 3];
-    for (slot, b) in three.iter_mut().zip(lang.bytes()) {
-        *slot = b;
-    }
-    out.extend_from_slice(&three);
+    out.extend_from_slice(&language_attribute(a.language.as_deref()));
     out
 }
 

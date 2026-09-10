@@ -2221,6 +2221,34 @@ async fn tracks(path: String) -> Result<Vec<StreamInfo>, String> {
                 optional: true,
             });
         }
+        // The subtitles a disc draws rather than writes. A choice like the
+        // rest: they travel, and a cut that does not want them can say so.
+        for g in &src.graphics {
+            out.push(StreamInfo {
+                index: g.stream_index,
+                kind: "graphics".into(),
+                pid: g.pid,
+                language: g.language.clone(),
+                detail: "PGS".into(),
+                main: false,
+                optional: true,
+            });
+        }
+        // A DVD's subtitles, which do not go into the file at all: they are
+        // written beside it, and which of them travel is answered in the
+        // chooser where a disc is opened rather than here. See
+        // `smartcut_core::vobsub`.
+        for s in &src.subpictures {
+            out.push(StreamInfo {
+                index: usize::MAX,
+                kind: "subpicture".into(),
+                pid: s.id,
+                language: s.language.clone(),
+                detail: "subpicture".into(),
+                main: false,
+                optional: false,
+            });
+        }
         // Listed but not offered: see `StreamInfo::optional`.
         for d in &src.dropped {
             out.push(StreamInfo {
@@ -2752,7 +2780,8 @@ fn streams_to_drop(
         .audios
         .iter()
         .map(|a| (a.pid, a.stream_index))
-        .chain(src.captions.iter().map(|c| (c.pid, c.stream_index)));
+        .chain(src.captions.iter().map(|c| (c.pid, c.stream_index)))
+        .chain(src.graphics.iter().map(|g| (g.pid, g.stream_index)));
     resolve_pids(on, by_index.unwrap_or_default(), &by_pid.unwrap_or_default())
 }
 
@@ -2915,6 +2944,10 @@ async fn export(
     // sent means nothing dropped, which is what a clip nobody opened the
     // menu on amounts to.
     drop_streams: Option<Vec<usize>>,
+    // Where a DVD's subtitles go: "beside" writes the pair next to the cut,
+    // "pgs" converts them into the kind a transport stream carries. Nothing
+    // sent means beside, which is the exact one.
+    subtitles: Option<String>,
     // Streams switched off in the chooser when a disc was read, by PID.
     //
     // A PID and not an index because the chooser answers before anything is
@@ -3004,7 +3037,19 @@ async fn export(
             // answers a downmix: by re-encoding the whole track.
             audio_sample_rate: audio_sample_rate.filter(|&r| r > 0),
             audio_bits: audio_bits.filter(|&b| b > 0),
-            drop_streams: streams_to_drop(&src, drop_streams, drop_pids),
+            subtitles: match subtitles.as_deref() {
+                Some("pgs") => smartcut_core::cut::Subtitles::Pgs,
+                _ => smartcut_core::cut::Subtitles::Beside,
+            },
+            drop_streams: streams_to_drop(&src, drop_streams, drop_pids.clone()),
+            // A DVD's subtitles are named by their substream id, which is
+            // what the chooser sends: they have no stream index to be named
+            // by. See `smartcut_core::SubpictureInfo`.
+            drop_subpictures: drop_pids
+                .unwrap_or_default()
+                .into_iter()
+                .filter(|pid| src.subpictures.iter().any(|s| s.id == *pid))
+                .collect(),
             ..Default::default()
         };
         smartcut_core::cut_with_progress(

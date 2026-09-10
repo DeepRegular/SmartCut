@@ -23,6 +23,7 @@ pub mod index;
 pub mod input;
 pub mod logo;
 pub mod netpath;
+pub mod pgs;
 pub mod plan;
 pub mod playback_audio;
 pub mod preview;
@@ -32,6 +33,7 @@ pub mod si;
 pub mod thumbs;
 pub mod udf;
 pub mod udfw;
+pub mod vobsub;
 
 pub use adts::{AacVersion, AdtsFormat};
 pub use cm::{
@@ -197,6 +199,40 @@ pub struct CaptionInfo {
     pub time_base: f64,
 }
 
+/// A graphics stream: the subtitles a disc draws rather than writes.
+///
+/// Blu-ray's own subtitles are pictures. What arrives is not a statement but
+/// a *display set* -- a composition, a window, a palette, a run-length coded
+/// image -- spread over several packets that mean nothing apart from one
+/// another. That grouping is the only thing that makes this different from
+/// [`CaptionInfo`], and [`crate::pgs`] is where it is dealt with.
+#[derive(Debug, Clone)]
+pub struct GraphicsInfo {
+    pub stream_index: usize,
+    pub pid: i32,
+    pub language: Option<String>,
+    pub time_base: f64,
+}
+
+/// A subpicture stream: the subtitles a DVD draws.
+///
+/// The same kind of thing as [`GraphicsInfo`] and it cannot travel the same
+/// way: a transport stream has a number for a Blu-ray's graphics and none at
+/// all for a DVD's, so these are written beside the cut instead of inside
+/// it. See [`crate::vobsub`].
+///
+/// Named by the substream id the disc gives it -- 0x20 to 0x3F -- because
+/// that is the one name everything agrees on. A DVD's subtitles share one
+/// stream with the sound and are told apart by the byte in front of each
+/// packet, so what libavformat calls a stream index here is a thing it makes
+/// up when it first meets one, and it may not meet one for the first
+/// gigabyte. The disc's own index has known all along.
+#[derive(Debug, Clone)]
+pub struct SubpictureInfo {
+    pub id: i32,
+    pub language: Option<String>,
+}
+
 /// A stream the recording carries that a cut cannot take with it.
 ///
 /// Superimposed crawls and the data broadcast sit on their own PIDs, and
@@ -215,9 +251,10 @@ pub struct DroppedStream {
     /// Its index among the container's streams, which is how it is named
     /// where the `pid` beside it is not a PID. See [`track_name`].
     pub stream_index: usize,
-    /// Which of them it is: `"superimpose"` or `"data"`. A name rather than
-    /// a sentence, because the window says this in the language it is set to
-    /// and the command line says it in English.
+    /// Which of them it is: `"superimpose"`, `"data"`, `"menu"` or
+    /// `"text subtitles"`. A name rather than a sentence, because the window
+    /// says this in the language it is set to and the command line says it
+    /// in English.
     pub what: &'static str,
 }
 
@@ -227,6 +264,10 @@ impl DroppedStream {
         match self.what {
             "superimpose" => "superimposed text",
             "substream" => "a compatibility stream folded into the track written",
+            // The two a disc carries that no cut can take with it. See
+            // [`disc::correct_from_index`].
+            "menu" => "a menu",
+            "text subtitles" => "text subtitles, whose typeface is on the disc",
             _ => "data broadcast",
         }
     }
@@ -255,6 +296,10 @@ pub struct Source {
     pub audios: Vec<AudioInfo>,
     /// Every caption stream. More than one means more than one language.
     pub captions: Vec<CaptionInfo>,
+    /// Every graphics stream: a disc's own subtitles, one per language.
+    pub graphics: Vec<GraphicsInfo>,
+    /// Every subpicture stream, which is what a DVD calls the same thing.
+    pub subpictures: Vec<SubpictureInfo>,
     /// What the recording carries that the output cannot; see
     /// [`DroppedStream`].
     pub dropped: Vec<DroppedStream>,
@@ -607,6 +652,8 @@ fn assemble(
         audio,
         audios,
         captions,
+        graphics,
+        subpictures,
         dropped,
         duration,
         start_time,
@@ -653,6 +700,8 @@ fn assemble(
         audio,
         audios,
         captions,
+        graphics,
+        subpictures,
         dropped,
         seek_margin,
         byte_seekable,
@@ -691,6 +740,8 @@ pub struct Outline {
     pub audio: Option<AudioInfo>,
     pub audios: Vec<AudioInfo>,
     pub captions: Vec<CaptionInfo>,
+    pub graphics: Vec<GraphicsInfo>,
+    pub subpictures: Vec<SubpictureInfo>,
     pub dropped: Vec<DroppedStream>,
     /// The container's own length, which is usually right and on a program
     /// stream can be wildly wrong -- a DVD's four gigabytes have been seen
@@ -729,6 +780,8 @@ impl Outline {
             audio: self.audio,
             audios: self.audios,
             captions: self.captions,
+            graphics: self.graphics,
+            subpictures: self.subpictures,
             dropped: self.dropped,
             duration: self.duration,
             start_time: self.start_time,
@@ -774,10 +827,26 @@ fn outline_of(path: &str) -> Result<(Outline, ff::format::context::Input)> {
         .split(',')
         .any(|n| n.trim() == "mpegts");
 
+    // What the disc's index says this clip carries that a demuxer cannot
+    // name. Read before anything the probe said is believed, because for
+    // these two the probe is guessing: see [`disc::unreadable_streams`].
+    let unreadable = disc::unreadable_streams(path);
+    let indexed = |pid: i32| unreadable.iter().any(|(on, _)| *on == pid);
+
     let stream = ictx
         .streams()
         .best(ff::media::Type::Video)
-        .ok_or_else(|| anyhow!("no video stream in {path}"))?;
+        .ok_or_else(|| {
+            // A disc's menu clips are files of exactly this shape: graphics
+            // and nothing else, no pictures at all. Worth saying, because
+            // "no video stream" reads like a fault in a file that is doing
+            // precisely what it was written to do.
+            if unreadable.iter().any(|(_, what)| *what == "menu") {
+                anyhow!("{path} is one of the disc's menus: it carries a menu's graphics and no pictures, so there is nothing here to cut")
+            } else {
+                anyhow!("no video stream in {path}")
+            }
+        })?;
     let stream_index = stream.index();
     let time_base = f64::from(stream.time_base());
     let params = stream.parameters();
@@ -835,6 +904,7 @@ fn outline_of(path: &str) -> Result<(Outline, ff::format::context::Input)> {
     let audios: Vec<AudioInfo> = ictx
         .streams()
         .filter(|s| s.parameters().medium() == ff::media::Type::Audio)
+        .filter(|s| !indexed(s.id()))
         .map(|s| read_audio(&s))
         // A track the container never managed to describe is not a track
         // this program can carry. It happens on a broadcast recording whose
@@ -870,11 +940,12 @@ fn outline_of(path: &str) -> Result<(Outline, ff::format::context::Input)> {
         .or_else(|| audios.first().cloned());
 
     // Captions are subtitles here only in the sense libav means it: an ARIB
-    // caption stream is not decoded, it is carried. Any other subtitle codec
-    // in a broadcast recording is not one of these and is left alone.
+    // caption stream is not decoded, it is carried. A disc's subtitles are
+    // the other kind and are gathered separately, just below.
     let captions: Vec<CaptionInfo> = ictx
         .streams()
         .filter(|s| s.parameters().id() == ff::codec::Id::ARIB_CAPTION)
+        .filter(|s| !indexed(s.id()))
         .map(|s| CaptionInfo {
             stream_index: s.index(),
             pid: s.id(),
@@ -883,12 +954,53 @@ fn outline_of(path: &str) -> Result<(Outline, ff::format::context::Input)> {
         })
         .collect();
 
+    // The disc's own subtitles, which are drawn rather than written. Kept
+    // apart from the captions above for the one reason [`GraphicsInfo`]
+    // gives: their packets come in groups, and a group is what a cut has to
+    // move. Menus (IGS) and the text format are not here -- a menu is a
+    // thing to press rather than a thing to show, and nothing has ever been
+    // seen to carry the text one.
+    let graphics: Vec<GraphicsInfo> = ictx
+        .streams()
+        .filter(|s| s.parameters().id() == ff::codec::Id::HDMV_PGS_SUBTITLE)
+        .filter(|s| !indexed(s.id()))
+        .map(|s| GraphicsInfo {
+            stream_index: s.index(),
+            pid: s.id(),
+            language: s.metadata().get("language").map(str::to_string),
+            time_base: f64::from(s.time_base()),
+        })
+        .collect();
+
+    // A DVD's subtitles, which are not asked of the container at all: the
+    // disc's own index names them, and it names them before libavformat has
+    // met one. See [`SubpictureInfo`].
+    let subpictures: Vec<SubpictureInfo> = dvd::subtitles_of(path)
+        .map(|s| {
+            s.streams
+                .into_iter()
+                .map(|(id, language)| SubpictureInfo {
+                    id: id as i32,
+                    language,
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+
     // What is being left behind, so it can be said out loud. See
     // [`DroppedStream`].
     let mut dropped: Vec<DroppedStream> = ictx
         .streams()
         .filter_map(|s| {
             let p = s.parameters();
+            // Named by the disc rather than by the probe, above.
+            if let Some((pid, what)) = unreadable.iter().find(|(on, _)| *on == s.id()) {
+                return Some(DroppedStream {
+                    pid: *pid,
+                    stream_index: s.index(),
+                    what,
+                });
+            }
             match (p.medium(), p.id()) {
                 // Not dropped at all: this is the event information table,
                 // and where it belongs is not in a stream. See [`si`], which
@@ -950,22 +1062,22 @@ fn outline_of(path: &str) -> Result<(Outline, ff::format::context::Input)> {
             .flatten(),
     };
 
-    Ok((
-        Outline {
-            path: path.to_string(),
-            input,
-            video,
-            audio,
-            audios,
-            captions,
-            dropped,
-            duration,
-            start_time,
-            byte_seekable,
-            on_a_ts,
-        },
-        ictx,
-    ))
+    let outline = Outline {
+        path: path.to_string(),
+        input,
+        video,
+        audio,
+        audios,
+        captions,
+        graphics,
+        subpictures,
+        dropped,
+        duration,
+        start_time,
+        byte_seekable,
+        on_a_ts,
+    };
+    Ok((outline, ictx))
 }
 
 #[cfg(test)]

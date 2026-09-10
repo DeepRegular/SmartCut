@@ -35,14 +35,14 @@ disc  : AnimeBox_Season1.iso
 
    1  00:00:43.543  Anime Box Season 1 00008  1 mark(s)
        0x1100  AC-3 stereo 48kHz eng
-       0x1200  PGS eng -- a cut cannot carry this
+       0x1200  PGS eng
    2  00:00:11.511  Anime Box Season 1 00002  1 mark(s)
    …
 *  8  00:11:52.003  Anime Box Season 1 00014  4 mark(s)
        0x1100  TrueHD multi 48kHz eng
        0x1101  TrueHD stereo 48kHz jpn
-       0x1200  PGS eng -- a cut cannot carry this
-       0x1201  PGS eng -- a cut cannot carry this
+       0x1200  PGS eng
+       0x1201  PGS eng
 ```
 
 SmartCut asks about a pressed disc rather than swallowing it whole — see
@@ -283,7 +283,7 @@ cutting time; this is what the disc says it wrote.
 Video      / H.264 1080p 23.976fps / PID 0x1011 / the video cannot be left out
 Sound      / TrueHD multi 48kHz    / eng / PID 0x1100
 Sound      / TrueHD stereo 48kHz   / jpn / PID 0x1101
-Subtitles  / PGS                   / eng / PID 0x1200 / a cut cannot carry this
+Subtitles  / PGS                   / eng / PID 0x1200
 Menu       / IGS                   / eng / PID 0x1400 / a cut cannot carry this
 ```
 
@@ -391,6 +391,91 @@ data", and asked to write E-AC-3 it reaches for ATSC's `0x87` rather than
 Blu-ray's `0x84` — but a cut written as a `.ts` keeps
 [the recording's own tables](broadcast-ts.md), and that is what
 the numbers come from.
+
+### The subtitles a disc draws
+
+A broadcast *writes* its subtitles: an ARIB caption statement is one packet
+with one timestamp, and carrying one across a cut is carrying one packet. A
+disc *draws* them. What travels is a **display set** — a composition saying
+where things go, a window, a palette, and the picture itself run-length coded
+— and each piece is its own PES packet with its own timestamp:
+
+```
+PCS  WDS  PDS  ODS  END      the subtitle appears
+PCS  WDS  END                and later, the plane is cleared
+```
+
+So the packets are timed the way a caption's are and travel the same way, but
+they are timed *in groups*, and a group means nothing in halves. That is the
+whole of the difference, and it comes to three rules — [`pgs.rs`](../../rust/crates/core/src/pgs.rs):
+
+1. **A display set is carried whole or not at all.** One that straddles the
+   end of a range is left behind: its pieces would arrive without the
+   composition that gives them meaning.
+2. **What is on screen when a range opens is put up again.** The set that drew
+   it was left behind with the material before the cut, so the cutter reads
+   the eight seconds in front of every kept range, keeps the last display set
+   that can stand on its own, and sends it again at the range's first frame —
+   marked as opening an epoch, because for this output it does.
+3. **What is on screen when a range ends is taken down.** The set that would
+   have cleared it is in the material after the cut. The clear is the standing
+   composition with its objects removed and its number advanced, which is
+   exactly what the disc itself sends to empty a plane.
+
+Rules 2 and 3 are why the eight seconds are read at all, and what a disc does
+says how much is enough. Measured over half an hour of one disc's feature:
+1334 display sets, 386 of them opening an epoch, 561 **acquisition points** —
+the same subtitle sent again, whole, so that a player joining mid-way has it —
+and 387 clearing the plane. A subtitle stands for 2.3 seconds at the median
+and 116 at the longest, but the gap between one self-contained set and the
+next never exceeds 2.8 seconds: however long a subtitle stays up, this disc
+keeps re-sending it. Eight seconds covers that several times over, and covers
+all but the longest-standing subtitle on a disc that never re-sends one at
+all. The read costs a second per kept range and happens only where the
+recording has graphics in it.
+
+**Where they can go.** Into Blu-ray's own framing, where libavformat writes
+the stream type a player expects. Into a plain `.ts` as well — but there the
+muxer writes them as private data of no stated kind, and everything reads that
+back as `bin_data`: carried, declared, and invisible. So the map written over
+the muxer's own says `0x90` and registers the programme as HDMV, which is the
+same correction [the disc's LPCM needs](#the-sound-a-disc-carries) and is made
+in the same pass. Into an MP4 they cannot go at all, and a cut asked for one
+says so.
+
+Menus (IGS) are the same kind of stream doing a different job: a button has a
+state and a target, and both point into a timeline the cut has just taken
+apart. Those are listed to say they are being left behind.
+
+### A menu is not a stream, and the index is the only thing that knows
+
+Two of the things a Blu-ray carries are named by its own index and by nothing
+else, and both of them are left behind — [`disc.rs`](../../rust/crates/core/src/disc.rs):
+
+| | |
+|---|---|
+| **A menu** (`0x91`, IGS) | Interactive graphics: pictures, and buttons with states and navigation commands. The commands point at playlists and titles that do not exist beside a cut, and the composition is timed against a playlist the cut has just taken apart |
+| **Text subtitles** (`0x92`, TextST) | Text with styling, set in a typeface that lives in the disc's `AUXDATA` rather than in the stream. What travelled into a cut would be text nothing could draw — and nothing would try: libavcodec has the codec id `hdmv_text_subtitle` and no decoder behind it |
+
+**Asking a demuxer what is on those PIDs gets an answer, and the answer is a
+guess.** On the disc measured here the menu on `0x1400` came back as **MP3
+audio**, in a clip that also carries pictures and real sound. A cut that
+believed it would have written a menu into the output declared as audio; what
+saved it was that the same probe could not find a sample rate to go with the
+guess, and a track with no rate is left out a few lines later — under a note
+calling it "the sound on pid 0x1400".
+
+So the index answers instead. A PID it says carries either of these is kept
+out of every list a probe would have put it in, and named as what it is:
+
+```text
+audio  : pcm_bluray 48000Hz 2ch  jpn  main   [stream 1 pid 0x1100]
+        not carried: a menu on pid 0x1400
+```
+
+A clip that is *only* a menu — which is what a disc's menu clips are, graphics
+and no pictures at all — says so rather than failing as a recording with
+something missing.
 
 ### The marks
 
@@ -718,6 +803,94 @@ and a recording that never was a broadcast had no map pass at all; it gets one n
 rebuilt from what the muxer itself wrote, with that one correction and nothing else
 added.
 
+### A DVD's subtitles: beside the cut, or converted into it
+
+A DVD draws its subtitles the way a Blu-ray does — a run-length coded picture
+with commands saying where to put it — and there the resemblance stops. A
+Blu-ray's graphics have a transport stream type of their own, `0x90`, and
+[travel inside the cut](#the-subtitles-a-disc-draws). **A DVD's have none.**
+Written into a `.ts` they become private data of no stated kind and everything
+reads them back as `bin_data`: carried, declared, and invisible. There is no
+number to correct that with.
+
+So they are written beside the cut instead, as the **VobSub** pair the rest of
+the world already reads — [`vobsub.rs`](../../rust/crates/core/src/vobsub.rs):
+
+```text
+cut_title.ts     the cut
+cut_title.idx    what the subtitles are, and when each one appears
+cut_title.sub    the subtitle pictures themselves, untouched
+```
+
+Nothing is re-encoded. The `.sub` holds the disc's own units back in the
+program stream framing they arrived in, one to a sector, and the `.idx` is a
+text file of times and file positions. A player opening the cut finds them by
+name.
+
+**The palette is not in the stream.** A unit says "colour 4" and nothing about
+what colour four is: a DVD keeps sixteen of them in the index, beside the chain
+of cells they belong to. So the cut goes back to the disc for the palette of
+the chain the title is cut out of, converts it out of the studio-range luma and
+colour differences a DVD writes, and puts it at the top of the `.idx`. Without
+that a subtitle is legible only by accident.
+
+**Both ends of a kept range are mended**, as they are for a Blu-ray's graphics
+and more simply, because a unit carries its own timing. What was on screen when
+the range opens is written again at its first frame; what is still on screen
+when it ends is taken down by a unit that says stop and nothing else — ten
+bytes, which is what a disc itself sends to clear a plane. That second half is
+not optional: of the units on the disc measured here, **not one carries a stop
+of its own**. Each subtitle stands until the next replaces it, so a cut that
+ended in the middle of one would leave it standing with nothing coming.
+
+**Or converted, where the cut should be one file.** The other answer takes
+the picture out of a DVD's unit and writes it as the kind of subtitle a
+transport stream does carry — a Blu-ray's — so that the subtitles are inside
+the cut and every reader that opens it finds them. `--subtitles pgs`, or the
+one-line question the output settings ask where a DVD is being cut.
+
+Nothing is resampled and no pixel is lost. **Both formats keep a subtitle in
+the same shape**: an index per pixel, run-length coded, and a table of
+colours. What changes is how the runs are spelled — four ways in one, four
+different ways in the other — and how the colours are written down: a DVD says
+red, green and blue and how opaque, a Blu-ray says luma, two colour
+differences and how opaque. libavcodec's own decoder reads the picture out
+(handed the palette from the disc's index, which is the one thing it cannot
+know) and [`pgs.rs`](../../rust/crates/core/src/pgs.rs) writes it back.
+
+What a converted stream needs beyond the pixels is timing, and that is where
+the two formats disagree: a DVD's unit says when it appears and, sometimes,
+when it goes, while a Blu-ray's display sets have to be told both. So the
+composer here holds one subtitle at a time — a new one replaces what was
+standing, a unit that said when to go is taken down at its own moment, and
+what is still up when a range ends is taken down there. It is the same
+mending the two ends of a range get [above](#the-subtitles-a-disc-draws), done
+from the other side.
+
+Two things about the reading are worth writing down, because both cost an
+afternoon:
+
+* **A DVD's subtitles may not be in the recording's stream list at all.** They
+  share one stream with the sound and are told apart by a byte in front of each
+  packet, so libavformat invents a stream the first time it meets one — which
+  on the disc measured here was 400 MB in. Probing that far to open a title is
+  not affordable. The disc's own index has known all along, so the list comes
+  from there and the packets are matched on what they *are* rather than on an
+  index settled in advance.
+* **Seek before discarding, not after.** The eight seconds in front of a range
+  are read with the pictures and the sound thrown away inside libavformat,
+  which is what makes the look-back cheap. Ask for that first and the seek is
+  then refused outright — a recording is seeked by one of its streams, and one
+  that has been thrown away cannot be seeked by — leaving a context that reads
+  nothing at all and a range that quietly opened with no subtitle.
+
+And one about the writing: **a stream has to exist before the file's header
+is written.** The converted stream is this program's own -- there is nothing
+in the recording to copy it from -- and adding it after the header went out
+left the muxer with a stream it had never initialised. What that costs is not
+an error but a segmentation fault, several frames later, inside a warning the
+muxer was trying to print about it.
+
 ### A disc that does not say how often pictures arrive
 
 libavformat works the frame rate out while it probes, and stops probing at the
@@ -745,8 +918,8 @@ reopening follows.
 | **Joining clips** | Not supported. A multi-clip playlist is shown as a row per clip (above) |
 | **BDMV titles** | `index.bdmv` names titles and a title is a navigation program. Which playlist "T05 Extra 01" plays is not worked out; rows are named by the disc and the clip |
 | **A clip whose EP map does not read** | The map is used where there is one — see [the disc's own index](#the-discs-own-index) — and the walk over the packets is what answers where there is not |
-| **Blu-ray's own streams** | PGS and IGS cannot go on a cut timeline and are dropped, which the chooser says. The sound is all carried — LPCM, DTS-HD, TrueHD, E-AC-3, [above](#the-sound-a-disc-carries). VC-1 video is read, listed and cut, the partial GOPs written by [SmartCut's own encoder](rust-core.md#vc-1-the-codec-with-no-encoder) |
-| **DVD subpictures** | A DVD subtitle is a run-length coded picture with its own display commands, the same kind of thing a Blu-ray's graphics are. Listed, so the chooser can say it is being left behind; not carried |
+| **Blu-ray's own streams** | PGS subtitles are carried into a transport stream, whole display set by whole display set, and mended at both ends of every kept range — [above](#the-subtitles-a-disc-draws). IGS (a menu) and TextST (text subtitles) are dropped and said to be dropped, for the reasons [above](#a-menu-is-not-a-stream-and-the-index-is-the-only-thing-that-knows). The sound is all carried — LPCM, DTS-HD, TrueHD, E-AC-3, [above](#the-sound-a-disc-carries). VC-1 video is read, listed and cut, the partial GOPs written by [SmartCut's own encoder](rust-core.md#vc-1-the-codec-with-no-encoder) |
+| **DVD subpictures** | Either written beside the cut as a VobSub pair, untouched, or converted into the kind a transport stream carries and written inside it — [above](#a-dvds-subtitles-beside-the-cut-or-converted-into-it). Not copied into the file as they are, because a transport stream has no stream type for them |
 | **DVD angles** | A chain whose cells are an angle block or an interleaved unit is not offered, [above](#a-title-is-a-run-of-cells) |
 | **Writing a DVD** | A cut of a DVD title is a transport stream. A DVD's own shape is VOBUs of a bounded size, a navigation pack opening each of them and an `.IFO` describing every cell — authoring, and a different problem |
 | **Encrypted DVDs** | Out of scope, the same as AACS. Nothing here decrypts CSS |
@@ -772,6 +945,63 @@ through `subfile` and demuxed — H.264 on 0x1011, TrueHD with its AC-3 on
 0x1100 and 0x1101, PGS on 0x1200 and 0x1201. A ten second cut of one episode
 came out at 91.8% copied, with both TrueHD tracks on their own PIDs and every
 sample of them decoding.
+
+**A UHD disc's subtitles, carried through a cut** — 60 seconds out of a 2160p
+feature (HEVC, LPCM 5.1, PGS on 0x1200), cut into two kept ranges placed so
+that three of the four boundaries fall inside a subtitle. Every display set
+inside the ranges came out the other side with its composition numbers
+unchanged — 44 packets — and eleven were written that the disc never sent
+there: the five of the set standing when the second range opens, put up again
+at its first frame, and three each for the two ranges' clears. Read back, the
+output declares `hdmv_pgs_subtitle` on 0x1200 both as a `.m2ts` and as a plain
+`.ts`; decoded and burnt in, the frame after the seam carries the new range's
+line rather than the old one's, the frame at the head of a range that opens
+mid-subtitle carries that subtitle, and nothing is left standing at the end of
+the file. Written to a BDAV folder instead, the clip index lists the stream as
+coding `0x90`; opened by its path on a real disc, the language comes out of
+`CLIPINF` (`jpn`) where the map says nothing at all.
+
+Then ten seconds taken straight off the disc — the 81 GB clip itself, opened
+through its own entry point map — where the cut is half re-encoded and half
+copied. **Every display set in the range came out in order**, including one
+that opens 66 ms before the seam between the re-encoded stretch and the copied
+one and finishes after it: 39 packets carried and 8 written. That set is the
+reason a segment reads on past its own end while a display set is part-read,
+and the reason "past the end" is judged by the earlier of the two times a
+packet carries — a set is *sent* a fraction of a second before it is *shown*,
+so the packet that opens one is the packet whose presentation time is
+furthest ahead.
+
+**A DVD's subtitles carried out of an image** — a 4.1 GB `.iso`, one title
+set, a Japanese subpicture stream on `0x20` that libavformat does not see
+until 400 MB into the recording. Two kept ranges out of the feature came out
+with eleven units beside them: nine the disc sent inside the ranges, the one
+that was on screen when the second range opened, written again at its first
+frame, and the stop that ends the first range. Read back, `ffprobe` finds one
+`dvd_subtitle` stream in the pair and both units of the short cut in it;
+burnt over the cut, the frame after the seam carries the line the disc had up
+at that moment, in the disc's own colours out of `VTS_02_0.IFO`. Asked to
+leave them out, the cut writes the `.ts` and nothing else.
+
+**The same subtitles converted** — the same two ranges with `--subtitles pgs`.
+Nine subtitles went in as display sets, on `0x20` in a `.ts` and renumbered to
+`0x1200` in a `.m2ts` as everything else is; `ffprobe` reads the stream back as
+`hdmv_pgs_subtitle` from both, which for the plain `.ts` means the map written
+over the muxer's own did its work. Burnt in, the frame after the seam carries
+the same line as the pair beside the cut carried, in the same colours.
+
+**A menu mistaken for sound** — a UHD disc's clip 00004: pictures, one LPCM
+track, and a menu on `0x1400`. libavformat calls that menu **MP3 audio**;
+asked about the clip now, the tool lists the one real sound track and says
+`not carried: a menu on pid 0x1400`. Its three menu-only clips — graphics and
+no pictures — say they are menus instead of failing for want of a video
+stream.
+
+The other one was measured by looking: **748 clip indexes across eight discs**.
+Twenty-nine of those clips carry a menu; **not one carries a text subtitle
+stream** — no `0x92` anywhere. That is the other half of why TextST is named
+and left rather than carried: there is nothing here to carry, and nothing to
+check a carrier against.
 
 **Two pressed Blu-rays written in VC-1** — the codec most discs of that age carry,
 and between them most of the ways an advanced-profile stream can differ: one

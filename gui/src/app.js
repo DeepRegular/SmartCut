@@ -2075,6 +2075,8 @@ const settings = {
   /// has anywhere to put.
   audioBits: "",
   keyframes: false,
+  // Where a DVD's subtitles go. See `outset.subtitles`.
+  subtitles: "beside",
 };
 
 /// The settings as the program starts with them, kept because 新規作成 has to
@@ -2230,6 +2232,7 @@ bindSetting("out-audio-channels", "audioChannels");
 bindSetting("out-audio-bitrate", "audioBitrate");
 bindSetting("out-audio-rate", "audioRate");
 bindSetting("out-audio-bits", "audioBits");
+bindSetting("out-subtitles", "subtitles");
 bindSetting("out-keyframes", "keyframes", "checked");
 
 // --- drop-downs that open upward -----------------------------------------
@@ -3231,6 +3234,19 @@ function filenameSafe(name) {
 /// belongs nowhere near anything else. For files, only where there is more
 /// than one of them: a single cut goes where it was told to go, and burying
 /// it one level down is one more folder to open for no reason.
+/// Whether anything in the list is a DVD title.
+///
+/// Which is the only kind of recording that carries the sort of subtitle the
+/// question is about: a Blu-ray's travel inside the cut whatever anyone
+/// says, and a broadcast's are not this kind at all.
+///
+/// Asked of the name rather than of the tracks, because a title's name
+/// carries the sectors it plays and nothing else does -- and the tracks are
+/// read when a clip is opened, which is later than this row has to be right.
+function hasSubpictures() {
+  return clips.some((c) => /\.vob@\d+-\d+$/i.test(c.path || ""));
+}
+
 function subfolderWanted() {
   return bdavMode() || ready().length > 1;
 }
@@ -3342,6 +3358,9 @@ function paintMode() {
   el("row-prefix").hidden = disc;
   el("row-container").hidden = disc;
   el("row-keyframes").hidden = disc;
+  // Asked only of a recording that has any: every other one would be
+  // answering a question about a kind of subtitle it does not carry.
+  el("row-subtitles").hidden = !hasSubpictures();
   // Only where a run would actually use one -- a single file has nothing to
   // be grouped with, and a row offering to make it a folder is a question
   // nobody asked.
@@ -3966,6 +3985,7 @@ async function runExport() {
         // the track menu's answer is the answer, and sending both would let a
         // track switched back on in the editor be switched off again here.
         dropPids: clip.edit ? [] : clip.dropPids,
+        subtitles: settings.subtitles,
       });
       // The head is past everything now, so the stage catches up with it: the
       // frame left standing is the last one the encoder made, rather than

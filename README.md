@@ -249,6 +249,23 @@ put back afterwards, and every stream goes back where it arrived. Superimposed
 text and data broadcasting cannot be carried on a cut timeline, and SmartCut
 says so rather than dropping them quietly.
 
+**A disc's subtitles (when writing a `.ts` or `.m2ts`):** a Blu-ray draws its
+subtitles rather than writing them, so what travels is a picture spread over
+several packets that mean nothing apart from one another. Those are carried
+across whole, and both ends of every kept range are mended: a subtitle that
+was already on screen when the range opens is put up again at its first
+frame, and one still on screen when the range ends is taken down, instead of
+standing there into the next scene. See
+[the subtitles a disc draws](docs/technical/disc.md#the-subtitles-a-disc-draws).
+
+**A DVD's subtitles:** the same pictures, and a transport stream has nowhere
+to put them — so you choose. **Beside the cut**, untouched, as the `.idx` and
+`.sub` pair players already read; or **converted into it**, written as the
+kind of subtitle a transport stream does carry, so the cut is one file with
+its subtitles inside. Either way the disc's own palette comes out of its index
+and both ends of every kept range are mended. See
+[a DVD's subtitles](docs/technical/disc.md#a-dvds-subtitles-beside-the-cut-or-converted-into-it).
+
 One video track per file. See
 [known limitations](docs/technical/validation.md#known-limitations) for the full
 list.

@@ -550,6 +550,91 @@ fn parts_of_titles(ifo: &[u8]) -> Vec<Vec<(usize, usize)>> {
     out
 }
 
+/// What a title's subtitles need that only the disc's index has.
+///
+/// The units in the stream say "colour 4" and nothing about what colour four
+/// is: a DVD keeps its palette in the index, beside the chain of cells it
+/// belongs to. So a cut that means to write the subtitles out has to come
+/// back to the disc for this, and it is the one thing here that is read at
+/// cutting time rather than when the list was drawn.
+pub struct Subtitles {
+    /// Every subpicture stream: the substream id the disc names it by, and
+    /// the language it declared.
+    pub streams: Vec<(u8, Option<String>)>,
+    pub palette: crate::vobsub::Palette,
+}
+
+/// The subtitles of the title a recording's own name points at.
+///
+/// `None` for a recording that is not a DVD title, which is every recording
+/// whose name does not carry the sectors it plays. See
+/// [`crate::input::Input`] for the shape of one.
+pub fn subtitles_of(spec: &str) -> Option<Subtitles> {
+    let (base, first) = spec.rsplit_once('@').map(|(b, r)| {
+        let first = r.split('-').next().and_then(|n| n.parse::<u64>().ok());
+        (b, first)
+    })?;
+    let (root, vts) = title_set_of(base)?;
+    let mut vol = Volume::open(Path::new(root)).ok()?;
+    let ifo = vol.read(&format!("VTS_{vts:02}_0.IFO")).ok()?;
+    if !ifo.starts_with(b"DVDVIDEO-VTS") {
+        return None;
+    }
+    let streams = tracks(&ifo)
+        .into_iter()
+        .filter(|t| t.kind == "subtitle")
+        .map(|t| (t.pid as u8, t.language))
+        .collect();
+    Some(Subtitles {
+        streams,
+        palette: palette_of(&ifo, first).unwrap_or_else(crate::vobsub::Palette::grey),
+    })
+}
+
+/// Split `<disc>/VIDEO_TS/VTS_02_1.VOB` into the disc and the title set
+/// number.
+///
+/// The disc is whatever the path says before `VIDEO_TS`, which is a
+/// directory on one and an image on the other; [`Volume::open`] takes either.
+fn title_set_of(base: &str) -> Option<(&str, usize)> {
+    let upper = base.to_ascii_uppercase();
+    let at = upper.rfind("/VIDEO_TS/")?;
+    let file = &upper[at + "/VIDEO_TS/".len()..];
+    let number = file.strip_prefix("VTS_")?.get(..2)?.parse().ok()?;
+    Some((&base[..at], number))
+}
+
+/// The palette of the chain that plays the sectors this title starts at.
+///
+/// A title set can hold several chains and each carries its own sixteen
+/// colours, so the one that matters is the one whose cells the title is cut
+/// out of. Where the sectors say nothing -- a name with no range on it --
+/// the first chain answers, which is right on the great majority of discs
+/// and is a colour rather than a failure on the rest.
+fn palette_of(ifo: &[u8], first: Option<u64>) -> Option<crate::vobsub::Palette> {
+    let table_at = u32be(ifo, 0xcc) as usize * SECTOR as usize;
+    let table = ifo.get(table_at..)?;
+    let count = u16be(table, 0) as usize;
+    let mut fallback = None;
+    for i in 0..count {
+        let at = 8 + i * 8;
+        let start = u32be(table.get(..at + 8)?, at + 4) as usize;
+        let g = table.get(start..)?;
+        let clut = g.get(0xa4..0xa4 + 64)?;
+        let palette = crate::vobsub::Palette::from_clut(clut);
+        fallback.get_or_insert(palette);
+        let Some(first) = first else { break };
+        if read_pgc(g).is_some_and(|pgc| {
+            pgc.cells
+                .iter()
+                .any(|c| c.first <= first && first <= c.last)
+        }) {
+            return Some(palette);
+        }
+    }
+    fallback
+}
+
 /// What a title set says it carries.
 ///
 /// Read from the index and not from the stream, for the same reason a
@@ -567,6 +652,9 @@ fn tracks(ifo: &[u8]) -> Vec<Track> {
         pid: 0x1e0,
         detail: video_detail(&ifo[0x200..0x202]),
         language: None,
+        // A DVD has no coding byte to give: its streams are named by the
+        // substream id in front of each packet and by nothing else.
+        coding: 0,
         carried: true,
     });
 
@@ -593,6 +681,7 @@ fn tracks(ifo: &[u8]) -> Vec<Track> {
             pid: base + i as i32,
             detail: format!("{name} {channels}ch {rate}"),
             language: language(&a[2..4]),
+            coding: 0,
             // Everything a DVD calls sound is a stream of timed packets, and
             // a cut carries it the same way it carries a broadcast's.
             carried: true,
@@ -607,10 +696,13 @@ fn tracks(ifo: &[u8]) -> Vec<Track> {
             pid: 0x20 + i as i32,
             detail: "subpicture".to_string(),
             language: language(&s[2..4]),
+            coding: 0,
             // A DVD subtitle is a run-length coded picture with its own
             // display commands, the same kind of thing a Blu-ray's graphics
-            // are, and a cut timeline has nowhere to put one.
-            carried: false,
+            // are -- but where those have a stream type a transport stream
+            // can carry, these have none. So they travel beside the cut
+            // instead of inside it; see [`crate::vobsub`].
+            carried: true,
         });
     }
     out

@@ -234,14 +234,27 @@ pub struct Track {
     pub pid: i32,
     /// The codec and shape, `H.264 1080p 23.976fps` or `TrueHD 5.1 48kHz`.
     pub detail: String,
+    /// The coding the index states, which is the disc's own number for what
+    /// is on this PID: `0x1B` for H.264, `0x90` for the subtitles it draws,
+    /// `0x91` for a menu. Zero where the disc has no such number to give --
+    /// a DVD names its streams by their substream id and nothing else.
+    ///
+    /// Kept because for two of them the index is the *only* thing that
+    /// knows: see [`correct_from_index`].
+    pub coding: u8,
     /// The language the disc declared, when it declared one.
     pub language: Option<String>,
     /// Whether a cut can take it with it.
     ///
-    /// The graphics streams a Blu-ray menu is made of cannot go on a cut
-    /// timeline -- a presentation graphics stream is its own little display
-    /// list, not a run of timed packets -- so they are listed to say they are
-    /// being left behind, not to offer a choice about them.
+    /// A menu cannot: its buttons have states and targets that point into a
+    /// timeline the cut has just taken apart. Nor can the text subtitle
+    /// format, for a plainer reason -- its typeface is a file on the disc
+    /// and not in the stream, so what travelled would be text nothing could
+    /// draw. Both are listed to say they are being left behind, not to offer
+    /// a choice about them.
+    ///
+    /// The subtitles a disc *draws* are the same kind of stream doing a
+    /// different job, and those travel; see [`crate::pgs`].
     pub carried: bool,
 }
 
@@ -456,6 +469,68 @@ pub fn carry_languages(src: &mut crate::Source, tracks: &[Track]) {
         if c.language.is_none() {
             c.language = said(c.pid);
         }
+    }
+    // A disc's own subtitles are where this matters most: a Blu-ray's map
+    // says nothing at all about them, and the language is written only in
+    // `CLIPINF`. Without this a cut of a disc with four subtitle tracks
+    // arrives with four anonymous ones.
+    for g in src.graphics.iter_mut() {
+        if g.language.is_none() {
+            g.language = said(g.pid);
+        }
+    }
+}
+
+/// The streams a disc's index names that a demuxer cannot, with their PID.
+///
+/// **A menu is not a stream libavformat has a name for.** Asked what is on
+/// the PID one sits on, the probe answers with whatever the bytes happened to
+/// look like: on the disc measured here, the menu on `0x1400` came back as
+/// **MP3 audio** -- and a cut that believed it would have carried a menu into
+/// the output declared as sound. It got away with it only because the same
+/// probe could not find a sample rate to go with the guess, and a track with
+/// no rate is left out a few lines later, under a note calling it "the sound
+/// on pid 0x1400".
+///
+/// The index has known all along. So a PID it says carries a menu, or the
+/// text subtitle format, is kept out of every list the probe would have put
+/// it in and named in [`crate::DroppedStream`] instead -- which is where a
+/// stream this program will not carry belongs, and which is what the tool
+/// then says out loud.
+///
+/// Costs one `.clpi` on a recording opened from a disc, and a look at two
+/// directory names on everything else.
+pub fn unreadable_streams(path: &str) -> Vec<(i32, &'static str)> {
+    let Some((root, clip)) = clip_on_a_disc(path) else {
+        return Vec::new();
+    };
+    let Ok(mut vol) = Volume::open(Path::new(root)) else {
+        return Vec::new();
+    };
+    vol.tracks(clip)
+        .iter()
+        .filter_map(|t| unreadable(t.coding).map(|what| (t.pid, what)))
+        .collect()
+}
+
+/// What a coding the index states means to a cut, for the two a demuxer
+/// cannot name.
+///
+/// Everything else a Blu-ray carries is something libavcodec knows by sight,
+/// including the subtitles it draws. These two it does not:
+///
+/// * **A menu** is interactive graphics -- pictures, and buttons with states
+///   and navigation commands. libavcodec has no name for the format at all.
+/// * **Text subtitles** it has a name for and nothing else: `hdmv_text_subtitle`
+///   is a codec id with no decoder behind it. And a decoder would not be
+///   enough, because the typeface those subtitles are set in is a file in the
+///   disc's `AUXDATA` rather than anything in the stream -- what travelled
+///   into a cut would be text nothing could draw.
+fn unreadable(coding: u8) -> Option<&'static str> {
+    match coding {
+        0x91 => Some("menu"),
+        0x92 => Some("text subtitles"),
+        _ => None,
     }
 }
 
@@ -1573,10 +1648,15 @@ fn track_of(pid: i32, attr: &[u8]) -> Option<Track> {
             }
             ("audio", detail, lang(2), true)
         }
-        // The graphics a Blu-ray's subtitles and menus are made of. Each is a
-        // little display list rather than a run of timed packets, and there
-        // is nowhere on a cut timeline to put one. See [`Track::carried`].
-        0x90 => ("subtitle", "PGS".to_string(), lang(1), false),
+        // The graphics a Blu-ray's subtitles are made of: a display list per
+        // subtitle rather than a packet per statement, which is a grouping
+        // to respect rather than a reason to leave them behind. Carried, and
+        // put back together at both ends of a cut; see [`crate::pgs`].
+        0x90 => ("subtitle", "PGS".to_string(), lang(1), true),
+        // The menus, which are the same kind of graphics doing a different
+        // job: a button has a state and a target, and neither means anything
+        // once the timeline it pointed into has been cut up. See
+        // [`Track::carried`].
         0x91 => ("menu", "IGS".to_string(), lang(1), false),
         0x92 => ("subtitle", "TextST".to_string(), lang(1), false),
         // Anything else, which on a Japanese recording is the broadcast's own
@@ -1590,6 +1670,7 @@ fn track_of(pid: i32, attr: &[u8]) -> Option<Track> {
         pid,
         detail,
         language,
+        coding,
         carried,
     })
 }
@@ -1806,12 +1887,28 @@ mod tests {
         assert_eq!(found[1].language.as_deref(), Some("eng"));
         assert_eq!(found[2].detail, "TrueHD stereo 48kHz");
         assert_eq!(found[2].language.as_deref(), Some("jpn"));
-        // The graphics are listed, and listed as things a cut leaves behind.
+        // The subtitles travel; the menu is listed to say it does not.
         assert_eq!(found[3].kind, "subtitle");
-        assert!(!found[3].carried);
+        assert!(found[3].carried);
         assert_eq!(found[4].kind, "menu");
         assert!(!found[4].carried);
-        assert!(found[..3].iter().all(|t| t.carried));
+        assert!(found[..4].iter().all(|t| t.carried));
+        // And the disc's own number for each travels with it, which is what
+        // says whether a demuxer's answer about that PID is worth having.
+        assert_eq!(
+            found.iter().map(|t| t.coding).collect::<Vec<_>>(),
+            [0x1B, 0x83, 0x83, 0x90, 0x91]
+        );
+    }
+
+    /// The two a demuxer cannot name, and everything else it can.
+    #[test]
+    fn the_index_names_what_a_probe_cannot() {
+        assert_eq!(unreadable(0x91), Some("menu"));
+        assert_eq!(unreadable(0x92), Some("text subtitles"));
+        for known in [0x1B, 0x24, 0x80, 0x83, 0x90, 0xEA] {
+            assert_eq!(unreadable(known), None, "0x{known:02x} is not a guess");
+        }
     }
 
     #[test]

@@ -110,7 +110,7 @@ something:
 |---|---|
 | **ClipInfo** | that this is a transport stream of a recording, the rate it is written at, and how many source packets it holds |
 | **SequenceInfo** | which PID carries the clock, and the first and last moment a picture is shown |
-| **ProgramInfo** | which PID the map is on, and what each stream is: the coding, and a shape and rate for pictures, a channel arrangement and rate and language for sound |
+| **ProgramInfo** | which PID the map is on, and what each stream is: the coding, and a shape and rate for pictures, a channel arrangement and rate and language for sound, a language for [the subtitles a disc draws](disc.md#the-subtitles-a-disc-draws) |
 | ClipMark | empty: on a disc of recordings the chapter points belong to the playlist |
 | MakersPrivateData | empty by definition |
 

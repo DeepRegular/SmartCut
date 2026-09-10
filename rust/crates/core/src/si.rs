@@ -2299,6 +2299,54 @@ mod tests {
         out
     }
 
+    /// The map a plain `.ts` gets for a disc's subtitles.
+    ///
+    /// Both halves matter and neither works alone. 0x90 is what a player
+    /// looks for; it means presentation graphics only in a programme that
+    /// has registered itself as HDMV, and means other things in one that has
+    /// not. See [`Declared`].
+    #[test]
+    fn a_graphics_stream_is_named_and_its_programme_registered() {
+        let service = recording(None);
+        let graft = Graft {
+            service: &service,
+            streams: vec![GraftStream {
+                pid: 0x1200,
+                was: 0x1200,
+                faithful: true,
+                declared: Some(Declared {
+                    stream_type: 0x90,
+                    descriptors: Vec::new(),
+                    program_info: vec![0x05, 0x04, b'H', b'D', b'M', b'V'],
+                }),
+                language: Some("jpn".into()),
+            }],
+            pcr_pid: 0x1011,
+            ranges: Vec::new(),
+            tables: Tables::Muxer,
+        };
+        let sec = build_pmt(
+            &graft,
+            0x1011,
+            &Components {
+                described: HashSet::new(),
+                carried: HashSet::new(),
+            },
+        );
+        // The programme's own loop, and then the one stream's entry.
+        let info_len = (((sec[10] & 0x0F) as usize) << 8) | sec[11] as usize;
+        assert_eq!(
+            &sec[12..12 + info_len],
+            [0x05, 0x04, b'H', b'D', b'M', b'V']
+        );
+        let es = &sec[12 + info_len..];
+        assert_eq!(es[0], 0x90, "the stream type a player looks for");
+        assert_eq!(u16::from_be_bytes([es[1] & 0x1F, es[2]]), 0x1200);
+        // The language the disc's index knew and the map never said.
+        let desc_len = (((es[3] & 0x0F) as usize) << 8) | es[4] as usize;
+        assert_eq!(&es[5..5 + desc_len], [0x0A, 0x04, b'j', b'p', b'n', 0x00]);
+    }
+
     #[test]
     fn a_section_about_streams_that_are_all_there_is_left_alone() {
         let sec = eit(0, &[component(0x00), short_event(), data_content(0x30)]);

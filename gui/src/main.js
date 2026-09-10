@@ -2545,7 +2545,11 @@ function renderTracks() {
   // Listed to be honest about them, not to be chosen between, so they go
   // under the tracks that are a choice rather than among them -- with the
   // reason said once at the end and not after each.
-  const dropped = trackList.filter((k) => !k.optional);
+  const dropped = trackList.filter((k) => !k.optional && k.kind !== "subpicture");
+  // A DVD's subtitles are not a choice made here and are not dropped either:
+  // they travel beside the cut. Said on their own line, because either of the
+  // lists they would otherwise land in would be saying something untrue.
+  const beside = trackList.filter((k) => k.kind === "subpicture");
   for (const track of trackList) {
     if (!track.optional) continue;
     const li = document.createElement("li");
@@ -2565,7 +2569,8 @@ function renderTracks() {
     });
     const label = document.createElement("label");
     label.htmlFor = box.id;
-    const kind = tr(track.kind === "audio" ? "tracks.audio" : "tracks.caption");
+    const kinds = { audio: "tracks.audio", graphics: "tracks.graphics" };
+    const kind = tr(kinds[track.kind] || "tracks.caption");
     const bits = [kind, track.detail];
     if (track.language) bits.push(track.language);
     if (track.main) bits.push(tr("tracks.main"));
@@ -2580,6 +2585,8 @@ function renderTracks() {
     superimpose: "tracks.superimpose",
     data: "tracks.data",
     substream: "tracks.substream",
+    menu: "tracks.menu",
+    "text subtitles": "tracks.textst",
   };
   for (const track of dropped) {
     const li = document.createElement("li");
@@ -2587,6 +2594,15 @@ function renderTracks() {
     li.textContent = tr("tracks.dropped", {
       what: tr(named[track.detail] || "tracks.data"),
       pid: track.pid.toString(16).padStart(4, "0"),
+    });
+    list.appendChild(li);
+  }
+  for (const track of beside) {
+    const li = document.createElement("li");
+    li.className = "dim";
+    li.textContent = tr("tracks.beside", {
+      lang: track.language ? `${track.language} ` : "",
+      pid: track.pid.toString(16).padStart(2, "0"),
     });
     list.appendChild(li);
   }

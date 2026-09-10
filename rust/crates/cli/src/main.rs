@@ -200,6 +200,8 @@ fn main() -> Result<()> {
     let mut audio_bits: Option<u8> = None;
     // Everything the recording carries is written unless it is named here.
     let mut drop_streams: Vec<usize> = Vec::new();
+    let mut drop_subpictures: Vec<i32> = Vec::new();
+    let mut subtitles = smartcut_core::cut::Subtitles::default();
     // A cut of a broadcast is a partial transport stream unless asked for
     // in one of the other two shapes. See `smartcut_core::si::Tables`.
     let mut tables = smartcut_core::si::Tables::default();
@@ -355,6 +357,26 @@ fn main() -> Result<()> {
                         .with_context(|| format!("--drop-stream wants a number, got {v:?}"))?,
                 );
             }
+            "--subtitles" => {
+                i += 1;
+                let v = args.get(i).context("--subtitles needs beside or pgs")?;
+                subtitles = match v.as_str() {
+                    "beside" => smartcut_core::cut::Subtitles::Beside,
+                    "pgs" => smartcut_core::cut::Subtitles::Pgs,
+                    other => bail!("--subtitles wants beside or pgs, got {other:?}"),
+                };
+            }
+            "--drop-subpicture" => {
+                i += 1;
+                let v = args
+                    .get(i)
+                    .context("--drop-subpicture needs a substream id, as 0x20")?;
+                let n = v.strip_prefix("0x").unwrap_or(v);
+                drop_subpictures.push(
+                    i32::from_str_radix(n, 16)
+                        .with_context(|| format!("--drop-subpicture wants an id, got {v:?}"))?,
+                );
+            }
             "--tables" => {
                 i += 1;
                 let v = args
@@ -440,7 +462,8 @@ fn main() -> Result<()> {
     let Some(input) = input else {
         bail!(
             "usage: smartcut <input> [--keep START-END]... [--cut START-END]... \
-             [--drop-stream INDEX]... [--tables partial|broadcast|muxer] [--no-open-gop] \
+             [--drop-stream INDEX]... [--drop-subpicture ID]... \
+             [--subtitles beside|pgs] [--tables partial|broadcast|muxer] [--no-open-gop] \
              [--clean-joins] \
              [--vc1-quant 3..31] [--title N] [-o OUTPUT | --bdav FOLDER]\n\
              <input> is a recording, or a disc -- a BDAV, BDMV or VIDEO_TS folder, \
@@ -661,6 +684,30 @@ fn main() -> Result<()> {
             "caption:{lang} ARIB STD-B24   [stream {}{pid}]",
             c.stream_index
         );
+    }
+    for g in &src.graphics {
+        let lang = g
+            .language
+            .as_deref()
+            .map(|l| format!(" {l}"))
+            .unwrap_or_default();
+        let pid = if src.on_a_ts {
+            format!(" pid 0x{:04x}", g.pid)
+        } else {
+            String::new()
+        };
+        println!("subtitle:{lang} PGS   [stream {}{pid}]", g.stream_index);
+    }
+    // Named by the id the disc gives them, which is all they have: see
+    // `smartcut_core::SubpictureInfo`. Said to be beside the cut rather than
+    // in it, because that is where they go.
+    for s in &src.subpictures {
+        let lang = s
+            .language
+            .as_deref()
+            .map(|l| format!(" {l}"))
+            .unwrap_or_default();
+        println!("subtitle:{lang} subpicture   [id 0x{:02x}]", s.id);
     }
     // Said out loud rather than dropped in silence: these are streams a cut
     // has no way to carry. See `smartcut_core::DroppedStream`.
@@ -1110,8 +1157,46 @@ fn main() -> Result<()> {
     } else {
         0
     };
+    let kept_graphics = if to_ts {
+        src.graphics
+            .iter()
+            .filter(|g| !drop_streams.contains(&g.stream_index))
+            .count()
+    } else {
+        0
+    };
+    // Said only where there are any: a broadcast recording would otherwise
+    // carry a line about a kind of subtitle no broadcast sends.
+    let graphics = if src.graphics.is_empty() {
+        String::new()
+    } else {
+        format!(
+            ", {kept_graphics} of {} subtitle stream(s)",
+            src.graphics.len()
+        )
+    };
+    // A DVD's subtitles are counted apart from the rest: they are kept, and
+    // they are kept somewhere else. See `smartcut_core::vobsub`.
+    let subpictures = if src.subpictures.is_empty() {
+        String::new()
+    } else {
+        let kept = src
+            .subpictures
+            .iter()
+            .filter(|s| !drop_subpictures.contains(&s.id))
+            .count();
+        let where_to = match (subtitles, to_ts) {
+            (smartcut_core::cut::Subtitles::Pgs, true) => "converted into the cut",
+            _ => "beside the cut",
+        };
+        format!(
+            ", {kept} of {} subtitle stream(s) {where_to}",
+            src.subpictures.len()
+        )
+    };
     println!(
-        "         {kept_audio} of {} sound track(s), {kept_caps} of {} caption stream(s){}",
+        "         {kept_audio} of {} sound track(s), {kept_caps} of {} caption \
+         stream(s){graphics}{subpictures}{}",
         src.audios.len(),
         src.captions.len(),
         match (to_ts, tables) {
@@ -1134,6 +1219,8 @@ fn main() -> Result<()> {
             audio_sample_rate,
             audio_bits,
             drop_streams,
+            drop_subpictures,
+            subtitles,
             tables,
             vc1_quant,
             ..Default::default()

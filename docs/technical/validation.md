@@ -223,10 +223,20 @@ These only surfaced on real material:
   Field pictures are read but written back as interlaced frames.
 - **One video track only**, and in the Python reference implementation one audio track
   only. The Rust engine reads every sound track the recording carries and writes them
-  all, and carries the ARIB caption stream across when writing a `.ts` (see
-  [audio](audio.md#multi-audio-broadcasts) and
-  [broadcast workflow compatibility](broadcast-ts.md)). Other subtitle formats, PGS
-  among them, are not handled.
+  all, and carries both kinds of subtitle across when writing a `.ts`: the ARIB
+  caption stream a broadcast sends, and the PGS a disc draws (see
+  [audio](audio.md#multi-audio-broadcasts),
+  [broadcast workflow compatibility](broadcast-ts.md) and
+  [the subtitles a disc draws](disc.md#the-subtitles-a-disc-draws)). A DVD's
+  subtitles have no stream type a transport stream can carry, so they are
+  either written beside the cut as a VobSub pair or converted into a Blu-ray's
+  kind and written inside it
+  ([above](disc.md#a-dvds-subtitles-beside-the-cut-or-converted-into-it)).
+  **Blu-ray menus (IGS) and text subtitles (TextST) are not carried**, and are
+  named as left behind rather than dropped in silence: a menu's buttons point
+  into a disc structure a cut does not have, and TextST is set in a typeface
+  that lives on the disc rather than in the stream
+  ([above](disc.md#a-menu-is-not-a-stream-and-the-index-is-the-only-thing-that-knows)).
 - **The audio boundary is still rounded to a whole frame in every mode but
   `reencode`.** What `smart` removes is the audio from the far side of a cut being
   left in the seam; it does not change an interval being a whole number of frames
