@@ -300,12 +300,25 @@ APS(5,0)  [≫カローラは]  APS(6,0)
 - `APS(row, column)` is where writing begins — **the row comes first**, and both count
   from 0 at the top left of the display area. Rows 5, 6 and 7 of the eight are where
   an ordinary caption goes, which is the bottom of the screen.
+- `ACPS(x; y)` is the other way to place a line, and the one most channels use: a
+  place in the plane's own dots rather than a row and a column. What it names is the
+  **bottom left** of the character field — 509 on a 540-dot plane is the last row, not
+  a row past the end of one — and a broadcast names it before the size that says how
+  tall that field is as often as after, so what it sets is kept as a bottom and turned
+  into a top when a character is drawn. Reading past it put every caption on those
+  channels in the top left corner.
 - Colour comes from the eight codes `RDF`…`WHF` and from `COL` by number. Only the
   foreground is followed; behind the text the preview draws a translucent black box of
   its own. The colour a broadcaster names for the background is an entry in a
   128-colour map, and what a preview needs is for the characters to be readable.
 - A statement that carries `CS` and nothing else is the caption **coming down**. The
   same shape is what marks a commercial break — see [Detecting commercials](cm-detection.md).
+- `TIME` is a statement timing itself. `TIME(0x20, n)` waits n tenths of a second, and
+  the `CS` after that wait takes the line down **then**, not at once: `CS … text …
+  TIME(2.0) CS` is a line that stands for two seconds. Read as a plain clear it wiped
+  the text in front of it, and the channels that write captions that way showed none
+  at all. So a statement comes back as a list of **pages** (`caption::Page`), each with
+  the moment it goes up and, where the statement says one, the moment it comes down.
 
 Half widths are handled too: the alphanumeric and half-width katakana sets take half a
 field per character, and `MSZ` draws a full-width character in half a field, which is
@@ -314,6 +327,10 @@ how any caption of more than fifteen characters to a line is written.
 What comes out is text and where to put it, not a picture. **The window does the
 drawing**, with the fonts it has and an outline around each glyph, which is why the
 characters stay sharp at any size and why there is not a line of glyph rendering here.
+A glyph the font draws wider than the field it was given is squeezed into it: a font
+that has never heard of ARIB draws a full-width bracket full width whether the
+broadcaster asked for half a field or a whole one, and the bracket a speaker's name
+opens with went under the name beside it.
 
 Nor is the whole file read. A preview sweeps a timeline, so only the stretch around
 the instant is read and kept (`subs.rs`: 30 seconds back and 30 on). Reading back is

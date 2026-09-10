@@ -865,15 +865,25 @@ and crosses the end of a window about once a minute.
 
 Two shapes come back. A broadcast's captions are **characters and positions**, and the
 window draws them on a `<canvas>` — one character at a time, at the advance the
-broadcaster asked for, with an outline. Nothing about the placement depends on a
-font's metrics, so it holds up in whatever font the machine has. A disc's subtitles are
-**a PNG and a rectangle**, and an `<img>` goes on the same part of the picture.
+broadcaster asked for, with an outline. Where a character goes is the broadcaster's
+advance rather than the font's, so it holds up in whatever font the machine has. A
+disc's subtitles are **a PNG and a rectangle**, and an `<img>` goes on the same part
+of the picture.
 
 Both are laid over the **picture** rather than over the stage. `object-fit: contain`
 leaves black bands beside a 16:9 picture in a wider stage, and a subtitle placed
 against the stage would drift into them as the window changed shape. While subtitles
 are showing, the frame number and time move to the top of the picture: both want the
 bottom, and the subtitle is the one that cannot be moved.
+
+A character is placed by the square it fills rather than by the font's idea of a line.
+`textBaseline: "top"` puts the *ascent* on the line it is given, and a Japanese font's
+ascent stands well above its em square, so every caption hung a third of a character
+below the box drawn behind it. The baseline goes 0.88 of the character's height down
+instead, which is where a Japanese font puts it in that square — and a glyph the font
+draws wider than the field the broadcaster gave it is squeezed into it, because a font
+that has never heard of ARIB draws a full-width bracket full width whether it was
+given half a field or a whole one.
 
 ## Output naming and containers
 

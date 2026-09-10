@@ -251,16 +251,37 @@ pub struct Run {
     pub colour: u32,
 }
 
+/// One page a statement puts up, and how long it stands.
+///
+/// Both times are counted from the statement's own moment, because that is
+/// the only clock a statement carries: it writes, waits out the time `TIME`
+/// names, and clears. A page that is never cleared leaves `until` empty and
+/// stands until the next statement replaces it, which is how most of a
+/// broadcast's captions come down.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct Page {
+    /// When it goes up, in seconds after the statement.
+    pub at: f32,
+    /// And when it comes down, where the statement says so.
+    pub until: Option<f32>,
+    /// What is on the plane while it is up.
+    pub runs: Vec<Run>,
+}
+
 /// What one caption statement puts on the plane.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Written {
-    /// The plane the runs are placed on, in dots. 960 x 540 for the high
+    /// The plane the pages are placed on, in dots. 960 x 540 for the high
     /// definition captions every broadcaster measured here sends.
     pub plane: (u16, u16),
     /// Empty for the statement that only clears the plane, which is what a
     /// broadcaster sends when the caption comes down and at every junction.
     /// See [`resets`].
-    pub runs: Vec<Run>,
+    ///
+    /// More than one where a statement paces itself: a page, a wait, a
+    /// clear, and another page. That is how a line that is timed to the
+    /// speech rather than to the next statement is sent.
+    pub pages: Vec<Page>,
 }
 
 /// The eight colours a caption names directly, in ARIB's own order.
@@ -373,10 +394,10 @@ impl Layout {
     pub fn statement(&mut self, units: &[u8]) -> Written {
         let mut pen = Pen::new(self);
         crate::arib::walk(units, &mut |step| pen.step(self, step));
-        pen.finish();
+        pen.turn(None);
         Written {
             plane: self.plane,
-            runs: pen.runs,
+            pages: pen.pages,
         }
     }
 }
@@ -385,13 +406,27 @@ impl Layout {
 /// there. One statement's worth.
 struct Pen {
     x: f32,
+    /// The top of the character field the pen is in.
     y: f32,
+    /// Where `ACPS` has just put the pen, as the *bottom* of the field --
+    /// which is what that sequence names, and which cannot be turned into a
+    /// top until the size says how tall the field is. Broadcasters send the
+    /// size after the position as often as before it, so this is kept until
+    /// a character is actually drawn. See the `0x61` arm.
+    bottom: Option<f32>,
     size: Size,
     colour: u32,
     runs: Vec<Run>,
     /// The run being gathered: it ends when the pen jumps, when the colour
     /// changes, or when the characters stop being the same width.
     open: Option<Run>,
+    /// The statement's own clock, in seconds: `TIME` is the only thing that
+    /// moves it, and a clear at a moment past zero ends a page rather than
+    /// throwing it away. See [`Page`].
+    clock: f32,
+    /// When the page being written went up.
+    page_at: f32,
+    pages: Vec<Page>,
 }
 
 impl Pen {
@@ -399,10 +434,14 @@ impl Pen {
         Pen {
             x: layout.origin.0 as f32,
             y: layout.origin.1 as f32,
+            bottom: None,
             size: Size::Normal,
             colour: COLOURS[7],
             runs: Vec::new(),
             open: None,
+            clock: 0.0,
+            page_at: 0.0,
+            pages: Vec::new(),
         }
     }
 
@@ -413,11 +452,42 @@ impl Pen {
         }
     }
 
+    /// Close the page on the plane, if anything is written on it.
+    ///
+    /// `until` is the moment it comes down: the clock where a clear takes it
+    /// down, and nothing at the end of the statement, where it stands until
+    /// the next one. A clear with nothing written closes no page -- it is
+    /// the head of the statement, which every broadcaster sends.
+    fn turn(&mut self, until: Option<f32>) {
+        self.finish();
+        let stood = until.is_none_or(|u| u > self.page_at);
+        if !self.runs.is_empty() && stood {
+            self.pages.push(Page {
+                at: self.page_at,
+                until,
+                runs: std::mem::take(&mut self.runs),
+            });
+        }
+        self.runs.clear();
+        self.page_at = self.clock;
+    }
+
+    /// Turn the position `ACPS` left into the top of a field, now that the
+    /// size is known.
+    fn settle(&mut self, field_h: f32) {
+        if let Some(bottom) = self.bottom.take() {
+            self.y = bottom - field_h;
+        }
+    }
+
     fn step(&mut self, layout: &mut Layout, step: crate::arib::Step<'_>) {
         let (field_w, field_h) = layout.field();
         let (sx, sy) = self.size.scale();
         match step {
             crate::arib::Step::Text(text, full_width) => {
+                // Where `ACPS` put the pen, now that the size says how tall
+                // the field under it is.
+                self.settle(field_h as f32 * sy);
                 // What this character takes: a field, or half of one where
                 // the set is a half-width set or the size is a half-width
                 // size.
@@ -455,12 +525,21 @@ impl Pen {
             crate::arib::Step::Control(code, params) => {
                 let p = |k: usize| params.get(k).map_or(0.0, |b| f32::from(b & 0x3F));
                 match code {
-                    // Clear the screen: everything written so far goes, and
-                    // the pen goes home. A statement that carries this and
-                    // nothing else is how a caption comes down.
+                    // Clear the screen: the plane goes and the pen goes
+                    // home. A statement that carries this and nothing else
+                    // is how a caption comes down.
                     0x0C => {
+                        // What was written before it is a page rather than
+                        // nothing, and the clear is when that page comes
+                        // down. `TIME` is how a caption times itself to the
+                        // speech instead of to the next statement, and
+                        // throwing away the text in front of the clear was
+                        // showing nothing at all on the channels that write
+                        // captions that way. See [`Page`].
+                        self.turn(Some(self.clock));
                         self.open = None;
                         self.runs.clear();
+                        self.bottom = None;
                         self.x = layout.origin.0 as f32;
                         self.y = layout.origin.1 as f32;
                     }
@@ -476,14 +555,17 @@ impl Pen {
                     }
                     0x0A => {
                         self.finish();
+                        self.settle(field_h as f32 * sy);
                         self.y += field_h as f32 * sy;
                     }
                     0x0B => {
                         self.finish();
+                        self.settle(field_h as f32 * sy);
                         self.y -= field_h as f32 * sy;
                     }
                     0x0D => {
                         self.finish();
+                        self.settle(field_h as f32 * sy);
                         self.x = layout.origin.0 as f32;
                         self.y += field_h as f32 * sy;
                     }
@@ -497,8 +579,18 @@ impl Pen {
                     // comes first.
                     0x1C => {
                         self.finish();
+                        self.bottom = None;
                         self.y = layout.origin.1 as f32 + p(0) * field_h as f32;
                         self.x = layout.origin.0 as f32 + p(1) * field_w as f32;
+                    }
+                    // TIME: the statement waiting on its own account.
+                    // `0x20` and a count of tenths of a second is the wait a
+                    // caption times a line with; the other form names a
+                    // clock, which nothing here is running.
+                    0x9D => {
+                        if params.first() == Some(&0x20) {
+                            self.clock += p(1) / 10.0;
+                        }
                     }
                     // The eight colours a code names outright.
                     0x80..=0x87 => self.colour = COLOURS[(code & 0x07) as usize],
@@ -545,6 +637,22 @@ impl Pen {
                             // SHS and SVS: the space left around it.
                             0x58 => layout.gap.0 = arg(0),
                             0x59 => layout.gap.1 = arg(0),
+                            // ACPS: straight to a place in the plane's own
+                            // dots. What it names is the *bottom* left of
+                            // the character field -- 509 on a 540 dot plane
+                            // is the last row, not a row past the bottom --
+                            // and it may name it before the size that says
+                            // how tall that field is, so the bottom is kept
+                            // and turned into a top when a character is
+                            // drawn. Every channel that puts a caption
+                            // anywhere but the head of the display area
+                            // places it with this, and reading past it left
+                            // their captions in the top left corner.
+                            0x61 => {
+                                self.finish();
+                                self.x = f32::from(arg(0));
+                                self.bottom = Some(f32::from(arg(1)) + 1.0);
+                            }
                             // SDP: where the writing area begins. The pen
                             // has not moved, but home has.
                             0x5F => {
@@ -618,12 +726,22 @@ mod tests {
     /// Two kanji, in the set a caption starts in.
     const KANJI: [u8; 4] = [0x30, 0x21, 0x30, 0x22];
 
+    /// The runs of a statement that writes one page, which is what a
+    /// statement with no waiting in it writes.
+    fn only(written: &Written) -> &[Run] {
+        match written.pages.as_slice() {
+            [] => &[],
+            [page] => &page.runs,
+            pages => panic!("{} pages, not one", pages.len()),
+        }
+    }
+
     #[test]
     fn reads_the_format_a_broadcast_declares() {
         let mut layout = Layout::default();
         let written = layout.statement(&statement(5, 0, &KANJI));
         assert_eq!(written.plane, (960, 540));
-        let run = &written.runs[0];
+        let run = &only(&written)[0];
         // Row five of eight, counted from the top of the display area: the
         // area begins 30 dots down and a field is 60 tall, so the field is
         // at 330 and the 36 dot character is centred in it.
@@ -640,7 +758,7 @@ mod tests {
     #[test]
     fn a_statement_that_only_clears_the_plane_writes_nothing() {
         let mut layout = Layout::default();
-        assert!(layout.statement(&statement(5, 0, b"")).runs.is_empty());
+        assert!(layout.statement(&statement(5, 0, b"")).pages.is_empty());
         // And it is not the same as an empty payload: the format was still
         // declared, and the next statement is laid out against it.
         assert_eq!(layout.field(), (40, 60));
@@ -654,7 +772,8 @@ mod tests {
         // is laid out against the one before it.
         let mut bare = vec![0x0C, 0x1C, 0x40 + 7, 0x40 + 2];
         bare.extend_from_slice(&KANJI);
-        let run = &layout.statement(&bare).runs[0];
+        let written = layout.statement(&bare);
+        let run = &only(&written)[0];
         assert_eq!(run.y, 30 + 7 * 60 + 12);
         assert_eq!(run.x, 170 + 2 * 40);
     }
@@ -666,12 +785,14 @@ mod tests {
         let mut units = statement(5, 0, &[]);
         units.push(0x83);
         units.extend_from_slice(&KANJI);
-        assert_eq!(layout.statement(&units).runs[0].colour, 0xFFFF00);
+        let written = layout.statement(&units);
+        assert_eq!(only(&written)[0].colour, 0xFFFF00);
         // And by number, which is the same eight colours.
         let mut units = statement(5, 0, &[]);
         units.extend_from_slice(&[0x90, 0x46]);
         units.extend_from_slice(&KANJI);
-        assert_eq!(layout.statement(&units).runs[0].colour, 0x00FFFF);
+        let written = layout.statement(&units);
+        assert_eq!(only(&written)[0].colour, 0x00FFFF);
     }
 
     #[test]
@@ -681,7 +802,8 @@ mod tests {
         // what a line of more than fifteen characters is written in.
         let mut units = statement(5, 0, &[0x89]);
         units.extend_from_slice(&KANJI);
-        let run = &layout.statement(&units).runs[0];
+        let written = layout.statement(&units);
+        let run = &only(&written)[0];
         assert_eq!(run.advance, 20);
         assert_eq!(run.width, 40);
         assert_eq!(run.height, 36);
@@ -690,7 +812,8 @@ mod tests {
         // a character, drawn in half a field at the normal size.
         let mut units = statement(5, 0, &[0x1B, 0x28, 0x4A]);
         units.extend_from_slice(b"AB");
-        let run = &layout.statement(&units).runs[0];
+        let written = layout.statement(&units);
+        let run = &only(&written)[0];
         assert_eq!(run.advance, 20);
         assert_eq!(run.text, "AB");
     }
@@ -702,9 +825,79 @@ mod tests {
         units.push(0x0D);
         units.extend_from_slice(&KANJI);
         let written = layout.statement(&units);
-        assert_eq!(written.runs.len(), 2);
-        assert_eq!(written.runs[1].y, written.runs[0].y + 60);
-        assert_eq!(written.runs[1].x, 170);
+        let runs = only(&written);
+        assert_eq!(runs.len(), 2);
+        assert_eq!(runs[1].y, runs[0].y + 60);
+        assert_eq!(runs[1].x, 170);
+    }
+
+    /// `ACPS`, which is how every channel but the ones that write straight
+    /// down the display area places a line: a place in the plane's own dots.
+    fn at_dots(x: u16, y: u16) -> Vec<u8> {
+        let mut out = vec![0x9B];
+        out.extend_from_slice(format!("{x};{y} a").as_bytes());
+        out
+    }
+
+    #[test]
+    fn a_place_in_dots_names_the_bottom_of_the_field() {
+        let mut layout = Layout::default();
+        // 509 is the last dot of the plane's last row, not a row past the
+        // bottom of it: the same line `APS(7,0)` names.
+        let mut units = statement(0, 0, &[]);
+        units.extend_from_slice(&at_dots(310, 509));
+        units.extend_from_slice(&KANJI);
+        let written = layout.statement(&units);
+        let run = &only(&written)[0];
+        assert_eq!(run.y, 30 + 7 * 60 + 12);
+        assert_eq!(run.x, 310);
+    }
+
+    #[test]
+    fn a_size_after_the_place_still_sits_on_it() {
+        let mut layout = Layout::default();
+        // Which is the order a broadcast sends them in as often as not, and
+        // the field is half as tall once the size has been read: the line
+        // stands on the dot named either way.
+        let mut units = statement(0, 0, &[]);
+        units.extend_from_slice(&at_dots(310, 509));
+        units.push(0x88);
+        units.extend_from_slice(&KANJI);
+        let written = layout.statement(&units);
+        let run = &only(&written)[0];
+        assert_eq!(run.height, 18);
+        // Half a field tall, ending where a full one would.
+        assert_eq!(run.y + run.height, 510 - 6);
+    }
+
+    #[test]
+    fn a_wait_and_a_clear_leave_the_line_up_for_the_wait() {
+        let mut layout = Layout::default();
+        let mut units = statement(7, 0, &KANJI);
+        // Two seconds, then the plane is cleared. Which is the statement
+        // saying how long its own line stands -- not saying there is none.
+        units.extend_from_slice(&[0x9D, 0x20, 0x54, 0x0C]);
+        let written = layout.statement(&units);
+        assert_eq!(written.pages.len(), 1);
+        assert_eq!(written.pages[0].at, 0.0);
+        assert_eq!(written.pages[0].until, Some(2.0));
+        assert_eq!(written.pages[0].runs.len(), 1);
+    }
+
+    #[test]
+    fn a_statement_paces_as_many_pages_as_it_carries() {
+        let mut layout = Layout::default();
+        let mut units = statement(7, 0, &KANJI);
+        units.extend_from_slice(&[0x9D, 0x20, 0x4A, 0x0C]);
+        units.extend_from_slice(&[0x1C, 0x40 + 7, 0x40]);
+        units.extend_from_slice(&KANJI);
+        let written = layout.statement(&units);
+        assert_eq!(written.pages.len(), 2);
+        assert_eq!(written.pages[0].until, Some(1.0));
+        // The second goes up where the first came down, and the statement
+        // says nothing about when it comes down again.
+        assert_eq!(written.pages[1].at, 1.0);
+        assert_eq!(written.pages[1].until, None);
     }
 
     #[test]

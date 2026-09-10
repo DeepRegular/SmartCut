@@ -340,14 +340,28 @@ impl Reader {
                             return;
                         }
                         let written = layout.statement(&units);
-                        events.push(Event {
-                            at,
-                            until: None,
-                            shown: (!written.runs.is_empty()).then(|| Shown::Text {
-                                plane: written.plane,
-                                runs: written.runs,
-                            }),
-                        });
+                        if written.pages.is_empty() {
+                            // The statement that only clears the plane,
+                            // which is how a caption comes down.
+                            events.push(Event {
+                                at,
+                                until: None,
+                                shown: None,
+                            });
+                        }
+                        // A statement that times itself carries more than
+                        // one, each with its own moment. See
+                        // [`caption::Page`].
+                        for page in written.pages {
+                            events.push(Event {
+                                at: at + f64::from(page.at),
+                                until: page.until.map(|u| at + f64::from(u)),
+                                shown: Some(Shown::Text {
+                                    plane: written.plane,
+                                    runs: page.runs,
+                                }),
+                            });
+                        }
                     });
                 }
                 Some(decoder) => {
@@ -364,6 +378,12 @@ impl Reader {
                 }
             }
         }
+        // A page a statement times for itself goes up after the statement
+        // that carried it, and the next statement may have arrived by then.
+        // Put back in order, because that is what [`Reader::at`] searches;
+        // stable, so two things said at the same instant stay in the order
+        // the recording said them.
+        events.sort_by(|a, b| a.at.partial_cmp(&b.at).unwrap_or(std::cmp::Ordering::Equal));
         self.events = events;
         self.window = Some((from, to));
         Ok(())

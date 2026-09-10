@@ -255,19 +255,29 @@ fn main() -> Result<()> {
             print!("{:9.3}s group {id:#04x}: ", pts as f64 * tb);
             dump(&units);
             let written = layout.statement(&units);
-            for r in &written.runs {
-                println!(
-                    "            plane {}x{}  ({:4},{:4}) {:3}x{:2} adv {:2} #{:06x}  {}",
-                    written.plane.0,
-                    written.plane.1,
-                    r.x,
-                    r.y,
-                    r.width,
-                    r.height,
-                    r.advance,
-                    r.colour,
-                    r.text
-                );
+            for page in &written.pages {
+                // What the statement says about when its own page goes up
+                // and comes down, which is only ever what `TIME` told it.
+                let when = match (page.at, page.until) {
+                    (0.0, None) => String::new(),
+                    (at, None) => format!("  [+{at:.1}s]"),
+                    (at, Some(until)) => format!("  [+{at:.1}s .. +{until:.1}s]"),
+                };
+                for r in &page.runs {
+                    println!(
+                        "            plane {}x{}  ({:4},{:4}) {:3}x{:2} adv {:2} #{:06x}  {}{}",
+                        written.plane.0,
+                        written.plane.1,
+                        r.x,
+                        r.y,
+                        r.width,
+                        r.height,
+                        r.advance,
+                        r.colour,
+                        r.text,
+                        when
+                    );
+                }
             }
         });
         if seen >= want {

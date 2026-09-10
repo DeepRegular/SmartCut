@@ -674,6 +674,14 @@ let subsId = null;
 /// can be redrawn without asking again.
 let subsShown = null;
 let subsToken = 0;
+/// One question in flight at a time, and the last instant asked for always
+/// answered. A drag asks on every pointer move; most are a lookup in the
+/// stretch already read, but the one that leaves it costs a seek and a read
+/// -- and without this the asks behind it queue up and land one after
+/// another once the hand has stopped, each drawing a caption for a place the
+/// playhead has left. See `subs.rs`.
+let subsBusy = false;
+let subsWanted = null;
 
 /// Fill the picker from what the recording carries, and put it away where
 /// it carries nothing.
@@ -775,6 +783,11 @@ async function showSubs(t) {
     clearSubs();
     return;
   }
+  if (subsBusy) {
+    subsWanted = t;
+    return;
+  }
+  subsBusy = true;
   const token = ++subsToken;
   try {
     const shown = await invoke("subtitle_at", { id: subsId, time: t });
@@ -787,10 +800,31 @@ async function showSubs(t) {
     // subtitles cannot be read is not one to say so about on every frame.
     el("status").textContent = tr("subs.failed", { e });
     subsId = null;
+    subsWanted = null;
     el("subs-track").value = "";
     clearSubs();
+  } finally {
+    subsBusy = false;
+    const next = subsWanted;
+    subsWanted = null;
+    if (next !== null && subsId !== null) showSubs(next);
   }
 }
+
+/// Where a Japanese font's baseline sits in the square its characters fill,
+/// as a fraction of the character's height.
+///
+/// The square is what a caption's character field is, and what the box behind
+/// a line is drawn around -- so the characters have to be placed by it. Not
+/// by `textBaseline: "top"`, which was the first answer here and put the
+/// *font's ascent* on that line instead: an ascent stands well above the
+/// square on a Japanese font, and every line hung below its own box by a
+/// third of a character. A number rather than a metric, because it is the
+/// same number in every font this asks for -- 0.88 above the baseline and
+/// 0.12 below is how a Japanese font divides its em -- and because the two
+/// webviews the app runs on need not agree about anything to draw the same
+/// picture.
+const BASELINE = 0.88;
 
 /// Put what was last read on screen, at whatever size the stage is now.
 function drawSubs() {
@@ -836,27 +870,73 @@ function drawSubs() {
   const ctx = canvas.getContext("2d");
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
   ctx.clearRect(0, 0, box.width, box.height);
-  for (const run of subsShown.runs || []) {
-    const size = run.height * sy;
-    const advance = run.advance * sx;
-    const x = run.x * sx;
-    const y = run.y * sy;
-    // The box behind the line, which is what a receiver draws and what makes
-    // white characters readable over a bright picture. The broadcaster names
-    // a colour for it as well; this is not that colour, and says so in
-    // `subs.rs`.
-    ctx.fillStyle = "rgba(0,0,0,.55)";
-    ctx.fillRect(x - advance * 0.08, y - size * 0.12, run.width * sx + advance * 0.16, size * 1.24);
+  const laid = (subsShown.runs || []).map((run) => ({
+    run,
+    size: run.height * sy,
+    advance: run.advance * sx,
+    x: run.x * sx,
+    y: run.y * sy,
+  }));
+
+  // The box behind the line, which is what a receiver draws and what makes
+  // white characters readable over a bright picture. The broadcaster names a
+  // colour for it as well; this is not that colour, and says so in
+  // `subs.rs`.
+  //
+  // Every box first and every character afterwards. A run ends wherever the
+  // colour or the width changes -- which on a caption naming a speaker is
+  // after the first bracket -- and a box drawn run by run went over the
+  // characters beside it.
+  const boxes = [];
+  for (const { run, size, advance, x, y } of laid) {
+    const rect = {
+      x: x - advance * 0.08,
+      y: y - size * 0.12,
+      width: run.width * sx + advance * 0.16,
+      height: size * 1.24,
+    };
+    // One box to a line rather than one to a run, so that the overlap
+    // between two of them is not a darker stripe down the middle of a word.
+    const last = boxes[boxes.length - 1];
+    const joins =
+      last &&
+      Math.abs(last.y - rect.y) < 0.5 &&
+      Math.abs(last.height - rect.height) < 0.5 &&
+      rect.x <= last.x + last.width + 0.5;
+    if (joins) last.width = Math.max(last.width, rect.x + rect.width - last.x);
+    else boxes.push(rect);
+  }
+  ctx.fillStyle = "rgba(0,0,0,.55)";
+  for (const b of boxes) ctx.fillRect(b.x, b.y, b.width, b.height);
+
+  ctx.textBaseline = "alphabetic";
+  ctx.lineJoin = "round";
+  ctx.strokeStyle = "rgba(0,0,0,.9)";
+  for (const { run, size, advance, x, y } of laid) {
     ctx.font = `${size}px "Noto Sans CJK JP", "Noto Sans JP", "Yu Gothic", "Hiragino Sans", "MS Gothic", sans-serif`;
-    ctx.textBaseline = "top";
-    ctx.lineJoin = "round";
     ctx.lineWidth = Math.max(1, size / 10);
-    ctx.strokeStyle = "rgba(0,0,0,.9)";
     ctx.fillStyle = run.colour;
-    let at = x;
+    // The character inside the field: what a format leaves around a
+    // character is left around it, which is a tenth of the field on the
+    // broadcasts measured here, and half of that on either side.
+    const cell = advance * 0.9;
+    const inset = (advance - cell) / 2;
+    let at = x + inset;
     for (const ch of Array.from(run.text)) {
-      ctx.strokeText(ch, at, y);
-      ctx.fillText(ch, at, y);
+      // Squeezed into that cell where the font draws it wider. The half
+      // width sizes -- MSZ, and the alphanumeric set a caption switches into
+      // -- put a glyph in half a field, and a font that has never heard of
+      // ARIB draws a full width character at its own width whatever field it
+      // was asked for: the bracket a speaker's name opens with was drawn
+      // over the name beside it and lost. Narrowed only, never stretched.
+      const drawn = ctx.measureText(ch).width;
+      const squeeze = drawn > cell ? cell / drawn : 1;
+      ctx.save();
+      ctx.translate(at, y);
+      ctx.scale(squeeze, 1);
+      ctx.strokeText(ch, 0, BASELINE * size);
+      ctx.fillText(ch, 0, BASELINE * size);
+      ctx.restore();
       at += advance;
     }
   }
@@ -1676,6 +1756,11 @@ const STANDIN_STALE = 0.25;
 /// every key picture it is offered, so the pictures land where the recording
 /// puts them and the floor can sit an order of magnitude below that.
 async function paintFast(t) {
+  // The caption belongs to the instant rather than to the picture, so it is
+  // asked for here as well as in `showFrame` -- this is the path a drag, a
+  // wheel and the right-click search move the playhead along, and without it
+  // the line on the stage was the one from wherever the drag started.
+  showSubs(t);
   if (!held) return;
   if (shownTime >= 0 && Math.abs(t - shownTime) < STANDIN_STALE) return;
   const token = ++hoverToken;
