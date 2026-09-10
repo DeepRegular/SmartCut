@@ -1299,10 +1299,13 @@ fn main() -> Result<()> {
             marks.push(at_out);
             at_out += plan.t_out - plan.t_in;
         }
-        // What to call the disc, when nobody said: the channel this came
-        // off, which for an evening of one channel's recordings is exactly
-        // right, and otherwise the programme.
+        // What to call the disc, when nobody said: the series this
+        // recording is an episode of, which is what a run of them written
+        // one after another onto the same disc has in common. The channel
+        // only where the name says nothing at all -- see
+        // [`smartcut_core::series`].
         let title = disc_title
+            .or_else(|| smartcut_core::series::shared(std::slice::from_ref(&name)))
             .or_else(|| channel.clone())
             .unwrap_or_else(|| name.clone());
         smartcut_core::bdav::write(

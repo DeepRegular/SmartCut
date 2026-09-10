@@ -85,7 +85,7 @@ there, the recording is **added** to it.
 |---|---|
 | `--bdav FOLDER` | Write a BDAV disc into this folder (one recording becomes `BDAV/STREAM/00001.m2ts`). The index is built afterwards |
 | `--iso 2.50\|2.60` | Wrap the finished disc in an `.iso` beside it: `--bdav ~/disc` writes `~/disc/BDAV` and `~/disc.iso`. The folder stays |
-| `--disc-title NAME` | What the disc is called. Left out, the channel the recording came off |
+| `--disc-title NAME` | What the disc is called. Left out, the series the recording is an episode of: the programme name with the episode number, the episode's own title and the broadcast's marks taken off it |
 | `--programme NAME` | What this recording is called in the disc's index. Left out, the name its playlist gave it if it came off a disc, otherwise the programme name the broadcast carries |
 | `--channel NAME[,N]` | The channel, and optionally the three digits a viewer knows it by (`--channel "衛星第一,161"`). Left out, both come from the recording |
 | `--about TEXT` | What the disc's index says the programme was. Left out, the description the recording carries |

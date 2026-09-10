@@ -29,6 +29,7 @@ pub mod playback_audio;
 pub mod preview;
 pub mod proxy;
 pub mod seek_index;
+pub mod series;
 pub mod si;
 pub mod thumbs;
 pub mod udf;

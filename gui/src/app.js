@@ -3074,13 +3074,25 @@ function bdavMode() {
 /// Cheap -- it is a read of the first few megabytes -- but not free, and the
 /// answer cannot change while the file does not. `{}` for a recording that
 /// says nothing, so that "asked and it said nothing" is not asked again.
+///
+/// The ask itself is held, not just its answer: the screen and the disc's
+/// own name both want this, and two callers arriving while the file is being
+/// read should wait on the one read rather than start a second.
 async function askProgramme(clip) {
   if (clip.said) return clip.said;
+  clip.asking ??= readProgramme(clip);
+  return clip.asking;
+}
+
+/// The read itself. Held on the clip while it is running and let go of when
+/// the answer is on the clip instead.
+async function readProgramme(clip) {
   try {
     clip.said = (await invoke("programme", { path: clip.path })) || {};
   } catch {
     clip.said = {};
   }
+  clip.asking = null;
   return clip.said;
 }
 
@@ -3321,16 +3333,76 @@ function imageLine() {
   });
 }
 
+/// The name the engine read out of the programmes, and the list it read it
+/// out of: asked once for a list rather than once for every redraw, and the
+/// screen and the export then use the one answer.
+let discGuess = { of: null, title: "" };
+
+/// The names of the programmes in the list, as one string: what the guess
+/// above was made from, and what tells a stale guess from a good one.
+function discGuessKey(list) {
+  return list.map(programmeOf).join("\n");
+}
+
+/// Ask the engine what a disc of these is called. Resolves to a name, and
+/// never rejects: a disc wants a title whether or not the reading worked.
+///
+/// The engine answers with nothing where the recordings do not all name one
+/// series, and the disc is then called after the moment it is being made --
+/// see `stamp`. That moment is settled here, with the name, and not read off
+/// the clock again afterwards: the field on the settings screen shows what
+/// will be written, and a title that ticked over while somebody was reading
+/// it would be a field that lied about the disc twice a minute.
+async function guessDiscTitle(list) {
+  // Every recording in the list and not only the one the screen is showing:
+  // what the disc is called is a fact about all of them, and a list read half
+  // way through looks like a mixture whatever it holds. Once per file -- see
+  // `askProgramme` -- and the export would read them anyway.
+  for (const clip of list) await askProgramme(clip);
+  const key = discGuessKey(list);
+  if (discGuess.of === key) return discGuess.title;
+  let title = "";
+  try {
+    title = await invoke("series_title", { names: list.map(programmeOf) });
+  } catch {
+    title = "";
+  }
+  discGuess = { of: key, title: title || stamp() };
+  return discGuess.title;
+}
+
+/// Now, as a disc is willing to be called: `2026-09-11 00:15`.
+///
+/// Local time, because the moment meant is the one on the clock in the room.
+/// To the minute: a disc is not made twice in one, and the seconds would be
+/// noise in a recorder's list.
+function stamp() {
+  const now = new Date();
+  const two = (n) => String(n).padStart(2, "0");
+  return (
+    `${now.getFullYear()}-${two(now.getMonth() + 1)}-${two(now.getDate())} ` +
+    `${two(now.getHours())}:${two(now.getMinutes())}`
+  );
+}
+
 /// What to call the disc, when nobody has said.
 ///
-/// The channel the first recording came off, which for an evening of
-/// recordings off one channel is exactly right and for a mixed disc is at
-/// least a name somebody will recognise. Then the first programme.
+/// The series the recordings are episodes of: six weeks of one programme
+/// written onto one disc is the disc most people make, and naming it after
+/// the channel they came off -- which is what this did until the engine
+/// could take a name apart -- named it after the transponder. A disc of
+/// several programmes, or of two seasons of one, has no such name, and is
+/// called after the moment it was made.
+///
+/// The moment is also what stands here until the engine answers, which is a
+/// matter of milliseconds. The first programme's name would read better for
+/// those milliseconds and worse afterwards -- a disc of a mixture would flash
+/// up named after one of them.
 function discTitleFor(list) {
   if (settings.discTitle) return settings.discTitle;
-  const first = list[0];
-  if (!first) return "";
-  return channelOf(first) || programmeOf(first);
+  if (!list.length) return "";
+  if (discGuess.of === discGuessKey(list) && discGuess.title) return discGuess.title;
+  return stamp();
 }
 
 el("browse-dir").addEventListener("click", async (ev) => {
@@ -3471,11 +3543,19 @@ function renderOutset() {
     return;
   }
   if (bdavMode()) {
-    // Asked here rather than when the row was added: it is only this screen
-    // that has anything to do with the answer, and a list of forty
-    // recordings would otherwise read forty files to draw a list nobody has
-    // reached yet. The answer redraws the screen when it arrives.
+    // What the recordings say about themselves, asked here rather than when
+    // a row was added: it is only this screen that has anything to do with
+    // the answer, and a list of forty recordings would otherwise read forty
+    // files to draw a list nobody has reached yet. Neither ask is waited
+    // for; each redraws the screen when it arrives, and stores its answer
+    // before the redraw, which is what stops the redraw asking again.
+    //
+    // The row on screen first, because that is the half of this screen
+    // somebody is looking at. Then the whole list, for the disc's own name,
+    // which is worked out from all of them -- the same read per file either
+    // way, and whichever gets there first pays for it.
     if (!clip.said) askProgramme(clip).then(() => renderOutset());
+    if (discGuess.of !== discGuessKey(list)) guessDiscTitle(list).then(() => renderOutset());
     // Each field shows what will be written, whether that is what somebody
     // typed or what the recording says about itself -- so that reading the
     // screen is reading the disc, and typing is editing rather than
@@ -3904,17 +3984,24 @@ async function runExport() {
   // watching. Both lanes stand aside until the list is written out.
   paused = true;
   await invoke("stop_batch", { lane: null });
+  // What each recording will be called on the disc, and what the disc is
+  // called. Asked before the folder below is settled, not after: the folder
+  // a disc is written into is named after the disc, and a name worked out a
+  // moment too late would leave the folder called something else.
+  if (disc) {
+    for (const clip of list) await askProgramme(clip);
+    await guessDiscTitle(list);
+  }
   // Settled before the first byte and held until the last: see `runDir`.
   runDir = settings.dir;
   runFolder = subfolderNow();
 
-  // What each recording will be called on the disc, and under which number.
-  // Both are settled before anything is written: the numbering depends on
-  // what the disc already holds, and asking a recording what programme it
-  // holds is a read of it that should not happen between two cuts.
+  // And under which number. Settled before anything is written: the
+  // numbering depends on what the disc already holds, and asking a recording
+  // what programme it holds is a read of it that should not happen between
+  // two cuts.
   let slots = null;
   if (disc) {
-    for (const clip of list) await askProgramme(clip);
     try {
       slots = await invoke("bdav_prepare", { dir: discDir(), n: list.length });
     } catch (e) {

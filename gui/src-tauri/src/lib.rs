@@ -3138,6 +3138,18 @@ async fn programme(path: String) -> Result<ProgrammeInfo, String> {
     .map_err(|e| e.to_string())?
 }
 
+/// What a disc holding these recordings is called, when nobody has typed a
+/// name for it: the series they are episodes of.
+///
+/// Worked out here rather than on the screen so that the disc the export
+/// writes and the name the settings screen shows are the same answer, out of
+/// the same rules -- see [`smartcut_core::series`]. Empty where the names
+/// say nothing, which leaves the screen to fall back on its own.
+#[tauri::command]
+fn series_title(names: Vec<String>) -> String {
+    smartcut_core::series::shared(&names).unwrap_or_default()
+}
+
 /// Make the disc's directories and say what the next `n` recordings on it
 /// are to be called.
 ///
@@ -3640,6 +3652,7 @@ pub fn run() {
             stop_play,
             export,
             programme,
+            series_title,
             bdav_prepare,
             bdav_discard,
             bdav_finish,

@@ -232,6 +232,27 @@ programme is in it; the disc's index is where that lives, and it has to be
 Each field is taken on its own rather than as a set, so a disc that named the
 programme and not the channel still takes the channel from the stream.
 
+**The disc's own name is not one of the fields.** Nothing carries it: a
+recording knows what programme it is, and a disc of six of them is a thing
+nobody has named yet. It used to be filled in with the channel the first
+recording came off, which is right for an evening scraped off one channel and
+wrong for the disc most people make -- six weeks of one series, labelled in a
+recorder's list with the name of a transponder. So it is now read out of the
+programmes instead: [`series::of`](../../rust/crates/core/src/series.rs) takes
+the episode number, the episode's own title and the broadcast's marks off one
+name, and `series::shared` answers where a run of them all say the same thing --
+`星降る夜の郵便局`, out of six recordings that each called themselves that and
+then said which episode they were -- and answers with nothing where they do
+not. Several programmes have no shared name to find, and neither do two
+seasons of one, because the season is part of the name; the screen then falls
+back on the moment the disc is being made, `2026-09-11 00:15`, which is a true
+thing to say about a disc when there is nothing else true to say. Cutting a
+mixture back to the letters its titles happen to share was tried first and
+taken out again: a disc of six programmes labelled with a name most of them do
+not have reads, in a recorder's list, exactly like a disc of six episodes of
+that one. Either way it is a filled-in field like the others, and typing over
+it is what settles it.
+
 The third source has two shapes to read, because this program writes one of
 them. A broadcast recording carries an event information table and a service
 description on their own PIDs; a cut this program has already made carries a
