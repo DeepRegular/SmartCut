@@ -192,27 +192,45 @@ shifts and escapes, with the size and colour controls in the same byte stream.
 it. The sizes and colours are dropped and the characters come out in order. The
 JIS X 0208 to Unicode table is not written down here: EUC-JP is JIS X 0208 with
 the high bit set on both bytes, so the table a UTF-8 world already has is the one
-this needs. That leaves a single dependency, `encoding_rs`.
+this needs. That leaves a single dependency, `encoding_rs`, and one table of its
+own — the rows JIS never assigned, which no encoding a UTF-8 world has fills the
+way ARIB fills them.
 
 Two things are worth getting right:
 
-- **Rows 85 and up of JIS are ARIB's own symbols.** JIS leaves them
-  unassigned and ARIB fills them with symbols of its own. Sending those through
-  the mapping table of an encoding that *does* fill those rows — which is where
-  a general purpose decoder would send them — produces entirely different
-  characters, so they come out as `〓`, which is what a receiver with no glyph
-  for them shows.
+- **Rows 85 and up of JIS are ARIB's own symbols, and they have to be named.**
+  JIS leaves those rows unassigned and ARIB fills them with symbols of its own.
+  Sending them through the mapping table of an encoding that *does* fill those
+  rows — which is where a general purpose decoder would send them — produces
+  entirely different characters, so a decoder that will not name them itself has
+  to answer `〓`, which is what a receiver with no glyph for them shows.
 
-  **Row 90 is the exception, because a programme name is full of it.** Cells 48
-  to 84 of it are the bracketed markers a listing carries — `[新]`, `[字]`,
-  `[終]`, `[再]` — drawn on a television as one boxed glyph and written down
-  everywhere else as the word inside the box, which is what comes out here. A
-  recorder writes them into the name it puts in a playlist, so turning row 90
-  away wholesale cost the first episode of a run the one thing that said so.
-  The rest of those rows — the weather and sport symbols a caption uses, and the
-  units — are still the geta mark: a programme name does not carry them, and a
-  table half remembered is worse than a mark that says plainly that something
-  was there.
+  Answering `〓` for the whole of those rows was the first thing tried, on the
+  grounds that a programme name does not carry weather symbols. **It does carry
+  a season number.** A series in its third season is `Ⅲ` and that is row 94 cell
+  3, not JIS and not an ASCII `III`; the name came back with the geta mark in
+  the middle of it, and because the same text is what gets written to a disc,
+  the geta mark went onto the disc and stayed there. The same rows hold the
+  kanji JIS X 0208 left out — `髙`, `﨑` — which a Japanese name reaches for
+  regularly. So all of them are named now, from ARIB STD-B62's own mapping:
+  rows 85 and 86 the kanji, 90 the traffic marks, 91 the map marks, 92 the units
+  and numbers, 93 the weather and the fractions, 94 the numerals. A cell nothing
+  is assigned to is still the geta mark, and so is a downloaded DRCS glyph.
+
+  **Cells 48 to 84 of row 90 are spelled rather than drawn.** They are the
+  bracketed markers a listing carries — `[新]`, `[字]`, `[終]`, `[再]` — one
+  boxed glyph on a television, and the word inside the box everywhere else.
+  Unicode does have characters for them, but they are ones half the fonts on a
+  machine cannot draw, and `[新]` is what a listing says.
+
+  **The trap has a second end.** `Ⅲ`, `①`, `㈱`, `℡`, `㎏` are all in row 13,
+  which JIS X 0208 also leaves unassigned and which the encodings a UTF-8 world
+  reaches for fill with a vendor's additions. So writing a name *out* through
+  EUC-JP put the numeral in a row ARIB has nothing in, which a receiver draws as
+  nothing. Row 13 is refused on the way out for the same reason rows 85 and up
+  are refused on the way in, and ARIB's own cell is written instead — designated
+  into G0 with an escape and designated back afterwards, which is exactly what
+  the broadcast this was found in does.
 - **The last eight cells of a kana set are punctuation, not kana.** Rows 4 and
   5 of JIS are not full, and ARIB spends what is left on `ー` `。` `「` `」`
   `、` `・`. Miss them and a programme name reads

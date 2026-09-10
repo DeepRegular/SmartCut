@@ -17,11 +17,12 @@
 //!
 //! So this is a reader, not a renderer. What comes out is the text: the
 //! characters in order, with the sizes and colours dropped, because a list
-//! entry has one size and one colour anyway. A character this cannot name --
-//! most of ARIB's own additional symbols, which fill the rows JIS X 0208
-//! leaves empty, and the downloaded glyphs of DRCS -- comes out as `〓`,
-//! which is what a receiver that cannot draw it shows. The markers a listing
-//! puts in front of a programme name are the exception; see [`symbol`].
+//! entry has one size and one colour anyway. ARIB's own additional symbols
+//! are named where the standard names them -- see [`ADDITIONAL`] -- except
+//! for the markers a listing puts in front of a programme name, which are
+//! spelled out rather than drawn; see [`symbol`]. A character this cannot
+//! name -- a cell nothing is assigned to, the downloaded glyphs of DRCS --
+//! comes out as `〓`, which is what a receiver that cannot draw it shows.
 
 /// Which graphic set a byte is to be read against.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -78,13 +79,129 @@ const UNKNOWN: char = '〓';
 /// The rows of JIS X 0208 that ARIB fills with symbols of its own.
 ///
 /// Rows 85 and up are unassigned in JIS, and ARIB puts its additional
-/// symbols there -- the bracketed markers a listing carries, `[新]`, `[字]`,
-/// `[終]`. They are not JIS characters and must not be decoded as though
-/// they were: the mapping tables of the encodings that *do* fill those rows,
-/// which is where a general purpose decoder would send them, hold entirely
-/// different characters. The markers themselves are named in [`symbol`]; the
-/// rest of those rows still come back as the geta mark.
+/// symbols there -- the kanji JIS left out, the units, the weather, and the
+/// bracketed markers a listing carries. They are not JIS characters and must
+/// not be decoded as though they were: the mapping tables of the encodings
+/// that *do* fill those rows, which is where a general purpose decoder would
+/// send them, hold entirely different characters. What ARIB puts there is
+/// [`ADDITIONAL`].
 const FIRST_ARIB_ROW: u8 = 0x75;
+
+/// The row EUC-JP fills with characters JIS X 0208 never put there.
+///
+/// The same trap as [`FIRST_ARIB_ROW`] and at the other end of the table.
+/// Row 13 is unassigned in JIS X 0208; the encodings a UTF-8 world reaches
+/// for fill it with a vendor's additions -- the Roman numerals, the circled
+/// digits, the units -- and ARIB does not. So a name carrying one of those
+/// must not be *written* there, whatever `encoding_rs` says: it would be
+/// written where a receiver has nothing to draw. ARIB's own cells for them
+/// are in [`ADDITIONAL`], which is where they go instead. See [`wide`].
+const VENDOR_ROW: u8 = 0x2D;
+
+/// What ARIB puts in the rows JIS X 0208 leaves empty, row by row.
+///
+/// **This is why a series in its third season was listed as `〓`.** The
+/// Roman numeral a broadcaster ends such a name with is not a JIS character
+/// and not an ASCII `III`: it is row 94 cell 3 of a set of ARIB's own, and a
+/// decoder that answers the geta mark for the whole of these rows throws it
+/// away. So does the writer downstream of it, which then puts the geta mark
+/// on the disc, where it stays.
+///
+/// Each row is its cells in order, from cell 1, as the characters ARIB
+/// STD-B62 names them by. A `〓` in the table is a cell nothing is assigned
+/// to, or one whose glyph Unicode never encoded -- the instrument marks a
+/// score uses, which take up most of the second half of row 92 -- and a row
+/// stops at its last assigned cell. Rows 87 to 89 have nothing in them at
+/// all and are not here.
+///
+/// Rows 85 and 86 are kanji rather than symbols: the ones JIS X 0208 left
+/// out and a Japanese name still needs, `髙`, `﨑`, `辻`. They belong here
+/// for the same reason as the rest -- a name that carries one carries it.
+const ADDITIONAL: [(u8, &str); 7] = [
+    (0x75, ROW_85),
+    (0x76, ROW_86),
+    (0x7A, ROW_90),
+    (0x7B, ROW_91),
+    (0x7C, ROW_92),
+    (0x7D, ROW_93),
+    (0x7E, ROW_94),
+];
+
+const ROW_85: &str = "\
+    㐂𠅘份仿侚俉傜儞冼㔟匇卡卬詹𠮷呍咖咜咩唎啊噲囤圳\
+    圴塚墀姤娣婕寬﨑㟢庬弴彅德怗恵愰昤曈曙曺曻桒鿄椑\
+    椻橅檑櫛𣏌𣏾𣗄毱泠洮海涿淊淸渚潞濹灤𤋮𤋮煇燁爀玟\
+    玨珉珖琛琡琢琦琪琬琹瑋㻚畵疁睲䂓磈磠祇禮鿆䄃\
+    ";
+
+const ROW_86: &str = "\
+    鿅秚稞筿簱䉤綋羡脘脺舘芮葛蓜蓬蕙藎蝕蟬蠋裵角諶跎\
+    辻迶郝鄧鄭醲鈳銈錡鍈閒雞餃饀髙鯖鷗麴麵\
+    ";
+
+const ROW_90: &str = "\
+    ⛌⛍❗⛏⛐⛑〓⛒⛕⛓⛔〓〓〓〓🅿🆊〓〓⛖⛗⛘⛙⛚\
+    ⛛⛜⛝⛞⛟⛠⛡⭕㉈㉉㉊㉋㉌㉍㉎㉏〓〓〓〓⒑⒒⒓🅊\
+    🅌🄿🅆🅋🈐🈑🈒🈓🅂🈔🈕🈖🅍🄱🄽⬛⬤🈗🈘🈙🈚🈛⚿🈜\
+    🈝🈞🈟🈠🈡🈢🈣🈤🈥🅎㊙🈀\
+    ";
+
+const ROW_91: &str = "\
+    ⛣⭖⭗⭘⭙☓㊋〒⛨㉆㉅⛩࿖⛪⛫⛬♨⛭⛮⛯⚓✈⛰⛱\
+    ⛲⛳⛴⛵🅗ⒹⓈ⛶🅟🆋🆍🆌🅹⛷⛸⛹⛺🅻☎⛻⛼⛽⛾🅼\
+    ⛿\
+    ";
+
+const ROW_92: &str = "\
+    ➡⬅⬆⬇⬯⬮年月日円㎡㎥㎝㎠㎤🄀⒈⒉⒊⒋⒌⒍⒎⒏\
+    ⒐氏副元故前新🄁🄂🄃🄄🄅🄆🄇🄈🄉🄊㈳㈶㈲㈱㈹㉄▶\
+    ◀〖〗⟐²³🄭〓〓〓〓〓〓〓〓〓〓〓〓〓〓〓〓〓\
+    〓〓〓〓〓〓〓〓〓〓〓〓〓🄬🄫㉇🆐🈦℻\
+    ";
+
+const ROW_93: &str = "\
+    ㈪㈫㈬㈭㈮㈯㈰㈷㍾㍽㍼㍻№℡〶⚾🉀🉁🉂🉃🉄🉅🉆🉇\
+    🉈🄪🈧🈨🈩🈔🈪🈫🈬🈭🈮🈯🈰🈱ℓ㎏㎐㏊㎞㎢㍱〓〓½\
+    ↉⅓⅔¼¾⅕⅖⅗⅘⅙⅚⅐⅛⅑⅒☀☁☂⛄☖☗⛉⛊♦\
+    ♥♣♠⛋⨀‼⁉⛅☔⛆☃⛇⚡⛈〓⚞⚟♬☎\
+    ";
+
+const ROW_94: &str = "\
+    ⅠⅡⅢⅣⅤⅥⅦⅧⅨⅩⅪⅫ⑰⑱⑲⑳⑴⑵⑶⑷⑸⑹⑺⑻\
+    ⑼⑽⑾⑿㉑㉒㉓㉔🄐🄑🄒🄓🄔🄕🄖🄗🄘🄙🄚🄛🄜🄝🄞🄟\
+    🄠🄡🄢🄣🄤🄥🄦🄧🄨🄩㉕㉖㉗㉘㉙㉚①②③④⑤⑥⑦⑧\
+    ⑨⑩⑪⑫⑬⑭⑮⑯❶❷❸❹❺❻❼❽❾❿⓫⓬㉛\
+    ";
+
+/// The additional symbol in one cell of one row, when there is one.
+///
+/// The cell number is the byte less the 0x20 every JIS-shaped code table
+/// begins at, and cell 1 is the first character of the row.
+fn additional(hi: u8, lo: u8) -> Option<char> {
+    let row = ADDITIONAL.iter().find(|(at, _)| *at == hi)?.1;
+    let cell = lo.checked_sub(0x21)? as usize;
+    row.chars().nth(cell).filter(|c| *c != UNKNOWN)
+}
+
+/// Which cell of which row a character is ARIB's, when it is one of them.
+///
+/// The markers of row 90 are passed over. They are read as the word inside
+/// the box -- `[二]` rather than the glyph -- so a name never arrives here
+/// carrying one, and two of them are also symbols a caption reaches through
+/// a row of its own. Left in, the row they are in comes first and a caption's
+/// `🈔` would be written back as the marker.
+fn additional_cell(c: char) -> Option<[u8; 2]> {
+    if c == UNKNOWN {
+        return None;
+    }
+    ADDITIONAL.iter().find_map(|(hi, row)| {
+        row.chars()
+            .enumerate()
+            .map(|(cell, in_row)| (0x21 + cell as u8, in_row))
+            .find(|(lo, in_row)| *in_row == c && symbol(Set::Kanji, *hi, *lo).is_none())
+            .map(|(lo, _)| [*hi, lo])
+    })
+}
 
 /// Decode an ARIB eight-unit string.
 ///
@@ -157,13 +274,11 @@ fn at_char(out: &mut String, bytes: &[u8], at: usize, set: Set) -> usize {
 /// one boxed glyph, and written down everywhere else as the bracketed word
 /// inside the box. That is what this returns, because a name is a name: a
 /// listing that says `[新]` says what the broadcast said, and one that says
-/// `〓` has thrown it away.
+/// `🅍` has said it in a glyph half the fonts on a machine cannot draw.
 ///
 /// Row 90 is the row of them, and cells 48 to 84 of it are the markers. The
-/// rest of what ARIB puts in the rows above [`FIRST_ARIB_ROW`] -- the weather
-/// and sport symbols a caption uses, and the units -- is left alone: a
-/// programme name does not carry them, and a table half remembered is worse
-/// than the geta mark, which at least says plainly that something was there.
+/// rest of ARIB's additional symbols are single characters and come back as
+/// themselves; see [`ADDITIONAL`].
 fn symbol(set: Set, hi: u8, lo: u8) -> Option<&'static str> {
     if !matches!(set, Set::Kanji | Set::Symbols) || hi != 0x7A {
         return None;
@@ -223,9 +338,12 @@ fn one(out: &mut String, bytes: &[u8], at: usize, set: Set) -> usize {
 
 fn character(set: Set, hi: u8, lo: u8) -> char {
     match set {
+        // The additional symbols are reachable two ways -- designated as a
+        // set of their own, and in the rows the kanji set leaves to them --
+        // and a broadcast uses both.
         Set::Kanji => {
             if hi >= FIRST_ARIB_ROW {
-                UNKNOWN
+                additional(hi, lo).unwrap_or(UNKNOWN)
             } else {
                 jis(hi, lo).unwrap_or(UNKNOWN)
             }
@@ -248,7 +366,8 @@ fn character(set: Set, hi: u8, lo: u8) -> char {
             0x21..=0x7D => hi as char,
             _ => UNKNOWN,
         },
-        Set::Symbols | Set::Unknown { .. } => UNKNOWN,
+        Set::Symbols => additional(hi, lo).unwrap_or(UNKNOWN),
+        Set::Unknown { .. } => UNKNOWN,
     }
 }
 
@@ -409,14 +528,20 @@ pub fn one_line(text: &str) -> String {
 /// kanji set invoked over the graphic-left range, the alphanumerics one
 /// locking shift away.
 ///
-/// Two sets are enough for a name. The kanji set holds the kana as well, so
-/// the only thing the other is for is ASCII, and both are already designated
-/// when the text begins -- nothing has to be escaped into a slot, and the
-/// whole of the state is which of the two is invoked.
+/// Two sets carry nearly all of a name. The kanji set holds the kana as
+/// well, so the only thing the other is for is ASCII, and both are already
+/// designated when the text begins.
+///
+/// The third is not, and is the only reason anything is escaped into a slot
+/// here: ARIB's additional symbols have to be designated over the kanji set
+/// before they can be invoked, and the kanji set designated back afterwards.
+/// A name that carries none of them -- most names -- comes out with no
+/// escape sequence in it at all, exactly as before there was a third.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Writing {
     Kanji,
     Alnum,
+    Symbols,
 }
 
 /// The half-width katakana, in the order [`Set::HalfKatakana`] reads them,
@@ -434,8 +559,8 @@ const WIDENED: &str = "。「」、・ヲァィゥェォャュョッーアイウ
 /// The reverse of [`decode`], and deliberately a smaller thing: a decoder
 /// has to read whatever a broadcaster sent, while a writer only has to be
 /// read correctly. So this uses the two sets a receiver already has invoked
-/// and the two locking shifts between them, and no escape sequence appears
-/// in the output at all.
+/// and the two locking shifts between them, and reaches for a designation
+/// only where a name carries one of ARIB's own symbols; see [`Writing`].
 ///
 /// The sizes go in as a recorder writes them -- half width over the
 /// alphanumerics, normal over the kanji -- because that is what makes a name
@@ -454,6 +579,9 @@ pub fn encode(text: &str) -> Vec<u8> {
 pub fn encode_within(text: &str, limit: usize) -> Vec<u8> {
     let mut out: Vec<u8> = Vec::new();
     let mut mode: Option<Writing> = None;
+    // Which two-byte set is designated into G0. It begins as the kanji set,
+    // which is what a receiver begins with, and only a symbol moves it.
+    let mut g0 = Writing::Kanji;
     for c in text.chars() {
         // Which set the character is written against, and the bytes it is
         // written as. A line break and a space are neither: both mean the
@@ -466,24 +594,37 @@ pub fn encode_within(text: &str, limit: usize) -> Vec<u8> {
                 Some(b) => (Some(Writing::Alnum), [b, 0]),
                 None => match wide(c) {
                     Some(pair) => (Some(Writing::Kanji), pair),
-                    // Neither set has it. What a receiver shows for a
-                    // character it cannot draw is written instead, so the
-                    // name keeps its shape and says plainly where it could
-                    // not be carried.
-                    None => (Some(Writing::Kanji), [0x22, 0x2E]),
+                    None => match additional_cell(c) {
+                        Some(pair) => (Some(Writing::Symbols), pair),
+                        // No set has it. What a receiver shows for a
+                        // character it cannot draw is written instead, so
+                        // the name keeps its shape and says plainly where it
+                        // could not be carried.
+                        None => (Some(Writing::Kanji), [0x22, 0x2E]),
+                    },
                 },
             },
         };
-        let wide_char = matches!(against, Some(Writing::Kanji));
+        let wide_char = matches!(against, Some(Writing::Kanji | Writing::Symbols));
         // Built to one side and only then accepted, so what is measured
         // against the limit is what the character actually costs -- the
         // shift and the size in front of it included.
         let mut piece: Vec<u8> = Vec::new();
-        if let Some(to) = against.filter(|to| mode != Some(*to)) {
-            piece.extend_from_slice(match to {
-                Writing::Kanji => &[0x0F, 0x8A], // LS0, and the normal size
-                Writing::Alnum => &[0x0E, 0x89], // LS1, and the half width
-            });
+        if let Some(to) = against {
+            // A two-byte set has to be in G0 before it can be invoked, and
+            // only one of them can be there at a time.
+            if wide_char && to != g0 {
+                piece.extend_from_slice(match to {
+                    Writing::Symbols => &[0x1B, 0x24, 0x3B],
+                    _ => &[0x1B, 0x24, 0x42],
+                });
+            }
+            if mode != Some(to) {
+                piece.extend_from_slice(match to {
+                    Writing::Alnum => &[0x0E, 0x89], // LS1, and the half width
+                    _ => &[0x0F, 0x8A],              // LS0, and the normal size
+                });
+            }
         }
         piece.push(body[0]);
         if wide_char {
@@ -495,6 +636,9 @@ pub fn encode_within(text: &str, limit: usize) -> Vec<u8> {
         out.extend_from_slice(&piece);
         if let Some(to) = against {
             mode = Some(to);
+            if wide_char {
+                g0 = to;
+            }
         }
     }
     out
@@ -530,11 +674,17 @@ fn wide(c: char) -> Option<[u8; 2]> {
         return None;
     }
     let (hi, lo) = (euc[0] & 0x7F, euc[1] & 0x7F);
-    // Rows 85 and up are ARIB's own symbols and are not reached this way:
-    // EUC-JP fills them with characters of its own, and writing one of those
-    // cells would be writing a different character. See [`FIRST_ARIB_ROW`].
-    (hi < FIRST_ARIB_ROW && (0x21..=0x7E).contains(&hi) && (0x21..=0x7E).contains(&lo))
-        .then_some([hi, lo])
+    // The rows JIS X 0208 leaves empty are not reached this way, at either
+    // end of the table: EUC-JP fills them with characters of its own, and
+    // writing one of those cells would be writing a different character.
+    // ARIB has its own cells for what belongs in them, and
+    // [`additional_cell`] is asked next. See [`FIRST_ARIB_ROW`] and
+    // [`VENDOR_ROW`].
+    (hi != VENDOR_ROW
+        && hi < FIRST_ARIB_ROW
+        && (0x21..=0x7E).contains(&hi)
+        && (0x21..=0x7E).contains(&lo))
+    .then_some([hi, lo])
 }
 
 /// The wide form of a half-width katakana. Anything else is itself.
@@ -583,9 +733,35 @@ mod tests {
 
     #[test]
     fn shows_what_it_cannot_name() {
-        // Row 90 of the kanji set is ARIB's own, not JIS's, and cell 1 of it
-        // is one of the symbols this does not name.
-        assert_eq!(decode(&[0x0F, 0x7A, 0x21]), "〓");
+        // Row 90 of the kanji set is ARIB's own, not JIS's. Cell 1 of it is
+        // a symbol ARIB names and this names with it; cell 7 is a cell
+        // nothing is assigned to, and cell 85 is past the end of the row.
+        assert_eq!(decode(&[0x0F, 0x7A, 0x21]), "⛌");
+        assert_eq!(decode(&[0x0F, 0x7A, 0x27]), "〓");
+        assert_eq!(decode(&[0x0F, 0x7A, 0x75]), "〓");
+        // And a downloaded glyph, which is a set with no characters in it at
+        // all: ESC 0x24 0x28 0x20 designates DRCS into G0.
+        assert_eq!(
+            decode(&[0x1B, 0x24, 0x28, 0x20, 0x41, 0x0F, 0x21, 0x21]),
+            "〓"
+        );
+    }
+
+    /// The shape a broadcast writes the season number of a returning series
+    /// in, taken off the air: the marker, the name, and a Roman numeral that
+    /// used to come back as the geta mark. Row 94 cell 3 of the additional
+    /// symbols, designated into G0 and designated out again -- which is also
+    /// the shape [`encode`] writes.
+    #[test]
+    fn names_the_roman_numeral_in_a_programmes_name() {
+        let raw = [
+            0x1B, 0x24, 0x3B, 0x0F, 0x7A, 0x6B, // [新]
+            0x1B, 0x24, 0x39, 0x0F, 0x25, 0x46, 0x25, 0x39, 0x25, 0x48, // テスト
+            0x1B, 0x24, 0x3B, 0x0F, 0x7E, 0x23, // Ⅲ
+            0x89, 0x20, 0x8A, // a half-width space between the two halves
+            0x1B, 0x24, 0x39, 0x0F, 0x21, 0x41, // ～
+        ];
+        assert_eq!(decode(&raw), "[新]テストⅢ ～");
     }
 
     #[test]
@@ -646,9 +822,55 @@ mod tests {
             "てすとばんぐみ!にっ!! #07「架空の休息日の過ごし方。」",
             "アニメ テスト",
             "Anime Test",
+            // A season number, a circled episode number and a kanji JIS X
+            // 0208 left out: all three are ARIB's own cells, and all three
+            // sit next to characters that are not.
+            "テストⅢ ②「髙い」",
         ] {
             assert_eq!(decode(&encode(text)), text);
         }
+    }
+
+    /// Every cell the table names can be written back as the cell it was
+    /// read from, or as a cell that means the same character.
+    ///
+    /// Not a tautology. Some of what ARIB keeps in these rows is also
+    /// somewhere EUC-JP can reach -- `年` and `新` are ordinary kanji as well
+    /// as squares of their own -- and [`wide`] is asked first, so those go
+    /// out through JIS. What this checks is that whichever way a character
+    /// leaves, it comes back as itself.
+    #[test]
+    fn every_symbol_named_can_be_written_again() {
+        for (hi, row) in ADDITIONAL {
+            for (cell, c) in row.chars().enumerate().filter(|(_, c)| *c != UNKNOWN) {
+                // Except the markers of row 90, which are not cells a name
+                // is written into at all; see [`additional_cell`].
+                if symbol(Set::Kanji, hi, 0x21 + cell as u8).is_some() {
+                    continue;
+                }
+                let one = c.to_string();
+                assert_eq!(decode(&encode(&one)), one, "U+{:04X}", c as u32);
+            }
+        }
+    }
+
+    #[test]
+    fn writes_arib_symbols_where_arib_keeps_them() {
+        // Row 94 cell 3, designated over the kanji set and designated back
+        // -- which is what the broadcast this was found in does. The two
+        // characters around it are ordinary kanji and are written with no
+        // escape at all.
+        assert_eq!(
+            encode("生Ⅲ生"),
+            vec![
+                0x0F, 0x8A, 0x40, 0x38, // 生
+                0x1B, 0x24, 0x3B, 0x0F, 0x8A, 0x7E, 0x23, // Ⅲ
+                0x1B, 0x24, 0x42, 0x0F, 0x8A, 0x40, 0x38, // 生
+            ]
+        );
+        // And nothing is written into the row EUC-JP would have put the
+        // numeral in, which is a row a receiver has nothing to draw for.
+        assert!(!encode("Ⅲ").contains(&VENDOR_ROW));
     }
 
     #[test]
