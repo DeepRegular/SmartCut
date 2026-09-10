@@ -663,8 +663,28 @@ input[type="text"]::placeholder { color: var(--dim); }
 .row > span:first-child { color: var(--dim); min-width: 132px; }
 .row .lbl { color: var(--dim); min-width: 48px; }
 .row .num { color: var(--dim); font-variant-numeric: tabular-nums; white-space: nowrap; }
-.row input[type="text"], .row select, .row .drop { flex: 1; min-width: 0; }
+.row input[type="text"], .row select, .row .drop, .row textarea { flex: 1; min-width: 0; }
 .row input[readonly] { color: var(--dim); }
+/* A field holding a count rather than a name: the three digits a channel is
+   known by. Wide enough for four of them and no wider, so the row does not
+   read as though a longer answer were expected. */
+.row input.narrow { flex: none; width: 5.5em; }
+/* A row whose control is taller than one line. The label sits at the top of
+   it rather than halfway down the box. */
+.row.tall { align-items: flex-start; }
+.row.tall > span:first-child { padding-top: 5px; }
+.row.tall .num { padding-top: 5px; }
+.row textarea {
+  background: #141414; color: var(--text); border: 1px solid var(--line);
+  border-radius: 2px; padding: 4px 8px; resize: vertical;
+  font: inherit;
+}
+.row textarea::placeholder { color: var(--dim); }
+/* What has been typed will not fit the field it is going into, or will not
+   be read as a date at all. Said in the colour rather than in a dialog: the
+   count beside the box is already saying how much room is left. */
+.row .num.over { color: #f0846a; }
+.row input.over, .row textarea.over { border-color: #f0846a; }
 .opts { display: flex; flex-direction: column; gap: 5px; margin-top: 8px; }
 /* A block laid out by a rule of its own does not go away when it is hidden:
    `display: flex` is more specific than the browser's own `[hidden]`. The

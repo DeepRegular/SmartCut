@@ -206,6 +206,12 @@ reaches at about 85 characters. What does not fit is cut at a character, never
 inside one: half a JIS pair is a different character rather than a shorter
 name.
 
+Which is a thing somebody typing a name should be able to see coming, so the
+screen counts the room left in each of the three text fields as they are typed
+-- in bytes of this code, since that is what the field is measured in, and not
+in characters. The channel's twenty are the tightest of them: a name like
+`NHK総合・東京` is seventeen.
+
 **The chapter points are the cuts.** One at the start of every kept range,
 which is where the commercial breaks were, plus whatever marks were put down
 in the editor. That is the one thing on a recorder's disc a viewer uses every
@@ -219,7 +225,7 @@ programme is in it; the disc's index is where that lives, and it has to be
 
 | | |
 |---|---|
-| **What was typed** | the output settings screen offers the programme's name per clip and the disc's name once, because a name nobody can correct is a name that is wrong forever |
+| **What was typed** | the output settings screen offers the disc's name once and, per clip, all four of the things a playlist says about a recording: the programme's name, the channel and its number, the moment it went out and what it was about. A field nobody can correct is a field that is wrong forever, and a recording that has been through tools that kept none of this has nowhere else to get it from. Each field shows what will be written, whichever of the three answers below it came from; emptied, it is written empty -- which is what the authoring tool's disc does with the channel and the description -- except the name, which fills itself back in |
 | **The disc it came off** | a recording read off a BDAV disc arrives with everything its playlist said: the name, the moment it was recorded, the channel and its number, and what the broadcaster said the programme was — [`disc::Entry`](../../rust/crates/core/src/disc.rs) carries all of it |
 | **The broadcast itself** | [`si::programme`](../../rust/crates/core/src/si.rs) reads the recording's own tables: the short event descriptor for the name and the sentence under it, the extended event descriptors for the cast and the staff, the event's start time for the moment, and the service description for the channel |
 

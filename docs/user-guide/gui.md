@@ -510,6 +510,9 @@ Writing a disc adds these fields:
 |---|---|
 | **Disc title** | The name a recorder shows over the list of what is on the disc. Filled in from the channel the first recording came off, and typed over from there |
 | **Programme name** | **Per clip**, not per list: what this recording is called in the disc's index. Filled in from what the recording says about itself, and typed over from there. Emptied, it goes back to what the recording said |
+| **Channel** | Per clip. What the channel calls itself, and beside it the three digits a viewer knows it by — 0, or empty, where the recording does not say, which is what a terrestrial recording writes there |
+| **Recorded** | Per clip. When the programme went out, as `2026-08-17 01:00:00`. Slashes, a missing seconds field and single digits are understood and put back in that shape; anything that cannot be read as a moment stops the run rather than being written as no moment at all |
+| **About** | Per clip, and several lines of it: the sentence a listing carries and the cast and staff under it. This is what a recorder shows when the programme is selected in its list |
 | **Image** | Whether to wrap the finished disc in a `.iso` (`None` / `UDF 2.50` / `UDF 2.60`). The folder is written either way, and the image goes beside it under the same name |
 | **Disc folder** | Replaces "Output folder", and **cannot be left empty** — a disc is one place, and the recordings in a list can have come from four. SmartCut makes one more folder under it, named by "Subfolder", and writes `BDAV` in there |
 
@@ -523,6 +526,21 @@ recording already knows.
 - A recording read off a disc keeps everything its playlist said.
 - A broadcast recording is read for its own programme information.
 - A cut this program made earlier still carries all of it.
+
+**And all of it can be typed over**, because a recording that has been through
+tools that kept none of it has nowhere else to get it from, and a name nobody
+can correct is a name that is wrong forever. What the fields show is what will
+be written. Emptying one leaves the field on the disc blank — which is a thing a
+real disc does: an authoring tool's disc names the programme and the date and
+leaves the channel and the description empty. The one exception is the name,
+which fills itself back in, since a nameless row in a recorder's list is the one
+outcome nobody wants.
+
+The count beside each text field is how much room the index has left for it, in
+bytes of the ARIB code a playlist is written in rather than in characters: 255
+for the name, 20 for the channel and 1200 for the description. It turns colour
+where what has been typed no longer fits, because what does not fit is cut off
+on the way onto the disc.
 
 **The chapter points are the cuts.** One at the start of every kept range —
 which is where the commercial breaks were — plus any marks put down in the cut

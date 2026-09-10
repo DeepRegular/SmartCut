@@ -282,11 +282,11 @@ const CATALOG = {
     "outset.formatBdav":
       "映像:　{codec}, {w}x{h}, {fps} fps, {scan}\n音声:　{audio}\n" +
       "区間:　{keeps} 区間 / 出力 {kept}（元 {dur}、カット {cuts} 箇所）\n" +
-      "チャンネル:　{channel}\n記録日時:　{made}\n番組内容:　{about}\n" +
       "チャプター:　{marks} 個\nディスク:　{out}",
-    "outset.channelNumbered": "{name}（{n}）",
-    "outset.channelUnknown": "（録画にチャンネル情報がありません）",
-    "outset.aboutNone": "（録画に番組内容がありません）",
+    // 索引の欄が空のまま書かれるときに、その欄が見せるもの。録画が何も
+    // 言わなかったときも、消したときも同じ結果になる——どちらもディスクには
+    // 何も入らない。番号だけ短いのは、欄が 3 桁ぶんしかないからです。
+    "outset.fieldBlank": "（書きません）",
     "outset.tabFile": "ファイル出力",
     "outset.tabBdav": "BDAV 出力",
     "outset.discHead": "ディスク設定",
@@ -301,7 +301,15 @@ const CATALOG = {
     "outset.discFolder": "ディスクの場所(F):",
     "outset.discHere": "（フォルダーを選んでください）",
     "outset.programme": "番組名:",
-    "outset.madeUnknown": "（録画に記録日時がありません）",
+    "outset.channel": "チャンネル:",
+    "outset.channelNumber": "番号:",
+    "outset.numberNone": "（なし）",
+    "outset.made": "記録日時:",
+    "outset.about": "番組内容:",
+    // 欄の残り。ARIB のバイト数で、UTF-8 でも文字数でもない——プレイリストが
+    // 数えるのがこれだから。
+    "outset.bytes": "{n}/{room}",
+    "outset.madeBad": "YYYY-MM-DD HH:MM:SS",
     "outset.discPath": "{dir}/BDAV",
     "outset.interlaced": "インターレース (トップフィールド優先)",
     "outset.sidecar": "\n　　　　{path}",
@@ -310,6 +318,8 @@ const CATALOG = {
     "out.idle": "出力するクリップを一覧に追加してください",
     "out.needDiscFolder":
       "BDAV 出力にはディスクを作る場所が要ります。出力先フォルダーを選んでください",
+    "out.madeUnreadable":
+      "「{name}」の記録日時が日時として読めません。YYYY-MM-DD HH:MM:SS の形で入れてください",
     "out.bdavIndexing": "ディスクの索引を作成中: 録画 {clip}",
     "out.imaging": "イメージを作成中（UDF {udf}）: {pct}%",
     "out.imageDone": "イメージを作成しました: {path}",
@@ -722,11 +732,8 @@ const CATALOG = {
     "outset.formatBdav":
       "Video:  {codec}, {w}x{h}, {fps} fps, {scan}\nAudio:  {audio}\n" +
       "Ranges:  {keeps} kept / {kept} out (of {dur}, {cuts} cuts)\n" +
-      "Channel:  {channel}\nRecorded:  {made}\nAbout:  {about}\n" +
       "Chapters:  {marks}\nDisc:  {out}",
-    "outset.channelNumbered": "{name} ({n})",
-    "outset.channelUnknown": "(the recording does not say)",
-    "outset.aboutNone": "(the recording does not say)",
+    "outset.fieldBlank": "(left blank)",
     "outset.tabFile": "Files",
     "outset.tabBdav": "BDAV disc",
     "outset.discHead": "Disc settings",
@@ -741,7 +748,13 @@ const CATALOG = {
     "outset.discFolder": "Disc folder (F):",
     "outset.discHere": "(choose a folder)",
     "outset.programme": "Programme name:",
-    "outset.madeUnknown": "(the recording does not say)",
+    "outset.channel": "Channel:",
+    "outset.channelNumber": "No.:",
+    "outset.numberNone": "(none)",
+    "outset.made": "Recorded:",
+    "outset.about": "About:",
+    "outset.bytes": "{n}/{room}",
+    "outset.madeBad": "YYYY-MM-DD HH:MM:SS",
     "outset.discPath": "{dir}/BDAV",
     "outset.interlaced": "interlaced (top field first)",
     "outset.sidecar": "\n             {path}",
@@ -749,6 +762,8 @@ const CATALOG = {
     // --- export screen ---------------------------------------------------
     "out.idle": "Add clips to the list to export them",
     "out.needDiscFolder": "A BDAV disc needs somewhere to be built: choose an output folder",
+    "out.madeUnreadable":
+      "{name}: that is not a moment a playlist can carry. Write it as YYYY-MM-DD HH:MM:SS",
     "out.bdavIndexing": "Writing the disc index: recording {clip}",
     "out.imaging": "Writing the image (UDF {udf}): {pct}%",
     "out.imageDone": "Wrote the image: {path}",

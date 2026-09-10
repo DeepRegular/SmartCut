@@ -165,13 +165,49 @@
           <!-- What a disc's index will say about this recording. On screen
                only where a disc is what is being written: in a file the
                programme's name is the file's name, which the row below the
-               format already shows. The name is filled in from what the
-               recording says about itself and can be typed over; the moment
-               it went out is what the recording said and nothing else, so it
-               is shown rather than offered. -->
+               format already shows. Every one of the four is filled in from
+               what the recording says about itself and can be typed over --
+               a name nobody can correct is a name that is wrong forever, and
+               the same goes for the channel, the night it went out and what
+               the broadcaster said it was. -->
           <div class="row" id="row-programme" hidden>
             <span data-i18n="outset.programme">番組名:</span>
             <input id="out-programme" type="text" />
+            <span class="num" id="out-programme-bytes"></span>
+          </div>
+          <!-- The other three things a recorder's own list shows about a
+               recording, and the other three the index has to be told. Filled
+               in the way the name is -- what the disc it came off said, and
+               otherwise what the broadcast's own tables said -- and typed over
+               the same way, because a recording that has been through tools
+               that kept none of it has nowhere else to get it from. Unlike
+               the name, a field emptied here is written empty -- which is
+               what the authoring tool's disc does with the channel and the
+               description -- and that is what its placeholder says. -->
+          <div class="row" id="row-channel" hidden>
+            <span data-i18n="outset.channel">チャンネル:</span>
+            <input id="out-channel" type="text" data-i18n-ph="outset.fieldBlank" />
+            <span class="num" id="out-channel-bytes"></span>
+            <!-- The three digits a viewer knows the channel by, which is a
+                 different fact from what the channel calls itself: a disc can
+                 carry either without the other, and a terrestrial recording
+                 has no number to carry at all. -->
+            <span class="lbl" data-i18n="outset.channelNumber">番号:</span>
+            <input id="out-channel-number" class="narrow" type="text" inputmode="numeric"
+                   data-i18n-ph="outset.numberNone" />
+          </div>
+          <div class="row" id="row-made" hidden>
+            <span data-i18n="outset.made">記録日時:</span>
+            <input id="out-made" type="text" data-i18n-ph="outset.fieldBlank" />
+            <span class="num" id="out-made-note"></span>
+          </div>
+          <!-- Several hundred characters of it, over as many lines as the
+               broadcaster wrote: the sentence a listing carries and the cast
+               and staff under it. So a box rather than a field. -->
+          <div class="row tall" id="row-about" hidden>
+            <span data-i18n="outset.about">番組内容:</span>
+            <textarea id="out-about" rows="4" data-i18n-ph="outset.fieldBlank"></textarea>
+            <span class="num" id="out-about-bytes"></span>
           </div>
           <pre id="outset-format" class="format" data-i18n="outset.noClips"></pre>
         </div>

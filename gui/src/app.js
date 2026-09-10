@@ -125,15 +125,20 @@ function makeClip(found) {
     /// editor would be switched off again on the way out by an answer given
     /// before anybody had seen the recording.
     dropPids: dropPids || [],
-    /// What the disc this came off said about the recording: when it was
-    /// made, as `2026-08-17 01:00:00`, what it was about, and the channel it
-    /// came off with the three digits a viewer knows that channel by. Null
-    /// for a file, whose own answer is in the recording and is asked for
-    /// when it is needed -- see `programmeOf`.
-    made: made || null,
-    description: description || null,
-    channel: channel || null,
-    channelNumber: channelNumber || 0,
+    /// What a disc's index will say about the recording besides its name:
+    /// when it was made, as `2026-08-17 01:00:00`, what it was about, and the
+    /// channel it came off with the three digits a viewer knows that channel
+    /// by. What the disc this came off said, until somebody types over it on
+    /// the output screen.
+    ///
+    /// Null is nobody having said, and falls through to what the recording
+    /// says about itself -- the answer a file arrives with, asked for when it
+    /// is needed. An empty string is an answer: leave the field blank on the
+    /// disc. See `madeOf`.
+    made: made ?? null,
+    description: description ?? null,
+    channel: channel ?? null,
+    channelNumber: channelNumber ?? null,
     /// What to call this recording in a disc's index, when the name it
     /// arrived with is not the one wanted. Null until somebody types one,
     /// which is the difference between "no answer yet" and "called nothing".
@@ -558,7 +563,10 @@ function closeChooser(take) {
         made: clip.made,
         description: clip.description,
         channel: clip.channel,
-        channelNumber: clip.channel_number,
+        // Nought is the disc's index saying it does not know, which is not
+        // the same as a row with no number in it -- so it arrives as nobody
+        // having said, and the stream is still asked. See `channelNumberOf`.
+        channelNumber: clip.channel_number || null,
         dropPids: st.drop.slice(),
       }))
   );
@@ -3088,15 +3096,27 @@ function programmeOf(clip) {
 
 /// And when it says the recording was made. The disc's answer first: it is
 /// the one a person has already seen in a list of recordings.
+///
+/// These three and the number below hold whatever will be written, which is
+/// what the recording arrived with until somebody types over it -- so `null`
+/// is "nobody has said" and falls through to what the recording says about
+/// itself, while an empty string is an answer: leave the field on the disc
+/// empty. Which is a thing a real disc does. The authoring tool's disc
+/// writes the programme and the date and leaves the channel and the
+/// description blank, because a file handed to it is not a broadcast.
+///
+/// The name is not like that -- see `programmeOf`, which fills an emptied
+/// field back in. A nameless row in a recorder's list is the one outcome
+/// nobody wants.
 function madeOf(clip) {
-  return clip.made || (clip.said || {}).made || null;
+  return clip.made ?? (clip.said || {}).made ?? null;
 }
 
 /// What the broadcaster said the programme was: the sentence a listing
 /// carries, and the cast and staff under it. A recorder writes this into the
 /// playlist beside the name, and shows it when the programme is selected.
 function descriptionOf(clip) {
-  return clip.description || (clip.said || {}).description || null;
+  return clip.description ?? (clip.said || {}).description ?? null;
 }
 
 /// The channel it came off, and the three digits a viewer knows that channel
@@ -3104,11 +3124,66 @@ function descriptionOf(clip) {
 /// this does not read. Field by field, so a disc that named the programme
 /// and not the channel still takes the channel from the stream.
 function channelOf(clip) {
-  return clip.channel || (clip.said || {}).channel || null;
+  return clip.channel ?? (clip.said || {}).channel ?? null;
 }
 
 function channelNumberOf(clip) {
-  return clip.channelNumber || (clip.said || {}).channel_number || 0;
+  return clip.channelNumber ?? (clip.said || {}).channel_number ?? 0;
+}
+
+/// How much room each of the index's texts has, in bytes of ARIB code.
+///
+/// The playlist gives the name a length byte and 255 bytes, the channel 20,
+/// and the description everything between where it starts and where the play
+/// items do. See `rpls` in `bdav.rs`, where these are the same four numbers.
+const ROOM = { name: 255, channel: 20, about: 1200 };
+
+/// What a text will cost in the field it is going into.
+///
+/// The index's texts are ARIB eight-unit code rather than UTF-8, and what
+/// does not fit is cut off at the far end without anybody being told. So it
+/// is counted here, where there is still somebody to tell.
+///
+/// The same arithmetic `arib::encode_within` does: an ASCII character is a
+/// byte, anything else is a JIS pair, and the first character of a run costs
+/// two bytes more for the shift into the set it is written against. A space
+/// and a line break are in neither set and leave the state alone.
+function aribBytes(text) {
+  let n = 0;
+  let mode = null;
+  for (const c of text) {
+    // `\` and `~` are the two cells JIS X 0201 spends on the money sign and
+    // the overline, so they go through the wide set as themselves.
+    const narrow =
+      c === "¥" || c === "‾" || (c >= "!" && c <= "~" && c !== "\\" && c !== "~");
+    const against = c === "\n" || c === " " ? null : narrow ? "alnum" : "kanji";
+    if (against && against !== mode) {
+      n += 2;
+      mode = against;
+    }
+    n += against === "kanji" ? 2 : 1;
+  }
+  return n;
+}
+
+/// A moment as the playlist carries it: `2026-08-17 01:00:00`, or null for
+/// anything that cannot be read as one.
+///
+/// The same bounds `si::Began::parse` holds to, because that is what will
+/// read this back -- and a date it cannot read is written as no date at all.
+/// What is looser here is only the typing: slashes for dashes, a `T` for the
+/// space, a missing seconds field and single digits are all understood and
+/// come back in the one shape the disc uses.
+function madeParse(text) {
+  const m = /^\s*(\d{4})[-/.](\d{1,2})[-/.](\d{1,2})[ T](\d{1,2}):(\d{1,2})(?::(\d{1,2}))?\s*$/.exec(
+    text
+  );
+  if (!m) return null;
+  const [y, mo, d, h, mi, se] = m.slice(1).map((v) => Number(v || 0));
+  if (y < 1970 || y > 2200 || mo < 1 || mo > 12 || d < 1 || d > 31) return null;
+  if (h > 23 || mi > 59 || se > 59) return null;
+  const pad = (n, w = 2) => String(n).padStart(w, "0");
+  return `${pad(y, 4)}-${pad(mo)}-${pad(d)} ${pad(h)}:${pad(mi)}:${pad(se)}`;
 }
 
 /// Where the chapter points of a recording written onto a disc go.
@@ -3230,24 +3305,6 @@ function imageLine() {
   });
 }
 
-/// The channel as the panel shows it: what it calls itself, and the three
-/// digits beside it where the recording knew them.
-function channelLine(clip) {
-  const name = channelOf(clip);
-  if (!name) return t("outset.channelUnknown");
-  const n = channelNumberOf(clip);
-  return n ? t("outset.channelNumbered", { name, n }) : name;
-}
-
-/// And what the broadcaster said the programme was, flattened to the one
-/// line the panel has room for.
-function aboutLine(clip) {
-  const about = descriptionOf(clip);
-  if (!about) return t("outset.aboutNone");
-  const flat = about.replace(/\s+/g, " ").trim();
-  return flat.length > 78 ? `${flat.slice(0, 78)}…` : flat;
-}
-
 /// What to call the disc, when nobody has said.
 ///
 /// The channel the first recording came off, which for an evening of
@@ -3292,6 +3349,9 @@ function paintMode() {
   el("row-disc-title").hidden = !disc;
   el("row-image").hidden = !disc;
   el("row-programme").hidden = !disc;
+  el("row-channel").hidden = !disc;
+  el("row-made").hidden = !disc;
+  el("row-about").hidden = !disc;
   el("outset-file-head").textContent = t(disc ? "outset.discHead" : "outset.fileHead");
   el("out-dir-label").textContent = t(disc ? "outset.discFolder" : "outset.outDir");
   el("out-dir").placeholder = t(disc ? "outset.discHere" : "outset.sameAsInput");
@@ -3334,6 +3394,44 @@ function settleSubfolder(list) {
   if (box.value !== want) box.value = want;
 }
 
+/// Put a value in a field without moving the caret.
+///
+/// These are redrawn whenever anything about the row changes -- a walk
+/// finishing, a lane reporting -- and assigning `value` what it already
+/// holds still sends the caret to the end of it. Which, in a box somebody is
+/// typing a programme description into, is the screen fighting the hand.
+function fill(id, value) {
+  const box = el(id);
+  if (box.value !== value) box.value = value;
+}
+
+/// How much of each text field the disc has room for, said beside it.
+///
+/// Only the count: the fields are the answer, and this is the margin. Over
+/// the limit it turns, because what is over is cut off on the way in and a
+/// title that lost its last four characters between the screen and the disc
+/// is a title nobody typed.
+///
+/// The date is here too, which is the same thing said about a different
+/// shape: what cannot be read as a moment is written as no moment at all.
+function paintIndexFields() {
+  const count = (id, room) => {
+    const n = aribBytes(el(id).value);
+    const box = el(`${id}-bytes`);
+    box.textContent = t("outset.bytes", { n, room });
+    box.classList.toggle("over", n > room);
+    el(id).classList.toggle("over", n > room);
+  };
+  count("out-programme", ROOM.name);
+  count("out-channel", ROOM.channel);
+  count("out-about", ROOM.about);
+  const made = el("out-made").value.trim();
+  const bad = made !== "" && !madeParse(made);
+  el("out-made-note").textContent = bad ? t("outset.madeBad") : "";
+  el("out-made-note").classList.toggle("over", bad);
+  el("out-made").classList.toggle("over", bad);
+}
+
 function renderOutset() {
   lockAudioDetail();
   lockUnwritable();
@@ -3359,10 +3457,16 @@ function renderOutset() {
     // recordings would otherwise read forty files to draw a list nobody has
     // reached yet. The answer redraws the screen when it arrives.
     if (!clip.said) askProgramme(clip).then(() => renderOutset());
-    el("out-programme").value = programmeOf(clip);
-    // A title nobody has typed is shown as the one that will be used, so
-    // that what is on screen is what will be written -- and typing over it
-    // is then editing rather than guessing.
+    // Each field shows what will be written, whether that is what somebody
+    // typed or what the recording says about itself -- so that reading the
+    // screen is reading the disc, and typing is editing rather than
+    // guessing. The same reason the disc's own title is filled in below.
+    fill("out-programme", programmeOf(clip));
+    fill("out-channel", channelOf(clip) ?? "");
+    fill("out-channel-number", channelNumberOf(clip) ? String(channelNumberOf(clip)) : "");
+    fill("out-made", madeOf(clip) ?? "");
+    fill("out-about", descriptionOf(clip) ?? "");
+    paintIndexFields();
     if (!settings.discTitle) el("out-disc-title").value = discTitleFor(list);
   }
   const i = clip.info;
@@ -3379,12 +3483,9 @@ function renderOutset() {
     kept: fmt(kept),
     dur: fmt(i.duration),
     cuts: clip.edit ? clip.edit.cuts.length : 0,
-    made: madeOf(clip) || t("outset.madeUnknown"),
-    channel: channelLine(clip),
-    // One line of it. A description runs to several hundred characters and
-    // this panel is a check of what will be written, not the programme
-    // guide -- the whole of it goes onto the disc either way.
-    about: aboutLine(clip),
+    // What the index will say about the recording is not repeated here: the
+    // four fields above are it, and a panel saying the same thing again in
+    // grey is a second place to have to keep in agreement with the first.
     marks: chaptersFor(clip).length,
     out: bdavMode()
       ? outDir()
@@ -3400,15 +3501,69 @@ function renderOutset() {
   });
 }
 el("outset-clip").addEventListener("change", renderOutset);
-// Per clip and not per list, unlike everything in the panel beside it: what
-// a recording is called is a fact about that recording. Emptied, it goes
-// back to what the recording says about itself rather than staying empty --
-// a nameless row in a recorder's list is the one outcome nobody wants.
-el("out-programme").addEventListener("input", (ev) => {
+
+// The four things the index says about one recording, which are per clip and
+// not per list unlike everything in the panel beside them: what a recording
+// is called, which channel it came off, when it went out and what it was
+// about are facts about that recording.
+//
+// The screen is not redrawn as they are typed -- the field is already
+// showing what was typed, and redrawing it under the hand is how a caret
+// ends up somewhere nobody put it. Only the counts beside them move.
+const edits = (id, set) =>
+  el(id).addEventListener("input", (ev) => {
+    const clip = byId(Number(el("outset-clip").value));
+    if (!clip) return;
+    set(clip, ev.target.value);
+    paintIndexFields();
+    touch();
+  });
+
+// Emptied, the name goes back to what the recording says about itself rather
+// than staying empty -- a nameless row in a recorder's list is the one
+// outcome nobody wants. The other three stay empty, because a field a
+// recorder leaves blank is a field a disc is allowed to have blank.
+edits("out-programme", (clip, v) => (clip.programme = v.trim() ? v : null));
+edits("out-channel", (clip, v) => (clip.channel = v));
+edits("out-about", (clip, v) => (clip.description = v));
+// The three digits and nothing else: 0 -- which is what an empty field
+// means -- is the index saying it does not know, which is what a terrestrial
+// recording writes there anyway.
+edits("out-channel-number", (clip, v) => {
+  const n = parseInt(v.replace(/[^0-9]/g, ""), 10);
+  clip.channelNumber = Number.isFinite(n) ? Math.min(n, 65535) : 0;
+});
+edits("out-made", (clip, v) => (clip.made = v.trim()));
+// And put back, once the typing has stopped, when what was typed was
+// nothing. On the way out of the field rather than on the keystroke that
+// emptied it: a name that reappears under a hand still deleting it is a
+// field arguing with the person in it.
+el("out-programme").addEventListener("change", () => {
+  const clip = byId(Number(el("outset-clip").value));
+  if (!clip || clip.programme) return;
+  fill("out-programme", programmeOf(clip));
+  paintIndexFields();
+});
+// Written back in the one shape the disc uses, once the typing has stopped:
+// `2026/8/17 1:00` is a moment a person can type and not one a playlist can
+// carry, and turning it into the other on the way past is friendlier than
+// refusing it.
+el("out-made").addEventListener("change", () => {
+  const clip = byId(Number(el("outset-clip").value));
+  if (!clip || !clip.made) return;
+  const said = madeParse(clip.made);
+  if (!said) return;
+  clip.made = said;
+  fill("out-made", said);
+  paintIndexFields();
+  touch();
+});
+// The number is only ever digits, and a field that quietly drops what is
+// typed into it is a field that lies. So it is put back as it was kept.
+el("out-channel-number").addEventListener("change", () => {
   const clip = byId(Number(el("outset-clip").value));
   if (!clip) return;
-  clip.programme = ev.target.value.trim() ? ev.target.value : null;
-  touch();
+  fill("out-channel-number", clip.channelNumber ? String(clip.channelNumber) : "");
 });
 
 // --- what will actually be re-encoded -------------------------------------
@@ -3712,6 +3867,19 @@ async function runExport() {
     el("out-dir").focus();
     return;
   }
+  // A moment the playlist cannot carry is written as no moment at all, and a
+  // recording that lost the night it went out somewhere between the field and
+  // the disc is worth stopping for -- it is one keystroke to fix and an hour
+  // of writing to find out about afterwards.
+  const unreadable = disc && list.find((c) => madeOf(c) && !madeParse(madeOf(c)));
+  if (unreadable) {
+    note(t("out.madeUnreadable", { name: programmeOf(unreadable) }));
+    show("outset");
+    el("outset-clip").value = String(unreadable.id);
+    renderOutset();
+    el("out-made").focus();
+    return;
+  }
   // A pass over another recording would be competing for the same disc, and
   // unlike the editor this is work with an end in sight that somebody is
   // watching. Both lanes stand aside until the list is written out.
@@ -3876,9 +4044,13 @@ async function runExport() {
           entries: wrote.map(({ clip, slot }) => ({
             clip: slot.clip,
             name: programmeOf(clip),
-            made: madeOf(clip),
-            description: descriptionOf(clip),
-            channel: channelOf(clip),
+            // Each of the three in the one shape the playlist has for it, and
+            // nothing where the field was left empty: a moment as the disc
+            // spells it, whatever the field was typed in, and a text or no
+            // text rather than a text of no length.
+            made: madeParse(madeOf(clip) || ""),
+            description: descriptionOf(clip) || null,
+            channel: channelOf(clip) || null,
             // Named the way the engine names it: the fields of a payload go
             // across as they are written, unlike a command's own arguments.
             channel_number: channelNumberOf(clip),
@@ -3991,10 +4163,13 @@ function captureProject() {
       // What a disc this program writes will say about the recording: what
       // the disc it came off said about it, and the name somebody typed over
       // the one it arrived with.
-      made: c.made || undefined,
-      description: c.description || undefined,
-      channel: c.channel || undefined,
-      channelNumber: c.channelNumber || undefined,
+      // `??` and not `||`: an emptied field is an answer -- write nothing
+      // there -- and a project that read it back as "nobody has said" would
+      // fill it in again from the recording.
+      made: c.made ?? undefined,
+      description: c.description ?? undefined,
+      channel: c.channel ?? undefined,
+      channelNumber: c.channelNumber ?? undefined,
       programme: c.programme || undefined,
       // What the editor handed back the last time this row was in it: the
       // cuts, the marks, and where the playhead was left. Null for a row
