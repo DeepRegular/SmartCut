@@ -129,8 +129,10 @@ has "BDAV: the captions are listed as what the index says" \
   "0x1102  stream type 0x06" "$av_iso"
 has "BDMV: the sound is listed by PID" "0x1100  TrueHD multi 48kHz jpn" "$mv_iso"
 has "BDMV: and the dub"                "0x1101  TrueHD stereo 48kHz eng" "$mv_iso"
-has "BDMV: the subtitles are named as unusable" \
-  "0x1200  PGS eng -- a cut cannot carry this" "$mv_iso"
+has "BDMV: the subtitles are listed plainly, because a cut carries them" \
+  "0x1200  PGS eng" "$mv_iso"
+has "BDMV: the menu is named as what cannot travel" \
+  "0x1400  IGS eng -- a cut cannot carry this" "$mv_iso"
 
 # --- opening one ---------------------------------------------------------
 # Not called `cut`: `md5` below pipes through the real one, and a function of
