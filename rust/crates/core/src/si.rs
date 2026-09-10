@@ -991,6 +991,17 @@ pub fn programme(input: &crate::input::Input, service_id: u16) -> Result<Program
         return Ok(Programme::default());
     };
 
+    // Which service the file's tables are being read for. A recorder that
+    // keeps the whole multiplex leaves five services described in a file
+    // that holds one of them, and the first description in the file is as
+    // likely to be a neighbour's as the recording's own -- a disc named
+    // after somebody else's programme, off somebody else's channel.
+    let want = if service_id != 0 {
+        service_id
+    } else {
+        recorded_service(&buf, base, stride).unwrap_or(0)
+    };
+
     let mut eit = SectionReader::default();
     let mut sdt = SectionReader::default();
     let mut sit = SectionReader::default();
@@ -1021,7 +1032,7 @@ pub fn programme(input: &crate::input::Input, service_id: u16) -> Result<Program
                     return;
                 }
                 let whose = ((sec[3] as u16) << 8) | sec[4] as u16;
-                if service_id != 0 && whose != service_id {
+                if want != 0 && whose != want {
                     return;
                 }
                 let Some(event) = sec.get(14..sec.len() - 4) else {
@@ -1044,7 +1055,7 @@ pub fn programme(input: &crate::input::Input, service_id: u16) -> Result<Program
                 if sec[0] != TABLE_SDT_ACTUAL {
                     return;
                 }
-                if let Some(d) = service_descriptor(sec) {
+                if let Some(d) = service_descriptor(sec, want) {
                     out.channel = out.channel.take().or_else(|| service_name(d));
                 }
             }),
@@ -1555,21 +1566,104 @@ fn present_event(snapshot: &Snapshot, components: &Components) -> Option<Present
 ///
 /// The name arrives as ARIB text and leaves as ARIB text; this only has to
 /// find where it starts and how far it runs.
-fn service_descriptor(sdt: &[u8]) -> Option<&[u8]> {
-    // Section header, then the one service: its id, the event flags, and the
-    // running status and length that open its descriptor loop.
-    let service = sdt.get(11..sdt.len().checked_sub(4)?)?;
-    let len = (((service[3] & 0x0F) as usize) << 8) | service[4] as usize;
-    let loop_bytes = service.get(5..5 + len)?;
-    let mut i = 0;
-    while i + 2 <= loop_bytes.len() {
-        let whole = loop_bytes.get(i..i + 2 + loop_bytes[i + 1] as usize)?;
-        if whole[0] == 0x48 {
-            return Some(whole);
+fn service_descriptor(sdt: &[u8], want: u16) -> Option<&[u8]> {
+    // Section header, then a service each: its id, the event flags, and the
+    // running status and length that open its descriptor loop. A recording
+    // of one service off a multiplex still carries the multiplex's own
+    // table, with every service on it -- so `want` says which of them is
+    // being asked about, and 0 takes the first, which is all a partial
+    // stream's table has.
+    let services = sdt.get(11..sdt.len().checked_sub(4)?)?;
+    let mut at = 0;
+    while at + 5 <= services.len() {
+        let whose = ((services[at] as u16) << 8) | services[at + 1] as u16;
+        let len = (((services[at + 3] & 0x0F) as usize) << 8) | services[at + 4] as usize;
+        let loop_bytes = services.get(at + 5..at + 5 + len)?;
+        at += 5 + len;
+        if want != 0 && whose != want {
+            continue;
         }
-        i += whole.len();
+        let mut i = 0;
+        while i + 2 <= loop_bytes.len() {
+            let whole = loop_bytes.get(i..i + 2 + loop_bytes[i + 1] as usize)?;
+            if whole[0] == 0x48 {
+                return Some(whole);
+            }
+            i += whole.len();
+        }
     }
     None
+}
+
+/// Which service a recording is of, out of a file that describes several.
+///
+/// The programme association table names every service the multiplex
+/// carried and where each one's map is; a recorder that kept one service
+/// wrote that service's map into the file and left the others' out. So the
+/// service whose map is here is the service this is a recording of.
+///
+/// `None` where that does not settle it -- no table, or a file that kept
+/// every map there was -- and the caller then reads the tables as it always
+/// did, first description first.
+fn recorded_service(buf: &[u8], base: usize, stride: usize) -> Option<u16> {
+    let mut pat = SectionReader::default();
+    let mut programs: Vec<(u16, u16)> = Vec::new();
+    let mut mapped = vec![false; 0x2000];
+    let mut at = base;
+    while at + PACKET <= buf.len() {
+        let p = &buf[at..at + PACKET];
+        at += stride;
+        if p[0] != 0x47 {
+            match find_sync(&buf[at..], stride) {
+                Some(off) => at += off,
+                None => break,
+            }
+            continue;
+        }
+        let pid = pid_of(p);
+        if maps_a_service(p) {
+            mapped[pid as usize] = true;
+        }
+        if pid != PID_PAT || !programs.is_empty() {
+            continue;
+        }
+        pat.feed(p, |sec| {
+            if sec[0] != TABLE_PAT {
+                return;
+            }
+            let Some(body) = sec.get(8..sec.len().saturating_sub(4)) else {
+                return;
+            };
+            for entry in body.as_chunks::<4>().0 {
+                let number = ((entry[0] as u16) << 8) | entry[1] as u16;
+                let map = (((entry[2] & 0x1F) as u16) << 8) | entry[3] as u16;
+                // Program 0 is the network information, not a service.
+                if number != 0 {
+                    programs.push((number, map));
+                }
+            }
+        });
+    }
+    let mut here = programs.iter().filter(|(_, map)| mapped[*map as usize]);
+    let (number, _) = here.next()?;
+    here.next().is_none().then_some(*number)
+}
+
+/// Whether this packet begins a program map.
+///
+/// Read off the packet rather than out of a reassembled section, because
+/// what is being asked is only whether the map is in the file at all -- and
+/// a map is one packet's worth of table that goes out ten times a second,
+/// so its first packet is in any window that holds any of it.
+fn maps_a_service(p: &[u8]) -> bool {
+    if p[1] & 0x40 == 0 {
+        return false;
+    }
+    let Some(start) = payload_start(p) else {
+        return false;
+    };
+    let pointer = *p.get(start).unwrap_or(&0xFF) as usize;
+    p.get(start + 1 + pointer) == Some(&TABLE_PMT)
 }
 
 /// How fast the partial transport stream runs, in the 400 bit/s the
@@ -1649,7 +1743,13 @@ fn build_sit(service: &Service, present: Option<&Present>, version: u8, peak_rat
     if let Some(p) = present {
         described.extend_from_slice(&partial_time_descriptor(p));
     }
-    if let Some(d) = service.sdt.as_deref().and_then(service_descriptor) {
+    // Already the one service (see `one_service_sdt`), so nothing to pick
+    // between.
+    if let Some(d) = service
+        .sdt
+        .as_deref()
+        .and_then(|sec| service_descriptor(sec, 0))
+    {
         described.extend_from_slice(d);
     }
     if let Some(p) = present {
@@ -2443,6 +2543,24 @@ mod tests {
 
     /// A service description carrying one service and the descriptors given.
     fn sdt(descriptors: &[u8]) -> Vec<u8> {
+        sdt_of(&[(0x00B5, descriptors)])
+    }
+
+    /// The table that names the services on a multiplex and where each
+    /// one's map is.
+    fn pat_of(programs: &[(u16, u16)]) -> Vec<u8> {
+        let mut sec = vec![TABLE_PAT, 0xB0, 0x00, 0x00, 0x01, 0xC1, 0x00, 0x00];
+        for (number, map) in programs {
+            sec.extend_from_slice(&number.to_be_bytes());
+            sec.extend_from_slice(&(map | 0xE000).to_be_bytes());
+        }
+        finish_section(&mut sec);
+        sec
+    }
+
+    /// A service description with as many services in it as a multiplex's
+    /// own has.
+    fn sdt_of(services: &[(u16, &[u8])]) -> Vec<u8> {
         let mut sec = vec![
             TABLE_SDT_ACTUAL,
             0xF0,
@@ -2456,11 +2574,13 @@ mod tests {
             0x04, // original network
             0xFF,
         ];
-        sec.extend_from_slice(&[0x00, 0xB5]); // service
-        sec.push(0xFC); // reserved, and both event information flags
-        sec.push(0x80 | ((descriptors.len() >> 8) as u8 & 0x0F));
-        sec.push(descriptors.len() as u8);
-        sec.extend_from_slice(descriptors);
+        for (id, descriptors) in services {
+            sec.extend_from_slice(&id.to_be_bytes());
+            sec.push(0xFC); // reserved, and both event information flags
+            sec.push(0x80 | ((descriptors.len() >> 8) as u8 & 0x0F));
+            sec.push(descriptors.len() as u8);
+            sec.extend_from_slice(descriptors);
+        }
         finish_section(&mut sec);
         sec
     }
@@ -2624,7 +2744,64 @@ mod tests {
     #[test]
     fn the_service_name_is_found_where_the_broadcast_put_it() {
         let section = sdt(&[service_name(), vec![0xC1, 0x01, 0x84]].concat());
-        assert_eq!(service_descriptor(&section), Some(&service_name()[..]));
-        assert!(service_descriptor(&sdt(&[])).is_none());
+        assert_eq!(service_descriptor(&section, 0), Some(&service_name()[..]));
+        assert_eq!(
+            service_descriptor(&section, 0x00B5),
+            Some(&service_name()[..])
+        );
+        assert!(service_descriptor(&sdt(&[]), 0).is_none());
+    }
+
+    /// A multiplex describes every service on it in the one table, and a
+    /// recording of one of them keeps that table whole. The name wanted is
+    /// the recording's own, which is not the first one in it.
+    #[test]
+    fn the_service_name_is_the_recordings_own() {
+        let neighbour = vec![0x48, 0x03, 0x01, 0x00, 0x00];
+        let section = sdt_of(&[(0x00B4, &neighbour), (0x00B5, &service_name())]);
+        assert_eq!(
+            service_descriptor(&section, 0x00B5),
+            Some(&service_name()[..])
+        );
+        assert_eq!(service_descriptor(&section, 0), Some(&neighbour[..]));
+        assert!(service_descriptor(&section, 0x00B6).is_none());
+    }
+
+    /// And which service that is: the one whose map the recorder kept. The
+    /// programme association table names both, and only one of them has a
+    /// map in the file.
+    #[test]
+    fn the_recorded_service_is_the_one_with_a_map() {
+        let mut cc = 0;
+        let mut buf = Vec::new();
+        packetize(
+            PID_PAT,
+            &pat_of(&[(0x00B4, 0x0100), (0x00B5, 0x0200)]),
+            &mut cc,
+            &mut buf,
+        );
+        packetize(
+            0x0200,
+            &[
+                TABLE_PMT, 0xB0, 0x0D, 0x00, 0xB5, 0xC1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+            ],
+            &mut cc,
+            &mut buf,
+        );
+        while buf.len() < PACKET * 8 {
+            packetize(0x1FFF, &[0xFF; 8], &mut cc, &mut buf);
+        }
+        assert_eq!(recorded_service(&buf, 0, PACKET), Some(0x00B5));
+        // Both maps kept, and the file no longer says which service it is
+        // of; the caller reads the tables as it did before.
+        packetize(
+            0x0100,
+            &[
+                TABLE_PMT, 0xB0, 0x0D, 0x00, 0xB4, 0xC1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+            ],
+            &mut cc,
+            &mut buf,
+        );
+        assert_eq!(recorded_service(&buf, 0, PACKET), None);
     }
 }

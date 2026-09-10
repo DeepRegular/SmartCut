@@ -113,6 +113,33 @@ near the start, and a recording that never names a stream in its first minute wa
 never going to. A caller with nothing particular to look for is still answered by the
 first map and pays for no extra reading.
 
+## The file describes services it is not a recording of
+
+A recorder that keeps one service off a multiplex keeps that service's packets and
+that service's map — and the multiplex's *own* service description and event
+information, whole. So a one-hour recording off one channel arrives describing five
+services: what each of them is called, what is on each of them now, and what follows.
+Nothing in the file marks which of the five it is a recording of.
+
+`si::programme` read the first description it found. On a satellite multiplex that is
+not the recorded service anything like reliably: a recording off an animation channel
+came back named after a musical revue, off a channel it was never on, at a time it did
+not go out — and a disc built from it was labelled that way in a recorder's list.
+
+Measured over sixty recordings drawn at random from the corpus: **the name matched
+what the recorder itself called the file in twenty-four of them**, and the service
+name matched the channel in thirty-one. Reading it the way described below: **sixty of
+sixty**, both fields.
+
+Which service it is, is in the file after all, one table further back. The programme
+association table names every service the multiplex carried and where each one's map
+is; the recorder kept one of those maps. So the service whose map is present is the
+service this is a recording of — and where that does not settle it, because no
+association table survived or because every map did, the tables are read as they were
+before, first description first. `si::recorded_service` is that pass, and what it
+finds filters both the event information and the service description, which carries
+several services in the one section too.
+
 ## What is put back is trimmed to what was written
 
 The same reasoning is needed one step further along. The broadcast describes the data
