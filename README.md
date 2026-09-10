@@ -229,8 +229,9 @@ small part of the format. Those pictures cost more bits than the ones they
 replace, but a fragment is under a second long, so the trade is worth making.
 Everything else is copied byte for byte as usual.
 
-**Audio:** AAC is smart rendered, and so is a Blu-ray's linear PCM. Every track
-in the file is cut separately, so a bilingual broadcast keeps both languages.
+**Audio:** AAC, AC-3, E-AC-3, MP2 and a Blu-ray's linear PCM are all smart
+rendered. Every track in the file is cut separately, so a bilingual broadcast
+keeps both languages.
 5.1 can be folded down to stereo, and the sound can be written as a different
 codec entirely — AAC, AC-3, DTS or linear PCM — although that leaves no frame to
 copy, so the whole track is rebuilt. The same is true of changing the sample
@@ -239,9 +240,8 @@ rate.
 The output settings screen only offers combinations that **can actually be
 written**: a rate a codec does not support, or a bitrate below what its frames
 need, is greyed out there rather than discovered at the end of an export.
-AC-3, E-AC-3 and MP2 are copied through rather than smart rendered, and SmartCut
-says so when that happens. A disc's lossless audio — DTS-HD and TrueHD — is
-carried byte for byte and never re-encoded.
+A disc's lossless audio — DTS-HD and TrueHD — is carried byte for byte and never
+re-encoded.
 
 **Broadcast extras (when writing a `.ts`):** captions are carried across byte
 for byte. Programme information, the station name and the broadcast clock are

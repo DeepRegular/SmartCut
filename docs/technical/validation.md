@@ -246,13 +246,14 @@ These only surfaced on real material:
 - **The frames written here carry no ADTS CRC** (`protection_absent = 1`). It is a
   per-frame field, so they sit legally among frames that have one, but they are not
   byte-for-byte the same shape as the recording's.
-- **`smart` goes as far as AAC and no further.** A replacement frame has to cover the
-  same samples the recording's frame did, and whether it can comes down to the
-  encoder's delay being a whole number of frames. AAC's is 1024, exactly one frame, so
-  its packets land on the same grid. AC-3's is 256, which puts every packet it makes
-  256 samples off that grid, and MP2's encoder will not take planar float at all. Both
-  are caught before the run, reported, and copied instead — so on such material the
-  default behaves exactly as `copy` does.
+- **`smart` reaches every lossy codec there is an encoder for, and no further.** AAC,
+  AC-3, E-AC-3, MP2 and Blu-ray LPCM are smart rendered; DTS and TrueHD are lossless
+  and are carried through byte for byte on purpose, and a codec with no encoder in this
+  build is copied with a note saying so — on that material the default behaves exactly
+  as `copy` does. What used to stop at AAC was the encoders' delay: only AAC's is a
+  whole frame, and the others' packets fell between the recording's. They are fed a
+  lead-in now, which puts them back on the grid
+  ([Audio](audio.md#which-codecs-it-reaches)).
 - **`--aac` reaches only the frames SmartCut writes.** Copied frames keep their own
   ADTS headers, so material cannot be converted from one flavour to the other: the
   payload may use tools the other version does not have, and flipping the bit alone

@@ -15,7 +15,10 @@ import os, struct, subprocess, sys
 
 SR = 48000
 GUARD = 0.05          # seconds either side of a range edge to ignore
-FRAME = 1024 / SR     # one AAC frame
+# One audio frame. AAC's is 1024 samples, and the codecs a disc carries have
+# their own -- AC-3's 1536, MP2's 1152 -- which is what the bound below is
+# half of, so a suite running one of those says which.
+FRAME = float(os.environ.get("SMARTCUT_FRAME", 1024)) / SR
 # Copying can only land on whole frames; re-encoding trims to the sample.
 TOLERANCE_MS = 1.0 if os.environ.get("SMARTCUT_AUDIO") == "reencode" else FRAME / 2 * 1000 + 1.0
 

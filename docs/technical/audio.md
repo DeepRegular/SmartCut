@@ -126,19 +126,54 @@ That is not only about keeping the samples: the LPCM encoder frames 16-bit sound
 samples at a time and 24-bit sound 360, so a 16-bit recording asked for as 24-bit comes
 back framed differently from itself.
 
-**Its delay has to be a whole number of frames.** The replacement has to cover the same
-samples the recording's frame did, and a fractional delay puts every packet the encoder
-makes off the recording's frame grid. AAC's delay is 1024, exactly one frame, and lines
-up. AC-3's is 256 and MP2's is 481, and neither does.
+**Its frame length has to be the recording's.** A frame written here stands in for one
+of the recording's, so it has to be the same number of samples. Every encoder here has
+a frame length of its own — AAC's is 1024 samples, AC-3's 1536, MP2's 1152 — and LPCM
+has none at all, which is how it fits any recording's.
 
-An encoder is opened once before the run to check both, and when they do not line up
-SmartCut says so and copies instead. Two codecs are not asked at all: DTS and TrueHD
-are lossless while libavformat's encoders for them are not, so their frames are carried
-through untouched — see
+**And its packets have to land where the recording's frames do**, which is a question
+about the *delay*. An encoder announces one and then stamps its output by it: fed
+frames at 0, 1024, 2048 …, libavcodec's AAC encoder answers with packets at −1024, 0,
+1024 …, so the packet covering the first frame fed comes out at 0 and the two grids
+agree. AAC's delay is a whole frame. **Every other encoder here delays by part of
+one** — AC-3 by 256 samples of 1536, MP2 by 481 of 1152, LAME by 1105 of 1152 — and
+their packets straddle the recording's frames rather than standing in for them:
+
+| encoder | frame | delay | packets come out at |
+|---|---|---|---|
+| `aac` | 1024 | 1024 | −1024, 0, 1024, 2048 … |
+| `ac3`, `eac3` | 1536 | 256 | −256, 1280, 2816, 4352 … |
+| `mp2` | 1152 | 481 | −481, 671, 1823, 2975 … |
+| `libmp3lame` | 1152 | 1105 | −1105, 47, 1199, 2351 … |
+
+That used to end smart rendering for all three: the packets fell on no multiple of the
+frame length, they were discarded, and the boundary frames were copied.
+
+**The answer is to move the grid rather than the packets.** The encoder is fed the tail
+of the frame *before* the run — as many samples as it takes for the delay and the
+lead-in together to come to a whole frame, so 1280 samples ahead of an AC-3 run and 671
+ahead of an MP2 one — and from there its packets land on the recording's own frames,
+one for one. That is `audio::lead_in`, and it is the whole of what makes AC-3, E-AC-3
+and MP2 smart-rendered rather than copied. `tests/run_audio_smart_tests.sh` asks each
+codec the same three questions: were the boundary frames re-encoded at all, is what
+lies past the cut inside the last of them silent, and — the one a wrong lead-in would
+fail — is the sound still where it was.
+
+**A constant-rate codec is written at its own rate.** AC-3 and MP2 spend the same
+number of bytes on every frame, and those bytes *are* the rate: read off the frames
+being replaced rather than taken from the container, it is exact where the container's
+figure is an average, and the frame written here comes out the length of the frame it
+replaces. So a constant-rate track stays constant across a patch, which is the one
+thing a receiver reading it as one is entitled to.
+
+Two codecs are not asked at all: DTS and TrueHD are lossless while libavformat's
+encoders for them are not, so their frames are carried through untouched — see
 [Reading a disc](disc.md#the-sound-a-disc-carries).
 
-So smart rendering reaches **AAC** and **Blu-ray LPCM**. AC-3, E-AC-3 and MP2 are copied
-because they cannot be lined up; DTS and TrueHD are copied on purpose.
+So smart rendering reaches **AAC**, **AC-3**, **E-AC-3**, **MP2** and **Blu-ray LPCM** —
+everything lossy a broadcast or a disc carries that there is an encoder for. DTS and
+TrueHD are copied on purpose, and anything with no encoder at all is copied with a note
+saying so.
 
 ### A lossless track has to be joined at a sync
 

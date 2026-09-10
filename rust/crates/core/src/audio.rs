@@ -841,6 +841,9 @@ struct Decoded {
     pts: i64,
     /// First sample, on the source's own sample clock.
     first: i64,
+    /// How many bytes that packet was. What a constant-rate codec spends on
+    /// a frame is what its rate *is* -- see [`own_bit_rate`].
+    bytes: usize,
     pcm: Pcm,
 }
 
@@ -880,23 +883,20 @@ pub fn boundary_patches(
     let rate = audio.sample_rate as f64;
     let adts = adts.map(|f| f.as_version(aac));
 
-    // Three ways a track can turn out not to be one whose frames this
-    // rewrites, and all three end the same way: say so and copy. Smart
-    // rendering is an improvement on copying, not a condition of it, and
-    // none of these is worth failing a cut over.
+    // Two ways a track can turn out not to be one whose frames this
+    // rewrites, and both end the same way: say so and copy. Smart rendering
+    // is an improvement on copying, not a condition of it, and neither is
+    // worth failing a cut over.
     //
     // The first is that re-encoding the codec at all would be the wrong
     // thing -- lossless sound, below.
     //
     // The second is that there is no encoder for it, or none that will open.
     //
-    // The third is that a frame this encoder produces cannot stand in for one
-    // of the recording's, because the two are not framed alike, and the
-    // encoder's delay is what says whether they are. AAC's is a whole frame,
-    // so its packets land on the same grid the recording's frames sit on.
-    // AC-3's is 256 samples and MP2's is 481, which puts every packet off
-    // that grid -- their frames cover the wrong samples to be swapped in,
-    // however well they are encoded.
+    // What is *not* one of them any more is a delay that is not a whole
+    // frame. See [`lead_in`]: the encoder is fed the samples before the run
+    // that bring its packets back onto the recording's own grid, so AC-3's
+    // 256 samples and MP2's 481 are answered rather than refused.
     if carried_whole(params.id()) {
         eprintln!(
             "note: {:?} is lossless sound and is carried through byte for byte -- no encoder \
@@ -925,18 +925,6 @@ pub fn boundary_patches(
             return Ok(out);
         }
     };
-    let size = frame_size_of(&probe);
-    let delay = unsafe { (*probe.as_ptr()).initial_padding.max(0) as usize };
-    if size == 0 || delay % size != 0 {
-        eprintln!(
-            "note: the {:?} encoder frames its output {} samples out of step with the \
-             recording, so no frame it makes can replace one of the recording's. \
-             The audio was copied, boundaries and all.",
-            params.id(),
-            delay % size.max(1),
-        );
-        return Ok(out);
-    }
     drop(probe);
 
     for &(w0, w1) in windows {
@@ -1013,6 +1001,9 @@ fn decode_around(
         if decoder.send_packet(&packet).is_err() {
             continue;
         }
+        // One packet is one frame for everything here, so what the packet
+        // cost is what this frame cost.
+        let bytes = packet.size();
         while decoder.receive_frame(&mut frame).is_ok() {
             let Some(pts) = frame.pts() else { continue };
             let t = pts as f64 * audio.time_base - src.start_time;
@@ -1031,7 +1022,12 @@ fn decode_around(
             let n = floats.samples();
             let mut pcm: Pcm = vec![Vec::with_capacity(n); channels];
             take_samples(floats, channels, &mut pcm, (0, n));
-            frames.push(Decoded { pts, first, pcm });
+            frames.push(Decoded {
+                pts,
+                first,
+                bytes,
+                pcm,
+            });
             if t > at {
                 past += 1;
             }
@@ -1112,14 +1108,26 @@ fn patch_run(
         return Ok(());
     }
 
-    let mut encoder = open_encoder(
-        params.id(),
-        sample_format(params),
-        audio.sample_rate,
-        audio.channels,
-        bit_rate,
-        false,
-    )?;
+    // What the frames written here are worth, in bits per second. The
+    // recording's own figure where its frames say what that is, and what
+    // the caller was given where they do not -- and the caller's own if the
+    // encoder will not open at the recording's, which is a question only
+    // `avcodec_open2` can answer.
+    let open = |rate| {
+        open_encoder(
+            params.id(),
+            sample_format(params),
+            audio.sample_rate,
+            audio.channels,
+            rate,
+            false,
+        )
+    };
+    let own = own_bit_rate(params.id(), run, audio.sample_rate, size).filter(|&r| r != bit_rate);
+    let mut encoder = match own.map(open) {
+        Some(Ok(e)) => e,
+        _ => open(bit_rate)?,
+    };
     // A frame written here has to cover exactly the samples the frame it
     // replaces covered. Most encoders have a frame length of their own, and
     // it has to be the recording's; LPCM has none -- it writes back whatever
@@ -1130,28 +1138,64 @@ fn patch_run(
         // frame it produces cannot stand in for one of the recording's.
         return Ok(());
     }
+    // And it has to *begin* where that frame began. See [`lead_in`]: an
+    // encoder whose delay is not a whole frame is fed the tail of the frame
+    // before the run to bring it onto the recording's grid, and without a
+    // frame there to take it from there is nothing to feed.
+    let delay = unsafe { (*encoder.as_ptr()).initial_padding.max(0) as usize };
+    let lead_in = lead_in(delay, size);
+    if lead_in > 0 && (lead == 0 || frames[lead - 1].len() < lead_in) {
+        return Ok(());
+    }
     let channels = audio.channels as usize;
     let enc_format = encoder.format();
     let enc_layout = encoder.channel_layout();
     let mut to_encoder = None;
     let mut feeding = ff::frame::Audio::empty();
 
-    let mut fed = 0i64;
-    let mut got: Vec<(usize, Vec<u8>)> = Vec::new();
-    for f in run {
-        let mut frame = ff::frame::Audio::new(
-            ff::format::Sample::F32(ff::format::sample::Type::Planar),
-            size,
-            enc_layout,
-        );
-        frame.set_rate(audio.sample_rate);
-        for ch in 0..channels {
-            let mut samples = f.pcm[ch].clone();
-            mask(&mut samples, f.first, window);
-            frame.plane_mut::<f32>(ch)[..size].copy_from_slice(&samples);
+    // The samples to feed, one buffer per channel and laid end to end: the
+    // lead-in, and then the run with the far side of the cut faded out.
+    //
+    // Laid out rather than fed frame by frame because the lead-in makes the
+    // two disagree -- what the encoder is handed as a frame is no longer
+    // what the recording had as one -- and it is the encoder's own framing
+    // that has to be kept, since that is what decides where its packets
+    // fall.
+    let mut fed: Pcm = vec![Vec::with_capacity(lead_in + run.len() * size); channels];
+    let masked = |f: &Decoded, ch: usize| {
+        let mut samples = f.pcm[ch].clone();
+        mask(&mut samples, f.first, window);
+        samples
+    };
+    if lead_in > 0 {
+        let before = &frames[lead - 1];
+        for (ch, buf) in fed.iter_mut().enumerate().take(channels) {
+            let samples = masked(before, ch);
+            buf.extend_from_slice(&samples[samples.len() - lead_in..]);
         }
-        frame.set_pts(Some(fed));
-        fed += size as i64;
+    }
+    for f in run {
+        for (ch, buf) in fed.iter_mut().enumerate().take(channels) {
+            buf.extend_from_slice(&masked(f, ch));
+        }
+    }
+
+    let total = fed[0].len();
+    let mut got: Vec<(i64, Vec<u8>)> = Vec::new();
+    let mut at = 0usize;
+    while at < total {
+        // Whole frames while there are whole frames left. What is left over
+        // at the end is the lead-in's own length, and it goes in as a short
+        // final frame -- which libavcodec pads with silence, past everything
+        // any kept packet is built from.
+        let n = size.min(total - at);
+        let mut frame = ff::frame::Audio::new(PLANAR_F32, n, enc_layout);
+        frame.set_rate(audio.sample_rate);
+        for (ch, buf) in fed.iter().enumerate().take(channels) {
+            frame.plane_mut::<f32>(ch)[..n].copy_from_slice(&buf[at..at + n]);
+        }
+        frame.set_pts(Some(at as i64));
+        at += n;
         let feed = conform(
             &mut to_encoder,
             &mut feeding,
@@ -1162,13 +1206,21 @@ fn patch_run(
         encoder.send_frame(feed)?;
         // Between sends, not only at the end: an encoder holding a full
         // output queue refuses the next frame outright.
-        collect_patch(&mut encoder, size, &mut got)?;
+        collect_patch(&mut encoder, &mut got)?;
     }
     encoder.send_eof()?;
-    collect_patch(&mut encoder, size, &mut got)?;
+    collect_patch(&mut encoder, &mut got)?;
 
-    for (at, data) in got {
-        let i = at + lead;
+    for (offset, data) in got {
+        // Which of the run's frames this packet stands in for. The run
+        // begins `lead_in` samples into what was fed, and every frame of it
+        // is `size` samples further on; a packet that lands anywhere else is
+        // one of the encoder's own edges and stands in for nothing.
+        let k = offset - lead_in as i64;
+        if k < 0 || k % size as i64 != 0 {
+            continue;
+        }
+        let i = (k / size as i64) as usize + lead;
         if i < emit_first || i > emit_last {
             continue;
         }
@@ -1185,13 +1237,74 @@ fn patch_run(
     Ok(())
 }
 
-/// Take what the encoder is holding, labelled with how many frames into the
-/// run each packet's samples begin.
-fn collect_patch(
-    encoder: &mut ff::encoder::Audio,
-    size: usize,
-    got: &mut Vec<(usize, Vec<u8>)>,
-) -> Result<()> {
+/// How many samples of the frame before a run the encoder has to be fed
+/// before the run itself, for its packets to fall where the recording's
+/// frames do.
+///
+/// An encoder announces a delay and then stamps its packets by it: fed
+/// frames at 0, 1024, 2048 ..., libavcodec's AAC encoder answers with
+/// packets at -1024, 0, 1024 ..., and each of those covers the samples from
+/// its own stamp onwards. AAC's delay is a whole frame, so the packet
+/// covering the first frame fed comes out at 0 and the two grids agree.
+///
+/// **Every other encoder here has a delay that is not a whole frame**, and
+/// left alone their packets straddle the recording's frames rather than
+/// standing in for them: AC-3 delays 256 samples of a 1536 sample frame and
+/// answers at -256, 1280, 2816 ...; MP2 delays 481 of 1152 and answers at
+/// -481, 671, 1823 ...; LAME delays 1105 of 1152 and answers at -1105, 47,
+/// 1199 ... None of those lands on a multiple of the frame length, which is
+/// what used to end smart rendering for all three -- the packets were
+/// discarded and the boundary frames copied.
+///
+/// The answer is to move the grid rather than the packets. Feeding this
+/// many samples of the recording *before* the run puts the next packet
+/// boundary exactly on the run's first frame: the delay and the lead-in
+/// together come to a whole frame, so 1280 samples ahead of an AC-3 run and
+/// 671 ahead of an MP2 one. Everything after that follows a frame at a
+/// time, and the packets stand in for the recording's frames one for one.
+///
+/// Zero where the delay is already a whole number of frames, which is AAC
+/// and -- with no delay at all -- LPCM.
+fn lead_in(delay: usize, size: usize) -> usize {
+    if size == 0 {
+        return 0;
+    }
+    (size - delay % size) % size
+}
+
+/// The rate the recording's own frames were written at, where the frames
+/// themselves say what that is.
+///
+/// A constant-rate codec spends the same bytes on every frame, and those
+/// bytes *are* the rate. Read off the run, it is exact where the container's
+/// figure is an average or a guess -- and, because the encoder is then
+/// asked for what the recording spent, the frame written here comes out the
+/// length of the frame it replaces. A constant-rate track stays constant
+/// across a patch, which is the one thing a receiver reading it as a
+/// constant-rate track is entitled to.
+///
+/// Only for the codecs whose frames are that by construction. AAC's frames
+/// are as long as the sound in them needs, so a run of four that happen to
+/// agree says nothing -- and in near silence, where they most often do,
+/// what they agree on is a few kilobits per second.
+///
+/// `None` where the frames disagree after all, which is a variable-rate
+/// stream in a constant-rate codec's clothing.
+fn own_bit_rate(id: ff::codec::Id, run: &[Decoded], rate: u32, size: usize) -> Option<usize> {
+    use ff::codec::Id::{AC3, EAC3, MP1, MP2, MP3};
+    if !matches!(id, AC3 | EAC3 | MP1 | MP2 | MP3) {
+        return None;
+    }
+    let bytes = run.first()?.bytes;
+    if bytes == 0 || size == 0 || run.iter().any(|f| f.bytes != bytes) {
+        return None;
+    }
+    Some(bytes * 8 * rate as usize / size)
+}
+
+/// Take what the encoder is holding, labelled with where each packet's
+/// samples begin in what was fed.
+fn collect_patch(encoder: &mut ff::encoder::Audio, got: &mut Vec<(i64, Vec<u8>)>) -> Result<()> {
     loop {
         let mut packet = ff::Packet::empty();
         if encoder.receive_packet(&mut packet).is_err() {
@@ -1200,13 +1313,7 @@ fn collect_patch(
         let Some(offset) = at_sample(&packet) else {
             continue;
         };
-        if offset % size as i64 != 0 {
-            continue;
-        }
-        got.push((
-            (offset / size as i64) as usize,
-            packet.data().unwrap_or(&[]).to_vec(),
-        ));
+        got.push((offset, packet.data().unwrap_or(&[]).to_vec()));
     }
 }
 
@@ -1270,6 +1377,7 @@ mod tests {
         Decoded {
             pts: first,
             first,
+            bytes: 0,
             pcm: vec![vec![1.0; n]],
         }
     }
@@ -1320,6 +1428,49 @@ mod tests {
         assert!(!outside_is_audible(&d, (0, 700)));
         d.pcm[0][900] = -0.5;
         assert!(outside_is_audible(&d, (0, 700)));
+    }
+
+    #[test]
+    fn brings_an_encoders_packets_onto_the_recordings_grid() {
+        // AAC delays a whole frame, so its packets already land on it.
+        assert_eq!(lead_in(1024, 1024), 0);
+        // The three that do not, as measured from the encoders themselves:
+        // AC-3 delays 256 samples of 1536, MP2 481 of 1152, LAME 1105 of
+        // 1152. Each lead-in is what makes the two add up to whole frames.
+        assert_eq!(lead_in(256, 1536), 1280);
+        assert_eq!((256 + 1280) % 1536, 0);
+        assert_eq!(lead_in(481, 1152), 671);
+        assert_eq!((481 + 671) % 1152, 0);
+        assert_eq!(lead_in(1105, 1152), 47);
+        assert_eq!((1105 + 47) % 1152, 0);
+        // Two frames of delay is still a whole number of frames.
+        assert_eq!(lead_in(2048, 1024), 0);
+        // LPCM has no frame length of its own and no delay either.
+        assert_eq!(lead_in(0, 0), 0);
+    }
+
+    #[test]
+    fn reads_a_constant_rate_off_the_frames_themselves() {
+        let frame = |bytes| Decoded {
+            pts: 0,
+            first: 0,
+            bytes,
+            pcm: vec![vec![0.0; 1536]],
+        };
+        // 1792 bytes of a 1536 sample frame at 48 kHz is 448 kbit/s, which
+        // is what the frames of a 5.1 AC-3 track are.
+        let run: Vec<Decoded> = (0..4).map(|_| frame(1792)).collect();
+        assert_eq!(
+            own_bit_rate(ff::codec::Id::AC3, &run, 48_000, 1536),
+            Some(448_000)
+        );
+        // One frame out of step with the rest is not a constant rate.
+        let mut mixed: Vec<Decoded> = (0..4).map(|_| frame(1792)).collect();
+        mixed[2] = frame(1000);
+        assert_eq!(own_bit_rate(ff::codec::Id::AC3, &mixed, 48_000, 1536), None);
+        // And AAC is not asked at all: its frames are as long as the sound
+        // in them needs, and four that happen to agree say nothing.
+        assert_eq!(own_bit_rate(ff::codec::Id::AAC, &run, 48_000, 1536), None);
     }
 
     #[test]
