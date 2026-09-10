@@ -188,7 +188,11 @@ fn crc32(data: &[u8]) -> u32 {
     for &b in data {
         crc ^= (b as u32) << 24;
         for _ in 0..8 {
-            crc = if crc & 0x8000_0000 != 0 { (crc << 1) ^ 0x04C1_1DB7 } else { crc << 1 };
+            crc = if crc & 0x8000_0000 != 0 {
+                (crc << 1) ^ 0x04C1_1DB7
+            } else {
+                crc << 1
+            };
         }
     }
     crc
@@ -212,7 +216,9 @@ struct SectionReader {
 
 impl SectionReader {
     fn feed(&mut self, packet: &[u8], mut visit: impl FnMut(&[u8])) {
-        let Some(start) = payload_start(packet) else { return };
+        let Some(start) = payload_start(packet) else {
+            return;
+        };
         let unit_start = packet[1] & 0x40 != 0;
         let mut data = &packet[start..];
         if unit_start {
@@ -226,7 +232,9 @@ impl SectionReader {
             }
             self.buf.clear();
             self.filling = true;
-            let Some(rest) = data.get(1 + pointer..) else { return };
+            let Some(rest) = data.get(1 + pointer..) else {
+                return;
+            };
             data = rest;
         } else if !self.filling {
             return;
@@ -244,7 +252,9 @@ impl SectionReader {
                 self.buf.clear();
                 return;
             }
-            let Some(len) = section_len(&self.buf) else { return };
+            let Some(len) = section_len(&self.buf) else {
+                return;
+            };
             if self.buf.len() < len {
                 return;
             }
@@ -254,7 +264,11 @@ impl SectionReader {
             // being short enough that the standard did not think it worth
             // one, and checking it for a CRC it never had would throw away
             // the only table that says when the recording was made.
-            let checked = if sec[1] & 0x80 == 0 { sec.len() >= 3 } else { sec.len() > 4 && crc32(&sec) == 0 };
+            let checked = if sec[1] & 0x80 == 0 {
+                sec.len() >= 3
+            } else {
+                sec.len() > 4 && crc32(&sec) == 0
+            };
             if checked {
                 visit(&sec);
             }
@@ -356,7 +370,12 @@ struct Components {
 
 impl Components {
     fn of(g: &Graft) -> Self {
-        let described = g.service.streams.iter().filter_map(|s| s.component_tag()).collect();
+        let described = g
+            .service
+            .streams
+            .iter()
+            .filter_map(|s| s.component_tag())
+            .collect();
         let carried = g
             .streams
             .iter()
@@ -397,7 +416,9 @@ fn keep_carried(loop_bytes: &[u8], components: &Components) -> Vec<u8> {
     while i + 2 <= loop_bytes.len() {
         let tag = loop_bytes[i];
         let len = loop_bytes[i + 1] as usize;
-        let Some(whole) = loop_bytes.get(i..i + 2 + len) else { break };
+        let Some(whole) = loop_bytes.get(i..i + 2 + len) else {
+            break;
+        };
         let keep = match component_reference(tag, &whole[2..]) {
             Some(component) => components.still_true(component),
             None => true,
@@ -426,7 +447,9 @@ fn add_descriptors(into: &mut Vec<u8>, extra: &[u8]) {
         let mut i = 0;
         while i + 2 <= loop_bytes.len() {
             let len = loop_bytes[i + 1] as usize;
-            let Some(whole) = loop_bytes.get(i..i + 2 + len) else { return false };
+            let Some(whole) = loop_bytes.get(i..i + 2 + len) else {
+                return false;
+            };
             if whole == want {
                 return true;
             }
@@ -437,7 +460,9 @@ fn add_descriptors(into: &mut Vec<u8>, extra: &[u8]) {
     let mut i = 0;
     while i + 2 <= extra.len() {
         let len = extra[i + 1] as usize;
-        let Some(whole) = extra.get(i..i + 2 + len) else { break };
+        let Some(whole) = extra.get(i..i + 2 + len) else {
+            break;
+        };
         if !holds(into, whole) {
             into.extend_from_slice(whole);
         }
@@ -452,7 +477,9 @@ fn keep_descriptors(loop_bytes: &[u8]) -> Vec<u8> {
     while i + 2 <= loop_bytes.len() {
         let tag = loop_bytes[i];
         let len = loop_bytes[i + 1] as usize;
-        let Some(whole) = loop_bytes.get(i..i + 2 + len) else { break };
+        let Some(whole) = loop_bytes.get(i..i + 2 + len) else {
+            break;
+        };
         if !DROP_DESCRIPTORS.contains(&tag) {
             out.extend_from_slice(whole);
         }
@@ -467,7 +494,10 @@ fn keep_descriptors(loop_bytes: &[u8]) -> Vec<u8> {
 /// empty `wanted` is satisfied by any map, which is what a caller that has
 /// nothing particular to look for asks for.
 fn names(service: &Service, wanted: &[u16]) -> usize {
-    wanted.iter().filter(|pid| service.streams.iter().any(|es| es.pid == **pid)).count()
+    wanted
+        .iter()
+        .filter(|pid| service.streams.iter().any(|es| es.pid == **pid))
+        .count()
 }
 
 /// Read the recording's own description of itself.
@@ -589,7 +619,9 @@ fn read_service_within(
             // [`read_service`].
             map_pid
                 if pmts.contains_key(&map_pid)
-                    && found.as_ref().is_none_or(|f| names(f, wanted) < wanted.len()) =>
+                    && found
+                        .as_ref()
+                        .is_none_or(|f| names(f, wanted) < wanted.len()) =>
             {
                 let reader = pmts.get_mut(&map_pid).expect("just checked");
                 reader.feed(p, |sec| {
@@ -602,7 +634,9 @@ fn read_service_within(
                     }
                     let pcr_pid = (((sec[8] & 0x1F) as u16) << 8) | sec[9] as u16;
                     let info_len = (((sec[10] & 0x0F) as usize) << 8) | sec[11] as usize;
-                    let Some(info) = sec.get(12..12 + info_len) else { return };
+                    let Some(info) = sec.get(12..12 + info_len) else {
+                        return;
+                    };
                     let program_info = keep_descriptors(info);
                     let mut streams = Vec::new();
                     let mut i = 12 + info_len;
@@ -611,7 +645,9 @@ fn read_service_within(
                         let stream_type = sec[i];
                         let pid = (((sec[i + 1] & 0x1F) as u16) << 8) | sec[i + 2] as u16;
                         let len = (((sec[i + 3] & 0x0F) as usize) << 8) | sec[i + 4] as usize;
-                        let Some(desc) = sec.get(i + 5..i + 5 + len) else { break };
+                        let Some(desc) = sec.get(i + 5..i + 5 + len) else {
+                            break;
+                        };
                         streams.push(ElementaryStream {
                             pid,
                             stream_type,
@@ -659,7 +695,9 @@ fn read_service_within(
             }),
             _ => {}
         }
-        if found.as_ref().is_some_and(|f| names(f, wanted) == wanted.len())
+        if found
+            .as_ref()
+            .is_some_and(|f| names(f, wanted) == wanted.len())
             && sdt_whole.is_some()
         {
             break;
@@ -682,7 +720,9 @@ fn read_service_within(
         while i + 5 <= end {
             let sid = ((sec[i] as u16) << 8) | sec[i + 1] as u16;
             let len = (((sec[i + 3] & 0x0F) as usize) << 8) | sec[i + 4] as usize;
-            let Some(body) = sec.get(i..i + 5 + len) else { break };
+            let Some(body) = sec.get(i..i + 5 + len) else {
+                break;
+            };
             if sid == service.service_id {
                 service.original_network_id = onid;
                 service.service_type = descriptor(&body[5..], 0x48)
@@ -764,7 +804,9 @@ pub fn snapshot_at(input: &crate::input::Input, pos: i64, service_id: u16) -> Re
     let mut buf = vec![0u8; WINDOW];
     let n = read_fully(&mut f, &mut buf)?;
     buf.truncate(n);
-    let Some((base, stride)) = framing(&buf) else { return Ok(Snapshot::default()) };
+    let Some((base, stride)) = framing(&buf) else {
+        return Ok(Snapshot::default());
+    };
 
     let mut eit = SectionReader::default();
     let mut tdt = SectionReader::default();
@@ -904,8 +946,18 @@ impl Began {
 
 impl std::fmt::Display for Began {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let Began { year, month, day, hour, minute, second } = self;
-        write!(f, "{year:04}-{month:02}-{day:02} {hour:02}:{minute:02}:{second:02}")
+        let Began {
+            year,
+            month,
+            day,
+            hour,
+            minute,
+            second,
+        } = self;
+        write!(
+            f,
+            "{year:04}-{month:02}-{day:02} {hour:02}:{minute:02}:{second:02}"
+        )
     }
 }
 
@@ -935,7 +987,9 @@ pub fn programme(input: &crate::input::Input, service_id: u16) -> Result<Program
     let mut buf = vec![0u8; WINDOW];
     let n = read_fully(&mut f, &mut buf)?;
     buf.truncate(n);
-    let Some((base, stride)) = framing(&buf) else { return Ok(Programme::default()) };
+    let Some((base, stride)) = framing(&buf) else {
+        return Ok(Programme::default());
+    };
 
     let mut eit = SectionReader::default();
     let mut sdt = SectionReader::default();
@@ -970,7 +1024,9 @@ pub fn programme(input: &crate::input::Input, service_id: u16) -> Result<Program
                 if service_id != 0 && whose != service_id {
                     return;
                 }
-                let Some(event) = sec.get(14..sec.len() - 4) else { return };
+                let Some(event) = sec.get(14..sec.len() - 4) else {
+                    return;
+                };
                 out.began = out.began.or_else(|| began_at(&event[2..7]));
                 if out.channel_number == 0 {
                     out.channel_number = three_digit(whose);
@@ -978,8 +1034,10 @@ pub fn programme(input: &crate::input::Input, service_id: u16) -> Result<Program
                 let len = (((event[10] & 0x0F) as usize) << 8) | event[11] as usize;
                 if let Some(loop_bytes) = event.get(12..12 + len) {
                     out.name = out.name.take().or_else(|| event_name(loop_bytes));
-                    out.description =
-                        out.description.take().or_else(|| event_description(loop_bytes));
+                    out.description = out
+                        .description
+                        .take()
+                        .or_else(|| event_description(loop_bytes));
                 }
             }),
             PID_SDT => sdt.feed(p, |sec| {
@@ -994,7 +1052,9 @@ pub fn programme(input: &crate::input::Input, service_id: u16) -> Result<Program
                 if sec[0] != TABLE_SIT {
                     return;
                 }
-                let Some((whose, described)) = sit_service(sec) else { return };
+                let Some((whose, described)) = sit_service(sec) else {
+                    return;
+                };
                 out.began = out
                     .began
                     .or_else(|| descriptor(described, 0xC3).and_then(|d| began_at(d.get(1..6)?)));
@@ -1002,7 +1062,10 @@ pub fn programme(input: &crate::input::Input, service_id: u16) -> Result<Program
                     out.channel_number = three_digit(whose);
                 }
                 out.name = out.name.take().or_else(|| event_name(described));
-                out.description = out.description.take().or_else(|| event_description(described));
+                out.description = out
+                    .description
+                    .take()
+                    .or_else(|| event_description(described));
                 out.channel = out.channel.take().or_else(|| {
                     let whole = descriptor(described, 0x48)?;
                     service_name(&[&[0x48, whole.len() as u8], whole].concat())
@@ -1078,7 +1141,9 @@ fn event_description(loop_bytes: &[u8]) -> Option<String> {
         while at < 5 + len as usize {
             let Some(&name_len) = d.get(at) else { break };
             let name = at + 1;
-            let Some(&text_len) = d.get(name + name_len as usize) else { break };
+            let Some(&text_len) = d.get(name + name_len as usize) else {
+                break;
+            };
             let text = name + name_len as usize + 1;
             let (Some(name), Some(text)) = (
                 d.get(name..name + name_len as usize),
@@ -1118,7 +1183,9 @@ fn every_descriptor(loop_bytes: &[u8], tag: u8) -> Vec<&[u8]> {
     let mut i = 0;
     while i + 2 <= loop_bytes.len() {
         let len = loop_bytes[i + 1] as usize;
-        let Some(body) = loop_bytes.get(i + 2..i + 2 + len) else { break };
+        let Some(body) = loop_bytes.get(i + 2..i + 2 + len) else {
+            break;
+        };
         if loop_bytes[i] == tag {
             out.push(body);
         }
@@ -1158,7 +1225,8 @@ fn began_at(raw: &[u8]) -> Option<Began> {
     };
     let yp = ((mjd as f64 - 15078.2) / 365.25) as u32;
     let mp = ((mjd as f64 - 14956.1 - (yp as f64 * 365.25).trunc()) / 30.6001) as u32;
-    let day = mjd - 14956 - (yp as f64 * 365.25).trunc() as u32 - (mp as f64 * 30.6001).trunc() as u32;
+    let day =
+        mjd - 14956 - (yp as f64 * 365.25).trunc() as u32 - (mp as f64 * 30.6001).trunc() as u32;
     let k = u32::from(mp == 14 || mp == 15);
     Some(Began {
         year: (yp + k + 1900) as u16,
@@ -1571,12 +1639,7 @@ fn partial_time_descriptor(present: &Present) -> Vec<u8> {
 /// and for how long, and what the broadcaster said about it. The bytes are
 /// the recording's own wherever there were any -- only the frame around them
 /// is written here.
-fn build_sit(
-    service: &Service,
-    present: Option<&Present>,
-    version: u8,
-    peak_rate: u32,
-) -> Vec<u8> {
+fn build_sit(service: &Service, present: Option<&Present>, version: u8, peak_rate: u32) -> Vec<u8> {
     let mut transmission = partial_stream_descriptor(peak_rate);
     if let Some(d) = network_descriptor(service.original_network_id) {
         transmission.extend_from_slice(&d);
@@ -1829,7 +1892,11 @@ pub fn graft(output: &str, g: &Graft) -> Result<Stats> {
         bail!("nothing to graft onto: no ranges");
     }
     let (out_pmt_pid, out_pcr_pid) = output_layout(output)?;
-    let pcr_pid = if out_pcr_pid > 0 { out_pcr_pid } else { g.pcr_pid };
+    let pcr_pid = if out_pcr_pid > 0 {
+        out_pcr_pid
+    } else {
+        g.pcr_pid
+    };
     // 188 or 192: see [`framing_of`]. Everything below reads and writes a
     // frame, whose last 188 bytes are the packet and whose first `lead` are
     // the arrival time a Blu-ray keeps in front of it.
@@ -1859,8 +1926,12 @@ pub fn graft(output: &str, g: &Graft) -> Result<Stats> {
             // The largest a section can be, since which range holds the
             // largest table is not known before the rate they all carry is.
             let biggest = SECTION_MAX.div_ceil(PACKET - 5) as f64;
-            let rate =
-                peak_rate(output, pcr_pid, stride, biggest * PACKET as f64 * 8.0 / SDT_PERIOD)?;
+            let rate = peak_rate(
+                output,
+                pcr_pid,
+                stride,
+                biggest * PACKET as f64 * 8.0 / SDT_PERIOD,
+            )?;
             let mut sections: Vec<Vec<u8>> = Vec::with_capacity(g.ranges.len());
             let mut version = 0u8;
             for r in &g.ranges {
@@ -1911,8 +1982,8 @@ pub fn graft(output: &str, g: &Graft) -> Result<Stats> {
         // Two packets sharing an arrival time is a burst, which is a thing a
         // recorder writes; an arrival time out of order is not.
         let put = |dst: &mut std::io::BufWriter<std::fs::File>,
-                       at: &[u8],
-                       packets: &[u8]|
+                   at: &[u8],
+                   packets: &[u8]|
          -> std::io::Result<()> {
             for one in packets.chunks(PACKET) {
                 dst.write_all(at)?;
@@ -1928,7 +1999,9 @@ pub fn graft(output: &str, g: &Graft) -> Result<Stats> {
             }
             let (arrival, packet) = frame.split_at(lead);
             if packet[0] != 0x47 {
-                bail!("{output} is not packet aligned; the cut was not written as a transport stream");
+                bail!(
+                    "{output} is not packet aligned; the cut was not written as a transport stream"
+                );
             }
             let pid = pid_of(packet);
             if pid == pcr_pid {
@@ -2040,7 +2113,14 @@ mod tests {
     /// A program association table naming one service.
     fn pat(service: u16, map_pid: u16) -> Vec<u8> {
         let mut sec = vec![
-            TABLE_PAT, 0xB0, 0x00, 0x00, 0x01, 0xC1, 0x00, 0x00,
+            TABLE_PAT,
+            0xB0,
+            0x00,
+            0x00,
+            0x01,
+            0xC1,
+            0x00,
+            0x00,
             (service >> 8) as u8,
             service as u8,
             0xE0 | ((map_pid >> 8) as u8 & 0x1F),
@@ -2067,7 +2147,13 @@ mod tests {
             0x00,
         ];
         for &pid in pids {
-            sec.extend_from_slice(&[0x02, 0xE0 | ((pid >> 8) as u8 & 0x1F), pid as u8, 0xF0, 0x00]);
+            sec.extend_from_slice(&[
+                0x02,
+                0xE0 | ((pid >> 8) as u8 & 0x1F),
+                pid as u8,
+                0xF0,
+                0x00,
+            ]);
         }
         finish_section(&mut sec);
         sec
@@ -2101,7 +2187,10 @@ mod tests {
         // Asked for the caption stream, the reading goes past the map that
         // does not name it.
         let asked = read_service(&input, 0x200, &[0x200, 0x300]).expect("a map");
-        assert!(asked.stream(0x300).is_some(), "the later map should have been taken");
+        assert!(
+            asked.stream(0x300).is_some(),
+            "the later map should have been taken"
+        );
 
         // Asked for nothing in particular, the first map still answers: a
         // caller with nothing to look for pays for no extra reading.
@@ -2182,7 +2271,7 @@ mod tests {
         sec.extend_from_slice(&[0x0B, 0x29]); // event id
         sec.extend_from_slice(&[0xEF, 0x58, 0x00, 0x00, 0x00]); // start time
         sec.extend_from_slice(&[0x00, 0x30, 0x00]); // duration
-        // Running status 0 and not scrambled, then the loop length.
+                                                    // Running status 0 and not scrambled, then the loop length.
         sec.push((loop_bytes.len() >> 8) as u8 & 0x0F);
         sec.push(loop_bytes.len() as u8);
         sec.extend_from_slice(&loop_bytes);
@@ -2227,7 +2316,10 @@ mod tests {
         // thing that has to have changed.
         assert_eq!(&out[14..24], &sec[14..24], "the event itself must not move");
         assert_eq!(out[24] & 0xF0, sec[24] & 0xF0, "nor its running status");
-        assert_eq!(&out[26..out.len() - 4], [component(0x00), short_event()].concat());
+        assert_eq!(
+            &out[26..out.len() - 4],
+            [component(0x00), short_event()].concat()
+        );
     }
 
     #[test]
@@ -2235,9 +2327,17 @@ mod tests {
         let sec = eit(0, &[component(0x00), short_event(), data_content(0x40)]);
         let out = prune_events(&sec, &broadcast()).unwrap();
         let length = (((out[1] & 0x0F) as usize) << 8) | out[2] as usize;
-        assert_eq!(length + 3, out.len(), "the length has to describe what is there");
+        assert_eq!(
+            length + 3,
+            out.len(),
+            "the length has to describe what is there"
+        );
         let event_loop = (((out[24] & 0x0F) as usize) << 8) | out[25] as usize;
-        assert_eq!(event_loop, out.len() - 4 - 26, "and so does the event's own");
+        assert_eq!(
+            event_loop,
+            out.len() - 4 - 26,
+            "and so does the event's own"
+        );
         assert_eq!(crc32(&out), 0, "a section is not accepted without its CRC");
     }
 
@@ -2262,7 +2362,10 @@ mod tests {
     fn a_recording_that_named_no_components_loses_nothing() {
         // A source that has been through a muxer already carries no stream
         // identifier descriptors, so nothing can be judged missing.
-        let muxed = Components { described: HashSet::new(), carried: HashSet::new() };
+        let muxed = Components {
+            described: HashSet::new(),
+            carried: HashSet::new(),
+        };
         let sec = eit(0, &[component(0x00), data_content(0x40)]);
         assert!(prune_events(&sec, &muxed).is_none());
     }
@@ -2335,7 +2438,11 @@ mod tests {
     }
 
     fn snapshot_of(section: Vec<u8>) -> Snapshot {
-        Snapshot { eit: vec![section], tot: None, tdt: None }
+        Snapshot {
+            eit: vec![section],
+            tot: None,
+            tdt: None,
+        }
     }
 
     /// The descriptor tags a built SIT carries, service loop only.
@@ -2356,14 +2463,21 @@ mod tests {
     #[test]
     fn one_table_says_what_four_used_to() {
         let service = recording(Some(sdt(&service_name())));
-        let snapshot = snapshot_of(eit(0, &[short_event(), component(0x00), data_content(0x40)]));
+        let snapshot = snapshot_of(eit(
+            0,
+            &[short_event(), component(0x00), data_content(0x40)],
+        ));
         let present = present_event(&snapshot, &broadcast()).expect("a programme is on");
         let sec = build_sit(&service, Some(&present), 0, 46235);
 
         assert_eq!(sec[0], TABLE_SIT);
         assert_eq!(crc32(&sec), 0, "a section is not accepted without its CRC");
         let length = (((sec[1] & 0x0F) as usize) << 8) | sec[2] as usize;
-        assert_eq!(length + 3, sec.len(), "the length has to describe what is there");
+        assert_eq!(
+            length + 3,
+            sec.len(),
+            "the length has to describe what is there"
+        );
         // The times, the name, then the programme's own descriptors -- and
         // not the one naming the data broadcast, which is not in the cut.
         assert_eq!(sit_tags(&sec), vec![0xC3, 0x48, 0x4D, 0x50]);
@@ -2374,7 +2488,10 @@ mod tests {
         let sec = build_sit(&recording(None), None, 0, 46235);
         let til = (((sec[8] & 0x0F) as usize) << 8) | sec[9] as usize;
         let loop_bytes = &sec[10..10 + til];
-        assert_eq!(loop_bytes[0], 0x63, "a partial stream says how fast it runs");
+        assert_eq!(
+            loop_bytes[0], 0x63,
+            "a partial stream says how fast it runs"
+        );
         let peak = (((loop_bytes[2] & 0x3F) as u32) << 16)
             | ((loop_bytes[3] as u32) << 8)
             | loop_bytes[4] as u32;
@@ -2382,7 +2499,10 @@ mod tests {
         // The partial stream descriptor is ten bytes, then the network's:
         // read the medium and the original network id off the end of it.
         assert_eq!(loop_bytes[10], 0xC2);
-        assert_eq!(&loop_bytes[12..19], &[b'J', b'P', b'N', b'B', b'S', 0x00, 0x04]);
+        assert_eq!(
+            &loop_bytes[12..19],
+            &[b'J', b'P', b'N', b'B', b'S', 0x00, 0x04]
+        );
     }
 
     #[test]
@@ -2422,7 +2542,11 @@ mod tests {
         let snapshot = snapshot_of(eit(0, &long));
         let present = present_event(&snapshot, &broadcast()).unwrap();
         let sec = build_sit(&recording(Some(sdt(&service_name()))), Some(&present), 0, 1);
-        assert!(sec.len() <= SECTION_MAX, "a section has a ceiling: {}", sec.len());
+        assert!(
+            sec.len() <= SECTION_MAX,
+            "a section has a ceiling: {}",
+            sec.len()
+        );
         assert_eq!(crc32(&sec), 0);
         // Whole descriptors were dropped, not the tail of one, and the two
         // that have to survive are still at the front.

@@ -130,13 +130,18 @@ pub fn find_silences_with(
     mut progress: Option<Box<dyn FnMut(f64) + Send>>,
 ) -> Result<Vec<Silence>> {
     crate::init()?;
-    let audio = src.audio.as_ref().ok_or_else(|| anyhow!("{} has no audio", src.path))?;
+    let audio = src
+        .audio
+        .as_ref()
+        .ok_or_else(|| anyhow!("{} has no audio", src.path))?;
     let mut ictx = crate::input::demux(&src.input.url)?;
     let params = ictx
         .stream(audio.stream_index)
         .ok_or_else(|| anyhow!("audio stream vanished"))?
         .parameters();
-    let mut decoder = ff::codec::context::Context::from_parameters(params)?.decoder().audio()?;
+    let mut decoder = ff::codec::context::Context::from_parameters(params)?
+        .decoder()
+        .audio()?;
 
     let floor = 10f64.powf(opts.threshold_db / 20.0);
     let mut frame = ff::frame::Audio::empty();
@@ -159,7 +164,10 @@ pub fn find_silences_with(
             if frame_peak(&frame) < floor {
                 quiet_from.get_or_insert(t);
             } else if let Some(from) = quiet_from.take() {
-                out.push(Silence { start: from, end: t });
+                out.push(Silence {
+                    start: from,
+                    end: t,
+                });
             }
             last_end = t + dur;
             if let Some(f) = progress.as_mut() {
@@ -175,7 +183,10 @@ pub fn find_silences_with(
         f(1.0);
     }
     if let Some(from) = quiet_from {
-        out.push(Silence { start: from, end: last_end });
+        out.push(Silence {
+            start: from,
+            end: last_end,
+        });
     }
     out.retain(|s| s.duration() >= opts.min_silence);
     Ok(out)
@@ -192,8 +203,7 @@ pub fn find_silences_with(
 /// because past a point a long quiet stretch is not a junction at all.
 fn on_grid(a: (f64, f64), b: (f64, f64), opts: &DetectOptions) -> bool {
     let gap = ((b.0 + b.1) - (a.0 + a.1)) / 2.0;
-    let slack = (((a.1 - a.0) + (b.1 - b.0)) / 2.0).min(opts.grid_max_slack)
-        + opts.grid_tolerance;
+    let slack = (((a.1 - a.0) + (b.1 - b.0)) / 2.0).min(opts.grid_max_slack) + opts.grid_tolerance;
     let units = (gap / 15.0).round();
     (1.0..=8.0).contains(&units) && (gap - units * 15.0).abs() <= slack
 }
@@ -254,10 +264,13 @@ pub fn candidates(silences: &[Silence], opts: &DetectOptions) -> Vec<Candidate> 
             score: 0.5 * long + 0.5 * chained,
         });
     }
-    out.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
+    out.sort_by(|a, b| {
+        b.score
+            .partial_cmp(&a.score)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
     out
 }
-
 
 /// A run of junctions: one commercial break, from its first cut point to its
 /// last.
@@ -282,7 +295,11 @@ impl Block {
 /// is what a string of commercials produces and a conversation does not.
 pub fn blocks(candidates: &[Candidate], opts: &DetectOptions, min_score: f64) -> Vec<Block> {
     let mut strong: Vec<&Candidate> = candidates.iter().filter(|c| c.score >= min_score).collect();
-    strong.sort_by(|a, b| a.time.partial_cmp(&b.time).unwrap_or(std::cmp::Ordering::Equal));
+    strong.sort_by(|a, b| {
+        a.time
+            .partial_cmp(&b.time)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
 
     let mut out: Vec<Block> = Vec::new();
     let mut current: Vec<&Candidate> = Vec::new();
@@ -354,7 +371,6 @@ fn flush(out: &mut Vec<Block>, run: &[&Candidate]) {
     });
 }
 
-
 /// Combine the two readings of where a break is.
 ///
 /// They are good at different things. The silences give junction times that
@@ -372,7 +388,11 @@ pub fn blocks_from_logo(
     snap: f64,
     duration: f64,
 ) -> Vec<Block> {
-    let mut junctions: Vec<f64> = candidates.iter().filter(|c| c.score >= 0.6).map(|c| c.time).collect();
+    let mut junctions: Vec<f64> = candidates
+        .iter()
+        .filter(|c| c.score >= 0.6)
+        .map(|c| c.time)
+        .collect();
     junctions.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
 
     let nearest = |t: f64, within: f64, from: &[f64]| -> Option<f64> {
@@ -391,8 +411,11 @@ pub fn blocks_from_logo(
             // The break's own junctions, and the grid continuing past the
             // last of them: that is where the final commercial ends, and no
             // silence marks it because the programme simply resumes.
-            let mine: Vec<f64> =
-                junctions.iter().copied().filter(|&t| t >= start - 0.1 && t <= b + snap).collect();
+            let mine: Vec<f64> = junctions
+                .iter()
+                .copied()
+                .filter(|&t| t >= start - 0.1 && t <= b + snap)
+                .collect();
             let mut grid = mine.clone();
             if let Some(&last) = mine.last() {
                 grid.extend((1..=8).map(|k| last + 15.0 * k as f64));
@@ -419,7 +442,6 @@ pub fn blocks_from_logo(
         })
         .collect()
 }
-
 
 /// How far off a 15-second multiple two resets may sit. Far tighter than the
 /// silences are allowed, because a reset is a timestamp rather than a stretch
@@ -461,14 +483,29 @@ pub fn blocks_from_resets(resets: &[f64], duration: f64) -> Vec<Block> {
         .filter_map(|run| {
             let (first, last) = (run[0], *run.last().expect("runs are never empty"));
             if run.len() >= 2 {
-                return Some(Block { start: first, end: last, junctions: run.len(), score: 1.0 });
+                return Some(Block {
+                    start: first,
+                    end: last,
+                    junctions: run.len(),
+                    score: 1.0,
+                });
             }
             // The recording's own ends are the only thing that can stand in
             // for the junction a lone mark is missing.
             if first <= RESET_EDGE {
-                Some(Block { start: 0.0, end: first, junctions: 1, score: 0.9 })
+                Some(Block {
+                    start: 0.0,
+                    end: first,
+                    junctions: 1,
+                    score: 0.9,
+                })
             } else if duration - first <= RESET_EDGE {
-                Some(Block { start: first, end: duration, junctions: 1, score: 0.9 })
+                Some(Block {
+                    start: first,
+                    end: duration,
+                    junctions: 1,
+                    score: 0.9,
+                })
             } else {
                 None
             }

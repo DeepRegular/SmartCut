@@ -40,7 +40,12 @@ fn main() -> Result<()> {
     });
 
     let began = Instant::now();
-    let r = sc::play_audio(&src, &ranges, ranges[0].0, move || stop.load(Ordering::SeqCst));
-    println!("play_audio -> {r:?}  elapsed {:.2}s", began.elapsed().as_secs_f64());
+    let r = sc::play_audio(&src, &ranges, ranges[0].0, move || {
+        stop.load(Ordering::SeqCst)
+    });
+    println!(
+        "play_audio -> {r:?}  elapsed {:.2}s",
+        began.elapsed().as_secs_f64()
+    );
     Ok(())
 }

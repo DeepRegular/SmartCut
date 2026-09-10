@@ -184,12 +184,18 @@ pub fn prepare(at: &Path, n: usize) -> Result<Vec<String>> {
 
 /// The five-digit stems of the files of one kind a disc directory holds.
 fn numbered(dir: &Path, ext: &str) -> Result<Vec<String>> {
-    let Ok(entries) = std::fs::read_dir(dir) else { return Ok(Vec::new()) };
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return Ok(Vec::new());
+    };
     let mut out = Vec::new();
     for entry in entries.flatten() {
         let name = entry.file_name().to_string_lossy().into_owned();
-        let Some((stem, found)) = name.rsplit_once('.') else { continue };
-        if !found.eq_ignore_ascii_case(ext) || stem.len() != 5 || !stem.bytes().all(|b| b.is_ascii_digit())
+        let Some((stem, found)) = name.rsplit_once('.') else {
+            continue;
+        };
+        if !found.eq_ignore_ascii_case(ext)
+            || stem.len() != 5
+            || !stem.bytes().all(|b| b.is_ascii_digit())
         {
             continue;
         }
@@ -216,12 +222,18 @@ pub fn write(
     for rec in recordings {
         let stream = stream_of(at, &rec.clip);
         if !stream.exists() {
-            bail!("{}: the stream this playlist is about is not there", stream.display());
+            bail!(
+                "{}: the stream this playlist is about is not there",
+                stream.display()
+            );
         }
         stamp(&stream)?;
         let clip = read_clip(&stream, on.map(|f| (f, rec.clip.as_str())))?;
-        std::fs::write(root.join("CLIPINF").join(format!("{}.clpi", rec.clip)), clpi(&clip))
-            .with_context(|| format!("writing the index of {}", rec.clip))?;
+        std::fs::write(
+            root.join("CLIPINF").join(format!("{}.clpi", rec.clip)),
+            clpi(&clip),
+        )
+        .with_context(|| format!("writing the index of {}", rec.clip))?;
         std::fs::write(
             root.join("PLAYLIST").join(format!("{}.rpls", rec.clip)),
             rpls(&rec.clip, &clip, rec),
@@ -232,8 +244,10 @@ pub fn write(
     // Every playlist on the disc and not only the ones just written: the
     // table is what a recorder reads the disc through, and one that named
     // three of five recordings would have lost two of them.
-    let playlists: Vec<String> =
-        numbered(&root.join("PLAYLIST"), "rpls")?.iter().map(|n| format!("{n}.rpls")).collect();
+    let playlists: Vec<String> = numbered(&root.join("PLAYLIST"), "rpls")?
+        .iter()
+        .map(|n| format!("{n}.rpls"))
+        .collect();
     std::fs::write(root.join("info.bdav"), info(&playlists, title))
         .with_context(|| format!("writing {}", root.join("info.bdav").display()))?;
     Ok(())
@@ -282,8 +296,8 @@ pub fn stamp(path: &Path) -> Result<u64> {
         let mut settled = 0u64;
 
         let put = |dst: &mut BufWriter<std::fs::File>,
-                       frame: &mut [u8; SOURCE_PACKET],
-                       at: f64|
+                   frame: &mut [u8; SOURCE_PACKET],
+                   at: f64|
          -> Result<()> {
             let ats = (at.max(0.0) as u64 as u32) & ATS_MASK;
             frame[..4].copy_from_slice(&ats.to_be_bytes());
@@ -302,7 +316,9 @@ pub fn stamp(path: &Path) -> Result<u64> {
             }
             written += 1;
             pending.push(frame);
-            let Some(pcr) = pcr_of(&frame[4..]) else { continue };
+            let Some(pcr) = pcr_of(&frame[4..]) else {
+                continue;
+            };
             match anchor {
                 // The first clock reference. Everything in front of it
                 // arrived before it, evenly spaced -- and the file's first
@@ -327,7 +343,11 @@ pub fn stamp(path: &Path) -> Result<u64> {
                     let n = pending.len();
                     settled += n as u64;
                     for (i, mut held) in pending.drain(..).enumerate() {
-                        put(&mut dst, &mut held, was_at + ran * (i + 1) as f64 / n as f64)?;
+                        put(
+                            &mut dst,
+                            &mut held,
+                            was_at + ran * (i + 1) as f64 / n as f64,
+                        )?;
                     }
                     anchor = Some((was_at + ran, pcr));
                 }
@@ -471,7 +491,11 @@ fn read_clip(stream: &Path, on: Option<(&(dyn Fn(&str, f64) + Sync), &str)>) -> 
             0 | 0x06 => audio_coding(&a.codec),
             named => named,
         };
-        streams.push(Carried { pid, coding, attributes: audio_attributes(a) });
+        streams.push(Carried {
+            pid,
+            coding,
+            attributes: audio_attributes(a),
+        });
     }
     for c in &src.captions {
         let pid = c.pid as u16;
@@ -479,7 +503,11 @@ fn read_clip(stream: &Path, on: Option<(&(dyn Fn(&str, f64) + Sync), &str)>) -> 
         // sends on one is not something a clip index has a field for, which
         // is why a recorder's own disc says no more about its captions than
         // that they are there.
-        streams.push(Carried { pid, coding: declared(pid, 0x06), attributes: Vec::new() });
+        streams.push(Carried {
+            pid,
+            coding: declared(pid, 0x06),
+            attributes: Vec::new(),
+        });
     }
 
     let ticks = |t: f64| ((t + src.start_time) * TICK).round().max(0.0) as u32;
@@ -709,9 +737,7 @@ fn ep_map(clip: &Clip) -> Vec<u8> {
     for &(pts, spn) in &clip.entries {
         let new = match coarse.last() {
             None => true,
-            Some(&(_, time, packet)) => {
-                (pts >> 19) as u32 != time || (spn >> 17) != (packet >> 17)
-            }
+            Some(&(_, time, packet)) => (pts >> 19) as u32 != time || (spn >> 17) != (packet >> 17),
         };
         if new {
             coarse.push((fine.len() as u32, (pts >> 19) as u32, spn));
@@ -826,9 +852,19 @@ fn rpls(clip_name: &str, clip: &Clip, rec: &Recording) -> Vec<u8> {
         }
     };
     if let Some(channel) = &rec.channel {
-        text(CHANNEL_NAME_AT, false, CHANNEL_NAME_MAX, &crate::arib::one_line(channel));
+        text(
+            CHANNEL_NAME_AT,
+            false,
+            CHANNEL_NAME_MAX,
+            &crate::arib::one_line(channel),
+        );
     }
-    text(NAME_LEN_AT, false, NAME_MAX, &crate::arib::one_line(&rec.name));
+    text(
+        NAME_LEN_AT,
+        false,
+        NAME_MAX,
+        &crate::arib::one_line(&rec.name),
+    );
     if let Some(about) = &rec.description {
         // Whatever is left of the description between where it starts and
         // where the play items do, which is nine hundred bytes and more than
@@ -909,9 +945,21 @@ mod tests {
             end: 20842 + 45000 * 30,
             video_pid: 0x1001,
             streams: vec![
-                Carried { pid: 0x1001, coding: 0x02, attributes: vec![0x44, 0x30] },
-                Carried { pid: 0x1041, coding: 0x0F, attributes: vec![0x31, b'j', b'p', b'n'] },
-                Carried { pid: 0x1201, coding: 0x06, attributes: Vec::new() },
+                Carried {
+                    pid: 0x1001,
+                    coding: 0x02,
+                    attributes: vec![0x44, 0x30],
+                },
+                Carried {
+                    pid: 0x1041,
+                    coding: 0x0F,
+                    attributes: vec![0x31, b'j', b'p', b'n'],
+                },
+                Carried {
+                    pid: 0x1201,
+                    coding: 0x06,
+                    attributes: Vec::new(),
+                },
             ],
             entries: vec![(20842, 8), (65842, 900), (1 << 20, 200_000)],
         }
@@ -924,7 +972,14 @@ mod tests {
         let rec = Recording {
             clip: "00001".into(),
             name: "アニメ 第07話「はじめての遠出」".into(),
-            made: Some(Began { year: 2026, month: 8, day: 17, hour: 1, minute: 0, second: 0 }),
+            made: Some(Began {
+                year: 2026,
+                month: 8,
+                day: 17,
+                hour: 1,
+                minute: 0,
+                second: 0,
+            }),
             description: Some("いつもの部屋で、いつもの話。".into()),
             channel: Some("衛星第一".into()),
             channel_number: 161,
@@ -948,9 +1003,8 @@ mod tests {
             u16::from_be_bytes(raw[CHANNEL_AT..CHANNEL_AT + 2].try_into().unwrap()),
             161
         );
-        let about = u16::from_be_bytes(
-            raw[DESCRIPTION_AT..DESCRIPTION_AT + 2].try_into().unwrap(),
-        ) as usize;
+        let about = u16::from_be_bytes(raw[DESCRIPTION_AT..DESCRIPTION_AT + 2].try_into().unwrap())
+            as usize;
         assert_eq!(
             crate::arib::decode(&raw[DESCRIPTION_AT + 2..DESCRIPTION_AT + 2 + about]),
             rec.description.unwrap()
@@ -960,7 +1014,10 @@ mod tests {
         assert_eq!(list_at, LIST_AT);
         // Two marks, at the clip's own start and twelve and a half seconds
         // into it.
-        assert_eq!(u16::from_be_bytes(raw[marks_at + 4..marks_at + 6].try_into().unwrap()), 2);
+        assert_eq!(
+            u16::from_be_bytes(raw[marks_at + 4..marks_at + 6].try_into().unwrap()),
+            2
+        );
         let second = marks_at + 6 + MARK;
         let at = u32::from_be_bytes(raw[second + 6..second + 10].try_into().unwrap());
         assert_eq!(at, 20842 + (12.5 * TICK) as u32);
@@ -1002,8 +1059,7 @@ mod tests {
         for (i, &(pts, spn)) in clip.entries.iter().enumerate() {
             // A player reads the coarse entry a fine one belongs to, which
             // is the last one whose fine id is not past it.
-            while coarse + 1 < coarse_n
-                && (word(map_at + 4 + (coarse + 1) * 8) >> 14) as usize <= i
+            while coarse + 1 < coarse_n && (word(map_at + 4 + (coarse + 1) * 8) >> 14) as usize <= i
             {
                 coarse += 1;
             }
@@ -1021,10 +1077,16 @@ mod tests {
 
     #[test]
     fn the_disc_index_lists_its_playlists() {
-        let raw = info(&["00001.rpls".into(), "00002.rpls".into()], "テストディスク");
+        let raw = info(
+            &["00001.rpls".into(), "00002.rpls".into()],
+            "テストディスク",
+        );
         assert_eq!(&raw[..8], b"BDAV0100");
         let at = u32::from_be_bytes(raw[8..12].try_into().unwrap()) as usize;
-        assert_eq!(u16::from_be_bytes(raw[at + 4..at + 6].try_into().unwrap()), 2);
+        assert_eq!(
+            u16::from_be_bytes(raw[at + 4..at + 6].try_into().unwrap()),
+            2
+        );
         assert_eq!(&raw[at + 6..at + 16], b"00001.rpls");
         let name: Vec<u8> = raw[DISC_NAME_AT..TABLE_AT]
             .iter()

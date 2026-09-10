@@ -90,12 +90,13 @@ pub fn sample_format(params: &ff::codec::Parameters) -> ff::format::Sample {
 /// 24 bit sound 360, so a 16 bit recording asked for as 24 comes back framed
 /// differently from itself -- and a frame that does not line up with the
 /// recording's own is a frame that cannot stand in for one.
-fn encoder_format(
-    codec: &ff::codec::codec::Codec,
-    like: ff::format::Sample,
-) -> ff::format::Sample {
-    let Ok(audio) = codec.audio() else { return PLANAR_F32 };
-    let Some(listed) = audio.formats() else { return PLANAR_F32 };
+fn encoder_format(codec: &ff::codec::codec::Codec, like: ff::format::Sample) -> ff::format::Sample {
+    let Ok(audio) = codec.audio() else {
+        return PLANAR_F32;
+    };
+    let Some(listed) = audio.formats() else {
+        return PLANAR_F32;
+    };
     let listed: Vec<ff::format::Sample> = listed.collect();
     if listed.is_empty() {
         return PLANAR_F32;
@@ -104,13 +105,22 @@ fn encoder_format(
     // The recording's own, laid out either way; then planar float, which is
     // what these buffers hold; then the widest on the list, because narrowing
     // is the one conversion that costs the recording something.
-    [like, like.planar(), like.packed(), PLANAR_F32, PLANAR_F32.packed()]
-        .into_iter()
-        .find(|f| *f != ff::format::Sample::None && offered(*f))
-        .or_else(|| {
-            listed.iter().copied().max_by_key(|f| f.bytes() * 2 + usize::from(f.is_planar()))
-        })
-        .unwrap_or(PLANAR_F32)
+    [
+        like,
+        like.planar(),
+        like.packed(),
+        PLANAR_F32,
+        PLANAR_F32.packed(),
+    ]
+    .into_iter()
+    .find(|f| *f != ff::format::Sample::None && offered(*f))
+    .or_else(|| {
+        listed
+            .iter()
+            .copied()
+            .max_by_key(|f| f.bytes() * 2 + usize::from(f.is_planar()))
+    })
+    .unwrap_or(PLANAR_F32)
 }
 
 /// The channel layout to open an encoder with, given how many channels the
@@ -140,8 +150,12 @@ fn encoder_layout(
     channels: u16,
 ) -> Option<ff::channel_layout::ChannelLayout> {
     let want = ff::channel_layout::ChannelLayout::default(channels as i32);
-    let Ok(audio) = codec.audio() else { return Some(want) };
-    let Some(listed) = audio.channel_layouts() else { return Some(want) };
+    let Ok(audio) = codec.audio() else {
+        return Some(want);
+    };
+    let Some(listed) = audio.channel_layouts() else {
+        return Some(want);
+    };
     let listed: Vec<ff::channel_layout::ChannelLayout> = listed.collect();
     if listed.is_empty() || listed.contains(&want) {
         return Some(want);
@@ -162,8 +176,12 @@ fn encoder_layout(
 /// coming down is the direction that costs the recording its top octave.
 /// An encoder that lists nothing takes anything.
 fn encoder_rate(codec: &ff::codec::codec::Codec, want: u32) -> u32 {
-    let Ok(audio) = codec.audio() else { return want };
-    let Some(listed) = audio.rates() else { return want };
+    let Ok(audio) = codec.audio() else {
+        return want;
+    };
+    let Some(listed) = audio.rates() else {
+        return want;
+    };
     let listed: Vec<i32> = listed.filter(|&r| r > 0).collect();
     if listed.is_empty() || listed.contains(&(want as i32)) {
         return want;
@@ -210,7 +228,9 @@ fn open_encoder(
     quiet: bool,
 ) -> Result<ff::encoder::Audio> {
     let codec = ff::encoder::find(id).ok_or_else(|| anyhow!("no encoder for {id:?}"))?;
-    let mut enc = ff::codec::context::Context::new_with_codec(codec).encoder().audio()?;
+    let mut enc = ff::codec::context::Context::new_with_codec(codec)
+        .encoder()
+        .audio()?;
     // An encoder opened to be looked at rather than fed says a word about
     // itself on the way out -- "Qavg: nan", the average of the frames it was
     // never given -- and a probe that says it every time a control is
@@ -248,7 +268,8 @@ fn open_encoder(
     if id == ff::codec::Id::DTS {
         eopts.set("strict", "experimental");
     }
-    enc.open_as_with(codec, eopts).map_err(|e| anyhow!("cannot open audio encoder: {e}"))
+    enc.open_as_with(codec, eopts)
+        .map_err(|e| anyhow!("cannot open audio encoder: {e}"))
 }
 
 /// Whether a track can be written this way at all.
@@ -294,7 +315,11 @@ fn at_sample(packet: &ff::Packet) -> Option<i64> {
 }
 
 fn frame_size_of(encoder: &ff::encoder::Audio) -> usize {
-    if encoder.frame_size() > 0 { encoder.frame_size() as usize } else { 1024 }
+    if encoder.frame_size() > 0 {
+        encoder.frame_size() as usize
+    } else {
+        1024
+    }
 }
 
 /// Planar float, one buffer per channel.
@@ -441,8 +466,9 @@ impl Reencoder {
         bit_rate: usize,
         adts: Option<AdtsFormat>,
     ) -> Result<Self> {
-        let decoder =
-            ff::codec::context::Context::from_parameters(params.clone())?.decoder().audio()?;
+        let decoder = ff::codec::context::Context::from_parameters(params.clone())?
+            .decoder()
+            .audio()?;
         let like = like.unwrap_or_else(|| sample_format(&params));
         let encoder = open_encoder(target, like, rate, channels, bit_rate, false)?;
         let frame_size = frame_size_of(&encoder);
@@ -612,9 +638,12 @@ impl Reencoder {
     /// behind it; what that filter still holds is the last few milliseconds
     /// of the track, and without this they are simply missing from the end.
     fn flush_resampler(&mut self) -> Result<()> {
-        let Some(ctx) = self.resample.as_mut() else { return Ok(()) };
+        let Some(ctx) = self.resample.as_mut() else {
+            return Ok(());
+        };
         loop {
-            let held = unsafe { ff::ffi::swr_get_delay(ctx.as_mut_ptr(), i64::from(self.out_rate)) };
+            let held =
+                unsafe { ff::ffi::swr_get_delay(ctx.as_mut_ptr(), i64::from(self.out_rate)) };
             if held <= 0 {
                 return Ok(());
             }
@@ -687,7 +716,9 @@ impl Reencoder {
             }
             // The priming packet holds the encoder's warm-up and nothing of
             // the audio, so there is nothing in it to write.
-            let Some(pts) = at_sample(&packet) else { continue };
+            let Some(pts) = at_sample(&packet) else {
+                continue;
+            };
             let packet = match &self.adts {
                 Some(f) => {
                     let mut framed = ff::Packet::copy(&f.wrap(packet.data().unwrap_or(&[])));
@@ -712,7 +743,10 @@ impl Reencoder {
 /// recording's own bytes reach the output unaltered, which for lossless sound
 /// is the answer that matters.
 pub fn carried_whole(id: ff::codec::Id) -> bool {
-    matches!(id, ff::codec::Id::DTS | ff::codec::Id::TRUEHD | ff::codec::Id::MLP)
+    matches!(
+        id,
+        ff::codec::Id::DTS | ff::codec::Id::TRUEHD | ff::codec::Id::MLP
+    )
 }
 
 /// How wide a track's samples are once they are written as linear PCM.
@@ -912,7 +946,9 @@ pub fn boundary_patches(
             // patch at all -- but that is not known until the frames are in
             // hand, so the decode happens first and the work is skipped after.
             let frames = decode_around(&mut ictx, &params, src, audio, at)?;
-            let Some(f) = straddler(&frames, edge, is_head) else { continue };
+            let Some(f) = straddler(&frames, edge, is_head) else {
+                continue;
+            };
             patch_run(
                 &frames,
                 f,
@@ -955,8 +991,9 @@ fn decode_around(
     };
     ictx.seek(target, ..target)?;
 
-    let mut decoder =
-        ff::codec::context::Context::from_parameters(params.clone())?.decoder().audio()?;
+    let mut decoder = ff::codec::context::Context::from_parameters(params.clone())?
+        .decoder()
+        .audio()?;
     let channels = audio.channels as usize;
     let rate = audio.sample_rate as f64;
     let mut frames: Vec<Decoded> = Vec::new();
@@ -1018,9 +1055,15 @@ fn decode_around(
 /// boundary is claimed by neither -- there is nothing to trim.
 fn straddler(frames: &[Decoded], edge: i64, is_head: bool) -> Option<usize> {
     let at = if is_head { edge } else { edge - 1 };
-    let i = frames.iter().position(|f| f.first <= at && at < f.first + f.len() as i64)?;
+    let i = frames
+        .iter()
+        .position(|f| f.first <= at && at < f.first + f.len() as i64)?;
     let f = &frames[i];
-    let aligned = if is_head { edge == f.first } else { edge == f.first + f.len() as i64 };
+    let aligned = if is_head {
+        edge == f.first
+    } else {
+        edge == f.first + f.len() as i64
+    };
     (!aligned).then_some(i)
 }
 
@@ -1039,8 +1082,11 @@ fn patch_run(
 ) -> Result<()> {
     // The guard sits on the kept side; the lead-in and lead-out are one frame
     // beyond each end of what is emitted.
-    let (emit_first, emit_last) =
-        if is_head { (straddle, straddle + 1) } else { (straddle.saturating_sub(1), straddle) };
+    let (emit_first, emit_last) = if is_head {
+        (straddle, straddle + 1)
+    } else {
+        (straddle.saturating_sub(1), straddle)
+    };
     let (Some(lead), Some(trail)) = (emit_first.checked_sub(1), emit_last.checked_add(1)) else {
         return Ok(());
     };
@@ -1066,8 +1112,14 @@ fn patch_run(
         return Ok(());
     }
 
-    let mut encoder =
-        open_encoder(params.id(), sample_format(params), audio.sample_rate, audio.channels, bit_rate, false)?;
+    let mut encoder = open_encoder(
+        params.id(),
+        sample_format(params),
+        audio.sample_rate,
+        audio.channels,
+        bit_rate,
+        false,
+    )?;
     // A frame written here has to cover exactly the samples the frame it
     // replaces covered. Most encoders have a frame length of their own, and
     // it has to be the recording's; LPCM has none -- it writes back whatever
@@ -1100,7 +1152,13 @@ fn patch_run(
         }
         frame.set_pts(Some(fed));
         fed += size as i64;
-        let feed = conform(&mut to_encoder, &mut feeding, &frame, enc_layout, enc_format)?;
+        let feed = conform(
+            &mut to_encoder,
+            &mut feeding,
+            &frame,
+            enc_layout,
+            enc_format,
+        )?;
         encoder.send_frame(feed)?;
         // Between sends, not only at the end: an encoder holding a full
         // output queue refuses the next frame outright.
@@ -1139,11 +1197,16 @@ fn collect_patch(
         if encoder.receive_packet(&mut packet).is_err() {
             return Ok(());
         }
-        let Some(offset) = at_sample(&packet) else { continue };
+        let Some(offset) = at_sample(&packet) else {
+            continue;
+        };
         if offset % size as i64 != 0 {
             continue;
         }
-        got.push(((offset / size as i64) as usize, packet.data().unwrap_or(&[]).to_vec()));
+        got.push((
+            (offset / size as i64) as usize,
+            packet.data().unwrap_or(&[]).to_vec(),
+        ));
     }
 }
 
@@ -1158,10 +1221,12 @@ fn outside_is_audible(frame: &Decoded, window: (i64, i64)) -> bool {
     let n = frame.len() as i64;
     let head = (window.0 - frame.first).clamp(0, n) as usize;
     let tail = (window.1 - frame.first).clamp(0, n) as usize;
-    frame
-        .pcm
-        .iter()
-        .any(|ch| ch[..head].iter().chain(&ch[tail..]).any(|v| v.abs() > FLOOR))
+    frame.pcm.iter().any(|ch| {
+        ch[..head]
+            .iter()
+            .chain(&ch[tail..])
+            .any(|v| v.abs() > FLOOR)
+    })
 }
 
 /// Fade to silence everything outside the keep-range.
@@ -1202,7 +1267,11 @@ mod tests {
     use super::*;
 
     fn decoded(first: i64, n: usize) -> Decoded {
-        Decoded { pts: first, first, pcm: vec![vec![1.0; n]] }
+        Decoded {
+            pts: first,
+            first,
+            pcm: vec![vec![1.0; n]],
+        }
     }
 
     #[test]

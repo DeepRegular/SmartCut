@@ -9,10 +9,15 @@ use smartcut_core as sc;
 
 fn main() -> Result<()> {
     let args: Vec<String> = std::env::args().skip(1).collect();
-    let path = args.first().expect("usage: stripdiag <file> [centre] [span] [outdir]");
+    let path = args
+        .first()
+        .expect("usage: stripdiag <file> [centre] [span] [outdir]");
     let centre: f64 = args.get(1).and_then(|s| s.parse().ok()).unwrap_or(-1.0);
     let span: f64 = args.get(2).and_then(|s| s.parse().ok()).unwrap_or(6.0);
-    let outdir = args.get(3).cloned().unwrap_or_else(|| "/tmp/stripdiag".into());
+    let outdir = args
+        .get(3)
+        .cloned()
+        .unwrap_or_else(|| "/tmp/stripdiag".into());
     std::fs::create_dir_all(&outdir)?;
 
     let src = sc::scan(path)?;
@@ -60,7 +65,10 @@ fn main() -> Result<()> {
         over
     );
     for w in worst.iter().take(12) {
-        println!("            off {:7.3}s   point {:9.3}  held {:9.3}", w.0, w.1, w.2);
+        println!(
+            "            off {:7.3}s   point {:9.3}  held {:9.3}",
+            w.0, w.1, w.2
+        );
     }
 
     // Also: are the held pictures themselves at access points?
@@ -75,7 +83,10 @@ fn main() -> Result<()> {
             stray += 1;
         }
     }
-    println!("stray     {} held pictures more than 20ms from any access point", stray);
+    println!(
+        "stray     {} held pictures more than 20ms from any access point",
+        stray
+    );
 
     if centre < 0.0 {
         return Ok(());
@@ -86,11 +97,20 @@ fn main() -> Result<()> {
     // wide the window is in pixels; this is a diagnostic, so it just picks a
     // number.
     let (w0, w1) = (centre - span / 2.0, centre + span / 2.0);
-    let marks: Vec<f64> =
-        src.points.iter().map(|p| p.time).filter(|&t| t >= w0 && t < w1).collect();
+    let marks: Vec<f64> = src
+        .points
+        .iter()
+        .map(|p| p.time)
+        .filter(|&t| t >= w0 && t < w1)
+        .collect();
     let every = ((marks.len() as f64) / 15.0).ceil().max(1.0) as usize;
-    let cells: Vec<f64> =
-        marks.iter().copied().enumerate().filter(|(k, _)| k % every == 0).map(|(_, t)| t).collect();
+    let cells: Vec<f64> = marks
+        .iter()
+        .copied()
+        .enumerate()
+        .filter(|(k, _)| k % every == 0)
+        .map(|(_, t)| t)
+        .collect();
     println!("\ncells     {} in [{:.3}, {:.3})", cells.len(), w0, w1);
 
     let shots = sc::shots_at(&src, &cells, 192)?;
@@ -105,11 +125,19 @@ fn main() -> Result<()> {
         println!(
             "  cell {i:2}  want {:9.3}   held {:>9}  {:>6}   decoded {:>9} {:>3} {:>6}",
             t,
-            held.map(|h| format!("{:.3}", h.time)).unwrap_or_else(|| "-".into()),
-            held.map(|h| format!("{}B", h.jpeg.len())).unwrap_or_default(),
-            shot.as_ref().map(|s| format!("{:.3}", s.time)).unwrap_or_else(|| "-".into()),
-            shot.as_ref().map(|s| s.kind.to_string()).unwrap_or_default(),
-            shot.as_ref().map(|s| format!("{}B", s.jpeg.len())).unwrap_or_default(),
+            held.map(|h| format!("{:.3}", h.time))
+                .unwrap_or_else(|| "-".into()),
+            held.map(|h| format!("{}B", h.jpeg.len()))
+                .unwrap_or_default(),
+            shot.as_ref()
+                .map(|s| format!("{:.3}", s.time))
+                .unwrap_or_else(|| "-".into()),
+            shot.as_ref()
+                .map(|s| s.kind.to_string())
+                .unwrap_or_default(),
+            shot.as_ref()
+                .map(|s| format!("{}B", s.jpeg.len()))
+                .unwrap_or_default(),
         );
     }
     println!("\nwrote     {outdir}");

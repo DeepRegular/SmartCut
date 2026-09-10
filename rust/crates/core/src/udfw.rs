@@ -194,9 +194,12 @@ pub fn write(
     let plan = lay_out(&mut tree);
     let meta = metadata_image(&tree, &plan, revision, &now, label)?;
 
-    let dst = std::fs::File::create(to)
-        .with_context(|| format!("cannot write {}", to.display()))?;
-    let mut out = Writer { to: BufWriter::with_capacity(1 << 20, dst), at: 0 };
+    let dst =
+        std::fs::File::create(to).with_context(|| format!("cannot write {}", to.display()))?;
+    let mut out = Writer {
+        to: BufWriter::with_capacity(1 << 20, dst),
+        at: 0,
+    };
 
     // Everything in front of the partition: the recognition sequence that
     // says there is a volume here at all, the descriptors that describe it,
@@ -223,7 +226,12 @@ pub fn write(
     // The partition. The two entries that describe the metadata partition
     // come first, then the metadata partition itself, then the files.
     out.pad_to(PARTITION)?;
-    out.sector(&sized(&metadata_entry(FILE_METADATA, plan.meta_at, plan.meta_blocks, &now))?)?;
+    out.sector(&sized(&metadata_entry(
+        FILE_METADATA,
+        plan.meta_at,
+        plan.meta_blocks,
+        &now,
+    ))?)?;
     out.sector(&sized(&metadata_entry(
         FILE_METADATA_MIRROR,
         plan.mirror_at,
@@ -238,8 +246,8 @@ pub fn write(
     for node in tree.iter().filter(|n| !n.is_dir()) {
         out.pad_to(PARTITION + node.data as u64)?;
         let path = node.source.as_ref().expect("a file has a path");
-        let mut src = std::fs::File::open(path)
-            .with_context(|| format!("cannot read {}", path.display()))?;
+        let mut src =
+            std::fs::File::open(path).with_context(|| format!("cannot read {}", path.display()))?;
         let mut buf = vec![0u8; 1 << 20];
         let mut left = node.size;
         while left > 0 {
@@ -285,7 +293,11 @@ fn say_what_was_left_out(from: &Path, left_out: &[String]) {
         .iter()
         .take(4)
         .map(|p| {
-            Path::new(p).strip_prefix(from).unwrap_or(Path::new(p)).to_string_lossy().into_owned()
+            Path::new(p)
+                .strip_prefix(from)
+                .unwrap_or(Path::new(p))
+                .to_string_lossy()
+                .into_owned()
         })
         .chain((left_out.len() > 4).then(|| "...".to_string()))
         .collect();
@@ -343,12 +355,7 @@ fn read_tree(from: &Path, left_out: &mut Vec<String>) -> Result<Vec<Node>> {
     Ok(tree)
 }
 
-fn fill(
-    dir: &Path,
-    parent: usize,
-    tree: &mut Vec<Node>,
-    left_out: &mut Vec<String>,
-) -> Result<()> {
+fn fill(dir: &Path, parent: usize, tree: &mut Vec<Node>, left_out: &mut Vec<String>) -> Result<()> {
     let mut entries: Vec<(String, PathBuf, bool, u64)> = Vec::new();
     for e in std::fs::read_dir(dir).with_context(|| format!("reading {}", dir.display()))? {
         let e = e?;
@@ -487,7 +494,11 @@ fn metadata_image(
         out[at..at + bytes.len()].copy_from_slice(bytes);
     };
 
-    put(&mut out, 0, &sized(&file_set(tree[0].entry, rev, now, label))?);
+    put(
+        &mut out,
+        0,
+        &sized(&file_set(tree[0].entry, rev, now, label))?,
+    );
     put(&mut out, 1, &sized(&terminating(1))?);
 
     for (i, node) in tree.iter().enumerate() {
@@ -537,7 +548,13 @@ fn file_id(
 ) -> Vec<u8> {
     let mut d = vec![0u8; fid_len(if parent { 0 } else { name.len() })];
     le16(&mut d, 16, 1); // file version
-    d[18] = if parent { 0x08 | 0x02 } else if directory { 0x02 } else { 0x00 };
+    d[18] = if parent {
+        0x08 | 0x02
+    } else if directory {
+        0x02
+    } else {
+        0x00
+    };
     d[19] = if parent { 0 } else { name.len() as u8 + 1 };
     long_ad(&mut d, 20, SECTOR as u32, icb, METADATA_PART);
     // What the six bytes a long descriptor keeps for the implementation are
@@ -644,7 +661,11 @@ fn metadata_entry(kind: u8, at: u32, blocks: u64, now: &Stamp) -> Vec<u8> {
     le32(&mut ad, 4, at);
     le32(&mut d, 212, ad.len() as u32);
     d.extend_from_slice(&ad);
-    tag(&mut d, TAG_EXTENDED_FILE_ENTRY, if kind == FILE_METADATA { 0 } else { 1 });
+    tag(
+        &mut d,
+        TAG_EXTENDED_FILE_ENTRY,
+        if kind == FILE_METADATA { 0 } else { 1 },
+    );
     d
 }
 
@@ -848,7 +869,12 @@ fn tag(d: &mut [u8], id: u16, location: u64) {
     le16(d, 10, crc_len as u16);
     le32(d, 12, location as u32);
     // The checksum is of the tag itself, and of every byte of it but its own.
-    let sum: u8 = d[..16].iter().enumerate().filter(|(i, _)| *i != 4).map(|(_, b)| *b).fold(0, u8::wrapping_add);
+    let sum: u8 = d[..16]
+        .iter()
+        .enumerate()
+        .filter(|(i, _)| *i != 4)
+        .map(|(_, b)| *b)
+        .fold(0, u8::wrapping_add);
     d[4] = sum;
 }
 
@@ -859,7 +885,11 @@ fn crc16(data: &[u8]) -> u16 {
     for b in data {
         crc ^= (*b as u16) << 8;
         for _ in 0..8 {
-            crc = if crc & 0x8000 != 0 { (crc << 1) ^ 0x1021 } else { crc << 1 };
+            crc = if crc & 0x8000 != 0 {
+                (crc << 1) ^ 0x1021
+            } else {
+                crc << 1
+            };
         }
     }
     crc
@@ -911,7 +941,10 @@ fn dstring(d: &mut [u8], at: usize, len: usize, text: &str) {
     let mut buf = [0u16; 2];
     for c in text.chars() {
         let piece: Vec<u8> = if wide {
-            c.encode_utf16(&mut buf).iter().flat_map(|u| u.to_be_bytes()).collect()
+            c.encode_utf16(&mut buf)
+                .iter()
+                .flat_map(|u| u.to_be_bytes())
+                .collect()
         } else {
             vec![c as u8]
         };
@@ -1061,7 +1094,11 @@ impl Stamp {
             | (self.day as u64) << 16
             | (self.hour as u64) << 8
             | self.minute as u64;
-        format!("{:08X}{:08X}", self.stamp as u32, (day ^ self.stamp as u64) as u32)
+        format!(
+            "{:08X}{:08X}",
+            self.stamp as u32,
+            (day ^ self.stamp as u64) as u32
+        )
     }
 }
 

@@ -133,7 +133,10 @@ impl Input {
             spec: spec.to_string(),
             url,
             file: image,
-            range: Some(Range { at: range.at, len: range.len }),
+            range: Some(Range {
+                at: range.at,
+                len: range.len,
+            }),
             parts: Vec::new(),
         })
     }
@@ -164,18 +167,29 @@ impl Input {
     /// past the end of it stops, rather than running on into the next clip.
     pub fn open(&self) -> Result<Reader> {
         let mut parts = Vec::new();
-        let names: Vec<&PathBuf> =
-            if self.parts.is_empty() { vec![&self.file] } else { self.parts.iter().collect() };
+        let names: Vec<&PathBuf> = if self.parts.is_empty() {
+            vec![&self.file]
+        } else {
+            self.parts.iter().collect()
+        };
         let mut whole = 0u64;
         for name in names {
             let file =
                 File::open(name).with_context(|| format!("cannot open {}", name.display()))?;
             let len = file.metadata()?.len();
-            parts.push(Part { file, at: whole, len });
+            parts.push(Part {
+                file,
+                at: whole,
+                len,
+            });
             whole += len;
         }
         let range = self.range.unwrap_or(Range { at: 0, len: whole });
-        Ok(Reader { parts, range, pos: 0 })
+        Ok(Reader {
+            parts,
+            range,
+            pos: 0,
+        })
     }
 
     /// How long the recording is in bytes.
@@ -216,7 +230,11 @@ impl Read for Reader {
         }
         let want = (buf.len() as u64).min(left) as usize;
         let at = self.range.at + self.pos;
-        let Some(part) = self.parts.iter_mut().find(|p| at < p.at + p.len && at >= p.at) else {
+        let Some(part) = self
+            .parts
+            .iter_mut()
+            .find(|p| at < p.at + p.len && at >= p.at)
+        else {
             return Ok(0);
         };
         // A read stops at the end of the file it started in; the caller comes
@@ -337,11 +355,7 @@ fn open(url: &str, generate_pts: bool) -> Result<ff::format::context::Input> {
     open_with(url, generate_pts, false)
 }
 
-fn open_with(
-    url: &str,
-    generate_pts: bool,
-    all_maps: bool,
-) -> Result<ff::format::context::Input> {
+fn open_with(url: &str, generate_pts: bool, all_maps: bool) -> Result<ff::format::context::Input> {
     let nested = url.starts_with("subfile,") || url.starts_with("concat:");
     if !nested && !generate_pts && !all_maps {
         return Ok(ff::format::input(&url)?);
@@ -382,7 +396,10 @@ fn split_at_sectors(spec: &str) -> Option<(&str, u64, u64)> {
 /// counted across all of them together. So the pieces are found first and the
 /// range is taken out of the whole.
 fn dvd_title(spec: &str, base: &str, first: u64, last: u64) -> Result<Input> {
-    let want = Range { at: first * SECTOR, len: (last + 1 - first) * SECTOR };
+    let want = Range {
+        at: first * SECTOR,
+        len: (last + 1 - first) * SECTOR,
+    };
     let path = Path::new(base);
     match split_at_image(path) {
         // Inside an image the pieces are laid down end to end, so the title
@@ -403,7 +420,10 @@ fn dvd_title(spec: &str, base: &str, first: u64, last: u64) -> Result<Input> {
                 spec: spec.to_string(),
                 url,
                 file: image,
-                range: Some(Range { at: at + range.at, len: range.len }),
+                range: Some(Range {
+                    at: at + range.at,
+                    len: range.len,
+                }),
                 parts: Vec::new(),
             })
         }
@@ -414,15 +434,21 @@ fn dvd_title(spec: &str, base: &str, first: u64, last: u64) -> Result<Input> {
             let whole: u64 = parts.iter().map(|(_, len)| len).sum();
             let range = clamp(want, whole)
                 .ok_or_else(|| anyhow!("{spec}: those sectors are not on this disc"))?;
-            let joined: Vec<String> =
-                parts.iter().map(|(p, _)| p.to_string_lossy().into_owned()).collect();
+            let joined: Vec<String> = parts
+                .iter()
+                .map(|(p, _)| p.to_string_lossy().into_owned())
+                .collect();
             let concat = format!("concat:{}", joined.join("|"));
             // A title that is the whole stream needs no window around the
             // join, and one protocol is worth more than two.
             let url = if range.at == 0 && range.len == whole {
                 concat
             } else {
-                format!("subfile,,start,{},end,{},,:{concat}", range.at, range.at + range.len)
+                format!(
+                    "subfile,,start,{},end,{},,:{concat}",
+                    range.at,
+                    range.at + range.len
+                )
             };
             Ok(Input {
                 spec: spec.to_string(),
@@ -444,7 +470,10 @@ fn clamp(want: Range, whole: u64) -> Option<Range> {
     if want.at >= whole {
         return None;
     }
-    Some(Range { at: want.at, len: want.len.min(whole - want.at) })
+    Some(Range {
+        at: want.at,
+        len: want.len.min(whole - want.at),
+    })
 }
 
 /// Where a title set's stream begins inside an image, and how long it is.
@@ -461,7 +490,10 @@ fn vobs_in_image(img: &udf::Image, inside: &str, image: &Path) -> Result<(u64, u
     for (n, name) in vob_names(inside).into_iter().enumerate() {
         let Some(entry) = img.find(&name) else { break };
         let run = entry.contiguous().ok_or_else(|| {
-            anyhow!("{name} is written in pieces on {}, which cannot be read in place", image.display())
+            anyhow!(
+                "{name} is written in pieces on {}, which cannot be read in place",
+                image.display()
+            )
         })?;
         if n == 0 {
             at = run.at;
@@ -483,12 +515,21 @@ fn vobs_in_image(img: &udf::Image, inside: &str, image: &Path) -> Result<(u64, u
 /// lengths.
 fn vobs_beside(first: &Path) -> Result<Vec<(PathBuf, u64)>> {
     let dir = first.parent().unwrap_or(Path::new("."));
-    let name = first.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+    let name = first
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default();
     let mut out = Vec::new();
     for want in vob_names(&name) {
         let path = dir.join(&want);
-        let path = if path.exists() { path } else { dir.join(want.to_ascii_lowercase()) };
-        let Ok(meta) = std::fs::metadata(&path) else { break };
+        let path = if path.exists() {
+            path
+        } else {
+            dir.join(want.to_ascii_lowercase())
+        };
+        let Ok(meta) = std::fs::metadata(&path) else {
+            break;
+        };
         out.push((path, meta.len()));
     }
     if out.is_empty() {
@@ -500,9 +541,13 @@ fn vobs_beside(first: &Path) -> Result<Vec<(PathBuf, u64)>> {
 /// `VTS_01_1.VOB` and the eight names that may follow it, keeping whatever
 /// path was in front.
 fn vob_names(first: &str) -> Vec<String> {
-    let Some(at) = first.to_ascii_uppercase().rfind(".VOB") else { return Vec::new() };
+    let Some(at) = first.to_ascii_uppercase().rfind(".VOB") else {
+        return Vec::new();
+    };
     // The piece number is the character before the extension.
-    let Some(number) = first[..at].chars().last() else { return Vec::new() };
+    let Some(number) = first[..at].chars().last() else {
+        return Vec::new();
+    };
     if !number.is_ascii_digit() {
         return Vec::new();
     }
@@ -553,7 +598,10 @@ mod tests {
         assert_eq!(names[8], "VTS_01_9.VOB");
         // The path in front is kept, and the piece number is the one digit
         // that changes.
-        assert_eq!(vob_names("VIDEO_TS/VTS_12_1.VOB")[1], "VIDEO_TS/VTS_12_2.VOB");
+        assert_eq!(
+            vob_names("VIDEO_TS/VTS_12_1.VOB")[1],
+            "VIDEO_TS/VTS_12_2.VOB"
+        );
         assert!(vob_names("recording.ts").is_empty());
     }
 
@@ -572,8 +620,20 @@ mod tests {
         let input = Input::parse(&spec).unwrap();
 
         assert_eq!(input.parts.len(), 2);
-        assert_eq!(input.range, Some(Range { at: SECTOR, len: SECTOR }));
-        assert!(input.url.starts_with("subfile,,start,2048,end,4096,,:concat:"), "{}", input.url);
+        assert_eq!(
+            input.range,
+            Some(Range {
+                at: SECTOR,
+                len: SECTOR
+            })
+        );
+        assert!(
+            input
+                .url
+                .starts_with("subfile,,start,2048,end,4096,,:concat:"),
+            "{}",
+            input.url
+        );
         assert_eq!(input.bytes().unwrap(), SECTOR);
 
         // And the window reads out of the second file, which is the whole
@@ -601,7 +661,10 @@ mod tests {
         let dir = std::env::temp_dir().join("smartcut-input-window");
         let _ = std::fs::create_dir_all(&dir);
         let path = dir.join("image.bin");
-        File::create(&path).unwrap().write_all(b"AAAAhello worldZZZZ").unwrap();
+        File::create(&path)
+            .unwrap()
+            .write_all(b"AAAAhello worldZZZZ")
+            .unwrap();
 
         let input = Input {
             spec: "x".into(),

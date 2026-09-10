@@ -131,7 +131,11 @@ pub fn mount_of(share: &Share) -> Option<PathBuf> {
 #[cfg(not(windows))]
 pub fn local(share: &Share) -> Result<PathBuf> {
     let at = mount_of(share).ok_or_else(|| anyhow!("{} is not mounted", share.unc()))?;
-    Ok(if share.rest.is_empty() { at } else { at.join(&share.rest) })
+    Ok(if share.rest.is_empty() {
+        at
+    } else {
+        at.join(&share.rest)
+    })
 }
 
 /// On Windows the UNC path is already the path: the redirector does what gvfs
@@ -169,24 +173,36 @@ fn mount_line(line: &str) -> Option<Mount> {
     if !matches!(fields.next()?, "cifs" | "smb3" | "smbfs" | "smbfs2") {
         return None;
     }
-    let rest = source.strip_prefix("//").or_else(|| source.strip_prefix(r"\\"))?;
+    let rest = source
+        .strip_prefix("//")
+        .or_else(|| source.strip_prefix(r"\\"))?;
     let (host, share) = rest.split_once(['/', '\\'])?;
     let share = share.trim_end_matches(['/', '\\']);
     if host.is_empty() || share.is_empty() {
         return None;
     }
-    Some(Mount { host: host.to_string(), share: share.to_string(), at: PathBuf::from(at) })
+    Some(Mount {
+        host: host.to_string(),
+        share: share.to_string(),
+        at: PathBuf::from(at),
+    })
 }
 
 #[cfg(unix)]
 fn gvfs_mounts() -> Vec<Mount> {
     let mut out = Vec::new();
     for dir in gvfs_dirs() {
-        let Ok(entries) = std::fs::read_dir(&dir) else { continue };
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            continue;
+        };
         for entry in entries.flatten() {
             let name = entry.file_name().to_string_lossy().into_owned();
             if let Some((host, share)) = gvfs_share(&name) {
-                out.push(Mount { host, share, at: entry.path() });
+                out.push(Mount {
+                    host,
+                    share,
+                    at: entry.path(),
+                });
             }
         }
     }
@@ -231,7 +247,9 @@ fn gvfs_share(name: &str) -> Option<(String, String)> {
     let body = name.strip_prefix("smb-share:")?;
     let (mut host, mut share) = (None, None);
     for field in body.split(',') {
-        let Some((key, value)) = field.split_once('=') else { continue };
+        let Some((key, value)) = field.split_once('=') else {
+            continue;
+        };
         match key {
             "server" => host = Some(decode(value)),
             "share" => share = Some(decode(value)),
@@ -249,7 +267,10 @@ fn decode(text: &str) -> String {
     let mut i = 0;
     while i < bytes.len() {
         if bytes[i] == b'%' && i + 2 < bytes.len() {
-            if let Some(byte) = hex(bytes[i + 1]).zip(hex(bytes[i + 2])).map(|(h, l)| h * 16 + l) {
+            if let Some(byte) = hex(bytes[i + 1])
+                .zip(hex(bytes[i + 2]))
+                .map(|(h, l)| h * 16 + l)
+            {
                 out.push(byte);
                 i += 3;
                 continue;
@@ -297,7 +318,8 @@ fn unescape(field: &str) -> String {
 
 fn strip_ci<'a>(text: &'a str, prefix: &str) -> Option<&'a str> {
     let head = text.get(..prefix.len())?;
-    head.eq_ignore_ascii_case(prefix).then(|| &text[prefix.len()..])
+    head.eq_ignore_ascii_case(prefix)
+        .then(|| &text[prefix.len()..])
 }
 
 fn eq_ci(a: &str, b: &str) -> bool {
@@ -309,13 +331,23 @@ mod tests {
     use super::*;
 
     fn share(host: &str, name: &str, rest: &str) -> Share {
-        Share { host: host.into(), share: name.into(), rest: rest.into() }
+        Share {
+            host: host.into(),
+            share: name.into(),
+            rest: rest.into(),
+        }
     }
 
     #[test]
     fn parses_both_spellings() {
-        assert_eq!(parse("smb://nas/rec/a.ts"), Some(share("nas", "rec", "a.ts")));
-        assert_eq!(parse(r"\\nas\rec\sub\a.ts"), Some(share("nas", "rec", "sub/a.ts")));
+        assert_eq!(
+            parse("smb://nas/rec/a.ts"),
+            Some(share("nas", "rec", "a.ts"))
+        );
+        assert_eq!(
+            parse(r"\\nas\rec\sub\a.ts"),
+            Some(share("nas", "rec", "sub/a.ts"))
+        );
         assert_eq!(parse("SMB://nas/rec/"), Some(share("nas", "rec", "")));
         assert_eq!(parse("  smb://nas/rec  "), Some(share("nas", "rec", "")));
     }
@@ -330,7 +362,10 @@ mod tests {
 
     #[test]
     fn decodes_the_url_form_only() {
-        assert_eq!(parse("smb://nas/録画%202026/a%20b.ts").unwrap().rest, "a b.ts");
+        assert_eq!(
+            parse("smb://nas/録画%202026/a%20b.ts").unwrap().rest,
+            "a b.ts"
+        );
         assert_eq!(parse("smb://nas/rec/100%.ts").unwrap().rest, "100%.ts");
         assert_eq!(parse(r"\\nas\rec\100%20.ts").unwrap().rest, "100%20.ts");
     }

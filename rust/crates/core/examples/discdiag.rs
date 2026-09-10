@@ -16,9 +16,14 @@ fn hms(seconds: f64) -> String {
 }
 
 fn main() -> Result<()> {
-    let path = std::env::args().nth(1).expect("usage: discdiag <disc or image>");
+    let path = std::env::args()
+        .nth(1)
+        .expect("usage: discdiag <disc or image>");
     let at = std::path::Path::new(&path);
-    println!("{path}\n  looks like a disc: {}", sc::disc::looks_like_disc(at));
+    println!(
+        "{path}\n  looks like a disc: {}",
+        sc::disc::looks_like_disc(at)
+    );
 
     let disc = sc::disc::read(at)?;
     println!("  {} -- {}", disc.shape.as_str(), disc.label);
@@ -35,10 +40,13 @@ fn main() -> Result<()> {
             e.label
         );
         if !e.marks.is_empty() {
-            let shown: Vec<String> =
-                e.marks.iter().take(6).map(|m| format!("{m:.1}")).collect();
+            let shown: Vec<String> = e.marks.iter().take(6).map(|m| format!("{m:.1}")).collect();
             let more = if e.marks.len() > 6 { ", ..." } else { "" };
-            println!("       marks {} [{}{more}]", e.marks.len(), shown.join(", "));
+            println!(
+                "       marks {} [{}{more}]",
+                e.marks.len(),
+                shown.join(", ")
+            );
         }
         for t in &e.tracks {
             println!(
@@ -46,8 +54,15 @@ fn main() -> Result<()> {
                 t.kind,
                 t.pid,
                 t.detail,
-                t.language.as_deref().map(|l| format!("  {l}")).unwrap_or_default(),
-                if t.carried { "" } else { "  (a cut cannot carry this)" },
+                t.language
+                    .as_deref()
+                    .map(|l| format!("  {l}"))
+                    .unwrap_or_default(),
+                if t.carried {
+                    ""
+                } else {
+                    "  (a cut cannot carry this)"
+                },
             );
         }
         println!("       {}", e.path);

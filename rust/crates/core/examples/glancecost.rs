@@ -50,7 +50,9 @@ fn even_cells(o: f64, step: f64, slots: usize, dur: f64) -> Vec<f64> {
 
 fn main() -> Result<()> {
     let mut args = std::env::args().skip(1);
-    let path = args.next().expect("usage: glancecost <file> [cells] [refreshes]");
+    let path = args
+        .next()
+        .expect("usage: glancecost <file> [cells] [refreshes]");
     let cells: usize = args.next().map_or(11, |s| s.parse().unwrap());
     let refreshes: usize = args.next().map_or(3, |s| s.parse().unwrap());
 
@@ -104,7 +106,10 @@ fn main() -> Result<()> {
                 if s.time >= starts[i] && s.time < starts[i] + step {
                     inside += 1;
                 }
-                let Some(k) = starts.iter().position(|&a| s.time >= a && s.time < a + step) else {
+                let Some(k) = starts
+                    .iter()
+                    .position(|&a| s.time >= a && s.time < a + step)
+                else {
                     off += 1;
                     continue;
                 };
@@ -128,7 +133,9 @@ fn main() -> Result<()> {
             sweep += t0.elapsed().as_secs_f64();
             let mut held = vec![false; starts.len()];
             for shot in &all {
-                let Some(k) = starts.iter().position(|&a| shot.time >= a && shot.time < a + step)
+                let Some(k) = starts
+                    .iter()
+                    .position(|&a| shot.time >= a && shot.time < a + step)
                 else {
                     continue;
                 };

@@ -76,7 +76,13 @@ impl IndexSource for PacketScan {
     }
 
     fn build(&self, input: IndexInput) -> Result<Index> {
-        let IndexInput { video, start_time, ictx, on, .. } = input;
+        let IndexInput {
+            video,
+            start_time,
+            ictx,
+            on,
+            ..
+        } = input;
         walk(video, start_time, ictx, on, |_| Ok(()), None)
     }
 }
@@ -162,8 +168,10 @@ pub fn walk(
         }
         video_bytes += p.size() as u64;
         let Some(pts) = p.pts() else { continue };
-        let reference =
-            p.data().map(|d| bitstream::is_reference(d, &codec, framing, vc1)).unwrap_or(true);
+        let reference = p
+            .data()
+            .map(|d| bitstream::is_reference(d, &codec, framing, vc1))
+            .unwrap_or(true);
         if !pulldown {
             // A picture shown for anything other than two fields is a
             // stream that is not constant frame rate, whatever its
@@ -236,7 +244,12 @@ impl IndexSource for DiscIndex {
     }
 
     fn build(&self, input: IndexInput) -> Result<Index> {
-        let IndexInput { path, video, start_time, .. } = input;
+        let IndexInput {
+            path,
+            video,
+            start_time,
+            ..
+        } = input;
         let held = crate::disc::clip_entry_points(path)
             .ok_or_else(|| anyhow!("no entry-point map beside this recording"))?;
         // The map counts on the stream's own clock, the same one the demuxer
@@ -256,13 +269,21 @@ impl IndexSource for DiscIndex {
             .filter(|p| p.time >= -1.0)
             .collect();
         if points.is_empty() {
-            return Err(anyhow!("the disc's entry-point map is empty for this recording"));
+            return Err(anyhow!(
+                "the disc's entry-point map is empty for this recording"
+            ));
         }
         // The last picture is not in the map -- the map holds the ones a
         // player may *start* at -- so the container's own length stands, and
         // `end: None` is how that is said.
         let _ = video;
-        Ok(Index { points, leading_known: false, pulldown: None, bit_rate: None, end: None })
+        Ok(Index {
+            points,
+            leading_known: false,
+            pulldown: None,
+            bit_rate: None,
+            end: None,
+        })
     }
 }
 
@@ -291,7 +312,12 @@ impl IndexSource for ContainerIndex {
     }
 
     fn build(&self, input: IndexInput) -> Result<Index> {
-        let IndexInput { video, start_time, ictx, .. } = input;
+        let IndexInput {
+            video,
+            start_time,
+            ictx,
+            ..
+        } = input;
         // How long the recording is, by the container's own reckoning. Only
         // used to ask whether the table below covers it, so a container that
         // will not say how long it is simply asks nothing.
@@ -326,7 +352,11 @@ impl IndexSource for ContainerIndex {
         if points.is_empty() {
             return Err(anyhow!("the container has no seek table for this stream"));
         }
-        points.sort_by(|a, b| a.time.partial_cmp(&b.time).unwrap_or(std::cmp::Ordering::Equal));
+        points.sort_by(|a, b| {
+            a.time
+                .partial_cmp(&b.time)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
         // Does it reach the end? Measured against the table's own spacing,
         // which is the only figure here that knows what this recording's
         // entry points are worth: a real table's last entry is an entry or
@@ -346,7 +376,13 @@ impl IndexSource for ContainerIndex {
                 );
             }
         }
-        Ok(Index { points, leading_known: false, pulldown: None, bit_rate: None, end: None })
+        Ok(Index {
+            points,
+            leading_known: false,
+            pulldown: None,
+            bit_rate: None,
+            end: None,
+        })
     }
 }
 
@@ -364,7 +400,10 @@ impl Finite for f64 {
 
 /// Is an environment switch turned off?
 fn off(key: &str) -> bool {
-    matches!(std::env::var(key).as_deref(), Ok("0") | Ok("off") | Ok("no"))
+    matches!(
+        std::env::var(key).as_deref(),
+        Ok("0") | Ok("off") | Ok("no")
+    )
 }
 
 /// The access point decoding has to begin at to produce the picture at `time`.
@@ -404,12 +443,7 @@ pub fn seek_to_entry(
     // offset": libavformat repositions the file and flushes what it had
     // buffered, and the demuxer picks the stream up again from there.
     let placed = unsafe {
-        ff::ffi::av_seek_frame(
-            ictx.as_mut_ptr(),
-            -1,
-            entry.pos,
-            ff::ffi::AVSEEK_FLAG_BYTE,
-        ) >= 0
+        ff::ffi::av_seek_frame(ictx.as_mut_ptr(), -1, entry.pos, ff::ffi::AVSEEK_FLAG_BYTE) >= 0
     };
     placed.then_some(entry.time)
 }
@@ -445,7 +479,13 @@ fn point_at(packets: &[PacketView], i: usize) -> AccessPoint {
             droppable &= !next.reference;
         }
     }
-    AccessPoint { time: pkt.pts, lead_start, lead_indices, droppable, pos: pkt.pos }
+    AccessPoint {
+        time: pkt.pts,
+        lead_start,
+        lead_indices,
+        droppable,
+        pos: pkt.pos,
+    }
 }
 
 /// Derive access points from a run of packets in decode order.
@@ -454,7 +494,11 @@ fn points_from(packets: &[PacketView]) -> Vec<AccessPoint> {
         .filter(|&i| packets[i].key)
         .map(|i| point_at(packets, i))
         .collect();
-    points.sort_by(|a, b| a.time.partial_cmp(&b.time).unwrap_or(std::cmp::Ordering::Equal));
+    points.sort_by(|a, b| {
+        a.time
+            .partial_cmp(&b.time)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
     points
 }
 
@@ -492,8 +536,11 @@ pub fn refine_leading(
     // comparison of times: the points are sorted by time and a boundary can
     // fall between two of them.
     let gaps: Vec<f64> = points.windows(2).map(|w| w[1].time - w[0].time).collect();
-    let mean_gop =
-        if gaps.is_empty() { 1.0 } else { gaps.iter().sum::<f64>() / gaps.len() as f64 };
+    let mean_gop = if gaps.is_empty() {
+        1.0
+    } else {
+        gaps.iter().sum::<f64>() / gaps.len() as f64
+    };
     let skirt = (mean_gop * SKIRT as f64).clamp(2.0, 60.0);
     for (t_in, t_out) in ranges {
         for slot in points.iter_mut() {
@@ -553,7 +600,13 @@ fn window_at(
             .data()
             .map(|d| bitstream::is_reference(d, &video.codec, video.framing, video.vc1.as_ref()))
             .unwrap_or(true);
-        out.push(PacketView { pts: t, dts: d, key, reference, pos: p.position() as i64 });
+        out.push(PacketView {
+            pts: t,
+            dts: d,
+            key,
+            reference,
+            pos: p.position() as i64,
+        });
         // Stop at the *next* access point: everything between it and the
         // target is what the target's leading pictures could be. Matching on
         // DTS means the target's own PTS is already past `at`, so the test

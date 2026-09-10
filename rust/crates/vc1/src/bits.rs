@@ -59,7 +59,11 @@ pub struct Reader<'a> {
 
 impl<'a> Reader<'a> {
     pub fn new(data: &'a [u8]) -> Self {
-        Self { data, bit: 0, overrun: false }
+        Self {
+            data,
+            bit: 0,
+            overrun: false,
+        }
     }
 
     /// Whether every read so far landed inside the payload.

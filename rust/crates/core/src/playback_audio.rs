@@ -27,7 +27,12 @@ fn capacity(sample_rate: u32, channels: u16) -> usize {
 /// Block until there is room, or `stop` says to give up. Never blocks forever
 /// on a chunk bigger than `cap`: one decoded frame is at most a few thousand
 /// samples, far under a second's worth.
-fn push(ring: &Mutex<VecDeque<f32>>, cap: usize, stop: &impl Fn() -> bool, samples: Vec<f32>) -> bool {
+fn push(
+    ring: &Mutex<VecDeque<f32>>,
+    cap: usize,
+    stop: &impl Fn() -> bool,
+    samples: Vec<f32>,
+) -> bool {
     loop {
         if stop() {
             return false;
@@ -246,11 +251,17 @@ fn open_output(want: (u32, u16), ring: &Arc<Mutex<VecDeque<f32>>>) -> Result<Out
     // do on the path that works.
     let mut named: Vec<cpal::Device> = host
         .output_devices()
-        .map(|ds| ds.filter(|d| matches!(d.name(), Ok(n) if FALLBACKS.contains(&n.as_str()))).collect())
+        .map(|ds| {
+            ds.filter(|d| matches!(d.name(), Ok(n) if FALLBACKS.contains(&n.as_str())))
+                .collect()
+        })
         .unwrap_or_default();
     named.sort_by_key(|d| {
         let name = d.name().unwrap_or_default();
-        FALLBACKS.iter().position(|n| *n == name).unwrap_or(usize::MAX)
+        FALLBACKS
+            .iter()
+            .position(|n| *n == name)
+            .unwrap_or(usize::MAX)
     });
     for device in named {
         if let Some(out) = open_on(&device, want, ring, &mut why) {
@@ -266,7 +277,9 @@ fn open_output(want: (u32, u16), ring: &Arc<Mutex<VecDeque<f32>>>) -> Result<Out
     let tried = FALLBACKS.join(", ");
     Err(match why {
         Some(e) => {
-            anyhow!("cannot open audio output for {rate}Hz/{channels}ch (tried default, {tried}): {e}")
+            anyhow!(
+                "cannot open audio output for {rate}Hz/{channels}ch (tried default, {tried}): {e}"
+            )
         }
         None => anyhow!("no audio output device"),
     })
@@ -286,7 +299,9 @@ pub fn play_audio(
     from: f64,
     stop: impl Fn() -> bool,
 ) -> Result<()> {
-    let Some(audio) = src.audio.clone() else { return Ok(()) };
+    let Some(audio) = src.audio.clone() else {
+        return Ok(());
+    };
     crate::init()?;
 
     // `BufferSize::Default` would leave the period to cpal, which asks the
@@ -305,17 +320,27 @@ pub fn play_audio(
     let out = open_output(want, &ring)?;
     let (rate, channels) = (out.sample_rate, out.channels);
     if (rate, channels) != want {
-        eprintln!("audio output: {}Hz/{}ch source played at {rate}Hz/{channels}ch", want.0, want.1);
+        eprintln!(
+            "audio output: {}Hz/{}ch source played at {rate}Hz/{channels}ch",
+            want.0, want.1
+        );
     }
     let layout = ff::channel_layout::ChannelLayout::default(channels as i32);
     let cap = capacity(rate, channels);
-    out.stream.play().map_err(|e| anyhow!("cannot start audio output: {e}"))?;
+    out.stream
+        .play()
+        .map_err(|e| anyhow!("cannot start audio output: {e}"))?;
 
     let mut ictx = crate::input::demux(&src.input.url)?;
     let idx = audio.stream_index;
     let in_tb = audio.time_base;
-    let params = ictx.stream(idx).ok_or_else(|| anyhow!("stream {idx} vanished"))?.parameters();
-    let mut decoder = ff::codec::context::Context::from_parameters(params)?.decoder().audio()?;
+    let params = ictx
+        .stream(idx)
+        .ok_or_else(|| anyhow!("stream {idx} vanished"))?
+        .parameters();
+    let mut decoder = ff::codec::context::Context::from_parameters(params)?
+        .decoder()
+        .audio()?;
     let mut resampler: Option<ff::software::resampling::Context> = None;
     let mut resampled = ff::frame::Audio::empty();
 

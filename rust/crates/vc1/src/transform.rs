@@ -26,7 +26,9 @@ pub const T: [[i32; 8]; 8] = [
 ];
 
 /// `T` times its own transpose is diagonal; these are the diagonal entries.
-const NORM: [f64; 8] = [1152.0, 1156.0, 1168.0, 1156.0, 1152.0, 1156.0, 1168.0, 1156.0];
+const NORM: [f64; 8] = [
+    1152.0, 1156.0, 1168.0, 1156.0, 1152.0, 1156.0, 1168.0, 1156.0,
+];
 
 /// What the inverse transform divides by once both passes have run.
 const RANGE: f64 = 1024.0;
@@ -131,7 +133,11 @@ pub struct Quant {
 
 impl Quant {
     pub fn new(step: i32, uniform: bool) -> Self {
-        Self { step, dc_scale: crate::tables::DC_SCALE[step.clamp(1, 31) as usize], uniform }
+        Self {
+            step,
+            dc_scale: crate::tables::DC_SCALE[step.clamp(1, 31) as usize],
+            uniform,
+        }
     }
 
     /// The distance between one reconstruction level and the next.
@@ -157,7 +163,9 @@ impl Quant {
         if magnitude * 2.0 < (self.stride() + self.offset()) as f64 {
             return 0;
         }
-        let level = ((magnitude - self.offset() as f64) / self.stride() as f64).round().max(1.0);
+        let level = ((magnitude - self.offset() as f64) / self.stride() as f64)
+            .round()
+            .max(1.0);
         // A level is written in eight bits at most, escape or no escape.
         let level = level.min(255.0) as i32;
         if coefficient < 0.0 {
@@ -207,7 +215,10 @@ mod tests {
     fn a_flat_block_survives_the_round_trip() {
         for value in [-128i16, -37, 0, 41, 127] {
             let (block, error) = round_trip([value; 64]);
-            assert!(error < 0.6, "flat {value} came back with error {error}: {block:?}");
+            assert!(
+                error < 0.6,
+                "flat {value} came back with error {error}: {block:?}"
+            );
         }
     }
 

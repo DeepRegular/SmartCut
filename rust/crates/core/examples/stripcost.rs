@@ -64,19 +64,31 @@ fn cells(pts: &[f64], o: f64, span: f64, vis: usize, slots: usize) -> Vec<f64> {
         marks[k] = m;
         j = m;
     }
-    marks.into_iter().filter(|&m| m != usize::MAX).map(|m| pts[m]).collect()
+    marks
+        .into_iter()
+        .filter(|&m| m != usize::MAX)
+        .map(|m| pts[m])
+        .collect()
 }
 
 fn to_neighbour(points: &[sc::AccessPoint], at: f64) -> f64 {
     let i = points.partition_point(|p| p.time < at - 1e-6);
-    let after = points[i..].iter().find(|p| p.time > at + 1e-6).map(|p| p.time - at);
+    let after = points[i..]
+        .iter()
+        .find(|p| p.time > at + 1e-6)
+        .map(|p| p.time - at);
     let before = points[..i].last().map(|p| at - p.time);
-    after.into_iter().chain(before).fold(f64::INFINITY, f64::min)
+    after
+        .into_iter()
+        .chain(before)
+        .fold(f64::INFINITY, f64::min)
 }
 
 fn main() -> Result<()> {
     let args: Vec<String> = std::env::args().skip(1).collect();
-    let path = args.first().expect("usage: stripcost <file> [span] [vis] [samples]");
+    let path = args
+        .first()
+        .expect("usage: stripcost <file> [span] [vis] [samples]");
     let span: f64 = args.get(1).and_then(|s| s.parse().ok()).unwrap_or(6.0);
     let vis: usize = args.get(2).and_then(|s| s.parse().ok()).unwrap_or(11);
     let samples: usize = args.get(3).and_then(|s| s.parse().ok()).unwrap_or(20);
@@ -107,12 +119,17 @@ fn main() -> Result<()> {
             continue;
         }
         total += cs.len();
-        let gaps: Vec<f64> =
-            cs.windows(2).map(|w| (w[1] - w[0]).abs()).filter(|d| *d > 1e-9).collect();
+        let gaps: Vec<f64> = cs
+            .windows(2)
+            .map(|w| (w[1] - w[0]).abs())
+            .filter(|d| *d > 1e-9)
+            .collect();
         let gap = med(&gaps).unwrap_or(f64::INFINITY);
         // Weighed against the held pictures over the stretch the cells cover,
         // the way `thumbs_now` weighs it.
-        let held = track.spacing_over(cs[0], cs[cs.len() - 1]).unwrap_or(track.interval);
+        let held = track
+            .spacing_over(cs[0], cs[cs.len() - 1])
+            .unwrap_or(track.interval);
         let want: Vec<f64> = if gap < held * 0.9 {
             fell_back += 1;
             cs.clone()

@@ -44,7 +44,10 @@ pub fn bdus(data: &[u8]) -> Vec<(u8, &[u8])> {
 
 /// The first BDU of the given type, if the payload holds one.
 pub fn find(data: &[u8], kind: u8) -> Option<&[u8]> {
-    bdus(data).into_iter().find(|&(t, _)| t == kind).map(|(_, p)| p)
+    bdus(data)
+        .into_iter()
+        .find(|&(t, _)| t == kind)
+        .map(|(_, p)| p)
 }
 
 /// How the quantizer for each picture is arrived at.

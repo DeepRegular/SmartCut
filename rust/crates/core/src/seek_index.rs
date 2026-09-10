@@ -194,8 +194,7 @@ impl SeekIndex {
             std::process::id(),
             SERIAL.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
         ));
-        std::fs::write(&part, &w.0)
-            .with_context(|| format!("cannot write {}", part.display()))?;
+        std::fs::write(&part, &w.0).with_context(|| format!("cannot write {}", part.display()))?;
         std::fs::rename(&part, path)
             .with_context(|| format!("cannot put {} in place", path.display()))?;
         Ok(())
@@ -226,7 +225,13 @@ impl SeekIndex {
             for _ in 0..leads {
                 lead_indices.push(r.u32()? as usize);
             }
-            points.push(AccessPoint { time, lead_start, lead_indices, droppable, pos });
+            points.push(AccessPoint {
+                time,
+                lead_start,
+                lead_indices,
+                droppable,
+                pos,
+            });
         }
 
         let track = if flags & FLAG_HAS_TRACK != 0 {
@@ -269,8 +274,7 @@ impl SeekIndex {
         Ok(SeekIndex {
             points,
             leading_known: flags & FLAG_LEADING_KNOWN != 0,
-            pulldown: (flags & FLAG_PULLDOWN_KNOWN != 0)
-                .then_some(flags & FLAG_PULLDOWN != 0),
+            pulldown: (flags & FLAG_PULLDOWN_KNOWN != 0).then_some(flags & FLAG_PULLDOWN != 0),
             end,
             track,
             // Whatever is left after the track, if a version that wrote one
@@ -292,7 +296,10 @@ fn clone_track(t: &thumbs::Track) -> thumbs::Track {
         thumbs: t
             .thumbs
             .iter()
-            .map(|th| thumbs::Thumb { time: th.time, jpeg: th.jpeg.clone() })
+            .map(|th| thumbs::Thumb {
+                time: th.time,
+                jpeg: th.jpeg.clone(),
+            })
             .collect(),
         scenes: t.scenes.clone(),
         threshold: t.threshold,
@@ -394,9 +401,12 @@ pub fn prune(dir: &Path, keep: usize, budget: u64) -> Result<usize> {
 /// Mark a file as used just now, so that the least-recently-used pruning is
 /// about use and not about when the file happened to be written.
 pub fn touch(path: &Path) {
-    let _ = std::fs::OpenOptions::new().write(true).open(path).and_then(|f| {
-        f.set_times(std::fs::FileTimes::new().set_modified(std::time::SystemTime::now()))
-    });
+    let _ = std::fs::OpenOptions::new()
+        .write(true)
+        .open(path)
+        .and_then(|f| {
+            f.set_times(std::fs::FileTimes::new().set_modified(std::time::SystemTime::now()))
+        });
 }
 
 // --- the little-endian plumbing -----------------------------------------
@@ -432,7 +442,10 @@ struct Reader<'a> {
 
 impl<'a> Reader<'a> {
     fn take(&mut self, n: usize) -> Result<&'a [u8]> {
-        let end = self.at.checked_add(n).ok_or_else(|| anyhow!("seek index is corrupt"))?;
+        let end = self
+            .at
+            .checked_add(n)
+            .ok_or_else(|| anyhow!("seek index is corrupt"))?;
         if end > self.raw.len() {
             bail!("the seek index is truncated");
         }

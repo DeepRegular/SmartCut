@@ -40,12 +40,17 @@ enum Set {
     /// [`FIRST_ARIB_ROW`].
     Symbols,
     /// Downloaded glyphs, or anything else there is no naming.
-    Unknown { wide: bool },
+    Unknown {
+        wide: bool,
+    },
 }
 
 impl Set {
     fn wide(&self) -> bool {
-        matches!(self, Set::Kanji | Set::Symbols | Set::Unknown { wide: true })
+        matches!(
+            self,
+            Set::Kanji | Set::Symbols | Set::Unknown { wide: true }
+        )
     }
 
     /// The graphic set a designation escape names.
@@ -100,8 +105,8 @@ pub fn decode(bytes: &[u8]) -> String {
         match b {
             // C0. Only the shifts and the spacing mean anything here.
             0x00..=0x1F => match b {
-                0x0F => gl = 0,               // LS0
-                0x0E => gl = 1,               // LS1
+                0x0F => gl = 0,                                 // LS0
+                0x0E => gl = 1,                                 // LS1
                 0x19 => at = one(&mut out, bytes, at, sets[2]), // SS2
                 0x1D => at = one(&mut out, bytes, at, sets[3]), // SS3
                 // A line break. Both are written: a recorder's own playlists
@@ -128,7 +133,9 @@ pub fn decode(bytes: &[u8]) -> String {
 /// Read one character of `set` at `at`, and say where the next one starts.
 fn at_char(out: &mut String, bytes: &[u8], at: usize, set: Set) -> usize {
     let width = if set.wide() { 2 } else { 1 };
-    let Some(raw) = bytes.get(at..at + width) else { return bytes.len() };
+    let Some(raw) = bytes.get(at..at + width) else {
+        return bytes.len();
+    };
     // Both halves of the code are read in the graphic left range, whichever
     // side of the code table the bytes arrived on.
     let hi = raw[0] & 0x7F;
@@ -164,10 +171,43 @@ fn symbol(set: Set, hi: u8, lo: u8) -> Option<&'static str> {
     // Cell 48 is `lo` 0x50: the cell number is the byte less the 0x20 every
     // JIS-shaped code table begins at.
     const MARKERS: [&str; 37] = [
-        "[HV]", "[SD]", "[P]", "[W]", "[MV]", "[手]", "[字]", "[双]", "[デ]", "[S]", "[二]",
-        "[多]", "[解]", "[SS]", "[B]", "[N]", "■", "●", "[天]", "[交]", "[映]", "[無]", "[料]",
-        "[年齢制限]", "[前]", "[後]", "[再]", "[新]", "[初]", "[終]", "[生]", "[販]", "[声]",
-        "[吹]", "[PPV]", "(秘)", "ほか",
+        "[HV]",
+        "[SD]",
+        "[P]",
+        "[W]",
+        "[MV]",
+        "[手]",
+        "[字]",
+        "[双]",
+        "[デ]",
+        "[S]",
+        "[二]",
+        "[多]",
+        "[解]",
+        "[SS]",
+        "[B]",
+        "[N]",
+        "■",
+        "●",
+        "[天]",
+        "[交]",
+        "[映]",
+        "[無]",
+        "[料]",
+        "[年齢制限]",
+        "[前]",
+        "[後]",
+        "[再]",
+        "[新]",
+        "[初]",
+        "[終]",
+        "[生]",
+        "[販]",
+        "[声]",
+        "[吹]",
+        "[PPV]",
+        "(秘)",
+        "ほか",
     ];
     MARKERS.get(lo.checked_sub(0x50)? as usize).copied()
 }
@@ -590,8 +630,8 @@ mod tests {
         assert_eq!(
             encode("アニメ テスト"),
             vec![
-                0x0F, 0x8A, 0x25, 0x22, 0x25, 0x4B, 0x25, 0x61, 0x20, 0x25, 0x46, 0x25, 0x39,
-                0x25, 0x48,
+                0x0F, 0x8A, 0x25, 0x22, 0x25, 0x4B, 0x25, 0x61, 0x20, 0x25, 0x46, 0x25, 0x39, 0x25,
+                0x48,
             ]
         );
     }

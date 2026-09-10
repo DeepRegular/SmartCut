@@ -86,14 +86,21 @@ impl RangePlan {
     }
 
     fn sum(&self, kind: SegmentKind) -> f64 {
-        self.segments.iter().filter(|s| s.kind == kind).map(Segment::duration).sum()
+        self.segments
+            .iter()
+            .filter(|s| s.kind == kind)
+            .map(Segment::duration)
+            .sum()
     }
 }
 
 /// An access point far enough before `target` to decode into it cleanly.
 fn safe_seek(points: &[AccessPoint], target: f64, back: usize) -> f64 {
-    let earlier: Vec<f64> =
-        points.iter().filter(|p| p.time <= target + 1e-6).map(|p| p.time).collect();
+    let earlier: Vec<f64> = points
+        .iter()
+        .filter(|p| p.time <= target + 1e-6)
+        .map(|p| p.time)
+        .collect();
     match earlier.len() {
         0 => 0.0,
         n => earlier[n.saturating_sub(1 + back)],
@@ -116,7 +123,11 @@ pub struct PlanOptions {
 
 impl Default for PlanOptions {
     fn default() -> Self {
-        Self { allow_open_gop: true, min_copy: None, clean_join: None }
+        Self {
+            allow_open_gop: true,
+            min_copy: None,
+            clean_join: None,
+        }
     }
 }
 
@@ -139,7 +150,11 @@ pub fn plan_range(
     // does harm -- a stream's pictures sit at an arbitrary phase, so moving a
     // bound by up to half a frame can drop the picture that should have ended
     // the range.
-    let fps = if video.frame_rate > 0.0 { video.frame_rate } else { 30.0 };
+    let fps = if video.frame_rate > 0.0 {
+        video.frame_rate
+    } else {
+        30.0
+    };
     let index = |t: f64| (t * fps).round();
 
     // Nothing before the file's first access point can be decoded -- a
@@ -165,7 +180,11 @@ pub fn plan_range(
         // is the net under them, and it also keeps the plan honest, since a
         // segment that reports no frames is not one the output needs.
         segments.retain(|s| s.kind != SegmentKind::Reencode || s.frames > 0);
-        RangePlan { t_in, t_out, segments }
+        RangePlan {
+            t_in,
+            t_out,
+            segments,
+        }
     };
     let full_reencode = || {
         finish(vec![Segment {
@@ -179,11 +198,17 @@ pub fn plan_range(
     };
 
     if t_out <= t_in {
-        return RangePlan { t_in, t_out, segments: Vec::new() };
+        return RangePlan {
+            t_in,
+            t_out,
+            segments: Vec::new(),
+        };
     }
 
-    let usable: Vec<&AccessPoint> =
-        points.iter().filter(|p| opts.allow_open_gop || !p.open_gop()).collect();
+    let usable: Vec<&AccessPoint> = points
+        .iter()
+        .filter(|p| opts.allow_open_gop || !p.open_gop())
+        .collect();
 
     // Any access point can *end* a copy, but starting one at an open GOP is
     // only possible when its leading pictures can be cut away.
@@ -203,8 +228,9 @@ pub fn plan_range(
     if duration > 0.0 && t_out >= duration - eps {
         stops.push((t_out, None));
     }
-    let Some(&(copy_end, copy_until)) =
-        stops.iter().max_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal))
+    let Some(&(copy_end, copy_until)) = stops
+        .iter()
+        .max_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal))
     else {
         return full_reencode();
     };
@@ -273,7 +299,10 @@ pub fn plan(
     ranges: &[(f64, f64)],
     opts: &PlanOptions,
 ) -> Vec<RangePlan> {
-    ranges.iter().map(|&(a, b)| plan_range(video, duration, points, a, b, opts)).collect()
+    ranges
+        .iter()
+        .map(|&(a, b)| plan_range(video, duration, points, a, b, opts))
+        .collect()
 }
 
 /// As [`plan`], and then moved off the entry points a copy cannot be joined
@@ -327,7 +356,9 @@ pub fn plan_on(src: &crate::Source, ranges: &[(f64, f64)], opts: &PlanOptions) -
 /// caller placed exactly on an entry point is a range the caller meant, and
 /// re-encoding where none was asked for would be a surprise.
 fn clean_the_join(src: &crate::Source, plan: &mut RangePlan, opts: &PlanOptions) {
-    let Some(budget) = opts.clean_join.filter(|b| *b > 0.0) else { return };
+    let Some(budget) = opts.clean_join.filter(|b| *b > 0.0) else {
+        return;
+    };
     if plan.segments.len() < 2
         || plan.segments[0].kind != SegmentKind::Reencode
         || plan.segments[1].kind != SegmentKind::Copy
@@ -335,7 +366,9 @@ fn clean_the_join(src: &crate::Source, plan: &mut RangePlan, opts: &PlanOptions)
         return;
     }
     let was = plan.segments[1].start;
-    let Some(clean) = clean_start(src, was, was + budget) else { return };
+    let Some(clean) = clean_start(src, was, was + budget) else {
+        return;
+    };
     if clean <= was + 1e-6 {
         return;
     }
@@ -347,7 +380,11 @@ fn clean_the_join(src: &crate::Source, plan: &mut RangePlan, opts: &PlanOptions)
     if plan.segments[1].end - clean < min_copy {
         return;
     }
-    let fps = if src.video.frame_rate > 0.0 { src.video.frame_rate } else { 30.0 };
+    let fps = if src.video.frame_rate > 0.0 {
+        src.video.frame_rate
+    } else {
+        30.0
+    };
     let frames = |a: f64, b: f64| ((b * fps).round() - (a * fps).round()).max(0.0) as usize;
     plan.segments[0].end = clean;
     plan.segments[0].frames = frames(plan.segments[0].start, clean);
@@ -462,7 +499,11 @@ mod tests {
         // which is where the copy's coverage ends.
         let t_out = points[10].lead_start + fd / 1000.0;
         let plan = plan_range(&video, 300.0, &points, 0.0, t_out, &PlanOptions::default());
-        assert!(plan.segments.iter().all(|s| s.frames > 0), "{:?}", plan.segments);
+        assert!(
+            plan.segments.iter().all(|s| s.frames > 0),
+            "{:?}",
+            plan.segments
+        );
         assert_eq!(plan.segments.last().unwrap().kind, SegmentKind::Copy);
     }
 

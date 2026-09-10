@@ -16,7 +16,9 @@ use anyhow::Result;
 use smartcut_core as sc;
 
 fn main() -> Result<()> {
-    let path = std::env::args().nth(1).expect("usage: mergediag <file> two|one|both");
+    let path = std::env::args()
+        .nth(1)
+        .expect("usage: mergediag <file> two|one|both");
     let how = std::env::args().nth(2).unwrap_or_else(|| "both".into());
     let bytes = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0) as f64 / 1e9;
     let opts = sc::ThumbOptions::default();
@@ -48,9 +50,11 @@ fn main() -> Result<()> {
 
     if let (Some((asrc, atrack)), Some((bsrc, btrack))) = (&two, &one) {
         let points = asrc.points.len() == bsrc.points.len()
-            && asrc.points.iter().zip(&bsrc.points).all(|(x, y)| {
-                x.time == y.time && x.droppable == y.droppable && x.pos == y.pos
-            });
+            && asrc
+                .points
+                .iter()
+                .zip(&bsrc.points)
+                .all(|(x, y)| x.time == y.time && x.droppable == y.droppable && x.pos == y.pos);
         let same_pictures = atrack.thumbs.len() == btrack.thumbs.len()
             && atrack
                 .thumbs
@@ -65,13 +69,21 @@ fn main() -> Result<()> {
         );
         println!(
             "  duration   {}  ({:.3} vs {:.3})",
-            if (asrc.duration - bsrc.duration).abs() < 1e-6 { "identical" } else { "DIFFER" },
+            if (asrc.duration - bsrc.duration).abs() < 1e-6 {
+                "identical"
+            } else {
+                "DIFFER"
+            },
             asrc.duration,
             bsrc.duration
         );
         println!(
             "  pulldown   {}  ({} vs {})",
-            if asrc.video.pulldown == bsrc.video.pulldown { "identical" } else { "DIFFER" },
+            if asrc.video.pulldown == bsrc.video.pulldown {
+                "identical"
+            } else {
+                "DIFFER"
+            },
             asrc.video.pulldown,
             bsrc.video.pulldown
         );
@@ -83,7 +95,11 @@ fn main() -> Result<()> {
         );
         println!(
             "  scenes     {}  ({} vs {})",
-            if atrack.scenes == btrack.scenes { "identical" } else { "DIFFER" },
+            if atrack.scenes == btrack.scenes {
+                "identical"
+            } else {
+                "DIFFER"
+            },
             atrack.scenes.len(),
             btrack.scenes.len()
         );

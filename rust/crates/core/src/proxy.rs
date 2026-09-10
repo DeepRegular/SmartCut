@@ -40,8 +40,14 @@ pub const VERSION: u32 = 2;
 /// Encoders to try, in order, when none is named. Hardware first: the design
 /// note in `docs/technical/design.md` keeps x264 at arm's length because it is GPL, and
 /// `mpeg4` is the fallback that is always there in any libavcodec build.
-pub const ENCODERS: [&str; 6] =
-    ["h264_nvenc", "h264_videotoolbox", "h264_amf", "h264_qsv", "libx264", "mpeg4"];
+pub const ENCODERS: [&str; 6] = [
+    "h264_nvenc",
+    "h264_videotoolbox",
+    "h264_amf",
+    "h264_qsv",
+    "libx264",
+    "mpeg4",
+];
 
 /// Default width. The picture on screen is what this has to hold up at: the
 /// preview asks the engine for the stage's own pixels, so a proxy narrower
@@ -113,9 +119,7 @@ impl Default for ProxyOptions {
             std::env::var(key).ok().and_then(|v| v.trim().parse().ok())
         }
         let encoders = match std::env::var("SMARTCUT_PROXY_ENCODER") {
-            Ok(v) if !v.trim().is_empty() => {
-                v.split(',').map(|s| s.trim().to_string()).collect()
-            }
+            Ok(v) if !v.trim().is_empty() => v.split(',').map(|s| s.trim().to_string()).collect(),
             _ => ENCODERS.iter().map(|s| s.to_string()).collect(),
         };
         Self {
@@ -155,7 +159,8 @@ impl Marks {
 
     fn push(&mut self, time: f64, kind: &str) {
         self.times.push(time);
-        self.kinds.push(kind.as_bytes().first().copied().unwrap_or(b'-'));
+        self.kinds
+            .push(kind.as_bytes().first().copied().unwrap_or(b'-'));
     }
 
     /// The kind of the picture nearest `time`, if one is within `slack`.
@@ -168,7 +173,9 @@ impl Marks {
             .into_iter()
             .filter(|&j| j < self.times.len())
             .min_by(|&a, &b| {
-                (self.times[a] - time).abs().total_cmp(&(self.times[b] - time).abs())
+                (self.times[a] - time)
+                    .abs()
+                    .total_cmp(&(self.times[b] - time).abs())
             })?;
         if (self.times[best] - time).abs() > slack {
             return None;
@@ -207,10 +214,15 @@ impl Marks {
         if raw.len() < 16 + n * 9 {
             bail!("{} is truncated", path.display());
         }
-        let mut marks = Marks { times: Vec::with_capacity(n), kinds: Vec::with_capacity(n) };
+        let mut marks = Marks {
+            times: Vec::with_capacity(n),
+            kinds: Vec::with_capacity(n),
+        };
         for i in 0..n {
             let at = 16 + i * 9;
-            marks.times.push(f64::from_le_bytes(raw[at..at + 8].try_into()?));
+            marks
+                .times
+                .push(f64::from_le_bytes(raw[at..at + 8].try_into()?));
             marks.kinds.push(raw[at + 8]);
         }
         Ok(marks)
@@ -375,8 +387,8 @@ pub fn open(path: &str) -> Result<Source> {
 pub fn open_with(path: &str, first_picture: Option<f64>) -> Result<Source> {
     // MP4 carries its own sync-sample table, so the index is free; the walk
     // is only there for a proxy some other muxer produced.
-    let mut src = crate::scan_with(path, &crate::index::ContainerIndex)
-        .or_else(|_| crate::scan(path))?;
+    let mut src =
+        crate::scan_with(path, &crate::index::ContainerIndex).or_else(|_| crate::scan(path))?;
     let have = src.points.first().map(|p| p.time).unwrap_or(0.0);
     // Without the marks, the container's own start time is the best guess
     // left -- which is right for a muxer that stored the timestamps as given.
@@ -492,7 +504,11 @@ fn write_side(
         let mut scaled = ff::frame::Video::empty();
         sc.run(&frame, &mut scaled)?;
         scaled.set_pts(Some(rescale(ticks, tb_in, s.tb_enc)));
-        scaled.set_kind(if entry { ff::picture::Type::I } else { ff::picture::Type::None });
+        scaled.set_kind(if entry {
+            ff::picture::Type::I
+        } else {
+            ff::picture::Type::None
+        });
         s.encoder.send_frame(&scaled)?;
         pictures += 1;
         drain(s)?;
@@ -502,7 +518,12 @@ fn write_side(
     s.encoder.send_eof()?;
     drain(&mut s)?;
     s.octx.write_trailer()?;
-    Ok(Wrote { encoder: s.name, width: s.width, height: s.height, pictures })
+    Ok(Wrote {
+        encoder: s.name,
+        width: s.width,
+        height: s.height,
+        pictures,
+    })
 }
 
 /// Decode the recording once, writing a small copy of it.
@@ -539,7 +560,9 @@ pub fn build(
 
     let mut ictx = crate::input::demux(&src.input.url)?;
     let idx = src.video.stream_index;
-    let stream = ictx.stream(idx).ok_or_else(|| anyhow!("video stream vanished"))?;
+    let stream = ictx
+        .stream(idx)
+        .ok_or_else(|| anyhow!("video stream vanished"))?;
     let tb_in = stream.time_base();
     let params = stream.parameters();
     let mut decoder = crate::video_decoder(params)?;
@@ -566,50 +589,53 @@ pub fn build(
 
         // Anything but `Ok(true)` means stop reading: the write side has hung
         // up, and its own error is the one worth reporting.
-        let mut hand_over = |frame: ff::frame::Video,
-                             tx: &std::sync::mpsc::SyncSender<Job>|
-         -> Result<bool> {
-            let Some(pts) = frame.pts() else { return Ok(true) };
-            let ticks = pts - start_ticks;
-            let t = ticks as f64 * f64::from(tb_in);
-            // Pictures before the container's own start belong to no moment
-            // the rest of the app can name.
-            if ticks < 0 {
-                return Ok(true);
-            }
-            marks.push(t, crate::preview::kind_of(&frame));
+        let mut hand_over =
+            |frame: ff::frame::Video, tx: &std::sync::mpsc::SyncSender<Job>| -> Result<bool> {
+                let Some(pts) = frame.pts() else {
+                    return Ok(true);
+                };
+                let ticks = pts - start_ticks;
+                let t = ticks as f64 * f64::from(tb_in);
+                // Pictures before the container's own start belong to no moment
+                // the rest of the app can name.
+                if ticks < 0 {
+                    return Ok(true);
+                }
+                marks.push(t, crate::preview::kind_of(&frame));
 
-            // Is this one of the recording's access points? The proxy is given
-            // a keyframe exactly there, and the thumbnail track is built from
-            // exactly those pictures -- the same ones a pass over the recording
-            // itself would have used.
-            while next_point < src.points.len() && src.points[next_point].time < t - fd / 2.0 {
-                next_point += 1;
-            }
-            let entry =
-                src.points.get(next_point).is_some_and(|p| (p.time - t).abs() <= fd / 2.0);
-            if entry {
-                collector.feed(t, &frame)?;
-                if let Some(f) = share.as_mut() {
-                    if shared.elapsed() >= thumbs::SHARE_EVERY {
-                        shared = std::time::Instant::now();
-                        f(collector.take_new());
+                // Is this one of the recording's access points? The proxy is given
+                // a keyframe exactly there, and the thumbnail track is built from
+                // exactly those pictures -- the same ones a pass over the recording
+                // itself would have used.
+                while next_point < src.points.len() && src.points[next_point].time < t - fd / 2.0 {
+                    next_point += 1;
+                }
+                let entry = src
+                    .points
+                    .get(next_point)
+                    .is_some_and(|p| (p.time - t).abs() <= fd / 2.0);
+                if entry {
+                    collector.feed(t, &frame)?;
+                    if let Some(f) = share.as_mut() {
+                        if shared.elapsed() >= thumbs::SHARE_EVERY {
+                            shared = std::time::Instant::now();
+                            f(collector.take_new());
+                        }
                     }
                 }
-            }
 
-            if tx.send((frame, ticks, entry)).is_err() {
-                return Ok(false);
-            }
-            if let Some(f) = progress.as_mut() {
-                let done = (t / src.duration.max(1e-9)).clamp(0.0, 1.0);
-                if done - told >= 0.005 {
-                    told = done;
-                    f(done);
+                if tx.send((frame, ticks, entry)).is_err() {
+                    return Ok(false);
                 }
-            }
-            Ok(true)
-        };
+                if let Some(f) = progress.as_mut() {
+                    let done = (t / src.duration.max(1e-9)).clamp(0.0, 1.0);
+                    if done - told >= 0.005 {
+                        told = done;
+                        f(done);
+                    }
+                }
+                Ok(true)
+            };
 
         'read: {
             for (stream, packet) in ictx.packets() {
@@ -740,12 +766,16 @@ fn open_sink(
         height = height_for(width).min(MAX_HEIGHT);
     }
 
-    let fps = if src.video.frame_rate > 0.0 { src.video.frame_rate } else { 30.0 };
+    let fps = if src.video.frame_rate > 0.0 {
+        src.video.frame_rate
+    } else {
+        30.0
+    };
     let rate = ff::Rational::from(fps).reduce();
     let gop = (fps * opts.max_gop).round().clamp(1.0, 600.0) as u32;
 
-    let mut octx = ff::format::output(&part)
-        .with_context(|| format!("cannot write {}", part.display()))?;
+    let mut octx =
+        ff::format::output(&part).with_context(|| format!("cannot write {}", part.display()))?;
 
     // MPEG-4 part 2 states its own time base in the bitstream as a 16-bit
     // `vop_time_increment_resolution`, so a transport stream's 90kHz tick is
@@ -759,8 +789,15 @@ fn open_sink(
     } else {
         tb_in
     };
-    let settings =
-        EncoderSettings { width, height, tb_enc, rate, gop, quality: opts.quality, bit_rate: opts.bit_rate };
+    let settings = EncoderSettings {
+        width,
+        height,
+        tb_enc,
+        rate,
+        gop,
+        quality: opts.quality,
+        bit_rate: opts.bit_rate,
+    };
     let mut chosen: Option<(ff::encoder::video::Encoder, String)> = None;
     let mut tried: Vec<String> = Vec::new();
     for name in &opts.encoders {
@@ -789,7 +826,10 @@ fn open_sink(
         break;
     }
     let (encoder, name) = chosen.ok_or_else(|| {
-        anyhow!("no proxy encoder would take a picture -- tried {}", tried.join(", "))
+        anyhow!(
+            "no proxy encoder would take a picture -- tried {}",
+            tried.join(", ")
+        )
     })?;
 
     {
@@ -802,9 +842,20 @@ fn open_sink(
         }
     }
     octx.write_header()?;
-    let tb_out = octx.stream(0).ok_or_else(|| anyhow!("no output stream"))?.time_base();
+    let tb_out = octx
+        .stream(0)
+        .ok_or_else(|| anyhow!("no output stream"))?
+        .time_base();
 
-    Ok(Sink { octx, encoder, name, tb_enc, tb_out, width, height })
+    Ok(Sink {
+        octx,
+        encoder,
+        name,
+        tb_enc,
+        tb_out,
+        width,
+        height,
+    })
 }
 
 /// What every candidate encoder is set up with, so that the one that is
@@ -846,7 +897,9 @@ fn open_encoder(
     name: &str,
     s: &EncoderSettings,
 ) -> Result<ff::encoder::video::Encoder> {
-    let mut enc = ff::codec::context::Context::new_with_codec(codec).encoder().video()?;
+    let mut enc = ff::codec::context::Context::new_with_codec(codec)
+        .encoder()
+        .video()?;
     enc.set_width(s.width);
     enc.set_height(s.height);
     enc.set_format(ff::format::Pixel::YUV420P);

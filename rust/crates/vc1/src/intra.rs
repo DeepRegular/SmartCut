@@ -205,8 +205,11 @@ impl Encoder {
         } else {
             (AcCodes::new(2), AcCodes::new(3)) // low motion
         };
-        let coding =
-            if shape.sequence.interlace { Coding::FrameInterlace } else { Coding::Progressive };
+        let coding = if shape.sequence.interlace {
+            Coding::FrameInterlace
+        } else {
+            Coding::Progressive
+        };
         Ok(Encoder {
             shape: shape.clone(),
             width,
@@ -372,7 +375,10 @@ impl Encoder {
             }
         }
         let coefficients = forward(&samples);
-        let mut block = Block { dc: self.quant.dc_level(coefficients[0]), ..Default::default() };
+        let mut block = Block {
+            dc: self.quant.dc_level(coefficients[0]),
+            ..Default::default()
+        };
         for i in 1..64 {
             let level = self.quant.level(coefficients[self.scan[i]]);
             block.ac[i] = level;
@@ -496,7 +502,12 @@ struct Block {
 
 impl Default for Block {
     fn default() -> Self {
-        Block { dc: 0, ac: [0; 64], coded: false, last: 0 }
+        Block {
+            dc: 0,
+            ac: [0; 64],
+            coded: false,
+            last: 0,
+        }
     }
 }
 
@@ -581,7 +592,11 @@ impl Running {
     fn coded_prediction(&self, x: usize, y: usize, k: usize) -> bool {
         let i = self.at(x, y, k);
         let stride = self.luma_stride;
-        let (a, b, c) = (self.coded[i - 1], self.coded[i - 1 - stride], self.coded[i - stride]);
+        let (a, b, c) = (
+            self.coded[i - 1],
+            self.coded[i - 1 - stride],
+            self.coded[i - stride],
+        );
         (if b == c { a } else { c }) != 0
     }
 

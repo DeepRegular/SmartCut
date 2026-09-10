@@ -17,8 +17,8 @@ pub enum NalFraming {
 /// Read the NAL length size out of an `avcC` / `hvcC` extradata blob.
 pub fn framing_from_extradata(codec: &str, extradata: &[u8]) -> NalFraming {
     let offset = match codec {
-        "h264" => 4,   // avcC: configurationVersion, profile, compat, level
-        "hevc" => 21,  // hvcC: fixed header before lengthSizeMinusOne
+        "h264" => 4,  // avcC: configurationVersion, profile, compat, level
+        "hevc" => 21, // hvcC: fixed header before lengthSizeMinusOne
         _ => return NalFraming::AnnexB,
     };
     match extradata.get(offset) {
@@ -63,7 +63,11 @@ fn nal_payloads(data: &[u8], framing: NalFraming) -> Vec<&[u8]> {
                 let end = starts.get(k + 1).map_or(data.len(), |&n| {
                     // trim the next start code, and its optional leading zero
                     let e = n - 3;
-                    if e > s && data[e - 1] == 0 { e - 1 } else { e }
+                    if e > s && data[e - 1] == 0 {
+                        e - 1
+                    } else {
+                        e
+                    }
                 });
                 if s < end {
                     out.push(&data[s..end]);
@@ -164,9 +168,10 @@ pub fn starts_a_sequence(data: &[u8], codec: &str, framing: NalFraming) -> bool 
         // a clean random access, chiefly -- are the recovery point's
         // equivalent here: a place to start reading whose leading pictures
         // may reference what came before.
-        "hevc" => nal_payloads(data, framing)
-            .iter()
-            .any(|nal| nal.first().is_some_and(|b| matches!((b >> 1) & 0x3F, 19 | 20))),
+        "hevc" => nal_payloads(data, framing).iter().any(|nal| {
+            nal.first()
+                .is_some_and(|b| matches!((b >> 1) & 0x3F, 19 | 20))
+        }),
         _ => true,
     }
 }
@@ -244,7 +249,10 @@ pub fn parameter_sets(codec: &str, extradata: &[u8]) -> Vec<Vec<u8>> {
 
 /// Does this payload start with a start code?
 pub fn is_annexb(data: &[u8]) -> bool {
-    data.len() >= 4 && data[0] == 0 && data[1] == 0 && (data[2] == 1 || (data[2] == 0 && data[3] == 1))
+    data.len() >= 4
+        && data[0] == 0
+        && data[1] == 0
+        && (data[2] == 1 || (data[2] == 0 && data[3] == 1))
 }
 
 fn push_length_prefixed(out: &mut Vec<u8>, nal: &[u8], n: usize) {
@@ -305,16 +313,15 @@ pub fn prepend_parameter_sets(data: &[u8], sets: &[Vec<u8>], n: usize) -> Vec<u8
     out
 }
 
-
 /// How many fields this picture occupies: two normally, more under pulldown.
 pub fn display_fields(data: &[u8], codec: &str, vc1: Option<&smartcut_vc1::Shape>) -> i64 {
     match codec {
         "mpeg2video" if mpeg2_repeats_field(data) => 3,
         // VC-1 says it in the picture header: a repeated field, or -- where
         // the stream is progressive or segmented -- a whole repeated frame.
-        "vc1" | "wmv3" => {
-            vc1.and_then(|shape| shape.picture(data)).map_or(2, |p| p.display_fields())
-        }
+        "vc1" | "wmv3" => vc1
+            .and_then(|shape| shape.picture(data))
+            .map_or(2, |p| p.display_fields()),
         _ => 2,
     }
 }
@@ -400,7 +407,11 @@ impl Bits {
 
     fn se(&mut self) -> Option<i32> {
         let k = self.ue()?;
-        Some(if k % 2 == 1 { k.div_ceil(2) as i32 } else { -((k / 2) as i32) })
+        Some(if k % 2 == 1 {
+            k.div_ceil(2) as i32
+        } else {
+            -((k / 2) as i32)
+        })
     }
 }
 

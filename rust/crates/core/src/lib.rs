@@ -33,27 +33,25 @@ pub mod thumbs;
 pub mod udf;
 pub mod udfw;
 
+pub use adts::{AacVersion, AdtsFormat};
 pub use cm::{
     blocks as cm_blocks, blocks_from_logo as cm_blocks_from_logo,
-    blocks_from_resets as cm_blocks_from_resets, candidates as cm_candidates,
-    find_silences, find_silences_with, refine_boundaries as cm_refine_boundaries,
-    DetectOptions,
+    blocks_from_resets as cm_blocks_from_resets, candidates as cm_candidates, find_silences,
+    find_silences_with, refine_boundaries as cm_refine_boundaries, DetectOptions,
 };
-pub use adts::{AacVersion, AdtsFormat};
 pub use cut::{
     cut, cut_with_progress, writable_sound, write_audio_es, AudioCodec, AudioMode, CutOptions,
     SoundAsIs, SoundChoices,
 };
 pub use index::{ContainerIndex, DiscIndex, IndexSource, PacketScan};
-pub use seek_index::SeekIndex;
-pub use preview::{
-    frame_at, glance, glance_at, glance_run, glance_sweep, play_from, shot_at, shots_at, Pace,
-    Shot,
-};
-pub use proxy::{Marks, ProxyOptions};
-pub use thumbs::{ThumbOptions, Track};
 pub use plan::{plan, plan_on, plan_range, PlanOptions, RangePlan, Segment, SegmentKind};
 pub use playback_audio::play_audio;
+pub use preview::{
+    frame_at, glance, glance_at, glance_run, glance_sweep, play_from, shot_at, shots_at, Pace, Shot,
+};
+pub use proxy::{Marks, ProxyOptions};
+pub use seek_index::SeekIndex;
+pub use thumbs::{ThumbOptions, Track};
 
 /// A random access point and the leading pictures that hang off it.
 #[derive(Debug, Clone)]
@@ -630,8 +628,11 @@ fn assemble(
     }
 
     let gaps: Vec<f64> = points.windows(2).map(|w| w[1].time - w[0].time).collect();
-    let mean_gop =
-        if gaps.is_empty() { 1.0 } else { gaps.iter().sum::<f64>() / gaps.len() as f64 };
+    let mean_gop = if gaps.is_empty() {
+        1.0
+    } else {
+        gaps.iter().sum::<f64>() / gaps.len() as f64
+    };
     let seek_margin = (3.0 * mean_gop).clamp(1.0, 30.0);
 
     video.pulldown = idx.pulldown.unwrap_or(false);
@@ -759,8 +760,7 @@ pub fn outline(path: &str) -> Result<Outline> {
 fn outline_of(path: &str) -> Result<(Outline, ff::format::context::Input)> {
     init()?;
     let input = input::Input::parse(path)?;
-    let ictx =
-        crate::input::demux(&input.url).map_err(|e| anyhow!("cannot open {path}: {e}"))?;
+    let ictx = crate::input::demux(&input.url).map_err(|e| anyhow!("cannot open {path}: {e}"))?;
     // Read before the demuxer is handed to the index source, which takes it.
     let byte_seekable = ictx
         .format()
@@ -768,7 +768,11 @@ fn outline_of(path: &str) -> Result<(Outline, ff::format::context::Input)> {
         .split(',')
         .any(|n| BYTE_SEEKABLE.contains(&n.trim()));
     // Whether a stream's id is a PID. See [`one_track_per_pid`].
-    let on_a_ts = ictx.format().name().split(',').any(|n| n.trim() == "mpegts");
+    let on_a_ts = ictx
+        .format()
+        .name()
+        .split(',')
+        .any(|n| n.trim() == "mpegts");
 
     let stream = ictx
         .streams()
@@ -791,7 +795,11 @@ fn outline_of(path: &str) -> Result<(Outline, ff::format::context::Input)> {
             (*p).height as u32,
             (*p).video_delay,
             (*p).field_order as i32,
-            if sar.num > 0 && sar.den > 0 { sar.num as f64 / sar.den as f64 } else { 1.0 },
+            if sar.num > 0 && sar.den > 0 {
+                sar.num as f64 / sar.den as f64
+            } else {
+                1.0
+            },
             extra,
         )
     };
@@ -805,7 +813,11 @@ fn outline_of(path: &str) -> Result<(Outline, ff::format::context::Input)> {
             (
                 (*raw).sample_rate as u32,
                 (*raw).ch_layout.nb_channels as u16,
-                if (*raw).bit_rate > 0 { Some((*raw).bit_rate as usize) } else { None },
+                if (*raw).bit_rate > 0 {
+                    Some((*raw).bit_rate as usize)
+                } else {
+                    None
+                },
             )
         };
         AudioInfo {
@@ -887,13 +899,11 @@ fn outline_of(path: &str) -> Result<(Outline, ff::format::context::Input)> {
                     stream_index: s.index(),
                     what: "superimpose",
                 }),
-                (ff::media::Type::Unknown, _) | (ff::media::Type::Data, _) => {
-                    Some(DroppedStream {
-                        pid: s.id(),
-                        stream_index: s.index(),
-                        what: "data",
-                    })
-                }
+                (ff::media::Type::Unknown, _) | (ff::media::Type::Data, _) => Some(DroppedStream {
+                    pid: s.id(),
+                    stream_index: s.index(),
+                    what: "data",
+                }),
                 _ => None,
             }
         })
@@ -906,8 +916,16 @@ fn outline_of(path: &str) -> Result<(Outline, ff::format::context::Input)> {
         let d = (*p).duration;
         let s = (*p).start_time;
         (
-            if d == ff::ffi::AV_NOPTS_VALUE { 0.0 } else { d as f64 / tb },
-            if s == ff::ffi::AV_NOPTS_VALUE { 0.0 } else { s as f64 / tb },
+            if d == ff::ffi::AV_NOPTS_VALUE {
+                0.0
+            } else {
+                d as f64 / tb
+            },
+            if s == ff::ffi::AV_NOPTS_VALUE {
+                0.0
+            } else {
+                s as f64 / tb
+            },
         )
     };
 
@@ -922,8 +940,8 @@ fn outline_of(path: &str) -> Result<(Outline, ff::format::context::Input)> {
         sample_aspect_ratio,
         framing,
         field_order,
-        pulldown: false,   // the index source reports this, when it can
-        bit_rate: None,    // and this, when it read the pictures to find out
+        pulldown: false, // the index source reports this, when it can
+        bit_rate: None,  // and this, when it read the pictures to find out
         // Read once, here, rather than hunted for in every packet: a
         // transport stream restates these in front of each entry point, so
         // libavformat has them before a packet has been asked for.
@@ -982,10 +1000,16 @@ mod tests {
         let (kept, folded) = one_track_per_pid(handed.clone(), true);
         // The track the programme map named, which is the one the disc
         // advertises and the one worth keeping.
-        assert_eq!(kept.iter().map(|a| a.stream_index).collect::<Vec<_>>(), [1, 3]);
+        assert_eq!(
+            kept.iter().map(|a| a.stream_index).collect::<Vec<_>>(),
+            [1, 3]
+        );
         assert!(kept.iter().all(|a| a.codec == "truehd"));
         // And what went, said out loud rather than dropped in silence.
-        assert_eq!(folded.iter().map(|d| d.pid).collect::<Vec<_>>(), [0x1100, 0x1101]);
+        assert_eq!(
+            folded.iter().map(|d| d.pid).collect::<Vec<_>>(),
+            [0x1100, 0x1101]
+        );
         assert!(folded.iter().all(|d| d.what == "substream"));
 
         // A broadcast's two sound tracks are two PIDs and stay two tracks.

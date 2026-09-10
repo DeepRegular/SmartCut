@@ -46,9 +46,24 @@ fn main() {
         let u = &raw[base + width * height..base + width * height + cw * ch];
         let v = &raw[base + width * height + cw * ch..base + frame_size];
         let frame = Frame {
-            y: Plane { data: y, stride: width, width, height },
-            u: Plane { data: u, stride: cw, width: cw, height: ch },
-            v: Plane { data: v, stride: cw, width: cw, height: ch },
+            y: Plane {
+                data: y,
+                stride: width,
+                width,
+                height,
+            },
+            u: Plane {
+                data: u,
+                stride: cw,
+                width: cw,
+                height: ch,
+            },
+            v: Plane {
+                data: v,
+                stride: cw,
+                width: cw,
+                height: ch,
+            },
             tff: true,
             rff: false,
             rptfrm: 0,

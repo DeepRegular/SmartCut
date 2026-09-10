@@ -40,7 +40,9 @@ fn main() -> Result<()> {
         src.video.height,
         src.video.frame_rate,
         src.points.len(),
-        std::thread::available_parallelism().map(|n| n.get()).unwrap_or(0),
+        std::thread::available_parallelism()
+            .map(|n| n.get())
+            .unwrap_or(0),
     );
 
     // Where the strip is asked to look, in the order a scrub would ask.
@@ -50,7 +52,10 @@ fn main() -> Result<()> {
             if i % 2 == 0 {
                 ("GOP 3分  ", strip_times(centre, 14.0, 13, src.duration))
             } else {
-                ("フレーム ", strip_times(centre, 1.0 / src.video.frame_rate, 25, src.duration))
+                (
+                    "フレーム ",
+                    strip_times(centre, 1.0 / src.video.frame_rate, 25, src.duration),
+                )
             }
         })
         .collect();
@@ -59,7 +64,11 @@ fn main() -> Result<()> {
         for (shape, times) in asks {
             let (got, secs) = time_it(|| sc::shots_at(&src, times, 200))?;
             let filled = got.iter().filter(|s| s.is_some()).count();
-            println!("  {label} {shape} {:6.2}s  {filled}/{} 枚", secs, times.len());
+            println!(
+                "  {label} {shape} {:6.2}s  {filled}/{} 枚",
+                secs,
+                times.len()
+            );
         }
         Ok(())
     };
@@ -80,7 +89,9 @@ fn main() -> Result<()> {
             &sc::ThumbOptions::default(),
             None,
             None,
-            Some(Box::new(move || !done.load(std::sync::atomic::Ordering::SeqCst))),
+            Some(Box::new(move || {
+                !done.load(std::sync::atomic::Ordering::SeqCst)
+            })),
         );
         r.map(|b| b.pictures).map_err(|e| e.to_string())
     });
@@ -91,7 +102,9 @@ fn main() -> Result<()> {
     run("build", &asks)?;
     let spent = began.elapsed().as_secs_f64();
     building.store(false, std::sync::atomic::Ordering::SeqCst);
-    let built = builder.join().map_err(|_| anyhow::anyhow!("build panicked"))?;
+    let built = builder
+        .join()
+        .map_err(|_| anyhow::anyhow!("build panicked"))?;
     println!("\nストリップ合計 {spent:.1}s   build: {built:?}");
     let _ = std::fs::remove_file(&out);
     Ok(())

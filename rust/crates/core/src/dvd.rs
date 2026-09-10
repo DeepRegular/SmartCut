@@ -119,7 +119,8 @@ pub fn looks_like_dvd(at: &Path) -> bool {
     if at.is_dir() {
         return video_ts(at).is_some();
     }
-    at.extension().is_some_and(|e| e.eq_ignore_ascii_case("iso"))
+    at.extension()
+        .is_some_and(|e| e.eq_ignore_ascii_case("iso"))
 }
 
 /// Whether this really is a DVD, as against something that merely arrived by
@@ -154,8 +155,11 @@ pub fn read(at: &Path) -> Result<Disc> {
         seen.push(key);
         let sectors = t.last_sector + 1 - t.first_sector;
         let path = vol.stream(t.vts, t.first_sector, t.last_sector);
-        let part =
-            if t.parts > 1 { format!(" ({}/{})", t.part, t.parts) } else { String::new() };
+        let part = if t.parts > 1 {
+            format!(" ({}/{})", t.part, t.parts)
+        } else {
+            String::new()
+        };
         let label_row = format!("{label} {}{part}", t.number);
         entries.push(Entry {
             path,
@@ -193,7 +197,11 @@ pub fn read(at: &Path) -> Result<Disc> {
     for (e, wanted) in entries.iter_mut().zip(worth_ticking(&lengths)) {
         e.wanted = wanted;
     }
-    Ok(Disc { shape: Shape::Dvd, label, entries })
+    Ok(Disc {
+        shape: Shape::Dvd,
+        label,
+        entries,
+    })
 }
 
 /// The titles the disc's own tables list, in the order a player numbers them.
@@ -202,7 +210,9 @@ pub fn read(at: &Path) -> Result<Disc> {
 /// assembled out of separately multiplexed pieces comes back as one entry per
 /// piece. See [`Title`].
 pub fn titles(vol: &mut Volume) -> Result<Vec<Title>> {
-    let vmg = vol.read("VIDEO_TS.IFO").context("this disc has no VIDEO_TS.IFO")?;
+    let vmg = vol
+        .read("VIDEO_TS.IFO")
+        .context("this disc has no VIDEO_TS.IFO")?;
     if !vmg.starts_with(b"DVDVIDEO-VMG") {
         bail!("VIDEO_TS.IFO is not a DVD-Video manager table");
     }
@@ -237,16 +247,24 @@ pub fn titles(vol: &mut Volume) -> Result<Vec<Title>> {
             // not a reason to show none of the others.
             cache.push((vts, title_set(vol, vts).ok()));
         }
-        let Some((_, Some(set))) = cache.iter().find(|(n, _)| *n == vts) else { continue };
-        let Some(parts) = set.parts.get(vts_ttn.wrapping_sub(1)) else { continue };
+        let Some((_, Some(set))) = cache.iter().find(|(n, _)| *n == vts) else {
+            continue;
+        };
+        let Some(parts) = set.parts.get(vts_ttn.wrapping_sub(1)) else {
+            continue;
+        };
         // All of one title's chapters are in one chain on every disc this has
         // met, and a title spread over several is one this does not claim to
         // understand.
-        let Some(&(pgcn, _)) = parts.first() else { continue };
+        let Some(&(pgcn, _)) = parts.first() else {
+            continue;
+        };
         if parts.iter().any(|&(n, _)| n != pgcn) {
             continue;
         }
-        let Some(pgc) = set.chains.get(pgcn.wrapping_sub(1)) else { continue };
+        let Some(pgc) = set.chains.get(pgcn.wrapping_sub(1)) else {
+            continue;
+        };
         let entries: Vec<usize> = parts.iter().map(|&(_, pgn)| pgn).collect();
         out.extend(pieces(vol, vts, i + 1, pgc, &entries, &set.tracks));
     }
@@ -280,7 +298,11 @@ fn pieces(
                 .filter_map(|&pgn| pgc.programs.get(pgn.checked_sub(1)?).copied())
                 .filter(|&cell| cell > run.from && cell <= run.to)
                 .map(|cell| {
-                    pgc.cells[run.from..cell - 1].iter().map(|c| c.length).sum::<f64>() + 0.0
+                    pgc.cells[run.from..cell - 1]
+                        .iter()
+                        .map(|c| c.length)
+                        .sum::<f64>()
+                        + 0.0
                 })
                 .collect();
             Title {
@@ -289,7 +311,11 @@ fn pieces(
                 parts,
                 vts,
                 duration: pgc.cells[run.from..run.to].iter().map(|c| c.length).sum(),
-                chapters: if run.start.is_some() { chapters } else { Vec::new() },
+                chapters: if run.start.is_some() {
+                    chapters
+                } else {
+                    Vec::new()
+                },
                 first_sector: pgc.cells[run.from].first,
                 last_sector: pgc.cells[run.to - 1].last,
                 start: run.start.unwrap_or(0.0),
@@ -342,7 +368,11 @@ fn runs_of(vol: &mut Volume, vts: usize, pgc: &Pgc) -> Vec<Run> {
         };
         match out.last_mut() {
             Some(run) if joins => run.to = i + 1,
-            _ => out.push(Run { from: i, to: i + 1, start }),
+            _ => out.push(Run {
+                from: i,
+                to: i + 1,
+                start,
+            }),
         }
         // Where this cell leaves the clock, for the next one to be judged
         // against. Its last VOBU is the one that knows.
@@ -409,7 +439,10 @@ fn program_chains(ifo: &[u8]) -> Result<Vec<Pgc>> {
         let start = u32be(table, at + 4) as usize;
         // A chain that will not read still has to occupy its number, or every
         // chain after it is misnamed.
-        let empty = Pgc { cells: Vec::new(), programs: Vec::new() };
+        let empty = Pgc {
+            cells: Vec::new(),
+            programs: Vec::new(),
+        };
         out.push(table.get(start..).and_then(read_pgc).unwrap_or(empty));
     }
     Ok(out)
@@ -474,7 +507,6 @@ fn read_pgc(g: &[u8]) -> Option<Pgc> {
     Some(Pgc { cells, programs })
 }
 
-
 /// For each title in the set, the parts it is made of as `(chain, program)`.
 ///
 /// This is the table a player's chapter-skip button walks, and it is the only
@@ -482,7 +514,9 @@ fn read_pgc(g: &[u8]) -> Option<Pgc> {
 /// hold programs that no title lists as a part, and those are not chapters.
 fn parts_of_titles(ifo: &[u8]) -> Vec<Vec<(usize, usize)>> {
     let table_at = u32be(ifo, 0xc8) as usize * SECTOR as usize;
-    let Some(table) = ifo.get(table_at..) else { return Vec::new() };
+    let Some(table) = ifo.get(table_at..) else {
+        return Vec::new();
+    };
     if table.len() < 8 {
         return Vec::new();
     }
@@ -498,7 +532,10 @@ fn parts_of_titles(ifo: &[u8]) -> Vec<Vec<(usize, usize)>> {
         // A title's parts run to the start of the next title's, and the last
         // one runs to the end of the table.
         let to = if i + 1 < count {
-            table.get(at + 4..at + 8).map(|b| u32be(b, 0) as usize).unwrap_or(last + 1)
+            table
+                .get(at + 4..at + 8)
+                .map(|b| u32be(b, 0) as usize)
+                .unwrap_or(last + 1)
         } else {
             last + 1
         };
@@ -546,7 +583,11 @@ fn tracks(ifo: &[u8]) -> Vec<Track> {
             _ => ("audio", 0xc0),
         };
         let channels = (a[1] & 7) + 1;
-        let rate = if (a[1] >> 4) & 3 == 0 { "48kHz" } else { "96kHz" };
+        let rate = if (a[1] >> 4) & 3 == 0 {
+            "48kHz"
+        } else {
+            "96kHz"
+        };
         out.push(Track {
             kind: "audio",
             pid: base + i as i32,
@@ -577,7 +618,11 @@ fn tracks(ifo: &[u8]) -> Vec<Track> {
 
 /// What the index says the picture is, from the two bytes it says it in.
 fn video_detail(attr: &[u8]) -> String {
-    let mpeg = if attr[0] >> 6 == 0 { "MPEG-1" } else { "MPEG-2" };
+    let mpeg = if attr[0] >> 6 == 0 {
+        "MPEG-1"
+    } else {
+        "MPEG-2"
+    };
     let ntsc = (attr[0] >> 4) & 3 == 0;
     let (lines, system) = if ntsc { (480, "NTSC") } else { (576, "PAL") };
     let width = match (attr[1] >> 2) & 3 {
@@ -585,13 +630,19 @@ fn video_detail(attr: &[u8]) -> String {
         1 => 704,
         _ => 352,
     };
-    let height = if (attr[1] >> 2) & 3 == 3 { lines / 2 } else { lines };
+    let height = if (attr[1] >> 2) & 3 == 3 {
+        lines / 2
+    } else {
+        lines
+    };
     let aspect = match (attr[0] >> 2) & 3 {
         0 => "4:3",
         3 => "16:9",
         _ => "",
     };
-    format!("{mpeg} {width}x{height} {system} {aspect}").trim_end().to_string()
+    format!("{mpeg} {width}x{height} {system} {aspect}")
+        .trim_end()
+        .to_string()
 }
 
 /// A two letter language code, when the index wrote one.
@@ -617,15 +668,22 @@ fn dvd_time(b: &[u8], at: usize) -> Option<f64> {
     };
     let frames = bcd(t[3] & 0x3f)?;
     let seconds = bcd(t[0])? * 3600.0 + bcd(t[1])? * 60.0 + bcd(t[2])?;
-    Some(if rate > 0.0 { seconds + frames / rate } else { seconds })
+    Some(if rate > 0.0 {
+        seconds + frames / rate
+    } else {
+        seconds
+    })
 }
 
 /// Which rows to offer already ticked. See [`WORTH_TICKING`].
 fn worth_ticking(lengths: &[f64]) -> Vec<bool> {
     let mut out: Vec<bool> = lengths.iter().map(|d| *d >= WORTH_TICKING).collect();
     if !out.contains(&true) {
-        if let Some(i) =
-            lengths.iter().enumerate().max_by(|a, b| a.1.total_cmp(b.1)).map(|(i, _)| i)
+        if let Some(i) = lengths
+            .iter()
+            .enumerate()
+            .max_by(|a, b| a.1.total_cmp(b.1))
+            .map(|(i, _)| i)
         {
             out[i] = true;
         }
@@ -648,7 +706,11 @@ pub enum Volume {
     Dir(PathBuf),
     /// An image, the path it was opened from, and the prefix `VIDEO_TS` sits
     /// at inside it.
-    Image { image: Box<udf::Image>, path: PathBuf, prefix: String },
+    Image {
+        image: Box<udf::Image>,
+        path: PathBuf,
+        prefix: String,
+    },
 }
 
 impl Volume {
@@ -661,7 +723,11 @@ impl Volume {
         let image = udf::Image::open(at)?;
         let prefix = prefix_of(&image)
             .ok_or_else(|| anyhow!("{}: no VIDEO_TS directory on this image", at.display()))?;
-        Ok(Volume::Image { image: Box::new(image), path: at.to_path_buf(), prefix })
+        Ok(Volume::Image {
+            image: Box::new(image),
+            path: at.to_path_buf(),
+            prefix,
+        })
     }
 
     /// Read one of the small index files, named relative to `VIDEO_TS`.
@@ -745,7 +811,11 @@ impl Volume {
         use std::io::{Read, Seek, SeekFrom};
         let (path, base) = match self {
             Volume::Dir(dir) => (at_name(dir, rel), 0),
-            Volume::Image { image, path, prefix } => {
+            Volume::Image {
+                image,
+                path,
+                prefix,
+            } => {
                 let entry = image.find(&format!("{prefix}{rel}"))?;
                 (path.clone(), entry.contiguous()?.at)
             }
@@ -859,7 +929,10 @@ mod tests {
         // 00:59:59.22 at 30000/1001
         let t = [0x00, 0x59, 0x59, 0xc0 | 0x22];
         let secs = dvd_time(&t, 0).unwrap();
-        assert!((secs - (3599.0 + 22.0 / (30000.0 / 1001.0))).abs() < 1e-6, "{secs}");
+        assert!(
+            (secs - (3599.0 + 22.0 / (30000.0 / 1001.0))).abs() < 1e-6,
+            "{secs}"
+        );
         // 25 fps carries a different pair of top bits.
         let t = [0x01, 0x00, 0x00, 0x40 | 0x12];
         assert!((dvd_time(&t, 0).unwrap() - (3600.0 + 12.0 / 25.0)).abs() < 1e-6);

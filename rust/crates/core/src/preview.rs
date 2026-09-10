@@ -60,7 +60,11 @@ pub fn shots_at(src: &Source, times: &[f64], width: u32) -> Result<Vec<Option<Sh
     // wider settings asks for exactly that, and used to wait tens of seconds
     // for it.
     const WALK: f64 = 2.0;
-    let jump = if base.is_finite() { (base * 2.5 + 0.5).min(WALK) } else { f64::INFINITY };
+    let jump = if base.is_finite() {
+        (base * 2.5 + 0.5).min(WALK)
+    } else {
+        f64::INFINITY
+    };
 
     // Every cell of a GOP-divided film strip stands on an entry point, and
     // when they all do, everything between them can go by unparsed: an entry
@@ -77,8 +81,9 @@ pub fn shots_at(src: &Source, times: &[f64], width: u32) -> Result<Vec<Option<Sh
         if !split {
             continue;
         }
-        for (k, shot) in
-            collect_run(src, &times[start..i], width, fd, keys)?.into_iter().enumerate()
+        for (k, shot) in collect_run(src, &times[start..i], width, fd, keys)?
+            .into_iter()
+            .enumerate()
         {
             out[start + k] = shot;
         }
@@ -152,13 +157,11 @@ fn collect_run(
 
     got.into_iter()
         .map(|slot| match slot {
-            Some((t, kind, f)) => {
-                Ok(Some(Shot {
-                    jpeg: encode_jpeg(&f, src.video.sample_aspect_ratio, width)?,
-                    time: t,
-                    kind,
-                }))
-            }
+            Some((t, kind, f)) => Ok(Some(Shot {
+                jpeg: encode_jpeg(&f, src.video.sample_aspect_ratio, width)?,
+                time: t,
+                kind,
+            })),
             None => Ok(None),
         })
         .collect()
@@ -346,7 +349,10 @@ pub fn glance_run(spec: &str, times: &[f64], width: u32) -> Result<Vec<Option<Sh
         return Ok(Vec::new());
     }
     let mut g = Glancer::open(spec)?;
-    Ok(times.iter().map(|&t| g.at(Landing::At(t), width).ok()).collect())
+    Ok(times
+        .iter()
+        .map(|&t| g.at(Landing::At(t), width).ok())
+        .collect())
 }
 
 /// One picture out of each cell of a stretch, from a single seek and a read.
@@ -436,7 +442,11 @@ impl Glancer {
         let params = stream.parameters();
         let sar = unsafe {
             let s = (*params.as_ptr()).sample_aspect_ratio;
-            if s.num > 0 && s.den > 0 { s.num as f64 / s.den as f64 } else { 1.0 }
+            if s.num > 0 && s.den > 0 {
+                s.num as f64 / s.den as f64
+            } else {
+                1.0
+            }
         };
         let (duration, start) = unsafe {
             let p = ictx.as_ptr();
@@ -444,8 +454,16 @@ impl Glancer {
             let d = (*p).duration;
             let s = (*p).start_time;
             (
-                if d == ff::ffi::AV_NOPTS_VALUE { 0.0 } else { d as f64 / tb },
-                if s == ff::ffi::AV_NOPTS_VALUE { 0.0 } else { s as f64 / tb },
+                if d == ff::ffi::AV_NOPTS_VALUE {
+                    0.0
+                } else {
+                    d as f64 / tb
+                },
+                if s == ff::ffi::AV_NOPTS_VALUE {
+                    0.0
+                } else {
+                    s as f64 / tb
+                },
             )
         };
         // One core, because this runs beside the passes that want the rest of
@@ -472,7 +490,17 @@ impl Glancer {
         // Field by field, so that the packet loop can hold the demuxer while
         // the decoder is fed: they are separate places and the borrow checker
         // will only see that if it is told them separately.
-        let Glancer { spec, ictx, decoder, idx, time_base, sar, start, duration, used } = self;
+        let Glancer {
+            spec,
+            ictx,
+            decoder,
+            idx,
+            time_base,
+            sar,
+            start,
+            duration,
+            used,
+        } = self;
         let (idx, time_base, sar, start) = (*idx, *time_base, *sar, *start);
         let again = std::mem::replace(used, true);
 
@@ -520,7 +548,9 @@ impl Glancer {
         // The picture's own instant, rebased, so the caller can say where what
         // it is looking at actually is.
         let when = |frame: &ff::frame::Video| {
-            frame.pts().map_or(0.0, |pts| pts as f64 * time_base - start)
+            frame
+                .pts()
+                .map_or(0.0, |pts| pts as f64 * time_base - start)
         };
         for (s, packet) in ictx.packets() {
             if s.index() != idx {
@@ -598,7 +628,16 @@ impl Glancer {
         cell: f64,
         most: usize,
     ) -> Result<Vec<Shot>> {
-        let Glancer { ictx, decoder, idx, time_base, sar, start, used, .. } = self;
+        let Glancer {
+            ictx,
+            decoder,
+            idx,
+            time_base,
+            sar,
+            start,
+            used,
+            ..
+        } = self;
         let (idx, time_base, sar, start) = (*idx, *time_base, *sar, *start);
         *used = true;
 
@@ -610,7 +649,11 @@ impl Glancer {
         let mut out: Vec<Shot> = Vec::new();
         // Which of the caller's cells the last answer went into.
         let mut held = i64::MIN;
-        let wide = if cell > 1e-9 { cell } else { (to - from) / most as f64 };
+        let wide = if cell > 1e-9 {
+            cell
+        } else {
+            (to - from) / most as f64
+        };
         let cell_of = move |t: f64| ((t - from) / wide).floor() as i64;
         let mut frame = ff::frame::Video::empty();
         // Nothing is fed to the decoder until a key packet has arrived: what
@@ -621,7 +664,9 @@ impl Glancer {
         // second is tens of packets.
         let mut left = 4000;
         let when = |frame: &ff::frame::Video| {
-            frame.pts().map_or(0.0, |pts| pts as f64 * time_base - start)
+            frame
+                .pts()
+                .map_or(0.0, |pts| pts as f64 * time_base - start)
         };
         'read: for (s, packet) in ictx.packets() {
             if s.index() != idx {
@@ -683,11 +728,7 @@ fn entry_before(points: &[AccessPoint], time: f64) -> f64 {
 /// `sar` is the recording's pixel aspect ratio -- see [`crate::VideoInfo`].
 /// Taken as a number rather than off a [`Source`], because a picture can be
 /// wanted before there is one; see [`glance`].
-pub(crate) fn encode_jpeg(
-    picture: &ff::frame::Video,
-    sar: f64,
-    width: u32,
-) -> Result<Vec<u8>> {
+pub(crate) fn encode_jpeg(picture: &ff::frame::Video, sar: f64, width: u32) -> Result<Vec<u8>> {
     let sar = sar.max(0.01);
     // What the picture is worth, in square pixels. Not its coded width: 1440
     // samples across shown at 16:9 needs 1920 to keep all 1080 of its lines,
@@ -701,11 +742,9 @@ pub(crate) fn encode_jpeg(
     let out_w = width.min(native).max(16) & !1;
     // Downscaling far enough also takes the comb out of interlaced material,
     // so a preview needs no deinterlacer of its own.
-    let out_h = (((out_w as f64 * picture.height() as f64)
-        / (picture.width() as f64 * sar))
-        .round() as u32)
-        .max(16)
-        & !1;
+    let out_h = (((out_w as f64 * picture.height() as f64) / (picture.width() as f64 * sar)).round()
+        as u32)
+        .max(16) & !1;
 
     let mut scaler = ff::software::scaling::Context::get(
         picture.format(),
@@ -719,9 +758,11 @@ pub(crate) fn encode_jpeg(
     let mut scaled = ff::frame::Video::empty();
     scaler.run(picture, &mut scaled)?;
 
-    let codec = ff::encoder::find(ff::codec::Id::MJPEG)
-        .ok_or_else(|| anyhow!("no MJPEG encoder"))?;
-    let mut enc = ff::codec::context::Context::new_with_codec(codec).encoder().video()?;
+    let codec =
+        ff::encoder::find(ff::codec::Id::MJPEG).ok_or_else(|| anyhow!("no MJPEG encoder"))?;
+    let mut enc = ff::codec::context::Context::new_with_codec(codec)
+        .encoder()
+        .video()?;
     enc.set_width(out_w);
     enc.set_height(out_h);
     enc.set_format(ff::format::Pixel::YUVJ420P);
@@ -798,10 +839,13 @@ fn walk(
         let _ = ictx.seek(target, ..target);
     }
 
-    let params =
-        ictx.stream(idx).ok_or_else(|| anyhow!("stream {idx} vanished"))?.parameters();
-    let mut decoder =
-        ff::codec::context::Context::from_parameters(params)?.decoder().video()?;
+    let params = ictx
+        .stream(idx)
+        .ok_or_else(|| anyhow!("stream {idx} vanished"))?
+        .parameters();
+    let mut decoder = ff::codec::context::Context::from_parameters(params)?
+        .decoder()
+        .video()?;
 
     let mut frame = ff::frame::Video::empty();
     let mut first = None;
@@ -853,7 +897,10 @@ fn walk(
         // of the file is answered rather than falling off it.
         let _ = decoder.send_eof();
         while decoder.receive_frame(&mut frame).is_ok() {
-            let t = frame.pts().map(|p| p as f64 * in_tb - src.start_time).unwrap_or(from);
+            let t = frame
+                .pts()
+                .map(|p| p as f64 * in_tb - src.start_time)
+                .unwrap_or(from);
             if first.is_none() {
                 first = Some(t);
             }

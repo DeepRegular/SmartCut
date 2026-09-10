@@ -137,9 +137,7 @@ impl Track {
         let cand = [i.wrapping_sub(1), i];
         cand.iter()
             .filter_map(|&j| self.thumbs.get(j))
-            .min_by(|a, b| {
-                (a.time - time).abs().total_cmp(&(b.time - time).abs())
-            })
+            .min_by(|a, b| (a.time - time).abs().total_cmp(&(b.time - time).abs()))
     }
 
     /// The spacing the held pictures sit at *between `a` and `b`*, or `None`
@@ -179,7 +177,12 @@ impl Track {
 /// The spacing a run of held pictures sits at, or `None` when there are
 /// fewer than two of them and nothing can be told.
 pub fn spacing(thumbs: &[Thumb]) -> Option<f64> {
-    median_gap(&thumbs.windows(2).map(|w| w[1].time - w[0].time).collect::<Vec<_>>())
+    median_gap(
+        &thumbs
+            .windows(2)
+            .map(|w| w[1].time - w[0].time)
+            .collect::<Vec<_>>(),
+    )
 }
 
 /// What a run of gaps amounts to as a spacing: their median.
@@ -530,7 +533,10 @@ pub fn build_with(
     crate::init()?;
     let mut ictx = crate::input::demux(&src.input.url)?;
     let idx = src.video.stream_index;
-    let params = ictx.stream(idx).ok_or_else(|| anyhow!("video stream vanished"))?.parameters();
+    let params = ictx
+        .stream(idx)
+        .ok_or_else(|| anyhow!("video stream vanished"))?
+        .parameters();
     let mut decoder = crate::video_decoder_with(params, opts.threads)?;
 
     let mut collector = Collector::new(src, opts);
@@ -539,7 +545,9 @@ pub fn build_with(
     let mut shared = std::time::Instant::now();
 
     let mut take = |frame: &ff::frame::Video| -> Result<()> {
-        let Some(pts) = frame.pts() else { return Ok(()) };
+        let Some(pts) = frame.pts() else {
+            return Ok(());
+        };
         let t = pts as f64 * src.video.time_base - src.start_time;
         collector.feed(t, frame)?;
         if let Some(f) = progress.as_mut() {
@@ -642,7 +650,11 @@ fn mark_scenes(diffs: &[(f64, f64)], duration: f64, opts: &ThumbOptions) -> (Vec
             q(1.0)
         );
     }
-    let scenes = diffs.iter().filter(|d| d.1 >= threshold).map(|d| d.0).collect();
+    let scenes = diffs
+        .iter()
+        .filter(|d| d.1 >= threshold)
+        .map(|d| d.0)
+        .collect();
     (scenes, threshold, typical)
 }
 
@@ -677,8 +689,13 @@ pub fn cut_near(src: &Source, at: f64, window: f64, floor: f64) -> Result<f64> {
         let target = ((landing + src.start_time) * ff::ffi::AV_TIME_BASE as f64) as i64;
         let _ = ictx.seek(target, ..target);
     }
-    let params = ictx.stream(idx).ok_or_else(|| anyhow!("video stream vanished"))?.parameters();
-    let mut decoder = ff::codec::context::Context::from_parameters(params)?.decoder().video()?;
+    let params = ictx
+        .stream(idx)
+        .ok_or_else(|| anyhow!("video stream vanished"))?
+        .parameters();
+    let mut decoder = ff::codec::context::Context::from_parameters(params)?
+        .decoder()
+        .video()?;
 
     let mut seen: Vec<(f64, [u8; SIG])> = Vec::new();
     let mut frame = ff::frame::Video::empty();
@@ -712,7 +729,12 @@ pub fn cut_near(src: &Source, at: f64, window: f64, floor: f64) -> Result<f64> {
     for w in seen.windows(2) {
         let d = distance(&w[0].1, &w[1].1);
         if show && d >= floor / 3.0 {
-            eprintln!("    {:9.3}  差 {:.3}{}", w[1].0, d, if d >= floor { "" } else { "  (床未満)" });
+            eprintln!(
+                "    {:9.3}  差 {:.3}{}",
+                w[1].0,
+                d,
+                if d >= floor { "" } else { "  (床未満)" }
+            );
         }
         if d < floor {
             continue;
@@ -755,8 +777,13 @@ pub fn refine(src: &Source, at: f64) -> Result<f64> {
         let target = ((landing + src.start_time) * ff::ffi::AV_TIME_BASE as f64) as i64;
         let _ = ictx.seek(target, ..target);
     }
-    let params = ictx.stream(idx).ok_or_else(|| anyhow!("video stream vanished"))?.parameters();
-    let mut decoder = ff::codec::context::Context::from_parameters(params)?.decoder().video()?;
+    let params = ictx
+        .stream(idx)
+        .ok_or_else(|| anyhow!("video stream vanished"))?
+        .parameters();
+    let mut decoder = ff::codec::context::Context::from_parameters(params)?
+        .decoder()
+        .video()?;
 
     let mut seen: Vec<(f64, [u8; SIG])> = Vec::new();
     let mut frame = ff::frame::Video::empty();
@@ -794,7 +821,13 @@ mod tests {
     use super::*;
 
     fn at(times: &[f64]) -> Vec<Thumb> {
-        times.iter().map(|&time| Thumb { time, jpeg: Vec::new() }).collect()
+        times
+            .iter()
+            .map(|&time| Thumb {
+                time,
+                jpeg: Vec::new(),
+            })
+            .collect()
     }
 
     #[test]
@@ -856,11 +889,18 @@ mod tests {
             t += 1.0;
         }
         let track = track_at(&times);
-        assert!((track.interval - 1.0).abs() < 1e-9, "over all it is {}", track.interval);
+        assert!(
+            (track.interval - 1.0).abs() < 1e-9,
+            "over all it is {}",
+            track.interval
+        );
         let busy = track.spacing_over(22.0, 28.0).unwrap();
         assert!((busy - 0.4).abs() < 1e-9, "over the cutting it is {busy}");
         let quiet = track.spacing_over(2.0, 8.0).unwrap();
-        assert!((quiet - 1.0).abs() < 1e-9, "over the dialogue it is {quiet}");
+        assert!(
+            (quiet - 1.0).abs() < 1e-9,
+            "over the dialogue it is {quiet}"
+        );
     }
 
     /// A stretch too short to hold two pictures cannot be measured, and says
@@ -903,19 +943,28 @@ mod tests {
     /// already read has been paid for.
     #[test]
     fn a_recording_that_does_not_fit_spreads_what_is_left() {
-        let opts = ThumbOptions { max_bytes: 8 << 20, ..ThumbOptions::default() };
+        let opts = ThumbOptions {
+            max_bytes: 8 << 20,
+            ..ThumbOptions::default()
+        };
         let c = a_film(&opts);
         let room = ((8 << 20) - 120 * 6144) as f64 / 6144.0;
         let want = (8460.0 - 60.0) / room;
         let got = c.min_gap();
-        assert!((got - want).abs() < 1e-9, "floor came out {got}, wanted {want}");
+        assert!(
+            (got - want).abs() < 1e-9,
+            "floor came out {got}, wanted {want}"
+        );
     }
 
     /// Nothing is dropped before there is anything to judge on. A rate read
     /// off one picture is not a rate.
     #[test]
     fn the_first_moment_is_held_whole() {
-        let opts = ThumbOptions { max_bytes: 1 << 10, ..ThumbOptions::default() };
+        let opts = ThumbOptions {
+            max_bytes: 1 << 10,
+            ..ThumbOptions::default()
+        };
         let mut c = Collector::about(8460.0, 1.0, &opts);
         assert_eq!(c.min_gap(), 0.0);
         c.seen = 0.5;

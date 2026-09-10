@@ -116,7 +116,9 @@ impl Entry {
     /// written in place can produce and a burner cannot -- has no single
     /// range, and the caller has to say so rather than read the wrong bytes.
     pub fn contiguous(&self) -> Option<Extent> {
-        let Data::Extents(exts) = &self.data else { return None };
+        let Data::Extents(exts) = &self.data else {
+            return None;
+        };
         let first = *exts.first()?;
         let mut end = first.at + first.len;
         for e in &exts[1..] {
@@ -125,7 +127,10 @@ impl Entry {
             }
             end += e.len;
         }
-        Some(Extent { at: first.at, len: (end - first.at).min(self.size) })
+        Some(Extent {
+            at: first.at,
+            len: (end - first.at).min(self.size),
+        })
     }
 
     pub fn name(&self) -> &str {
@@ -162,9 +167,12 @@ impl Image {
     /// sectors, and holding the answer means nothing downstream has to think
     /// about UDF again.
     pub fn open(path: &Path) -> Result<Image> {
-        let file =
-            File::open(path).with_context(|| format!("cannot open {}", path.display()))?;
-        let mut img = Image { file, maps: Vec::new(), files: Vec::new() };
+        let file = File::open(path).with_context(|| format!("cannot open {}", path.display()))?;
+        let mut img = Image {
+            file,
+            maps: Vec::new(),
+            files: Vec::new(),
+        };
         let root = img
             .read_descriptors()
             .with_context(|| format!("{} is not a UDF image", path.display()))?;
@@ -184,7 +192,9 @@ impl Image {
     /// recorders have shipped `INFO.BDAV` for as long as there have been
     /// recorders.
     pub fn find(&self, path: &str) -> Option<&Entry> {
-        self.files.iter().find(|e| e.path.eq_ignore_ascii_case(path))
+        self.files
+            .iter()
+            .find(|e| e.path.eq_ignore_ascii_case(path))
     }
 
     /// The whole of a small file. For streams, take [`Entry::contiguous`] and
@@ -203,7 +213,10 @@ impl Image {
                         break;
                     }
                     let take = e.len.min(size - out.len() as u64);
-                    out.extend(self.read_runs(&[Extent { at: e.at, len: take }])?);
+                    out.extend(self.read_runs(&[Extent {
+                        at: e.at,
+                        len: take,
+                    }])?);
                 }
                 Ok(out)
             }
@@ -226,12 +239,18 @@ impl Image {
         }
         // The three places the standard allows an anchor. The last two are
         // what a disc written by a drive uses.
-        let candidates = [ANCHOR, end.saturating_sub(1), end.saturating_sub(1 + ANCHOR)];
+        let candidates = [
+            ANCHOR,
+            end.saturating_sub(1),
+            end.saturating_sub(1 + ANCHOR),
+        ];
         let anchor = candidates
             .into_iter()
             .filter(|at| *at > 0 && *at < end)
             .find_map(|at| {
-                self.sectors(at, 1).ok().filter(|s| tag_id(s) == Some(TAG_ANCHOR))
+                self.sectors(at, 1)
+                    .ok()
+                    .filter(|s| tag_id(s) == Some(TAG_ANCHOR))
             })
             .ok_or_else(|| anyhow!("no anchor descriptor"))?;
 
@@ -268,13 +287,16 @@ impl Image {
     /// volume descriptor are all this needs from it.
     fn volume_sequence(&mut self, at: (u64, u64)) -> Result<Sequence> {
         let (len, loc) = at;
-        let mut seq = Sequence { parts: Vec::new(), lvd: Vec::new() };
+        let mut seq = Sequence {
+            parts: Vec::new(),
+            lvd: Vec::new(),
+        };
         for i in 0..(len / SECTOR).min(64) {
-            let Ok(sec) = self.sectors(loc + i, 1) else { break };
+            let Ok(sec) = self.sectors(loc + i, 1) else {
+                break;
+            };
             match tag_id(&sec) {
-                Some(TAG_PARTITION) => {
-                    seq.parts.push((u16le(&sec, 22), u32le(&sec, 188) as u64))
-                }
+                Some(TAG_PARTITION) => seq.parts.push((u16le(&sec, 22), u32le(&sec, 188) as u64)),
                 Some(TAG_LOGICAL_VOLUME) if seq.lvd.is_empty() => seq.lvd = sec,
                 Some(TAG_TERMINATING) | None => break,
                 _ => {}
@@ -310,7 +332,9 @@ impl Image {
             match kind {
                 // Type 1: the volume sequence number, and then the
                 // partition this reference means.
-                1 => maps.push(Map::Physical { start: start_of(u16le(&table, at + 4))? }),
+                1 => maps.push(Map::Physical {
+                    start: start_of(u16le(&table, at + 4))?,
+                }),
                 2 => {
                     let ident = &table[at + 4..at + 36];
                     let number = u16le(&table, at + 38);
@@ -371,11 +395,21 @@ impl Image {
         let (size, ad_at, ad_len, kind) = match tag_id(fe) {
             Some(TAG_FILE_ENTRY) => {
                 let ea = u32le(fe, 168) as usize;
-                (u64le(fe, 56), 176 + ea, u32le(fe, 172) as usize, u16le(fe, 34) & 7)
+                (
+                    u64le(fe, 56),
+                    176 + ea,
+                    u32le(fe, 172) as usize,
+                    u16le(fe, 34) & 7,
+                )
             }
             Some(TAG_EXTENDED_FILE_ENTRY) => {
                 let ea = u32le(fe, 208) as usize;
-                (u64le(fe, 56), 216 + ea, u32le(fe, 212) as usize, u16le(fe, 34) & 7)
+                (
+                    u64le(fe, 56),
+                    216 + ea,
+                    u32le(fe, 212) as usize,
+                    u16le(fe, 34) & 7,
+                )
             }
             other => bail!("expected a file entry, found tag {other:?}"),
         };
@@ -431,7 +465,9 @@ impl Image {
                 }
                 at += step;
             }
-            let Some((map, block, len)) = carry_on else { break };
+            let Some((map, block, len)) = carry_on else {
+                break;
+            };
             let more = self.read_runs(&byte_runs(&map, block, len)?)?;
             // An allocation extent descriptor is a tag, the location of the
             // descriptors that led here, and the length of the ones carried.
@@ -478,8 +514,11 @@ impl Image {
                 if chars & (FID_PARENT | FID_DELETED) != 0 {
                     continue;
                 }
-                let path =
-                    if prefix.is_empty() { name.clone() } else { format!("{prefix}/{name}") };
+                let path = if prefix.is_empty() {
+                    name.clone()
+                } else {
+                    format!("{prefix}/{name}")
+                };
                 if chars & FID_DIRECTORY != 0 {
                     queue.push((path, child, depth + 1));
                     continue;
@@ -506,7 +545,10 @@ impl Image {
 /// because the metadata file is itself a file and may be laid down in pieces.
 fn byte_runs(map: &Map, block: u64, len: u64) -> Result<Vec<Extent>> {
     match map {
-        Map::Physical { start } => Ok(vec![Extent { at: (start + block) * SECTOR, len }]),
+        Map::Physical { start } => Ok(vec![Extent {
+            at: (start + block) * SECTOR,
+            len,
+        }]),
         Map::Metadata { extents } => {
             let mut want = block * SECTOR;
             let mut left = len;
@@ -517,14 +559,19 @@ fn byte_runs(map: &Map, block: u64, len: u64) -> Result<Vec<Extent>> {
                     continue;
                 }
                 let take = (e.len - want).min(left);
-                out.push(Extent { at: e.at + want, len: take });
+                out.push(Extent {
+                    at: e.at + want,
+                    len: take,
+                });
                 left -= take;
                 want = 0;
                 if left == 0 {
                     return Ok(out);
                 }
             }
-            Err(anyhow!("block {block} is past the end of the metadata file"))
+            Err(anyhow!(
+                "block {block} is past the end of the metadata file"
+            ))
         }
     }
 }
@@ -543,7 +590,9 @@ fn file_ids(dir: &[u8]) -> Vec<(String, u8, LongAd)> {
         let icb = long_ad(dir, at + 20);
         let iu_len = u16le(dir, at + 36) as usize;
         let name_at = at + 38 + iu_len;
-        let Some(raw) = dir.get(name_at..name_at + name_len) else { break };
+        let Some(raw) = dir.get(name_at..name_at + name_len) else {
+            break;
+        };
         out.push((dstring(raw), chars, icb));
         // Every descriptor starts on a four byte boundary.
         at = (name_at + name_len + 3) & !3;
@@ -594,7 +643,10 @@ struct LongAd {
 }
 
 fn long_ad(b: &[u8], at: usize) -> LongAd {
-    LongAd { block: u32le(b, at + 4) as u64, partition: u16le(b, at + 8) }
+    LongAd {
+        block: u32le(b, at + 4) as u64,
+        partition: u16le(b, at + 8),
+    }
 }
 
 fn extent_ad(b: &[u8], at: usize) -> (u64, u64) {
@@ -631,7 +683,11 @@ mod tests {
         Entry {
             path: "BDAV/STREAM/00001.m2ts".into(),
             size,
-            data: Data::Extents(runs.iter().map(|(at, len)| Extent { at: *at, len: *len }).collect()),
+            data: Data::Extents(
+                runs.iter()
+                    .map(|(at, len)| Extent { at: *at, len: *len })
+                    .collect(),
+            ),
         }
     }
 
@@ -639,8 +695,17 @@ mod tests {
     fn joins_the_pieces_a_gigabyte_limit_forces() {
         // What a burner writes for a 1.15 GB stream: one full descriptor and
         // the remainder, laid down back to back.
-        let e = entry(&[(747_520, 1_073_739_776), (1_074_487_296, 158_107_648)], 1_231_847_424);
-        assert_eq!(e.contiguous(), Some(Extent { at: 747_520, len: 1_231_847_424 }));
+        let e = entry(
+            &[(747_520, 1_073_739_776), (1_074_487_296, 158_107_648)],
+            1_231_847_424,
+        );
+        assert_eq!(
+            e.contiguous(),
+            Some(Extent {
+                at: 747_520,
+                len: 1_231_847_424
+            })
+        );
     }
 
     #[test]
@@ -652,16 +717,46 @@ mod tests {
     #[test]
     fn a_metadata_partition_maps_through_its_own_file() {
         let map = Map::Metadata {
-            extents: vec![Extent { at: 655_360, len: 4096 }, Extent { at: 1_000_000, len: 4096 }],
+            extents: vec![
+                Extent {
+                    at: 655_360,
+                    len: 4096,
+                },
+                Extent {
+                    at: 1_000_000,
+                    len: 4096,
+                },
+            ],
         };
         // Second block of the metadata file.
-        assert_eq!(byte_runs(&map, 1, SECTOR).unwrap(), vec![Extent { at: 657_408, len: 2048 }]);
+        assert_eq!(
+            byte_runs(&map, 1, SECTOR).unwrap(),
+            vec![Extent {
+                at: 657_408,
+                len: 2048
+            }]
+        );
         // Third block, which is where the file's own second piece begins.
-        assert_eq!(byte_runs(&map, 2, SECTOR).unwrap(), vec![Extent { at: 1_000_000, len: 2048 }]);
+        assert_eq!(
+            byte_runs(&map, 2, SECTOR).unwrap(),
+            vec![Extent {
+                at: 1_000_000,
+                len: 2048
+            }]
+        );
         // A run that crosses the join comes back as the two pieces it is.
         assert_eq!(
             byte_runs(&map, 1, 4096).unwrap(),
-            vec![Extent { at: 657_408, len: 2048 }, Extent { at: 1_000_000, len: 2048 }]
+            vec![
+                Extent {
+                    at: 657_408,
+                    len: 2048
+                },
+                Extent {
+                    at: 1_000_000,
+                    len: 2048
+                }
+            ]
         );
     }
 

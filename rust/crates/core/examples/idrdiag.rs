@@ -136,8 +136,11 @@ fn main() -> Result<()> {
             })
             .collect();
         far.sort_by(|a, b| b.1.total_cmp(&a.1));
-        let worst: Vec<String> =
-            far.iter().take(40).map(|(t, c)| format!("{t:.3}/{c:.1}")).collect();
+        let worst: Vec<String> = far
+            .iter()
+            .take(40)
+            .map(|(t, c)| format!("{t:.3}/{c:.1}"))
+            .collect();
         println!("  far: {}", worst.join(" "));
     }
     Ok(())

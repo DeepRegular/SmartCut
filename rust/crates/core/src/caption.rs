@@ -85,7 +85,9 @@ fn data_groups(payload: &[u8], mut visit: impl FnMut(u8, &[u8])) {
     while i + 5 <= payload.len() {
         let id = payload[i] >> 2;
         let size = ((payload[i + 3] as usize) << 8) | payload[i + 4] as usize;
-        let Some(body) = payload.get(i + 5..i + 5 + size) else { return };
+        let Some(body) = payload.get(i + 5..i + 5 + size) else {
+            return;
+        };
         visit(id, body);
         i += 5 + size + 2; // + CRC16
     }
@@ -110,10 +112,11 @@ fn text_units(body: &[u8], out: &mut Vec<u8>) {
             return;
         }
         let param = body[i + 1];
-        let size = ((body[i + 2] as usize) << 16)
-            | ((body[i + 3] as usize) << 8)
-            | body[i + 4] as usize;
-        let Some(data) = body.get(i + 5..i + 5 + size) else { return };
+        let size =
+            ((body[i + 2] as usize) << 16) | ((body[i + 3] as usize) << 8) | body[i + 4] as usize;
+        let Some(data) = body.get(i + 5..i + 5 + size) else {
+            return;
+        };
         if param == 0x20 {
             out.extend_from_slice(data);
         }
@@ -198,7 +201,9 @@ pub fn resets_with(
         let Some(&(_, tb)) = streams.iter().find(|(i, _)| *i == stream.index()) else {
             continue;
         };
-        let (Some(data), Some(pts)) = (packet.data(), packet.pts()) else { continue };
+        let (Some(data), Some(pts)) = (packet.data(), packet.pts()) else {
+            continue;
+        };
         let t = pts as f64 * tb - src.start_time;
         if is_reset(data, &mut scratch) {
             out.push(t);

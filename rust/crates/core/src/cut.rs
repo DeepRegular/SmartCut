@@ -443,8 +443,12 @@ impl Writer {
     }
 
     fn emit_one(&mut self) -> Result<()> {
-        let Some(mut e) = self.pending.pop_front() else { return Ok(()) };
-        let Some(std::cmp::Reverse(next_in_display)) = self.seen.pop() else { return Ok(()) };
+        let Some(mut e) = self.pending.pop_front() else {
+            return Ok(());
+        };
+        let Some(std::cmp::Reverse(next_in_display)) = self.seen.pop() else {
+            return Ok(());
+        };
         // Three fields of lead-in per level of reordering, and then the
         // picture's own display position as a ceiling.
         //
@@ -487,13 +491,15 @@ impl Writer {
         // what makes that answerable -- and on a recording with holes in it
         // the answer is usually the holes.
         let (pts, dts) = (e.packet.pts().unwrap_or(0), e.packet.dts().unwrap_or(0));
-        e.packet.write_interleaved(&mut self.octx).with_context(|| {
-            format!(
-                "writing picture {} of the output (display {}, pts {pts}, dts {dts})",
-                self.written + 1,
-                e.display
-            )
-        })?;
+        e.packet
+            .write_interleaved(&mut self.octx)
+            .with_context(|| {
+                format!(
+                    "writing picture {} of the output (display {}, pts {pts}, dts {dts})",
+                    self.written + 1,
+                    e.display
+                )
+            })?;
         self.written += 1;
         if let Some(report) = &self.progress {
             if self.expected > 0 && self.written % 16 == 0 {
@@ -504,7 +510,9 @@ impl Writer {
     }
 
     fn push_audio_encoded(&mut self, track: usize, mut packet: ff::Packet, pts: i64) -> Result<()> {
-        let Some(t) = self.audio.get(track) else { return Ok(()) };
+        let Some(t) = self.audio.get(track) else {
+            return Ok(());
+        };
         let (index, tb, rate) = (t.out_index, t.out_tb, t.out_rate);
         packet.set_stream(index);
         // `pts` counts samples, because that is the encoder's own clock. The
@@ -534,7 +542,9 @@ impl Writer {
         out_start: f64,
         out_dur: f64,
     ) -> Result<()> {
-        let Some(t) = self.audio.get(track) else { return Ok(()) };
+        let Some(t) = self.audio.get(track) else {
+            return Ok(());
+        };
         let (index, tb) = (t.out_index, t.out_tb);
         if out_dur <= 0.0 {
             return Ok(());
@@ -563,9 +573,9 @@ impl Writer {
             let t = &self.audio[track].info;
             crate::track_name(self.on_a_ts, t.pid, t.stream_index)
         };
-        packet.write_interleaved(&mut self.octx).with_context(|| {
-            format!("writing sound on {named} at {out_start:.4}s (pts {pts})")
-        })?;
+        packet
+            .write_interleaved(&mut self.octx)
+            .with_context(|| format!("writing sound on {named} at {out_start:.4}s (pts {pts})"))?;
         let t = &mut self.audio[track];
         t.written += 1;
         t.last_out = Some(pts);
@@ -580,7 +590,9 @@ impl Writer {
     /// the packet, and a duration invented here would only be a claim the
     /// muxer then has to reconcile with the next packet's timestamp.
     fn push_caption(&mut self, track: usize, mut packet: ff::Packet, at: f64) -> Result<()> {
-        let Some(t) = self.captions.get(track) else { return Ok(()) };
+        let Some(t) = self.captions.get(track) else {
+            return Ok(());
+        };
         let (index, tb) = (t.out_index, t.out_tb);
         packet.set_stream(index);
         let pts = (at.max(0.0) / tb).round() as i64;
@@ -611,7 +623,9 @@ fn take_audio(
     packet: ff::Packet,
     writer: &mut Writer,
 ) -> Result<bool> {
-    let Some(pts) = packet.pts() else { return Ok(false) };
+    let Some(pts) = packet.pts() else {
+        return Ok(false);
+    };
     let t = pts as f64 * audio.in_tb - src.start_time;
     let dur = packet.duration() as f64 * audio.in_tb;
     let past_end = t >= seg.end;
@@ -629,7 +643,9 @@ fn take_audio(
         };
         if claimed {
             let mut out = Vec::new();
-            let AudioTrack { info, reencoder, .. } = &mut writer.audio[audio.track];
+            let AudioTrack {
+                info, reencoder, ..
+            } = &mut writer.audio[audio.track];
             if let Some(re) = reencoder.as_mut() {
                 re.take(&packet, info, src.start_time, audio.window)?;
                 re.drain(&mut out)?;
@@ -684,7 +700,10 @@ fn take_audio(
         writer.audio[audio.track].need_sync = false;
     }
     let track = &writer.audio[audio.track];
-    let patch = track.patches.get(&pts).filter(|p| p.after.is_none() || p.after == track.prev);
+    let patch = track
+        .patches
+        .get(&pts)
+        .filter(|p| p.after.is_none() || p.after == track.prev);
     let packet = match patch {
         Some(p) => {
             let mut patched = ff::Packet::copy(&p.bytes);
@@ -748,7 +767,9 @@ fn take_caption(
     packet: ff::Packet,
     writer: &mut Writer,
 ) -> Result<bool> {
-    let Some(pts) = packet.pts() else { return Ok(false) };
+    let Some(pts) = packet.pts() else {
+        return Ok(false);
+    };
     let t = pts as f64 * caption.in_tb - src.start_time;
     if t >= seg.end {
         return Ok(true);
@@ -827,7 +848,10 @@ fn write_one_track_out(cut: &str, output: &str, aac: AacVersion) -> Result<usize
         muxer_opts.set("write_mpeg2", "1");
     }
     octx.write_header_with(muxer_opts)?;
-    let out_tb = octx.stream(0).ok_or_else(|| anyhow!("no output stream"))?.time_base();
+    let out_tb = octx
+        .stream(0)
+        .ok_or_else(|| anyhow!("no output stream"))?
+        .time_base();
 
     let mut written = 0usize;
     for (stream, mut packet) in ictx.packets() {
@@ -872,7 +896,11 @@ fn writing_m2ts(path: &str) -> bool {
 /// written straight onto a disc. See [`crate::bdav`].
 fn writing_ts(path: &str) -> bool {
     matches!(
-        std::path::Path::new(path).extension().and_then(|e| e.to_str()).map(str::to_ascii_lowercase).as_deref(),
+        std::path::Path::new(path)
+            .extension()
+            .and_then(|e| e.to_str())
+            .map(str::to_ascii_lowercase)
+            .as_deref(),
         Some("ts" | "m2ts" | "mts" | "m2t")
     )
 }
@@ -899,7 +927,11 @@ fn ts_layout(ictx: &ff::format::context::Input, video_index: usize) -> Option<Ts
             return None;
         }
         let video_pid = ictx.stream(video_index).map(|s| s.id()).unwrap_or(0);
-        let first_pid = if (PID_MIN..=PID_MAX).contains(&video_pid) { video_pid } else { 0 };
+        let first_pid = if (PID_MIN..=PID_MAX).contains(&video_pid) {
+            video_pid
+        } else {
+            0
+        };
         // The service this recording is of, which is the one whose map names
         // the pictures. A recorder that keeps the multiplex's own PAT names
         // the neighbouring services too, and the first of them is as likely
@@ -915,8 +947,11 @@ fn ts_layout(ictx: &ff::format::context::Input, video_index: usize) -> Option<Ts
         let mut ours = programs.first().copied();
         for &p in programs {
             let n = (*p).nb_stream_indexes as usize;
-            let in_it: &[u32] =
-                if n > 0 { std::slice::from_raw_parts((*p).stream_index, n) } else { &[] };
+            let in_it: &[u32] = if n > 0 {
+                std::slice::from_raw_parts((*p).stream_index, n)
+            } else {
+                &[]
+            };
             if in_it.contains(&(video_index as u32)) {
                 ours = Some(p);
                 break;
@@ -937,7 +972,11 @@ fn ts_layout(ictx: &ff::format::context::Input, video_index: usize) -> Option<Ts
         Some(TsLayout {
             pmt_pid,
             first_pid,
-            service_id: if (1..=0xFFFF).contains(&service_id) { service_id } else { 0 },
+            service_id: if (1..=0xFFFF).contains(&service_id) {
+                service_id
+            } else {
+                0
+            },
         })
     }
 }
@@ -1056,9 +1095,7 @@ fn copy_segment(
         let display = display_base + ((t - a) / field).round() as i64;
         let fields = packet
             .data()
-            .map(|d| {
-                crate::bitstream::display_fields(d, &src.video.codec, src.video.vc1.as_ref())
-            })
+            .map(|d| crate::bitstream::display_fields(d, &src.video.codec, src.video.vc1.as_ref()))
             .unwrap_or(2);
         span.fields = span.fields.max(display - display_base + fields);
         span.pictures += 1;
@@ -1085,7 +1122,11 @@ fn copy_segment(
             }
             _ => packet,
         };
-        writer.push(Emitted { packet, display, fields })?;
+        writer.push(Emitted {
+            packet,
+            display,
+            fields,
+        })?;
     }
     if !started {
         if overshot {
@@ -1145,7 +1186,9 @@ impl Pictures {
                     .map_err(|e| anyhow!("cannot write VC-1 for this recording: {e}"))?;
             return Ok(Pictures::Vc1(Box::new(encoder)));
         }
-        Ok(Pictures::Libav(Box::new(open_encoder(src, params, opts, signalling)?)))
+        Ok(Pictures::Libav(Box::new(open_encoder(
+            src, params, opts, signalling,
+        )?)))
     }
 }
 
@@ -1160,7 +1203,10 @@ fn encode_vc1(
     fields: i64,
 ) -> Result<ff::Packet> {
     if frame.format() != ff::format::Pixel::YUV420P {
-        bail!("a VC-1 picture came back as {:?}, which is not 4:2:0", frame.format());
+        bail!(
+            "a VC-1 picture came back as {:?}, which is not 4:2:0",
+            frame.format()
+        );
     }
     let (width, height) = (frame.width() as usize, frame.height() as usize);
     let (cw, ch) = (width.div_ceil(2), height.div_ceil(2));
@@ -1170,9 +1216,8 @@ fn encode_vc1(
         width: w,
         height: h,
     };
-    let tff = unsafe {
-        (*frame.as_ptr()).flags & ff::ffi::AV_FRAME_FLAG_TOP_FIELD_FIRST as i32 != 0
-    };
+    let tff =
+        unsafe { (*frame.as_ptr()).flags & ff::ffi::AV_FRAME_FLAG_TOP_FIELD_FIRST as i32 != 0 };
     // A picture shown for three fields is one whose first field is repeated;
     // anything longer is a whole frame shown again, which only a progressive
     // stream says.
@@ -1273,8 +1318,12 @@ fn signalling_of(src: &Source, opts: &CutOptions) -> Signalling {
         ff::ffi::AVFrameSideDataType::AV_FRAME_DATA_DOVI_METADATA,
     ];
     let mut out = Signalling::default();
-    let Ok((mut ictx, ist)) = open_input(&src.input.url) else { return out };
-    let Some(params) = ictx.stream(ist).map(|s| s.parameters()) else { return out };
+    let Ok((mut ictx, ist)) = open_input(&src.input.url) else {
+        return out;
+    };
+    let Some(params) = ictx.stream(ist).map(|s| s.parameters()) else {
+        return out;
+    };
     out.has_dovi = declares_dovi(&params);
     // Nothing to look for outside HDR, and a picture not decoded is a picture
     // not paid for. `bt2020-10` is Blu-ray's wide-gamut SDR and carries none
@@ -1400,7 +1449,9 @@ fn open_encoder(
 ) -> Result<ff::encoder::video::Encoder> {
     let id = params.id();
     let codec = ff::encoder::find(id).ok_or_else(|| anyhow!("no encoder for {id:?}"))?;
-    let mut enc = ff::codec::context::Context::new_with_codec(codec).encoder().video()?;
+    let mut enc = ff::codec::context::Context::new_with_codec(codec)
+        .encoder()
+        .video()?;
 
     let v = &src.video;
     enc.set_width(v.width);
@@ -1431,9 +1482,9 @@ fn open_encoder(
         // spliced in describe themselves differently from the copied ones on
         // either side. See [`crate::bitstream::coded_transfer`].
         (*e).color_trc = match signalling.coded_transfer {
-            Some(coded) => std::mem::transmute::<u32, ff::ffi::AVColorTransferCharacteristic>(
-                u32::from(coded),
-            ),
+            Some(coded) => {
+                std::mem::transmute::<u32, ff::ffi::AVColorTransferCharacteristic>(u32::from(coded))
+            }
             None => (*p).color_trc,
         };
         (*e).colorspace = (*p).color_space;
@@ -1511,7 +1562,8 @@ fn open_encoder(
             eopts.set("x265-params", &x265.join(":"));
         }
     }
-    enc.open_as_with(codec, eopts).map_err(|e| anyhow!("cannot open encoder: {e}"))
+    enc.open_as_with(codec, eopts)
+        .map_err(|e| anyhow!("cannot open encoder: {e}"))
 }
 
 /// Recover the exact rational frame rate, so 29.97 comes back as 30000/1001
@@ -1568,7 +1620,12 @@ fn pictures_less_the_sound(src: &Source) -> Option<f64> {
         None => std::fs::metadata(&src.input.file).ok()?.len(),
     };
     let whole = bytes as f64 * 8.0 / src.duration;
-    let sound: f64 = src.audios.iter().filter_map(|a| a.bit_rate).map(|b| b as f64).sum();
+    let sound: f64 = src
+        .audios
+        .iter()
+        .filter_map(|a| a.bit_rate)
+        .map(|b| b as f64)
+        .sum();
     let left = whole - sound;
     (left > whole * 0.2).then_some(left)
 }
@@ -1624,7 +1681,11 @@ fn drain_encoder(
             }
             _ => packet,
         };
-        writer.push(Emitted { packet, display, fields })?;
+        writer.push(Emitted {
+            packet,
+            display,
+            fields,
+        })?;
     }
 }
 
@@ -1648,8 +1709,9 @@ fn reencode_segment(
     // whether that picture is in or out.
     let tol = fd * 1e-3;
 
-    let mut decoder =
-        ff::codec::context::Context::from_parameters(params.clone())?.decoder().video()?;
+    let mut decoder = ff::codec::context::Context::from_parameters(params.clone())?
+        .decoder()
+        .video()?;
     let mut encoder = Pictures::open(src, &params, opts, ctx.signalling)?;
 
     seek_to(&mut ictx, src, seg.seek_from)?;
@@ -1700,7 +1762,11 @@ fn reencode_segment(
                     // goes straight out with the timing worked out above.
                     Pictures::Vc1(enc) => {
                         let packet = encode_vc1(enc, &frame, fields)?;
-                        writer.push(Emitted { packet, display, fields })?;
+                        writer.push(Emitted {
+                            packet,
+                            display,
+                            fields,
+                        })?;
                     }
                 }
             }
@@ -1728,7 +1794,10 @@ fn reencode_segment(
             if audio_done.iter().all(|&d| d) && caption_done.iter().all(|&d| d) {
                 break;
             }
-            if packet.pts().is_some_and(|p| p as f64 * in_tb - src.start_time > seg.end + TRAIL) {
+            if packet
+                .pts()
+                .is_some_and(|p| p as f64 * in_tb - src.start_time > seg.end + TRAIL)
+            {
                 break;
             }
         }
@@ -1767,16 +1836,18 @@ fn reencode_segment(
                 seg.end
             );
         }
-        bail!("segment {:.3}-{:.3}: no pictures decoded", seg.start, seg.end);
+        bail!(
+            "segment {:.3}-{:.3}: no pictures decoded",
+            seg.start,
+            seg.end
+        );
     }
     if damaged > 0 {
         eprintln!(
             "note: {damaged} packet(s) between {:.3}s and {:.3}s are damaged and could not be \
              decoded, so the pictures they carried are missing from the {} written there. \
              What the cut copies is untouched by this.",
-            seg.start,
-            seg.end,
-            span.pictures,
+            seg.start, seg.end, span.pictures,
         );
     }
     Ok(span)
@@ -1828,7 +1899,10 @@ impl Pids {
 
     /// Where the stream that arrived on `was` is written.
     fn out(&self, was: i32) -> i32 {
-        self.moved.iter().find(|(from, _)| *from == was).map_or(was, |(_, to)| *to)
+        self.moved
+            .iter()
+            .find(|(from, _)| *from == was)
+            .map_or(was, |(_, to)| *to)
     }
 }
 
@@ -2063,7 +2137,9 @@ fn sound_writes(tracks: &[SoundAsIs], opts: &CutOptions) -> bool {
         if opts.audio_sample_rate.is_some_and(|_| rate != asked_rate) {
             return false;
         }
-        let bit_rate = opts.audio_bit_rate.unwrap_or_else(|| derived_bit_rate(target, channels));
+        let bit_rate = opts
+            .audio_bit_rate
+            .unwrap_or_else(|| derived_bit_rate(target, channels));
         crate::audio::opens_at(target, rate, channels, bit_rate)
     })
 }
@@ -2172,7 +2248,10 @@ fn plan_audio(
     // Which track these notes are about, said the way the recording names its
     // tracks. See [`crate::track_name`].
     let named = if many {
-        format!(" on {}", crate::track_name(on_a_ts, info.pid, info.stream_index))
+        format!(
+            " on {}",
+            crate::track_name(on_a_ts, info.pid, info.stream_index)
+        )
     } else {
         String::new()
     };
@@ -2220,8 +2299,12 @@ fn plan_audio(
     // it is, and each of these is a way of asking for it not to be.
     let declined: Vec<String> = if lossless {
         [
-            (asked_channels != info.channels)
-                .then(|| format!("{} channels, not the {asked_channels} asked for", info.channels)),
+            (asked_channels != info.channels).then(|| {
+                format!(
+                    "{} channels, not the {asked_channels} asked for",
+                    info.channels
+                )
+            }),
             opts.audio_sample_rate
                 .filter(|&r| r != info.sample_rate)
                 .map(|r| format!("{} Hz, not the {r} asked for", info.sample_rate)),
@@ -2232,7 +2315,8 @@ fn plan_audio(
             // encoder here. Said with the rest rather than left to the
             // encoder-rate check below, which no longer looks at a track
             // that is carried through.
-            opts.audio_bit_rate.map(|r| format!("its own frames, not the {r} bit/s asked for")),
+            opts.audio_bit_rate
+                .map(|r| format!("its own frames, not the {r} bit/s asked for")),
         ]
         .into_iter()
         .flatten()
@@ -2256,14 +2340,21 @@ fn plan_audio(
     // setting that decides the mode rather than living under it: there is no
     // copying a 5.1 frame into a stereo track, so it is a whole-track
     // re-encode or it is nothing.
-    let channels = if lossless { info.channels } else { asked_channels };
+    let channels = if lossless {
+        info.channels
+    } else {
+        asked_channels
+    };
     let downmix = (channels != info.channels).then_some((info.channels, channels));
     // The rate the track is written at. What was asked for, taken to the
     // nearest the codec being written can actually speak -- AC-3 has three
     // and MP2 six, and an encoder handed a rate it does not list refuses to
     // open at all.
-    let asked_rate =
-        if lossless { info.sample_rate } else { opts.audio_sample_rate.unwrap_or(info.sample_rate) };
+    let asked_rate = if lossless {
+        info.sample_rate
+    } else {
+        opts.audio_sample_rate.unwrap_or(info.sample_rate)
+    };
     let sample_rate = crate::audio::writable_rate(target, asked_rate);
     if sample_rate != asked_rate {
         eprintln!(
@@ -2513,7 +2604,11 @@ fn plan_audio(
 /// going anywhere but a transport stream.
 fn declared_as(target: ff::codec::Id) -> Option<crate::si::Declared> {
     let plain = |stream_type| {
-        Some(crate::si::Declared { stream_type, descriptors: Vec::new(), program_info: Vec::new() })
+        Some(crate::si::Declared {
+            stream_type,
+            descriptors: Vec::new(),
+            program_info: Vec::new(),
+        })
     };
     match target {
         // ADTS AAC, which is what everything here frames it as.
@@ -2663,13 +2758,21 @@ pub fn cut_with_progress(
     // Which of the recording's streams are being written. Everything it
     // carries that a cut can carry, less whatever the caller named.
     let kept = |i: usize| !opts.drop_streams.contains(&i);
-    let audios: Vec<crate::AudioInfo> =
-        src.audios.iter().filter(|a| kept(a.stream_index)).cloned().collect();
+    let audios: Vec<crate::AudioInfo> = src
+        .audios
+        .iter()
+        .filter(|a| kept(a.stream_index))
+        .cloned()
+        .collect();
     // Captions go into a transport stream and nowhere else. MP4 has no
     // sample entry for an ARIB caption stream -- there is nothing to declare
     // it as, and no format to turn it into that is still what it was.
     let captions: Vec<crate::CaptionInfo> = if to_ts {
-        src.captions.iter().filter(|c| kept(c.stream_index)).cloned().collect()
+        src.captions
+            .iter()
+            .filter(|c| kept(c.stream_index))
+            .cloned()
+            .collect()
     } else {
         Vec::new()
     };
@@ -2697,7 +2800,16 @@ pub fn cut_with_progress(
     // parameters describe.
     let setups: Vec<AudioSetup> = audios
         .iter()
-        .map(|a| plan_audio(&src.input.url, a, opts, to_ts, src.on_a_ts, audios.len() > 1))
+        .map(|a| {
+            plan_audio(
+                &src.input.url,
+                a,
+                opts,
+                to_ts,
+                src.on_a_ts,
+                audios.len() > 1,
+            )
+        })
         .collect::<Result<Vec<_>>>()?;
 
     // What the recording says about itself. Read here rather than after the
@@ -2808,7 +2920,14 @@ pub fn cut_with_progress(
     let reframe = match (mp4ish, src.video.framing, src.video.codec.as_str()) {
         (true, NalFraming::Length(n), "h264" | "hevc") => {
             let sets = parameter_sets(&src.video.codec, &extradata);
-            if sets.is_empty() { None } else { Some(Reframe { nal_length: n, sets }) }
+            if sets.is_empty() {
+                None
+            } else {
+                Some(Reframe {
+                    nal_length: n,
+                    sets,
+                })
+            }
         }
         _ => None,
     };
@@ -2959,7 +3078,10 @@ pub fn cut_with_progress(
     // write_header is free to replace the stream's time base with whatever the
     // container actually uses, so every packet has to be rescaled from the
     // tick scale we built timestamps in into the one that got written.
-    let out_tb = octx.stream(0).ok_or_else(|| anyhow!("no output stream"))?.time_base();
+    let out_tb = octx
+        .stream(0)
+        .ok_or_else(|| anyhow!("no output stream"))?
+        .time_base();
 
     // Smart mode re-encodes the frames the boundaries fall inside, before any
     // of them is written, so that the pass below can stay a copy with a
@@ -3014,7 +3136,9 @@ pub fn cut_with_progress(
         .zip(patches)
         .map(|((setup, (out_index, reencoder)), patches)| AudioTrack {
             out_index,
-            out_tb: octx.stream(out_index).map_or(1.0 / 90_000.0, |s| f64::from(s.time_base())),
+            out_tb: octx
+                .stream(out_index)
+                .map_or(1.0 / 90_000.0, |s| f64::from(s.time_base())),
             in_index: setup.info.stream_index,
             info: setup.info.clone(),
             out_rate: setup.sample_rate,
@@ -3024,8 +3148,7 @@ pub fn cut_with_progress(
             end: None,
             reencoder,
             patches,
-            need_sync: mp4ish
-                && matches!(setup.target, ff::codec::Id::TRUEHD | ff::codec::Id::MLP),
+            need_sync: mp4ish && matches!(setup.target, ff::codec::Id::TRUEHD | ff::codec::Id::MLP),
             joins_at_sync: matches!(setup.target, ff::codec::Id::TRUEHD | ff::codec::Id::MLP),
             last_out: None,
             dropped: 0,
@@ -3036,7 +3159,9 @@ pub fn cut_with_progress(
         .zip(caption_pending)
         .map(|(info, out_index)| CaptionTrack {
             out_index,
-            out_tb: octx.stream(out_index).map_or(1.0 / 90_000.0, |s| f64::from(s.time_base())),
+            out_tb: octx
+                .stream(out_index)
+                .map_or(1.0 / 90_000.0, |s| f64::from(s.time_base())),
             in_index: info.stream_index,
             in_tb: info.time_base,
             written: 0,
@@ -3052,7 +3177,9 @@ pub fn cut_with_progress(
         // DTS trails PTS by the stream's reorder depth. Being generous costs
         // nothing: the muxer writes an edit list for the negative lead-in,
         // just as it would for any encoder's output.
-        depth: opts.reorder_depth.unwrap_or(src.video.has_b_frames.max(0) as i64),
+        depth: opts
+            .reorder_depth
+            .unwrap_or(src.video.has_b_frames.max(0) as i64),
         pending: Default::default(),
         seen: Default::default(),
         last_dts: None,
@@ -3061,7 +3188,11 @@ pub fn cut_with_progress(
         audio: audio_tracks,
         captions: caption_tracks,
         progress,
-        expected: plans.iter().flat_map(|p| &p.segments).map(|s| s.frames as i64).sum(),
+        expected: plans
+            .iter()
+            .flat_map(|p| &p.segments)
+            .map(|s| s.frames as i64)
+            .sum(),
     };
 
     let fps = num as f64 / den as f64;
@@ -3118,7 +3249,11 @@ pub fn cut_with_progress(
                     in_tb: t.info.time_base,
                     offset: target_start - plan.t_in,
                     pick_from: plan.t_in + drift,
-                    min_start: if t.end.is_none() { plan.t_in } else { f64::NEG_INFINITY },
+                    min_start: if t.end.is_none() {
+                        plan.t_in
+                    } else {
+                        f64::NEG_INFINITY
+                    },
                     window: (
                         (plan.t_in * t.info.sample_rate as f64).round() as i64,
                         (plan.t_out * t.info.sample_rate as f64).round() as i64,
@@ -3176,7 +3311,10 @@ pub fn cut_with_progress(
     writer.octx.write_trailer()?;
 
     if writer.written + writer.skipped != pictures {
-        bail!("segments reported {pictures} pictures, wrote {}", writer.written);
+        bail!(
+            "segments reported {pictures} pictures, wrote {}",
+            writer.written
+        );
     }
     if writer.skipped > 0 {
         eprintln!(
@@ -3222,7 +3360,9 @@ pub fn cut_with_progress(
     let unnamed = to_ts
         && tables.is_none()
         && !writing_m2ts(output)
-        && setups.iter().any(|s| s.recoded && s.target == ff::codec::Id::PCM_BLURAY);
+        && setups
+            .iter()
+            .any(|s| s.recoded && s.target == ff::codec::Id::PCM_BLURAY);
     let own_map = unnamed
         .then(|| {
             let at = crate::input::Input::plain(output);
@@ -3246,7 +3386,11 @@ pub fn cut_with_progress(
             output,
             // The recording's own tables where it had some; where it had
             // none, only the map is being corrected.
-            if tables.is_some() { opts.tables } else { crate::si::Tables::Muxer },
+            if tables.is_some() {
+                opts.tables
+            } else {
+                crate::si::Tables::Muxer
+            },
         ) {
             Ok(stats) if std::env::var("SMARTCUT_DEBUG").is_ok() => {
                 eprintln!(
@@ -3305,7 +3449,10 @@ mod tests {
 
     #[test]
     fn offers_only_the_rates_the_codec_is_written_at() {
-        let opts = CutOptions { audio_codec: AudioCodec::Lpcm, ..Default::default() };
+        let opts = CutOptions {
+            audio_codec: AudioCodec::Lpcm,
+            ..Default::default()
+        };
         // Blu-ray LPCM -- the only linear PCM a transport stream can declare
         // -- has 48, 96 and 192 kHz and nothing between.
         let can = writable_sound(&[surround(true)], &opts, &offered());
@@ -3319,17 +3466,26 @@ mod tests {
         // own arithmetic and not this. So which codecs have 96 kHz is a
         // question that reaches here: AAC does; AC-3 has 32, 44.1 and 48 and
         // nothing above.
-        let opts = CutOptions { audio_codec: AudioCodec::Aac, ..Default::default() };
+        let opts = CutOptions {
+            audio_codec: AudioCodec::Aac,
+            ..Default::default()
+        };
         let can = writable_sound(&[surround(true)], &opts, &offered());
         assert!(can.sample_rates.contains(&96_000));
-        let opts = CutOptions { audio_codec: AudioCodec::Ac3, ..Default::default() };
+        let opts = CutOptions {
+            audio_codec: AudioCodec::Ac3,
+            ..Default::default()
+        };
         let can = writable_sound(&[surround(true)], &opts, &offered());
         assert_eq!(can.sample_rates, vec![0, 48_000, 44_100, 32_000]);
     }
 
     #[test]
     fn offers_only_the_rungs_above_the_codecs_floor() {
-        let opts = CutOptions { audio_codec: AudioCodec::Dts, ..Default::default() };
+        let opts = CutOptions {
+            audio_codec: AudioCodec::Dts,
+            ..Default::default()
+        };
         // A DTS frame carries a fixed number of samples and has to be long
         // enough to describe every channel in it, so 5.1 at 48 kHz has a
         // floor between 640 and 768 kbit/s.
@@ -3337,11 +3493,17 @@ mod tests {
         assert_eq!(can.bit_rates, vec![768_000, 1_536_000]);
         // The floor comes down with the rate, since the same frame then
         // covers more of a second.
-        let opts = CutOptions { audio_sample_rate: Some(32_000), ..opts };
+        let opts = CutOptions {
+            audio_sample_rate: Some(32_000),
+            ..opts
+        };
         let can = writable_sound(&[surround(true)], &opts, &offered());
         assert_eq!(can.bit_rates, vec![512_000, 768_000, 1_536_000]);
         // And AAC has no floor at all.
-        let opts = CutOptions { audio_codec: AudioCodec::Aac, ..Default::default() };
+        let opts = CutOptions {
+            audio_codec: AudioCodec::Aac,
+            ..Default::default()
+        };
         let can = writable_sound(&[surround(true)], &opts, &offered());
         assert_eq!(can.bit_rates, offered().bit_rates);
     }
@@ -3351,14 +3513,23 @@ mod tests {
         // DTS is written mono, stereo, quad, 5.0 or 5.1 and in no other
         // count, so a three channel recording carried through as it is has
         // nowhere to put its middle channel.
-        let three = SoundAsIs { channels: 3, ..surround(true) };
+        let three = SoundAsIs {
+            channels: 3,
+            ..surround(true)
+        };
         let can = writable_sound(&[three], &CutOptions::default(), &offered());
         assert!(!can.codecs.contains(&AudioCodec::Dts));
         assert!(can.codecs.contains(&AudioCodec::Ac3));
         // Folded to stereo on the way it is a count DTS does have, so the
         // codec is on offer again the moment the channels are chosen.
-        let three = SoundAsIs { channels: 3, ..surround(true) };
-        let opts = CutOptions { audio_channels: Some(2), ..Default::default() };
+        let three = SoundAsIs {
+            channels: 3,
+            ..surround(true)
+        };
+        let opts = CutOptions {
+            audio_channels: Some(2),
+            ..Default::default()
+        };
         let can = writable_sound(&[three], &opts, &offered());
         assert!(can.codecs.contains(&AudioCodec::Dts));
     }
@@ -3368,7 +3539,13 @@ mod tests {
         // One recording DTS can be written from and one it cannot: the
         // second is enough to take the codec off the list, because the cut
         // writes both.
-        let tracks = [surround(true), SoundAsIs { channels: 3, ..surround(true) }];
+        let tracks = [
+            surround(true),
+            SoundAsIs {
+                channels: 3,
+                ..surround(true)
+            },
+        ];
         let can = writable_sound(&tracks, &CutOptions::default(), &offered());
         assert!(!can.codecs.contains(&AudioCodec::Dts));
     }
@@ -3398,7 +3575,10 @@ mod tests {
         // A recording read by a version that did not send the codec down.
         // Nothing here can say what it could be written as, and a list
         // greyed out on a guess is worse than one that was not.
-        let unnamed = SoundAsIs { codec: String::new(), ..surround(true) };
+        let unnamed = SoundAsIs {
+            codec: String::new(),
+            ..surround(true)
+        };
         let can = writable_sound(&[unnamed], &CutOptions::default(), &offered());
         assert_eq!(can.codecs.len(), offered().codecs.len());
         assert_eq!(can.bit_rates, offered().bit_rates);

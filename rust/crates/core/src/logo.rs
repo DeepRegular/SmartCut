@@ -72,8 +72,12 @@ pub enum Corner {
 }
 
 impl Corner {
-    const ALL: [Corner; 4] =
-        [Corner::TopLeft, Corner::TopRight, Corner::BottomLeft, Corner::BottomRight];
+    const ALL: [Corner; 4] = [
+        Corner::TopLeft,
+        Corner::TopRight,
+        Corner::BottomLeft,
+        Corner::BottomRight,
+    ];
 
     fn origin(self, w: usize, h: usize, cw: usize, ch: usize) -> (usize, usize) {
         match self {
@@ -150,8 +154,13 @@ fn walk_keyframes(
 ) -> Result<()> {
     let mut ictx = crate::input::demux(&src.input.url)?;
     let idx = src.video.stream_index;
-    let params = ictx.stream(idx).ok_or_else(|| anyhow!("video stream vanished"))?.parameters();
-    let mut decoder = ff::codec::context::Context::from_parameters(params)?.decoder().video()?;
+    let params = ictx
+        .stream(idx)
+        .ok_or_else(|| anyhow!("video stream vanished"))?
+        .parameters();
+    let mut decoder = ff::codec::context::Context::from_parameters(params)?
+        .decoder()
+        .video()?;
     // Only intra pictures are decoded: eight times faster, and a couple of
     // samples a second is far more resolution than a commercial break needs.
     unsafe {
@@ -223,16 +232,18 @@ pub fn detect_with(
             }
         };
         walk_keyframes(src, cw, ch, Some(&mut on), |_t, corners| {
-        for (k, buf) in corners.iter().enumerate() {
-            for (i, &v) in buf.iter().enumerate() {
-                sums[k][i] += v as f64;
+            for (k, buf) in corners.iter().enumerate() {
+                for (i, &v) in buf.iter().enumerate() {
+                    sums[k][i] += v as f64;
+                }
             }
-        }
-        count += 1;
+            count += 1;
         })?;
     }
     if count < 20 {
-        return Err(anyhow!("only {count} key frames; not enough to find a logo"));
+        return Err(anyhow!(
+            "only {count} key frames; not enough to find a logo"
+        ));
     }
 
     // Build a template for each corner. The strongest is not necessarily the
@@ -259,7 +270,13 @@ pub fn detect_with(
         let strength =
             mask.iter().map(|&i| tmpl[i] * tmpl[i]).sum::<f64>() / mask.len().max(1) as f64;
         let norm = mask.iter().map(|&i| tmpl[i] * tmpl[i]).sum::<f64>().sqrt();
-        cands.push(Cand { corner: *corner, tmpl, mask, norm, strength });
+        cands.push(Cand {
+            corner: *corner,
+            tmpl,
+            mask,
+            norm,
+            strength,
+        });
     }
 
     // Second pass: score every key frame against all four templates.
@@ -284,27 +301,31 @@ pub fn detect_with(
             }
         };
         walk_keyframes(src, cw, ch, Some(&mut on), |t, corners| {
-        times.push(t);
-        for k in 0..4 {
-            rings[k].push_back(corners[k].clone());
-            if rings[k].len() > ring_len {
-                rings[k].pop_front();
-            }
-            let mut avg = vec![0.0; n];
-            for buf in &rings[k] {
-                for i in 0..n {
-                    avg[i] += buf[i] as f64;
+            times.push(t);
+            for k in 0..4 {
+                rings[k].push_back(corners[k].clone());
+                if rings[k].len() > ring_len {
+                    rings[k].pop_front();
                 }
+                let mut avg = vec![0.0; n];
+                for buf in &rings[k] {
+                    for i in 0..n {
+                        avg[i] += buf[i] as f64;
+                    }
+                }
+                for v in avg.iter_mut() {
+                    *v /= rings[k].len() as f64;
+                }
+                let hp = region.highpass(&avg);
+                let c = &cands[k];
+                let dot: f64 = c.mask.iter().map(|&i| hp[i] * c.tmpl[i]).sum();
+                let en: f64 = c.mask.iter().map(|&i| hp[i] * hp[i]).sum::<f64>().sqrt();
+                scores[k].push(if en > 0.0 && c.norm > 0.0 {
+                    dot / (en * c.norm)
+                } else {
+                    0.0
+                });
             }
-            for v in avg.iter_mut() {
-                *v /= rings[k].len() as f64;
-            }
-            let hp = region.highpass(&avg);
-            let c = &cands[k];
-            let dot: f64 = c.mask.iter().map(|&i| hp[i] * c.tmpl[i]).sum();
-            let en: f64 = c.mask.iter().map(|&i| hp[i] * hp[i]).sum::<f64>().sqrt();
-            scores[k].push(if en > 0.0 && c.norm > 0.0 { dot / (en * c.norm) } else { 0.0 });
-        }
         })?;
     }
 
@@ -333,7 +354,8 @@ pub fn detect_with(
     let mut chosen: Option<Pick> = None;
     for k in 0..4 {
         let (present_t, absent_t) = thresholds[k];
-        let (intervals, transitions) = intervals_from(&times, &scores[k], present_t, absent_t, opts);
+        let (intervals, transitions) =
+            intervals_from(&times, &scores[k], present_t, absent_t, opts);
         let present: usize = scores[k].iter().filter(|&&s| s >= present_t).count();
         let frac = present as f64 / scores[k].len().max(1) as f64;
         if std::env::var("SMARTCUT_DEBUG").is_ok() {
@@ -351,7 +373,10 @@ pub fn detect_with(
         // mean the template latched onto moving picture instead.
         let mut lengths: Vec<f64> = intervals.iter().map(|(a, b)| b - a).collect();
         lengths.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
-        let median_len = lengths.get(lengths.len() / 2).copied().unwrap_or(f64::INFINITY);
+        let median_len = lengths
+            .get(lengths.len() / 2)
+            .copied()
+            .unwrap_or(f64::INFINITY);
         let plausible = frac >= 0.5
             && intervals.len() <= opts.max_breaks
             && (intervals.is_empty() || median_len >= opts.typical_break);
@@ -359,7 +384,11 @@ pub fn detect_with(
             continue;
         }
         if chosen.as_ref().is_none_or(|p| transitions < p.transitions) {
-            chosen = Some(Pick { corner_index: k, transitions, absent: intervals });
+            chosen = Some(Pick {
+                corner_index: k,
+                transitions,
+                absent: intervals,
+            });
         }
     }
     let pick = chosen.ok_or(NoLogo)?;
@@ -367,9 +396,12 @@ pub fn detect_with(
     let corner = cands[k].corner;
     let strength = cands[k].strength;
 
-    Ok(Logo { corner, strength, absent })
+    Ok(Logo {
+        corner,
+        strength,
+        absent,
+    })
 }
-
 
 /// Turn a score timeline into "logo missing" stretches, with hysteresis so a
 /// single dark frame does not end the programme. Also reports how often the
@@ -431,13 +463,17 @@ fn intervals_from(
     let absent = absent
         .into_iter()
         .filter(|&(a, b, edge)| {
-            b - a >= if edge { opts.min_edge_absent } else { opts.min_absent }
+            b - a
+                >= if edge {
+                    opts.min_edge_absent
+                } else {
+                    opts.min_absent
+                }
         })
         .map(|(a, b, _)| (a, b))
         .collect();
     (absent, transitions)
 }
-
 
 /// Keep only the biggest connected run of mask pixels.
 fn largest_cluster(picked: &[usize], w: usize, h: usize) -> Vec<usize> {

@@ -10,7 +10,9 @@ fn fmt_hms(t: f64) -> String {
 fn parse_time(s: &str) -> Result<f64> {
     let mut total = 0.0;
     for part in s.trim().split(':') {
-        let v: f64 = part.parse().with_context(|| format!("bad timestamp {s:?}"))?;
+        let v: f64 = part
+            .parse()
+            .with_context(|| format!("bad timestamp {s:?}"))?;
         total = total * 60.0 + v;
     }
     Ok(total)
@@ -23,10 +25,16 @@ fn parse_time(s: &str) -> Result<f64> {
 /// reported as written, because nothing between here and the muxer had
 /// anything to say about a range that selects nothing.
 fn parse_range(s: &str) -> Result<(f64, f64)> {
-    let (a, b) = s.split_once('-').with_context(|| format!("bad range {s:?}, want START-END"))?;
+    let (a, b) = s
+        .split_once('-')
+        .with_context(|| format!("bad range {s:?}, want START-END"))?;
     let (start, end) = (parse_time(a)?, parse_time(b)?);
     if start.is_nan() || end.is_nan() || end <= start {
-        bail!("range {s:?}: {} does not come before {}", fmt_hms(start), fmt_hms(end));
+        bail!(
+            "range {s:?}: {} does not come before {}",
+            fmt_hms(start),
+            fmt_hms(end)
+        );
     }
     Ok((start, end))
 }
@@ -92,14 +100,19 @@ fn pick<'a>(
     if let Ok(n) = want.parse::<usize>() {
         return match entries.get(n.wrapping_sub(1)).filter(|_| n >= 1) {
             Some(e) => Ok(Some(e)),
-            None => bail!("--title {n}: this disc holds {} recording(s)", entries.len()),
+            None => bail!(
+                "--title {n}: this disc holds {} recording(s)",
+                entries.len()
+            ),
         };
     }
     entries
         .iter()
         .find(|e| e.label.contains(want) || e.path.contains(want))
         .map(Some)
-        .ok_or_else(|| anyhow::anyhow!("--title {want:?}: no recording on this disc is called that"))
+        .ok_or_else(|| {
+            anyhow::anyhow!("--title {want:?}: no recording on this disc is called that")
+        })
 }
 
 fn list_disc(input: &str, disc: &smartcut_core::disc::Disc) {
@@ -122,7 +135,12 @@ fn list_disc(input: &str, disc: &smartcut_core::disc::Disc) {
             (true, false) => " ",
             (false, _) => "",
         };
-        println!("{tick}{:3}  {}  {}{marks}", i + 1, fmt_hms(e.duration), e.label);
+        println!(
+            "{tick}{:3}  {}  {}{marks}",
+            i + 1,
+            fmt_hms(e.duration),
+            e.label
+        );
         // Only where there is a choice to make. A clip with one sound track
         // and nothing else is a clip the list has already described.
         if e.tracks.iter().filter(|t| t.kind != "video").count() > 1 {
@@ -130,8 +148,16 @@ fn list_disc(input: &str, disc: &smartcut_core::disc::Disc) {
                 if t.kind == "video" {
                     continue;
                 }
-                let lang = t.language.as_deref().map(|l| format!(" {l}")).unwrap_or_default();
-                let gone = if t.carried { "" } else { " -- a cut cannot carry this" };
+                let lang = t
+                    .language
+                    .as_deref()
+                    .map(|l| format!(" {l}"))
+                    .unwrap_or_default();
+                let gone = if t.carried {
+                    ""
+                } else {
+                    " -- a cut cannot carry this"
+                };
                 println!("       0x{:04x}  {}{lang}{gone}", t.pid, t.detail);
             }
         }
@@ -211,7 +237,11 @@ fn main() -> Result<()> {
             "--logo" => use_logo = true,
             "--title" => {
                 i += 1;
-                title = Some(args.get(i).context("--title needs a number or a name")?.clone());
+                title = Some(
+                    args.get(i)
+                        .context("--title needs a number or a name")?
+                        .clone(),
+                );
             }
             "--audio-mode" => {
                 i += 1;
@@ -308,12 +338,14 @@ fn main() -> Result<()> {
             }
             "--index" => {
                 i += 1;
-                index_kind = args.get(i).context("--index needs auto|disc|scan|container")?.clone();
+                index_kind = args
+                    .get(i)
+                    .context("--index needs auto|disc|scan|container")?
+                    .clone();
             }
             "--seek-index" => {
                 i += 1;
-                seek_index =
-                    Some(args.get(i).context("--seek-index needs a path")?.clone());
+                seek_index = Some(args.get(i).context("--seek-index needs a path")?.clone());
             }
             "--drop-stream" => {
                 i += 1;
@@ -325,7 +357,9 @@ fn main() -> Result<()> {
             }
             "--tables" => {
                 i += 1;
-                let v = args.get(i).context("--tables needs partial, broadcast or muxer")?;
+                let v = args
+                    .get(i)
+                    .context("--tables needs partial, broadcast or muxer")?;
                 tables = match v.as_str() {
                     "partial" => smartcut_core::si::Tables::Partial,
                     "broadcast" => smartcut_core::si::Tables::Broadcast,
@@ -476,7 +510,11 @@ fn main() -> Result<()> {
                     // guide.
                     let flat = text.replace('\n', " ");
                     let short: String = flat.chars().take(100).collect();
-                    let more = if flat.chars().count() > 100 { "…" } else { "" };
+                    let more = if flat.chars().count() > 100 {
+                        "…"
+                    } else {
+                        ""
+                    };
                     println!("        {short}{more}");
                 }
                 chapters = entry.marks.iter().map(|m| entry.start + m).collect();
@@ -571,20 +609,36 @@ fn main() -> Result<()> {
     for (n, a) in src.audios.iter().enumerate() {
         // The stream index is what names a track to `--drop-stream`, so it
         // is printed even when there is only one.
-        let main = if src.audio.as_ref().is_some_and(|m| m.stream_index == a.stream_index) {
+        let main = if src
+            .audio
+            .as_ref()
+            .is_some_and(|m| m.stream_index == a.stream_index)
+        {
             "  main"
         } else {
             ""
         };
-        let lang = a.language.as_deref().map(|l| format!("  {l}")).unwrap_or_default();
+        let lang = a
+            .language
+            .as_deref()
+            .map(|l| format!("  {l}"))
+            .unwrap_or_default();
         // The PID only where there is one. A recording out of an MP4 has a
         // track number in that field and calling it a PID would name it
         // something it is not; the stream index names it either way, and is
         // what `--drop-stream` takes.
-        let pid = if src.on_a_ts { format!(" pid 0x{:04x}", a.pid) } else { String::new() };
+        let pid = if src.on_a_ts {
+            format!(" pid 0x{:04x}", a.pid)
+        } else {
+            String::new()
+        };
         println!(
             "audio{}: {} {}Hz {}ch{lang}{}{main}   [stream {}{pid}]",
-            if src.audios.len() > 1 { format!(" {}", n + 1) } else { "  ".to_string() },
+            if src.audios.len() > 1 {
+                format!(" {}", n + 1)
+            } else {
+                "  ".to_string()
+            },
             a.codec,
             a.sample_rate,
             a.channels,
@@ -593,9 +647,20 @@ fn main() -> Result<()> {
         );
     }
     for c in &src.captions {
-        let lang = c.language.as_deref().map(|l| format!(" {l}")).unwrap_or_default();
-        let pid = if src.on_a_ts { format!(" pid 0x{:04x}", c.pid) } else { String::new() };
-        println!("caption:{lang} ARIB STD-B24   [stream {}{pid}]", c.stream_index);
+        let lang = c
+            .language
+            .as_deref()
+            .map(|l| format!(" {l}"))
+            .unwrap_or_default();
+        let pid = if src.on_a_ts {
+            format!(" pid 0x{:04x}", c.pid)
+        } else {
+            String::new()
+        };
+        println!(
+            "caption:{lang} ARIB STD-B24   [stream {}{pid}]",
+            c.stream_index
+        );
     }
     // Said out loud rather than dropped in silence: these are streams a cut
     // has no way to carry. See `smartcut_core::DroppedStream`.
@@ -608,9 +673,21 @@ fn main() -> Result<()> {
     }
 
     let open = src.points.iter().filter(|p| p.open_gop()).count();
-    let droppable = src.points.iter().filter(|p| p.open_gop() && p.droppable).count();
-    let gaps: Vec<f64> = src.points.windows(2).map(|w| w[1].time - w[0].time).collect();
-    let mean_gop = if gaps.is_empty() { 0.0 } else { gaps.iter().sum::<f64>() / gaps.len() as f64 };
+    let droppable = src
+        .points
+        .iter()
+        .filter(|p| p.open_gop() && p.droppable)
+        .count();
+    let gaps: Vec<f64> = src
+        .points
+        .windows(2)
+        .map(|w| w[1].time - w[0].time)
+        .collect();
+    let mean_gop = if gaps.is_empty() {
+        0.0
+    } else {
+        gaps.iter().sum::<f64>() / gaps.len() as f64
+    };
     // An index that did not read the pictures cannot say which GOPs are open,
     // and the points it hands over say "closed" because that is the value a
     // field nobody filled in holds. Only the ones a boundary lands on are
@@ -625,7 +702,10 @@ fn main() -> Result<()> {
     } else if droppable == 0 {
         format!("{open} open (leading pictures, referenced -- cannot start a copy there)")
     } else {
-        format!("{open} open ({droppable} droppable, {} referenced)", open - droppable)
+        format!(
+            "{open} open ({droppable} droppable, {} referenced)",
+            open - droppable
+        )
     };
     println!(
         "        {} access points, mean GOP {mean_gop:.3}s, {note}  [{}]",
@@ -636,11 +716,7 @@ fn main() -> Result<()> {
     if let Some(at) = cut_near {
         for w in [0.5, 1.0, 2.0] {
             let t = smartcut_core::thumbs::cut_near(&src, at, w, 0.08)?;
-            println!(
-                "  ±{w:.1}s の窓: {}  ({:+.3}s)",
-                fmt_hms(t),
-                t - at
-            );
+            println!("  ±{w:.1}s の窓: {}  ({:+.3}s)", fmt_hms(t), t - at);
         }
         return Ok(());
     }
@@ -683,11 +759,18 @@ fn main() -> Result<()> {
             );
         }
         if let Ok(path) = std::env::var("SMARTCUT_SCENES_OUT") {
-            let dump: String =
-                track.scenes.iter().map(|t| format!("{t:.3}\n")).collect();
+            let dump: String = track.scenes.iter().map(|t| format!("{t:.3}\n")).collect();
             std::fs::write(path, dump)?;
         }
-        for t in track.scenes.iter().take(if std::env::var_os("SMARTCUT_SCENES_OUT").is_some() { 0 } else { 24 }) {
+        for t in track
+            .scenes
+            .iter()
+            .take(if std::env::var_os("SMARTCUT_SCENES_OUT").is_some() {
+                0
+            } else {
+                24
+            })
+        {
             let began = std::time::Instant::now();
             let exact = smartcut_core::thumbs::refine(&src, *t)?;
             println!(
@@ -994,7 +1077,11 @@ fn main() -> Result<()> {
         } else {
             audio_mode.as_str()
         },
-        if recoded { format!(", as {}", audio_codec.as_str()) } else { String::new() },
+        if recoded {
+            format!(", as {}", audio_codec.as_str())
+        } else {
+            String::new()
+        },
         asked.map_or(String::new(), |c| format!(", downmixed to {c}ch")),
         resampled.map_or(String::new(), |r| format!(", at {r} Hz")),
         requantised.map_or(String::new(), |b| format!(", {b} bit")),
@@ -1004,10 +1091,22 @@ fn main() -> Result<()> {
     let to_ts = std::path::Path::new(&out)
         .extension()
         .and_then(|e| e.to_str())
-        .is_some_and(|e| matches!(e.to_ascii_lowercase().as_str(), "ts" | "m2ts" | "mts" | "m2t"));
-    let kept_audio = src.audios.iter().filter(|a| !drop_streams.contains(&a.stream_index)).count();
+        .is_some_and(|e| {
+            matches!(
+                e.to_ascii_lowercase().as_str(),
+                "ts" | "m2ts" | "mts" | "m2t"
+            )
+        });
+    let kept_audio = src
+        .audios
+        .iter()
+        .filter(|a| !drop_streams.contains(&a.stream_index))
+        .count();
     let kept_caps = if to_ts {
-        src.captions.iter().filter(|c| !drop_streams.contains(&c.stream_index)).count()
+        src.captions
+            .iter()
+            .filter(|c| !drop_streams.contains(&c.stream_index))
+            .count()
     } else {
         0
     };
@@ -1052,9 +1151,7 @@ fn main() -> Result<()> {
     // having been handed a stream it has no header for.
     let es_is_aac = match audio_codec {
         smartcut_core::AudioCodec::Aac => true,
-        smartcut_core::AudioCodec::Source => {
-            src.audio.as_ref().is_some_and(|a| a.codec == "aac")
-        }
+        smartcut_core::AudioCodec::Source => src.audio.as_ref().is_some_and(|a| a.codec == "aac"),
         _ => false,
     };
     if audio_es && es_is_aac {
@@ -1095,9 +1192,15 @@ fn main() -> Result<()> {
                     .map(|s| s.to_string_lossy().into_owned())
                     .unwrap_or_else(|| clip.clone())
             });
-        let made = given_made.or_else(|| was.and_then(|e| e.made)).or(said.began);
-        let description = about.or_else(|| was.and_then(|e| e.description.clone())).or(said.description);
-        let channel = given_channel.or_else(|| was.and_then(|e| e.channel.clone())).or(said.channel);
+        let made = given_made
+            .or_else(|| was.and_then(|e| e.made))
+            .or(said.began);
+        let description = about
+            .or_else(|| was.and_then(|e| e.description.clone()))
+            .or(said.description);
+        let channel = given_channel
+            .or_else(|| was.and_then(|e| e.channel.clone()))
+            .or(said.channel);
         let channel_number = given_number
             .or_else(|| was.map(|e| e.channel_number).filter(|n| *n > 0))
             .unwrap_or(said.channel_number);
@@ -1112,7 +1215,9 @@ fn main() -> Result<()> {
         // What to call the disc, when nobody said: the channel this came
         // off, which for an evening of one channel's recordings is exactly
         // right, and otherwise the programme.
-        let title = disc_title.or_else(|| channel.clone()).unwrap_or_else(|| name.clone());
+        let title = disc_title
+            .or_else(|| channel.clone())
+            .unwrap_or_else(|| name.clone());
         smartcut_core::bdav::write(
             &at,
             &title,
@@ -1181,10 +1286,16 @@ mod tests {
 
     #[test]
     fn cut_ranges_are_the_complement_of_the_kept_ones() {
-        assert_eq!(complement(&mut [(3.0, 5.0)], 10.0), [(0.0, 3.0), (5.0, 10.0)]);
+        assert_eq!(
+            complement(&mut [(3.0, 5.0)], 10.0),
+            [(0.0, 3.0), (5.0, 10.0)]
+        );
         // A cut running to the end leaves only what is in front of it.
         assert_eq!(complement(&mut [(8.0, 20.0)], 10.0), [(0.0, 8.0)]);
         // Overlapping cuts are one cut.
-        assert_eq!(complement(&mut [(3.0, 6.0), (5.0, 8.0)], 10.0), [(0.0, 3.0), (8.0, 10.0)]);
+        assert_eq!(
+            complement(&mut [(3.0, 6.0), (5.0, 8.0)], 10.0),
+            [(0.0, 3.0), (8.0, 10.0)]
+        );
     }
 }

@@ -336,7 +336,8 @@ pub fn looks_like_disc(at: &Path) -> bool {
     if at.is_dir() {
         return disc_dir(at).is_some() || dvd::looks_like_dvd(at);
     }
-    at.extension().is_some_and(|e| e.eq_ignore_ascii_case("iso"))
+    at.extension()
+        .is_some_and(|e| e.eq_ignore_ascii_case("iso"))
 }
 
 /// The recordings a disc holds, in the order its own index lists them.
@@ -406,8 +407,12 @@ pub fn read(at: &Path) -> Result<Disc> {
 /// not on a disc costs a look at two directory names and nothing else.
 pub fn carry_disc_languages(src: &mut crate::Source) {
     let path = src.path.clone();
-    let Some((root, clip)) = clip_on_a_disc(&path) else { return };
-    let Ok(mut vol) = Volume::open(Path::new(root)) else { return };
+    let Some((root, clip)) = clip_on_a_disc(&path) else {
+        return;
+    };
+    let Ok(mut vol) = Volume::open(Path::new(root)) else {
+        return;
+    };
     let tracks = vol.tracks(clip);
     if !tracks.is_empty() {
         carry_languages(src, &tracks);
@@ -423,7 +428,9 @@ fn clip_on_a_disc(path: &str) -> Option<(&str, &str)> {
     let (root, rest) = ["/BDMV/STREAM/", "/BDAV/STREAM/"]
         .iter()
         .find_map(|marker| path.split_once(marker))?;
-    let clip = rest.strip_suffix(".m2ts").or_else(|| rest.strip_suffix(".M2TS"))?;
+    let clip = rest
+        .strip_suffix(".m2ts")
+        .or_else(|| rest.strip_suffix(".M2TS"))?;
     (!clip.is_empty() && !clip.contains('/')).then_some((root, clip))
 }
 
@@ -473,8 +480,12 @@ fn read_bluray(at: &Path) -> Result<Disc> {
     let mut seen: Vec<((String, i64, i64), usize, usize)> = Vec::new();
 
     for name in vol.playlists() {
-        let Ok(raw) = vol.read(&format!("PLAYLIST/{name}")) else { continue };
-        let Ok(title) = playlist(&raw, &name, shape, &mut vol) else { continue };
+        let Ok(raw) = vol.read(&format!("PLAYLIST/{name}")) else {
+            continue;
+        };
+        let Ok(title) = playlist(&raw, &name, shape, &mut vol) else {
+            continue;
+        };
         let many = title.clips.len();
         for (i, c) in title.clips.iter().enumerate() {
             let key = (c.name.clone(), ticks(c.start), ticks(c.end));
@@ -534,7 +545,11 @@ fn read_bluray(at: &Path) -> Result<Disc> {
         e.wanted = wanted;
     }
 
-    Ok(Disc { shape, label, entries })
+    Ok(Disc {
+        shape,
+        label,
+        entries,
+    })
 }
 
 /// Which rows to offer already ticked.
@@ -627,7 +642,12 @@ enum Volume {
     Dir { shape: Shape, dir: PathBuf },
     /// An image, the path it was opened from, and the prefix that directory
     /// sits at inside it.
-    Image { shape: Shape, image: Box<udf::Image>, path: PathBuf, prefix: String },
+    Image {
+        shape: Shape,
+        image: Box<udf::Image>,
+        path: PathBuf,
+        prefix: String,
+    },
 }
 
 impl Volume {
@@ -640,7 +660,12 @@ impl Volume {
         let image = udf::Image::open(at)?;
         let (shape, prefix) = prefix_of(&image)
             .ok_or_else(|| anyhow!("{}: no BDMV or BDAV directory on this image", at.display()))?;
-        Ok(Volume::Image { shape, image: Box::new(image), path: at.to_path_buf(), prefix })
+        Ok(Volume::Image {
+            shape,
+            image: Box::new(image),
+            path: at.to_path_buf(),
+            prefix,
+        })
     }
 
     fn shape(&self) -> Shape {
@@ -684,18 +709,22 @@ impl Volume {
     fn bytes(&self, clip: &str) -> u64 {
         let rel = format!("STREAM/{clip}.m2ts");
         match self {
-            Volume::Dir { dir, .. } => {
-                std::fs::metadata(at_name(dir, &rel)).map(|m| m.len()).unwrap_or(0)
-            }
-            Volume::Image { image, prefix, .. } => {
-                image.find(&format!("{prefix}{rel}")).map(|e| e.size).unwrap_or(0)
-            }
+            Volume::Dir { dir, .. } => std::fs::metadata(at_name(dir, &rel))
+                .map(|m| m.len())
+                .unwrap_or(0),
+            Volume::Image { image, prefix, .. } => image
+                .find(&format!("{prefix}{rel}"))
+                .map(|e| e.size)
+                .unwrap_or(0),
         }
     }
 
     /// What the disc says one clip carries, out of `CLIPINF`.
     fn tracks(&mut self, clip: &str) -> Vec<Track> {
-        self.read(&format!("CLIPINF/{clip}.clpi")).ok().map(|raw| tracks(&raw)).unwrap_or_default()
+        self.read(&format!("CLIPINF/{clip}.clpi"))
+            .ok()
+            .map(|raw| tracks(&raw))
+            .unwrap_or_default()
     }
 
     /// Everything in one of the disc's directories, whichever case it spells
@@ -705,7 +734,9 @@ impl Volume {
         let mut names: Vec<String> = match self {
             Volume::Dir { dir: root, .. } => std::fs::read_dir(at_name(root, dir))
                 .map(|d| {
-                    d.flatten().map(|e| e.file_name().to_string_lossy().into_owned()).collect()
+                    d.flatten()
+                        .map(|e| e.file_name().to_string_lossy().into_owned())
+                        .collect()
                 })
                 .unwrap_or_default(),
             Volume::Image { image, prefix, .. } => {
@@ -786,7 +817,9 @@ impl Volume {
             }
         });
         for name in names {
-            let Ok(raw) = self.read(&format!("META/DL/{name}")) else { continue };
+            let Ok(raw) = self.read(&format!("META/DL/{name}")) else {
+                continue;
+            };
             if let Some(found) = disc_name(&String::from_utf8_lossy(&raw)) {
                 return found;
             }
@@ -823,7 +856,10 @@ fn disc_dir(at: &Path) -> Option<(Shape, PathBuf)> {
 /// copied under somebody's own name -- `Anime 2026-08-17/`, holding
 /// `PLAYLIST`, `CLIPINF` and `STREAM` -- still open.
 fn dialect_of(dir: &Path) -> Option<Shape> {
-    let playlists = ["PLAYLIST", "playlist"].iter().map(|n| dir.join(n)).find(|p| p.is_dir())?;
+    let playlists = ["PLAYLIST", "playlist"]
+        .iter()
+        .map(|n| dir.join(n))
+        .find(|p| p.is_dir())?;
     let (mut rpls, mut mpls) = (0usize, 0usize);
     for e in std::fs::read_dir(&playlists).ok()?.flatten() {
         let name = e.file_name().to_string_lossy().to_ascii_lowercase();
@@ -841,7 +877,12 @@ fn dialect_of(dir: &Path) -> Option<Shape> {
     }
     // A disc's three directories with no playlist in them is a copy that went
     // wrong, and the only thing left to go on is what it was called.
-    match dir.file_name()?.to_string_lossy().to_ascii_uppercase().as_str() {
+    match dir
+        .file_name()?
+        .to_string_lossy()
+        .to_ascii_uppercase()
+        .as_str()
+    {
         "BDMV" => Some(Shape::Bdmv),
         "BDAV" => Some(Shape::Bdav),
         _ => None,
@@ -951,7 +992,10 @@ fn info_name(raw: &[u8]) -> Option<String> {
     }
     let end = (u32be(raw, 8) as usize).min(raw.len());
     let field = raw.get(NAME_AT..end)?;
-    let text = field.iter().position(|b| *b == 0).map_or(field, |at| &field[..at]);
+    let text = field
+        .iter()
+        .position(|b| *b == 0)
+        .map_or(field, |at| &field[..at]);
     let name = arib::one_line(&arib::decode(text));
     (!name.is_empty()).then_some(name)
 }
@@ -962,14 +1006,18 @@ fn table_of_playlists(raw: &[u8]) -> Vec<String> {
         return Vec::new();
     }
     let at = u32be(raw, 8) as usize;
-    let Some(count) = raw.get(at + 4..at + 6).map(|b| u16::from_be_bytes([b[0], b[1]]) as usize)
+    let Some(count) = raw
+        .get(at + 4..at + 6)
+        .map(|b| u16::from_be_bytes([b[0], b[1]]) as usize)
     else {
         return Vec::new();
     };
     let mut out = Vec::new();
     for i in 0..count.min(2000) {
         let name_at = at + 6 + i * 10;
-        let Some(name) = raw.get(name_at..name_at + 10) else { break };
+        let Some(name) = raw.get(name_at..name_at + 10) else {
+            break;
+        };
         if !name.iter().all(|b| b.is_ascii_graphic()) {
             break;
         }
@@ -1031,26 +1079,38 @@ fn play_items(raw: &[u8], at: usize, vol: &mut Volume) -> Result<Vec<Clip>> {
     let mut out = Vec::new();
     let mut item = at + 10;
     for _ in 0..count.min(1000) {
-        let Some(len) = raw.get(item..item + 2).map(|b| u16::from_be_bytes([b[0], b[1]]) as usize)
+        let Some(len) = raw
+            .get(item..item + 2)
+            .map(|b| u16::from_be_bytes([b[0], b[1]]) as usize)
         else {
             break;
         };
-        let Some(body) = raw.get(item + 2..item + 2 + len) else { break };
+        let Some(body) = raw.get(item + 2..item + 2 + len) else {
+            break;
+        };
         if body.len() < 20 {
             break;
         }
         let name = String::from_utf8_lossy(&body[..5]).into_owned();
         let codec = &body[5..9];
         if codec != b"M2TS" {
-            bail!("a clip in {name} is {}, which is not a stream this reads",
-                  String::from_utf8_lossy(codec));
+            bail!(
+                "a clip in {name} is {}, which is not a stream this reads",
+                String::from_utf8_lossy(codec)
+            );
         }
         let start = u32be(body, 12) as f64 / TICK;
         let end = u32be(body, 16) as f64 / TICK;
         if end <= start {
             bail!("a clip in the playlist ends before it begins");
         }
-        out.push(Clip { path: vol.stream(&name), name, start, end, marks: Vec::new() });
+        out.push(Clip {
+            path: vol.stream(&name),
+            name,
+            start,
+            end,
+            marks: Vec::new(),
+        });
         item += 2 + len;
     }
     Ok(out)
@@ -1079,7 +1139,9 @@ fn play_marks(raw: &[u8], at: usize, clips: &[Clip]) -> Vec<Vec<f64>> {
     if clips.is_empty() {
         return Vec::new();
     }
-    let Some(count) = raw.get(at + 4..at + 6).map(|b| u16::from_be_bytes([b[0], b[1]]) as usize)
+    let Some(count) = raw
+        .get(at + 4..at + 6)
+        .map(|b| u16::from_be_bytes([b[0], b[1]]) as usize)
     else {
         return none();
     };
@@ -1249,7 +1311,9 @@ fn u32be(b: &[u8], at: usize) -> u32 {
 }
 
 fn u16be(b: &[u8], at: usize) -> u16 {
-    b.get(at..at + 2).map(|v| u16::from_be_bytes([v[0], v[1]])).unwrap_or(0)
+    b.get(at..at + 2)
+        .map(|v| u16::from_be_bytes([v[0], v[1]]))
+        .unwrap_or(0)
 }
 
 // --- what a clip carries, out of CLIPINF ---------------------------------
@@ -1299,12 +1363,16 @@ fn entry_points(raw: &[u8]) -> Vec<(f64, u64)> {
         return Vec::new();
     }
     let map = cpi + 6;
-    let Some(&streams) = raw.get(map + 1) else { return Vec::new() };
+    let Some(&streams) = raw.get(map + 1) else {
+        return Vec::new();
+    };
     // One stream's worth is enough: the pictures are what a cut is planned
     // against, and a clip carries one picture stream.
     for i in 0..streams.min(16) as usize {
         let at = map + 2 + i * 12;
-        let Some(head) = raw.get(at..at + 12) else { break };
+        let Some(head) = raw.get(at..at + 12) else {
+            break;
+        };
         // Sixteen bits of PID, ten reserved, four of stream type, then the
         // two counts -- sixteen bits and eighteen, which do not fall on byte
         // boundaries, so the six bytes are read as one number.
@@ -1375,7 +1443,9 @@ fn tracks(raw: &[u8]) -> Vec<Track> {
         return Vec::new();
     }
     let at = u32be(raw, 12) as usize;
-    let Some(&sequences) = raw.get(at + 5) else { return Vec::new() };
+    let Some(&sequences) = raw.get(at + 5) else {
+        return Vec::new();
+    };
     let mut out: Vec<Track> = Vec::new();
     let mut p = at + 6;
     for _ in 0..sequences.min(64) {
@@ -1383,8 +1453,12 @@ fn tracks(raw: &[u8]) -> Vec<Track> {
         p += 8;
         for _ in 0..count {
             let pid = u16be(raw, p) as i32;
-            let Some(&len) = raw.get(p + 2) else { return out };
-            let Some(attr) = raw.get(p + 3..p + 3 + len as usize) else { return out };
+            let Some(&len) = raw.get(p + 2) else {
+                return out;
+            };
+            let Some(attr) = raw.get(p + 3..p + 3 + len as usize) else {
+                return out;
+            };
             p += 3 + len as usize;
             // A clip whose program map changes part-way through is written as
             // several sequences naming the same streams. One row each would
@@ -1405,8 +1479,11 @@ fn track_of(pid: i32, attr: &[u8]) -> Option<Track> {
     let coding = *attr.first()?;
     let lang = |at: usize| -> Option<String> {
         let raw = attr.get(at..at + 3)?;
-        let text: String =
-            raw.iter().take_while(|b| b.is_ascii_alphabetic()).map(|b| *b as char).collect();
+        let text: String = raw
+            .iter()
+            .take_while(|b| b.is_ascii_alphabetic())
+            .map(|b| *b as char)
+            .collect();
         (text.len() == 3).then_some(text.to_lowercase())
     };
     let (kind, detail, language, carried) = match coding {
@@ -1508,7 +1585,13 @@ fn track_of(pid: i32, attr: &[u8]) -> Option<Track> {
         // something the disc's index says.
         c => ("other", format!("stream type 0x{c:02x}"), None, true),
     };
-    Some(Track { kind, pid, detail, language, carried })
+    Some(Track {
+        kind,
+        pid,
+        detail,
+        language,
+        carried,
+    })
 }
 
 #[cfg(test)]
@@ -1522,10 +1605,16 @@ mod tests {
         raw[8..12].copy_from_slice(&320u32.to_be_bytes());
         raw[320..324].copy_from_slice(&32u32.to_be_bytes());
         raw[324..326].copy_from_slice(&3u16.to_be_bytes());
-        for (i, name) in ["00001.rpls", "00002.rpls", "00003.rpls"].iter().enumerate() {
+        for (i, name) in ["00001.rpls", "00002.rpls", "00003.rpls"]
+            .iter()
+            .enumerate()
+        {
             raw[326 + i * 10..336 + i * 10].copy_from_slice(name.as_bytes());
         }
-        assert_eq!(table_of_playlists(&raw), ["00001.rpls", "00002.rpls", "00003.rpls"]);
+        assert_eq!(
+            table_of_playlists(&raw),
+            ["00001.rpls", "00002.rpls", "00003.rpls"]
+        );
     }
 
     #[test]
@@ -1620,7 +1709,10 @@ mod tests {
         // A disc of recordings is all of it.
         assert_eq!(worth_ticking(Shape::Bdav, &disc), [true; 5]);
         // And a disc that is all short clips is not a disc holding nothing.
-        assert_eq!(worth_ticking(Shape::Bdmv, &[10.0, 47.0, 3.0]), [false, true, false]);
+        assert_eq!(
+            worth_ticking(Shape::Bdmv, &[10.0, 47.0, 3.0]),
+            [false, true, false]
+        );
         assert!(worth_ticking(Shape::Bdmv, &[]).is_empty());
     }
 
@@ -1668,7 +1760,9 @@ mod tests {
     fn leaves_out_marks_it_cannot_place() {
         // Times that fall nowhere near the title, at every candidate offset.
         let raw = mark_section(46, &[(0, 900_000_000), (0, 900_000_000)], 2, 6);
-        assert!(play_marks(&raw, 0, &[clip(0.4, 510.0)]).iter().all(Vec::is_empty));
+        assert!(play_marks(&raw, 0, &[clip(0.4, 510.0)])
+            .iter()
+            .all(Vec::is_empty));
     }
 
     /// One `.clpi`, with the stream list of an episode off a pressed disc:
@@ -1750,8 +1844,7 @@ mod tests {
         map.extend_from_slice(&0x1011u16.to_be_bytes());
         // Ten reserved bits, four of stream type, sixteen of coarse count and
         // eighteen of fine count, packed into six bytes.
-        let packed: u64 =
-            (1 << 34) | ((coarse.len() as u64) << 18) | fine.len() as u64;
+        let packed: u64 = (1 << 34) | ((coarse.len() as u64) << 18) | fine.len() as u64;
         map.extend_from_slice(&packed.to_be_bytes()[2..]);
         map.extend_from_slice(&(map.len() as u32 + 4).to_be_bytes());
         map.extend_from_slice(&one);
@@ -1770,7 +1863,10 @@ mod tests {
         // Two coarse entries, four fine ones between them. The second coarse
         // entry carries the next step of the timestamp, which is what makes a
         // point more than its own fine entry.
-        let raw = clpi_with_ep_map(&[(0, 0, 0), (2, 1, 0)], &[(0, 0), (90, 100), (0, 7), (90, 9)]);
+        let raw = clpi_with_ep_map(
+            &[(0, 0, 0), (2, 1, 0)],
+            &[(0, 0), (90, 100), (0, 7), (90, 9)],
+        );
         let found = entry_points(&raw);
         assert_eq!(found.len(), 4);
         // The fine entry holds bits 19..9 of the timestamp: 90 << 9 is 46080
@@ -1835,14 +1931,23 @@ mod tests {
         }
         let found = tracks(&raw);
         assert_eq!(found.len(), 3);
-        assert_eq!((found[0].kind, found[0].detail.as_str()), ("video", "MPEG-2 1080i 29.97fps"));
-        assert_eq!((found[1].kind, found[1].detail.as_str()), ("audio", "AAC stereo 48kHz"));
+        assert_eq!(
+            (found[0].kind, found[0].detail.as_str()),
+            ("video", "MPEG-2 1080i 29.97fps")
+        );
+        assert_eq!(
+            (found[1].kind, found[1].detail.as_str()),
+            ("audio", "AAC stereo 48kHz")
+        );
         // Three bytes of attributes leave no room for a language, and a
         // language guessed at is worse than none.
         assert_eq!(found[1].language, None);
         // A broadcast's private stream -- the captions, on this disc. The
         // index does not say what is in one, so neither does this.
-        assert_eq!((found[2].kind, found[2].detail.as_str()), ("other", "stream type 0x06"));
+        assert_eq!(
+            (found[2].kind, found[2].detail.as_str()),
+            ("other", "stream type 0x06")
+        );
         assert!(found.iter().all(|t| t.carried));
     }
 
@@ -1875,7 +1980,10 @@ mod tests {
             said.description.as_deref(),
             Some("美術科に入学した主人公が、ひとり暮らしを始める。")
         );
-        assert_eq!(said.made.map(|m| m.to_string()).as_deref(), Some("2010-01-31 00:30:00"));
+        assert_eq!(
+            said.made.map(|m| m.to_string()).as_deref(),
+            Some("2010-01-31 00:30:00")
+        );
 
         // A playlist that says none of it -- which is what an authoring tool
         // writes -- says none of it rather than saying something empty.

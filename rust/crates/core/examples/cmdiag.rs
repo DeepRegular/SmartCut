@@ -45,11 +45,24 @@ fn main() -> Result<()> {
     let without = blocks_of(&bare);
     let t_without = began.elapsed().as_secs_f64();
 
-    println!("walked    {t_with:6.2}s  {} blocks  ({} points)", with.len(), walked.points.len());
-    println!("container {t_without:6.2}s  {} blocks  (0 points)", without.len());
+    println!(
+        "walked    {t_with:6.2}s  {} blocks  ({} points)",
+        with.len(),
+        walked.points.len()
+    );
+    println!(
+        "container {t_without:6.2}s  {} blocks  (0 points)",
+        without.len()
+    );
     let same = with.len() == without.len()
-        && with.iter().zip(&without).all(|(a, b)| a.0 == b.0 && a.1 == b.1);
-    println!("\n  found the same breaks: {}", if same { "yes" } else { "NO" });
+        && with
+            .iter()
+            .zip(&without)
+            .all(|(a, b)| a.0 == b.0 && a.1 == b.1);
+    println!(
+        "\n  found the same breaks: {}",
+        if same { "yes" } else { "NO" }
+    );
     for (i, (a, b)) in with.iter().zip(&without).enumerate() {
         if a != b {
             println!("    block {i}: walked {a:?} vs container {b:?}");
@@ -81,6 +94,11 @@ fn main() -> Result<()> {
 
 fn to_blocks(v: &[(f64, f64)]) -> Vec<sc::cm::Block> {
     v.iter()
-        .map(|&(start, end)| sc::cm::Block { start, end, junctions: 0, score: 1.0 })
+        .map(|&(start, end)| sc::cm::Block {
+            start,
+            end,
+            junctions: 0,
+            score: 1.0,
+        })
         .collect()
 }
