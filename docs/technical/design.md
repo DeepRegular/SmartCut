@@ -853,7 +853,7 @@ stalls (GOP · 6 s, 2–7 px every 16 ms).
 ## Subtitles over the preview
 
 **Off by default.** The cut editor is a place to look at the picture, and a subtitle
-is wanted only when a cut is being placed by one. A picker in the info bar chooses a
+is wanted only when a cut is being placed by one. A picker on the bottom line chooses a
 track and it is drawn over the preview; a recording that carries no subtitles has no
 picker at all.
 
@@ -872,9 +872,16 @@ of the picture.
 
 Both are laid over the **picture** rather than over the stage. `object-fit: contain`
 leaves black bands beside a 16:9 picture in a wider stage, and a subtitle placed
-against the stage would drift into them as the window changed shape. While subtitles
-are showing, the frame number and time move to the top of the picture: both want the
-bottom, and the subtitle is the one that cannot be moved.
+against the stage would drift into them as the window changed shape. The frame number
+and time stay at the foot of the stage whether subtitles are drawn or not — that is
+where they are looked for — and they are drawn over the subtitle layer rather than
+under it, so a caption never takes the playhead's own readout with it. A stage has no
+third place to put either of them, so which one may be in the way is the person's to
+say: **Counter**, on the bottom line beside what the cut costs, takes the box off the
+picture — a button that stays down while they are drawn, because what it switches has
+no label of its own to go dim — and the answer is kept
+in the browser's own store beside the language, because the editor window is built
+afresh for every clip.
 
 A character is placed by the square it fills rather than by the font's idea of a line.
 `textBaseline: "top"` puts the *ascent* on the line it is given, and a Japanese font's

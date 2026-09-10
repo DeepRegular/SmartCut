@@ -247,14 +247,14 @@ frames, and `Snap to lossless` can take those to zero once it lights up.
 | Where | What |
 |---|---|
 | Top line | The filename |
-| Info bar | Lossless points, resolution, fps, scan type, audio, codec. **Subtitles**, **Tracks** and **Detect commercials** on the right |
+| Info bar | Lossless points, resolution, fps, scan type, audio, codec. **Tracks** and **Detect commercials** on the right |
 | Left column | The **keyframes** — your marks, each with a thumbnail. Click one to jump there |
 | The large picture | The preview. Bottom right: frame number, timecode, what kind of frame it is, and the current selection |
 | The band under it | The **filmstrip**: the frames around you, laid out as pictures. The `View` menu on the right sets how much time one cell covers |
 | The scrubber | **Green is the output itself.** `▼` are keyframes, a red vertical line is a join left by a cut, and the fine ticks below are scene changes |
 | The button row | **Cut** in the middle, `[ IN` to its left and `OUT ]` to its right, and outwards from there: go to, one frame, lossless point, start and end |
 | The band and lines below | **The export plan**: what will be copied and what will be rebuilt |
-| Bottom right | **OK** and **Cancel** |
+| The bottom line | On the left, what the cut costs, and beside it **Counter** and **Subtitles** — what the preview carries. **OK** and **Cancel** on the right |
 
 > **What a "lossless point" is.** Video is built of **key frames**, which are
 > whole pictures on their own, and frames that hold only the difference from
@@ -288,8 +288,8 @@ hole, and the frame counter counts the length that will actually be written.
 
 ![The preview with the subtitles drawn over it](../images/usage-subs.png)
 
-**Subtitles** sits at the right of the info bar. It is off to begin with; choose a
-track and it is drawn over the preview. **It is there to place a cut by.** Whether a
+**Subtitles** sits on the bottom line, beside what the cut costs. It is off to begin
+with; choose a track and it is drawn over the preview. **It is there to place a cut by.** Whether a
 seam lands in the middle of a line, and how far a subtitle runs either side of a
 commercial break, are not things the picture alone will tell you.
 
@@ -299,8 +299,11 @@ commercial break, are not things the picture alone will tell you.
   the disc drew is what is put on screen.
 - Where a recording carries more than one (a bilingual broadcast, Japanese and English
   on a disc), the one chosen is the one drawn.
-- While subtitles are showing, the frame number and time move to the **top** of the
-  picture: both want the bottom, and the subtitle is the one that cannot be moved.
+- The frame number and time stay at the **foot** of the picture whether subtitles are
+  showing or not. They share that corner with a caption, and they are drawn over it, so
+  where the playhead is never goes missing. Where the caption is the one you want to
+  see whole, turn **Counter** off beside it — the line under the film strip still
+  says where you are, and the answer is remembered for the next clip.
 - Playback keeps up with them.
 
 None of this changes what is written. This chooses what is **on screen**; which

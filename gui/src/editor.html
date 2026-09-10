@@ -18,14 +18,6 @@
     <div class="infobar">
       <span id="info">—</span>
       <span class="spacer"></span>
-      <!-- Which subtitles to draw over the preview, and 表示しない first
-           because that is what a cutting screen is for: the picture under
-           the playhead is what a cut is judged by, and a caption over it is
-           something to turn on when the cut is near a line. Empty and out of
-           the way on a recording that carries none. See `subs.rs`. -->
-      <label class="opt" id="subs-pick" hidden><span data-i18n="subs.label">字幕</span>
-        <select id="subs-track"></select>
-      </label>
       <button id="tracks" class="mini wide" data-i18n="tracks.button"
               data-i18n-title="tracks.button.title">トラック</button>
       <!-- Its label counts a detection up while one is running, so it is
@@ -46,7 +38,7 @@
       <div class="editor">
         <div class="stage">
           <img id="preview" alt="" />
-          <div class="overlay">
+          <div class="overlay" id="overlay">
             <div class="ovl-main">
               <span id="ovl-frame">—</span>
               <span id="ovl-time">--:--:--.--</span>
@@ -161,6 +153,35 @@
                what say which way you left it. -->
           <div class="export">
             <span class="badge" id="smart-badge">—</span>
+            <!-- What the preview carries, beside what the cut costs. Both are
+                 answers about the picture you are looking at rather than
+                 about the file, and this corner is where the eye already is
+                 while a cut is being placed -- the info bar above is a long
+                 way from the picture, and these two were being reached for
+                 while looking at it.
+
+                 The frame number and the time, on the picture or off it: they
+                 stand at the foot of the picture and so does a subtitle, and
+                 a stage has no third place to put either, so which of the two
+                 may be in the way is the person's to say.
+
+                 A button that stays down rather than a box to tick: what it
+                 turns on is a thing you are looking straight at, so it is
+                 pressed while looking at the picture and the picture is the
+                 answer. `aria-pressed` is the state, and `.on` is that state
+                 made visible. -->
+            <button id="counter-show" class="mini" type="button" aria-pressed="true"
+                    data-i18n="editor.counterShow"
+                    data-i18n-title="editor.counterShow.title">カウンタ</button>
+            <!-- Which subtitles to draw over the preview, and 表示しない first
+                 because that is what a cutting screen is for: the picture
+                 under the playhead is what a cut is judged by, and a caption
+                 over it is something to turn on when the cut is near a line.
+                 Empty and out of the way on a recording that carries none.
+                 See `subs.rs`. -->
+            <label class="opt" id="subs-pick" hidden><span data-i18n="subs.label">字幕</span>
+              <select id="subs-track"></select>
+            </label>
             <span class="dim" id="status"></span>
             <span class="spacer"></span>
             <button id="editor-ok" class="primary wide" data-i18n="editor.ok">OK</button>

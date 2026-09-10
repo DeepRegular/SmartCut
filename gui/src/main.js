@@ -695,7 +695,6 @@ function paintSubsPicker() {
     subsId = null;
     sel.innerHTML = "";
     clearSubs();
-    placeReadouts();
     return;
   }
   // Rebuilt rather than patched: this is drawn once per recording, and the
@@ -718,7 +717,6 @@ function paintSubsPicker() {
   subsId = still ? subsId : null;
   sel.value = still ? String(subsId) : "";
   if (!still) clearSubs();
-  placeReadouts();
 }
 
 /// What to call one track in the list.
@@ -766,15 +764,6 @@ function clearSubs() {
   subsShown = null;
   const layer = el("subs-layer");
   if (layer) layer.hidden = true;
-}
-
-/// The frame counter and the subtitles both want the bottom of the picture,
-/// and only one of them can be moved. Moved while a track is chosen rather
-/// than while a line is actually on screen: a readout that jumped to the top
-/// and back at every line would be worse than either place.
-function placeReadouts() {
-  const stage = document.querySelector(".stage");
-  if (stage) stage.classList.toggle("subs-on", subsId !== null);
 }
 
 /// Ask what is on screen at `t` and draw it.
@@ -952,7 +941,6 @@ const subsPicker = el("subs-track");
 if (subsPicker) {
   subsPicker.addEventListener("change", () => {
     subsId = subsPicker.value === "" ? null : Number(subsPicker.value);
-    placeReadouts();
     if (subsId === null) {
       clearSubs();
     } else {
@@ -980,6 +968,61 @@ function updateReadouts() {
   });
   el("selection").textContent = sel;
   el("ovl-sel").textContent = sel;
+}
+
+// --- the readouts on the picture ------------------------------------------
+//
+// Drawn unless they are turned off, from the info bar. They stand at the foot
+// of the picture, which is where a subtitle stands too, and a stage has no
+// third place to put either of them: the readouts are drawn over the
+// subtitles so that neither can go missing, and which of the two may be in
+// the way is a question for the person cutting rather than for this window.
+//
+// The line under the film strip says the same thing and is not touched --
+// what this hides is the box on the picture, which is the one that is in the
+// way of anything.
+
+/// Kept in the browser's own store, beside the language. The editor window is
+/// built afresh for every clip, and an answer given once about what the
+/// picture carries should not have to be given again.
+const COUNTER_KEY = "smartcut.counter";
+
+/// Whether to draw them, as it was last left. Anything but a stored "off" is
+/// on, so a store that has never been written and one that cannot be read
+/// come to the same answer.
+function counterWanted() {
+  try {
+    return localStorage.getItem(COUNTER_KEY) !== "off";
+  } catch {
+    return true;
+  }
+}
+
+/// Put them up or take them down, and leave the button showing which it is.
+/// `remember` is false for the window doing as it was already told, and true
+/// for the person telling it.
+function showCounter(on, remember = true) {
+  el("overlay").hidden = !on;
+  const button = el("counter-show");
+  if (button) {
+    button.classList.toggle("on", on);
+    button.setAttribute("aria-pressed", on ? "true" : "false");
+  }
+  if (!remember) return;
+  try {
+    localStorage.setItem(COUNTER_KEY, on ? "on" : "off");
+  } catch {
+    // This window still does as it was asked; only the next one forgets.
+  }
+}
+
+const counterButton = el("counter-show");
+if (counterButton) {
+  showCounter(counterWanted(), false);
+  // Read back off the picture rather than off a flag of its own: the one on
+  // the stage is what the button is about, and two of them would be one too
+  // many things to keep in step.
+  counterButton.addEventListener("click", () => showCounter(el("overlay").hidden));
 }
 
 // --- film strip ---------------------------------------------------------

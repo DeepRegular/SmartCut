@@ -255,16 +255,21 @@ main { flex: 1; min-height: 0; display: flex; gap: 0; }
   position: absolute; left: 50%; bottom: 10px; transform: translateX(-50%);
   background: rgba(0,0,0,.55); padding: 4px 14px; border-radius: 2px;
   text-align: center; pointer-events: none; white-space: nowrap;
+  /* Over the subtitle layer, which covers the whole picture: a caption
+     drew its own box over the readouts otherwise, and where the playhead
+     is is not a thing to lose. The readouts stay at the foot of the stage
+     whether subtitles are drawn or not -- that is where they are looked
+     for, and a readout that moved when a picker changed was worse than
+     one a caption sometimes sits behind. */
+  z-index: 2;
 }
+/* Turned off from the info bar. Spelled out for the same reason `.ovl-main`
+   spells it out: a rule of its own is what a bare `hidden` loses against. */
+.overlay[hidden] { display: none; }
 .ovl-main[hidden] { display: none; }
 .ovl-main { display: flex; gap: 26px; font-size: 21px; font-variant-numeric: tabular-nums; }
 .ovl-sub { display: flex; gap: 18px; font-size: 11px; color: #cfcfcf; justify-content: center; }
 #ovl-kind.key { color: #7ee787; font-weight: 600; }
-/* The readouts move to the top of the stage while subtitles are being drawn.
-   Both want the bottom of the picture -- that is where a subtitle goes and
-   where a frame counter goes least in the way -- and the subtitle is the one
-   that cannot be moved: it is where the broadcaster put it. */
-.stage.subs-on .overlay { top: 8px; bottom: auto; }
 
 /* The subtitle layer, laid over the picture rather than over the stage: the
    stage is black where a 16:9 picture does not reach the edges, and a
@@ -278,7 +283,7 @@ main { flex: 1; min-height: 0; display: flex; gap: 0; }
 #subs-pic[hidden] { display: none; }
 
 .searching {
-  position: absolute; top: 8px; left: 50%; transform: translateX(-50%);
+  position: absolute; top: 8px; left: 50%; transform: translateX(-50%); z-index: 3;
   background: rgba(240,160,32,.9); color: #201400; font-weight: 600;
   padding: 2px 12px; border-radius: 2px; pointer-events: none;
 }
@@ -472,6 +477,13 @@ main { flex: 1; min-height: 0; display: flex; gap: 0; }
 .opt[hidden] { display: none; }
 .mini.wide { min-width: 96px; }
 .mini { background: #333; color: var(--text); border: 1px solid #4a4a4a; border-radius: 2px; padding: 3px 10px; cursor: pointer; }
+/* A `.mini` that is a switch rather than a command: down while what it turns
+   on is on. The state has to show in the button, because what it switches --
+   the readouts drawn on the picture -- has no label of its own to go dim.
+   The transport's own blue, not the teal of a badge: this is a control that
+   is down, and the badge beside it in the editor's foot is a state that was
+   measured. Two teals side by side read as one thing said twice. */
+.mini.on { background: #2c5f7a; border-color: #3a7fa0; color: var(--text); }
 button:disabled { opacity: .45; cursor: default; }
 /* A control the chosen mode has no use for. The output settings do this to
    the audio channel and bitrate pickers unless the whole track is being
