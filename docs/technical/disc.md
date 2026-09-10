@@ -772,7 +772,7 @@ and now reports it, as `index::Index::end`; the container's own answer is kept
 wherever it is the longer of the two, so a container that knows its length
 keeps it.
 
-### The container's seek table has to reach the end to be worth having
+### The container's seek table has to cover the recording, not just reach the end
 
 `--index auto` asks the container for its seek table before walking the packets,
 because reading a table is free and walking four gigabytes is not. A program stream
@@ -784,10 +784,34 @@ Taken at face value that is worse than no index at all. A cut anywhere past the
 fourth second finds no entry point to copy from and re-encodes the whole title, and
 `--scenes` pulls every boundary in the recording onto the same picture.
 
-So the table is asked the one question that costs nothing: **does it reach the end of
-the recording**, measured against its own spacing? A table that stops where the probe
-stopped is declined and the walk answers instead. The same cut then copies 98.2%, and
-the scene list has 249 entries rather than one repeated.
+So the table is asked the one question that costs nothing: **does it cover the
+recording**? A table that stops where the probe stopped is declined and the walk
+answers instead. The same cut then copies 98.2%, and the scene list has 249 entries
+rather than one repeated.
+
+Asking only whether it *reaches the end* is not enough, and a 1999 DVD showed why.
+libavformat measures a program stream's length by seeking to the far end of the file
+and reading what is there, and it indexes that packet like any other. The table it
+left behind for an hour-and-a-half title was **ten entries over the first five
+seconds and one entry at 5110.6s of 5110.9s**. It reaches the end. It holds nothing in
+between, and it passed. What came of it was not a bad cut but a bad editor: the film
+strip draws its cells on entry points, so a window anywhere in that hour and a half
+had two of them to draw with, and stepping by keyframe had nowhere to step to.
+
+So the hole is asked about as well, and against the recording's length rather than
+against the table's own spacing: gaps in a real table vary by more than a factor of
+three, because an encoder puts an entry wherever the picture changes, and what is
+being caught here is not an uneven table but an empty one. A gap wider than a tenth
+of the recording is not a table a container kept.
+
+The walk that answers instead read the whole four-gigabyte title in **3.2 seconds**,
+which is the other half of why this is the right way round: the table was never
+saving much on a DVD, and it was costing everything.
+
+`examples/indexdiag.rs` asks each of the three sources separately and prints what each
+one says, which is how a table that should have been declined is found: nothing goes
+wrong loudly when an early source answers badly — the recording opens, and the editor
+is drawn from whatever entry points it was handed.
 
 ### A DVD's sound is LPCM in a stream nothing else declares
 

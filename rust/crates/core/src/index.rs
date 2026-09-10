@@ -301,9 +301,9 @@ impl IndexSource for DiscIndex {
 /// than no index at all: a cut anywhere past the fourth second finds no
 /// entry point to copy from and re-encodes the lot, and `--scenes` pulls
 /// every boundary in the recording onto the same picture. So the table is
-/// asked the one question that needs nothing read -- does it reach the end
-/// of the recording? -- and a table that stops where the probe stopped is
-/// declined, which sends the caller on to the walk.
+/// asked the one question that needs nothing read -- does it cover the
+/// recording? -- and a table that only covers where the probe went is
+/// declined, which sends the caller on to the walk. See [`covers`].
 pub struct ContainerIndex;
 
 impl IndexSource for ContainerIndex {
@@ -357,25 +357,7 @@ impl IndexSource for ContainerIndex {
                 .partial_cmp(&b.time)
                 .unwrap_or(std::cmp::Ordering::Equal)
         });
-        // Does it reach the end? Measured against the table's own spacing,
-        // which is the only figure here that knows what this recording's
-        // entry points are worth: a real table's last entry is an entry or
-        // two short of the end, a probe's is the whole recording short of
-        // it. The floor is for the short file whose every entry point sits
-        // in the first seconds anyway, and for the table of one, which has
-        // no spacing to be measured by.
-        if let Some(duration) = duration {
-            let first = points.first().expect("checked non-empty").time;
-            let last = points.last().expect("checked non-empty").time;
-            let spacing = (last - first) / (points.len() as f64 - 1.0).max(1.0);
-            let allowed = (spacing * 3.0).max(10.0);
-            if duration - last > allowed {
-                bail!(
-                    "the container's seek table stops at {last:.1}s of {duration:.1}s -- it is \
-                     what the probe read, not a table the container kept"
-                );
-            }
-        }
+        covers(&points.iter().map(|p| p.time).collect::<Vec<_>>(), duration)?;
         Ok(Index {
             points,
             leading_known: false,
@@ -384,6 +366,57 @@ impl IndexSource for ContainerIndex {
             end: None,
         })
     }
+}
+
+/// Does a seek table cover the recording, or only the part a probe read?
+///
+/// There are two ways to fall short of covering it, and a program stream
+/// shows both. The plain one is stopping early: the table runs out where the
+/// probe stopped and the rest of the recording has no entry point in it. The
+/// other is a hole, and it is the one that gets through a test written only
+/// against the end -- libavformat measures a program stream's length by
+/// seeking to the far end and reading what is there, and indexes that packet
+/// like any other. The table it leaves behind on a DVD title measured here is
+/// ten entries over the first five seconds and one entry at 5110.6s of
+/// 5110.9s. It reaches the end. It holds nothing in between, and the film
+/// strip drawn from it has two cells in an hour and a half.
+///
+/// So both are asked, each against the figure that can answer it. The end is
+/// asked against the table's own spacing, taken as the median gap, because a
+/// real table's last entry is an entry or two short of the end whatever it is
+/// spaced at. The hole is asked against the recording's length instead: gaps
+/// in a real table vary by more than a factor of three -- an encoder puts an
+/// entry wherever the picture changes -- and what is being caught here is not
+/// an uneven table but an empty one, so the bar is set where no table a
+/// container kept can reach it and a probe's cannot help but.
+///
+/// The floors are for the short recording, whose entry points sit in the
+/// first seconds because that is where the recording is.
+fn covers(times: &[f64], duration: Option<f64>) -> Result<()> {
+    let (Some(&first), Some(&last)) = (times.first(), times.last()) else {
+        return Ok(());
+    };
+    let gaps: Vec<f64> = times.windows(2).map(|w| w[1] - w[0]).collect();
+    let widest = gaps.iter().copied().fold(0.0, f64::max);
+    let allowed = (duration.unwrap_or(last - first) / 10.0).max(30.0);
+    if widest > allowed {
+        bail!(
+            "the container's seek table leaves {widest:.1}s with no entry point in it -- it is \
+             what the probe read, not a table the container kept"
+        );
+    }
+    // A table of one has no spacing to be measured by, and nothing to be
+    // measured: whether it covers the recording is the end's question alone.
+    if let Some(duration) = duration {
+        let spacing = crate::thumbs::median_gap(&gaps).unwrap_or(0.0);
+        if duration - last > (spacing * 3.0).max(10.0) {
+            bail!(
+                "the container's seek table stops at {last:.1}s of {duration:.1}s -- it is \
+                 what the probe read, not a table the container kept"
+            );
+        }
+    }
+    Ok(())
 }
 
 /// `f64::max` over an empty run gives negative infinity, which is not an
@@ -622,4 +655,69 @@ fn window_at(
         }
     }
     Ok(out)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Entry points every `every` seconds from `from` to `to`.
+    fn every(from: f64, to: f64, every: f64) -> Vec<f64> {
+        let mut out = Vec::new();
+        let mut t = from;
+        while t < to {
+            out.push(t);
+            t += every;
+        }
+        out
+    }
+
+    /// What libavformat hands over for the main title of a DVD measured
+    /// here: the probe's own half second of entry points, and the packet the
+    /// duration estimate found by seeking to the far end. It reaches the end
+    /// of the recording and holds nothing in between.
+    #[test]
+    fn the_probes_table_with_the_end_on_it_is_not_a_table() {
+        let mut times = every(0.467, 5.0, 0.5005);
+        times.push(5110.572);
+        assert_eq!(times.len(), 11);
+        let e = covers(&times, Some(5110.944)).unwrap_err().to_string();
+        assert!(e.contains("no entry point in it"), "{e}");
+    }
+
+    /// The same probe on a container that would not say how long it is: the
+    /// hole is measured against the table's own reach instead, and is just
+    /// as wide.
+    #[test]
+    fn the_hole_is_a_hole_whether_or_not_the_length_is_known() {
+        let mut times = every(0.467, 5.0, 0.5005);
+        times.push(5110.572);
+        assert!(covers(&times, None).is_err());
+    }
+
+    /// And without it: the table simply stops where the probe stopped.
+    #[test]
+    fn the_probes_table_on_its_own_stops_where_the_probe_did() {
+        let times = every(0.467, 5.0, 0.5005);
+        let e = covers(&times, Some(5110.944)).unwrap_err().to_string();
+        assert!(e.contains("stops at"), "{e}");
+    }
+
+    /// A table a container kept, with the unevenness a real one has: an
+    /// entry every five seconds, a stretch of nothing where the picture held
+    /// still, and a last entry a spacing short of the end.
+    #[test]
+    fn a_table_the_container_kept_is_taken() {
+        let mut times = every(0.0, 600.0, 5.0);
+        times.retain(|&t| !(300.0..340.0).contains(&t));
+        assert!(covers(&times, Some(603.0)).is_ok());
+    }
+
+    /// A recording shorter than the floors: every entry point it has sits in
+    /// the first seconds because that is where the recording is.
+    #[test]
+    fn a_short_recording_is_not_measured_against_a_long_one() {
+        assert!(covers(&every(0.0, 4.0, 0.5), Some(4.2)).is_ok());
+        assert!(covers(&[0.0], Some(4.2)).is_ok());
+    }
 }

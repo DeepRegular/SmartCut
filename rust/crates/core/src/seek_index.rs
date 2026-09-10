@@ -42,7 +42,14 @@ static SERIAL: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(
 /// cap is thinner than the film strip needs on anything over half an hour --
 /// which is the whole of what that change was for, so an index carrying one
 /// has to be made again rather than picked up.
-pub const VERSION: u32 = 3;
+///
+/// 4: an index made for a program stream held the probe's own handful of
+/// entry points rather than the recording's, because the test that was meant
+/// to turn that table away let it through ([`index::ContainerIndex`]).
+/// Nothing in an
+/// index says which source made it, and a saved one is simply believed, so a
+/// DVD opened before this stayed broken however often it was opened again.
+pub const VERSION: u32 = 4;
 
 const MAGIC: &[u8; 4] = b"SCIX";
 
