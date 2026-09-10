@@ -111,6 +111,20 @@ there, the recording is **added** to it.
 | `--proxy` | Build the editing proxy (a light stand-in file) beside the recording and stop (`.proxy.mp4`, or `-o`) |
 | `--as-proxy` | Treat the input as a proxy rather than a recording — how a proxy is checked against what it stands in for |
 
+## A disc's subtitles
+
+| Option | Meaning |
+|---|---|
+| `--subtitles pgs\|beside\|sup` | Where the subtitles a disc draws go. `pgs`, the default, puts them **inside the cut** as the kind a transport stream carries — a Blu-ray's own untouched, a DVD's converted to it. `beside` writes them **next to the cut** as the `.idx` and `.sub` pair every player and subtitle tool reads — a DVD's own untouched, a Blu-ray's read back out of its display sets. `sup` writes those display sets themselves, into a **`.sup` next to the cut** — a Blu-ray's subtitles byte for byte, and what BDSup2Sub and Subtitle Edit read |
+| `--drop-subpicture ID` | Leave one of a DVD's subtitle streams out, by the id the disc knows it by (`0x20`). Repeatable |
+
+Only a `.ts` or an `.m2ts` can hold subtitles inside it. Asked for an `.mp4`,
+SmartCut says so and writes the pair beside it instead — beside the cut is the
+one way a cut of a disc in that container keeps its subtitles. A `.sup` holds
+one stream, so a recording with two of them is written as two files, named by
+language (`cut_title.eng.sup`). See
+[a disc's subtitles](../technical/disc.md#a-discs-subtitles-inside-the-cut-or-beside-it).
+
 ## VC-1 discs
 
 | Option | Meaning |

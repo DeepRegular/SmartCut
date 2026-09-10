@@ -421,6 +421,7 @@ What is set on either tab stays there when you switch.
 | **Sample rate** | `Same as the input`, or 96 / 48 / 44.1 / 32 kHz |
 | **Bit depth** | `Same as the input`, 16 or 24 bit (only meaningful for linear PCM) |
 | **Audio bitrate** | For frames that are rebuilt. `Leave it to the engine` is the safe answer |
+| **A disc's subtitles** | Shown only for a recording off a disc. `Inside the cut (PGS)` by default — one file, with its subtitles in it — or beside the cut: `.idx / .sub`, the pair every player and subtitle tool reads, or `.sup`, the display sets themselves. **The line says which destination leaves them untouched**, and that is a different one for a DVD than for a Blu-ray |
 | **Write the keyframes to a separate .keyframe file** | Puts a `.keyframe` file next to the video, under the same name |
 
 A `.keyframe` file is **frame numbers and nothing else, with no header**, counted

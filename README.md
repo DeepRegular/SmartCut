@@ -258,13 +258,16 @@ frame, and one still on screen when the range ends is taken down, instead of
 standing there into the next scene. See
 [the subtitles a disc draws](docs/technical/disc.md#the-subtitles-a-disc-draws).
 
-**A DVD's subtitles:** the same pictures, and a transport stream has nowhere
-to put them — so you choose. **Beside the cut**, untouched, as the `.idx` and
-`.sub` pair players already read; or **converted into it**, written as the
-kind of subtitle a transport stream does carry, so the cut is one file with
-its subtitles inside. Either way the disc's own palette comes out of its index
-and both ends of every kept range are mended. See
-[a DVD's subtitles](docs/technical/disc.md#a-dvds-subtitles-beside-the-cut-or-converted-into-it).
+**Inside the cut, or beside it.** A DVD draws its subtitles the same way and a
+transport stream has nowhere to put those, so they are **converted** by
+default: written as the kind a Blu-ray carries, the same pixels and the same
+colours, so the cut is one file with its subtitles inside. Two other answers
+go for either disc, and both put the subtitles next to the cut instead —
+**`.idx` and `.sub`**, the VobSub pair every player and subtitle tool already
+reads, or **`.sup`**, the display sets themselves, which is a Blu-ray's
+subtitles byte for byte. Either way both ends of every kept range are mended,
+and beside is the one way an `.mp4` of a disc keeps its subtitles at all. See
+[a disc's subtitles, inside the cut or beside it](docs/technical/disc.md#a-discs-subtitles-inside-the-cut-or-beside-it).
 
 One video track per file. See
 [known limitations](docs/technical/validation.md#known-limitations) for the full

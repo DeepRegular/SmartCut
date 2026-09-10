@@ -34,11 +34,20 @@
 //!                             [ delay next  STOP END                    ]
 //! ```
 //!
-//! There are two things to do with one of these, and this module holds both.
-//! One is to write it out unchanged, which is what everything above is for.
-//! The other is to **read the picture out of it** so that it can be written
-//! again as the kind of subtitle a transport stream does carry -- see
+//! There are three things to do with one of these, and this module holds all
+//! three. One is to write it out unchanged, which is what everything above is
+//! for. The second is to **read the picture out of it** so that it can be
+//! written again as the kind of subtitle a transport stream does carry -- see
 //! [`Reader`], and [`crate::pgs::write`] for the other half of that.
+//!
+//! The third is that same journey the other way. A Blu-ray's subtitles *can*
+//! travel inside a cut and are not always wanted there: a pair beside the cut
+//! is what an editor, a player on an old set-top box, or a subtitle tool
+//! reads without being taught anything. So a display set is decoded
+//! ([`crate::pgs::read`]) and **written back as one of these units** --
+//! [`unit`], and [`Ink`] for the palette that has to be invented on the way,
+//! since a Blu-ray carries its colours in the stream and a DVD does not carry
+//! them at all.
 //!
 //! **The second sequence is optional, and often absent.** Of the units on
 //! the disc measured here, not one carries a STOP: each subtitle stands
@@ -53,7 +62,11 @@ use std::io::Write;
 
 /// What a delay in a display control sequence counts in: 1024 ticks of the
 /// 90 kHz clock, which is 11.378 ms.
-const TICK: f64 = 1024.0 / 90_000.0;
+///
+/// Public because it is the resolution of everything a unit says about time:
+/// a stop written to land at an exact instant lands within one of these of
+/// it, and a caller comparing the two has to know that.
+pub const TICK: f64 = 1024.0 / 90_000.0;
 
 /// Commands, of the ten a unit may carry, that this has to know by name.
 const STOP: u8 = 0x02;
@@ -171,11 +184,12 @@ pub fn take_down() -> Vec<u8> {
     out
 }
 
-/// One subtitle, decoded: the picture a unit was carrying.
+/// One subtitle, decoded: the picture a unit or a display set was carrying.
 ///
 /// An index per pixel and the colours those index into, which is the shape
 /// both formats keep a subtitle in -- so what [`crate::pgs::write`] does
-/// with this is spell the same pixels differently.
+/// with this is spell the same pixels differently, and what [`unit`] does
+/// with it is spell them back.
 pub struct Drawn {
     pub x: u16,
     pub y: u16,
@@ -242,58 +256,68 @@ impl Reader {
         if !self.decoder.decode(&packet, &mut sub)? {
             return Ok(None);
         }
-        // How long the unit says it stands. The decoder counts from the
-        // moment it appears, in milliseconds, and says nothing by saying
-        // either nothing or everything.
-        let until = match sub.end() {
-            0 | u32::MAX => None,
-            ms => Some(ms as f64 / 1000.0),
-        };
-        for rect in sub.rects() {
-            let ff::codec::subtitle::Rect::Bitmap(bitmap) = rect else {
-                continue;
-            };
-            let drawn = unsafe {
-                let r = bitmap.as_ptr();
-                let (w, h) = ((*r).w as usize, (*r).h as usize);
-                let stride = (*r).linesize[0] as usize;
-                if w == 0 || h == 0 || (*r).data[0].is_null() {
-                    continue;
-                }
-                let mut indices = Vec::with_capacity(w * h);
-                for row in 0..h {
-                    let line = std::slice::from_raw_parts((*r).data[0].add(row * stride), w);
-                    indices.extend_from_slice(line);
-                }
-                // The colours, as libavcodec hands them over: one word each,
-                // opacity in the top byte.
-                let colours = ((*r).nb_colors as usize).min(256);
-                let table = (*r).data[1] as *const u32;
-                let palette = (0..colours)
-                    .map(|i| {
-                        let c = if table.is_null() { 0 } else { *table.add(i) };
-                        (
-                            ((c >> 16) & 0xFF) as u8,
-                            ((c >> 8) & 0xFF) as u8,
-                            (c & 0xFF) as u8,
-                            ((c >> 24) & 0xFF) as u8,
-                        )
-                    })
-                    .collect();
-                Drawn {
-                    x: (*r).x.max(0) as u16,
-                    y: (*r).y.max(0) as u16,
-                    width: w as u16,
-                    height: h as u16,
-                    indices,
-                    palette,
-                    until,
-                }
-            };
-            return Ok(Some(drawn));
-        }
-        Ok(None)
+        Ok(drawn_from(&sub))
     }
+}
+
+/// The picture in a decoded subtitle, whichever decoder read it.
+///
+/// A DVD's units and a Blu-ray's display sets come out of libavcodec in the
+/// same shape -- one byte per pixel and a table of colours to look them up in
+/// -- so both readers end here. `None` where the subtitle draws nothing,
+/// which is what the thing that clears a screen decodes to in either format.
+pub(crate) fn drawn_from(sub: &ff::codec::subtitle::Subtitle) -> Option<Drawn> {
+    // How long the subtitle says it stands. The decoder counts from the
+    // moment it appears, in milliseconds, and says nothing by saying either
+    // nothing or everything.
+    let until = match sub.end() {
+        0 | u32::MAX => None,
+        ms => Some(ms as f64 / 1000.0),
+    };
+    for rect in sub.rects() {
+        let ff::codec::subtitle::Rect::Bitmap(bitmap) = rect else {
+            continue;
+        };
+        let drawn = unsafe {
+            let r = bitmap.as_ptr();
+            let (w, h) = ((*r).w as usize, (*r).h as usize);
+            let stride = (*r).linesize[0] as usize;
+            if w == 0 || h == 0 || (*r).data[0].is_null() {
+                continue;
+            }
+            let mut indices = Vec::with_capacity(w * h);
+            for row in 0..h {
+                let line = std::slice::from_raw_parts((*r).data[0].add(row * stride), w);
+                indices.extend_from_slice(line);
+            }
+            // The colours, as libavcodec hands them over: one word each,
+            // opacity in the top byte.
+            let colours = ((*r).nb_colors as usize).min(256);
+            let table = (*r).data[1] as *const u32;
+            let palette = (0..colours)
+                .map(|i| {
+                    let c = if table.is_null() { 0 } else { *table.add(i) };
+                    (
+                        ((c >> 16) & 0xFF) as u8,
+                        ((c >> 8) & 0xFF) as u8,
+                        (c & 0xFF) as u8,
+                        ((c >> 24) & 0xFF) as u8,
+                    )
+                })
+                .collect();
+            Drawn {
+                x: (*r).x.max(0) as u16,
+                y: (*r).y.max(0) as u16,
+                width: w as u16,
+                height: h as u16,
+                indices,
+                palette,
+                until,
+            }
+        };
+        return Some(drawn);
+    }
+    None
 }
 
 /// The sixteen colours a title's subtitles are drawn from.
@@ -332,6 +356,429 @@ impl Palette {
             *slot = (v << 16) | (v << 8) | v;
         }
         Palette(out)
+    }
+}
+
+/// The sixteen colours an index is written with, filled in as they are met.
+///
+/// A DVD's palette comes off the disc whole: sixteen entries sitting in the
+/// index beside the cells they belong to, and [`Palette::from_clut`] is the
+/// whole of the work. **A Blu-ray has no such sixteen.** Every display set
+/// carries its own colours in the stream -- as many as 256 of them, and a
+/// different set each time -- so a pair written out of one has to invent the
+/// palette its `.idx` puts at the top.
+///
+/// This is that palette, built as the subtitles go past. Each one is reduced
+/// to the four colours a unit may carry (see [`unit`]) and each of those four
+/// is written down here under the number the index will call it by. A colour
+/// already written is used again, which is what keeps a stream of white text
+/// with a black edge down to three or four entries over a whole film. Where
+/// sixteen are spoken for, the nearest of them stands in for the seventeenth:
+/// the format has no room for more, and a subtitle drawn in a colour a shade
+/// off is a subtitle.
+#[derive(Debug, Default)]
+pub struct Ink {
+    colours: Vec<u32>,
+}
+
+impl Ink {
+    /// The number this colour is written under, adding it where there is
+    /// still room and taking the nearest already written where there is not.
+    ///
+    /// A colour near enough to one already written is that one. It has to be:
+    /// the four colours of a subtitle are an average of what it was drawn in,
+    /// and the same white text averages a shade differently in every line of
+    /// it. Written down as they came, one film's white would spend the whole
+    /// palette on itself.
+    pub fn intern(&mut self, rgb: (u8, u8, u8)) -> u8 {
+        let mut best = (0usize, u32::MAX);
+        for (at, &c) in self.colours.iter().enumerate() {
+            let d = apart(unpack(c), rgb);
+            if d < best.1 {
+                best = (at, d);
+            }
+        }
+        if best.1 <= NEAR || self.colours.len() == 16 {
+            return best.0 as u8;
+        }
+        self.colours
+            .push(((rgb.0 as u32) << 16) | ((rgb.1 as u32) << 8) | rgb.2 as u32);
+        (self.colours.len() - 1) as u8
+    }
+
+    /// What has been written down, as the index writes it. The entries
+    /// nobody asked for are black, and nothing points at them.
+    pub fn palette(&self) -> Palette {
+        let mut out = [0u32; 16];
+        for (slot, &c) in out.iter_mut().zip(self.colours.iter()) {
+            *slot = c;
+        }
+        Palette(out)
+    }
+}
+
+/// How far apart two colours are, weighted the way the eye weights them:
+/// green most, then red, then blue. Squared, because only the order matters.
+fn apart(a: (u8, u8, u8), b: (u8, u8, u8)) -> u32 {
+    let d = |x: u8, y: u8| (x as i32 - y as i32).pow(2) as u32;
+    2 * d(a.0, b.0) + 4 * d(a.1, b.1) + 3 * d(a.2, b.2)
+}
+
+/// Near enough to be the same colour: eight levels of the 255 in each of the
+/// three, by the measure above. Two greys that far apart are one grey to
+/// anybody watching, and telling them apart costs an entry of the sixteen.
+const NEAR: u32 = 576;
+
+fn unpack(c: u32) -> (u8, u8, u8) {
+    (
+        ((c >> 16) & 0xFF) as u8,
+        ((c >> 8) & 0xFF) as u8,
+        (c & 0xFF) as u8,
+    )
+}
+
+/// A picture reduced to what one unit may carry: four colours, how opaque
+/// each is, and which of the four every colour of the original became.
+///
+/// Four is the format, not a choice. A DVD's unit says two bits per pixel and
+/// names four entries of the sixteen in the index -- background, pattern, and
+/// two emphases -- which is exactly what a subtitle is made of: nothing, the
+/// letter, its edge, and the blend between them.
+struct Slots {
+    rgb: [(u8, u8, u8); 4],
+    /// Opacity in the four bits a unit gives it: 0 invisible, 15 solid.
+    alpha: [u8; 4],
+    /// One entry per colour of the original, saying which slot it became.
+    of: [u8; 256],
+}
+
+/// Opacity at or below which a colour is taken to be nothing at all, so that
+/// the near-transparent fringe a decoder leaves around a letter does not
+/// spend one of the three slots that are worth having.
+const SHEER: u8 = 24;
+
+/// Reduce a picture to four colours.
+///
+/// Slot zero is the background and is always transparent: a subtitle is
+/// mostly nothing, and a unit whose background were opaque would draw a black
+/// box across the film. The other three are found by clustering the colours
+/// that are actually drawn -- weighted by how many pixels each covers, so a
+/// letter counts for more than the two pixels of a stray -- starting from the
+/// most used and then from whatever is furthest from what is already chosen.
+///
+/// Starting from the three most used would not do. The shades of one letter's
+/// interior are used more than its edge is, and a subtitle drawn in three
+/// shades of white with a black outline would come out as three whites with
+/// no outline at all.
+fn reduce(drawn: &Drawn) -> Slots {
+    let mut count = [0usize; 256];
+    for &i in &drawn.indices {
+        count[i as usize] += 1;
+    }
+    // The colours that are drawn at all, and how much of the picture each is.
+    let drawn_in: Vec<(usize, (u8, u8, u8), u8)> = (0..drawn.palette.len().min(256))
+        .filter(|&i| count[i] > 0 && drawn.palette[i].3 > SHEER)
+        .map(|i| {
+            let (r, g, b, a) = drawn.palette[i];
+            (i, (r, g, b), a)
+        })
+        .collect();
+
+    let mut slots = Slots {
+        rgb: [(0, 0, 0); 4],
+        alpha: [0; 4],
+        of: [0u8; 256],
+    };
+    if drawn_in.is_empty() {
+        return slots;
+    }
+
+    // Where the clusters start. The most used colour, and then the colour
+    // whose distance from everything already chosen, multiplied by how much
+    // of the picture it covers, is greatest.
+    let mut centres: Vec<((u8, u8, u8), u8)> = Vec::new();
+    let first = drawn_in
+        .iter()
+        .max_by_key(|(i, _, _)| count[*i])
+        .expect("not empty");
+    centres.push((first.1, first.2));
+    while centres.len() < 3 && centres.len() < drawn_in.len() {
+        let pick = drawn_in
+            .iter()
+            .max_by_key(|(i, rgb, a)| {
+                let near = centres
+                    .iter()
+                    .map(|c| apart(c.0, *rgb) + 4 * (c.1 as i32 - *a as i32).pow(2) as u32)
+                    .min()
+                    .unwrap_or(0);
+                (near as u64) * (count[*i] as u64)
+            })
+            .expect("not empty");
+        if centres.iter().any(|c| c.0 == pick.1 && c.1 == pick.2) {
+            break;
+        }
+        centres.push((pick.1, pick.2));
+    }
+
+    // And then the usual settling: every colour to the nearest centre, every
+    // centre to the middle of what came to it. Four passes, which is more
+    // than three clusters over a few dozen colours ever needs.
+    let mut belongs: Vec<usize> = vec![0; drawn_in.len()];
+    for _ in 0..4 {
+        for (k, (_, rgb, a)) in drawn_in.iter().enumerate() {
+            belongs[k] = centres
+                .iter()
+                .enumerate()
+                .min_by_key(|(_, c)| apart(c.0, *rgb) + 4 * (c.1 as i32 - *a as i32).pow(2) as u32)
+                .map_or(0, |(at, _)| at);
+        }
+        for (at, centre) in centres.iter_mut().enumerate() {
+            let mut total = [0u64; 4];
+            let mut weight = 0u64;
+            for (k, (i, rgb, a)) in drawn_in.iter().enumerate() {
+                if belongs[k] != at {
+                    continue;
+                }
+                let n = count[*i] as u64;
+                total[0] += rgb.0 as u64 * n;
+                total[1] += rgb.1 as u64 * n;
+                total[2] += rgb.2 as u64 * n;
+                total[3] += *a as u64 * n;
+                weight += n;
+            }
+            if weight == 0 {
+                continue;
+            }
+            let mean = |v: u64| (v / weight) as u8;
+            *centre = (
+                (mean(total[0]), mean(total[1]), mean(total[2])),
+                mean(total[3]),
+            );
+        }
+    }
+
+    for (at, (rgb, a)) in centres.iter().enumerate() {
+        slots.rgb[at + 1] = *rgb;
+        // Fifteen is solid and the format has no sixteen.
+        slots.alpha[at + 1] = ((*a as u16 * 15 + 127) / 255) as u8;
+    }
+    for (k, (i, _, _)) in drawn_in.iter().enumerate() {
+        slots.of[*i] = belongs[k] as u8 + 1;
+    }
+    slots
+}
+
+/// The unit that draws this picture, with its colours written into `ink`.
+///
+/// `None` where there is nothing to draw, or where the unit will not fit: a
+/// sub-picture unit states its own length in two bytes, so 65535 is the whole
+/// of what one may be. A subtitle never comes near it -- a line of text is a
+/// few kilobytes run-length coded -- and a full-screen picture can, which is
+/// why the caller is told rather than handed something a player will refuse.
+///
+/// The shape is the disc's own: the length, where the commands begin, the
+/// picture in two fields, and one display control sequence that names the
+/// four colours, says how opaque each is, says where on the screen it goes
+/// and where in here its two fields are, and puts it up. A second sequence
+/// takes it down again where the picture says when it should go; where it
+/// says nothing, none is written and the subtitle stands until the next one
+/// replaces it -- which is what a disc's own units do, and what the two ends
+/// of a kept range are mended on the strength of.
+pub fn unit(drawn: &Drawn, ink: &mut Ink) -> Option<Vec<u8>> {
+    let (w, h) = (drawn.width as usize, drawn.height as usize);
+    if w == 0 || h == 0 {
+        return None;
+    }
+    let slots = reduce(drawn);
+    if slots.alpha[1..].iter().all(|&a| a == 0) {
+        return None;
+    }
+    let clut: Vec<u8> = slots
+        .rgb
+        .iter()
+        .zip(slots.alpha.iter())
+        // A slot nothing is drawn in is not worth an entry of the sixteen:
+        // one film's subtitles would otherwise fill the palette with the
+        // black of every background they never drew.
+        .map(|(rgb, &a)| if a == 0 { 0 } else { ink.intern(*rgb) })
+        .collect();
+
+    let (x1, y1) = (drawn.x, drawn.y);
+    // The area a unit states is inclusive at both ends, which is why a
+    // subtitle one pixel wide has x2 == x1 rather than an empty span. Twelve
+    // bits each is what it states them in: a 4K screen is inside that and
+    // nothing a disc carries is outside it, but a picture that would be is
+    // refused rather than wrapped around.
+    let (x2, y2) = (x1 + drawn.width - 1, y1 + drawn.height - 1);
+    if x2 > 0xFFF || y2 > 0xFFF {
+        return None;
+    }
+
+    // Four bytes of header, then the picture in its two fields, each of them
+    // starting on an even address as a disc's own units do.
+    let mut out = vec![0u8; 4];
+    let top_at = out.len();
+    out.extend_from_slice(&field(drawn, &slots, 0));
+    if out.len() % 2 != 0 {
+        out.push(0xFF);
+    }
+    let bottom_at = out.len();
+    out.extend_from_slice(&field(drawn, &slots, 1));
+    if out.len() % 2 != 0 {
+        out.push(0xFF);
+    }
+    let dcsqt = out.len();
+    // The sequence below comes to twenty-four bytes: four of header, three
+    // each for the colours and the contrast, seven for the area, five for
+    // where the fields are, and one each to put it up and to end.
+    let first_ends = dcsqt + 24;
+    let next = if drawn.until.is_some() {
+        first_ends
+    } else {
+        dcsqt // pointing at itself: the end
+    };
+    out.extend_from_slice(&0u16.to_be_bytes()); // at once
+    out.extend_from_slice(&(next as u16).to_be_bytes());
+    out.push(0x03);
+    out.push((clut[3] << 4) | clut[2]);
+    out.push((clut[1] << 4) | clut[0]);
+    out.push(0x04);
+    out.push((slots.alpha[3] << 4) | slots.alpha[2]);
+    out.push((slots.alpha[1] << 4) | slots.alpha[0]);
+    out.push(0x05);
+    out.push((x1 >> 4) as u8);
+    out.push((((x1 & 0x0F) << 4) | (x2 >> 8)) as u8);
+    out.push(x2 as u8);
+    out.push((y1 >> 4) as u8);
+    out.push((((y1 & 0x0F) << 4) | (y2 >> 8)) as u8);
+    out.push(y2 as u8);
+    out.push(0x06);
+    out.extend_from_slice(&(top_at as u16).to_be_bytes());
+    out.extend_from_slice(&(bottom_at as u16).to_be_bytes());
+    out.push(0x01); // put it up
+    out.push(END);
+    debug_assert_eq!(
+        out.len(),
+        first_ends,
+        "the second sequence is placed by hand"
+    );
+    if let Some(after) = drawn.until {
+        let delay = (after.max(0.0) / TICK).round().min(u16::MAX as f64) as u16;
+        out.extend_from_slice(&delay.to_be_bytes());
+        out.extend_from_slice(&(first_ends as u16).to_be_bytes()); // pointing at itself: the end
+        out.push(STOP);
+        out.push(END);
+    }
+    if out.len() > u16::MAX as usize {
+        return None;
+    }
+    let size = out.len() as u16;
+    out[0..2].copy_from_slice(&size.to_be_bytes());
+    out[2..4].copy_from_slice(&(dcsqt as u16).to_be_bytes());
+    Some(out)
+}
+
+/// One field of the picture, run-length coded: the even rows of it or the
+/// odd ones.
+///
+/// A DVD keeps the two fields apart and addresses each on its own, which is
+/// what a television drawing every other line wanted. Each row ends on a byte
+/// boundary; a row that runs to its end in one colour says so with the code
+/// that means "and the rest", which is most of them.
+fn field(drawn: &Drawn, slots: &Slots, parity: usize) -> Vec<u8> {
+    let (w, h) = (drawn.width as usize, drawn.height as usize);
+    let mut nib = Nibbles::default();
+    let mut y = parity;
+    while y < h {
+        let mut x = 0usize;
+        while x < w {
+            let at = |x: usize| {
+                drawn
+                    .indices
+                    .get(y * w + x)
+                    .map_or(0, |&i| slots.of[i as usize])
+            };
+            let colour = at(x);
+            let mut run = 1usize;
+            while x + run < w && at(x + run) == colour {
+                run += 1;
+            }
+            if x + run == w && run > 15 {
+                nib.rest(colour);
+            } else {
+                nib.run(colour, run);
+            }
+            x += run;
+        }
+        nib.align();
+        y += 2;
+    }
+    nib.out
+}
+
+/// Four bits at a time, which is how a unit's picture is written.
+#[derive(Default)]
+struct Nibbles {
+    out: Vec<u8>,
+    /// Whether the last byte is half written.
+    half: bool,
+}
+
+impl Nibbles {
+    fn nibble(&mut self, v: u8) {
+        if self.half {
+            if let Some(b) = self.out.last_mut() {
+                *b |= v & 0x0F;
+            }
+            self.half = false;
+        } else {
+            self.out.push((v & 0x0F) << 4);
+            self.half = true;
+        }
+    }
+
+    /// A run of one colour, in the shortest of the four codes that holds it.
+    ///
+    /// The codes are told apart by how many zeroes they open with, which caps
+    /// a single one at 255 pixels; a longer run is written as several.
+    fn run(&mut self, colour: u8, mut len: usize) {
+        while len > 0 {
+            let take = len.min(255);
+            let v = ((take as u16) << 2) | colour as u16;
+            match take {
+                0..=3 => self.nibble(v as u8),
+                4..=15 => {
+                    self.nibble((v >> 4) as u8);
+                    self.nibble(v as u8);
+                }
+                16..=63 => {
+                    self.nibble(0);
+                    self.nibble((v >> 4) as u8);
+                    self.nibble(v as u8);
+                }
+                _ => {
+                    self.nibble(0);
+                    self.nibble((v >> 8) as u8);
+                    self.nibble((v >> 4) as u8);
+                    self.nibble(v as u8);
+                }
+            }
+            len -= take;
+        }
+    }
+
+    /// This colour to the end of the row, however far that is: a length of
+    /// zero in the longest of the codes, which is what says so.
+    fn rest(&mut self, colour: u8) {
+        self.nibble(0);
+        self.nibble(0);
+        self.nibble(0);
+        self.nibble(colour);
+    }
+
+    /// End the row. A row starts on a byte of its own.
+    fn align(&mut self) {
+        self.half = false;
     }
 }
 
@@ -376,6 +823,16 @@ impl Sidecar {
                 at: Vec::new(),
             });
         }
+    }
+
+    /// Write the palette over, for a pair whose colours were invented on the
+    /// way out rather than read off a disc. See [`Ink`].
+    ///
+    /// Late, because it has to be: a palette built as the subtitles go past
+    /// is not finished until the last of them has gone past, and the index is
+    /// written after that.
+    pub fn recolour(&mut self, palette: Palette) {
+        self.palette = palette;
     }
 
     /// Whether anything at all was written. Nothing means no files.
@@ -671,6 +1128,205 @@ mod tests {
         assert!(idx.contains("id: en, index: 0"), "{idx}");
         assert!(idx.contains("id: jp, index: 1"), "{idx}");
         assert!(!side.is_empty());
+    }
+
+    /// A picture, in the shape a decoder hands one over: four colours, one
+    /// of them nothing, and a border drawn in one of the other three so that
+    /// nothing is cropped off the edges on the way back.
+    ///
+    /// A decoder trims the fully transparent rows and columns from around a
+    /// subtitle -- which is right, and would make a round trip compare two
+    /// different rectangles.
+    fn picture(width: u16, height: u16) -> Drawn {
+        let (w, h) = (width as usize, height as usize);
+        let mut indices = vec![0u8; w * h];
+        for y in 0..h {
+            for x in 0..w {
+                let edge = x == 0 || y == 0 || x == w - 1 || y == h - 1;
+                indices[y * w + x] = if edge {
+                    2
+                } else if x % 37 == 0 {
+                    3
+                } else if (x / 5 + y / 3) % 3 == 0 {
+                    1
+                } else {
+                    0
+                };
+            }
+        }
+        Drawn {
+            x: 40,
+            y: 100,
+            width,
+            height,
+            indices,
+            palette: vec![
+                (0, 0, 0, 0),         // nothing
+                (255, 255, 255, 255), // the letter
+                (16, 24, 200, 255),   // its edge
+                (200, 190, 32, 153),  // and a blend, half there
+            ],
+            until: None,
+        }
+    }
+
+    /// The encoder and libavcodec's own decoder, back to back. Every pixel
+    /// comes back the colour it went in as, at the same place on the screen.
+    ///
+    /// This is the test the format is checked by: a unit written wrong is
+    /// read wrong here, and reading is not this program's own code.
+    fn round_trip(width: u16, height: u16) {
+        let drawn = picture(width, height);
+        let mut ink = Ink::default();
+        let spu = unit(&drawn, &mut ink).expect("small enough to be a unit");
+        assert_eq!(u16be(&spu, 0) as usize, spu.len(), "the length is its own");
+        let mut reader = Reader::open(&ink.palette(), (720, 480)).expect("a decoder");
+        let back = reader
+            .read(&spu)
+            .expect("decodes")
+            .expect("and draws something");
+        assert_eq!(
+            (back.x, back.y, back.width, back.height),
+            (drawn.x, drawn.y, drawn.width, drawn.height),
+            "the same rectangle of the screen"
+        );
+        assert_eq!(back.indices.len(), drawn.indices.len());
+        for (n, (&before, &after)) in drawn.indices.iter().zip(back.indices.iter()).enumerate() {
+            let want = drawn.palette[before as usize];
+            let got = back.palette[after as usize];
+            // A pixel that draws nothing has no colour to be compared: what
+            // it points at is whatever the background slot was left naming,
+            // and what makes it nothing is the opacity below.
+            if want.3 > 0 {
+                assert_eq!(
+                    (want.0, want.1, want.2),
+                    (got.0, got.1, got.2),
+                    "pixel {n} of {width}x{height} came back another colour"
+                );
+            }
+            // Opacity survives as the four bits a unit gives it, which is
+            // seventeen steps of the 255 it went in with.
+            assert!(
+                want.3.abs_diff(got.3) <= 17,
+                "pixel {n} came back {} opaque, not {}",
+                got.3,
+                want.3
+            );
+        }
+    }
+
+    #[test]
+    fn a_small_picture_survives_being_written_as_a_unit() {
+        round_trip(48, 20);
+    }
+
+    /// The same, wide enough that the runs need every code the format has --
+    /// including the one that means "and the rest of the row".
+    #[test]
+    fn a_wide_picture_survives_being_written_as_a_unit() {
+        round_trip(720, 48);
+    }
+
+    /// A unit written from a picture that says when it goes says so too, in
+    /// the second sequence, and one that says nothing carries only the first.
+    #[test]
+    fn a_written_unit_can_say_when_it_goes() {
+        let mut ink = Ink::default();
+        let standing = unit(&picture(32, 16), &mut ink).expect("a unit");
+        assert_eq!(stops_after(&standing), None, "nothing says when this goes");
+        let mut timed = picture(32, 16);
+        timed.until = Some(2.5);
+        let timed = unit(&timed, &mut ink).expect("a unit");
+        let after = stops_after(&timed).expect("this one says");
+        assert!((after - 2.5).abs() < TICK, "{after}");
+        assert_eq!(u16be(&timed, 0) as usize, timed.len());
+    }
+
+    /// A picture that draws nothing is not a unit. What clears a screen is
+    /// [`take_down`], which is ten bytes rather than a picture of nothing.
+    #[test]
+    fn a_picture_of_nothing_is_not_written() {
+        let mut ink = Ink::default();
+        let empty = Drawn {
+            x: 0,
+            y: 0,
+            width: 16,
+            height: 8,
+            indices: vec![0; 16 * 8],
+            palette: vec![(0, 0, 0, 0), (255, 255, 255, 255)],
+            until: None,
+        };
+        assert!(unit(&empty, &mut ink).is_none());
+    }
+
+    /// The palette fills up as colours are met, keeps the number it gave a
+    /// colour the first time, and stands the nearest of the sixteen in for
+    /// the seventeenth.
+    #[test]
+    fn the_palette_is_built_as_the_colours_are_met() {
+        let mut ink = Ink::default();
+        assert_eq!(ink.intern((255, 255, 255)), 0);
+        assert_eq!(ink.intern((0, 0, 0)), 1);
+        assert_eq!(
+            ink.intern((255, 255, 255)),
+            0,
+            "the same colour, the same id"
+        );
+        assert_eq!(
+            ink.intern((252, 253, 255)),
+            0,
+            "and near enough is the same"
+        );
+        for i in 2..16u8 {
+            assert_eq!(ink.intern((0, i * 16, 0)), i);
+        }
+        // Full. A colour nothing like the rest is written as the nearest.
+        assert_eq!(ink.intern((250, 250, 250)), 0);
+        assert_eq!(ink.palette().0[0], 0xffffff);
+        assert_eq!(ink.palette().0[1], 0x000000);
+    }
+
+    /// Three colours and a background is what a unit holds, and a picture
+    /// drawn in more is reduced to them rather than refused.
+    #[test]
+    fn a_picture_of_many_colours_is_reduced_to_four() {
+        let (w, h) = (64usize, 16usize);
+        let mut palette = vec![(0, 0, 0, 0)];
+        // A white letter, a black edge, and thirty shades between them,
+        // which is what a decoder hands over for antialiased text.
+        for i in 0..30u8 {
+            let v = i * 8;
+            palette.push((v, v, v, 255));
+        }
+        let mut indices = vec![0u8; w * h];
+        for (n, slot) in indices.iter_mut().enumerate() {
+            *slot = if n % 7 == 0 { 0 } else { (n % 30 + 1) as u8 };
+        }
+        let drawn = Drawn {
+            x: 0,
+            y: 0,
+            width: w as u16,
+            height: h as u16,
+            indices,
+            palette,
+            until: None,
+        };
+        let mut ink = Ink::default();
+        let spu = unit(&drawn, &mut ink).expect("a unit");
+        assert!(
+            ink.palette().0.iter().filter(|&&c| c != 0).count() <= 3,
+            "one picture cannot spend more than three of the sixteen"
+        );
+        let mut reader = Reader::open(&ink.palette(), (720, 480)).expect("a decoder");
+        let back = reader.read(&spu).expect("decodes").expect("draws");
+        assert_eq!(back.width, w as u16);
+        // The shades came back as the nearest of the three that were kept,
+        // which is what four colours means -- but nothing became nothing.
+        for (&before, &after) in drawn.indices.iter().zip(back.indices.iter()) {
+            let want = drawn.palette[before as usize];
+            let got = back.palette[after as usize];
+            assert_eq!(want.3 == 0, got.3 == 0, "a drawn pixel stayed drawn");
+        }
     }
 
     /// The palette is the disc's, converted to what the index writes.

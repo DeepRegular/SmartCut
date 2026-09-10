@@ -2075,8 +2075,8 @@ const settings = {
   /// has anywhere to put.
   audioBits: "",
   keyframes: false,
-  // Where a DVD's subtitles go. See `outset.subtitles`.
-  subtitles: "beside",
+  // Where the subtitles a disc draws go. See `outset.subtitles`.
+  subtitles: "pgs",
 };
 
 /// The settings as the program starts with them, kept because 新規作成 has to
@@ -3248,15 +3248,57 @@ function filenameSafe(name) {
 /// it one level down is one more folder to open for no reason.
 /// Whether anything in the list is a DVD title.
 ///
-/// Which is the only kind of recording that carries the sort of subtitle the
-/// question is about: a Blu-ray's travel inside the cut whatever anyone
-/// says, and a broadcast's are not this kind at all.
+/// Which is either kind of disc: a DVD draws its subtitles and so does a
+/// Blu-ray, and either can go inside the cut or beside it. A broadcast's are
+/// not this kind at all, and the question is not asked of one.
+///
+/// `"dvd"`, `"bdmv"`, `"both"` where the list holds some of each, or null
+/// where nothing in it draws its subtitles. Which of the two it is decides
+/// how the choice is worded: see `paintSubtitleChoices`.
 ///
 /// Asked of the name rather than of the tracks, because a title's name
 /// carries the sectors it plays and nothing else does -- and the tracks are
 /// read when a clip is opened, which is later than this row has to be right.
-function hasSubpictures() {
-  return clips.some((c) => /\.vob@\d+-\d+$/i.test(c.path || ""));
+/// A name survives a project being saved and opened again, which is the
+/// other reason.
+function drawnSubtitles() {
+  let dvd = false;
+  let bdmv = false;
+  for (const c of clips) {
+    const path = c.path || "";
+    if (/\.vob@\d+-\d+$/i.test(path)) dvd = true;
+    else if (/[\\/]BDMV[\\/]STREAM[\\/][^\\/]+$/i.test(path)) bdmv = true;
+  }
+  if (dvd && bdmv) return "both";
+  return dvd ? "dvd" : bdmv ? "bdmv" : null;
+}
+
+/// Word the three destinations for the disc the list came off.
+///
+/// The three are the same either way and what they mean is not. A DVD's
+/// subtitles travel **untouched** in the pair beside the cut and are
+/// converted into either of the other two; a Blu-ray's are untouched inside
+/// the cut and in the `.sup` beside it, and converted into the pair. Which
+/// one leaves them alone is the whole of what a person is choosing between,
+/// so it is what the line says -- and it is a different line for each disc.
+///
+/// A list holding some of each gets the neutral wording, which is true of
+/// both and says less. The default is the same one throughout: inside the
+/// cut, whichever disc it came off.
+///
+/// Written as `data-i18n` and not only as text, so that the language picker
+/// finds the right string here as it does everywhere else.
+function paintSubtitleChoices(from) {
+  const suffix = from === "both" ? "" : `.${from}`;
+  const say = (node, key) => {
+    if (!node) return;
+    node.dataset.i18n = key;
+    node.textContent = t(key);
+  };
+  say(el("label-subtitles"), `outset.subtitles${suffix}`);
+  for (const option of el("out-subtitles").options) {
+    say(option, `subtitles.${option.value}${suffix}`);
+  }
 }
 
 function subfolderWanted() {
@@ -3431,8 +3473,12 @@ function paintMode() {
   el("row-container").hidden = disc;
   el("row-keyframes").hidden = disc;
   // Asked only of a recording that has any: every other one would be
-  // answering a question about a kind of subtitle it does not carry.
-  el("row-subtitles").hidden = !hasSubpictures();
+  // answering a question about a kind of subtitle it does not carry. Worded
+  // for the disc it came off, because the three answers do different things
+  // to a DVD's subtitles than to a Blu-ray's.
+  const drawn = drawnSubtitles();
+  el("row-subtitles").hidden = !drawn;
+  if (drawn) paintSubtitleChoices(drawn);
   // Only where a run would actually use one -- a single file has nothing to
   // be grouped with, and a row offering to make it a folder is a question
   // nobody asked.

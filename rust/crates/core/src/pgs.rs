@@ -44,6 +44,9 @@
 //! window is lost at that one boundary -- which is what happens today to
 //! every subtitle on every disc.
 
+use anyhow::Result;
+use std::io::Write;
+
 /// A composition: where the objects go and what state the epoch is in.
 pub const PCS: u8 = 0x16;
 /// A window: the rectangle of the plane the composition draws inside.
@@ -321,6 +324,154 @@ impl Plane {
                 data,
             })
             .collect()
+    }
+}
+
+/// A PGS elementary stream, written beside the cut.
+///
+/// The third destination, and the one that converts nothing at all. A `.sup`
+/// is what a display set looks like outside a container: every segment as it
+/// travelled, each behind ten bytes saying when it is decoded and when it is
+/// shown. What goes in is the disc's own bytes, so a Blu-ray's subtitles come
+/// out of this byte for byte -- and BDSup2Sub, Subtitle Edit and everything
+/// else that works on a disc's subtitles read it without being taught
+/// anything.
+///
+/// ```text
+/// "PG"  pts  dts  type  length  [ the segment ]
+///  2     4    4    1      2
+/// ```
+///
+/// It holds **one stream**, where the pair a DVD's subtitles go in holds as
+/// many as the disc had. A recording with two of them is written as two
+/// files; see [`Sup::write`].
+#[derive(Debug)]
+pub struct Sup {
+    /// What the file is called beside the cut, where the cut's own name will
+    /// not do because another stream has taken it. See [`Sup::write`].
+    tag: Option<String>,
+    out: Vec<u8>,
+    segments: usize,
+}
+
+impl Sup {
+    pub fn new(tag: Option<String>) -> Sup {
+        Sup {
+            tag,
+            out: Vec::new(),
+            segments: 0,
+        }
+    }
+
+    /// Take one packet of a display set, moved onto the output's clock by
+    /// `offset`.
+    ///
+    /// A packet is usually one segment and the format allows it to be
+    /// several, so this writes a header per segment rather than per packet.
+    /// Both times are the packet's: every segment of a set is handed over
+    /// and shown together, which is what the set being a set means.
+    pub fn take(&mut self, held: &Held, offset: f64) {
+        let stamp = |t: f64| {
+            ((t + offset).max(0.0) * 90_000.0)
+                .round()
+                .min(u32::MAX as f64) as u32
+        };
+        let (pts, dts) = (stamp(held.pts), stamp(held.dts));
+        for (kind, body) in segments(&held.data) {
+            self.out.extend_from_slice(b"PG");
+            self.out.extend_from_slice(&pts.to_be_bytes());
+            self.out.extend_from_slice(&dts.to_be_bytes());
+            self.out.push(kind);
+            self.out
+                .extend_from_slice(&(body.len() as u16).to_be_bytes());
+            self.out.extend_from_slice(body);
+            self.segments += 1;
+        }
+    }
+
+    /// Whether anything at all was written. Nothing means no file.
+    pub fn is_empty(&self) -> bool {
+        self.segments == 0
+    }
+
+    /// How many segments it carries, for the note that says so.
+    pub fn count(&self) -> usize {
+        self.segments
+    }
+
+    /// Write it. `beside` is the cut itself; the file takes its name, which
+    /// is what makes a tool that opens the cut find them together.
+    ///
+    /// Where a recording carries more than one of these they cannot all be
+    /// that name, so each takes the language the disc says it is in --
+    /// `cut_title.eng.sup` -- or the number it sits on where the disc says
+    /// nothing or says the same thing twice.
+    pub fn write(&self, beside: &str) -> Result<String> {
+        let stem = std::path::Path::new(beside).with_extension("");
+        let at = match &self.tag {
+            None => stem.with_extension("sup"),
+            Some(tag) => stem.with_extension(format!("{tag}.sup")),
+        };
+        std::fs::File::create(&at)?.write_all(&self.out)?;
+        Ok(at.to_string_lossy().into_owned())
+    }
+}
+
+/// Reading a display set back into the picture it draws.
+///
+/// The other direction from [`write`], and for the other destination. A
+/// Blu-ray's subtitles can travel inside a cut untouched, which is what
+/// [`Plane`] is for, and they are not always wanted there: a `.idx` and
+/// `.sub` pair beside the cut is what an editor, a subtitle tool, or a player
+/// that has never heard of a display set reads without being taught anything.
+/// So the set is decoded here and written back out as a DVD's kind of unit --
+/// see [`crate::vobsub::unit`], which is the other half of this.
+///
+/// libavcodec's own decoder does the reading, and unlike a DVD's it needs
+/// nothing told to it: a display set carries its own colours. What it does
+/// need is **every set, in order**. A set that is not self-contained changes
+/// a composition whose picture and palette arrived earlier, so a decoder that
+/// was not shown those has nothing to change; the same decoder is kept for
+/// the whole of a stream for that reason.
+pub mod read {
+    use anyhow::Result;
+    use ffmpeg_next as ff;
+
+    /// One graphics stream being read back into pictures.
+    pub struct Reader {
+        decoder: ff::codec::decoder::Subtitle,
+    }
+
+    impl Reader {
+        /// Open one for a recording of this screen size.
+        pub fn open(screen: (u16, u16)) -> Result<Reader> {
+            let mut ctx = ff::codec::context::Context::new();
+            unsafe {
+                let p = ctx.as_mut_ptr();
+                (*p).codec_type = ff::ffi::AVMediaType::AVMEDIA_TYPE_SUBTITLE;
+                (*p).codec_id = ff::ffi::AVCodecID::AV_CODEC_ID_HDMV_PGS_SUBTITLE;
+                (*p).width = screen.0 as i32;
+                (*p).height = screen.1 as i32;
+            }
+            Ok(Reader {
+                decoder: ctx.decoder().subtitle()?,
+            })
+        }
+
+        /// The picture one display set puts up, or `None` where it puts up
+        /// none -- which is what the set that clears the plane amounts to.
+        ///
+        /// `set` is the segments of one whole set, end to end, which is how
+        /// the decoder wants them: it reads a run of segments and answers at
+        /// the END that finishes them.
+        pub fn read(&mut self, set: &[u8]) -> Result<Option<crate::vobsub::Drawn>> {
+            let packet = ff::Packet::copy(set);
+            let mut sub = ff::codec::subtitle::Subtitle::new();
+            if !self.decoder.decode(&packet, &mut sub)? {
+                return Ok(None);
+            }
+            Ok(crate::vobsub::drawn_from(&sub))
+        }
     }
 }
 
@@ -718,6 +869,63 @@ mod tests {
             dts: at,
             data,
         }
+    }
+
+    /// What a `.sup` is: every segment as it travelled, behind ten bytes
+    /// saying when it is decoded and when it is shown.
+    ///
+    /// Read back here the way the readers that matter read it -- the magic,
+    /// the two times, the type and the length -- because nothing else in
+    /// this program ever reads one.
+    #[test]
+    fn a_sup_is_the_segments_with_their_times_in_front() {
+        let mut sup = Sup::new(None);
+        let mut set = pcs(7, EPOCH_START, 1);
+        set.extend(one(WDS, 10));
+        // One packet carrying three segments, which the format allows and a
+        // demuxer hands over as it was given: three records, not one.
+        set.extend(one(END, 0));
+        sup.take(&held(2.0, set), 0.5);
+        assert_eq!(sup.count(), 3);
+        assert!(!sup.is_empty());
+
+        let mut at = 0usize;
+        let mut kinds = Vec::new();
+        while at < sup.out.len() {
+            assert_eq!(&sup.out[at..at + 2], b"PG", "every record opens with it");
+            let stamp = |from: usize| {
+                u32::from_be_bytes(sup.out[from..from + 4].try_into().expect("four bytes"))
+            };
+            // 2.0 seconds and half a second of offset, in 90 kHz.
+            assert_eq!(stamp(at + 2), 225_000);
+            assert_eq!(stamp(at + 6), 225_000);
+            let len = u16::from_be_bytes([sup.out[at + 11], sup.out[at + 12]]) as usize;
+            kinds.push(sup.out[at + 10]);
+            at += 13 + len;
+        }
+        assert_eq!(kinds, [PCS, WDS, END]);
+        assert_eq!(at, sup.out.len(), "and nothing left over");
+    }
+
+    /// The only stream takes the cut's own name; where there is a second,
+    /// each takes something of its own. What that is, is the caller's.
+    #[test]
+    fn a_sup_is_named_after_the_cut() {
+        let at = std::env::temp_dir().join("smartcut-sup-test");
+        std::fs::create_dir_all(&at).expect("a place to write");
+        let cut = at.join("cut_title.ts");
+        let cut = cut.to_string_lossy().into_owned();
+
+        let mut only = Sup::new(None);
+        only.take(&held(0.0, one(END, 0)), 0.0);
+        let wrote = only.write(&cut).expect("writes");
+        assert!(wrote.ends_with("cut_title.sup"), "{wrote}");
+
+        let mut second = Sup::new(Some("eng".into()));
+        second.take(&held(0.0, one(END, 0)), 0.0);
+        let wrote = second.write(&cut).expect("writes");
+        assert!(wrote.ends_with("cut_title.eng.sup"), "{wrote}");
+        let _ = std::fs::remove_dir_all(&at);
     }
 
     /// A packet that carries several segments at once is read as several.

@@ -2234,10 +2234,10 @@ async fn tracks(path: String) -> Result<Vec<StreamInfo>, String> {
                 optional: true,
             });
         }
-        // A DVD's subtitles, which do not go into the file at all: they are
-        // written beside it, and which of them travel is answered in the
-        // chooser where a disc is opened rather than here. See
-        // `smartcut_core::vobsub`.
+        // A DVD's subtitles, which go into the file only if converted first:
+        // where they end up is the output settings' question, and which of
+        // them travel is answered in the chooser where a disc is opened
+        // rather than here. See `smartcut_core::vobsub`.
         for s in &src.subpictures {
             out.push(StreamInfo {
                 index: usize::MAX,
@@ -2944,9 +2944,11 @@ async fn export(
     // sent means nothing dropped, which is what a clip nobody opened the
     // menu on amounts to.
     drop_streams: Option<Vec<usize>>,
-    // Where a DVD's subtitles go: "beside" writes the pair next to the cut,
-    // "pgs" converts them into the kind a transport stream carries. Nothing
-    // sent means beside, which is the exact one.
+    // Where the subtitles a disc draws go: "pgs" puts them inside the cut,
+    // as the kind a transport stream carries; "beside" writes the .idx and
+    // .sub pair next to it; "sup" writes the display sets themselves into a
+    // .sup next to it. Nothing sent means inside, which is one file rather
+    // than two.
     subtitles: Option<String>,
     // Streams switched off in the chooser when a disc was read, by PID.
     //
@@ -3038,8 +3040,9 @@ async fn export(
             audio_sample_rate: audio_sample_rate.filter(|&r| r > 0),
             audio_bits: audio_bits.filter(|&b| b > 0),
             subtitles: match subtitles.as_deref() {
-                Some("pgs") => smartcut_core::cut::Subtitles::Pgs,
-                _ => smartcut_core::cut::Subtitles::Beside,
+                Some("beside") => smartcut_core::cut::Subtitles::Beside,
+                Some("sup") => smartcut_core::cut::Subtitles::Sup,
+                _ => smartcut_core::cut::Subtitles::Pgs,
             },
             drop_streams: streams_to_drop(&src, drop_streams, drop_pids.clone()),
             // A DVD's subtitles are named by their substream id, which is

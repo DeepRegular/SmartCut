@@ -359,11 +359,14 @@ fn main() -> Result<()> {
             }
             "--subtitles" => {
                 i += 1;
-                let v = args.get(i).context("--subtitles needs beside or pgs")?;
+                let v = args
+                    .get(i)
+                    .context("--subtitles needs pgs, beside or sup")?;
                 subtitles = match v.as_str() {
                     "beside" => smartcut_core::cut::Subtitles::Beside,
                     "pgs" => smartcut_core::cut::Subtitles::Pgs,
-                    other => bail!("--subtitles wants beside or pgs, got {other:?}"),
+                    "sup" => smartcut_core::cut::Subtitles::Sup,
+                    other => bail!("--subtitles wants pgs, beside or sup, got {other:?}"),
                 };
             }
             "--drop-subpicture" => {
@@ -463,7 +466,7 @@ fn main() -> Result<()> {
         bail!(
             "usage: smartcut <input> [--keep START-END]... [--cut START-END]... \
              [--drop-stream INDEX]... [--drop-subpicture ID]... \
-             [--subtitles beside|pgs] [--tables partial|broadcast|muxer] [--no-open-gop] \
+             [--subtitles pgs|beside|sup] [--tables partial|broadcast|muxer] [--no-open-gop] \
              [--clean-joins] \
              [--vc1-quant 3..31] [--title N] [-o OUTPUT | --bdav FOLDER]\n\
              <input> is a recording, or a disc -- a BDAV, BDMV or VIDEO_TS folder, \
@@ -473,6 +476,13 @@ fn main() -> Result<()> {
              of each range to reach an entry point the copy can be spliced onto \
              without a picture coming out of the decoder in the wrong order; \
              what it costs is that those seconds stop being an exact copy\n\
+             --subtitles says where the subtitles a disc draws go: pgs, the \
+             default, puts them inside the cut, which only a .ts or an .m2ts \
+             can hold; beside writes them as the .idx and .sub pair next to it, \
+             which is a DVD's own subtitles untouched and a Blu-ray's read back \
+             out of the display sets it draws them with; sup writes those \
+             display sets themselves, into a .sup beside the cut, which is the \
+             one destination that converts a Blu-ray's subtitles not at all\n\
              --bdav writes the cut onto a disc of recordings in FOLDER rather than \
              into a file; --disc-title, --programme, --channel, --about and --made \
              fill in what its index says, which is otherwise taken from what the \
@@ -1157,7 +1167,11 @@ fn main() -> Result<()> {
     } else {
         0
     };
-    let kept_graphics = if to_ts {
+    // A disc's own subtitles are kept where a transport stream is being
+    // written, which can carry them, and wherever the pair beside the cut was
+    // asked for, which anything can be written next to.
+    let beside = subtitles != smartcut_core::cut::Subtitles::Pgs;
+    let kept_graphics = if to_ts || beside {
         src.graphics
             .iter()
             .filter(|g| !drop_streams.contains(&g.stream_index))
@@ -1171,8 +1185,13 @@ fn main() -> Result<()> {
         String::new()
     } else {
         format!(
-            ", {kept_graphics} of {} subtitle stream(s)",
-            src.graphics.len()
+            ", {kept_graphics} of {} subtitle stream(s){}",
+            src.graphics.len(),
+            match subtitles {
+                smartcut_core::cut::Subtitles::Beside => " beside the cut, as a pair",
+                smartcut_core::cut::Subtitles::Sup => " beside the cut, as a .sup",
+                smartcut_core::cut::Subtitles::Pgs => "",
+            },
         )
     };
     // A DVD's subtitles are counted apart from the rest: they are kept, and
@@ -1187,6 +1206,7 @@ fn main() -> Result<()> {
             .count();
         let where_to = match (subtitles, to_ts) {
             (smartcut_core::cut::Subtitles::Pgs, true) => "converted into the cut",
+            (smartcut_core::cut::Subtitles::Sup, _) => "converted, into a .sup beside the cut",
             _ => "beside the cut",
         };
         format!(

@@ -354,19 +354,28 @@
               </select>
             </span>
           </div>
-          <!-- Only where the recording has the kind of subtitle a DVD draws:
-               a transport stream has no number for one, so either it goes
-               beside the cut untouched or it is converted into the kind a
-               transport stream does carry. See `vobsub.rs` and `pgs.rs`. -->
+          <!-- Only where the recording is a disc that draws its subtitles.
+               Three destinations: inside the cut, as the kind a transport
+               stream carries; beside it as the pair every subtitle tool
+               reads; or beside it as the display sets themselves, which is
+               the one that converts a Blu-ray's nothing at all. See
+               `vobsub.rs` and `pgs.rs`.
+
+               The wording here is the neutral one. Which of the three leaves
+               the subtitles untouched depends on which disc they came off,
+               and `paintSubtitleChoices` says so. -->
           <div class="row" id="row-subtitles" hidden>
-            <span data-i18n="outset.subtitles">DVD の字幕:</span>
+            <span id="label-subtitles" data-i18n="outset.subtitles">ディスクの字幕:</span>
             <span class="drop">
               <select id="out-subtitles">
-                <option value="beside" selected data-i18n="subtitles.beside">
-                  そのまま傍らに (.idx / .sub)
+                <option value="pgs" selected data-i18n="subtitles.pgs">
+                  カットの中に (PGS)
                 </option>
-                <option value="pgs" data-i18n="subtitles.pgs">
-                  変換してカットの中に (PGS)
+                <option value="beside" data-i18n="subtitles.beside">
+                  カットの傍らに (.idx / .sub)
+                </option>
+                <option value="sup" data-i18n="subtitles.sup">
+                  カットの傍らに (.sup)
                 </option>
               </select>
             </span>

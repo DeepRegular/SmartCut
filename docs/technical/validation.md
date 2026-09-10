@@ -229,9 +229,10 @@ These only surfaced on real material:
   [broadcast workflow compatibility](broadcast-ts.md) and
   [the subtitles a disc draws](disc.md#the-subtitles-a-disc-draws)). A DVD's
   subtitles have no stream type a transport stream can carry, so they are
-  either written beside the cut as a VobSub pair or converted into a Blu-ray's
-  kind and written inside it
-  ([above](disc.md#a-dvds-subtitles-beside-the-cut-or-converted-into-it)).
+  converted into a Blu-ray's kind and written inside it, which is the default;
+  either disc's can be written beside the cut instead — as a VobSub pair, or
+  as a `.sup` — which is the one way an `.mp4` of a disc keeps them
+  ([above](disc.md#a-discs-subtitles-inside-the-cut-or-beside-it)).
   **Blu-ray menus (IGS) and text subtitles (TextST) are not carried**, and are
   named as left behind rather than dropped in silence: a menu's buttons point
   into a disc structure a cut does not have, and TextST is set in a typeface

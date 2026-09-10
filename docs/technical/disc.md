@@ -468,7 +468,9 @@ back as `bin_data`: carried, declared, and invisible. So the map written over
 the muxer's own says `0x90` and registers the programme as HDMV, which is the
 same correction [the disc's LPCM needs](#the-sound-a-disc-carries) and is made
 in the same pass. Into an MP4 they cannot go at all, and a cut asked for one
-says so.
+says so — and offers the other answer, which is to write them
+[beside the cut](#a-discs-subtitles-inside-the-cut-or-beside-it) instead of
+inside it.
 
 Menus (IGS) are the same kind of stream doing a different job: a button has a
 state and a target, and both point into a timeline the cut has just taken
@@ -854,7 +856,7 @@ and a recording that never was a broadcast had no map pass at all; it gets one n
 rebuilt from what the muxer itself wrote, with that one correction and nothing else
 added.
 
-### A DVD's subtitles: beside the cut, or converted into it
+### A disc's subtitles: inside the cut, or beside it
 
 A DVD draws its subtitles the way a Blu-ray does — a run-length coded picture
 with commands saying where to put it — and there the resemblance stops. A
@@ -864,8 +866,22 @@ Written into a `.ts` they become private data of no stated kind and everything
 reads them back as `bin_data`: carried, declared, and invisible. There is no
 number to correct that with.
 
-So they are written beside the cut instead, as the **VobSub** pair the rest of
-the world already reads — [`vobsub.rs`](../../rust/crates/core/src/vobsub.rs):
+So there are two destinations, and `--subtitles` chooses between them — or the
+one-line question the output settings ask where a disc is being cut:
+
+| | |
+|---|---|
+| `pgs`, the default | **Inside the cut**, as the kind a transport stream carries. A Blu-ray's own go untouched; a DVD's are converted [below](#a-dvds-subtitles-converted-into-a-blu-rays) |
+| `beside` | **Beside the cut**, as the `.idx` and `.sub` pair. A DVD's own go untouched; a Blu-ray's are read back out of their display sets [below](#a-blu-rays-subtitles-written-as-a-dvds) |
+| `sup` | **Beside the cut**, as a `.sup` — the display sets themselves, outside any container. A Blu-ray's go byte for byte; a DVD's are converted as they are for the cut [below](#a-sup-the-display-sets-with-nothing-around-them) |
+
+Inside is the default because one file is one file: a cut with its subtitles in
+it is a cut everything opens. Beside is what a subtitle tool, an old set-top
+box, or an MP4 wants — and an MP4 can only have them beside, whatever is asked
+for.
+
+The pair is the **VobSub** one the rest of the world already reads —
+[`vobsub.rs`](../../rust/crates/core/src/vobsub.rs):
 
 ```text
 cut_title.ts     the cut
@@ -894,11 +910,13 @@ not optional: of the units on the disc measured here, **not one carries a stop
 of its own**. Each subtitle stands until the next replaces it, so a cut that
 ended in the middle of one would leave it standing with nothing coming.
 
-**Or converted, where the cut should be one file.** The other answer takes
-the picture out of a DVD's unit and writes it as the kind of subtitle a
-transport stream does carry — a Blu-ray's — so that the subtitles are inside
-the cut and every reader that opens it finds them. `--subtitles pgs`, or the
-one-line question the output settings ask where a DVD is being cut.
+#### A DVD's subtitles, converted into a Blu-ray's
+
+**The default, because the cut should be one file.** This takes the picture out
+of a DVD's unit and writes it as the kind of subtitle a transport stream does
+carry — a Blu-ray's — so that the subtitles are inside the cut and every
+reader that opens it finds them. Only a transport stream can hold them: asked
+for an MP4, the cut says so and writes the pair beside it instead.
 
 Nothing is resampled and no pixel is lost. **Both formats keep a subtitle in
 the same shape**: an index per pixel, run-length coded, and a table of
@@ -917,6 +935,89 @@ standing, a unit that said when to go is taken down at its own moment, and
 what is still up when a range ends is taken down there. It is the same
 mending the two ends of a range get [above](#the-subtitles-a-disc-draws), done
 from the other side.
+
+#### A Blu-ray's subtitles, written as a DVD's
+
+The same journey the other way, and for the other reason: a pair beside the cut
+is what a subtitle tool, a player that has never heard of a display set, or an
+MP4 reads. `--subtitles beside` on a Blu-ray decodes each display set
+([`pgs::read`](../../rust/crates/core/src/pgs.rs)) and writes the picture back
+out as a DVD's kind of unit ([`vobsub::unit`](../../rust/crates/core/src/vobsub.rs)).
+
+Three things have to be invented on the way, because a DVD's format has them
+and a Blu-ray's does not put them where the pair needs them:
+
+**A palette of sixteen.** A DVD's is in the disc's index; a Blu-ray's is in
+every display set, a different one each time and as many as 256 colours in it.
+So one of sixteen is built as the subtitles go past: each subtitle's colours
+are written down under the numbers the `.idx` will call them by, and a colour
+near enough to one already written *is* that one — the four colours of a
+subtitle are an average of what it was drawn in, and the same white text
+averages a shade differently in every line of it. Written down as they came, a
+film's white would spend the whole palette on itself. Where sixteen are spoken
+for, the nearest stands in for the seventeenth.
+
+**Four colours per subtitle.** A DVD's unit is two bits a pixel and names four
+entries of the sixteen: background, pattern, and two emphases — which is
+exactly what a subtitle is made of, nothing and the letter and its edge and the
+blend between them. A Blu-ray's antialiased text arrives in thirty shades of
+that, so the colours actually drawn are clustered into three, weighted by how
+much of the picture each covers. **Not the three most used**: the shades of a
+letter's interior are used more than its edge is, and picking by count alone
+gives three whites and no outline. So the first cluster is the most used, and
+each after it is the colour whose distance from what is already chosen,
+multiplied by how much it covers, is greatest — then the usual settling, four
+passes, which is more than three clusters over a few dozen colours needs.
+
+**How long each one stands.** A display set does not say; what takes a subtitle
+down is a later set. A unit *can* say, in the sequence that stops it — so each
+one is held back until the set that ends it arrives, and then written with the
+delay filled in. Left standing instead, the pair is still right on a player
+that follows a DVD's own rule, and is a subtitle of no duration at all to
+everything built on libavcodec, which is most things. Waiting one set is what
+turns the one into the other.
+
+The two ends of a kept range need nothing new. What reaches this is a display
+set either way — carried, put up again at a range's opening, or written to
+clear one at its end — so the mending [above](#the-subtitles-a-disc-draws) is
+the mending here, and the set that clears a plane at a range's end is what
+fills in the last unit's stop.
+
+One limit, and it is the format's: **a unit states its own length in two
+bytes**, so 65535 is the whole of what one may be. A line of text is a few
+kilobytes run-length coded and never comes near it; a full-screen picture can,
+and one that will not fit is counted and said rather than written as something
+a player would refuse.
+
+#### A `.sup`: the display sets with nothing around them
+
+The third destination, and the only one that converts a Blu-ray's subtitles
+**not at all**. A `.sup` is what a display set looks like outside a container:
+every segment as it travelled, each behind ten bytes saying when it is decoded
+and when it is shown —
+[`pgs::Sup`](../../rust/crates/core/src/pgs.rs):
+
+```text
+"PG"  pts  dts  type  length  [ the segment ]
+ 2     4    4    1      2
+```
+
+That is the whole format. So a Blu-ray's subtitles come out of it byte for
+byte, and BDSup2Sub, Subtitle Edit and everything else that works on a disc's
+subtitles read it without being taught anything. A DVD's go through the same
+conversion they would for the cut itself — [above](#a-dvds-subtitles-converted-into-a-blu-rays)
+— and land in a `.sup` instead of in a stream, which is what puts a DVD's
+subtitles beside an `.mp4` without flattening them to four colours.
+
+What reaches this is the same display set the pair gets and the cut carries, so
+the mending at both ends of a kept range is the same mending
+([above](#the-subtitles-a-disc-draws)) and nothing here has to know about it.
+
+One difference from the pair, and it is the format's: **a `.sup` holds one
+stream**, where a `.idx` names as many as the disc had. A recording with two of
+them is written as two files, each taking the language the disc says it is in —
+`cut_title.eng.sup` — and the number it sits on where the disc says nothing, or
+says the same thing twice.
 
 Two things about the reading are worth writing down, because both cost an
 afternoon:
@@ -969,8 +1070,8 @@ reopening follows.
 | **Joining clips** | Not supported. A multi-clip playlist is shown as a row per clip (above) |
 | **BDMV titles** | `index.bdmv` names titles and a title is a navigation program. Which playlist "T05 Extra 01" plays is not worked out; rows are named by the disc and the clip |
 | **A clip whose EP map does not read** | The map is used where there is one — see [the disc's own index](#the-discs-own-index) — and the walk over the packets is what answers where there is not |
-| **Blu-ray's own streams** | PGS subtitles are carried into a transport stream, whole display set by whole display set, and mended at both ends of every kept range — [above](#the-subtitles-a-disc-draws). IGS (a menu) and TextST (text subtitles) are dropped and said to be dropped, for the reasons [above](#a-menu-is-not-a-stream-and-the-index-is-the-only-thing-that-knows). The sound is all carried — LPCM, DTS-HD, TrueHD, E-AC-3, [above](#the-sound-a-disc-carries). VC-1 video is read, listed and cut, the partial GOPs written by [SmartCut's own encoder](rust-core.md#vc-1-the-codec-with-no-encoder) |
-| **DVD subpictures** | Either written beside the cut as a VobSub pair, untouched, or converted into the kind a transport stream carries and written inside it — [above](#a-dvds-subtitles-beside-the-cut-or-converted-into-it). Not copied into the file as they are, because a transport stream has no stream type for them |
+| **Blu-ray's own streams** | PGS subtitles are carried into a transport stream, whole display set by whole display set, and mended at both ends of every kept range — [above](#the-subtitles-a-disc-draws) — or written beside the cut where that was asked for, as a VobSub pair ([above](#a-blu-rays-subtitles-written-as-a-dvds)) or as a `.sup` ([above](#a-sup-the-display-sets-with-nothing-around-them)), which is how an MP4 of a disc keeps them. IGS (a menu) and TextST (text subtitles) are dropped and said to be dropped, for the reasons [above](#a-menu-is-not-a-stream-and-the-index-is-the-only-thing-that-knows). The sound is all carried — LPCM, DTS-HD, TrueHD, E-AC-3, [above](#the-sound-a-disc-carries). VC-1 video is read, listed and cut, the partial GOPs written by [SmartCut's own encoder](rust-core.md#vc-1-the-codec-with-no-encoder) |
+| **DVD subpictures** | Converted into the kind a transport stream carries and written inside the cut, which is the default; or beside it, untouched, as a VobSub pair; or converted and written beside it as a `.sup` — [above](#a-discs-subtitles-inside-the-cut-or-beside-it). Not copied into the file as they are, because a transport stream has no stream type for them |
 | **DVD angles** | A chain whose cells are an angle block or an interleaved unit is not offered, [above](#a-title-is-a-run-of-cells) |
 | **Writing a DVD** | A cut of a DVD title is a transport stream. A DVD's own shape is VOBUs of a bounded size, a navigation pack opening each of them and an `.IFO` describing every cell — authoring, and a different problem |
 | **Encrypted DVDs** | Out of scope, the same as AACS. Nothing here decrypts CSS |
@@ -1040,6 +1141,39 @@ Nine subtitles went in as display sets, on `0x20` in a `.ts` and renumbered to
 `hdmv_pgs_subtitle` from both, which for the plain `.ts` means the map written
 over the muxer's own did its work. Burnt in, the frame after the seam carries
 the same line as the pair beside the cut carried, in the same colours.
+
+**A Blu-ray's subtitles written as a pair** — two twenty second ranges out of a
+1080p feature (H.264, LPCM, PGS on `0x1200`), placed so that the second range
+opens in the middle of a subtitle. Eleven units came out beside the cut: ten
+the disc drew inside the ranges and the one standing when the second opens,
+written again at its first frame. **Nothing was left over at either end** — the
+display set that clears a plane at a range's end fills in the last unit's stop
+rather than adding a unit of its own, and the last subtitle of the first range
+stops at the instant the range does. Read back, `ffprobe` finds one
+`dvd_subtitle` stream at 1920x1080 in the pair, decodes every unit, and every
+one of them says how long it stands. The invented palette came to six entries
+over the two ranges and thirteen over three minutes of the same feature.
+
+Rendered on a flat ground and compared against the same subtitles carried into
+a `.ts` as the disc's own display sets, the two are **identical in colour and
+39.7 dB apart on luma** — which is the whole of what flattening a Blu-ray's
+antialiasing into a DVD's four colours costs. No pixel moved and no subtitle
+changed its moment. Asked for an `.mp4` instead, the same pair is written
+beside it, which is the only way a cut of a disc in that container keeps its
+subtitles at all.
+
+**A Blu-ray's subtitles written as a `.sup`** — the same two ranges again with
+`--subtitles sup`. The 85 segments came out **byte for byte the same** as the
+same cut's PGS carried into a `.ts` and remuxed to a `.sup` by ffmpeg — every
+segment type and every payload identical — with the times at most **6 ticks of
+90 kHz apart**, 67 µs, which is the seconds-as-a-float trip through the cutter's
+own clock. `ffprobe` reads the file back as `hdmv_pgs_subtitle` at 1920x1080
+starting at the first subtitle of the cut. A disc with two subtitle streams on
+`0x1200` and `0x1201`, both saying `eng`, was written as `cut.1201.sup` — the
+language cannot tell them apart, so the number they sit on does — and the
+stream that had nothing inside the ranges said so instead of leaving an empty
+file. Asked of a DVD, the same option converts the units first and writes those
+display sets to a `.sup` beside an `.mp4`.
 
 **A menu mistaken for sound** — a UHD disc's clip 00004: pictures, one LPCM
 track, and a menu on `0x1400`. libavformat calls that menu **MP3 audio**;

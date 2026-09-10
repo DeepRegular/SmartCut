@@ -143,22 +143,39 @@ impl AudioCodec {
     }
 }
 
-/// What becomes of the subtitles a DVD draws.
+/// What becomes of the subtitles a disc draws.
 ///
-/// Two answers, and neither is wrong. **Beside** writes them out untouched,
-/// as the `.idx` and `.sub` pair players already read: nothing is converted,
-/// and nothing is in the file. **Pgs** converts them into the kind of
-/// subtitle a transport stream carries -- the same pixels and the same
+/// Two answers, and neither is wrong. **Pgs** puts them inside the cut, as
+/// the kind of subtitle a transport stream carries: a Blu-ray's own travel
+/// untouched and a DVD's are converted -- the same pixels and the same
 /// colours, spelled the way a Blu-ray spells them -- so that the cut is one
-/// file with its subtitles inside it.
+/// file with its subtitles in it and every reader that opens it finds them.
+/// **Beside** writes them out as the `.idx` and `.sub` pair players already
+/// read: two files next to the cut, which is where a DVD's can stay
+/// untouched and where a Blu-ray's can be read by a tool that has never
+/// heard of a display set.
 ///
-/// See [`crate::vobsub`] for the first and [`crate::pgs::write`] for the
-/// second. Beside is the default because it is the exact one.
+/// Which way round the conversion runs is decided by what the recording is,
+/// and both are here: [`crate::pgs::write`] writes a DVD's subtitles as a
+/// Blu-ray's, [`crate::vobsub::unit`] writes a Blu-ray's as a DVD's, and
+/// [`crate::vobsub`] holds the pair either of them may end up in.
+///
+/// **Sup** is the third answer and the one that converts nothing at all: the
+/// display sets themselves, written into the file a PGS stream lives in
+/// outside a container -- a `.sup`, which is what every tool that works on a
+/// disc's subtitles reads. A Blu-ray's come out of it byte for byte, and a
+/// DVD's are converted on the way as they are for the cut itself.
+///
+/// Inside the cut is the default because one file is one file. A cut that is
+/// not a transport stream cannot hold either kind, and falls back to the pair
+/// beside it rather than losing them; the two files beside it are written
+/// whatever the container is.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum Subtitles {
-    #[default]
     Beside,
+    #[default]
     Pgs,
+    Sup,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -478,11 +495,18 @@ struct CaptionTrack {
     written: i64,
 }
 
-/// A DVD's subtitles, gathered as the cut is written.
+/// The subtitles going beside the cut, gathered as it is written.
 ///
 /// Not a track: nothing of this goes into the output file. The units are put
 /// aside as they go past and written beside the cut at the end, in the pair
 /// [`crate::vobsub`] describes.
+///
+/// A DVD's arrive as units already and are put aside untouched. A Blu-ray's
+/// arrive as display sets and are drawn into units here -- see [`draw`] --
+/// which is where `ink` comes from: a DVD hands over its sixteen colours with
+/// the disc's index, and a Blu-ray has no sixteen anywhere to hand over.
+///
+/// [`draw`]: Subpictures::draw
 ///
 /// The two ends of a kept range are mended the way a Blu-ray's graphics are
 /// ([`crate::pgs`]), and more simply, because a unit carries its own
@@ -491,13 +515,32 @@ struct CaptionTrack {
 /// unit that says so and nothing else.
 struct Subpictures {
     side: crate::vobsub::Sidecar,
+    /// The palette being invented, where the subtitles came with none that
+    /// fits the pair. `None` for a DVD's, whose own palette is the disc's.
+    ink: Option<crate::vobsub::Ink>,
     /// What each stream last put up: when, on the output's own clock, and
     /// how long after that the unit takes itself down -- `None` for a unit
     /// that never says, which stands until something replaces it.
     standing: Vec<(i32, f64, Option<f64>)>,
+    /// Subtitles that could not be drawn into a unit, for the note that says
+    /// so. A unit states its own length in two bytes and a picture can be
+    /// bigger than that; see [`crate::vobsub::unit`].
+    refused: usize,
 }
 
 impl Subpictures {
+    /// Draw one subtitle a disc put up as a display set into the unit that
+    /// says the same thing, with its colours written into the palette being
+    /// built. `None` where it will not go into one; see
+    /// [`crate::vobsub::unit`].
+    fn drew(&mut self, drawn: &crate::vobsub::Drawn) -> Option<Vec<u8>> {
+        let unit = crate::vobsub::unit(drawn, self.ink.as_mut()?);
+        if unit.is_none() {
+            self.refused += 1;
+        }
+        unit
+    }
+
     /// Take one unit, shown at `at` on the output's clock.
     fn take(&mut self, id: i32, at: f64, unit: &[u8]) {
         self.side.add(id as u8, at, unit);
@@ -511,8 +554,13 @@ impl Subpictures {
     /// A unit that has already taken itself down by then is left alone: the
     /// disc said when it ends, and it ended.
     fn end_range(&mut self, at: f64) {
+        // Within one tick of the clock a unit counts its delay in, which is
+        // eleven milliseconds: a stop written to land exactly here -- which
+        // is what the set that clears a plane at a range's end writes -- can
+        // come back a fraction the other side of it, and ending it again
+        // would be a unit saying what the one before it just said.
         let over = |&(_, shown, stops): &(i32, f64, Option<f64>)| {
-            stops.is_some_and(|after| shown + after <= at)
+            stops.is_some_and(|after| shown + after <= at + crate::vobsub::TICK)
         };
         let standing: Vec<i32> = self
             .standing
@@ -547,6 +595,77 @@ struct Converted {
     shown: usize,
 }
 
+/// What one stream's `.sup` is called beside the cut, or `None` where it is
+/// the only one and takes the cut's own name.
+///
+/// A pair holds as many streams as the disc had; a `.sup` holds one. So where
+/// there are several, each takes the language the disc says it is in --
+/// `cut_title.eng.sup` -- and the number it sits on where the disc says
+/// nothing, or says the same thing for two of them.
+fn sup_tag(languages: &[Option<String>], k: usize, id: i32) -> Option<String> {
+    if languages.len() < 2 {
+        return None;
+    }
+    let mine = languages.get(k).and_then(|l| l.as_deref());
+    let alone = mine.is_some_and(|l| {
+        languages
+            .iter()
+            .filter(|other| other.as_deref() == Some(l))
+            .count()
+            == 1
+    });
+    Some(match (alone, mine) {
+        (true, Some(language)) => language.to_string(),
+        _ => format!("{id:04x}"),
+    })
+}
+
+/// Where a graphics track goes when it does not go into the cut.
+///
+/// It hangs off the track rather than standing beside one because everything
+/// that reaches a track is a display set -- whether the recording sent it,
+/// the cut wrote it to mend a range's end, or a DVD's unit was converted into
+/// it -- and all of it has to go the same way.
+///
+/// Two of them, and the difference is how much is converted. **Redrawn**
+/// takes the picture out and writes it as the kind a DVD draws, for the pair
+/// beside the cut. **Sup** writes the display sets down as they are. See
+/// [`Subtitles`].
+enum Aside {
+    Redrawn(Redrawn),
+    Sup(crate::pgs::Sup),
+}
+
+/// One graphics stream on its way *out* of the cut, as a DVD's kind of
+/// subtitle.
+///
+/// The mirror of [`Converted`]. See [`crate::pgs::read`] and
+/// [`crate::vobsub::unit`].
+struct Redrawn {
+    /// The substream id the pair knows it by. A DVD's own subtitles are
+    /// numbered 0x20 upwards and there is no other convention to follow, so
+    /// a Blu-ray's are numbered into the same run.
+    id: i32,
+    reader: crate::pgs::read::Reader,
+    /// The set being gathered, end to end. A display set arrives a packet at
+    /// a time and means nothing until its END: the decoder is given the whole
+    /// of one, which is how it is given the composition, the palette and the
+    /// picture together.
+    building: Vec<u8>,
+    /// When that set puts its subtitle up, on the output's own clock.
+    at: Option<f64>,
+    /// The unit last drawn and when it went up, held back until the set that
+    /// ends it arrives.
+    ///
+    /// Held because a display set does not say how long its subtitle stands
+    /// -- what takes it down is a later set -- and a unit can say, in the
+    /// sequence that stops it. Waiting one set is what turns the one into the
+    /// other. Left standing instead, the pair is still right on a player that
+    /// follows a DVD's own rule, and is a subtitle of no duration at all to
+    /// everything built on libavcodec.
+    pending: Option<(f64, Vec<u8>)>,
+}
+
 /// One graphics track being written, and what it has on screen.
 ///
 /// The plane is here rather than beside the read because it is a fact about
@@ -572,6 +691,9 @@ struct GraphicsTrack {
     /// so they can land on the same tick honestly -- and a muxer refuses a
     /// packet that does not come after the one before it.
     last_out: Option<i64>,
+    /// Set where this track goes beside the cut instead of into it, which is
+    /// the one case where `out_index` names no stream. See [`Aside`].
+    aside: Option<Aside>,
 }
 
 impl Writer {
@@ -776,6 +898,13 @@ impl Writer {
         let Some(t) = self.graphics.get(track) else {
             return Ok(());
         };
+        // A track going beside the cut has no stream to be written to. What
+        // reaches it is the same display set either way -- carried, replayed
+        // at a range's opening, or written to clear one at its end -- so the
+        // turning aside is here, where all three meet.
+        if t.aside.is_some() {
+            return self.push_aside(track, held, offset, mended);
+        }
         let (index, tb, last) = (t.out_index, t.out_tb, t.last_out);
         let mut dts = ((held.dts + offset).max(0.0) / tb).round() as i64;
         // Nudged rather than dropped: half a display set is not a subtitle,
@@ -797,6 +926,86 @@ impl Writer {
             t.mended += 1;
         } else {
             t.written += 1;
+        }
+        Ok(())
+    }
+
+    /// Take one packet of a display set for a track that goes beside the cut
+    /// rather than into it.
+    fn push_aside(
+        &mut self,
+        track: usize,
+        held: &crate::pgs::Held,
+        offset: f64,
+        mended: bool,
+    ) -> Result<()> {
+        let t = &mut self.graphics[track];
+        if mended {
+            t.mended += 1;
+        } else {
+            t.written += 1;
+        }
+        match t.aside.as_mut() {
+            None => Ok(()),
+            // The display sets as they are. Nothing to gather and nothing to
+            // decide: a `.sup` is the packets with their times in front of
+            // them, which is what is in hand.
+            Some(Aside::Sup(sup)) => {
+                sup.take(held, offset);
+                Ok(())
+            }
+            Some(Aside::Redrawn(_)) => self.push_redrawn(track, held, offset),
+        }
+    }
+
+    /// The same, for a track being written back into the units a DVD draws.
+    ///
+    /// Gathered until the END that finishes the set, then read back into the
+    /// picture it draws and drawn again as a DVD's kind of unit. A set that
+    /// draws nothing is the one that clears the plane, and beside the cut
+    /// that is what fills in how long the last subtitle stood.
+    fn push_redrawn(&mut self, track: usize, held: &crate::pgs::Held, offset: f64) -> Result<()> {
+        let opens = crate::pgs::segments(&held.data).any(|(kind, _)| kind == crate::pgs::PCS);
+        let ends = crate::pgs::segments(&held.data).any(|(kind, _)| kind == crate::pgs::END);
+        let Some(Aside::Redrawn(aside)) = self.graphics[track].aside.as_mut() else {
+            return Ok(());
+        };
+        aside.building.extend_from_slice(&held.data);
+        // The composition is what says when the subtitle appears; the pieces
+        // around it carry the times they are handed over at, which are a
+        // decoder's business and not a subtitle's.
+        if opens || aside.at.is_none() {
+            aside.at = Some((held.pts + offset).max(0.0));
+        }
+        if !ends {
+            return Ok(());
+        }
+        let set = std::mem::take(&mut aside.building);
+        let at = aside.at.take().unwrap_or(0.0);
+        let id = aside.id;
+        let drawn = aside.reader.read(&set)?;
+        let pending = aside.pending.take();
+        let Some(subs) = self.subpictures.as_mut() else {
+            return Ok(());
+        };
+        // Whatever was on screen ends where this set begins -- it is either
+        // replaced by it or cleared by it -- and now that that is known the
+        // unit can be written saying so itself.
+        if let Some((shown, unit)) = pending {
+            subs.take(id, shown, &crate::vobsub::stopped_after(&unit, at - shown));
+        }
+        // And this one waits for the same answer. A set that draws nothing
+        // is the one that cleared the screen, and it has now been spent
+        // saying when the last subtitle went: there is nothing else it has
+        // to put in the pair.
+        let Some(drawn) = drawn else {
+            return Ok(());
+        };
+        let Some(unit) = subs.drew(&drawn) else {
+            return Ok(());
+        };
+        if let Some(Aside::Redrawn(aside)) = self.graphics[track].aside.as_mut() {
+            aside.pending = Some((at, unit));
         }
         Ok(())
     }
@@ -1491,7 +1700,8 @@ fn copy_segment(
     // A recording with no subtitles of this kind is done with them before it
     // begins, which is what keeps the read from waiting on packets that are
     // never coming.
-    let mut sub_done = writer.subpictures.is_none() && writer.converted.is_empty();
+    let mut sub_done =
+        src.subpictures.is_empty() || (writer.subpictures.is_none() && writer.converted.is_empty());
 
     for (stream, packet) in ictx.packets() {
         let index = stream.index();
@@ -2215,7 +2425,8 @@ fn reencode_segment(
     // A recording with no subtitles of this kind is done with them before it
     // begins, which is what keeps the read from waiting on packets that are
     // never coming.
-    let mut sub_done = writer.subpictures.is_none() && writer.converted.is_empty();
+    let mut sub_done =
+        src.subpictures.is_empty() || (writer.subpictures.is_none() && writer.converted.is_empty());
     let mut anchor: Option<f64> = None;
     let mut span = Span::default();
     // The encoder hands packets back in decode order, labelled only with the
@@ -3349,8 +3560,14 @@ pub fn cut_with_progress(
         .collect();
 
     // A disc's own subtitles, on the same terms and for the same reason: MP4
-    // has no box for a graphics stream either.
-    let graphics: Vec<crate::GraphicsInfo> = if to_ts {
+    // has no box for a graphics stream either. Where they go is [`Subtitles`]:
+    // carried inside the cut, which only a transport stream can do, or read
+    // back and written beside it as the pair a DVD's subtitles travel in,
+    // which any output can be given.
+    let inside = opts.subtitles == Subtitles::Pgs;
+    let beside = opts.subtitles == Subtitles::Beside;
+    let sup = opts.subtitles == Subtitles::Sup;
+    let graphics: Vec<crate::GraphicsInfo> = if to_ts && inside {
         src.graphics
             .iter()
             .filter(|g| kept(g.stream_index))
@@ -3359,17 +3576,27 @@ pub fn cut_with_progress(
     } else {
         Vec::new()
     };
-    if opts.subtitles == Subtitles::Pgs && !to_ts && !src.subpictures.is_empty() {
+    let aside: Vec<crate::GraphicsInfo> = if beside || sup {
+        src.graphics
+            .iter()
+            .filter(|g| kept(g.stream_index))
+            .cloned()
+            .collect()
+    } else {
+        Vec::new()
+    };
+    if inside && !to_ts && !src.subpictures.is_empty() {
         eprintln!(
             "note: the subtitles a DVD draws can only be converted into a transport \
              stream, which this output is not. They are written beside the cut instead."
         );
     }
-    if !to_ts && !src.graphics.is_empty() {
+    if !to_ts && inside && !src.graphics.is_empty() {
         eprintln!(
             "note: this recording carries {} subtitle stream(s) drawn the way a disc draws \
              them, which only a transport stream can hold. Write a .ts or a .m2ts to keep \
-             them.",
+             them, or ask for them beside the cut -- as an .idx and .sub pair, or as a \
+             .sup -- and they are written whatever this is.",
             src.graphics.len(),
         );
     }
@@ -3386,7 +3613,7 @@ pub fn cut_with_progress(
                 // A converted subtitle stream is numbered with the rest of
                 // them, from the id the disc knew it by. See [`Subtitles`].
                 .chain(
-                    (opts.subtitles == Subtitles::Pgs)
+                    inside
                         .then(|| subpictures.iter().map(|s| s.id))
                         .into_iter()
                         .flatten(),
@@ -3695,13 +3922,20 @@ pub fn cut_with_progress(
         graphics_pending.push(out_index);
     }
 
-    // A DVD's subtitles, where the caller asked for them inside the file.
+    // A DVD's subtitles, converted into the kind a Blu-ray draws: into the
+    // file where the caller asked for them inside it, and into a `.sup`
+    // beside it where they asked for that -- which needs no stream at all,
+    // and is why the index here is an option.
+    //
     // The stream is this program's own -- the recording has nothing of the
     // kind in it -- so it is declared from nothing rather than copied from
     // an input stream, and it goes on the number the disc knew the subtitles
     // by (renumbered like everything else where a `.m2ts` is being written).
-    let mut converting: Vec<(crate::SubpictureInfo, usize)> = Vec::new();
-    if opts.subtitles == Subtitles::Pgs && to_ts {
+    let mut converting: Vec<(crate::SubpictureInfo, Option<usize>)> = Vec::new();
+    if sup {
+        converting.extend(subpictures.iter().map(|info| (info.clone(), None)));
+    }
+    if inside && to_ts {
         for info in &subpictures {
             let mut ost = octx.add_stream(ff::encoder::find(ff::codec::Id::None))?;
             ost.set_time_base(ff::Rational::new(1, 90_000));
@@ -3720,7 +3954,7 @@ pub fn cut_with_progress(
                 (*p).codec_tag = 0;
                 set_pid(&mut ost, to_ts, pids.out(info.id));
             }
-            converting.push((info.clone(), out_index));
+            converting.push((info.clone(), Some(out_index)));
         }
     }
 
@@ -3829,8 +4063,13 @@ pub fn cut_with_progress(
         })
         .collect();
 
-    let converted_streams: Vec<crate::SubpictureInfo> =
-        converting.iter().map(|(info, _)| info.clone()).collect();
+    // Only the ones that went into the file: what this names is what the map
+    // written over the muxer's own has to describe.
+    let converted_streams: Vec<crate::SubpictureInfo> = converting
+        .iter()
+        .filter(|(_, out_index)| out_index.is_some())
+        .map(|(info, _)| info.clone())
+        .collect();
 
     let graphics_tracks: Vec<GraphicsTrack> = graphics
         .iter()
@@ -3847,12 +4086,23 @@ pub fn cut_with_progress(
             mended: 0,
             plane: Default::default(),
             last_out: None,
+            aside: None,
         })
         .collect();
     // The converted streams take a track each, at the end of the same list:
     // what is written on one is a display set either way.
     let mut graphics_tracks = graphics_tracks;
     let mut converted: Vec<Converted> = Vec::new();
+    // What each `.sup` written beside the cut is called. Settled over all of
+    // them at once because the answer for one depends on the others: the only
+    // one takes the cut's own name and cannot where there is a second.
+    let sup_langs: Vec<Option<String>> = converting
+        .iter()
+        .filter(|(_, out_index)| out_index.is_none())
+        .map(|(info, _)| info.language.clone())
+        .chain(aside.iter().map(|info| info.language.clone()))
+        .collect();
+    let mut sup_at = 0usize;
     for (info, out_index) in &converting {
         let palette = crate::dvd::subtitles_of(&src.path)
             .map(|s| s.palette)
@@ -3866,10 +4116,17 @@ pub fn cut_with_progress(
             composer: Default::default(),
             shown: 0,
         });
+        // Where it has no stream of the output to be written to, it has a
+        // file of its own beside it instead.
+        let destination = out_index.is_none().then(|| {
+            let tag = sup_tag(&sup_langs, sup_at, info.id);
+            sup_at += 1;
+            Aside::Sup(crate::pgs::Sup::new(tag))
+        });
         graphics_tracks.push(GraphicsTrack {
-            out_index: *out_index,
-            out_tb: octx
-                .stream(*out_index)
+            out_index: out_index.unwrap_or(usize::MAX),
+            out_tb: out_index
+                .and_then(|at| octx.stream(at))
                 .map_or(1.0 / 90_000.0, |s| f64::from(s.time_base())),
             // No stream to read it off: this one is written, not carried.
             in_index: usize::MAX,
@@ -3879,24 +4136,86 @@ pub fn cut_with_progress(
             mended: 0,
             plane: Default::default(),
             last_out: None,
+            aside: destination,
         });
     }
 
-    // A DVD's subtitles, if this recording has any and the caller kept them.
-    // Their palette is not in the stream -- see [`crate::vobsub`] -- so the
-    // disc is asked for it here, which is one small read of an index.
-    let subpictures = (!subpictures.is_empty() && converted.is_empty()).then(|| {
-        let palette = crate::dvd::subtitles_of(&src.path)
-            .map(|s| s.palette)
-            .unwrap_or_else(crate::vobsub::Palette::grey);
+    // And the streams going the other way: a Blu-ray's graphics, read back
+    // and written beside the cut. A track each, like the rest, and the only
+    // ones with no stream in the file to be written to. See [`Aside`].
+    //
+    // Numbered from 0x20, which is where a DVD numbers its own subtitles and
+    // the only convention there is to follow. A recording never has both
+    // kinds, so nothing collides.
+    let mut aside_streams: Vec<(crate::GraphicsInfo, i32)> = Vec::new();
+    for (k, info) in aside.iter().enumerate() {
+        let id = 0x20 + k as i32;
+        let destination = if sup {
+            let tag = sup_tag(&sup_langs, sup_at, info.pid);
+            sup_at += 1;
+            Aside::Sup(crate::pgs::Sup::new(tag))
+        } else {
+            aside_streams.push((info.clone(), id));
+            Aside::Redrawn(Redrawn {
+                id,
+                reader: crate::pgs::read::Reader::open((
+                    src.video.width as u16,
+                    src.video.height as u16,
+                ))?,
+                building: Vec::new(),
+                at: None,
+                pending: None,
+            })
+        };
+        graphics_tracks.push(GraphicsTrack {
+            // No stream: this one is turned aside before it reaches the file.
+            out_index: usize::MAX,
+            out_tb: 1.0 / 90_000.0,
+            in_index: info.stream_index,
+            in_tb: info.time_base,
+            pid: info.pid,
+            written: 0,
+            mended: 0,
+            plane: Default::default(),
+            last_out: None,
+            aside: Some(destination),
+        });
+    }
+
+    // The pair beside the cut, if anything is going into it: a DVD's own
+    // subtitles, or a Blu-ray's read back into the same shape.
+    //
+    // A DVD's palette is not in the stream -- see [`crate::vobsub`] -- so the
+    // disc is asked for it here, which is one small read of an index. A
+    // Blu-ray's is not anywhere: every display set carries its own colours,
+    // as many as 256 of them, so one of sixteen is built as the subtitles go
+    // past and written over the top of this at the end. See
+    // [`crate::vobsub::Ink`].
+    let wanted = (!subpictures.is_empty() && converted.is_empty()) || !aside_streams.is_empty();
+    let subpictures = wanted.then(|| {
+        let from_disc = !subpictures.is_empty() && converted.is_empty();
+        let palette = if from_disc {
+            crate::dvd::subtitles_of(&src.path)
+                .map(|s| s.palette)
+                .unwrap_or_else(crate::vobsub::Palette::grey)
+        } else {
+            crate::vobsub::Palette::grey()
+        };
         let mut side =
             crate::vobsub::Sidecar::new(src.video.width as u16, src.video.height as u16, palette);
-        for s in &subpictures {
-            side.declare(s.id as u8, s.language.clone());
+        if from_disc {
+            for s in &subpictures {
+                side.declare(s.id as u8, s.language.clone());
+            }
+        }
+        for (info, id) in &aside_streams {
+            side.declare(*id as u8, info.language.clone());
         }
         Subpictures {
             side,
+            ink: (!aside_streams.is_empty()).then(crate::vobsub::Ink::default),
             standing: Vec::new(),
+            refused: 0,
         }
     });
 
@@ -4024,7 +4343,9 @@ pub fn cut_with_progress(
         // opens is written again at its first frame. A unit that had already
         // taken itself down before the cut is not on screen and is not
         // written. See [`crate::vobsub`].
-        if writer.subpictures.is_some() || !writer.converted.is_empty() {
+        if !src.subpictures.is_empty()
+            && (writer.subpictures.is_some() || !writer.converted.is_empty())
+        {
             for (id, shown, unit) in read_subpictures_before(src, plan.t_in)? {
                 let over = crate::vobsub::stops_after(&unit)
                     .is_some_and(|after| shown + after <= plan.t_in);
@@ -4154,21 +4475,75 @@ pub fn cut_with_progress(
         );
     }
 
-    // What the conversion came to, where one was asked for.
+    // What the conversion came to, where one was asked for. Where it went is
+    // said by the note above for a `.sup` and by the stream itself for a cut.
     for c in &writer.converted {
+        let into = if writer.graphics[c.track].aside.is_some() {
+            "written beside the cut"
+        } else {
+            "written into the cut"
+        };
         eprintln!(
-            "note: {} subtitle(s) the disc draws were written into the cut as the kind a \
-             transport stream carries, on {}. The pixels and the colours are the disc's; \
-             what changed is how they are spelled.",
+            "note: {} subtitle(s) the disc draws were {into} as the kind a transport \
+             stream carries, on {}. The pixels and the colours are the disc's; what \
+             changed is how they are spelled.",
             c.shown,
             crate::track_name(true, pids.out(c.id), 0),
         );
     }
 
+    // The display sets that travelled beside the cut rather than into it,
+    // written now that the cut is closed. Said out loud, as the pair below
+    // is: a file nobody asked for by name is a file worth naming.
+    for track in &writer.graphics {
+        let Some(Aside::Sup(sup)) = &track.aside else {
+            continue;
+        };
+        // A converted stream has no input stream to be named by -- it is
+        // written, not carried -- so it is named by the number the disc knew
+        // its subtitles by, which is where it would have gone.
+        let name = crate::track_name(
+            writer.on_a_ts || track.in_index == usize::MAX,
+            track.pid,
+            track.in_index,
+        );
+        if sup.is_empty() {
+            eprintln!(
+                "note: the kept ranges hold none of the subtitles on {name}. Nothing was \
+                 written beside the cut for it."
+            );
+            continue;
+        }
+        match sup.write(output) {
+            Ok(at) => eprintln!(
+                "note: the subtitles on {name} are beside the cut, not in it, as asked. \
+                 {at} carries {} segment(s), on the cut's own clock.",
+                sup.count(),
+            ),
+            // A cut that came out right is not worth failing over the files
+            // beside it.
+            Err(e) => eprintln!("note: the subtitles could not be written beside {output}: {e}"),
+        }
+    }
+
     // The subtitles that travelled beside the cut, written now that it is
     // known how long it turned out to be. Said out loud: two files nobody
     // asked for by name are two files worth naming.
-    if let Some(subs) = writer.subpictures.take() {
+    if let Some(mut subs) = writer.subpictures.take() {
+        // The palette invented on the way, where one was: it is not finished
+        // until the last subtitle has gone past. See [`crate::vobsub::Ink`].
+        let drawn_back = subs.ink.is_some();
+        if let Some(ink) = subs.ink.as_ref() {
+            subs.side.recolour(ink.palette());
+        }
+        if subs.refused > 0 {
+            eprintln!(
+                "note: {} subtitle(s) were too big to be written as the kind a DVD draws -- \
+                 a unit states its own length in two bytes -- and are not in the pair \
+                 beside the cut.",
+                subs.refused,
+            );
+        }
         if subs.side.is_empty() {
             eprintln!(
                 "note: this recording declares subtitles the disc draws, and the kept \
@@ -4183,10 +4558,17 @@ pub fn cut_with_progress(
                         .iter()
                         .map(|(id, n)| format!("{n} on 0x{id:02x}"))
                         .collect();
+                    let why = if drawn_back {
+                        "the subtitles are beside the cut rather than in it, as asked -- read \
+                         back out of the display sets the disc draws them with and written as \
+                         the kind a DVD draws, palette and all"
+                    } else {
+                        "the subtitles are beside the cut, not in it -- a transport stream has \
+                         no place for the kind a DVD draws"
+                    };
                     eprintln!(
-                        "note: the subtitles are beside the cut, not in it -- a transport \
-                         stream has no place for the kind a DVD draws. {idx} and {sub} \
-                         carry {}. A player opening the cut finds them by name.",
+                        "note: {why}. {idx} and {sub} carry {}. A player opening the cut \
+                         finds them by name.",
                         counts.join(", "),
                     );
                 }
