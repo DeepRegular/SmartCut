@@ -19,7 +19,7 @@ prototype's approach of shelling out to ffmpeg:
 - Timestamps are assigned by us, so the seam problem disappears by construction.
 - `nal_ref_idc` can be read straight off the packet, so the reference test does not
   have to sample one place in the file and assume the rest
-  ([pitfall 3](../technical/algorithm.md#3-leading-pictures--the-heart-of-the-open-gop-problem)).
+  ([pitfall 3](algorithm.md#3-leading-pictures--the-heart-of-the-open-gop-problem)).
 - No intermediate files, and no repeated ffprobe passes.
 
 **The GUI** is Tauri v2 plus vanilla JS. It runs on Windows, macOS and Linux, the
@@ -141,7 +141,7 @@ exist until a stream has been opened. See [Reading a disc](disc.md).
 
 ### Duplicates made a row and a recording different things
 
-[Duplicating a clip](../user-guide/batch.md#duplicating-a-clip) puts the same recording
+[Duplicating a clip](../user-guide/batch.md#4-splitting-one-recording-across-two-rows) puts the same recording
 in the list twice. That made **a row and a recording different things**, so a row now
 carries an `id`.
 
@@ -162,7 +162,7 @@ is counted off the list each time rather than stamped on at duplication.
 
 There are three background lanes: **one walks the packets and builds the index, one
 decodes the key pictures into thumbnails and scenes, and one detects commercials.** The
-user-level description is in [batch processing](../user-guide/batch.md); what follows is
+user-level description is in [working through a batch](../user-guide/batch.md); what follows is
 why they are shaped that way.
 
 They are split because **their costs are different in kind.** The walk is disk-bound:
@@ -867,7 +867,7 @@ the programme's name, with the characters a filesystem will not take turned into
 full width forms the way a Japanese recorder writes them. And "the same as the input"
 means `.ts` rather than `.m2ts`: asked for a `.m2ts`, the muxer writes Blu-ray's own
 framing and PID numbering, which is not what [the tables put back after
-muxing](../technical/broadcast-ts.md) describe. Choosing M2TS explicitly still gets one,
+muxing](broadcast-ts.md) describe. Choosing M2TS explicitly still gets one,
 and says that the tables are being left to the muxer. See [Reading a disc](disc.md).
 
 **Two rows that would be written to the same file are numbered.** The list already

@@ -213,7 +213,7 @@ smartcut rec.ts --seek-index /tmp/rec.scix --scenes
 
 `tests/verify_real.py <src> <out> <ranges>` が、フレーム数・整列・ビット一致率・
 タイムライン・インターレース・A/V の尺差をまとめて検査する。結果は
-[検証](../technical/validation.ja.md)にある。
+[検証](validation.ja.md)にある。
 
 ## 仮想マシンで動かす
 

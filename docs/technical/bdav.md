@@ -27,7 +27,7 @@ Nothing here writes video. Asked for a `.m2ts`, libavformat writes Blu-ray's
 own framing — the same 188 byte packets with four bytes of arrival time in
 front of each — and the recording's own tables go back into it exactly as they
 go into a `.ts` ([`si.rs`](../../rust/crates/core/src/si.rs), and
-[Broadcast TS](../technical/broadcast-ts.md)). So a recording written onto a
+[Broadcast TS](broadcast-ts.md)). So a recording written onto a
 disc is the same smart-rendered cut as one written into a file: over 99% of it
 copied byte for byte, with the same handful of re-encoded frames at each seam.
 

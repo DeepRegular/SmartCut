@@ -389,7 +389,7 @@ The stream types are the disc's own. libavformat's own transport stream muxer
 knows none of the first three — asked to write LPCM it declares "private
 data", and asked to write E-AC-3 it reaches for ATSC's `0x87` rather than
 Blu-ray's `0x84` — but a cut written as a `.ts` keeps
-[the recording's own tables](../technical/broadcast-ts.md), and that is what
+[the recording's own tables](broadcast-ts.md), and that is what
 the numbers come from.
 
 ### The marks
@@ -505,7 +505,7 @@ the name still reads.
 **The container is `.ts`.** Asked for a `.m2ts`, libavformat writes Blu-ray's
 own shape: 192 byte framing, and Blu-ray's own PID numbering. Both are the
 muxer's to decide and neither is the layout that
-[the broadcast's own tables](../technical/broadcast-ts.md) describe, so "the
+[the broadcast's own tables](broadcast-ts.md) describe, so "the
 same as the input" means a `.ts` for a recording that came off a disc. It is
 the same stream. Ask for M2TS on the output settings screen and that is still
 what you get — and it says, there and then, that the tables are being left to
@@ -713,7 +713,7 @@ reaches for — every reader named the track `bin_data` and played silence.
 It goes out as **Blu-ray LPCM** instead, which is the shape a transport stream has for
 exactly these samples. That alone fixes an `.m2ts` and a disc, where the muxer
 declares it properly. A plain `.ts` needed
-[the map written again](../technical/broadcast-ts.md#putting-the-recordings-own-tables-back),
+[the map written again](broadcast-ts.md#putting-the-recordings-own-tables-back),
 and a recording that never was a broadcast had no map pass at all; it gets one now,
 rebuilt from what the muxer itself wrote, with that one correction and nothing else
 added.

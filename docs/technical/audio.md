@@ -135,7 +135,7 @@ An encoder is opened once before the run to check both, and when they do not lin
 SmartCut says so and copies instead. Two codecs are not asked at all: DTS and TrueHD
 are lossless while libavformat's encoders for them are not, so their frames are carried
 through untouched — see
-[Reading a disc](../developers/disc.md#the-sound-a-disc-carries).
+[Reading a disc](disc.md#the-sound-a-disc-carries).
 
 So smart rendering reaches **AAC** and **Blu-ray LPCM**. AC-3, E-AC-3 and MP2 are copied
 because they cannot be lined up; DTS and TrueHD are copied on purpose.

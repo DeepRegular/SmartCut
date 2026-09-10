@@ -7,11 +7,11 @@ SmartCut の GUI です。Tauri v2 + バニラ JS で書かれています。ウ
 開くカット編集ウィンドウです。
 
 操作方法は [`docs/user-guide/gui.ja.md`](../docs/user-guide/gui.ja.md)、実装の
-解説は [`docs/developers/design.ja.md`](../docs/developers/design.ja.md) に
+解説は [`docs/technical/design.ja.md`](../docs/technical/design.ja.md) に
 あります。ビルド手順は
-[`docs/developers/building.ja.md`](../docs/developers/building.ja.md)、配布物の
+[`docs/technical/building.ja.md`](../docs/technical/building.ja.md)、配布物の
 作り方は
-[`docs/developers/distribution.ja.md`](../docs/developers/distribution.ja.md) に
+[`docs/technical/distribution.ja.md`](../docs/technical/distribution.ja.md) に
 あります。
 
 ```bash

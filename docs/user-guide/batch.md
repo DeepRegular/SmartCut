@@ -1,152 +1,128 @@
-# Batch processing
+# Working through a batch
 
 [← Documentation](../README.md) ・ [← SmartCut](../../README.md) ・ [日本語](batch.ja.md)
 
-SmartCut is built around handling a whole evening's recordings in one sitting: drop
-twenty files in, press `Ctrl+A` then `Ctrl+D`, work through them one at a time in
-the editor, and write the lot out at the end.
-
-This page describes what happens in the background while you do that, and why it
-does not get in your way.
-
-## The shape of the work
+SmartCut is not built around opening one recording at a time. It is built for
+**dropping in a whole evening's recordings and working through them**.
 
 ```
-Add files  →  indexed and pictured in the background  →  Ctrl+D detects commercials
-              →  cut each one in the editor  →  export the whole list
+①  drop the recordings in together
+②  Ctrl+A, then Ctrl+D, to run commercial detection on all of them
+③  double-click them one at a time and cut
+④  export the whole list at the end
 ```
 
-Cuts live with the clip, not with the editor window, so you can go down the list
-cutting one recording after another and only then write everything out.
+Cuts belong to **the row in the list**, not to the editor window. So you can cut
+your way down the list and leave the exporting until last.
 
-## Three lanes, running side by side
+## 1. Preparation starts the moment you drop them
 
-There are three background lanes: **one walks the packets and builds the seek index,
-one decodes the key pictures into thumbnails and scene changes, and one detects
-commercials.** One pass of each kind runs at a time, and three of different kinds
-run at once.
+![The list while recordings are loading](../images/usage-loading.png)
 
-They are separate because their costs are different in kind. The walk is
-disk-bound: one core reading about a gigabyte a second, touching no decoder at all.
-The thumbnails are CPU-bound: every key picture through libavcodec, around four
-seconds a gigabyte. A commercial detection reads the caption stream, or the audio
-and the logo, and libavcodec threads none of that: one core and a great deal of
-waiting for the disk. The background loses far less by sharing than `Ctrl+D` gains,
-and that is what gets an evening's detection finished by morning.
+The rows fill in immediately. Behind them, SmartCut is doing three jobs at once.
 
-**Running the walk and the thumbnails side by side, rather than one after the other,
-is why the list is quick.** In series they simply added up: the walk read a
-recording end to end, and then the thumbnails read the same recording end to end
-again, neither of them waiting on anything the other did. Side by side, the walk
-runs ahead through the list while the thumbnails follow a clip behind, so **every
-row is filled in at disk speed** and the decoding happens during reads it is not
-holding up.
+| Background job | What it does | How long it takes |
+|---|---|---|
+| **Loading** | builds the seek index, used for seeking and cutting | about 1 second per GB |
+| **Thumbnails** | makes the filmstrip pictures and finds scene changes | about 4 seconds per GB |
+| **Commercial detection** | looks for the commercial breaks (started by `Ctrl+D`) | 10–60 seconds for a 30-minute recording |
 
-The thumbnails follow the walk closely on purpose: they read a recording the machine
-has just pulled through, so the second read comes back from the page cache rather
-than off the disk. That holds on a share too — a read that hits the cache never
-reaches the network either.
+Two jobs of the same kind run one after another; jobs of different kinds run at
+the same time. Progress appears at the bottom right of each row. Rows whose turn
+has not come say `Queued`.
 
-There is no fourth lane. A fourth pass would be a second decoder on the same cores,
-and past that point the disk is the limit anyway.
+**The index is built once and kept.** Open the same recording again and the row
+says `Index from an earlier run`, skipping the loading pass entirely.
 
-## The editor never waits for the lanes
+**You do not have to wait.** A recording that has not finished loading still
+opens on a double-click. What is available immediately and what arrives later is
+in [Using the GUI](gui.md#usable-from-the-moment-it-opens).
 
-The walk, the thumbnails, a detection and an open cut editor all run at the same
-time. Nothing is shared between them: the lanes and the export alike reopen the
-recording from the seek index on disk, so a long pass over clip 12 costs the clip
-you are editing nothing.
+## 2. Detect commercials across the whole list
 
-While the editor window is up, the three background lanes share only **half the
-machine** between them. The picture under your pointer is the one somebody is
-waiting for, and a background pass finishing a few seconds later is a good trade for
-that.
+![The list during commercial detection](../images/usage-detect.png)
 
-**You can open a clip the list has not read yet.** The editor makes that pass
-itself and becomes usable as far as it has got (see [Usable the moment it
-opens](gui.md#usable-the-moment-it-opens)), so waiting for the lane's turn buys you
-nothing.
+`Ctrl+A` (select all), then `Ctrl+D` (detect commercials). That queues detection
+for every selected recording. **Eighteen recordings, one keystroke** — that is
+what the feature is for. Press it in the evening, look at the results in the
+morning.
 
-**Opening the editor stops nothing.** A pass already running on that clip runs on to
-the end: what it has read stays read, and the row keeps the progress, the picture and
-the scene marks it had rather than falling back to `Analysis queued` because a window
-was opened. The editor's own read of the same file follows the lane's through the page
-cache instead of going back to the disk for it. What the lanes do skip is *starting* a
-fresh pass on the clip the editor has, which would only repeat work that window is
-already doing -- and the index the editor writes stays on disk, so when the editor
-closes and the lane picks the row up, it costs one read.
+Progress appears on the row: `Detecting commercials 84% — Looking for the logo`.
+Rows still queued say `Commercial detection queued`.
 
-## Detecting commercials across the list
+**Detection only places marks; it does not cut.** You decide what to remove,
+later, in the editor. See [Commercial detection](cm-detection.md).
 
-`Ctrl+A` then `Ctrl+D` queues a detection for every selected clip. Selecting
-eighteen recordings and pressing `Ctrl+D` once starts a night's work with one
-keystroke, which is exactly what this is for. Meanwhile the clips that have no index
-yet carry on being read alongside.
+**To stop, press "Stop analysis".** Press it again to resume. Loading and
+thumbnails can stop in the middle of a file, but commercial detection cannot, so
+it stops **between** recordings.
 
-Progress appears on each row (`Detecting commercials 84% — Looking for the logo`),
-and rows whose turn has not come say `Commercial detection queued`.
+Only what is running stops. You can stop a batch and immediately start detection
+on something else.
 
-**Stop analysis** stops all three lanes, and pressing it again resumes them. The
-walk and the thumbnails can stop part-way through a file. The three passes that make
-up a commercial detection cannot, so a stop lands **between clips** rather than
-inside one.
+## 3. Edit without waiting for the background
 
-Stopping affects what is running and nothing after it, so you can stop a batch and
-immediately start a different one.
+Loading, thumbnails, commercial detection and cutting all run at the same time.
+**A long job on the twelfth recording does not affect the one you have open.**
 
-## Duplicating a clip
+While the editor window is open, the three background jobs share **half** the
+machine. The picture you are looking at comes first.
 
-**⧉ Duplicate clip** puts the same recording in the list a second time. This is for
-the two-hour capture holding two programmes: the same file on two rows, each written
-out over a different range.
+**Opening the editor does not stop the background.** Work already started on
+that clip runs to the end. Its progress, its pictures and its scene marks never
+go backwards because you opened a window.
 
-**A duplicate carries the cuts and the marks over.** The second cut is almost always
-the first one moved rather than one begun from nothing, and a copy that dropped the
-edit would be useless for the thing duplicates exist for. The index, the length and
-whatever commercial detection found come across too — they are all the same file's
-answer — so a duplicate costs no extra pass over the disk.
+## 4. Splitting one recording across two rows
 
-**Rows that would be written to the same file gain `_1` and `_2` in list order.**
-Duplicates are the obvious case and not the only one: two recordings of the same
-programme in different folders share a name, and every recording read off a disc
-is called `00001`. Without the number the second cut would land on top of the
-first, and the run would report two files written with one of them gone. Remove
-one and the survivor gets its plain name back, because the number is counted off
-the list each time rather than stamped on at duplication.
+**⧉ Duplicate clip** adds the same recording to the list a second time. It is
+there for the two-hour recording that contains two programmes: put the same file
+on two rows and keep a different part in each.
 
-## Exporting the list
+**A duplicate keeps the cuts and the marks.** The second programme's cuts are
+usually the first one's, moved. The index and the detection results come along
+too, so nothing is read from disk again.
 
-The export tab writes the list out from the top down, one clip at a time. Each row
-carries its own progress and result; above them are the overall state, the elapsed
-time and the time remaining.
+**Rows that would write the same filename get `_1`, `_2` in list order.** That
+happens with duplicates, but also with same-named programmes from different
+folders, and with recordings read off a disc (they are all called `00001`).
+Without the numbers the second one would overwrite the first, and the program
+would report two exports while leaving one file. Delete one of them and the
+other goes back to its unnumbered name.
 
-`Stop export` finishes writing the clip currently in progress and then stops, so you
-never end up with a half-written file. **Stopping part way through a disc takes back
-what was written to it**: a stopped run does not write the index, and a stream no
-playlist names is one the disc does not know it has. See the
-[GUI guide](gui.md#4-write).
+## 5. Export the list
 
-Because the export order is the list order, dragging a row to the top is how you say
-"write this one first".
+The output tab writes the list **from the top down**. Each row shows its
+progress and result, with the overall state, elapsed time and time remaining
+above.
 
-## Working over a network share
+To export something first, **drag its row upwards**. The export order is the
+list order.
 
-Recordings on an SMB share work as command-line arguments, as drops from a file
-manager, and as an output folder. SmartCut translates the share path into wherever
-this machine has already mounted it, and after that it is an ordinary path — the
-packet scan, the seek index and the output all proceed without knowing a network was
-involved.
+`Stop export` finishes the recording it is on and then stops. It never leaves a
+half-written file behind. (If you stop it while it is writing a BDAV disc, what
+it has written is taken back off the disc as well — the reason is in
+[Using the GUI](gui.md#4-export).)
 
-**SmartCut does not mount anything itself.** Mounting means handling a password,
-which belongs in your desktop's keyring rather than in a cut editor. A share that is
-not connected is refused, and SmartCut tells you where to connect it:
+## Recordings on a network share (NAS)
+
+Recordings on a NAS can be dropped in like any other, and a share can be used as
+the output folder.
+
+But **SmartCut does not mount shares.** Mounting needs a password, and that
+belongs to the file manager or the keyring, not to a video editor. Given a share
+that is not connected, it stops and says where to connect it.
 
 ```
-Not connected to \\nas\rec. Open smb://nas/rec in the file manager and add
-it again. (shares connected now: \\nas\録画)
+\\nas\rec is not connected. Open smb://nas/rec in your file manager and add
+the files again. (Connected shares: \\nas\video)
 ```
 
-## Saving the batch
+## Saving part-way through
 
-The whole list — recordings, cuts, track choices and output settings — saves as a
-project with `Ctrl+S` and comes back next time. See [projects](projects.md).
+The whole list — recordings, cuts, track choices, output settings — saves with
+`Ctrl+S` and comes back next time. See [Projects](projects.md).
+
+---
+
+Why the three jobs run in parallel, and how that was tuned, is in the
+[design notes](../technical/design.md#three-lanes-and-an-editor-that-stays-open).

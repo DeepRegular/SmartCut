@@ -6,7 +6,7 @@ The Rust port is what ships. The Python implementation is kept as the test oracl
 The "first frame is 13 ms early" limitation is gone in this implementation — see
 below.
 
-Everything about audio has its own page: [audio](../technical/audio.md).
+Everything about audio has its own page: [audio](audio.md).
 
 ## State of the port
 
@@ -71,7 +71,7 @@ resort behind that.
 
 A decoder hands its pictures back in picture-order-count order, and the counts on the
 two sides of a seam were written by different encoders —
-[pitfall 10](../technical/algorithm.md#10-the-picture-order-counts-either-side-of-a-splice-are-not-one-anothers)
+[pitfall 10](algorithm.md#10-the-picture-order-counts-either-side-of-a-splice-are-not-one-anothers)
 has the whole of it. `--clean-joins` spends up to two seconds more re-encoding to
 reach an IDR, which is the entry point that settles it, and is off unless asked for
 because what it costs is exactness.
@@ -185,7 +185,7 @@ Three things are needed:
   re-encoded part's SPS were left active, the copied part would be decoded with the
   wrong SPS, so the original parameter sets are restored at each splice.
 
-The background to this is [pitfall 1](../technical/algorithm.md#1-the-parameter-sets-spspps-do-not-match).
+The background to this is [pitfall 1](algorithm.md#1-the-parameter-sets-spspps-do-not-match).
 
 ## Where the reference test became more accurate than Python
 
@@ -302,9 +302,9 @@ The audio side of the engine is large enough to have its own page. It covers:
 
 | | |
 |---|---|
-| [The three modes](../technical/audio.md#the-three-modes) | `copy`, `smart` and `reencode`, and what each costs |
-| [Cutting per interval](../technical/audio.md#cutting-per-interval-and-the-drift-that-nearly-happened) | Why an MP4 `stts` track accumulates drift, and how it is bounded |
-| [Smart rendering applied to audio](../technical/audio.md#smart-rendering-applied-to-audio) | Re-encoding only the straddling frames, the guard frame, and the silence test |
-| [Writing MPEG-2 AAC](../technical/audio.md#writing-mpeg-2-aac---aac) | Why the ADTS headers are built here rather than by a muxer |
-| [Downmixing](../technical/audio.md#downmixing---audio-channels) | Folding 5.1 to stereo, and why it forces a whole-track re-encode |
-| [Multi-audio broadcasts](../technical/audio.md#multi-audio-broadcasts) | Cutting every sound track independently |
+| [The three modes](audio.md#the-three-modes) | `copy`, `smart` and `reencode`, and what each costs |
+| [Cutting per interval](audio.md#cutting-per-interval-and-the-drift-that-nearly-happened) | Why an MP4 `stts` track accumulates drift, and how it is bounded |
+| [Smart rendering applied to audio](audio.md#smart-rendering-applied-to-audio) | Re-encoding only the straddling frames, the guard frame, and the silence test |
+| [Writing MPEG-2 AAC](audio.md#writing-mpeg-2-aac---aac) | Why the ADTS headers are built here rather than by a muxer |
+| [Downmixing](audio.md#downmixing---audio-channels) | Folding 5.1 to stereo, and why it forces a whole-track re-encode |
+| [Multi-audio broadcasts](audio.md#multi-audio-broadcasts) | Cutting every sound track independently |

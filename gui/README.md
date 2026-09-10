@@ -8,10 +8,10 @@ and a cut editor that opens in a window of its own.
 
 For how to use the GUI, see
 [`docs/user-guide/gui.md`](../docs/user-guide/gui.md); for how it is built, see
-[`docs/developers/design.md`](../docs/developers/design.md). Build instructions
-are in [`docs/developers/building.md`](../docs/developers/building.md), and the
+[`docs/technical/design.md`](../docs/technical/design.md). Build instructions
+are in [`docs/technical/building.md`](../docs/technical/building.md), and the
 release artifacts are covered in
-[`docs/developers/distribution.md`](../docs/developers/distribution.md).
+[`docs/technical/distribution.md`](../docs/technical/distribution.md).
 
 ```bash
 cd src-tauri && cargo build --release   # -> target/release/gui

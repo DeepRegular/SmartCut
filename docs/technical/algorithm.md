@@ -24,7 +24,7 @@ encoder in libavcodec, on a graphics card, or in any free implementation. SmartC
 writes those pictures itself — intra pictures only, which is all a `head` or a `tail`
 needs, since nothing outside the fragment may be referenced. What that costs, and how
 it was measured, is in
-[the Rust core](../developers/rust-core.md#vc-1-the-codec-with-no-encoder).
+[the Rust core](rust-core.md#vc-1-the-codec-with-no-encoder).
 
 The Python reference implementation is split as follows:
 

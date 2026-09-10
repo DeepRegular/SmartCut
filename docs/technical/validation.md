@@ -54,7 +54,7 @@ back out of the decoder every player uses at a measured distance from the ones t
 replaced. Both checks are needed: a subtly malformed bitstream still decodes, and a
 wrongly scaled transform decodes without complaint into a picture of the wrong
 brightness. The encoder and what it costs are in
-[the Rust core](../developers/rust-core.md#vc-1-the-codec-with-no-encoder).
+[the Rust core](rust-core.md#vc-1-the-codec-with-no-encoder).
 
 Everything a real transport stream can throw at you turned up along the way:
 
@@ -209,13 +209,13 @@ These only surfaced on real material:
   nothing is left saying what the pictures cannot back up. Measured on a profile 4
   recording, which libavcodec refuses outright; its GOPs are 4.2 seconds, so a range
   that misses an entry point re-encodes a long way. See
-  [the Rust core](../developers/rust-core.md#dolby-vision-is-in-the-pictures-and-cannot-be-written-back).
+  [the Rust core](rust-core.md#dolby-vision-is-in-the-pictures-and-cannot-be-written-back).
 - **An HLG transfer written the backward-compatible way is only kept for HEVC.** The
   sequence header says `bt2020-10` and an SEI beside it says HLG; both are reproduced
   across a seam by telling libx265 `atc-sei`, which libx264 has no equivalent of. No
   H.264 recording signalling HLG this way has been measured here.
 - **A VC-1 partial GOP is written by SmartCut's own encoder, and it writes intra
-  pictures only** ([the Rust core](../developers/rust-core.md#vc-1-the-codec-with-no-encoder)).
+  pictures only** ([the Rust core](rust-core.md#vc-1-the-codec-with-no-encoder)).
   There is no VC-1 encoder in libavcodec to use instead. Pictures cost more bits than
   the predicted ones they stand in for — still fewer than the disc's own I pictures —
   and two things in the format are refused by name rather than written wrongly: a

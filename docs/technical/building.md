@@ -215,7 +215,7 @@ builds its own proxy.
 
 `tests/verify_real.py <src> <out> <ranges>` checks frame count, alignment, bit-exact
 ratio, timeline, interlacing and A/V length difference in one go. For the results, see
-[Validation](../technical/validation.md).
+[Validation](validation.md).
 
 ## Running in a virtual machine
 
