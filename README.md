@@ -60,6 +60,12 @@ recorded, what the broadcaster said it was about, and a chapter point wherever a
 commercial break was taken out. Ask for it and the finished disc is wrapped in a
 **`.iso`** a burner can take. See [Writing a disc](docs/technical/bdav.md).
 
+**You can place a cut by the subtitles.** The editor's preview will draw them
+over the picture (off by default): a broadcast's ARIB captions as characters, at
+the position and colour the broadcaster asked for, and a disc's — PGS and a
+DVD's subpictures — as the pictures they are. Whether a seam lands in the middle
+of a line is not something the picture alone will tell you.
+
 **Commercial breaks are found for you.** SmartCut uses three independent
 clues: the marks the broadcaster puts in its own subtitle stream at every
 switch, runs of silence, and whether the station logo is on screen. It places

@@ -84,6 +84,23 @@ struct Held(Mutex<Option<SeekIndex>>);
 #[derive(Default)]
 struct Playing(std::sync::atomic::AtomicBool);
 
+/// The subtitle track the preview is drawing, once one has been asked for.
+///
+/// Kept between frames because that is the whole point of it: the reader
+/// holds the recording open and a stretch of the subtitles decoded, so
+/// scrubbing inside that stretch costs a lookup. Built on the first frame
+/// the window asks about, thrown away when another track is asked for or
+/// another recording is opened. See [`smartcut_core::subs`].
+#[derive(Default)]
+struct Subs(Mutex<Option<Subtitles>>);
+
+struct Subtitles {
+    /// Which track, by the number the recording names it with -- a PID, or
+    /// a DVD's substream id.
+    id: i32,
+    reader: smartcut_core::subs::Reader,
+}
+
 /// How many times each of the clip list's background lanes has been asked to
 /// give up.
 ///
@@ -146,6 +163,42 @@ fn audio_tracks_of(audios: &[smartcut_core::AudioInfo]) -> Vec<AudioTrackInfo> {
         .collect()
 }
 
+/// One subtitle track, for the preview's own picker.
+///
+/// Carried with the rest of what a recording is, because it is free here:
+/// the same open that found the sound found these. See
+/// [`smartcut_core::subs`], which is what draws them.
+#[derive(Serialize)]
+struct SubtitleTrackInfo {
+    /// A PID in a transport stream, a substream id on a DVD -- the number
+    /// [`subtitle_at`] is asked for.
+    id: i32,
+    /// "caption" for a broadcast's ARIB captions, "graphics" for a
+    /// Blu-ray's, "subpicture" for a DVD's.
+    kind: String,
+    language: Option<String>,
+}
+
+fn subtitle_tracks_of(
+    captions: &[smartcut_core::CaptionInfo],
+    graphics: &[smartcut_core::GraphicsInfo],
+    subpictures: &[smartcut_core::SubpictureInfo],
+) -> Vec<SubtitleTrackInfo> {
+    smartcut_core::subs::tracks(captions, graphics, subpictures)
+        .into_iter()
+        .map(|t| SubtitleTrackInfo {
+            id: t.id,
+            kind: match t.kind {
+                smartcut_core::subs::Kind::Caption => "caption",
+                smartcut_core::subs::Kind::Graphics => "graphics",
+                smartcut_core::subs::Kind::Subpicture => "subpicture",
+            }
+            .into(),
+            language: t.language,
+        })
+        .collect()
+}
+
 #[derive(Serialize)]
 struct SourceInfo {
     path: String,
@@ -168,6 +221,9 @@ struct SourceInfo {
     /// Every sound track, so the window can answer for the one it is keeping
     /// rather than for the one above. See [`AudioTrackInfo`].
     audio_tracks: Vec<AudioTrackInfo>,
+    /// Every subtitle track, so the editor can offer to draw one over the
+    /// preview. See [`SubtitleTrackInfo`].
+    subtitles: Vec<SubtitleTrackInfo>,
     index_name: String,
     /// Presentation times of every random access point: the places a cut
     /// costs nothing.
@@ -682,6 +738,7 @@ async fn open_outline(path: String) -> Result<SourceInfo, String> {
             audio_sample_rate: o.audio.as_ref().map_or(0, |a| a.sample_rate),
             audio_bits: o.audio.as_ref().map_or(0, |a| a.bits),
             audio_tracks: audio_tracks_of(&o.audios),
+            subtitles: subtitle_tracks_of(&o.captions, &o.graphics, &o.subpictures),
             index_name: String::new(),
             points: Vec::new(),
             unusable_points: 0,
@@ -881,6 +938,7 @@ fn info_of(src: &Source) -> SourceInfo {
         audio_sample_rate: src.audio.as_ref().map_or(0, |a| a.sample_rate),
         audio_bits: src.audio.as_ref().map_or(0, |a| a.bits),
         audio_tracks: audio_tracks_of(&src.audios),
+        subtitles: subtitle_tracks_of(&src.captions, &src.graphics, &src.subpictures),
         index_name: src.index_name.to_string(),
         points: src.points.iter().map(|p| p.time).collect(),
         unusable_points: src.points.iter().filter(|p| p.open_gop() && !p.droppable).count(),
@@ -901,6 +959,7 @@ fn open_now(path: &str, app: &tauri::AppHandle) -> Result<SourceInfo, String> {
     // it handed over.
     *app.state::<OpenPath>().0.lock().unwrap() = Some(path.to_string());
     *app.state::<Proxy>().0.lock().unwrap() = None;
+    *app.state::<Subs>().0.lock().unwrap() = None;
     *app.state::<Held>().0.lock().unwrap() = held;
     let info = info_of(&src);
     *app.state::<Opened>().0.lock().unwrap() = Some(src);
@@ -3406,6 +3465,119 @@ async fn play(
     .map_err(|e| e.to_string())?
 }
 
+/// What one subtitle track has on screen at an instant, for the preview to
+/// draw over the picture.
+///
+/// Two shapes, because the recordings have two. A broadcast's captions are
+/// characters and where to put them: the window draws them itself, with the
+/// fonts it has, which is why they stay sharp however big the stage is. A
+/// disc's subtitles are a picture, and it arrives as a PNG cropped to
+/// itself, to be placed on the same screen the positions are measured
+/// against.
+#[derive(Serialize)]
+struct Overlay {
+    /// The screen everything below is placed on: the caption plane for a
+    /// broadcast, the picture's own size for a disc.
+    width: u16,
+    height: u16,
+    runs: Vec<TextRun>,
+    picture: Option<Picture>,
+}
+
+#[derive(Serialize)]
+struct TextRun {
+    x: u16,
+    y: u16,
+    width: u16,
+    height: u16,
+    /// How far apart the characters are, which is what lets the window
+    /// place each one where the broadcaster put it rather than where a font
+    /// would.
+    advance: u16,
+    text: String,
+    /// `#rrggbb`.
+    colour: String,
+}
+
+#[derive(Serialize)]
+struct Picture {
+    x: u16,
+    y: u16,
+    width: u16,
+    height: u16,
+    url: String,
+}
+
+/// The subtitle on screen at `time`, or nothing where there is none.
+///
+/// `id` is the track, by the number the track chooser lists it under. A
+/// different one throws the last reader away and opens another, which is
+/// what switching languages amounts to.
+#[tauri::command]
+async fn subtitle_at(
+    id: i32,
+    time: f64,
+    app: tauri::AppHandle,
+) -> Result<Option<Overlay>, String> {
+    off_thread(move || {
+        let state = app.state::<Subs>();
+        let mut guard = state.0.lock().unwrap();
+        if guard.as_ref().is_none_or(|s| s.id != id) {
+            let opened = app.state::<Opened>();
+            let src = opened.0.lock().unwrap();
+            let src = src.as_ref().ok_or("no file open")?;
+            *guard = Some(Subtitles {
+                id,
+                reader: smartcut_core::subs::Reader::open(src, id).map_err(|e| e.to_string())?,
+            });
+        }
+        let subs = guard.as_mut().expect("just built");
+        let shown = subs.reader.at(time).map_err(|e| e.to_string())?;
+        Ok(shown.map(|shown| match shown {
+            smartcut_core::subs::Shown::Text { plane, runs } => Overlay {
+                width: plane.0,
+                height: plane.1,
+                runs: runs
+                    .iter()
+                    .map(|r| TextRun {
+                        x: r.x,
+                        y: r.y,
+                        width: r.width,
+                        height: r.height,
+                        advance: r.advance,
+                        text: r.text.clone(),
+                        colour: format!("#{:06x}", r.colour),
+                    })
+                    .collect(),
+                picture: None,
+            },
+            smartcut_core::subs::Shown::Picture {
+                screen,
+                x,
+                y,
+                width,
+                height,
+                png,
+            } => Overlay {
+                width: screen.0,
+                height: screen.1,
+                runs: Vec::new(),
+                picture: Some(Picture {
+                    x: *x,
+                    y: *y,
+                    width: *width,
+                    height: *height,
+                    url: format!(
+                        "data:image/png;base64,{}",
+                        base64::engine::general_purpose::STANDARD.encode(png)
+                    ),
+                }),
+            },
+        }))
+    })
+    .await
+}
+
 #[tauri::command]
 fn stop_play(playing: State<Playing>) {
     playing.0.store(false, std::sync::atomic::Ordering::SeqCst);
@@ -3610,6 +3782,7 @@ pub fn run() {
         .manage(OpenPath::default())
         .manage(Held::default())
         .manage(Playing::default())
+        .manage(Subs::default())
         .manage(BatchStop::default())
         .manage(argv)
         // The list window is declared in the configuration rather than built
@@ -3653,6 +3826,7 @@ pub fn run() {
             read_keyframes,
             play,
             stop_play,
+            subtitle_at,
             export,
             programme,
             series_title,

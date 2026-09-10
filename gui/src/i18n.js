@@ -423,6 +423,17 @@ const CATALOG = {
     "editor.ok": "OK",
     "editor.cancel": "キャンセル",
 
+    // --- プレビューの字幕 -----------------------------------------------
+    "subs.label": "字幕",
+    "subs.off": "表示しない",
+    "subs.kind.caption": "文字",
+    "subs.kind.graphics": "PGS",
+    "subs.kind.subpicture": "サブピクチャ",
+    "subs.failed": "字幕を読めませんでした: {e}",
+    "lang.jpn": "日本語",
+    "lang.eng": "英語",
+    "lang.und": "言語不明",
+
     // --- トラック -------------------------------------------------------
     "tracks.button": "トラック",
     "tracks.button.title": "この録画のどのストリームを書き出すか選ぶ",
@@ -884,6 +895,17 @@ const CATALOG = {
     "t.clearAll.title": "Remove every cut and every keyframe",
     "editor.ok": "OK",
     "editor.cancel": "Cancel",
+
+    // --- subtitles over the preview --------------------------------------
+    "subs.label": "Subtitles",
+    "subs.off": "Off",
+    "subs.kind.caption": "text",
+    "subs.kind.graphics": "PGS",
+    "subs.kind.subpicture": "subpicture",
+    "subs.failed": "Could not read the subtitles: {e}",
+    "lang.jpn": "Japanese",
+    "lang.eng": "English",
+    "lang.und": "unnamed",
 
     // --- tracks ---------------------------------------------------------
     "tracks.button": "Tracks",

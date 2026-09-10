@@ -18,10 +18,18 @@
     <div class="infobar">
       <span id="info">—</span>
       <span class="spacer"></span>
-      <!-- Its label counts a detection up while one is running, so it is
-           `main.js` that writes it and not `applyStatic`. -->
+      <!-- Which subtitles to draw over the preview, and 表示しない first
+           because that is what a cutting screen is for: the picture under
+           the playhead is what a cut is judged by, and a caption over it is
+           something to turn on when the cut is near a line. Empty and out of
+           the way on a recording that carries none. See `subs.rs`. -->
+      <label class="opt" id="subs-pick" hidden><span data-i18n="subs.label">字幕</span>
+        <select id="subs-track"></select>
+      </label>
       <button id="tracks" class="mini wide" data-i18n="tracks.button"
               data-i18n-title="tracks.button.title">トラック</button>
+      <!-- Its label counts a detection up while one is running, so it is
+           `main.js` that writes it and not `applyStatic`. -->
       <button id="detect-cm" class="mini wide" data-i18n-title="editor.detectCm.title">CM を検出</button>
     </div>
 
@@ -47,6 +55,15 @@
               <span id="ovl-kind">—</span>
               <span id="ovl-sel" data-i18n="editor.selectionNone">選択 —</span>
             </div>
+          </div>
+          <!-- The subtitles, over the picture and inside it: the layer is
+               moved to wherever `object-fit: contain` actually put the
+               picture, so a caption sits where the broadcaster put it
+               whatever shape the window is. Characters are drawn on the
+               canvas and a disc's pictures go in the <img>. -->
+          <div id="subs-layer" class="subs" hidden>
+            <canvas id="subs-text"></canvas>
+            <img id="subs-pic" alt="" hidden />
           </div>
           <div id="searching" class="searching" data-i18n="editor.searching" hidden>サーチ中</div>
         </div>

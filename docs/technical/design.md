@@ -850,6 +850,31 @@ redrawn when the playhead nears the drawn edge, and since the same pictures land
 places, the swap is invisible. Measured at 160 px/s, tracked for 1.8 s with no jumps and no
 stalls (GOP · 6 s, 2–7 px every 16 ms).
 
+## Subtitles over the preview
+
+**Off by default.** The cut editor is a place to look at the picture, and a subtitle
+is wanted only when a cut is being placed by one. A picker in the info bar chooses a
+track and it is drawn over the preview; a recording that carries no subtitles has no
+picker at all.
+
+The backend is asked one question — what is on screen at this instant — once per frame
+(`subs.rs`). It reads a **stretch at a time**, 30 seconds back and 30 on, so a question
+inside that stretch is a lookup. Reading back is what makes the answer right: the
+subtitle on screen was put there by an earlier statement. Playback asks per frame too
+and crosses the end of a window about once a minute.
+
+Two shapes come back. A broadcast's captions are **characters and positions**, and the
+window draws them on a `<canvas>` — one character at a time, at the advance the
+broadcaster asked for, with an outline. Nothing about the placement depends on a
+font's metrics, so it holds up in whatever font the machine has. A disc's subtitles are
+**a PNG and a rectangle**, and an `<img>` goes on the same part of the picture.
+
+Both are laid over the **picture** rather than over the stage. `object-fit: contain`
+leaves black bands beside a 16:9 picture in a wider stage, and a subtitle placed
+against the stage would drift into them as the window changed shape. While subtitles
+are showing, the frame number and time move to the top of the picture: both want the
+bottom, and the subtitle is the one that cannot be moved.
+
 ## Output naming and containers
 
 **The output inherits the input's name.** The default is the same directory and the same

@@ -476,6 +476,17 @@ Menus (IGS) are the same kind of stream doing a different job: a button has a
 state and a target, and both point into a timeline the cut has just taken
 apart. Those are listed to say they are being left behind.
 
+**They can also be drawn over the editor's preview.** That is a different
+question from carrying them — what is on screen at this instant (`subs.rs`) —
+and here libavcodec does the decoding: PGS and a DVD's subpictures both come
+back as one byte per pixel and a table of colours, which
+[`vobsub::drawn_from`](../../rust/crates/core/src/vobsub.rs) already puts into
+one shape. That becomes a PNG cropped to the subtitle's own rectangle, and the
+window places it on the same part of the screen. A DVD's palette is not in the
+stream, so here too it is read off the disc's index
+([below](#a-discs-subtitles-inside-the-cut-or-beside-it)). How a broadcast's characters are
+read is in [Broadcast TS](broadcast-ts.md#reading-the-captions-to-draw-them-over-the-preview).
+
 ### A menu is not a stream, and the index is the only thing that knows
 
 Two of the things a Blu-ray carries are named by its own index and by nothing

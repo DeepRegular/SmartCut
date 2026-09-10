@@ -647,10 +647,238 @@ async function showFrame(t) {
       { kind: shot.kind }
     );
     el("ovl-kind").className = onPoint ? "key" : "";
+    showSubs(shot.time);
   } catch (e) {
     if (token === previewToken) el("status").textContent = tr("editor.previewFailed", { e });
   }
   scheduleStrip();
+}
+
+// --- subtitles over the picture -------------------------------------------
+//
+// Off unless it is asked for. A cutting screen is for the picture: what a
+// caption tells you is where a line begins and ends, which matters at the
+// two or three instants a cut is being placed near one and is in the way
+// everywhere else.
+//
+// The backend answers "what is on screen at this instant" and holds a
+// stretch of the subtitles decoded around wherever it was last asked, so
+// this can ask on every frame -- while scrubbing and while playing -- and
+// pay for a read only when the playhead leaves that stretch. See
+// `subs.rs`.
+
+/// The track being drawn, by the number the recording names it with, or
+/// null for 表示しない.
+let subsId = null;
+/// What the backend last said is on screen, kept so that a resized window
+/// can be redrawn without asking again.
+let subsShown = null;
+let subsToken = 0;
+
+/// Fill the picker from what the recording carries, and put it away where
+/// it carries nothing.
+function paintSubsPicker() {
+  const pick = el("subs-pick");
+  const sel = el("subs-track");
+  if (!pick || !sel) return;
+  const tracks = (src && src.subtitles) || [];
+  pick.hidden = tracks.length === 0;
+  if (!tracks.length) {
+    subsId = null;
+    sel.innerHTML = "";
+    clearSubs();
+    placeReadouts();
+    return;
+  }
+  // Rebuilt rather than patched: this is drawn once per recording, and the
+  // answer it is holding belongs to the recording before it.
+  sel.innerHTML = "";
+  const off = document.createElement("option");
+  off.value = "";
+  off.textContent = tr("subs.off");
+  sel.appendChild(off);
+  for (const t of tracks) {
+    const o = document.createElement("option");
+    o.value = String(t.id);
+    o.textContent = subsLabel(t, tracks);
+    sel.appendChild(o);
+  }
+  // Kept across a reopen of the same recording, and only then: the editor is
+  // opened on one clip at a time and remembering the language between two of
+  // them would be remembering a track number that means something else.
+  const still = tracks.some((t) => t.id === subsId);
+  subsId = still ? subsId : null;
+  sel.value = still ? String(subsId) : "";
+  if (!still) clearSubs();
+  placeReadouts();
+}
+
+/// What to call one track in the list.
+///
+/// The language where the recording gives one, and what kind of subtitle it
+/// is where two tracks would otherwise read the same -- a disc with two
+/// English tracks says which is which by number, because that is all the
+/// disc says about them either.
+function subsLabel(track, all) {
+  const kind = tr(`subs.kind.${track.kind}`);
+  const lang = track.language ? lang3(track.language) : null;
+  const same = all.filter((t) => (t.language || "") === (track.language || ""));
+  const number = same.length > 1 ? ` ${same.indexOf(track) + 1}` : "";
+  return lang ? `${lang}${number} (${kind})` : `${kind}${number}`;
+}
+
+/// A three letter language code as something to read, where it is one of the
+/// handful a recording here actually carries. Anything else is shown as it
+/// arrived -- a code nobody translated is still a name, and a made-up one
+/// would not be.
+function lang3(code) {
+  const known = tr(`lang.${code.toLowerCase()}`);
+  return known.startsWith("lang.") ? code : known;
+}
+
+/// Where the picture actually is inside the stage.
+///
+/// `object-fit: contain` centres the picture and leaves black at two of the
+/// edges; everything a subtitle is placed against is measured on the
+/// picture, so the layer has to be put exactly there.
+function pictureBox() {
+  const img = el("preview");
+  const w = img.clientWidth;
+  const h = img.clientHeight;
+  const nw = img.naturalWidth;
+  const nh = img.naturalHeight;
+  if (!w || !h || !nw || !nh) return null;
+  const scale = Math.min(w / nw, h / nh);
+  const pw = nw * scale;
+  const ph = nh * scale;
+  return { left: img.offsetLeft + (w - pw) / 2, top: img.offsetTop + (h - ph) / 2, width: pw, height: ph };
+}
+
+function clearSubs() {
+  subsShown = null;
+  const layer = el("subs-layer");
+  if (layer) layer.hidden = true;
+}
+
+/// The frame counter and the subtitles both want the bottom of the picture,
+/// and only one of them can be moved. Moved while a track is chosen rather
+/// than while a line is actually on screen: a readout that jumped to the top
+/// and back at every line would be worse than either place.
+function placeReadouts() {
+  const stage = document.querySelector(".stage");
+  if (stage) stage.classList.toggle("subs-on", subsId !== null);
+}
+
+/// Ask what is on screen at `t` and draw it.
+async function showSubs(t) {
+  if (subsId === null || !src) {
+    clearSubs();
+    return;
+  }
+  const token = ++subsToken;
+  try {
+    const shown = await invoke("subtitle_at", { id: subsId, time: t });
+    if (token !== subsToken) return;
+    subsShown = shown;
+    drawSubs();
+  } catch (e) {
+    if (token !== subsToken) return;
+    // Said once, and the picker goes back to 表示しない: a recording whose
+    // subtitles cannot be read is not one to say so about on every frame.
+    el("status").textContent = tr("subs.failed", { e });
+    subsId = null;
+    el("subs-track").value = "";
+    clearSubs();
+  }
+}
+
+/// Put what was last read on screen, at whatever size the stage is now.
+function drawSubs() {
+  const layer = el("subs-layer");
+  const pic = el("subs-pic");
+  const canvas = el("subs-text");
+  if (!layer) return;
+  const box = pictureBox();
+  if (!subsShown || !box) {
+    layer.hidden = true;
+    return;
+  }
+  layer.hidden = false;
+  layer.style.left = `${box.left}px`;
+  layer.style.top = `${box.top}px`;
+  layer.style.width = `${box.width}px`;
+  layer.style.height = `${box.height}px`;
+  const sx = box.width / subsShown.width;
+  const sy = box.height / subsShown.height;
+
+  // A disc's subtitle is a picture of its own rectangle of the screen.
+  if (subsShown.picture) {
+    const p = subsShown.picture;
+    pic.src = p.url;
+    pic.style.left = `${p.x * sx}px`;
+    pic.style.top = `${p.y * sy}px`;
+    pic.style.width = `${p.width * sx}px`;
+    pic.style.height = `${p.height * sy}px`;
+    pic.hidden = false;
+  } else {
+    pic.hidden = true;
+    pic.removeAttribute("src");
+  }
+
+  // And a broadcast's is characters, drawn here. On a canvas rather than in
+  // elements because what a caption needs is a glyph in a given box: the
+  // characters are placed one at a time, at the spacing the broadcaster
+  // asked for, so nothing depends on a font's own metrics -- and the outline
+  // that keeps white text readable over a white shirt is one call.
+  const dpr = window.devicePixelRatio || 1;
+  canvas.width = Math.round(box.width * dpr);
+  canvas.height = Math.round(box.height * dpr);
+  const ctx = canvas.getContext("2d");
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.clearRect(0, 0, box.width, box.height);
+  for (const run of subsShown.runs || []) {
+    const size = run.height * sy;
+    const advance = run.advance * sx;
+    const x = run.x * sx;
+    const y = run.y * sy;
+    // The box behind the line, which is what a receiver draws and what makes
+    // white characters readable over a bright picture. The broadcaster names
+    // a colour for it as well; this is not that colour, and says so in
+    // `subs.rs`.
+    ctx.fillStyle = "rgba(0,0,0,.55)";
+    ctx.fillRect(x - advance * 0.08, y - size * 0.12, run.width * sx + advance * 0.16, size * 1.24);
+    ctx.font = `${size}px "Noto Sans CJK JP", "Noto Sans JP", "Yu Gothic", "Hiragino Sans", "MS Gothic", sans-serif`;
+    ctx.textBaseline = "top";
+    ctx.lineJoin = "round";
+    ctx.lineWidth = Math.max(1, size / 10);
+    ctx.strokeStyle = "rgba(0,0,0,.9)";
+    ctx.fillStyle = run.colour;
+    let at = x;
+    for (const ch of Array.from(run.text)) {
+      ctx.strokeText(ch, at, y);
+      ctx.fillText(ch, at, y);
+      at += advance;
+    }
+  }
+}
+
+// The picture is what the layer is measured against, and a picture that
+// has not arrived yet has no size: the first frame of a recording, and any
+// frame whose shape differs from the one before it, are placed when the
+// browser has the image rather than when it was asked for.
+el("preview").addEventListener("load", () => drawSubs());
+
+const subsPicker = el("subs-track");
+if (subsPicker) {
+  subsPicker.addEventListener("change", () => {
+    subsId = subsPicker.value === "" ? null : Number(subsPicker.value);
+    placeReadouts();
+    if (subsId === null) {
+      clearSubs();
+    } else {
+      showSubs(shownTime >= 0 ? shownTime : playhead);
+    }
+  });
 }
 
 const seekOut = (o) => showFrame(outToSrc(clamp(o, 0, outDur)));
@@ -2145,6 +2373,7 @@ async function openPath(picked, saved, side, name, chapters, dropPids) {
     exact.catch(() => {});
     src = await invoke("open_outline", { path: picked });
     paintSourceInfo();
+    paintSubsPicker();
     cuts = saved ? saved.cuts.map((c) => ({ a: c.a, b: c.b })) : [];
     cutHistory = [];
     keyframes = saved ? saved.keyframes.slice() : [];
@@ -2241,6 +2470,7 @@ async function pointsArrived(exact, picked) {
   const at = playhead;
   src = full;
   paintSourceInfo();
+  paintSubsPicker();
   rebuildTimeline();
   renderKeyframes();
   stripCache = null;
@@ -2679,6 +2909,7 @@ if (listen) {
     shownTime = t;
     updateReadouts();
     draw();
+    showSubs(t);
     // The strip is not redrawn here -- it is already sliding, and this is
     // what it slides against.
     anchorPlay(srcToOutSeam(t));
@@ -2741,6 +2972,7 @@ window.addEventListener("resize", relayout);
 /// number of cells until this runs.
 function relayout() {
   draw();
+  drawSubs();
   // the reel is placed in pixels, so a narrower window is a wrong offset --
   // and a narrower window holds fewer cells, so it wants a fresh reel too
   holdReel();

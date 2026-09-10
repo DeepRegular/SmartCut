@@ -54,6 +54,17 @@ impl Set {
         )
     }
 
+    /// Whether a character of this set takes a whole character field.
+    ///
+    /// Not the same question as [`Set::wide`], which is about the bytes. The
+    /// kana sets are one byte a character and drawn full width; the
+    /// alphanumerics and the half-width katakana are one byte and drawn at
+    /// half the width. A caption is laid out on a grid of fields, so this is
+    /// what decides where the next character goes.
+    fn full_width(&self) -> bool {
+        !matches!(self, Set::Alnum | Set::HalfKatakana)
+    }
+
     /// The graphic set a designation escape names.
     fn from_final(f: u8, wide: bool) -> Set {
         match (f, wide) {
@@ -226,52 +237,110 @@ fn additional_cell(c: char) -> Option<[u8; 2]> {
     })
 }
 
+/// One step of an eight-unit string, for a reader that wants more than the
+/// characters.
+///
+/// [`decode`] wants only the characters -- a programme name has one size and
+/// one colour whatever the broadcaster wrote it in. A **caption** is the
+/// other case: where its lines go and what colour they are is half of what
+/// it says, and that is in the control codes. So the walk is one thing and
+/// what is made of it is another.
+pub enum Step<'a> {
+    /// A character, spelled the way [`decode`] spells it. The flag is
+    /// whether it takes a whole character field or half of one, which is
+    /// what a caption's layout is counted in.
+    Text(&'a str, bool),
+    /// A control code, with the parameters that belong to it. A control
+    /// sequence (`0x9B`) carries everything up to and including the byte
+    /// that ends it, which is the byte that says which sequence it was.
+    Control(u8, &'a [u8]),
+}
+
 /// Decode an ARIB eight-unit string.
 ///
 /// Never fails: a broadcast's own text is not always well formed, and half a
 /// programme name is better than an error where a name should be.
 pub fn decode(bytes: &[u8]) -> String {
+    let mut out = String::new();
+    walk(bytes, &mut |step| match step {
+        Step::Text(text, _) => out.push_str(text),
+        // A line break. Both are written: a recorder's own playlists
+        // separate the lines of a programme description with 0x0A, and a
+        // broadcast's text uses 0x0D.
+        Step::Control(0x0A | 0x0D, _) => out.push('\n'),
+        Step::Control(..) => {}
+    });
+    out
+}
+
+/// Walk an ARIB eight-unit string, handing every character and every control
+/// code to `visit` in the order they arrive.
+///
+/// Never fails, for [`decode`]'s reason: this is a broadcaster's own bytes,
+/// and half of a caption is better than none of one.
+pub fn walk(bytes: &[u8], visit: &mut impl FnMut(Step<'_>)) {
     // What a receiver starts with, and what a playlist or a service
     // description is written against.
     let mut sets = [Set::Kanji, Set::Alnum, Set::Hiragana, Set::Katakana];
     let mut gl = 0usize;
     let mut gr = 2usize;
-    let mut out = String::new();
     let mut at = 0usize;
+    // Where a character is spelled before it is handed over. One buffer for
+    // the whole walk: a symbol is several characters and a character is
+    // several bytes, so there has to be something to spell them into.
+    let mut scratch = String::new();
 
     while at < bytes.len() {
         let b = bytes[at];
         at += 1;
         match b {
-            // C0. Only the shifts and the spacing mean anything here.
+            // C0. The shifts and the escapes are acted on here because they
+            // decide how the bytes after them are read; the rest is handed
+            // over with the parameters it carries -- the cursor moves have
+            // them, and a reader that stepped over the code and not its
+            // parameters would read those as text.
             0x00..=0x1F => match b {
-                0x0F => gl = 0,                                 // LS0
-                0x0E => gl = 1,                                 // LS1
-                0x19 => at = one(&mut out, bytes, at, sets[2]), // SS2
-                0x1D => at = one(&mut out, bytes, at, sets[3]), // SS3
-                // A line break. Both are written: a recorder's own playlists
-                // separate the lines of a programme description with 0x0A,
-                // and a broadcast's text uses 0x0D.
-                0x0A | 0x0D => out.push('\n'),
+                0x0F => gl = 0,                                       // LS0
+                0x0E => gl = 1,                                       // LS1
+                0x19 => at = one(&mut scratch, bytes, at, sets[2], visit), // SS2
+                0x1D => at = one(&mut scratch, bytes, at, sets[3], visit), // SS3
                 0x1B => at = escape(bytes, at, &mut sets, &mut gl, &mut gr),
-                _ => {}
+                _ => {
+                    let n = match b {
+                        0x16 => 1, // PAPF
+                        0x1C => 2, // APS
+                        _ => 0,
+                    };
+                    let end = (at + n).min(bytes.len());
+                    visit(Step::Control(b, &bytes[at..end]));
+                    at = end;
+                }
             },
-            0x20 => out.push(' '),
-            0x21..=0x7E => at = at_char(&mut out, bytes, at - 1, sets[gl]),
+            0x20 => visit(Step::Text(" ", false)),
+            0x21..=0x7E => at = at_char(&mut scratch, bytes, at - 1, sets[gl], visit),
             0x7F => {}
             // C1. Colours, sizes and positioning, each with its own count of
-            // parameters to step over.
-            0x80..=0x9F => at = control(bytes, at, b),
-            0xA0 => out.push('\u{3000}'),
-            0xA1..=0xFE => at = at_char(&mut out, bytes, at - 1, sets[gr]),
+            // parameters.
+            0x80..=0x9F => {
+                let end = control(bytes, at, b);
+                visit(Step::Control(b, &bytes[at.min(end)..end]));
+                at = end;
+            }
+            0xA0 => visit(Step::Text("\u{3000}", true)),
+            0xA1..=0xFE => at = at_char(&mut scratch, bytes, at - 1, sets[gr], visit),
             0xFF => {}
         }
     }
-    out
 }
 
 /// Read one character of `set` at `at`, and say where the next one starts.
-fn at_char(out: &mut String, bytes: &[u8], at: usize, set: Set) -> usize {
+fn at_char(
+    scratch: &mut String,
+    bytes: &[u8],
+    at: usize,
+    set: Set,
+    visit: &mut impl FnMut(Step<'_>),
+) -> usize {
     let width = if set.wide() { 2 } else { 1 };
     let Some(raw) = bytes.get(at..at + width) else {
         return bytes.len();
@@ -282,10 +351,12 @@ fn at_char(out: &mut String, bytes: &[u8], at: usize, set: Set) -> usize {
     let lo = if width == 2 { raw[1] & 0x7F } else { 0 };
     // A symbol stands for a word rather than a letter, so it is the one
     // thing here that is not one character wide.
+    scratch.clear();
     match symbol(set, hi, lo) {
-        Some(text) => out.push_str(text),
-        None => out.push(character(set, hi, lo)),
+        Some(text) => scratch.push_str(text),
+        None => scratch.push(character(set, hi, lo)),
     }
+    visit(Step::Text(scratch, set.full_width()));
     at + width
 }
 
@@ -356,11 +427,17 @@ const MARKERS: [&str; 37] = [
 
 /// Read one character of `set`, for the single shifts, which name the set
 /// themselves.
-fn one(out: &mut String, bytes: &[u8], at: usize, set: Set) -> usize {
+fn one(
+    scratch: &mut String,
+    bytes: &[u8],
+    at: usize,
+    set: Set,
+    visit: &mut impl FnMut(Step<'_>),
+) -> usize {
     if at >= bytes.len() {
         return at;
     }
-    at_char(out, bytes, at, set)
+    at_char(scratch, bytes, at, set, visit)
 }
 
 fn character(set: Set, hi: u8, lo: u8) -> char {

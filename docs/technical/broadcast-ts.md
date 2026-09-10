@@ -270,6 +270,58 @@ This is not the kind of thing a frame-hash comparison reveals, so
 `tests/run_ts_layout_tests.sh` gained a check that the re-encoded head's sequence header
 matches the source.
 
+## Reading the captions, to draw them over the preview
+
+As far as a cut is concerned an ARIB caption is something to **carry**, not something
+to read: the bytes move to the output and the ends of each range are mended. The
+editor asks a different question. **What is on screen at this instant** — because
+whether a seam lands in the middle of a line is not something the picture will tell
+you.
+
+Nothing in the FFmpeg this program ships against can decode one. Debian's FFmpeg 7.1
+has no ARIB caption decoder, and a build with `libaribcaption` in it is not something
+to depend on. So they are read here (`caption.rs`, `Layout`). Decoding the characters
+themselves is what `arib.rs` already does for programme names; what was missing is
+**where to put them**.
+
+A caption statement opens with its own layout. This is what a broadcast sends:
+
+```
+CS  SWF(7)  SDF(620;480)  SDP(170;30)  SHS(4)  SVS(24)  SSM(36;36)
+APS(5,0)  [≫カローラは]  APS(6,0)
+```
+
+- `SWF` is the screen format. **7 is a 960 x 540 caption plane**, and that can be read
+  off the broadcast rather than out of the standard: a 620 x 480 display area placed
+  at (170, 30) leaves exactly 170 either side and 30 above and below.
+- `SSM` is how big a character is (36 x 36) and `SHS`/`SVS` the space left around it
+  (4 and 24). Added together they make the **character field**, 40 x 60 here, so the
+  display area holds 15 columns and 8 rows.
+- `APS(row, column)` is where writing begins — **the row comes first**, and both count
+  from 0 at the top left of the display area. Rows 5, 6 and 7 of the eight are where
+  an ordinary caption goes, which is the bottom of the screen.
+- Colour comes from the eight codes `RDF`…`WHF` and from `COL` by number. Only the
+  foreground is followed; behind the text the preview draws a translucent black box of
+  its own. The colour a broadcaster names for the background is an entry in a
+  128-colour map, and what a preview needs is for the characters to be readable.
+- A statement that carries `CS` and nothing else is the caption **coming down**. The
+  same shape is what marks a commercial break — see [Detecting commercials](cm-detection.md).
+
+Half widths are handled too: the alphanumeric and half-width katakana sets take half a
+field per character, and `MSZ` draws a full-width character in half a field, which is
+how any caption of more than fifteen characters to a line is written.
+
+What comes out is text and where to put it, not a picture. **The window does the
+drawing**, with the fonts it has and an outline around each glyph, which is why the
+characters stay sharp at any size and why there is not a line of glyph rendering here.
+
+Nor is the whole file read. A preview sweeps a timeline, so only the stretch around
+the instant is read and kept (`subs.rs`: 30 seconds back and 30 on). Reading back is
+what makes the answer right — the caption on screen was put there by an *earlier*
+statement — and playback crosses the end of a window about once a minute. A disc's
+subtitles are read the same way; see
+[The subtitles a disc draws](disc.md#the-subtitles-a-disc-draws).
+
 ## Audio can be written out on its own as `.aac`
 
 In a DGIndex → x264 → mux workflow, the audio reaches the muxer as a **bare ADTS file**.

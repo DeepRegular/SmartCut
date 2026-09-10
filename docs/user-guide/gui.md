@@ -247,7 +247,7 @@ frames, and `Snap to lossless` can take those to zero once it lights up.
 | Where | What |
 |---|---|
 | Top line | The filename |
-| Info bar | Lossless points, resolution, fps, scan type, audio, codec. **Tracks** and **Detect commercials** on the right |
+| Info bar | Lossless points, resolution, fps, scan type, audio, codec. **Subtitles**, **Tracks** and **Detect commercials** on the right |
 | Left column | The **keyframes** — your marks, each with a thumbnail. Click one to jump there |
 | The large picture | The preview. Bottom right: frame number, timecode, what kind of frame it is, and the current selection |
 | The band under it | The **filmstrip**: the frames around you, laid out as pictures. The `View` menu on the right sets how much time one cell covers |
@@ -283,6 +283,28 @@ hole, and the frame counter counts the length that will actually be written.
 | `S` / `Shift+S` | Next / previous scene change |
 | `◀\|` `\|▶` | Previous / next **lossless point** |
 | `\|◀` `▶\|` | Start / end |
+
+### Showing the subtitles
+
+![The preview with the subtitles drawn over it](../images/usage-subs.png)
+
+**Subtitles** sits at the right of the info bar. It is off to begin with; choose a
+track and it is drawn over the preview. **It is there to place a cut by.** Whether a
+seam lands in the middle of a line, and how far a subtitle runs either side of a
+commercial break, are not things the picture alone will tell you.
+
+- A broadcast's **ARIB captions** are drawn as characters, at the position, size and
+  colour the broadcaster asked for, so they stay sharp however big the window is.
+- A disc's subtitles — **PGS** and a DVD's **subpictures** — are pictures, and what
+  the disc drew is what is put on screen.
+- Where a recording carries more than one (a bilingual broadcast, Japanese and English
+  on a disc), the one chosen is the one drawn.
+- While subtitles are showing, the frame number and time move to the **top** of the
+  picture: both want the bottom, and the subtitle is the one that cannot be moved.
+- Playback keeps up with them.
+
+None of this changes what is written. This chooses what is **on screen**; which
+subtitles go into the output is answered by **Tracks** and by the output settings.
 
 ### Marks and cuts are two different things
 

@@ -260,6 +260,23 @@ main { flex: 1; min-height: 0; display: flex; gap: 0; }
 .ovl-main { display: flex; gap: 26px; font-size: 21px; font-variant-numeric: tabular-nums; }
 .ovl-sub { display: flex; gap: 18px; font-size: 11px; color: #cfcfcf; justify-content: center; }
 #ovl-kind.key { color: #7ee787; font-weight: 600; }
+/* The readouts move to the top of the stage while subtitles are being drawn.
+   Both want the bottom of the picture -- that is where a subtitle goes and
+   where a frame counter goes least in the way -- and the subtitle is the one
+   that cannot be moved: it is where the broadcaster put it. */
+.stage.subs-on .overlay { top: 8px; bottom: auto; }
+
+/* The subtitle layer, laid over the picture rather than over the stage: the
+   stage is black where a 16:9 picture does not reach the edges, and a
+   caption placed against the stage would drift into that band as the window
+   changed shape. `showSubs` measures the picture and puts this on it. */
+.subs { position: absolute; overflow: hidden; pointer-events: none; }
+.subs > canvas { position: absolute; left: 0; top: 0; width: 100%; height: 100%; }
+/* A disc's subtitle: its own rectangle of the screen, as a fraction of the
+   picture, so it lands where the disc drew it. */
+#subs-pic { position: absolute; image-rendering: auto; }
+#subs-pic[hidden] { display: none; }
+
 .searching {
   position: absolute; top: 8px; left: 50%; transform: translateX(-50%);
   background: rgba(240,160,32,.9); color: #201400; font-weight: 600;
