@@ -223,6 +223,15 @@ Two things are worth getting right:
   Unicode does have characters for them, but they are ones half the fonts on a
   machine cannot draw, and `[新]` is what a listing says.
 
+  **Written out, the word goes back into the cell it came from.** Three
+  characters where the recording had one is the name a listing prints rather
+  than the name the broadcast sent: ten bytes where the cell costs two, and a
+  television drawing `[`, `新`, `]` where it would have drawn the box. So the
+  spelling is matched on the way out — but only the ones spelled as a word in
+  brackets. Three of the thirty-seven are spelled as ordinary text, `■`, `●`
+  and `ほか`, and a programme name carries those on its own account: a title
+  ending `…遠出」ほか` would otherwise have its last two kana swallowed.
+
   **The trap has a second end.** `Ⅲ`, `①`, `㈱`, `℡`, `㎏` are all in row 13,
   which JIS X 0208 also leaves unassigned and which the encodings a UTF-8 world
   reaches for fill with a vendor's additions. So writing a name *out* through

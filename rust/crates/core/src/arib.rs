@@ -183,6 +183,29 @@ fn additional(hi: u8, lo: u8) -> Option<char> {
     row.chars().nth(cell).filter(|c| *c != UNKNOWN)
 }
 
+/// The cell a marker's spelling goes back into, and how much of `text` it
+/// took, when `text` begins with one.
+///
+/// A marker read out of a playlist is `[新]`, three characters where the
+/// recording had one cell, and writing those three back would be writing the
+/// name a listing prints rather than the name the broadcast sent -- ten bytes
+/// where the cell costs two, and a television drawing three characters where
+/// it would have drawn the boxed glyph. So the spelling is matched on the way
+/// out and the cell is written.
+///
+/// Only the ones spelled as a word in brackets. Three of the thirty-seven are
+/// spelled as ordinary text -- `■`, `●` and `ほか` -- and a programme name
+/// carries those on their own account: a title ending `…遠出」ほか` would
+/// otherwise have its last two kana swallowed into a symbol. They are written
+/// as the characters they are, which a receiver draws the same way.
+fn marker_cell(text: &str) -> Option<([u8; 2], usize)> {
+    let (i, m) = MARKERS
+        .iter()
+        .enumerate()
+        .find(|(_, m)| m.starts_with(['[', '(']) && text.starts_with(**m))?;
+    Some(([0x7A, MARKERS_AT + i as u8], m.len()))
+}
+
 /// Which cell of which row a character is ARIB's, when it is one of them.
 ///
 /// The markers of row 90 are passed over. They are read as the word inside
@@ -283,49 +306,53 @@ fn symbol(set: Set, hi: u8, lo: u8) -> Option<&'static str> {
     if !matches!(set, Set::Kanji | Set::Symbols) || hi != 0x7A {
         return None;
     }
-    // Cell 48 is `lo` 0x50: the cell number is the byte less the 0x20 every
-    // JIS-shaped code table begins at.
-    const MARKERS: [&str; 37] = [
-        "[HV]",
-        "[SD]",
-        "[P]",
-        "[W]",
-        "[MV]",
-        "[手]",
-        "[字]",
-        "[双]",
-        "[デ]",
-        "[S]",
-        "[二]",
-        "[多]",
-        "[解]",
-        "[SS]",
-        "[B]",
-        "[N]",
-        "■",
-        "●",
-        "[天]",
-        "[交]",
-        "[映]",
-        "[無]",
-        "[料]",
-        "[年齢制限]",
-        "[前]",
-        "[後]",
-        "[再]",
-        "[新]",
-        "[初]",
-        "[終]",
-        "[生]",
-        "[販]",
-        "[声]",
-        "[吹]",
-        "[PPV]",
-        "(秘)",
-        "ほか",
-    ];
-    MARKERS.get(lo.checked_sub(0x50)? as usize).copied()
+    MARKERS.get(lo.checked_sub(MARKERS_AT)? as usize).copied()
 }
+
+/// The `lo` byte of the first marker: cell 48, which is 0x50 -- the cell
+/// number plus the 0x20 every JIS-shaped code table begins at.
+const MARKERS_AT: u8 = 0x50;
+
+/// Cells 48 to 84 of row 90, as a listing spells them; see [`symbol`].
+const MARKERS: [&str; 37] = [
+    "[HV]",
+    "[SD]",
+    "[P]",
+    "[W]",
+    "[MV]",
+    "[手]",
+    "[字]",
+    "[双]",
+    "[デ]",
+    "[S]",
+    "[二]",
+    "[多]",
+    "[解]",
+    "[SS]",
+    "[B]",
+    "[N]",
+    "■",
+    "●",
+    "[天]",
+    "[交]",
+    "[映]",
+    "[無]",
+    "[料]",
+    "[年齢制限]",
+    "[前]",
+    "[後]",
+    "[再]",
+    "[新]",
+    "[初]",
+    "[終]",
+    "[生]",
+    "[販]",
+    "[声]",
+    "[吹]",
+    "[PPV]",
+    "(秘)",
+    "ほか",
+];
 
 /// Read one character of `set`, for the single shifts, which name the set
 /// themselves.
@@ -582,27 +609,38 @@ pub fn encode_within(text: &str, limit: usize) -> Vec<u8> {
     // Which two-byte set is designated into G0. It begins as the kanji set,
     // which is what a receiver begins with, and only a symbol moves it.
     let mut g0 = Writing::Kanji;
-    for c in text.chars() {
-        // Which set the character is written against, and the bytes it is
-        // written as. A line break and a space are neither: both mean the
-        // same thing whichever set is invoked, so they are written where
-        // they are and leave the state alone.
-        let (against, body): (Option<Writing>, [u8; 2]) = match c {
-            '\n' => (None, [0x0D, 0]),
-            ' ' => (None, [0x20, 0]),
-            _ => match narrow(c) {
-                Some(b) => (Some(Writing::Alnum), [b, 0]),
-                None => match wide(c) {
-                    Some(pair) => (Some(Writing::Kanji), pair),
-                    None => match additional_cell(c) {
-                        Some(pair) => (Some(Writing::Symbols), pair),
-                        // No set has it. What a receiver shows for a
-                        // character it cannot draw is written instead, so
-                        // the name keeps its shape and says plainly where it
-                        // could not be carried.
-                        None => (Some(Writing::Kanji), [0x22, 0x2E]),
-                    },
-                },
+    let mut at = 0usize;
+    while at < text.len() {
+        let rest = &text[at..];
+        let c = rest.chars().next().expect("inside the string");
+        // Which set is written against, the bytes written, and how much of
+        // the text they account for -- one character, except for a marker,
+        // which is a word in brackets standing for a single cell. A line
+        // break and a space are written against no set at all: both mean the
+        // same thing whichever one is invoked, so they are written where they
+        // are and leave the state alone.
+        let (against, body, took): (Option<Writing>, [u8; 2], usize) = match c {
+            '\n' => (None, [0x0D, 0], 1),
+            ' ' => (None, [0x20, 0], 1),
+            _ => match marker_cell(rest) {
+                Some((pair, len)) => (Some(Writing::Symbols), pair, len),
+                None => {
+                    let n = c.len_utf8();
+                    match narrow(c) {
+                        Some(b) => (Some(Writing::Alnum), [b, 0], n),
+                        None => match wide(c) {
+                            Some(pair) => (Some(Writing::Kanji), pair, n),
+                            None => match additional_cell(c) {
+                                Some(pair) => (Some(Writing::Symbols), pair, n),
+                                // No set has it. What a receiver shows for a
+                                // character it cannot draw is written
+                                // instead, so the name keeps its shape and
+                                // says plainly where it could not be carried.
+                                None => (Some(Writing::Kanji), [0x22, 0x2E], n),
+                            },
+                        },
+                    }
+                }
             },
         };
         let wide_char = matches!(against, Some(Writing::Kanji | Writing::Symbols));
@@ -634,6 +672,7 @@ pub fn encode_within(text: &str, limit: usize) -> Vec<u8> {
             break;
         }
         out.extend_from_slice(&piece);
+        at += took;
         if let Some(to) = against {
             mode = Some(to);
             if wide_char {
@@ -843,15 +882,35 @@ mod tests {
     fn every_symbol_named_can_be_written_again() {
         for (hi, row) in ADDITIONAL {
             for (cell, c) in row.chars().enumerate().filter(|(_, c)| *c != UNKNOWN) {
-                // Except the markers of row 90, which are not cells a name
-                // is written into at all; see [`additional_cell`].
-                if symbol(Set::Kanji, hi, 0x21 + cell as u8).is_some() {
-                    continue;
-                }
-                let one = c.to_string();
+                let lo = 0x21 + cell as u8;
+                // A marker's text is the word a listing spells it with, not
+                // the character; see [`symbol`].
+                let one = symbol(Set::Kanji, hi, lo)
+                    .map(str::to_string)
+                    .unwrap_or_else(|| c.to_string());
                 assert_eq!(decode(&encode(&one)), one, "U+{:04X}", c as u32);
             }
         }
+    }
+
+    /// A marker goes back into the cell it was read from, not out as the
+    /// three characters a listing spells it with.
+    #[test]
+    fn writes_a_marker_back_as_the_cell_it_came_from() {
+        // The same bytes a recorder wrote, which is what the reader was
+        // tested against: row 90 cell 75, the additional symbols designated
+        // over the kanji set.
+        assert_eq!(
+            encode("[新]"),
+            vec![0x1B, 0x24, 0x3B, 0x0F, 0x8A, 0x7A, 0x6B]
+        );
+        // Ten bytes as the word, two as the cell, once the set is invoked.
+        assert_eq!(encode("[新][再]").len(), 9);
+        // But the three that are spelled as ordinary text stay ordinary
+        // text: a name ends in `ほか` because the programme has others after
+        // it, and those are two kana of the name.
+        assert_eq!(decode(&encode("そのほか")), "そのほか");
+        assert!(!encode("そのほか").contains(&0x7A));
     }
 
     #[test]
