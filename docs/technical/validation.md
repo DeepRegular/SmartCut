@@ -201,6 +201,19 @@ These only surfaced on real material:
   It still serves as a test oracle, but the Rust implementation is ahead of it.
 - **Supported codecs are H.264 / HEVC / MPEG-2 / MPEG-4 Part 2 / VC-1.** VP9 and AV1
   have no elementary-stream concatenation form and would need a different design.
+- **Dolby Vision survives a copy but not a re-encode.** The RPU on every picture is
+  copied with it, so a range whose ends fall on the recording's own entry points comes
+  through with all of them; the pictures rewritten at a seam have none, because
+  libavcodec will only configure libx265 for the profiles it can write. The cut says so
+  and takes the recording's stream-level Dolby Vision claim off the output with it, so
+  nothing is left saying what the pictures cannot back up. Measured on a profile 4
+  recording, which libavcodec refuses outright; its GOPs are 4.2 seconds, so a range
+  that misses an entry point re-encodes a long way. See
+  [the Rust core](../developers/rust-core.md#dolby-vision-is-in-the-pictures-and-cannot-be-written-back).
+- **An HLG transfer written the backward-compatible way is only kept for HEVC.** The
+  sequence header says `bt2020-10` and an SEI beside it says HLG; both are reproduced
+  across a seam by telling libx265 `atc-sei`, which libx264 has no equivalent of. No
+  H.264 recording signalling HLG this way has been measured here.
 - **A VC-1 partial GOP is written by SmartCut's own encoder, and it writes intra
   pictures only** ([the Rust core](../developers/rust-core.md#vc-1-the-codec-with-no-encoder)).
   There is no VC-1 encoder in libavcodec to use instead. Pictures cost more bits than

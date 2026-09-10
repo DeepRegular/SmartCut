@@ -107,11 +107,51 @@ HDR10 is two SEI messages — the mastering display's primaries and luminance
 range, and the brightest content in the recording — and on the files measured
 here they are in the bitstream and nowhere in the container. A copied picture
 carries its own; a re-encoded one had nothing to say, so a player changed its
-tone mapping partway through the cut. `mastering_of` decodes one picture to
+tone mapping partway through the cut. `signalling_of` decodes one picture to
 read them and hands them to the encoder as `decoded_side_data`, which is where
 libx265 looks. Done once per cut, and only when there is something to
 re-encode. The transfer says whether to look at all: PQ and HLG carry this,
 `bt2020-10` — Blu-ray's wide-gamut SDR — does not.
+
+### And a broadcast does not say HLG where you would look for it
+
+A 4K broadcast carries HLG the way it has to for a receiver that predates it.
+The sequence header says `bt2020-10`, which every decoder ever built
+understands, and an `alternative_transfer_characteristics` SEI beside it says
+the pictures are really HLG. libavcodec reconciles the two and reports 18,
+which is what the pictures are — so `signalling_of` finds the recording HDR
+and reads its mastering after all, and the paragraph above holds.
+
+What does not hold is writing 18 back. Handed the resolved answer, libx265
+writes a sequence header saying 18 while the copied pictures either side keep
+saying 14: on a 8.5 second cut of a satellite test stream, **the 99
+re-encoded pictures described themselves differently from the 410 copied
+ones**. A player that reads the SEI sees HLG throughout and notices nothing; a
+player that reads only the sequence header — which is legal, the SEI is
+optional — sees the transfer change at both seams. So
+`bitstream::coded_transfer` reads the transfer out of the recording's own
+sequence header, and where that differs from the resolved one the encoder is
+given the recording's value and told `atc-sei` separately. Both halves of the
+signalling then come out the way they went in. Only libx265 can be told this,
+so it is the only codec it is done for.
+
+### Dolby Vision is in the pictures, and cannot be written back
+
+A Dolby Vision recording says nothing about colour in its sequence header at
+all — an RPU on every picture carries it, in a NAL type nothing else uses.
+Copied pictures keep theirs, and a range whose ends fall on entry points comes
+through with every RPU intact, in `.ts`, `.mp4` and `.mkv` alike. A re-encoded
+picture has none: libx265 will write RPUs, but only for the profiles
+libavcodec can configure it for, and only when the pictures handed to it carry
+Dolby Vision metadata of that profile.
+
+So the attempt is made once, up front, by opening an encoder and seeing
+whether it takes. Where it does not — the profile 4 recording measured here is
+refused outright — the cut says so, and the Dolby Vision the recording
+declares at stream level comes off the output with it. A stream that says
+Dolby Vision and then hands a player no RPU to drive it is worse off than one
+that never said so. The decision is made before the output declares its
+streams, because by the first seam the header has been written.
 
 ## Fixing the timestamp problem
 

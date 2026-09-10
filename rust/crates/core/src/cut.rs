@@ -321,9 +321,9 @@ struct SegmentCtx<'a> {
     /// Whether this is the opening segment of its keep-range, which is where
     /// the range's audio boundary decision is made.
     first: bool,
-    /// What the recording says about how it was mastered, read once for the
-    /// whole cut. Empty for everything that is not HDR. See [`mastering_of`].
-    mastering: &'a Mastering,
+    /// What the recording says about its own colour, read once for the
+    /// whole cut. See [`signalling_of`].
+    signalling: &'a Signalling,
 }
 
 /// Everything the writer needs that is shared across segments.
@@ -1128,7 +1128,7 @@ impl Pictures {
         src: &Source,
         params: &ff::codec::Parameters,
         opts: &CutOptions,
-        mastering: &Mastering,
+        signalling: &Signalling,
     ) -> Result<Self> {
         if matches!(src.video.codec.as_str(), "vc1" | "wmv3") {
             let shape = src.video.vc1.as_ref().ok_or_else(|| {
@@ -1145,7 +1145,7 @@ impl Pictures {
                     .map_err(|e| anyhow!("cannot write VC-1 for this recording: {e}"))?;
             return Ok(Pictures::Vc1(Box::new(encoder)));
         }
-        Ok(Pictures::Libav(Box::new(open_encoder(src, params, opts, mastering)?)))
+        Ok(Pictures::Libav(Box::new(open_encoder(src, params, opts, signalling)?)))
     }
 }
 
@@ -1211,38 +1211,126 @@ fn encode_vc1(
 /// is a stretch to re-encode at all.
 type Mastering = Vec<(ff::ffi::AVFrameSideDataType, Vec<u8>)>;
 
-fn mastering_of(src: &Source) -> Mastering {
-    const WANTED: [ff::ffi::AVFrameSideDataType; 2] = [
+/// Everything a re-encoded picture has to be told so that it describes itself
+/// the way the copied pictures around it do.
+///
+/// Three separate things travel in the pictures rather than the container,
+/// and every one of them is a way for a cut to change how a player fits the
+/// picture to the screen partway through.
+#[derive(Default)]
+struct Signalling {
+    /// Mastering display, content light level, and one picture's Dolby
+    /// Vision metadata, handed to the encoder as `decoded_side_data` --
+    /// which is where libx265 looks. Empty for everything that is not HDR.
+    side: Mastering,
+    /// The transfer characteristic the recording's own sequence header
+    /// writes, where a decoder resolves a different one. See
+    /// [`crate::bitstream::coded_transfer`].
+    coded_transfer: Option<u8>,
+    /// Whether the re-encoded pictures can carry the recording's Dolby
+    /// Vision. False where it has none, and where the encoder refuses it.
+    dovi: bool,
+    /// Whether the recording carries Dolby Vision at all, which is what
+    /// decides whether `dovi` being false is worth saying out loud.
+    has_dovi: bool,
+}
+
+/// Does this stream declare Dolby Vision?
+///
+/// The configuration record is what makes a player treat the pictures as
+/// Dolby Vision at all, and it rides at stream level -- so it survives a cut
+/// whether or not the RPUs inside the pictures do. That is the trap this is
+/// asked about: a stream that says Dolby Vision and then hands a player no
+/// RPU to drive it is worse off than one that never said so.
+fn declares_dovi(params: &ff::codec::Parameters) -> bool {
+    unsafe {
+        let p = params.as_ptr();
+        !ff::ffi::av_packet_side_data_get(
+            (*p).coded_side_data,
+            (*p).nb_coded_side_data,
+            ff::ffi::AVPacketSideDataType::AV_PKT_DATA_DOVI_CONF,
+        )
+        .is_null()
+    }
+}
+
+/// Take that record off a stream, so it stops claiming what it cannot back up.
+unsafe fn drop_dovi(params: *mut ff::ffi::AVCodecParameters) {
+    ff::ffi::av_packet_side_data_remove(
+        (*params).coded_side_data,
+        &mut (*params).nb_coded_side_data,
+        ff::ffi::AVPacketSideDataType::AV_PKT_DATA_DOVI_CONF,
+    );
+}
+
+fn signalling_of(src: &Source, opts: &CutOptions) -> Signalling {
+    const WANTED: [ff::ffi::AVFrameSideDataType; 3] = [
         ff::ffi::AVFrameSideDataType::AV_FRAME_DATA_MASTERING_DISPLAY_METADATA,
         ff::ffi::AVFrameSideDataType::AV_FRAME_DATA_CONTENT_LIGHT_LEVEL,
+        // What one picture's RPU works out to, which is what libx265 is
+        // configured from. The RPUs themselves ride on the frames handed to
+        // it, one per picture.
+        ff::ffi::AVFrameSideDataType::AV_FRAME_DATA_DOVI_METADATA,
     ];
-    let mut out: Mastering = Vec::new();
+    let mut out = Signalling::default();
     let Ok((mut ictx, ist)) = open_input(&src.input.url) else { return out };
     let Some(params) = ictx.stream(ist).map(|s| s.parameters()) else { return out };
+    out.has_dovi = declares_dovi(&params);
     // Nothing to look for outside HDR, and a picture not decoded is a picture
     // not paid for. `bt2020-10` is Blu-ray's wide-gamut SDR and carries none
-    // of this; PQ and HLG are the two transfers that do.
-    let hdr = unsafe {
-        matches!(
-            (*params.as_ptr()).color_trc,
-            ff::ffi::AVColorTransferCharacteristic::AVCOL_TRC_SMPTE2084
-                | ff::ffi::AVColorTransferCharacteristic::AVCOL_TRC_ARIB_STD_B67
-        )
-    };
-    if !hdr {
+    // of this; PQ and HLG are the two transfers that do. A Dolby Vision
+    // recording states no transfer at all -- its RPU carries the colour --
+    // so the record it declares is the other way in.
+    let resolved = unsafe { (*params.as_ptr()).color_trc };
+    let hdr = matches!(
+        resolved,
+        ff::ffi::AVColorTransferCharacteristic::AVCOL_TRC_SMPTE2084
+            | ff::ffi::AVColorTransferCharacteristic::AVCOL_TRC_ARIB_STD_B67
+    );
+    if !hdr && !out.has_dovi {
         return out;
     }
-    let Ok(mut decoder) = ff::codec::context::Context::from_parameters(params)
+    let Ok(mut decoder) = ff::codec::context::Context::from_parameters(params.clone())
         .and_then(|c| c.decoder().video())
     else {
         return out;
     };
     let mut frame = ff::frame::Video::empty();
+    let mut picture = false;
     // However many pictures it takes to get one out, which for a stream that
     // reorders is the reorder depth and for anything else is one. Bounded so
-    // a stream that never decodes does not turn this into a second pass.
+    // a stream that never decodes does not turn this into a second pass. The
+    // sequence header is looked for over the same packets: on a transport
+    // stream it is restated at every entry point, and on an MP4 it is in the
+    // extradata instead, which is read first.
+    let extradata = unsafe {
+        let p = params.as_ptr();
+        if (*p).extradata.is_null() || (*p).extradata_size <= 0 {
+            Vec::new()
+        } else {
+            std::slice::from_raw_parts((*p).extradata, (*p).extradata_size as usize).to_vec()
+        }
+    };
+    // Only HEVC: `coded_transfer` reads an HEVC sequence header, and an
+    // H.264 one handed to it would be read as though it were one.
+    if src.video.codec == "hevc" {
+        out.coded_transfer = crate::bitstream::parameter_sets(&src.video.codec, &extradata)
+            .iter()
+            .find_map(|set| crate::bitstream::coded_transfer(set));
+    }
     for (stream, packet) in ictx.packets().take(64) {
-        if stream.index() != ist || decoder.send_packet(&packet).is_err() {
+        if stream.index() != ist {
+            continue;
+        }
+        if out.coded_transfer.is_none() {
+            out.coded_transfer = packet
+                .data()
+                .and_then(|d| {
+                    crate::bitstream::sequence_header(&src.video.codec, d, src.video.framing)
+                })
+                .and_then(crate::bitstream::coded_transfer);
+        }
+        if picture || decoder.send_packet(&packet).is_err() {
             continue;
         }
         if decoder.receive_frame(&mut frame).is_err() {
@@ -1256,10 +1344,49 @@ fn mastering_of(src: &Source) -> Mastering {
                     continue;
                 }
                 let bytes = std::slice::from_raw_parts((*sd).data, (*sd).size).to_vec();
-                out.push(((*sd).type_, bytes));
+                out.side.push(((*sd).type_, bytes));
             }
         }
-        break;
+        picture = true;
+        // The header may still be ahead of the first picture on a stream
+        // that keeps it out of band, so the walk goes on until both are had.
+        if out.coded_transfer.is_some() {
+            break;
+        }
+    }
+    // Only worth carrying where it says something different from what a
+    // decoder already worked out; anywhere else it is the same answer twice.
+    // And only where libav has a name for it: the field is an enumeration,
+    // and a recording is free to write a number that is not one of its
+    // members.
+    out.coded_transfer = out.coded_transfer.filter(|coded| {
+        u32::from(*coded) != resolved as u32
+            && u32::from(*coded) < ff::ffi::AVColorTransferCharacteristic::AVCOL_TRC_NB as u32
+    });
+    // Whether the encoder will take the Dolby Vision is settled here, once,
+    // by asking it -- rather than at the first seam, by which time the
+    // output's stream header has been written and cannot be taken back.
+    if out.has_dovi {
+        out.dovi = true;
+        if let Err(e) = open_encoder(src, &params, opts, &out) {
+            out.dovi = false;
+            // And it is not left in the side data to be found again: the
+            // encoder's own default is to decide for itself whether to write
+            // Dolby Vision from what it is handed, and it has just said it
+            // cannot. Every seam after this asks a plain question.
+            out.side.retain(|(kind, _)| {
+                *kind != ff::ffi::AVFrameSideDataType::AV_FRAME_DATA_DOVI_METADATA
+            });
+            eprintln!(
+                "note: this recording is Dolby Vision, and the encoder here will not write it \
+                 ({e}). The pictures rewritten at each seam carry no RPU, so the Dolby Vision \
+                 metadata stops where they begin; the copied pictures keep theirs. Where the \
+                 recording declares Dolby Vision at stream level that claim is taken off the \
+                 output too, so nothing is left saying what the pictures cannot back up. A \
+                 range whose ends fall on the recording's own entry points is copied whole and \
+                 comes through intact."
+            );
+        }
     }
     out
 }
@@ -1269,7 +1396,7 @@ fn open_encoder(
     src: &Source,
     params: &ff::codec::Parameters,
     opts: &CutOptions,
-    mastering: &Mastering,
+    signalling: &Signalling,
 ) -> Result<ff::encoder::video::Encoder> {
     let id = params.id();
     let codec = ff::encoder::find(id).ok_or_else(|| anyhow!("no encoder for {id:?}"))?;
@@ -1298,7 +1425,17 @@ fn open_encoder(
         (*e).pix_fmt = std::mem::transmute::<i32, ff::ffi::AVPixelFormat>((*p).format);
         (*e).sample_aspect_ratio = (*p).sample_aspect_ratio;
         (*e).color_primaries = (*p).color_primaries;
-        (*e).color_trc = (*p).color_trc;
+        // What the recording writes, not what a decoder worked out from it.
+        // A broadcast carrying HLG the backward-compatible way writes 14 and
+        // says 18 in an SEI beside it; write 18 here and the pictures
+        // spliced in describe themselves differently from the copied ones on
+        // either side. See [`crate::bitstream::coded_transfer`].
+        (*e).color_trc = match signalling.coded_transfer {
+            Some(coded) => std::mem::transmute::<u32, ff::ffi::AVColorTransferCharacteristic>(
+                u32::from(coded),
+            ),
+            None => (*p).color_trc,
+        };
         (*e).colorspace = (*p).color_space;
         (*e).color_range = (*p).color_range;
         (*e).profile = (*p).profile;
@@ -1318,8 +1455,8 @@ fn open_encoder(
         // What the recording says about its own mastering, handed over the
         // way an encoder expects to be told: libx265 reads these and writes
         // the SEI back, so the pictures spliced in describe themselves the
-        // same way the ones around them do. See [`mastering_of`].
-        for (kind, bytes) in mastering {
+        // same way the ones around them do. See [`signalling_of`].
+        for (kind, bytes) in &signalling.side {
             let sd = ff::ffi::av_frame_side_data_new(
                 &mut (*e).decoded_side_data,
                 &mut (*e).nb_decoded_side_data,
@@ -1332,7 +1469,8 @@ fn open_encoder(
             }
         }
     }
-    enc.set_bit_rate(opts.bit_rate.unwrap_or_else(|| default_bit_rate(src)));
+    let bit_rate = opts.bit_rate.unwrap_or_else(|| default_bit_rate(src));
+    enc.set_bit_rate(bit_rate);
 
     let mut eopts = ff::Dictionary::new();
     // mpeg2video and mpeg4 refuse a closed GOP while scene-change detection
@@ -1340,13 +1478,38 @@ fn open_encoder(
     if matches!(v.codec.as_str(), "mpeg2video" | "mpeg4") {
         eopts.set("sc_threshold", "1000000000");
     }
-    // x265 writes its banner and its statistics to the terminal itself,
-    // rather than through libav's logging, so quietening libav does not
-    // quieten it -- forty-odd lines about an encoder the person running this
-    // never asked for. Told here instead, and told nothing when the logging
-    // was asked for, so the two stay in step. See [`crate::init`].
-    if codec.name() == "libx265" && std::env::var("SMARTCUT_FFMPEG_LOG").is_err() {
-        eopts.set("x265-params", "log-level=none");
+    if codec.name() == "libx265" {
+        let mut x265: Vec<String> = Vec::new();
+        // x265 writes its banner and its statistics to the terminal itself,
+        // rather than through libav's logging, so quietening libav does not
+        // quieten it -- forty-odd lines about an encoder the person running
+        // this never asked for. Told here instead, and told nothing when the
+        // logging was asked for, so the two stay in step. See [`crate::init`].
+        if std::env::var("SMARTCUT_FFMPEG_LOG").is_err() {
+            x265.push("log-level=none".into());
+        }
+        // The sequence header now says what the recording's says, so the SEI
+        // that says what the pictures really are has to go back beside it --
+        // otherwise the transfer is written twice and neither says HLG.
+        if let Some(coded) = signalling.coded_transfer {
+            let resolved = unsafe { (*params.as_ptr()).color_trc } as u32;
+            if u32::from(coded) != resolved {
+                x265.push(format!("atc-sei={resolved}"));
+            }
+        }
+        if signalling.dovi {
+            // x265 will not write Dolby Vision without an HRD to hang it on,
+            // and an HRD needs the buffer described. The rate is the one this
+            // encoder was just given; the buffer is a second of it, which is
+            // longer than any partial GOP a cut re-encodes.
+            let kbit = (bit_rate / 1000).max(1);
+            x265.push(format!("vbv-maxrate={kbit}"));
+            x265.push(format!("vbv-bufsize={kbit}"));
+            eopts.set("dolbyvision", "1");
+        }
+        if !x265.is_empty() {
+            eopts.set("x265-params", &x265.join(":"));
+        }
     }
     enc.open_as_with(codec, eopts).map_err(|e| anyhow!("cannot open encoder: {e}"))
 }
@@ -1487,7 +1650,7 @@ fn reencode_segment(
 
     let mut decoder =
         ff::codec::context::Context::from_parameters(params.clone())?.decoder().video()?;
-    let mut encoder = Pictures::open(src, &params, opts, ctx.mastering)?;
+    let mut encoder = Pictures::open(src, &params, opts, ctx.signalling)?;
 
     seek_to(&mut ictx, src, seg.seek_from)?;
 
@@ -2659,11 +2822,33 @@ pub fn cut_with_progress(
         }),
         _ => None,
     };
+    // What the re-encoded pictures have to be told to say. Read once, and
+    // only where there is something to write: a cut that copies every
+    // picture never opens a decoder for this. Read *here*, before the output
+    // declares its streams, because one of the answers -- whether the Dolby
+    // Vision can be carried -- decides what the video stream may claim, and
+    // by the first seam the header has been written and cannot be taken back.
+    let signalling = if plans
+        .iter()
+        .flat_map(|p| &p.segments)
+        .any(|s| s.kind == SegmentKind::Reencode)
+    {
+        signalling_of(src, opts)
+    } else {
+        Signalling::default()
+    };
     {
         let mut ost = octx.add_stream(ff::encoder::find(ff::codec::Id::None))?;
         ost.set_parameters(params);
         ost.set_time_base(ff::Rational::new(1, 2 * num as i32));
         unsafe {
+            // A stream that says Dolby Vision and hands a player no RPU to
+            // drive it is worse off than one that never said so. Where the
+            // pictures rewritten at a seam cannot carry it, the claim comes
+            // off with them.
+            if signalling.has_dovi && !signalling.dovi {
+                drop_dovi(ost.parameters().as_mut_ptr());
+            }
             // `avc3`/`hev1` say the parameter sets may live in the samples,
             // which is what lets copied and re-encoded pictures carry
             // different ones in the same track.
@@ -2880,17 +3065,6 @@ pub fn cut_with_progress(
     };
 
     let fps = num as f64 / den as f64;
-    // Read once, and only where there is something to write: a cut that
-    // copies every picture never opens a decoder for this.
-    let mastering: Mastering = if plans
-        .iter()
-        .flat_map(|p| &p.segments)
-        .any(|s| s.kind == SegmentKind::Reencode)
-    {
-        mastering_of(src)
-    } else {
-        Vec::new()
-    };
     let mut display_base: i64 = 0;
     let mut pictures: i64 = 0;
     // Where each kept range began in the output, which is what the tables
@@ -2974,7 +3148,7 @@ pub fn cut_with_progress(
                 audio: &audio_ctx,
                 captions: &caption_ctx,
                 first: first_segment,
-                mastering: &mastering,
+                signalling: &signalling,
             };
             // Each segment reports the span it actually occupied, so the
             // next one starts exactly where it ended -- no reliance on the

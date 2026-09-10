@@ -338,3 +338,327 @@ pub fn mpeg2_repeats_field(data: &[u8]) -> bool {
     }
     false
 }
+
+/// The bits of a NAL unit's payload, with the emulation prevention bytes
+/// taken back out.
+///
+/// Every read is fallible and every one is checked, because this reads a
+/// sequence header out of a recording nobody vouched for: a truncated or
+/// mangled one has to come back as "no answer", never as a panic or a loop.
+struct Bits {
+    data: Vec<u8>,
+    pos: usize,
+}
+
+impl Bits {
+    fn new(nal: &[u8]) -> Self {
+        let mut data = Vec::with_capacity(nal.len());
+        let mut i = 0;
+        while i < nal.len() {
+            if i + 2 < nal.len() && nal[i] == 0 && nal[i + 1] == 0 && nal[i + 2] == 3 {
+                data.extend_from_slice(&[0, 0]);
+                i += 3;
+            } else {
+                data.push(nal[i]);
+                i += 1;
+            }
+        }
+        Bits { data, pos: 0 }
+    }
+
+    fn u(&mut self, n: usize) -> Option<u32> {
+        let mut v = 0u32;
+        for _ in 0..n {
+            let byte = *self.data.get(self.pos >> 3)?;
+            v = (v << 1) | u32::from((byte >> (7 - (self.pos & 7))) & 1);
+            self.pos += 1;
+        }
+        Some(v)
+    }
+
+    /// Step over bits whose value is not wanted -- runs of reserved flags,
+    /// chiefly, which are longer than a single read may be.
+    fn skip(&mut self, n: usize) -> Option<()> {
+        self.pos = self.pos.checked_add(n)?;
+        (self.pos <= self.data.len() * 8).then_some(())
+    }
+
+    fn ue(&mut self) -> Option<u32> {
+        let mut zeros = 0usize;
+        while self.u(1)? == 0 {
+            zeros += 1;
+            // A value this long is not a value; it is a mis-parse.
+            if zeros > 31 {
+                return None;
+            }
+        }
+        if zeros == 0 {
+            return Some(0);
+        }
+        ((1u32 << zeros) - 1).checked_add(self.u(zeros)?)
+    }
+
+    fn se(&mut self) -> Option<i32> {
+        let k = self.ue()?;
+        Some(if k % 2 == 1 { k.div_ceil(2) as i32 } else { -((k / 2) as i32) })
+    }
+}
+
+/// The HEVC sequence header in a packet or an extradata blob, if there is one.
+pub fn sequence_header<'a>(codec: &str, data: &'a [u8], framing: NalFraming) -> Option<&'a [u8]> {
+    if codec != "hevc" {
+        return None;
+    }
+    nal_payloads(data, framing)
+        .into_iter()
+        .find(|nal| nal.first().is_some_and(|b| (b >> 1) & 0x3F == 33))
+}
+
+/// The transfer characteristic an HEVC sequence header writes for itself.
+///
+/// **Not the same thing as the one a decoder reports.** A broadcast carries
+/// HLG the way it has to for a receiver that predates it: the sequence
+/// header says `bt2020-10` -- wide-gamut SDR, which every decoder ever built
+/// understands -- and an `alternative_transfer_characteristics` SEI beside it
+/// says the pictures are really HLG. libavcodec resolves the two and hands
+/// back the answer, 18, which is what the pictures are; this hands back 14,
+/// which is what the recording *says*. A re-encoded picture has to say the
+/// same thing as the copied ones beside it, or a player reading only the
+/// sequence header changes its mind partway through the cut.
+///
+/// `None` where the header cannot be read, or says nothing about colour.
+pub fn coded_transfer(sps: &[u8]) -> Option<u8> {
+    let mut b = Bits::new(sps.get(2..)?); // past the two-byte NAL header
+    b.skip(4)?; // sps_video_parameter_set_id
+    let max_sub = b.u(3)? as usize;
+    b.skip(1)?; // sps_temporal_id_nesting_flag
+    profile_tier_level(&mut b, max_sub)?;
+    b.ue()?; // sps_seq_parameter_set_id
+    if b.ue()? == 3 {
+        b.skip(1)?; // separate_colour_plane_flag
+    }
+    b.ue()?; // pic_width_in_luma_samples
+    b.ue()?; // pic_height_in_luma_samples
+    if b.u(1)? == 1 {
+        for _ in 0..4 {
+            b.ue()?; // conformance window
+        }
+    }
+    b.ue()?; // bit_depth_luma_minus8
+    b.ue()?; // bit_depth_chroma_minus8
+    let log2_poc_lsb = b.ue()? as usize + 4;
+    let per_sub_layer = b.u(1)? == 1;
+    for _ in (if per_sub_layer { 0 } else { max_sub })..=max_sub {
+        b.ue()?;
+        b.ue()?;
+        b.ue()?;
+    }
+    for _ in 0..6 {
+        b.ue()?; // coding and transform block sizes, and the two depths
+    }
+    if b.u(1)? == 1 && b.u(1)? == 1 {
+        scaling_list_data(&mut b)?;
+    }
+    b.skip(2)?; // amp_enabled_flag, sample_adaptive_offset_enabled_flag
+    if b.u(1)? == 1 {
+        b.skip(8)?; // pcm sample bit depths
+        b.ue()?;
+        b.ue()?;
+        b.skip(1)?;
+    }
+    let sets = b.ue()? as usize;
+    if sets > 64 {
+        return None;
+    }
+    let mut deltas: Vec<u32> = Vec::with_capacity(sets);
+    for i in 0..sets {
+        let n = short_term_ref_pic_set(&mut b, i, sets, &deltas)?;
+        deltas.push(n);
+    }
+    if b.u(1)? == 1 {
+        let n = b.ue()?;
+        if n > 64 {
+            return None;
+        }
+        for _ in 0..n {
+            b.skip(log2_poc_lsb)?;
+            b.skip(1)?;
+        }
+    }
+    b.skip(2)?; // temporal mvp, strong intra smoothing
+    if b.u(1)? != 1 {
+        return None; // vui_parameters_present_flag
+    }
+    if b.u(1)? == 1 && b.u(8)? == 255 {
+        b.skip(32)?; // an aspect ratio written out as a pair of extents
+    }
+    if b.u(1)? == 1 {
+        b.skip(1)?; // overscan_appropriate_flag
+    }
+    if b.u(1)? != 1 {
+        return None; // video_signal_type_present_flag
+    }
+    b.skip(4)?; // video_format, video_full_range_flag
+    if b.u(1)? != 1 {
+        return None; // colour_description_present_flag
+    }
+    b.skip(8)?; // colour_primaries
+    b.u(8).map(|v| v as u8)
+}
+
+/// The profile, tier and level, which are only ever stepped over here.
+fn profile_tier_level(b: &mut Bits, max_sub: usize) -> Option<()> {
+    b.skip(8)?; // profile_space, tier_flag, profile_idc
+    b.skip(32)?; // profile compatibility flags
+    b.skip(48)?; // source and constraint flags, reserved, inbld
+    b.skip(8)?; // general_level_idc
+    let mut present = Vec::with_capacity(max_sub);
+    for _ in 0..max_sub {
+        present.push((b.u(1)? == 1, b.u(1)? == 1));
+    }
+    if max_sub > 0 {
+        b.skip(2 * (8 - max_sub))?;
+    }
+    for (profile, level) in present {
+        if profile {
+            b.skip(88)?;
+        }
+        if level {
+            b.skip(8)?;
+        }
+    }
+    Some(())
+}
+
+/// The quantiser matrices, where a recording writes its own.
+fn scaling_list_data(b: &mut Bits) -> Option<()> {
+    for size_id in 0..4usize {
+        let step = if size_id == 3 { 3 } else { 1 };
+        let mut matrix_id = 0;
+        while matrix_id < 6 {
+            if b.u(1)? == 0 {
+                b.ue()?; // scaling_list_pred_matrix_id_delta
+            } else {
+                let coefficients = std::cmp::min(64, 1 << (4 + (size_id << 1)));
+                if size_id > 1 {
+                    b.se()?; // scaling_list_dc_coef_minus8
+                }
+                for _ in 0..coefficients {
+                    b.se()?;
+                }
+            }
+            matrix_id += step;
+        }
+    }
+    Some(())
+}
+
+/// One of the reference picture sets, and how many pictures it names --
+/// which is what the next one may be written as a difference against.
+fn short_term_ref_pic_set(b: &mut Bits, idx: usize, sets: usize, deltas: &[u32]) -> Option<u32> {
+    if idx != 0 && b.u(1)? == 1 {
+        if idx == sets {
+            b.ue()?; // delta_idx_minus1
+        }
+        b.skip(1)?; // delta_rps_sign
+        b.ue()?; // abs_delta_rps_minus1
+        let reference = *deltas.get(idx.checked_sub(1)?)?;
+        let mut kept = 0;
+        for _ in 0..=reference {
+            // use_delta_flag is written only where the picture is not used
+            // by the current one, so the second read is conditional.
+            if b.u(1)? == 1 || b.u(1)? == 1 {
+                kept += 1;
+            }
+        }
+        return Some(kept);
+    }
+    let negative = b.ue()?;
+    let positive = b.ue()?;
+    if negative > 64 || positive > 64 {
+        return None;
+    }
+    for _ in 0..negative + positive {
+        b.ue()?;
+        b.skip(1)?;
+    }
+    Some(negative + positive)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn sps(hex: &str) -> Vec<u8> {
+        (0..hex.len() / 2)
+            .map(|i| u8::from_str_radix(&hex[i * 2..i * 2 + 2], 16).unwrap())
+            .collect()
+    }
+
+    /// A 4K broadcast that carries HLG the backward-compatible way: the
+    /// sequence header says 14, and an SEI beside it says the pictures are
+    /// really 18. What is wanted here is the 14.
+    #[test]
+    fn reads_the_transfer_a_broadcast_writes_rather_than_the_one_it_means() {
+        let header = sps(
+            "420101022000000300b00000030000030099a001e020021c4db18869242942f016a121c136ca0000\
+             07d20001d4c0c24820dc0002b4be00015a5f7cf1e3d0",
+        );
+        assert_eq!(coded_transfer(&header), Some(14));
+    }
+
+    /// One that says what it means: PQ, in the header, with nothing to
+    /// reconcile.
+    #[test]
+    fn reads_the_transfer_of_a_recording_that_states_it_plainly() {
+        let header = sps(
+            "420101222000000300b00000030000030099a001e020021c4d90628d9242942f016a12201228000\
+             01f480007530786b041b80007270c00039387f9e3c7a0",
+        );
+        assert_eq!(coded_transfer(&header), Some(16));
+        // And what an encoder of ours writes for the same pictures.
+        let written = sps(
+            "420101022000000300900000030000030099a001e020021c4d96565924caf016a1224120800001f\
+             48000753004",
+        );
+        assert_eq!(coded_transfer(&written), Some(18));
+    }
+
+    /// A Dolby Vision recording states no colour at all -- the RPU carries
+    /// it -- so there is nothing to answer with.
+    #[test]
+    fn says_nothing_where_the_header_describes_no_colour() {
+        let header = sps(
+            "42010102a000000300b00000030000030096a001e020021c4d94526491b6bc040400000fa400017\
+             70186b7bdf8000aba900017d782",
+        );
+        assert_eq!(coded_transfer(&header), None);
+    }
+
+    /// Whatever a damaged recording hands over, an answer comes back rather
+    /// than a panic or a loop.
+    #[test]
+    fn refuses_a_header_it_cannot_read() {
+        assert_eq!(coded_transfer(&[]), None);
+        assert_eq!(coded_transfer(&[0x42, 0x01]), None);
+        assert_eq!(coded_transfer(&[0xff; 64]), None);
+        let mut truncated = sps(
+            "420101022000000300b00000030000030099a001e020021c4db18869242942f016a121c136ca0000\
+             07d20001d4c0c24820dc0002b4be00015a5f7cf1e3d0",
+        );
+        while truncated.pop().is_some() {
+            // every prefix of a real one, none of which may hang
+            let _ = coded_transfer(&truncated);
+        }
+    }
+
+    /// The sequence header is picked out of a packet by its NAL type.
+    #[test]
+    fn finds_the_sequence_header_among_the_others() {
+        let mut packet = vec![0, 0, 1, 0x40, 0x01, 0xaa]; // VPS
+        packet.extend_from_slice(&[0, 0, 1, 0x42, 0x01, 0xbb]); // SPS
+        let found = sequence_header("hevc", &packet, NalFraming::AnnexB).unwrap();
+        assert_eq!(found, &[0x42, 0x01, 0xbb]);
+        assert!(sequence_header("h264", &packet, NalFraming::AnnexB).is_none());
+    }
+}

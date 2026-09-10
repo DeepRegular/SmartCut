@@ -211,9 +211,13 @@ input.
 interlaced, and 2:3 pulldown is handled on a field-level timeline. **4K HDR10**
 cuts too: the pictures rewritten at a boundary carry the recording's own
 mastering metadata (PQ or HLG, primaries, luminance range, content light
-level), so the tone mapping does not change partway through. VP9 and AV1 are
-not supported: they have no elementary-stream form that can be concatenated, so
-they would need a different design.
+level), so the tone mapping does not change partway through — including the
+backward-compatible signalling a 4K broadcast writes HLG with, which says one
+thing in the sequence header and another in an SEI beside it. **Dolby Vision**
+is copied intact, RPU and all, wherever the pictures are copied; the pictures
+rewritten at a boundary cannot carry it, and a cut that has to rewrite any says
+so. VP9 and AV1 are not supported: they have no elementary-stream form that can
+be concatenated, so they would need a different design.
 
 VC-1 — the codec most Blu-rays pressed before about 2010 were written in — is a
 special case, because there is no VC-1 encoder anywhere: not in FFmpeg, not on a
