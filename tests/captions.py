@@ -17,8 +17,15 @@ import sys
 
 
 def packets(path, stream):
+    # The same deeper probe the program itself uses: a recording that began
+    # before the broadcaster announced its captions does not name them in the
+    # program map at the head of the file, and ffprobe's own five megabytes
+    # stop short of the one that does. Without this such a recording reads as
+    # "carries no captions" and the check quietly passes on the one case it
+    # would be most useful for. See `input.rs`, `captions_may_come_later`.
     out = subprocess.run(
-        ["ffprobe", "-v", "error", "-select_streams", stream, "-show_packets",
+        ["ffprobe", "-v", "error", "-probesize", "32000000",
+         "-select_streams", stream, "-show_packets",
          "-show_data_hash", "adler32", "-of", "compact=p=0:nk=0", path],
         capture_output=True, text=True).stdout
     rows = []

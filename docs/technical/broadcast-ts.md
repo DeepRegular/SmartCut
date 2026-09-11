@@ -392,6 +392,38 @@ is run as nothing rather than as a guess, which leaves the sets alone and writes
 character. And the starting state is now asked for by name (`arib::Start`), because
 the two kinds of text this program reads do not share it.
 
+Read again with both of those right, the same 62 recordings come back with **no geta
+mark at all**: 1,213 downloaded glyphs drawn across 27,829 statements in the 51
+recordings that carry captions, and not one cell left that this cannot name
+(`capdiag <file> stats`). That is every statement the bytes hold — the same count a
+reader that ignores the tables and looks for caption packets directly arrives at,
+which it takes the section below to get to.
+
+### The captions the head of the file does not mention
+
+A recorder starts before the programme does, and a broadcaster announces its caption
+stream when the programme starts. So the program map at the head of the file names the
+video and the sound and nothing else, and a few seconds in it is replaced by one that
+also names the caption PID. libavformat probes the head of a file and stops after five
+megabytes — about two and a half seconds of a broadcast — so on such a recording it
+never sees the second map. No subtitle stream is listed: the editor offers no caption
+track, the commercial detector has no caption marks to read, and the cut has nothing
+named to carry.
+
+Over the same 300 recordings, two from each of the 32 channels here, 279 carry
+captions and **7 of them are announced late** — between 8.4 and 8.8 megabytes in, just
+past where the probe stops, with the first caption packet 10 to 12 megabytes in. The
+other 20 carry no captions anywhere in the file, which is what the bytes say when they
+are looked at directly rather than through the tables.
+
+So a transport stream that comes back with no subtitle stream at all is opened a
+second time with a 32 megabyte probe (`input.rs`, `captions_may_come_later`). That
+ceiling is not a read: the analysis stops at five seconds of stream whatever it says,
+which is about ten megabytes at a broadcast's bitrate. It costs about 0.3 s on a
+recording that really has no captions, and nothing at all for the nine in ten that
+listed them the first time — asked where it is needed rather than always, which is how
+the other two reopenings in that module work.
+
 What comes out is text and where to put it, and — for the characters the broadcaster
 drew — the dots of those. **The window does the drawing**, with the fonts it has and
 an outline around each glyph, which is why the characters stay sharp at any size and
