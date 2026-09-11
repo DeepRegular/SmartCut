@@ -92,6 +92,18 @@ follows it will not fit at the rate, in which case it has to begin earlier and
 the reference moves earlier with it. The gaps then fall where the stream had
 nothing to send.
 
+**Where in a run the gaps fall is a choice, and the recording does not say.**
+All that is known is the clock references; between two of them there is room
+the packets in between do not need. Packing each of them as late as it will go
+puts all of that room in one lump at the front of the run, which measured on a
+recording written that way is a stream that runs for 22 milliseconds and then
+stops for 18. A recorder stops far more often and for far less: 38 packets and
+then 72 steps of nothing on one reference disc, 76 and 71 on the other, which
+is a stop every 6.5 and 8.6 milliseconds. So the room is dealt out through the
+run instead, in stretches of about four milliseconds — which on the same
+recording comes to a stop every 7.3, of 36 steps, with every gap still a whole
+number of steps and no packet arriving sooner than one.
+
 **A moved reference is rewritten.** A clock reference *is* the arrival time of
 the byte carrying it; a packet delivered at a different moment from the one
 its reference claims would have a player's clock stepping about by the
@@ -100,9 +112,18 @@ the schedule's own, and the two agree by construction.
 
 What that costs is that the data sits in the decoder's buffer for as long as
 the reference moved, so the rate is chosen to keep the move small: the
-slowest rate that moves no reference by more than a tenth of a second, found
+slowest rate that moves no reference by more than a fifth of a second, found
 by searching between 25.8 and 48 Mbit/s, and the fastest where no rate does.
-A tenth of a second is about a fifth of the lead a broadcast gives a decoder.
+
+**A fifth of a second, because a tenth does not reach the rate a disc is
+written at.** At a tenth, six recordings off one broadcast came out between 32
+and 35 Mbit/s — no reference disc's rate, and a different one on each
+recording, since each is searched for on its own. Solving two of those same
+streams again at 25.8 Mbit/s costs 0.079 and 0.070 seconds of further
+movement, all of it inside a fifth; and at a fifth every one of them settles
+on 25.8 Mbit/s, which is one rate for the whole disc and the same
+3,231,064 the reference disc carries. The lead it is paid for with is 0.66
+seconds, against the 1.12 the reference disc asks of the same buffer.
 
 Interpolating between the clock references instead — which is what this did
 before, and looks reasonable — puts the *muxer's* bursts into the arrival
@@ -112,7 +133,7 @@ came out claiming to arrive at 137 Mbit/s. Measured on a 24 minute recording,
 **59% of the packets arrived faster than the rate the index declared**, which
 is the one mistake in this file that matters. On the same recording written
 the way above, none of them do and the decoder's lead sits between 0.42 and
-0.61 seconds from one end to the other.
+0.66 seconds from one end to the other.
 
 ### The stream is padded to whole aligned units
 

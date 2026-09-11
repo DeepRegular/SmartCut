@@ -98,12 +98,47 @@ const FASTEST_STEP: i64 = 846;
 ///
 /// Holding a rate means a burst that will not fit between two clock
 /// references has to begin earlier, which moves the reference at the end of
-/// it earlier too. A tenth of a second is about a fifth of the lead a
-/// broadcast gives a decoder, and moving a reference by less than that asks
-/// the buffer for room it was already carrying. Where even the fastest a disc
-/// is written cannot stay inside the budget, the fastest is what is used: a
-/// rate the stream keeps to matters more than the budget does.
-const MOVE_BUDGET: i64 = 27_000_000 / 10;
+/// it earlier too. Moving one by less than the lead a broadcast gives a
+/// decoder asks the buffer for room it was already carrying. Where even the
+/// fastest a disc is written cannot stay inside the budget, the fastest is
+/// what is used: a rate the stream keeps to matters more than the budget
+/// does.
+///
+/// **A fifth of a second, because a tenth does not reach the rate a disc is
+/// written at.** At a tenth, six recordings off one broadcast came out at
+/// steps of 1156 to 1255 -- 32 to 35 Mbit/s, which is no reference disc's
+/// rate, and a different one on each recording, since each searches on its
+/// own. Solving two of those streams again at [`NOMINAL_STEP`] costs 0.079
+/// and 0.070 seconds of further movement, which puts the whole of it inside
+/// a fifth of a second; at a fifth every one of them settles on
+/// `NOMINAL_STEP` itself, which is one rate for the disc and the same number
+/// the reference disc carries. It is paid for in decoder lead, which the
+/// same measurement puts at 0.66 seconds against the 1.12 the reference disc
+/// asks of the same buffer.
+const MOVE_BUDGET: i64 = 27_000_000 / 5;
+
+/// About how long a stream is delivered for before it stops for a moment.
+///
+/// A recording is delivered at a constant rate with nothing in the moments
+/// it had nothing to send, and where those moments fall is the difference
+/// between a disc that was recorded and a disc that was written. A schedule
+/// solved from the clock references alone can put every packet as late as it
+/// will go, which leaves all of the room a run does not need in one lump at
+/// the front of it: measured on a recording written that way, the stream ran
+/// for 22 milliseconds at a time and then stopped for 18. The reference
+/// discs stop far more often and for far less -- 38 packets and then 72
+/// steps of nothing on one, 76 and 71 on the other, which is a stop every
+/// 6.5 and 8.6 milliseconds.
+///
+/// So the room is spread through the run instead, in stretches about this
+/// long. It is not a rate the stream is written at -- every gap is still a
+/// whole number of steps, and no packet arrives sooner than the step, which
+/// are the two things the reference discs' times are made of. Four
+/// milliseconds is what puts this material's own stop every 7 or so, inside
+/// the two discs: the runs with no room to give pause not at all, so the
+/// stretches that do have room carry the average further apart than they are
+/// asked to be.
+const PAUSE: i64 = 27_000_000 * 4 / 1000;
 
 /// The rate, in bytes of transport stream a second, that a step comes to.
 ///
@@ -335,6 +370,15 @@ pub struct Timing {
 /// earlier, and the reference moves earlier with it. The gaps fall where the
 /// stream had nothing to send, which is what a jump in a recorder's times is.
 ///
+/// **Where in a run the gaps fall is a choice, and the run is not told.** The
+/// arrival times a recording comes in with are libavformat's, which are
+/// nonsense; all that is known is the clock references, and between two of
+/// them there is room the packets do not need. Packing every packet as late
+/// as it will go puts all of that room at the front of the run in one lump,
+/// which is a stream that runs for 22 milliseconds and then stops for 18.
+/// A recorder's stops are shorter and far more frequent, so the room is
+/// dealt out through the run instead, in stretches of about [`PAUSE`].
+///
 /// **A moved reference is rewritten.** A clock reference *is* the arrival
 /// time of the byte that carries it; a packet delivered at a different moment
 /// from the one its reference claims would have a player's clock stepping
@@ -377,8 +421,27 @@ impl Schedule {
     /// for: packets are asked about in order.
     fn when(&self, i: u32, next: usize) -> i64 {
         match self.at.get(next) {
-            // Inside the run that ends at a reference, or in front of the
-            // first one: a step per packet back from it.
+            // Inside the run that ends at a reference: a step per packet back
+            // from it, and the room the run does not need spread through it
+            // rather than left in a lump at the front. See [`PAUSE`].
+            Some(&(packet, when)) if next > 0 => {
+                let (first, began) = self.at[next - 1];
+                let back = i64::from(packet - i);
+                let count = i64::from(packet - first);
+                let slots = (when - began) / self.step;
+                let spare = (slots - count).max(0);
+                if spare == 0 {
+                    return when - back * self.step;
+                }
+                // Pauses only at the ends of stretches this long, so that
+                // the stream stops for a moment about every PAUSE ticks
+                // rather than at every packet.
+                let stretch = (count * PAUSE / (slots * self.step)).max(1);
+                let whole = (back / stretch) * stretch;
+                when - (back + whole * spare / count) * self.step
+            }
+            // In front of the first reference, where there is no run to
+            // spread through: a step per packet back from it.
             Some(&(packet, when)) => when - i64::from(packet - i) * self.step,
             // Past the last reference, where there is nothing left to pin to.
             None => match self.at.last() {
@@ -1437,6 +1500,44 @@ mod tests {
         };
         assert_eq!(mark_at(0), 20842);
         assert_eq!(mark_at(1), 20842 + (12.5 * TICK) as u32);
+    }
+
+    /// The room a run does not need is dealt out through it, and the two
+    /// things a reference disc's arrival times are made of survive the
+    /// dealing: no packet arrives sooner than a step after the one in front
+    /// of it, and every gap is a whole number of steps.
+    ///
+    /// The run here is 900 packets given twice the room they need, which at
+    /// a step of 1571 is 2.6 milliseconds of stream in 5.2 of clock -- long
+    /// enough to be dealt into more than one stretch.
+    #[test]
+    fn the_room_a_run_does_not_need_is_spread_through_it() {
+        let step = NOMINAL_STEP;
+        let anchors = [(0u32, 0i64), (900, 1800 * step)];
+        let plan = Schedule::new(&anchors, step);
+        // Solving cannot have moved either reference: there is room to spare.
+        assert_eq!(plan.at.as_slice(), anchors.as_slice());
+
+        // The caller walks `next` forward with the stream, so the first
+        // packet is asked about as the reference it is.
+        let at: Vec<i64> = (0..=900)
+            .map(|i| plan.when(i, usize::from(i > 0)))
+            .collect();
+        assert_eq!(at[0], 0, "the run begins at the reference in front of it");
+        assert_eq!(at[900], 1800 * step, "and ends on the one it is pinned to");
+        let mut pauses = 0;
+        for pair in at.windows(2) {
+            let d = pair[1] - pair[0];
+            assert!(d >= step, "{d} ticks is sooner than the rate allows");
+            assert_eq!(d % step, 0, "{d} ticks is not a whole number of steps");
+            if d > step {
+                pauses += 1;
+            }
+        }
+        // Two of the four milliseconds are room, so the stream stops about
+        // every other one: fewer than one stop per packet, more than one for
+        // the run.
+        assert!((2..50).contains(&pauses), "{pauses} stops in the run");
     }
 
     /// The buckets a picture's length falls in, at the boundaries a disc was
