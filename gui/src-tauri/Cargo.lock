@@ -1371,7 +1371,7 @@ dependencies = [
 
 [[package]]
 name = "gui"
-version = "0.5.11"
+version = "0.5.12"
 dependencies = [
  "base64 0.22.1",
  "serde",
@@ -3166,7 +3166,7 @@ checksum = "8ed6a63f02c8539c91a8685a86f4099661ba3da017932f6ebbea6de3f0fa7c90"
 
 [[package]]
 name = "smartcut-core"
-version = "0.5.11"
+version = "0.5.12"
 dependencies = [
  "anyhow",
  "cpal",
@@ -3177,7 +3177,7 @@ dependencies = [
 
 [[package]]
 name = "smartcut-vc1"
-version = "0.5.11"
+version = "0.5.12"
 
 [[package]]
 name = "socket2"
