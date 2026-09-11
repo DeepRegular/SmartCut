@@ -161,6 +161,9 @@ pub struct Title {
     /// its own says the recording was made when this one says it was. See
     /// [`crate::bdav`].
     pub made: Option<crate::si::Began>,
+    /// How long the programme ran on air, in seconds -- the slot rather than
+    /// the recording. Carried out again for the same reason the moment is.
+    pub ran: Option<u32>,
     /// What the recorder wrote down about the programme beside its name:
     /// the sentence a listing carries, and the cast and staff under it. A
     /// recorder fills this in from the broadcast's own event information;
@@ -318,6 +321,7 @@ pub struct Entry {
     /// be written onto a disc of its own, and a recording that arrived with
     /// all of this should leave with the same. See [`crate::bdav`].
     pub made: Option<crate::si::Began>,
+    pub ran: Option<u32>,
     pub description: Option<String>,
     pub channel: Option<String>,
     pub channel_number: u16,
@@ -601,6 +605,7 @@ fn read_bluray(at: &Path) -> Result<Disc> {
                 stem: filename(&label_row),
                 label: label_row,
                 made: title.made,
+                ran: title.ran,
                 description: title.description.clone(),
                 channel: title.channel.clone(),
                 channel_number: title.channel_number,
@@ -1056,21 +1061,23 @@ fn disc_name(xml: &str) -> Option<String> {
 
 /// What a disc of recordings calls itself, out of `info.bdav`.
 ///
-/// ARIB text, like every other name a recorder writes, in a fixed field that
-/// is padded with zeroes rather than counted -- so it runs to the first of
-/// them, or to the list of playlists that follows it. Where the disc has
-/// been given no name the field is empty, and that is not a name either.
+/// ARIB text, like every other name a recorder writes, and counted the way a
+/// playlist counts the programme's: a length byte and then that many bytes.
+/// Read instead as a field running to the first zero, as this did before,
+/// every byte of every real disc's name came out one place early -- a disc
+/// named `この世の果てで恋を唄う少女ＹＵ－ＮＯ` read back as
+/// `〓海寮い硫未討芭〓魃瓦〓〓〓掖㍊〓`, the length byte having been decoded as
+/// the first half of a character and every pair after it split across two.
+/// Where the disc has been given no name the length is zero, and that is not
+/// a name either.
 fn info_name(raw: &[u8]) -> Option<String> {
     const NAME_AT: usize = 64;
     if raw.len() < 12 || &raw[..4] != b"BDAV" {
         return None;
     }
     let end = (u32be(raw, 8) as usize).min(raw.len());
-    let field = raw.get(NAME_AT..end)?;
-    let text = field
-        .iter()
-        .position(|b| *b == 0)
-        .map_or(field, |at| &field[..at]);
+    let len = usize::from(*raw.get(NAME_AT)?);
+    let text = raw.get(NAME_AT + 1..(NAME_AT + 1 + len).min(end))?;
     let name = arib::one_line(&arib::decode(text));
     (!name.is_empty()).then_some(name)
 }
@@ -1137,6 +1144,7 @@ fn playlist(raw: &[u8], file: &str, shape: Shape, vol: &mut Volume) -> Result<Ti
         playlist: file.to_string(),
         name: said.name,
         made: said.made,
+        ran: said.ran,
         description: said.description,
         channel: said.channel,
         channel_number: said.channel_number,
@@ -1316,12 +1324,14 @@ fn play_marks(raw: &[u8], at: usize, clips: &[Clip]) -> Vec<Vec<f64>> {
 struct AppInfo {
     name: Option<String>,
     made: Option<crate::si::Began>,
+    ran: Option<u32>,
     description: Option<String>,
     channel: Option<String>,
     channel_number: u16,
 }
 
 fn app_info(raw: &[u8], list_at: usize) -> AppInfo {
+    const RAN_AT: usize = 57;
     const CHANNEL_AT: usize = 64;
     const CHANNEL_NAME_AT: usize = 67;
     const NAME_LEN_AT: usize = 88;
@@ -1341,6 +1351,17 @@ fn app_info(raw: &[u8], list_at: usize) -> AppInfo {
     AppInfo {
         name: counted(NAME_LEN_AT).map(|t| arib::one_line(&t)),
         made: app_info_made(raw),
+        // How long it ran on air: three bytes of binary coded decimal, hours
+        // first. The slot rather than the recording -- a disc read here says
+        // half an hour against a twenty-four minute cut of it.
+        ran: raw.get(RAN_AT..RAN_AT + 3).and_then(|b| {
+            let d = |i: usize| -> Option<u32> {
+                let (hi, lo) = (b[i] >> 4, b[i] & 0x0F);
+                (hi <= 9 && lo <= 9).then_some(u32::from(hi) * 10 + u32::from(lo))
+            };
+            let seconds = d(0)? * 3600 + d(1)? * 60 + d(2)?;
+            (seconds > 0).then_some(seconds)
+        }),
         // The only one of the four counted in two bytes: a description runs
         // to hundreds of them where a name runs to tens.
         description: text(DESCRIPTION_AT + 2, u16be(raw, DESCRIPTION_AT) as usize),

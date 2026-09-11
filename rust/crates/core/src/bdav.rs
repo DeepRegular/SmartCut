@@ -79,19 +79,48 @@ const ATS_CLOCK: f64 = 27_000_000.0;
 /// carries.
 const ATS_MASK: u32 = 0x3FFF_FFFF;
 
-/// The rate a BDAV disc is written at, in bytes of transport stream per
-/// second.
+/// How far apart two packets arrive, in ticks of the 27 MHz clock, on a disc
+/// written at the rate the reference disc was.
 ///
-/// A fixed number, and the same one the disc this was written against
-/// carries. It is what the format is built around rather than a measurement
-/// of any one recording: a player reads it to size the buffer it feeds, and
-/// a figure below the rate the stream actually arrives at is the one mistake
-/// that matters.
+/// This is the same number the other way round: 27 MHz over 1571 ticks, times
+/// a packet, is 3,231,064 bytes a second, which is that disc's
+/// `TS_recording_rate` and what this used to write as a constant. The step is
+/// the truer form of it, because it is what the arrival times are actually
+/// built out of -- see [`Schedule`] -- and a rate written into the index that
+/// the stream does not keep to is the one mistake that matters.
 ///
-/// It is also the rate the arrival times below are spaced at where there is
-/// no clock to space them by -- 27 MHz divided by this over a packet is
-/// 1571 ticks, which is exactly the step a real disc's arrival times run at.
-const RECORDING_RATE: u32 = 3_231_064;
+/// A disc is never written slower than this, and no faster than 48 Mbit/s,
+/// which is [`FASTEST_STEP`].
+const NOMINAL_STEP: i64 = 1571;
+const FASTEST_STEP: i64 = 846;
+
+/// How far a clock reference may be moved to make a stream fit a rate.
+///
+/// Holding a rate means a burst that will not fit between two clock
+/// references has to begin earlier, which moves the reference at the end of
+/// it earlier too. A tenth of a second is about a fifth of the lead a
+/// broadcast gives a decoder, and moving a reference by less than that asks
+/// the buffer for room it was already carrying. Where even the fastest a disc
+/// is written cannot stay inside the budget, the fastest is what is used: a
+/// rate the stream keeps to matters more than the budget does.
+const MOVE_BUDGET: i64 = 27_000_000 / 10;
+
+/// The rate, in bytes of transport stream a second, that a step comes to.
+///
+/// Rounded **up**, so that the rate written into the index is never one the
+/// stream beats: a step of 1571 ticks is 3,231,063.02 bytes a second, and a
+/// disc that declared 3,231,063 would be a disc whose every packet arrives a
+/// fraction faster than it says. Rounding up is also what the reference disc
+/// did -- 3,231,064 is the number on it, and this is where that number comes
+/// from.
+fn rate_of(step: i64) -> u32 {
+    (PACKET as f64 * ATS_CLOCK / step as f64).ceil() as u32
+}
+
+/// An aligned unit: the 32 source packets a Blu-ray reads and writes a stream
+/// in. A stream file is a whole number of them, which is what the null
+/// packets at the end of one are for -- see [`stamp`].
+const ALIGNED_UNIT: u64 = 32;
 
 /// Where each thing a playlist says about its recording sits, and how much
 /// room it has. The same offsets [`crate::disc`] reads, and the same on both
@@ -99,12 +128,14 @@ const RECORDING_RATE: u32 = 3_231_064;
 ///
 /// ```text
 ///  50  when it was recorded    7 bytes, binary coded decimal, century first
+///  57  how long it ran         3 bytes, binary coded decimal, hours first
 ///  64  the channel's number    2 bytes  -- the three digits a viewer knows
 ///  67  the channel's name      1 + 20   -- ARIB text
 ///  88  the programme's name    1 + 255  -- ARIB text
 /// 344  what it was about       2 + …    -- ARIB text, lines and all
 /// ```
 const MADE_AT: usize = 50;
+const RAN_AT: usize = 57;
 const CHANNEL_AT: usize = 64;
 const CHANNEL_NAME_AT: usize = 67;
 const CHANNEL_NAME_MAX: usize = 20;
@@ -121,9 +152,11 @@ const DESCRIPTION_AT: usize = 344;
 const APP_INFO: usize = 1502;
 const LIST_AT: usize = 44 + APP_INFO;
 /// Where the list of playlists starts in `info.bdav`, and where the disc's
-/// own name sits before it.
+/// own name sits before it: a length byte and then that many bytes of ARIB,
+/// with room to the table that follows.
 const TABLE_AT: usize = 320;
 const DISC_NAME_AT: usize = 64;
+const DISC_NAME_MAX: usize = TABLE_AT - DISC_NAME_AT - 1;
 
 /// One recording, as it is to appear on the disc.
 #[derive(Debug, Clone)]
@@ -137,6 +170,17 @@ pub struct Recording {
     /// what goes here is the moment the programme went out, where the
     /// recording still said so, and nothing where it did not.
     pub made: Option<Began>,
+    /// How long the programme ran on air, in seconds, and nothing where the
+    /// recording never said.
+    ///
+    /// **The slot and not the cut.** This is the length the listing gave it,
+    /// which is what both reference discs carry: half an hour against a
+    /// twenty-four minute recording, a quarter of an hour against twelve and
+    /// a half. It comes from the same descriptor the moment above does -- a
+    /// broadcast's event says when it began and how long it lasted in the
+    /// same breath -- so a disc that says one and not the other would be
+    /// throwing half of a field away.
+    pub ran: Option<u32>,
     /// What the broadcaster said the programme was: the sentence a listing
     /// carries, and the cast and staff under it. What a recorder's own
     /// remote shows when the programme is selected in its list.
@@ -227,8 +271,8 @@ pub fn write(
                 stream.display()
             );
         }
-        stamp(&stream)?;
-        let clip = read_clip(&stream, on.map(|f| (f, rec.clip.as_str())))?;
+        let timing = stamp(&stream)?;
+        let clip = read_clip(&stream, &timing, on.map(|f| (f, rec.clip.as_str())))?;
         std::fs::write(
             root.join("CLIPINF").join(format!("{}.clpi", rec.clip)),
             clpi(&clip),
@@ -255,128 +299,321 @@ pub fn write(
 
 // --- the arrival times ---------------------------------------------------
 
-/// Write each packet's arrival time again, from the clock inside the stream.
+/// What one pass over a written stream leaves behind for the index around it.
+pub struct Timing {
+    /// How many source packets the stream holds once it has been padded out
+    /// to a whole number of aligned units.
+    pub packets: u32,
+    /// The rate it is written at, in bytes of transport stream a second. Read
+    /// off the schedule that was used rather than assumed, so that the index
+    /// and the stream cannot disagree.
+    pub rate: u32,
+    /// The packet the clock sequence starts at: the first one carrying a
+    /// clock reference.
+    pub first_clock: u32,
+    /// Where every picture begins, so that an entry point can say how far
+    /// past it the picture it names ends. See [`ep_map`].
+    pub pictures: Vec<u32>,
+}
+
+/// Where every packet arrives, on a clock that runs one packet every `step`
+/// ticks.
 ///
-/// A source packet is a transport stream packet with the moment it arrived
-/// in front of it, and what a player does with that is meter the stream into
-/// its decoder. The stream itself already says when everything arrives --
-/// that is what the programme clock reference is -- so the arrival time of
-/// every packet between two clock references is the two of them interpolated
-/// by how far through it sits. Which is the same model a recorder uses, and
-/// why a recording's arrival times step evenly through a burst and then jump:
-/// the jump is where the recorder had nothing to write.
+/// A recording is delivered at a **constant rate**, and where there was
+/// nothing to deliver the recorder wrote nothing and the times jump. That is
+/// the shape a real disc's arrival times have: measured on two discs a
+/// Japanese authoring tool wrote, every step is either exactly the rate's own
+/// step -- 1571 ticks on one, 1593 on the other -- or a jump, and never
+/// anything between. Both discs declare a `TS_recording_rate` that is exactly
+/// that step read as a rate.
+///
+/// The clock references say when the packets carrying them arrive, and they
+/// are what the schedule is pinned to. Working backwards from the end, a
+/// packet arrives one step before the packet after it, and a packet carrying
+/// a clock reference arrives at the moment its clock says -- unless the burst
+/// that follows it will not fit at the rate, in which case it has to begin
+/// earlier, and the reference moves earlier with it. The gaps fall where the
+/// stream had nothing to send, which is what a jump in a recorder's times is.
+///
+/// **A moved reference is rewritten.** A clock reference *is* the arrival
+/// time of the byte that carries it; a packet delivered at a different moment
+/// from the one its reference claims would have a player's clock stepping
+/// about by the difference. So the value goes back into the stream as the
+/// schedule's own, and the two agree by construction. The cost is that the
+/// data sits in the decoder's buffer for that much longer, which is why
+/// [`MOVE_BUDGET`] is what picks the rate.
+struct Schedule {
+    step: i64,
+    /// One entry per clock reference: which packet carries it, and when that
+    /// packet arrives once the schedule has been solved.
+    at: Vec<(u32, i64)>,
+}
+
+impl Schedule {
+    /// Solve the schedule for `anchors`, which is `(packet, what the clock
+    /// said)` for every clock reference in the stream, in order and with the
+    /// 33 bit wrap already unwound.
+    fn new(anchors: &[(u32, i64)], step: i64) -> Schedule {
+        let mut at = anchors.to_vec();
+        for k in (0..at.len().saturating_sub(1)).rev() {
+            let room = at[k + 1].1 - i64::from(at[k + 1].0 - at[k].0) * step;
+            at[k].1 = at[k].1.min(room);
+        }
+        Schedule { step, at }
+    }
+
+    /// The furthest any one clock reference had to be moved.
+    fn moved(&self, anchors: &[(u32, i64)]) -> i64 {
+        anchors
+            .iter()
+            .zip(&self.at)
+            .map(|(was, now)| was.1 - now.1)
+            .max()
+            .unwrap_or(0)
+    }
+
+    /// When packet `i` arrives. `next` is the first reference at or past `i`,
+    /// which the caller walks forward with the stream rather than searching
+    /// for: packets are asked about in order.
+    fn when(&self, i: u32, next: usize) -> i64 {
+        match self.at.get(next) {
+            // Inside the run that ends at a reference, or in front of the
+            // first one: a step per packet back from it.
+            Some(&(packet, when)) => when - i64::from(packet - i) * self.step,
+            // Past the last reference, where there is nothing left to pin to.
+            None => match self.at.last() {
+                Some(&(packet, when)) => when + i64::from(i - packet) * self.step,
+                None => i64::from(i) * self.step,
+            },
+        }
+    }
+}
+
+/// The rate to write a stream at: the slowest that moves no clock reference
+/// further than [`MOVE_BUDGET`], and the fastest a disc is written where no
+/// rate does.
+///
+/// Slower is better -- it is the rate a disc is actually written at, and it
+/// is what a player sizes the buffer it feeds from -- but a slower rate is a
+/// longer burst, and a longer burst moves more references. So the two are
+/// traded off by searching, which costs a pass over the references and
+/// nothing over the stream.
+fn choose_step(anchors: &[(u32, i64)]) -> i64 {
+    if anchors.len() < 2 {
+        return NOMINAL_STEP;
+    }
+    let (mut slow, mut fast, mut best) = (FASTEST_STEP, NOMINAL_STEP, FASTEST_STEP);
+    while slow <= fast {
+        let middle = (slow + fast) / 2;
+        if Schedule::new(anchors, middle).moved(anchors) <= MOVE_BUDGET {
+            best = middle;
+            slow = middle + 1;
+        } else {
+            fast = middle - 1;
+        }
+    }
+    best
+}
+
+/// Write each packet's arrival time again, at the rate a disc is written at.
+///
+/// A source packet is a transport stream packet with the moment it arrived in
+/// front of it, and what a player does with that is meter the stream into its
+/// decoder. libavformat writes that field and, asked for a stream whose rate
+/// it was not told, writes nonsense in it -- a counter that steps *backwards*
+/// by a fixed amount every packet. So the times are written again here, from
+/// the schedule in [`Schedule`], and the clock references are moved onto it.
+///
+/// The stream is also **padded out to a whole number of aligned units**: a
+/// Blu-ray reads a stream in 32 source packets at a time, and every stream
+/// file on both reference discs is a whole number of them, each one ending in
+/// the null packets that made it so. What libavformat leaves is whatever the
+/// last flush happened to come to.
+///
+/// Two passes: one to find the clock references and the pictures, one to
+/// write. The schedule cannot be started until its last reference is known,
+/// and holding a recording in memory to avoid reading it twice is not a
+/// trade worth making.
 ///
 /// The file is rewritten beside itself and renamed over, so a failure leaves
 /// the stream as it was rather than half stamped.
-pub fn stamp(path: &Path) -> Result<u64> {
+pub fn stamp(path: &Path) -> Result<Timing> {
+    let (read, anchors, pictures) = survey(path)?;
+    let step = choose_step(&anchors);
+    let plan = Schedule::new(&anchors, step);
+
     let temp = path.with_extension("m2ts.ats");
-    let done = (|| -> Result<u64> {
+    let done = (|| -> Result<u32> {
         let mut src = BufReader::with_capacity(1 << 20, std::fs::File::open(path)?);
         let mut dst = BufWriter::with_capacity(1 << 20, std::fs::File::create(&temp)?);
         let mut frame = [0u8; SOURCE_PACKET];
-        // Frames whose arrival time is not settled yet, because the clock
-        // reference that ends their interval has not arrived. A clock goes
-        // out at least every tenth of a second, which is a few hundred
-        // packets.
-        let mut pending: Vec<[u8; SOURCE_PACKET]> = Vec::new();
-        // The last packet whose time is settled: when it arrived, and what
-        // the clock said there.
-        let mut anchor: Option<(f64, f64)> = None;
-        // How far apart two packets are before anything is known: the rate a
-        // disc is written at. What the packets in front of the first clock
-        // reference are spaced by, there being nothing else to go on for
-        // them. Past that the file's own average takes over -- see below.
-        let opening = ATS_CLOCK / (RECORDING_RATE as f64 / PACKET as f64);
-        let mut written = 0u64;
-        // How many packets have been given a time, so that the ones after
-        // the last clock reference can be spaced by the average of the file
-        // rather than by the interval that happened to come last. The final
-        // interval is often a handful of packets the muxer flushed together,
-        // whose spacing is nothing like the recording's.
-        let mut settled = 0u64;
-
-        let put = |dst: &mut BufWriter<std::fs::File>,
-                   frame: &mut [u8; SOURCE_PACKET],
-                   at: f64|
-         -> Result<()> {
-            let ats = (at.max(0.0) as u64 as u32) & ATS_MASK;
-            frame[..4].copy_from_slice(&ats.to_be_bytes());
-            dst.write_all(frame)?;
-            Ok(())
-        };
-
+        let mut i = 0u32;
+        let mut next = 0usize;
+        let mut last = 0i64;
         loop {
             match src.read_exact(&mut frame) {
                 Ok(()) => {}
                 Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => break,
                 Err(e) => return Err(e).context("reading the stream back"),
             }
-            if frame[4] != 0x47 {
-                bail!("{} is not a Blu-ray transport stream", path.display());
+            while plan.at.get(next).is_some_and(|(packet, _)| *packet < i) {
+                next += 1;
             }
-            written += 1;
-            pending.push(frame);
-            let Some(pcr) = pcr_of(&frame[4..]) else {
-                continue;
-            };
-            match anchor {
-                // The first clock reference. Everything in front of it
-                // arrived before it, evenly spaced -- and the file's first
-                // packet arrives at zero, which is where a recording starts
-                // counting.
-                None => {
-                    let first = (pending.len() - 1) as f64 * opening;
-                    settled += pending.len() as u64;
-                    for (i, mut held) in pending.drain(..).enumerate() {
-                        put(&mut dst, &mut held, i as f64 * opening)?;
-                    }
-                    anchor = Some((first, pcr));
-                }
-                Some((was_at, was_pcr)) => {
-                    // The clock is 33 bits and wraps every twenty-six hours,
-                    // and a cut is not that long, so a step backwards is the
-                    // wrap and nothing else.
-                    let mut ran = pcr - was_pcr;
-                    if ran < 0.0 {
-                        ran += (1u64 << 33) as f64 * 300.0;
-                    }
-                    let n = pending.len();
-                    settled += n as u64;
-                    for (i, mut held) in pending.drain(..).enumerate() {
-                        put(
-                            &mut dst,
-                            &mut held,
-                            was_at + ran * (i + 1) as f64 / n as f64,
-                        )?;
-                    }
-                    anchor = Some((was_at + ran, pcr));
-                }
+            let at = plan.when(i, next);
+            frame[..4].copy_from_slice(&((at as u32) & ATS_MASK).to_be_bytes());
+            // A reference that was moved says so, or a player's clock steps
+            // by the difference every time one arrives.
+            if plan.at.get(next).is_some_and(|(packet, _)| *packet == i) {
+                write_pcr(&mut frame[4..], at);
             }
+            dst.write_all(&frame)?;
+            last = at;
+            i += 1;
         }
-        // Whatever followed the last clock reference, at the rate the file
-        // has run at so far.
-        let tail = anchor.map_or(0.0, |(at, _)| at);
-        let step = match settled {
-            0 => opening,
-            n => tail / n as f64,
-        };
-        for (i, mut held) in pending.drain(..).enumerate() {
-            put(&mut dst, &mut held, tail + (i + 1) as f64 * step)?;
+        // And the null packets that make the file a whole number of aligned
+        // units, arriving at the rate everything else did.
+        let short = (ALIGNED_UNIT - u64::from(i) % ALIGNED_UNIT) % ALIGNED_UNIT;
+        for k in 0..short {
+            let mut null = [0xFFu8; SOURCE_PACKET];
+            null[4..8].copy_from_slice(&[0x47, 0x1F, 0xFF, 0x10]);
+            let at = last + (k as i64 + 1) * step;
+            null[..4].copy_from_slice(&((at as u32) & ATS_MASK).to_be_bytes());
+            dst.write_all(&null)?;
+            i += 1;
         }
         dst.flush()?;
-        Ok(written)
+        Ok(i)
     })();
     match done {
-        Ok(n) => {
+        Ok(packets) => {
             std::fs::rename(&temp, path)
                 .with_context(|| format!("replacing {}", path.display()))?;
-            Ok(n)
+            debug_assert_eq!(u64::from(packets) % ALIGNED_UNIT, 0);
+            let _ = read;
+            Ok(Timing {
+                packets,
+                rate: rate_of(step),
+                first_clock: anchors.first().map_or(0, |(packet, _)| *packet),
+                pictures,
+            })
         }
         Err(e) => {
             let _ = std::fs::remove_file(&temp);
             Err(e)
         }
     }
+}
+
+/// The read-only pass: every clock reference in the stream, and where every
+/// picture in it begins.
+///
+/// The pictures are for the entry point map, which says how far past each
+/// entry the picture it names ends -- so what is wanted is the packet the
+/// *next* picture starts in, and a picture starts wherever a packet on the
+/// video's own PID says a new payload does. Which PID that is comes out of
+/// the stream's own tables, read here rather than asked of libavformat: this
+/// pass is already reading every packet.
+fn survey(path: &Path) -> Result<(u32, Vec<(u32, i64)>, Vec<u32>)> {
+    let mut src = BufReader::with_capacity(1 << 20, std::fs::File::open(path)?);
+    let mut frame = [0u8; SOURCE_PACKET];
+    let mut anchors: Vec<(u32, i64)> = Vec::new();
+    let mut pictures: Vec<u32> = Vec::new();
+    let mut map_pid: Option<u16> = None;
+    let mut video: Option<u16> = None;
+    let (mut i, mut wrap, mut was) = (0u32, 0i64, -1i64);
+    loop {
+        match src.read_exact(&mut frame) {
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => break,
+            Err(e) => return Err(e).context("reading the stream"),
+        }
+        let p = &frame[4..];
+        if p[0] != 0x47 {
+            bail!("{} is not a Blu-ray transport stream", path.display());
+        }
+        let pid = (u16::from(p[1] & 0x1F) << 8) | u16::from(p[2]);
+        if video.is_none() {
+            match map_pid {
+                None if pid == 0 => map_pid = section(p).and_then(map_of),
+                Some(on) if pid == on => video = section(p).and_then(video_of),
+                _ => {}
+            }
+        }
+        if video == Some(pid) && p[1] & 0x40 != 0 {
+            pictures.push(i);
+        }
+        if let Some(pcr) = pcr_of(p) {
+            let mut now = pcr as i64 + wrap;
+            // The clock is 33 bits and wraps every twenty-six hours, and a cut
+            // is not that long, so a step backwards is the wrap and nothing
+            // else.
+            if now < was {
+                wrap += (1i64 << 33) * 300;
+                now += (1i64 << 33) * 300;
+            }
+            was = now;
+            anchors.push((i, now));
+        }
+        i += 1;
+    }
+    Ok((i, anchors, pictures))
+}
+
+/// The section a packet begins, past the pointer that says where it starts.
+/// `None` where the packet carries the middle of one, which for the two
+/// tables read here is never: both fit in a packet.
+fn section(p: &[u8]) -> Option<&[u8]> {
+    if p[1] & 0x40 == 0 {
+        return None;
+    }
+    let payload = match (p[3] >> 4) & 0x03 {
+        1 => p.get(4..)?,
+        3 => p.get(5 + p[4] as usize..)?,
+        _ => return None,
+    };
+    payload.get(1 + *payload.first()? as usize..)
+}
+
+/// Which PID the programme map is on, out of the table that lists it.
+fn map_of(sec: &[u8]) -> Option<u16> {
+    let len = ((usize::from(*sec.get(1)? & 0x0F)) << 8) | usize::from(*sec.get(2)?);
+    if *sec.first()? != 0x00 {
+        return None;
+    }
+    sec.get(8..3 + len.checked_sub(4)?)?
+        .chunks_exact(4)
+        .find(|e| u16::from_be_bytes([e[0], e[1]]) != 0)
+        .map(|e| u16::from_be_bytes([e[2], e[3]]) & 0x1FFF)
+}
+
+/// And which PID the pictures are on, out of the map.
+fn video_of(sec: &[u8]) -> Option<u16> {
+    if *sec.first()? != 0x02 {
+        return None;
+    }
+    let len = ((usize::from(sec[1] & 0x0F)) << 8) | usize::from(sec[2]);
+    let end = 3 + len.checked_sub(4)?;
+    let mut at = 12 + (((usize::from(sec.get(10)? & 0x0F)) << 8) | usize::from(*sec.get(11)?));
+    while at + 5 <= end && at + 5 <= sec.len() {
+        if matches!(sec[at], 0x01 | 0x02 | 0x1B | 0x24 | 0xEA) {
+            return Some(u16::from_be_bytes([sec[at + 1], sec[at + 2]]) & 0x1FFF);
+        }
+        at += 5 + (((usize::from(sec[at + 3] & 0x0F)) << 8) | usize::from(sec[at + 4]));
+    }
+    None
+}
+
+/// Put a clock reference back into the packet carrying one, at the moment the
+/// schedule has that packet arriving.
+fn write_pcr(p: &mut [u8], at: i64) {
+    let at = at.rem_euclid((1i64 << 33) * 300) as u64;
+    let (base, ext) = (at / 300, at % 300);
+    p[6] = (base >> 25) as u8;
+    p[7] = (base >> 17) as u8;
+    p[8] = (base >> 9) as u8;
+    p[9] = (base >> 1) as u8;
+    p[10] = ((base as u8) << 7) | 0x7E | ((ext >> 8) as u8 & 0x01);
+    p[11] = ext as u8;
 }
 
 /// The programme clock reference a packet carries, in the 27 MHz the arrival
@@ -386,7 +623,7 @@ pub fn stamp(path: &Path) -> Result<u64> {
 /// everything about presentation is on. Here the extension matters: it is
 /// the difference between placing a packet to the millisecond and to the
 /// microsecond.
-fn pcr_of(p: &[u8]) -> Option<f64> {
+fn pcr_of(p: &[u8]) -> Option<u64> {
     let afc = (p[3] >> 4) & 0x03;
     if afc < 2 || p[4] < 7 || p[5] & 0x10 == 0 {
         return None;
@@ -397,7 +634,7 @@ fn pcr_of(p: &[u8]) -> Option<f64> {
         | ((p[9] as u64) << 1)
         | ((p[10] as u64) >> 7);
     let ext = (((p[10] as u64) & 0x01) << 8) | p[11] as u64;
-    Some((base * 300 + ext) as f64)
+    Some(base * 300 + ext)
 }
 
 // --- what the written stream says about itself ---------------------------
@@ -416,32 +653,65 @@ struct Carried {
     attributes: Vec<u8>,
 }
 
+/// One point a player may start at: when it is shown, which source packet it
+/// begins in, and how far past that the picture it names ends.
+///
+/// The time here is **not** the playlist's tick. An entry point map carries
+/// `PTS_EP_start`, which is the picture's own presentation time stamp --
+/// thirty-three bits at 90 kHz, the number the stream itself carries -- and
+/// it is the one place in a disc's index that counts in that clock rather
+/// than in the playlist's half of it.
+struct Entry {
+    pts: u64,
+    packet: u32,
+    /// How far past the entry its picture ends, in the 128 kB the field
+    /// counts in and counting from one. See [`ends_within`].
+    ends: u8,
+}
+
 /// Everything the index files have to say about one written stream.
 struct Clip {
     packets: u32,
+    /// The rate the stream was written at, off the schedule that wrote it.
+    rate: u32,
     pmt_pid: u16,
     pcr_pid: u16,
+    /// The packet the clock sequence starts at: the first one carrying a
+    /// clock reference, which is where a recorder's disc points too.
+    first_clock: u32,
     /// The first and last moment a picture is shown, in the 45 kHz a
     /// playlist counts in.
     start: u32,
     end: u32,
     video_pid: u16,
     streams: Vec<Carried>,
-    /// Every point a player may start at: when it is shown, and which source
-    /// packet it begins in.
-    ///
-    /// The time here is **not** the playlist's tick. An entry point map
-    /// carries `PTS_EP_start`, which is the picture's own presentation time
-    /// stamp -- thirty-three bits at 90 kHz, the number the stream itself
-    /// carries -- and it is the one place in a disc's index that counts in
-    /// that clock rather than in the playlist's half of it.
-    entries: Vec<(u64, u32)>,
+    entries: Vec<Entry>,
+}
+
+/// How far past an entry point the picture it names ends, in the units the
+/// three bits of `I_end_position_offset` count in.
+///
+/// Measured off both reference discs, which fill the field on every entry:
+/// the value steps at 128 kB of stream and counts from one, so a picture of
+/// under 128 kB is 1, one of under 256 kB is 2, and so on. The boundaries are
+/// exact on 678 entries read off two discs -- the largest picture in each
+/// bucket and the smallest in the next fall either side of a multiple of
+/// 131,072 bytes without a single crossing.
+///
+/// It is what a player reads to fetch one picture and no more, which is how a
+/// fast forward is done. Written as zero, as this did before, it says the
+/// picture is shorter than the field can express.
+fn ends_within(packets: u32) -> u8 {
+    (((u64::from(packets) * SOURCE_PACKET as u64) >> 17) + 1).min(7) as u8
 }
 
 /// Read a written stream for everything the index around it has to say.
-fn read_clip(stream: &Path, on: Option<(&(dyn Fn(&str, f64) + Sync), &str)>) -> Result<Clip> {
+fn read_clip(
+    stream: &Path,
+    timing: &Timing,
+    on: Option<(&(dyn Fn(&str, f64) + Sync), &str)>,
+) -> Result<Clip> {
     let path = stream.to_string_lossy().into_owned();
-    let bytes = std::fs::metadata(stream)?.len();
     // Every entry point in the stream, which is a pass over the whole of it.
     // The same pass the editor makes when a recording is opened, for the
     // same answer: where a player may begin.
@@ -531,17 +801,35 @@ fn read_clip(stream: &Path, on: Option<(&(dyn Fn(&str, f64) + Sync), &str)>) -> 
     // against times half the truth, which on a short recording put a
     // boundary between two pictures and left the segment with none.
     let stamp = |t: f64| ((t + src.start_time) * (TICK * 2.0)).round().max(0.0) as u64;
+    // Where the picture an entry names ends is where the next one begins, and
+    // that is the pass [`survey`] already made: the pictures are in order, so
+    // the one after an entry is found by searching rather than by walking the
+    // stream a third time. A last entry has no next picture, and ends where
+    // the stream does.
+    let after = |packet: u32| -> u32 {
+        let at = timing.pictures.partition_point(|begins| *begins <= packet);
+        timing.pictures.get(at).copied().unwrap_or(timing.packets)
+    };
     let entries = src
         .points
         .iter()
         .filter(|p| p.pos >= 0)
-        .map(|p| (stamp(p.time), (p.pos as u64 / SOURCE_PACKET as u64) as u32))
+        .map(|p| {
+            let packet = (p.pos as u64 / SOURCE_PACKET as u64) as u32;
+            Entry {
+                pts: stamp(p.time),
+                packet,
+                ends: ends_within(after(packet).saturating_sub(packet)),
+            }
+        })
         .collect();
 
     Ok(Clip {
-        packets: (bytes / SOURCE_PACKET as u64) as u32,
+        packets: timing.packets,
+        rate: timing.rate,
         pmt_pid: service.as_ref().map_or(0x0100, |s| s.pmt_pid),
         pcr_pid: service.as_ref().map_or(video_pid, |s| s.pcr_pid),
+        first_clock: timing.first_clock,
         start: ticks(0.0),
         end: ticks(src.duration),
         video_pid,
@@ -663,21 +951,28 @@ fn audio_attributes(a: &crate::AudioInfo) -> Vec<u8> {
 fn clpi(clip: &Clip) -> Vec<u8> {
     let mut info = Vec::new();
     // Reserved, then the kind of stream this is (1, a transport stream) and
-    // what it is for (1, a recording).
-    info.extend_from_slice(&[0x00, 0x00, 0x01, 0x01]);
+    // what it is for. Both reference discs say 0 there, which is what this
+    // says: 1 was read off neither of them.
+    info.extend_from_slice(&[0x00, 0x00, 0x01, 0x00]);
     // Reserved, and the flag that would say the clip's arrival clock is
     // offset from its neighbour's -- which is a thing only a disc written in
     // several sittings has.
     info.extend_from_slice(&0u32.to_be_bytes());
-    info.extend_from_slice(&RECORDING_RATE.to_be_bytes());
+    info.extend_from_slice(&clip.rate.to_be_bytes());
     info.extend_from_slice(&clip.packets.to_be_bytes());
     info.extend_from_slice(&[0u8; 128]);
-    // The block that says which network the recording came off. Nothing is
-    // claimed here -- the flags that say which of its fields to believe are
-    // all clear -- because everything in it is already in the stream's own
-    // tables, where a player that wants it will look.
+    // The block that says what kind of stream this is and who wrote it.
+    // Nothing is claimed about the network -- the flags that say which of
+    // those fields to believe are clear, because everything in them is
+    // already in the stream's own tables, where a player that wants it will
+    // look -- but the name of the tool is not a claim about the recording and
+    // both reference discs carry theirs. Sixteen bytes, padded with the same
+    // ones they pad with.
+    let mut about = vec![0u8; 30];
+    about[14..22].copy_from_slice(b"SmartCut");
+    about[26..30].copy_from_slice(&[0xFF; 4]);
     info.extend_from_slice(&30u16.to_be_bytes());
-    info.extend_from_slice(&[0u8; 30]);
+    info.extend_from_slice(&about);
 
     let mut sequence = Vec::new();
     // One arrival-time sequence and one clock sequence: a cut is written in
@@ -688,7 +983,10 @@ fn clpi(clip: &Clip) -> Vec<u8> {
     sequence.push(0x01);
     sequence.push(0x00);
     sequence.extend_from_slice(&clip.pcr_pid.to_be_bytes());
-    sequence.extend_from_slice(&0u32.to_be_bytes());
+    // Where that clock sequence begins, which is the packet its first
+    // reference is in and not the file's first packet: both reference discs
+    // point at the reference.
+    sequence.extend_from_slice(&clip.first_clock.to_be_bytes());
     sequence.extend_from_slice(&clip.start.to_be_bytes());
     sequence.extend_from_slice(&clip.end.to_be_bytes());
 
@@ -748,18 +1046,30 @@ fn clpi(clip: &Clip) -> Vec<u8> {
 /// the packet number -- and a coarse entry carries the high bits and is
 /// written afresh whenever they change, which is every twelve seconds or
 /// every 131072 packets, whichever comes first.
+///
+/// **Twelve seconds and not six.** A coarse entry's time is fourteen bits
+/// above bit 19, and a player puts the two halves back together with the
+/// lowest of those fourteen *dropped*: the fine entry's eleven bits cover
+/// bit 19 as well. So a coarse entry is only worth writing when bit 20
+/// changes, and writing one when bit 19 did wrote twice as many as a disc
+/// needs -- 369 of them where the reference disc has 186 over the same
+/// length. Nothing read them wrongly; the map was simply a kilobyte fatter
+/// than it had to be.
 fn ep_map(clip: &Clip) -> Vec<u8> {
     let mut coarse: Vec<(u32, u32, u32)> = Vec::new(); // fine id, time, packet
-    let mut fine: Vec<(u64, u32)> = Vec::new();
-    for &(pts, spn) in &clip.entries {
+    let mut fine: Vec<&Entry> = Vec::new();
+    for entry in &clip.entries {
+        let (pts, spn) = (entry.pts, entry.packet);
         let new = match coarse.last() {
             None => true,
-            Some(&(_, time, packet)) => (pts >> 19) as u32 != time || (spn >> 17) != (packet >> 17),
+            Some(&(_, time, packet)) => {
+                (pts >> 20) as u32 != time >> 1 || (spn >> 17) != (packet >> 17)
+            }
         };
         if new {
             coarse.push((fine.len() as u32, (pts >> 19) as u32, spn));
         }
-        fine.push((pts, spn));
+        fine.push(entry);
     }
 
     let mut body = Vec::new();
@@ -783,12 +1093,14 @@ fn ep_map(clip: &Clip) -> Vec<u8> {
         one.extend_from_slice(&(((id as u32) << 14) | (time & 0x3FFF)).to_be_bytes());
         one.extend_from_slice(&packet.to_be_bytes());
     }
-    for &(pts, spn) in &fine {
+    for entry in &fine {
         // The three bits between the angle-change flag and the time say how
         // far past the entry point its picture ends, for a player fetching
-        // exactly one picture and no more. Nothing here measures that, and
-        // zero is how the field says so.
-        let word = ((((pts >> 9) & 0x7FF) as u32) << 17) | (spn & 0x1_FFFF);
+        // exactly one picture and no more -- which is how a fast forward is
+        // done. See [`ends_within`].
+        let word = (u32::from(entry.ends) << 28)
+            | ((((entry.pts >> 9) & 0x7FF) as u32) << 17)
+            | (entry.packet & 0x1_FFFF);
         one.extend_from_slice(&word.to_be_bytes());
     }
     body.extend_from_slice(&one);
@@ -802,6 +1114,33 @@ fn ep_map(clip: &Clip) -> Vec<u8> {
 }
 
 // --- the playlist --------------------------------------------------------
+
+/// The entry point nearest a chapter point, in the playlist's own tick.
+///
+/// A chapter point a player cannot start at is a chapter point it starts at
+/// the nearest entry to instead, so a mark put down between two of them lands
+/// somewhere the editor did not show. Most of them are already on one -- a
+/// kept range begins where a cut could begin -- but a range whose opening was
+/// re-encoded has no entry at its seam, and five of twenty-nine marks on a
+/// disc measured here were up to seven frames out. Both reference discs are
+/// within six milliseconds of an entry on every one of their 153.
+fn nearest_entry(clip: &Clip, when: u32) -> u32 {
+    // The map counts in the stream's clock and a playlist in half of it; the
+    // entries are in order, so the nearest is one of the two either side.
+    let want = u64::from(when) * 2;
+    let at = clip.entries.partition_point(|e| e.pts < want);
+    [at.checked_sub(1), Some(at)]
+        .into_iter()
+        .flatten()
+        .filter_map(|i| clip.entries.get(i))
+        .min_by_key(|e| e.pts.abs_diff(want))
+        // Rounded rather than halved away: the two clocks are read off the
+        // same moment and rounded separately, so an entry an odd number of
+        // ticks in belongs to the playlist tick above it. Truncating instead
+        // put the mark at the clip's own start one tick *before* the
+        // playlist began, which is a mark outside the recording it is about.
+        .map_or(when, |e| ((e.pts + 1) / 2) as u32)
+}
 
 /// `PLAYLIST/000NN.rpls`: one recording -- which clip, from when to when,
 /// what it is called, and where its chapter points are.
@@ -833,8 +1172,8 @@ fn rpls(clip_name: &str, clip: &Clip, rec: &Recording) -> Vec<u8> {
         // accepted them. The play item, the time and the length of the entry
         // are this program's own.
         entry[..4].copy_from_slice(&[0x05, 0x00, 0x02, 0x12]);
-        let when = clip.start as f64 + at * TICK;
-        entry[6..10].copy_from_slice(&(when.max(0.0) as u32).to_be_bytes());
+        let when = nearest_entry(clip, (clip.start as f64 + at * TICK).max(0.0) as u32);
+        entry[6..10].copy_from_slice(&when.to_be_bytes());
         entry[10..14].copy_from_slice(&[0xFF; 4]);
         marks.extend_from_slice(&entry);
     }
@@ -852,6 +1191,14 @@ fn rpls(clip_name: &str, clip: &Clip, rec: &Recording) -> Vec<u8> {
     out[48..50].copy_from_slice(&[0x12, 0x00]);
     if let Some(made) = rec.made {
         out[MADE_AT..MADE_AT + 7].copy_from_slice(&bcd(made));
+    }
+    if let Some(ran) = rec.ran.filter(|s| *s < 100 * 3600) {
+        let pair = |n: u32| ((n / 10) << 4) as u8 | (n % 10) as u8;
+        out[RAN_AT..RAN_AT + 3].copy_from_slice(&[
+            pair(ran / 3600),
+            pair(ran / 60 % 60),
+            pair(ran % 60),
+        ]);
     }
     out[CHANNEL_AT..CHANNEL_AT + 2].copy_from_slice(&rec.channel_number.to_be_bytes());
     // Each of the three texts is a length and then that many bytes of ARIB.
@@ -936,8 +1283,16 @@ fn info(playlists: &[String], title: &str) -> Vec<u8> {
     out[44..48].copy_from_slice(&[0x00, 0x00, 0x01, 0x00]);
     out[48..52].copy_from_slice(b"0000");
     out[62..64].copy_from_slice(&[0xFF, 0xFF]);
-    let text = crate::arib::encode_within(&crate::arib::one_line(title), NAME_MAX);
-    out[DISC_NAME_AT..DISC_NAME_AT + text.len()].copy_from_slice(&text);
+    // The disc's name is counted, not run on to a zero: a length byte and
+    // then that many bytes of ARIB, exactly as the programme's name is in a
+    // playlist. Written without the byte, as this did before, a recorder read
+    // the first byte of the text as the length -- and the first byte of a
+    // name that begins in kanji is a shift, so a disc called `無職転生Ⅲ
+    // ～異世界行ったら本気だす～` came up in its list as `無職転生`, cut off
+    // fifteen bytes in at the shift the length happened to be.
+    let text = crate::arib::encode_within(&crate::arib::one_line(title), DISC_NAME_MAX);
+    out[DISC_NAME_AT] = text.len() as u8;
+    out[DISC_NAME_AT + 1..DISC_NAME_AT + 1 + text.len()].copy_from_slice(&text);
 
     let mut table = Vec::new();
     table.extend_from_slice(&(playlists.len() as u16).to_be_bytes());
@@ -953,11 +1308,21 @@ fn info(playlists: &[String], title: &str) -> Vec<u8> {
 mod tests {
     use super::*;
 
+    fn entry(pts: u64, packet: u32) -> Entry {
+        Entry {
+            pts,
+            packet,
+            ends: 1,
+        }
+    }
+
     fn clip() -> Clip {
         Clip {
             packets: 1000,
+            rate: rate_of(NOMINAL_STEP),
             pmt_pid: 0x0100,
             pcr_pid: 0x1001,
+            first_clock: 3,
             start: 20842,
             end: 20842 + 45000 * 30,
             video_pid: 0x1001,
@@ -978,7 +1343,13 @@ mod tests {
                     attributes: Vec::new(),
                 },
             ],
-            entries: vec![(20842, 8), (65842, 900), (1 << 20, 200_000)],
+            // On the stream's own clock, which is twice the playlist's: the
+            // first entry is the picture the playlist opens at.
+            entries: vec![
+                entry(20842 * 2, 8),
+                entry(65842 * 2, 900),
+                entry(1 << 21, 200_000),
+            ],
         }
     }
 
@@ -1001,6 +1372,7 @@ mod tests {
             channel: Some("衛星第一".into()),
             channel_number: 161,
             marks: vec![0.0, 12.5],
+            ran: Some(30 * 60),
         };
         let raw = rpls("00001", &clip(), &rec);
         assert_eq!(&raw[..8], b"PLST0100");
@@ -1020,6 +1392,9 @@ mod tests {
             u16::from_be_bytes(raw[CHANNEL_AT..CHANNEL_AT + 2].try_into().unwrap()),
             161
         );
+        // Half an hour of air time, as the three bytes of binary coded
+        // decimal a recorder writes it in.
+        assert_eq!(&raw[RAN_AT..RAN_AT + 3], &[0x00, 0x30, 0x00]);
         let about = u16::from_be_bytes(raw[DESCRIPTION_AT..DESCRIPTION_AT + 2].try_into().unwrap())
             as usize;
         assert_eq!(
@@ -1029,15 +1404,28 @@ mod tests {
         // The play items begin where both real discs put them, whatever went
         // into the description above.
         assert_eq!(list_at, LIST_AT);
-        // Two marks, at the clip's own start and twelve and a half seconds
-        // into it.
+        // Two marks. Each is at the entry point nearest where it was asked
+        // for, because a mark a player cannot start at is a mark it starts
+        // somewhere else at: the first at the clip's own start, which is an
+        // entry, and the second -- asked for at twelve and a half seconds,
+        // which is not -- at the entry that is nearest to it.
         assert_eq!(
             u16::from_be_bytes(raw[marks_at + 4..marks_at + 6].try_into().unwrap()),
             2
         );
-        let second = marks_at + 6 + MARK;
-        let at = u32::from_be_bytes(raw[second + 6..second + 10].try_into().unwrap());
-        assert_eq!(at, 20842 + (12.5 * TICK) as u32);
+        let mark_at = |i: usize| {
+            let one = marks_at + 6 + i * MARK;
+            u32::from_be_bytes(raw[one + 6..one + 10].try_into().unwrap())
+        };
+        assert_eq!(mark_at(0), 20842);
+        let asked = u64::from(20842 + (12.5 * TICK) as u32) * 2;
+        let nearest = clip()
+            .entries
+            .into_iter()
+            .min_by_key(|e| e.pts.abs_diff(asked))
+            .unwrap();
+        assert_eq!(u64::from(mark_at(1)) * 2, nearest.pts);
+        assert_eq!(mark_at(1), 1 << 20);
     }
 
     #[test]
@@ -1073,7 +1461,8 @@ mod tests {
         let map_at = 2 + 14;
         let fine_at = map_at + word(map_at) as usize;
         let mut coarse = 0usize;
-        for (i, &(pts, spn)) in clip.entries.iter().enumerate() {
+        for (i, want) in clip.entries.iter().enumerate() {
+            let (pts, spn) = (want.pts, want.packet);
             // A player reads the coarse entry a fine one belongs to, which
             // is the last one whose fine id is not past it.
             while coarse + 1 < coarse_n && (word(map_at + 4 + (coarse + 1) * 8) >> 14) as usize <= i
@@ -1105,11 +1494,16 @@ mod tests {
             2
         );
         assert_eq!(&raw[at + 6..at + 16], b"00001.rpls");
-        let name: Vec<u8> = raw[DISC_NAME_AT..TABLE_AT]
+        // A length byte and then that many bytes of ARIB, which is how a
+        // playlist counts the programme's name and how a recorder reads the
+        // disc's. Read as a field running to the first zero instead, every
+        // byte of it came out one place late.
+        let len = usize::from(raw[DISC_NAME_AT]);
+        assert!(len > 0 && DISC_NAME_AT + 1 + len <= TABLE_AT);
+        let name = &raw[DISC_NAME_AT + 1..DISC_NAME_AT + 1 + len];
+        assert_eq!(crate::arib::decode(name), "テストディスク");
+        assert!(raw[DISC_NAME_AT + 1 + len..TABLE_AT]
             .iter()
-            .copied()
-            .take_while(|b| *b != 0)
-            .collect();
-        assert_eq!(crate::arib::decode(&name), "テストディスク");
+            .all(|b| *b == 0));
     }
 }

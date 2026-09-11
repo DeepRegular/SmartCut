@@ -12,6 +12,7 @@ in this program reads those. A player does, and this stands in for one.
 What is printed is `key=value` lines, one per recording, for the shell to
 compare against what it asked for.
 """
+import math
 import os
 import struct
 import sys
@@ -32,16 +33,24 @@ def u32(b, at):
 # --- the stream ----------------------------------------------------------
 
 def arrivals(path):
-    """When each packet arrived, and whether that ever goes backwards.
+    """When each packet arrived, whether that ever goes backwards, and how
+    close together two of them ever come.
 
     The field is thirty bits of a 27 MHz clock, so it wraps about every forty
     seconds; a step that is nearly the whole of its range is a wrap and not a
     step backwards.
+
+    The smallest step is the one the clip index has to be able to stand
+    behind. A disc is written at a rate, the index says what that rate is, and
+    a packet arriving faster than it says is a packet a player was not asked
+    to make room for. On both reference discs the smallest step *is* the rate
+    -- 1571 ticks on one, 1593 on the other -- and nothing is under it.
     """
     size = os.path.getsize(path)
     n = size // SOURCE_PACKET
     total = 0
     back = 0
+    least = None
     prev = None
     with open(path, "rb") as f:
         for i in range(n):
@@ -51,9 +60,11 @@ def arrivals(path):
                 step = (at - prev) % (1 << 30)
                 if step > (1 << 29):
                     back += 1
+                else:
+                    least = step if least is None else min(least, step)
                 total += step
             prev = at
-    return n, total / 27e6, back
+    return n, total / 27e6, back, least or 0
 
 
 def pmt_of(path):
@@ -118,7 +129,8 @@ def clpi(path):
         streams[pid] = raw[p + 3]
         p += 3 + length
     out["streams"] = streams
-    out["ep"] = ep_map(raw)
+    out["ep"], out["coarse"] = ep_map(raw)
+    out["application_type"] = raw[info + 7]
     return out
 
 
@@ -141,8 +153,11 @@ def ep_map(raw):
             ci += 1
         pts = ((coarse[ci][0] & 0x3FFF) & ~1) << 19 | ((w >> 17) & 0x7FF) << 9
         spn = (coarse[ci][1] & ~0x1FFFF) | (w & 0x1FFFF)
-        out.append((pts, spn))
-    return out
+        # And the three bits that say how far past the entry its picture
+        # ends, which both reference discs fill in on every entry and a
+        # player reads to fetch one picture and no more.
+        out.append((pts, spn, (w >> 28) & 0x7))
+    return out, coarse_n
 
 
 def entries_land(m2ts, pid, ep):
@@ -155,7 +170,7 @@ def entries_land(m2ts, pid, ep):
     wrong = 0
     size = os.path.getsize(m2ts)
     with open(m2ts, "rb") as f:
-        for pts, spn in ep:
+        for pts, spn, _ends in ep:
             at = spn * SOURCE_PACKET
             if at + SOURCE_PACKET > size:
                 wrong += 1
@@ -201,6 +216,10 @@ def rpls(path):
         # check that the fields are there and the right size, and the reader
         # in disc.rs is what says they read back as the right words.
         "made": raw[50:57].hex(),
+        # How long it ran on air: the listing's own length, which is the slot
+        # and not the cut -- half an hour against a twenty-four minute
+        # recording on both reference discs.
+        "ran": raw[57:60].hex(),
         "channel_number": u16(raw, 64),
         "channel_length": raw[67],
         "name_length": raw[88],
@@ -222,7 +241,7 @@ def main():
         play = rpls(os.path.join(at, "PLAYLIST", name))
         m2ts = os.path.join(at, "STREAM", stem + ".m2ts")
         clip = clpi(os.path.join(at, "CLIPINF", stem + ".clpi"))
-        packets, seconds, back = arrivals(m2ts)
+        packets, seconds, back, least = arrivals(m2ts)
         pcr, streams = pmt_of(m2ts)
         video = next((pid for pid, kind in streams.items() if kind in (0x02, 0x1B, 0xEA, 0x24)), 0)
         wrong = entries_land(m2ts, video, clip["ep"])
@@ -230,6 +249,7 @@ def main():
         print(f"{stem}.seconds={(play['out'] - play['in']) / TICK:.3f}")
         print(f"{stem}.marks={len(play['marks'])}")
         print(f"{stem}.made={play['made']}")
+        print(f"{stem}.ran={play['ran']}")
         print(f"{stem}.channel_number={play['channel_number']}")
         print(f"{stem}.channel_length={play['channel_length']}")
         print(f"{stem}.name_length={play['name_length']}")
@@ -245,6 +265,27 @@ def main():
         print(f"{stem}.entry_points_wrong={wrong}")
         print(f"{stem}.arrival_seconds={seconds:.3f}")
         print(f"{stem}.arrival_backwards={back}")
+        # A stream file is a whole number of aligned units -- 32 source
+        # packets, which is what a Blu-ray reads and writes in.
+        print(f"{stem}.aligned_units={os.path.getsize(m2ts) % (SOURCE_PACKET * 32) == 0}")
+        # And nothing in it arrives faster than the index says the disc is
+        # written: 27 MHz over the rate, times a packet, is the closest two
+        # packets may come.
+        # The rate is rounded up when it is written, so the closest two
+        # packets may come is that rate read back and rounded up again --
+        # exactly, with nothing over. A margin of a whole step would be a
+        # disc claiming to be written faster than it is.
+        floor = PACKET * 27_000_000 / clip["rate"]
+        print(f"{stem}.rate_kept={least >= floor}")
+        print(f"{stem}.rate_exact={least == math.ceil(floor)}")
+        # The field that says where the picture an entry names ends, which a
+        # player reads to fetch one picture and no more.
+        print(f"{stem}.entries_say_where_the_picture_ends="
+              f"{sum(1 for _, _, ends in clip['ep'] if ends == 0)}")
+        # A coarse entry per 2**20 of the clock, which is what a player
+        # reconstructs against -- see `ep_map`.
+        print(f"{stem}.coarse_entries={clip['coarse']}")
+        print(f"{stem}.application_type={clip['application_type']}")
 
 
 if __name__ == "__main__":

@@ -93,6 +93,22 @@ for clip in 00001 00002; do
   python3 -c "import sys; sys.exit(0 if abs($arrival-$seconds) < 1.0 else 1)" \
     && ok "$clip: they span the recording" "${arrival}s of ${seconds}s" \
     || bad "$clip: they span the recording" "${arrival}s of ${seconds}s"
+  # A disc is written at a rate, and the rate the index declares is the one
+  # the stream keeps to: nothing arrives faster than it says. On both
+  # reference discs the closest two packets ever come *is* the declared rate,
+  # which is what a margin of nought below means.
+  same "$clip: nothing arrives faster than the rate" "True" "$(field "$facts" "$clip.rate_kept")"
+  same "$clip: and the rate is the one it is written at" "True" "$(field "$facts" "$clip.rate_exact")"
+  # A Blu-ray reads and writes a stream 32 source packets at a time, so a
+  # stream file is a whole number of them. What libavformat leaves is
+  # whatever the last flush came to.
+  same "$clip: the stream is whole aligned units" "True" "$(field "$facts" "$clip.aligned_units")"
+  # And every entry says where the picture it names ends, which is what a
+  # player reads to fetch one picture and no more.
+  same "$clip: every entry says where its picture ends" "0" \
+    "$(field "$facts" "$clip.entries_say_where_the_picture_ends")"
+  same "$clip: a recording, as both reference discs say" "0" \
+    "$(field "$facts" "$clip.application_type")"
 done
 
 # The chapter points are the one thing on a recorder's disc that a viewer
@@ -201,6 +217,9 @@ for udf in 2.50 2.60; do
   fi
   bytes=$(stat -c %s "$out.iso")
   same "UDF $udf: the image is whole blocks" "0" "$((bytes % 2048))"
+  # And a whole 64 KB cluster, which is the unit a Blu-ray is written in and
+  # what both reference images come to.
+  same "UDF $udf: and whole clusters" "0" "$((bytes % 65536))"
   # The reader that opens every other disc opens this one.
   read=$("$BIN" "$out.iso" 2>/dev/null)
   has "UDF $udf: it opens as a disc" "DISCTEST" "$read"

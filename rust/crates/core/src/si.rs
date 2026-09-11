@@ -894,6 +894,11 @@ pub struct Programme {
     /// recording does not say. See [`three_digit`].
     pub channel_number: u16,
     pub began: Option<Began>,
+    /// How long the programme ran on air, in seconds: the listing's own
+    /// length, which is half an hour for a twenty-four minute episode. It
+    /// sits beside the moment it began, in both of the two tables that carry
+    /// either, and a disc's playlist has a field for it. See [`crate::bdav`].
+    pub ran: Option<u32>,
 }
 
 /// The number a viewer knows a channel by, from the service it is.
@@ -1039,6 +1044,7 @@ pub fn programme(input: &crate::input::Input, service_id: u16) -> Result<Program
                     return;
                 };
                 out.began = out.began.or_else(|| began_at(&event[2..7]));
+                out.ran = out.ran.or_else(|| event.get(7..10).and_then(ran_for));
                 if out.channel_number == 0 {
                     out.channel_number = three_digit(whose);
                 }
@@ -1069,6 +1075,11 @@ pub fn programme(input: &crate::input::Input, service_id: u16) -> Result<Program
                 out.began = out
                     .began
                     .or_else(|| descriptor(described, 0xC3).and_then(|d| began_at(d.get(1..6)?)));
+                // The same descriptor says how long it ran, in the three
+                // bytes after the moment it began.
+                out.ran = out
+                    .ran
+                    .or_else(|| descriptor(described, 0xC3).and_then(|d| ran_for(d.get(6..9)?)));
                 if out.channel_number == 0 {
                     out.channel_number = three_digit(whose);
                 }
@@ -1247,6 +1258,21 @@ fn began_at(raw: &[u8]) -> Option<Began> {
         minute: d(3)?,
         second: d(4)?,
     })
+}
+
+/// The three bytes a broadcast writes a length in: hours, minutes and
+/// seconds, each in binary coded decimal.
+///
+/// All ones is how a broadcaster says the length is not known, and so is any
+/// pair that is not two digits.
+fn ran_for(raw: &[u8]) -> Option<u32> {
+    let d = |i: usize| -> Option<u32> {
+        let b = *raw.get(i)?;
+        let (hi, lo) = (b >> 4, b & 0x0F);
+        (hi <= 9 && lo <= 9).then_some(u32::from(hi) * 10 + u32::from(lo))
+    };
+    let seconds = d(0)? * 3600 + d(1)? * 60 + d(2)?;
+    (seconds > 0).then_some(seconds)
 }
 
 /// How a stream the cut wrote in another codec is to be declared.
@@ -2074,6 +2100,10 @@ pub fn graft(output: &str, g: &Graft) -> Result<Stats> {
         // Which range the clock is inside, so a cut spanning two programmes
         // describes each of them over its own stretch.
         let mut range = 0usize;
+        // Whether the map has gone out yet, and whether a partial stream's
+        // own table is waiting for it to.
+        let mut opened = false;
+        let mut held = false;
 
         let mut frame = vec![0u8; stride];
         // A section this pass writes goes out behind the arrival time of the
@@ -2132,6 +2162,17 @@ pub fn graft(output: &str, g: &Graft) -> Result<Stats> {
                     packetize(p, &pmt_section, c, &mut scratch);
                     put(&mut dst, arrival, &scratch)?;
                     stats.pmt += 1;
+                    // And the table a partial stream opens with, where the
+                    // muxer put its service description in front of the map
+                    // rather than behind it -- see `held` below.
+                    if std::mem::take(&mut held) {
+                        let c = cc.entry(PID_SIT).or_default();
+                        scratch.clear();
+                        packetize(PID_SIT, &sit[range], c, &mut scratch);
+                        put(&mut dst, arrival, &scratch)?;
+                        stats.sit += 1;
+                    }
+                    opened = true;
                     continue;
                 }
                 // The muxer's own service description is where a partial
@@ -2139,6 +2180,16 @@ pub fn graft(output: &str, g: &Graft) -> Result<Stats> {
                 // service description is written at, which is the cadence
                 // either table wants, and taking its place is what leaves
                 // PID 0x11 out of the output altogether.
+                // A stream opens with its map, not with a description of
+                // what the map is about. libavformat writes the service
+                // description first, which put nine packets of selection
+                // information in front of the very first table of a disc's
+                // stream; both reference discs open with the map. So the
+                // first one is held back and goes out behind the map above.
+                PID_SDT if g.tables == Tables::Partial && !opened => {
+                    held = true;
+                    continue;
+                }
                 PID_SDT if g.tables == Tables::Partial => {
                     let c = cc.entry(PID_SIT).or_default();
                     scratch.clear();

@@ -561,6 +561,7 @@ function closeChooser(take) {
         home: clip.home,
         chapters: clip.chapters,
         made: clip.made,
+        ran: clip.ran,
         description: clip.description,
         channel: clip.channel,
         // Nought is the disc's index saying it does not know, which is not
@@ -4210,6 +4211,9 @@ async function runExport() {
             // spells it, whatever the field was typed in, and a text or no
             // text rather than a text of no length.
             made: madeParse(madeOf(clip) || ""),
+            // Not one of the four anybody types: the length the listing gave
+            // the programme, carried from wherever the recording knew it.
+            ran: clip.ran ?? (clip.said || {}).ran ?? null,
             description: descriptionOf(clip) || null,
             channel: channelOf(clip) || null,
             // Named the way the engine names it: the fields of a payload go

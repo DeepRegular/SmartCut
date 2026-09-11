@@ -485,6 +485,8 @@ struct DiscClip {
     /// this recording written onto a disc of its own says the programme was
     /// what this disc says it was.
     made: Option<String>,
+    /// How long the programme ran on air, in seconds.
+    ran: Option<u32>,
     description: Option<String>,
     channel: Option<String>,
     channel_number: u16,
@@ -506,6 +508,7 @@ impl From<smartcut_core::disc::Entry> for DiscClip {
             bytes: e.bytes,
             wanted: e.wanted,
             made: e.made.map(|m| m.to_string()),
+            ran: e.ran,
             description: e.description,
             channel: e.channel,
             channel_number: e.channel_number,
@@ -3166,6 +3169,9 @@ struct BdavEntry {
     name: String,
     /// `2026-08-17 01:00:00`, or nothing where the recording never said.
     made: Option<String>,
+    /// How long the programme ran on air, in seconds. Carried rather than
+    /// typed: it is the listing's own length.
+    ran: Option<u32>,
     /// What the broadcaster said the programme was, and the channel it came
     /// off: the rest of what a recorder writes into a playlist.
     description: Option<String>,
@@ -3183,6 +3189,8 @@ struct ProgrammeInfo {
     channel: Option<String>,
     channel_number: u16,
     made: Option<String>,
+    /// How long the programme ran on air, in seconds.
+    ran: Option<u32>,
 }
 
 /// Read what a recording says about its own programme.
@@ -3202,6 +3210,7 @@ async fn programme(path: String) -> Result<ProgrammeInfo, String> {
             channel: said.channel,
             channel_number: said.channel_number,
             made: said.began.map(|m| m.to_string()),
+            ran: said.ran,
         })
     })
     .await
@@ -3336,6 +3345,7 @@ async fn bdav_finish(
                 clip: e.clip,
                 name: e.name,
                 made: e.made.as_deref().and_then(smartcut_core::si::Began::parse),
+                ran: e.ran,
                 description: e.description,
                 channel: e.channel,
                 channel_number: e.channel_number.unwrap_or(0),

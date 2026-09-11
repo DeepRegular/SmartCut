@@ -179,6 +179,7 @@ pub fn read(at: &Path) -> Result<Disc> {
             // A DVD's index has nowhere to write any of this: the format
             // predates the question.
             made: None,
+            ran: None,
             description: None,
             channel: None,
             channel_number: 0,

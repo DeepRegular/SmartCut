@@ -456,7 +456,12 @@ fn lay_out(tree: &mut [Node]) -> Plan {
         mirror_at,
         partition_blocks,
         reserve_vds,
-        sectors: reserve_vds + VDS_BLOCKS + 1,
+        // Rounded out to a whole 64 KB cluster, which is the unit a Blu-ray
+        // is written in and what both reference images come to: 10,326,144
+        // sectors and 9,959,520, each of them 32 blocks' worth exactly. The
+        // second anchor moves out to the new last sector with it, which is
+        // where it has to be either way.
+        sectors: align(reserve_vds + VDS_BLOCKS + 1),
         files: tree.iter().filter(|n| !n.is_dir()).count() as u32,
         directories: tree.iter().filter(|n| n.is_dir()).count() as u32,
         next_unique: 15 + tree.len() as u32,

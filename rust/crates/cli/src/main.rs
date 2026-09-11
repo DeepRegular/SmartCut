@@ -1302,6 +1302,9 @@ fn main() -> Result<()> {
         let made = given_made
             .or_else(|| was.and_then(|e| e.made))
             .or(said.began);
+        // How long it ran on air, which nothing on the command line offers:
+        // it is the listing's own length and not a thing anybody types.
+        let ran = was.and_then(|e| e.ran).or(said.ran);
         let description = about
             .or_else(|| was.and_then(|e| e.description.clone()))
             .or(said.description);
@@ -1335,6 +1338,7 @@ fn main() -> Result<()> {
                 clip: clip.clone(),
                 name: name.clone(),
                 made,
+                ran,
                 description,
                 channel,
                 channel_number,

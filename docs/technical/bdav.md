@@ -57,7 +57,7 @@ AAC, the captions declared as a data stream with the component tag they
 arrived with, and the programme information on PID 0x1F where a partial
 transport stream keeps it.
 
-### The arrival times are written again
+### The arrival times are written again, at a rate
 
 Every packet of a Blu-ray carries the moment it arrived, in the 27 MHz the
 clock counts in, and a player uses those to feed its decoder at the rate the
@@ -75,21 +75,56 @@ Told a mux rate it writes a clean one, at the cost of padding the stream with
 null packets up to that rate, which on a 12 Mbit/s recording is half the disc
 spent on nothing.
 
-So [`bdav::stamp`](../../rust/crates/core/src/bdav.rs) writes them again from
-the stream's own clock, which is where the answer already is. A packet between
-two programme clock references arrived between them, in proportion to how far
-through it sits; the packets in front of the first are spaced at the rate a
-disc is written at, and the ones after the last at the rate the file has
-averaged so far. That is the same model a recorder uses, and it is why a real
-disc's arrival times step evenly for a burst and then jump: the jump is where
-the recorder had nothing to write. Measured on a disc a Japanese authoring
-tool wrote, the step is 1571 ticks for 94% of the packets and a larger number
-for the rest.
+So [`bdav::stamp`](../../rust/crates/core/src/bdav.rs) writes them again. **A
+recording is delivered at a constant rate**, and where there was nothing to
+deliver the recorder wrote nothing and the times jump. That is exactly the
+shape a real disc's arrival times have: on both reference discs every step is
+either the rate's own step — 1571 ticks on one, 1593 on the other — or a
+jump, and never anything between. Both discs declare a `TS_recording_rate`
+that is that step read back as a rate; 27 MHz over 1571 ticks, times a packet,
+is 3,231,064 bytes a second, which is the number on the first of them.
 
-The last interval is the one worth being careful about. It is often a handful
-of packets the muxer flushed together, whose spacing is nothing like the
-recording's — extrapolating the tail from it put four seconds of arrival time
-onto a 167 second recording before the average took over.
+The clock references say when the packets carrying them arrive, and they are
+what the schedule is pinned to. Working backwards from the end, a packet
+arrives one step before the packet after it, and a packet carrying a clock
+reference arrives at the moment its clock says — unless the burst that
+follows it will not fit at the rate, in which case it has to begin earlier and
+the reference moves earlier with it. The gaps then fall where the stream had
+nothing to send.
+
+**A moved reference is rewritten.** A clock reference *is* the arrival time of
+the byte carrying it; a packet delivered at a different moment from the one
+its reference claims would have a player's clock stepping about by the
+difference every time one arrived. So the value goes back into the stream as
+the schedule's own, and the two agree by construction.
+
+What that costs is that the data sits in the decoder's buffer for as long as
+the reference moved, so the rate is chosen to keep the move small: the
+slowest rate that moves no reference by more than a tenth of a second, found
+by searching between 25.8 and 48 Mbit/s, and the fastest where no rate does.
+A tenth of a second is about a fifth of the lead a broadcast gives a decoder.
+
+Interpolating between the clock references instead — which is what this did
+before, and looks reasonable — puts the *muxer's* bursts into the arrival
+times: libavformat writes a clock reference every twenty to thirty
+milliseconds and whatever the picture needed in between, so a 258 kB frame
+came out claiming to arrive at 137 Mbit/s. Measured on a 24 minute recording,
+**59% of the packets arrived faster than the rate the index declared**, which
+is the one mistake in this file that matters. On the same recording written
+the way above, none of them do and the decoder's lead sits between 0.42 and
+0.61 seconds from one end to the other.
+
+### The stream is padded to whole aligned units
+
+A Blu-ray reads and writes a stream 32 source packets — 6144 bytes — at a
+time, and every stream file on both reference discs is a whole number of them,
+each one ending in the null packets that made it so. What libavformat leaves
+is whatever its last flush came to: of six streams measured, none were a whole
+number and the shortfall ran from 1920 to 3456 bytes. So the tail is padded
+with null packets, arriving at the rate everything else did.
+
+The image is rounded out the same way, to a whole 64 kB cluster: both
+reference images come to one exactly.
 
 ### The index is read back off the file
 
@@ -108,8 +143,8 @@ something:
 
 | | |
 |---|---|
-| **ClipInfo** | that this is a transport stream of a recording, the rate it is written at, and how many source packets it holds |
-| **SequenceInfo** | which PID carries the clock, and the first and last moment a picture is shown |
+| **ClipInfo** | that this is a transport stream of a recording, the rate it is written at — read off the schedule that wrote it, so the index and the stream cannot disagree — and how many source packets it holds |
+| **SequenceInfo** | which PID carries the clock, the packet its first reference is in, and the first and last moment a picture is shown |
 | **ProgramInfo** | which PID the map is on, and what each stream is: the coding, and a shape and rate for pictures, a channel arrangement and rate and language for sound, a language for [the subtitles a disc draws](disc.md#the-subtitles-a-disc-draws) |
 | ClipMark | empty: on a disc of recordings the chapter points belong to the playlist |
 | MakersPrivateData | empty by definition |
@@ -141,8 +176,28 @@ fine:     1 bit   an angle change point, which a recording has none of
 A player reconstructs one by taking the coarse entry's high bits and the fine
 entry's low bits, so a coarse entry is written afresh whenever the high bits
 change — every twelve seconds of time or every 131,072 packets of position,
-whichever comes first. On a half-hour recording that is about 3,600 fine
-entries and 300 coarse ones.
+whichever comes first. On a half-hour recording that is about 3,100 fine
+entries and 200 coarse ones.
+
+**Twelve seconds and not six.** The coarse time is fourteen bits above bit 19,
+and a player puts the two halves back together with the lowest of those
+fourteen *dropped* — the fine entry's eleven bits cover bit 19 as well. So a
+coarse entry is only worth writing when bit 20 changes. Writing one when bit
+19 did, as this used to, wrote twice as many as a disc needs: 369 against the
+reference disc's 186 over the same length. Nothing read them wrongly; the map
+was a kilobyte fatter than it had to be.
+
+**Where the picture ends.** The three bits between the angle-change flag and
+the time say how far past an entry the picture it names ends, which is what a
+player reads to fetch one picture and no more — how a fast forward is done.
+Both reference discs fill it in on every entry; this used to write zero, which
+says the picture is shorter than the field can express. What the units are is
+not written down anywhere this project can reach, so they were measured: on
+678 entries read off the two discs the value steps at 128 kB of stream and
+counts from one, the largest picture in each bucket and the smallest in the
+next falling either side of a multiple of 131,072 bytes without a single
+crossing. Written that way, all 299 entries checked on a recording of this
+program's own agree with the picture they name.
 
 **The times here are not the playlist's tick.** An entry point map carries
 `PTS_EP_start`, which is the picture's own presentation time stamp —
@@ -173,6 +228,7 @@ the four things in it are at the same offsets on both:
 
 ```text
  50  when it was recorded    7 bytes, binary coded decimal, century first
+ 57  how long it ran         3 bytes, binary coded decimal, hours first
  64  the channel's number    2 bytes  -- the three digits a viewer knows
  67  the channel's name      1 + 20   -- ARIB text
  88  the programme's name    1 + 255  -- ARIB text
@@ -180,7 +236,16 @@ the four things in it are at the same offsets on both:
 ```
 
 The fields fit each other exactly: 68 + 20 is 88, and 89 + 255 is 344, which
-is how the layout can be read off two discs rather than guessed at. The
+is how the layout can be read off two discs rather than guessed at.
+
+**How long it ran is the slot and not the cut.** One reference disc says half
+an hour against twenty-four minute recordings, the other a quarter of an hour
+against twelve and a half minute ones — and thirty minutes against the two
+half-hour programmes at the end of it. That is the listing's own length, which
+is the field a broadcast's event carries beside the moment it began, in the
+same three bytes of binary coded decimal; a disc that wrote one and not the
+other would be throwing half a descriptor away. Nothing types it: it comes
+from the recording, or from the playlist of the disc the recording came off. The
 description is the only one counted in two bytes, because it runs to hundreds
 of them — the recorder's disc read here carries between 471 and 596 bytes of
 it per recording, and there is room to 1546 for more.
@@ -217,6 +282,28 @@ which is where the commercial breaks were, plus whatever marks were put down
 in the editor. That is the one thing on a recorder's disc a viewer uses every
 time.
 
+Each is written at the **entry point nearest to it**, because a chapter point
+a player cannot start at is one it starts at the nearest entry to anyway, and
+a mark between two of them lands somewhere the editor did not show. Most are
+already on one — a kept range begins where a cut could begin — but a range
+whose opening was re-encoded has no entry at its seam: five of twenty-nine
+marks on a disc measured here were up to seven frames out, where both
+reference discs are within six milliseconds of an entry on all 153 of theirs.
+
+## The lead a disc gives a decoder
+
+A stream cannot show its first picture the moment its clock starts: the
+buffer that picture comes out of has to be filled first, and the lead is how
+long the stream waits. Both reference discs wait 0.44 and 0.46 seconds. Left
+to itself, the mpegts muxer waits for the reorder delay and nothing more,
+which on one recording was 0.05 seconds — not time enough to fill anything.
+
+The muxer adds its `max_delay` to every presentation time and takes it off
+again for the clock reference it writes, so that setting *is* the lead and
+nothing else. It is set to 0.4 seconds, which comes out at 0.48. Only on a
+disc's own stream: a `.ts` cut is meant to be the recording it came from, and
+this would be a shift the recording does not have.
+
 ## Where all of that comes from
 
 This is the reason the feature exists. A stream says nothing about what
@@ -231,6 +318,19 @@ programme is in it; the disc's index is where that lives, and it has to be
 
 Each field is taken on its own rather than as a set, so a disc that named the
 programme and not the channel still takes the channel from the stream.
+
+**The disc's own name is counted, like every other name.** A length byte in
+`info.bdav` at offset 64 and then that many bytes of ARIB — the same shape the
+playlist gives the programme's name. Written without the byte, as this did
+before, a recorder reads the first byte of the text as the length; the first
+byte of a name that begins in kanji is a shift, so a disc named
+`無職転生Ⅲ ～異世界行ったら本気だす～` came up in a list as `無職転生`, cut off
+fifteen bytes in at whatever the shift happened to be. The reader had the same
+byte off in the other direction and every real disc's name came back
+mojibake — `この世の果てで恋を唄う少女ＹＵ－ＮＯ` read as
+`〓海寮い硫未討芭〓魃瓦〓〓〓掖㍊〓`. Both halves are fixed, and the two discs
+below are what say so: the length byte is exactly the number of bytes that
+follow it on each.
 
 **The disc's own name is not one of the fields.** Nothing carries it: a
 recording knows what programme it is, and a disc of six of them is a thing
@@ -415,8 +515,10 @@ the index against the stream it is about with
 [`tests/bdav_index.py`](../../tests/bdav_index.py), which stands in for the
 player: that the clip index agrees with the file on the packet count, the
 times, the clock PID and the streams; that **every entry point lands on a
-picture at the time it claims**; that the arrival times never step backwards
-and span the recording; and that the programme's name, the channel and its
+picture at the time it claims** and says where that picture ends; that the
+arrival times never step backwards, span the recording, and **never come
+closer together than the rate the index declares**; that the stream is a whole
+number of aligned units and the image a whole number of clusters; and that the programme's name, the channel and its
 number, the moment it went out and what the broadcaster said it was about all
 survive being written into a disc, read back out of it, and written into a
 second one — the last two compared as the bytes that went in.
@@ -429,4 +531,4 @@ out of the image comes out the same md5 as the same cut taken out of the
 folder. Separately, an image of a 1.2 GB file was written and unpacked byte
 for byte, which is the extent split above.
 
-Fifty-three checks, all passing.
+Sixty-five checks, all passing.

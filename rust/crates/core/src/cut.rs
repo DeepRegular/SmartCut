@@ -22,6 +22,10 @@ use crate::bitstream::{
 };
 use crate::{RangePlan, Segment, SegmentKind, Source};
 
+/// How long a disc's stream waits before it shows its first picture, in
+/// seconds. See where it is set, below.
+const LEAD_IN: f64 = 0.4;
+
 /// How H.264/HEVC payloads have to be shaped on the way out.
 ///
 /// MP4 stores NAL units length-prefixed and keeps one set of parameter sets
@@ -3741,6 +3745,23 @@ pub fn cut_with_progress(
     // `output_with` hands its dictionary to the *protocol*, so anything meant
     // for the muxer is quietly dropped there. This one goes below.
     let mut octx = ff::format::output(&output)?;
+    // The lead a disc gives a decoder: how far the first picture is shown
+    // after the clock that has to be running to show it arrives.
+    //
+    // The mpegts muxer adds this to every presentation time and takes it off
+    // again for the clock reference it writes, so it is exactly that lead and
+    // nothing else. Left at its default of none, a cut came out with its
+    // first picture 0.05 seconds after its first clock -- which is the
+    // reorder delay and nothing more, and is not time enough to fill the
+    // buffer the picture comes out of. Both reference discs open 0.44 and
+    // 0.46 seconds in. Only on a disc's own stream: a `.ts` cut is meant to
+    // be the recording it came from, and this would be a shift the recording
+    // does not have.
+    if to_ts && output.to_ascii_lowercase().ends_with(".m2ts") {
+        unsafe {
+            (*octx.as_mut_ptr()).max_delay = (LEAD_IN * 1e6) as i32;
+        }
+    }
     let mp4ish = {
         let name = octx.format().name().to_string();
         name.contains("mp4") || name.contains("mov")
