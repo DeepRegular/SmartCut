@@ -1206,8 +1206,9 @@ fn play_items(raw: &[u8], at: usize, vol: &mut Volume) -> Result<Vec<Clip>> {
 /// what sits where inside one is not the same on both dialects: BDMV's mark
 /// is fourteen bytes -- a byte reserved, the mark's kind, the play item it
 /// belongs to, then the time -- and the marks a BDAV recorder writes are
-/// longer and carry a name and a thumbnail beside the time. So the layout is
-/// not assumed. Each candidate is tried, and the one whose times all land
+/// forty-six, the kind first, then the maker who wrote the mark, then the
+/// play item and the time, and then room for a name and a thumbnail that no
+/// disc here fills in. So the layout is not assumed. Each candidate is tried, and the one whose times all land
 /// inside the clip they claim is the one that is right -- and when none of
 /// them does, the marks are left out rather than guessed at, because a
 /// chapter point in the wrong place is worse than no chapter point.
@@ -1242,11 +1243,15 @@ fn play_marks(raw: &[u8], at: usize, clips: &[Clip]) -> Vec<Vec<f64>> {
     let body_at = at + 6;
 
     // Where the time sits, and where the play item's number sits when the
-    // layout is one that carries it. The pair that reads a BDMV mark is
-    // first: it is the only one that can place a mark in a playlist of more
-    // than one clip, and on a playlist of exactly one it agrees with the
-    // others anyway.
-    for (time_at, item_at) in [(4usize, Some(2usize)), (4, None), (6, Some(2)), (6, None)] {
+    // layout is one that carries it. The two that can say which clip a mark
+    // is on come first, because they are the only ones a playlist of more
+    // than one clip can be read by: BDMV's, and then BDAV's, whose two bytes
+    // in front of the play item are the maker who wrote the mark rather than
+    // anything about the clip. Until 0.5.13 this looked for the play item
+    // there, in the maker, and asked for clip 0x0212 of a disc that has
+    // three -- so a playlist of several episodes fell through to a layout
+    // that could not place a mark at all, and came back with none.
+    for (time_at, item_at) in [(4usize, Some(2usize)), (6, Some(4)), (4, None), (6, None)] {
         if item_at.is_some_and(|o| o + 2 > time_at) {
             continue;
         }
@@ -1845,16 +1850,43 @@ mod tests {
         assert!((marks[2][1] - (600.0 - 11.651)).abs() < 0.01);
     }
 
+    /// The same thing again in the dialect a recorder writes: forty-six
+    /// bytes, the maker two in and the play item four in. Reading the maker
+    /// as the play item is what kept this from placing a mark on any disc a
+    /// recorder wrote with more than one recording in a playlist.
+    #[test]
+    fn a_mark_lands_on_the_clip_it_belongs_to_in_a_recorder_s_playlist() {
+        let clips: Vec<Clip> = (0..3).map(|_| clip(11.651, 723.695)).collect();
+        let ticks = |seconds: f64| (seconds * TICK) as u32;
+        let mut raw = mark_section(
+            46,
+            &[(0, ticks(11.651)), (1, ticks(100.0)), (2, ticks(600.0))],
+            4,
+            6,
+        );
+        // The maker who wrote them, which is what sits in front of the play
+        // item and what this used to read as one.
+        for i in 0..3 {
+            raw[6 + i * 46 + 2..6 + i * 46 + 4].copy_from_slice(&0x0212u16.to_be_bytes());
+        }
+        let marks = play_marks(&raw, 0, &clips);
+        assert_eq!(marks[0].len(), 1);
+        assert_eq!(marks[1].len(), 1);
+        assert_eq!(marks[2].len(), 1);
+        assert!((marks[2][0] - (600.0 - 11.651)).abs() < 0.01);
+    }
+
     #[test]
     fn leaves_a_multi_clip_playlist_unmarked_rather_than_marked_wrongly() {
         // A layout with no play item number in it says nothing about which of
         // three clips a mark is on, and putting all three episodes' chapter
         // points on episode one would be worse than putting down none.
         let clips: Vec<Clip> = (0..3).map(|_| clip(11.651, 723.695)).collect();
-        // 46 byte entries with the time six in, and something at offset two
-        // that is not a play item of this playlist -- so the layout that
-        // reads one there is rejected as well.
-        let raw = mark_section(46, &[(40_000, 524_280), (40_000, 10_000_000)], 2, 6);
+        // 46 byte entries with the time six in, and something where the play
+        // item sits that is not a play item of this playlist -- so the
+        // layout that reads one there is rejected as well, and what is left
+        // cannot say which clip it meant.
+        let raw = mark_section(46, &[(40_000, 524_280), (40_000, 10_000_000)], 4, 6);
         assert!(play_marks(&raw, 0, &clips).iter().all(Vec::is_empty));
     }
 
