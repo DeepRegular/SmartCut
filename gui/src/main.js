@@ -2610,6 +2610,15 @@ async function openPath(picked, saved, side, name, chapters, dropPids) {
     // find.
     await pointsArrived(exact, picked);
     prepare();
+    // Asked again now that the open is over. Everything above schedules the
+    // plan while this window is still `opening`, and a plan asked for then is
+    // answered with 「読み込み中」 and nothing else -- which is the honest
+    // answer at the time, and the last one the panel would ever get: the walk
+    // has already landed, so nothing further is coming to ask on its behalf.
+    // The wait between them is a picture decode, so whether the panel settled
+    // came down to whether that decode beat a 120 ms timer, and on a 1440x1080
+    // recording in a wide window it did not.
+    schedulePlan();
   } catch (e) {
     el("title").textContent = "";
     el("status").textContent = tr("editor.openFailed", { e });
