@@ -436,6 +436,10 @@ struct Wrote {
 /// point there.
 type Job = (ff::frame::Video, i64, bool);
 
+/// What a scaler is built for: how a picture is laid out, and how big it is.
+/// See [`write_side`], where a picture that stops matching one gets another.
+type Shape = (ff::format::Pixel, u32, u32);
+
 /// Take the encoder's packets as they come and mux them.
 fn drain(s: &mut Sink) -> Result<()> {
     let mut packet = ff::Packet::empty();
@@ -468,7 +472,19 @@ fn write_side(
     rx: std::sync::mpsc::Receiver<Job>,
 ) -> Result<Wrote> {
     let mut sink: Option<Sink> = None;
-    let mut scaler: Option<ff::software::scaling::Context> = None;
+    // The scaler, and the shape of picture it was built for. A scaler is
+    // built for one size and one format and takes nothing else, and a
+    // broadcast can change either: a recording that runs across a programme
+    // boundary may carry 1440x1080 on one side of it and 720x480 on the
+    // other. One scaler kept for the whole file would fail on the first
+    // picture of the second shape and take the build down with it, so a
+    // picture that stops matching gets a scaler of its own. What comes out
+    // stays the size the first picture settled -- a stream is one size or it
+    // is not a stream -- so the later shape is fitted into that, which
+    // stretches it where the two do not share an aspect. A proxy stands in
+    // for the recording while a cut is being placed, and one of the wrong
+    // shape is worth more there than no proxy at all.
+    let mut scaler: Option<(Shape, ff::software::scaling::Context)> = None;
     let mut pictures = 0usize;
 
     for (frame, ticks, entry) in rx {
@@ -479,10 +495,11 @@ fn write_side(
                 sink.as_mut().unwrap()
             }
         };
-        let sc = match scaler.as_mut() {
-            Some(sc) => sc,
-            None => {
-                scaler = Some(ff::software::scaling::Context::get(
+        let shape = (frame.format(), frame.width(), frame.height());
+        if scaler.as_ref().is_none_or(|(was, _)| *was != shape) {
+            scaler = Some((
+                shape,
+                ff::software::scaling::Context::get(
                     frame.format(),
                     frame.width(),
                     frame.height(),
@@ -494,10 +511,10 @@ fn write_side(
                     // than combs, and the proxy needs no deinterlacer of its
                     // own.
                     ff::software::scaling::Flags::AREA,
-                )?);
-                scaler.as_mut().unwrap()
-            }
-        };
+                )?,
+            ));
+        }
+        let (_, sc) = scaler.as_mut().expect("just built");
         // A fresh picture every time: the encoder keeps a reference to what it
         // is handed, so scaling into the same buffer again would rewrite a
         // picture that has not been encoded yet.
