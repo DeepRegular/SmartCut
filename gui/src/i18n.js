@@ -941,6 +941,8 @@ const CATALOG = {
     "tracks.superimpose": "superimposed text",
     "tracks.data": "data broadcast",
     "tracks.substream": "a compatibility stream folded into this PID",
+    "tracks.menu": "a menu",
+    "tracks.textst": "text subtitles (the fonts are on the disc)",
     "tracks.droppedNote":
       "These cannot be put on a cut timeline: superimposed text arrives with no time on its packets, and a data broadcast is a carousel of sections rather than a stream.",
     "tracks.substreamNote":
