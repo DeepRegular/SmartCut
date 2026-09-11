@@ -110,11 +110,11 @@ deb 以外はすべて FFmpeg を同梱しているので、ほかに用意す�
 
 | プラットフォーム | ファイル | 備考 |
 |---|---|---|
-| **Linux** | `SmartCut_0.5.12_amd64.AppImage` | 実行権限を付けて起動します |
-| **Linux** | `SmartCut-0.5.12-linux-x86_64.tar.gz` | 展開して `./smartcut` を実行します。FUSE を使いたくない場合はこちらです |
-| **Linux (Debian/Ubuntu)** | `smartcut_0.5.12_amd64.deb` | `sudo apt install ./smartcut_0.5.12_amd64.deb`。システムに入っている FFmpeg を使うので 3.4 MB で済みます |
-| **Windows** | `SmartCut_0.5.12_x64-setup.exe` | インストーラ |
-| **Windows** | `smartcut-portable-x64-0.5.12.zip` | 展開して `smartcut.exe` を実行します |
+| **Linux** | `SmartCut_0.5.13_amd64.AppImage` | 実行権限を付けて起動します |
+| **Linux** | `SmartCut-0.5.13-linux-x86_64.tar.gz` | 展開して `./smartcut` を実行します。FUSE を使いたくない場合はこちらです |
+| **Linux (Debian/Ubuntu)** | `smartcut_0.5.13_amd64.deb` | `sudo apt install ./smartcut_0.5.13_amd64.deb`。システムに入っている FFmpeg を使うので 3.4 MB で済みます |
+| **Windows** | `SmartCut_0.5.13_x64-setup.exe` | インストーラ |
+| **Windows** | `smartcut-portable-x64-0.5.13.zip` | 展開して `smartcut.exe` を実行します |
 
 **動作条件。** AppImage と tar.gz には glibc 2.39 以降が必要です（Ubuntu 24.04、
 Debian 13、Fedora 40 以降）。deb は FFmpeg 7.1 を使うので、Debian 13 または
