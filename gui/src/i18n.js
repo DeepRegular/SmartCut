@@ -54,6 +54,8 @@ const CATALOG = {
     "project.windowTitle": "{mark}{name} — SmartCut",
     "project.saved": "プロジェクトを保存しました: {name}",
     "project.opened": "プロジェクトを開きました: {name}（クリップ {n} 本）",
+    "project.refused":
+      "プロジェクトを開きました: {name}（クリップ {n} 本、{bad} 本はファイル名ではないので外しました）",
     "project.nothingToSave": "一覧が空です。保存するものがありません",
     "project.cannotOpen": "プロジェクトを開けません: {name}（{e}）",
     "project.wrongFormat":
@@ -547,6 +549,8 @@ const CATALOG = {
     "project.windowTitle": "{mark}{name} — SmartCut",
     "project.saved": "Project saved: {name}",
     "project.opened": "Project opened: {name} ({n} clips)",
+    "project.refused":
+      "Project opened: {name} ({n} clips; {bad} left out, being names of something other than a file)",
     "project.nothingToSave": "The list is empty — there is nothing to save",
     "project.cannotOpen": "Cannot open the project: {name} ({e})",
     "project.wrongFormat":

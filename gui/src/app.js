@@ -3926,18 +3926,26 @@ function renderOutScreen() {
   // this puts the audio half back on it, which the settings can have changed
   // since.
   paintShotsNote();
-  el("out-list").innerHTML = list
+  const rows = el("out-list");
+  rows.innerHTML = list
     .map((c, i) => {
       const kept = keepsOf(c).reduce((n, k) => n + (k.b - k.a), 0);
       return `<li class="${c.out.state}">
         <span class="n">${i + 1}</span>
         <span class="nm">${esc(clipLabel(c))}</span>
         <span class="len dim">${fmt(kept)}</span>
-        <span class="pbar"><span style="width:${Math.round(c.out.progress * 100)}%"></span></span>
+        <span class="pbar"><span></span></span>
         <span class="note dim">${esc(c.out.note || "")}</span>
       </li>`;
     })
     .join("");
+  // The bar is filled from here rather than written into the markup above: a
+  // `style` attribute in markup is the one thing the window's content policy
+  // turns off, and the property is not.
+  list.forEach((c, i) => {
+    const bar = rows.children[i]?.querySelector(".pbar span");
+    if (bar) bar.style.width = `${Math.round(c.out.progress * 100)}%`;
+  });
   paintButtons();
 }
 
@@ -4281,6 +4289,26 @@ async function runExport() {
 
 const PROJECT_EXT = "scproj";
 
+/// Whether a name would be opened as a protocol rather than as a file.
+///
+/// The engine hands a name it does not recognise straight to libavformat,
+/// which opens a good deal more than files -- that is deliberate, and on the
+/// command line it is the point. The window is another matter: its names come
+/// from the picker, from a drop and from the command line, and a project file
+/// is the one that can have been written by somebody else. A row naming
+/// `http://…` would be fetched the moment the project was opened, because the
+/// index lanes start on their own as soon as the list is up.
+///
+/// A drive letter is not a protocol, and neither is the one share spelling
+/// the window resolves to a mount point itself.
+function namesAProtocol(path) {
+  return (
+    /^[A-Za-z][A-Za-z0-9+.-]*:/.test(path) &&
+    !/^[A-Za-z]:[\\/]/.test(path) &&
+    !/^smb:/i.test(path)
+  );
+}
+
 /// The format's own number, which is not the program's. It goes up when a
 /// file written by an older version would be read *wrongly* rather than
 /// merely incompletely -- a field added is not a new format, since a reader
@@ -4561,8 +4589,16 @@ async function loadProject(path) {
   filledIn = null;
   showSettings();
   const taken = [];
+  let refused = 0;
   for (const saved of Array.isArray(doc.clips) ? doc.clips : []) {
     if (!saved || typeof saved.path !== "string") continue;
+    // A project is the one thing in the list that can arrive from somebody
+    // else, and every row in it is opened without being asked for -- the
+    // index lanes start as soon as the list is up. See `namesAProtocol`.
+    if (namesAProtocol(saved.path)) {
+      refused += 1;
+      continue;
+    }
     const clip = makeClip(saved);
     // The row's id is this session's counting, so the saved edit is
     // readdressed to the row it has just become. Everything else in it is
@@ -4576,7 +4612,11 @@ async function loadProject(path) {
   retitleMain();
   show("input");
   renderList();
-  note(t("project.opened", { name: nameOf(path), n: taken.length }));
+  note(
+    refused
+      ? t("project.refused", { name: nameOf(path), n: taken.length, bad: refused })
+      : t("project.opened", { name: nameOf(path), n: taken.length })
+  );
   (async () => {
     for (const [clip, pending] of taken) await restoreCm(clip, pending);
   })();

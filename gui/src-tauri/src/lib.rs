@@ -32,6 +32,18 @@ use tauri::{Emitter, Manager, State, WebviewUrl, WebviewWindowBuilder};
 #[derive(Default)]
 struct Opened(Mutex<Option<Source>>);
 
+/// A lock a panic cannot take away for good.
+///
+/// `Mutex::lock` refuses ever after once a thread has panicked while holding
+/// it, and `unwrap` on that refusal turns one unreadable recording into a
+/// window that answers nothing until it is restarted -- the film strip, the
+/// preview and the list all read through these. Everything behind them is a
+/// cache of what is open, so what a panic left there is worth no less than
+/// the lock: the poison is stepped over and the next open writes over it.
+fn locked<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    m.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
 /// The proxy standing in for the recording, once there is one.
 ///
 /// Everything that only wants to *look* at a picture reads from here: the
@@ -672,13 +684,13 @@ fn with_pictures<T>(
 ) -> Result<T, String> {
     {
         let state = app.state::<Proxy>();
-        let guard = state.0.lock().unwrap();
+        let guard = locked(&state.0);
         if let Some(p) = guard.as_ref() {
             return f(&p.src, Some(&p.marks));
         }
     }
     let state = app.state::<Opened>();
-    let guard = state.0.lock().unwrap();
+    let guard = locked(&state.0);
     f(guard.as_ref().ok_or("no file open")?, None)
 }
 
@@ -953,16 +965,16 @@ fn open_now(path: &str, app: &tauri::AppHandle) -> Result<SourceInfo, String> {
     // Anything still building for the file that was open belongs to nothing
     // now; the count going up is what tells it so.
     app.state::<Generation>().0.fetch_add(1, Ordering::SeqCst);
-    *app.state::<Thumbs>().0.lock().unwrap() = None;
+    *locked(&app.state::<Thumbs>().0) = None;
     // Named by what was asked for rather than by what came back: this is
     // compared against a path the list window holds, and that is the string
     // it handed over.
-    *app.state::<OpenPath>().0.lock().unwrap() = Some(path.to_string());
-    *app.state::<Proxy>().0.lock().unwrap() = None;
-    *app.state::<Subs>().0.lock().unwrap() = None;
-    *app.state::<Held>().0.lock().unwrap() = held;
+    *locked(&app.state::<OpenPath>().0) = Some(path.to_string());
+    *locked(&app.state::<Proxy>().0) = None;
+    *locked(&app.state::<Subs>().0) = None;
+    *locked(&app.state::<Held>().0) = held;
     let info = info_of(&src);
-    *app.state::<Opened>().0.lock().unwrap() = Some(src);
+    *locked(&app.state::<Opened>().0) = Some(src);
     Ok(info)
 }
 
@@ -1104,7 +1116,7 @@ fn thumbs_now(
         // neighbour is the furthest a picture can be and still be nearer to
         // what was asked for than to anything else.
         let held: Option<Vec<Option<Shot>>> = {
-            let guard = thumbs.0.lock().unwrap();
+            let guard = locked(&thumbs.0);
             guard
                 .as_ref()
                 .filter(|t| {
@@ -1233,7 +1245,7 @@ fn proxy_wanted() -> bool {
 async fn prepare(app: tauri::AppHandle) -> Result<PrepareInfo, String> {
     let (src, generation) = {
         let state = app.state::<Opened>();
-        let guard = state.0.lock().unwrap();
+        let guard = locked(&state.0);
         let src = guard.as_ref().ok_or("no file open")?.clone();
         (src, app.state::<Generation>().0.load(Ordering::SeqCst))
     };
@@ -1285,14 +1297,14 @@ fn without_proxy(
     // The index read when the file was opened carries the track it was built
     // with. Taken rather than borrowed: the pictures are tens of megabytes
     // and there is no reason to hold them twice.
-    let kept = app.state::<Held>().0.lock().unwrap().as_mut().and_then(|ix| ix.track.take());
+    let kept = locked(&app.state::<Held>().0).as_mut().and_then(|ix| ix.track.take());
     if let Some(track) = kept {
         let info = track_info(&track, began.elapsed().as_secs_f64());
         if current() != generation {
             return Err("cancelled".to_string());
         }
         let index = index_info(app, src, true);
-        *app.state::<Thumbs>().0.lock().unwrap() = Some(track);
+        *locked(&app.state::<Thumbs>().0) = Some(track);
         return Ok(PrepareInfo { proxy: None, index, track: info, note });
     }
 
@@ -1320,14 +1332,14 @@ fn without_proxy(
     // The pictures handed over during the pass are already held; what came
     // back has the tail of them and the scene index. Both halves are this
     // pass's, so they go back together in the order they were made.
-    if let Some(head) = app.state::<Thumbs>().0.lock().unwrap().take() {
+    if let Some(head) = locked(&app.state::<Thumbs>().0).take() {
         let tail = std::mem::take(&mut track.thumbs);
         track.thumbs = head.thumbs;
         track.thumbs.extend(tail);
     }
     let info = track_info(&track, began.elapsed().as_secs_f64());
     let index = remember(app, src, Some(&track));
-    *app.state::<Thumbs>().0.lock().unwrap() = Some(track);
+    *locked(&app.state::<Thumbs>().0) = Some(track);
     Ok(PrepareInfo { proxy: None, index, track: info, note })
 }
 
@@ -1954,7 +1966,7 @@ fn make_proxy(
         // came back has the tail of them and the scene index. Both halves are
         // this build's, so they go back together in the order they were made.
         if app.state::<Generation>().0.load(Ordering::SeqCst) == generation {
-            if let Some(head) = app.state::<Thumbs>().0.lock().unwrap().take() {
+            if let Some(head) = locked(&app.state::<Thumbs>().0).take() {
                 let tail = std::mem::take(&mut built.track.thumbs);
                 built.track.thumbs = head.thumbs;
                 built.track.thumbs.extend(tail);
@@ -2004,9 +2016,9 @@ fn make_proxy(
     // Whatever a held index was carrying, the proxy's own track is what the
     // timeline will use. Dropped rather than left to sit: it is tens of
     // megabytes of pictures nothing will ask for again.
-    *app.state::<Held>().0.lock().unwrap() = None;
-    *app.state::<Thumbs>().0.lock().unwrap() = Some(track);
-    *app.state::<Proxy>().0.lock().unwrap() = Some(Proxied { src: psrc, marks });
+    *locked(&app.state::<Held>().0) = None;
+    *locked(&app.state::<Thumbs>().0) = Some(track);
+    *locked(&app.state::<Proxy>().0) = Some(Proxied { src: psrc, marks });
     Ok(Some(PrepareInfo { proxy: Some(info), index, track: tinfo, note: String::new() }))
 }
 
@@ -2028,7 +2040,7 @@ fn hold(app: &tauri::AppHandle, batch: smartcut_core::thumbs::Batch, generation:
     let (count, interval, covered) = (batch.thumbs.len(), batch.interval, batch.covered);
     {
         let state = app.state::<Thumbs>();
-        let mut guard = state.0.lock().unwrap();
+        let mut guard = locked(&state.0);
         match guard.as_mut() {
             Some(track) => {
                 track.thumbs.extend(batch.thumbs);
@@ -2088,7 +2100,7 @@ fn touch(path: &std::path::Path) {
 /// would take longer than the pointer stays anywhere.
 #[tauri::command]
 fn hover_thumb(time: f64, thumbs: State<Thumbs>) -> Option<Shot> {
-    let guard = thumbs.0.lock().unwrap();
+    let guard = locked(&thumbs.0);
     // `nearest` will hand back the last picture it has for any time past the
     // end of a track that is still being built -- the wrong picture, where
     // none is the honest answer.
@@ -2119,7 +2131,7 @@ fn scene_now(from: f64, dir: i32, app: &tauri::AppHandle) -> Result<Option<f64>,
         let mut at = from;
         for _ in 0..8 {
             let coarse = {
-                let guard = thumbs.0.lock().unwrap();
+                let guard = locked(&thumbs.0);
                 let track = guard.as_ref().ok_or("scene index not built yet")?;
                 if dir >= 0 {
                     track.scene_after(at)
@@ -2153,7 +2165,7 @@ async fn make_plan(ranges: Vec<(f64, f64)>, app: tauri::AppHandle) -> Result<Pla
 
 fn plan_now(ranges: &[(f64, f64)], app: &tauri::AppHandle) -> Result<PlanInfo, String> {
     let state = app.state::<Opened>();
-    let mut guard = state.0.lock().unwrap();
+    let mut guard = locked(&state.0);
     let src = guard.as_mut().ok_or("no file open")?;
     if !src.leading_known {
         index::refine_leading(
@@ -2396,12 +2408,12 @@ async fn clip_poster(
     off_thread(move || {
         let open_here = {
             let state = app.state::<OpenPath>();
-            let guard = state.0.lock().unwrap();
+            let guard = locked(&state.0);
             guard.as_deref() == Some(path.as_str())
         };
         if open_here {
             let state = app.state::<Thumbs>();
-            let guard = state.0.lock().unwrap();
+            let guard = locked(&state.0);
             let url = guard.as_ref().and_then(|t| poster_of(t, &keeps)).map(|t| as_url(&t.jpeg));
             if url.is_some() {
                 return Ok(url);
@@ -2771,7 +2783,7 @@ async fn detect_cm(path: String, app: tauri::AppHandle) -> Result<CmResult, Stri
 fn opened_clone(app: &tauri::AppHandle, path: &str) -> Option<Source> {
     {
         let state = app.state::<Proxy>();
-        let guard = state.0.lock().unwrap();
+        let guard = locked(&state.0);
         if let Some(p) = guard.as_ref() {
             if p.src.path == path {
                 return Some(p.src.clone());
@@ -2779,7 +2791,7 @@ fn opened_clone(app: &tauri::AppHandle, path: &str) -> Option<Source> {
         }
     }
     let state = app.state::<Opened>();
-    let guard = state.0.lock().unwrap();
+    let guard = locked(&state.0);
     guard.as_ref().filter(|s| s.path == path).cloned()
 }
 
@@ -3038,11 +3050,7 @@ async fn export(
         // own output runs.
         let mut src = match &path {
             Some(p) => scan_cached(&app, p)?.0,
-            None => app
-                .state::<Opened>()
-                .0
-                .lock()
-                .unwrap()
+            None => locked(&app.state::<Opened>().0)
                 .as_ref()
                 .ok_or("no file open")?
                 .clone(),
@@ -3367,7 +3375,7 @@ async fn play(
     let src = with_pictures(&app, |s, _| Ok(s.clone()))?;
     let audio_from = {
         let state = app.state::<Opened>();
-        let guard = state.0.lock().unwrap();
+        let guard = locked(&state.0);
         guard.as_ref().ok_or("no file open")?.clone()
     };
     app.state::<Playing>().0.store(true, Ordering::SeqCst);
@@ -3539,10 +3547,10 @@ async fn subtitle_at(
 ) -> Result<Option<Overlay>, String> {
     off_thread(move || {
         let state = app.state::<Subs>();
-        let mut guard = state.0.lock().unwrap();
+        let mut guard = locked(&state.0);
         if guard.as_ref().is_none_or(|s| s.id != id) {
             let opened = app.state::<Opened>();
-            let src = opened.0.lock().unwrap();
+            let src = locked(&opened.0);
             let src = src.as_ref().ok_or("no file open")?;
             *guard = Some(Subtitles {
                 id,
