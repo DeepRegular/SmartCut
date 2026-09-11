@@ -176,10 +176,12 @@ Four things mattered in the implementation:
   logo is on throughout the programme, so pick the corner with **the fewest state
   changes**. With that criterion, Nihonkai TV correctly selected the top right
   (strength 26.9) and rejected the programme logo at the bottom right (1110.7).
-- **Keep only the largest connected component of the mask.** The logo is one blob;
+- **Keep only the largest connected component of the mask.** The logo is one mark;
   scattered survivors are noise, such as the edges of a subtitle box. Adding this
   stopped the correlation wobbling during commercials and fragmenting the regions —
-  13 regions down to 4.
+  13 regions down to 4. Pixels count as connected when they are within **three**
+  pixels of each other, not only when they touch; see
+  [a pale logo is not one blob](#a-pale-logo-is-not-one-blob).
 - **Take the threshold from the recording.** Logo density differs by station, but the
   programme occupies most of the running time, so the median score works as the
   representative "logo present" value.
@@ -202,11 +204,63 @@ to silence alone.
 |---|---|---|
 | Nihonkai TV (logo present, 4 commercial breaks) | Detected top right | **4 blocks, every one an exact multiple of 15 s** (150.0 / 119.8 / 120.2 / 59.9 s) |
 | AT-X (no logo) | **Judged not found → silence only** | 1 block (correct) |
-| NHK E-Tele (no commercials) | Detected bottom left, 0 absences | 0 blocks (correct) |
+| NHK E-Tele (no commercials) | Detected top right, 0 absences | 0 blocks (correct) |
 
 With silence alone, the second and third blocks come out at the odd lengths 104.8 s
 and 105.2 s. Adding the logo makes them 119.8 s and 120.2 s, back on the multiple of
 15 — evidence that the missing last commercial got filled in.
+
+### A pale logo is not one blob
+
+The detector found nothing at all on a BS recording whose logo is a pale grey
+watermark — every corner flipped state around a hundred times and none of them was
+believed. The recording has three commercial blocks and a shopping programme at the
+end, and silence alone found one of them.
+
+Three things were wrong, and all three were about which pixels the template is drawn
+from rather than about any threshold.
+
+**A mark made of thin strokes is not a connected blob.** High-passing the averaged
+corner leaves a pale logo as a scatter of one- and two-pixel fragments. The top 500
+pixels of that corner fell into **290 clusters, the largest of them 15 pixels** of a
+single stroke — and a correlation over 15 pixels is noise, which is why the corner
+never read as carrying a logo. Letting a pixel reach **three** pixels instead of one
+before the run is traced assembles the strokes into one mark of **156 pixels**
+covering the whole logo, while the commercial's own graphics, ten pixels below it,
+stay a cluster of their own.
+
+Reach is the whole of the setting, so it was measured on both sides: at four and
+five pixels one recording's mask stopped being the logo and grew across the corner
+(78 pixels to 245 and then 399), and at one pixel nothing assembles. Three is the
+largest value that kept every measured mask on its mark.
+
+**The picture's own edge stands as still as a logo does.** On a recording with
+pillar-box bars the mask came out as a **428-pixel line two pixels wide running the
+height of the corner** — the step between the bar and the picture. It is the
+steadiest thing in the frame and it never goes away, so it read as a logo that is
+never absent, and NHK E-Tele got its correct answer for the wrong reason. The mask
+is now drawn from four pixels inside the region, and that recording picks its real
+logo, top right, instead.
+
+**Two whole marks can be equally steady.** With the strokes assembled, the programme
+branding at the bottom left of the terrestrial recording flipped state exactly as
+often as the station logo top right — eight times each — and iteration order decided
+between them. It chose the branding and put a four-minute "absence" over the
+programme. A tie now goes to the corner that is on for more of the recording: the
+branding is up for 56% of it against the logo's 76%.
+
+| | Before | After |
+|---|---|---|
+| BS recording, pale logo | **no logo found**, 1 block from silence | top right, 24 state changes, **5 blocks** |
+| Terrestrial, logo + branding | top right (correct) | top right (correct) |
+| NHK E-Tele | bottom left — the pillar-box edge | **top right — the logo**, still 0 absences |
+| BS Animax × 2 | 3 and 4 absences | the same, on a stronger template (30.1 → 37.6) |
+| AT-X (no logo) | none | none |
+
+The five recordings pinned in `tests/run_cm_tests.sh` come out **unchanged, to the
+tenth of a second**. What moved is the recording that was getting nothing: its blocks
+now sit on the head commercial, a break at 2:05, the break silence already had, and
+the shopping programme at the end — all four checked against the pictures.
 
 The cost is about 30 seconds on a 30-minute recording: two passes over the video,
 decoding only keyframes, so about an eighth of a full decode. Silence alone is 3

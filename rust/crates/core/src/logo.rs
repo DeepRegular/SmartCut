@@ -259,13 +259,30 @@ pub fn detect_with(
     for (k, corner) in Corner::ALL.iter().enumerate() {
         let avg: Vec<f64> = sums[k].iter().map(|s| s / count as f64).collect();
         let tmpl = region.highpass(&avg);
-        let mut mag: Vec<f64> = tmpl.iter().map(|x| x.abs()).collect();
+        // The picture's own edge stands as still as any logo does, and it is
+        // the strongest thing in the region: on a recording with pillar-box
+        // bars the mask came out as a 428-pixel line two pixels wide running
+        // the height of the corner, which is not a mark a station puts on a
+        // broadcast. Since it never goes away it reads as a logo that is
+        // never absent, and the recording gets no breaks for the wrong
+        // reason.
+        let inside = |i: usize| {
+            let (x, y) = (i % cw, i / cw);
+            x >= MARGIN && y >= MARGIN && x < cw - MARGIN && y < ch - MARGIN
+        };
+        let mut mag: Vec<f64> = (0..n)
+            .filter(|&i| inside(i))
+            .map(|i| tmpl[i].abs())
+            .collect();
         mag.sort_by(|a, b| b.partial_cmp(a).unwrap_or(std::cmp::Ordering::Equal));
-        let cutoff = mag[opts.mask_pixels.min(n - 1)];
-        let picked: Vec<usize> = (0..n).filter(|&i| tmpl[i].abs() >= cutoff).collect();
-        // A logo is one contiguous mark. Scattered survivors are whatever
-        // else happened to sit still -- a caption box edge, a letterbox line
-        // -- and they only add noise to the correlation.
+        let cutoff = mag[opts.mask_pixels.min(mag.len().saturating_sub(1))];
+        let picked: Vec<usize> = (0..n)
+            .filter(|&i| inside(i) && tmpl[i].abs() >= cutoff)
+            .collect();
+        // A logo is one mark. Whatever else happened to sit still -- the edge
+        // of a caption box, a graphic a commercial holds on screen -- is
+        // somewhere else in the corner, and only adds noise to the
+        // correlation.
         let mask = largest_cluster(&picked, cw, ch);
         let strength =
             mask.iter().map(|&i| tmpl[i] * tmpl[i]).sum::<f64>() / mask.len().max(1) as f64;
@@ -349,6 +366,9 @@ pub fn detect_with(
     struct Pick {
         corner_index: usize,
         transitions: usize,
+        /// Share of the recording the corner read as carrying its mark.
+        /// Only used to settle a tie: see where `chosen` is decided.
+        present: f64,
         absent: Vec<(f64, f64)>,
     }
     let mut chosen: Option<Pick> = None;
@@ -383,10 +403,23 @@ pub fn detect_with(
         if !plausible {
             continue;
         }
-        if chosen.as_ref().is_none_or(|p| transitions < p.transitions) {
+        // Fewest state changes wins, and where two corners are equally
+        // steady, the one that is on for more of the recording. The tie is
+        // not hypothetical: a terrestrial recording whose station logo sits
+        // top right also carries programme branding bottom left, and once
+        // both templates were whole marks rather than fragments the branding
+        // flipped state exactly as often as the logo did -- eight times each.
+        // Iteration order then decided it, and the branding, which is up for
+        // 56% of the recording against the logo's 76%, won and put a
+        // four-minute "absence" over the programme.
+        let better = chosen.as_ref().is_none_or(|p| {
+            transitions < p.transitions || (transitions == p.transitions && frac > p.present)
+        });
+        if better {
             chosen = Some(Pick {
                 corner_index: k,
                 transitions,
+                present: frac,
                 absent: intervals,
             });
         }
@@ -475,7 +508,36 @@ fn intervals_from(
     (absent, transitions)
 }
 
+/// How far apart two mask pixels may sit and still belong to the same mark.
+///
+/// Touching is too strict a test for a logo made of thin strokes. A pale
+/// watermark high-passes to a scatter of one- and two-pixel fragments: on the
+/// recording this was measured against, the top 500 pixels of the corner fell
+/// into 290 clusters, the largest of them fifteen pixels of a single stroke,
+/// and a correlation over fifteen pixels is noise -- which is why that
+/// recording's logo was never tracked and the corner was dismissed as not
+/// carrying one.
+///
+/// Three pixels of reach joins the strokes of one mark without joining marks
+/// that sit apart. The same corner then gives one cluster of 156 pixels
+/// covering the whole logo, while the commercial's own graphics, ten pixels
+/// below it, stay a cluster of their own. Five pixels of reach would still
+/// have kept them apart on this recording; three leaves room for a station
+/// that sets its logo closer to something else.
+const REACH: i64 = 3;
+
+/// How much of the region's own border the mask may not be drawn from.
+///
+/// Four pixels is enough to clear the step between a pillar-box bar and the
+/// picture, which is what the mask latched onto otherwise. No station sets
+/// its logo that tight against the edge of the frame.
+const MARGIN: usize = 4;
+
 /// Keep only the biggest connected run of mask pixels.
+///
+/// Pixels within [`REACH`] of each other count as connected, but only the
+/// pixels that were actually picked are kept: the reach decides what belongs
+/// to one mark, and is not itself part of the template.
 fn largest_cluster(picked: &[usize], w: usize, h: usize) -> Vec<usize> {
     use std::collections::HashSet;
     let set: HashSet<usize> = picked.iter().copied().collect();
@@ -491,8 +553,8 @@ fn largest_cluster(picked: &[usize], w: usize, h: usize) -> Vec<usize> {
         while let Some(i) = stack.pop() {
             group.push(i);
             let (x, y) = (i % w, i / w);
-            for dy in -1i64..=1 {
-                for dx in -1i64..=1 {
+            for dy in -REACH..=REACH {
+                for dx in -REACH..=REACH {
                     let (nx, ny) = (x as i64 + dx, y as i64 + dy);
                     if nx < 0 || ny < 0 || nx >= w as i64 || ny >= h as i64 {
                         continue;
