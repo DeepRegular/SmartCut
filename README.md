@@ -13,8 +13,11 @@ Cut commercials out of a TV recording without re-encoding it.
 
 English ・ [日本語](README.ja.md)
 
-<img src="docs/images/demo.gif" width="1000"
-     alt="Two commercial blocks being removed from a recording in the SmartCut editor">
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/images/hero-dark.svg">
+  <img src="docs/images/hero.svg" width="1000"
+       alt="A recording with two commercial blocks in it, and under it the export: what you keep has closed up into one file that is copied byte for byte, with a rebuilt sliver at each seam">
+</picture>
 
 </div>
 
@@ -81,8 +84,10 @@ run at the same time, so a batch never stops you from working.
 
 ## 30-second demo
 
-The animation at the top of this page shows two commercial blocks being removed
-from a 3 minute 45 second recording:
+<img src="docs/images/demo.gif" width="1000"
+     alt="Two commercial blocks being removed from a recording in the SmartCut editor">
+
+Two commercial blocks are removed from a 3 minute 45 second recording:
 
 - **133.91 seconds copied bit-for-bit, 0.57 seconds re-encoded**
 - **17 frames out of 6743 were touched at all**
@@ -95,16 +100,14 @@ broadcast material is involved.
 Here is the same idea as a diagram. For each range you keep, only the parts that
 stick out past the key frames have to be rebuilt:
 
-```
-... I ....... I=========================I ....... I ...
-      ^t_in   ^k_first                  ^k_term   ^t_out
-    |<-head->|<--------- body --------->|<-tail->|
-      re-encode        stream copy       re-encode
-```
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/images/seam-dark.svg">
+  <img src="docs/images/seam.svg" width="1000"
+       alt="One kept range across a row of pictures: the head, before the first key frame the copy can start at, and the tail, after the last one it reaches, are re-encoded; everything between them is copied byte for byte">
+</picture>
 
-Cut exactly on a key frame and even the head and tail disappear. A 22-minute
-export of 5 ranges, placed by the automatic commercial detector, came out
-**bit-identical across all 40589 frames**.
+A 22-minute export of 5 ranges, placed by the automatic commercial detector,
+came out **bit-identical across all 40589 frames**.
 
 ## Download
 

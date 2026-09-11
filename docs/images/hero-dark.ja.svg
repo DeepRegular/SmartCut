@@ -1,0 +1,124 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 356" width="1000" height="356" font-family="-apple-system, BlinkMacSystemFont, 'Hiragino Sans', 'Hiragino Kaku Gothic ProN', 'Yu Gothic', YuGothic, 'Noto Sans JP', 'Noto Sans CJK JP', Meiryo, sans-serif">
+<defs>
+<clipPath id="cin"><rect x="40.0" y="64.0" width="920.0" height="48.0" rx="4"/></clipPath>
+<clipPath id="cout"><rect x="40.0" y="244.0" width="708.4" height="48.0" rx="4"/></clipPath>
+<linearGradient id="keep" x1="0" y1="112" x2="0" y2="244" gradientUnits="userSpaceOnUse"><stop offset="0" stop-color="#14b8d4" stop-opacity="0.05"/><stop offset="1" stop-color="#14b8d4" stop-opacity="0.30"/></linearGradient>
+<linearGradient id="drop" x1="0" y1="112" x2="0" y2="244" gradientUnits="userSpaceOnUse"><stop offset="0" stop-color="#b06030" stop-opacity="0.40"/><stop offset="1" stop-color="#b06030" stop-opacity="0.03"/></linearGradient>
+</defs>
+<text x="40.0" y="50" font-size="13.5" font-weight="600" letter-spacing="0.6" fill="#9198a1">録画</text>
+<g clip-path="url(#cin)">
+<rect x="40.0" y="64.0" width="220.8" height="48.0" fill="#21262d"/>
+<line x1="51.5" y1="64.0" x2="51.5" y2="112.0" stroke="#2c333c" stroke-width="1" opacity="0.55"/>
+<line x1="63.0" y1="64.0" x2="63.0" y2="112.0" stroke="#2c333c" stroke-width="1" opacity="0.55"/>
+<line x1="74.5" y1="64.0" x2="74.5" y2="112.0" stroke="#2c333c" stroke-width="1" opacity="0.55"/>
+<line x1="86.0" y1="64.0" x2="86.0" y2="112.0" stroke="#2c333c" stroke-width="1" opacity="0.55"/>
+<line x1="97.5" y1="64.0" x2="97.5" y2="112.0" stroke="#2c333c" stroke-width="1" opacity="0.55"/>
+<line x1="109.0" y1="64.0" x2="109.0" y2="112.0" stroke="#2c333c" stroke-width="1" opacity="0.55"/>
+<line x1="120.5" y1="64.0" x2="120.5" y2="112.0" stroke="#2c333c" stroke-width="1" opacity="0.55"/>
+<line x1="132.0" y1="64.0" x2="132.0" y2="112.0" stroke="#2c333c" stroke-width="1" opacity="0.55"/>
+<line x1="143.5" y1="64.0" x2="143.5" y2="112.0" stroke="#2c333c" stroke-width="1" opacity="0.55"/>
+<line x1="155.0" y1="64.0" x2="155.0" y2="112.0" stroke="#2c333c" stroke-width="1" opacity="0.55"/>
+<line x1="166.5" y1="64.0" x2="166.5" y2="112.0" stroke="#2c333c" stroke-width="1" opacity="0.55"/>
+<line x1="178.0" y1="64.0" x2="178.0" y2="112.0" stroke="#2c333c" stroke-width="1" opacity="0.55"/>
+<line x1="189.5" y1="64.0" x2="189.5" y2="112.0" stroke="#2c333c" stroke-width="1" opacity="0.55"/>
+<line x1="201.0" y1="64.0" x2="201.0" y2="112.0" stroke="#2c333c" stroke-width="1" opacity="0.55"/>
+<line x1="212.5" y1="64.0" x2="212.5" y2="112.0" stroke="#2c333c" stroke-width="1" opacity="0.55"/>
+<line x1="224.0" y1="64.0" x2="224.0" y2="112.0" stroke="#2c333c" stroke-width="1" opacity="0.55"/>
+<line x1="235.5" y1="64.0" x2="235.5" y2="112.0" stroke="#2c333c" stroke-width="1" opacity="0.55"/>
+<line x1="247.0" y1="64.0" x2="247.0" y2="112.0" stroke="#2c333c" stroke-width="1" opacity="0.55"/>
+<line x1="258.5" y1="64.0" x2="258.5" y2="112.0" stroke="#2c333c" stroke-width="1" opacity="0.55"/>
+<line x1="86.0" y1="64.0" x2="86.0" y2="112.0" stroke="#4b5563" stroke-width="1.6" opacity="0.75"/>
+<line x1="132.0" y1="64.0" x2="132.0" y2="112.0" stroke="#4b5563" stroke-width="1.6" opacity="0.75"/>
+<line x1="178.0" y1="64.0" x2="178.0" y2="112.0" stroke="#4b5563" stroke-width="1.6" opacity="0.75"/>
+<line x1="224.0" y1="64.0" x2="224.0" y2="112.0" stroke="#4b5563" stroke-width="1.6" opacity="0.75"/>
+<rect x="260.8" y="64.0" width="101.2" height="48.0" fill="#b06030"/>
+<text x="311.4" y="93.0" text-anchor="middle" font-size="14" font-weight="700" letter-spacing="1" fill="#ffeade">CM</text>
+<rect x="362.0" y="64.0" width="303.6" height="48.0" fill="#21262d"/>
+<line x1="373.5" y1="64.0" x2="373.5" y2="112.0" stroke="#2c333c" stroke-width="1" opacity="0.55"/>
+<line x1="385.0" y1="64.0" x2="385.0" y2="112.0" stroke="#2c333c" stroke-width="1" opacity="0.55"/>
+<line x1="396.5" y1="64.0" x2="396.5" y2="112.0" stroke="#2c333c" stroke-width="1" opacity="0.55"/>
+<line x1="408.0" y1="64.0" x2="408.0" y2="112.0" stroke="#2c333c" stroke-width="1" opacity="0.55"/>
+<line x1="419.5" y1="64.0" x2="419.5" y2="112.0" stroke="#2c333c" stroke-width="1" opacity="0.55"/>
+<line x1="431.0" y1="64.0" x2="431.0" y2="112.0" stroke="#2c333c" stroke-width="1" opacity="0.55"/>
+<line x1="442.5" y1="64.0" x2="442.5" y2="112.0" stroke="#2c333c" stroke-width="1" opacity="0.55"/>
+<line x1="454.0" y1="64.0" x2="454.0" y2="112.0" stroke="#2c333c" stroke-width="1" opacity="0.55"/>
+<line x1="465.5" y1="64.0" x2="465.5" y2="112.0" stroke="#2c333c" stroke-width="1" opacity="0.55"/>
+<line x1="477.0" y1="64.0" x2="477.0" y2="112.0" stroke="#2c333c" stroke-width="1" opacity="0.55"/>
+<line x1="488.5" y1="64.0" x2="488.5" y2="112.0" stroke="#2c333c" stroke-width="1" opacity="0.55"/>
+<line x1="500.0" y1="64.0" x2="500.0" y2="112.0" stroke="#2c333c" stroke-width="1" opacity="0.55"/>
+<line x1="511.5" y1="64.0" x2="511.5" y2="112.0" stroke="#2c333c" stroke-width="1" opacity="0.55"/>
+<line x1="523.0" y1="64.0" x2="523.0" y2="112.0" stroke="#2c333c" stroke-width="1" opacity="0.55"/>
+<line x1="534.5" y1="64.0" x2="534.5" y2="112.0" stroke="#2c333c" stroke-width="1" opacity="0.55"/>
+<line x1="546.0" y1="64.0" x2="546.0" y2="112.0" stroke="#2c333c" stroke-width="1" opacity="0.55"/>
+<line x1="557.5" y1="64.0" x2="557.5" y2="112.0" stroke="#2c333c" stroke-width="1" opacity="0.55"/>
+<line x1="569.0" y1="64.0" x2="569.0" y2="112.0" stroke="#2c333c" stroke-width="1" opacity="0.55"/>
+<line x1="580.5" y1="64.0" x2="580.5" y2="112.0" stroke="#2c333c" stroke-width="1" opacity="0.55"/>
+<line x1="592.0" y1="64.0" x2="592.0" y2="112.0" stroke="#2c333c" stroke-width="1" opacity="0.55"/>
+<line x1="603.5" y1="64.0" x2="603.5" y2="112.0" stroke="#2c333c" stroke-width="1" opacity="0.55"/>
+<line x1="615.0" y1="64.0" x2="615.0" y2="112.0" stroke="#2c333c" stroke-width="1" opacity="0.55"/>
+<line x1="626.5" y1="64.0" x2="626.5" y2="112.0" stroke="#2c333c" stroke-width="1" opacity="0.55"/>
+<line x1="638.0" y1="64.0" x2="638.0" y2="112.0" stroke="#2c333c" stroke-width="1" opacity="0.55"/>
+<line x1="649.5" y1="64.0" x2="649.5" y2="112.0" stroke="#2c333c" stroke-width="1" opacity="0.55"/>
+<line x1="661.0" y1="64.0" x2="661.0" y2="112.0" stroke="#2c333c" stroke-width="1" opacity="0.55"/>
+<line x1="408.0" y1="64.0" x2="408.0" y2="112.0" stroke="#4b5563" stroke-width="1.6" opacity="0.75"/>
+<line x1="454.0" y1="64.0" x2="454.0" y2="112.0" stroke="#4b5563" stroke-width="1.6" opacity="0.75"/>
+<line x1="500.0" y1="64.0" x2="500.0" y2="112.0" stroke="#4b5563" stroke-width="1.6" opacity="0.75"/>
+<line x1="546.0" y1="64.0" x2="546.0" y2="112.0" stroke="#4b5563" stroke-width="1.6" opacity="0.75"/>
+<line x1="592.0" y1="64.0" x2="592.0" y2="112.0" stroke="#4b5563" stroke-width="1.6" opacity="0.75"/>
+<line x1="638.0" y1="64.0" x2="638.0" y2="112.0" stroke="#4b5563" stroke-width="1.6" opacity="0.75"/>
+<rect x="665.6" y="64.0" width="110.4" height="48.0" fill="#b06030"/>
+<text x="720.8" y="93.0" text-anchor="middle" font-size="14" font-weight="700" letter-spacing="1" fill="#ffeade">CM</text>
+<rect x="776.0" y="64.0" width="184.0" height="48.0" fill="#21262d"/>
+<line x1="787.5" y1="64.0" x2="787.5" y2="112.0" stroke="#2c333c" stroke-width="1" opacity="0.55"/>
+<line x1="799.0" y1="64.0" x2="799.0" y2="112.0" stroke="#2c333c" stroke-width="1" opacity="0.55"/>
+<line x1="810.5" y1="64.0" x2="810.5" y2="112.0" stroke="#2c333c" stroke-width="1" opacity="0.55"/>
+<line x1="822.0" y1="64.0" x2="822.0" y2="112.0" stroke="#2c333c" stroke-width="1" opacity="0.55"/>
+<line x1="833.5" y1="64.0" x2="833.5" y2="112.0" stroke="#2c333c" stroke-width="1" opacity="0.55"/>
+<line x1="845.0" y1="64.0" x2="845.0" y2="112.0" stroke="#2c333c" stroke-width="1" opacity="0.55"/>
+<line x1="856.5" y1="64.0" x2="856.5" y2="112.0" stroke="#2c333c" stroke-width="1" opacity="0.55"/>
+<line x1="868.0" y1="64.0" x2="868.0" y2="112.0" stroke="#2c333c" stroke-width="1" opacity="0.55"/>
+<line x1="879.5" y1="64.0" x2="879.5" y2="112.0" stroke="#2c333c" stroke-width="1" opacity="0.55"/>
+<line x1="891.0" y1="64.0" x2="891.0" y2="112.0" stroke="#2c333c" stroke-width="1" opacity="0.55"/>
+<line x1="902.5" y1="64.0" x2="902.5" y2="112.0" stroke="#2c333c" stroke-width="1" opacity="0.55"/>
+<line x1="914.0" y1="64.0" x2="914.0" y2="112.0" stroke="#2c333c" stroke-width="1" opacity="0.55"/>
+<line x1="925.5" y1="64.0" x2="925.5" y2="112.0" stroke="#2c333c" stroke-width="1" opacity="0.55"/>
+<line x1="937.0" y1="64.0" x2="937.0" y2="112.0" stroke="#2c333c" stroke-width="1" opacity="0.55"/>
+<line x1="948.5" y1="64.0" x2="948.5" y2="112.0" stroke="#2c333c" stroke-width="1" opacity="0.55"/>
+<line x1="822.0" y1="64.0" x2="822.0" y2="112.0" stroke="#4b5563" stroke-width="1.6" opacity="0.75"/>
+<line x1="868.0" y1="64.0" x2="868.0" y2="112.0" stroke="#4b5563" stroke-width="1.6" opacity="0.75"/>
+<line x1="914.0" y1="64.0" x2="914.0" y2="112.0" stroke="#4b5563" stroke-width="1.6" opacity="0.75"/>
+</g>
+<rect x="40.0" y="64.0" width="920.0" height="48.0" rx="4" fill="none" stroke="#30363d"/>
+<path d="M260.8 112 L362.0 112 L260.8 244 Z" fill="url(#drop)"/>
+<path d="M665.6 112 L776.0 112 L564.4 244 Z" fill="url(#drop)"/>
+<path d="M40.0 112 L260.8 112 L260.8 244 L40.0 244 Z" fill="url(#keep)" stroke="#14b8d4" stroke-opacity="0.22" stroke-width="1"/>
+<path d="M362.0 112 L665.6 112 L564.4 244 L260.8 244 Z" fill="url(#keep)" stroke="#14b8d4" stroke-opacity="0.22" stroke-width="1"/>
+<path d="M776.0 112 L960.0 112 L748.4 244 L564.4 244 Z" fill="url(#keep)" stroke="#14b8d4" stroke-opacity="0.22" stroke-width="1"/>
+<text x="40.0" y="230" font-size="13.5" font-weight="600" letter-spacing="0.6" fill="#9198a1">書き出し</text>
+<g clip-path="url(#cout)">
+<rect x="40.0" y="244.0" width="708.4" height="48.0" fill="#14b8d4"/>
+<line x1="86.0" y1="244.0" x2="86.0" y2="292.0" stroke="#ffffff" stroke-width="1.6" opacity="0.13"/>
+<line x1="132.0" y1="244.0" x2="132.0" y2="292.0" stroke="#ffffff" stroke-width="1.6" opacity="0.13"/>
+<line x1="178.0" y1="244.0" x2="178.0" y2="292.0" stroke="#ffffff" stroke-width="1.6" opacity="0.13"/>
+<line x1="224.0" y1="244.0" x2="224.0" y2="292.0" stroke="#ffffff" stroke-width="1.6" opacity="0.13"/>
+<line x1="270.0" y1="244.0" x2="270.0" y2="292.0" stroke="#ffffff" stroke-width="1.6" opacity="0.13"/>
+<line x1="316.0" y1="244.0" x2="316.0" y2="292.0" stroke="#ffffff" stroke-width="1.6" opacity="0.13"/>
+<line x1="362.0" y1="244.0" x2="362.0" y2="292.0" stroke="#ffffff" stroke-width="1.6" opacity="0.13"/>
+<line x1="408.0" y1="244.0" x2="408.0" y2="292.0" stroke="#ffffff" stroke-width="1.6" opacity="0.13"/>
+<line x1="454.0" y1="244.0" x2="454.0" y2="292.0" stroke="#ffffff" stroke-width="1.6" opacity="0.13"/>
+<line x1="500.0" y1="244.0" x2="500.0" y2="292.0" stroke="#ffffff" stroke-width="1.6" opacity="0.13"/>
+<line x1="546.0" y1="244.0" x2="546.0" y2="292.0" stroke="#ffffff" stroke-width="1.6" opacity="0.13"/>
+<line x1="592.0" y1="244.0" x2="592.0" y2="292.0" stroke="#ffffff" stroke-width="1.6" opacity="0.13"/>
+<line x1="638.0" y1="244.0" x2="638.0" y2="292.0" stroke="#ffffff" stroke-width="1.6" opacity="0.13"/>
+<line x1="684.0" y1="244.0" x2="684.0" y2="292.0" stroke="#ffffff" stroke-width="1.6" opacity="0.13"/>
+<line x1="730.0" y1="244.0" x2="730.0" y2="292.0" stroke="#ffffff" stroke-width="1.6" opacity="0.13"/>
+<rect x="258.8" y="244.0" width="4" height="48.0" fill="#f0a020"/>
+<rect x="562.4" y="244.0" width="4" height="48.0" fill="#f0a020"/>
+</g>
+<text x="412.6" y="273.0" text-anchor="middle" font-size="15.5" font-weight="600" fill="#062831">バイト単位でそのままコピー</text>
+<rect x="753.4" y="244.0" width="206.6" height="48.0" rx="4" fill="none" stroke="#b06030" stroke-width="1.2" stroke-dasharray="4 4" opacity="0.75"/>
+<text x="854.2" y="272.0" text-anchor="middle" font-size="12" fill="#d08c5e">CM 23% を削除</text>
+<path d="M260.8 292 V312 H273.8" fill="none" stroke="#f0a020" stroke-width="1.5"/>
+<text x="279.8" y="316" font-size="13" fill="#f0a020">作り直すのは継ぎ目の数コマだけ。0 コマのことも多い</text>
+<text x="500" y="340" text-anchor="middle" font-size="17" font-weight="600" fill="#e6edf3">出力の 99% 以上が入力と同一のコピー。</text>
+</svg>

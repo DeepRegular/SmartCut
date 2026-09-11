@@ -6,6 +6,12 @@
 
 残す区間 `[t_in, t_out)` について、次のように切り分ける。
 
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="../images/seam-dark.ja.svg">
+  <img src="../images/seam.ja.svg" width="1000"
+       alt="残す区間 1 つをコマ単位で見た図。コピーを始められる最初のキーフレームより手前の head と、コピーが届いた最後のキーフレームより後ろの tail だけが再エンコードで、その間はバイト単位のコピー">
+</picture>
+
 ```
 ... I ....... I=========================I ....... I ...
       ^t_in   ^k_first                  ^k_term   ^t_out

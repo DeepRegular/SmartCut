@@ -6,6 +6,12 @@
 
 For a kept interval `[t_in, t_out)`:
 
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="../images/seam-dark.svg">
+  <img src="../images/seam.svg" width="1000"
+       alt="One kept range across a row of pictures: the head, before the first key frame the copy can start at, and the tail, after the last one it reaches, are re-encoded; everything between them is copied byte for byte">
+</picture>
+
 ```
 ... I ....... I=========================I ....... I ...
       ^t_in   ^k_first                  ^k_term   ^t_out

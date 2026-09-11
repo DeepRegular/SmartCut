@@ -13,8 +13,11 @@
 
 [English](README.md) ・ 日本語
 
-<img src="docs/images/demo.ja.gif" width="1000"
-     alt="SmartCut の編集画面で CM ブロックを 2 つ切り落とすところ">
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/images/hero-dark.ja.svg">
+  <img src="docs/images/hero.ja.svg" width="1000"
+       alt="CM を 2 つ含む録画と、その下に書き出し。残した部分が詰められて 1 本になり、継ぎ目以外はバイト単位のコピー">
+</picture>
 
 </div>
 
@@ -75,8 +78,10 @@ BDAV フォルダー——レコーダーが BD-RE に書くのと同じ形—�
 
 ## 30 秒でわかるデモ
 
-冒頭のアニメーションは、3 分 45 秒の録画から CM ブロックを 2 つ取り除いたところ
-です。
+<img src="docs/images/demo.ja.gif" width="1000"
+     alt="SmartCut の編集画面で CM ブロックを 2 つ切り落とすところ">
+
+3 分 45 秒の録画から CM ブロックを 2 つ取り除いたところです。
 
 - **133.91 秒をビット単位でコピー、再エンコードは 0.57 秒**
 - **6743 コマ中、手を加えたのは 17 コマだけ**
@@ -88,14 +93,12 @@ CM でできています。実際の放送素材は使っていません。
 仕組みを図にすると次のようになります。残す区間ごとに、キーフレームからはみ出した
 部分だけを作り直します。
 
-```
-... I ....... I=========================I ....... I ...
-      ^t_in   ^k_first                  ^k_term   ^t_out
-    |<-head->|<--------- body --------->|<-tail->|
-     再エンコード      ストリームコピー      再エンコード
-```
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/images/seam-dark.ja.svg">
+  <img src="docs/images/seam.ja.svg" width="1000"
+       alt="残す区間 1 つをコマ単位で見た図。コピーを始められる最初のキーフレームより手前の head と、コピーが届いた最後のキーフレームより後ろの tail だけが再エンコードで、その間はバイト単位のコピー">
+</picture>
 
-カット位置がキーフレームちょうどなら、この head と tail も不要になります。
 CM 自動検出で決めた 5 区間・22 分の書き出しでは、**40589 コマすべてがビット単位で
 一致**しました。
 
