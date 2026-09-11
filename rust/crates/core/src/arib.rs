@@ -323,7 +323,7 @@ pub fn walk(bytes: &[u8], visit: &mut impl FnMut(Step<'_>)) {
             // parameters.
             0x80..=0x9F => {
                 let end = control(bytes, at, b);
-                visit(Step::Control(b, &bytes[at.min(end)..end]));
+                visit(Step::Control(b, &bytes[at..end]));
                 at = end;
             }
             0xA0 => visit(Step::Text("\u{3000}", true)),
@@ -570,6 +570,12 @@ fn escape(bytes: &[u8], at: usize, sets: &mut [Set; 4], gl: &mut usize, gr: &mut
 /// The counts are from ARIB STD-B24 table 7-14. Getting one wrong reads a
 /// parameter as text, which is how a decoder ends up printing stray digits
 /// in the middle of a programme name.
+///
+/// Never past the end of what was handed over. A broadcaster's own bytes
+/// stop where the recording stopped, and a statement cut off after the code
+/// that opens it -- which is what the tail of a capture that was interrupted
+/// looks like -- names parameters that are not there. What comes back is
+/// where the next byte is, and there is no byte after the last one.
 fn control(bytes: &[u8], at: usize, code: u8) -> usize {
     let params = match code {
         // Colour by index, flashing, conceal, pattern polarity, writing mode,
@@ -596,7 +602,7 @@ fn control(bytes: &[u8], at: usize, code: u8) -> usize {
         }
         _ => 0,
     };
-    at + params
+    (at + params).min(bytes.len())
 }
 
 /// A programme name as a list can show it: one line, no runs of spaces.
@@ -838,6 +844,25 @@ mod tests {
         // "2026年" -- digits from the alphanumeric set, 年 from the kanji set.
         let raw = [0x0E, 0x32, 0x30, 0x32, 0x36, 0x0F, 0x47, 0x2F];
         assert_eq!(decode(&raw), "2026年");
+    }
+
+    /// A statement that stops in the middle of a control code's parameters.
+    ///
+    /// Which is what the tail of a recording that was interrupted looks
+    /// like, and half of what this program is pointed at. Reading past the
+    /// end of the bytes handed over used to bring the whole run down --
+    /// the programme name in a CLI cut, and the subtitle preview in the
+    /// window, where the panic also left the reader's own lock poisoned and
+    /// every later question about the picture answered with an error.
+    #[test]
+    fn a_control_code_cut_off_mid_parameter_is_not_read_past() {
+        // TIME wants two parameters and COL one, and here there are none.
+        assert_eq!(decode(&[0x9D]), "");
+        assert_eq!(decode(&[0x90]), "");
+        // One of TIME's two, and the second missing.
+        assert_eq!(decode(&[0x9D, 0x20]), "");
+        // And what came before it still comes back.
+        assert_eq!(decode(&[0x0F, 0x47, 0x2F, 0x9D]), "年");
     }
 
     #[test]
