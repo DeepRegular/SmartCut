@@ -240,11 +240,15 @@ pub fn plan_range(
     }
 
     let mut segments = Vec::new();
-    let mut body_start = k_first.time;
+    let body_start = k_first.time;
     // A head only exists if a whole picture fits before the entry point.
     // Pictures sit one frame duration apart ending at `k_first.time`, so a
     // gap shorter than that contains none -- and asking the cutter to
     // re-encode an empty window is an error, not an empty segment.
+    //
+    // Where there is none, the range simply begins at the entry point
+    // instead, and the audio is anchored there with it: that is what
+    // `effective_in` below reports back.
     if body_start - t_in >= fd - 1e-9 {
         segments.push(Segment {
             kind: SegmentKind::Reencode,
@@ -254,10 +258,6 @@ pub fn plan_range(
             copy_until: None,
             seek_from: safe_seek(points, t_in, 2),
         });
-    } else {
-        // No room for a head: the range effectively begins at the entry
-        // point, and the audio has to be anchored there too.
-        body_start = k_first.time;
     }
     segments.push(Segment {
         kind: SegmentKind::Copy,

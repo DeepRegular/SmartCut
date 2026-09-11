@@ -351,14 +351,16 @@ impl Size {
 /// already has -- see [`Written`]. The parts of the format that are about
 /// *how* rather than *where* are read past: the ornament around a glyph, the
 /// colour maps beyond the first, flashing, and the downloaded glyphs of
-/// DRCS, which have no character to stand for them.
+/// DRCS, which have no character to stand for them. So is the *size* of the
+/// writing area, which only a renderer that clipped a line would need -- a
+/// broadcaster's own line fits the area it declared, and what is wanted here
+/// is where the line goes.
 #[derive(Debug, Clone)]
 pub struct Layout {
     /// The whole caption plane, in dots.
     plane: (u16, u16),
-    /// The part of it a caption may be written in: how big, and where it
-    /// begins.
-    area: (u16, u16),
+    /// Where in the plane a caption begins: the top left of the area it may
+    /// be written in, which is where the pen goes home to.
     origin: (u16, u16),
     /// One character, and the space left around it. A field is the two
     /// added together, and that is the grid a row and a column count.
@@ -374,7 +376,6 @@ impl Default for Layout {
     fn default() -> Self {
         Layout {
             plane: (960, 540),
-            area: (620, 480),
             origin: (170, 30),
             cell: (36, 36),
             gap: (4, 24),
@@ -630,8 +631,12 @@ impl Pen {
                                     layout.plane = plane;
                                 }
                             }
-                            // SDF: how big the writing area is.
-                            0x56 => layout.area = (arg(0), arg(1)),
+                            // SDF: how big the writing area is. Read past:
+                            // nothing here clips a line to it, because a
+                            // broadcaster's own line fits the area it just
+                            // declared. Where a line goes is `SDP` and
+                            // `ACPS`, below.
+                            0x56 => {}
                             // SSM: how big one character is.
                             0x57 => layout.cell = (arg(0), arg(1)),
                             // SHS and SVS: the space left around it.
@@ -667,7 +672,6 @@ impl Pen {
                             }
                             _ => {}
                         }
-                        let _ = layout.area;
                     }
                     _ => {}
                 }
