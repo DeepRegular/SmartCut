@@ -322,6 +322,10 @@ const CATALOG = {
       "BDAV 出力にはディスクを作る場所が要ります。出力先フォルダーを選んでください",
     "out.madeUnreadable":
       "「{name}」の記録日時が日時として読めません。YYYY-MM-DD HH:MM:SS の形で入れてください",
+    // 出力一覧に並ぶ、カットのあとに続く 2 行。
+    "out.stepIndex": "ディスクの索引",
+    "out.stepImage": "ディスクイメージ（UDF {udf}）",
+    "out.stepFailed": "失敗",
     "out.bdavIndexing": "ディスクの索引を作成中: 録画 {clip}",
     "out.imaging": "イメージを作成中（UDF {udf}）: {pct}%",
     "out.imageDone": "イメージを作成しました: {path}",
@@ -799,6 +803,10 @@ const CATALOG = {
     "out.needDiscFolder": "A BDAV disc needs somewhere to be built: choose an output folder",
     "out.madeUnreadable":
       "{name}: that is not a moment a playlist can carry. Write it as YYYY-MM-DD HH:MM:SS",
+    // The two rows that follow the cuts in the output list.
+    "out.stepIndex": "The disc index",
+    "out.stepImage": "The disc image (UDF {udf})",
+    "out.stepFailed": "Failed",
     "out.bdavIndexing": "Writing the disc index: recording {clip}",
     "out.imaging": "Writing the image (UDF {udf}): {pct}%",
     "out.imageDone": "Wrote the image: {path}",

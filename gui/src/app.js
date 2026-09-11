@@ -3905,6 +3905,44 @@ let abort = false;
 /// one belonging to the row before it.
 let writing = null;
 let began = 0;
+/// What a disc run does after the last cut: the index the recordings are
+/// wrapped in, and the image the folder is wrapped in. Both are minutes of
+/// work on a disc's worth of material, so they are rows in the list and turns
+/// on the bar rather than a percentage in the status line -- a bar that sat
+/// full while the disc was still being written was saying the run was over.
+let discSteps = [];
+/// When the stretch the bar is currently about began, which is the run for
+/// the cuts and the step itself for each of those two. What is left is worked
+/// out from it; what has gone is always the whole run.
+let phaseBegan = 0;
+
+function discStep(key) {
+  return discSteps.find((s) => s.key === key);
+}
+
+/// A step is over. Done fills its bar, because a pass that reports in
+/// thousandths stops somewhere short of the end; failed leaves the bar where
+/// it stopped, which is where it went wrong.
+function finishStep(key, state) {
+  const step = discStep(key);
+  if (!step) return;
+  step.state = state;
+  if (state === "done") {
+    step.progress = 1;
+    step.note = "100%";
+    paintOutProgress(1, phaseBegan);
+  } else {
+    step.note = t("out.stepFailed");
+    // Whatever was to come after it is not coming.
+    for (const s of discSteps) {
+      if (s.state === "waiting") {
+        s.state = "skipped";
+        s.note = t("out.skipped");
+      }
+    }
+  }
+  renderOutScreen();
+}
 
 function renderOutScreen() {
   // Where the files actually land, folder of their own included: this line
@@ -3928,34 +3966,55 @@ function renderOutScreen() {
   // since.
   paintShotsNote();
   const rows = el("out-list");
-  rows.innerHTML = list
-    .map((c, i) => {
-      const kept = keepsOf(c).reduce((n, k) => n + (k.b - k.a), 0);
-      return `<li class="${c.out.state}">
-        <span class="n">${i + 1}</span>
-        <span class="nm">${esc(clipLabel(c))}</span>
-        <span class="len dim">${fmt(kept)}</span>
+  // The cuts, and then what the disc is wrapped in. The two come out of the
+  // same shape as a cut because they are the same thing to whoever is
+  // watching: a named piece of the run, with how far through it is.
+  const shown = [
+    ...list.map((c, i) => ({
+      n: String(i + 1),
+      name: clipLabel(c),
+      len: fmt(keepsOf(c).reduce((n, k) => n + (k.b - k.a), 0)),
+      out: c.out,
+    })),
+    ...discSteps.map((s) => ({ n: "", name: s.label, len: "", out: s })),
+  ];
+  rows.innerHTML = shown
+    .map(
+      (s) => `<li class="${s.out.state}">
+        <span class="n">${s.n}</span>
+        <span class="nm">${esc(s.name)}</span>
+        <span class="len dim">${s.len}</span>
         <span class="pbar"><span></span></span>
-        <span class="note dim">${esc(c.out.note || "")}</span>
-      </li>`;
-    })
+        <span class="note dim">${esc(s.out.note || "")}</span>
+      </li>`
+    )
     .join("");
   // The bar is filled from here rather than written into the markup above: a
   // `style` attribute in markup is the one thing the window's content policy
   // turns off, and the property is not.
-  list.forEach((c, i) => {
+  shown.forEach((s, i) => {
     const bar = rows.children[i]?.querySelector(".pbar span");
-    if (bar) bar.style.width = `${Math.round(c.out.progress * 100)}%`;
+    if (bar) bar.style.width = `${Math.round(s.out.progress * 100)}%`;
   });
   paintButtons();
 }
 
-function paintOutProgress(overall) {
+/// Paint the bar for the stretch of the run it is currently about.
+///
+/// `since` is when that stretch began: the run itself while the cuts are
+/// being written, and the step itself for each of the two a disc is finished
+/// with. Time gone is always the whole run -- somebody watching wants to know
+/// how long they have been waiting, not how long this pass has -- and time
+/// left is worked out inside the stretch, because the rate of one says
+/// nothing about the rate of the next.
+function paintOutProgress(overall, since = began) {
   const pct = Math.round(overall * 100);
   el("progress-bar").style.width = `${pct}%`;
   el("out-pct").textContent = `${pct}%`;
-  const spent = (Date.now() - began) / 1000;
-  el("out-elapsed").textContent = t("out.elapsed", { t: clock(spent) });
+  el("out-elapsed").textContent = t("out.elapsed", {
+    t: clock((Date.now() - began) / 1000),
+  });
+  const spent = (Date.now() - since) / 1000;
   el("out-left").textContent =
     overall > 0.01
       ? t("out.left", { t: clock((spent / overall) * (1 - overall)) })
@@ -3978,24 +4037,47 @@ if (listen) {
 }
 
 if (listen) {
-  // The image is one long write with nothing else happening, so it says how
-  // far through it is where the state is said rather than on the bar.
+  // The image says how far through it is once for every megabyte it copies,
+  // which on a disc is twenty thousand times. Painting a whole list for each
+  // of those is work nobody can see: the screen only changes when the
+  // rounded percentage does.
+  const stepped = (step, done) => {
+    const was = Math.round(step.progress * 100);
+    step.progress = done;
+    step.note = `${Math.round(done * 100)}%`;
+    if (Math.round(done * 100) === was) return false;
+    paintOutProgress(done, phaseBegan);
+    renderOutScreen();
+    return true;
+  };
+
   listen("image-progress", (ev) => {
     if (!exporting) return;
-    el("out-state").textContent = t("out.imaging", {
-      udf: settings.image,
-      pct: Math.round(ev.payload * 100),
-    });
+    const step = discStep("image");
+    if (!step) return;
+    if (stepped(step, ev.payload)) {
+      el("out-state").textContent = t("out.imaging", {
+        udf: settings.image,
+        pct: Math.round(ev.payload * 100),
+      });
+    }
   });
 
   // The pass that writes the disc's index reads every stream back, which on
-  // a disc's worth of recordings is minutes. It says which recording it is
-  // on and how far through; there is no room on the bar for it, because the
-  // bar is about the cuts, so it goes where the state is said.
+  // a disc's worth of recordings is minutes. It reports one recording at a
+  // time; the bar is about the whole step, so the recordings before this one
+  // are counted into it.
   listen("bdav-progress", (ev) => {
     const [clip, done] = ev.payload;
     if (!exporting) return;
-    el("out-state").textContent = `${t("out.bdavIndexing", { clip })} ${Math.round(done * 100)}%`;
+    const step = discStep("index");
+    if (!step) return;
+    const k = step.clips.indexOf(clip);
+    const overall = k < 0 ? done : (k + done) / step.clips.length;
+    if (stepped(step, overall)) {
+      el("out-state").textContent =
+        `${t("out.bdavIndexing", { clip })} ${Math.round(done * 100)}%`;
+    }
   });
 }
 
@@ -4075,6 +4157,8 @@ async function runExport() {
   exporting = true;
   abort = false;
   began = Date.now();
+  phaseBegan = began;
+  discSteps = [];
   heldAfterRun = false;
   list.forEach((c) => (c.out = { state: "waiting", progress: 0, note: t("out.waiting") }));
   el("abort-export").disabled = false;
@@ -4198,7 +4282,32 @@ async function runExport() {
       }
     }
     if (wrote.length) {
+      // The rest of the run, as rows, before the first of it is asked for:
+      // what is still to come is part of what somebody is watching, and a
+      // list that grew a row at a time would keep moving under them.
+      discSteps = [
+        {
+          key: "index",
+          label: t("out.stepIndex"),
+          clips: wrote.map(({ slot }) => slot.clip),
+          state: "running",
+          progress: 0,
+          note: "0%",
+        },
+      ];
+      if (settings.image) {
+        discSteps.push({
+          key: "image",
+          label: t("out.stepImage", { udf: settings.image }),
+          state: "waiting",
+          progress: 0,
+          note: t("out.waiting"),
+        });
+      }
+      phaseBegan = Date.now();
+      paintOutProgress(0, phaseBegan);
       el("out-state").textContent = t("out.bdavIndexing", { clip: wrote[0].slot.clip });
+      renderOutScreen();
       try {
         await invoke("bdav_finish", {
           dir: discDir(),
@@ -4222,6 +4331,7 @@ async function runExport() {
             marks: chaptersFor(clip),
           })),
         });
+        finishStep("index", "done");
         note(
           t("out.bdavDone", {
             path: `${discDir()}/BDAV`,
@@ -4233,18 +4343,28 @@ async function runExport() {
         // before there is anything to wrap.
         if (settings.image) {
           try {
+            // Asked for after the rows were made, if the setting was turned
+            // on while the index was being written: a row it never got is
+            // not worth failing the image over.
+            if (discStep("image")) discStep("image").state = "running";
+            phaseBegan = Date.now();
+            paintOutProgress(0, phaseBegan);
             el("out-state").textContent = t("out.imaging", { udf: settings.image, pct: 0 });
+            renderOutScreen();
             const path = await invoke("bdav_image", {
               dir: discDir(),
               title: discTitleFor(list),
               revision: settings.image,
             });
+            finishStep("image", "done");
             note(t("out.imageDone", { path }));
           } catch (e) {
+            finishStep("image", "error");
             note(t("out.imageFailed", { e: String(e) }));
           }
         }
       } catch (e) {
+        finishStep("index", "error");
         note(t("out.bdavFailed", { e: String(e) }));
       }
     }
