@@ -1115,33 +1115,6 @@ fn ep_map(clip: &Clip) -> Vec<u8> {
 
 // --- the playlist --------------------------------------------------------
 
-/// The entry point nearest a chapter point, in the playlist's own tick.
-///
-/// A chapter point a player cannot start at is a chapter point it starts at
-/// the nearest entry to instead, so a mark put down between two of them lands
-/// somewhere the editor did not show. Most of them are already on one -- a
-/// kept range begins where a cut could begin -- but a range whose opening was
-/// re-encoded has no entry at its seam, and five of twenty-nine marks on a
-/// disc measured here were up to seven frames out. Both reference discs are
-/// within six milliseconds of an entry on every one of their 153.
-fn nearest_entry(clip: &Clip, when: u32) -> u32 {
-    // The map counts in the stream's clock and a playlist in half of it; the
-    // entries are in order, so the nearest is one of the two either side.
-    let want = u64::from(when) * 2;
-    let at = clip.entries.partition_point(|e| e.pts < want);
-    [at.checked_sub(1), Some(at)]
-        .into_iter()
-        .flatten()
-        .filter_map(|i| clip.entries.get(i))
-        .min_by_key(|e| e.pts.abs_diff(want))
-        // Rounded rather than halved away: the two clocks are read off the
-        // same moment and rounded separately, so an entry an odd number of
-        // ticks in belongs to the playlist tick above it. Truncating instead
-        // put the mark at the clip's own start one tick *before* the
-        // playlist began, which is a mark outside the recording it is about.
-        .map_or(when, |e| ((e.pts + 1) / 2) as u32)
-}
-
 /// `PLAYLIST/000NN.rpls`: one recording -- which clip, from when to when,
 /// what it is called, and where its chapter points are.
 fn rpls(clip_name: &str, clip: &Clip, rec: &Recording) -> Vec<u8> {
@@ -1172,8 +1145,8 @@ fn rpls(clip_name: &str, clip: &Clip, rec: &Recording) -> Vec<u8> {
         // accepted them. The play item, the time and the length of the entry
         // are this program's own.
         entry[..4].copy_from_slice(&[0x05, 0x00, 0x02, 0x12]);
-        let when = nearest_entry(clip, (clip.start as f64 + at * TICK).max(0.0) as u32);
-        entry[6..10].copy_from_slice(&when.to_be_bytes());
+        let when = clip.start as f64 + at * TICK;
+        entry[6..10].copy_from_slice(&(when.max(0.0) as u32).to_be_bytes());
         entry[10..14].copy_from_slice(&[0xFF; 4]);
         marks.extend_from_slice(&entry);
     }
@@ -1405,11 +1378,9 @@ mod tests {
         // The play items begin where both real discs put them, whatever went
         // into the description above.
         assert_eq!(list_at, LIST_AT);
-        // Two marks. Each is at the entry point nearest where it was asked
-        // for, because a mark a player cannot start at is a mark it starts
-        // somewhere else at: the first at the clip's own start, which is an
-        // entry, and the second -- asked for at twelve and a half seconds,
-        // which is not -- at the entry that is nearest to it.
+        // Two marks, at the clip's own start and twelve and a half seconds
+        // into it -- where the edit put them, and not at the nearest place a
+        // player could start.
         assert_eq!(
             u16::from_be_bytes(raw[marks_at + 4..marks_at + 6].try_into().unwrap()),
             2
@@ -1419,14 +1390,7 @@ mod tests {
             u32::from_be_bytes(raw[one + 6..one + 10].try_into().unwrap())
         };
         assert_eq!(mark_at(0), 20842);
-        let asked = u64::from(20842 + (12.5 * TICK) as u32) * 2;
-        let nearest = clip()
-            .entries
-            .into_iter()
-            .min_by_key(|e| e.pts.abs_diff(asked))
-            .unwrap();
-        assert_eq!(u64::from(mark_at(1)) * 2, nearest.pts);
-        assert_eq!(mark_at(1), 1 << 20);
+        assert_eq!(mark_at(1), 20842 + (12.5 * TICK) as u32);
     }
 
     #[test]

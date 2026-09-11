@@ -282,14 +282,6 @@ which is where the commercial breaks were, plus whatever marks were put down
 in the editor. That is the one thing on a recorder's disc a viewer uses every
 time.
 
-Each is written at the **entry point nearest to it**, because a chapter point
-a player cannot start at is one it starts at the nearest entry to anyway, and
-a mark between two of them lands somewhere the editor did not show. Most are
-already on one — a kept range begins where a cut could begin — but a range
-whose opening was re-encoded has no entry at its seam: five of twenty-nine
-marks on a disc measured here were up to seven frames out, where both
-reference discs are within six milliseconds of an entry on all 153 of theirs.
-
 ## The lead a disc gives a decoder
 
 A stream cannot show its first picture the moment its clock starts: the
