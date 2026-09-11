@@ -25,6 +25,8 @@
 //! signal, and when they are not, [`NoResets`] says so and the caller falls
 //! back rather than being handed noise.
 
+use std::collections::HashMap;
+
 use anyhow::Result;
 use ffmpeg_next as ff;
 
@@ -99,9 +101,14 @@ pub fn is_statement(id: u8) -> bool {
     (1..=8).contains(&id) || (0x21..=0x28).contains(&id)
 }
 
-/// Concatenate a statement's text data units (`data_unit_parameter` 0x20).
-pub fn text_units(body: &[u8], out: &mut Vec<u8>) {
-    out.clear();
+/// Walk a statement's data units, handing each to `visit` with the
+/// parameter that says what it is.
+///
+/// A statement is not only its text. The words are one data unit and the
+/// pictures of the characters no code stands for are others, side by side
+/// in the same loop -- which is why this is a walk rather than a reader for
+/// the text alone. See [`text_units`] and [`Layout::glyphs`].
+fn data_units(body: &[u8], mut visit: impl FnMut(u8, &[u8])) {
     let Some(&first) = body.first() else { return };
     // A time-controlled statement carries a five-byte origin before the loop.
     let tmd = first >> 6;
@@ -117,11 +124,19 @@ pub fn text_units(body: &[u8], out: &mut Vec<u8>) {
         let Some(data) = body.get(i + 5..i + 5 + size) else {
             return;
         };
+        visit(param, data);
+        i += 5 + size;
+    }
+}
+
+/// Concatenate a statement's text data units (`data_unit_parameter` 0x20).
+pub fn text_units(body: &[u8], out: &mut Vec<u8>) {
+    out.clear();
+    data_units(body, |param, data| {
         if param == 0x20 {
             out.extend_from_slice(data);
         }
-        i += 5 + size;
-    }
+    });
 }
 
 /// Whether the bytes are a non-empty run of CSI sequences and nothing else.
@@ -228,6 +243,154 @@ pub fn resets_with(
     Ok(out)
 }
 
+/// A character a broadcaster sent the picture of.
+///
+/// **This is what a caption line ending in `〓` was.** ARIB calls them DRCS,
+/// and what they hold is not exotic: an arrow saying the sentence carries on
+/// into the next line, and the double brackets a speaker's name sits in.
+/// There is no code for them in any of the sets, so the broadcaster sends
+/// the dots and then writes the cell it put them in -- and a reader with no
+/// dots has nothing to show but the geta mark, which is what this program
+/// showed. The dots arrive in the same statement as the words, a data unit
+/// along; see [`Layout::glyphs`].
+///
+/// One bit a dot, which is not what the standard sends. A glyph may be sent
+/// in up to four shades, and the shades are a colour map away from a colour
+/// -- but what every glyph measured here uses them for is the anti-aliasing
+/// around a solid shape, drawn at 36 dots where it is shown at a fraction of
+/// that. So a dot is ink or it is not, and the shades go the way the
+/// ornaments and the colour maps went in [`Layout`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Glyph {
+    /// The dots across and down, which is the character cell the format
+    /// declared: 36 by 36 on the broadcasts measured here.
+    pub width: u8,
+    pub height: u8,
+    /// One bit a dot, rows in order from the top, each row starting on a
+    /// byte and the high bit of a byte the leftmost dot in it.
+    pub ink: Vec<u8>,
+}
+
+impl Glyph {
+    /// How many bytes a row takes.
+    pub fn stride(&self) -> usize {
+        (self.width as usize).div_ceil(8)
+    }
+
+    /// Whether the dot at `x`, `y` is ink.
+    pub fn at(&self, x: u8, y: u8) -> bool {
+        if x >= self.width || y >= self.height {
+            return false;
+        }
+        let bit = y as usize * self.stride() * 8 + x as usize;
+        self.ink
+            .get(bit / 8)
+            .is_some_and(|b| b >> (7 - bit % 8) & 1 == 1)
+    }
+}
+
+/// Read one DRCS data unit into `into`, under the cells it names.
+///
+/// `wide` says which of the two downloaded sets this unit is for, because
+/// the same code can be defined in both; it is the data unit's own
+/// parameter, 0x30 for the one-byte sets and 0x31 for the two-byte one.
+/// `cell` is the character cell the format declared, which is how a font is
+/// chosen where a broadcaster sends the same glyph at more than one size.
+///
+/// A unit carries any number of cells, each with any number of fonts, and
+/// only the fonts that are dots are read: a glyph may also be sent as
+/// geometry, which nothing here draws, and a unit that reaches one stops
+/// rather than guessing where the next cell begins.
+fn read_glyphs(
+    data: &[u8],
+    wide: bool,
+    cell: (u16, u16),
+    into: &mut HashMap<crate::arib::Drcs, Glyph>,
+) {
+    let Some(&codes) = data.first() else { return };
+    let mut i = 1;
+    for _ in 0..codes {
+        let Some(head) = data.get(i..i + 3) else {
+            return;
+        };
+        let code = u16::from(head[0]) << 8 | u16::from(head[1]);
+        let fonts = head[2];
+        i += 3;
+        let mut best: Option<(bool, Glyph)> = None;
+        for _ in 0..fonts {
+            let Some(&mode) = data.get(i) else { return };
+            i += 1;
+            // The two modes that are dots. The others are geometry and a
+            // compression this has never seen sent.
+            if mode & 0x0F > 1 {
+                return;
+            }
+            let Some(shape) = data.get(i..i + 3) else {
+                return;
+            };
+            let (depth, width, height) = (shape[0], shape[1], shape[2]);
+            i += 3;
+            // The shades are `depth` + 2, and a dot is as many bits as it
+            // takes to count them.
+            let bits = (u32::BITS - (u32::from(depth) + 1).leading_zeros()).max(1) as usize;
+            let dots = width as usize * height as usize;
+            let Some(pattern) = data.get(i..i + (dots * bits).div_ceil(8)) else {
+                return;
+            };
+            i += pattern.len();
+            // A cell may be sent at several sizes. The one that is kept is
+            // the one the size of the character cell -- the rest are the
+            // same glyph for the sizes a caption asks for with a control
+            // code, and those are drawn by scaling this one -- and the
+            // first of them where none of them is.
+            let matches = u16::from(width) == cell.0 && u16::from(height) == cell.1;
+            if best.as_ref().is_none_or(|(was, _)| !was && matches) {
+                best = Some((matches, ink(pattern, bits, width, height)));
+            }
+        }
+        if let Some((_, glyph)) = best {
+            // What a *later statement* sends replaces this, which is how
+            // the material is actually sent: one cell, redefined line by
+            // line -- an arrow in this one, a bracket in the next.
+            into.insert(
+                crate::arib::Drcs {
+                    // A cell is named in the graphic-left range wherever it
+                    // was written from; see [`crate::arib::Drcs`].
+                    code: code & 0x7F7F,
+                    wide,
+                },
+                glyph,
+            );
+        }
+    }
+}
+
+/// Turn a glyph's shades into ink: any shade but the first is a dot that is
+/// drawn, and the first is the one the picture shows through.
+fn ink(pattern: &[u8], bits: usize, width: u8, height: u8) -> Glyph {
+    let stride = (width as usize).div_ceil(8);
+    let mut out = vec![0u8; stride * height as usize];
+    for y in 0..height as usize {
+        for x in 0..width as usize {
+            let at = (y * width as usize + x) * bits;
+            let shade = (0..bits).any(|k| {
+                let bit = at + k;
+                pattern
+                    .get(bit / 8)
+                    .is_some_and(|b| b >> (7 - bit % 8) & 1 == 1)
+            });
+            if shade {
+                out[y * stride + x / 8] |= 0x80 >> (x % 8);
+            }
+        }
+    }
+    Glyph {
+        width,
+        height,
+        ink: out,
+    }
+}
+
 /// One run of characters on the caption plane: what it says, where it sits
 /// and what it is drawn in.
 ///
@@ -247,6 +410,10 @@ pub struct Run {
     /// renderer place every character without knowing a font's metrics.
     pub advance: u16,
     pub text: String,
+    /// The picture of one character, where the broadcaster sent one rather
+    /// than a code. A run carrying this is that character and nothing else,
+    /// and its `text` is empty: see [`Glyph`].
+    pub glyph: Option<Glyph>,
     /// What the broadcaster asked for it to be drawn in, `0xRRGGBB`.
     pub colour: u32,
 }
@@ -366,6 +533,11 @@ pub struct Layout {
     /// added together, and that is the grid a row and a column count.
     cell: (u16, u16),
     gap: (u16, u16),
+    /// The pictures of the characters no code stands for, under the cells
+    /// they were sent in. Kept for the same reason the format is: a
+    /// broadcaster may define a glyph in one statement and write it in a
+    /// later one. See [`Layout::glyphs`].
+    glyphs: HashMap<crate::arib::Drcs, Glyph>,
 }
 
 impl Default for Layout {
@@ -379,6 +551,7 @@ impl Default for Layout {
             origin: (170, 30),
             cell: (36, 36),
             gap: (4, 24),
+            glyphs: HashMap::new(),
         }
     }
 }
@@ -389,12 +562,33 @@ impl Layout {
         (self.cell.0 + self.gap.0, self.cell.1 + self.gap.1)
     }
 
+    /// Take in the glyphs a statement carries the pictures of.
+    ///
+    /// Handed the whole data group rather than the text, because that is
+    /// where the pictures are: the words are one data unit of it and the
+    /// glyphs are others. Call it before [`Layout::statement`] reads the
+    /// words -- the cell a line writes is defined in the same statement that
+    /// writes it, every time, on all the material measured here.
+    pub fn glyphs(&mut self, body: &[u8]) {
+        data_units(body, |param, data| match param {
+            // The one-byte downloaded sets, and the two-byte one.
+            0x30 => read_glyphs(data, false, self.cell, &mut self.glyphs),
+            0x31 => read_glyphs(data, true, self.cell, &mut self.glyphs),
+            _ => {}
+        });
+    }
+
     /// Read one statement's text units, and say what they leave on screen.
     ///
     /// The format the statement declares is kept for the ones after it.
     pub fn statement(&mut self, units: &[u8]) -> Written {
         let mut pen = Pen::new(self);
-        crate::arib::walk(units, &mut |step| pen.step(self, step));
+        // Against what a caption starts with, which is not what a name
+        // starts with: the macro set is in G3 rather than the katakana.
+        // See [`crate::arib::Start`].
+        crate::arib::walk_from(crate::arib::Start::Caption, units, &mut |step| {
+            pen.step(self, step)
+        });
         pen.turn(None);
         Written {
             plane: self.plane,
@@ -481,47 +675,91 @@ impl Pen {
         }
     }
 
+    /// Put one character where the pen is, and move the pen on.
+    ///
+    /// `text` is how it is spelled and `glyph` the picture of it, where the
+    /// broadcaster sent one instead; a character is one or the other.
+    fn place(&mut self, layout: &Layout, text: &str, full_width: bool, glyph: Option<Glyph>) {
+        let (field_w, field_h) = layout.field();
+        let (sx, sy) = self.size.scale();
+        // Where `ACPS` put the pen, now that the size says how tall the
+        // field under it is.
+        self.settle(field_h as f32 * sy);
+        // What this character takes: a field, or half of one where the set
+        // is a half-width set or the size is a half-width size.
+        let advance = field_w as f32 * sx * if full_width { 1.0 } else { 0.5 };
+        let height = layout.cell.1 as f32 * sy;
+        // The glyph sits in the middle of its field: the space a format
+        // leaves around a character is left around it rather than under it,
+        // which is what keeps two lines the same distance apart however
+        // tall the characters are.
+        let top = self.y + (field_h as f32 * sy - height) / 2.0;
+        let advance_u = advance.round() as u16;
+        // A picture is a run of its own, and so is the character after it:
+        // a run is a string drawn in one call, and this one is not a string.
+        let fits = glyph.is_none()
+            && self.open.as_ref().is_some_and(|r| {
+                r.glyph.is_none()
+                    && r.advance == advance_u
+                    && r.colour == self.colour
+                    && r.height == height.round() as u16
+                    && (r.y as f32 - top).abs() < 0.5
+                    && ((r.x + r.width) as f32 - self.x).abs() < 0.5
+            });
+        if !fits {
+            self.finish();
+        }
+        let run = self.open.get_or_insert_with(|| Run {
+            x: self.x.max(0.0).round() as u16,
+            y: top.max(0.0).round() as u16,
+            width: 0,
+            height: height.round() as u16,
+            advance: advance_u,
+            text: String::new(),
+            glyph,
+            colour: self.colour,
+        });
+        run.text.push_str(text);
+        run.width += advance_u;
+        self.x += advance;
+        if run.glyph.is_some() {
+            self.finish();
+        }
+    }
+
     fn step(&mut self, layout: &mut Layout, step: crate::arib::Step<'_>) {
         let (field_w, field_h) = layout.field();
         let (sx, sy) = self.size.scale();
         match step {
+            // A character the broadcaster sent the picture of goes where a
+            // character goes; it is only what is drawn there that differs.
+            // Where the picture never arrived -- a statement read from the
+            // middle of a recording, which is what scrubbing a timeline
+            // does -- what is left is what a receiver without it shows.
+            crate::arib::Step::Glyph(drcs) => {
+                let glyph = layout.glyphs.get(&drcs).cloned();
+                let text = match glyph {
+                    Some(_) => String::new(),
+                    None => crate::arib::UNKNOWN.to_string(),
+                };
+                // A whole field, because the sets these come from are drawn
+                // full width -- except where the glyph is half a cell wide
+                // and nothing has asked for a half-width size, which is a
+                // character that is half a character. Both happen, and the
+                // difference is the size code: a broadcaster writing a line
+                // in `MSZ` sends the glyph at 18 dots *for that*, and the
+                // pen has already halved the field, so halving it again
+                // would put the glyph in a quarter of one. A `ü` in a
+                // German line is the other case -- 18 dots in a line
+                // written at full size, beside half-width letters.
+                let half = glyph
+                    .as_ref()
+                    .is_some_and(|g| u16::from(g.width) * 2 <= layout.cell.0)
+                    && self.size == Size::Normal;
+                self.place(layout, &text, !half, glyph);
+            }
             crate::arib::Step::Text(text, full_width) => {
-                // Where `ACPS` put the pen, now that the size says how tall
-                // the field under it is.
-                self.settle(field_h as f32 * sy);
-                // What this character takes: a field, or half of one where
-                // the set is a half-width set or the size is a half-width
-                // size.
-                let advance = field_w as f32 * sx * if full_width { 1.0 } else { 0.5 };
-                let height = layout.cell.1 as f32 * sy;
-                // The glyph sits in the middle of its field: the space a
-                // format leaves around a character is left around it rather
-                // than under it, which is what keeps two lines the same
-                // distance apart however tall the characters are.
-                let top = self.y + (field_h as f32 * sy - height) / 2.0;
-                let advance_u = advance.round() as u16;
-                let fits = self.open.as_ref().is_some_and(|r| {
-                    r.advance == advance_u
-                        && r.colour == self.colour
-                        && r.height == height.round() as u16
-                        && (r.y as f32 - top).abs() < 0.5
-                        && ((r.x + r.width) as f32 - self.x).abs() < 0.5
-                });
-                if !fits {
-                    self.finish();
-                }
-                let run = self.open.get_or_insert_with(|| Run {
-                    x: self.x.max(0.0).round() as u16,
-                    y: top.max(0.0).round() as u16,
-                    width: 0,
-                    height: height.round() as u16,
-                    advance: advance_u,
-                    text: String::new(),
-                    colour: self.colour,
-                });
-                run.text.push_str(text);
-                run.width += advance_u;
-                self.x += advance;
+                self.place(layout, text, full_width, None);
             }
             crate::arib::Step::Control(code, params) => {
                 let p = |k: usize| params.get(k).map_or(0.0, |b| f32::from(b & 0x3F));
@@ -730,6 +968,49 @@ mod tests {
     /// Two kanji, in the set a caption starts in.
     const KANJI: [u8; 4] = [0x30, 0x21, 0x30, 0x22];
 
+    /// A data group body: what a statement arrives as, which is the text
+    /// and whatever else the broadcaster sent with it.
+    ///
+    /// [`Layout::statement`] is handed the text alone -- that is what
+    /// [`text_units`] pulls out of this -- and [`Layout::glyphs`] is handed
+    /// the whole of it, because the pictures are the other units.
+    fn body(units: &[(u8, Vec<u8>)]) -> Vec<u8> {
+        let mut out = vec![0x00, 0x00, 0x00, 0x00];
+        for (param, data) in units {
+            out.extend_from_slice(&[0x1F, *param]);
+            let n = data.len();
+            out.extend_from_slice(&[(n >> 16) as u8, (n >> 8) as u8, n as u8]);
+            out.extend_from_slice(data);
+        }
+        out
+    }
+
+    /// One cell of the one-byte downloaded set, as a broadcaster defines
+    /// it: two shades, one bit a dot, and whichever dots `ink` says.
+    fn drcs_unit(code: u16, width: u8, height: u8, ink: impl Fn(u8, u8) -> bool) -> (u8, Vec<u8>) {
+        let mut out = vec![1, (code >> 8) as u8, code as u8, 1, 0x00, 0, width, height];
+        let mut byte = 0u8;
+        let mut bits = 0;
+        for y in 0..height {
+            for x in 0..width {
+                byte = byte << 1 | u8::from(ink(x, y));
+                bits += 1;
+                if bits == 8 {
+                    out.push(byte);
+                    (byte, bits) = (0, 0);
+                }
+            }
+        }
+        if bits > 0 {
+            out.push(byte << (8 - bits));
+        }
+        (0x30, out)
+    }
+
+    /// The bytes that designate the one-byte downloaded set into G0 and
+    /// write the first cell of it.
+    const DRCS_CELL: [u8; 6] = [0x1B, 0x28, 0x20, 0x41, 0x0F, 0x21];
+
     /// The runs of a statement that writes one page, which is what a
     /// statement with no waiting in it writes.
     fn only(written: &Written) -> &[Run] {
@@ -917,5 +1198,115 @@ mod tests {
         assert_eq!(plane_of(5), Some((1920, 1080)));
         // Not one the standard gives a size for: the plane in hand stands.
         assert_eq!(plane_of(3), None);
+    }
+
+    /// A caption line ending in a character the broadcaster sent the
+    /// picture of, which is what every such line used to end in a geta mark
+    /// for.
+    ///
+    /// The arrow that carries a sentence into the next line and the double
+    /// brackets around a speaker's name are sent this way on the material
+    /// measured here -- one cell, redefined statement by statement.
+    #[test]
+    fn draws_the_character_a_broadcaster_sent_the_picture_of() {
+        let mut layout = Layout::default();
+        // A triangle, in a glyph the size of the character cell.
+        let mut text = statement(5, 0, &KANJI);
+        text.extend_from_slice(&DRCS_CELL);
+        let group = body(&[
+            drcs_unit(0x4121, 36, 36, |x, y| x >= 18 - y / 2 && x <= 18 + y / 2),
+            (0x20, text.clone()),
+        ]);
+        layout.glyphs(&group);
+        let written = layout.statement(&text);
+        let runs = only(&written);
+        // The two kanji, and the picture beside them as a run of its own.
+        assert_eq!(runs.len(), 2);
+        assert_eq!(runs[0].text, "亜唖");
+        assert!(runs[0].glyph.is_none());
+        let cell = &runs[1];
+        assert_eq!(cell.text, "");
+        assert_eq!(cell.x, 170 + 80);
+        assert_eq!(cell.advance, 40);
+        let glyph = cell.glyph.as_ref().expect("the picture that was sent");
+        assert_eq!((glyph.width, glyph.height), (36, 36));
+        // The dots that were sent, read back: the point of the triangle at
+        // the top and its base at the bottom.
+        let row = |y: u8| -> String {
+            (0..36)
+                .map(|x| if glyph.at(x, y) { '#' } else { '.' })
+                .collect()
+        };
+        assert_eq!(row(0), "..................#.................");
+        assert!(row(35).starts_with(".#####"));
+    }
+
+    /// The same cell, redefined.
+    ///
+    /// Which is not a corner case: a broadcaster that sends glyphs at all
+    /// sends one cell and redefines it in every statement that uses it.
+    #[test]
+    fn the_last_picture_sent_for_a_cell_is_the_one_drawn() {
+        let mut layout = Layout::default();
+        let mut text = statement(5, 0, &[]);
+        text.extend_from_slice(&DRCS_CELL);
+        let first = body(&[drcs_unit(0x4121, 36, 36, |_, _| true), (0x20, text.clone())]);
+        layout.glyphs(&first);
+        let written = layout.statement(&text);
+        assert!(only(&written)[0].glyph.as_ref().unwrap().at(0, 0));
+        let then = body(&[
+            drcs_unit(0x4121, 36, 36, |_, _| false),
+            (0x20, text.clone()),
+        ]);
+        layout.glyphs(&then);
+        let written = layout.statement(&text);
+        assert!(!only(&written)[0].glyph.as_ref().unwrap().at(0, 0));
+    }
+
+    /// A glyph sent at half the dots of a character cell.
+    ///
+    /// Both of the ways that happens, because they want opposite things: a
+    /// line written in `MSZ` is already in half a field and the glyph sent
+    /// for it fills that, while a `ü` in a line of half-width letters at
+    /// full size is a half-width character in its own right.
+    #[test]
+    fn a_glyph_half_a_cell_wide_is_a_half_width_character() {
+        let mut layout = Layout::default();
+        // Eighteen dots across of a thirty-six dot cell, which is the
+        // shape a broadcaster sends for a letter no set has.
+        let narrow = drcs_unit(0x4121, 18, 36, |_, _| true);
+        let mut text = statement(5, 0, &[]);
+        text.extend_from_slice(&DRCS_CELL);
+        let group = body(&[narrow.clone(), (0x20, text.clone())]);
+        layout.glyphs(&group);
+        let written = layout.statement(&text);
+        assert_eq!(only(&written)[0].advance, 20);
+        // The same glyph where the line asked for the half-width size. The
+        // field is already half of one, and halving it again would draw the
+        // character in a quarter of a field.
+        let mut text = statement(5, 0, &[0x89]);
+        text.extend_from_slice(&DRCS_CELL);
+        let group = body(&[narrow, (0x20, text.clone())]);
+        layout.glyphs(&group);
+        let written = layout.statement(&text);
+        assert_eq!(only(&written)[0].advance, 20);
+    }
+
+    /// A cell written by a statement whose definition was never read.
+    ///
+    /// Which is what scrubbing a timeline does: the window reads from the
+    /// middle of a recording, and the statement that defined the cell is
+    /// behind it. What a receiver shows without the picture is what this
+    /// shows, in the place the character would have taken.
+    #[test]
+    fn a_cell_with_no_picture_is_what_a_receiver_shows() {
+        let mut layout = Layout::default();
+        let mut text = statement(5, 0, &[]);
+        text.extend_from_slice(&DRCS_CELL);
+        let written = layout.statement(&text);
+        let run = &only(&written)[0];
+        assert_eq!(run.text, "〓");
+        assert!(run.glyph.is_none());
+        assert_eq!(run.advance, 40);
     }
 }

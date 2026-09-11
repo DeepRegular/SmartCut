@@ -324,9 +324,78 @@ Half widths are handled too: the alphanumeric and half-width katakana sets take 
 field per character, and `MSZ` draws a full-width character in half a field, which is
 how any caption of more than fifteen characters to a line is written.
 
-What comes out is text and where to put it, not a picture. **The window does the
-drawing**, with the fonts it has and an outline around each glyph, which is why the
-characters stay sharp at any size and why there is not a line of glyph rendering here.
+### The characters the broadcaster draws
+
+Some of what a caption says has no code in any of the sets. The arrow that carries a
+sentence into the next line, the double brackets a speaker's name sits in, the `ü` in
+a German line — ARIB's answer is to send **the dots**: the statement carries the
+pattern of the glyph in a data unit beside the words (`data_unit_parameter` 0x30 for
+the one-byte sets, 0x31 for the two-byte one), designates a downloaded set with an
+escape that puts `0x20` before the final byte, and then writes the cell it put the
+glyph in.
+
+There is nothing to spell that with, and answering `〓` — which is what a receiver
+with no glyph shows — is what this did. **It is not a rare corner.** Of 62 recordings
+sampled two to a channel across the 32 channels here, 51 carry captions and 27,829
+statements were read out of them: 971 of those statements, 3.5%, carried a geta mark,
+and *every one* came from a downloaded set rather than from a cell of the ordinary
+sets that this cannot name. Fifteen of the 26 channels that caption their programmes
+send glyphs at all. (Not every one of those cells was a glyph: some were hiragana in
+a set a macro had designated back, which is the section after this one. A reader that
+runs neither cannot tell them apart, which is rather the point.)
+
+So the dots come back with the run (`caption::Glyph`: one bit a dot, the shades
+flattened) and the window draws them in the character cell, the same box a glyph from
+a font goes in. The 43 distinct pictures in the sample are sent at 36 x 36 — the
+character cell — and a handful at 18 x 36, which is what a broadcaster sends for a
+line written in `MSZ`. The cell is what they are drawn in either way, so a size the
+pattern was not sent for is a glyph scaled rather than a glyph refused.
+
+Two things about the cells are worth knowing, because both look like bugs from the
+outside:
+
+- **The same cell is redefined line by line.** A channel sends one cell — 0x4121, the
+  first of DRCS-1 — and redefines it in every statement that uses it: an arrow in this
+  line, a bracket in the next. A reader that took the first picture and kept it would
+  draw an arrow for the rest of the programme.
+- **A cell is written whose picture is not in the statement.** So the pictures are
+  remembered (`Layout`, beside the format, and for the same reason), and a statement
+  that writes a cell nothing has ever defined is still the geta mark. Scrubbing a
+  timeline is the ordinary way to get one: the window reads a stretch around the
+  instant, and the statement that defined the cell can be behind it.
+
+### The two bytes in front of a speaker's name
+
+A caption switches sets with `SS3` — `0x1D` and a byte — and the set it finds there is
+**not the katakana**. Three of the four slots a caption starts with are the ones a
+programme name starts with; the fourth is the **macro set**, whose cells are stored
+escape sequences. `1D 60` designates the kanji, the alphanumerics, hiragana and the
+macros themselves into the four slots and invokes the first and the third; `1D 61` is
+the same with the katakana in place of the alphanumerics. Broadcasters use them as
+shorthand, and a line naming its speaker switches sets three times in six bytes:
+
+```
+1D 60  0E  MSZ  (    1D 61  0E  ヨ ハ ネ ス    1D 60  0E  )
+```
+
+Read as characters, each of those was a stray katakana — and the sets they name were
+never designated, so everything after them was read against the wrong ones. That line
+came back as `ム(メhOM9ム)` where the broadcast said `（ヨハネス）`. It is also how a
+channel designates the hiragana **back** into G2 after writing a downloaded glyph
+there, so on that channel every kana after a glyph was read as another glyph and shown
+as the geta mark, cell after cell — the geta marks the fix above would otherwise have
+been blamed for.
+
+The three macros the standard opens with are run; a cell this does not know — the
+thirteen that designate the mosaic sets and the downloaded sets of data broadcasting —
+is run as nothing rather than as a guess, which leaves the sets alone and writes no
+character. And the starting state is now asked for by name (`arib::Start`), because
+the two kinds of text this program reads do not share it.
+
+What comes out is text and where to put it, and — for the characters the broadcaster
+drew — the dots of those. **The window does the drawing**, with the fonts it has and
+an outline around each glyph, which is why the characters stay sharp at any size and
+why there is no glyph rendering here beyond unpacking the dots nobody has a font for.
 A glyph the font draws wider than the field it was given is squeezed into it: a font
 that has never heard of ARIB draws a full-width bracket full width whether the
 broadcaster asked for half a field or a whole one, and the bracket a speaker's name

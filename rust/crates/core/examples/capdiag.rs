@@ -7,6 +7,7 @@
 //!
 //! usage: capdiag <file> [statements]
 //!        capdiag <file> at <seconds> [seconds ...]
+//!        capdiag <file> stats
 //!
 //! The second form asks the question the window asks -- what is on screen
 //! at this instant -- of every subtitle track the recording carries, which
@@ -156,6 +157,71 @@ fn dump(units: &[u8]) {
     println!();
 }
 
+/// A downloaded glyph as the dots it is, for reading in a terminal.
+fn art(g: &sc::caption::Glyph) {
+    for y in 0..g.height {
+        let row: String = (0..g.width)
+            .map(|x| if g.at(x, y) { '#' } else { '.' })
+            .collect();
+        println!("              {row}");
+    }
+}
+
+/// How much of a recording's captions this can draw, counted rather than
+/// looked at.
+///
+/// One line a file, for asking the same question of a shelf of recordings:
+/// how many statements there are, how many characters the broadcaster sent
+/// the picture of, and how many cells are left over as the geta mark --
+/// which is what a reader that cannot name a character shows, and what this
+/// is here to keep an eye on.
+fn stats(path: &str) -> Result<()> {
+    let mut ictx = sc::input::demux(path)?;
+    let streams: Vec<usize> = ictx
+        .streams()
+        .filter(|s| s.parameters().id() == ff::codec::Id::ARIB_CAPTION)
+        .map(|s| s.index())
+        .collect();
+    let mut layout = sc::caption::Layout::default();
+    let mut units: Vec<u8> = Vec::new();
+    let (mut statements, mut glyphs, mut geta, mut lines) = (0u32, 0u32, 0u32, 0u32);
+    loop {
+        // By hand rather than through the packet iterator, which spins on a
+        // recording that stops in the middle of a packet; see `subs.rs`.
+        let mut packet = ff::Packet::empty();
+        if packet.read(&mut ictx).is_err() {
+            break;
+        }
+        if !streams.contains(&packet.stream()) {
+            continue;
+        }
+        let Some(data) = packet.data() else { continue };
+        sc::caption::data_groups(data, |id, body| {
+            if !sc::caption::is_statement(id) {
+                return;
+            }
+            layout.glyphs(body);
+            sc::caption::text_units(body, &mut units);
+            if units.is_empty() {
+                return;
+            }
+            statements += 1;
+            for page in layout.statement(&units).pages {
+                for run in page.runs {
+                    lines += u32::from(!run.text.is_empty());
+                    glyphs += u32::from(run.glyph.is_some());
+                    geta += run.text.matches('\u{3013}').count() as u32;
+                }
+            }
+        });
+    }
+    println!(
+        "{statements} statements, {lines} runs, {glyphs} drawn glyphs, {geta} geta  {}",
+        path.rsplit('/').next().unwrap_or(path)
+    );
+    Ok(())
+}
+
 /// What each track has on screen at each of these instants.
 fn on_screen(path: &str, times: &[f64]) -> Result<()> {
     let src = sc::scan(path)?;
@@ -176,12 +242,30 @@ fn on_screen(path: &str, times: &[f64]) -> Result<()> {
             match shown {
                 None => println!("    {t:8.2}s  --                              ({took:.2}s)"),
                 Some(sc::subs::Shown::Text { plane, runs }) => {
-                    println!("    {t:8.2}s  text on {}x{}  ({took:.2}s)", plane.0, plane.1);
+                    println!(
+                        "    {t:8.2}s  text on {}x{}  ({took:.2}s)",
+                        plane.0, plane.1
+                    );
                     for r in runs {
                         println!(
-                            "              ({:4},{:4}) {:3}x{:2} adv {:2} #{:06x}  {}",
-                            r.x, r.y, r.width, r.height, r.advance, r.colour, r.text
+                            "              ({:4},{:4}) {:3}x{:2} adv {:2} #{:06x}  {}{}",
+                            r.x,
+                            r.y,
+                            r.width,
+                            r.height,
+                            r.advance,
+                            r.colour,
+                            r.text,
+                            r.glyph.as_ref().map_or(String::new(), |g| format!(
+                                "[{}x{} glyph]",
+                                g.width, g.height
+                            )),
                         );
+                        if std::env::var("SMARTCUT_DRCS_ART").is_ok() {
+                            if let Some(g) = &r.glyph {
+                                art(g);
+                            }
+                        }
                     }
                 }
                 Some(sc::subs::Shown::Picture {
@@ -214,6 +298,9 @@ fn main() -> Result<()> {
     ff::init()?;
     let args: Vec<String> = std::env::args().skip(1).collect();
     let path = args.first().expect("usage: capdiag <file> [statements]");
+    if args.get(1).map(String::as_str) == Some("stats") {
+        return stats(path);
+    }
     if args.get(1).map(String::as_str) == Some("at") {
         let times: Vec<f64> = args[2..].iter().filter_map(|s| s.parse().ok()).collect();
         return on_screen(path, &times);
@@ -247,6 +334,7 @@ fn main() -> Result<()> {
             if !sc::caption::is_statement(id) {
                 return;
             }
+            layout.glyphs(body);
             sc::caption::text_units(body, &mut units);
             if units.is_empty() {
                 return;
@@ -265,7 +353,7 @@ fn main() -> Result<()> {
                 };
                 for r in &page.runs {
                     println!(
-                        "            plane {}x{}  ({:4},{:4}) {:3}x{:2} adv {:2} #{:06x}  {}{}",
+                        "            plane {}x{}  ({:4},{:4}) {:3}x{:2} adv {:2} #{:06x}  {}{}{}",
                         written.plane.0,
                         written.plane.1,
                         r.x,
@@ -275,8 +363,19 @@ fn main() -> Result<()> {
                         r.advance,
                         r.colour,
                         r.text,
+                        r.glyph.as_ref().map_or(String::new(), |g| format!(
+                            "[{}x{} glyph]",
+                            g.width, g.height
+                        )),
                         when
                     );
+                    // The dots themselves, for the question this example
+                    // exists to answer: what the broadcaster actually drew.
+                    if std::env::var("SMARTCUT_DRCS_ART").is_ok() {
+                        if let Some(g) = &r.glyph {
+                            art(g);
+                        }
+                    }
                 }
             }
         });

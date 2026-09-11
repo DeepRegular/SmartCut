@@ -62,8 +62,10 @@ commercial break was taken out. Ask for it and the finished disc is wrapped in a
 
 **You can place a cut by the subtitles.** The editor's preview will draw them
 over the picture (off by default): a broadcast's ARIB captions as characters, at
-the position and colour the broadcaster asked for, and a disc's — PGS and a
-DVD's subpictures — as the pictures they are. Whether a seam lands in the middle
+the position and colour the broadcaster asked for — including the ones the
+broadcaster sends as dots rather than as characters, such as the arrow that
+carries a line onto the next one — and a disc's, PGS and a DVD's subpictures, as
+the pictures they are. Whether a seam lands in the middle
 of a line is not something the picture alone will tell you.
 
 **Commercial breaks are found for you.** SmartCut uses three independent

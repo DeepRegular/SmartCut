@@ -40,7 +40,18 @@ enum Set {
     /// They also appear in the rows [`Set::Kanji`] leaves to them; see
     /// [`FIRST_ARIB_ROW`].
     Symbols,
-    /// Downloaded glyphs, or anything else there is no naming.
+    /// One of the downloaded glyph sets: the characters a broadcaster
+    /// sends as pictures because no code stands for them. `set` is the
+    /// final byte that designated it, which is half of the code each glyph
+    /// is defined under; see [`Drcs`].
+    Drcs {
+        set: u8,
+        wide: bool,
+    },
+    /// The macro set, whose cells are not characters at all: each is a
+    /// little program that designates sets. See [`MACROS`].
+    Macro,
+    /// Anything else there is no naming.
     Unknown {
         wide: bool,
     },
@@ -50,7 +61,7 @@ impl Set {
     fn wide(&self) -> bool {
         matches!(
             self,
-            Set::Kanji | Set::Symbols | Set::Unknown { wide: true }
+            Set::Kanji | Set::Symbols | Set::Unknown { wide: true } | Set::Drcs { wide: true, .. }
         )
     }
 
@@ -82,10 +93,25 @@ impl Set {
             _ => Set::Unknown { wide },
         }
     }
+
+    /// The downloaded set a DRCS designation names.
+    ///
+    /// The final byte says which: 0x40 is the two-byte set and 0x41 to 0x4F
+    /// are the fifteen one-byte ones. How many bytes a character takes is
+    /// the designation's own shape rather than the final, because that is
+    /// what decides how the bytes after it are read.
+    fn drcs(f: u8, wide: bool) -> Set {
+        match f {
+            0x40..=0x4F => Set::Drcs { set: f, wide },
+            // The macro set is designated the same way and is not glyphs.
+            0x70 => Set::Macro,
+            _ => Set::Unknown { wide },
+        }
+    }
 }
 
 /// What a receiver shows for a character it has no glyph for.
-const UNKNOWN: char = '〓';
+pub(crate) const UNKNOWN: char = '〓';
 
 /// The rows of JIS X 0208 that ARIB fills with symbols of its own.
 ///
@@ -254,6 +280,150 @@ pub enum Step<'a> {
     /// sequence (`0x9B`) carries everything up to and including the byte
     /// that ends it, which is the byte that says which sequence it was.
     Control(u8, &'a [u8]),
+    /// A character the broadcaster sent the picture of. There is nothing to
+    /// spell it with -- that is why it was sent as a picture -- so what
+    /// comes out is which glyph was asked for, and a reader that has the
+    /// pictures draws it. See [`Drcs`], and [`crate::caption::Layout`],
+    /// which is the reader that has them.
+    Glyph(Drcs),
+}
+
+/// Which downloaded glyph a caption asked for.
+///
+/// A broadcaster draws what no code stands for -- an arrow carrying a
+/// sentence onto the next line, the brackets a speaker's name sits in -- by
+/// sending the dots of the glyph and then writing the cell it put them in.
+/// The cell is all that is in the text, so this is what the text says; the
+/// dots arrive beside it, in data units of the same statement.
+///
+/// The same cell is redefined as often as the broadcaster likes, and on the
+/// material measured here that is every statement: one cell, one arrow in
+/// this line and one bracket in the next.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct Drcs {
+    /// The cell: the designation's final byte over the character's own byte
+    /// for the one-byte sets, and the two bytes themselves for the two-byte
+    /// one. Both halves are the graphic-left form, which is how a glyph is
+    /// defined whichever side of the code table it is written from.
+    pub code: u16,
+    /// Whether it is the two-byte set, which is the rest of what names a
+    /// glyph: the same code can be defined in both.
+    pub wide: bool,
+}
+
+/// The macros a caption reaches for, as the bytes they stand for.
+///
+/// **The third byte of a caption is often `1D 60`, and it is not a
+/// character.** `SS3` invokes the macro set, which ARIB puts in G3 of what
+/// a caption starts with, and a cell of it is a stored escape sequence: a
+/// receiver runs the bytes and designates four sets in two. Broadcasters
+/// use them as shorthand -- `1D 60` for "kanji, alphanumerics, hiragana",
+/// `1D 61` for "kanji, katakana, hiragana", and back again -- and a line
+/// naming its speaker switches sets three times in six bytes that way.
+///
+/// Reading those two bytes as a character was printing a stray katakana in
+/// front of every such switch *and* leaving the sets where they were, so
+/// the text after them was read against the wrong ones. A German line came
+/// back as `ム(メhOM9ム)` where the broadcast said `（ヨハネス）`, and the
+/// hiragana of the line after a downloaded glyph came back as the geta
+/// mark, cell after cell, because G2 still held the glyphs the macro had
+/// just designated back out of it.
+///
+/// The three the standard opens with are here, which are the three a
+/// caption uses. The rest of the sixteen designate the mosaic sets and the
+/// downloaded ones for data broadcasting; a cell this does not know is run
+/// as nothing rather than as a guess, which leaves the sets alone and
+/// writes no character -- the same two things a receiver would do least
+/// wrongly.
+const MACROS: [(u8, &[u8]); 3] = [
+    (
+        0x60,
+        &[
+            0x1B, 0x24, 0x42, // kanji into G0
+            0x1B, 0x29, 0x4A, // the alphanumerics into G1
+            0x1B, 0x2A, 0x30, // hiragana into G2
+            0x1B, 0x2B, 0x20, 0x70, // and the macros themselves into G3
+            0x0F, 0x1B, 0x7D, // G0 over the left range, G2 over the right
+        ],
+    ),
+    (
+        0x61,
+        &[
+            0x1B, 0x24, 0x42, 0x1B, 0x29, 0x31, // katakana into G1
+            0x1B, 0x2A, 0x30, 0x1B, 0x2B, 0x20, 0x70, 0x0F, 0x1B, 0x7D,
+        ],
+    ),
+    (
+        0x62,
+        &[
+            0x1B, 0x24, 0x42, 0x1B, 0x29, 0x20, 0x41, // the first downloaded set into G1
+            0x1B, 0x2A, 0x30, 0x1B, 0x2B, 0x20, 0x70, 0x0F, 0x1B, 0x7D,
+        ],
+    ),
+];
+
+/// Run the macro in one cell of the macro set.
+///
+/// What it does is designate: the bytes are escape sequences and locking
+/// shifts, read here exactly as they are read in the text itself.
+fn run_macro(cell: u8, state: &mut State) {
+    let Some((_, body)) = MACROS.iter().find(|(at, _)| *at == cell) else {
+        return;
+    };
+    let mut at = 0;
+    while at < body.len() {
+        match body[at] {
+            0x1B => at = escape(body, at + 1, state),
+            0x0F => {
+                state.gl = 0;
+                at += 1;
+            }
+            0x0E => {
+                state.gl = 1;
+                at += 1;
+            }
+            _ => at += 1,
+        }
+    }
+}
+
+/// Where a reader starts: which sets are designated before the first byte.
+///
+/// A broadcast writes its programme names and its captions in the same code
+/// against different starting states, and neither says so in the text: what
+/// is designated at the outset is what the standard says for the kind of
+/// text this is. Three of the four slots agree. The fourth does not -- a
+/// name has the katakana in G3 and a caption has the macros -- and reading
+/// one as the other is reading a shorthand for switching sets as a
+/// character. See [`MACROS`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Start {
+    /// A programme name, a service name, an event description: the text of
+    /// the tables, and of a disc's own playlists.
+    Name,
+    /// A caption statement.
+    Caption,
+}
+
+impl Start {
+    fn state(self) -> State {
+        State {
+            sets: match self {
+                Start::Name => [Set::Kanji, Set::Alnum, Set::Hiragana, Set::Katakana],
+                Start::Caption => [Set::Kanji, Set::Alnum, Set::Hiragana, Set::Macro],
+            },
+            gl: 0,
+            gr: 2,
+        }
+    }
+}
+
+/// Which sets are designated, and which two of the four the bytes are being
+/// read against: the graphic-left range and the graphic-right one.
+struct State {
+    sets: [Set; 4],
+    gl: usize,
+    gr: usize,
 }
 
 /// Decode an ARIB eight-unit string.
@@ -264,6 +434,9 @@ pub fn decode(bytes: &[u8]) -> String {
     let mut out = String::new();
     walk(bytes, &mut |step| match step {
         Step::Text(text, _) => out.push_str(text),
+        // A name is text, and a downloaded glyph is not text: what a
+        // receiver shows for one is what a list has to show.
+        Step::Glyph(_) => out.push(UNKNOWN),
         // A line break. Both are written: a recorder's own playlists
         // separate the lines of a programme description with 0x0A, and a
         // broadcast's text uses 0x0D.
@@ -279,11 +452,15 @@ pub fn decode(bytes: &[u8]) -> String {
 /// Never fails, for [`decode`]'s reason: this is a broadcaster's own bytes,
 /// and half of a caption is better than none of one.
 pub fn walk(bytes: &[u8], visit: &mut impl FnMut(Step<'_>)) {
-    // What a receiver starts with, and what a playlist or a service
-    // description is written against.
-    let mut sets = [Set::Kanji, Set::Alnum, Set::Hiragana, Set::Katakana];
-    let mut gl = 0usize;
-    let mut gr = 2usize;
+    walk_from(Start::Name, bytes, visit)
+}
+
+/// As [`walk`], against the sets the kind of text in hand starts with.
+///
+/// Which matters for one slot of four; see [`Start`].
+pub fn walk_from(start: Start, bytes: &[u8], visit: &mut impl FnMut(Step<'_>)) {
+    // What a receiver has designated before the first byte arrives.
+    let mut state = start.state();
     let mut at = 0usize;
     // Where a character is spelled before it is handed over. One buffer for
     // the whole walk: a symbol is several characters and a character is
@@ -300,11 +477,13 @@ pub fn walk(bytes: &[u8], visit: &mut impl FnMut(Step<'_>)) {
             // them, and a reader that stepped over the code and not its
             // parameters would read those as text.
             0x00..=0x1F => match b {
-                0x0F => gl = 0,                                       // LS0
-                0x0E => gl = 1,                                       // LS1
-                0x19 => at = one(&mut scratch, bytes, at, sets[2], visit), // SS2
-                0x1D => at = one(&mut scratch, bytes, at, sets[3], visit), // SS3
-                0x1B => at = escape(bytes, at, &mut sets, &mut gl, &mut gr),
+                0x0F => state.gl = 0, // LS0
+                0x0E => state.gl = 1, // LS1
+                // The single shifts, which is also how a caption reaches
+                // the macro set: it sits in G3, where `SS3` finds it.
+                0x19 => at = one(&mut scratch, bytes, at, 2, &mut state, visit),
+                0x1D => at = one(&mut scratch, bytes, at, 3, &mut state, visit),
+                0x1B => at = escape(bytes, at, &mut state),
                 _ => {
                     let n = match b {
                         0x16 => 1, // PAPF
@@ -317,7 +496,7 @@ pub fn walk(bytes: &[u8], visit: &mut impl FnMut(Step<'_>)) {
                 }
             },
             0x20 => visit(Step::Text(" ", false)),
-            0x21..=0x7E => at = at_char(&mut scratch, bytes, at - 1, sets[gl], visit),
+            0x21..=0x7E => at = read(&mut scratch, bytes, at - 1, state.gl, &mut state, visit),
             0x7F => {}
             // C1. Colours, sizes and positioning, each with its own count of
             // parameters.
@@ -327,7 +506,7 @@ pub fn walk(bytes: &[u8], visit: &mut impl FnMut(Step<'_>)) {
                 at = end;
             }
             0xA0 => visit(Step::Text("\u{3000}", true)),
-            0xA1..=0xFE => at = at_char(&mut scratch, bytes, at - 1, sets[gr], visit),
+            0xA1..=0xFE => at = read(&mut scratch, bytes, at - 1, state.gr, &mut state, visit),
             0xFF => {}
         }
     }
@@ -349,6 +528,18 @@ fn at_char(
     // side of the code table the bytes arrived on.
     let hi = raw[0] & 0x7F;
     let lo = if width == 2 { raw[1] & 0x7F } else { 0 };
+    // A downloaded glyph has no spelling at all; the cell goes over as it
+    // is. Which cell it is takes the designation as well as the bytes: a
+    // one-byte set holds its glyphs under the final byte that named it.
+    if let Set::Drcs { set, wide } = set {
+        let code = if wide {
+            u16::from(hi) << 8 | u16::from(lo)
+        } else {
+            u16::from(set) << 8 | u16::from(hi)
+        };
+        visit(Step::Glyph(Drcs { code, wide }));
+        return at + width;
+    }
     // A symbol stands for a word rather than a letter, so it is the one
     // thing here that is not one character wide.
     scratch.clear();
@@ -425,19 +616,43 @@ const MARKERS: [&str; 37] = [
     "ほか",
 ];
 
-/// Read one character of `set`, for the single shifts, which name the set
-/// themselves.
+/// Read what is at `at` against the set in slot `slot`, and say where the
+/// next byte is.
+///
+/// Not always a character: a cell of the macro set is a little program,
+/// which is run here rather than read, and writes nothing. See [`MACROS`].
+fn read(
+    scratch: &mut String,
+    bytes: &[u8],
+    at: usize,
+    slot: usize,
+    state: &mut State,
+    visit: &mut impl FnMut(Step<'_>),
+) -> usize {
+    if state.sets[slot] == Set::Macro {
+        let Some(&cell) = bytes.get(at) else {
+            return bytes.len();
+        };
+        run_macro(cell, state);
+        return at + 1;
+    }
+    at_char(scratch, bytes, at, state.sets[slot], visit)
+}
+
+/// Read one byte against the set a single shift names, where there is a
+/// byte to read.
 fn one(
     scratch: &mut String,
     bytes: &[u8],
     at: usize,
-    set: Set,
+    slot: usize,
+    state: &mut State,
     visit: &mut impl FnMut(Step<'_>),
 ) -> usize {
     if at >= bytes.len() {
         return at;
     }
-    at_char(scratch, bytes, at, set, visit)
+    read(scratch, bytes, at, slot, state, visit)
 }
 
 fn character(set: Set, hi: u8, lo: u8) -> char {
@@ -471,7 +686,11 @@ fn character(set: Set, hi: u8, lo: u8) -> char {
             _ => UNKNOWN,
         },
         Set::Symbols => additional(hi, lo).unwrap_or(UNKNOWN),
-        Set::Unknown { .. } => UNKNOWN,
+        // None of these is reached from [`at_char`]: a downloaded glyph is
+        // handed over as the cell it is and a macro is run rather than
+        // read. They are here because a set with no characters in it still
+        // has to answer.
+        Set::Drcs { .. } | Set::Macro | Set::Unknown { .. } => UNKNOWN,
     }
 }
 
@@ -505,7 +724,7 @@ fn jis(hi: u8, lo: u8) -> Option<char> {
 
 /// Step over an escape sequence, applying the designations and locking
 /// shifts it carries.
-fn escape(bytes: &[u8], at: usize, sets: &mut [Set; 4], gl: &mut usize, gr: &mut usize) -> usize {
+fn escape(bytes: &[u8], at: usize, state: &mut State) -> usize {
     let Some(&b) = bytes.get(at) else { return at };
     match b {
         // Two byte set into one of the four.
@@ -513,15 +732,18 @@ fn escape(bytes: &[u8], at: usize, sets: &mut [Set; 4], gl: &mut usize, gr: &mut
             Some(0x28..=0x2B) => {
                 let to = (bytes[at + 1] - 0x28) as usize;
                 // A DRCS designation puts 0x20 before the final byte.
-                let (f, end) = match bytes.get(at + 2) {
-                    Some(0x20) => (bytes.get(at + 3).copied().unwrap_or(0), at + 4),
-                    other => (other.copied().unwrap_or(0), at + 3),
+                let (f, drcs, end) = match bytes.get(at + 2) {
+                    Some(0x20) => (bytes.get(at + 3).copied().unwrap_or(0), true, at + 4),
+                    other => (other.copied().unwrap_or(0), false, at + 3),
                 };
-                sets[to] = Set::from_final(f, true);
+                state.sets[to] = match drcs {
+                    true => Set::drcs(f, true),
+                    false => Set::from_final(f, true),
+                };
                 end
             }
             Some(&f) => {
-                sets[0] = Set::from_final(f, true);
+                state.sets[0] = Set::from_final(f, true);
                 at + 2
             }
             None => at + 1,
@@ -530,35 +752,38 @@ fn escape(bytes: &[u8], at: usize, sets: &mut [Set; 4], gl: &mut usize, gr: &mut
         0x28..=0x2B => {
             let to = (b - 0x28) as usize;
             match bytes.get(at + 1) {
+                // The one-byte downloaded sets, which is where a caption's
+                // own glyphs are: the final byte after the 0x20 says which
+                // of the fifteen, and the glyphs are held under it.
                 Some(0x20) => {
-                    sets[to] = Set::Unknown { wide: false };
+                    state.sets[to] = Set::drcs(bytes.get(at + 2).copied().unwrap_or(0), false);
                     at + 3
                 }
                 Some(&f) => {
-                    sets[to] = Set::from_final(f, false);
+                    state.sets[to] = Set::from_final(f, false);
                     at + 2
                 }
                 None => at + 1,
             }
         }
         0x6E => {
-            *gl = 2;
+            state.gl = 2;
             at + 1
         } // LS2
         0x6F => {
-            *gl = 3;
+            state.gl = 3;
             at + 1
         } // LS3
         0x7C => {
-            *gr = 3;
+            state.gr = 3;
             at + 1
         } // LS3R
         0x7D => {
-            *gr = 2;
+            state.gr = 2;
             at + 1
         } // LS2R
         0x7E => {
-            *gr = 1;
+            state.gr = 1;
             at + 1
         } // LS1R
         _ => at + 1,
@@ -880,12 +1105,100 @@ mod tests {
         assert_eq!(decode(&[0x0F, 0x7A, 0x21]), "⛌");
         assert_eq!(decode(&[0x0F, 0x7A, 0x27]), "〓");
         assert_eq!(decode(&[0x0F, 0x7A, 0x75]), "〓");
-        // And a downloaded glyph, which is a set with no characters in it at
-        // all: ESC 0x24 0x28 0x20 designates DRCS into G0.
+        // And a downloaded glyph, which has no spelling at all: ESC 0x24
+        // 0x28 0x20 designates the two-byte downloaded set into G0. A name
+        // is text and a picture is not, so the geta mark is what a list can
+        // show -- the caption reader is the one that draws it; see
+        // [`crate::caption::Glyph`].
         assert_eq!(
-            decode(&[0x1B, 0x24, 0x28, 0x20, 0x41, 0x0F, 0x21, 0x21]),
+            decode(&[0x1B, 0x24, 0x28, 0x20, 0x40, 0x0F, 0x21, 0x21]),
             "〓"
         );
+    }
+
+    /// A caption line as one channel sends it, which was read as neither
+    /// the words it says nor the sets it says them in.
+    ///
+    /// `1D 60` and `1D 61` are the macro set in G3, invoked by `SS3`: the
+    /// first designates the alphanumerics into G1 and the second the
+    /// katakana, so the speaker's name is katakana and the line after it is
+    /// Latin. Read as characters they were two stray katakana, and the sets
+    /// they name were never designated -- so the name came back as
+    /// `ム(メhOM9ム)` instead of `（ヨハネス）`.
+    #[test]
+    fn runs_the_macros_a_caption_switches_sets_with() {
+        // Taken off the air: a German line with its speaker named, two
+        // downloaded glyphs in it, and three macro invocations.
+        let raw: Vec<u8> = vec![
+            0x1D, 0x60, 0x0E, 0x89, 0x28, // macro, LS1, MSZ, "("
+            0x1D, 0x61, 0x0E, 0x68, 0x4F, 0x4D, 0x39, // macro, LS1, katakana
+            0x1D, 0x60, 0x0E, 0x29, // macro, LS1, ")"
+            0x1B, 0x2A, 0x20, 0x41, // the first downloaded set into G2
+            0x8A, 0xA1, // NSZ, and a glyph of it
+            0x89, 0x44, 0x61, 0x6E, 0x6B, 0x65, 0x2E, 0x20, // MSZ, "Danke. "
+            0x54, 0x73, 0x63, 0x68, 0xA3, 0x73, 0x73, // "Tsch", a glyph, "ss"
+            0x8A, 0xA2, 0x0F, // NSZ, another glyph
+        ];
+        let mut out = String::new();
+        let mut glyphs: Vec<u16> = Vec::new();
+        walk_from(Start::Caption, &raw, &mut |step| match step {
+            Step::Text(text, _) => out.push_str(text),
+            Step::Glyph(d) => glyphs.push(d.code),
+            Step::Control(..) => {}
+        });
+        assert_eq!(out, "(ヨハネス)Danke. Tschss");
+        // The three cells the broadcaster drew: the brackets around the
+        // line and the letter the alphanumerics do not have.
+        assert_eq!(glyphs, [0x4121, 0x4123, 0x4122]);
+    }
+
+    /// Which cell of which downloaded set a caption asked for.
+    ///
+    /// The one-byte sets are where a broadcast's own glyphs are, and a cell
+    /// in one of them is named by the designation as well as by the byte:
+    /// the same byte in DRCS-1 and DRCS-2 is two different glyphs.
+    #[test]
+    fn names_the_cell_a_downloaded_glyph_was_sent_in() {
+        let mut seen: Vec<Drcs> = Vec::new();
+        let mut collect = |bytes: &[u8]| {
+            seen.clear();
+            walk(bytes, &mut |step| {
+                if let Step::Glyph(d) = step {
+                    seen.push(d);
+                }
+            });
+            seen.clone()
+        };
+        // ESC 0x28 0x20 0x41 designates DRCS-1 into G0; the cell is the
+        // final byte over the character's own.
+        assert_eq!(
+            collect(&[0x1B, 0x28, 0x20, 0x41, 0x0F, 0x21]),
+            [Drcs {
+                code: 0x4121,
+                wide: false
+            }]
+        );
+        // The same cell written over the graphic-right range, which is
+        // where a caption writes it: the set is invoked there by LS2R and
+        // the byte arrives with the high bit set.
+        assert_eq!(
+            collect(&[0x1B, 0x2A, 0x20, 0x41, 0x1B, 0x7D, 0xA1]),
+            [Drcs {
+                code: 0x4121,
+                wide: false
+            }]
+        );
+        // And the two-byte set, whose cells are the two bytes themselves.
+        assert_eq!(
+            collect(&[0x1B, 0x24, 0x28, 0x20, 0x40, 0x0F, 0x21, 0x22]),
+            [Drcs {
+                code: 0x2122,
+                wide: true
+            }]
+        );
+        // The macro set is designated the same way and is not glyphs: what
+        // it holds is a program, and nothing here runs one.
+        assert!(collect(&[0x1B, 0x28, 0x20, 0x70, 0x0F, 0x60]).is_empty());
     }
 
     /// The shape a broadcast writes the season number of a returning series

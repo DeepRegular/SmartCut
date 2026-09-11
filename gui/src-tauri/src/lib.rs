@@ -3495,8 +3495,26 @@ struct TextRun {
     /// would.
     advance: u16,
     text: String,
+    /// The dots of one character, where the broadcaster sent the picture of
+    /// it rather than a code for it. A run carrying this is that character
+    /// and nothing else, and its `text` is empty.
+    glyph: Option<Glyph>,
     /// `#rrggbb`.
     colour: String,
+}
+
+/// A character a broadcaster drew: an arrow carrying a sentence onto the
+/// next line, the brackets around a speaker's name. See
+/// `smartcut_core::caption::Glyph`.
+#[derive(Serialize)]
+struct Glyph {
+    /// The dots across and down, which is the character cell it fills.
+    width: u16,
+    height: u16,
+    /// One bit a dot, rows in order, each row starting on a byte and the
+    /// high bit of a byte the leftmost dot -- base64, because this goes
+    /// through JSON on its way to the window.
+    ink: String,
 }
 
 #[derive(Serialize)]
@@ -3546,6 +3564,11 @@ async fn subtitle_at(
                         height: r.height,
                         advance: r.advance,
                         text: r.text.clone(),
+                        glyph: r.glyph.as_ref().map(|g| Glyph {
+                            width: u16::from(g.width),
+                            height: u16::from(g.height),
+                            ink: base64::engine::general_purpose::STANDARD.encode(&g.ink),
+                        }),
                         colour: format!("#{:06x}", r.colour),
                     })
                     .collect(),

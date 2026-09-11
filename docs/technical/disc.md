@@ -215,7 +215,10 @@ Two things are worth getting right:
   regularly. So all of them are named now, from ARIB STD-B62's own mapping:
   rows 85 and 86 the kanji, 90 the traffic marks, 91 the map marks, 92 the units
   and numbers, 93 the weather and the fractions, 94 the numerals. A cell nothing
-  is assigned to is still the geta mark, and so is a downloaded DRCS glyph.
+  is assigned to is still the geta mark. So is a downloaded DRCS glyph *here*:
+  a name is text, and a glyph a broadcaster sent the dots of is not text. The
+  caption reader is handed those dots and draws them; see
+  [The characters the broadcaster draws](broadcast-ts.md#the-characters-the-broadcaster-draws).
 
   **Cells 48 to 84 of row 90 are spelled rather than drawn.** They are the
   bracketed markers a listing carries — `[新]`, `[字]`, `[終]`, `[再]` — one

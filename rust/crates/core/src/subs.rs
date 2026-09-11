@@ -335,6 +335,11 @@ impl Reader {
                         if !caption::is_statement(id) {
                             return;
                         }
+                        // The pictures of the characters no code stands
+                        // for, which arrive beside the words and are taken
+                        // in first: the cell a line writes is defined in
+                        // the statement that writes it.
+                        layout.glyphs(body);
                         caption::text_units(body, &mut units);
                         if units.is_empty() {
                             return;

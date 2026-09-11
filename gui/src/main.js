@@ -815,6 +815,44 @@ async function showSubs(t) {
 /// picture.
 const BASELINE = 0.88;
 
+/// Draw the dots of a character the broadcaster sent the picture of.
+///
+/// ARIB calls them DRCS: the arrow that carries a sentence into the next
+/// line and the brackets a speaker's name sits in are sent as dots rather
+/// than as codes, because no character stands for them -- so there is no
+/// font to ask, and what a receiver draws is the picture itself. It arrives
+/// as one bit a dot and is drawn in the character cell, at whatever size
+/// the stage is.
+///
+/// On its own little canvas first, then scaled into place: that is one
+/// `drawImage`, which the browser smooths, rather than a rectangle per dot
+/// at a size where a dot is less than a pixel.
+function drawGlyph(ctx, glyph, colour, x, y, width, height) {
+  const bits = atob(glyph.ink);
+  const stride = Math.ceil(glyph.width / 8);
+  const off = document.createElement("canvas");
+  off.width = glyph.width;
+  off.height = glyph.height;
+  const octx = off.getContext("2d");
+  const image = octx.createImageData(glyph.width, glyph.height);
+  const r = parseInt(colour.slice(1, 3), 16);
+  const g = parseInt(colour.slice(3, 5), 16);
+  const b = parseInt(colour.slice(5, 7), 16);
+  for (let row = 0; row < glyph.height; row++) {
+    for (let col = 0; col < glyph.width; col++) {
+      const byte = bits.charCodeAt(row * stride + (col >> 3)) || 0;
+      if (!((byte >> (7 - (col & 7))) & 1)) continue;
+      const at = (row * glyph.width + col) * 4;
+      image.data[at] = r;
+      image.data[at + 1] = g;
+      image.data[at + 2] = b;
+      image.data[at + 3] = 255;
+    }
+  }
+  octx.putImageData(image, 0, 0);
+  ctx.drawImage(off, x, y, width, height);
+}
+
 /// Put what was last read on screen, at whatever size the stage is now.
 function drawSubs() {
   const layer = el("subs-layer");
@@ -911,6 +949,13 @@ function drawSubs() {
     const cell = advance * 0.9;
     const inset = (advance - cell) / 2;
     let at = x + inset;
+    // A character the broadcaster drew rather than named. It fills the cell
+    // the same way a glyph from a font does, and the box behind the line is
+    // what keeps it readable, so it needs no outline of its own.
+    if (run.glyph) {
+      drawGlyph(ctx, run.glyph, run.colour, at, y, cell, size);
+      continue;
+    }
     for (const ch of Array.from(run.text)) {
       // Squeezed into that cell where the font draws it wider. The half
       // width sizes -- MSZ, and the alphanumeric set a caption switches into
