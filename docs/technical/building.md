@@ -66,6 +66,7 @@ bash tests/run_audio_content_tests.sh # is real material's audio in the right pl
 bash tests/run_aac_tests.sh           # what the output's AAC frames are made of         8
 bash tests/run_downmix_tests.sh       # where 5.1 goes when it is folded to stereo       9
 bash tests/run_audio_codec_tests.sh   # writing the sound as another codec entirely     39
+bash tests/run_audio_smart_tests.sh   # smart rendering, codec by codec                 20
 bash tests/run_audio_format_tests.sh  # the rate and the width the samples are written  23
 bash tests/run_preview_tests.sh       # does a scrub show the time you asked for         7
 bash tests/run_index_tests.sh         # does the index answer as the walk did           27
@@ -80,6 +81,13 @@ bash tests/run_dvd_tests.sh           # a DVD-Video disc, as a folder and as an 
 bash tests/run_bd_audio_tests.sh      # the sound a disc carries, written out             39
 bash tests/run_vc1_tests.sh           # the VC-1 encoder, put through a decoder          4
 ```
+
+**Two of the proxy suite's checks fail on two of the fixtures, and are expected to.**
+`opengop points` and `ntsc points` count the access points either side — the recording's
+ten against the proxy's eleven. The other synthetic fixture agrees (41 access points
+either way) and so does real material, which is what the check exists to protect: 3607
+either way on half an hour of terrestrial, 1889 on the other. It is not a regression;
+the count was the same several releases back.
 
 ### Fixtures
 

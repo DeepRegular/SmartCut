@@ -107,7 +107,7 @@ there, the recording is **added** to it.
 | Option | Meaning |
 |---|---|
 | `--seek-index PATH` | Where to keep the seek index. Written on the first run and read on the next, which saves walking the recording again |
-| `--index scan\|container` | How the index is built. `container` is faster, but not available for TS |
+| `--index auto\|disc\|scan\|container` | Where the entry points come from. `auto`, the default, asks whoever already knows and falls back: the disc's own map, then the container's seek table, then the walk over the packets. `disc` and `container` ask one of those and stop; `scan` always walks, which is what a transport stream needs — it has neither table. A container table is taken only where it covers the whole recording |
 | `--proxy` | Build the editing proxy (a light stand-in file) beside the recording and stop (`.proxy.mp4`, or `-o`) |
 | `--as-proxy` | Treat the input as a proxy rather than a recording — how a proxy is checked against what it stands in for |
 

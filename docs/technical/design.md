@@ -265,8 +265,9 @@ and an MP4 or a Matroska file carries a seek table of its own. `scan_cached_repo
 tries the disc's index, then the container's, then the walk over the packets, which is
 what answers for a transport stream because it has neither. On an 81 GB UHD title that
 is the difference between under a second and eight minutes forty-five. A container
-table is only taken where it reaches the end of the recording; a program stream's
-probe leftovers are declined, [as on the command line](disc.md#the-containers-seek-table-has-to-reach-the-end-to-be-worth-having).
+table is only taken where it covers the recording — reaching the end is not enough, and
+a table with a hole in the middle of it is what a program stream's probe leaves behind,
+so those leftovers are declined, [as on the command line](disc.md#the-containers-seek-table-has-to-cover-the-recording-not-just-reach-the-end).
 
 ### Between the two windows
 
@@ -419,6 +420,14 @@ during the walk came out as sixteen re-encoded frames, 99.9% lossless.
 **Only two things are switched off in stage one.** 無劣化点へ吸着 has nothing to snap to,
 and 再生 decodes continuously, so an approximate seek gives it no reliable start. Nothing
 else waits.
+
+**The plan is asked for once more when the open is over.** Every step above schedules the
+plan panel while the window is still `opening`, and a plan asked for then can only be
+answered 「読み込み中」. That was the last ask the panel ever got, so whether it settled came
+down to whether the picture decode at the end of `pointsArrived` beat a 120 ms timer — on a
+1440x1080 recording in a wide window it did not, and a recording that had been read through
+sat under a band saying it was still being read, for as long as the window stayed open.
+`openPath` asks again after the walk has been put in place.
 
 **The pointer steps by frames in stage one; the picture under it does not.** `showFrame`
 snaps the playhead onto the instant the picture that came back turned out to be at, so that

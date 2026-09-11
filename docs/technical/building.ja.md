@@ -67,6 +67,7 @@ bash tests/run_audio_content_tests.sh # 実素材の音声が正しい位置に�
 bash tests/run_aac_tests.sh           # 出力の AAC フレームが何でできているか             8
 bash tests/run_downmix_tests.sh       # 5.1ch をステレオに畳んだとき各成分がどこへ行くか  9
 bash tests/run_audio_codec_tests.sh   # 音声を別のコーデックで書き出せるか               39
+bash tests/run_audio_smart_tests.sh   # コーデックごとのスマートレンダリング             20
 bash tests/run_audio_format_tests.sh  # 音声のサンプリングレートと量子化ビット数         23
 bash tests/run_preview_tests.sh       # スクラブで指定した時刻の絵が出るか                7
 bash tests/run_index_tests.sh         # 索引が走査と同じ答えを返すか                     27
@@ -81,6 +82,13 @@ bash tests/run_dvd_tests.sh           # DVD-Video をフォルダーと .iso か
 bash tests/run_bd_audio_tests.sh      # ディスクの音声が書き出せるか                    39
 bash tests/run_vc1_tests.sh           # VC-1 エンコーダをデコーダに通す                  4
 ```
+
+**プロキシのスイートは 2 つのフィクスチャで 2 件落ちるが、これは既知である。**
+`opengop points` と `ntsc points` は録画とプロキシのアクセスポイント数を突き合わせる
+検査で、この 2 つでは録画の 10 に対してプロキシが 11 になる。もう 1 つの合成
+フィクスチャは一致し（どちらも 41）、この検査が守ろうとしている実素材も一致する
+（地上波 30 分で 3607、もう 1 本で 1889、いずれも両方同じ）。回帰ではなく、
+数世代前の版でも同じ数だった。
 
 ### フィクスチャ
 

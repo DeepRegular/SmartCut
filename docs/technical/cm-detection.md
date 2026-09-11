@@ -245,6 +245,13 @@ All 35 on Nihonkai TV land exactly on the 15-second grid. The largest difference
 the boundaries checked by eye is 0.16 s, and it is always slightly early: the screen
 is cleared *for* the cut, not *by* it.
 
+**A recording has to be carrying the stream at all.** A recorder that started before
+the programme did has a first program map naming no caption stream, and libavformat
+stops probing five megabytes in, so such a recording used to arrive here with no
+captions to read resets out of — 7 of 279 captioned recordings measured. Those are
+opened a second time with a deeper probe now, and the marks are there to find; see
+[the captions the head of the file does not mention](broadcast-ts.md#the-captions-the-head-of-the-file-does-not-mention).
+
 **More stations may omit these marks than emit them.** Three of the five recordings
 emit none. So this takes the same shape as the logo detector: if nothing is found it
 returns "none" and the caller falls back to silence and logo. Only when resets are
