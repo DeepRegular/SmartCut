@@ -87,7 +87,17 @@ impl Default for DetectOptions {
 /// Peak amplitude of one decoded audio frame, as a fraction of full scale.
 fn frame_peak(frame: &ff::frame::Audio) -> f64 {
     use ff::format::sample::{Sample, Type};
-    let planes = if frame.is_planar() { frame.planes() } else { 1 };
+    // A frame can claim more planes than an `AVFrame` has pointers to hold:
+    // eight is all there are, and a corrupt header in an off-air recording is
+    // enough to ask for a ninth. Reading it is a panic rather than an error,
+    // and it took the whole detection down on one recording in a survey of
+    // thirty-five. What the loudest channel is does not change for looking at
+    // the first eight.
+    let planes = if frame.is_planar() {
+        frame.planes().min(8)
+    } else {
+        1
+    };
     let mut peak = 0.0f64;
     for p in 0..planes {
         match frame.format() {
