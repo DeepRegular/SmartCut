@@ -2,7 +2,9 @@
 
 # SmartCut
 
-**テレビ録画から CM を、再エンコードせずに切り出す。**
+**録画は残す。CM は落とす。**
+
+テレビ録画から CM を、再エンコードせずに切り出す。
 
 [![Release](https://img.shields.io/github/v/release/DeepRegular/SmartCut?style=flat-square&color=1f883d)](https://github.com/DeepRegular/SmartCut/releases)
 [![License](https://img.shields.io/badge/license-GPL--3.0-blue?style=flat-square)](LICENSE)
@@ -265,6 +267,33 @@ FFmpeg にもグラフィックスカードにもないのです。そこで Sma
 映像トラックは 1 ファイルにつき 1 本のみです。制限の一覧は
 [既知の制限](docs/technical/validation.ja.md#既知の制限)を参照してください。
 
+## 「GOP 単位で切って繋ぐ」では済まない理由
+
+「キーフレームを探し、そこで切り、繋ぐ」は誰でも思いつく方法で、そして動きません。
+以下はすべて試作の途中で実際に踏んだもので、すべてに再現を押さえたテストがあります。
+
+- **パラメータセットが一致しない。** 再エンコードした断片の SPS を元のエンコーダの
+  それとビット単位で一致させることはできず、MP4 の `avcC` ボックスは 1 組しか
+  持てません。素朴に繋ぐと、出力の半分が違う SPS で復号されます。
+- **キーフレームは復号では見つからない。** `ffprobe -skip_frame nokey` はオープン
+  GOP のアクセスポイントを取りこぼします。参照先のない I ピクチャをデコーダが
+  出力できないからです。最初の試験素材では 10 個中 3 個しか見つかりませんでした。
+- **leading picture。** デコード順では I ピクチャの後、表示順では前に来るピクチャは、
+  直前の GOP を参照しています。これを捨てられるかどうかは、そのコーデックが
+  leading picture を参照ピクチャにすることを許すかで決まり、MPEG-2・H.264・VC-1 は
+  それぞれ違う答えを返します。
+- **秒は単位として間違っている。** `-c copy` では区間長は DTS に対して測られ、DTS は
+  リオーダー分だけ表示時刻より先を走っています。180 フレームが 182 フレームとして
+  出てきました。
+- **音声に GOP 構造はなく、** そのフレーム境界が映像のカット位置に来ることはありません。
+- **継ぎ目の両側のピクチャオーダーカウントは、互いのものではありません。**
+  デコーダはその順でピクチャを返しますが、継ぎ目の両側の番号は別のエンコーダが
+  振ったものです。重なったところでは、去っていく側の 1 コマが、入ってくる側より
+  *後* に返ってきます。
+
+全部で 10 個あり、[実装上の難所](docs/technical/algorithm.ja.md#実装上の難所)に
+踏んだ順で並べてあります。ドキュメントを 1 ページだけ読むなら、そのページです。
+
 ## どのくらい安全か
 
 **元のファイルは変更しません。** SmartCut は読み込むだけです。出力は新しい
@@ -299,6 +328,76 @@ FFmpeg にもグラフィックスカードにもないのです。そこで Sma
 途中で見つかった不具合や、この方式そのものの限界も含めた完全な結果は
 [検証](docs/technical/validation.ja.md)にあります。
 
+## 中身の構成
+
+エンジンは Rust のクレート 1 つです。GUI とコマンドラインツールはその前面に
+立つ 2 つのフロントエンドで、カットについて何かを決めるのはどちらでもありません。
+
+```
+             gui/                          rust/crates/cli/
+  ┌──────────────────────────┐   ┌──────────────────────────┐
+  │  Tauri v2・バニラ JS     │   │  smartcut-cli            │
+  └────────────┬─────────────┘   └────────────┬─────────────┘
+               └───────────────┬──────────────┘
+                               ▼
+  ┌─────────────────────────────────────────────────────────┐
+  │  rust/crates/core — smartcut-core                       │
+  ├─────────────────────────────────────────────────────────┤
+  │  ソースを開く        input  netpath  index  seek_index  │
+  │                      proxy  thumbs                      │
+  │  カットそのもの      plan  bitstream  cut  audio  adts  │
+  │  放送そのもの        si  arib  caption  series          │
+  │  切れ目を探す        cm  logo                           │
+  │  ディスク、両方向    disc  dvd  udf  bdav  udfw         │
+  │  字幕                pgs  vobsub  subs                  │
+  │  編集画面に見せる    preview  playback_audio            │
+  └────────────┬───────────────────────────┬────────────────┘
+               ▼                           ▼
+  ┌──────────────────────────┐   ┌──────────────────────────┐
+  │  FFmpeg  libav*          │   │  rust/crates/vc1         │
+  │  分離・復号・符号化      │   │  イントラ専用 VC-1       │
+  │                          │   │  エンコーダ              │
+  └──────────────────────────┘   └──────────────────────────┘
+```
+
+### なぜこの実装を信用できるか
+
+二度書いてあるからです。
+
+`smartcut/` ディレクトリには、同じアルゴリズムの Python 実装があります。放置された
+試作ではありません。アルゴリズムとその落とし穴を最初に固めたのがこの実装で、
+**リファレンス実装兼テストオラクル**として残してあります。両方の実装が同じ
+フレームハッシュ照合にかけられ、同じ入力に対して同じ無劣化率を報告しなければ
+なりません。
+
+```
+                        アルゴリズム
+                              │
+              ┌───────────────┴───────────────┐
+              ▼                               ▼
+   smartcut/        (Python)        rust/crates/core   (Rust)
+   リファレンス実装                 配布されるほう
+   planner · renderer ·             plan · cut · audio ·
+   bitstream · probe · verify       bitstream · ...
+              │                               │
+              ▼                               ▼
+     tests/run_tests.sh              tests/run_rust_tests.sh
+              │                               │
+              └───────────────┬───────────────┘
+                              ▼
+         同じ実録画に対する同じフレームハッシュ照合
+                              │
+                              ▼
+                      一致する無劣化率
+```
+
+オラクルが同意しないエンジンの変更は、正しいとは呼ばせない。Python が今も
+残っている理由はそれだけです。
+
+両方がくぐる E2E テスト 20 スイート・352 チェックは `tests/` にあります。
+どのモジュールに何が入っているかは [Rust コア](docs/technical/rust-core.ja.md)、
+なぜこの分け方なのかは[設計ノート](docs/technical/design.ja.md)にあります。
+
 ## ドキュメント
 
 ドキュメントは 2 つに分かれています。各ページに日本語版と英語版があり、切り替えは
@@ -310,25 +409,6 @@ FFmpeg にもグラフィックスカードにもないのです。そこで Sma
 |---|---|
 | **ユーザーガイド**<br>使い方 | [GUI の使い方](docs/user-guide/gui.ja.md) ・ [CM 検出](docs/user-guide/cm-detection.ja.md) ・ [まとめて処理する](docs/user-guide/batch.ja.md) ・ [プロジェクト](docs/user-guide/projects.ja.md) ・ [コマンドラインで使う](docs/user-guide/cli.ja.md) |
 | **技術資料**<br>中で何をしているか | [アルゴリズム](docs/technical/algorithm.ja.md) ・ [検証](docs/technical/validation.ja.md) ・ [音声](docs/technical/audio.ja.md) ・ [放送 TS](docs/technical/broadcast-ts.ja.md) ・ [CM 検出の実装](docs/technical/cm-detection.ja.md) ・ [ディスクを読む](docs/technical/disc.ja.md) ・ [ディスクを書く](docs/technical/bdav.ja.md) ・ [Rust コア](docs/technical/rust-core.ja.md) ・ [設計ノート](docs/technical/design.ja.md) ・ [ビルド](docs/technical/building.ja.md) ・ [配布](docs/technical/distribution.ja.md) |
-
-1 ページだけ読むなら[実装上の難所](docs/technical/algorithm.ja.md#実装上の難所)を
-おすすめします。「GOP 単位で切って繋ぐだけ」では済まない 10 の理由を、実際に
-踏んだ順に並べてあります。
-
-## リポジトリの構成
-
-```
-rust/     Rust コア（smartcut_core）と VC-1 エンコーダと CLI  ← 本体
-gui/      Tauri v2 + バニラ JS の GUI
-smartcut/ Python リファレンス実装             ← テストオラクル
-tests/    E2E テスト 20 スイート・352 チェック
-docs/     ドキュメント
-```
-
-Python 実装はリファレンス実装兼テストオラクルとして残してあります。アルゴリズム
-とその落とし穴を最初に固めたのがこの実装です。Rust コアと同じフレームハッシュ
-照合を使っていて、`tests/run_tests.sh` と `tests/run_rust_tests.sh` は同じ
-無劣化率を報告します。
 
 ## ライセンス
 

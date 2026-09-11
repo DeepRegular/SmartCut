@@ -2,7 +2,9 @@
 
 # SmartCut
 
-**Cut commercials out of a TV recording without re-encoding it.**
+**Keep the recording. Lose the commercials.**
+
+Cut commercials out of a TV recording without re-encoding it.
 
 [![Release](https://img.shields.io/github/v/release/DeepRegular/SmartCut?style=flat-square&color=1f883d)](https://github.com/DeepRegular/SmartCut/releases)
 [![License](https://img.shields.io/badge/license-GPL--3.0-blue?style=flat-square)](LICENSE)
@@ -281,6 +283,36 @@ One video track per file. See
 [known limitations](docs/technical/validation.md#known-limitations) for the full
 list.
 
+## Why is this harder than it looks?
+
+"Find a key frame, cut there, join the pieces" is the obvious approach, and it
+does not work. Every one of these was hit for real while building the prototype,
+and every one has a test pinning the reproduction:
+
+- **The parameter sets do not match.** A re-encoded fragment's SPS cannot be made
+  bit-identical to the original encoder's, and an MP4 `avcC` box holds only one
+  set. Join the pieces naively and half the output is decoded with the wrong one.
+- **Key frames cannot be found by decoding.** `ffprobe -skip_frame nokey` misses
+  the access points in open GOPs, because the decoder cannot output an I picture
+  whose references are absent. On the first test material it found 3 of 10.
+- **Leading pictures.** Pictures that come after an I picture in decode order but
+  before it in display order reference the GOP that just ended. Whether they can
+  simply be dropped depends on whether the codec allows them to be reference
+  pictures — and MPEG-2, H.264 and VC-1 each answer differently.
+- **Seconds are the wrong unit.** Under `-c copy` a duration is measured against
+  the DTS, which runs ahead of presentation time by the reorder depth. 180 frames
+  came out as 182.
+- **Audio has no GOP structure,** so its frames never land where the video's cut
+  does.
+- **The picture order counts either side of a splice are not one another's.**
+  A decoder hands pictures back in that order, and the two sides of a seam were
+  numbered by different encoders. Where they overlap, one picture of the outgoing
+  scene comes back a frame *after* the incoming one.
+
+There are ten of them, in [the pitfalls](docs/technical/algorithm.md#pitfalls),
+in the order they were hit. If you read one page of the documentation, make it
+that one.
+
 ## How safe is it?
 
 **Your original file is never modified.** SmartCut only reads it. The output
@@ -317,6 +349,77 @@ it means it.
 Full results, including the bugs found along the way and the limits inherent in
 the approach, are in [Validation](docs/technical/validation.md).
 
+## Under the hood
+
+The engine is one Rust crate. The GUI and the command-line tool are two front
+ends onto it: neither of them decides anything about a cut.
+
+```
+             gui/                          rust/crates/cli/
+  ┌──────────────────────────┐   ┌──────────────────────────┐
+  │  Tauri v2, vanilla JS    │   │  smartcut-cli            │
+  └────────────┬─────────────┘   └────────────┬─────────────┘
+               └───────────────┬──────────────┘
+                               ▼
+  ┌─────────────────────────────────────────────────────────┐
+  │  rust/crates/core — smartcut-core                       │
+  ├─────────────────────────────────────────────────────────┤
+  │  opening a source    input  netpath  index  seek_index  │
+  │                      proxy  thumbs                      │
+  │  the cut itself      plan  bitstream  cut  audio  adts  │
+  │  the broadcast       si  arib  caption  series          │
+  │  finding the breaks  cm  logo                           │
+  │  discs, both ways    disc  dvd  udf  bdav  udfw         │
+  │  subtitles           pgs  vobsub  subs                  │
+  │  the editor's view   preview  playback_audio            │
+  └────────────┬───────────────────────────┬────────────────┘
+               ▼                           ▼
+  ┌──────────────────────────┐   ┌──────────────────────────┐
+  │  FFmpeg  libav*          │   │  rust/crates/vc1         │
+  │  demux, decode, encode   │   │  intra-only VC-1 encoder │
+  └──────────────────────────┘   └──────────────────────────┘
+```
+
+### Why trust the implementation?
+
+Because it is written twice.
+
+The `smartcut/` directory holds a Python implementation of the same algorithm.
+It is not a prototype left lying around: it is what pinned down the algorithm and
+its pitfalls in the first place, and it is kept as a **reference implementation
+and test oracle**. Both implementations are put through the same frame-hash
+verification, and both have to report the same lossless ratio on the same input.
+
+```
+                        the algorithm
+                              │
+              ┌───────────────┴───────────────┐
+              ▼                               ▼
+   smartcut/        (Python)        rust/crates/core   (Rust)
+   reference implementation         the one that ships
+   planner · renderer ·             plan · cut · audio ·
+   bitstream · probe · verify       bitstream · ...
+              │                               │
+              ▼                               ▼
+     tests/run_tests.sh              tests/run_rust_tests.sh
+              │                               │
+              └───────────────┬───────────────┘
+                              ▼
+               the same frame-hash comparison
+              against the same real recordings
+                              │
+                              ▼
+                  identical lossless ratios
+```
+
+An engine change the oracle disagrees with does not get to be called correct.
+That is the whole reason the Python is still there.
+
+`tests/` holds the 20 end-to-end suites and 352 checks both sides are run
+through. See [Rust core](docs/technical/rust-core.md) for what lives in each
+module, and [Design notes](docs/technical/design.md) for why the split is shaped
+this way.
+
 ## Documentation
 
 The documentation is in two parts. Every page exists in English and Japanese;
@@ -328,27 +431,6 @@ the switch is at the top of each one.
 |---|---|
 | **User guide**<br>How to use it | [Using the GUI](docs/user-guide/gui.md) ・ [Commercial detection](docs/user-guide/cm-detection.md) ・ [Working through a batch](docs/user-guide/batch.md) ・ [Projects](docs/user-guide/projects.md) ・ [Using the command line](docs/user-guide/cli.md) |
 | **Technical**<br>What it does inside | [Algorithm](docs/technical/algorithm.md) ・ [Validation](docs/technical/validation.md) ・ [Audio](docs/technical/audio.md) ・ [Broadcast TS](docs/technical/broadcast-ts.md) ・ [Commercial detection internals](docs/technical/cm-detection.md) ・ [Reading a disc](docs/technical/disc.md) ・ [Writing a disc](docs/technical/bdav.md) ・ [Rust core](docs/technical/rust-core.md) ・ [Design notes](docs/technical/design.md) ・ [Building](docs/technical/building.md) ・ [Distribution](docs/technical/distribution.md) |
-
-If you only read one page, make it
-[the pitfalls](docs/technical/algorithm.md#pitfalls): the ten reasons why "just
-cut on GOP boundaries and concatenate the pieces" does not work, in the order
-they were hit.
-
-## Repository layout
-
-```
-rust/     Rust core (smartcut_core), the VC-1 encoder and the CLI   <- the real implementation
-gui/      Tauri v2 + vanilla JS GUI
-smartcut/ Python reference implementation     <- test oracle
-tests/    20 end-to-end suites, 352 checks
-docs/     Documentation
-```
-
-The Python implementation is kept as a reference implementation and test oracle.
-It is what pinned down the algorithm and its pitfalls in the first place. It
-shares the same frame-hash verification as the Rust core, and
-`tests/run_tests.sh` and `tests/run_rust_tests.sh` report identical lossless
-ratios.
 
 ## License
 
