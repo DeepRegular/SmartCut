@@ -684,6 +684,13 @@ struct Clip {
     start: u32,
     end: u32,
     video_pid: u16,
+    /// Which transport stream this was, and which service on it, as the
+    /// recording's own tables name them. They go into the block that says
+    /// what kind of stream the clip is; see [`clpi`]. Zero where the
+    /// recording had no tables to name them in, which is what a cut out of
+    /// an MP4 is.
+    tsid: u16,
+    service_id: u16,
     streams: Vec<Carried>,
     entries: Vec<Entry>,
 }
@@ -691,18 +698,33 @@ struct Clip {
 /// How far past an entry point the picture it names ends, in the units the
 /// three bits of `I_end_position_offset` count in.
 ///
-/// Measured off both reference discs, which fill the field on every entry:
-/// the value steps at 128 kB of stream and counts from one, so a picture of
-/// under 128 kB is 1, one of under 256 kB is 2, and so on. The boundaries are
-/// exact on 678 entries read off two discs -- the largest picture in each
-/// bucket and the smallest in the next fall either side of a multiple of
-/// 131,072 bytes without a single crossing.
+/// **The steps are not even.** The first three are 682 source packets apart,
+/// which is near enough 128 kB of stream that an even 128 kB reads right all
+/// the way to the third -- and then they stretch, to four and a half of that
+/// step, to seven, to ten. Carrying the even one upwards, as this did
+/// before, is wrong from the fourth bucket on.
+///
+/// Measured against the whole of one disc an authoring tool wrote. Each of
+/// its 1019 entry points was read back out of the stream itself -- from the
+/// entry to the first packet of the picture after it, which is where the
+/// picture it names ends -- and every one of the 1019 falls in the bucket
+/// the disc's own field names. The even step puts 75 of them a bucket too
+/// high, all of them pictures over 393 kB, which on an interlaced broadcast
+/// is an ordinary size for one.
+///
+/// The last two steps are the only ones no disc here exercises. They are
+/// `sorshi/bdav`'s, which arrived at the same table from the other
+/// direction, against a different tool's output.
 ///
 /// It is what a player reads to fetch one picture and no more, which is how a
-/// fast forward is done. Written as zero, as this did before, it says the
+/// fast forward is done. Written as zero, as this once did, it says the
 /// picture is shorter than the field can express.
 fn ends_within(packets: u32) -> u8 {
-    (((u64::from(packets) * SOURCE_PACKET as u64) >> 17) + 1).min(7) as u8
+    const STEPS: [u32; 6] = [682, 1364, 2046, 3069, 4774, 6820];
+    STEPS
+        .iter()
+        .position(|end| packets <= *end)
+        .map_or(7, |i| i as u8 + 1)
 }
 
 /// Read a written stream for everything the index around it has to say.
@@ -833,6 +855,8 @@ fn read_clip(
         start: ticks(0.0),
         end: ticks(src.duration),
         video_pid,
+        tsid: service.as_ref().map_or(0, |s| s.transport_stream_id),
+        service_id: service.as_ref().map_or(0, |s| s.service_id),
         streams,
         entries,
     })
@@ -961,16 +985,36 @@ fn clpi(clip: &Clip) -> Vec<u8> {
     info.extend_from_slice(&clip.rate.to_be_bytes());
     info.extend_from_slice(&clip.packets.to_be_bytes());
     info.extend_from_slice(&[0u8; 128]);
-    // The block that says what kind of stream this is and who wrote it.
-    // Nothing is claimed about the network -- the flags that say which of
-    // those fields to believe are clear, because everything in them is
-    // already in the stream's own tables, where a player that wants it will
-    // look -- but the name of the tool is not a claim about the recording and
-    // both reference discs carry theirs. Sixteen bytes, padded with the same
-    // ones they pad with.
+    // The block that says which stream this was and who wrote it.
+    //
+    // Both discs here that fill it in -- one a recorder's, one an authoring
+    // tool's, sixteen years apart -- fill it in the same way: the flags byte
+    // 0x7C, an unexplained 0x04, the transport stream and the service the
+    // recording came off, and the country, which on both of them is Japan
+    // and here is written as Japan too -- the rest of these files is ARIB
+    // from end to end, down to the text in the playlist. The flags are
+    // copied whole rather than reasoned about, because what each bit stands
+    // for is not written down anywhere this program can reach, and both of
+    // those discs write 0x7C while leaving the format id zero, which is what
+    // this does too.
+    //
+    // A cut with no tables behind it -- one out of an MP4 -- has no ids to
+    // put here, and then the block says so: flags clear, and the fields it
+    // would vouch for left at zero, which is what this wrote before 0.5.13.
+    //
+    // The name of the tool is not a claim about the recording, so it goes in
+    // either way. Sixteen bytes, padded out with the same 0xFF the two discs
+    // that carry a name pad theirs with.
     let mut about = vec![0u8; 30];
+    if (clip.tsid, clip.service_id) != (0, 0) {
+        about[0] = 0x7C;
+        about[6] = 0x04;
+        about[7..9].copy_from_slice(&clip.tsid.to_be_bytes());
+        about[9..11].copy_from_slice(&clip.service_id.to_be_bytes());
+        about[11..14].copy_from_slice(b"JPN");
+    }
     about[14..22].copy_from_slice(b"SmartCut");
-    about[26..30].copy_from_slice(&[0xFF; 4]);
+    about[22..30].copy_from_slice(&[0xFF; 8]);
     info.extend_from_slice(&30u16.to_be_bytes());
     info.extend_from_slice(&about);
 
@@ -1300,6 +1344,8 @@ mod tests {
             start: 20842,
             end: 20842 + 45000 * 30,
             video_pid: 0x1001,
+            tsid: 0x40D1,
+            service_id: 0x00D3,
             streams: vec![
                 Carried {
                     pid: 0x1001,
@@ -1391,6 +1437,59 @@ mod tests {
         };
         assert_eq!(mark_at(0), 20842);
         assert_eq!(mark_at(1), 20842 + (12.5 * TICK) as u32);
+    }
+
+    /// The buckets a picture's length falls in, at the boundaries a disc was
+    /// measured to use. The first three are an even step apart and the rest
+    /// are not, which is the whole reason this is a table and not a shift.
+    #[test]
+    fn a_picture_lands_in_the_bucket_a_disc_would_give_it() {
+        for (packets, want) in [
+            (1, 1),
+            (682, 1),
+            (683, 2),
+            (1364, 2),
+            (1365, 3),
+            (2046, 3),
+            // The first boundary an even 128 kB step gets wrong: it reads
+            // 2047 packets as the fourth bucket and 2731 as the fifth, where
+            // a disc has both in the fourth.
+            (2047, 4),
+            (2731, 4),
+            (3069, 4),
+            (3070, 5),
+            (4774, 5),
+            (4775, 6),
+            (6820, 6),
+            (6821, 7),
+            (u32::MAX, 7),
+        ] {
+            assert_eq!(ends_within(packets), want, "{packets} packets");
+        }
+    }
+
+    /// The block that says which stream the clip was cut out of. A recording
+    /// with tables behind it names them; the flags byte that vouches for
+    /// them is the one both reference discs write.
+    #[test]
+    fn the_clip_says_which_service_it_came_off() {
+        let raw = clpi(&clip());
+        let about = &raw[0xBE..0xBE + 30];
+        assert_eq!(about[0], 0x7C);
+        assert_eq!(&about[7..9], &[0x40, 0xD1]);
+        assert_eq!(&about[9..11], &[0x00, 0xD3]);
+        assert_eq!(&about[11..14], b"JPN");
+        assert_eq!(&about[14..22], b"SmartCut");
+
+        // A cut with nothing to name vouches for nothing.
+        let mut anonymous = clip();
+        anonymous.tsid = 0;
+        anonymous.service_id = 0;
+        let raw = clpi(&anonymous);
+        let about = &raw[0xBE..0xBE + 30];
+        assert_eq!(about[0], 0x00);
+        assert_eq!(&about[..14], &[0u8; 14]);
+        assert_eq!(&about[14..22], b"SmartCut");
     }
 
     #[test]

@@ -107,6 +107,11 @@ for clip in 00001 00002; do
   # player reads to fetch one picture and no more.
   same "$clip: every entry says where its picture ends" "0" \
     "$(field "$facts" "$clip.entries_say_where_the_picture_ends")"
+  # And says it in the bucket the picture's own length falls in, measured
+  # off the stream. The buckets are not evenly spaced; writing them as
+  # though they were is right for the first three and wrong above them.
+  same "$clip: and says it in the right bucket" "0" \
+    "$(field "$facts" "$clip.picture_ends_wrong")"
   same "$clip: a recording, as both reference discs say" "0" \
     "$(field "$facts" "$clip.application_type")"
 done

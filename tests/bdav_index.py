@@ -13,6 +13,7 @@ What is printed is `key=value` lines, one per recording, for the shell to
 compare against what it asked for.
 """
 import math
+import bisect
 import os
 import struct
 import sys
@@ -197,6 +198,39 @@ def entries_land(m2ts, pid, ep):
     return wrong
 
 
+def ends_wrong(m2ts, pid, ep):
+    """Does each entry say which bucket its picture's length falls in?
+
+    The three bits are not a length but a bucket, and the buckets are not
+    evenly spaced -- 682 source packets, then 1364, 2046, 3069, 4774, 6820,
+    which is an even step for the first three and then four and a half of it,
+    seven, ten. Measured off a disc an authoring tool wrote, where all 1019
+    entries land this way and 75 of them land a bucket higher on an even
+    step. So the check is the measurement: read the picture's own length out
+    of the stream -- entry to the first packet of the picture after it -- and
+    ask which bucket it is in.
+    """
+    steps = (682, 1364, 2046, 3069, 4774, 6820)
+    starts = []
+    with open(m2ts, "rb") as f:
+        i = 0
+        while chunk := f.read(SOURCE_PACKET * 8192):
+            for k in range(0, len(chunk) - SOURCE_PACKET + 1, SOURCE_PACKET):
+                p = chunk[k + 4 : k + 8]
+                if p[1] & 0x40 and (((p[1] & 0x1F) << 8) | p[2]) == pid:
+                    starts.append(i + k // SOURCE_PACKET)
+            i += len(chunk) // SOURCE_PACKET
+    wrong = 0
+    for _pts, spn, ends in ep:
+        j = bisect.bisect_right(starts, spn)
+        if j >= len(starts):
+            continue
+        span = starts[j] - spn
+        want = next((n + 1 for n, end in enumerate(steps) if span <= end), 7)
+        wrong += ends != want
+    return wrong
+
+
 # --- the playlist and the disc -------------------------------------------
 
 def rpls(path):
@@ -279,9 +313,12 @@ def main():
         print(f"{stem}.rate_kept={least >= floor}")
         print(f"{stem}.rate_exact={least == math.ceil(floor)}")
         # The field that says where the picture an entry names ends, which a
-        # player reads to fetch one picture and no more.
+        # player reads to fetch one picture and no more. Zero says the
+        # picture is shorter than the field can express; anything else has to
+        # be the bucket the picture's own length falls in.
         print(f"{stem}.entries_say_where_the_picture_ends="
               f"{sum(1 for _, _, ends in clip['ep'] if ends == 0)}")
+        print(f"{stem}.picture_ends_wrong={ends_wrong(m2ts, video, clip['ep'])}")
         # A coarse entry per 2**20 of the clock, which is what a player
         # reconstructs against -- see `ep_map`.
         print(f"{stem}.coarse_entries={clip['coarse']}")

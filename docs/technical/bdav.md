@@ -192,12 +192,20 @@ the time say how far past an entry the picture it names ends, which is what a
 player reads to fetch one picture and no more — how a fast forward is done.
 Both reference discs fill it in on every entry; this used to write zero, which
 says the picture is shorter than the field can express. What the units are is
-not written down anywhere this project can reach, so they were measured: on
-678 entries read off the two discs the value steps at 128 kB of stream and
-counts from one, the largest picture in each bucket and the smallest in the
-next falling either side of a multiple of 131,072 bytes without a single
-crossing. Written that way, all 299 entries checked on a recording of this
-program's own agree with the picture they name.
+not written down anywhere this project can reach, so they were measured — and
+the steps turn out **not to be even**. The first three are 682 source packets
+apart, which is close enough to 128 kB of stream that an even 128 kB reads
+right all the way to the third; above that they stretch, to four and a half of
+that step, to seven, to ten. Measured against the whole of one disc: each of
+its 1019 entries was read back out of the stream — from the entry to the first
+packet of the picture after it, which is where the picture it names ends — and
+every one of the 1019 falls in the bucket the disc's own field names. An even
+128 kB carried upwards, which is what this wrote before 0.5.13, puts 75 of
+them a bucket too high, all of them pictures over 393 kB, which on an
+interlaced broadcast is an ordinary size for one. The two largest steps are
+the only ones no disc here exercises; they are
+[`sorshi/bdav`](https://github.com/sorshi/bdav)'s, which arrived at the same
+table from the other direction, against a different tool's output.
 
 **The times here are not the playlist's tick.** An entry point map carries
 `PTS_EP_start`, which is the picture's own presentation time stamp —
