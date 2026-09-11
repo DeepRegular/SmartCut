@@ -98,7 +98,6 @@ there, the recording is **added** to it.
 | `--analyze` | Work out the plan and print it. **Writes nothing** — not even into a `--bdav` folder |
 | `--detect-cm` | Look for the commercial breaks |
 | `--logo` | Let commercial detection use the station logo as well |
-| `--cm-plan` | Divide the whole recording in one decision rather than taking the readings in order of preference. Reads every reading, so it costs more; not the default yet ([why](../technical/cm-detection.md#dividing-the-recording-in-one-decision-cmplan)) |
 | `--scenes` | List the scene changes |
 | `--preview TIME` | Decode one picture at `TIME` and write it as a JPEG (`preview.jpg`, or `-o`). It prints the time actually decoded beside the time asked for |
 | `--cut-near TIME` | Print where the nearest picture-to-picture change is to `TIME`, in windows of ±0.5, ±1 and ±2 seconds |

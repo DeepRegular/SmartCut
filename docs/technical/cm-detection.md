@@ -381,78 +381,64 @@ There are two costs.
   means looking at the logo, which costs 30 seconds of decoding for 3.4 seconds of
   commercial, so it is not worth paying. A miss is the cheap error.
 
-## Dividing the recording in one decision (`cm::plan`)
+## Tried and dropped: dividing the recording in one decision
 
-Everything above decides locally and in a fixed order of preference: resets if the
+Everything above decides locally and in a fixed order of preference — resets if the
 recording has any, otherwise the logo, otherwise the silences, each with thresholds
-of its own. That order has a cost this page keeps running into. A recording whose
-station marks only some of its seams gets the sparse reading and nothing else —
-[the fallback that was not good enough](#when-the-fallback-is-not-good-enough) is
-the same complaint — and a threshold cannot be argued with by evidence sitting
-either side of it.
+of its own. Whatever comes second is never read, and a threshold cannot be argued
+with by evidence sitting either side of it. So the readings were put into one
+objective instead: every reading offers boundaries (the middle of a silence, a reset,
+an edge of a logo absence), every division of the recording into alternating
+stretches of programme and commercial is scored by how well it explains all of them
+at once, and the best division is found exactly, with a segmental dynamic program
+over those boundaries.
 
-`cm::plan` asks the question once instead. Every reading offers **boundaries** — the
-middle of a silence, a reset, an edge of a logo absence — and every way of dividing
-the recording into alternating stretches of programme and commercial is scored by how
-well it explains all of them at once. The best division is found with a segmental
-dynamic program over those boundaries, which is exact rather than greedy. It is
-`--cm-plan` on the command line; the old path is still what runs by default.
+It was implemented, measured, and taken back out. What follows is why, because the
+idea is sound enough that someone will have it again.
 
-What a stretch is worth, all in one unit — a second of programme the logo vouches for:
+**It won where a logo or a reset exists.** All five pinned recordings passed. BS
+Fuji's leftover commercial went from 3.4 s to none. On the recording with the pale
+logo the middle break came out at exactly 60.0 s against 64.9 s. Two recordings
+outside the pinned set were checked by eye where the two answers differed, and the
+one decision was right both times: a BS Animax break ended at 765 s, where the
+programme resumes, rather than six seconds into it, and a Kids Station recording
+that carries only four resets — so the preference order read those and stopped,
+keeping three minutes of trailers and an infomercial — got the rest of its blocks.
 
-- **The logo, per second**, for or against the label the stretch was given. `None`
-  means no logo was found; a logo that was found and *never went away* is not the
-  absence of a reading but the strongest statement in the recording that all of it
-  is programme.
-- **How full the grid is**, per second, measured against how full a run of
-  commercials would be: a junction at every fifteen-second boundary, because that is
-  what the boundaries are. Counted **by boundary, not by junction** — a talkative
-  programme pauses several times inside one unit and would otherwise count as more
-  than full. Getting that wrong swallowed 41 seconds of programme on the first
-  recording it was tried on.
-- **What a boundary costs**, by what marks it: a silence, eased by how long it is; a
-  logo edge; and a reset, which costs *less than nothing*. A reset is the
-  broadcaster's own equipment saying that what it was captioning has stopped,
-  stamped to the frame, and a moving average should not be able to drag an end past
-  one.
+**A survey of thirty-five recordings across twenty stations said no.** Both ways were
+run off one reading of each file. The one decision found more: 120 blocks against
+110, 11930 s of commercial against 10792, with 1653 s that only it called commercial
+against 515 s the other way. But on the independent ruler — a block's length being a
+whole number of fifteen-second units — it was **worse**: 52.0% of 75 blocks against
+61.1% of 72.
 
-Two things had to be right before any of it worked, and both were found by measuring:
+**What the ruler was pointing at.** On an AT-X recording with no logo and no caption
+resets, thumbnails every thirty seconds across the whole recording showed that four
+of the five blocks it emitted — 173 seconds — were **programme**. Only the last one,
+the trailers at the end, was real. The preference order emitted nothing there: it
+missed some 330 s of trailers, and cut nothing. Six of the thirty-five recordings
+have the silences as their only reading, and that is where the risk lives. The
+thresholds the preference order applies to a silence-only recording — a score, a
+chain, at least three junctions, a filled grid — exist for exactly this case, and
+the one objective dissolved them into something a talkative programme can outvote.
+
+Three things about the model were right, and are worth keeping for whoever tries
+again:
 
 - **A stretch of commercial has to cost something before the evidence starts.** The
   junction term can only add, so without a standing cost "all commercial" wins on a
-  recording that has none. Grading the fill against a floor is that cost.
-- **Where the logo is up, the junctions do not get a vote.** A talkative programme
-  is silent on the beat often enough to look like a grid. The logo is an observation
-  of which of the two this is, so a stretch it says is on air is not a break at all,
-  whatever the junctions look like.
+  recording that has none.
+- **Where the logo is up, the junctions do not get a vote.** The logo is an
+  observation of which of the two a stretch is; the grid is circumstantial.
+- **Count the grid by boundary, not by junction.** A talkative programme pauses
+  several times inside one fifteen-second unit, which counts as more than a full
+  grid and swallowed 41 seconds of programme before it was fixed.
 
-Against the pinned five, plus the recording with the pale logo:
+To revisit it, the thing to build is not a better weight but a rule for the case that
+broke it: what a break has to look like when the silences are all there is. That can
+be measured on those six recordings and the pinned five without rebuilding any of
+this.
 
-| Material | Preference order | One decision |
-|---|---|---|
-| Terrestrial Nihonkai TV | 0.2 s cut / 0.1 s left | 0.2 / 0.1 |
-| AT-X (no logo) | 0.0 / 0.1 | 0.0 / 0.1 |
-| BS Fuji (with slot idents) | 0.1 / **3.4** | 0.1 / **0.0** |
-| BS Fuji (no commercials) | 0 / 0 | 0 / 0 |
-| NHK E (no commercials) | 0 / 0 | 0 / 0 |
-| BS, pale logo | 5 blocks, one 4.9 s long | the same five, that one **exactly 60.0 s** |
-
-Two recordings outside the pinned set were checked by eye where the two answers
-disagreed, and the one decision was right both times:
-
-- On a BS Animax recording the break ends at 765 s — 763 s is still a trailer, 766 s
-  is the programme. The preference order ends it at 771.6 s, six seconds into the
-  programme.
-- A Kids Station recording carries only four resets, so the preference order reads
-  those and stops: one block, and three minutes of trailers and an infomercial left
-  in at the end. Reading the silences and the logo as well finds them.
-
-The cost is that every reading has to be taken, where the preference order stopped at
-the first one that answered: the silences are always walked, and the logo is scored
-even on a recording that has resets. That is about twenty seconds on a half-hour
-recording, or fifty with the logo.
-
-**It is not the default yet.** Five pinned recordings and four checked by eye are
-enough to justify the flag, not enough to move every recording onto it; the
-measurement to make is the one this page has not made yet — the same comparison
-across a few dozen recordings from stations that are not in the five.
+The survey paid for itself on the way: one recording's silence walk **panicked** on a
+frame claiming a ninth audio plane, which an `AVFrame` has no pointer for. That is
+fixed, and is not part of what was dropped.
