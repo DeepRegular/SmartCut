@@ -380,3 +380,79 @@ There are two costs.
   Extending the block would shave 1.7 s off that one. Telling the two cases apart
   means looking at the logo, which costs 30 seconds of decoding for 3.4 seconds of
   commercial, so it is not worth paying. A miss is the cheap error.
+
+## Dividing the recording in one decision (`cm::plan`)
+
+Everything above decides locally and in a fixed order of preference: resets if the
+recording has any, otherwise the logo, otherwise the silences, each with thresholds
+of its own. That order has a cost this page keeps running into. A recording whose
+station marks only some of its seams gets the sparse reading and nothing else —
+[the fallback that was not good enough](#when-the-fallback-is-not-good-enough) is
+the same complaint — and a threshold cannot be argued with by evidence sitting
+either side of it.
+
+`cm::plan` asks the question once instead. Every reading offers **boundaries** — the
+middle of a silence, a reset, an edge of a logo absence — and every way of dividing
+the recording into alternating stretches of programme and commercial is scored by how
+well it explains all of them at once. The best division is found with a segmental
+dynamic program over those boundaries, which is exact rather than greedy. It is
+`--cm-plan` on the command line; the old path is still what runs by default.
+
+What a stretch is worth, all in one unit — a second of programme the logo vouches for:
+
+- **The logo, per second**, for or against the label the stretch was given. `None`
+  means no logo was found; a logo that was found and *never went away* is not the
+  absence of a reading but the strongest statement in the recording that all of it
+  is programme.
+- **How full the grid is**, per second, measured against how full a run of
+  commercials would be: a junction at every fifteen-second boundary, because that is
+  what the boundaries are. Counted **by boundary, not by junction** — a talkative
+  programme pauses several times inside one unit and would otherwise count as more
+  than full. Getting that wrong swallowed 41 seconds of programme on the first
+  recording it was tried on.
+- **What a boundary costs**, by what marks it: a silence, eased by how long it is; a
+  logo edge; and a reset, which costs *less than nothing*. A reset is the
+  broadcaster's own equipment saying that what it was captioning has stopped,
+  stamped to the frame, and a moving average should not be able to drag an end past
+  one.
+
+Two things had to be right before any of it worked, and both were found by measuring:
+
+- **A stretch of commercial has to cost something before the evidence starts.** The
+  junction term can only add, so without a standing cost "all commercial" wins on a
+  recording that has none. Grading the fill against a floor is that cost.
+- **Where the logo is up, the junctions do not get a vote.** A talkative programme
+  is silent on the beat often enough to look like a grid. The logo is an observation
+  of which of the two this is, so a stretch it says is on air is not a break at all,
+  whatever the junctions look like.
+
+Against the pinned five, plus the recording with the pale logo:
+
+| Material | Preference order | One decision |
+|---|---|---|
+| Terrestrial Nihonkai TV | 0.2 s cut / 0.1 s left | 0.2 / 0.1 |
+| AT-X (no logo) | 0.0 / 0.1 | 0.0 / 0.1 |
+| BS Fuji (with slot idents) | 0.1 / **3.4** | 0.1 / **0.0** |
+| BS Fuji (no commercials) | 0 / 0 | 0 / 0 |
+| NHK E (no commercials) | 0 / 0 | 0 / 0 |
+| BS, pale logo | 5 blocks, one 4.9 s long | the same five, that one **exactly 60.0 s** |
+
+Two recordings outside the pinned set were checked by eye where the two answers
+disagreed, and the one decision was right both times:
+
+- On a BS Animax recording the break ends at 765 s — 763 s is still a trailer, 766 s
+  is the programme. The preference order ends it at 771.6 s, six seconds into the
+  programme.
+- A Kids Station recording carries only four resets, so the preference order reads
+  those and stops: one block, and three minutes of trailers and an infomercial left
+  in at the end. Reading the silences and the logo as well finds them.
+
+The cost is that every reading has to be taken, where the preference order stopped at
+the first one that answered: the silences are always walked, and the logo is scored
+even on a recording that has resets. That is about twenty seconds on a half-hour
+recording, or fifty with the logo.
+
+**It is not the default yet.** Five pinned recordings and four checked by eye are
+enough to justify the flag, not enough to move every recording onto it; the
+measurement to make is the one this page has not made yet — the same comparison
+across a few dozen recordings from stations that are not in the five.

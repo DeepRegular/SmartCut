@@ -41,7 +41,8 @@ pub use adts::{AacVersion, AdtsFormat};
 pub use cm::{
     blocks as cm_blocks, blocks_from_logo as cm_blocks_from_logo,
     blocks_from_resets as cm_blocks_from_resets, candidates as cm_candidates, find_silences,
-    find_silences_with, refine_boundaries as cm_refine_boundaries, DetectOptions,
+    find_silences_with, plan as cm_plan, refine_boundaries as cm_refine_boundaries, DetectOptions,
+    PlanWeights,
 };
 pub use cut::{
     cut, cut_with_progress, writable_sound, write_audio_es, AudioCodec, AudioMode, CutOptions,

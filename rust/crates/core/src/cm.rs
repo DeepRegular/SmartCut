@@ -512,3 +512,299 @@ pub fn blocks_from_resets(resets: &[f64], duration: f64) -> Vec<Block> {
         })
         .collect()
 }
+
+/// What each reading is worth when the whole recording is divided at once.
+///
+/// [`plan`] weighs these against each other, so they share one unit: a
+/// second of programme that the logo vouches for. A boundary's cost then
+/// reads as "how many seconds of evidence a division here has to be worth
+/// before it pays for itself".
+pub struct PlanWeights {
+    /// Per second the logo agrees with the label given to it.
+    pub logo: f64,
+    /// Per second, scaled by how full of junctions the run is...
+    pub fill: f64,
+    /// ...measured against this share of the fifteen-second grid filled. A
+    /// run of commercials is silent at nearly every boundary; a talkative
+    /// programme pauses on the beat about half the time.
+    pub fill_floor: f64,
+    /// A break has to be at least this much logo-less. Where the logo is up
+    /// it is not evidence to be outweighed: the stretch is simply not a
+    /// break, whatever the junctions look like.
+    pub logo_says: f64,
+    /// What a boundary costs at a silence, eased by how long the silence is.
+    pub cost_silence: f64,
+    /// ...at a caption reset. Negative, because a reset is not merely a
+    /// permitted place to divide the recording: it is the broadcaster's own
+    /// equipment saying that what it was captioning has stopped, stamped to
+    /// the frame. A division that lands on one is better than a division
+    /// that does not, and the logo -- a moving average whose edges lag by
+    /// the window it was averaged over -- should not be able to drag an end
+    /// past it.
+    pub cost_reset: f64,
+    /// ...where the logo went away or came back.
+    pub cost_logo_edge: f64,
+    /// No commercial break is shorter than this, or longer than that.
+    pub min_break: f64,
+    pub max_break: f64,
+    /// A scrap of programme shorter than this between two breaks is not a
+    /// return to the programme; it is a gap inside one break.
+    pub min_programme: f64,
+    /// How far inside its own edges a logo absence is believed. The score it
+    /// is built from is a moving average, so the absence reaches this much
+    /// further out than the break does at each end. Taking the edges at face
+    /// value costs programme: on a terrestrial recording the absence ran
+    /// 1.2 s past the last caption reset, and the break was extended to the
+    /// end of the recording over a second and a half of programme.
+    pub logo_lag: f64,
+}
+
+impl Default for PlanWeights {
+    fn default() -> Self {
+        Self {
+            logo: 3.0,
+            fill: 1.5,
+            fill_floor: 0.5,
+            logo_says: 0.5,
+            cost_silence: 10.0,
+            cost_reset: -10.0,
+            cost_logo_edge: 20.0,
+            min_break: 14.0,
+            max_break: 400.0,
+            min_programme: 20.0,
+            logo_lag: 2.5,
+        }
+    }
+}
+
+/// How far outside a block a junction may sit and still be one of its own.
+///
+/// A junction is timed by the middle of a silence, which is only an estimate
+/// of where the seam is -- and the block's own end may have been drawn at a
+/// different reading of the same seam. On a terrestrial recording the last
+/// caption reset and the middle of the silence around it are 0.17 s apart,
+/// and counting to the tenth of a second lost the block a junction for
+/// ending on the reset: enough of the grid to make running to the end of the
+/// recording, over a second and a half of programme, score better.
+const JUNCTION_SLACK: f64 = 0.75;
+
+/// How many of a stretch's fifteen-second boundaries carry a junction, and
+/// how many junctions that is.
+///
+/// Counted by boundary rather than by junction. A run of commercials is
+/// silent at every fifteen-second mark because that is what the marks are,
+/// so what says "commercials" is the grid being *complete* -- while a
+/// talkative programme pauses several times within one unit and would
+/// otherwise count as more than full. The block's own ends are marks too:
+/// they are where it was cut.
+fn grid_filled(junctions: &[f64], a: f64, b: f64) -> (usize, f64) {
+    let slots = ((b - a) / 15.0).round().max(1.0) + 1.0;
+    let mut seen = vec![false; slots as usize + 1];
+    let mut count = 0usize;
+    for &t in junctions {
+        if t < a - JUNCTION_SLACK || t > b + JUNCTION_SLACK {
+            continue;
+        }
+        count += 1;
+        let slot = (((t - a) / 15.0).round().max(0.0) as usize).min(seen.len() - 1);
+        seen[slot] = true;
+    }
+    let filled = seen.iter().filter(|&&x| x).count() as f64;
+    (count, filled / slots)
+}
+
+/// Seconds of `a..b` covered by `spans`.
+fn covered(a: f64, b: f64, spans: &[(f64, f64)]) -> f64 {
+    spans
+        .iter()
+        .map(|&(x, y)| (b.min(y) - a.max(x)).max(0.0))
+        .sum()
+}
+
+/// Divide the whole recording into programme and commercial in one decision.
+///
+/// The other entry points here decide locally and in a fixed order of
+/// preference: resets if there are any, otherwise the logo, otherwise the
+/// silences, each with its own thresholds. That order throws away whichever
+/// readings come second, and a threshold cannot be argued with by evidence
+/// that sits either side of it.
+///
+/// This asks the question once. Every reading offers boundaries -- a silence
+/// centre, a reset, an edge of a logo absence -- and every division of the
+/// recording into alternating stretches is scored by how well it explains
+/// all of them at once. The best division is found by a dynamic program over
+/// the boundaries, which is exact rather than greedy.
+///
+/// `logo_absent` is `None` when no logo was found, and `Some(&[])` for a logo
+/// that was found and never went away -- which is not the absence of a
+/// reading but the strongest statement in the recording that all of it is
+/// programme.
+pub fn plan(
+    silences: &[Silence],
+    resets: &[f64],
+    logo_absent: Option<&[(f64, f64)]>,
+    duration: f64,
+    opts: &DetectOptions,
+    w: &PlanWeights,
+) -> Vec<Block> {
+    let spans: Vec<(f64, f64)> = silences.iter().map(|s| (s.start, s.end)).collect();
+
+    // A silence counts as a junction where another one sits a whole number
+    // of commercial units away -- the same test the chain walk makes, kept
+    // at the level of the boundaries rather than the length of a block.
+    let junctions: Vec<f64> = silences
+        .iter()
+        .enumerate()
+        .filter(|&(i, _)| {
+            spans.iter().enumerate().any(|(j, _)| {
+                j != i
+                    && if j < i {
+                        on_grid(spans[j], spans[i], opts)
+                    } else {
+                        on_grid(spans[i], spans[j], opts)
+                    }
+            })
+        })
+        .map(|(_, s)| s.centre())
+        .collect();
+
+    // Where a boundary may be drawn, and what it costs there. Where two
+    // readings mark the same instant, the cheaper of them stands.
+    let mut marks: Vec<(f64, f64)> = vec![(0.0, 0.0), (duration, 0.0)];
+    for s in silences {
+        let eased = 1.0 - 0.5 * (s.duration().min(1.5) / 1.5);
+        marks.push((s.centre(), w.cost_silence * eased));
+    }
+    marks.extend(resets.iter().map(|&t| (t, w.cost_reset)));
+    if let Some(absent) = logo_absent {
+        for &(a, b) in absent {
+            marks.push((a, w.cost_logo_edge));
+            marks.push((b, w.cost_logo_edge));
+        }
+    }
+    marks.retain(|&(t, _)| (0.0..=duration).contains(&t));
+    marks.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
+    let mut ts: Vec<f64> = Vec::with_capacity(marks.len());
+    let mut cost: Vec<f64> = Vec::with_capacity(marks.len());
+    for (t, c) in marks {
+        match ts.last() {
+            Some(&last) if (t - last).abs() < 1e-9 => {
+                let at = cost.len() - 1;
+                cost[at] = cost[at].min(c);
+            }
+            _ => {
+                ts.push(t);
+                cost.push(c);
+            }
+        }
+    }
+    let n = ts.len();
+    if n < 2 {
+        return Vec::new();
+    }
+
+    // What the logo says, held to where it is sure of itself. Its edges are
+    // still offered as boundaries -- that is where the break is, to within
+    // the window -- but they do not count as evidence about which side of
+    // the break those seconds fall on.
+    let absent: Vec<(f64, f64)> = logo_absent
+        .unwrap_or(&[])
+        .iter()
+        .filter_map(|&(a, b)| {
+            // Only where there is a break to lag behind. An absence running
+            // off either end of the recording is the recorder having started
+            // or stopped inside one, and its outer end is the file's, not a
+            // moving average's.
+            let trim = ((b - a) / 4.0).min(w.logo_lag);
+            let head = if a <= EDGE { a } else { a + trim };
+            let tail = if b >= duration - EDGE { b } else { b - trim };
+            (tail > head).then_some((head, tail))
+        })
+        .collect();
+    let absent = absent.as_slice();
+    let have_logo = logo_absent.is_some();
+    let score_of = |a: f64, b: f64, is_break: bool| -> Option<f64> {
+        let span = b - a;
+        // The recording's own ends are not seams. What sits against them is
+        // whatever the recorder caught of a break already running, and that
+        // is routinely a few seconds rather than a whole unit.
+        let at_edge = a <= EDGE || b >= duration - EDGE;
+        let gone = covered(a, b, absent);
+        if is_break {
+            if span > w.max_break || (span < w.min_break && !at_edge) {
+                return None;
+            }
+            if have_logo && gone < w.logo_says * span {
+                return None;
+            }
+            let (_, fill) = grid_filled(&junctions, a, b);
+            let mut s = w.fill * span * (fill - w.fill_floor);
+            if have_logo {
+                s += w.logo * (gone - (span - gone));
+            }
+            return Some(s);
+        }
+        if span < w.min_programme && !at_edge {
+            return None;
+        }
+        Some(if have_logo {
+            w.logo * ((span - gone) - gone)
+        } else {
+            0.0
+        })
+    };
+
+    // best[i][k] is the best total for a division of 0..ts[i] whose last
+    // stretch is a break when k is 1.
+    let mut best = vec![[f64::NEG_INFINITY; 2]; n];
+    let mut from = vec![[None::<(usize, usize)>; 2]; n];
+    for i in 1..n {
+        for k in 0..2 {
+            for j in 0..i {
+                let Some(s) = score_of(ts[j], ts[i], k == 1) else {
+                    continue;
+                };
+                let prev = if j == 0 {
+                    0.0
+                } else {
+                    let p = best[j][1 - k];
+                    if p == f64::NEG_INFINITY {
+                        continue;
+                    }
+                    p - cost[j]
+                };
+                if prev + s > best[i][k] {
+                    best[i][k] = prev + s;
+                    from[i][k] = Some((j, 1 - k));
+                }
+            }
+        }
+    }
+
+    let mut k = usize::from(best[n - 1][1] > best[n - 1][0]);
+    if best[n - 1][k] == f64::NEG_INFINITY {
+        return Vec::new();
+    }
+    let mut out = Vec::new();
+    let mut i = n - 1;
+    while let Some((j, prev_k)) = from[i][k] {
+        if k == 1 {
+            let (a, b) = (ts[j], ts[i]);
+            let (inside, fill) = grid_filled(&junctions, a, b);
+            out.push(Block {
+                start: a,
+                end: b,
+                junctions: inside,
+                // How much of the block is actually evidenced, by whichever
+                // reading has more to say about it.
+                score: fill
+                    .max(covered(a, b, absent) / (b - a).max(1e-9))
+                    .clamp(0.0, 1.0),
+            });
+        }
+        i = j;
+        k = prev_k;
+    }
+    out.reverse();
+    out
+}

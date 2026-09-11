@@ -186,6 +186,9 @@ fn main() -> Result<()> {
     let mut audio_es = false;
     let mut cut_near: Option<f64> = None;
     let mut use_logo = false;
+    // Divide the whole recording at once instead of taking the readings in
+    // order of preference: see `cm::plan`.
+    let mut plan_cm = false;
     // Whatever the engine has as its default, which is smart rendering.
     let mut audio_mode = smartcut_core::AudioMode::default();
     // And the recording's own codec, which is what every mode but a
@@ -237,6 +240,7 @@ fn main() -> Result<()> {
                 cut_near = Some(parse_time(args.get(i).context("--cut-near needs a time")?)?);
             }
             "--logo" => use_logo = true,
+            "--cm-plan" => plan_cm = true,
             "--title" => {
                 i += 1;
                 title = Some(
@@ -857,7 +861,10 @@ fn main() -> Result<()> {
         };
         // The logo costs half a minute of decoding and is the weaker signal
         // where the resets exist, so it is not paid for then.
-        let logo = if use_logo && resets.is_none() {
+        // Every reading is wanted when the division is decided from all of
+        // them at once, including the ones a preference order would have
+        // discarded unread.
+        let logo = if use_logo && (plan_cm || resets.is_none()) {
             match smartcut_core::logo::detect(&src, &Default::default()) {
                 Ok(l) => Some(l),
                 Err(e) => {
@@ -882,8 +889,8 @@ fn main() -> Result<()> {
         let opts = smartcut_core::DetectOptions::default();
         // Silences are only wanted where they still decide something.
         let silences = match &resets {
-            Some(_) => Vec::new(),
-            None => smartcut_core::find_silences(&src, &opts)?,
+            Some(_) if !plan_cm => Vec::new(),
+            _ => smartcut_core::find_silences(&src, &opts)?,
         };
         let cands = smartcut_core::cm_candidates(&silences, &opts);
         // The same reading the window makes, arrived at the same way, so
@@ -893,21 +900,40 @@ fn main() -> Result<()> {
         // which is an answer -- and falling back to the silences instead
         // gave a programme with no commercials in it a block the window
         // would not have offered.
-        let (blocks, how) = match (&resets, &logo) {
-            (Some(r), _) => (
-                smartcut_core::cm_blocks_from_resets(r, src.duration),
-                "（字幕リセット）",
-            ),
-            (None, Some(l)) if !l.absent.is_empty() => (
-                smartcut_core::cm_blocks_from_logo(&cands, &l.absent, &opts, 3.0, src.duration),
-                "（ロゴ＋無音）",
-            ),
-            (None, Some(_)) => (Vec::new(), "（ロゴが一度も消えない）"),
-            _ => (smartcut_core::cm_blocks(&cands, &opts, 0.6), "（無音のみ）"),
+        let (blocks, how) = if plan_cm {
+            (
+                smartcut_core::cm_plan(
+                    &silences,
+                    resets.as_deref().unwrap_or(&[]),
+                    logo.as_ref().map(|l| l.absent.as_slice()),
+                    src.duration,
+                    &opts,
+                    &Default::default(),
+                ),
+                "（全体を一度に区切る）",
+            )
+        } else {
+            match (&resets, &logo) {
+                (Some(r), _) => (
+                    smartcut_core::cm_blocks_from_resets(r, src.duration),
+                    "（字幕リセット）",
+                ),
+                (None, Some(l)) if !l.absent.is_empty() => (
+                    smartcut_core::cm_blocks_from_logo(&cands, &l.absent, &opts, 3.0, src.duration),
+                    "（ロゴ＋無音）",
+                ),
+                (None, Some(_)) => (Vec::new(), "（ロゴが一度も消えない）"),
+                _ => (smartcut_core::cm_blocks(&cands, &opts, 0.6), "（無音のみ）"),
+            }
         };
         // Same treatment the window gives them, so what is printed here is
         // what would be marked there.
         let mut blocks = blocks;
+        if std::env::var("SMARTCUT_DEBUG").is_ok() {
+            for b in &blocks {
+                eprintln!("  estimate {:9.3} - {:9.3}", b.start, b.end);
+            }
+        }
         smartcut_core::cm_refine_boundaries(&src, &mut blocks, 0.5, 0.08);
         println!("\nCM ブロック : {} 個{how}", blocks.len());
         for b in &blocks {
