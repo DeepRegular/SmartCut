@@ -30,13 +30,13 @@
 
 仕組みを知りたい人は[アルゴリズム](technical/algorithm.ja.md)から、
 とくに[実装上の難所](technical/algorithm.ja.md#実装上の難所)がおすすめです。
-「GOP 単位で切って繋ぐだけ」では済まない理由を 10 挙げてあります。
+「GOP 単位で切って繋ぐだけ」では済まない理由を 10 個挙げてあります。
 
 ### 仕組みと検証
 
 | | |
 |---|---|
-| [アルゴリズム](technical/algorithm.ja.md) | カットを head / body / tail に切り分ける原理と、これを見た目より難しくしている 10 の落とし穴 |
+| [アルゴリズム](technical/algorithm.ja.md) | カットを head / body / tail に切り分ける原理と、見た目より難しくしている 10 個の落とし穴 |
 | [検証](technical/validation.ja.md) | フレームハッシュ照合の結果、実際の放送録画での検証、既知の制限 |
 | [音声](technical/audio.ja.md) | 音声へのスマートレンダリングの適用、境界の誤差、MPEG-2 AAC のフレーミング、ダウンミックス、出力コーデックの選択、音声多重放送 |
 | [放送 TS](technical/broadcast-ts.ja.md) | PID 配置、録画自身のテーブル、字幕と番組情報、部分 TS、ADTS、L-SMASH と DGIndex |
