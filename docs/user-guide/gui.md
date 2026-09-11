@@ -86,8 +86,12 @@ of the disc it takes, which is usually enough to tell an episode from a logo.
 **② Which tracks do you want?**
 Open a row's *tracks* and you see what that clip carries: the video, the audio
 tracks with their languages, the subtitles and the menus. The video cannot be
-left out. Subtitles and menus on a pressed disc are always left out, because a
-cut cannot carry them.
+left out. **The subtitles travel with the cut** — whether they end up inside it
+or beside it is [an output setting](#the-settings). A **menu** cannot travel:
+its buttons point into a timeline the cut has just taken apart. Nor can the
+**text subtitles** a disc writes as text, because the typeface they are drawn
+with is a file on the disc rather than part of the stream. Both are listed as
+`a cut cannot carry this` rather than offered as a choice.
 *Use these tracks for every clip like this one* copies your answer across the
 whole disc, which is what you want for a season set.
 
@@ -249,7 +253,7 @@ frames, and `Snap to lossless` can take those to zero once it lights up.
 | Top line | The filename |
 | Info bar | Lossless points, resolution, fps, scan type, audio, codec. **Tracks** and **Detect commercials** on the right |
 | Left column | The **keyframes** — your marks, each with a thumbnail. Click one to jump there |
-| The large picture | The preview. Bottom right: frame number, timecode, what kind of frame it is, and the current selection |
+| The large picture | The preview. At its foot, in the middle: frame number, timecode, what kind of frame it is, and the current selection. **Counter**, on the bottom line, turns them off |
 | The band under it | The **filmstrip**: the frames around you, laid out as pictures. The `View` menu on the right sets how much time one cell covers |
 | The scrubber | **Green is the output itself.** `▼` are keyframes, a red vertical line is a join left by a cut, and the fine ticks below are scene changes |
 | The button row | **Cut** in the middle, `[ IN` to its left and `OUT ]` to its right, and outwards from there: go to, one frame, lossless point, start and end |
@@ -295,6 +299,10 @@ commercial break, are not things the picture alone will tell you.
 
 - A broadcast's **ARIB captions** are drawn as characters, at the position, size and
   colour the broadcaster asked for, so they stay sharp however big the window is.
+  The ones a broadcaster sends **as dots** rather than as characters — the arrow that
+  carries a sentence onto the next line, the brackets a speaker's name sits in, the
+  `ü` in a German line — are drawn from those dots, in the cell a character would
+  have taken.
 - A disc's subtitles — **PGS** and a DVD's **subpictures** — are pictures, and what
   the disc drew is what is put on screen.
 - Where a recording carries more than one (a bilingual broadcast, Japanese and English
@@ -305,6 +313,9 @@ commercial break, are not things the picture alone will tell you.
   see whole, turn **Counter** off beside it — the line under the film strip still
   says where you are, and the answer is remembered for the next clip.
 - Playback keeps up with them.
+- **A recording that carries no subtitles has no picker.** The bottom line then holds
+  **Counter** and nothing else — which is what the screenshots elsewhere on this page
+  show, since the practice recording has none.
 
 None of this changes what is written. This chooses what is **on screen**; which
 subtitles go into the output is answered by **Tracks** and by the output settings.
@@ -373,13 +384,13 @@ there.
 **When a cut point lands between key frames, the piece around it is rebuilt.**
 The orange part of the band, and the `re-encode` lines, are those frames.
 
-Above, **14 frames** out of 461 — leaving 97.0% of the length a byte-for-byte
+Above, **21 frames** out of 453 — leaving 95.4% of the length a byte-for-byte
 copy.
 
 Commercial boundaries in a broadcast recording sit in silence, and silence is
 usually a lossless point as well, so **removing commercials often comes out
 completely lossless.** It is cutting at an arbitrary moment that costs those
-fourteen frames, and `Snap to lossless` takes them back to zero.
+twenty-one frames, and `Snap to lossless` takes them back to zero.
 
 ### Choosing which tracks are written
 
@@ -395,7 +406,12 @@ program deciding what the recording is for.
 
 - **Captions can only be kept when writing a `.ts`.**
 - Superimposed text and data broadcasting cannot be carried on a cut timeline at
-  all, so they appear as `not carried` rather than as choices.
+  all, so they appear as `not carried` rather than as choices. For a recording
+  off a disc, a menu and the text subtitles drawn with the disc's own typeface
+  say the same thing.
+- **A Blu-ray's subtitles are a choice here like any other track.** A DVD's are
+  not: they go wherever the output settings send them, and the list says so on a
+  line of its own — `inside the cut or beside it, as the output settings say`.
 - Programme information, the station name and the broadcast clock are not tracks
   and so are not listed, but they are carried across when writing a `.ts`.
 

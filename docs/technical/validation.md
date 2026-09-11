@@ -162,9 +162,11 @@ These only surfaced on real material:
   used to stop the whole cut, on a recording that was otherwise perfectly cuttable.
   Now the packets that will not decode are dropped, a picture with nowhere to go on
   the timeline is left out, and a sound frame that does not follow the one before it
-  is left out; each is counted and said once when the cut finishes. What is copied is
-  untouched by any of it. Measured over 82 recordings from 32 stations, one was
-  damaged badly enough to reach all three paths.
+  is left out; a caption statement that lands on a tick already taken is moved on by a
+  tick rather than dropped, because a statement is a line of the programme and a tick is
+  a ninetieth of a millisecond. Each is counted and said once when the cut finishes.
+  What is copied is untouched by any of it. Measured over 82 recordings from 32
+  stations, one was damaged badly enough to reach all three paths.
 - **The first frame is 13 ms early** (Python implementation only). A raw elementary
   stream carries no timestamps at all — every packet is `N/A` — so ffmpeg synthesises
   them from `-r` and the POC. In doing so, the first `has_b_frames` packets come out

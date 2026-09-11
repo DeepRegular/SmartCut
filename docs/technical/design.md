@@ -1398,6 +1398,17 @@ deciding for itself). As a result the proxy's index lands on the same times, and
 track built from it sits on the same key pictures as one built from the original. On 30 minutes
 of Nihonkai TV, `frame I:3607` — exactly the recording's 3607 access points.
 
+**The recording can change shape partway through.** A scaler is built for one size and one pixel
+format and takes nothing else, and this pass built one from the first picture and kept it for the
+file. A broadcast that runs across a programme boundary carries 1440x1080 on one side of it and
+720x480 on the other, and there the first picture of the second shape ended the build. The shape
+the scaler was built for is kept beside it now, and a picture that stops matching gets a scaler of
+its own. What comes out does not change size — a stream is one size or it is not a stream — so the
+later shape is fitted into what the first picture settled, which stretches it where the two do not
+share an aspect. A proxy of the wrong shape is worth more while a cut is being placed than no
+proxy at all. (`preview.rs` builds a scaler for every picture it is asked about, and was never
+exposed to this.)
+
 ### The thumbnail track comes free on this pass
 
 The pass that builds the proxy is decoding the whole recording anyway, so **handing the pictures

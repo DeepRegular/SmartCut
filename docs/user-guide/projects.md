@@ -42,7 +42,9 @@ A project saves **the things you decided**:
 - where each recording is (and the order you put them in)
 - the cuts and the keyframes (marks) you made in each one
 - which tracks you chose to write
-- the programme names and chapters read from a disc
+- the programme names and chapters read from a disc, and what a disc written
+  from the list will say about each recording — the name, the channel, when it
+  was recorded and what it was about, including anything typed over
 - the output settings
 
 It does not save **anything it can work out again**. Length, resolution and
