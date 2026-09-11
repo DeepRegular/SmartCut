@@ -110,11 +110,11 @@ install.
 
 | Platform | File | Notes |
 |---|---|---|
-| **Linux** | `SmartCut_0.5.9_amd64.AppImage` | Make it executable and run it |
-| **Linux** | `SmartCut-0.5.9-linux-x86_64.tar.gz` | Unpack and run `./smartcut`. Use this if you would rather not deal with FUSE |
-| **Linux (Debian/Ubuntu)** | `smartcut_0.5.9_amd64.deb` | `sudo apt install ./smartcut_0.5.9_amd64.deb`. Only 3.4 MB, because it uses the FFmpeg already on your system |
-| **Windows** | `SmartCut_0.5.9_x64-setup.exe` | Installer |
-| **Windows** | `smartcut-portable-x64-0.5.9.zip` | Unzip and run `smartcut.exe` |
+| **Linux** | `SmartCut_0.5.10_amd64.AppImage` | Make it executable and run it |
+| **Linux** | `SmartCut-0.5.10-linux-x86_64.tar.gz` | Unpack and run `./smartcut`. Use this if you would rather not deal with FUSE |
+| **Linux (Debian/Ubuntu)** | `smartcut_0.5.10_amd64.deb` | `sudo apt install ./smartcut_0.5.10_amd64.deb`. Only 3.4 MB, because it uses the FFmpeg already on your system |
+| **Windows** | `SmartCut_0.5.10_x64-setup.exe` | Installer |
+| **Windows** | `smartcut-portable-x64-0.5.10.zip` | Unzip and run `smartcut.exe` |
 
 **Requirements.** The AppImage and the tar.gz need glibc 2.39 or newer, which
 means Ubuntu 24.04, Debian 13, Fedora 40 or later. The `.deb` needs FFmpeg 7.1,
