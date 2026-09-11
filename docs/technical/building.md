@@ -60,7 +60,7 @@ For how the AppImage, tar.gz, deb and the Windows installer are produced, see
 
 ```bash
 bash tests/run_tests.sh               # Python E2E                                     13
-bash tests/run_rust_tests.sh          # Rust E2E (+9 with the container index)          15
+bash tests/run_rust_tests.sh          # Rust E2E (+11 with the container index)         15
 bash tests/run_audio_tests.sh         # A/V sync (+10 with copy and reencode)            5
 bash tests/run_audio_content_tests.sh # is real material's audio in the right place      6
 bash tests/run_aac_tests.sh           # what the output's AAC frames are made of         8
@@ -75,7 +75,7 @@ bash tests/run_scene_tests.sh         # scene detection vs commercial boundaries
 bash tests/run_ts_layout_tests.sh     # TS provenance and sequence headers               5
 bash tests/run_broadcast_tests.sh     # captions, programme information, multi-audio    11
 bash tests/run_cm_tests.sh            # commercial detection vs a human's answer         5
-bash tests/run_disc_tests.sh          # a BDAV and a BDMV disc, as folders and as .isos 37
+bash tests/run_disc_tests.sh          # a BDAV and a BDMV disc, as folders and as .isos 38
 bash tests/run_bdav_tests.sh          # writing a disc: the index, the image, and both   53
 bash tests/run_dvd_tests.sh           # a DVD-Video disc, as a folder and as an .iso    23
 bash tests/run_bd_audio_tests.sh      # the sound a disc carries, written out             39
@@ -193,6 +193,10 @@ SMARTCUT_AUDIO=copy      bash tests/run_audio_tests.sh   # never touch the audio
 SMARTCUT_AUDIO=reencode  bash tests/run_audio_tests.sh   # sample-accurate audio
 SMARTCUT_BYTE_SEEK=0     bash tests/run_preview_tests.sh # seek by timestamp again
 ```
+
+The container-index run answers 11 of the 15: the four transport-stream checks skip
+themselves with `the container has no seek table for this stream`, which is the fact that
+makes the walk exist.
 
 ## Environment variables
 

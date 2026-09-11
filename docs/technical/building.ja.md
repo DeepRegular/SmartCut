@@ -61,7 +61,7 @@ AppImage・tar.gz・deb・Windows インストーラの作り方は[配布](dist
 
 ```bash
 bash tests/run_tests.sh               # Python E2E                                      13
-bash tests/run_rust_tests.sh          # Rust E2E（コンテナ索引で +9）                    15
+bash tests/run_rust_tests.sh          # Rust E2E（コンテナ索引で +11）                   15
 bash tests/run_audio_tests.sh         # A/V 同期（copy と reencode で +10）               5
 bash tests/run_audio_content_tests.sh # 実素材の音声が正しい位置にあるか                  6
 bash tests/run_aac_tests.sh           # 出力の AAC フレームが何でできているか             8
@@ -76,7 +76,7 @@ bash tests/run_scene_tests.sh         # シーン検出と CM 境界の照合   
 bash tests/run_ts_layout_tests.sh     # TS の出自とシーケンスヘッダ                       5
 bash tests/run_broadcast_tests.sh     # 字幕・番組情報・音声多重                         11
 bash tests/run_cm_tests.sh            # CM 検出と人間の答えの照合                         5
-bash tests/run_disc_tests.sh          # BDAV と BDMV をフォルダーと .iso から読む       37
+bash tests/run_disc_tests.sh          # BDAV と BDMV をフォルダーと .iso から読む       38
 bash tests/run_bdav_tests.sh          # ディスクを書く。索引・イメージ・その中身       53
 bash tests/run_dvd_tests.sh           # DVD-Video をフォルダーと .iso から読む          23
 bash tests/run_bd_audio_tests.sh      # ディスクの音声が書き出せるか                    39
@@ -191,6 +191,10 @@ SMARTCUT_AUDIO=copy      bash tests/run_audio_tests.sh   # 音声に一切触ら
 SMARTCUT_AUDIO=reencode  bash tests/run_audio_tests.sh   # サンプル精度の音声
 SMARTCUT_BYTE_SEEK=0     bash tests/run_preview_tests.sh # タイムスタンプでシークする旧経路
 ```
+
+コンテナ索引での実行は 15 件のうち 11 件に答える。トランスポートストリームの 4 件は
+`the container has no seek table for this stream` と言って自分を飛ばす。走査という
+経路が存在する理由そのものである。
 
 ## 環境変数
 
