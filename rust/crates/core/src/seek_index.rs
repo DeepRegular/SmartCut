@@ -59,6 +59,15 @@ const FLAG_PULLDOWN: u32 = 1 << 2;
 const FLAG_HAS_TRACK: u32 = 1 << 3;
 const FLAG_END_KNOWN: u32 = 1 << 4;
 
+/// The fewest bytes one access point can take: its time, the time its lead
+/// pictures begin at, its position, whether it is droppable, and the count of
+/// the lead pictures -- which is zero often enough that the count is where one
+/// stops. Used to disbelieve a count before a vector is raised for it.
+const ACCESS_POINT: usize = 8 + 8 + 8 + 1 + 4;
+
+/// And one thumbnail: its time and the length of its JPEG.
+const THUMB: usize = 8 + 4;
+
 /// Everything a previous open worked out about a recording.
 pub struct SeekIndex {
     pub points: Vec<AccessPoint>,
@@ -221,6 +230,7 @@ impl SeekIndex {
         let end = (flags & FLAG_END_KNOWN != 0).then_some(end);
 
         let n = r.u64()? as usize;
+        let n = r.fits(n, ACCESS_POINT)?;
         let mut points = Vec::with_capacity(n);
         for _ in 0..n {
             let time = r.f64()?;
@@ -228,6 +238,7 @@ impl SeekIndex {
             let pos = r.i64()?;
             let droppable = r.u8()? != 0;
             let leads = r.u32()? as usize;
+            let leads = r.fits(leads, 4)?;
             let mut lead_indices = Vec::with_capacity(leads);
             for _ in 0..leads {
                 lead_indices.push(r.u32()? as usize);
@@ -254,11 +265,13 @@ impl SeekIndex {
             let threshold = r.f64()?;
             let typical = r.f64()?;
             let n = r.u64()? as usize;
+            let n = r.fits(n, 8)?;
             let mut scenes = Vec::with_capacity(n);
             for _ in 0..n {
                 scenes.push(r.f64()?);
             }
             let n = r.u64()? as usize;
+            let n = r.fits(n, THUMB)?;
             let mut list = Vec::with_capacity(n);
             for _ in 0..n {
                 let time = r.f64()?;
@@ -478,5 +491,62 @@ impl<'a> Reader<'a> {
     fn bytes(&mut self) -> Result<&'a [u8]> {
         let n = self.u32()? as usize;
         self.take(n)
+    }
+    /// A count of things, checked against the bytes there are left to hold
+    /// them -- `each` being the fewest one of them can take.
+    ///
+    /// A file is free to say it holds four billion access points. Raising the
+    /// vector before reading them is how forty bytes asked for an allocation
+    /// of sixty terabytes, and a failed allocation aborts the process rather
+    /// than failing the read: there is no error to return by then. So the
+    /// count is disbelieved here, where there is still a `Result` to put the
+    /// answer in.
+    fn fits(&self, n: usize, each: usize) -> Result<usize> {
+        let left = self.raw.len() - self.at;
+        if n.checked_mul(each).is_none_or(|want| want > left) {
+            bail!("the seek index says it holds more than it has room for");
+        }
+        Ok(n)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Forty bytes that say they hold a trillion access points.
+    ///
+    /// The count used to size the vector before a single point was read, and
+    /// an allocation that large does not fail -- it aborts the process, with
+    /// no error left to return. So the count is disbelieved first.
+    #[test]
+    fn a_count_larger_than_the_file() {
+        let mut raw = Vec::new();
+        raw.extend_from_slice(MAGIC);
+        raw.extend_from_slice(&VERSION.to_le_bytes());
+        raw.extend_from_slice(&0u32.to_le_bytes()); // no track, no known end
+        raw.extend_from_slice(&0f64.to_le_bytes());
+        raw.extend_from_slice(&(1u64 << 40).to_le_bytes());
+
+        let at = std::env::temp_dir().join("smartcut-scix-too-many.scix");
+        std::fs::write(&at, &raw).unwrap();
+        assert!(SeekIndex::load(&at).is_err());
+        let _ = std::fs::remove_file(&at);
+    }
+
+    /// And one that says it holds none, which is a file that reads.
+    #[test]
+    fn a_count_of_none() {
+        let mut raw = Vec::new();
+        raw.extend_from_slice(MAGIC);
+        raw.extend_from_slice(&VERSION.to_le_bytes());
+        raw.extend_from_slice(&0u32.to_le_bytes());
+        raw.extend_from_slice(&0f64.to_le_bytes());
+        raw.extend_from_slice(&0u64.to_le_bytes());
+
+        let at = std::env::temp_dir().join("smartcut-scix-empty.scix");
+        std::fs::write(&at, &raw).unwrap();
+        assert!(SeekIndex::load(&at).unwrap().points.is_empty());
+        let _ = std::fs::remove_file(&at);
     }
 }

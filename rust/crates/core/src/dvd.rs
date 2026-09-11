@@ -690,7 +690,12 @@ fn tracks(ifo: &[u8]) -> Vec<Track> {
 
     let subs = (ifo[0x255] as usize).min(32);
     for i in 0..subs {
-        let s = &ifo[0x256 + i * 6..0x256 + i * 6 + 6];
+        // The count is a byte and the table behind it is six bytes an entry,
+        // so a title set that stops in the middle of the table names more
+        // streams than it carries. Those are not streams.
+        let Some(s) = ifo.get(0x256 + i * 6..0x256 + i * 6 + 6) else {
+            break;
+        };
         out.push(Track {
             kind: "subtitle",
             pid: 0x20 + i as i32,
@@ -1002,19 +1007,71 @@ fn at_name(dir: &Path, rel: &str) -> PathBuf {
     direct
 }
 
+/// A big-endian word, or zero where the table is shorter than it claims.
+///
+/// Zero rather than a panic because every caller is reading a file nobody
+/// vouched for: an index truncated by a bad burn, or one written to be read
+/// wrongly. A zero offset lands on the next check -- a table that starts at
+/// sector zero, a chain whose cells do not lie end to end -- and the read
+/// gives up with a message instead of taking the process with it.
 fn u32be(b: &[u8], at: usize) -> u32 {
-    let mut v = [0u8; 4];
-    v.copy_from_slice(&b[at..at + 4]);
-    u32::from_be_bytes(v)
+    b.get(at..at + 4)
+        .map(|v| u32::from_be_bytes([v[0], v[1], v[2], v[3]]))
+        .unwrap_or(0)
 }
 
 fn u16be(b: &[u8], at: usize) -> u16 {
-    u16::from_be_bytes([b[at], b[at + 1]])
+    b.get(at..at + 2)
+        .map(|v| u16::from_be_bytes([v[0], v[1]]))
+        .unwrap_or(0)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// An index that is nothing but its own magic.
+    ///
+    /// Both tables a DVD is read through are found by a word at a fixed
+    /// offset, and the twelve byte magic is all that stands in front of them.
+    /// A disc written badly, or written to be read wrongly, gets a refusal.
+    #[test]
+    fn an_index_with_nothing_behind_its_magic() {
+        let mut vmg = vec![0u8; 0x40];
+        vmg[..12].copy_from_slice(b"DVDVIDEO-VMG");
+        assert_eq!(u32be(&vmg, 0xc4), 0);
+
+        let mut ifo = vec![0u8; 0x40];
+        ifo[..12].copy_from_slice(b"DVDVIDEO-VTS");
+        // Whatever the walk makes of the bytes behind the magic, no chain in
+        // it names a cell -- and it answers rather than taking the process.
+        let chains = program_chains(&ifo).unwrap_or_default();
+        assert!(chains.iter().all(|g| g.cells.is_empty()));
+        assert!(tracks(&ifo).is_empty());
+    }
+
+    /// A title set naming more subpicture streams than its table holds.
+    ///
+    /// The count is a byte and the table behind it is six bytes an entry, so
+    /// an index that stops where the table begins can still say it carries
+    /// thirty-two of them.
+    #[test]
+    fn more_subpicture_streams_than_there_is_table() {
+        let mut ifo = vec![0u8; 0x256];
+        ifo[..12].copy_from_slice(b"DVDVIDEO-VTS");
+        ifo[0x255] = 32;
+        // The video track, and not one subtitle: the table is not there.
+        assert_eq!(tracks(&ifo).len(), 1);
+    }
+
+    /// A chain table that points past the end of the index it is in.
+    #[test]
+    fn a_palette_table_that_is_not_there() {
+        let mut ifo = vec![0u8; 0x1000];
+        ifo[..12].copy_from_slice(b"DVDVIDEO-VTS");
+        ifo[0xcc..0xd0].copy_from_slice(&2u32.to_be_bytes());
+        assert!(palette_of(&ifo, None).is_none());
+    }
 
     #[test]
     fn a_dvd_time_is_binary_coded_decimal_with_the_rate_on_top() {

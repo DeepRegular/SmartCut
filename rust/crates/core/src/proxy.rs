@@ -211,7 +211,11 @@ impl Marks {
             bail!("{} was written by another version", path.display());
         }
         let n = u64::from_le_bytes(raw[8..16].try_into()?) as usize;
-        if raw.len() < 16 + n * 9 {
+        // Checked, because `n * 9` on a number this file chose wraps and
+        // makes the comparison below come out true -- after which the vectors
+        // are raised for a count nothing holds, and a failed allocation takes
+        // the process rather than the read.
+        if n.checked_mul(9).is_none_or(|want| raw.len() - 16 < want) {
             bail!("{} is truncated", path.display());
         }
         let mut marks = Marks {
@@ -997,4 +1001,27 @@ fn open_encoder(
     enc.set_bit_rate(s.bit_rate.unwrap_or(0));
 
     enc.open_as_with(codec, eopts).map_err(|e| anyhow!("{e}"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A picture-kind table whose count, times nine, wraps.
+    ///
+    /// The length check multiplied the count out before comparing it, so a
+    /// number large enough to wrap made a sixteen byte file look long enough
+    /// to hold it -- and the vectors were then raised for the count itself.
+    #[test]
+    fn a_count_that_wraps_the_length_check() {
+        let mut raw = Vec::new();
+        raw.extend_from_slice(MARKS_MAGIC);
+        raw.extend_from_slice(&VERSION.to_le_bytes());
+        raw.extend_from_slice(&(u64::MAX / 8).to_le_bytes());
+
+        let at = std::env::temp_dir().join("smartcut-marks-wrapping.scmk");
+        std::fs::write(&at, &raw).unwrap();
+        assert!(Marks::load(&at).is_err());
+        let _ = std::fs::remove_file(&at);
+    }
 }

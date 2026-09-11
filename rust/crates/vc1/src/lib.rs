@@ -89,6 +89,19 @@ impl Shape {
 mod tests {
     use super::*;
 
+    /// Two start codes with nothing between them.
+    ///
+    /// The first BDU's payload would begin where the second start code does,
+    /// which is one byte before it. Every packet on a VC-1 stream is split
+    /// this way to find its picture header, so a stream nobody vouched for
+    /// has to come out as an empty payload rather than as a backwards range.
+    #[test]
+    fn start_codes_back_to_back() {
+        let got = headers::bdus(&[0, 0, 1, 0, 0, 1, 0]);
+        assert_eq!(got.len(), 2);
+        assert!(got[0].1.is_empty());
+    }
+
     /// The headers a Blu-ray written in VC-1 hands over as extradata: 1920
     /// by 1080, interlaced, with the pulldown flags in play.
     const EXTRADATA: &[u8] = &[

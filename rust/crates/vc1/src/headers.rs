@@ -36,7 +36,17 @@ pub fn bdus(data: &[u8]) -> Vec<(u8, &[u8])> {
         .iter()
         .enumerate()
         .map(|(k, &s)| {
-            let end = starts.get(k + 1).copied().unwrap_or(data.len());
+            // Two start codes back to back leave no payload between them --
+            // the second begins where the first one's would. A stream nobody
+            // vouched for is free to hold that, so the empty case is named
+            // rather than subtracted into a backwards range.
+            // `s + 4` is never past the end: the scan above only records a
+            // start with a byte behind it.
+            let end = starts
+                .get(k + 1)
+                .copied()
+                .unwrap_or(data.len())
+                .clamp(s + 4, data.len());
             (data[s + 3], &data[s + 4..end])
         })
         .collect()

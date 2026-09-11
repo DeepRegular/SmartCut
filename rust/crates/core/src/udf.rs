@@ -224,10 +224,10 @@ impl Image {
     }
 
     fn sectors(&mut self, at: u64, count: u64) -> Result<Vec<u8>> {
-        let mut buf = vec![0u8; (count * SECTOR) as usize];
-        self.file.seek(SeekFrom::Start(at * SECTOR))?;
-        self.file.read_exact(&mut buf)?;
-        Ok(buf)
+        self.read_runs(&[Extent {
+            at: at.saturating_mul(SECTOR),
+            len: count.saturating_mul(SECTOR),
+        }])
     }
 
     /// Find the anchor, then the volume descriptors it points at, and from
@@ -325,10 +325,25 @@ impl Image {
         let mut maps = Vec::new();
         let mut at = 0usize;
         for _ in 0..count.min(16) {
+            // An entry says how long it is, and the whole of it has to be in
+            // the table: the fields read below sit at fixed offsets inside
+            // it, and a length that runs past the end is a table that does
+            // not hold the entry it counts. A physical map is six bytes and
+            // the other kinds are sixty-four.
             let (kind, len) = match (table.get(at), table.get(at + 1)) {
                 (Some(k), Some(l)) if *l as usize >= 2 => (*k, *l as usize),
                 _ => break,
             };
+            let Some(entry) = table.get(at..at + len) else {
+                break;
+            };
+            let wants = match kind {
+                1 => 6,
+                _ => 64,
+            };
+            if entry.len() < wants {
+                break;
+            }
             match kind {
                 // Type 1: the volume sequence number, and then the
                 // partition this reference means.
@@ -481,8 +496,16 @@ impl Image {
     }
 
     fn read_runs(&mut self, runs: &[Extent]) -> Result<Vec<u8>> {
+        // An extent carries thirty bits of length, so one descriptor can ask
+        // for a gigabyte and sixty-four of them for sixty-four. The buffer is
+        // raised before the read, so a run that runs off the end of the image
+        // has to be turned away here rather than by `read_exact` failing.
+        let end = self.file.seek(SeekFrom::End(0))?;
         let mut out = Vec::new();
         for run in runs {
+            if run.at > end || run.len > end - run.at {
+                bail!("this image says its bytes are past the end of itself");
+            }
             self.file.seek(SeekFrom::Start(run.at))?;
             let mut buf = vec![0u8; run.len as usize];
             self.file.read_exact(&mut buf)?;
@@ -678,6 +701,49 @@ fn u64le(b: &[u8], at: usize) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A partition map table two bytes long, holding one map that is six.
+    ///
+    /// The walk over the maps used to check the two bytes that say how long
+    /// an entry is and then read the fifth of them. An image is a file the
+    /// program is handed, so this has to come back as a refusal.
+    #[test]
+    fn a_partition_map_table_shorter_than_its_entry() {
+        fn sec(img: &mut [u8], n: usize) -> &mut [u8] {
+            &mut img[n * SECTOR as usize..(n + 1) * SECTOR as usize]
+        }
+        fn put16(s: &mut [u8], at: usize, v: u16) {
+            s[at..at + 2].copy_from_slice(&v.to_le_bytes());
+        }
+        fn put32(s: &mut [u8], at: usize, v: u32) {
+            s[at..at + 4].copy_from_slice(&v.to_le_bytes());
+        }
+
+        let mut img = vec![0u8; (ANCHOR as usize + 2) * SECTOR as usize];
+        // The anchor, pointing the main descriptor sequence at sector 200.
+        let s = sec(&mut img, ANCHOR as usize);
+        put16(s, 0, TAG_ANCHOR);
+        put32(s, 16, 2 * SECTOR as u32);
+        put32(s, 20, 200);
+        // A partition, number 0, starting at sector 0.
+        let s = sec(&mut img, 200);
+        put16(s, 0, TAG_PARTITION);
+        put16(s, 22, 0);
+        put32(s, 188, 0);
+        // The logical volume: one map, in a table of two bytes.
+        let s = sec(&mut img, 201);
+        put16(s, 0, TAG_LOGICAL_VOLUME);
+        put32(s, 212, SECTOR as u32);
+        put32(s, 264, 2);
+        put32(s, 268, 1);
+        s[440] = 1;
+        s[441] = 2;
+
+        let at = std::env::temp_dir().join("smartcut-udf-short-map.iso");
+        std::fs::write(&at, &img).unwrap();
+        assert!(Image::open(&at).is_err());
+        let _ = std::fs::remove_file(&at);
+    }
 
     fn entry(runs: &[(u64, u64)], size: u64) -> Entry {
         Entry {
