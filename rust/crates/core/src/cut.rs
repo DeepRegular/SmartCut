@@ -493,6 +493,15 @@ struct CaptionTrack {
     in_index: usize,
     in_tb: f64,
     written: i64,
+    /// The moment given to the last statement written. A muxer refuses a
+    /// packet that does not come after the one before it, and says only
+    /// "Invalid argument" about it -- which stops the whole cut. Two
+    /// statements sent a few microseconds apart land on the same tick of a
+    /// 90 kHz clock honestly, and a damaged recording can send them out of
+    /// order outright. See [`Writer::push_caption`]; the sound
+    /// ([`Writer::push_audio`]) and a disc's graphics
+    /// ([`Writer::push_graphics`]) each answer this in their own way.
+    last_out: Option<i64>,
 }
 
 /// The subtitles going beside the cut, gathered as it is written.
@@ -864,15 +873,25 @@ impl Writer {
         let Some(t) = self.captions.get(track) else {
             return Ok(());
         };
-        let (index, tb) = (t.out_index, t.out_tb);
+        let (index, tb, last) = (t.out_index, t.out_tb, t.last_out);
         packet.set_stream(index);
-        let pts = (at.max(0.0) / tb).round() as i64;
+        // Nudged rather than dropped, which is what a display set gets and
+        // for the same reason: a statement is a line of the programme, and a
+        // tick of 90 kHz is a ninetieth of a millisecond. The sound is the
+        // one that drops instead, because a frame moved off its own instant
+        // is a frame in the wrong place.
+        let mut pts = (at.max(0.0) / tb).round() as i64;
+        if let Some(last) = last {
+            pts = pts.max(last + 1);
+        }
         packet.set_pts(Some(pts));
         packet.set_dts(Some(pts));
         packet.set_duration(0);
         packet.set_position(-1);
         packet.write_interleaved(&mut self.octx)?;
-        self.captions[track].written += 1;
+        let t = &mut self.captions[track];
+        t.written += 1;
+        t.last_out = Some(pts);
         Ok(())
     }
 
@@ -4060,6 +4079,7 @@ pub fn cut_with_progress(
             in_index: info.stream_index,
             in_tb: info.time_base,
             written: 0,
+            last_out: None,
         })
         .collect();
 
