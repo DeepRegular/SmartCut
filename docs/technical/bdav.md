@@ -322,15 +322,18 @@ programme and not the channel still takes the channel from the stream.
 **The disc's own name is counted, like every other name.** A length byte in
 `info.bdav` at offset 64 and then that many bytes of ARIB — the same shape the
 playlist gives the programme's name. Written without the byte, as this did
-before, a recorder reads the first byte of the text as the length; the first
-byte of a name that begins in kanji is a shift, so a disc named
-`無職転生Ⅲ ～異世界行ったら本気だす～` came up in a list as `無職転生`, cut off
-fifteen bytes in at whatever the shift happened to be. The reader had the same
-byte off in the other direction and every real disc's name came back
-mojibake — `この世の果てで恋を唄う少女ＹＵ－ＮＯ` read as
-`〓海寮い硫未討芭〓魃瓦〓〓〓掖㍊〓`. Both halves are fixed, and the two discs
-below are what say so: the length byte is exactly the number of bytes that
-follow it on each.
+before, a recorder reads the first byte of the text as the length, and the
+first byte of a name that begins in kanji is a shift — so a disc called
+`星降る夜の郵便局` goes out as eighteen bytes behind a shift of 0x0F, is read as
+fifteen bytes of name, and comes up in a list as `星降る夜の郵便`.
+
+The reader had the same byte off in the other direction: a recorder writes the
+name straight in kanji, so the length in front of it was decoded as the first
+half of a character and every pair after it split across two. The same name
+read back as `〓厩澆詭襪陵絞惷`, and so did every real disc's.
+
+Both halves are fixed, and the two discs below are what say so: the length
+byte is exactly the number of bytes that follow it on each.
 
 **The disc's own name is not one of the fields.** Nothing carries it: a
 recording knows what programme it is, and a disc of six of them is a thing

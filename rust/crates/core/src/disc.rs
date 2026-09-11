@@ -1064,10 +1064,10 @@ fn disc_name(xml: &str) -> Option<String> {
 /// ARIB text, like every other name a recorder writes, and counted the way a
 /// playlist counts the programme's: a length byte and then that many bytes.
 /// Read instead as a field running to the first zero, as this did before,
-/// every byte of every real disc's name came out one place early -- a disc
-/// named `この世の果てで恋を唄う少女ＹＵ－ＮＯ` read back as
-/// `〓海寮い硫未討芭〓魃瓦〓〓〓掖㍊〓`, the length byte having been decoded as
-/// the first half of a character and every pair after it split across two.
+/// every byte of every real disc's name came out one place early -- a
+/// recorder writes the name straight in kanji, so the length in front of it
+/// was decoded as the first half of a character and every pair after it split
+/// across two. A disc named `星降る夜の郵便局` read back as `〓厩澆詭襪陵絞惷`.
 /// Where the disc has been given no name the length is zero, and that is not
 /// a name either.
 fn info_name(raw: &[u8]) -> Option<String> {

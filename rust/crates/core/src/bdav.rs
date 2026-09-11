@@ -1287,9 +1287,10 @@ fn info(playlists: &[String], title: &str) -> Vec<u8> {
     // then that many bytes of ARIB, exactly as the programme's name is in a
     // playlist. Written without the byte, as this did before, a recorder read
     // the first byte of the text as the length -- and the first byte of a
-    // name that begins in kanji is a shift, so a disc called `無職転生Ⅲ
-    // ～異世界行ったら本気だす～` came up in its list as `無職転生`, cut off
-    // fifteen bytes in at the shift the length happened to be.
+    // name that begins in kanji is a shift, so a disc called
+    // `星降る夜の郵便局` went out as eighteen bytes behind a shift of 0x0F,
+    // was read as fifteen bytes of name, and came up in a list as
+    // `星降る夜の郵便`.
     let text = crate::arib::encode_within(&crate::arib::one_line(title), DISC_NAME_MAX);
     out[DISC_NAME_AT] = text.len() as u8;
     out[DISC_NAME_AT + 1..DISC_NAME_AT + 1 + text.len()].copy_from_slice(&text);
