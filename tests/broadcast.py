@@ -13,12 +13,12 @@ Prints `key=value` lines for a caller to compare, plus one `eit.<n>=` line
 per event section, hashed, so two files can be told apart without either
 this or the caller having to understand ARIB text.
 
-The two conditional access descriptors are left out of every descriptor loop
-printed here: 0x09, and ARIB's own 0xF6. Each says where the entitlement
-messages are and which system scrambles the service, and a cut carries
-neither -- so a cut that restated one would be describing a file that does
-not exist. Printing them would make every comparison fail for the one
-difference that is correct.
+Five descriptors are left out of every descriptor loop printed here, being
+the ones a cut is right not to carry: the two that name the scrambling a cut
+does not have (0x09 and ARIB's own 0xF6), and the three that state the terms
+the broadcast was sent under (0xC1, 0xC8, 0xDE), which are about a
+transmission rather than about a file. Printing them would make every
+comparison fail for the differences that are correct.
 """
 import hashlib
 import sys
@@ -31,12 +31,15 @@ data = open(path, "rb").read()
 start = data.find(b"\x47")
 
 
+DROPPED = (0x09, 0xC1, 0xC8, 0xDE, 0xF6)
+
+
 def no_ca(loop):
-    """A descriptor loop with the conditional access descriptors taken out."""
+    """A descriptor loop with the ones a cut does not carry taken out."""
     out, i = bytearray(), 0
     while i + 2 <= len(loop):
         ln = loop[i + 1]
-        if loop[i] not in (0x09, 0xF6):
+        if loop[i] not in DROPPED:
             out += loop[i:i + 2 + ln]
         i += 2 + ln
     return bytes(out)
@@ -178,10 +181,18 @@ def take_service_and_event(loop, from_sit):
 
 
 def no_component_descriptors(loop):
+    """An event's descriptors, minus the ones a cut is entitled to differ on.
+
+    The ones that name a component, because a cut carries fewer streams than
+    the recording; and the ones in `DROPPED`, because the terms a broadcast
+    was sent under are not carried into the table a file describes itself
+    with any more than into its map. What is left -- which programme, when,
+    its name, its genre, the long text -- has to be the recording's own.
+    """
     out, i = bytearray(), 0
     while i + 2 <= len(loop):
         ln = loop[i + 1]
-        if loop[i] not in COMPONENT_DESCRIPTORS:
+        if loop[i] not in COMPONENT_DESCRIPTORS and loop[i] not in DROPPED:
             out += loop[i:i + 2 + ln]
         i += 2 + ln
     return bytes(out)

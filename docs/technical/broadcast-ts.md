@@ -79,14 +79,35 @@ gigabytes — so a cut spanning a programme boundary describes both programmes. 
 clock in the TOT is moved on as the output runs; left as the snapshot it would name
 the same second for the length of the file.
 
-Two descriptors are not carried across: the conditional access descriptor (0x09) and
-ARIB's own version of it, the access control descriptor (0xF6). Both say which system
-scrambles the service and which PID the entitlement messages arrive on. The output is
-not scrambled and has no ECM stream, so restating either would be describing a file
-that does not exist — and 0xF6 arrives twice on a Japanese broadcast, once in the
-programme loop and once beside the captions. A disc written with them left in
-announced an ECM stream on a PID the disc does not have, in a file nothing had
-scrambled; neither of the reference discs carries one.
+Five descriptors are not carried across into the rebuilt map.
+
+Two of them are about scrambling the cut does not have: the conditional access
+descriptor (0x09) and ARIB's own version of it, the access control descriptor (0xF6).
+Both say which system scrambles the service and which PID the entitlement messages
+arrive on, and a Japanese broadcast carries one of each in the programme loop and
+another pair beside the captions. The output is not scrambled and has no ECM stream, so
+a disc written with them left in announced an ECM stream on a PID the disc does not
+have, in a file nothing had scrambled.
+
+The other three are the terms the broadcast was sent under: 0xC1 says how many times it
+may be copied, 0xDE whether it may be kept at all, and 0xC8 how a decoder is to handle
+the pictures of a service being received off the air. **None of them is about the
+file.** A cut is made from a recording already descrambled and already on a disk, and
+restating the terms of the transmission in the map of something that is no longer a
+transmission describes a situation that stopped existing before the recording was made.
+
+The authoring tool's own discs strip all five and leave the programme loop empty; what
+their map carries is the stream identifier of each stream, the data component
+descriptor beside the captions, and the language of the sound. A recorder keeps the
+last three in the map and adds a sixth of its own — but a recorder is describing what
+it is receiving, and this is not.
+
+**The same three go from the event as well.** A recording states its copy control
+twice: once in the map, and once in the descriptor loop of the event itself, which is
+what the SIT below carries across. Neither reference disc has it in either place. The
+event is still the broadcast's own event — what it was called, when it went out and
+what it was about all travel as they came — and what goes is the terms, from both
+places or from neither.
 
 The network information table is read for one thing only, and not carried at all:
 **which button on a remote control the recording came off**. It is in the transport
@@ -216,6 +237,21 @@ has.
 A section has a ceiling of 4096 bytes, and a real recording's extended event descriptors
 ran to a kilobyte on their own. What does not fit is dropped whole descriptors at a
 time, from the end, which is why the times and the service name are written first.
+
+**One a second, dealt out a packet at a time across that second.** Measured on the
+reference discs, section start to section start: a recorder's own disc sends one every
+998 milliseconds, an authoring tool's every 800. This used to ride on whatever slot
+libavformat wrote a service description in, which put it at 500 — more often than
+either, for no reason anybody chose. The packets of one section are now spread through
+the interval rather than written as a burst, which is the recorder's shape too: its
+PID has something on it every two hundred milliseconds rather than five packets in a
+thousand, and the table never arrives as a lump a buffer has to find room for at once.
+Measured on a cut written that way, a section every 1001 milliseconds and a packet
+every 200.
+
+Nothing of it goes out in front of the first map. A stream opens with what its tables
+are about, not with a description of them; both reference discs do, and libavformat
+wrote its service description first.
 
 ## Written with the broadcast's own tables (`--tables broadcast`)
 

@@ -90,21 +90,38 @@ const TABLE_SIT: u8 = 0x7F;
 const TABLE_TDT: u8 = 0x70;
 const TABLE_TOT: u8 = 0x73;
 
-/// Descriptor tags that must not be carried across.
+/// Descriptor tags that must not be carried across into a rebuilt map, or
+/// into the one table a partial transport stream describes itself with.
 ///
-/// 0x09 is the conditional access descriptor -- it says where the entitlement
-/// messages are and which system scrambles the service. The output is not
-/// scrambled and carries no ECM stream, so restating it would describe a file
-/// that does not exist and invites a player to wait for a key that never
-/// comes.
+/// Two of them are about scrambling a cut does not have. 0x09 is the
+/// conditional access descriptor -- it says where the entitlement messages
+/// are and which system scrambles the service -- and 0xF6 is the same thing
+/// in ARIB's own words, the access control descriptor. A Japanese broadcast
+/// carries one of each in the programme loop and another pair beside the
+/// captions, and a disc written with them left in announced an ECM stream on
+/// a PID the disc does not have, in a file nothing had scrambled.
 ///
-/// 0xF6 is the same thing in ARIB's own words: the access control descriptor,
-/// which names the scrambling system and the PID the entitlement messages
-/// arrive on. A Japanese broadcast carries one in the programme loop and
-/// another beside the captions, and a disc written with them left in
-/// announced an ECM stream on a PID the disc does not have, in a file
-/// nothing had scrambled. Neither reference disc carries one.
-const DROP_DESCRIPTORS: [u8; 2] = [0x09, 0xF6];
+/// The other three are the conditions the broadcast was sent under: 0xC1 says
+/// how many times it may be copied, 0xDE whether it may be kept at all, and
+/// 0xC8 how a decoder is to handle the pictures of a service that is being
+/// received off the air. **None of them is about the file.** A cut is made
+/// from a recording already descrambled and already on a disk; restating the
+/// terms of the transmission in the map of something that is no longer a
+/// transmission describes a situation that has not existed since before the
+/// recording was made.
+///
+/// Read off the authoring tool's own discs, which strip all five and leave
+/// the programme loop empty: what its map carries is the stream identifier of
+/// each stream, the data component descriptor beside the captions, and the
+/// language of the sound. The recorder's own discs keep the last three in the
+/// map and add a sixth of their own; between the two, the tool that was
+/// handed a file is the one in the same position as this.
+///
+/// **Neither of them carries the copy control in its selection information
+/// either**, which is the other place a recording states it -- the event's
+/// own descriptor loop rather than the map's. So it goes from both; see
+/// [`present_event`].
+const DROP_DESCRIPTORS: [u8; 5] = [0x09, 0xC1, 0xC8, 0xDE, 0xF6];
 
 /// Which account of itself a finished cut carries.
 ///
@@ -1641,10 +1658,25 @@ pub struct Stats {
 /// can say what it is playing, so these are short on purpose.
 const EIT_PERIOD: f64 = 2.0;
 const TOT_PERIOD: f64 = 5.0;
-/// How often the muxer writes a service description, and so how often a
-/// partial stream's own table goes out in its place. libavformat's default,
-/// which this does not change.
-const SDT_PERIOD: f64 = 0.5;
+
+/// How often a partial transport stream's own table goes out, and how long
+/// each one of them is dealt out over.
+///
+/// **A second, because that is what a recorder does.** Measured on the
+/// reference discs, section start to section start: a recorder's own disc
+/// sends one every 998 milliseconds, an authoring tool's every 800. This used
+/// to ride on whatever slot libavformat wrote a service description in, which
+/// was every 500 -- more often than either, for no reason anybody chose.
+///
+/// **The packets of one section are spread across that second**, one at a
+/// time, rather than written as a burst. That is the recorder's shape too:
+/// the five packets of its table are dealt out through the second between
+/// sections, which is what leaves its PID with something on it every two
+/// hundred milliseconds rather than for five packets in a thousand. A player
+/// joining part way through still waits a whole interval either way; what the
+/// spreading buys is that the table never arrives as a lump the buffer has to
+/// find room for at once.
+const SIT_PERIOD: f64 = 1.0;
 
 /// Wrap a section into transport packets on one PID.
 fn packetize(pid: u16, section: &[u8], cc: &mut u8, out: &mut Vec<u8>) {
@@ -1848,7 +1880,8 @@ struct Present {
     start: [u8; 5],
     /// Binary-coded decimal, hours to seconds.
     duration: [u8; 3],
-    /// The event's own descriptor loop, trimmed to the streams that are here.
+    /// The event's own descriptor loop, trimmed to the streams that are here
+    /// and to what a file may say about itself.
     descriptors: Vec<u8>,
 }
 
@@ -1858,12 +1891,21 @@ struct Present {
 /// this file. The following one names a programme that is not here, and a
 /// partial transport stream has nowhere to put it: the SIT describes what
 /// the file *is*.
+///
+/// The loop is trimmed twice over. [`keep_carried`] takes out what names a
+/// stream the cut does not carry; [`keep_descriptors`] takes out the terms
+/// the broadcast was sent under, which are no more true of a file here than
+/// they are in the map -- and which neither reference disc has in this table
+/// either. **The event is still the broadcast's own event.** What it was
+/// called, when it went out and what it was about all travel as they came;
+/// what goes is the copy control, and it goes from both places or from
+/// neither.
 fn present_event(snapshot: &Snapshot, components: &Components) -> Option<Present> {
     let section = snapshot.eit.iter().find(|s| s.len() > 26 && s[6] == 0)?;
     let body = &section[..section.len() - 4];
     let event = body.get(14..)?;
     let len = (((event[10] & 0x0F) as usize) << 8) | event[11] as usize;
-    let descriptors = keep_carried(event.get(12..12 + len)?, components);
+    let descriptors = keep_descriptors(&keep_carried(event.get(12..12 + len)?, components));
     Some(Present {
         version: (section[5] >> 1) & 0x1F,
         start: event[2..7].try_into().ok()?,
@@ -2367,7 +2409,7 @@ pub fn graft(output: &str, g: &Graft) -> Result<Stats> {
                 output,
                 pcr_pid,
                 stride,
-                biggest * PACKET as f64 * 8.0 / SDT_PERIOD,
+                biggest * PACKET as f64 * 8.0 / SIT_PERIOD,
             )?;
             let mut sections: Vec<Vec<u8>> = Vec::with_capacity(g.ranges.len());
             let mut version = 0u8;
@@ -2408,13 +2450,22 @@ pub fn graft(output: &str, g: &Graft) -> Result<Stats> {
         let mut now = 0.0f64;
         let mut next_eit = 0.0f64;
         let mut next_tot = 0.0f64;
+        let mut next_sit = 0.0f64;
+        // A partial stream's own table, in the packets it was cut into and
+        // waiting to be dealt out one at a time. `sent` is how many of this
+        // section have gone, and `began` is when the first of them did; see
+        // [`SIT_PERIOD`].
+        let mut pending: std::collections::VecDeque<Vec<u8>> = std::collections::VecDeque::new();
+        let mut sent = 0usize;
+        let mut began = 0.0f64;
         // Which range the clock is inside, so a cut spanning two programmes
         // describes each of them over its own stretch.
         let mut range = 0usize;
-        // Whether the map has gone out yet, and whether a partial stream's
-        // own table is waiting for it to.
+        // Whether the map has gone out yet. A stream opens with the map and
+        // not with a description of what the map is about -- both reference
+        // discs do, and libavformat writes its service description first --
+        // so nothing of the table below goes out in front of the first one.
         let mut opened = false;
-        let mut held = false;
 
         let mut frame = vec![0u8; stride];
         // A section this pass writes goes out behind the arrival time of the
@@ -2471,6 +2522,12 @@ pub fn graft(output: &str, g: &Graft) -> Result<Stats> {
                 // rather than waiting out the interval.
                 next_eit = now;
                 next_tot = now;
+                // And the table it describes itself with, which is a
+                // different table now. What is left of the one in flight
+                // belongs to the range that has ended; a reader throws away
+                // a section the next one interrupts, which is what this is.
+                pending.clear();
+                next_sit = now;
             }
 
             match pid {
@@ -2488,42 +2545,15 @@ pub fn graft(output: &str, g: &Graft) -> Result<Stats> {
                     packetize(p, &pmt_section, c, &mut scratch);
                     put(&mut dst, arrival, &scratch)?;
                     stats.pmt += 1;
-                    // And the table a partial stream opens with, where the
-                    // muxer put its service description in front of the map
-                    // rather than behind it -- see `held` below.
-                    if std::mem::take(&mut held) {
-                        let c = cc.entry(PID_SIT).or_default();
-                        scratch.clear();
-                        packetize(PID_SIT, &sit[range], c, &mut scratch);
-                        put(&mut dst, arrival, &scratch)?;
-                        stats.sit += 1;
-                    }
                     opened = true;
                     continue;
                 }
-                // The muxer's own service description is where a partial
-                // stream's table goes too. It arrives at the cadence a
-                // service description is written at, which is the cadence
-                // either table wants, and taking its place is what leaves
-                // PID 0x11 out of the output altogether.
-                // A stream opens with its map, not with a description of
-                // what the map is about. libavformat writes the service
-                // description first, which put nine packets of selection
-                // information in front of the very first table of a disc's
-                // stream; both reference discs open with the map. So the
-                // first one is held back and goes out behind the map above.
-                PID_SDT if g.tables == Tables::Partial && !opened => {
-                    held = true;
-                    continue;
-                }
-                PID_SDT if g.tables == Tables::Partial => {
-                    let c = cc.entry(PID_SIT).or_default();
-                    scratch.clear();
-                    packetize(PID_SIT, &sit[range], c, &mut scratch);
-                    put(&mut dst, arrival, &scratch)?;
-                    stats.sit += 1;
-                    continue;
-                }
+                // A partial stream carries its own table instead of the four
+                // it replaces, and the muxer's service description is one of
+                // them. Dropping it outright is what leaves PID 0x11 out of
+                // the output altogether; the table that stands in its place
+                // is written on a clock of its own, below.
+                PID_SDT if g.tables == Tables::Partial => continue,
                 PID_SDT if sdt_section.is_some() => {
                     let c = cc.entry(PID_SDT).or_default();
                     scratch.clear();
@@ -2553,8 +2583,36 @@ pub fn graft(output: &str, g: &Graft) -> Result<Stats> {
             dst.write_all(&frame)?;
 
             // A partial stream has said everything it has to say in the one
-            // table; the tables below are the ones it exists instead of.
+            // table; the tables below are the ones it exists instead of. It
+            // is written here rather than over a slot the muxer chose,
+            // because when it goes out is a thing a disc has an answer to and
+            // libavformat has not: a section a second, dealt out a packet at
+            // a time across that second. See [`SIT_PERIOD`].
             if g.tables == Tables::Partial {
+                // Nothing in front of the first map: a stream opens with what
+                // its tables are about, not with a description of them.
+                if !opened {
+                    continue;
+                }
+                if pending.is_empty() && now >= next_sit {
+                    let c = cc.entry(PID_SIT).or_default();
+                    scratch.clear();
+                    packetize(PID_SIT, &sit[range], c, &mut scratch);
+                    pending = scratch.chunks(PACKET).map(<[u8]>::to_vec).collect();
+                    sent = 0;
+                    began = now;
+                    next_sit = now + SIT_PERIOD;
+                    stats.sit += 1;
+                }
+                // The nth packet of a section of m is due a nth of the way
+                // through the interval, so the last of them goes out just
+                // before the next section starts.
+                let whole = (sent + pending.len()) as f64;
+                if !pending.is_empty() && now >= began + SIT_PERIOD * sent as f64 / whole {
+                    let one = pending.pop_front().expect("just checked it was not empty");
+                    put(&mut dst, arrival, &one)?;
+                    sent += 1;
+                }
                 continue;
             }
             let snap = &g.ranges[range].snapshot;
