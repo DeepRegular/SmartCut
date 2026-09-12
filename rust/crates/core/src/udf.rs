@@ -450,6 +450,10 @@ impl Image {
         // fragmented file, but the format allows it -- so this is a loop over
         // runs of descriptors rather than over one run.
         let mut out = Vec::new();
+        // How much of the file has been accounted for, which is what says
+        // whether an extent with nothing in it is a hole or the tail end of
+        // the room the file was given.
+        let mut recorded = 0u64;
         let mut chunk = ads.to_vec();
         for _ in 0..MAX_CONTINUATIONS {
             let mut carry_on = None;
@@ -467,11 +471,24 @@ impl Image {
                 };
                 match raw >> 30 {
                     // Recorded and allocated: the only kind that holds bytes.
-                    0 => out.extend(byte_runs(&map, block, len)?),
-                    // Allocated but not recorded, or neither: a hole. A
-                    // stream with one is not a stream to hand to a demuxer,
-                    // and saying so is better than reading zeros as pictures.
-                    1 | 2 => bail!("the file has an unwritten hole in it"),
+                    0 => {
+                        out.extend(byte_runs(&map, block, len)?);
+                        recorded += len;
+                    }
+                    // Allocated but not recorded, or neither. Past the end of
+                    // the file it is room a recorder took and never filled --
+                    // a recording stopped partway through the unit it was
+                    // writing, and every clip on the BD-REs here ends in one
+                    // -- so the file is whole without it and ignoring it is
+                    // the only way such a disc opens at all. Inside the file
+                    // it is a hole, and a stream with one is not a stream to
+                    // hand to a demuxer: saying so is better than reading
+                    // zeros as pictures.
+                    1 | 2 => {
+                        if recorded < size {
+                            bail!("the file has an unwritten hole in it");
+                        }
+                    }
                     // More descriptors, over there.
                     _ => {
                         carry_on = Some((map, block, len));
