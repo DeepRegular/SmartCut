@@ -4207,6 +4207,39 @@ async function showReencode(clip) {
   }
 }
 
+/// What the line at the top of the output screen says while a clip is
+/// written.
+///
+/// It used to say the same thing whatever was happening: that the video was
+/// being copied losslessly. That is the best case and it is often the true
+/// one -- cuts that land on access points cost nothing -- but a cut in the
+/// middle of a group of pictures has a stretch either side of it that has to
+/// be made again, and a range too short to hold one access point is made
+/// again from end to end. Saying "losslessly" over the top of that describes
+/// a run nobody is having.
+///
+/// So it is asked of the plan, which is already in hand by the time a clip
+/// starts: the same plan the frames on the stage below came from. A plan that
+/// could not be read leaves the plain line standing -- it promises nothing,
+/// which is all that can be honestly said there.
+function sayWhatIsWritten(clip, out) {
+  // The plan this clip is being written to, and not one left over from the
+  // ranges it had before somebody moved them.
+  const held = clip.reencode;
+  const plan =
+    held && held.sig === JSON.stringify(rangesOf(clip)) ? held.plan : null;
+  const segs = (plan && plan.segments) || [];
+  if (!segs.length) return;
+  const name = nameOf(out);
+  const redone = segs.filter((g) => g.kind !== "copy").length;
+  const text = !segs.some((g) => g.kind === "copy")
+    ? t("out.writingAll", { name })
+    : redone === 0
+      ? t("out.writingCopy", { name })
+      : t("out.writingMost", { name, n: redone });
+  el("out-state").textContent = text;
+}
+
 /// Put segment `i` on the stage.
 ///
 /// `note` stands in for the sub-line when there is no segment to show, and
@@ -4541,6 +4574,9 @@ async function runExport() {
     // Before the cut starts, not during: the plan and the frames are reads of
     // the same recording the cut is about to stream off the disc.
     await showReencode(clip);
+    // And now that the plan is in, the line above can say what is actually
+    // being written rather than the best case.
+    sayWhatIsWritten(clip, out);
     // A second run over a clip already on show would otherwise start from
     // wherever the first one left the stage.
     if (onShow && onShow.r.segs.length) stageShot(0);
