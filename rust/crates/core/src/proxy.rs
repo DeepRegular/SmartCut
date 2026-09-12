@@ -596,6 +596,19 @@ pub fn build(
     let mut collector = thumbs::Collector::new(src, thumb_opts);
     let mut marks = Marks::default();
     let mut next_point = 0usize;
+    // How far from the instant an index states the picture it names may
+    // actually be. Half a group of pictures: far enough to cover a clock that
+    // is off by a picture or two, near enough that the point after this one
+    // can never be the one taken. See `entry` below.
+    let reach = {
+        let gaps: Vec<f64> = src.points.windows(2).map(|w| w[1].time - w[0].time).collect();
+        let mean = if gaps.is_empty() {
+            1.0
+        } else {
+            gaps.iter().sum::<f64>() / gaps.len() as f64
+        };
+        (mean / 2.0).clamp(fd, 1.0)
+    };
     let mut told = -1.0f64;
     let mut shared = std::time::Instant::now();
 
@@ -628,14 +641,31 @@ pub fn build(
                 // a keyframe exactly there, and the thumbnail track is built from
                 // exactly those pictures -- the same ones a pass over the recording
                 // itself would have used.
-                while next_point < src.points.len() && src.points[next_point].time < t - fd / 2.0 {
+                //
+                // **A picture is matched, not an instant.** The time an index
+                // states can sit a picture or two from the moment the picture
+                // is shown: a container's own seek table is written on the
+                // clock the file keeps before its edit list moves it, and on
+                // the 29.97 recordings measured here every entry but the first
+                // came out two frames early. Taken at its word, that put the
+                // proxy's keyframe on the picture two before the access point
+                // -- which is not an access point at all, so the proxy had
+                // entry points the recording does not have, and the one it was
+                // standing in for was missing from it. What an index names is
+                // a key picture and nothing else is, so what is asked is that:
+                // an I picture, with the next point still within half a group
+                // of it. A point is taken once and then done with.
+                let key = frame.kind() == ff::picture::Type::I;
+                while next_point < src.points.len() && src.points[next_point].time < t - reach {
                     next_point += 1;
                 }
-                let entry = src
-                    .points
-                    .get(next_point)
-                    .is_some_and(|p| (p.time - t).abs() <= fd / 2.0);
+                let entry = key
+                    && src
+                        .points
+                        .get(next_point)
+                        .is_some_and(|p| p.time <= t + reach);
                 if entry {
+                    next_point += 1;
                     collector.feed(t, &frame)?;
                     if let Some(f) = share.as_mut() {
                         if shared.elapsed() >= thumbs::SHARE_EVERY {
@@ -898,7 +928,13 @@ struct EncoderSettings {
 /// sample as a sync sample only when it is an IDR, and the proxy's whole
 /// arrangement rests on its keyframes being findable in that table: the
 /// thumbnail track built from a cached proxy reads nothing else.
-const X264_PARAMS: &str = "scenecut=0";
+///
+/// The shortest gap between keyframes is one picture, because the gap between
+/// two of the recording's access points is the recording's to decide. Left at
+/// its default -- a tenth of the longest gap -- x264 declines a forced
+/// keyframe that falls too soon after the last one, and the entry point it
+/// declines is one the proxy then does not have.
+const X264_PARAMS: &str = "scenecut=0:min-keyint=1";
 
 /// One quality number, on the scale the named encoder actually has.
 ///

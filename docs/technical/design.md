@@ -1462,9 +1462,19 @@ there is nothing to get wrong and nothing that can drift out of sync when the cu
 
 **The access points must match.** A keyframe is forced at every access point of the original
 recording and nowhere else (`sc_threshold` and `x264-params scenecut=0` stop the encoder from
-deciding for itself). As a result the proxy's index lands on the same times, and the thumbnail
-track built from it sits on the same key pictures as one built from the original. On 30 minutes
+deciding for itself; `min-keyint=1` stops it refusing a forced one for arriving too soon after the
+last). As a result the proxy's index lands on the same pictures, and the thumbnail track built
+from it sits on the same key pictures as one built from the original. On 30 minutes
 of Nihonkai TV, `frame I:3607` — exactly the recording's 3607 access points.
+
+> **A picture is matched, not an instant.** An index says when each access point is, and that time
+> is not always the moment the picture is shown: a container's own seek table is written on the
+> clock the file keeps before its edit list moves it. On the 29.97 fixture here every entry but the
+> first came out two frames early, and on the open-GOP one five. Taken at its word, the keyframe
+> was forced onto the picture two before the access point — which is not an access point at all, so
+> the proxy had entry points the recording does not have and was missing the ones it was standing
+> in for. What an index names is a key picture and nothing else is, so that is what is asked of a
+> picture: an I picture, with the next point still within half a group of it.
 
 **The recording can change shape partway through.** A scaler is built for one size and one pixel
 format and takes nothing else, and this pass built one from the first picture and kept it for the
