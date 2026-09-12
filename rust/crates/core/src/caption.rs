@@ -529,6 +529,11 @@ pub struct Layout {
     /// Where in the plane a caption begins: the top left of the area it may
     /// be written in, which is where the pen goes home to.
     origin: (u16, u16),
+    /// How big that area is. What it is for is the right edge: a line that
+    /// reaches it goes on at the left edge of the next line down, which is
+    /// what a receiver does and what several channels write for. See
+    /// [`Pen::place`].
+    area: (u16, u16),
     /// One character, and the space left around it. A field is the two
     /// added together, and that is the grid a row and a column count.
     cell: (u16, u16),
@@ -549,6 +554,7 @@ impl Default for Layout {
         Layout {
             plane: (960, 540),
             origin: (170, 30),
+            area: (620, 480),
             cell: (36, 36),
             gap: (4, 24),
             glyphs: HashMap::new(),
@@ -688,6 +694,25 @@ impl Pen {
         // What this character takes: a field, or half of one where the set
         // is a half-width set or the size is a half-width size.
         let advance = field_w as f32 * sx * if full_width { 1.0 } else { 0.5 };
+        // A character that will not fit in what is left of the display area
+        // goes at the left edge of the next line down, which is what a
+        // receiver does with a line that runs on.
+        //
+        // Broadcasters write for it. One channel measured here puts two
+        // speakers in one statement -- the first line, then a colour change
+        // and the reply, with no position between them -- and the reply ran
+        // off the plane and was drawn nowhere. A line that ends exactly on
+        // the edge is a line that fits: the channels that right-align a
+        // line land on it to the dot.
+        //
+        // Only from somewhere past the left edge, so that a field wider than
+        // the whole area moves the pen once rather than for ever.
+        let edge = (layout.origin.0 + layout.area.0) as f32;
+        if self.x > layout.origin.0 as f32 && self.x + advance > edge + 0.5 {
+            self.finish();
+            self.x = layout.origin.0 as f32;
+            self.y += field_h as f32 * sy;
+        }
         let height = layout.cell.1 as f32 * sy;
         // The glyph sits in the middle of its field: the space a format
         // leaves around a character is left around it rather than under it,
@@ -814,13 +839,25 @@ impl Pen {
                         self.x += field_w as f32 * sx * p(0);
                     }
                     // Straight to a row and a column, counted from the top
-                    // left of the display area in whole fields. The row
-                    // comes first.
+                    // left of the display area in fields. The row comes
+                    // first.
+                    //
+                    // The field they count is the one the size in force
+                    // makes, the same as every cursor move above: a channel
+                    // writing a line in `MSZ` counts half-width columns,
+                    // and a column of 25 is 500 dots along rather than
+                    // 1000. Counted at full width regardless, three of the
+                    // five channels measured put their lines clean off the
+                    // plane -- 58 + 25 x 40 is 1058 on a plane 960 wide --
+                    // and a line off the plane is a line nothing draws.
+                    // Right-aligning a half-width line is how those
+                    // channels write a reply, so what went missing was
+                    // whole exchanges rather than the odd word.
                     0x1C => {
                         self.finish();
                         self.bottom = None;
-                        self.y = layout.origin.1 as f32 + p(0) * field_h as f32;
-                        self.x = layout.origin.0 as f32 + p(1) * field_w as f32;
+                        self.y = layout.origin.1 as f32 + p(0) * field_h as f32 * sy;
+                        self.x = layout.origin.0 as f32 + p(1) * field_w as f32 * sx;
                     }
                     // TIME: the statement waiting on its own account.
                     // `0x20` and a count of tenths of a second is the wait a
@@ -869,12 +906,12 @@ impl Pen {
                                     layout.plane = plane;
                                 }
                             }
-                            // SDF: how big the writing area is. Read past:
-                            // nothing here clips a line to it, because a
-                            // broadcaster's own line fits the area it just
-                            // declared. Where a line goes is `SDP` and
-                            // `ACPS`, below.
-                            0x56 => {}
+                            // SDF: how big the writing area is. Not a clip
+                            // -- nothing here cuts a line off -- but the
+                            // right edge is where a line that runs on comes
+                            // back to the left one row down. See
+                            // [`Pen::place`].
+                            0x56 => layout.area = (arg(0), arg(1)),
                             // SSM: how big one character is.
                             0x57 => layout.cell = (arg(0), arg(1)),
                             // SHS and SVS: the space left around it.
@@ -1101,6 +1138,49 @@ mod tests {
         let run = &only(&written)[0];
         assert_eq!(run.advance, 20);
         assert_eq!(run.text, "AB");
+    }
+
+    /// A row and a column are counted in the fields the size in force
+    /// makes, which is how a channel writing half-width text puts a line
+    /// against the right edge of the display area.
+    ///
+    /// Measured on three channels' recordings, where the line this places
+    /// ends exactly on the edge of the area declared -- 58 + 25 x 20 + 340
+    /// against an area 840 wide at 58 -- and was landing at 1058 on a plane
+    /// 960 wide, which is to say nowhere.
+    #[test]
+    fn a_position_is_counted_in_the_size_in_force() {
+        let mut layout = Layout::default();
+        let mut units = statement(0, 0, &[]);
+        // MSZ, then the jump, then back to full size for the text: the
+        // order a broadcast sends, and the reason the size cannot be read
+        // off the characters that follow.
+        units.push(0x89);
+        units.extend_from_slice(&[0x1C, 0x40 + 7, 0x40 + 25]);
+        units.push(0x8A);
+        units.extend_from_slice(&KANJI);
+        let written = layout.statement(&units);
+        let run = &only(&written)[0];
+        assert_eq!(run.x, 170 + 25 * 20);
+        // The row is unchanged: `MSZ` is half the width and the whole
+        // height.
+        assert_eq!(run.y, 30 + 7 * 60 + 12);
+        assert_eq!(run.advance, 40);
+
+        // `SSZ` is half of both, so the row halves with the column. Row 15
+        // is inside a 480 dot area written at that size, and 942 -- which
+        // is where it was going -- is past the bottom of the plane.
+        let mut units = statement(0, 0, &[]);
+        units.push(0x88);
+        units.extend_from_slice(&[0x1C, 0x40 + 15, 0x40]);
+        units.extend_from_slice(&KANJI);
+        let written = layout.statement(&units);
+        let run = &only(&written)[0];
+        assert_eq!(run.y, 30 + 15 * 30 + 6);
+        assert_eq!(run.height, 18);
+        // Half a field across, the same as `MSZ`: what `SSZ` halves as well
+        // is the height.
+        assert_eq!(run.advance, 20);
     }
 
     #[test]

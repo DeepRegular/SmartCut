@@ -299,7 +299,18 @@ APS(5,0)  [≫カローラは]  APS(6,0)
   display area holds 15 columns and 8 rows.
 - `APS(row, column)` is where writing begins — **the row comes first**, and both count
   from 0 at the top left of the display area. Rows 5, 6 and 7 of the eight are where
-  an ordinary caption goes, which is the bottom of the screen.
+  an ordinary caption goes, which is the bottom of the screen. What they count is the
+  field the **size in force** makes: a channel writing in `MSZ` that sends column 25
+  means 58 + 25 x 20, a line up against the right edge. Counted at full width it is
+  1058, which is off a 960-dot plane — and `SSZ` halves the row as well, which puts
+  the line off the bottom. Three of five channels measured do this, and what went
+  missing was the replies.
+- `SDF` is how big the display area is, and what it is for here is the **right edge**:
+  a character that will not fit goes at the left edge of the next line down, which is
+  what a receiver does and what the channels write for. One puts two speakers in a
+  single statement — the first line, a colour change, then the reply, with no position
+  between them — and the reply ran off the plane. A line that ends exactly on the edge
+  fits: the channels that right-align a line land on it to the dot.
 - `ACPS(x; y)` is the other way to place a line, and the one most channels use: a
   place in the plane's own dots rather than a row and a column. What it names is the
   **bottom left** of the character field — 509 on a 540-dot plane is the last row, not
