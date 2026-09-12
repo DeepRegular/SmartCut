@@ -66,6 +66,17 @@ fn main() -> Result<()> {
             );
         }
         println!("       {}", e.path);
+        // What it takes to read the clip as one recording, where it is one
+        // of the clips that needs it: a recorder's, written in several
+        // stretches with a clock each. See `smartcut_core::restamp`.
+        if let Some(table) = sc::disc::clip_restamp(&e.path) {
+            let shown: Vec<String> = table
+                .pieces()
+                .iter()
+                .map(|p| format!("{}@{:+.2}s", p.at / 192, p.shift as f64 / 90_000.0))
+                .collect();
+            println!("       joined from {} [{}]", shown.len(), shown.join(", "));
+        }
         match sc::input::Input::parse(&e.path) {
             Ok(input) => {
                 let range = match input.range {

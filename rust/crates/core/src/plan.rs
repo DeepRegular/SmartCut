@@ -314,11 +314,53 @@ pub fn plan(
 /// table. So this is the entry point for a caller that has the recording in
 /// hand, and [`plan`] stays the arithmetic.
 pub fn plan_on(src: &crate::Source, ranges: &[(f64, f64)], opts: &PlanOptions) -> Vec<RangePlan> {
-    let mut plans = plan(&src.video, src.duration, &src.points, ranges, opts);
+    let ranges = at_the_seams(ranges, &src.joins);
+    let mut plans = plan(&src.video, src.duration, &src.points, &ranges, opts);
     for p in &mut plans {
         clean_the_join(src, p, opts);
     }
     plans
+}
+
+/// The shortest a piece of a range is worth keeping as a range of its own.
+/// A seam that falls this near the end of one is the end of it.
+const SLIVER: f64 = 0.1;
+
+/// Cut every kept range at the seams the recording carries.
+///
+/// **A seam is a cut somebody else already made.** A recorder that stops and
+/// starts writes each stretch with a clock of its own, and joining them --
+/// see [`crate::restamp`] -- puts the times in one line but not the pictures:
+/// the first pictures of a stretch reference pictures from before the
+/// recorder stopped, which are minutes of broadcast away and were never
+/// written down. Copied straight across, a decoder shows the wreckage until
+/// the next picture that restarts it, which on a recorder's own stream can be
+/// a minute later.
+///
+/// So the seam is planned as a cut. That is the operation this program
+/// already does correctly at every boundary a person draws: the far side
+/// opens with a re-encoded head that starts a coded video sequence of its
+/// own, and the output timeline closes up behind it because a segment
+/// occupies the fields it writes and not the times it came from.
+///
+/// Costs a second or two of re-encoding per seam, which is what a cut costs
+/// anywhere. A recording with no seams is planned exactly as it was.
+fn at_the_seams(ranges: &[(f64, f64)], joins: &[f64]) -> Vec<(f64, f64)> {
+    if joins.is_empty() {
+        return ranges.to_vec();
+    }
+    let mut out = Vec::new();
+    for &(a, b) in ranges {
+        let mut at = a;
+        for &seam in joins {
+            if seam > at + SLIVER && seam < b - SLIVER {
+                out.push((at, seam));
+                at = seam;
+            }
+        }
+        out.push((at, b));
+    }
+    out
 }
 
 /// Move the start of a range's copied body onto an entry point that restarts
@@ -519,5 +561,27 @@ mod tests {
         assert_eq!(tail.kind, SegmentKind::Reencode);
         assert!(tail.frames > 0, "{tail:?}");
         assert!((plan.t_out - t_out).abs() < 1e-9);
+    }
+
+    /// A kept range that runs across a seam is planned as two, because a copy
+    /// cannot be carried across one. See [`at_the_seams`].
+    #[test]
+    fn a_range_is_cut_at_the_seams() {
+        let joins = [10.0, 25.0];
+        assert_eq!(
+            at_the_seams(&[(0.0, 40.0)], &joins),
+            vec![(0.0, 10.0), (10.0, 25.0), (25.0, 40.0)]
+        );
+        // A seam outside the range changes nothing.
+        assert_eq!(at_the_seams(&[(12.0, 20.0)], &joins), vec![(12.0, 20.0)]);
+        // Nor does one that falls where the range already begins or ends.
+        assert_eq!(at_the_seams(&[(10.0, 25.0)], &joins), vec![(10.0, 25.0)]);
+        // A recording with no seams is planned exactly as it was.
+        assert_eq!(at_the_seams(&[(0.0, 40.0)], &[]), vec![(0.0, 40.0)]);
+        // And several ranges are each cut where they need it.
+        assert_eq!(
+            at_the_seams(&[(5.0, 15.0), (30.0, 35.0)], &joins),
+            vec![(5.0, 10.0), (10.0, 15.0), (30.0, 35.0)]
+        );
     }
 }

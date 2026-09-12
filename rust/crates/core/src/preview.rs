@@ -412,7 +412,7 @@ fn glance_now(spec: &str, landing: Landing, width: u32) -> Result<Shot> {
 struct Glancer {
     /// The name it was asked for by, for what the failures say.
     spec: String,
-    ictx: ff::format::context::Input,
+    ictx: crate::input::Demux,
     decoder: ff::decoder::Video,
     idx: usize,
     time_base: f64,

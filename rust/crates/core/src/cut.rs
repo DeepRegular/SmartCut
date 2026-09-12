@@ -1281,7 +1281,7 @@ fn take_graphics(
     Ok(arrives >= seg.end && !writer.graphics[graphics.track].plane.building())
 }
 
-fn open_input(path: &str) -> Result<(ff::format::context::Input, usize)> {
+fn open_input(path: &str) -> Result<(crate::input::Demux, usize)> {
     let ictx = crate::input::demux(&path)?;
     let index = ictx
         .streams()

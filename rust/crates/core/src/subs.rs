@@ -164,7 +164,7 @@ pub struct Reader {
     /// Which stream the pictures are on. See [`Reader::fill`]: they are the
     /// clock a window is read against.
     video: usize,
-    ictx: Option<ff::format::context::Input>,
+    ictx: Option<crate::input::Demux>,
     /// The stretch [`Reader::events`] covers. Empty until the first read.
     window: Option<(f64, f64)>,
     events: Vec<Event>,

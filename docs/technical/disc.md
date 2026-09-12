@@ -699,40 +699,88 @@ the broadcast's tables the same as a cut taken from a `.ts`.
 
 A recorder stops and starts. Each time it does, the stretch it writes next
 begins a **new sequence** with a clock of its own, and all of them go into one
-`.m2ts`. The BD-REs measured here hold five and seven of them in a clip. The
-playlist says so plainly: one play item per sequence, each naming the sequence
-its IN and OUT are on, which is why such a recording already listed as
-`(1/7)`, `(2/7)` and so on.
+`.m2ts`. The BD-REs measured here hold five, six or seven of them in a clip.
+The playlist says so plainly: one play item per sequence, each naming the
+sequence its IN and OUT are on.
 
-Read whole, that file is unreadable in a way nothing announces. Its
+Read whole, that file used to be unreadable in a way nothing announced. Its
 entry-point map counts 3,598 points whose byte offsets rise all the way and
 whose **times go backwards twice** — 7.1 seconds to 1.1 at the fourth point,
-and again at the last. A time no longer picks out a place. libavformat
-declines to measure the file at all, so every `--keep` was refused for
-beginning after a recording that ends at zero; with a length supplied it got
-as far as seeking, landed wrong, and decoded nothing. The stream is not
-damaged: read from the front it decodes to the end.
+and again at the last. A time no longer picks out a place. libavformat declines
+to measure the file at all, so every `--keep` was refused for beginning after a
+recording that ends at zero. The stream is not damaged: read from the front it
+decodes to the end.
 
-So a play item is named by the packets it plays, the way a DVD title is named
-by its sectors:
+**So the clocks are put back together as the file is read.** That is
+[`restamp.rs`](../../rust/crates/core/src/restamp.rs), and it is the whole of
+the join: each stretch is given a place on one timeline, one after another in
+the order the file holds them, and every timestamp inside it is moved by the
+difference. A presentation time lives in a fixed five bytes of a PES header and
+a program clock reference in a fixed six of an adaptation field, so **nothing
+moves and nothing changes length** — the clip's own entry-point map still
+points where it pointed, the seek index still addresses the same bytes, and the
+demuxer reads a stream whose clock runs from one end to the other.
+
+Nothing is remembered either. Which stretch a byte belongs to is a property of
+where it is in the file, so the correction for any packet is worked out from
+its position alone. That is what makes it seekable: libavformat may jump
+anywhere, and the packet it lands on is corrected by the same amount it would
+have been corrected by had the file been read from the beginning.
+
+Where each stretch goes is asked of two witnesses, because neither knows the
+whole of it. The **sequence table** states what a stretch presents, which is
+what a play item plays and not what the file holds: on the clip measured it
+declares 892.94 seconds where the pictures run to 894.5, because a recorder
+writes to the end of a group and edits inside it. The **entry-point map** knows
+where pictures are, but only at the places a player may start, so it stops a
+group short at either end. What the map does give is the rate — how many bytes
+of this stretch a second of it takes — and the bytes past the last entry point,
+read at that rate, are how much longer the stretch goes on. Neither witness is
+overruled: whichever says the stretch is wider is the one taken, so nothing a
+play item plays falls outside, and no stretch lands on top of the one before
+it. The first stretch is left where it is, so a clip read from the front reads
+at the times it always did.
+
+The row is then the whole clip under the plain name it always had:
+
+```
+/rec/Recording.iso/BDAV/STREAM/00001.m2ts
+```
+
+A demuxer in this program is opened from a string and from nothing else, so
+what it is handed is that name wrapped in a `restamp:` URL carrying the table.
+[`input.rs`](../../rust/crates/core/src/input.rs) reads through an ordinary
+libavformat i/o context of its own and corrects whole source packets on the
+way past, which is why `subfile` and `concat` keep doing what they do.
+
+**A seam is planned as a cut.** The pictures at the start of a stretch
+reference pictures from before the recorder stopped, which were never written
+down; copied straight across, a decoder shows the wreckage until the next
+picture that restarts it, which on a recorder's own stream can be a minute
+later. So `plan::plan_on` cuts every kept range at the seams before planning
+it, and the far side of each opens with a re-encoded head that starts a coded
+video sequence of its own. The output timeline closes up behind it because a
+segment occupies the fields it writes and not the times it came from. On the
+recording measured, a full cut is 6 ranges and **99.4% copied**.
+
+A row is joined only where the playlist accounts for the whole clip: every
+sequence it holds, in the order the file holds them, one play item each.
+Anything else is left as it was — a row per item, each named by the packets it
+plays, the way a DVD title is named by its sectors:
 
 ```
 /rec/Recording.iso/BDAV/STREAM/00001.m2ts@8960-4605951
 ```
 
-Both numbers come off the clip index. Its **sequence table** gives the source
-packet each sequence begins at, and the play item's `ref_to_STC_id` says which
-of them this row is; the sequence after it, or the end of the file, closes the
-range. Handed to the demuxer as those bytes alone, what it reads is one clock
-from beginning to end, and the entry-point map is cut to the same packets and
-counted from the same place.
-
 A clip with one sequence is named whole, which is every disc that came before
 these and every disc this program writes. So is a clip whose sequence table
 does not read as one: the sequences have to begin at the front of the clip,
-each after the one before it, and all of them inside the file. A table that
-fails any of that is a table this cannot place a cut with, and a clip named
-whole is the behaviour there has always been.
+each after the one before it, and all of them inside the file.
+
+**Measured**, on four BD-REs a recorder wrote: 20 recordings that listed as 106
+rows now list as 20, each the length its own index states — 44:19 to 47:57
+against broadcast lengths of 44:41 and 45:10. The four reference discs, the
+pressed Blu-rays and the DVDs list exactly as they did.
 
 ## DVD-Video
 

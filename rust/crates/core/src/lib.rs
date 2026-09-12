@@ -28,6 +28,7 @@ pub mod plan;
 pub mod playback_audio;
 pub mod preview;
 pub mod proxy;
+pub mod restamp;
 pub mod seek_index;
 pub mod series;
 pub mod si;
@@ -334,6 +335,15 @@ pub struct Source {
     /// about "the sound on pid 0x0102" of an MP4 is a note using a word for
     /// something that is not there. See [`track_name`].
     pub on_a_ts: bool,
+    /// The seams, in seconds: where a recording that is several stretches of
+    /// one clip joined together passes from one stretch to the next.
+    ///
+    /// Empty for every ordinary recording. Where there are some, a copy
+    /// cannot be carried across one -- the pictures on the far side reference
+    /// pictures the recorder made minutes earlier and did not write down --
+    /// so a cut is planned as though the seam were a cut of its own. See
+    /// [`plan::plan_on`] and [`restamp`].
+    pub joins: Vec<f64>,
     /// Whether a raw byte offset may be seeked to.
     ///
     /// True of the stream formats, which are demuxed by reading forward from
@@ -676,6 +686,7 @@ fn assemble(
         start_time,
         byte_seekable,
         on_a_ts,
+        joins,
     } = outline;
     let mut points = idx.points;
     if points.is_empty() {
@@ -713,6 +724,7 @@ fn assemble(
 
     let mut src = Source {
         path: path.to_string(),
+        joins,
         input,
         audio,
         audios,
@@ -770,6 +782,8 @@ pub struct Outline {
     pub byte_seekable: bool,
     /// Whether a track's `pid` is really a PID. See [`Source::on_a_ts`].
     pub on_a_ts: bool,
+    /// See [`Source::joins`].
+    pub joins: Vec<f64>,
 }
 
 impl Outline {
@@ -792,6 +806,7 @@ impl Outline {
     pub fn into_source(self) -> Source {
         Source {
             path: self.path,
+            joins: self.joins,
             input: self.input,
             video: self.video,
             audio: self.audio,
@@ -827,7 +842,7 @@ pub fn outline(path: &str) -> Result<Outline> {
 /// [`scan_reporting`] wants both: the answer, and the open file to walk. An
 /// index source takes the demuxer, so it has to come out of here rather than
 /// be opened a second time.
-fn outline_of(path: &str) -> Result<(Outline, ff::format::context::Input)> {
+fn outline_of(path: &str) -> Result<(Outline, input::Demux)> {
     init()?;
     let input = input::Input::parse(path)?;
     // What libavformat says when it is handed encrypted bytes -- "Invalid
@@ -1098,6 +1113,7 @@ fn outline_of(path: &str) -> Result<(Outline, ff::format::context::Input)> {
 
     let outline = Outline {
         path: path.to_string(),
+        joins: input::joins(&input),
         input,
         video,
         audio,

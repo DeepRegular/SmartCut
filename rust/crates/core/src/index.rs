@@ -49,7 +49,7 @@ pub struct IndexInput<'a> {
     /// Container start time; access point times are rebased against it.
     pub start_time: f64,
     /// A demuxer already open on the source.
-    pub ictx: ff::format::context::Input,
+    pub ictx: crate::input::Demux,
     /// Where to say how far through the read is, if anyone is listening.
     ///
     /// Only the walk has anything to report: the sources that read a table
@@ -104,7 +104,7 @@ impl IndexSource for PacketScan {
 pub fn walk(
     video: &VideoInfo,
     start_time: f64,
-    mut ictx: ff::format::context::Input,
+    mut ictx: crate::input::Demux,
     on: Option<OnProgress>,
     mut key: impl FnMut(&ff::Packet) -> Result<()>,
     stop: Option<&(dyn Fn() -> bool + Sync)>,

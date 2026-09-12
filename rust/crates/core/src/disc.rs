@@ -587,9 +587,10 @@ fn read_bluray(at: &Path) -> Result<Disc> {
         let Ok(title) = playlist(&raw, &name, shape, &mut vol) else {
             continue;
         };
-        let many = title.clips.len();
-        for (i, c) in title.clips.iter().enumerate() {
-            let key = (c.name.clone(), ticks(c.start), ticks(c.end));
+        let rows = rows_of(&title.clips, shape, &mut vol);
+        let many = rows.len();
+        for (i, c) in rows.iter().enumerate() {
+            let key = (c.clip.clone(), ticks(c.start), ticks(c.end));
             if let Some((_, row, from)) = seen.iter_mut().find(|(k, _, _)| *k == key) {
                 if many < *from && !c.marks.is_empty() {
                     entries[*row].marks = c.marks.clone();
@@ -614,13 +615,12 @@ fn read_bluray(at: &Path) -> Result<Disc> {
             // something a person can tell apart at a glance in a folder.
             let label_row = match &title.name {
                 Some(programme) => format!("{programme}{part}"),
-                None => format!("{label} {}{part}", c.name),
+                None => format!("{label} {}{part}", c.clip),
             };
             seen.push((key, entries.len(), many));
-            let starts = vol.sequences(&c.name);
             entries.push(Entry {
-                path: stretch(&c.path, &starts, c.stc, vol.bytes(&c.name)),
-                clip: c.name.clone(),
+                path: c.path.clone(),
+                clip: c.clip.clone(),
                 duration: c.end - c.start,
                 marks: c.marks.clone(),
                 start: c.start,
@@ -632,8 +632,8 @@ fn read_bluray(at: &Path) -> Result<Disc> {
                 description: title.description.clone(),
                 channel: title.channel.clone(),
                 channel_number: title.channel_number,
-                bytes: vol.bytes(&c.name),
-                tracks: vol.tracks(&c.name),
+                bytes: vol.bytes(&c.clip),
+                tracks: vol.tracks(&c.clip),
                 // Filled in below, once the whole disc is known.
                 wanted: false,
             });
@@ -653,6 +653,129 @@ fn read_bluray(at: &Path) -> Result<Disc> {
         label,
         entries,
         protected: vol.protected(),
+    })
+}
+
+/// One row of the list, once it has been decided what a row is.
+///
+/// A play item and a row used to be the same thing. They still are on a
+/// pressed disc and on most of a recorder's, and they are not on the discs a
+/// recorder writes when it stops and starts inside a clip: there a
+/// programme is one playlist, several play items, and one row. See
+/// [`rows_of`].
+struct Row {
+    /// The clip's number on the disc, `00001`.
+    clip: String,
+    /// What to open, which for a joined clip is the clip's own name.
+    path: String,
+    /// Where the row begins and ends on the clock the demuxer will report --
+    /// which for a joined clip is the joined one. See [`joined`].
+    start: f64,
+    end: f64,
+    /// The chapter points inside it, in seconds from `start`.
+    marks: Vec<f64>,
+}
+
+/// Turn the items a playlist plays into the rows a list offers.
+///
+/// **A recorder's clip is one recording however many pieces it is written
+/// in.** It stops and starts -- for a pause, or to leave the commercials out
+/// -- and each stretch keeps a clock of its own, so the playlist that plays
+/// the programme back plays it as five, six or seven items. Those are not
+/// five recordings. Offering them as five rows was what this did while there
+/// was no way to read such a clip whole; there is one now, so the run of
+/// items becomes the row it always was.
+///
+/// Joined only where the playlist accounts for the whole clip: every
+/// sequence the clip holds, in the order the file holds them, one item each.
+/// Anything else -- a playlist that plays half a clip, a clip whose index
+/// does not read, a pressed disc's "play all" running twelve episodes
+/// together -- is left as it was, a row per item, each naming the packets it
+/// plays. See [`stretch`].
+fn rows_of(clips: &[Clip], shape: Shape, vol: &mut Volume) -> Vec<Row> {
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i < clips.len() {
+        // The items that name the same clip, one after another, are the most
+        // that could be one recording.
+        let mut j = i + 1;
+        while j < clips.len() && clips[j].name == clips[i].name {
+            j += 1;
+        }
+        let run = &clips[i..j];
+        let raw = vol
+            .read(&format!("CLIPINF/{}.clpi", clips[i].name))
+            .unwrap_or_default();
+        let starts = sequence_starts(&raw);
+        let bytes = vol.bytes(&clips[i].name);
+        match whole_clip(run, shape, &starts, &raw, bytes) {
+            Some(row) => out.push(row),
+            None => out.extend(run.iter().map(|c| Row {
+                clip: c.name.clone(),
+                path: stretch(&c.path, &starts, c.stc, bytes),
+                start: c.start,
+                end: c.end,
+                marks: c.marks.clone(),
+            })),
+        }
+        i = j;
+    }
+    out
+}
+
+/// A run of play items read as the one clip they cover, or `None` where they
+/// do not cover it.
+///
+/// The times come back on the joined clock, because that is the clock the
+/// demuxer will report once the clip is opened: a row's start, its end and
+/// every chapter point inside it are moved by however much the sequence they
+/// sit in was moved. A clip whose sequences already run on from one another
+/// is joined too, and moved by nothing.
+fn whole_clip(
+    run: &[Clip],
+    shape: Shape,
+    starts: &[Sequence],
+    raw: &[u8],
+    bytes: u64,
+) -> Option<Row> {
+    if shape != Shape::Bdav || run.len() < 2 || starts.len() != run.len() {
+        return None;
+    }
+    if !sound(starts, bytes / SOURCE_PACKET) {
+        return None;
+    }
+    // Each item on the sequence the file holds in that place, and no
+    // sequence named twice or missed out.
+    if !starts.iter().zip(run).all(|(s, c)| s.id == c.stc) {
+        return None;
+    }
+    let table = joined(raw, bytes / SOURCE_PACKET);
+    let moved = |k: usize| {
+        table
+            .as_ref()
+            .map_or(0.0, |t| t.seconds_at(starts[k].at * SOURCE_PACKET))
+    };
+    let start = run[0].start + moved(0);
+    let end = run.last()?.end + moved(run.len() - 1);
+    if end <= start {
+        return None;
+    }
+    let mut marks: Vec<f64> = run
+        .iter()
+        .enumerate()
+        .flat_map(|(k, c)| {
+            c.marks
+                .iter()
+                .map(move |m| c.start + m + moved(k) - start)
+        })
+        .collect();
+    marks.sort_by(f64::total_cmp);
+    Some(Row {
+        clip: run[0].name.clone(),
+        path: run[0].path.clone(),
+        start,
+        end,
+        marks,
     })
 }
 
@@ -853,14 +976,6 @@ impl Volume {
                 .map(|e| e.size)
                 .unwrap_or(0),
         }
-    }
-
-    /// Where the clip's sequences begin. See [`sequence_starts`].
-    fn sequences(&mut self, clip: &str) -> Vec<(u8, u64)> {
-        self.read(&format!("CLIPINF/{clip}.clpi"))
-            .ok()
-            .map(|raw| sequence_starts(&raw))
-            .unwrap_or_default()
     }
 
     /// What the disc says one clip carries, out of `CLIPINF`.
@@ -1649,10 +1764,19 @@ pub fn clip_entry_points(path: &str) -> Option<Vec<(f64, u64)>> {
     // inside it sits that many bytes earlier than the whole clip would put
     // it.
     if let Some((_, first, last)) = crate::input::clip_window(path) {
-        let (from, to) = (first * 192, (last + 1) * 192);
+        let (from, to) = (first * SOURCE_PACKET, (last + 1) * SOURCE_PACKET);
         points.retain(|(_, pos)| *pos >= from && *pos < to);
         for p in points.iter_mut() {
             p.1 -= from;
+        }
+    } else if let Some(table) = joined(&raw, vol.bytes(clip) / SOURCE_PACKET) {
+        // A clip read whole is read with its clocks joined, so the map has to
+        // be on the joined clock too: it is what says where in the file a
+        // moment is, and the moments the demuxer reports have moved. The
+        // corrections only ever go forwards, so a map that was in order stays
+        // in order.
+        for p in points.iter_mut() {
+            p.0 += table.seconds_at(p.1);
         }
     }
     (!points.is_empty()).then_some(points)
@@ -1672,7 +1796,7 @@ pub fn clip_entry_points(path: &str) -> Option<Vec<(f64, u64)>> {
 /// Empty for a clip index that does not read, and for the ordinary clip with
 /// a single sequence there is one entry, which is the same as none: the
 /// caller names such a clip whole.
-fn sequence_starts(raw: &[u8]) -> Vec<(u8, u64)> {
+fn sequence_starts(raw: &[u8]) -> Vec<Sequence> {
     if raw.len() < 24 || !matches!(&raw[..4], b"HDMV" | b"M2TS") {
         return Vec::new();
     }
@@ -1695,11 +1819,175 @@ fn sequence_starts(raw: &[u8]) -> Vec<(u8, u64)> {
             if raw.get(p..p + 14).is_none() {
                 return out;
             }
-            out.push((first.wrapping_add(j), u32be(raw, p + 2) as u64));
+            out.push(Sequence {
+                id: first.wrapping_add(j),
+                at: u32be(raw, p + 2) as u64,
+                start: u32be(raw, p + 6) as f64 / TICK,
+                end: u32be(raw, p + 10) as f64 / TICK,
+            });
             p += 14;
         }
     }
     out
+}
+
+/// One stretch of a clip that keeps a single clock.
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct Sequence {
+    /// What a play item calls it, which is what its `ref_to_STC_id` holds.
+    id: u8,
+    /// Where its packets begin, in source packets from the front of the clip.
+    at: u64,
+    /// The first and last moment it presents, on its own clock, in seconds.
+    start: f64,
+    end: f64,
+}
+
+/// Whether a clip's sequence table reads as a table.
+///
+/// Three things have to hold: the sequences begin at the front of the clip,
+/// each starts after the one before it, and all of them are inside the file.
+/// A table that fails any of them is a table nothing should be worked out
+/// from -- the clip is named whole, and read as it always was.
+fn sound(starts: &[Sequence], packets: u64) -> bool {
+    !starts.is_empty()
+        && starts[0].at == 0
+        && starts.windows(2).all(|w| w[0].at < w[1].at)
+        && starts.last().is_some_and(|s| s.at < packets)
+}
+
+/// What to add to each stretch of a clip to make its clocks one clock.
+///
+/// **This is the whole of the join.** A recorder's clip holds a sequence per
+/// time it stopped and started, and the times in them neither run on from one
+/// another nor even always go forwards: the disc measured against has a clip
+/// whose last timestamp is 1.1 seconds and whose first is 8.3. So each
+/// sequence is given a place on a timeline of its own making, one after
+/// another in the order the file holds them, and the correction that moves it
+/// there is what comes back. See [`crate::restamp`].
+///
+/// Where a sequence begins and ends is asked of two witnesses. The sequence
+/// table states both, and the entry-point map shows where the pictures
+/// actually are -- and they disagree: on the clip measured, the first
+/// sequence's table says it presents from 7.04 seconds and its entry points
+/// begin at 5.13, because a play item plays the tail of a stretch the
+/// recorder left longer than it plays. Taking the wider of the two means the
+/// pictures outside what is played still land inside the piece they belong
+/// to, rather than on top of the piece before.
+///
+/// The first sequence is left where it is. Its own clock becomes the joined
+/// one, so a clip that is read from the front reads at the times it always
+/// did, and nothing can be pushed before zero.
+///
+/// `None` where there is nothing to join, which is every clip with one
+/// sequence, and where the table cannot be believed.
+fn joined(raw: &[u8], packets: u64) -> Option<crate::restamp::Restamp> {
+    let starts = sequence_starts(raw);
+    if starts.len() < 2 || !sound(&starts, packets) {
+        return None;
+    }
+    let points = entry_points(raw);
+    let clip = pace(&points).unwrap_or((0.0, 0.0));
+    let mut pieces = Vec::with_capacity(starts.len());
+    let mut end = 0.0f64;
+    for (i, s) in starts.iter().enumerate() {
+        let from = s.at * SOURCE_PACKET;
+        let to = starts.get(i + 1).map_or(packets, |n| n.at) * SOURCE_PACKET;
+        let (lo, hi) = span(&points, from, to, s, clip);
+        if hi < lo {
+            return None;
+        }
+        let shift = if i == 0 { 0.0 } else { end - lo };
+        let begins = if i == 0 { lo } else { end };
+        end = if i == 0 { hi } else { end + (hi - lo) };
+        pieces.push(crate::restamp::Piece {
+            at: from,
+            shift: (shift * 90_000.0).round() as i64,
+            from: (begins * 90_000.0).round() as i64,
+        });
+    }
+    let table = crate::restamp::Restamp::new(pieces);
+    table.wanted().then_some(table)
+}
+
+/// The first and last moment one stretch of a clip shows a picture.
+///
+/// **Neither witness knows the whole of it.** The sequence table states what
+/// the stretch presents, which is what a play item plays and not what the
+/// file holds: on the clip measured here it declares 892.94 seconds where the
+/// pictures run to 894.5, because a recorder writes to the end of a group and
+/// edits inside it. The entry-point map knows where pictures are but only at
+/// the places a player may start, so it stops a group short at each end.
+///
+/// What the map does give is the rate: how many bytes of this stretch a
+/// second of it takes, measured over the stretch itself. The bytes between
+/// the last entry point and the end of the stretch, read at that rate, are
+/// how much longer it goes on -- and the same at the front. Neither witness
+/// is overruled: whichever says the stretch is wider is the one taken, so
+/// nothing a play item plays can fall outside.
+fn span(points: &[(f64, u64)], from: u64, to: u64, s: &Sequence, clip: (f64, f64)) -> (f64, f64) {
+    let inside: Vec<(f64, u64)> = points
+        .iter()
+        .filter(|(_, p)| *p >= from && *p < to)
+        .copied()
+        .collect();
+    // The stretch's own pace where it has enough points to be measured, and
+    // the whole clip's where it does not -- which is the fragment a recorder
+    // leaves at the end of a file, a second of pictures with one entry point
+    // in it.
+    let (rate, gap) = pace(&inside).unwrap_or(clip);
+    if rate <= 0.0 {
+        return (s.start, s.end);
+    }
+    let (Some(&(t0, p0)), Some(&(t1, p1))) = (inside.first(), inside.last()) else {
+        // No entry point at all: the stretch runs as long as its bytes say.
+        return (s.start, s.end.max(s.start + (to - from) as f64 / rate));
+    };
+    let lo = t0 - (p0 - from) as f64 / rate;
+    // Never less than one entry point's worth at the end. Where the last one
+    // sits almost at the end of the stretch the bytes say the pictures stop
+    // there, and they do not: the group it opens is still to be shown, and
+    // its pictures present after it.
+    let hi = t1 + ((to - p1) as f64 / rate).max(gap);
+    (lo.min(s.start), hi.max(s.end))
+}
+
+/// How many bytes a second of a stretch takes, and how far apart the places
+/// a player may start in it are. `None` where there are too few points to
+/// measure either.
+fn pace(points: &[(f64, u64)]) -> Option<(f64, f64)> {
+    let (&(t0, p0), &(t1, p1)) = (points.first()?, points.last()?);
+    if points.len() < 2 || t1 <= t0 || p1 <= p0 {
+        return None;
+    }
+    Some((
+        (p1 - p0) as f64 / (t1 - t0),
+        (t1 - t0) / (points.len() - 1) as f64,
+    ))
+}
+
+/// The correction a recording needs to read as one, or `None` for the
+/// recordings that need none -- which is everything but a clip on a disc a
+/// recorder wrote, and most of those.
+///
+/// Asked of a name, because [`crate::input`] has nothing else to go on when
+/// it is handed one. A name that plays a single sequence is already one
+/// clock and is left alone; so is everything on a pressed disc, which is
+/// settled by looking at the name before anything is opened.
+pub fn clip_restamp(path: &str) -> Option<crate::restamp::Restamp> {
+    if crate::input::clip_window(path).is_some() {
+        return None;
+    }
+    // Only a recorder writes several clocks into one clip, and only a
+    // recorder writes `BDAV`. Asked of the name so that a pressed disc pays
+    // nothing at all: no image opened, no index read.
+    if !path.to_ascii_uppercase().contains("/BDAV/STREAM/") {
+        return None;
+    }
+    let (root, clip) = clip_on_a_disc(path)?;
+    let mut vol = Volume::open(Path::new(root)).ok()?;
+    let raw = vol.read(&format!("CLIPINF/{clip}.clpi")).ok()?;
+    joined(&raw, vol.bytes(clip) / SOURCE_PACKET)
 }
 
 /// The part of a clip a play item plays, named the way it will be opened.
@@ -1710,27 +1998,19 @@ fn sequence_starts(raw: &[u8]) -> Vec<(u8, u64)> {
 /// are several recordings in one file and their clocks do not run on from
 /// one another: read whole, the times go backwards part-way through and
 /// nothing downstream can place a cut. See [`crate::input`].
-fn stretch(path: &str, starts: &[(u8, u64)], stc: u8, bytes: u64) -> String {
-    if starts.len() < 2 {
+fn stretch(path: &str, starts: &[Sequence], stc: u8, bytes: u64) -> String {
+    let packets = bytes / SOURCE_PACKET;
+    // A clip index this could not make sense of names the clip whole, which
+    // is what a clip with one sequence is named and what every name was
+    // before this. See [`sound`].
+    if starts.len() < 2 || !sound(starts, packets) {
         return path.to_string();
     }
-    // Believed only where the whole table reads as a table: the sequences
-    // begin at the front of the clip, each after the one before it, and all
-    // of them inside the file. A clip index this could not make sense of
-    // names the clip whole, which is what a clip with one sequence is named
-    // and what every name was before this.
-    let packets = bytes / 192;
-    let sound = starts[0].1 == 0
-        && starts.windows(2).all(|w| w[0].1 < w[1].1)
-        && starts.last().is_some_and(|(_, at)| *at < packets);
-    if !sound {
-        return path.to_string();
-    }
-    let Some(i) = starts.iter().position(|(id, _)| *id == stc) else {
+    let Some(i) = starts.iter().position(|s| s.id == stc) else {
         return path.to_string();
     };
-    let from = starts[i].1;
-    let to = starts.get(i + 1).map_or(packets, |(_, s)| *s);
+    let from = starts[i].at;
+    let to = starts.get(i + 1).map_or(packets, |s| s.at);
     if to <= from {
         return path.to_string();
     }
@@ -1953,36 +2233,57 @@ mod tests {
         assert_eq!(app_info_made(&raw), None);
     }
 
-    /// A clip index's sequence table: one entry per sequence, each saying
-    /// where its packets begin.
-    fn clpi_with(sequences: &[(u8, u32)]) -> Vec<u8> {
+    /// A clip index's sequence table: one entry per sequence, saying where
+    /// its packets begin and the first and last moment it presents.
+    fn clpi_timed(sequences: &[(u8, u32, u32, u32)]) -> Vec<u8> {
         let mut raw = vec![0u8; 40];
         raw[..4].copy_from_slice(b"M2TS");
         raw[4..8].copy_from_slice(b"0100");
         raw[8..12].copy_from_slice(&40u32.to_be_bytes());
+        // The entry-point map lives at 16, and this index carries none: the
+        // four bytes it points at are a length of zero.
+        raw[16..20].copy_from_slice(&36u32.to_be_bytes());
         let mut table = vec![0u8; 4];
         table.push(0); // reserved
         table.push(sequences.len() as u8);
-        for (id, at) in sequences {
+        for (id, at, from, to) in sequences {
             table.extend_from_slice(&0u32.to_be_bytes()); // where the arrivals start
             table.push(1); // one presentation sequence inside it
             table.push(*id);
             table.extend_from_slice(&0x1001u16.to_be_bytes());
             table.extend_from_slice(&at.to_be_bytes());
-            table.extend_from_slice(&[0; 8]); // the moments it presents
+            table.extend_from_slice(&from.to_be_bytes());
+            table.extend_from_slice(&to.to_be_bytes());
         }
         raw.extend_from_slice(&table);
         raw
+    }
+
+    /// The same, for the tests that care only about where sequences begin.
+    fn clpi_with(sequences: &[(u8, u32)]) -> Vec<u8> {
+        let timed: Vec<(u8, u32, u32, u32)> =
+            sequences.iter().map(|(id, at)| (*id, *at, 0, 0)).collect();
+        clpi_timed(&timed)
+    }
+
+    /// A sequence as the table states it, for comparing against.
+    fn seq(id: u8, at: u64, start: f64, end: f64) -> Sequence {
+        Sequence {
+            id,
+            at,
+            start,
+            end,
+        }
     }
 
     /// A recorder writes several sequences into one clip, and the table says
     /// where each begins.
     #[test]
     fn the_sequences_of_a_clip_are_read() {
-        let raw = clpi_with(&[(0, 0), (1, 8960), (2, 4_605_952)]);
+        let raw = clpi_timed(&[(0, 0, 45_000, 90_000), (1, 8960, 0, 45_000)]);
         assert_eq!(
             sequence_starts(&raw),
-            vec![(0, 0), (1, 8960), (2, 4_605_952)]
+            vec![seq(0, 0, 1.0, 2.0), seq(1, 8960, 0.0, 1.0)]
         );
         // A clip with one sequence reads as one, which is a clip named whole.
         assert_eq!(sequence_starts(&clpi_with(&[(0, 0)])).len(), 1);
@@ -1995,7 +2296,11 @@ mod tests {
     fn a_sequence_is_named_by_the_packets_it_holds() {
         let path = "/d/BDAV/STREAM/00001.m2ts";
         let bytes = 14_238_784 * 192;
-        let starts = [(0u8, 0u64), (1, 8960), (2, 4_605_952)];
+        let starts = [
+            seq(0, 0, 0.0, 0.0),
+            seq(1, 8960, 0.0, 0.0),
+            seq(2, 4_605_952, 0.0, 0.0),
+        ];
         assert_eq!(stretch(path, &starts[..1], 0, bytes), path);
         assert_eq!(stretch(path, &starts, 0, bytes), format!("{path}@0-8959"));
         assert_eq!(
@@ -2012,10 +2317,116 @@ mod tests {
         // backwards, and one that runs past the end: all named whole rather
         // than guessed at.
         assert_eq!(stretch(path, &starts, 9, bytes), path);
-        assert_eq!(stretch(path, &[(0, 64), (1, 8960)], 0, bytes), path);
-        assert_eq!(stretch(path, &[(0, 0), (1, 0)], 0, bytes), path);
+        assert_eq!(
+            stretch(path, &[seq(0, 64, 0.0, 0.0), seq(1, 8960, 0.0, 0.0)], 0, bytes),
+            path
+        );
+        assert_eq!(
+            stretch(path, &[seq(0, 0, 0.0, 0.0), seq(1, 0, 0.0, 0.0)], 0, bytes),
+            path
+        );
         assert_eq!(stretch(path, &starts, 1, 1024 * 192), path);
         assert_eq!(stretch(path, &starts, 1, 0), path);
+    }
+
+    /// A clip of three stretches: the first presents from 1 to 11 seconds,
+    /// and the two after it start their clocks again. Three thousand source
+    /// packets, a thousand to each.
+    fn three_stretches() -> Vec<u8> {
+        clpi_timed(&[
+            (0, 0, 45_000, 495_000),
+            (1, 1_000, 45_000, 90_000),
+            (2, 2_000, 450_000, 900_000),
+        ])
+    }
+
+    fn item(stc: u8, start: f64, end: f64, marks: &[f64]) -> Clip {
+        Clip {
+            name: "00001".to_string(),
+            path: "/d/BDAV/STREAM/00001.m2ts".to_string(),
+            start,
+            end,
+            stc,
+            marks: marks.to_vec(),
+        }
+    }
+
+    /// Each stretch is put where the one before it ended, and the first is
+    /// left where it is.
+    #[test]
+    fn the_stretches_of_a_clip_are_laid_end_to_end() {
+        let table = joined(&three_stretches(), 3_000).unwrap();
+        let moved = |packet: u64| table.seconds_at(packet * SOURCE_PACKET);
+        assert!((moved(0) - 0.0).abs() < 1e-9);
+        // The second presents from 1 second and is wanted at 11.
+        assert!((moved(1_000) - 10.0).abs() < 1e-9);
+        // The third presents from 10 and is wanted at 12, which is where the
+        // second -- one second long -- left off.
+        assert!((moved(2_000) - 2.0).abs() < 1e-9);
+        // And a byte inside a stretch is corrected like the stretch.
+        assert_eq!(moved(1_500), moved(1_000));
+        let joins = table.joins();
+        assert_eq!(joins.len(), 2);
+        assert!((joins[0] - 11.0).abs() < 1e-9);
+        assert!((joins[1] - 12.0).abs() < 1e-9);
+        // A clip of one stretch has nothing to join.
+        assert!(joined(&clpi_timed(&[(0, 0, 45_000, 495_000)]), 3_000).is_none());
+        // Nor has a table that does not read as one.
+        assert!(joined(&clpi_timed(&[(0, 64, 0, 45_000), (1, 1_000, 0, 45_000)]), 3_000).is_none());
+    }
+
+    /// A playlist that plays every stretch of a clip, in the order the file
+    /// holds them, is one recording.
+    #[test]
+    fn a_playlist_that_covers_a_clip_is_one_row() {
+        let raw = three_stretches();
+        let starts = sequence_starts(&raw);
+        let bytes = 3_000 * SOURCE_PACKET;
+        let run = [
+            item(0, 1.0, 11.0, &[0.0, 5.0]),
+            item(1, 1.0, 2.0, &[]),
+            item(2, 10.0, 20.0, &[1.0]),
+        ];
+        let row = whole_clip(&run, Shape::Bdav, &starts, &raw, bytes).unwrap();
+        assert_eq!(row.clip, "00001");
+        // Named whole: the packet range is what a name says when only part of
+        // a clip is played.
+        assert_eq!(row.path, "/d/BDAV/STREAM/00001.m2ts");
+        assert!((row.start - 1.0).abs() < 1e-9);
+        assert!((row.end - 22.0).abs() < 1e-9);
+        // Every mark on the joined clock, counted from the row's own start.
+        assert_eq!(row.marks.len(), 3);
+        assert!((row.marks[0] - 0.0).abs() < 1e-9);
+        assert!((row.marks[1] - 5.0).abs() < 1e-9);
+        assert!((row.marks[2] - 12.0).abs() < 1e-9);
+    }
+
+    /// And anything less than the whole clip is left as it was: a row per
+    /// item, each naming the packets it plays.
+    #[test]
+    fn a_playlist_that_covers_part_of_a_clip_is_not() {
+        let raw = three_stretches();
+        let starts = sequence_starts(&raw);
+        let bytes = 3_000 * SOURCE_PACKET;
+        let run = [
+            item(0, 1.0, 11.0, &[]),
+            item(1, 1.0, 2.0, &[]),
+            item(2, 10.0, 20.0, &[]),
+        ];
+        // Two items for three stretches.
+        assert!(whole_clip(&run[..2], Shape::Bdav, &starts, &raw, bytes).is_none());
+        // One item, which is the ordinary clip and the ordinary name.
+        assert!(whole_clip(&run[..1], Shape::Bdav, &starts, &raw, bytes).is_none());
+        // A pressed disc, whose "play all" is not one recording however many
+        // clips it names.
+        assert!(whole_clip(&run, Shape::Bdmv, &starts, &raw, bytes).is_none());
+        // Items that do not name the stretches the file holds, in that order.
+        let jumbled = [
+            item(0, 1.0, 11.0, &[]),
+            item(2, 10.0, 20.0, &[]),
+            item(1, 1.0, 2.0, &[]),
+        ];
+        assert!(whole_clip(&jumbled, Shape::Bdav, &starts, &raw, bytes).is_none());
     }
 
     /// A disc that carries AACS says so beside `BDAV`, not inside it.
