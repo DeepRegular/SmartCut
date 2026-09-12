@@ -248,6 +248,7 @@ impl IndexSource for DiscIndex {
             path,
             video,
             start_time,
+            ictx,
             ..
         } = input;
         let held = crate::disc::clip_entry_points(path)
@@ -274,15 +275,36 @@ impl IndexSource for DiscIndex {
             ));
         }
         // The last picture is not in the map -- the map holds the ones a
-        // player may *start* at -- so the container's own length stands, and
-        // `end: None` is how that is said.
-        let _ = video;
+        // player may *start* at -- so the container's own length stands
+        // wherever it has one, and `end: None` is how that is said.
+        //
+        // Where it has none, nothing else does either, and a recording of
+        // unknown length is one no range can be cut out of: every `--keep`
+        // is refused for beginning after the recording ends at zero. The
+        // clips on the BD-REs a recorder writes here are that case -- each
+        // holds several arrival-time sequences, and libavformat declines to
+        // measure a stream whose clock restarts part-way through. The last
+        // point in the map, plus the picture it names, is then the best
+        // floor there is. It is a floor and not the length: the last picture
+        // is still not in the map, so a recording read this way ends up to
+        // one interval of entry points short of where it really ends.
+        let told = unsafe { (*ictx.as_ptr()).duration != ff::ffi::AV_NOPTS_VALUE };
+        let end = (!told)
+            .then(|| {
+                points
+                    .iter()
+                    .map(|p| p.time)
+                    .fold(f64::NEG_INFINITY, f64::max)
+                    .into_finite()
+                    .map(|t| t + video.frame_duration())
+            })
+            .flatten();
         Ok(Index {
             points,
             leading_known: false,
             pulldown: None,
             bit_rate: None,
-            end: None,
+            end,
         })
     }
 }
