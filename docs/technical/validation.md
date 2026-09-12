@@ -127,6 +127,32 @@ duration in decode order overtakes presentation once field durations vary, and t
 muxer rejects it with `pts < dts`. It was replaced with the correct construction,
 deriving DTS from the position in display order.
 
+### A recorder's own disc codes field pairs (a bug found on real material)
+
+A SONY recorder's BD-RE writes 1440x1080 29.97 H.264 as **PAFF**: every frame is a
+pair of field pictures, and the demuxer hands the two over separately. Nothing in the
+broadcast corpus does this — broadcast 1080i is interlaced content coded as whole
+frames — so it went unmet until a disc of recordings was read.
+
+A forty-second cut of one lost **642 of the 1842 pictures** it wrote, and the copied
+part decoded as blocky mush from its first picture on. Two causes, both from taking a
+picture for a frame: each field was given two fields of the timeline instead of one,
+and the writer's reorder queue, which counts frames, held one picture where the frame
+needed two. See [pitfall 11](algorithm.md#11-a-recording-may-hand-over-two-pictures-per-frame).
+
+With the queue measured in halves of a frame and the pair placed on two fields, the
+same cut writes all 1842 and **every copied picture decodes bit-identically to the
+recording** — 855 frames compared across a sixty-three second copy, with the only
+differences in the re-encoded head, where they belong. The disc's older per-sequence
+path comes out the same way.
+
+Frame-coded material is untouched by any of it, and that was checked by byte rather
+than by argument: the cut of a broadcast recording made before and after the change
+is the same file, md5 for md5. That includes one recording which is frame-coded but
+for seven field pairs in half a minute — libavcodec's MPEG-2 parser joins each pair
+into one packet, so it is seven frames, not fourteen half-frames, and it comes out
+exactly as it did.
+
 ### The planner's phase problem (resolved)
 
 Interval boundaries used to be snapped to an ideal grid, `round(t*fps)/fps`. That
@@ -190,7 +216,13 @@ These only surfaced on real material:
   IDR instead, and the two are joins with no IDR within two seconds. It is off by
   default because it costs exactness: the stretch it re-encodes measures 51 dB
   against a copy of the same pictures, which is bit-exact. Material that reorders
-  nothing — MPEG-2, VC-1 — is unaffected.
+  nothing — MPEG-2, VC-1 — is unaffected. **A recorder's own disc cannot be helped
+  at all**: `idrdiag` counts *one* IDR among the 1786 entry points of a
+  fifteen-minute recording on one, so the median wait for a clean join is 446
+  seconds and the two-second reach never finds anything. On a forty-second cut of
+  it, libavcodec withholds the eighteen frames of the copy whose counts fall below
+  the head's last — the pictures are there and decode exactly, and a decoder that
+  does not reorder on output shows them.
 - **The Python leading-picture reference test samples one place in the file** and
   applies the result to the whole thing, assuming the encoder does not change its mind
   partway. The Rust implementation does not need this, since `nal_ref_idc` can be read

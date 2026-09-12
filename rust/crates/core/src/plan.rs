@@ -507,6 +507,7 @@ mod tests {
             field_order: 2,
             bit_rate: None,
             vc1: None,
+            field_shape: None,
         }
     }
 

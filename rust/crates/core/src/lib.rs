@@ -135,6 +135,14 @@ pub struct VideoInfo {
     /// copied pictures across the splice are decoded against the parameters
     /// they were coded with. See [`smartcut_vc1`].
     pub vc1: Option<smartcut_vc1::Shape>,
+    /// What a picture of this recording is read against to say whether it is
+    /// a whole frame or one field of a pair.
+    ///
+    /// `None` for every recording that codes whole frames, which is nearly
+    /// all of them: broadcast 1080i is interlaced content coded as frames,
+    /// and only a recorder writing its own discs was found to code the two
+    /// fields separately. See [`bitstream::is_field_picture`].
+    pub field_shape: Option<bitstream::FieldShape>,
 }
 
 /// Field orders that mean "interlaced" (AV_FIELD_TT/BB/TB/BT).
@@ -1109,6 +1117,9 @@ fn outline_of(path: &str) -> Result<(Outline, input::Demux)> {
         vc1: matches!(codec.as_str(), "vc1" | "wmv3")
             .then(|| smartcut_vc1::Shape::read(&extradata))
             .flatten(),
+        // Likewise, and for the same reason: whether a picture is a field is
+        // one bit of it, and where that bit sits is in here.
+        field_shape: bitstream::field_shape(&codec, &extradata, framing),
     };
 
     let outline = Outline {

@@ -419,6 +419,16 @@ struct Writer {
     /// Pictures left out for having nowhere to go on the timeline. See
     /// [`Writer::emit_one`].
     skipped: i64,
+    /// How many of the written pictures were half a frame.
+    ///
+    /// The plan counts frames and `written` counts pictures, which are the
+    /// same thing until a recording codes field pairs. Then it is two
+    /// pictures to the frame, and a bar built on the count alone reaches the
+    /// end halfway through the cut. Halves are counted apart rather than the
+    /// whole being scaled, because a picture shown for *three* fields is
+    /// still one frame of the plan and pulldown must not move the bar
+    /// either.
+    halves: i64,
     /// The output's sound tracks, in the order they were added. A broadcast
     /// in two languages has two, and each is cut on its own -- one track's
     /// boundary frame is no business of another's.
@@ -720,10 +730,34 @@ impl Writer {
     fn push(&mut self, e: Emitted) -> Result<()> {
         self.seen.push(std::cmp::Reverse(e.display));
         self.pending.push_back(e);
-        while self.pending.len() > self.depth.max(0) as usize {
+        // **The queue is measured in halves of a frame, not in pictures.**
+        // The reorder depth is the source's own and counts frames, and for
+        // as long as a picture is a whole frame the two are the same number.
+        // A recording coded as field pairs hands over two pictures per frame,
+        // and a queue of one picture then settles a P frame's decode time
+        // before the B frames that display ahead of it have arrived -- which
+        // leaves every one of those with nowhere to go. That was half the
+        // pictures of a recorder's own disc, and the cut it wrote was blocky
+        // mush from the first copied picture on.
+        //
+        // Counted in halves rather than scaled by what the recording is,
+        // because a recording is not all one thing: a broadcast in the
+        // sample here is frame-coded but for seven field pairs in half a
+        // minute, and only those seven want the extra room. A picture shown
+        // for *three* fields is still one frame and still counts two, so
+        // pulldown does not move the boundary either.
+        while self.held_halves() > (self.depth * 2).max(0) {
             self.emit_one()?;
         }
         Ok(())
+    }
+
+    /// Halves of a frame the queue is holding. See [`Writer::push`].
+    fn held_halves(&self) -> i64 {
+        self.pending
+            .iter()
+            .map(|e| if e.fields < 2 { 1 } else { 2 })
+            .sum()
     }
 
     fn emit_one(&mut self) -> Result<()> {
@@ -785,9 +819,13 @@ impl Writer {
                 )
             })?;
         self.written += 1;
+        if e.fields < 2 {
+            self.halves += 1;
+        }
         if let Some(report) = &self.progress {
             if self.expected > 0 && self.written % 16 == 0 {
-                report((self.written as f64 / self.expected as f64).min(1.0));
+                let done = self.written as f64 - self.halves as f64 / 2.0;
+                report((done / self.expected as f64).min(1.0));
             }
         }
         Ok(())
@@ -1709,6 +1747,9 @@ fn copy_segment(
     // idealised time for it.
     let mut anchor: Option<f64> = None;
     let mut span = Span::default();
+    // Where the previous picture went, when it was the first field of a pair
+    // and the next one completes it. See where the pair is placed.
+    let mut first_field: Option<i64> = None;
 
     let mut started = false;
     let mut overshot = false;
@@ -1797,7 +1838,11 @@ fn copy_segment(
         // The copy ends when the terminating access point turns up. Its own
         // leading pictures are decoded after it, so stopping here leaves them
         // out -- which is exactly the display range the planner asked for.
-        if let Some(until) = seg.copy_until {
+        //
+        // Never in the middle of a field pair, though: half a frame is not a
+        // frame, and the access point that ends a copy opens one, so a pair
+        // left open here can only be one the fallback below caught partway.
+        if let Some(until) = seg.copy_until.filter(|_| first_field.is_none()) {
             if (packet.is_key() && (t - until).abs() < fd / 2.0) || t > until + fd {
                 video_done = true;
                 if audio_done.iter().all(|&d| d)
@@ -1817,11 +1862,35 @@ fn copy_segment(
         if t < a - fd / 4.0 {
             continue;
         }
-        let display = display_base + ((t - a) / field).round() as i64;
-        let fields = packet
-            .data()
-            .map(|d| crate::bitstream::display_fields(d, &src.video.codec, src.video.vc1.as_ref()))
-            .unwrap_or(2);
+        let data = packet.data().unwrap_or(&[]);
+        // Two field pictures are one frame between them, and the timeline
+        // counts in fields, so a pair takes two places on it and lasts a
+        // field each. The second field is placed after the first rather than
+        // by its own timestamp: a recording that gives a pair one timestamp
+        // between them -- or two close enough to round together -- would
+        // otherwise put both fields in the same place, and the muxer would
+        // take only one of them. The two are always next to each other in
+        // decode order, so the first is always the one just seen.
+        let (display, fields) = match (
+            crate::bitstream::is_field_picture(
+                data,
+                &src.video.codec,
+                src.video.framing,
+                src.video.field_shape.as_ref(),
+            ),
+            first_field.take(),
+        ) {
+            (true, Some(first)) => (first + 1, 1),
+            (true, None) => {
+                let at = display_base + ((t - a) / field).round() as i64;
+                first_field = Some(at);
+                (at, 1)
+            }
+            (false, _) => (
+                display_base + ((t - a) / field).round() as i64,
+                crate::bitstream::display_fields(data, &src.video.codec, src.video.vc1.as_ref()),
+            ),
+        };
         span.fields = span.fields.max(display - display_base + fields);
         span.pictures += 1;
         let packet = match (reframe, ctx.unframe) {
@@ -4277,6 +4346,7 @@ pub fn cut_with_progress(
         last_dts: None,
         written: 0,
         skipped: 0,
+        halves: 0,
         audio: audio_tracks,
         captions: caption_tracks,
         graphics: graphics_tracks,

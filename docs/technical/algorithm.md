@@ -222,3 +222,54 @@ Reading this needs the recording in hand, and on a disc the index was never walk
 it came off the disc's own table. So planning gained an entry point that has the
 recording, `plan_on`, while `plan` stays the arithmetic. It costs a handful of seeks
 rather than a pass — the byte each entry point begins at is already known.
+
+### 11. A recording may hand over two pictures per frame
+
+The output timeline counts in fields, because pulldown shows some pictures for three
+of them and a frame grid cannot say so. That answers how *long* a picture stands. It
+does not answer how many pictures a frame arrives in, and the answer is not always
+one: H.264 lets a frame be coded as a pair of field pictures — PAFF — and a recorder
+writing its own Blu-ray discs does exactly that, 1440x1080 at 29.97 with every frame
+split in two.
+
+Broadcast 1080i is interlaced content coded as whole frames, so nothing in the
+broadcast corpus hits this. On a recorder's disc it breaks the cut in two places at
+once:
+
+- **Placement.** Each field is half a frame and takes one field of the timeline, not
+  two. Given two, the segment's span is twice what the pictures occupy and the
+  duration written onto each packet is twice what it lasts.
+- **Lookahead.** DTS is derived by holding pictures back until the display order is
+  known, and how many to hold comes from the recording's reorder depth, which counts
+  *frames*. Held to one picture, the writer settles a P frame's decode time before the
+  B frames that display ahead of it have arrived. Every one of those is then left with
+  nowhere to go and dropped: on a forty-second cut, 642 of 1842 pictures, and the copy
+  decoded as blocky mush from its first picture on.
+
+So the queue is measured in **halves of a frame** rather than in pictures. A picture
+standing for a single field contributes one half, anything else two — including a
+picture shown for three fields, which is still one frame and must not move the
+boundary. Frame-coded material is then held exactly as it was before, and a recording
+that is frame-coded but for a handful of field pairs gets the extra room only where
+those pairs are.
+
+**The question is asked of the packet, not of the pictures in it.** libavcodec's
+MPEG-2 parser joins a complementary field pair into one packet, and one broadcast in
+the sample does that seven times in half a minute: two field pictures, one frame, two
+fields of the timeline. Its H.264 parser hands each field over on its own. So what is
+counted is the pictures a packet *opens* — `first_mb_in_slice` of nought for H.264,
+one picture coding extension for MPEG-2 — and a packet is half a frame only where it
+opens one picture and that picture is a field.
+
+Reading the flag needs the sequence header first: `field_pic_flag` sits behind
+`frame_num`, whose width only the SPS carries. That is read once per recording, the
+way a VC-1 stream's headers are, and a sequence with `frame_mbs_only_flag` set needs
+no picture asked at all. **The header alone does not settle it**, though: what this
+program writes back over the same recording is MB-AFF, whose header also allows
+fields while every picture in it is a whole frame.
+
+The second field of a pair is placed **after the first** rather than by its own
+timestamp. The two are always next to each other in decode order, so the first is
+always the one just seen; a recording that gives a pair one timestamp between them —
+or two close enough to round together — would otherwise put both fields in the same
+place, and one of them would have nowhere to go.

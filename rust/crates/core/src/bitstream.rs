@@ -333,17 +333,235 @@ pub fn display_fields(data: &[u8], codec: &str, vc1: Option<&smartcut_vc1::Shape
 /// pictures then do not arrive at a constant rate, which breaks any output
 /// timeline built from a single frame duration.
 pub fn mpeg2_repeats_field(data: &[u8]) -> bool {
+    mpeg2_coding_extensions(data)
+        .first()
+        .is_some_and(|e| e[3] & 0x02 != 0)
+}
+
+/// The picture coding extensions in a packet, each from its extension id
+/// onwards. Everything MPEG-2 says about how a picture is shown is in here,
+/// and there is one per picture -- which is not always one per packet. See
+/// [`is_field_picture`].
+fn mpeg2_coding_extensions(data: &[u8]) -> Vec<&[u8]> {
+    let mut out = Vec::new();
     let mut i = 0;
     while i + 8 <= data.len() {
         if data[i] == 0 && data[i + 1] == 0 && data[i + 2] == 1 && data[i + 3] == 0xB5 {
             // picture coding extension: extension id 0x8 in the top nibble
             if data[i + 4] >> 4 == 0x8 {
-                return data[i + 7] & 0x02 != 0;
+                out.push(&data[i + 4..]);
+                i += 8;
+                continue;
             }
         }
         i += 1;
     }
-    false
+    out
+}
+
+/// What an H.264 recording has to be read against for a picture to say
+/// whether it is a whole frame or one field of a pair.
+///
+/// MPEG-2 writes the answer plainly in every picture it codes and needs
+/// nothing kept. H.264 writes it as a single bit of the slice header, and
+/// where that bit sits depends on numbers that appear nowhere but the
+/// sequence parameter set -- so the sequence has to be read first and kept,
+/// the way a VC-1 stream's has to. See [`is_reference`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FieldShape {
+    /// Width of `frame_num`, the one field of variable width standing
+    /// between the start of a slice header and the flag being looked for.
+    frame_num_bits: usize,
+    /// Set where each colour plane is coded on its own, which puts one more
+    /// field in front of `frame_num`. 4:4:4 only, and vanishingly rare.
+    separate_colour_planes: bool,
+}
+
+/// Read out of a recording's sequence header what is needed to tell a field
+/// picture from a whole frame.
+///
+/// `data` is a packet or a container's extradata; either may carry the
+/// header, and a transport stream restates it in front of every entry point.
+/// `None` where the sequence says every picture in it is a whole frame,
+/// which is what all but a handful of recordings say -- and `None` again
+/// where no header was found or it could not be read. Both answers mean the
+/// same thing to a caller: nothing here is coded as fields.
+pub fn field_shape(codec: &str, data: &[u8], framing: NalFraming) -> Option<FieldShape> {
+    if codec != "h264" {
+        return None;
+    }
+    // An `avcC` is not NAL-framed and has to be unpacked before it can be
+    // searched; a packet -- and a transport stream's Annex-B extradata --
+    // already is.
+    let packed = parameter_sets(codec, data);
+    if packed.iter().any(|nal| is_h264_sps(nal)) {
+        return packed.iter().find_map(|nal| h264_field_shape(nal));
+    }
+    nal_payloads(data, framing)
+        .into_iter()
+        .find_map(h264_field_shape)
+}
+
+fn is_h264_sps(nal: &[u8]) -> bool {
+    nal.first().is_some_and(|b| b & 0x1F == 7)
+}
+
+/// Profiles whose sequence header states its chroma format, and may carry
+/// quantiser matrices, ahead of everything read below.
+const H264_CHROMA_PROFILES: &[u32] =
+    &[100, 110, 122, 244, 44, 83, 86, 118, 128, 134, 135, 138, 139];
+
+fn h264_field_shape(nal: &[u8]) -> Option<FieldShape> {
+    if !is_h264_sps(nal) {
+        return None;
+    }
+    let mut b = Bits::new(nal.get(1..)?); // past the one-byte NAL header
+    let profile = b.u(8)?;
+    b.skip(16)?; // constraint and reserved flags, then level_idc
+    b.ue()?; // seq_parameter_set_id
+    let mut separate_colour_planes = false;
+    if H264_CHROMA_PROFILES.contains(&profile) {
+        let chroma = b.ue()?;
+        if chroma == 3 {
+            separate_colour_planes = b.u(1)? == 1;
+        }
+        b.ue()?; // bit_depth_luma_minus8
+        b.ue()?; // bit_depth_chroma_minus8
+        b.skip(1)?; // qpprime_y_zero_transform_bypass_flag
+        if b.u(1)? == 1 {
+            h264_scaling_lists(&mut b, if chroma == 3 { 12 } else { 8 })?;
+        }
+    }
+    let frame_num_bits = b.ue()? as usize + 4;
+    if frame_num_bits > 32 {
+        return None;
+    }
+    match b.ue()? {
+        // pic_order_cnt_type 0 and 1 each carry their own tail; 2 carries
+        // nothing.
+        0 => {
+            b.ue()?; // log2_max_pic_order_cnt_lsb_minus4
+        }
+        1 => {
+            b.skip(1)?; // delta_pic_order_always_zero_flag
+            b.se()?; // offset_for_non_ref_pic
+            b.se()?; // offset_for_top_to_bottom_field
+            let cycle = b.ue()?;
+            if cycle > 255 {
+                return None;
+            }
+            for _ in 0..cycle {
+                b.se()?;
+            }
+        }
+        _ => {}
+    }
+    b.ue()?; // max_num_ref_frames
+    b.skip(1)?; // gaps_in_frame_num_value_allowed_flag
+    b.ue()?; // pic_width_in_mbs_minus1
+    b.ue()?; // pic_height_in_map_units_minus1
+    let frame_mbs_only = b.u(1)? == 1;
+    // Set, and every picture in the sequence is a whole frame: no picture
+    // need be asked, and nothing after this is read.
+    (!frame_mbs_only).then_some(FieldShape {
+        frame_num_bits,
+        separate_colour_planes,
+    })
+}
+
+/// Step over the quantiser matrices a sequence header may write for itself.
+fn h264_scaling_lists(b: &mut Bits, lists: usize) -> Option<()> {
+    for i in 0..lists {
+        if b.u(1)? == 0 {
+            continue;
+        }
+        // A matrix is written as differences and stops early at a zero, so
+        // how many are actually there can only be found by reading them.
+        let (mut last, mut next) = (8i32, 8i32);
+        for _ in 0..if i < 6 { 16 } else { 64 } {
+            if next != 0 {
+                next = (last + b.se()? + 256).rem_euclid(256);
+            }
+            if next != 0 {
+                last = next;
+            }
+        }
+    }
+    Some(())
+}
+
+/// Does this packet carry one field of a pair rather than a whole frame?
+///
+/// A recording coded as field pairs hands the two halves of a frame over
+/// separately. **The output timeline counts in fields** -- see the writer --
+/// so the pair takes two places on it and lasts a field each, where
+/// [`display_fields`] answers for a packet that is a whole frame.
+///
+/// **The question is about the packet, not about how the pictures inside it
+/// are coded.** libavcodec's MPEG-2 parser joins a complementary field pair
+/// into one packet, and a broadcast in the sample here does that seven times
+/// in half a minute: two field pictures, one frame, two fields of the
+/// timeline. Its H.264 parser hands each field of a pair over on its own,
+/// which is what a recorder's own disc is made of. So what is counted is the
+/// pictures the packet opens, and the answer is yes only where there is one
+/// of them and it is a field.
+///
+/// `shape` is what the sequence header said, and `None` -- from a recording
+/// that codes no fields, or one whose header could not be read -- is
+/// answered no: a frame taken for a field is half a frame missing from the
+/// output, while a field taken for a frame is what every recording before
+/// this one was.
+pub fn is_field_picture(
+    data: &[u8],
+    codec: &str,
+    framing: NalFraming,
+    shape: Option<&FieldShape>,
+) -> bool {
+    match codec {
+        // picture_structure in the picture coding extension: 3 is a frame,
+        // 1 and 2 are the top and the bottom field on their own. A field
+        // picture may not also ask for a repeat, so it is one field exactly.
+        "mpeg2video" => match mpeg2_coding_extensions(data).as_slice() {
+            [only] => only[2] & 0x03 != 3,
+            _ => false,
+        },
+        "h264" => {
+            let Some(shape) = shape else { return false };
+            let mut opened = None;
+            for nal in nal_payloads(data, framing) {
+                if !nal.first().is_some_and(|b| H264_VCL.contains(&(b & 0x1F))) {
+                    continue;
+                }
+                // A picture written in several slices opens once; the slices
+                // after the first carry on from a macroblock further in.
+                let Some(field) = h264_opens_a_picture(nal, shape) else {
+                    continue;
+                };
+                if opened.is_some() {
+                    return false; // a second picture: a whole frame's worth
+                }
+                opened = Some(field);
+            }
+            opened.unwrap_or(false)
+        }
+        _ => false,
+    }
+}
+
+/// `Some(field_pic_flag)` where this slice opens a picture, `None` where it
+/// carries on one already opened.
+fn h264_opens_a_picture(nal: &[u8], shape: &FieldShape) -> Option<bool> {
+    let mut b = Bits::new(nal.get(1..)?); // past the one-byte NAL header
+    if b.ue()? != 0 {
+        return None; // first_mb_in_slice
+    }
+    b.ue()?; // slice_type
+    b.ue()?; // pic_parameter_set_id
+    if shape.separate_colour_planes {
+        b.skip(2)?; // colour_plane_id
+    }
+    b.skip(shape.frame_num_bits)?;
+    Some(b.u(1)? == 1)
 }
 
 /// The bits of a NAL unit's payload, with the emulation prevention bytes
@@ -671,5 +889,147 @@ mod tests {
         let found = sequence_header("hevc", &packet, NalFraming::AnnexB).unwrap();
         assert_eq!(found, &[0x42, 0x01, 0xbb]);
         assert!(sequence_header("h264", &packet, NalFraming::AnnexB).is_none());
+    }
+
+    /// Wrap NAL payloads back up as a transport stream's packet would carry
+    /// them.
+    fn annexb(nals: &[&[u8]]) -> Vec<u8> {
+        let mut out = Vec::new();
+        for nal in nals {
+            out.extend_from_slice(&[0, 0, 0, 1]);
+            out.extend_from_slice(nal);
+        }
+        out
+    }
+
+    /// A recorder's own disc: 1440x1080 at 29.97, and every picture on it
+    /// half a frame. The header says fields are coded at all, and the two
+    /// slices are the two halves of one frame.
+    #[test]
+    fn reads_a_recorder_that_codes_its_pictures_as_field_pairs() {
+        let header =
+            sps("27640028ac2ca50168111f7ff800200018800001f480007530742000206c80001036651b5805");
+        let shape = field_shape("h264", &annexb(&[&header]), NalFraming::AnnexB)
+            .expect("the recorder codes fields");
+        assert_eq!(shape.frame_num_bits, 8);
+        assert!(!shape.separate_colour_planes);
+        for slice in ["2188a7de14d29e346f5a", "219927fe3f219e2c5ffa"] {
+            let packet = annexb(&[&[0x09, 0x10], &sps(slice)]);
+            assert!(is_field_picture(
+                &packet,
+                "h264",
+                NalFraming::AnnexB,
+                Some(&shape)
+            ));
+        }
+    }
+
+    /// **The header alone does not settle it.** What this program writes back
+    /// over the same recording says fields are coded -- it is interlaced, and
+    /// `frame_mbs_only_flag` is clear -- while every picture in it is a whole
+    /// frame. So the picture is what is asked, and the header only says how
+    /// to ask it.
+    #[test]
+    fn a_header_that_allows_fields_does_not_make_every_picture_one() {
+        let header = sps("67640028ace40168113f7870800001f4800075300f8b1689");
+        let shape = field_shape("h264", &annexb(&[&header]), NalFraming::AnnexB).unwrap();
+        assert_eq!(shape.frame_num_bits, 4);
+        let packet = annexb(&[&sps("6588820804bff626")]);
+        assert!(!is_field_picture(
+            &packet,
+            "h264",
+            NalFraming::AnnexB,
+            Some(&shape)
+        ));
+    }
+
+    /// Progressive material says so outright, and then no picture need be
+    /// read at all.
+    #[test]
+    fn a_progressive_recording_codes_no_fields() {
+        let header = sps("67f4000d919b28283f6022000003000200000300781e28532c");
+        assert!(field_shape("h264", &annexb(&[&header]), NalFraming::AnnexB).is_none());
+    }
+
+    /// MPEG-2 says it in the picture itself: `picture_structure` 3 is a whole
+    /// frame, 1 and 2 are the top and the bottom field on their own. But a
+    /// packet holding the two fields of one frame is a whole frame, which is
+    /// how libavcodec's parser hands a pair over.
+    #[test]
+    fn an_mpeg2_field_pair_arrives_as_one_frame() {
+        // A picture header, then a coding extension whose third byte carries
+        // intra_dc_precision and picture_structure in its low four bits.
+        let picture = |structure: u8| {
+            let mut d = vec![0, 0, 1, 0x00, 0x00, 0x08, 0xff, 0xff];
+            d.extend_from_slice(&[0, 0, 1, 0xB5, 0x8f, 0xff, 0xf0 | structure, 0x00]);
+            d
+        };
+        let asked = |d: &[u8]| is_field_picture(d, "mpeg2video", NalFraming::AnnexB, None);
+        assert!(!asked(&picture(3)));
+        assert!(asked(&picture(1)));
+        assert!(asked(&picture(2)));
+        // The pair joined, which is what the demuxer actually produces.
+        let mut pair = picture(1);
+        pair.extend_from_slice(&picture(2));
+        assert!(!asked(&pair));
+        // And a packet with no coding extension in it at all is a frame.
+        assert!(!asked(&[0, 0, 1, 0x00]));
+    }
+
+    /// A picture written in several slices opens once, and the slices after
+    /// the first say nothing about which it is.
+    #[test]
+    fn a_picture_in_several_slices_is_still_one_picture() {
+        let header =
+            sps("27640028ac2ca50168111f7ff800200018800001f480007530742000206c80001036651b5805");
+        let shape = field_shape("h264", &annexb(&[&header]), NalFraming::AnnexB).unwrap();
+        let opening = sps("2188a7de14d29e346f5a");
+        // The same slice header with a first_mb_in_slice of 90 in front of
+        // it, which is how the second slice of a 1440-wide picture starts.
+        let mut later = vec![0x21, 0x00, 0x5a];
+        later.extend_from_slice(&opening[1..]);
+        let one = annexb(&[&opening, &later]);
+        assert!(is_field_picture(
+            &one,
+            "h264",
+            NalFraming::AnnexB,
+            Some(&shape)
+        ));
+        // Two pictures in one packet are a frame's worth between them.
+        let two = annexb(&[&opening, &opening]);
+        assert!(!is_field_picture(
+            &two,
+            "h264",
+            NalFraming::AnnexB,
+            Some(&shape)
+        ));
+    }
+
+    /// Whatever a damaged recording hands over, an answer comes back rather
+    /// than a panic or a loop -- and a picture nothing could be read from is
+    /// a whole frame, which is what every recording before the recorder's
+    /// own was.
+    #[test]
+    fn refuses_a_picture_it_cannot_read() {
+        assert!(field_shape("h264", &[], NalFraming::AnnexB).is_none());
+        assert!(field_shape("h264", &[0xff; 64], NalFraming::AnnexB).is_none());
+        let mut header =
+            sps("27640028ac2ca50168111f7ff800200018800001f480007530742000206c80001036651b5805");
+        let shape = field_shape("h264", &annexb(&[&header]), NalFraming::AnnexB).unwrap();
+        while header.pop().is_some() {
+            // every prefix of a real one, none of which may hang
+            let _ = field_shape("h264", &annexb(&[&header]), NalFraming::AnnexB);
+        }
+        let mut slice = sps("2188a7de14d29e346f5a");
+        while slice.pop().is_some() {
+            let _ = is_field_picture(&annexb(&[&slice]), "h264", NalFraming::AnnexB, Some(&shape));
+        }
+        // And with nothing read from the sequence, no picture is a field.
+        assert!(!is_field_picture(
+            &annexb(&[&sps("2188a7de14d29e346f5a")]),
+            "h264",
+            NalFraming::AnnexB,
+            None
+        ));
     }
 }
