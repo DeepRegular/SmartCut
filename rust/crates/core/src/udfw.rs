@@ -82,9 +82,19 @@ const ALIGN: u64 = 32;
 
 /// The largest a single allocation descriptor may describe: its length field
 /// is 30 bits, and a length that is not the last of a file has to be a whole
-/// number of blocks. This is the same 1,073,739,776 the reader sees on discs
-/// written by burners.
-const EXTENT_MAX: u64 = ((1u64 << 30) - 1) & !(SECTOR as u64 - 1);
+/// number of blocks.
+///
+/// **Rounded down to a whole number of clusters, not of blocks.** A gigabyte
+/// less one block is 524,287 blocks, which is what a burner writes and what
+/// this wrote -- and which is odd. A four gigabyte recording then came out as
+/// five extents of which only the first began on a 64 kB error-correction
+/// block, the unit a Blu-ray is read and written in. A recorder's own image
+/// uses 524,256 blocks, which is 16,383 clusters exactly, and every extent on
+/// all eight of its recordings begins and ends on one.
+///
+/// The other half of this is the stream file's own length; see
+/// [`crate::bdav`], which rounds a recording up to the same 64 kB.
+const EXTENT_MAX: u64 = ((1u64 << 30) - 1) & !(ALIGN * SECTOR as u64 - 1);
 
 // Descriptor tags, from ECMA-167 parts 3 and 4.
 const TAG_PRIMARY: u16 = 1;
@@ -145,6 +155,59 @@ impl Revision {
     }
 }
 
+/// What the image says may be done to the disc it is burned onto.
+///
+/// One number in the partition descriptor, and it is a statement about the
+/// medium rather than about the files. An image is written once and burned;
+/// what happens to the disc afterwards is the question this answers, and the
+/// answer depends on what it is burned to.
+///
+/// **Read-only is the default and is what a burned disc should say.** It is
+/// what every image written from a folder says -- this one and everybody
+/// else's -- and it is the truth about a disc nothing is going to write to
+/// again.
+///
+/// **Overwritable is what a recorder writes on a BD-RE**, and it is what a
+/// recorder wants to see before it will add a recording to a disc or take one
+/// off. A disc burned from a read-only image plays on the recorder and cannot
+/// be edited on it. So the choice is offered: the image is the same either
+/// way apart from this number, and only the person burning it knows which
+/// disc it is going on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Access {
+    /// Nothing will be written to this disc again.
+    #[default]
+    ReadOnly,
+    /// A rewritable disc a recorder may go on managing.
+    Overwritable,
+}
+
+impl Access {
+    /// The number the partition descriptor carries. 1 is read-only, 2
+    /// write-once, 3 rewritable, 4 overwritable.
+    fn number(self) -> u32 {
+        match self {
+            Access::ReadOnly => 1,
+            Access::Overwritable => 4,
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Access::ReadOnly => "read-only",
+            Access::Overwritable => "overwritable",
+        }
+    }
+
+    pub fn parse(s: &str) -> Option<Access> {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "read-only" | "readonly" | "ro" => Some(Access::ReadOnly),
+            "overwritable" | "rewritable" | "rw" => Some(Access::Overwritable),
+            _ => None,
+        }
+    }
+}
+
 /// One node of the tree being written.
 struct Node {
     name: String,
@@ -180,6 +243,7 @@ pub fn write(
     from: &Path,
     to: &Path,
     revision: Revision,
+    access: Access,
     label: &str,
     on: Option<&(dyn Fn(f64) + Sync)>,
 ) -> Result<u64> {
@@ -213,7 +277,7 @@ pub fn write(
         out.sector(&sec)?;
     }
     out.pad_to(MAIN_VDS)?;
-    for d in volume_descriptors(&plan, revision, &now, label, MAIN_VDS) {
+    for d in volume_descriptors(&plan, revision, access, &now, label, MAIN_VDS) {
         out.sector(&sized(&d)?)?;
     }
     out.pad_to(INTEGRITY)?;
@@ -271,8 +335,14 @@ pub fn write(
     ))?)?;
     out.pad_to(PARTITION + plan.mirror_at as u64)?;
     out.write_all(&meta)?;
-    out.pad_to(plan.reserve_vds)?;
-    for d in volume_descriptors(&plan, revision, &now, label, plan.reserve_vds) {
+    // The third anchor, 256 sectors back from the last one and immediately
+    // in front of the reserve descriptors, which is where a recorder's own
+    // image has it. A burner writes two and a reader needs only one of the
+    // three; the third costs a sector and is one more place a disc with an
+    // unreadable end can still be opened from. See [`lay_out`].
+    out.pad_to(plan.reserve_vds - 1)?;
+    out.sector(&sized(&anchor(&plan, plan.reserve_vds - 1))?)?;
+    for d in volume_descriptors(&plan, revision, access, &now, label, plan.reserve_vds) {
         out.sector(&sized(&d)?)?;
     }
     out.pad_to(plan.sectors - 1)?;
@@ -459,7 +529,13 @@ fn lay_out(tree: &mut [Node]) -> Plan {
     at += ALIGN;
     let mirror_at = at as u32;
     let partition_blocks = at + meta_blocks;
-    let reserve_vds = PARTITION + partition_blocks;
+    // A cluster of room between the end of the partition and the reserve
+    // descriptors. It is what the third anchor sits in -- the sector
+    // immediately in front of them, which is where being 256 back from the
+    // last sector puts it. A recorder's own image has exactly this gap: a
+    // partition ending at 11,825,888 and its reserve sequence at
+    // 11,825,920.
+    let reserve_vds = PARTITION + partition_blocks + ALIGN;
 
     Plan {
         meta_blocks,
@@ -468,12 +544,19 @@ fn lay_out(tree: &mut [Node]) -> Plan {
         mirror_entry,
         partition_blocks,
         reserve_vds,
-        // Rounded out to a whole 64 KB cluster, which is the unit a Blu-ray
-        // is written in and what both reference images come to: 10,326,144
-        // sectors and 9,959,520, each of them 32 blocks' worth exactly. The
-        // second anchor moves out to the new last sector with it, which is
-        // where it has to be either way.
-        sectors: align(reserve_vds + VDS_BLOCKS + 1),
+        // Room for the last two anchors, and a whole 64 KB cluster either
+        // way: the unit a Blu-ray is written in, and what every reference
+        // image comes to.
+        //
+        // An anchor is allowed in three places and a reader may look in any
+        // of them: 256, the last sector, and 256 back from the last. A
+        // burner writes the first two; a recorder writes all three, and puts
+        // the middle one in the sector immediately in front of the reserve
+        // descriptors -- which is what fixes the size of the image, since
+        // the middle anchor and the last are 256 apart by definition. Its
+        // own disc is 11,826,176 sectors to a reserve sequence at
+        // 11,825,920, which is exactly this.
+        sectors: reserve_vds + ANCHOR,
         files: tree.iter().filter(|n| !n.is_dir()).count() as u32,
         directories: tree.iter().filter(|n| n.is_dir()).count() as u32,
         next_unique: 15 + tree.len() as u32,
@@ -708,6 +791,7 @@ fn file_set(root: u32, rev: Revision, now: &Stamp, label: &str) -> Vec<u8> {
 fn volume_descriptors(
     plan: &Plan,
     rev: Revision,
+    access: Access,
     now: &Stamp,
     label: &str,
     at: u64,
@@ -715,7 +799,7 @@ fn volume_descriptors(
     vec![
         primary(now, label, at),
         implementation_use(rev, label, at + 1),
-        partition(plan, at + 2),
+        partition(plan, access, at + 2),
         logical_volume(plan, rev, label, at + 3),
         unallocated(at + 4),
         terminating(at + 5),
@@ -761,13 +845,13 @@ fn implementation_use(rev: Revision, label: &str, at: u64) -> Vec<u8> {
     d
 }
 
-fn partition(plan: &Plan, at: u64) -> Vec<u8> {
+fn partition(plan: &Plan, access: Access, at: u64) -> Vec<u8> {
     let mut d = vec![0u8; 512];
     le32(&mut d, 16, 2);
     le16(&mut d, 20, 1); // allocated
     le16(&mut d, 22, 0); // partition number
     d[24..56].copy_from_slice(&regid(0, "+NSR03", &[]));
-    le32(&mut d, 184, 1); // read only
+    le32(&mut d, 184, access.number()); // what may be done to the disc
     le32(&mut d, 188, PARTITION as u32);
     le32(&mut d, 192, plan.partition_blocks as u32);
     d[196..228].copy_from_slice(&regid(0, "*SmartCut", &[]));

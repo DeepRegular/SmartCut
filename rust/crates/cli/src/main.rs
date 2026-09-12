@@ -220,6 +220,9 @@ fn main() -> Result<()> {
     let mut iso: Option<smartcut_core::udfw::Revision> = None;
     // And whether the folder goes once the image has been made of it.
     let mut iso_only = false;
+    // What the image says may be done to the disc it is burned onto; see
+    // `smartcut_core::udfw::Access`.
+    let mut iso_access = smartcut_core::udfw::Access::default();
     let mut programme: Option<String> = None;
     let mut given_channel: Option<String> = None;
     let mut given_number: Option<u16> = None;
@@ -432,6 +435,15 @@ fn main() -> Result<()> {
             // The image on its own: the folder is still written, still what
             // the image is made of, and taken away once the image holds it.
             "--iso-only" => iso_only = true,
+            // What the burned disc is to say about itself. Read-only unless
+            // asked, which is what a burned disc is.
+            "--iso-access" => {
+                i += 1;
+                let v = args.get(i).context("--iso-access needs read-only or overwritable")?;
+                iso_access = smartcut_core::udfw::Access::parse(v).with_context(|| {
+                    format!("--iso-access wants read-only or overwritable, got {v:?}")
+                })?;
+            }
             "--disc-title" => {
                 i += 1;
                 disc_title = Some(args.get(i).context("--disc-title needs a name")?.clone());
@@ -481,6 +493,9 @@ fn main() -> Result<()> {
     if iso_only && iso.is_none() {
         bail!("--iso-only needs --iso 2.50|2.60: the image is made of the folder");
     }
+    if iso_access != smartcut_core::udfw::Access::default() && iso.is_none() {
+        bail!("--iso-access needs --iso 2.50|2.60: it is a thing the image says");
+    }
     let Some(input) = input else {
         bail!(
             "usage: smartcut <input> [--keep START-END]... [--cut START-END]... \
@@ -507,7 +522,9 @@ fn main() -> Result<()> {
              fill in what its index says, which is otherwise taken from what the \
              recording says about itself; --iso 2.50|2.60 wraps the finished disc \
              in a UDF image beside it, and --iso-only takes the folder away \
-             once the image has been made of it"
+             once the image has been made of it; --iso-access overwritable has \
+             that image describe a disc a recorder may go on managing, where the \
+             default read-only describes one nothing will write to again"
         );
     };
     // A share the machine has already mounted may be named the way it is
@@ -1375,12 +1392,14 @@ fn main() -> Result<()> {
             // Appended rather than `with_extension`, which would take a
             // folder called `2026.09` and write `2026.iso`.
             let image = std::path::PathBuf::from(format!("{}.iso", at.display()));
-            let bytes = smartcut_core::udfw::write(&at, &image, revision, &title, None)?;
+            let bytes =
+                smartcut_core::udfw::write(&at, &image, revision, iso_access, &title, None)?;
             println!(
-                "wrote {} ({:.1} MB, UDF {})",
+                "wrote {} ({:.1} MB, UDF {}, {})",
                 image.display(),
                 bytes as f64 / 1e6,
-                revision.as_str()
+                revision.as_str(),
+                iso_access.as_str()
             );
             // And the folder, now that the image holds all of it. After the
             // image and never instead of it: a folder taken away before

@@ -2225,6 +2225,11 @@ const settings = {
   /// revision: "" for a folder and nothing else, "2.50" or "2.60" for one.
   /// The folder is written either way -- the image is made of it.
   image: "",
+  /// What the image says may be done to the disc it is burned onto:
+  /// "read-only", which is what a burned disc is, or "overwritable", which is
+  /// what a recorder writes on a BD-RE and what it wants to see before it
+  /// will edit a disc. Only means anything where an image is being made.
+  imageAccess: "read-only",
   /// And whether the folder goes once the image has been made of it. Only
   /// means anything where an image is being made at all, and only ever
   /// happens after one was written: the folder is what the image is made of.
@@ -2554,6 +2559,7 @@ bindSetting("out-dir", "dir");
 bindSetting("out-subfolder", "subfolder");
 bindSetting("out-disc-title", "discTitle");
 bindSetting("out-image", "image");
+bindSetting("out-image-access", "imageAccess");
 bindSetting("out-image-only", "imageOnly", "checked");
 bindSetting("out-prefix", "prefix");
 bindSetting("out-number", "number", "checked");
@@ -3823,6 +3829,7 @@ function paintMode() {
   el("row-disc-title").hidden = !disc;
   el("row-image").hidden = !disc;
   // The question after it only where there is an image to ask it about.
+  el("row-image-access").hidden = !disc || !settings.image;
   el("row-image-only").hidden = !disc || !settings.image;
   el("row-programme").hidden = !disc;
   el("row-channel").hidden = !disc;
@@ -4703,6 +4710,7 @@ async function runExport() {
               dir: discDir(),
               title: discTitleFor(list),
               revision: settings.image,
+              access: settings.imageAccess,
             });
             finishStep("image", "done");
             note(t("out.imageDone", { path }));

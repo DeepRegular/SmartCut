@@ -31,7 +31,7 @@ go into a `.ts` ([`si.rs`](../../rust/crates/core/src/si.rs), and
 disc is the same smart-rendered cut as one written into a file: over 99% of it
 copied byte for byte, with the same handful of re-encoded frames at each seam.
 
-Three things are different, and each of them is a thing a *disc* needs.
+Four things are different, and each of them is a thing a *disc* needs.
 
 ### The PIDs are Blu-ray's
 
@@ -49,13 +49,59 @@ two to meet — at which point the muxer stops the cut outright:
 ```
 
 So the streams of a `.m2ts` are numbered the way a Blu-ray numbers them:
-pictures on 0x1011, sound from 0x1100, everything else from 0x1200. The
-recording's own tables still describe each of them — the map that goes into
-the file is the broadcast's, with each stream named by where it went rather
-than by where it came from — so a Japanese player still finds AAC declared as
-AAC, the captions declared as a data stream with the component tag they
-arrived with, and the programme information on PID 0x1F where a partial
-transport stream keeps it.
+
+| | |
+|---|---|
+| 0x1001 | the clock |
+| 0x1011 | the pictures |
+| 0x1100 | the sound |
+| 0x1110 | the captions a broadcast sends |
+| 0x1200 | the subtitles a disc draws |
+| 0x001F | what the stream says about itself |
+
+The recording's own tables still describe each of them — the map that goes
+into the file is the broadcast's, with each stream named by where it went
+rather than by where it came from — so a Japanese player still finds AAC
+declared as AAC, and the captions declared as a data stream with the
+component tag they arrived with.
+
+**The two kinds of subtitle do not share a run.** 0x1200 upwards is the range
+Blu-ray keeps for the graphics it draws itself, and that is what goes there: a
+presentation graphics stream, declared as one. A broadcast's own captions are
+not that — they are a data stream in a private format — and putting them in
+the graphics range, which is what this did before, had them announced as
+something nothing can read them as. A recorder's own disc puts its captions at
+0x1110, inside the range the sound is numbered from, and this now does the
+same.
+
+**The clock gets a PID of its own.** libavformat writes the clock reference
+into the adaptation field of the pictures, which is where a broadcast carries
+it; every reference disc here — a recorder's own and an authoring tool's alike
+— gives it 0x1001, and each disc's clip index says so. So the reference comes
+out of the picture it was riding in and goes into a packet of its own, arriving
+at the same moment; the six bytes it vacates become stuffing, so the adaptation
+field is the length it was and the payload behind it has not moved a byte. It
+costs one packet per reference, which is a third of a percent of a disc.
+
+### The tables go out at the rate a disc's do
+
+libavformat repeats the list of programmes and the map every tenth of a
+second, which is the ceiling rather than the target — and asking for the
+ceiling is how it gets missed. The muxer writes the pair when the next *frame*
+falls due after the interval, and the arrival times below stretch the wait
+further. Measured on two discs written that way, the pair came every 100
+milliseconds on average and as much as 147 apart. The recorder's own disc runs
+at 36 and never reaches 100; the authoring tool's at 80 and never reaches 81.
+
+Asked for every fiftieth of a second — which on a broadcast recording means
+"every frame" — the same material comes out at 33 and never reaches 79. It
+costs the pair twice over per frame, which is 0.4% of a disc.
+
+The list of programmes is also written again rather than left alone, because
+it has an entry the muxer will not write: **programme nought**, which is not a
+service but the PID the stream describes itself on. Both reference discs name
+0x001F there. The same pass makes the list and the map agree on which service
+this is, which the muxer does not guarantee.
 
 ### The arrival times are written again, at a rate
 
@@ -107,12 +153,21 @@ All that is known is the clock references; between two of them there is room
 the packets in between do not need. Packing each of them as late as it will go
 puts all of that room in one lump at the front of the run, which measured on a
 recording written that way is a stream that runs for 22 milliseconds and then
-stops for 18. A recorder stops far more often and for far less: 38 packets and
-then 72 steps of nothing on one reference disc, 76 and 71 on the other, which
-is a stop every 6.5 and 8.6 milliseconds. So the room is dealt out through the
-run instead, in stretches of about four milliseconds — which on the same
-recording comes to a stop every 7.3, of 36 steps, with every gap still a whole
-number of steps and no packet arriving sooner than one.
+stops for 18. A real disc stops far more often and for far less. So the room
+is dealt out through the run instead, in stretches of about half a millisecond
+— with every gap still a whole number of steps and no packet arriving sooner
+than one.
+
+**Half a millisecond, because four was still four times the lumpiest disc.**
+Four was the first answer, and it was measured against the *stops*: it puts
+this material's own stop every 4.4 milliseconds, which sits between the
+authoring tool's 1.3 and the recorder's 0.52 near enough. What it did not
+match is how long the stream runs between them, which is the same fact from
+the other side and the one a player's buffer meets — a median run of 24
+packets and a longest of 3,234, against 19 and 19 on the authoring tool's disc
+and 5 and 85 on the recorder's. At half a millisecond the same recording runs
+a median of 3 packets and stops every 0.49, both of them between the two
+discs.
 
 **A moved reference is rewritten.** A clock reference *is* the arrival time of
 the byte carrying it; a packet delivered at a different moment from the one
@@ -145,17 +200,26 @@ is the one mistake in this file that matters. On the same recording written
 the way above, none of them do and the decoder's lead sits between 0.42 and
 0.66 seconds from one end to the other.
 
-### The stream is padded to whole aligned units
+### The stream is padded to where a recorder stops
 
 A Blu-ray reads and writes a stream 32 source packets — 6144 bytes — at a
-time, and every stream file on both reference discs is a whole number of them,
+time, and every stream file on every reference disc is a whole number of them,
 each one ending in the null packets that made it so. What libavformat leaves
 is whatever its last flush came to: of six streams measured, none were a whole
-number and the shortfall ran from 1920 to 3456 bytes. So the tail is padded
-with null packets, arriving at the rate everything else did.
+number and the shortfall ran from 1920 to 3456 bytes.
 
-The image is rounded out the same way, to a whole 64 kB cluster: both
-reference images come to one exactly.
+**A recorder stops further out than that.** All eight recordings on a
+recorder's own disc are a whole number of 196,608 bytes — 32 aligned units, or
+two of the 64 kB error-correction blocks a Blu-ray is written in — and not one
+of them is merely a multiple of 6144. It is the other half of laying out the
+image: an extent that is a whole number of those blocks can begin on one, and
+a file whose *length* is not leaves every extent after the first straddling a
+block boundary however carefully the image is laid out. So the tail is padded
+to 1024 source packets, with null packets arriving at the rate everything else
+did. At worst that is 1023 of them — 196 kB on a recording of four gigabytes.
+
+The image is rounded out the same way, to a whole 64 kB cluster: every
+reference image comes to one exactly.
 
 ### The index is read back off the file
 
@@ -174,7 +238,7 @@ something:
 
 | | |
 |---|---|
-| **ClipInfo** | that this is a transport stream of a recording, the rate it is written at — read off the schedule that wrote it, so the index and the stream cannot disagree — and how many source packets it holds |
+| **ClipInfo** | that this is a transport stream of a recording, the rate it is written at — read off the schedule that wrote it, so the index and the stream cannot disagree — how many source packets it holds, and which network, transport stream and service it came off |
 | **SequenceInfo** | which PID carries the clock, the packet its first reference is in, and the first and last moment a picture is shown |
 | **ProgramInfo** | which PID the map is on, and what each stream is: the coding, and a shape and rate for pictures, a channel arrangement and rate and language for sound, a language for [the subtitles a disc draws](disc.md#the-subtitles-a-disc-draws) |
 | ClipMark | empty: on a disc of recordings the chapter points belong to the playlist |
@@ -184,6 +248,21 @@ The coding of each stream is taken from the map the file itself carries rather
 than from the codec libavformat named, so the index and the map cannot
 disagree — which is the failure that would have a player hand AAC frames to a
 decoder that was told they were private data.
+
+**The language of a sound track goes in only where there is one.** A broadcast
+does not say, and a track whose language is unknown was going out as three
+zero bytes — a language field filled in with nothing, in an entry a byte
+longer than any reference disc writes. Every one of them stops after the
+channel arrangement and the rate and pads to an even length; so does this,
+where there is nothing to say. A cut off a disc does know the language, since
+it is in the index it came from, and there the field goes in.
+
+**Which network the recording came off** sits in the same block as the
+transport stream and the service. It was written as 4 — satellite — until a
+recorder's own discs were read: the authoring tool's two are both of a
+satellite broadcast, where 4 is the answer, and copying it wrote "satellite"
+onto every terrestrial recording this ever put on a disc. The recorder's discs
+carry the network they came off, and so does this.
 
 ### The entry point map
 
@@ -321,6 +400,16 @@ which is where the commercial breaks were, plus whatever marks were put down
 in the editor. That is the one thing on a recorder's disc a viewer uses every
 time.
 
+A mark opens with what kind of mark it is and then the maker who wrote it,
+which is the pair a playlist of several clips has to be read past to reach the
+play item. Both were copied whole out of the authoring tool's disc until a
+recorder's own were read, which put that tool's maker number on every mark
+this ever wrote. A recorder writes 4 on each of its chapter points and one 1
+where the viewer stopped watching, each of them under its own maker number. So
+the kind is now the recorder's, and the maker is nought: this program has no
+number of its own, and nothing follows it in the entry that a maker would have
+to be asked about.
+
 ## The lead a disc gives a decoder
 
 A stream cannot show its first picture the moment its clock starts: the
@@ -401,19 +490,39 @@ one carrying an empty name. What goes onto the disc is the sentence, and then
 `【item】text` a line at a time, which is what the recorder's own disc has in
 that field.
 
-**The channel's number is the three digits a viewer knows it by**, and it is
-the service's own identifier on satellite: a satellite service numbered 161 is
-channel 161, and every BS and CS service is numbered in that range. A terrestrial
-service is not — its identifier is 1024 and up, and the three digits are built
-from a key number that only the network information table carries — so a
-terrestrial recording writes 0, which is the field saying it does not know
-rather than a number that would be wrong. The name goes in either way.
+### The channel's number
+
+**The three digits a viewer knows the channel by**, and on satellite they are
+the service's own identifier: a service numbered 161 is channel 161, and every
+BS and CS service is numbered in that range.
+
+A terrestrial service is not. Its identifier is 1024 and up, and the three
+digits are built from two things — the button on the remote control, and which
+of that station's services this is. The button is in the network information
+table and nowhere else, in the transport stream information descriptor (0xCD);
+the service is the bottom three bits of the identifier. 011 is the first
+service behind button 1, 012 the second. A terrestrial recording used to write
+0 here, which is the field saying it does not know; the table is now read, and
+the number comes out.
+
+Read off a recorder's own disc, which is what settled the arithmetic: a
+service numbered 0x1820 behind button 1, written into the playlist as 11 —
+and the same descriptor lists 0x1820 through 0x1823, which are 011 to 014.
+Checked back against three broadcasts from a region where the buttons are not
+the obvious ones: NHK総合 comes out 031 there and not 011, because the local
+commercial station holds button 1, and the recorder's own disc of that station
+says 011.
+
+**The button travels with the cut.** The same descriptor goes into the table a
+partial transport stream carries, which is where a recorder's own disc has it,
+so a cut of a cut still knows what channel it came off. The name goes in
+either way.
 
 ## What is copied rather than understood
 
-Three places still carry fields whose meaning is not written down anywhere
-this program can reach: the six bytes in front of the date in a playlist, four
-in `info.bdav`, and the four bytes each chapter mark opens with.
+Two places still carry fields whose meaning is not written down anywhere this
+program can reach: the six bytes in front of the date in a playlist, and four
+in `info.bdav`.
 
 **Both discs have the same values in all of them** — a Japanese recorder's,
 written in 2010, and an authoring tool's, written in 2026 — so what is written
@@ -482,10 +591,10 @@ images are already opened with.
  32..47   the volume descriptors: primary, implementation use, partition,
           logical volume, unallocated space, terminating
  64..65   the logical volume integrity descriptor, and a terminator
-    256   the anchor, which is the one descriptor at a fixed place
+    256   the first anchor, which is the one descriptor at a fixed place
     288   the partition, and inside it the metadata partition and the files
-   then   a reserve copy of the volume descriptors, and a second anchor in
-          the last sector
+   then   the second anchor, a reserve copy of the volume descriptors, and a
+          third anchor in the last sector
 ```
 
 **The file entries live in a metadata partition**, which is what UDF 2.50
@@ -521,15 +630,42 @@ that reads until the day a cluster of it goes bad:
   does the same, a recorder's and a burner's alike; `run_udf_tests.sh` is
   what noticed that ours did not.
 
-A file longer than 1,073,739,776 bytes is written as several extents, because
-that is what a 30 bit length field with a 2 KB block comes to -- the same
-split the reader sees on discs written by burners. **A file so large that its
-extents no longer fit in one block is refused**, rather than written as though
-it were whole: an extent is a gigabyte and a long allocation descriptor is
-sixteen bytes, so a block holds the description of about 114 GB, and the
-padding step used to `resize` a file entry past that back down to a block and
-finish the image without a word. An image that says it is done and is not is
-the worst answer available here.
+* **There are three places an anchor may be**, and a reader may look in any of
+  them: block 256, the last block, and 256 back from the last. A burner writes
+  the first two, which is what this wrote. A recorder writes all three, and
+  puts the middle one in the block immediately in front of the reserve
+  descriptors — which is what fixes the size of the image, since the middle
+  anchor and the last are 256 apart by definition. Its own disc is 11,826,176
+  blocks to a reserve sequence at 11,825,920; this now lays out the same way,
+  and the third anchor costs one block.
+
+A file longer than 1,073,676,288 bytes is written as several extents, because
+that is what a 30 bit length field with a 2 KB block comes to, **rounded down
+to a whole 64 kB cluster**. A gigabyte less one block is 524,287 blocks, which
+is what a burner writes and what this wrote — and which is odd, so a four
+gigabyte recording came out as five extents of which only the first began on a
+cluster and the four after it each straddled one. A recorder's own image uses
+524,256 blocks, which is 16,383 clusters exactly, and every extent on all
+eight of its recordings begins and ends on one. The other half of that is the
+stream file's own length, which is padded to the same 64 kB above.
+
+**A file so large that its extents no longer fit in one block is refused**,
+rather than written as though it were whole: an extent is a gigabyte and a
+long allocation descriptor is sixteen bytes, so a block holds the description
+of about 114 GB, and the padding step used to `resize` a file entry past that
+back down to a block and finish the image without a word. An image that says
+it is done and is not is the worst answer available here.
+
+**What the image says may be done to the disc** is one number in the partition
+descriptor, and it is a statement about the medium rather than about the
+files. Read-only is what every image written from a folder says — this one and
+everybody else's — and it is the truth about a disc nothing is going to write
+to again, so it is the default. A recorder writes *overwritable* on a BD-RE,
+and that is what it wants to see before it will add a recording to a disc or
+take one off; a disc burned from a read-only image plays on the recorder and
+cannot be edited on it. So the choice is offered, in the output settings and
+as `--iso-access`: the image is the same either way apart from that number,
+and only the person burning it knows which disc it is going on.
 
 **A file a UDF volume cannot name is named rather than dropped.** The names
 written here are plain ASCII of 200 characters or fewer, which is what a disc
@@ -559,6 +695,18 @@ two agree byte for byte on every field either of them fills in — which is what
 makes the table above a layout rather than a guess. Both discs open in this
 program's own reader, and the marks, the tracks and the names come back off
 both.
+
+**And four BD-REs a recorder wrote in 2026**, eight terrestrial programmes
+apiece. These are what found the places where the two discs above agreed and
+were both being *copied*: the clock's PID, the cadence of the tables,
+programme nought in the list, the captions' PID, the network number, the
+button on the remote, the audio language field, a mark's kind and maker, the
+file length and the extents' 64 kB boundaries, and the third anchor. Each of
+those was a value the authoring tool's two discs shared, and each was taken as
+settled on that evidence. What the recorder's discs make possible is telling
+apart the things two discs agreed on because that is how it is done, and the
+things two discs agreed on because they happened to be of the same kind of
+material.
 
 **Round trip.** [`tests/run_bdav_tests.sh`](../../tests/run_bdav_tests.sh)
 writes a disc of two recordings, opens it with this program's own reader —

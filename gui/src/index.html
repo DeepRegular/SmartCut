@@ -163,6 +163,19 @@
               </select>
             </span>
           </div>
+          <!-- What the burned disc is to say may be done to it. Under the
+               image row and only on screen with one chosen, for the same
+               reason as the box below: it is a thing the image says, and
+               there is nothing to say it in without one. -->
+          <div class="row" id="row-image-access" hidden>
+            <span data-i18n="outset.imageAccess">ディスクの種別:</span>
+            <span class="drop">
+              <select id="out-image-access">
+                <option value="read-only" selected data-i18n="access.readOnly">追記しない（BD-R / 再生専用）</option>
+                <option value="overwritable" data-i18n="access.overwritable">レコーダーで編集する（BD-RE）</option>
+              </select>
+            </span>
+          </div>
           <!-- And whether the folder goes once the image holds all of it.
                Under the image row and only on screen with one chosen: the
                image is made *of* the folder, so there is no keeping one

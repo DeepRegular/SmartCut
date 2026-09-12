@@ -13,11 +13,12 @@ Prints `key=value` lines for a caller to compare, plus one `eit.<n>=` line
 per event section, hashed, so two files can be told apart without either
 this or the caller having to understand ARIB text.
 
-The conditional access descriptor (0x09) is left out of every descriptor
-loop printed here. It says where the entitlement messages are and which
-system scrambles the service, and a cut carries neither -- so a cut that
-restated it would be describing a file that does not exist. Printing it
-would make every comparison fail for the one difference that is correct.
+The two conditional access descriptors are left out of every descriptor loop
+printed here: 0x09, and ARIB's own 0xF6. Each says where the entitlement
+messages are and which system scrambles the service, and a cut carries
+neither -- so a cut that restated one would be describing a file that does
+not exist. Printing them would make every comparison fail for the one
+difference that is correct.
 """
 import hashlib
 import sys
@@ -31,11 +32,11 @@ start = data.find(b"\x47")
 
 
 def no_ca(loop):
-    """A descriptor loop with the conditional access descriptor taken out."""
+    """A descriptor loop with the conditional access descriptors taken out."""
     out, i = bytearray(), 0
     while i + 2 <= len(loop):
         ln = loop[i + 1]
-        if loop[i] != 0x09:
+        if loop[i] not in (0x09, 0xF6):
             out += loop[i:i + 2 + ln]
         i += 2 + ln
     return bytes(out)

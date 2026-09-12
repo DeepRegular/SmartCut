@@ -3325,11 +3325,16 @@ async fn bdav_image(
     dir: String,
     title: String,
     revision: String,
+    access: String,
 ) -> Result<String, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let at = local_path(&dir)?;
         let revision = smartcut_core::udfw::Revision::parse(&revision)
             .ok_or_else(|| format!("{revision}: not a UDF revision this writes"))?;
+        // What the burned disc is to say about itself. A window that has not
+        // been asked -- an older one, or one where the row was never drawn --
+        // gets what a burned disc is.
+        let access = smartcut_core::udfw::Access::parse(&access).unwrap_or_default();
         // Appended rather than `with_extension`, which would take a folder
         // called `2026.09` and write `2026.iso`.
         let image = std::path::PathBuf::from(format!("{}.iso", at.display()));
@@ -3338,6 +3343,7 @@ async fn bdav_image(
             &at,
             &image,
             revision,
+            access,
             &title,
             Some(&move |done: f64| {
                 let _ = reporter.emit("image-progress", done);

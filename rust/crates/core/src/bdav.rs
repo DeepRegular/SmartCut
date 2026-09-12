@@ -133,12 +133,19 @@ const MOVE_BUDGET: i64 = 27_000_000 / 5;
 /// So the room is spread through the run instead, in stretches about this
 /// long. It is not a rate the stream is written at -- every gap is still a
 /// whole number of steps, and no packet arrives sooner than the step, which
-/// are the two things the reference discs' times are made of. Four
-/// milliseconds is what puts this material's own stop every 7 or so, inside
-/// the two discs: the runs with no room to give pause not at all, so the
-/// stretches that do have room carry the average further apart than they are
-/// asked to be.
-const PAUSE: i64 = 27_000_000 * 4 / 1000;
+/// are the two things the reference discs' times are made of.
+///
+/// **Half a millisecond, because four was still four times the lumpiest
+/// disc.** At four, measured over twenty seconds of a written stream: a stop
+/// every 4.4 milliseconds, of 42 steps, with the longest run 3,234 packets.
+/// The authoring tool's disc over the same span stops every 1.3 of 1 step
+/// and never runs past 19 packets; the recorder's every 0.52 of 2 and never
+/// past 85. Four milliseconds was measured against the *stops* on those
+/// discs and matched them; what it did not match is how long the stream
+/// runs between them, which is the same fact from the other side and the one
+/// a player's buffer meets. At half a millisecond both land between the two
+/// discs.
+const PAUSE: i64 = 27_000_000 / 2000;
 
 /// The rate, in bytes of transport stream a second, that a step comes to.
 ///
@@ -153,9 +160,25 @@ fn rate_of(step: i64) -> u32 {
 }
 
 /// An aligned unit: the 32 source packets a Blu-ray reads and writes a stream
-/// in. A stream file is a whole number of them, which is what the null
-/// packets at the end of one are for -- see [`stamp`].
+/// in.
 const ALIGNED_UNIT: u64 = 32;
+
+/// How many source packets a stream file is rounded up to.
+///
+/// Thirty-two of them is an aligned unit, which is what a player reads in;
+/// **a thousand and twenty-four is where a recorder stops**. All eight clips
+/// of a recorder's own disc are a whole number of 196,608 bytes -- 32 aligned
+/// units, or two of the 64 kB error-correction blocks a Blu-ray is written
+/// in -- and not one of them is merely a multiple of 6,144.
+///
+/// It is the other half of writing the image: an extent that is a whole
+/// number of those blocks can start on one, and a file whose length is not
+/// leaves every extent after the first straddling a block boundary however
+/// carefully the image is laid out. See `crate::udfw::EXTENT_MAX`.
+///
+/// The cost is the null packets at the end, which at worst is 1023 of them:
+/// 196 kB on a recording of four gigabytes.
+const FILE_UNIT: u64 = 1024;
 
 /// Where each thing a playlist says about its recording sits, and how much
 /// room it has. The same offsets [`crate::disc`] reads, and the same on both
@@ -558,9 +581,9 @@ pub fn stamp(path: &Path) -> Result<Timing> {
             last = at;
             i += 1;
         }
-        // And the null packets that make the file a whole number of aligned
-        // units, arriving at the rate everything else did.
-        let short = (ALIGNED_UNIT - u64::from(i) % ALIGNED_UNIT) % ALIGNED_UNIT;
+        // And the null packets that make the file a whole number of the unit
+        // a recorder writes in, arriving at the rate everything else did.
+        let short = (FILE_UNIT - u64::from(i) % FILE_UNIT) % FILE_UNIT;
         for k in 0..short {
             let mut null = [0xFFu8; SOURCE_PACKET];
             null[4..8].copy_from_slice(&[0x47, 0x1F, 0xFF, 0x10]);
@@ -576,7 +599,8 @@ pub fn stamp(path: &Path) -> Result<Timing> {
         Ok(packets) => {
             std::fs::rename(&temp, path)
                 .with_context(|| format!("replacing {}", path.display()))?;
-            debug_assert_eq!(u64::from(packets) % ALIGNED_UNIT, 0);
+            debug_assert_eq!(u64::from(packets) % FILE_UNIT, 0);
+            debug_assert_eq!(FILE_UNIT % ALIGNED_UNIT, 0);
             let _ = read;
             Ok(Timing {
                 packets,
@@ -772,11 +796,12 @@ struct Clip {
     start: u32,
     end: u32,
     video_pid: u16,
-    /// Which transport stream this was, and which service on it, as the
-    /// recording's own tables name them. They go into the block that says
-    /// what kind of stream the clip is; see [`clpi`]. Zero where the
-    /// recording had no tables to name them in, which is what a cut out of
-    /// an MP4 is.
+    /// Which network this came off, which transport stream it was on, and
+    /// which service on that, as the recording's own tables name them. They
+    /// go into the block that says what kind of stream the clip is; see
+    /// [`clpi`]. Zero where the recording had no tables to name them in,
+    /// which is what a cut out of an MP4 is.
+    network_id: u16,
     tsid: u16,
     service_id: u16,
     streams: Vec<Carried>,
@@ -943,6 +968,7 @@ fn read_clip(
         start: ticks(0.0),
         end: ticks(src.duration),
         video_pid,
+        network_id: service.as_ref().map_or(0, |s| s.original_network_id),
         tsid: service.as_ref().map_or(0, |s| s.transport_stream_id),
         service_id: service.as_ref().map_or(0, |s| s.service_id),
         streams,
@@ -962,7 +988,7 @@ fn video_pid(path: &str, index: usize) -> Result<u16> {
 }
 
 /// The coding type of a picture stream, when its own map did not say.
-fn video_coding(codec: &str) -> u8 {
+pub(crate) fn video_coding(codec: &str) -> u8 {
     match codec {
         "mpeg1video" => 0x01,
         "h264" => 0x1B,
@@ -988,7 +1014,7 @@ fn audio_coding(codec: &str) -> u8 {
 /// The two bytes a clip index describes a picture stream with: the shape of
 /// the frame and the rate it is shown at, then the shape of the picture
 /// inside it.
-fn video_attributes(v: &crate::VideoInfo) -> Vec<u8> {
+pub(crate) fn video_attributes(v: &crate::VideoInfo) -> Vec<u8> {
     let format = match (v.height, v.interlaced()) {
         (0..=480, true) => 1,
         (0..=480, false) => 3,
@@ -1035,6 +1061,16 @@ fn language_attribute(language: Option<&str>) -> Vec<u8> {
     three.to_vec()
 }
 
+/// The bytes a clip index describes a sound track with: how many channels
+/// and at what rate, and then the language it is in.
+///
+/// **The language is only written where there is one.** A broadcast does not
+/// say, and a track whose language is unknown was going out as three zero
+/// bytes -- a language field filled in with nothing, in an entry a byte
+/// longer than either reference disc writes. Both of them stop after the
+/// channels and the rate, and pad to an even length; so does this, where
+/// there is nothing to say. A cut off a disc does know the language -- it is
+/// in the index it came from -- and there the field goes in.
 fn audio_attributes(a: &crate::AudioInfo) -> Vec<u8> {
     let channels = match a.channels {
         0 | 1 => 1,
@@ -1047,7 +1083,11 @@ fn audio_attributes(a: &crate::AudioInfo) -> Vec<u8> {
         _ => 1,
     };
     let mut out = vec![(channels << 4) | rate];
-    out.extend_from_slice(&language_attribute(a.language.as_deref()));
+    match a.language.as_deref().filter(|l| !l.trim().is_empty()) {
+        Some(language) => out.extend_from_slice(&language_attribute(Some(language))),
+        // The byte both reference discs pad theirs out with.
+        None => out.push(0x00),
+    }
     out
 }
 
@@ -1062,10 +1102,11 @@ fn audio_attributes(a: &crate::AudioInfo) -> Vec<u8> {
 /// definition nobody else's.
 fn clpi(clip: &Clip) -> Vec<u8> {
     let mut info = Vec::new();
-    // Reserved, then the kind of stream this is (1, a transport stream) and
-    // what it is for. Both reference discs say 0 there, which is what this
-    // says: 1 was read off neither of them.
-    info.extend_from_slice(&[0x00, 0x00, 0x01, 0x00]);
+    // Reserved, then the kind of stream this is -- 1, a transport stream --
+    // and what it is for. 2 is what a recorder's own disc says, on all
+    // sixteen clips of the four read here; the authoring tool's discs say 0,
+    // and 0 is what this said until the recorder's were measured.
+    info.extend_from_slice(&[0x00, 0x00, 0x01, 0x02]);
     // Reserved, and the flag that would say the clip's arrival clock is
     // offset from its neighbour's -- which is a thing only a disc written in
     // several sittings has.
@@ -1075,28 +1116,43 @@ fn clpi(clip: &Clip) -> Vec<u8> {
     info.extend_from_slice(&[0u8; 128]);
     // The block that says which stream this was and who wrote it.
     //
-    // Both discs here that fill it in -- one a recorder's, one an authoring
-    // tool's, sixteen years apart -- fill it in the same way: the flags byte
-    // 0x7C, an unexplained 0x04, the transport stream and the service the
-    // recording came off, and the country, which on both of them is Japan
-    // and here is written as Japan too -- the rest of these files is ARIB
-    // from end to end, down to the text in the playlist. The flags are
-    // copied whole rather than reasoned about, because what each bit stands
-    // for is not written down anywhere this program can reach, and both of
-    // those discs write 0x7C while leaving the format id zero, which is what
-    // this does too.
+    // ```text
+    //   0  which of the fields below are filled in
+    //   1  the format this came in                4 bytes
+    //   5  the network it came off                2
+    //   7  the transport stream it was on         2
+    //   9  the service on it                      2
+    //  11  the country                            3
+    //  14  who wrote the disc                    16, padded with 0xFF
+    // ```
+    //
+    // The three discs here that fill it in -- two an authoring tool's, one a
+    // recorder's, sixteen years apart -- agree on the shape and differ on
+    // how much they vouch for: 0x7C on the tool's, which fills in the stream
+    // and the service, and 0x64 on the recorder's, which leaves both at 0xFF
+    // and says so. The flags are copied rather than reasoned about, because
+    // what each bit stands for is not written down anywhere this program can
+    // reach. The country on all three is Japan, and here it is Japan too --
+    // the rest of these files is ARIB from end to end, down to the text in
+    // the playlist.
+    //
+    // **The network is the recording's own.** It was 0x0004 here until the
+    // recorder's discs were read: the authoring tool's two are both of a
+    // satellite broadcast, where 4 is the answer, and copying it wrote
+    // "satellite" onto every terrestrial recording this ever put on a disc.
+    // The recorder's discs carry the network they came off, and so does this.
     //
     // A cut with no tables behind it -- one out of an MP4 -- has no ids to
     // put here, and then the block says so: flags clear, and the fields it
     // would vouch for left at zero, which is what this wrote before 0.5.13.
     //
     // The name of the tool is not a claim about the recording, so it goes in
-    // either way. Sixteen bytes, padded out with the same 0xFF the two discs
+    // either way. Sixteen bytes, padded out with the same 0xFF the discs
     // that carry a name pad theirs with.
     let mut about = vec![0u8; 30];
     if (clip.tsid, clip.service_id) != (0, 0) {
         about[0] = 0x7C;
-        about[6] = 0x04;
+        about[5..7].copy_from_slice(&clip.network_id.to_be_bytes());
         about[7..9].copy_from_slice(&clip.tsid.to_be_bytes());
         about[9..11].copy_from_slice(&clip.service_id.to_be_bytes());
         about[11..14].copy_from_slice(b"JPN");
@@ -1128,7 +1184,9 @@ fn clpi(clip: &Clip) -> Vec<u8> {
     program.extend_from_slice(&0u32.to_be_bytes());
     program.extend_from_slice(&clip.pmt_pid.to_be_bytes());
     program.push(clip.streams.len() as u8);
-    program.push(0x00);
+    // Reserved, and 1 on every disc read here -- the recorder's and the
+    // authoring tool's alike. This wrote 0 until they were compared.
+    program.push(0x01);
     for s in &clip.streams {
         program.extend_from_slice(&s.pid.to_be_bytes());
         program.push(1 + s.attributes.len() as u8);
@@ -1139,7 +1197,13 @@ fn clpi(clip: &Clip) -> Vec<u8> {
     let cpi = ep_map(clip);
 
     let mut out = Vec::new();
-    out.extend_from_slice(b"M2TS0100");
+    // The version a recorder's own clip index and playlist both carry. The
+    // authoring tool's discs say 0100, which is what this said; nothing here
+    // reads the number back -- our own reader takes either, and so does
+    // everything that has been shown these discs -- so the recorder's is
+    // written, being the newer of the two. The disc's own index keeps 0100,
+    // which is what the recorder writes there.
+    out.extend_from_slice(b"M2TS0110");
     let head = 40;
     let sequence_at = head + 4 + info.len();
     let program_at = sequence_at + 4 + sequence.len();
@@ -1271,12 +1335,20 @@ fn rpls(clip_name: &str, clip: &Clip, rec: &Recording) -> Vec<u8> {
     marks.extend_from_slice(&(rec.marks.len() as u16).to_be_bytes());
     for at in &rec.marks {
         let mut entry = [0u8; MARK];
-        // The first four bytes and the four after the time are copied from a
-        // disc a real tool wrote; what they mean is not written down
-        // anywhere this program can reach, and a player has demonstrably
-        // accepted them. The play item, the time and the length of the entry
-        // are this program's own.
-        entry[..4].copy_from_slice(&[0x05, 0x00, 0x02, 0x12]);
+        // What kind of mark this is, and then the maker who wrote it -- the
+        // two bytes a playlist of several clips is read past to reach the
+        // play item, which is why this program's own reader knows where they
+        // are ([`crate::disc`]).
+        //
+        // Both were copied whole out of an authoring tool's disc until a
+        // recorder's own were read: `05 00 02 12`, which put that tool's
+        // maker number on every mark this ever wrote. A recorder writes
+        // `04 00 01 08` on each of its chapter points -- 4, and its own
+        // maker -- and one `01` where the viewer stopped watching. So the
+        // kind is now the recorder's, and the maker is nought: this program
+        // has no number of its own, and nothing follows it in the entry that
+        // a maker would have to be asked about.
+        entry[..4].copy_from_slice(&[0x04, 0x00, 0x00, 0x00]);
         let when = clip.start as f64 + at * TICK;
         entry[6..10].copy_from_slice(&(when.max(0.0) as u32).to_be_bytes());
         entry[10..14].copy_from_slice(&[0xFF; 4]);
@@ -1286,7 +1358,7 @@ fn rpls(clip_name: &str, clip: &Clip, rec: &Recording) -> Vec<u8> {
     // The description the playlist opens with, written at its own offsets
     // into a field of the size both real discs give it.
     let mut out = vec![0u8; LIST_AT];
-    out[..8].copy_from_slice(b"PLST0100");
+    out[..8].copy_from_slice(b"PLST0110");
     // The six bytes in front of the date are the same on both of those
     // discs, eighteen years and two unrelated tools apart, and what they
     // mean is not written down anywhere this program can reach. Copying a
@@ -1432,6 +1504,7 @@ mod tests {
             start: 20842,
             end: 20842 + 45000 * 30,
             video_pid: 0x1001,
+            network_id: 0x0004,
             tsid: 0x40D1,
             service_id: 0x00D3,
             streams: vec![
@@ -1483,7 +1556,7 @@ mod tests {
             ran: Some(30 * 60),
         };
         let raw = rpls("00001", &clip(), &rec);
-        assert_eq!(&raw[..8], b"PLST0100");
+        assert_eq!(&raw[..8], b"PLST0110");
         // The addresses in the header point at sections that are there.
         let list_at = u32::from_be_bytes(raw[8..12].try_into().unwrap()) as usize;
         let marks_at = u32::from_be_bytes(raw[12..16].try_into().unwrap()) as usize;
@@ -1559,10 +1632,11 @@ mod tests {
                 pauses += 1;
             }
         }
-        // Two of the four milliseconds are room, so the stream stops about
-        // every other one: fewer than one stop per packet, more than one for
-        // the run.
-        assert!((2..50).contains(&pauses), "{pauses} stops in the run");
+        // Half the run is room, so a stretch comes to about four packets and
+        // the stream stops about every fourth one -- which on 900 packets is
+        // in the low hundreds: well short of a stop per packet, and far more
+        // than one for the run. See [`PAUSE`].
+        assert!((100..400).contains(&pauses), "{pauses} stops in the run");
     }
 
     /// The buckets a picture's length falls in, at the boundaries a disc was
@@ -1621,7 +1695,7 @@ mod tests {
     #[test]
     fn the_clip_index_reads_back() {
         let raw = clpi(&clip());
-        assert_eq!(&raw[..8], b"M2TS0100");
+        assert_eq!(&raw[..8], b"M2TS0110");
         let program_at = u32::from_be_bytes(raw[12..16].try_into().unwrap()) as usize;
         // One program sequence, whose map is on the PID a Blu-ray puts it
         // on, and the three streams it names.

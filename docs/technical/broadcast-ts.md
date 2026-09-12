@@ -79,9 +79,20 @@ gigabytes — so a cut spanning a programme boundary describes both programmes. 
 clock in the TOT is moved on as the output runs; left as the snapshot it would name
 the same second for the length of the file.
 
-The conditional access descriptor (0x09) is the one thing not carried across. The
-output is not scrambled and has no ECM stream, so restating it would be describing a
-file that does not exist.
+Two descriptors are not carried across: the conditional access descriptor (0x09) and
+ARIB's own version of it, the access control descriptor (0xF6). Both say which system
+scrambles the service and which PID the entitlement messages arrive on. The output is
+not scrambled and has no ECM stream, so restating either would be describing a file
+that does not exist — and 0xF6 arrives twice on a Japanese broadcast, once in the
+programme loop and once beside the captions. A disc written with them left in
+announced an ECM stream on a PID the disc does not have, in a file nothing had
+scrambled; neither of the reference discs carries one.
+
+The network information table is read for one thing only, and not carried at all:
+**which button on a remote control the recording came off**. It is in the transport
+stream information descriptor (0xCD) there and nowhere else, and without it the three
+digits a viewer knows a terrestrial channel by cannot be worked out. See
+[Writing a disc](bdav.md#the-channels-number).
 
 ## The map is not fixed for the length of a recording
 

@@ -85,6 +85,7 @@ there, the recording is **added** to it.
 |---|---|
 | `--bdav FOLDER` | Write a BDAV disc into this folder (one recording becomes `BDAV/STREAM/00001.m2ts`). The index is built afterwards |
 | `--iso 2.50\|2.60` | Wrap the finished disc in an `.iso` beside it: `--bdav ~/disc` writes `~/disc/BDAV` and `~/disc.iso`. The folder stays |
+| `--iso-access read-only\|overwritable` | What the image says may be done to the disc it is burned onto. `read-only`, the default, is the truth about a disc nothing will write to again — a BD-R, or a BD-RE you only play. `overwritable` is what a recorder writes on a BD-RE, and what it wants to see before it will add a recording to the disc or take one off. Needs `--iso` |
 | `--iso-only` | And then take the folder away, leaving the image on its own. Needs `--iso`: the image is made *of* the folder, so the folder is written first and goes once the image holds it. What goes is `BDAV`, and the folder above it only where that leaves it empty — a disc written into a folder of your own leaves everything else in it alone |
 | `--disc-title NAME` | What the disc is called. Left out, the series the recording is an episode of: the programme name with the episode number, the episode's own title and the broadcast's marks taken off it |
 | `--programme NAME` | What this recording is called in the disc's index. Left out, the name its playlist gave it if it came off a disc, otherwise the programme name the broadcast carries |

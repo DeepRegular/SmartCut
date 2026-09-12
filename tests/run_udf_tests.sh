@@ -54,10 +54,12 @@ for rev in 2.50 2.60; do
 
   echo "UDF $rev"
   # Layer one: the descriptors a reader finds before it finds anything else.
-  # An anchor at 256 and an anchor at the last sector; a drive that cannot
-  # read one reads the other, and a reader that finds neither finds no disc.
+  # An anchor at 256, one at the last sector and one 256 back from it; a
+  # drive that cannot read one reads another, and a reader that finds none of
+  # the three finds no disc. All three is what a recorder writes.
   sectors=$(field "$s" sectors)
-  same "  an anchor at each end" "256,$((sectors - 1))" "$(field "$s" anchors)"
+  same "  an anchor in each of the three places" \
+       "256,$((sectors - 257)),$((sectors - 1))" "$(field "$s" anchors)"
   same "  the revision asked for" "$rev" "$(field "$s" udf_revision)"
   # 2.50 is what the metadata partition arrived in, so it is the oldest
   # reader that can be expected to open either.
@@ -82,15 +84,20 @@ for rev in 2.50 2.60; do
   same "  no stale file identifiers" "0" "$(field "$s" deleted_ids)"
   # The length field of an allocation descriptor is thirty bits, so an extent
   # stops short of a gigabyte whatever the file is.
+  # A Blu-ray is written in 64 KB clusters, so an extent stops at the last
+  # whole cluster inside that: 524,256 blocks, which is what a recorder's own
+  # image uses. Anything longer either overruns the field or ends inside a
+  # cluster, and then every extent after it begins inside one.
   longest=$(field "$s" longest_extent)
-  if [ "$longest" -le 524287 ]; then
+  if [ "$longest" -le 524256 ] && [ $((longest % 32)) -eq 0 ]; then
     ok "  no extent overruns its length field" "$longest blocks"
   else
     bad "  no extent overruns its length field" "$longest blocks"
   fi
-  # A Blu-ray is written in 64 KB clusters and read in them; a stream that
-  # begins inside one is a stream every read of which straddles two.
+  # A Blu-ray is read in those clusters too; a stream that begins inside one
+  # is a stream every read of which straddles two.
   same "  the streams begin on a cluster" "yes" "$(field "$s" stream_starts_aligned)"
+  same "  and end on one" "yes" "$(field "$s" stream_runs_aligned)"
 
   # Layer three: the image holds the disc it was made of, byte for byte.
   # Sizes read out of the file entries against the folder the image was made

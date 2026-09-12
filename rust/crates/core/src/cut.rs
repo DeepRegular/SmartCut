@@ -2685,12 +2685,24 @@ fn reencode_segment(
 /// [mpegts] PID 256 cannot be both elementary and PMT PID
 /// ```
 ///
-/// So a `.m2ts` is numbered the way a Blu-ray is numbered: the pictures on
-/// 0x1011, the sound from 0x1100, and everything else from 0x1200. That is
+/// So a `.m2ts` is numbered the way a Blu-ray is numbered: the clock on
+/// 0x1001, the pictures on 0x1011, the sound from 0x1100, a broadcast's own
+/// captions from 0x1110, and the subtitles a disc draws from 0x1200. That is
 /// where a disc player looks, it is what the disc's index will say the clip
 /// carries ([`crate::bdav`]), and the recording's own tables still describe
 /// each stream -- they are written over the muxer's with the streams named
-/// by where they went rather than where they came from.
+/// by where they went rather than where they came from. The clock is the one
+/// of those the muxer will not do; see [`crate::si::graft`].
+///
+/// **The two kinds of subtitle do not share a run.** 0x1200 upwards is the
+/// range Blu-ray keeps for the graphics it draws itself, and that is what
+/// goes there: a presentation graphics stream, declared as one. A
+/// broadcast's own captions are not that -- they are a data stream in a
+/// private format, and numbering them into the graphics range had them
+/// announced as something nothing can read them as. A recorder's own disc
+/// puts its captions at 0x1110, inside the range the sound is numbered from,
+/// and this does the same. Written into one run, as this did before, a
+/// recording carrying both had the second kind numbered after the first.
 struct Pids {
     moved: Vec<(i32, i32)>,
 }
@@ -2702,12 +2714,15 @@ impl Pids {
     }
 
     /// Blu-ray's numbering, in the order the streams will be written.
-    fn bluray(video: i32, audios: &[i32], others: &[i32]) -> Pids {
+    fn bluray(video: i32, audios: &[i32], captions: &[i32], graphics: &[i32]) -> Pids {
         let mut moved = vec![(video, 0x1011)];
         for (i, pid) in audios.iter().enumerate() {
             moved.push((*pid, 0x1100 + i as i32));
         }
-        for (i, pid) in others.iter().enumerate() {
+        for (i, pid) in captions.iter().enumerate() {
+            moved.push((*pid, 0x1110 + i as i32));
+        }
+        for (i, pid) in graphics.iter().enumerate() {
             moved.push((*pid, 0x1200 + i as i32));
         }
         Pids { moved }
@@ -3473,12 +3488,32 @@ fn graft_tables(
     output: &str,
     tables: crate::si::Tables,
 ) -> Result<crate::si::Stats> {
+    // A disc's own stream says once, on the pictures, that the stream types
+    // in its map are Blu-ray's. A recorder writes it; a broadcast has no
+    // reason to, so where the cut is a disc's it is added here. The same two
+    // bytes the clip index will carry about the same stream go in with it,
+    // which is what a recorder's own disc puts there.
+    let registration = if pids.moved.is_empty() {
+        Vec::new()
+    } else {
+        crate::si::hdmv_registration(
+            service
+                .stream(pids.out(video_pid) as u16)
+                .or_else(|| service.stream(video_pid as u16))
+                .map_or_else(
+                    || crate::bdav::video_coding(&src.video.codec),
+                    |es| es.stream_type,
+                ),
+            &crate::bdav::video_attributes(&src.video),
+        )
+    };
     let mut streams = vec![crate::si::GraftStream {
         pid: pids.out(video_pid) as u16,
         was: video_pid as u16,
         faithful: true,
         declared: None,
         language: None,
+        extra: registration,
     }];
     for setup in setups {
         streams.push(crate::si::GraftStream {
@@ -3491,6 +3526,7 @@ fn graft_tables(
             faithful: setup.downmix.is_none() && !setup.recoded,
             declared: setup.recoded.then(|| declared_as(setup.target)).flatten(),
             language: setup.info.language.clone(),
+            extra: Vec::new(),
         });
     }
     for c in captions {
@@ -3500,6 +3536,7 @@ fn graft_tables(
             faithful: true,
             declared: None,
             language: c.language.clone(),
+            extra: Vec::new(),
         });
     }
     // The disc's own subtitles are declared here rather than left to
@@ -3523,6 +3560,7 @@ fn graft_tables(
                 program_info: vec![0x05, 0x04, b'H', b'D', b'M', b'V'],
             }),
             language: g.language.clone(),
+            extra: Vec::new(),
         });
     }
     // A DVD's subtitles converted into that same kind, which the map has to
@@ -3540,6 +3578,7 @@ fn graft_tables(
                 program_info: vec![0x05, 0x04, b'H', b'D', b'M', b'V'],
             }),
             language: c.language.clone(),
+            extra: Vec::new(),
         });
     }
 
@@ -3698,12 +3737,13 @@ pub fn cut_with_progress(
         Pids::bluray(
             video_pid,
             &audios.iter().map(|a| a.pid).collect::<Vec<_>>(),
-            &captions
+            &captions.iter().map(|c| c.pid).collect::<Vec<_>>(),
+            &graphics
                 .iter()
-                .map(|c| c.pid)
-                .chain(graphics.iter().map(|g| g.pid))
-                // A converted subtitle stream is numbered with the rest of
-                // them, from the id the disc knew it by. See [`Subtitles`].
+                .map(|g| g.pid)
+                // A converted subtitle stream is drawn the way a disc draws
+                // one, so it is numbered with those, from the id the disc
+                // knew it by. See [`Subtitles`].
                 .chain(
                     inside
                         .then(|| subpictures.iter().map(|s| s.id))
@@ -3808,6 +3848,29 @@ pub fn cut_with_progress(
             if t.service_type > 0 {
                 muxer_opts.set("mpegts_service_type", &service_type);
             }
+        }
+        // How often the list of programmes and the map go out, on a disc.
+        //
+        // **A tenth of a second is the ceiling, not the target.**
+        // libavformat's default is the ceiling itself, and asking for the
+        // ceiling is how it gets missed: the muxer writes the pair when the
+        // next *frame* falls due after the interval, and the arrival times a
+        // disc is written at stretch the wait further. Measured on two discs
+        // written that way, the map came every 100 milliseconds on average
+        // and as much as 147 apart, which is over. The recorder's own disc
+        // runs at 36 and never reaches 100; the authoring tool's at 80 and
+        // never reaches 81.
+        //
+        // Asking for a fiftieth is asking for "every frame", which on the
+        // same material comes to 33 and never reaches 79 -- between the two
+        // discs, and the recorder's own rate almost exactly. It costs the
+        // pair twice over per frame, which is 0.4% of a disc.
+        //
+        // Only on a disc's own stream: a `.ts` cut is meant to be the
+        // recording it came from, and a broadcast repeats its tables at the
+        // rate a broadcast repeats them.
+        if writing_m2ts(output) {
+            muxer_opts.set("pat_period", "0.02");
         }
     }
     // Note: muxer options belong to `write_header`, not to opening the file --
@@ -4751,8 +4814,9 @@ pub fn cut_with_progress(
         ) {
             Ok(stats) if std::env::var("SMARTCUT_DEBUG").is_ok() => {
                 eprintln!(
-                    "  tables: {} map, {} service, {} event, {} clock, {} selection",
-                    stats.pmt, stats.sdt, stats.eit, stats.tot, stats.sit
+                    "  tables: {} list, {} map, {} service, {} event, {} clock, \
+                     {} selection; {} clock references given a PID of their own",
+                    stats.pat, stats.pmt, stats.sdt, stats.eit, stats.tot, stats.sit, stats.pcr
                 );
             }
             Ok(_) => {}
