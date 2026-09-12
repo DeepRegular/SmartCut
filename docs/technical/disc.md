@@ -737,9 +737,18 @@ group short at either end. What the map does give is the rate — how many bytes
 of this stretch a second of it takes — and the bytes past the last entry point,
 read at that rate, are how much longer the stretch goes on. Neither witness is
 overruled: whichever says the stretch is wider is the one taken, so nothing a
-play item plays falls outside, and no stretch lands on top of the one before
-it. The first stretch is left where it is, so a clip read from the front reads
-at the times it always did.
+play item plays falls outside. The first stretch is left where it is, so a clip
+read from the front reads at the times it always did.
+
+**What neither witness covers is the material either side of what is played.**
+A play item's IN is a picture; the sound at that moment began a frame or two
+before it, and the file holds those frames. Given a place that begins at the
+picture, they land behind the end of the stretch in front, where the output
+timeline has already been written, and the cut leaves them out. Measured on the
+recording here, a seam costs 8 sound frames on each track and 3 pictures. The
+instants themselves are covered by the stretch in front of them, so what is
+left out is the second account of them and not a hole — which is what the note
+at the end of a cut now says. It used to say the recording was damaged.
 
 The row is then the whole clip under the plain name it always had:
 

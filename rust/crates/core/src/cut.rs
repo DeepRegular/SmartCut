@@ -4614,11 +4614,21 @@ pub fn cut_with_progress(
         );
     }
     if writer.skipped > 0 {
+        // Two things hand pictures over in an order the output timeline cannot
+        // take, and which one it was is known here: a recording read as
+        // several stretches joined says so, and nothing else does.
         eprintln!(
-            "note: {} picture(s) could not be placed on the output timeline -- a damaged \
-             recording hands them over out of any order a decoder could restore -- and were \
+            "note: {} picture(s) could not be placed on the output timeline -- {} -- and were \
              left out of the {} written.",
-            writer.skipped, writer.written,
+            writer.skipped,
+            if src.joins.is_empty() {
+                "a damaged recording hands them over out of any order a decoder could restore"
+            } else {
+                "where a recorder stopped and started, the stretch on one side of the join \
+                 presents a little past the place the disc's index gives the next, and a \
+                 picture landing behind one already written has nowhere to go"
+            },
+            writer.written,
         );
     }
 
@@ -4634,16 +4644,28 @@ pub fn cut_with_progress(
         }
     }
 
-    // What a damaged recording cost the sound, said once per track rather
-    // than once per frame.
+    // What a damaged recording -- or a join -- cost the sound, said once per
+    // track rather than once per frame.
     for t in &writer.audio {
         if t.dropped == 0 {
             continue;
         }
+        let (why, cost) = if src.joins.is_empty() {
+            (
+                "which is what damage does to a recording's timestamps",
+                "The sound there was lost with the packets that carried it.",
+            )
+        } else {
+            (
+                "which is what a join does, where the sound of one stretch runs past the \
+                 place the disc's index gives the next",
+                "Those instants are covered by the stretch in front of them; what was left \
+                 out is the second account of them.",
+            )
+        };
         eprintln!(
-            "note: {} frame(s) of the sound on {} do not follow the frame before them -- which \
-             is what damage does to a recording's timestamps -- and were left out. The sound \
-             there was lost with the packets that carried it.",
+            "note: {} frame(s) of the sound on {} do not follow the frame before them -- {why} \
+             -- and were left out. {cost}",
             t.dropped,
             crate::track_name(writer.on_a_ts, t.info.pid, t.info.stream_index),
         );
