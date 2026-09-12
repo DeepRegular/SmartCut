@@ -65,6 +65,12 @@ check() {
   else
     bad "$name size" "$size bytes from $from"
   fi
+  # A proxy of half an hour of broadcast is a couple of gigabytes, and the two
+  # here came to 3.1 GB of the 3.9 GB the dev VM's /tmp holds. Left behind,
+  # every suite run after this one failed for want of room and said only that
+  # the cutter had failed. Nothing here needs the file once it has been read,
+  # and a run that fails is a run to make again.
+  rm -f "$proxy"
 }
 
 echo "proxy stands in for the recording"
