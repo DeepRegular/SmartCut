@@ -162,13 +162,19 @@ applies to this material, and `CM 2` means two commercial blocks were found.
 | | |
 |---|---|
 | **Double-click** / `Enter` | Open that recording in the cut editor |
+| `F2` | Rename the clip |
 | `Ctrl+A` | Select all |
 | `Ctrl+D` | Detect commercials in the selection |
 | `Delete` | Remove it from the list (**the file itself is not touched**) |
 | `↑` `↓` | Move the selection. Hold `Shift` to extend it |
 | **Drag a row** | Reorder. `Esc` cancels |
+| **Click where there is no row** | Clear the selection |
 | **Right-click** | The commands for that row, as a menu |
 | **⧉ Duplicate clip** | Put the same recording in the list twice. Cuts and marks come with it |
+
+**What you add arrives selected**, and whatever was selected before is not. Drop
+three recordings onto a list of twenty and you can detect, reorder or rename
+those three without finding them again.
 
 **The picture on the left follows the cuts.** Recordings tend to start on black
 or on the tail of the previous programme, so the picture is taken a little way
@@ -176,7 +182,17 @@ in — and, once there are cuts, a little way into *what survives*. A row whose
 commercials have been cut never goes on showing one of them.
 
 **Rows can be dragged into a different order.** The export runs down the list,
-so move whatever you want written first to the top.
+so move whatever you want written first to the top. Where that order itself means
+something, **Number** in the output settings carries it into the filenames.
+
+**A clip can be renamed:** `F2`, the **Rename clip** button, or the right-click
+menu. The name on the row becomes a field where it stands. `Enter` keeps it,
+`Esc` drops it, and emptying it goes back to the name the row arrived with.
+
+The name is used wherever the row is named — the list, the cut editor's header,
+and **the file a cut of it is written to**. Characters a filesystem will not take
+(`? : /` and the like) become their full-width forms. On a BDAV disc it is the
+programme name too, unless the output screen has been given one.
 
 **Duplicating** is for a two-hour recording that contains two programmes: the
 same file on two rows, each written out over a different range. The output
@@ -454,7 +470,8 @@ What is set on either tab stays there when you switch.
 |---|---|
 | **Output folder** | Empty means alongside the input. Use `Browse`, or type a path (an SMB path is fine) |
 | **Subfolder** | A folder of that name under the output folder, which is where the run writes. Offered where there is more than one file. Emptied, the run writes straight into the folder above |
-| **Filename prefix** | `cut_` by default, so `cut_recording.ts` |
+| **Filename prefix** | `cut_` by default, in front of the name. What it starts as is a [preference](#output-settings-1) |
+| **Number** | Puts the row's number in the list behind the prefix, in 2 to 4 digits. **On by default**, so `cut_01_recording.ts`; turned off, `cut_recording.ts`. For a list whose order means something and a folder that sorts by name |
 | **Container** | The file format. `Same as the input`, or a specific one |
 | **Audio** | `Smart rendering (default)` / `Copy through` / `Re-encode everything` |
 | **Audio codec** | `Same as the input`, or AAC, AC-3, DTS, linear PCM |
@@ -673,6 +690,11 @@ effect as you make it.
 
 ### Output settings
 
+**Filename prefix** and **Put the row's number in the list behind the prefix**
+(with its digits) are what the fields of the same name on the output screen start
+as; the number is on by default. Changing one here puts it into the settings in
+force as well. A project that is opened brings its own and wins.
+
 **Carry the output settings over to the next start** remembers them and puts
 them back at the next start and on **New project**: the folder, the file name
 prefix, the container, what is done to the audio, and which of file output and
@@ -743,6 +765,7 @@ can quote it straight into a bug report.
 | `Ctrl+S` / `Ctrl+Shift+S` | Save project / save as |
 | `Ctrl+O` | Open project |
 | `Enter` / double-click | Open the cut editor |
+| `F2` | Rename the clip |
 | `Delete` | Remove from the list |
 | `↑` `↓` (`Shift` to extend) | Move the selection |
 

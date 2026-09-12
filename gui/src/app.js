@@ -64,12 +64,21 @@ function copyNo(clip) {
   return same.length > 1 ? String(same.indexOf(clip) + 1) : "";
 }
 
+/// The name a row goes by: the one somebody typed over it, or the one it
+/// arrived with -- a filename, or what a disc's index called the programme.
+///
+/// A rename is held beside the arrival name rather than over it, which is what
+/// lets an emptied field mean "back to what it was called" rather than "called
+/// nothing". See `startRename`.
+const clipName = (clip) => clip.renamed || clip.name;
+
 /// What to call a row anywhere it is named to the user. Two duplicates share
 /// a filename, so the name alone stops identifying which one is meant the
 /// moment there are two of them.
 function clipLabel(clip) {
   const n = copyNo(clip);
-  return n ? t("list.copyLabel", { name: clip.name, n }) : clip.name;
+  const name = clipName(clip);
+  return n ? t("list.copyLabel", { name, n }) : name;
 }
 
 // --- the clip list ------------------------------------------------------
@@ -92,8 +101,8 @@ let nextId = 1;
 /// A path for a file, one of those for a recording on a disc, and a saved row
 /// out of a project, which is the same shape written down.
 function makeClip(found) {
-  const { path, name, stem, home, chapters, dropPids, made, description, channel,
-          channelNumber, programme } =
+  const { path, name, renamed, stem, home, chapters, dropPids, made, description,
+          channel, channelNumber, programme } =
     typeof found === "string" ? { path: found } : found;
   return {
     // A row's own identity, which its path is not: the same recording can be
@@ -103,6 +112,15 @@ function makeClip(found) {
     id: nextId++,
     path,
     name: name || nameOf(path),
+    /// What somebody renamed this row to, or null for the name it arrived
+    /// with.
+    ///
+    /// The row's answer and not the file's: two rows on one recording can be
+    /// called two things, which is half of what duplicating one is for. It is
+    /// what the row shows, what a cut of it is written as, and -- unless the
+    /// output screen has been told otherwise -- what a disc's index calls the
+    /// programme.
+    renamed: renamed || null,
     /// What a cut of it is called and where it goes, when the recording's own
     /// path cannot answer either. Null for an ordinary file.
     stem: stem || null,
@@ -262,7 +280,7 @@ let editing = null;
 let before = null;
 
 async function edit(clip) {
-  jlog(`edit ${clip.name} (${clip.state})`);
+  jlog(`edit ${clipName(clip)} (${clip.state})`);
   // A clip that could not be read has nothing to open. Anything else can be
   // opened whenever it is asked for -- the editor makes its own way through a
   // recording that has never been read, showing what it has got to as it
@@ -326,9 +344,10 @@ function tellEditor() {
   emit("editor-open", {
     id: editing.id,
     path: editing.path,
-    // What the row is called, which for a recording on a disc is the
-    // programme rather than `00001.m2ts`.
-    name: editing.name,
+    // What the row is called: what somebody renamed it to, and failing that
+    // what it arrived as -- which for a recording on a disc is the programme
+    // rather than `00001.m2ts`.
+    name: clipName(editing),
     // Where a keyframe list beside the recording would be, without the
     // extension. Beside the disc for a recording on one -- inside an image
     // there is nothing to be beside -- and under the same name a cut of it
@@ -457,7 +476,17 @@ async function addPaths(inputs) {
     clips.push(clip);
     taken.push(clip);
   }
+  // What has just arrived is what the next thing done to the list is about, so
+  // it is what is selected -- and whatever was selected before is not. Three
+  // recordings dropped onto a list of twenty are three rows to detect, move or
+  // rename, and finding them again afterwards is work the drop already did.
+  if (taken.length) {
+    clips.forEach((c) => (c.selected = false));
+    taken.forEach((c) => (c.selected = true));
+    anchor = clips.indexOf(taken[0]);
+  }
   renderList();
+  if (taken.length) taken[0].row.scrollIntoView({ block: "nearest" });
   // One at a time rather than a hundred at once: each is a stat on whatever
   // the recordings are on, and the answer is wanted before anyone looks at
   // the row rather than this instant.
@@ -1167,6 +1196,10 @@ function renderList() {
   // the list comes through here -- rows added, removed, reordered -- and a
   // menu still standing after one is a menu pointing at nothing.
   closeRowMenu();
+  // The field a row was being renamed in is about to be thrown away with the
+  // row it sits over, so what is in it is taken first: a name somebody has
+  // typed is kept, never lost to a row arriving somewhere else in the list.
+  endRename(true);
   const list = el("cliplist");
   list.innerHTML = "";
   for (const clip of clips) {
@@ -1485,6 +1518,9 @@ function clipActions() {
     // Anything but a clip that could not be read: the editor makes its own
     // way through one the list has not got to yet.
     edit: picked.length === 1 && picked[0].state !== "error",
+    // Any one row, whatever state it is in: what a row is called is the
+    // list's own answer and does not wait on a pass over the recording.
+    rename: picked.length === 1,
     duplicate: picked.length > 0,
     detect: picked.some((c) => c.state === "ready"),
     move: picked.length > 0,
@@ -1496,6 +1532,7 @@ function paintButtons() {
   const busy = running();
   const can = clipActions();
   el("edit-clip").disabled = !can.edit;
+  el("rename-clip").disabled = !can.rename;
   el("duplicate-clip").disabled = !can.duplicate;
   el("detect-selected").disabled = !can.detect;
   const queued = clips.some(
@@ -1527,8 +1564,8 @@ function paintProps() {
   if (!i) {
     box.textContent =
       c.state === "error"
-        ? t("props.error", { name: c.name, error: c.error })
-        : t("props.queued", { name: c.name });
+        ? t("props.error", { name: clipName(c), error: c.error })
+        : t("props.queued", { name: clipName(c) });
     return;
   }
   // Three of the lines here are the walk's alone -- where the lossless points
@@ -1550,7 +1587,7 @@ function paintProps() {
   const n = copyNo(c);
   const sound = audioOf(c);
   box.textContent = t("props.body", {
-    name: c.name,
+    name: clipName(c),
     copy: n ? t("props.copyOf", { n }) : "",
     path: c.path,
     codec: i.codec,
@@ -1593,6 +1630,19 @@ function pick(clip, ev) {
   }
   paintList();
 }
+
+// A press on the list where there is no row is a press on nothing, and that
+// is an answer rather than an accident: it lets twenty selected rows go
+// without having to find one of them to click on. The right button is left
+// out -- it opens the menu, and a menu about nothing is not worth clearing a
+// selection for.
+el("droptarget").addEventListener("mousedown", (ev) => {
+  if (ev.button !== 0 || ev.target.closest(".clip")) return;
+  if (!selected().length) return;
+  clips.forEach((c) => (c.selected = false));
+  anchor = -1;
+  paintList();
+});
 
 /// Put a second row on the same recording, carrying everything already known
 /// about it.
@@ -1713,6 +1763,119 @@ function move(dir) {
 el("move-up").addEventListener("click", () => move(-1));
 el("move-down").addEventListener("click", () => move(1));
 
+// --- 名前の変更 ----------------------------------------------------------
+//
+// A row is named after the file it came off, and for a broadcast recording
+// that name carries the date, the channel and the episode -- everything you
+// would need to find it again, which is why it is kept. It is not always the
+// name the *cut* wants: twelve recordings that are about to be twelve episodes
+// of one thing are a list whose useful names are 第1話 … 第12話, and nothing in
+// any of the files says so.
+//
+// So the name can be typed over, in the row itself rather than in a dialog:
+// F2 and a field where the name already is, which is what a file manager does
+// and where the eye already is. What is typed is the row's name everywhere the
+// row is named -- the list, the quick properties, the cut editor's header, the
+// file a cut of it is written to, and the programme on a disc's index unless
+// the output screen has been told otherwise.
+
+/// The row being renamed and the field it is being renamed in, or null.
+let renaming = null;
+
+/// Put a field over a row's name, with the name in it.
+///
+/// The row's own `.nm` line is hidden rather than replaced: it is what
+/// `paintRow` writes to, and a repaint arriving mid-rename -- the walk
+/// finishes, a detection reports -- must not have to know this is going on.
+function startRename(clip) {
+  if (!clip.row) return;
+  // Whatever was being renamed is settled first. Two fields open at once is
+  // two answers, and the one being left is the one somebody has finished with.
+  endRename(true);
+  const line = clip.row.querySelector(".nm");
+  if (!line) return;
+  const field = document.createElement("input");
+  field.type = "text";
+  field.className = "rename";
+  field.spellcheck = false;
+  // The name alone. What the row *shows* can carry a copy number as well --
+  // `録画.ts（2）` -- and that is the list telling two rows on one recording
+  // apart, not part of what either of them is called.
+  field.value = clipName(clip);
+  line.hidden = true;
+  line.parentNode.insertBefore(field, line);
+  renaming = { clip, field };
+  // The row may have been reached with the arrow keys, from off the screen.
+  clip.row.scrollIntoView({ block: "nearest" });
+  field.focus();
+  field.select();
+  // A press in the field is not a press on the row: the row would take it as
+  // the beginning of a drag, and the double click that selects a word in it
+  // would open the cut editor.
+  for (const kind of ["mousedown", "dblclick", "click"]) {
+    field.addEventListener(kind, (ev) => ev.stopPropagation());
+  }
+  field.addEventListener("keydown", (ev) => {
+    if (ev.key === "Enter") {
+      ev.preventDefault();
+      endRename(true);
+    } else if (ev.key === "Escape") {
+      ev.preventDefault();
+      endRename(false);
+    }
+    // Everything else is typing, and it stops here: the list's own keys are on
+    // the window, where Delete would take the row out from under the field.
+    ev.stopPropagation();
+  });
+  // Clicking away keeps it. The other way round -- a name thrown away by a
+  // click that landed somewhere else -- is the one outcome that loses work.
+  field.addEventListener("blur", () => endRename(true));
+}
+
+/// Take the field away, keeping what is in it or not.
+///
+/// A name that is empty, or that is the one the row arrived with, is not a
+/// rename: it is `renamed` being null again. So emptying the field undoes the
+/// rename rather than settling on a row called nothing.
+function endRename(keep) {
+  if (!renaming) return;
+  const { clip, field } = renaming;
+  // Let go of before the field does, because taking a focused field out of the
+  // page is a blur arriving straight back in here.
+  renaming = null;
+  const typed = keep ? field.value.trim() : null;
+  field.remove();
+  const line = clip.row && clip.row.querySelector(".nm");
+  if (line) line.hidden = false;
+  if (typed === null) return;
+  const was = clip.renamed;
+  clip.renamed = typed && typed !== clip.name ? typed : null;
+  if (clip.renamed === was) return;
+  paintRow(clip);
+  paintProps();
+  // A name is half of what a cut is written as, so both output screens were
+  // showing the old one.
+  renderOutset();
+  renderOutScreen();
+  // And the cut editor, if this row is open in it: the name is in its title
+  // bar and on its own header, and neither is something that window can work
+  // out for itself.
+  if (clip === editing) {
+    invoke("retitle_editor", { title: t("editor.windowTitle", { clip: clipLabel(clip) }) });
+    if (emit) emit("clip-renamed", { id: clip.id, name: clipName(clip) });
+  }
+  touch();
+}
+
+/// Rename whatever single row is selected. What F2, the button down the side
+/// and the item on the right button's menu all come to.
+function renameSelected() {
+  const one = selected();
+  if (one.length === 1) startRename(one[0]);
+}
+
+el("rename-clip").addEventListener("click", renameSelected);
+
 // --- the menu on the right button ---------------------------------------
 //
 // The clip commands again, under the pointer instead of down the side. Only
@@ -1736,6 +1899,7 @@ function closeRowMenu() {
 function openRowMenu(x, y) {
   const can = clipActions();
   el("row-edit").disabled = !can.edit;
+  el("row-rename").disabled = !can.rename;
   el("row-duplicate").disabled = !can.duplicate;
   el("row-detect").disabled = !can.detect;
   el("row-up").disabled = !can.move;
@@ -1762,6 +1926,10 @@ el("row-edit").addEventListener("click", () => {
   closeRowMenu();
   const one = selected();
   if (one.length === 1) edit(one[0]);
+});
+el("row-rename").addEventListener("click", () => {
+  closeRowMenu();
+  renameSelected();
 });
 el("row-duplicate").addEventListener("click", () => {
   closeRowMenu();
@@ -2058,6 +2226,19 @@ const settings = {
   /// happens after one was written: the folder is what the image is made of.
   imageOnly: false,
   prefix: "cut_",
+  /// Whether the row's place in the list goes into the name behind the
+  /// prefix, and in how many digits.
+  ///
+  /// The order of a list is an answer somebody gave -- two halves of a film in
+  /// the order they are played, twelve episodes in the order they are watched
+  /// -- and a folder sorted by name is where that answer is otherwise lost.
+  /// The digits are a string because that is what the control holding them
+  /// hands back; `seqNo` is where it becomes a number again.
+  ///
+  /// On, the same as the preference it starts from: the order of a list is
+  /// worth keeping more often than not.
+  number: true,
+  digits: "2",
   container: "",
   audio: "smart",
   /// Empty writes the recording's own codec back; anything else is a
@@ -2089,6 +2270,24 @@ const settings = {
 /// put them back. A project carries its output settings, so starting a new
 /// one from the last one's folder and prefix would be starting it half open.
 const SETTING_DEFAULTS = { ...settings };
+
+/// The three of them 環境設定 answers for, put into force.
+///
+/// What a cut is called is the one output setting that is as much about the
+/// person as about the work: somebody who writes `編集_` in front of every file
+/// writes it in front of the next one too. So the prefix and the number behind
+/// it have a standing answer in 環境設定 as well as the per-project one here,
+/// and this is where the standing answer becomes the project's -- at the start,
+/// on 新規作成, and on 既定に戻す, which is every moment the defaults are what
+/// is in force.
+///
+/// A project saved with its own answer is not one of those moments:
+/// `loadProject` writes what the file says over all three.
+function applyNameDefaults() {
+  settings.prefix = String(prefs.get("outPrefix") ?? SETTING_DEFAULTS.prefix);
+  settings.number = !!prefs.get("outNumber");
+  settings.digits = String(Number(prefs.get("outDigits")) || 2);
+}
 
 /// Which of them are worth carrying from one session to the next.
 ///
@@ -2142,12 +2341,85 @@ function sidecarBase(clip) {
   return `${dir}${clip.stem || stemOf(clip.path)}`;
 }
 
+/// Bytes, which is what a filesystem counts a name in. One encoder rather
+/// than one per character: this runs per character of every name on screen.
+const utf8 = new TextEncoder();
+
+/// The characters a filesystem will not take, and what they become.
+const FULLWIDTH = {
+  "\\": "＼", "/": "／", ":": "：", "*": "＊", "?": "？",
+  '"': "＂", "<": "＜", ">": "＞", "|": "｜",
+};
+
+/// A name somebody typed, as a file name.
+///
+/// The same turn `filename` in `disc.rs` does to a programme name off a disc,
+/// and for the same reason: the characters a filesystem will not take become
+/// their full width forms rather than being dropped, because `第1話？` still
+/// reads and `第1話` is a different name. A Japanese recorder does this with
+/// the same problem.
+///
+/// Empty for a name that was nothing but those -- or that was too long to
+/// have a first character, which cannot happen -- and the caller falls back
+/// to what the recording is called. The limit is in bytes, because that is
+/// what a filesystem counts, and a title in Japanese is three bytes a
+/// character.
+function fileSafe(name) {
+  const LIMIT = 180;
+  let out = "";
+  let used = 0;
+  for (const c of String(name)) {
+    const put = FULLWIDTH[c] ?? (c.codePointAt(0) < 0x20 ? " " : c);
+    const cost = utf8.encode(put).length;
+    if (used + cost > LIMIT) break;
+    out += put;
+    used += cost;
+  }
+  // Windows will not have a name that ends in a dot or a space, and no
+  // filesystem is improved by one.
+  return out.replace(/^[\s.\u3000]+|[\s.\u3000]+$/g, "");
+}
+
+/// What a cut of this clip is called, before the prefix and the number.
+///
+/// What somebody renamed the row to, where they did: a rename is about the cut
+/// as much as about the row, and a list renamed 第1話 … 第12話 that went on
+/// writing twelve files named after the transponder would be a rename that
+/// never reached the place it matters. Then the disc's answer, and then the
+/// recording's own file name.
+function outStem(clip) {
+  return fileSafe(clip.renamed || "") || clip.stem || stemOf(clip.path);
+}
+
+/// The row's place in the list, as a file name carries it -- `03_`, or "" where
+/// nobody asked for one.
+///
+/// Counted off the list rather than stored, so it is the number on the row:
+/// move a row and its file is renumbered with it. Every row counts, the ones
+/// still being read included -- the number beside a row and the number in its
+/// file name have to be the same number, and a list whose third row wrote
+/// `02_` because the second would not open is a list to be checked against the
+/// folder afterwards.
+///
+/// The underscore is the program's rather than a setting: a number run into the
+/// name (`cut_03第1話`) is the one shape of this nobody wants, and the prefix
+/// is where a different separator can be typed.
+function seqNo(clip) {
+  if (!settings.number) return "";
+  const digits = clamp(Number(settings.digits) || 2, 1, 6);
+  return `${String(clips.indexOf(clip) + 1).padStart(digits, "0")}_`;
+}
+
 /// Where a clip will be written, given the settings.
 ///
 /// Named after the recording it came from, in the folder chosen or beside
 /// it. A broadcast file's name carries the date, the channel and the episode
 /// -- everything you would need to find it again -- so throwing it away for
 /// "cut.ts" is a loss. The prefix is what says which one is the edit.
+///
+/// The number in front, where it was asked for, is the row's place in the list
+/// -- what the order of the list means is not recoverable from a folder sorted
+/// by name otherwise. See `seqNo`.
 ///
 /// Duplicated clips are numbered `_1`, `_2` in list order, because they came
 /// from one recording and would otherwise be one filename written twice --
@@ -2202,7 +2474,7 @@ function outputBase(clip) {
   // one that was typed, or the one the recording came out of. A batch left
   // to write beside its inputs is exactly the case that wants it.
   const dir = `${beneath(outDir() || beside)}/`;
-  return { dir, name: `${settings.prefix}${clip.stem || stemOf(clip.path)}`, ext };
+  return { dir, name: `${settings.prefix}${seqNo(clip)}${outStem(clip)}`, ext };
 }
 
 /// Which of the rows that would be written to the same file this one is,
@@ -2280,6 +2552,8 @@ bindSetting("out-disc-title", "discTitle");
 bindSetting("out-image", "image");
 bindSetting("out-image-only", "imageOnly", "checked");
 bindSetting("out-prefix", "prefix");
+bindSetting("out-number", "number", "checked");
+bindSetting("out-digits", "digits");
 bindSetting("out-container", "container");
 bindSetting("out-audio", "audio");
 bindSetting("out-audio-codec", "audioCodec");
@@ -3159,6 +3433,10 @@ async function readProgramme(clip) {
 /// something a person chose once.
 function programmeOf(clip) {
   if (clip.programme) return clip.programme;
+  // A row renamed in the list is a row somebody has named, which beats what
+  // the recording or the disc it came off says about itself. The field on the
+  // output screen still wins: that one is about the disc.
+  if (clip.renamed) return clip.renamed;
   if (clip.stem) return clip.name;
   const said = clip.said || {};
   return said.name || stemOf(clip.path);
@@ -3551,6 +3829,14 @@ function paintMode() {
   el("out-dir").placeholder = t(disc ? "outset.discHere" : "outset.sameAsInput");
 }
 
+/// How many digits, only while there is a number to write them in. Greyed
+/// rather than hidden: it sits inside the prefix row, and a control coming and
+/// going would move the field beside it under the hand.
+function paintNumbering() {
+  el("out-digits").disabled = !settings.number;
+  el("row-digits").classList.toggle("off", !settings.number);
+}
+
 // Chosen the way the screens themselves are chosen. The settings on either
 // side of the switch are kept, not cleared: coming back to a tab should find
 // what was left there.
@@ -3632,6 +3918,7 @@ function renderOutset() {
   lockUnwritable();
   fillBitrates();
   paintMode();
+  paintNumbering();
   const list = ready();
   const select = el("outset-clip");
   const was = select.value;
@@ -4520,6 +4807,9 @@ function captureProject() {
     settings: { ...settings },
     clips: clips.map((c) => ({
       path: c.path,
+      // What somebody renamed the row to. The one name in the list that
+      // nothing can work out again from the recording.
+      renamed: c.renamed || undefined,
       // What a disc's index said about it. Written down because reopening the
       // project must not have to read the disc again -- it may not be in the
       // drive -- and because a row that came back called `00001.m2ts` would
@@ -4581,6 +4871,7 @@ function shapeOf() {
     settings,
     clips: clips.map((c) => ({
       path: c.path,
+      renamed: c.renamed,
       dropPids: c.dropPids,
       programme: c.programme,
       edit: c.edit,
@@ -4726,6 +5017,7 @@ async function newProject() {
   // starts where the last one left off rather than at the program's idea of
   // a first run.
   for (const key of Object.keys(SETTING_DEFAULTS)) settings[key] = SETTING_DEFAULTS[key];
+  applyNameDefaults();
   restoreOutput();
   filledIn = null;
   showSettings();
@@ -4986,6 +5278,9 @@ function paintPrefs() {
   el("pref-lang").value = preference();
   el("pref-counter").checked = !!prefs.get("counter");
   el("pref-subs").checked = !!prefs.get("subsOn");
+  el("pref-prefix").value = String(prefs.get("outPrefix") ?? "");
+  el("pref-number").checked = !!prefs.get("outNumber");
+  el("pref-digits").value = String(Number(prefs.get("outDigits")) || 2);
   el("pref-keep-output").checked = !!prefs.get("keepOutput");
   el("pref-clean-joins").checked = !!prefs.get("cleanJoins");
   el("pref-proxy").checked = !!prefs.get("proxy");
@@ -4994,6 +5289,15 @@ function paintPrefs() {
   paintCacheDir();
   paintKeptOutput();
   paintProxyWidth();
+  paintPrefDigits();
+}
+
+/// The digits, only while a number is being put on at all. Hidden rather than
+/// greyed, which is what the proxy's width does one group along: these are
+/// rows of their own here, and a row that is not an answer to anything is a
+/// row to read past.
+function paintPrefDigits() {
+  el("row-pref-digits").hidden = !prefs.get("outNumber");
 }
 
 /// The width only means anything while a proxy is being built at all.
@@ -5082,6 +5386,32 @@ el("pref-subs").addEventListener("change", (ev) => {
   tellEditorPrefs();
 });
 
+// What a cut is called. Written into the settings in force as well as into
+// the store: this panel's answers take effect as they are given, and a default
+// that would only be seen at the next start is no answer at all to "what is
+// this run going to be called". The field on the output settings screen is
+// still free to disagree afterwards -- that one is about this project.
+el("pref-prefix").addEventListener("input", (ev) => {
+  prefs.set("outPrefix", ev.target.value);
+  settings.prefix = ev.target.value;
+  showSettings();
+  touch();
+});
+el("pref-number").addEventListener("change", (ev) => {
+  prefs.set("outNumber", ev.target.checked);
+  settings.number = ev.target.checked;
+  paintPrefDigits();
+  showSettings();
+  touch();
+});
+el("pref-digits").addEventListener("change", (ev) => {
+  const digits = Number(ev.target.value) || 2;
+  prefs.set("outDigits", digits);
+  settings.digits = String(digits);
+  showSettings();
+  touch();
+});
+
 el("pref-keep-output").addEventListener("change", (ev) => {
   prefs.set("keepOutput", ev.target.checked);
   // Turning it on settles what is to be carried at the moment it is turned
@@ -5092,6 +5422,10 @@ el("pref-keep-output").addEventListener("change", (ev) => {
 
 el("pref-forget-output").addEventListener("click", () => {
   for (const key of Object.keys(SETTING_DEFAULTS)) settings[key] = SETTING_DEFAULTS[key];
+  // The program's defaults for everything except what a cut is named, where
+  // 環境設定 is the default: it is on this very panel, and a button that put
+  // `cut_` back over the answer two rows above it would be arguing.
+  applyNameDefaults();
   filledIn = null;
   // Which writes the defaults back over what was being carried: from here on
   // that is what a restart restores, because it is what is now in force.
@@ -5353,6 +5687,11 @@ window.addEventListener("keydown", (ev) => {
     if (one.length === 1) edit(one[0]);
     return;
   }
+  if (ev.key === "F2") {
+    ev.preventDefault();
+    renameSelected();
+    return;
+  }
   if (ev.key === "ArrowDown" || ev.key === "ArrowUp") {
     ev.preventDefault();
     if (!clips.length) return;
@@ -5370,11 +5709,15 @@ noBrowserMenu();
 noNativeDrag();
 applyStatic();
 el("pref-lang").value = preference();
-// The output settings as the last session left them, where that is what was
-// asked for. Before the first draw rather than after it: the settings screen
-// is drawn from `settings`, and putting them back afterwards would show the
-// defaults for as long as it takes to redraw.
-if (restoreOutput()) showSettings();
+// What 環境設定 says a cut is named, and then the output settings as the last
+// session left them where that is what was asked for -- the carried answer is
+// the one this session was last used with, so it is the one that wins. Both
+// before the first draw rather than after it: the settings screen is drawn from
+// `settings`, and putting them back afterwards would show the defaults for as
+// long as it takes to redraw.
+applyNameDefaults();
+restoreOutput();
+showSettings();
 // The three readouts on the output screen that stand at rest until something
 // is written. Set here rather than marked up, so that a language change
 // during a run does not blank a summary that has just been printed.
@@ -5436,8 +5779,6 @@ tellBackend(invoke)
     retitleMain();
     const one = taken.length === 1 && taken[0];
     if (!one) return;
-    one.selected = true;
-    paintList();
     // Straight in, without waiting for the index: the editor builds what it
     // needs itself and shows the recording as it goes. Waiting was for when
     // the list had to have the disc to itself.

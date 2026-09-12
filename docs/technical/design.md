@@ -158,6 +158,25 @@ Output filenames gain `_1` and `_2` in list order when a recording is in the lis
 than once. Remove one copy and the survivor gets its plain name back, because the number
 is counted off the list each time rather than stamped on at duplication.
 
+### A row can be told what it is called
+
+A row is named after the file it came off, and that name is worth keeping: a broadcast
+filename carries the date, the channel and the episode. It is not always the name the
+*cut* wants. Twelve recordings that are about to be twelve episodes want 第1話 … 第12話,
+and nothing in any of the files says so. So `F2` puts a field over the name where it
+stands, which is what a file manager does.
+
+What is typed is held beside the arrival name rather than over it. That is what lets an
+emptied field mean "back to what it was called" rather than "called nothing", and it
+keeps a disc's own programme name recoverable after a rename.
+
+The name reaches everywhere the row is named: the list, the quick properties, the
+editor's header and window title, the file a cut of it is written to, and the programme
+on a BDAV index — where the output screen's own field still outranks it. On the way into
+a filename it goes through the same substitution `filename` in `disc.rs` does to a
+programme name off a disc: the characters a filesystem will not take become their full
+width forms, because `第1話？` still reads and `第1話` is a different name.
+
 ### Three lanes, and an editor that stays open
 
 There are three background lanes: **one walks the packets and builds the index, one
@@ -941,6 +960,14 @@ which is a list naming a container and its extension together — **Same as the 
 `MPEG-2 TS (.ts)` / `M2TS (.m2ts)` / `MP4 (.mp4)` / `Matroska (.mkv)` / `QuickTime (.mov)`.
 **A container per entry** rather than one "video" line, because choosing one is what swaps
 the extension; without that, the container would become "an extension you have to remember".
+
+**The order of the list goes into the names.** The row's number goes between the prefix
+and the name (`cut_01_…`) in two to four digits, which is on by default. That order is an
+answer somebody gave — two halves of a film, twelve episodes — and a folder sorted by name
+is where the answer is otherwise lost. It is the number *on the row*, counted off the list
+rather than off the run, so a row that will not open does not renumber the rows below it.
+The prefix and the number both have a standing answer in 環境設定, which is what a project
+starts from; this screen is where one project disagrees with it.
 
 TS output is verified on real material (60 seconds of terrestrial, **1798/1798 frames, 99.2%
 lossless, interlacing preserved**). The engine branches on the container name, and only the

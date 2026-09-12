@@ -88,6 +88,15 @@ const CATALOG = {
     "prefs.subsNote":
       "字幕を持つ録画でのみ有効です。編集中に切り替えられます。",
     "prefs.groupOut": "出力設定",
+    "prefs.prefix": "ファイル名の接頭辞:",
+    "prefs.prefixNote":
+      "新しいプロジェクトの初期値です。ここで変えると、いま開いている出力設定にも入ります。" +
+      "プロジェクトを開いたときは、そのプロジェクトの設定が優先されます。",
+    "prefs.number": "接頭辞のうしろに一覧の連番を付ける",
+    "prefs.numberNote":
+      "一覧の並び順を、書き出したファイル名に残します。番号は一覧に出ている行番号です。" +
+      "例: cut_03_録画.ts",
+    "prefs.digits": "連番の桁数:",
     "prefs.keepOutput": "出力設定を次回の起動に引き継ぐ",
     "prefs.keepOutputNote":
       "保存先・ファイル名・コンテナ・音声の扱いを保存し、次回の起動と新規作成時に復元します。" +
@@ -162,12 +171,14 @@ const CATALOG = {
     "input.dropHint.body":
       "「ファイルを追加」で選ぶか、ここへドラッグ＆ドロップしてください。<br />読み込んだ順にシーク用インデックスを作ります。",
     "input.dropHint.keys":
-      "ダブルクリックで編集　／　ドラッグで並べ替え　／　Ctrl+A 全選択　／　Ctrl+D 選択した動画の CM 検出　／　Delete 削除",
+      "ダブルクリックで編集　／　ドラッグで並べ替え　／　F2 名前を変更　／　Ctrl+A 全選択　／　" +
+      "Ctrl+D 選択した動画の CM 検出　／　Delete 削除",
     "side.fileInput": "ファイル入力",
     "side.addFiles": "＋　ファイルを追加",
     "side.clipEdit": "クリップ編集",
     "side.editClip": "✂　カット編集",
     "side.duplicate": "⧉　クリップを複製",
+    "side.rename": "名前を変更",
     "side.detect": "CM を検出",
     "side.stopBatch": "解析を中止",
     "side.resumeBatch": "解析を再開",
@@ -186,6 +197,7 @@ const CATALOG = {
     // menu items of which two are marked would read as though those two were
     // the special ones.
     "rowmenu.edit": "カット編集",
+    "rowmenu.rename": "名前を変更",
     "rowmenu.duplicate": "クリップを複製",
     "rowmenu.detect": "CM を検出",
     "rowmenu.moveUp": "上に移動",
@@ -292,6 +304,8 @@ const CATALOG = {
     "outset.sameAsInput": "（入力ファイルと同じ場所）",
     "outset.browse": "参照",
     "outset.prefix": "ファイル名の接頭辞:",
+    "outset.number": "連番",
+    "outset.digits": "桁数:",
     "outset.container": "コンテナタイプ(Y):",
     "outset.audio": "音声(A):",
     "outset.audioCodec": "音声コーデック:",
@@ -646,6 +660,15 @@ const CATALOG = {
     "prefs.subsNote":
       "Only for recordings that carry any. It can still be turned off while cutting.",
     "prefs.groupOut": "Output settings",
+    "prefs.prefix": "Filename prefix:",
+    "prefs.prefixNote":
+      "What a new project starts with. Changing it here puts it into the settings in force as well. " +
+      "A project that is opened brings its own and wins.",
+    "prefs.number": "Put the row's number in the list behind the prefix",
+    "prefs.numberNote":
+      "Carries the order of the list into the names that are written. The number is the one beside " +
+      "the row: cut_03_recording.ts",
+    "prefs.digits": "Digits in the number:",
     "prefs.keepOutput": "Carry the output settings over to the next start",
     "prefs.keepOutputNote":
       "Remembers the folder, the file name, the container and what is done to the audio, and puts them " +
@@ -720,12 +743,14 @@ const CATALOG = {
     "input.dropHint.body":
       "Pick them with “Add files”, or drag and drop them here.<br />Seek indexes are built in the order they arrive.",
     "input.dropHint.keys":
-      "Double-click to edit  /  drag to reorder  /  Ctrl+A select all  /  Ctrl+D detect commercials  /  Delete to remove",
+      "Double-click to edit  /  drag to reorder  /  F2 rename  /  Ctrl+A select all  /  " +
+      "Ctrl+D detect commercials  /  Delete to remove",
     "side.fileInput": "Files",
     "side.addFiles": "＋　Add files",
     "side.clipEdit": "Clip",
     "side.editClip": "✂　Cut editor",
     "side.duplicate": "⧉　Duplicate clip",
+    "side.rename": "Rename clip",
     "side.detect": "Detect commercials",
     "side.stopBatch": "Stop analysis",
     "side.resumeBatch": "Resume analysis",
@@ -738,6 +763,7 @@ const CATALOG = {
 
     // --- the menu on the right button --------------------------------------
     "rowmenu.edit": "Cut editor",
+    "rowmenu.rename": "Rename",
     "rowmenu.duplicate": "Duplicate clip",
     "rowmenu.detect": "Detect commercials",
     "rowmenu.moveUp": "Move up",
@@ -841,6 +867,8 @@ const CATALOG = {
     "outset.sameAsInput": "(the same folder as the input)",
     "outset.browse": "Browse",
     "outset.prefix": "Filename prefix:",
+    "outset.number": "Number",
+    "outset.digits": "digits:",
     "outset.container": "Container (Y):",
     "outset.audio": "Audio (A):",
     "outset.audioCodec": "Audio codec:",

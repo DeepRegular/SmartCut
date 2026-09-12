@@ -56,6 +56,28 @@ const DEFAULTS = {
   /// cached stays where it was written, which is the honest behaviour but
   /// worth saying on screen.
   cacheDir: "",
+  /// What a cut's filename begins with, as a project starts out.
+  ///
+  /// The answer in force belongs to the project -- it is on the output
+  /// settings screen and it is written into a `.scproj`, because a list
+  /// reopened next year should be written out the way it was settled. This is
+  /// what that field holds before anybody has touched it, which is the part
+  /// that is about the person rather than about the work: somebody who names
+  /// every cut `編集_` should not have to say so again at every start.
+  outPrefix: "cut_",
+  /// Whether the row's place in the list goes into the name behind the
+  /// prefix, and in how many digits.
+  ///
+  /// The order of a list is an answer somebody gave -- three episodes are in
+  /// the order they are watched, two halves of a film in the order they are
+  /// played -- and a folder sorted by name is where that answer is otherwise
+  /// lost. Same standing as the prefix: the default for a project, which the
+  /// output screen can then disagree with.
+  ///
+  /// On, because the order is nearly always worth keeping and a number in
+  /// front of a name that did not need one costs nothing to read past.
+  outNumber: true,
+  outDigits: 2,
   /// Whether the cut editor draws the subtitles over the picture from the
   /// moment a recording opens, rather than waiting to be asked each time.
   subsOn: false,

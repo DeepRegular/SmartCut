@@ -614,6 +614,15 @@ input[type="text"]::placeholder { color: var(--dim); }
 .clip .poster.blank { background: repeating-linear-gradient(45deg, #1a1a1a 0 6px, #141414 6px 12px); }
 .clip .meta { min-width: 0; }
 .clip .nm { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+/* The field a row's name is typed in: over the name itself, same line and same
+   width, so that renaming is editing what is there rather than answering a
+   dialog about it. The `.nm` line under it is hidden rather than replaced --
+   it is what a repaint writes to. */
+.clip .rename {
+  width: 100%; box-sizing: border-box;
+  font: inherit; color: var(--text); background: #141414;
+  border: 1px solid var(--sel); border-radius: 2px; padding: 0 3px;
+}
 .clip .sub, .clip .cm {
   font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
   font-variant-numeric: tabular-nums;
@@ -754,6 +763,14 @@ input[type="text"]::placeholder { color: var(--dim); }
    known by. Wide enough for four of them and no wider, so the row does not
    read as though a longer answer were expected. */
 .row input.narrow { flex: none; width: 5.5em; }
+/* 連番 and the digits it is written in, beside the prefix they go in front of.
+   Greyed rather than taken away while no number is being written: the three of
+   them are one row, and a control that came and went would move the field
+   beside it under the hand. */
+#row-prefix .seq { display: flex; align-items: center; gap: 5px; }
+#row-prefix .seq.off { opacity: 0.45; }
+#row-prefix .seq .lbl { min-width: 0; }
+#row-prefix select { flex: none; width: 4.2em; }
 /* A row whose control is taller than one line. The label sits at the top of
    it rather than halfway down the box. */
 .row.tall { align-items: flex-start; }

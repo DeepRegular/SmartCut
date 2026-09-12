@@ -40,6 +40,7 @@ smartcut friday.scproj
 A project saves **the things you decided**:
 
 - where each recording is (and the order you put them in)
+- any clip you renamed
 - the cuts and the keyframes (marks) you made in each one
 - which tracks you chose to write
 - the programme names and chapters read from a disc, and what a disc written

@@ -3277,6 +3277,16 @@ if (listen) {
     const said = ev.payload || {};
     if (typeof said.counter === "boolean") showCounter(said.counter, false);
   });
+  // A row renamed in the list while this window is up. The name is the list's
+  // to give -- it is the row that was renamed and not the recording -- so it
+  // arrives here rather than being worked out again, and only for the row this
+  // window is actually on.
+  listen("clip-renamed", (ev) => {
+    const said = ev.payload || {};
+    if (said.id !== editId) return;
+    shownName = said.name || null;
+    paintSourceInfo();
+  });
 }
 
 /// Everything this window has drawn out of the catalogue since it opened.

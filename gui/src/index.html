@@ -91,6 +91,11 @@
           <div class="side-head" data-i18n="side.clipEdit">クリップ編集</div>
           <button id="edit-clip" class="side-btn" data-i18n="side.editClip" disabled>✂　カット編集</button>
           <button id="duplicate-clip" class="side-btn" data-i18n="side.duplicate" disabled>⧉　クリップを複製</button>
+          <!-- What the row is called, which is not always what the file it
+               came off is called: a list that is about to be twelve episodes
+               is a list whose useful names are 第1話 … 第12話. Typed in the row
+               itself -- see `startRename`. -->
+          <button id="rename-clip" class="side-btn" data-i18n="side.rename" disabled>名前を変更</button>
           <button id="detect-selected" class="side-btn" data-i18n="side.detect" disabled>CM を検出</button>
           <!-- Its label is the one thing on this side that says what would
                happen rather than what the button is, so `paintButtons` writes
@@ -257,9 +262,24 @@
             <span data-i18n="outset.subfolder">サブフォルダー:</span>
             <input id="out-subfolder" type="text" data-i18n-ph="outset.subfolderNone" />
           </div>
+          <!-- The prefix, and the row's place in the list behind it. The
+               order of a list means something often enough -- two halves of a
+               film, twelve episodes -- and a folder sorted by name is where
+               that meaning is otherwise lost. Its starting answer is in
+               環境設定; this is where this project disagrees with it. -->
           <div class="row" id="row-prefix">
             <span data-i18n="outset.prefix">ファイル名の接頭辞:</span>
             <input id="out-prefix" type="text" value="cut_" />
+            <label class="opt"><input id="out-number" type="checkbox" />
+              <span data-i18n="outset.number">連番</span></label>
+            <span class="seq" id="row-digits">
+              <span class="lbl" data-i18n="outset.digits">桁数:</span>
+              <select id="out-digits">
+                <option value="2">2</option>
+                <option value="3">3</option>
+                <option value="4">4</option>
+              </select>
+            </span>
           </div>
           <div class="row" id="row-container">
             <span data-i18n="outset.container">コンテナタイプ(Y):</span>
@@ -524,6 +544,27 @@
 
             <section class="pref-pane" id="pref-pane-out" role="tabpanel"
                      aria-labelledby="pref-tab-out" hidden>
+              <!-- What a cut is called. The answer in force is on the output
+                   settings screen and travels with the project, because a list
+                   reopened next year should be written out the way it was
+                   settled; these are what that screen starts from, and what
+                   they are changed to goes into it as well. -->
+              <div class="row">
+                <span data-i18n="prefs.prefix">ファイル名の接頭辞:</span>
+                <input id="pref-prefix" type="text" />
+              </div>
+              <p class="dim" data-i18n="prefs.prefixNote"></p>
+              <label class="opt"><input id="pref-number" type="checkbox" />
+                <span data-i18n="prefs.number">接頭辞のうしろに一覧の連番を付ける</span></label>
+              <p class="dim" data-i18n="prefs.numberNote"></p>
+              <div class="row" id="row-pref-digits">
+                <span data-i18n="prefs.digits">連番の桁数:</span>
+                <select id="pref-digits">
+                  <option value="2">2</option>
+                  <option value="3">3</option>
+                  <option value="4">4</option>
+                </select>
+              </div>
               <label class="opt"><input id="pref-keep-output" type="checkbox" />
                 <span data-i18n="prefs.keepOutput">出力設定を次回の起動に引き継ぐ</span></label>
               <p class="dim" data-i18n="prefs.keepOutputNote"></p>
@@ -682,6 +723,10 @@
       <button class="menu-item" id="row-edit">
         <span data-i18n="rowmenu.edit">カット編集</span>
         <span class="menu-key">Enter</span>
+      </button>
+      <button class="menu-item" id="row-rename">
+        <span data-i18n="rowmenu.rename">名前を変更</span>
+        <span class="menu-key">F2</span>
       </button>
       <button class="menu-item" id="row-duplicate" data-i18n="rowmenu.duplicate">
         クリップを複製
