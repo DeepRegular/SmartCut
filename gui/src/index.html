@@ -158,6 +158,19 @@
               </select>
             </span>
           </div>
+          <!-- And whether the folder goes once the image holds all of it.
+               Under the image row and only on screen with one chosen: the
+               image is made *of* the folder, so there is no keeping one
+               without the other having been written first. -->
+          <div class="row" id="row-image-only" hidden>
+            <!-- A row rather than a line of options, and the label cell left
+                 empty: that is what puts the box under the list it is about
+                 rather than out at the edge of the panel. The question is
+                 the image's, and it reads as one thing with it. -->
+            <span></span>
+            <label class="opt"><input id="out-image-only" type="checkbox" />
+              <span data-i18n="outset.imageOnly">イメージを作成後、フォルダーを削除</span></label>
+          </div>
           <div class="row">
             <span data-i18n="outset.clipPick">クリップ選択:</span>
             <select id="outset-clip"></select>

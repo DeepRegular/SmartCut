@@ -3289,10 +3289,11 @@ async fn bdav_discard(dir: String, clips: Vec<String>) -> Result<usize, String> 
 
 /// Wrap the finished disc in an image a burner can take.
 ///
-/// The folder is what was written and it stays: the image is made *of* it,
-/// and deleting somebody's disc because they asked for an image of it is not
-/// this program's decision. The image goes beside the folder, under the same
-/// name -- `disc/` becomes `disc.iso`.
+/// The folder is what was written and it stays unless the run asks for it to
+/// go ([`bdav_drop`]): the image is made *of* it, and deleting somebody's
+/// disc because they asked for an image of it is not this program's decision
+/// to make on its own. The image goes beside the folder, under the same name
+/// -- `disc/` becomes `disc.iso`.
 #[tauri::command]
 async fn bdav_image(
     app: tauri::AppHandle,
@@ -3319,6 +3320,26 @@ async fn bdav_image(
         )
         .map_err(|e| e.to_string())?;
         Ok(image.to_string_lossy().into_owned())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// Take the written disc away, now that the image holds all of it.
+///
+/// Asked for separately from the image and only ever after one was written:
+/// the image is made *of* the folder, so an image that failed leaves the
+/// disc exactly where it is, and a removal that fails does not take the
+/// image down with it. What goes is `BDAV` and, where that leaves it empty,
+/// the folder above -- a disc written straight into a folder of somebody's
+/// own leaves what else is in it alone. See
+/// [`smartcut_core::bdav::remove_disc`].
+#[tauri::command]
+async fn bdav_drop(dir: String) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let at = local_path(&dir)?;
+        smartcut_core::bdav::remove_disc(&at).map_err(|e| e.to_string())?;
+        Ok(at.to_string_lossy().into_owned())
     })
     .await
     .map_err(|e| e.to_string())?
@@ -3875,6 +3896,7 @@ pub fn run() {
             bdav_discard,
             bdav_finish,
             bdav_image,
+            bdav_drop,
             audio_limits,
             index_clip,
             clip_outline,

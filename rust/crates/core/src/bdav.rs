@@ -261,6 +261,31 @@ pub fn prepare(at: &Path, n: usize) -> Result<Vec<String>> {
     Ok((0..n as u32).map(|i| format!("{:05}", next + i)).collect())
 }
 
+/// Take the written disc away, for a run that wanted the image of it.
+///
+/// The image is made *of* the folder, so the folder is always written first
+/// and this is always afterwards: an image that failed leaves the disc
+/// exactly where it is. It is never done on this module's own account --
+/// writing a disc does not decide the disc goes -- and the caller says so
+/// per run.
+///
+/// What goes is `BDAV`, and the folder above it only where that leaves it
+/// empty. A disc written straight into a folder that holds other things is
+/// somebody else's folder, and what else is in it is not ours to take.
+pub fn remove_disc(at: &Path) -> Result<()> {
+    let root = root(at);
+    if !root.is_dir() {
+        bail!("{} holds no disc to remove", at.display());
+    }
+    std::fs::remove_dir_all(&root).with_context(|| format!("removing {}", root.display()))?;
+    // `remove_dir` and not `remove_dir_all`: it removes an empty folder and
+    // refuses anything else, which is the rule here rather than a check
+    // somebody could race. A folder that is not ours to take stays, and
+    // that is not a failure -- the disc it held is gone either way.
+    let _ = std::fs::remove_dir(at);
+    Ok(())
+}
+
 /// The five-digit stems of the files of one kind a disc directory holds.
 fn numbered(dir: &Path, ext: &str) -> Result<Vec<String>> {
     let Ok(entries) = std::fs::read_dir(dir) else {

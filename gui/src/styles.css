@@ -475,6 +475,10 @@ main { flex: 1; min-height: 0; display: flex; gap: 0; }
 .opt { color: var(--dim); display: flex; align-items: center; gap: 5px; white-space: nowrap; }
 /* The display above is what a bare `hidden` would otherwise lose against. */
 .opt[hidden] { display: none; }
+/* A checkbox standing in a settings row takes the column the lists and the
+   fields are in, and the browser's own margin on the box would leave it a
+   few pixels to the right of every one of them. */
+.row .opt input[type="checkbox"] { margin-left: 0; }
 .mini.wide { min-width: 96px; }
 .mini { background: #333; color: var(--text); border: 1px solid #4a4a4a; border-radius: 2px; padding: 3px 10px; cursor: pointer; }
 /* A `.mini` that is a switch rather than a command: down while what it turns

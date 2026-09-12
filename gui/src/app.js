@@ -2052,6 +2052,10 @@ const settings = {
   /// revision: "" for a folder and nothing else, "2.50" or "2.60" for one.
   /// The folder is written either way -- the image is made of it.
   image: "",
+  /// And whether the folder goes once the image has been made of it. Only
+  /// means anything where an image is being made at all, and only ever
+  /// happens after one was written: the folder is what the image is made of.
+  imageOnly: false,
   prefix: "cut_",
   container: "",
   audio: "smart",
@@ -2225,6 +2229,7 @@ bindSetting("out-dir", "dir");
 bindSetting("out-subfolder", "subfolder");
 bindSetting("out-disc-title", "discTitle");
 bindSetting("out-image", "image");
+bindSetting("out-image-only", "imageOnly", "checked");
 bindSetting("out-prefix", "prefix");
 bindSetting("out-container", "container");
 bindSetting("out-audio", "audio");
@@ -3370,7 +3375,7 @@ function discDir() {
 /// what you make when the disc is finished and about to be burnt.
 function imageLine() {
   if (!settings.image || !outDir()) return "";
-  return t("outset.imageLine", {
+  return t(settings.imageOnly ? "outset.imageOnlyLine" : "outset.imageLine", {
     path: `${discDir()}.iso`,
     udf: settings.image,
   });
@@ -3486,6 +3491,8 @@ function paintMode() {
   el("row-subfolder").hidden = !subfolderWanted();
   el("row-disc-title").hidden = !disc;
   el("row-image").hidden = !disc;
+  // The question after it only where there is an image to ask it about.
+  el("row-image-only").hidden = !disc || !settings.image;
   el("row-programme").hidden = !disc;
   el("row-channel").hidden = !disc;
   el("row-made").hidden = !disc;
@@ -4358,6 +4365,18 @@ async function runExport() {
             });
             finishStep("image", "done");
             note(t("out.imageDone", { path }));
+            // And the folder, if that was asked for. After the image and
+            // never instead of it -- the image is made of the folder, so a
+            // folder taken away before there is an image is the disc lost --
+            // and a removal that fails is a note rather than a failed step:
+            // the image it was to make room for is written and whole.
+            if (settings.imageOnly) {
+              try {
+                note(t("out.folderGone", { path: await invoke("bdav_drop", { dir: discDir() }) }));
+              } catch (e) {
+                note(t("out.folderStays", { e: String(e) }));
+              }
+            }
           } catch (e) {
             finishStep("image", "error");
             note(t("out.imageFailed", { e: String(e) }));

@@ -210,6 +210,8 @@ fn main() -> Result<()> {
     let mut bdav: Option<String> = None;
     let mut disc_title: Option<String> = None;
     let mut iso: Option<smartcut_core::udfw::Revision> = None;
+    // And whether the folder goes once the image has been made of it.
+    let mut iso_only = false;
     let mut programme: Option<String> = None;
     let mut given_channel: Option<String> = None;
     let mut given_number: Option<u16> = None;
@@ -419,6 +421,9 @@ fn main() -> Result<()> {
                         .with_context(|| format!("--iso wants 2.50 or 2.60, got {v:?}"))?,
                 );
             }
+            // The image on its own: the folder is still written, still what
+            // the image is made of, and taken away once the image holds it.
+            "--iso-only" => iso_only = true,
             "--disc-title" => {
                 i += 1;
                 disc_title = Some(args.get(i).context("--disc-title needs a name")?.clone());
@@ -462,6 +467,12 @@ fn main() -> Result<()> {
         }
         i += 1;
     }
+    // Nothing to take the folder away *for*: the image is what is kept in
+    // its place, and without one this would be a run that deletes its own
+    // output.
+    if iso_only && iso.is_none() {
+        bail!("--iso-only needs --iso 2.50|2.60: the image is made of the folder");
+    }
     let Some(input) = input else {
         bail!(
             "usage: smartcut <input> [--keep START-END]... [--cut START-END]... \
@@ -487,7 +498,8 @@ fn main() -> Result<()> {
              into a file; --disc-title, --programme, --channel, --about and --made \
              fill in what its index says, which is otherwise taken from what the \
              recording says about itself; --iso 2.50|2.60 wraps the finished disc \
-             in a UDF image beside it"
+             in a UDF image beside it, and --iso-only takes the folder away \
+             once the image has been made of it"
         );
     };
     // A share the machine has already mounted may be named the way it is
@@ -1348,10 +1360,10 @@ fn main() -> Result<()> {
         )?;
         println!("wrote {} -- {name}", at.join("BDAV").display());
         if let Some(revision) = iso {
-            // Beside the folder and named after it. The folder stays: it is
-            // what the image was made of, and deleting somebody's disc
-            // because they asked for an image of it is not this program's
-            // decision.
+            // Beside the folder and named after it. The folder stays unless
+            // `--iso-only` says otherwise: it is what the image was made of,
+            // and deleting somebody's disc because they asked for an image of
+            // it is not this program's decision to make on its own.
             // Appended rather than `with_extension`, which would take a
             // folder called `2026.09` and write `2026.iso`.
             let image = std::path::PathBuf::from(format!("{}.iso", at.display()));
@@ -1362,6 +1374,13 @@ fn main() -> Result<()> {
                 bytes as f64 / 1e6,
                 revision.as_str()
             );
+            // And the folder, now that the image holds all of it. After the
+            // image and never instead of it: a folder taken away before
+            // there is an image is the disc lost.
+            if iso_only {
+                smartcut_core::bdav::remove_disc(&at)?;
+                println!("removed {}", at.display());
+            }
         }
         return Ok(());
     }

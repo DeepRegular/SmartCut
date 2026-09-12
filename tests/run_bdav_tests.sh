@@ -273,6 +273,58 @@ else
   bad "a cut out of the image is the cut out of the folder" "one of them was not written"
 fi
 
+# --- and the image on its own ---------------------------------------------
+#
+# `--iso-only` is the run that wanted the image rather than the pile of files
+# it was made of. The folder still gets written -- that is what the image is
+# made of -- and goes once the image holds it. What it must never do is take
+# anything else with it: a disc written into a folder of somebody's own
+# leaves the folder, and only the disc in it goes.
+
+echo
+echo "the image on its own"
+
+rm -rf "$OUT/only" "$OUT/only.iso"
+"$BIN" "$FX/mpeg2.ts" --keep 0-2 --bdav "$OUT/only" --disc-title DISCONLY \
+  --programme "一本目の番組" --iso 2.60 --iso-only >"$OUT/only.log" 2>&1
+if [ -f "$OUT/only.iso" ]; then
+  read=$("$BIN" "$OUT/only.iso" 2>/dev/null)
+  has "the image is there without the folder" "DISCONLY" "$read"
+else
+  bad "the image is there without the folder" "$(tail -2 "$OUT/only.log")"
+fi
+if [ -e "$OUT/only" ]; then
+  bad "and the folder it was made of is gone" "$OUT/only is still there"
+else
+  ok "and the folder it was made of is gone"
+fi
+
+# The same run into a folder that already held something of somebody else's.
+rm -rf "$OUT/shared" "$OUT/shared.iso"
+mkdir -p "$OUT/shared"
+echo "not ours" >"$OUT/shared/notes.txt"
+"$BIN" "$FX/mpeg2.ts" --keep 0-2 --bdav "$OUT/shared" --disc-title DISCSHARED \
+  --programme "一本目の番組" --iso 2.60 --iso-only >"$OUT/shared.log" 2>&1
+if [ -d "$OUT/shared/BDAV" ]; then
+  bad "the disc goes out of a folder of somebody's own"
+else
+  ok "the disc goes out of a folder of somebody's own"
+fi
+if [ -f "$OUT/shared/notes.txt" ]; then
+  ok "and what else was in it stays"
+else
+  bad "and what else was in it stays" "$OUT/shared/notes.txt went with it"
+fi
+
+# And an image nobody asked for is a folder nobody may take away.
+"$BIN" "$FX/mpeg2.ts" --keep 0-2 --bdav "$OUT/noiso" --iso-only \
+  >"$OUT/noiso.log" 2>&1
+if [ -e "$OUT/noiso/BDAV" ]; then
+  bad "--iso-only without an image writes nothing" "the disc was written anyway"
+else
+  ok "--iso-only without an image writes nothing"
+fi
+
 echo
 echo "=== $pass passed, $fail failed ==="
 [ "$fail" -eq 0 ]

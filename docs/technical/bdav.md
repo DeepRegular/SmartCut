@@ -447,7 +447,16 @@ A folder is what a recorder writes to a disc and what an authoring tool will
 burn, but it is not what most people hand to a burner. So the disc can be
 wrapped in an image as it is finished: `disc/` becomes `disc.iso`, and the
 folder stays -- the image is made *of* it, and deleting somebody's disc
-because they asked for an image of it is not this program's decision.
+because they asked for an image of it is not this program's decision to make
+on its own.
+
+Asked for by the run, though, it is: the checkbox under the image setting, or
+`--iso-only` on the command line, takes the folder away once the image holds
+all of it. Always in that order -- the folder is written, the image is made of
+it, and only then does the folder go, so an image that failed leaves the disc
+exactly where it is. What goes is `BDAV`, and the folder above it only where
+that leaves it empty (`bdav::remove_disc`): a disc written straight into a
+folder of somebody's own is one thing in it, and the rest is not ours to take.
 
 The image is a **UDF** filesystem, at revision 2.50 or 2.60 as the output
 settings screen asks. [`udfw.rs`](../../rust/crates/core/src/udfw.rs) writes
