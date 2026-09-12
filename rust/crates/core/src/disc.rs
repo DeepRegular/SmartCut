@@ -208,6 +208,13 @@ pub struct Clip {
     /// zero either.
     pub start: f64,
     pub end: f64,
+    /// Which of the clip's sequences the times above are on.
+    ///
+    /// A recorder can write several into one clip -- it stops and starts, and
+    /// each stretch keeps its own clock -- and then a playlist plays one item
+    /// per sequence, each naming the sequence it belongs to. Zero on every
+    /// clip that has only one, which is every disc but a recorder's.
+    pub stc: u8,
     /// The chapter points the disc set inside this clip, in seconds from
     /// [`Clip::start`]. Empty when the playlist carries none, or carries them
     /// in a shape this could not vouch for.
@@ -343,6 +350,8 @@ pub struct Disc {
     pub label: String,
     /// Everything on it that can be opened, in the order its index lists it.
     pub entries: Vec<Entry>,
+    /// Whether the disc carries AACS. See [`Volume::protected`].
+    pub protected: bool,
 }
 
 /// Whether this is worth trying to read as a disc.
@@ -442,6 +451,9 @@ pub fn carry_disc_languages(src: &mut crate::Source) {
 /// for: which disc, and which clip on it. Anything else is not on a disc as
 /// far as this is concerned.
 fn clip_on_a_disc(path: &str) -> Option<(&str, &str)> {
+    // A name that plays one sequence of a clip still names the clip, and the
+    // index beside it is the clip's.
+    let path = crate::input::clip_window(path).map_or(path, |(base, _, _)| base);
     let (root, rest) = ["/BDMV/STREAM/", "/BDAV/STREAM/"]
         .iter()
         .find_map(|marker| path.split_once(marker))?;
@@ -595,8 +607,9 @@ fn read_bluray(at: &Path) -> Result<Disc> {
                 None => format!("{label} {}{part}", c.name),
             };
             seen.push((key, entries.len(), many));
+            let starts = vol.sequences(&c.name);
             entries.push(Entry {
-                path: c.path.clone(),
+                path: stretch(&c.path, &starts, c.stc, vol.bytes(&c.name)),
                 clip: c.name.clone(),
                 duration: c.end - c.start,
                 marks: c.marks.clone(),
@@ -629,6 +642,7 @@ fn read_bluray(at: &Path) -> Result<Disc> {
         shape,
         label,
         entries,
+        protected: vol.protected(),
     })
 }
 
@@ -754,6 +768,38 @@ impl Volume {
         }
     }
 
+    /// Whether the disc carries AACS, which is what a Blu-ray recorder
+    /// encrypts everything it records with.
+    ///
+    /// The directory sits *beside* `BDAV` or `BDMV` rather than inside it,
+    /// so this is the one thing here that looks a level up. What it means is
+    /// that the streams are encrypted and the index files are not: such a
+    /// disc lists its recordings perfectly and opens none of them, and being
+    /// handed that without a word about why is the thing to avoid.
+    ///
+    /// Not a verdict on any particular clip. An image made by a tool that
+    /// decrypted the streams where they lay would keep the directory and
+    /// open anyway -- and the tools that move the streams instead put the
+    /// directory somewhere of their own, which is not this one.
+    fn protected(&self) -> bool {
+        match self {
+            Volume::Dir { dir, .. } => dir
+                .parent()
+                .is_some_and(|root| at_name(root, "AACS").is_dir()),
+            Volume::Image { image, prefix, .. } => {
+                let beside = prefix
+                    .trim_end_matches('/')
+                    .rsplit_once('/')
+                    .map_or(String::new(), |(above, _)| format!("{above}/"));
+                let want = format!("{beside}AACS/").to_ascii_uppercase();
+                image
+                    .files()
+                    .iter()
+                    .any(|e| e.path.to_ascii_uppercase().starts_with(&want))
+            }
+        }
+    }
+
     /// Read one of the small index files, named relative to `BDAV` or `BDMV`.
     fn read(&mut self, rel: &str) -> Result<Vec<u8>> {
         match self {
@@ -797,6 +843,14 @@ impl Volume {
                 .map(|e| e.size)
                 .unwrap_or(0),
         }
+    }
+
+    /// Where the clip's sequences begin. See [`sequence_starts`].
+    fn sequences(&mut self, clip: &str) -> Vec<(u8, u64)> {
+        self.read(&format!("CLIPINF/{clip}.clpi"))
+            .ok()
+            .map(|raw| sequence_starts(&raw))
+            .unwrap_or_default()
     }
 
     /// What the disc says one clip carries, out of `CLIPINF`.
@@ -1182,6 +1236,10 @@ fn play_items(raw: &[u8], at: usize, vol: &mut Volume) -> Result<Vec<Clip>> {
                 String::from_utf8_lossy(codec)
             );
         }
+        // Two bytes of flags, then the sequence this item's times are on,
+        // then the times. A disc whose clips hold one sequence writes zero
+        // here and nothing downstream looks twice at it.
+        let stc = body[11];
         let start = u32be(body, 12) as f64 / TICK;
         let end = u32be(body, 16) as f64 / TICK;
         if end <= start {
@@ -1190,6 +1248,7 @@ fn play_items(raw: &[u8], at: usize, vol: &mut Volume) -> Result<Vec<Clip>> {
         out.push(Clip {
             path: vol.stream(&name),
             name,
+            stc,
             start,
             end,
             marks: Vec::new(),
@@ -1523,6 +1582,23 @@ fn entry_points(raw: &[u8]) -> Vec<(f64, u64)> {
     Vec::new()
 }
 
+/// Whether the streams of the disc a recording is on are encrypted.
+///
+/// Asked of a path rather than of an open disc, because the place it is
+/// needed is where opening one has just failed and all there is to go on is
+/// the name. `false` for everything that is not a clip on a disc, and for
+/// every disc that carries no AACS directory. See [`Volume::protected`].
+///
+/// Costs a read of the disc's filesystem, so it belongs on the path where
+/// something has already gone wrong and not on the one where things are
+/// working.
+pub fn encrypted(path: &str) -> bool {
+    let Some((root, _)) = clip_on_a_disc(path) else {
+        return false;
+    };
+    Volume::open(Path::new(root)).is_ok_and(|v| v.protected())
+}
+
 /// The entry points a disc holds for one of its own clips.
 ///
 /// `None` for anything that is not a clip on a disc, and for a disc whose
@@ -1532,8 +1608,99 @@ pub fn clip_entry_points(path: &str) -> Option<Vec<(f64, u64)>> {
     let (root, clip) = clip_on_a_disc(path)?;
     let mut vol = Volume::open(Path::new(root)).ok()?;
     let raw = vol.read(&format!("CLIPINF/{clip}.clpi")).ok()?;
-    let points = entry_points(&raw);
+    let mut points = entry_points(&raw);
+    // A name that plays one sequence is opened as those bytes alone, so the
+    // map has to be cut to them and counted from where they start: a point
+    // outside the sequence is not in what the demuxer is reading, and one
+    // inside it sits that many bytes earlier than the whole clip would put
+    // it.
+    if let Some((_, first, last)) = crate::input::clip_window(path) {
+        let (from, to) = (first * 192, (last + 1) * 192);
+        points.retain(|(_, pos)| *pos >= from && *pos < to);
+        for p in points.iter_mut() {
+            p.1 -= from;
+        }
+    }
     (!points.is_empty()).then_some(points)
+}
+
+/// Where each of a clip's sequences begins, in source packets, and which
+/// number a playlist calls it by.
+///
+/// The clip index opens with a table of them: an arrival-time sequence for
+/// every time the recorder stopped and started, and inside each one a
+/// presentation-time sequence for every time the clock it copied jumped.
+/// What a play item names is the second of those, numbered straight through
+/// the clip, and what has to be read is where it starts -- because a
+/// recording that plays one sequence is those bytes of the file and no
+/// others.
+///
+/// Empty for a clip index that does not read, and for the ordinary clip with
+/// a single sequence there is one entry, which is the same as none: the
+/// caller names such a clip whole.
+fn sequence_starts(raw: &[u8]) -> Vec<(u8, u64)> {
+    if raw.len() < 24 || !matches!(&raw[..4], b"HDMV" | b"M2TS") {
+        return Vec::new();
+    }
+    let at = u32be(raw, 8) as usize + 4;
+    let Some(&arrivals) = raw.get(at + 1) else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    let mut p = at + 2;
+    for _ in 0..arrivals.min(64) {
+        let Some(head) = raw.get(p..p + 6) else {
+            return out;
+        };
+        let count = head[4];
+        let first = head[5];
+        p += 6;
+        for j in 0..count {
+            // Sixteen bits of PCR PID, then where this sequence's packets
+            // begin, then the first and last moment it presents.
+            if raw.get(p..p + 14).is_none() {
+                return out;
+            }
+            out.push((first.wrapping_add(j), u32be(raw, p + 2) as u64));
+            p += 14;
+        }
+    }
+    out
+}
+
+/// The part of a clip a play item plays, named the way it will be opened.
+///
+/// A clip holding one sequence is named whole, which is what every name in
+/// this program was until a recorder's own discs turned up. A clip holding
+/// several is named a sequence at a time, in source packets, because those
+/// are several recordings in one file and their clocks do not run on from
+/// one another: read whole, the times go backwards part-way through and
+/// nothing downstream can place a cut. See [`crate::input`].
+fn stretch(path: &str, starts: &[(u8, u64)], stc: u8, bytes: u64) -> String {
+    if starts.len() < 2 {
+        return path.to_string();
+    }
+    // Believed only where the whole table reads as a table: the sequences
+    // begin at the front of the clip, each after the one before it, and all
+    // of them inside the file. A clip index this could not make sense of
+    // names the clip whole, which is what a clip with one sequence is named
+    // and what every name was before this.
+    let packets = bytes / 192;
+    let sound = starts[0].1 == 0
+        && starts.windows(2).all(|w| w[0].1 < w[1].1)
+        && starts.last().is_some_and(|(_, at)| *at < packets);
+    if !sound {
+        return path.to_string();
+    }
+    let Some(i) = starts.iter().position(|(id, _)| *id == stc) else {
+        return path.to_string();
+    };
+    let from = starts[i].1;
+    let to = starts.get(i + 1).map_or(packets, |(_, s)| *s);
+    if to <= from {
+        return path.to_string();
+    }
+    format!("{path}@{from}-{}", to - 1)
 }
 
 fn tracks(raw: &[u8]) -> Vec<Track> {
@@ -1752,10 +1919,113 @@ mod tests {
         assert_eq!(app_info_made(&raw), None);
     }
 
+    /// A clip index's sequence table: one entry per sequence, each saying
+    /// where its packets begin.
+    fn clpi_with(sequences: &[(u8, u32)]) -> Vec<u8> {
+        let mut raw = vec![0u8; 40];
+        raw[..4].copy_from_slice(b"M2TS");
+        raw[4..8].copy_from_slice(b"0100");
+        raw[8..12].copy_from_slice(&40u32.to_be_bytes());
+        let mut table = vec![0u8; 4];
+        table.push(0); // reserved
+        table.push(sequences.len() as u8);
+        for (id, at) in sequences {
+            table.extend_from_slice(&0u32.to_be_bytes()); // where the arrivals start
+            table.push(1); // one presentation sequence inside it
+            table.push(*id);
+            table.extend_from_slice(&0x1001u16.to_be_bytes());
+            table.extend_from_slice(&at.to_be_bytes());
+            table.extend_from_slice(&[0; 8]); // the moments it presents
+        }
+        raw.extend_from_slice(&table);
+        raw
+    }
+
+    /// A recorder writes several sequences into one clip, and the table says
+    /// where each begins.
+    #[test]
+    fn the_sequences_of_a_clip_are_read() {
+        let raw = clpi_with(&[(0, 0), (1, 8960), (2, 4_605_952)]);
+        assert_eq!(
+            sequence_starts(&raw),
+            vec![(0, 0), (1, 8960), (2, 4_605_952)]
+        );
+        // A clip with one sequence reads as one, which is a clip named whole.
+        assert_eq!(sequence_starts(&clpi_with(&[(0, 0)])).len(), 1);
+        assert!(sequence_starts(b"not a clip index").is_empty());
+    }
+
+    /// What a play item is opened as: the clip whole where there is one
+    /// sequence, and that sequence's packets where there are several.
+    #[test]
+    fn a_sequence_is_named_by_the_packets_it_holds() {
+        let path = "/d/BDAV/STREAM/00001.m2ts";
+        let bytes = 14_238_784 * 192;
+        let starts = [(0u8, 0u64), (1, 8960), (2, 4_605_952)];
+        assert_eq!(stretch(path, &starts[..1], 0, bytes), path);
+        assert_eq!(stretch(path, &starts, 0, bytes), format!("{path}@0-8959"));
+        assert_eq!(
+            stretch(path, &starts, 1, bytes),
+            format!("{path}@8960-4605951")
+        );
+        // The last sequence runs to the end of the file.
+        assert_eq!(
+            stretch(path, &starts, 2, bytes),
+            format!("{path}@4605952-14238783")
+        );
+        // A sequence the playlist names and the index does not have, a table
+        // that does not begin at the front of the clip, one that goes
+        // backwards, and one that runs past the end: all named whole rather
+        // than guessed at.
+        assert_eq!(stretch(path, &starts, 9, bytes), path);
+        assert_eq!(stretch(path, &[(0, 64), (1, 8960)], 0, bytes), path);
+        assert_eq!(stretch(path, &[(0, 0), (1, 0)], 0, bytes), path);
+        assert_eq!(stretch(path, &starts, 1, 1024 * 192), path);
+        assert_eq!(stretch(path, &starts, 1, 0), path);
+    }
+
+    /// A disc that carries AACS says so beside `BDAV`, not inside it.
+    #[test]
+    fn a_disc_that_encrypts_its_streams_is_known_by_its_directory() {
+        let root = std::env::temp_dir().join("smartcut-disc-aacs");
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("BDAV/STREAM")).unwrap();
+        // Enough of a disc to be opened as one: the dialect is read off what
+        // the playlists are called.
+        std::fs::create_dir_all(root.join("BDAV/PLAYLIST")).unwrap();
+        std::fs::write(root.join("BDAV/PLAYLIST/00001.rpls"), []).unwrap();
+        let clip = format!("{}/BDAV/STREAM/00001.m2ts", root.to_string_lossy());
+        assert!(!encrypted(&clip));
+        std::fs::create_dir_all(root.join("AACS/AACS_av")).unwrap();
+        assert!(encrypted(&clip));
+        // The tools that decrypt a disc by moving its streams out put the
+        // directory somewhere of their own, and that is not this one.
+        let _ = std::fs::remove_dir_all(root.join("AACS"));
+        std::fs::create_dir_all(root.join("MAKEMKV/AACS")).unwrap();
+        assert!(!encrypted(&clip));
+        // A recording that is not on a disc at all is not asked about.
+        assert!(!encrypted("/rec/yesterday.ts"));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// A name that plays one sequence still names its disc and its clip.
+    #[test]
+    fn a_windowed_name_is_still_a_clip_on_a_disc() {
+        assert_eq!(
+            clip_on_a_disc("/d/BDAV/STREAM/00001.m2ts@8960-4605951"),
+            Some(("/d", "00001"))
+        );
+        assert_eq!(
+            clip_on_a_disc("/d/BDAV/STREAM/00001.m2ts"),
+            Some(("/d", "00001"))
+        );
+    }
+
     fn clip(start: f64, end: f64) -> Clip {
         Clip {
             name: "00001".into(),
             path: "/x/00001.m2ts".into(),
+            stc: 0,
             start,
             end,
             marks: Vec::new(),

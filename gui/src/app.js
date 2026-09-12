@@ -556,6 +556,10 @@ function askAboutDisc(disc) {
       // twelve that were meant.
       showAll: disc.kind === "bdav",
     };
+    // Said before anything is ticked rather than after: the index of such a
+    // disc reads and every stream it names does not, so the list below is
+    // complete and none of it can be opened.
+    el("disc-protected-row").hidden = !disc.protected;
     el("disc-show-all").checked = chooser.showAll;
     el("disc-show-all-row").hidden = disc.kind === "bdav";
     el("disc-what").textContent = t("disc.what", {

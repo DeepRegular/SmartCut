@@ -118,7 +118,15 @@ fn pick<'a>(
 fn list_disc(input: &str, disc: &smartcut_core::disc::Disc) {
     println!("disc  : {input}");
     println!("        {} -- {}", disc.shape.as_str(), disc.label);
-    println!("        {} recording(s)\n", disc.entries.len());
+    println!("        {} recording(s)", disc.entries.len());
+    // Said here because the rows below are readable and what they name is
+    // not: the index files a recorder writes are in the clear and every
+    // stream beside them is encrypted, so a disc like this lists itself
+    // perfectly and opens nothing.
+    if disc.protected {
+        println!("        AACS -- the streams are encrypted; only the index is readable");
+    }
+    println!();
     // What a pressed disc mostly holds is not the film, so the ones worth a
     // look are pointed at rather than left to be found by their length. A
     // disc of recordings is all worth a look, and a column of stars beside

@@ -202,6 +202,9 @@ pub fn read(at: &Path) -> Result<Disc> {
         shape: Shape::Dvd,
         label,
         entries,
+        // AACS is a Blu-ray's. What a DVD is scrambled with is CSS, which is
+        // not read here and not what this says.
+        protected: false,
     })
 }
 

@@ -434,6 +434,9 @@ enum Found {
         kind: String,
         /// What the disc calls itself.
         label: String,
+        /// Whether the disc's streams are encrypted, which is a thing to say
+        /// before somebody ticks rows that will not open.
+        protected: bool,
         clips: Vec<DiscClip>,
     },
 }
@@ -448,6 +451,7 @@ impl Found {
             path: at.to_string_lossy().into_owned(),
             kind: disc.shape.as_str().to_string(),
             label: disc.label,
+            protected: disc.protected,
             clips: disc.entries.into_iter().map(DiscClip::from).collect(),
         }
     }

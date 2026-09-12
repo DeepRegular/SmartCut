@@ -161,6 +161,18 @@ Both are read.
 **Encrypted discs are not handled and will not be.** AACS is a decryption
 problem and this program has none of it.
 
+What it does do is say so. A recorder encrypts the streams and leaves the
+index in the clear, so such a disc lists its recordings perfectly and opens
+none of them — and what libavformat says about bytes it cannot make sense of,
+`Invalid data found when processing input`, is accurate about the bytes and
+silent about the reason. An `AACS` directory beside `BDAV` is the disc saying
+what the reason is. The chooser says it before anything is ticked, and an
+open that fails says it instead of the demuxer's sentence. It is read only
+where something has already failed or is being described, never as a refusal:
+an image whose streams were decrypted where they lay would keep the directory
+and open anyway, and the tools that move the streams out put the directory
+somewhere of their own.
+
 ## What a playlist says about the recording
 
 **On BDAV, a playlist is where everything a person reads lives.** Not only the
@@ -669,6 +681,45 @@ reads the broadcast's own tables (PAT, PMT, SDT, EIT, SIT) walks the file
 directly, so it has to open a **range inside an image** and to find packets
 **192 bytes apart**. Both are in, which is why a cut taken from a disc carries
 the broadcast's tables the same as a cut taken from a `.ts`.
+
+### A clip whose clock restarts
+
+A recorder stops and starts. Each time it does, the stretch it writes next
+begins a **new sequence** with a clock of its own, and all of them go into one
+`.m2ts`. The BD-REs measured here hold five and seven of them in a clip. The
+playlist says so plainly: one play item per sequence, each naming the sequence
+its IN and OUT are on, which is why such a recording already listed as
+`(1/7)`, `(2/7)` and so on.
+
+Read whole, that file is unreadable in a way nothing announces. Its
+entry-point map counts 3,598 points whose byte offsets rise all the way and
+whose **times go backwards twice** — 7.1 seconds to 1.1 at the fourth point,
+and again at the last. A time no longer picks out a place. libavformat
+declines to measure the file at all, so every `--keep` was refused for
+beginning after a recording that ends at zero; with a length supplied it got
+as far as seeking, landed wrong, and decoded nothing. The stream is not
+damaged: read from the front it decodes to the end.
+
+So a play item is named by the packets it plays, the way a DVD title is named
+by its sectors:
+
+```
+/rec/Recording.iso/BDAV/STREAM/00001.m2ts@8960-4605951
+```
+
+Both numbers come off the clip index. Its **sequence table** gives the source
+packet each sequence begins at, and the play item's `ref_to_STC_id` says which
+of them this row is; the sequence after it, or the end of the file, closes the
+range. Handed to the demuxer as those bytes alone, what it reads is one clock
+from beginning to end, and the entry-point map is cut to the same packets and
+counted from the same place.
+
+A clip with one sequence is named whole, which is every disc that came before
+these and every disc this program writes. So is a clip whose sequence table
+does not read as one: the sequences have to begin at the front of the clip,
+each after the one before it, and all of them inside the file. A table that
+fails any of that is a table this cannot place a cut with, and a clip named
+whole is the behaviour there has always been.
 
 ## DVD-Video
 

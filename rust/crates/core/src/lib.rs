@@ -830,7 +830,24 @@ pub fn outline(path: &str) -> Result<Outline> {
 fn outline_of(path: &str) -> Result<(Outline, ff::format::context::Input)> {
     init()?;
     let input = input::Input::parse(path)?;
-    let ictx = crate::input::demux(&input.url).map_err(|e| anyhow!("cannot open {path}: {e}"))?;
+    // What libavformat says when it is handed encrypted bytes -- "Invalid
+    // data found when processing input" -- describes them accurately and
+    // says nothing about what is wrong. A recorder's own disc does: it
+    // writes its index in the clear and encrypts every stream beside it, so
+    // such a disc lists its recordings perfectly and opens none of them.
+    // Said here rather than in either front end, because both reach it.
+    let ictx = crate::input::demux(&input.url).map_err(|e| {
+        if crate::disc::encrypted(path) {
+            anyhow!(
+                "{path}: this recording is encrypted with AACS, which this program does not \
+                 decrypt. The disc's index is not encrypted, which is why its recordings \
+                 could be listed at all; an image made with the encryption taken off opens \
+                 as any other disc does. ({e})"
+            )
+        } else {
+            anyhow!("cannot open {path}: {e}")
+        }
+    })?;
     // Read before the demuxer is handed to the index source, which takes it.
     let byte_seekable = ictx
         .format()

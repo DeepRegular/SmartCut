@@ -44,6 +44,20 @@
 //! libavformat's `concat` protocol joins them -- with `subfile` around it to
 //! take the title out of the join.
 //!
+//! A clip on a disc a recorder wrote needs the same thing for a different
+//! reason. Its arrival clock can restart part-way through the file -- the
+//! recorder wrote several sequences into one clip, and the playlist plays
+//! them as several items -- so what a row in the list offers is one of those
+//! sequences and not the file around it:
+//!
+//! ```text
+//! /rec/Recording.iso/BDAV/STREAM/00001.m2ts@8960-4605951
+//! ```
+//!
+//! Counted in source packets, which is the unit the disc's own index counts
+//! its clips in, and handed to the demuxer as those bytes alone -- so what it
+//! reads is one clock from beginning to end. See [`crate::disc`].
+//!
 //! A path that is simply a file comes back unchanged, which is the case that
 //! has to cost nothing.
 
@@ -56,6 +70,10 @@ use std::path::{Path, PathBuf};
 
 /// A DVD sector, and the unit its index addresses the stream in.
 const SECTOR: u64 = 2048;
+
+/// A source packet: a transport packet behind the four bytes that say when
+/// it arrived, and the unit a Blu-ray's index counts a clip in.
+const SOURCE_PACKET: u64 = 192;
 
 /// The most pieces a title set's stream is written in. The format numbers
 /// them from one and stops at nine.
@@ -103,6 +121,13 @@ impl Input {
         // that a real file whose name ends that way is still a file.
         if let Some((base, first, last)) = split_at_sectors(spec) {
             return dvd_title(spec, base, first, last);
+        }
+        // And a name that says which source packets it plays is one sequence
+        // of a clip. Whatever the clip is named -- a file, or a file inside
+        // an image -- is answered by parsing that name and taking the
+        // stretch out of whatever comes back.
+        if let Some((base, first, last)) = clip_window(spec) {
+            return clip_sequence(spec, base, first, last);
         }
         let Some((image, inside)) = split_at_image(path) else {
             return Ok(Input::plain(spec));
@@ -451,6 +476,62 @@ fn split_at_sectors(spec: &str) -> Option<(&str, u64, u64)> {
     (first <= last).then_some((base, first, last))
 }
 
+/// The clip a name plays a stretch of, and which source packets those are.
+///
+/// `None` for every other name, the bare clip included: a clip whose clock
+/// never restarts is played whole and named whole.
+pub fn clip_window(spec: &str) -> Option<(&str, u64, u64)> {
+    let (base, range) = spec.rsplit_once('@')?;
+    if !base.to_ascii_uppercase().ends_with(".M2TS") {
+        return None;
+    }
+    let (first, last) = range.split_once('-')?;
+    let (first, last) = (first.parse().ok()?, last.parse().ok()?);
+    (first <= last).then_some((base, first, last))
+}
+
+/// One sequence of a clip: the bytes its source packets occupy.
+///
+/// The clip is parsed first and the stretch taken out of the answer, so that
+/// a clip inside an image and a clip beside one are the same case here --
+/// the first arrives as a range of the image and the second as a whole file,
+/// and a stretch of either is a range of one file.
+fn clip_sequence(spec: &str, base: &str, first: u64, last: u64) -> Result<Input> {
+    let clip = Input::parse(base)?;
+    if !clip.parts.is_empty() {
+        bail!("{spec}: a clip written in pieces cannot be played a sequence at a time");
+    }
+    let whole = match clip.range {
+        Some(r) => r.len,
+        None => std::fs::metadata(&clip.file)
+            .with_context(|| format!("cannot measure {}", clip.file.display()))?
+            .len(),
+    };
+    let at = clip.range.map_or(0, |r| r.at);
+    let want = Range {
+        at: first * SOURCE_PACKET,
+        len: (last + 1 - first) * SOURCE_PACKET,
+    };
+    let range = clamp(want, whole)
+        .ok_or_else(|| anyhow!("{spec}: those packets are not in this clip"))?;
+    let url = format!(
+        "subfile,,start,{},end,{},,:file:{}",
+        at + range.at,
+        at + range.at + range.len,
+        clip.file.to_string_lossy()
+    );
+    Ok(Input {
+        spec: spec.to_string(),
+        url,
+        file: clip.file,
+        range: Some(Range {
+            at: at + range.at,
+            len: range.len,
+        }),
+        parts: Vec::new(),
+    })
+}
+
 /// Where a DVD title's bytes are, and how to hand them to a demuxer.
 ///
 /// The name points at the first of the pieces the title set's stream is
@@ -636,6 +717,44 @@ mod tests {
         assert_eq!(input.url, spec);
         assert!(!input.nested());
         assert_eq!(input.bytes().unwrap(), 10);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn one_sequence_of_a_clip_names_the_packets_it_plays() {
+        assert_eq!(
+            clip_window("/rec/R.iso/BDAV/STREAM/00001.m2ts@8960-4605951"),
+            Some(("/rec/R.iso/BDAV/STREAM/00001.m2ts", 8960, 4_605_951))
+        );
+        // A clip named whole, a title of a DVD, and a recording whose own
+        // name holds an at-sign are none of them this.
+        assert_eq!(clip_window("/rec/R.iso/BDAV/STREAM/00001.m2ts"), None);
+        assert_eq!(clip_window("/rec/D.iso/VIDEO_TS/VTS_01_1.VOB@0-2267"), None);
+        assert_eq!(clip_window("/rec/2026-08-17@22.ts"), None);
+        // Backwards, and not a pair of numbers at all.
+        assert_eq!(clip_window("/x/00001.m2ts@900-100"), None);
+        assert_eq!(clip_window("/x/00001.m2ts@first-last"), None);
+    }
+
+    #[test]
+    fn a_sequence_is_read_as_the_bytes_it_occupies() {
+        let dir = std::env::temp_dir().join("smartcut-input-sequence");
+        let _ = std::fs::create_dir_all(&dir);
+        let path = dir.join("00001.m2ts");
+        let mut f = File::create(&path).unwrap();
+        f.write_all(&vec![0u8; 10 * SOURCE_PACKET as usize]).unwrap();
+
+        let input = Input::parse(&format!("{}@2-5", path.to_string_lossy())).unwrap();
+        assert!(input.nested());
+        let range = input.range.unwrap();
+        assert_eq!(range.at, 2 * SOURCE_PACKET);
+        assert_eq!(range.len, 4 * SOURCE_PACKET);
+        // A stretch that runs off the end is cut to what is there rather
+        // than asked for past it.
+        let input = Input::parse(&format!("{}@8-99", path.to_string_lossy())).unwrap();
+        assert_eq!(input.range.unwrap().len, 2 * SOURCE_PACKET);
+        // And one that begins past the end is refused.
+        assert!(Input::parse(&format!("{}@20-30", path.to_string_lossy())).is_err());
         let _ = std::fs::remove_file(&path);
     }
 

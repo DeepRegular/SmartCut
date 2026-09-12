@@ -466,6 +466,9 @@ main { flex: 1; min-height: 0; display: flex; gap: 0; }
 }
 .counter { font-size: 15px; }
 .dim { color: var(--dim); }
+/* Something the disc itself says that changes what the rows below are worth.
+   The accent is the one this window already uses for a thing to look at. */
+.notice { color: var(--accent); }
 
 /* --- output ----------------------------------------------------------- */
 .output { flex: none; display: flex; flex-direction: column; gap: 5px; }
