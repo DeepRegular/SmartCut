@@ -84,6 +84,16 @@ jump, and never anything between. Both discs declare a `TS_recording_rate`
 that is that step read back as a rate; 27 MHz over 1571 ticks, times a packet,
 is 3,231,064 bytes a second, which is the number on the first of them.
 
+**A recorder need not declare the step it used.** The BD-REs a recorder wrote
+in 2026, measured here later, step every 2031 ticks and declare 3,525,000
+bytes a second -- which is the step 1440, a rate two fifths faster than
+anything on the disc actually arrives at. Nothing on them arrives faster than
+the declared rate allows, and that is the only thing the field can be read as
+promising: a ceiling. The two discs above declare theirs exactly at the step
+because the tool that wrote them chose to. Working backwards from
+`TS_recording_rate` to the step is right on those two and wrong on a
+recorder's own.
+
 The clock references say when the packets carrying them arrive, and they are
 what the schedule is pinned to. Working backwards from the end, a packet
 arrives one step before the packet after it, and a packet carrying a clock
@@ -488,8 +498,9 @@ on", so a directory -- whose contents are in the metadata partition too --
 uses short ones, and a file uses long ones and names the partition its bytes
 are actually on.
 
-Two details are worth writing down, because getting either wrong produces an
-image this program reads and everything else refuses:
+Three details are worth writing down, because getting any of them wrong
+produces an image this program reads and everything else refuses -- or one
+that reads until the day a cluster of it goes bad:
 
 * **Every descriptor records the block it is written at.** A reader that
   finds one claiming to be somewhere else is right to stop, and other readers
@@ -501,6 +512,14 @@ image this program reads and everything else refuses:
   `udfw.rs` is that the identifier this writes for a directory called `BDAV`
   comes out **byte for byte identical** to the one on the reference image,
   checksum and cyclic redundancy check included.
+* **The metadata partition's second copy is described from beside itself.**
+  The copy goes at the end of the partition, and the entry that describes it
+  used to be written at block 1, beside the original's at block 0 -- so one
+  unreadable 64 KB cluster took the directory tree and the spare copy of it
+  together, which is the single thing the spare exists to survive. It now
+  goes a cluster in front of the copy it describes. Every reference image
+  does the same, a recorder's and a burner's alike; `run_udf_tests.sh` is
+  what noticed that ours did not.
 
 A file longer than 1,073,739,776 bytes is written as several extents, because
 that is what a 30 bit length field with a 2 KB block comes to -- the same

@@ -77,6 +77,7 @@ bash tests/run_broadcast_tests.sh     # captions, programme information, multi-a
 bash tests/run_cm_tests.sh            # commercial detection vs a human's answer         5
 bash tests/run_disc_tests.sh          # a BDAV and a BDMV disc, as folders and as .isos 38
 bash tests/run_bdav_tests.sh          # writing a disc: the index, the image, and both   53
+bash tests/run_udf_tests.sh           # the image as a filesystem, beside real discs     26
 bash tests/run_dvd_tests.sh           # a DVD-Video disc, as a folder and as an .iso    23
 bash tests/run_bd_audio_tests.sh      # the sound a disc carries, written out             39
 bash tests/run_vc1_tests.sh           # the VC-1 encoder, put through a decoder          4
@@ -110,6 +111,25 @@ programme's name, the channel and the moment it went out survive a round trip th
 disc. The last of it is the image: each UDF revision is written, opened again by this
 program, and -- where 7-Zip is installed -- unpacked by a reader written by somebody
 else and compared against the folder it was made of.
+
+`run_udf_tests.sh` looks at the image the other way round: not as a disc that opens
+but as a filesystem that has to be well-formed before anything opens it. `udf_shape.py`
+reports the three layers a reader goes through -- the anchors and the descriptors they
+point at, the partition and the entries inside it, and where each file's bytes actually
+lie -- and the suite checks the invariants that hold for any image at all: an anchor at
+each end, every file inside the partition, nothing written over anything, no extent
+longer than its own length field, the streams beginning on a 64 KB cluster, and the
+tree matching the folder the image was made of file for file and byte for byte.
+
+It then prints the same report for one image per other writer it can find under
+`$SMARTCUT_DISCS` (`~/Documents/claude/TMPGEnc` unless set), so the places where our
+dialect differs from a recorder's or a burner's are in front of you rather than
+waiting on a disc that will not play. Those columns are never failures: a recorder
+writes an overwritable partition where an image file is read-only, keeps three anchors
+to a burner's two, and leaves deleted file identifiers in its directories, and all of
+it is legal. The comparison earned its place immediately -- it is what found the
+mirror of the metadata partition being described by an entry written beside the
+original's, where one unreadable cluster would have taken both.
 
 `run_dvd_tests.sh` builds two DVDs out of the same stream, muxed to MPEG program
 streams by ffmpeg's `dvd` muxer: an ordinary one, whose title set is written in two

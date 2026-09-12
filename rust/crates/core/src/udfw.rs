@@ -27,11 +27,11 @@
 //!     256   the anchor, which is the one descriptor at a fixed place
 //!     288   the partition:
 //!             +0    the metadata file's own entry
-//!             +1    the mirror's
 //!             +32   the metadata partition itself -- every file entry, every
 //!                   directory, and the file set descriptor
 //!             ...   the files, each starting on a 32 block boundary
-//!             end   a second copy of the metadata partition
+//!             end   the mirror's entry, then a second copy of the metadata
+//!                   partition a cluster behind it
 //!    then   the reserve copy of the volume descriptors, and a second anchor
 //!           in the last sector
 //! ```
@@ -74,7 +74,6 @@ const INTEGRITY_BLOCKS: u64 = 2;
 /// from the start of the partition. The first two blocks of it, which is
 /// where the reference images have the first of them.
 const METADATA_FILE_ENTRY: u32 = 0;
-const METADATA_MIRROR_ENTRY: u32 = 1;
 
 /// How the metadata partition and the file data are aligned inside the
 /// partition, in blocks. 32 blocks is 64 KB, which is what both reference
@@ -230,12 +229,7 @@ pub fn write(
         FILE_METADATA,
         plan.meta_at,
         plan.meta_blocks,
-        &now,
-    ))?)?;
-    out.sector(&sized(&metadata_entry(
-        FILE_METADATA_MIRROR,
-        plan.mirror_at,
-        plan.meta_blocks,
+        METADATA_FILE_ENTRY,
         &now,
     ))?)?;
     out.pad_to(PARTITION + plan.meta_at as u64)?;
@@ -264,8 +258,17 @@ pub fn write(
         out.align()?;
     }
 
-    // The second copy of the metadata partition, and then everything that
-    // has to be at the end: the reserve descriptors and the second anchor.
+    // The second copy of the metadata partition, the entry that describes it
+    // a cluster in front, and then everything that has to be at the end: the
+    // reserve descriptors and the second anchor.
+    out.pad_to(PARTITION + plan.mirror_entry as u64)?;
+    out.sector(&sized(&metadata_entry(
+        FILE_METADATA_MIRROR,
+        plan.mirror_at,
+        plan.meta_blocks,
+        plan.mirror_entry,
+        &now,
+    ))?)?;
     out.pad_to(PARTITION + plan.mirror_at as u64)?;
     out.write_all(&meta)?;
     out.pad_to(plan.reserve_vds)?;
@@ -318,6 +321,7 @@ struct Plan {
     meta_blocks: u64,
     meta_at: u32,
     mirror_at: u32,
+    mirror_entry: u32,
     /// How long the partition is, and where the reserve descriptors and the
     /// end of the image are.
     partition_blocks: u64,
@@ -446,6 +450,13 @@ fn lay_out(tree: &mut [Node]) -> Plan {
         tree[i].blocks = blocks(tree[i].size);
         at = align(at + tree[i].blocks);
     }
+    // The mirror is there to survive a cluster the drive cannot read, and an
+    // entry for it written beside the metadata file's own would be lost to
+    // the same one. So it goes with the copy it describes: a cluster in front
+    // of it, which is where every reference image -- a recorder's and a
+    // burner's alike -- puts theirs.
+    let mirror_entry = at as u32;
+    at += ALIGN;
     let mirror_at = at as u32;
     let partition_blocks = at + meta_blocks;
     let reserve_vds = PARTITION + partition_blocks;
@@ -454,6 +465,7 @@ fn lay_out(tree: &mut [Node]) -> Plan {
         meta_blocks,
         meta_at,
         mirror_at,
+        mirror_entry,
         partition_blocks,
         reserve_vds,
         // Rounded out to a whole 64 KB cluster, which is the unit a Blu-ray
@@ -643,7 +655,7 @@ fn file_entry(node: &Node, now: &Stamp) -> Vec<u8> {
 ///
 /// It lives on the partition beside the one it describes, so its own
 /// descriptors are short ones and mean that partition.
-fn metadata_entry(kind: u8, at: u32, blocks: u64, now: &Stamp) -> Vec<u8> {
+fn metadata_entry(kind: u8, at: u32, blocks: u64, entry_at: u32, now: &Stamp) -> Vec<u8> {
     let mut d = vec![0u8; 216];
     icb(&mut d, kind, 0);
     le32(&mut d, 36, 0xFFFF_FFFF);
@@ -666,11 +678,7 @@ fn metadata_entry(kind: u8, at: u32, blocks: u64, now: &Stamp) -> Vec<u8> {
     le32(&mut ad, 4, at);
     le32(&mut d, 212, ad.len() as u32);
     d.extend_from_slice(&ad);
-    tag(
-        &mut d,
-        TAG_EXTENDED_FILE_ENTRY,
-        if kind == FILE_METADATA { 0 } else { 1 },
-    );
+    tag(&mut d, TAG_EXTENDED_FILE_ENTRY, entry_at as u64);
     d
 }
 
@@ -708,7 +716,7 @@ fn volume_descriptors(
         primary(now, label, at),
         implementation_use(rev, label, at + 1),
         partition(plan, at + 2),
-        logical_volume(rev, label, at + 3),
+        logical_volume(plan, rev, label, at + 3),
         unallocated(at + 4),
         terminating(at + 5),
     ]
@@ -767,7 +775,7 @@ fn partition(plan: &Plan, at: u64) -> Vec<u8> {
     d
 }
 
-fn logical_volume(rev: Revision, label: &str, at: u64) -> Vec<u8> {
+fn logical_volume(plan: &Plan, rev: Revision, label: &str, at: u64) -> Vec<u8> {
     let mut d = vec![0u8; 512];
     le32(&mut d, 16, 3);
     charspec(&mut d, 20);
@@ -796,9 +804,10 @@ fn logical_volume(rev: Revision, label: &str, at: u64) -> Vec<u8> {
     le16(&mut d, m + 38, 0);
     // Where the two *entries* are, not where their contents are: a reader
     // finds the metadata partition by reading the file that holds it, and a
-    // file is found by its entry. Both are at the front of the partition.
+    // file is found by its entry. One is at the front of the partition and
+    // the other at the back, each beside the copy it describes.
     le32(&mut d, m + 40, METADATA_FILE_ENTRY);
-    le32(&mut d, m + 44, METADATA_MIRROR_ENTRY);
+    le32(&mut d, m + 44, plan.mirror_entry);
     le32(&mut d, m + 48, 0xFFFF_FFFF); // no bitmap: nothing here is allocated later
     le32(&mut d, m + 52, ALIGN as u32);
     le16(&mut d, m + 56, ALIGN as u16);
