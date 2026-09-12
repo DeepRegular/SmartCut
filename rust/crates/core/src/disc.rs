@@ -90,6 +90,16 @@ const TICK: f64 = 45_000.0;
 /// over the longest thing a menu is made of.
 const WORTH_TICKING: f64 = 300.0;
 
+/// A source packet: the transport packet and the four bytes in front of it
+/// that say when it arrived, which is the unit a clip index counts in.
+const SOURCE_PACKET: u64 = 192;
+
+/// The most seventeen-bit turns an entry point is carried forward by when the
+/// map it came out of states a position behind the one before it. Sixty-four
+/// of them is eight million packets, or a gigabyte and a half: past that, the
+/// map is not one turn out of step but wrong, and it is left as it reads.
+const TURNS: u32 = 64;
+
 /// What wrote this disc.
 ///
 /// Two of the three are the halves of the Blu-ray specification and are read
@@ -1564,17 +1574,41 @@ fn entry_points(raw: &[u8]) -> Vec<(f64, u64)> {
             return Vec::new();
         }
         let mut out = Vec::with_capacity(fine_n);
+        // The last position handed out. Entry points are places in a file and
+        // a file only goes one way, which is what the correction below leans
+        // on.
+        let mut behind = 0u64;
         for (k, &(first, pts_hi, spn_hi)) in coarse.iter().enumerate() {
             let last = coarse.get(k + 1).map_or(fine_n, |c| c.0);
+            // The top of the packet number comes from the coarse entry and
+            // the bottom seventeen bits from the fine one.
+            let mut top = spn_hi & !0x1_FFFF;
             for f in first..last.min(fine_n) {
                 let v = u32be(raw, fine_at + f * 4);
                 let pts = (pts_hi << 19) | (((v >> 17) & 0x7FF) as u64) << 9;
-                // The top of the packet number comes from the coarse entry
-                // and the bottom seventeen bits from the fine one.
-                let spn = (spn_hi & !0x1_FFFF) | (v & 0x1_FFFF) as u64;
+                let mut spn = top | (v & 0x1_FFFF) as u64;
+                // **A coarse entry does not always carry the top it should.**
+                // The seventeen bits a fine entry holds run out every 131072
+                // packets, about twenty seconds of a recording, and a coarse
+                // entry is written each time they do -- but on one clip of the
+                // recorder's discs measured here, nine of them state a top
+                // that is one such step behind, which reads as the map turning
+                // round and going back 25 megabytes. It does not: what a
+                // player is being told is where the next picture is, and the
+                // next picture is further in. So a position that would go
+                // backwards is stepped on by whole seventeen-bit turns until
+                // it does not, which leaves every well-written map exactly as
+                // it was and puts that one back in order.
+                let mut turns = 0;
+                while spn < behind && turns < TURNS {
+                    top += 0x2_0000;
+                    spn += 0x2_0000;
+                    turns += 1;
+                }
+                behind = spn;
                 // A source packet is 192 bytes: a transport packet behind the
                 // four that say when it arrived.
-                out.push((pts as f64 / 90_000.0, spn * 192));
+                out.push((pts as f64 / 90_000.0, spn * SOURCE_PACKET));
             }
         }
         return out;
@@ -2284,8 +2318,8 @@ mod tests {
         // entry carries the next step of the timestamp, which is what makes a
         // point more than its own fine entry.
         let raw = clpi_with_ep_map(
-            &[(0, 0, 0), (2, 1, 0)],
-            &[(0, 0), (90, 100), (0, 7), (90, 9)],
+            &[(0, 0, 0), (2, 1, 150)],
+            &[(0, 0), (90, 100), (0, 150), (90, 190)],
         );
         let found = entry_points(&raw);
         assert_eq!(found.len(), 4);
@@ -2294,8 +2328,29 @@ mod tests {
         assert_eq!(found[0], (0.0, 0));
         assert_eq!(found[1], (46080.0 / 90_000.0, 100 * 192));
         // And the coarse entry holds everything above that: 1 << 19 ticks.
-        assert_eq!(found[2], (524_288.0 / 90_000.0, 7 * 192));
-        assert_eq!(found[3], ((524_288.0 + 46080.0) / 90_000.0, 9 * 192));
+        assert_eq!(found[2], (524_288.0 / 90_000.0, 150 * 192));
+        assert_eq!(found[3], ((524_288.0 + 46080.0) / 90_000.0, 190 * 192));
+    }
+
+    /// A coarse entry that states a position behind the one before it is one
+    /// turn of the fine entry's seventeen bits out of step, which is what one
+    /// recorder's discs do. The points are places in a file and a file goes
+    /// one way, so it is carried forward rather than believed.
+    #[test]
+    fn an_entry_point_never_goes_backwards() {
+        let raw = clpi_with_ep_map(
+            &[(0, 0, 0), (2, 1, 0)],
+            &[(0, 0), (90, 100), (0, 7), (90, 9)],
+        );
+        let found = entry_points(&raw);
+        assert_eq!(found.len(), 4);
+        assert_eq!(found[1].1, 100 * 192);
+        // Seven packets in would be behind the hundred already given out, so
+        // the whole turn is added: 131072 of them.
+        assert_eq!(found[2].1, (7 + 131_072) * 192);
+        assert_eq!(found[3].1, (9 + 131_072) * 192);
+        // And every position still climbs.
+        assert!(found.windows(2).all(|w| w[0].1 < w[1].1));
     }
 
     #[test]

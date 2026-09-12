@@ -607,6 +607,19 @@ fill in the rest; a time is therefore one of each, put together. The layout is
 for a stream opens with a four-byte offset to its own fine table, and the
 coarse table starts after that.
 
+**And a coarse entry does not always carry the top it should.** The seventeen
+bits a fine entry holds for the packet number run out every 131,072 packets,
+about twenty seconds of a recording, and a coarse entry is written each time
+they do. On one clip of the recorder's discs measured here, nine of them state
+a top one such step behind, which combined with the fine entry reads as the map
+turning round and going back 25 megabytes — and put nine entry points, with
+times from a later stretch of the clip, inside an earlier one. The other
+nineteen clips on those four discs are clean, and so is every pressed disc
+measured. Entry points are places in a file and a file goes one way, so a
+position that would go backwards is stepped on by whole seventeen-bit turns
+until it does not. Nineteen of the twenty clips come out byte for byte as they
+did before.
+
 **What the map cannot say** is whether a GOP is open, or whether the leading
 pictures hanging off one may be thrown away — that is in the bitstream, not in
 any index. So the points arrive with `leading_known: false` and
