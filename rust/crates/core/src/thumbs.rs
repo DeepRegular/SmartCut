@@ -540,6 +540,7 @@ pub fn build_with(
     let mut decoder = crate::video_decoder_with(params, opts.threads)?;
 
     let mut collector = Collector::new(src, opts);
+    let mut entries = crate::EntryPictures::new(&src.video);
     let mut told = -1.0;
     let mut frame = ff::frame::Video::empty();
     let mut shared = std::time::Instant::now();
@@ -588,10 +589,21 @@ pub fn build_with(
         // BS Fuji recording that lost 351 of 3371 entry points in runs tens
         // of seconds long, and the film strip filled the holes with whatever
         // picture happened to be nearest.
-        if !packet.is_key() {
+        //
+        // Which packets those are is [`crate::EntryPictures`]: a key packet
+        // is the whole of an entry picture until the material is PAFF, where
+        // it is the first field of one and the packet behind it is the rest.
+        let step = entries.step(&packet);
+        if step == crate::Step::Skip {
             continue;
         }
         if decoder.send_packet(&packet).is_err() {
+            entries.broke();
+            continue;
+        }
+        // Half a picture: nothing can come out until its partner goes in, and
+        // draining here would flush the half away.
+        if step == crate::Step::Half {
             continue;
         }
         // Drained on its own, because it was sent on its own. A decoder

@@ -1302,6 +1302,38 @@ entry points where it answered 32, and does it in half the time. Material that
 reorders nothing — an interlaced MPEG-2 recording — is unaffected either way, at 2941
 of 2941 before and after.
 
+### An entry picture marked in one packet can still take two
+
+The rule those paths skip by is the key flag: a key packet is an entry picture, everything
+else is not, and everything else goes by unparsed. **PAFF breaks the rule.** A Blu-ray
+recorder codes 1440x1080 H.264 as field pairs, libavcodec's H.264 parser hands each field
+over on its own, and only the first of the pair carries the flag. Fed that half and then
+drained, the decoder holds it back waiting for the other half and gives nothing at all
+back: **0 pictures out of 3802 entry points** on a recorder's own BD-RE.
+
+Nothing failed and nothing was logged. The clip's row had no picture, its film strip had
+no cells, its scene marks were an empty list, and the cached index was written down with
+no thumbnail track in it. The material decodes perfectly well — the cut editor's own
+preview, which sends every packet, shows it — so the report from outside was simply that
+the pictures were missing on these discs and on no others.
+
+`EntryPictures` now says which packets an entry picture is made of, and the three passes
+that read only entry pictures — the thumbnail track, the film strip's own decode, the
+one-read scan — ask it instead of asking the key flag. A field-coded half is sent and
+nothing is read back; the packet behind it is always its other half and goes in next; only
+then is the decoder drained. The disc measured here goes from 0 held pictures to 5564 at
+0.50 s apart, with 929 scene marks, and the strip answers every cell from the track
+instead of decoding it. Both halves of the pair land in one picture, so the count is
+pictures and not fields.
+
+Material that codes no fields is untouched, by construction rather than by intent: the
+question is asked of the packet, and a packet that opens a whole frame answers no. Over 12
+broadcast recordings and 6 reference discs — MPEG-2 broadcast, MPEG-2 DVD, H.264 and VC-1
+Blu-ray, a recorder's BDAV — not one key packet is a field picture, and the pass sends
+exactly what it sent before. Broadcast MPEG-2 is the near miss worth naming: it codes
+field pairs too, but its parser joins the pair into one packet, so the packet holds a
+whole frame's worth and the old rule was right about it.
+
 ### Refinement — the mark is an I picture, the cut is just before it
 
 What scene detection finds is "the I picture that first showed the new image"; the cut itself is

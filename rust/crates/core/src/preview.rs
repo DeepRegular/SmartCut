@@ -850,6 +850,7 @@ fn walk(
     let mut frame = ff::frame::Video::empty();
     let mut first = None;
     let mut stopped = false;
+    let mut entries = crate::EntryPictures::new(&src.video);
     'outer: for (stream, packet) in ictx.packets() {
         if stream.index() != idx {
             continue;
@@ -858,10 +859,25 @@ fn walk(
         // here rather than with `skip_frame`, which is per *picture* and so
         // takes the P bottom field off a field-coded entry point; see the
         // note in `thumbs::build`.
-        if keys && !packet.is_key() {
+        //
+        // Which packets an entry picture is made of is not always the one
+        // marked: PAFF codes it as two, and the decoder gives nothing back
+        // until both have gone in. See [`crate::EntryPictures`].
+        let step = if keys {
+            entries.step(&packet)
+        } else {
+            crate::Step::Whole
+        };
+        if step == crate::Step::Skip {
             continue;
         }
         if decoder.send_packet(&packet).is_err() {
+            entries.broke();
+            continue;
+        }
+        // Half a picture. Nothing can come out yet, and the drain below would
+        // throw the half away rather than wait for its partner.
+        if step == crate::Step::Half {
             continue;
         }
         // An entry picture decodes on its own, which is the whole reason the

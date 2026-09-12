@@ -498,6 +498,84 @@ pub fn video_decoder_with(
     Ok(ctx.decoder().video()?)
 }
 
+/// What a pass that decodes only entry pictures has to hand its decoder.
+///
+/// Three passes here read a recording for its entry points alone -- the
+/// thumbnail track, the one-read scan, the film strip's own decode -- and all
+/// three skip the packets between them unparsed, which is most of the file
+/// and nearly all of the saving. The rule they skipped by was the key flag:
+/// an entry picture is a key packet and a key packet is an entry picture.
+///
+/// **A field-coded entry picture is two packets and only the first is
+/// marked.** A recorder's own BD-RE codes 1440x1080 as PAFF, and libavcodec's
+/// H.264 parser hands each field of a pair over separately (its MPEG-2 parser
+/// joins them, which is why this only shows up on the discs). Fed the first
+/// half on its own, a decoder holds it back waiting for the other and hands
+/// nothing over -- not late, never: 0 pictures out of 3802 entry points on the
+/// disc measured here. Every picture in the application was then missing at
+/// once -- no film strip, no row picture, no scene marks -- which is what the
+/// symptom looked like from outside.
+///
+/// So the half is sent, nothing is read back, and the packet that follows it
+/// -- always its other half -- goes in behind it. Then the picture is whole
+/// and the decoder can be drained.
+pub struct EntryPictures<'a> {
+    video: &'a VideoInfo,
+    /// A half has gone in and the next packet completes it.
+    partner: bool,
+}
+
+/// What [`EntryPictures::step`] says to do with a packet.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Step {
+    /// No part of an entry picture. Skip it unparsed.
+    Skip,
+    /// Send it and read nothing back yet: this is one field of a pair.
+    Half,
+    /// Send it. The entry picture is complete and the decoder can be drained.
+    Whole,
+}
+
+impl<'a> EntryPictures<'a> {
+    pub fn new(video: &'a VideoInfo) -> Self {
+        Self {
+            video,
+            partner: false,
+        }
+    }
+
+    /// What to do with the next packet of the video stream.
+    pub fn step(&mut self, packet: &ff::Packet) -> Step {
+        // The other half of a pair, whether or not it is marked: a recording
+        // that marks both fields of its entry pictures is still describing
+        // one picture, and the field after a field is that picture's second
+        // half either way.
+        if std::mem::take(&mut self.partner) {
+            return Step::Whole;
+        }
+        if !packet.is_key() {
+            return Step::Skip;
+        }
+        self.partner = bitstream::is_field_picture(
+            packet.data().unwrap_or(&[]),
+            &self.video.codec,
+            self.video.framing,
+            self.video.field_shape.as_ref(),
+        );
+        if self.partner {
+            Step::Half
+        } else {
+            Step::Whole
+        }
+    }
+
+    /// Forget a half the caller could not send, so that the packet behind it
+    /// is not taken for a partner of nothing.
+    pub fn broke(&mut self) {
+        self.partner = false;
+    }
+}
+
 /// Index the video stream's random access points by walking packets.
 ///
 /// Packets arrive in decode order and need no decoding, which matters twice

@@ -87,7 +87,7 @@ impl IndexSource for PacketScan {
     }
 }
 
-/// The walk itself, with each key packet offered to `key` as it goes by.
+/// The walk itself, with each entry picture offered to `entry` as it goes by.
 ///
 /// One read where there would otherwise be two. The index needs every packet
 /// and decodes none of them; the thumbnail track needs only the key ones and
@@ -98,15 +98,18 @@ impl IndexSource for PacketScan {
 /// here lets a caller that wants both pay for one read; see
 /// [`crate::scan_with_pictures`].
 ///
-/// `key` is offered the packet, not the picture: what to do with it -- decode
-/// it, count it, ignore it -- is the caller's business, and this file has no
-/// decoder in it.
+/// `entry` is offered the packet, not the picture: what to do with it --
+/// decode it, count it, ignore it -- is the caller's business, and this file
+/// has no decoder in it. It is offered *both* packets of a field-coded entry
+/// picture, the marked half and the unmarked one behind it, because half of a
+/// picture is not one and a decoder handed only the marked half gives nothing
+/// back at all. See [`crate::EntryPictures`].
 pub fn walk(
     video: &VideoInfo,
     start_time: f64,
     mut ictx: crate::input::Demux,
     on: Option<OnProgress>,
-    mut key: impl FnMut(&ff::Packet) -> Result<()>,
+    mut entry: impl FnMut(&ff::Packet) -> Result<()>,
     stop: Option<&(dyn Fn() -> bool + Sync)>,
 ) -> Result<Index> {
     let stream_index = video.stream_index;
@@ -133,6 +136,7 @@ pub fn walk(
     });
 
     let mut packets: Vec<PacketView> = Vec::new();
+    let mut entries = crate::EntryPictures::new(video);
     let mut pulldown = false;
     // What the pictures weigh. Free here -- the walk is holding every packet
     // already -- and there is nowhere else to learn it: a transport stream
@@ -167,6 +171,12 @@ pub fn walk(
             continue;
         }
         video_bytes += p.size() as u64;
+        // Before the timestamp is asked for, not after: the second field of a
+        // pair often carries none, and a packet with no timestamp is nothing
+        // to the index but is still half of a picture to a decoder.
+        if entries.step(&p) != crate::Step::Skip {
+            entry(&p)?;
+        }
         let Some(pts) = p.pts() else { continue };
         let reference = p
             .data()
@@ -181,9 +191,6 @@ pub fn walk(
                 .data()
                 .map(|d| bitstream::display_fields(d, &codec, vc1) != 2)
                 .unwrap_or(false);
-        }
-        if p.is_key() {
-            key(&p)?;
         }
         packets.push(PacketView {
             pts: pts as f64 * time_base - start_time,
