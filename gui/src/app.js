@@ -23,6 +23,7 @@
 import { fmt, clock, coarse, chLabel, cmNote, esc, size, noBrowserMenu, noNativeDrag } from "./shared.js";
 import { t, applyStatic, preference, currentLang, setLang, onLangChange, tellBackend, confirmWithOs }
   from "./i18n.js";
+import * as prefs from "./prefs.js";
 
 const T = window.__TAURI__ || {};
 const invoke = T.core && T.core.invoke;
@@ -2089,6 +2090,52 @@ const settings = {
 /// one from the last one's folder and prefix would be starting it half open.
 const SETTING_DEFAULTS = { ...settings };
 
+/// Which of them are worth carrying from one session to the next.
+///
+/// Everything that describes the output rather than the recordings it is
+/// made from. The two left out belong to whatever is in the list: the disc's
+/// name is read off the first recording, and `subfolder` is null until the
+/// screen has settled it. Restoring a stale answer to either would be
+/// answering for a list this session has not seen.
+const KEPT_SETTINGS = Object.keys(SETTING_DEFAULTS)
+  .filter((key) => !["discTitle", "subfolder"].includes(key));
+
+/// The settings as they are now, put away for the next start.
+///
+/// Written on every change rather than at quit: a program that is killed, or
+/// that falls over, has still been used, and the answers it was being used
+/// with are the ones worth having back. Stored whatever the preference says
+/// -- what it governs is whether they are read again -- so that turning it
+/// on has something to restore without waiting for the next change.
+function rememberOutput() {
+  const kept = {};
+  for (const key of KEPT_SETTINGS) kept[key] = settings[key];
+  prefs.set("output", kept);
+  paintKeptOutput();
+}
+
+/// Put a remembered set back, for the start of a session and for 新規作成.
+///
+/// Only names this build knows, and only where the stored value is the shape
+/// this build expects: the store outlives a version, and a setting that has
+/// since changed what it means is better left at its default than restored
+/// into a control that cannot hold it. `showSettings` does the rest -- it is
+/// the one that puts them on screen and reads them back off the controls.
+function restoreOutput() {
+  if (!prefs.get("keepOutput")) return false;
+  const kept = prefs.get("output");
+  if (!kept || typeof kept !== "object") return false;
+  let any = false;
+  for (const key of KEPT_SETTINGS) {
+    const value = kept[key];
+    if (value === undefined) continue;
+    if (typeof value !== typeof SETTING_DEFAULTS[key] && SETTING_DEFAULTS[key] !== null) continue;
+    settings[key] = value;
+    any = true;
+  }
+  return any;
+}
+
 /// The path a sidecar of this clip has, without the extension.
 function sidecarBase(clip) {
   const dir = clip.home ? `${clip.home.replace(/[/\\]*$/, "")}/` : dirOf(clip.path);
@@ -2193,6 +2240,7 @@ function bindSetting(id, key, kind = "value") {
     settings[key] = kind === "checked" ? input.checked : input.value;
     renderOutset();
     renderOutScreen();
+    rememberOutput();
     touch();
   };
   input.addEventListener(kind === "checked" ? "change" : "input", read);
@@ -2224,6 +2272,7 @@ function showSettings() {
   }
   renderOutset();
   renderOutScreen();
+  rememberOutput();
 }
 bindSetting("out-dir", "dir");
 bindSetting("out-subfolder", "subfolder");
@@ -3511,6 +3560,7 @@ for (const b of document.querySelectorAll(".modes .tab")) {
     settings.mode = b.dataset.mode;
     renderOutset();
     renderOutScreen();
+    rememberOutput();
     touch();
   });
 }
@@ -4670,7 +4720,13 @@ async function askReplace(title = t("project.replaceTitle"), body = t("project.r
 async function newProject() {
   if (!(await askReplace(t("project.newTitle"), t("project.newBody")))) return;
   await remove(clips.slice());
+  // Back to the defaults -- unless the settings are being carried, in which
+  // case the answer to "what should a new list be written as" is the one
+  // being carried. That is what the preference is for: a new project then
+  // starts where the last one left off rather than at the program's idea of
+  // a first run.
   for (const key of Object.keys(SETTING_DEFAULTS)) settings[key] = SETTING_DEFAULTS[key];
+  restoreOutput();
   filledIn = null;
   showSettings();
   projectPath = "";
@@ -4860,12 +4916,120 @@ window.addEventListener("keydown", (ev) => {
 });
 
 // --- 環境設定 -------------------------------------------------------------
+//
+// Every control here takes effect as it is changed: there is no OK, and the
+// button at the foot only puts the panel away. A preferences screen with an
+// Apply is a screen you can leave in a state that is neither what you had
+// nor what you asked for, and this one is reachable while a list is being
+// worked on.
+//
+// Three of them reach further than this window. The language and the two the
+// cut editor reads are sent on as an event, because that window has its own
+// copy of everything and does not read the store again while it is up; the
+// four the engine acts on are sent to the backend, which is where a plan is
+// made and where the scratch files are written. See `prefs.js` and
+// `prefs.rs`.
 
-const prefs = el("prefs");
+const prefsPanel = el("prefs");
+
+/// Which group is on screen. Kept for the life of the window rather than
+/// stored: somebody who came back to the panel twice in a minute came back
+/// for the same group, and somebody who starts the program again is starting
+/// again.
+let prefsPane = "view";
+
+/// Put one group up and the rest away.
+///
+/// The list on the left is a tab list, so exactly one of its names is the
+/// one that can be tabbed to -- the arrow keys are what walks the rest. See
+/// the handler below.
+function showPane(which) {
+  prefsPane = which;
+  for (const tab of document.querySelectorAll(".pref-tab")) {
+    const on = tab.dataset.pane === which;
+    tab.classList.toggle("active", on);
+    tab.setAttribute("aria-selected", on ? "true" : "false");
+    tab.tabIndex = on ? 0 : -1;
+    el(`pref-pane-${tab.dataset.pane}`).hidden = !on;
+  }
+}
+
+for (const tab of document.querySelectorAll(".pref-tab")) {
+  tab.addEventListener("click", () => showPane(tab.dataset.pane));
+}
+
+/// The arrow keys walk the list, Home and End go to its ends. What a list of
+/// tabs is expected to answer to, and the reason only the selected one is in
+/// the tab order.
+el("prefs").querySelector(".pref-tabs").addEventListener("keydown", (ev) => {
+  const tabs = [...document.querySelectorAll(".pref-tab")];
+  const at = tabs.findIndex((t) => t.dataset.pane === prefsPane);
+  const to = {
+    ArrowDown: at + 1,
+    ArrowRight: at + 1,
+    ArrowUp: at - 1,
+    ArrowLeft: at - 1,
+    Home: 0,
+    End: tabs.length - 1,
+  }[ev.key];
+  if (to === undefined) return;
+  ev.preventDefault();
+  const next = tabs[clamp(to, 0, tabs.length - 1)];
+  showPane(next.dataset.pane);
+  next.focus();
+});
+
+/// Put the store on screen. Called on opening rather than once at startup:
+/// nothing else writes these, but a panel that paints itself is a panel that
+/// cannot be caught showing yesterday's answer.
+function paintPrefs() {
+  el("pref-lang").value = preference();
+  el("pref-counter").checked = !!prefs.get("counter");
+  el("pref-subs").checked = !!prefs.get("subsOn");
+  el("pref-keep-output").checked = !!prefs.get("keepOutput");
+  el("pref-clean-joins").checked = !!prefs.get("cleanJoins");
+  el("pref-proxy").checked = !!prefs.get("proxy");
+  el("pref-proxy-width").value = String(Number(prefs.get("proxyWidth")) || 0);
+  el("pref-ffmpeg-log").value = String(Number(prefs.get("ffmpegLog")) || 0);
+  paintCacheDir();
+  paintKeptOutput();
+  paintProxyWidth();
+}
+
+/// The width only means anything while a proxy is being built at all.
+function paintProxyWidth() {
+  el("row-pref-proxy-width").hidden = !prefs.get("proxy");
+}
+
+function paintCacheDir() {
+  const dir = String(prefs.get("cacheDir") || "");
+  const field = el("pref-cache-dir");
+  field.value = dir;
+  field.placeholder = cacheHome || t("prefs.cacheDirDefault");
+}
+
+/// What a restart would put back, for the line under the preference. The
+/// folder alone: it is the setting somebody would be surprised to inherit,
+/// and the rest of them are on the screen the panel is standing over.
+function paintKeptOutput() {
+  const kept = prefs.get("output");
+  const line = el("pref-keep-what");
+  if (!kept || typeof kept !== "object") {
+    line.textContent = t("prefs.keepNone");
+    return;
+  }
+  line.textContent = t("prefs.keepWhat", { what: kept.dir || t("prefs.keepBeside") });
+}
 
 function showPrefs(on) {
-  prefs.hidden = !on;
-  if (on) el("pref-lang").value = preference();
+  prefsPanel.hidden = !on;
+  if (!on) return;
+  showPane(prefsPane);
+  paintPrefs();
+  // What is actually on disk, which only the other side can say. Asked on
+  // every opening because a pass that ran while the panel was shut has added
+  // to it.
+  paintCacheUse();
 }
 
 el("menu-prefs").addEventListener("click", () => {
@@ -4874,11 +5038,11 @@ el("menu-prefs").addEventListener("click", () => {
 });
 el("prefs-close").addEventListener("click", () => showPrefs(false));
 // The dark ground behind the panel, but not the panel itself.
-prefs.addEventListener("click", (ev) => {
-  if (ev.target === prefs) showPrefs(false);
+prefsPanel.addEventListener("click", (ev) => {
+  if (ev.target === prefsPanel) showPrefs(false);
 });
 window.addEventListener("keydown", (ev) => {
-  if (ev.key === "Escape" && !prefs.hidden) showPrefs(false);
+  if (ev.key === "Escape" && !prefsPanel.hidden) showPrefs(false);
 });
 
 el("pref-lang").addEventListener("change", async (ev) => {
@@ -4895,6 +5059,164 @@ el("pref-lang").addEventListener("change", async (ev) => {
   // from the webview's own idea of the machine, and this window may already
   // have been corrected by the backend's.
   if (emit) emit("lang-changed", currentLang());
+  // The panel is standing open in the language it was opened in: the static
+  // markup has been redrawn by `setLang`, and these are the lines that are
+  // written rather than marked up.
+  paintKeptOutput();
+  paintCacheUse();
+});
+
+/// Tell the cut editor. It reads the store when it opens, so this is only
+/// for one that is already up -- and the editor decides for itself what it
+/// can act on without being reopened.
+function tellEditorPrefs() {
+  if (emit) emit("prefs-changed", { counter: !!prefs.get("counter"), subsOn: !!prefs.get("subsOn") });
+}
+
+el("pref-counter").addEventListener("change", (ev) => {
+  prefs.set("counter", ev.target.checked);
+  tellEditorPrefs();
+});
+el("pref-subs").addEventListener("change", (ev) => {
+  prefs.set("subsOn", ev.target.checked);
+  tellEditorPrefs();
+});
+
+el("pref-keep-output").addEventListener("change", (ev) => {
+  prefs.set("keepOutput", ev.target.checked);
+  // Turning it on settles what is to be carried at the moment it is turned
+  // on, rather than at the next change to a setting: the answer somebody has
+  // in front of them is the one they mean.
+  if (ev.target.checked) rememberOutput();
+});
+
+el("pref-forget-output").addEventListener("click", () => {
+  for (const key of Object.keys(SETTING_DEFAULTS)) settings[key] = SETTING_DEFAULTS[key];
+  filledIn = null;
+  // Which writes the defaults back over what was being carried: from here on
+  // that is what a restart restores, because it is what is now in force.
+  showSettings();
+  touch();
+  note(t("prefs.forgetOutput"));
+});
+
+/// The four the engine acts on. Sent as a set rather than one at a time --
+/// there is one command and it takes all of them -- and the folder is the
+/// only one that can be refused, so it is the only one with anything to say
+/// back.
+async function pushPrefs() {
+  const failed = await prefs.tellBackend(invoke);
+  if (failed) note(t("prefs.cacheDirFailed", { e: failed }));
+  return !failed;
+}
+
+el("pref-clean-joins").addEventListener("change", async (ev) => {
+  prefs.set("cleanJoins", ev.target.checked);
+  await pushPrefs();
+});
+el("pref-proxy").addEventListener("change", async (ev) => {
+  prefs.set("proxy", ev.target.checked);
+  paintProxyWidth();
+  await pushPrefs();
+});
+el("pref-proxy-width").addEventListener("change", async (ev) => {
+  prefs.set("proxyWidth", Number(ev.target.value) || 0);
+  await pushPrefs();
+});
+el("pref-ffmpeg-log").addEventListener("change", async (ev) => {
+  prefs.set("ffmpegLog", Number(ev.target.value) || 0);
+  await pushPrefs();
+});
+
+/// Where the backend would put the scratch files if nobody chose. Asked once
+/// at startup and shown as the field's placeholder, so that "既定" is a place
+/// with a name rather than an empty box.
+let cacheHome = "";
+
+el("pref-cache-pick").addEventListener("click", async () => {
+  const picked = await dialog.open({ directory: true, multiple: false });
+  if (!picked) return;
+  const dir = Array.isArray(picked) ? picked[0] : picked;
+  const was = prefs.get("cacheDir");
+  prefs.set("cacheDir", dir);
+  // A folder that cannot be written to is not a preference worth keeping:
+  // it would be tried again at every start and fail there too, where there
+  // is nobody looking at a panel to be told about it.
+  if (!(await pushPrefs())) {
+    prefs.set("cacheDir", was);
+    await prefs.tellBackend(invoke);
+  }
+  paintCacheDir();
+  paintCacheUse();
+});
+
+el("pref-cache-reset").addEventListener("click", async () => {
+  prefs.set("cacheDir", "");
+  await pushPrefs();
+  paintCacheDir();
+  paintCacheUse();
+});
+
+/// What is on disk, by kind. Three rows, because they do not cost the same
+/// to lose: an index is a pass over the recording, a proxy is a whole
+/// re-encode of it, and a detection is both.
+let cacheTotal = 0;
+
+async function paintCacheUse() {
+  const list = el("pref-cache-list");
+  const total = el("pref-cache-total");
+  let use = null;
+  try {
+    use = invoke ? await invoke("cache_usage") : null;
+  } catch (e) {
+    void e;
+  }
+  list.innerHTML = "";
+  cacheTotal = 0;
+  if (!use) {
+    total.textContent = "";
+    el("pref-cache-clear").disabled = true;
+    return;
+  }
+  for (const kind of ["index", "proxy", "cm"]) {
+    const held = use[kind] || { files: 0, bytes: 0 };
+    cacheTotal += held.bytes || 0;
+    const li = document.createElement("li");
+    const what = document.createElement("span");
+    what.className = "what";
+    what.textContent = t(`prefs.cacheKind.${kind}`);
+    const n = document.createElement("span");
+    n.className = "num";
+    n.textContent = t("prefs.cacheFiles", { n: held.files || 0 });
+    const b = document.createElement("span");
+    b.className = "num";
+    b.textContent = size(held.bytes || 0);
+    li.append(what, n, b);
+    list.appendChild(li);
+  }
+  total.textContent = cacheTotal
+    ? t("prefs.cacheTotal", { size: size(cacheTotal) })
+    : t("prefs.cacheEmpty");
+  el("pref-cache-clear").disabled = cacheTotal === 0;
+}
+
+el("pref-cache-clear").addEventListener("click", async () => {
+  // Asked with the number in it. What is lost is only ever a pass -- the
+  // cuts are in the list and in the project file -- and saying so is what
+  // makes the question answerable without going to look first.
+  const go = await dialog.ask(t("prefs.cacheClearBody", { size: size(cacheTotal) }), {
+    title: t("prefs.cacheClearTitle"),
+    kind: "warning",
+    okLabel: t("prefs.cacheClearOk"),
+    cancelLabel: t("prefs.cacheClearCancel"),
+  });
+  if (!go) return;
+  try {
+    await invoke("clear_cache");
+  } catch (e) {
+    note(t("prefs.cacheClearFailed", { e: String(e) }));
+  }
+  paintCacheUse();
 });
 
 // --- バージョン情報 --------------------------------------------------------
@@ -5006,7 +5328,7 @@ window.addEventListener("keydown", (ev) => {
   // A panel is over the list: the ground behind it says the rest of the
   // program is not listening, and Delete deleting a clip out from under it
   // would be the list listening anyway.
-  if (!prefs.hidden || !about.hidden) return;
+  if (!prefsPanel.hidden || !about.hidden) return;
   if (ev.target.tagName === "INPUT" || ev.target.tagName === "SELECT") return;
   const key = ev.key.toLowerCase();
   if ((ev.ctrlKey || ev.metaKey) && key === "a") {
@@ -5048,6 +5370,11 @@ noBrowserMenu();
 noNativeDrag();
 applyStatic();
 el("pref-lang").value = preference();
+// The output settings as the last session left them, where that is what was
+// asked for. Before the first draw rather than after it: the settings screen
+// is drawn from `settings`, and putting them back afterwards would show the
+// defaults for as long as it takes to redraw.
+if (restoreOutput()) showSettings();
 // The three readouts on the output screen that stand at rest until something
 // is written. Set here rather than marked up, so that a language change
 // during a run does not blank a summary that has just been printed.
@@ -5063,6 +5390,27 @@ show("input");
 tellBackend(invoke)
   .then(() => confirmWithOs(invoke))
   .then((changed) => (changed ? tellBackend(invoke) : null))
+  // And the rest of 環境設定, which the other side acts on: where the scratch
+  // files go, whether a proxy is built, how a join is planned. Asked for
+  // first and told second -- the four of them also answer to an environment
+  // variable, and what that came out as is the default for anything nobody
+  // has settled here. Both before the list is touched: a pass queued by
+  // `initial_paths` would otherwise run the way the backend was started
+  // rather than the way it has been asked.
+  .then(() => (invoke ? invoke("prefs_now").catch(() => null) : null))
+  .then((now) => {
+    if (!now) return null;
+    cacheHome = now.cacheHome || "";
+    prefs.seed(now);
+    return null;
+  })
+  .then(() => prefs.tellBackend(invoke))
+  // The one of them that can be refused is the folder for the scratch files,
+  // and a folder that was there when it was chosen can be gone by the next
+  // start -- an external disk, a share that is not mounted yet. Said on the
+  // line the passes report on, because what happens instead is not nothing:
+  // the scratch files go back to the place the platform gives.
+  .then((failed) => (failed ? note(t("prefs.cacheDirFailed", { e: failed })) : null))
   .then(() => invoke("initial_paths"))
   .then(async (paths) => {
     if (!paths || !paths.length) return;

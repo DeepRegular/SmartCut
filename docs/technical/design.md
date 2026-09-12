@@ -1366,7 +1366,7 @@ elementary streams). The old path comes back with `SMARTCUT_BYTE_SEEK=0`.
 
 ## Proxy editing (`proxy.rs`)
 
-**Off by default. `SMARTCUT_PROXY=1` builds one.**
+**Off by default. 環境設定 turns it on, and `SMARTCUT_PROXY=1` is what it starts at.**
 
 The idea is that continuing to decode the loaded recording as it is, is **too expensive just to
 look at pictures**, so right after opening, the whole thing is decoded once and rewritten small.

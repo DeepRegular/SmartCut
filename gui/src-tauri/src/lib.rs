@@ -23,6 +23,7 @@ use std::sync::Mutex;
 
 #[macro_use]
 mod lang;
+mod prefs;
 
 use base64::Engine as _;
 use serde::{Deserialize, Serialize};
@@ -848,17 +849,37 @@ async fn glimpse_sweep(
     .await
 }
 
-/// Where seek indexes are kept.
-fn index_dir(app: &tauri::AppHandle) -> Result<std::path::PathBuf, String> {
-    let dir = app
-        .path()
-        .app_cache_dir()
-        .map_err(|e| {
-            format!("{}: {e}", tr!("キャッシュの置き場が分かりません", "No cache directory"))
-        })?
-        .join("index");
+/// Where this program may put what it can always build again.
+///
+/// The platform's own answer, unless 環境設定 names somewhere else: a seek
+/// index is a few hundred kilobytes but a proxy is gigabytes an hour, and a
+/// machine whose home directory is on the small fast disk has every reason
+/// to send them to the big slow one. Under it are the three folders below,
+/// one per kind, so that a folder somebody chose stays legible and so that
+/// one kind can be deleted without the others.
+///
+/// A folder chosen here is made when it is chosen, not when it is used --
+/// `set_prefs` is where a path that cannot be written to is refused, which
+/// is while somebody is looking at the panel that asked for it.
+fn cache_root(app: &tauri::AppHandle) -> Result<std::path::PathBuf, String> {
+    if let Some(dir) = prefs::cache_dir() {
+        return Ok(dir);
+    }
+    app.path().app_cache_dir().map_err(|e| {
+        format!("{}: {e}", tr!("キャッシュの置き場が分かりません", "No cache directory"))
+    })
+}
+
+/// One of the three, made if it is not there yet.
+fn cache_kind(app: &tauri::AppHandle, kind: &str) -> Result<std::path::PathBuf, String> {
+    let dir = cache_root(app)?.join(kind);
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
     Ok(dir)
+}
+
+/// Where seek indexes are kept.
+fn index_dir(app: &tauri::AppHandle) -> Result<std::path::PathBuf, String> {
+    cache_kind(app, "index")
 }
 
 /// The seek index written for this recording by an earlier session, if there
@@ -1238,8 +1259,11 @@ fn track_info(track: &smartcut_core::Track, seconds: f64) -> TrackInfo {
 /// out of seeking. What is left for the proxy is material where decoding one
 /// picture is itself too slow to scrub -- which 1440x1080 MPEG-2 is not, and
 /// 8K will be.
+///
+/// Off unless 環境設定 says otherwise, which the environment seeds at startup
+/// -- see [`prefs`].
 fn proxy_wanted() -> bool {
-    matches!(std::env::var("SMARTCUT_PROXY").as_deref(), Ok("1") | Ok("on") | Ok("yes"))
+    prefs::proxy()
 }
 
 /// Make the recording ready to look at: the thumbnail track and scene index,
@@ -1256,7 +1280,14 @@ async fn prepare(app: tauri::AppHandle) -> Result<PrepareInfo, String> {
         let thumb_opts = smartcut_core::ThumbOptions::default();
         let mut note = String::new();
         if proxy_wanted() {
-            let opts = proxy::ProxyOptions::default();
+            let mut opts = proxy::ProxyOptions::default();
+            // A width settled in 環境設定 beats the engine's own, which is
+            // what the environment and the default between them came to.
+            // The engine still brings it down to something the stage can
+            // show -- see `proxy::MAX_WIDTH`.
+            if let Some(w) = prefs::proxy_width() {
+                opts.width = w;
+            }
             match make_proxy(&app, &src, &opts, &thumb_opts, generation) {
                 Ok(Some(info)) => return Ok(info),
                 // Superseded: another file was opened while this ran.
@@ -1922,14 +1953,7 @@ fn make_proxy(
     thumb_opts: &smartcut_core::ThumbOptions,
     generation: u64,
 ) -> Result<Option<PrepareInfo>, String> {
-    let dir = app
-        .path()
-        .app_cache_dir()
-        .map_err(|e| {
-            format!("{}: {e}", tr!("キャッシュの置き場が分かりません", "No cache directory"))
-        })?
-        .join("proxy");
-    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    let dir = cache_kind(app, "proxy")?;
     let path = proxy::cache_path(&dir, &src.path, opts).map_err(|e| e.to_string())?;
     let began = std::time::Instant::now();
 
@@ -2156,7 +2180,12 @@ fn scene_now(from: f64, dir: i32, app: &tauri::AppHandle) -> Result<Option<f64>,
 }
 
 fn build_plan(src: &Source, ranges: &[(f64, f64)]) -> Vec<smartcut_core::RangePlan> {
-    plan_on(src, ranges, &PlanOptions::default())
+    // The one thing 環境設定 has to say about a plan: whether a range that
+    // begins on an open GOP is worth a second or two of re-encoding to get
+    // off cleanly. Read here rather than passed in, so that the plan the
+    // editor draws and the plan the export writes cannot disagree -- they
+    // both come through this function.
+    plan_on(src, ranges, &PlanOptions { clean_join: prefs::clean_join(), ..Default::default() })
 }
 
 #[tauri::command]
@@ -2573,15 +2602,7 @@ fn detect_now(
 
 /// Where detections are kept.
 fn cm_dir(app: &tauri::AppHandle) -> Result<std::path::PathBuf, String> {
-    let dir = app
-        .path()
-        .app_cache_dir()
-        .map_err(|e| {
-            format!("{}: {e}", tr!("キャッシュの置き場が分かりません", "No cache directory"))
-        })?
-        .join("cm");
-    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
-    Ok(dir)
+    cache_kind(app, "cm")
 }
 
 /// Bumped when what is written here stops meaning what it used to -- a change
@@ -3749,6 +3770,179 @@ fn os_locale() -> Option<String> {
     lang::from_os()
 }
 
+// --- 環境設定 -------------------------------------------------------------
+//
+// The frontend holds the preferences, for the reason it holds the language:
+// it is the one with somewhere to keep them. What is here is the half this
+// side acts on -- see [`prefs`] -- plus the two questions only this side can
+// answer, which are where the scratch files are and how much of them there
+// is.
+
+/// The four as the panel sends them.
+///
+/// Every field defaults, so a window from a build that had one fewer of them
+/// still settles the rest instead of failing the whole call.
+#[derive(Deserialize, Default)]
+#[serde(rename_all = "camelCase", default)]
+struct PrefsIn {
+    clean_joins: bool,
+    proxy: bool,
+    proxy_width: u32,
+    ffmpeg_log: u8,
+    /// Empty for the platform's own place.
+    cache_dir: String,
+}
+
+/// What is in force, for the panel to paint itself from.
+#[derive(Serialize, Default)]
+#[serde(rename_all = "camelCase")]
+struct PrefsOut {
+    clean_joins: bool,
+    proxy: bool,
+    proxy_width: u32,
+    ffmpeg_log: u8,
+    cache_dir: String,
+    /// Where they would go if nobody chose, so that 既定 is a place with a
+    /// name on screen rather than an empty field.
+    cache_home: String,
+}
+
+/// Settle them.
+///
+/// The folder is the only one that can be refused: the other three are a
+/// flag or a small number and mean something whatever they are set to, while
+/// a folder that does not exist or cannot be written to would be found out
+/// at the next open, in the middle of a pass, with nobody looking at the
+/// panel that asked for it. So it is made and written to here, and a refusal
+/// comes back as a sentence the panel can show.
+#[tauri::command]
+fn set_prefs(want: PrefsIn) -> Result<(), String> {
+    let asked = match want.cache_dir.trim() {
+        "" => Ok(None),
+        chosen => usable_cache_dir(chosen).map(Some),
+    };
+    // The other three are settled either way. A folder that has gone missing
+    // since it was chosen -- an external disk, a share not mounted yet -- is
+    // no reason to leave a window running with the joins and the proxy set to
+    // whatever they were before: the scratch files go back to the place the
+    // platform gives, which is where they were before anybody chose, and the
+    // refusal is reported.
+    let dir = asked.as_ref().ok().and_then(|d| d.clone());
+    prefs::set(want.clean_joins, want.proxy, want.proxy_width, want.ffmpeg_log, dir);
+    asked.map(|_| ())
+}
+
+/// The folder, if it can hold anything.
+///
+/// Made if it is not there yet: what a picker hands back is a place, not a
+/// place already in use. And then written to, because made is not the same as
+/// writable -- a folder on a share that has gone read-only is already there.
+fn usable_cache_dir(chosen: &str) -> Result<std::path::PathBuf, String> {
+    let dir = std::path::PathBuf::from(chosen);
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    let probe = dir.join(".smartcut-write-test");
+    std::fs::write(&probe, b"").map_err(|e| e.to_string())?;
+    let _ = std::fs::remove_file(&probe);
+    Ok(dir)
+}
+
+/// What is in force now, which at startup is what the environment said.
+#[tauri::command]
+fn prefs_now(app: tauri::AppHandle) -> PrefsOut {
+    PrefsOut {
+        clean_joins: prefs::clean_join().is_some(),
+        proxy: prefs::proxy(),
+        proxy_width: prefs::proxy_width().unwrap_or(0),
+        ffmpeg_log: prefs::ffmpeg_log(),
+        cache_dir: prefs::cache_dir().map(|d| d.display().to_string()).unwrap_or_default(),
+        cache_home: app
+            .path()
+            .app_cache_dir()
+            .map(|d| d.display().to_string())
+            .unwrap_or_default(),
+    }
+}
+
+/// How much one kind of scratch file is taking up.
+#[derive(Serialize, Default)]
+struct CacheUse {
+    files: u64,
+    bytes: u64,
+}
+
+/// The three kinds, and where they are.
+#[derive(Serialize, Default)]
+#[serde(rename_all = "camelCase")]
+struct CacheReport {
+    dir: String,
+    index: CacheUse,
+    proxy: CacheUse,
+    cm: CacheUse,
+}
+
+/// What one folder holds. A folder that is not there holds nothing, which is
+/// the answer rather than an error: none of the three is made until the
+/// first thing goes into it.
+fn folder_use(dir: &std::path::Path) -> CacheUse {
+    let mut held = CacheUse::default();
+    let Ok(entries) = std::fs::read_dir(dir) else { return held };
+    for entry in entries.flatten() {
+        let Ok(meta) = entry.metadata() else { continue };
+        if !meta.is_file() {
+            continue;
+        }
+        held.files += 1;
+        held.bytes += meta.len();
+    }
+    held
+}
+
+/// What is on disk, for the panel to show before it asks about deleting it.
+///
+/// By kind, because the three do not cost the same to lose: an index is a
+/// pass over the recording, a proxy is a whole re-encode of it, and a
+/// detection is both. Counted when asked rather than kept running -- the
+/// panel asks once per opening, and three `read_dir`s is nothing beside what
+/// made the files.
+#[tauri::command]
+async fn cache_usage(app: tauri::AppHandle) -> Result<CacheReport, String> {
+    off_thread(move || {
+        let root = cache_root(&app)?;
+        Ok(CacheReport {
+            dir: root.display().to_string(),
+            index: folder_use(&root.join("index")),
+            proxy: folder_use(&root.join("proxy")),
+            cm: folder_use(&root.join("cm")),
+        })
+    })
+    .await
+}
+
+/// Delete them.
+///
+/// The files inside the three folders, and not the folders: what is being
+/// thrown away is what a pass would build again, and a folder somebody chose
+/// in 環境設定 is not that. Nothing here can lose any of the user's work --
+/// the cuts are in the clip list and in the project file -- so a file that
+/// will not go is passed over rather than stopped on, and what is left is
+/// reported by the count the panel asks for next.
+#[tauri::command]
+async fn clear_cache(app: tauri::AppHandle) -> Result<(), String> {
+    off_thread(move || {
+        let root = cache_root(&app)?;
+        for kind in ["index", "proxy", "cm"] {
+            let Ok(entries) = std::fs::read_dir(root.join(kind)) else { continue };
+            for entry in entries.flatten() {
+                if entry.metadata().map(|m| m.is_file()).unwrap_or(false) {
+                    let _ = std::fs::remove_file(entry.path());
+                }
+            }
+        }
+        Ok(())
+    })
+    .await
+}
+
 /// What the バージョン情報 panel prints.
 ///
 /// Asked for rather than written into the frontend, because two of these
@@ -3833,6 +4027,12 @@ pub fn run() {
     if let Some(tag) = lang::from_os() {
         lang::set(&tag);
     }
+    // And the preferences the environment can also set, which is how they
+    // were reachable before 環境設定 had a row for each of them. The frontend
+    // sends what is actually stored as soon as it has read its own store;
+    // until then these are what a pass started from the command line runs
+    // with. See [`prefs`].
+    prefs::from_env();
 
     let argv = Argv(std::env::args().skip(1).filter(|a| !a.starts_with('-')).collect());
     tauri::Builder::default()
@@ -3919,6 +4119,10 @@ pub fn run() {
             quit,
             set_lang,
             os_locale,
+            set_prefs,
+            prefs_now,
+            cache_usage,
+            clear_cache,
             versions
         ])
         .run(tauri::generate_context!())
@@ -3950,5 +4154,48 @@ mod tests {
         let none: Vec<usize> = Vec::new();
         assert_eq!(resolve_pids(streams.into_iter(), Vec::new(), &[0x1200]), none);
         assert_eq!(resolve_pids(streams.into_iter(), vec![3], &[]), vec![3]);
+    }
+
+    /// 環境設定 sends a folder for the scratch files, and a folder that cannot
+    /// hold them has to be refused while the panel that asked for it is still
+    /// on screen -- not at the next open, in the middle of a pass. What is
+    /// settled is settled as sent: a refusal leaves the previous answer in
+    /// force.
+    #[test]
+    fn a_cache_folder_that_cannot_be_written_to_is_refused() {
+        let mut root = std::env::temp_dir();
+        root.push(format!("smartcut-prefs-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let good = root.join("scratch");
+
+        let want = |dir: &str| PrefsIn {
+            clean_joins: true,
+            proxy: false,
+            proxy_width: 960,
+            ffmpeg_log: 0,
+            cache_dir: dir.to_string(),
+        };
+        // A folder that is not there yet is made rather than refused: what
+        // the picker hands back is a place, not a place already in use.
+        assert!(set_prefs(want(&good.display().to_string())).is_ok());
+        assert_eq!(prefs::cache_dir(), Some(good));
+        assert_eq!(prefs::clean_join(), Some(2.0));
+        assert_eq!(prefs::proxy_width(), Some(960));
+
+        // A file where a folder was named. `create_dir_all` fails on it, and
+        // the scratch files go back to the platform's own place -- while the
+        // three settings sent with it are settled all the same.
+        let file = root.join("not-a-folder");
+        std::fs::write(&file, b"").unwrap();
+        assert!(set_prefs(want(&file.display().to_string())).is_err());
+        assert_eq!(prefs::cache_dir(), None);
+        assert_eq!(prefs::proxy_width(), Some(960));
+
+        // And empty means the platform's own place, which is not this side's
+        // to name -- `None` is how that is said.
+        assert!(set_prefs(want("")).is_ok());
+        assert_eq!(prefs::cache_dir(), None);
+
+        let _ = std::fs::remove_dir_all(&root);
     }
 }

@@ -30,6 +30,7 @@ jlog("main.js start");
 
 import { fmt, chLabel, cmNote, noBrowserMenu, noNativeDrag } from "./shared.js";
 import { t as tr, applyStatic, setLang, onLangChange, confirmWithOs } from "./i18n.js";
+import * as prefs from "./prefs.js";
 
 const el = (id) => document.getElementById(id);
 const track = el("track");
@@ -717,6 +718,15 @@ function paintSubsPicker() {
   subsId = still ? subsId : null;
   sel.value = still ? String(subsId) : "";
   if (!still) clearSubs();
+  // Unless 環境設定 says to start with them up, in which case the first track
+  // is the one put up: which of several a recording carries is a question
+  // only the person cutting can answer, and the first is the one the
+  // recording itself leads with. Nothing is drawn from here -- the next
+  // frame the stage shows draws it, which is a frame away.
+  if (!still && tracks.length && prefs.get("subsOn")) {
+    subsId = tracks[0].id;
+    sel.value = String(subsId);
+  }
 }
 
 /// What to call one track in the list.
@@ -1027,21 +1037,11 @@ function updateReadouts() {
 // what this hides is the box on the picture, which is the one that is in the
 // way of anything.
 
-/// Kept in the browser's own store, beside the language. The editor window is
-/// built afresh for every clip, and an answer given once about what the
-/// picture carries should not have to be given again.
-const COUNTER_KEY = "smartcut.counter";
-
-/// Whether to draw them, as it was last left. Anything but a stored "off" is
-/// on, so a store that has never been written and one that cannot be read
-/// come to the same answer.
-function counterWanted() {
-  try {
-    return localStorage.getItem(COUNTER_KEY) !== "off";
-  } catch {
-    return true;
-  }
-}
+/// Kept with the rest of 環境設定, which is where it can also be answered from
+/// -- the editor window is built afresh for every clip, and an answer given
+/// once about what the picture carries should not have to be given again.
+/// The button on the info bar and the box in the panel write the same thing.
+const counterWanted = () => !!prefs.get("counter");
 
 /// Put them up or take them down, and leave the button showing which it is.
 /// `remember` is false for the window doing as it was already told, and true
@@ -1054,11 +1054,7 @@ function showCounter(on, remember = true) {
     button.setAttribute("aria-pressed", on ? "true" : "false");
   }
   if (!remember) return;
-  try {
-    localStorage.setItem(COUNTER_KEY, on ? "on" : "off");
-  } catch {
-    // This window still does as it was asked; only the next one forgets.
-  }
+  prefs.set("counter", on);
 }
 
 const counterButton = el("counter-show");
@@ -3273,6 +3269,14 @@ if (listen) {
   // than the preference, because "follow the machine" is answered once, in
   // that window, and both windows have to land on the same answer.
   listen("lang-changed", (ev) => setLang(ev.payload, false));
+  // 環境設定 is in the other window, and this one has its own copy of
+  // everything the store holds. The counter is the half that can be applied
+  // where it stands; which subtitle track to start with is answered when a
+  // recording is opened, so a window already up keeps the one it has.
+  listen("prefs-changed", (ev) => {
+    const said = ev.payload || {};
+    if (typeof said.counter === "boolean") showCounter(said.counter, false);
+  });
 }
 
 /// Everything this window has drawn out of the catalogue since it opened.

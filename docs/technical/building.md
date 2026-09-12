@@ -223,6 +223,12 @@ The [proxy](design.md#proxy-editing-proxyrs) is off by default, and tunable the 
 Width and quality are [part of the cache hash](design.md#the-cache), so each setting
 builds its own proxy.
 
+In the window, the first two of those are also rows in 環境設定, along with
+`SMARTCUT_FFMPEG_LOG` and `SMARTCUT_CLEAN_JOINS`. The environment is what each
+of them starts at, which is what a recording named on the command line is
+opened with; the frontend sends what it has stored as soon as it has read it,
+and that wins. See [Using the GUI](../user-guide/gui.md#preferences).
+
 ## Validating against real material
 
 `tests/verify_real.py <src> <out> <ranges>` checks frame count, alignment, bit-exact

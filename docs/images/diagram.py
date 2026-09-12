@@ -25,9 +25,14 @@ DARK = dict(
 
 SANS = ("-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Noto Sans', "
         "Helvetica, Arial, sans-serif")
-JSANS = ("-apple-system, BlinkMacSystemFont, 'Hiragino Sans', "
-         "'Hiragino Kaku Gothic ProN', 'Yu Gothic', YuGothic, 'Noto Sans JP', "
-         "'Noto Sans CJK JP', Meiryo, sans-serif")
+# Noto Sans CJK JP first, rather than whatever the reader's machine calls its
+# own Japanese face: these figures are drawn once and read everywhere, and the
+# layout -- where a caption ends, how wide a label sits under a bar -- was
+# measured against Noto. The rest of the stack is there for a machine without
+# it, not as a preference.
+JSANS = ("'Noto Sans CJK JP', 'Noto Sans JP', -apple-system, BlinkMacSystemFont, "
+         "'Hiragino Sans', 'Hiragino Kaku Gothic ProN', 'Yu Gothic', YuGothic, "
+         "Meiryo, sans-serif")
 MONO = "ui-monospace, SFMono-Regular, Menlo, Consolas, 'Liberation Mono', monospace"
 
 # Type that has to hold in both languages: Japanese sits a little larger and

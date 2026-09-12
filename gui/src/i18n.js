@@ -82,6 +82,62 @@ const CATALOG = {
     "prefs.langNote":
       "「自動」は OS の言語設定に従います。変更はすぐに反映され、次回起動時も引き継がれます。",
     "prefs.close": "閉じる",
+    "prefs.groupView": "表示",
+    "prefs.counter": "カット編集で、フレーム番号と時刻を画面に重ねる",
+    "prefs.subs": "カット編集で、最初から字幕を表示する",
+    "prefs.subsNote":
+      "字幕を持つ録画でのみ有効です。編集中に切り替えられます。",
+    "prefs.groupOut": "出力設定",
+    "prefs.keepOutput": "出力設定を次回の起動に引き継ぐ",
+    "prefs.keepOutputNote":
+      "保存先・ファイル名・コンテナ・音声の扱いを保存し、次回の起動と新規作成時に復元します。" +
+      "プロジェクトを開いたときは、そのプロジェクトの設定が優先されます。",
+    "prefs.forgetOutput": "既定に戻す",
+    "prefs.keepWhat": "保存された出力先: {what}",
+    "prefs.keepBeside": "録画と同じ場所",
+    "prefs.keepNone": "まだ保存されていません",
+    "prefs.groupRun": "カットの精度と速度",
+    "prefs.cleanJoins": "範囲の先頭を整え直す（継ぎ目の乱れを防ぐ）",
+    "prefs.cleanJoinsNote":
+      "開いた GOP から始まる範囲で、先頭の最大 2 秒を再エンコードします。" +
+      "継ぎ目の乱れは減りますが、無劣化でコピーされる区間はその分減ります。",
+    "prefs.proxy": "プロキシを作ってから編集する",
+    "prefs.proxyNote":
+      "録画全体を再エンコードし、軽い映像で編集します。1 時間あたり数分の時間と数 GB の容量が必要です。" +
+      "1 フレームの展開が重い素材では効果的です。",
+    "prefs.proxyWidth": "プロキシの幅:",
+    "prefs.proxyWidth.auto": "自動（1280）",
+    "prefs.groupData": "作業データ",
+    "prefs.cacheDir": "置き場:",
+    "prefs.cacheDirDefault": "既定の場所",
+    "prefs.cacheDirPick": "参照…",
+    "prefs.cacheDirReset": "既定",
+    "prefs.cacheDirNote":
+      "シークインデックス・プロキシ・CM 検出の結果を保存する場所です。" +
+      "変更後に作成されたものだけが新しい場所に保存され、既存のものはそのまま残ります。",
+    "prefs.cacheDirFailed": "その場所には書き込めません: {e}",
+    "prefs.cacheKind.index": "シークインデックス",
+    "prefs.cacheKind.proxy": "プロキシ",
+    "prefs.cacheKind.cm": "CM 検出",
+    "prefs.cacheFiles": "{n} 件",
+    "prefs.cacheTotal": "合計 {size}",
+    "prefs.cacheEmpty": "作業データはありません",
+    "prefs.cacheClear": "すべて削除",
+    "prefs.cacheClearTitle": "作業データの削除",
+    "prefs.cacheClearBody":
+      "{size} を削除します。削除されるのは再解析で復元できるデータだけで、" +
+      "カット内容やプロジェクトには影響しません。",
+    "prefs.cacheClearOk": "削除",
+    "prefs.cacheClearCancel": "キャンセル",
+    "prefs.cacheClearFailed": "削除できませんでした: {e}",
+    "prefs.groupLog": "ログ",
+    "prefs.ffmpegLog": "FFmpeg のログ:",
+    "prefs.ffmpegLog.off": "出力しない（既定）",
+    "prefs.ffmpegLog.warn": "警告のみ",
+    "prefs.ffmpegLog.all": "すべて",
+    "prefs.ffmpegLogNote":
+      "FFmpeg 自身のメッセージを標準エラーに出力します。そのほとんどは不具合ではありません。" +
+      "不具合を報告するときにだけ使ってください。",
 
     // --- バージョン情報 ----------------------------------------------------
     "about.title": "バージョン情報",
@@ -584,6 +640,62 @@ const CATALOG = {
     "prefs.langNote":
       "“Automatic” follows the language the machine is set to. A change takes effect at once and is remembered for next time.",
     "prefs.close": "Close",
+    "prefs.groupView": "Windows",
+    "prefs.counter": "Draw the frame number and clock over the picture in the cut editor",
+    "prefs.subs": "Show the subtitles in the cut editor from the start",
+    "prefs.subsNote":
+      "Only for recordings that carry any. It can still be turned off while cutting.",
+    "prefs.groupOut": "Output settings",
+    "prefs.keepOutput": "Carry the output settings over to the next start",
+    "prefs.keepOutputNote":
+      "Remembers the folder, the file name, the container and what is done to the audio, and puts them " +
+      "back at the next start and on a new project. A project that is opened brings its own and wins.",
+    "prefs.forgetOutput": "Back to the defaults",
+    "prefs.keepWhat": "Remembered folder: {what}",
+    "prefs.keepBeside": "beside the recording",
+    "prefs.keepNone": "Nothing remembered yet",
+    "prefs.groupRun": "How cuts are made",
+    "prefs.cleanJoins": "Tidy the start of each range (steadier joins)",
+    "prefs.cleanJoinsNote":
+      "Re-encodes up to the first two seconds of a range that begins on an open GOP. " +
+      "The join is steadier; that much less of the output is copied losslessly.",
+    "prefs.proxy": "Build a proxy before cutting",
+    "prefs.proxyNote":
+      "Re-encodes the whole recording and cuts against the lighter copy. Costs minutes and " +
+      "gigabytes per hour, and only pays where decoding one picture is itself slow.",
+    "prefs.proxyWidth": "Proxy width:",
+    "prefs.proxyWidth.auto": "Automatic (1280)",
+    "prefs.groupData": "Scratch files",
+    "prefs.cacheDir": "Kept in:",
+    "prefs.cacheDirDefault": "the usual place",
+    "prefs.cacheDirPick": "Browse…",
+    "prefs.cacheDirReset": "Default",
+    "prefs.cacheDirNote":
+      "Where the seek indexes, proxies and commercial detections go. Only what is written " +
+      "after the change goes to the new folder; what is already cached stays where it is.",
+    "prefs.cacheDirFailed": "Nothing can be written there: {e}",
+    "prefs.cacheKind.index": "Seek indexes",
+    "prefs.cacheKind.proxy": "Proxies",
+    "prefs.cacheKind.cm": "Commercial detections",
+    "prefs.cacheFiles": "{n} files",
+    "prefs.cacheTotal": "{size} in all",
+    "prefs.cacheEmpty": "Nothing here yet",
+    "prefs.cacheClear": "Delete all",
+    "prefs.cacheClearTitle": "Delete the scratch files",
+    "prefs.cacheClearBody":
+      "{size} will be deleted. What is lost is what another pass would build again, " +
+      "never a cut or a project.",
+    "prefs.cacheClearOk": "Delete",
+    "prefs.cacheClearCancel": "Cancel",
+    "prefs.cacheClearFailed": "Cannot delete: {e}",
+    "prefs.groupLog": "Logging",
+    "prefs.ffmpegLog": "FFmpeg log:",
+    "prefs.ffmpegLog.off": "Silent (default)",
+    "prefs.ffmpegLog.warn": "Warnings only",
+    "prefs.ffmpegLog.all": "Everything",
+    "prefs.ffmpegLogNote":
+      "Lets FFmpeg's own messages through to standard error. Almost none of them are faults; " +
+      "turn this on to quote them in a bug report.",
 
     // --- about -----------------------------------------------------------
     "about.title": "About SmartCut",

@@ -652,13 +652,75 @@ put in, the track choices, and the output settings.
 A `.scproj` file is only a few hundred bytes, and it opens on another machine.
 See [Projects](projects.md).
 
-## Language and version
+## Preferences
 
 ![Preferences](../images/usage-prefs.png)
 
-**Preferences…**, in the same menu, is where you choose the interface language:
-English, Japanese, or follow the system (the default). A change takes effect in
-both windows at once and is remembered for next time.
+**Preferences…**, in the same menu. Nothing settled here goes into a project:
+it is the program's own set of answers, and it is still in force the next time
+you start it.
+
+The five groups are the list down the left. There is no OK: every change takes
+effect as you make it.
+
+### Windows
+
+| Setting | What it does |
+|---|---|
+| **Language** | English, Japanese, or follow the system (the default). A change takes effect in both windows at once |
+| **Frame number and clock over the picture** | The box at the foot of the cut editor's picture. The same answer as its **Counter** button |
+| **Show the subtitles from the start** | Opens a recording that carries subtitles with the first track already chosen. It can still be switched while cutting |
+
+### Output settings
+
+**Carry the output settings over to the next start** remembers them and puts
+them back at the next start and on **New project**: the folder, the file name
+prefix, the container, what is done to the audio, and which of file output and
+BDAV output you were on. A project that is opened brings its own settings and
+wins.
+
+Two things are never carried: the disc title, and the name of the folder made
+under the output folder. Both are read off whatever is in the list, and
+carrying either to another recording would mean answering for a recording this
+session has not seen.
+
+**Back to the defaults** puts the output settings back where they started.
+
+### How cuts are made
+
+| Setting | What it does |
+|---|---|
+| **Tidy the start of each range** | Re-encodes up to the first two seconds of a range that begins on an open GOP. The join is steadier; that much less of the output is copied losslessly. The same thing as the CLI's `--clean-joins` |
+| **Build a proxy before cutting** | Re-encodes the whole recording and cuts against the lighter copy. Costs minutes and gigabytes per hour, and only pays where decoding one picture is itself slow. The width is a setting of its own |
+
+### Scratch files
+
+![The scratch files tab](../images/usage-prefs-data.png)
+
+Where the seek indexes, proxies and commercial detections go. The default is
+the cache directory the platform gives this program; **Browse…** changes it. A
+folder that cannot be written to is refused on the spot and the old one stays
+in force.
+
+Only what is written after the change goes to the new folder. What is already
+cached stays where it is.
+
+How many files and how many bytes there are shows by kind, and **Delete all**
+removes them. Nothing there is worth keeping: it is what another pass would
+build again, never a cut or a project.
+
+### Logging
+
+**FFmpeg log** lets FFmpeg's own messages through to standard error. Silent by
+default: almost none of them are faults, and this program says what it needs to
+say in its own words. Turn it on to quote them in a bug report. It is the same
+setting as the `SMARTCUT_FFMPEG_LOG` environment variable.
+
+The proxy and the FFmpeg log can also be set from the environment (see
+[Building](../technical/building.md)). The environment is the value each of
+them starts at; a preference settled here beats it.
+
+## About
 
 ![About](../images/usage-about.png)
 

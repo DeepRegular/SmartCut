@@ -1,4 +1,4 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 356" width="1000" height="356" font-family="-apple-system, BlinkMacSystemFont, 'Hiragino Sans', 'Hiragino Kaku Gothic ProN', 'Yu Gothic', YuGothic, 'Noto Sans JP', 'Noto Sans CJK JP', Meiryo, sans-serif">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 356" width="1000" height="356" font-family="'Noto Sans CJK JP', 'Noto Sans JP', -apple-system, BlinkMacSystemFont, 'Hiragino Sans', 'Hiragino Kaku Gothic ProN', 'Yu Gothic', YuGothic, Meiryo, sans-serif">
 <defs>
 <clipPath id="cin"><rect x="40.0" y="64.0" width="920.0" height="48.0" rx="4"/></clipPath>
 <clipPath id="cout"><rect x="40.0" y="244.0" width="708.4" height="48.0" rx="4"/></clipPath>
@@ -119,6 +119,6 @@
 <rect x="753.4" y="244.0" width="206.6" height="48.0" rx="4" fill="none" stroke="#a95c2e" stroke-width="1.2" stroke-dasharray="4 4" opacity="0.75"/>
 <text x="854.2" y="272.0" text-anchor="middle" font-size="12" fill="#9c5528">CM 23% を削除</text>
 <path d="M260.8 292 V312 H273.8" fill="none" stroke="#d98410" stroke-width="1.5"/>
-<text x="279.8" y="316" font-size="13" fill="#d98410">作り直すのは継ぎ目の数コマだけ。0 コマのことも多い</text>
+<text x="279.8" y="316" font-size="13" fill="#d98410">作り直すのは継ぎ目の数フレームだけ。0 フレームのことも多い</text>
 <text x="500" y="340" text-anchor="middle" font-size="17" font-weight="600" fill="#1f2328">出力の 99% 以上が入力と同一のコピー。</text>
 </svg>

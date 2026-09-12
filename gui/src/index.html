@@ -464,23 +464,128 @@
     </section>
 
     <!-- 環境設定. A panel of its own rather than a screen in the tab bar:
-         the three screens are stages the work goes through, and what language
-         the program speaks is not one of them. Built out of plain elements
-         rather than <dialog>, whose support in the webviews this ships
-         against is not something to find out about in a released build. -->
+         the three screens are stages the work goes through, and none of what
+         is settled here is one of them. Built out of plain elements rather
+         than <dialog>, whose support in the webviews this ships against is
+         not something to find out about in a released build.
+
+         Five groups, and a list of them down the left rather than all five
+         one under the other: a preferences panel is looked *into* -- somebody
+         opens it knowing which answer they came to change -- and a name to
+         click is a shorter way there than a scrollbar. The panel is then as
+         tall as its tallest group and stays that height, so switching does
+         not move the ground under the pointer.
+
+         Everything here takes effect the moment it is changed. There is no
+         OK to press, and the button at the foot only puts the panel away. -->
     <div id="prefs" class="modal" hidden>
-      <div class="modal-box" role="dialog" aria-modal="true" aria-labelledby="prefs-title">
+      <div class="modal-box wide" role="dialog" aria-modal="true" aria-labelledby="prefs-title">
         <div class="modal-head" id="prefs-title" data-i18n="prefs.title">環境設定</div>
-        <div class="modal-body">
-          <div class="row">
-            <span data-i18n="prefs.language">表示言語:</span>
-            <select id="pref-lang">
-              <option value="auto" data-i18n="prefs.lang.auto"></option>
-              <option value="ja" data-i18n="prefs.lang.ja"></option>
-              <option value="en" data-i18n="prefs.lang.en"></option>
-            </select>
+        <div class="modal-body prefs-body">
+          <!-- The names, as a tab list: the arrow keys walk it and Home and
+               End go to the ends, which is what a list of tabs is expected to
+               answer to. -->
+          <nav class="pref-tabs" role="tablist" aria-orientation="vertical">
+            <button class="pref-tab active" role="tab" id="pref-tab-view"
+                    aria-controls="pref-pane-view" aria-selected="true"
+                    data-pane="view" data-i18n="prefs.groupView">表示</button>
+            <button class="pref-tab" role="tab" id="pref-tab-out"
+                    aria-controls="pref-pane-out" aria-selected="false" tabindex="-1"
+                    data-pane="out" data-i18n="prefs.groupOut">出力設定</button>
+            <button class="pref-tab" role="tab" id="pref-tab-run"
+                    aria-controls="pref-pane-run" aria-selected="false" tabindex="-1"
+                    data-pane="run" data-i18n="prefs.groupRun">カットの精度と速度</button>
+            <button class="pref-tab" role="tab" id="pref-tab-data"
+                    aria-controls="pref-pane-data" aria-selected="false" tabindex="-1"
+                    data-pane="data" data-i18n="prefs.groupData">作業データ</button>
+            <button class="pref-tab" role="tab" id="pref-tab-log"
+                    aria-controls="pref-pane-log" aria-selected="false" tabindex="-1"
+                    data-pane="log" data-i18n="prefs.groupLog">ログ</button>
+          </nav>
+
+          <div class="pref-panes">
+            <section class="pref-pane" id="pref-pane-view" role="tabpanel"
+                     aria-labelledby="pref-tab-view">
+              <div class="row">
+                <span data-i18n="prefs.language">表示言語:</span>
+                <select id="pref-lang">
+                  <option value="auto" data-i18n="prefs.lang.auto"></option>
+                  <option value="ja" data-i18n="prefs.lang.ja"></option>
+                  <option value="en" data-i18n="prefs.lang.en"></option>
+                </select>
+              </div>
+              <p class="dim" data-i18n="prefs.langNote"></p>
+              <label class="opt"><input id="pref-counter" type="checkbox" />
+                <span data-i18n="prefs.counter">カット編集で、フレーム番号と時刻を画面に重ねる</span></label>
+              <label class="opt"><input id="pref-subs" type="checkbox" />
+                <span data-i18n="prefs.subs">カット編集で、最初から字幕を表示する</span></label>
+              <p class="dim" data-i18n="prefs.subsNote"></p>
+            </section>
+
+            <section class="pref-pane" id="pref-pane-out" role="tabpanel"
+                     aria-labelledby="pref-tab-out" hidden>
+              <label class="opt"><input id="pref-keep-output" type="checkbox" />
+                <span data-i18n="prefs.keepOutput">出力設定を次回の起動に引き継ぐ</span></label>
+              <p class="dim" data-i18n="prefs.keepOutputNote"></p>
+              <div class="row">
+                <span class="grow" id="pref-keep-what"></span>
+                <button id="pref-forget-output" class="mini" data-i18n="prefs.forgetOutput">既定に戻す</button>
+              </div>
+            </section>
+
+            <section class="pref-pane" id="pref-pane-run" role="tabpanel"
+                     aria-labelledby="pref-tab-run" hidden>
+              <label class="opt"><input id="pref-clean-joins" type="checkbox" />
+                <span data-i18n="prefs.cleanJoins">範囲の先頭を整え直す（継ぎ目の乱れを防ぐ）</span></label>
+              <p class="dim" data-i18n="prefs.cleanJoinsNote"></p>
+              <label class="opt"><input id="pref-proxy" type="checkbox" />
+                <span data-i18n="prefs.proxy">プロキシを作ってから編集する</span></label>
+              <p class="dim" data-i18n="prefs.proxyNote"></p>
+              <div class="row" id="row-pref-proxy-width">
+                <span data-i18n="prefs.proxyWidth">プロキシの幅:</span>
+                <select id="pref-proxy-width">
+                  <option value="0" data-i18n="prefs.proxyWidth.auto"></option>
+                  <option value="960">960</option>
+                  <option value="1280">1280</option>
+                  <option value="1600">1600</option>
+                  <option value="1920">1920</option>
+                </select>
+              </div>
+            </section>
+
+            <section class="pref-pane" id="pref-pane-data" role="tabpanel"
+                     aria-labelledby="pref-tab-data" hidden>
+              <div class="row">
+                <span data-i18n="prefs.cacheDir">置き場:</span>
+                <input id="pref-cache-dir" type="text" class="grow" readonly />
+                <button id="pref-cache-pick" class="mini" data-i18n="prefs.cacheDirPick">参照…</button>
+                <button id="pref-cache-reset" class="mini" data-i18n="prefs.cacheDirReset">既定</button>
+              </div>
+              <p class="dim" data-i18n="prefs.cacheDirNote"></p>
+              <!-- What is there now, by kind, because they are not the same
+                   thing to lose: an index is a pass over the recording, a
+                   proxy is a re-encode of it, and a detection is both. The
+                   row says what a deletion costs before it is asked for. -->
+              <ul class="pref-cache" id="pref-cache-list"></ul>
+              <div class="row">
+                <span class="grow dim" id="pref-cache-total"></span>
+                <button id="pref-cache-clear" class="mini" data-i18n="prefs.cacheClear">すべて削除</button>
+              </div>
+            </section>
+
+            <section class="pref-pane" id="pref-pane-log" role="tabpanel"
+                     aria-labelledby="pref-tab-log" hidden>
+              <div class="row">
+                <span data-i18n="prefs.ffmpegLog">FFmpeg のログ:</span>
+                <select id="pref-ffmpeg-log">
+                  <option value="0" data-i18n="prefs.ffmpegLog.off"></option>
+                  <option value="1" data-i18n="prefs.ffmpegLog.warn"></option>
+                  <option value="2" data-i18n="prefs.ffmpegLog.all"></option>
+                </select>
+              </div>
+              <p class="dim" data-i18n="prefs.ffmpegLogNote"></p>
+            </section>
           </div>
-          <p class="dim" data-i18n="prefs.langNote"></p>
         </div>
         <div class="modal-foot">
           <button id="prefs-close" class="primary" data-i18n="prefs.close">閉じる</button>

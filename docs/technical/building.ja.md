@@ -221,6 +221,11 @@ smartcut rec.ts --seek-index /tmp/rec.scix --scenes
 幅と品質は[キャッシュのハッシュに含まれる](design.ja.md#キャッシュ)ので、設定ごとに
 別のプロキシが作られる。
 
+このうち最初の 2 つは、`SMARTCUT_FFMPEG_LOG` と `SMARTCUT_CLEAN_JOINS` とともに
+ウィンドウの環境設定にも項目がある。環境変数は起動時の初期値として使われ、
+コマンドラインで渡した録画はその値で開かれる。フロントエンドが保存された値を
+送った時点で、そちらが優先される。[GUI の使い方](../user-guide/gui.ja.md#環境設定)を見よ。
+
 ## 実素材での検証
 
 `tests/verify_real.py <src> <out> <ranges>` が、フレーム数・整列・ビット一致率・

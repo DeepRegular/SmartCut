@@ -10,7 +10,7 @@
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="../images/seam-dark.ja.svg">
   <img src="../images/seam.ja.svg" width="1000"
-       alt="残す区間 1 つをコマ単位で見た図。コピーを始められる最初のキーフレームより手前の head と、コピーが届いた最後のキーフレームより後ろの tail だけが再エンコードで、その間はバイト単位のコピー">
+       alt="残す区間 1 つをフレーム単位で見た図。コピーを始められる最初のキーフレームより手前の head と、コピーが届いた最後のキーフレームより後ろの tail だけが再エンコードで、その間はバイト単位のコピー">
 </picture>
 
 ```

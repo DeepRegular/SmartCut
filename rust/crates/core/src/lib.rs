@@ -377,12 +377,27 @@ pub fn track_name(on_a_ts: bool, pid: i32, stream_index: usize) -> String {
 pub fn init() -> Result<()> {
     ff::init().map_err(|e| anyhow!("ffmpeg init failed: {e}"))?;
     let level = match std::env::var("SMARTCUT_FFMPEG_LOG").as_deref() {
-        Ok("2") | Ok("all") => ff::util::log::Level::Verbose,
-        Ok("1") | Ok("on") | Ok("yes") => ff::util::log::Level::Warning,
-        _ => ff::util::log::Level::Quiet,
+        Ok("2") | Ok("all") => 2,
+        Ok("1") | Ok("on") | Ok("yes") => 1,
+        _ => 0,
     };
-    ff::util::log::set_level(level);
+    set_ffmpeg_log(level);
     Ok(())
+}
+
+/// How much of that to let through, after the fact.
+///
+/// The same three settings [`init`] reads out of the environment -- 0 for
+/// silence, 1 for the warnings, 2 for everything -- as something a window
+/// can change while it is running. The level lives inside libav rather than
+/// here, so this is the whole of it: nothing has to be told, and the next
+/// line printed is the first one the new setting applies to.
+pub fn set_ffmpeg_log(level: u8) {
+    ff::util::log::set_level(match level {
+        0 => ff::util::log::Level::Quiet,
+        1 => ff::util::log::Level::Warning,
+        _ => ff::util::log::Level::Verbose,
+    });
 }
 
 /// This crate's own version, which is the version of the cutting engine --
