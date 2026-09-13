@@ -6014,9 +6014,15 @@ async function projectForQueue() {
   // Which is also why the copy does not become the project this window is
   // about. The title bar would then name a file in a folder nobody can find,
   // and 保存 would write there instead of over the project that is open, or
-  // instead of asking for a name. A list that was saved before it was
-  // registered is still saved; one that was not still has the `*` that says
-  // so, registering being no kind of saving.
+  // instead of asking for a name.
+  //
+  // **Registering counts as saving all the same.** The list goes on disc
+  // either way, so a window still saying there is work to lose would be
+  // wrong -- and it would be wrong about work somebody has just put where
+  // they meant it to go. So the project that is open is written first where
+  // there is one, the way 保存 writes it; and where there is none, the copy
+  // is what there is to have been saved, and the `*` comes off for it.
+  if (projectPath && dirty() && !(await writeProject(projectPath))) return "";
   const stem = projectPath ? stemOf(projectPath) : autoProjectStem();
   let path = tempProject;
   if (!path) {
@@ -6031,6 +6037,13 @@ async function projectForQueue() {
   // Kept, so that a list registered twice is written to the one file and
   // refused as the duplicate it is, rather than piling up copies of itself.
   tempProject = path;
+  // An untitled list has no file of its own to have been written, and the
+  // copy is what it now has instead. Where there was a project, `writeProject`
+  // has already said as much.
+  if (!projectPath) {
+    savedShape = shapeOf();
+    retitleMain();
+  }
   return path;
 }
 

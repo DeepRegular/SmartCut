@@ -92,11 +92,15 @@ overnight.
 
 What is queued is a copy. The queue writes the list as it stands into a folder
 of its own and runs that, under the name of the project you have open or of the
-list's first row where there is none. **The project you have open is not written
-to, and an untitled list stays untitled** — `Ctrl+S` and `名前を付けて保存` are
-still what save your own copy. The queue's copy is the queue's, and goes when
-the job is taken out of it; to change it, open the job from its row in the tool
-with `プロジェクトを開く`. A job is a `.scproj` and nothing
+list's first row where there is none. The copy is the queue's, and goes when the
+job is taken out of it; to change it, open the job from its row in the tool with
+`プロジェクトを開く`.
+
+**Registering is also saving.** The project you have open is written as well,
+the way `Ctrl+S` writes it, and an untitled list counts as saved by the copy —
+either way the `*` comes off the title bar. Note what that means for an
+untitled one: taking the job out of the queue takes the copy with it, so save
+it yourself with `名前を付けて保存` if you will want it again. A job is a `.scproj` and nothing
 besides, because the file already holds everything a job is. See
 [Working through a batch](batch.md#an-overnight-queue-of-projects).
 

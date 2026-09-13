@@ -650,8 +650,11 @@ half-written file behind.
 picker. **What goes into the queue is a copy of the list, written into a folder
 of the queue's own** — never into the output folder — under the name of the
 project you have open, or of the list's first row where there is none. The copy
-belongs to the queue and goes when the job goes; the project you have open is
-not written to, `Ctrl+S` being what does that. The press also starts the
+belongs to the queue and goes when the job goes.
+
+**Registering is also saving.** The project you have open is written as well,
+the way `Ctrl+S` writes it; an untitled list has the copy instead, and the `*`
+in the title bar comes off for it either way. The press also starts the
 [batch tool](batch.md#an-overnight-queue-of-projects) if one is not already up,
 and the job goes to the end of its queue.
 

@@ -173,6 +173,15 @@ window is about: a title bar naming a file in a folder nobody can find, and a
 保存 that wrote there instead of over the project that is open, would be the
 price of saying so.
 
+Registering is nonetheless a saving, and says so. The list is on disc after
+it either way, and a window that went on claiming there was work to lose
+would be wrong about work somebody had just put where they meant it to go. So
+the project that is open is written first where there is one, exactly as 保存
+writes it, and where there is none the copy is what there is to have been
+saved and the `*` comes off for it. What that costs is worth knowing: an
+untitled list registered and then taken out of the queue goes with the copy,
+which is what 名前を付けて保存 is still for.
+
 What the queue gives up for that is the one thing it had: a job it re-read at
 midnight was a job that could be fixed by fixing the file. So the fixing moves
 onto the row, where the job is. プロジェクトを開く hands the copy to a list
