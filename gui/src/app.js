@@ -5270,7 +5270,24 @@ async function loadProject(path) {
     // The row's id is this session's counting, so the saved edit is
     // readdressed to the row it has just become. Everything else in it is
     // source time and travels unchanged.
-    if (saved.edit) clip.edit = { ...saved.edit, id: clip.id, path: clip.path };
+    //
+    // The two lists an edit is read for are filled in where the file leaves
+    // them out. A project is the one thing in the list that can arrive from
+    // somebody else -- from an older version of this program, or from a hand
+    // that wrote it -- and everything downstream asks an edit for its cuts
+    // and its keyframes without asking first whether it has any. One missing
+    // field would otherwise be a row that cannot be drawn at all, which in
+    // the batch tool is a job that cannot be run and a queue that stops on
+    // it.
+    if (saved.edit) {
+      clip.edit = {
+        ...saved.edit,
+        cuts: Array.isArray(saved.edit.cuts) ? saved.edit.cuts : [],
+        keyframes: Array.isArray(saved.edit.keyframes) ? saved.edit.keyframes : [],
+        id: clip.id,
+        path: clip.path,
+      };
+    }
     clips.push(clip);
     taken.push([clip, !!saved.cmPending]);
   }
@@ -5469,9 +5486,16 @@ async function saveQueue() {
           // the next poll that every project had gone back to its first
           // version. See `batch_touch`.
           edited: j.edited || 0,
-          // A job in the middle of something is not a state to come back in:
-          // whatever was running has stopped with the process it ran in.
-          state: j.state === "done" || j.state === "error" ? j.state : "waiting",
+          // 待機 for a job called off in this run: calling one off is about
+          // the run rather than about the job, and the queue reopened
+          // tomorrow is a queue of work still to do.
+          //
+          // **中 stays 中.** It is what the other window reads to see that
+          // the tool is working, and it is the one mark left on the file by a
+          // tool that went away with a job open -- which is what
+          // `takeBackInterrupted` mends. A row written 待機 there would be a
+          // row nothing could tell from one nobody had started.
+          state: ["done", "error", "running"].includes(j.state) ? j.state : "waiting",
           note: j.note || "",
         })),
         after: batchAfter,
@@ -6657,6 +6681,38 @@ async function runBatch() {
   }
   renderBatch();
   await saveQueue();
+  try {
+    await walkQueue();
+  } catch (e) {
+    // The walk itself, rather than a job in it: each job already answers for
+    // its own failures. Caught all the same, so that the three lines below
+    // run and the queue is written down as it actually stands -- a file left
+    // saying a job was running would be a row nothing is doing anything about.
+    sayHere(t("batch.threw", { e: String(e) }));
+    for (const job of batchJobs) {
+      if (job.state !== "running") continue;
+      job.state = "error";
+      job.note = t("batch.threw", { e: String(e) });
+    }
+  } finally {
+    // Whatever happened in there, this window is not writing any more. The
+    // two are together because a queue that said it was running with nothing
+    // running is a queue whose バッチ開始 is switched off for good.
+    batchRunning = false;
+    clearInterval(ticking);
+  }
+  show("batch");
+  renderBatch();
+  await saveQueue();
+  // The machine is only put down over a queue that ran to the end. A queue
+  // somebody stopped is a queue somebody is standing at.
+  if (!batchStopped) startAfter();
+}
+
+/// The walk itself, one job after another. Split from the press above so
+/// that the two lines that say the queue has stopped running are written
+/// once, in a `finally`, rather than at every way out of it.
+async function walkQueue() {
   // By index rather than over the array, because the array is replaced
   // whenever a job is added from the other window; see `takeAdded`.
   for (let i = 0; i < batchJobs.length; i += 1) {
@@ -6681,51 +6737,77 @@ async function runBatch() {
     // next moment control comes back, which is why it is asked after each of
     // the three waits below rather than once.
     const calledOff = () => job.state === "skipped";
-    if (!(await loadProject(job.path))) {
-      job.state = "error";
-      job.note = t("batch.cannotOpen");
-    } else if (calledOff()) {
-      // Nothing to do: the note is the one the click left.
-    } else {
-      job.note = t("batch.reading");
-      renderBatch();
-      await listSettled();
-      const list = ready();
-      if (calledOff()) {
-        // As above.
-      } else if (batchStopped) {
-        job.state = "skipped";
-        job.note = t("batch.skipped");
-      } else if (!list.length) {
+    // **A job that throws is a job that failed, and nothing more than that.**
+    // Every await below is over code written for somebody standing at the
+    // window, where a mistake is a message and the next press puts it right.
+    // There is nobody here, and an error let out of this loop would stop the
+    // walk where it stood -- leaving the queue saying it was running, with
+    // its one way to start another run switched off, until the tool was
+    // killed. Which is the one thing this screen is for: the queue goes on.
+    try {
+      if (!(await loadProject(job.path))) {
         job.state = "error";
-        job.note = t("batch.nothingReadable");
+        job.note = t("batch.cannotOpen");
+      } else if (calledOff()) {
+        // Nothing to do: the note is the one the click left.
       } else {
-        job.note = t("batch.writing");
+        job.note = t("batch.reading");
         renderBatch();
-        await runExport();
-        // `runExport` turns back at the door onto the settings screen when a
-        // disc has nowhere to be written. There is nobody on that screen
-        // here, and this window is its queue.
-        show("batch");
-        if (calledOff() || abort) {
-          // Either this job was called off or the whole queue was; which of
-          // them decides whether there is a next job.
+        await listSettled();
+        const list = ready();
+        if (calledOff()) {
+          // As above.
+        } else if (batchStopped) {
           job.state = "skipped";
-          job.note = t(batchStopped ? "batch.stoppedHere" : "batch.jobStopped");
-        } else if (list.every((c) => c.out.state === "idle")) {
-          // A run that never started: the guard above sent it back without
-          // writing anything.
+          job.note = t("batch.skipped");
+        } else if (!list.length) {
           job.state = "error";
-          job.note = t("batch.refused");
+          job.note = t("batch.nothingReadable");
         } else {
-          const bad = list.filter((c) => c.out.state === "error").length;
-          const good = list.filter((c) => c.out.state === "done").length;
-          job.state = bad ? "error" : "done";
-          job.note = bad
-            ? t("batch.someFailed", { n: bad, all: list.length })
-            : t("batch.wrote", { n: good });
+          job.note = t("batch.writing");
+          renderBatch();
+          await runExport();
+          // `runExport` turns back at the door onto the settings screen when
+          // a disc has nowhere to be written. There is nobody on that screen
+          // here, and this window is its queue.
+          show("batch");
+          if (calledOff() || abort) {
+            // Either this job was called off or the whole queue was; which of
+            // them decides whether there is a next job.
+            job.state = "skipped";
+            job.note = t(batchStopped ? "batch.stoppedHere" : "batch.jobStopped");
+          } else if (list.every((c) => c.out.state === "idle")) {
+            // A run that never started: the guard above sent it back without
+            // writing anything.
+            job.state = "error";
+            job.note = t("batch.refused");
+          } else {
+            const bad = list.filter((c) => c.out.state === "error").length;
+            const good = list.filter((c) => c.out.state === "done").length;
+            job.state = bad ? "error" : "done";
+            job.note = bad
+              ? t("batch.someFailed", { n: bad, all: list.length })
+              : t("batch.wrote", { n: good });
+          }
         }
       }
+    } catch (e) {
+      job.state = "error";
+      job.note = t("batch.threw", { e: String(e) });
+      // And the pass it was thrown out of, if it was in one: what `runExport`
+      // sets on its way in it clears on its way out, and an error between the
+      // two leaves this window saying it is still writing -- which is a
+      // window that will not start the next job. Put down here rather than
+      // left to the next caller, the way the end of the pass puts them down.
+      // `abort` is not among them: `runExport` clears it as it starts.
+      exporting = false;
+      paused = false;
+      runDir = null;
+      runFolder = null;
+      writing = null;
+      paintExportButton();
+      pump();
+      show("batch");
     }
     // Where its clock stops. Read back by the row from here on, so that a
     // finished job goes on saying how long it took rather than how long ago
@@ -6737,14 +6819,6 @@ async function runBatch() {
     // window appends to it, and this is where what it appended is noticed.
     await takeAdded();
   }
-  batchRunning = false;
-  clearInterval(ticking);
-  show("batch");
-  renderBatch();
-  await saveQueue();
-  // The machine is only put down over a queue that ran to the end. A queue
-  // somebody stopped is a queue somebody is standing at.
-  if (!batchStopped) startAfter();
 }
 
 /// Put the queue down, and pick up any job the other window added while this
