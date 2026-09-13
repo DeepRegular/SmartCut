@@ -5354,8 +5354,14 @@ window.addEventListener("keydown", (ev) => {
 let batchRole = "main";
 /// The jobs, in the order they will run.
 let batchJobs = [];
-/// Which row the ↑↓ and 削除 buttons are about, by path, or "".
-let batchPick = "";
+/// Which rows the ↑↓ and 削除 buttons are about, by path. A set rather than
+/// one path, and picked the way the clip list picks rows: a queue lined up
+/// for the night is a queue whose middle five rows are sometimes all wrong,
+/// and taking them out one at a time is the work this saves.
+let batchPicked = new Set();
+/// Where a shift-range is measured from: an index into `batchJobs`, or -1.
+/// The clip list's `anchor`, and for the same reason.
+let batchAnchor = -1;
 /// What to do when the queue empties. The tool's answer; the list window
 /// shows the queue but never runs it, so it never acts on this.
 let batchAfter = "nothing";
@@ -5366,10 +5372,26 @@ let batchStopped = false;
 let afterTimer = null;
 /// The button is down on a row of the queue, and it is not (yet) a drag.
 let jobPress = null;
-/// The drag proper: which row is being carried, and where it would land.
+/// The drag proper: which rows are being carried, and where they would land.
 let jobDrag = null;
 
 const isTool = () => batchRole === "batch";
+
+/// The picked rows, in queue order.
+const pickedJobs = () => batchJobs.filter((j) => batchPicked.has(j.path));
+/// The one picked row, for the things that are about a file rather than about
+/// a stretch of the queue -- opening the project, opening the folder it writes
+/// into. Null where five rows are picked, the way the clip list's カット編集
+/// goes out when five clips are.
+const onePicked = () => (batchPicked.size === 1 ? pickedJobs()[0] || null : null);
+/// The ends of the picked stretch, for the four that move it.
+const firstPicked = () => batchJobs.findIndex((j) => batchPicked.has(j.path));
+const lastPicked = () => {
+  for (let i = batchJobs.length - 1; i >= 0; i -= 1) {
+    if (batchPicked.has(batchJobs[i].path)) return i;
+  }
+  return -1;
+};
 
 /// Say something where whoever asked for it is looking.
 ///
@@ -5435,6 +5457,11 @@ async function refreshQueue() {
       };
     });
   batchAfter = queue && queue.after ? queue.after : "nothing";
+  // A row that has left the queue -- written out of it by the tool, taken out
+  // of it in the other window -- takes its pick with it.
+  for (const path of [...batchPicked]) {
+    if (!batchJobs.some((j) => j.path === path)) batchPicked.delete(path);
+  }
   if (isTool()) paintAfterMenu();
   renderBatch();
   // What the rows show about each project, for any job not looked at yet.
@@ -5481,6 +5508,11 @@ async function watchQueue() {
 /// nothing to call off, and a job that is finished -- written, failed or
 /// already called off -- is past being stopped.
 const canStop = (job) => batchRunning && (job.state === "running" || job.state === "waiting");
+
+/// And whether もう一度出力する has anything to put back on it: a job that is
+/// finished with this run. The one being written is not finished with it, and
+/// one still waiting was never taken out.
+const canRequeue = (job) => job.state !== "waiting" && job.state !== "running";
 
 /// What a project says about itself, for the rows to show: where it writes,
 /// how many recordings it holds, and a picture off the first of them.
@@ -5629,6 +5661,11 @@ function renderBatch() {
     bad: count("error"),
     off: count("skipped"),
   });
+  // Where the queue is scrolled to, kept over the rebuild below: this runs
+  // off the poll as well as off anything anybody does, and a long queue that
+  // jumped back to the top twice a second would be one nobody could read the
+  // bottom of.
+  const listAt = el("batch-list").scrollTop;
   el("batch-list").innerHTML = batchJobs
     .map((j, i) => {
       const look = jobLook.get(j.path) || {};
@@ -5637,7 +5674,7 @@ function renderBatch() {
       const poster = look.poster
         ? `<img class="poster" src="${look.poster}" alt="" draggable="false">`
         : `<span class="poster blank"></span>`;
-      return `<li class="${j.state}${j.path === batchPick ? " picked" : ""}" data-i="${i}">
+      return `<li class="${j.state}${batchPicked.has(j.path) ? " picked" : ""}" data-i="${i}">
         <span class="n">${i + 1}</span>
         ${poster}
         <div class="meta">
@@ -5669,6 +5706,7 @@ function renderBatch() {
     const fill = el("batch-list").children[i]?.querySelector(".say .fill");
     if (fill) fill.style.width = `${Math.round(jobHow(j) * 100)}%`;
   });
+  el("batch-list").scrollTop = listAt;
   paintBatchButtons();
 }
 
@@ -5692,14 +5730,13 @@ function paintBatchButtons() {
   // A queue that is being written is not one to rearrange: the row order is
   // what the loop is walking. Adding is the exception, and is not on this
   // screen anyway -- see `batch_append`.
-  const at = batchJobs.findIndex((j) => j.path === batchPick);
   const left = batchJobs.some((j) => j.state !== "done");
   el("batch-go").disabled = batchRunning || !left || exporting;
   // Never disabled while the queue runs: a stop has to be there the moment it
   // is wanted.
   el("batch-stop-all").disabled = !batchRunning;
   el("batch-add").disabled = batchRunning;
-  el("batch-drop").disabled = batchRunning || at < 0;
+  el("batch-drop").disabled = batchRunning || !batchPicked.size;
   el("batch-more").disabled = batchRunning || !batchJobs.length;
   el("batch-clear-done").disabled = !batchJobs.some((j) => j.state === "done");
 }
@@ -5755,28 +5792,92 @@ const jobAt = (ev) => {
   return li ? batchJobs[Number(li.dataset.i)] : null;
 };
 
-/// Picking a row and starting to carry it are the same press: which of the
-/// two it was is settled by whether the pointer travels. Picked on the way
-/// down either way, because a queue has one row picked rather than a
-/// selection of them -- there is nothing here for a press to hold open.
+/// Which rows are picked, settled the way the clip list settles it: plain for
+/// this row alone, Ctrl for one more or one fewer, Shift for everything
+/// between here and where the last plain press was.
+/// Mark the picked rows on the rows that are already on screen.
+///
+/// Not a repaint of the list. A press that rebuilt the markup would be a press
+/// that threw away the row it was on, and the second half of a double click
+/// would land on a row that had not been there for the first half -- no
+/// double click at all, as far as the window is concerned.
+function paintPicked() {
+  const rows = el("batch-list").children;
+  for (let i = 0; i < rows.length; i += 1) {
+    const job = batchJobs[i];
+    rows[i].classList.toggle("picked", !!job && batchPicked.has(job.path));
+  }
+  // What can be done to the queue is mostly what can be done to the picking.
+  paintBatchButtons();
+}
+
+function pickJob(job, ev) {
+  const at = batchJobs.indexOf(job);
+  if (ev.shiftKey && batchAnchor >= 0) {
+    const [lo, hi] = [Math.min(batchAnchor, at), Math.max(batchAnchor, at)];
+    batchPicked = new Set(batchJobs.slice(lo, hi + 1).map((j) => j.path));
+  } else if (ev.ctrlKey || ev.metaKey) {
+    if (batchPicked.has(job.path)) batchPicked.delete(job.path);
+    else batchPicked.add(job.path);
+    batchAnchor = at;
+  } else {
+    batchPicked = new Set([job.path]);
+    batchAnchor = at;
+  }
+  paintPicked();
+}
+
+/// Picking rows and starting to carry them are the same press: which of the
+/// two it was is settled by whether the pointer travels. A press on a row
+/// that is already picked leaves the picking alone until the button comes
+/// up -- collapsing to the one row on the way down would drop the other four
+/// out of the drag before it began, which is the clip list's reason too.
 el("batch-list").addEventListener("mousedown", (ev) => {
+  if (ev.button !== 0) return;
   const job = jobAt(ev);
-  if (!job || ev.button !== 0) return;
+  // A press on the list where there is no row is a press on nothing, and
+  // that is an answer rather than an accident -- the same answer the clip
+  // list gives it, for the same reason: it is how twenty picked rows are let
+  // go of without having to find one of them to click on. The right button is
+  // left out here as it is there, since it opens a menu and a menu about
+  // nothing is not worth unpicking rows for.
+  if (!job) {
+    if (!batchPicked.size) return;
+    batchPicked.clear();
+    batchAnchor = -1;
+    paintPicked();
+    return;
+  }
   if (ev.target.closest("[data-stop]") || ev.target.closest("[data-kill]")) return;
-  batchPick = job.path;
-  renderBatch();
-  jobPress = { path: job.path, x: ev.clientX, y: ev.clientY };
+  const plain = !ev.shiftKey && !ev.ctrlKey && !ev.metaKey;
+  jobPress = {
+    path: job.path,
+    x: ev.clientX,
+    y: ev.clientY,
+    collapse: batchPicked.has(job.path) && plain,
+  };
+  if (!jobPress.collapse) pickJob(job, ev);
+});
+
+/// What a double click does to a clip is open it; what it does to a job is
+/// open the project the job is, which is the same act one window further out.
+/// Enter does it too, as it does there.
+el("batch-list").addEventListener("dblclick", (ev) => {
+  const job = jobAt(ev);
+  if (!job) return;
+  if (ev.target.closest("[data-stop]") || ev.target.closest("[data-kill]")) return;
+  openJobProject();
 });
 
 el("batch-list").addEventListener("contextmenu", (ev) => {
   const job = jobAt(ev);
   if (!job) return;
   ev.preventDefault();
-  // The menu is about the row it was opened on, so that row becomes the
-  // picked one -- a menu doing its work to a row nobody pointed at is the
-  // one thing it must not do.
-  batchPick = job.path;
-  renderBatch();
+  // The menu is about what is picked, and a row nobody had picked becomes the
+  // picking by being right-clicked. A row already in one is left alone:
+  // collapsing five rows to the one under the pointer would leave the menu
+  // doing its work to rows nobody asked it about.
+  if (!batchPicked.has(job.path)) pickJob(job, {});
   openJobMenu(ev.clientX, ev.clientY);
 });
 
@@ -5895,8 +5996,8 @@ async function moveBatch(by) {
 // Both follow the clip list, which does the same two things to the same kind
 // of row; see 並べ替え（ドラッグ）there. Plain mouse events rather than HTML5
 // drag and drop, because Tauri takes the window's drags before the page sees
-// them. What differs is that a queue has one row picked rather than a
-// selection of them, which is most of why this is shorter.
+// them. What is carried is the picking, so the press that would pick one row
+// may also be the start of carrying five.
 
 const jobMenu = el("job-menu");
 
@@ -5907,22 +6008,25 @@ function closeJobMenu() {
 }
 
 function openJobMenu(x, y) {
-  const at = batchJobs.findIndex((j) => j.path === batchPick);
-  const job = batchJobs[at] || {};
-  const look = jobLook.get(job.path) || {};
+  const top = firstPicked();
+  const bottom = lastPicked();
+  // The two that are about one file rather than about a stretch of the queue.
+  const one = onePicked();
+  const look = (one && jobLook.get(one.path)) || {};
   // Moving is the loop's business while it runs: it walks the rows by place.
-  el("job-top").disabled = batchRunning || at <= 0;
-  el("job-up").disabled = batchRunning || at <= 0;
-  el("job-down").disabled = batchRunning || at < 0 || at >= batchJobs.length - 1;
-  el("job-bottom").disabled = batchRunning || at < 0 || at >= batchJobs.length - 1;
+  el("job-top").disabled = batchRunning || top <= 0;
+  el("job-up").disabled = batchRunning || top <= 0;
+  el("job-down").disabled = batchRunning || bottom < 0 || bottom >= batchJobs.length - 1;
+  el("job-bottom").disabled = batchRunning || bottom < 0 || bottom >= batchJobs.length - 1;
   // Only a job that has finished with this run has anything to put back, and
-  // the one being written is not finished with it.
-  el("job-requeue").disabled = at < 0 || job.state === "waiting" || job.state === "running";
-  el("job-open").disabled = at < 0;
+  // the one being written is not finished with it. Live for a picking with
+  // any such row in it, and it is those rows it puts back.
+  el("job-requeue").disabled = !pickedJobs().some(canRequeue);
+  el("job-open").disabled = !one;
   // A project that writes beside its recordings has no folder of its own to
   // be opened at.
-  el("job-folder").disabled = at < 0 || !look.dir;
-  el("job-remove").disabled = batchRunning || at < 0;
+  el("job-folder").disabled = !one || !look.dir;
+  el("job-remove").disabled = batchRunning || !batchPicked.size;
   showBatchMenu(false);
   jobMenu.style.left = `${x}px`;
   jobMenu.style.top = `${y}px`;
@@ -5961,33 +6065,38 @@ el("job-bottom").addEventListener("click", () => {
 /// it is waiting should not also be saying how long it took.
 el("job-requeue").addEventListener("click", async () => {
   closeJobMenu();
-  const job = batchJobs.find((j) => j.path === batchPick);
-  if (!job || job.state === "waiting" || job.state === "running") return;
-  job.state = "waiting";
-  job.note = t("batch.waiting");
-  job.began = undefined;
-  job.spent = undefined;
-  job.done = 0;
+  const back = pickedJobs().filter(canRequeue);
+  if (!back.length) return;
+  for (const job of back) {
+    job.state = "waiting";
+    job.note = t("batch.waiting");
+    job.began = undefined;
+    job.spent = undefined;
+    job.done = 0;
+  }
   await saveQueue();
   renderBatch();
 });
 
 /// プロジェクトを開く: hand the job's file to a list window of its own.
-el("job-open").addEventListener("click", async () => {
-  closeJobMenu();
-  const job = batchJobs.find((j) => j.path === batchPick);
+async function openJobProject() {
+  const job = onePicked();
   if (!job) return;
   try {
     await invoke("open_project_window", { path: job.path });
   } catch (e) {
     sayHere(String(e));
   }
+}
+el("job-open").addEventListener("click", () => {
+  closeJobMenu();
+  openJobProject();
 });
 
 /// 出力先フォルダーを開く: the one question a finished queue leaves.
 el("job-folder").addEventListener("click", async () => {
   closeJobMenu();
-  const job = batchJobs.find((j) => j.path === batchPick);
+  const job = onePicked();
   const look = (job && jobLook.get(job.path)) || {};
   if (!look.dir) return;
   try {
@@ -5998,14 +6107,9 @@ el("job-folder").addEventListener("click", async () => {
 });
 
 /// ジョブ削除, from under the pointer rather than from the bar.
-el("job-remove").addEventListener("click", async () => {
+el("job-remove").addEventListener("click", () => {
   closeJobMenu();
-  const at = batchJobs.findIndex((j) => j.path === batchPick);
-  if (at < 0 || batchRunning) return;
-  batchJobs.splice(at, 1);
-  batchPick = (batchJobs[Math.min(at, batchJobs.length - 1)] || {}).path || "";
-  await saveQueue();
-  renderBatch();
+  dropPicked();
 });
 
 // A press anywhere else shuts it -- `mousedown`, because the press that
@@ -6031,12 +6135,12 @@ function jobDropAt(y) {
   return rows.length;
 }
 
-/// The carried row dimmed, and a line where it would land.
+/// The carried rows dimmed, and a line where they would land.
 function paintJobDrag() {
   const rows = el("batch-list").children;
   for (let i = 0; i < rows.length; i++) {
     const job = batchJobs[i];
-    rows[i].classList.toggle("dragging", !!jobDrag && !!job && job.path === jobDrag.path);
+    rows[i].classList.toggle("dragging", !!jobDrag && !!job && jobDrag.paths.has(job.path));
     rows[i].classList.toggle("dropbefore", !!jobDrag && jobDrag.at === i);
     rows[i].classList.toggle(
       "dropafter",
@@ -6053,21 +6157,24 @@ function clearJobDrag() {
   paintJobDrag();
 }
 
-/// Take the carried row out and put it back in at the drop. The index counted
-/// the row being carried, so what it means once that row is out is however
-/// many of the rows left were above it.
+/// Take the carried rows out and put them back in at the drop, keeping the
+/// order they were in. The index counted rows that are being carried, so what
+/// it means once they are out is however many of the rows left were above it.
 async function endJobDrag() {
-  const { path, at } = jobDrag;
-  const from = batchJobs.findIndex((j) => j.path === path);
+  const { paths, at } = jobDrag;
+  const held = batchJobs.filter((j) => paths.has(j.path));
+  const rest = batchJobs.filter((j) => !paths.has(j.path));
+  const above = batchJobs.slice(0, at).filter((j) => !paths.has(j.path)).length;
   clearJobDrag();
-  if (from < 0) return;
-  const to = at > from ? at - 1 : at;
-  if (to === from) {
+  if (!held.length) return;
+  const was = batchJobs;
+  batchJobs = [...rest.slice(0, above), ...held, ...rest.slice(above)];
+  // Put down where they were picked up: nothing to write, and nothing to
+  // repaint that the drag's own classes have not already taken off.
+  if (batchJobs.every((j, i) => j === was[i])) {
     paintJobDrag();
     return;
   }
-  const [job] = batchJobs.splice(from, 1);
-  batchJobs.splice(to, 0, job);
   await saveQueue();
   renderBatch();
 }
@@ -6078,7 +6185,14 @@ window.addEventListener("mousemove", (ev) => {
     // Far enough that a click under an unsteady hand is still a click.
     if (Math.abs(ev.clientX - jobPress.x) + Math.abs(ev.clientY - jobPress.y) < 4) return;
     if (batchRunning) return;
-    jobDrag = { path: jobPress.path, at: batchJobs.findIndex((j) => j.path === jobPress.path) };
+    // What is carried is the picking, unless the press was on a row outside
+    // it -- which cannot happen from here, the press having picked that row
+    // on the way down, but is what the row under the pointer means.
+    const held = batchPicked.has(jobPress.path) ? pickedJobs() : batchJobs.filter((j) => j.path === jobPress.path);
+    jobDrag = {
+      paths: new Set(held.map((j) => j.path)),
+      at: batchJobs.findIndex((j) => j.path === jobPress.path),
+    };
     el("batch-list").classList.add("reordering");
   }
   jobDrag.y = ev.clientY;
@@ -6089,6 +6203,12 @@ window.addEventListener("mousemove", (ev) => {
 
 window.addEventListener("mouseup", () => {
   if (jobDrag) endJobDrag();
+  // A press that never travelled: the picking it was holding open now settles
+  // onto the one row, which is what a plain click has always meant.
+  else if (jobPress && jobPress.collapse) {
+    const job = batchJobs.find((j) => j.path === jobPress.path);
+    if (job) pickJob(job, {});
+  }
   jobPress = null;
 });
 
@@ -6122,15 +6242,21 @@ function jobEdge() {
   }
 }
 
-/// ジョブ削除: the row that is picked.
-el("batch-drop").addEventListener("click", async () => {
-  const at = batchJobs.findIndex((j) => j.path === batchPick);
-  if (at < 0) return;
-  batchJobs.splice(at, 1);
-  batchPick = (batchJobs[Math.min(at, batchJobs.length - 1)] || {}).path || "";
+/// ジョブ削除: the picked rows, from the bar or from the row's own menu.
+///
+/// Nothing is picked afterwards, as nothing is selected in the clip list once
+/// what was selected has been removed: the rows that answered to the pick are
+/// gone, and putting the pick onto whichever row moved up into the gap would
+/// be the program choosing one nobody pointed at.
+async function dropPicked() {
+  if (batchRunning || !batchPicked.size) return;
+  batchJobs = batchJobs.filter((j) => !batchPicked.has(j.path));
+  batchPicked.clear();
+  batchAnchor = -1;
   await saveQueue();
   renderBatch();
-});
+}
+el("batch-drop").addEventListener("click", dropPicked);
 
 el("batch-more").addEventListener("click", (ev) => {
   ev.stopPropagation();
@@ -6152,7 +6278,9 @@ el("batch-clear-done").addEventListener("click", async () => {
   const gone = batchJobs.filter((j) => j.state === "done").length;
   if (!gone) return;
   batchJobs = batchJobs.filter((j) => j.state !== "done");
-  if (!batchJobs.some((j) => j.path === batchPick)) batchPick = "";
+  for (const path of [...batchPicked]) {
+    if (!batchJobs.some((j) => j.path === path)) batchPicked.delete(path);
+  }
   await saveQueue();
   renderBatch();
   sayHere(t("batch.clearedDone", { n: gone }));
@@ -6169,7 +6297,8 @@ el("batch-clear-all").addEventListener("click", async () => {
   });
   if (!go) return;
   batchJobs = [];
-  batchPick = "";
+  batchPicked.clear();
+  batchAnchor = -1;
   await saveQueue();
   renderBatch();
 });
@@ -6265,7 +6394,7 @@ el("batch-list").addEventListener("click", async (ev) => {
   const job = batchJobs[Number(at.dataset.kill)];
   if (!job) return;
   batchJobs = batchJobs.filter((j) => j !== job);
-  if (batchPick === job.path) batchPick = "";
+  batchPicked.delete(job.path);
   await saveQueue();
   renderBatch();
 });
@@ -7036,6 +7165,59 @@ function relocalise() {
   }
 }
 onLangChange(relocalise);
+
+// --- keys on the queue --------------------------------------------------
+//
+// The clip list's keys, on the rows they mean the same thing to. Only in the
+// tool, the queue being the only screen it has and no screen the list window
+// shows -- and only the four that a queue has an answer to: there is nothing
+// here to rename, and nothing to detect.
+
+/// 全選択, which the queue has no button for: the bar is about the queue as a
+/// whole and this is about the rows.
+function pickAllJobs() {
+  batchPicked = new Set(batchJobs.map((j) => j.path));
+  batchAnchor = batchJobs.length ? 0 : -1;
+  paintPicked();
+}
+
+window.addEventListener("keydown", (ev) => {
+  if (screen !== "batch") return;
+  // A panel is over the queue: the ground behind it says the rest of the
+  // program is not listening, and Delete taking a job out from under it would
+  // be the queue listening anyway.
+  if (!prefsPanel.hidden || !about.hidden) return;
+  if (ev.target.tagName === "INPUT" || ev.target.tagName === "SELECT") return;
+  const key = ev.key.toLowerCase();
+  if ((ev.ctrlKey || ev.metaKey) && key === "a") {
+    ev.preventDefault();
+    pickAllJobs();
+    return;
+  }
+  if (ev.ctrlKey || ev.metaKey || ev.altKey) return;
+  if (ev.key === "Delete" || ev.key === "Backspace") {
+    ev.preventDefault();
+    dropPicked();
+    return;
+  }
+  // What Enter does to a clip is open it; what it does to a job is open the
+  // project the job is, which is the same act one window further out.
+  if (ev.key === "Enter") {
+    ev.preventDefault();
+    openJobProject();
+    return;
+  }
+  if (ev.key === "ArrowDown" || ev.key === "ArrowUp") {
+    ev.preventDefault();
+    if (!batchJobs.length) return;
+    const step = ev.key === "ArrowDown" ? 1 : -1;
+    const from = batchAnchor < 0 ? (step > 0 ? -1 : batchJobs.length) : batchAnchor;
+    const at = clamp(from + step, 0, batchJobs.length - 1);
+    pickJob(batchJobs[at], { shiftKey: ev.shiftKey });
+    // After the repaint, which has just replaced the row this is about.
+    el("batch-list").children[at]?.scrollIntoView({ block: "nearest" });
+  }
+});
 
 // --- keys on the list ---------------------------------------------------
 //

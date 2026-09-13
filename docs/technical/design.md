@@ -138,13 +138,28 @@ not come is passed over when the loop reaches it. Either way it is waiting
 again at the next start, because calling a job off is about this run and
 deleting it is what the bar is for. Where it sits in the queue is on the row
 too, under the right button and under the pointer that drags it, both following
-the clip list's own; and the rest of what one job needs — the ends of the
+the clip list's own — as does picking rows at all: plain, Ctrl and Shift mean
+what they mean there, the picked rows carry the same ground, a press on the
+empty part of the list lets them go, and five rows move and are taken out
+together. Clicking a row means one thing in this program and not two. The job in
+hand gave up its own ground for it, and was right to: a ground says picked, and
+what a row is *doing* is said the way the clip list says it — on the row, in
+the bar that fills and the sentence at the end of the line above; and the rest of what one job needs — the ends of the
 queue, putting a written job back, opening its project or the folder it writes
 into — is on that same menu, since none of it is about the queue.
 
-The output screen's own 出力開始 and 出力中止 come off in the tool for the reason
-the settings screens do: the list it is holding is a job out of the queue, and
-nothing should be able to start or stop it but the bar and the row. The menu in
+The list window's own screens say the same thing about one list rather than
+about a queue, and there the one button is right: 出力開始 before a run, 出力中止
+during one, because a list being written has exactly one way of being stopped
+and the pair would have spent its life with one half greyed out. Its neighbour
+バッチに登録 is the other answer to a settled list, and it asks nothing on the
+way: a job is a file, so the list is written — over its own file, or under the
+first row's name where it has none — and the tool is started over the queue it
+just landed in, a queue with nobody over it being a queue nobody writes.
+
+That one button comes off altogether in the tool, for the reason the settings
+screens do: the list it is holding is a job out of the queue, and nothing
+should be able to start or stop it but the bar and the row. The menu in
 the corner goes the same way — the four items about a project, and the one that
 opens a batch tool, are not things a batch tool has any business offering, and
 neither are the keys that do the same. What is left of it there is 完了後,

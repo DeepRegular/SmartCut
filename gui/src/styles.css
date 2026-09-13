@@ -961,12 +961,23 @@ input[type="text"]::placeholder { color: var(--dim); }
   line-height: 1.1;
 }
 #batch-list .kill:hover { color: #ff8a80; }
+/* Under the pointer, and picked: both said the way the clip list says them,
+   down to the colours and to nothing being drawn round the row. It is the
+   same act on the same kind of row, and a window that answered a click
+   differently from the window next to it would be the program disagreeing
+   with itself about what clicking a row means.
+
+   Which leaves the job in hand with no ground of its own, #175a70 now meaning
+   picked here as it does there -- and it needs none. A row's ground says
+   whether it is picked; what the row is *doing* is said where the clip list
+   says it, on the row itself: the bar filling, the clocks that appear only
+   once a job has run, and the sentence at the end of the line above. The one
+   state that keeps a ground is the one the clip list gives a ground too. */
 #batch-list li:hover { background: #33454f; }
-/* The one being written, and the one the pointer has chosen. Two different
-   things, so they are said two different ways. */
-#batch-list li.running { background: #175a70; }
 #batch-list li.error { background: #4a2b2b; }
-#batch-list li.picked { box-shadow: inset 0 0 0 2px var(--sel); }
+#batch-list li.picked { background: #175a70; }
+#batch-list li.picked .n { color: #cfefff; }
+#batch-list li.picked .who { color: #cfe9f2; }
 /* Carried with the mouse, the way the clip list carries a row, and drawn the
    same way: the row dimmed where it came from, and the line it would land on
    sitting on the edge of the row it would land above. */

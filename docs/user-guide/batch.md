@@ -185,17 +185,19 @@ has none to state: what comes out is what went in, copied.
 
 **The order is the running order**, and a row is moved by dragging it: press
 it, carry it to where it belongs, and a line shows the gap it will drop into.
-Escape puts it back.
+Several picked rows are carried together. Escape puts them back.
 
-**A right click on a row** is where the rest of what can be done to one job
-is: `先頭へ移動` / `上に移動` / `下に移動` / `末尾へ移動` for the order, and then
+**A right click on a row** is where the rest of what can be done to the picked
+jobs is: `先頭へ移動` / `上に移動` / `下に移動` / `末尾へ移動` for the order, and
+then the four below — of which the middle two are about one file, and are live
+only while a single row is picked.
 
 | | |
 |---|---|
-| `もう一度出力する` | Puts a job that has been written — or failed, or been called off — back in the queue as one that is waiting, in the place it already holds. Without it the only way to write a job twice is to take it out and add it again |
+| `もう一度出力する` | Puts a job that has been written — or failed, or been called off — back in the queue as one that is waiting, in the place it already holds; every picked row it applies to goes back at once. Without it the only way to write a job twice is to take it out and add it again |
 | `プロジェクトを開く` | Opens that job's `.scproj` in a list window of its own, for when a job needs looking at rather than running |
 | `出力先フォルダーを開く` | Shows where it writes, in whatever your desktop uses to show folders |
-| `ジョブ削除` | Takes the job out of the queue for good |
+| `ジョブ削除` | Takes the picked jobs out of the queue for good |
 
 **The queue survives the program.** It is written to a file as it is changed,
 so a queue lined up at midnight is still there in the morning — and a job that
