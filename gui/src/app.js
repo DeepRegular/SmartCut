@@ -7180,6 +7180,13 @@ el("menu-about").addEventListener("click", () => {
   showMenu(false);
   showAbout(true);
 });
+/// 終了: the same way out as the window's cross, question and all. In both
+/// windows -- the tool is a program somebody leaves running and closes when
+/// it is done, and reaching for a menu to do it is no stranger there.
+el("menu-quit").addEventListener("click", () => {
+  showMenu(false);
+  if (invoke) invoke("close_main");
+});
 el("about-close").addEventListener("click", () => showAbout(false));
 about.addEventListener("click", (ev) => {
   if (ev.target === about) showAbout(false);

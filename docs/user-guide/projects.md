@@ -28,6 +28,9 @@ The keyboard does the same things.
 exactly the state you get when you start the program. If you have unsaved work,
 it asks first.
 
+At the foot of the menu is **終了**, which is the window's own cross by another
+route: unsaved work stops it the same way. The batch tool's menu has it too.
+
 You can also open a saved file by dropping it on the window, or by passing it on
 the command line.
 

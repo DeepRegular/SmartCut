@@ -50,6 +50,7 @@ const CATALOG = {
     "menu.batch": "バッチ出力ツール…",
     "menu.prefs": "環境設定…",
     "menu.about": "SmartCut について",
+    "menu.quit": "終了",
 
     // --- プロジェクト -----------------------------------------------------
     "project.untitled": "無題",
@@ -692,6 +693,7 @@ const CATALOG = {
     "menu.batch": "Batch tool…",
     "menu.prefs": "Preferences…",
     "menu.about": "About SmartCut",
+    "menu.quit": "Quit",
 
     // --- projects ---------------------------------------------------------
     "project.untitled": "Untitled",

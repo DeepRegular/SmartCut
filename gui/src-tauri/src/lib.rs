@@ -3774,6 +3774,18 @@ fn quit(app: tauri::AppHandle) {
     app.exit(0);
 }
 
+/// 終了 on the menu: ask this window to close, exactly as its cross does.
+///
+/// Not [`quit`], which is the answer to the question rather than the asking
+/// of it. A menu item that went straight there would be the one way out of
+/// the program that could take an evening's cuts with it.
+#[tauri::command]
+fn close_main(app: tauri::AppHandle) {
+    if let Some(w) = app.get_webview_window(MAIN) {
+        let _ = w.close();
+    }
+}
+
 // --- バッチ出力 -----------------------------------------------------------
 //
 // The queue of projects to write out, and the second process that writes
@@ -4584,6 +4596,7 @@ pub fn run() {
             window_role,
             center_window,
             quit,
+            close_main,
             set_lang,
             os_locale,
             set_prefs,
