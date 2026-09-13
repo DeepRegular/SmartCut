@@ -1004,8 +1004,14 @@ input[type="text"]::placeholder { color: var(--dim); }
 #batch-go:hover:not(:disabled) { filter: brightness(1.08); }
 /* The same said to one job, on its row. Held out of the way until the queue
    is running -- there is nothing to call off before that -- and the column it
-   sits in stays, so the rows do not shuffle sideways when it appears. */
-.jobstop { padding: 1px 8px; font-size: 11px; }
+   sits in stays, so the rows do not shuffle sideways when it appears.
+
+   As tall as the bar it stands beside, to the pixel: two things on one line
+   whose tops and bottoms disagree read as one of them being slightly wrong,
+   and the bar is what says how tall that line is. Stretched rather than given
+   a height, so it goes on agreeing with a bar whose own height comes from the
+   text in it. */
+.jobstop { padding: 0 8px; font-size: 11px; align-self: stretch; }
 .jobstop[hidden] { visibility: hidden; display: block; }
 #batch-go:disabled { background: #333; border-color: #4a4a4a; color: var(--dim); }
 /* The tool's bar: the run control, then 削除 with its two bulk forms hanging
