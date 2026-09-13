@@ -934,7 +934,7 @@ input[type="text"]::placeholder { color: var(--dim); }
    running. */
 #batch-go {
   background: var(--accent); color: #201400; border: 1px solid var(--accent);
-  border-radius: 2px; padding: 3px 18px; font: inherit; font-weight: 600; cursor: pointer;
+  border-radius: 2px; font: inherit; cursor: pointer;
 }
 #batch-go:hover:not(:disabled) { filter: brightness(1.08); }
 /* Stopping is not starting, so it is not drawn as though it were: a plain
@@ -952,6 +952,16 @@ input[type="text"]::placeholder { color: var(--dim); }
    as everywhere else here. */
 #batch-bar { display: flex; align-items: center; gap: 8px; }
 #batch-bar[hidden] { display: none; }
+/* All one size. They are four things that can be said to the queue, and one
+   of them drawn smaller than the rest would read as a smaller thing to say --
+   which 中止 is not. Wide enough for the longest of the four labels in either
+   language, so they line up rather than merely matching in height. */
+#batch-bar > button,
+#batch-bar .dropgroup > .mini {
+  min-width: 112px; padding: 3px 12px; font-weight: 600;
+}
+/* The exception, being half of the button beside it rather than a button. */
+#batch-bar .dropmenu .caret { min-width: 0; padding: 3px 7px; font-weight: 400; }
 /* 削除 and its caret read as one control, so they are drawn as one: no gap,
    and the seam between them is a single border rather than two. */
 .dropgroup { display: flex; align-items: stretch; position: relative; }
