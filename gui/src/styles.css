@@ -888,6 +888,9 @@ input[type="text"]::placeholder { color: var(--dim); }
   margin-left: auto; min-width: 0; overflow: hidden; text-overflow: ellipsis;
   color: var(--text);
 }
+#batch-list .doingnow.done { color: #7ee787; }
+#batch-list .doingnow.error { color: #ff9a90; }
+#batch-list .doingnow.waiting, #batch-list .doingnow.skipped { color: var(--dim); }
 /* What the job is doing, in a box of its own: it is the line that changes,
    and the eye should be able to find it without reading the two above.
 
@@ -900,6 +903,10 @@ input[type="text"]::placeholder { color: var(--dim); }
 #batch-list .doing { display: flex; align-items: stretch; gap: 8px; }
 #batch-list .say {
   flex: 1; min-width: 0;
+  /* A line's worth of room even when there is nothing in it: an empty bar is
+     still a bar, and a row that shrank for want of numbers would step out of
+     line with the rows either side of it. */
+  min-height: 1.45em;
   position: relative; overflow: hidden;
   background: var(--sunken); border: 1px solid var(--line); border-radius: 2px;
   padding: 1px 6px; color: var(--dim);
@@ -915,13 +922,10 @@ input[type="text"]::placeholder { color: var(--dim); }
 #batch-list .say .what {
   position: relative; display: flex; align-items: baseline; gap: 10px;
 }
-#batch-list .say .txt { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 /* Legible on the filled side and the unfilled side alike, which neither the
    dim grey nor the plain text colour is. */
 #batch-list .say .ela, #batch-list .say .rest { color: #bcd6de; }
 #batch-list .say .pct { color: var(--text); font-weight: 600; }
-#batch-list li.done .say { color: #7ee787; }
-#batch-list li.error .say { color: #ff9a90; }
 #batch-list li.running .say { color: var(--text); }
 /* The clock, the bar, and the button that calls this job off. */
 #batch-list .kill {

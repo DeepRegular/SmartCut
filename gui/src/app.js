@@ -5444,15 +5444,15 @@ function jobLine(job) {
   return bits.join(t("sep"));
 }
 
-/// What stands in the bar. For the job being written it is the numbers -- how
-/// long it has taken, how far it has got, how long is left -- and nothing
-/// else: the sentence about what is being written goes on the line above, so
-/// that the numbers are not read past to find each other.
+/// What stands in the bar: the numbers, and only for the job being written.
 ///
-/// For every other job the bar has no numbers, so the box says what the row
-/// has to say instead: waiting, written, failed, called off.
+/// Everything a row has to say in words -- what is being written, or that it
+/// is waiting, written, failed or called off -- is said on the line above, at
+/// the right. The bar is left the three numbers, one at each end and one in
+/// the middle, so that none of them is read past to find another; and a row
+/// with no numbers to show has an empty bar, which is what an empty bar means.
 function jobSaid(job) {
-  if (job.state !== "running") return `<span class="txt">${esc(job.note || "")}</span>`;
+  if (job.state !== "running") return "";
   const done = job.done || 0;
   const spent = job.began ? (Date.now() - job.began) / 1000 : 0;
   const left = done > 0.01 ? (spent / done) * (1 - done) : null;
@@ -5493,11 +5493,7 @@ function renderBatch() {
           <div class="nm">${esc(j.label)}</div>
           <div class="sub">
             <span class="who dim">${esc(jobLine(j))}</span>
-            ${
-              j.state === "running"
-                ? `<span class="doingnow">${esc(j.note || "")}</span>`
-                : ""
-            }
+            <span class="doingnow ${j.state}">${esc(j.note || "")}</span>
           </div>
           <div class="doing">
             <div class="say">
@@ -5524,7 +5520,11 @@ function renderBatch() {
   // content policy turns off, and the property is not.
   batchJobs.forEach((j, i) => {
     const fill = el("batch-list").children[i]?.querySelector(".say .fill");
-    if (fill) fill.style.width = `${j.state === "running" ? Math.round((j.done || 0) * 100) : 0}%`;
+    // Full for a job that is written -- a bar that reached the end and a bar
+    // that was never started should not look the same -- and otherwise as far
+    // as the job in hand has got.
+    const how = j.state === "done" ? 1 : j.state === "running" ? j.done || 0 : 0;
+    if (fill) fill.style.width = `${Math.round(how * 100)}%`;
   });
   paintBatchButtons();
 }
