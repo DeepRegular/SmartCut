@@ -84,6 +84,9 @@ button.brand:hover, button.brand.open { background: #3a3a3a; border-color: #5c5c
   box-shadow: 0 6px 18px rgba(0, 0, 0, .6);
 }
 .menu[hidden] { display: none; }
+/* `display` on the element beats the attribute, as everywhere else here. The
+   batch tool takes the items that are about a project off its own menu. */
+.menu-item[hidden], .menu-sep[hidden] { display: none; }
 .menu-item {
   display: flex; align-items: baseline; gap: 24px; width: 100%; text-align: left;
   /* The label and the key it is paired with stay on one line, and the menu

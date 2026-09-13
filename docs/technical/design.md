@@ -101,7 +101,12 @@ that drags it, both following the clip list's own.
 
 The output screen's own 出力開始 and 出力中止 come off in the tool for the reason
 the settings screens do: the list it is holding is a job out of the queue, and
-nothing should be able to start or stop it but the bar and the row.
+nothing should be able to start or stop it but the bar and the row. The menu in
+the corner goes the same way — the four items about a project, and the one that
+opens a batch tool, are not things a batch tool has any business offering, and
+neither are the keys that do the same. What is left of it there is 環境設定 and
+the about box, which are about the program rather than about any list: the tool
+is the process doing the cutting, so the answers on that panel are its own.
 
 The queue is a file in the config directory. The tool re-reads it every two
 seconds and writes it as each job ends; the list window only ever *appends* to

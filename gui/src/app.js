@@ -5244,6 +5244,10 @@ el("menu-save-as").addEventListener("click", () => {
 // list's own key handler for that reason.
 window.addEventListener("keydown", (ev) => {
   if (!(ev.ctrlKey || ev.metaKey) || ev.altKey) return;
+  // Not in the batch tool, for the reason the items are off its menu: what it
+  // has open is a job out of the queue, and Ctrl+S over that file is a queue
+  // editing its own work.
+  if (isTool()) return;
   const key = ev.key.toLowerCase();
   if (key === "s") {
     ev.preventDefault();
@@ -6263,9 +6267,17 @@ async function settleRole() {
   el("enlist-export").hidden = true;
   el("menu-batch").hidden = true;
   // Nor is there a project to save: what the tool opens it opens to write
-  // out, and 保存 over the file it was handed is not something a queue
-  // should be able to do on its own.
-  for (const id of ["menu-new", "menu-open", "menu-save", "menu-save-as"]) {
+  // out, and 保存 over the file it was handed is not something a queue should
+  // be able to do on its own. The rules that group them go with them, or the
+  // menu opens on two lines and two items.
+  for (const id of [
+    "menu-new",
+    "menu-open",
+    "menu-save",
+    "menu-save-as",
+    "menu-sep-work",
+    "menu-sep-tool",
+  ]) {
     if (el(id)) el(id).hidden = true;
   }
   show("batch");
