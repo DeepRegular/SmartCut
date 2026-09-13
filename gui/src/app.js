@@ -1557,7 +1557,7 @@ function paintButtons() {
   el("select-all").disabled = clips.length === 0;
   el("remove-clip").disabled = !can.remove;
   el("remove-all").disabled = clips.length === 0;
-  el("run-export").disabled = ready().length === 0 || exporting || batchRunning;
+  paintExportButton();
   el("enlist-export").disabled = clips.length === 0 || exporting || batchRunning;
   // The queue drives this screen, so what it can do changes with it.
   if (el("batch-go")) paintBatchButtons();
@@ -4502,12 +4502,31 @@ if (listen) {
   });
 }
 
-el("abort-export").addEventListener("click", () => {
+/// The one button on the 出力 screen, which says what pressing it now does.
+///
+/// 出力中止 while a run is on and 出力開始 the rest of the time. Greyed out
+/// with nothing to write, while the queue is being written by the tool -- and
+/// while a stop is already on its way, because 中止 twice is not twice as
+/// stopped and the state line has just said so.
+///
+/// Hidden altogether in the batch tool, which has its own control on the bar
+/// over a queue rather than over one list; see the startup code.
+function paintExportButton() {
+  const button = el("run-export");
+  if (!button || button.hidden) return;
+  button.textContent = t(exporting ? "out.abort" : "out.run");
+  button.disabled = exporting ? abort : ready().length === 0 || batchRunning;
+}
+
+el("run-export").addEventListener("click", () => {
+  if (!exporting) {
+    runExport();
+    return;
+  }
   abort = true;
   el("out-state").textContent = t("out.aborting");
+  paintExportButton();
 });
-
-el("run-export").addEventListener("click", runExport);
 
 async function runExport() {
   if (exporting) return;
@@ -4582,7 +4601,6 @@ async function runExport() {
   discSteps = [];
   heldAfterRun = false;
   list.forEach((c) => (c.out = { state: "waiting", progress: 0, note: t("out.waiting") }));
-  el("abort-export").disabled = false;
   paintButtons();
   renderOutScreen();
 
@@ -4811,7 +4829,7 @@ async function runExport() {
   runDir = null;
   runFolder = null;
   writing = null;
-  el("abort-export").disabled = true;
+  paintExportButton();
   const failed = list.filter((c) => c.out.state === "error").length;
   el("out-state").textContent = t("out.summary", {
     done,
@@ -6436,7 +6454,6 @@ async function settleRole() {
   // out of the queue; writing it again from underneath the queue is not
   // something the one control up on the bar should have a rival for.
   el("run-export").hidden = true;
-  el("abort-export").hidden = true;
   // Nor has it a list to put in the queue: what it has open is a job out of
   // the queue already. Nor another tool to open, being one.
   el("enlist-export").hidden = true;

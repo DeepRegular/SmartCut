@@ -558,10 +558,18 @@
 
       <div class="out-run">
         <div class="out-buttons">
-          <button id="run-export" class="primary big" data-i18n="out.run">出力開始</button>
-          <button id="abort-export" class="mini" data-i18n="out.abort" disabled>出力中止</button>
+          <!-- One button, because there was never a moment when both of them
+               were live: before a run only 出力開始 could be pressed and
+               during one only 出力中止. Two buttons for that is a button that
+               spends its whole life greyed out beside the one being pressed,
+               and a press that has to be aimed at the right one of the pair.
+
+               So: what the button says is what pressing it now does. No
+               `data-i18n` on it for that reason -- `paintExportButton` writes
+               it, in the language of the moment. -->
+          <button id="run-export" class="primary big">出力開始</button>
           <!-- The other thing to do with a settled list: put it in the queue
-               instead of writing it now. Under the two buttons that write it,
+               instead of writing it now. Under the button that writes it,
                because it is the same question asked about a different
                evening -- and it is the answer somebody wants at exactly this
                moment, having just settled where the files go.
