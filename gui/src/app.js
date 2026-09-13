@@ -5444,18 +5444,20 @@ function jobLine(job) {
   return bits.join(t("sep"));
 }
 
-/// The clock under the bar, which only the job being written has: a job whose
-/// turn has not come has nothing to time.
-function jobRunLine(job) {
-  if (job.state !== "running") return "";
+/// What stands in the bar: the clock, what is being written, and how far it
+/// has got. All of it inside the one box, because all of it is about the same
+/// moment -- a job whose turn has not come has only the sentence, having
+/// nothing yet to time or to measure.
+function jobSaid(job) {
+  const text = `<span class="txt">${esc(job.note || "")}</span>`;
+  if (job.state !== "running") return text;
   const done = job.done || 0;
   const spent = job.began ? (Date.now() - job.began) / 1000 : 0;
   const left = done > 0.01 ? (spent / done) * (1 - done) : null;
-  return `<div class="run">
-      <span class="ela">${esc(t("batch.elapsed", { t: clock(spent) }))}</span>
+  return `<span class="ela">${esc(t("batch.elapsed", { t: clock(spent) }))}</span>
+      ${text}
       <span class="pct">${Math.round(done * 100)}%</span>
-      <span class="rest">${left === null ? "" : esc(t("batch.left", { t: clock(left) }))}</span>
-    </div>`;
+      <span class="rest">${left === null ? "" : esc(t("batch.left", { t: clock(left) }))}</span>`;
 }
 
 function renderBatch() {
@@ -5488,16 +5490,16 @@ function renderBatch() {
           <div class="nm">${esc(j.label)}</div>
           <div class="sub dim">${esc(jobLine(j))}</div>
           <div class="doing">
-            <div class="say"><span class="fill"></span><span class="what">${esc(
-              j.note || ""
-            )}</span></div>
+            <div class="say">
+              <span class="fill"></span>
+              <span class="what">${jobSaid(j)}</span>
+            </div>
             ${
               canStop(j)
                 ? `<button class="jobstop mini" data-stop="${i}">${esc(t("batch.stopJob"))}</button>`
                 : ""
             }
           </div>
-          ${jobRunLine(j)}
         </div>
         ${
           batchRunning

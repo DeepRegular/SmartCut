@@ -895,15 +895,21 @@ input[type="text"]::placeholder { color: var(--dim); }
   background: #1d7f99; transition: width .15s;
 }
 /* Over the fill rather than under it, and the same colour either side of its
-   edge: a word half-covered is still a word. */
-#batch-list .say .what { position: relative; display: block; }
+   edge: a word half-covered is still a word. The clock and the percentage
+   stand in here with the sentence, because all three are about the same
+   moment and the box is the room that moment has. */
+#batch-list .say .what {
+  position: relative; display: flex; align-items: baseline; gap: 10px;
+}
+#batch-list .say .txt { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+/* Legible on the filled side and the unfilled side alike, which neither the
+   dim grey nor the plain text colour is. */
+#batch-list .say .ela, #batch-list .say .rest { color: #bcd6de; }
+#batch-list .say .pct { color: var(--text); font-weight: 600; }
 #batch-list li.done .say { color: #7ee787; }
 #batch-list li.error .say { color: #ff9a90; }
 #batch-list li.running .say { color: var(--text); }
 /* The clock, the bar, and the button that calls this job off. */
-#batch-list .run { display: flex; align-items: center; gap: 10px; font-size: 11px; }
-#batch-list .ela, #batch-list .rest { color: var(--dim); }
-#batch-list .pct { color: var(--text); }
 #batch-list .kill {
   background: none; border: 0; color: var(--dim); cursor: pointer;
   font-size: 14px; padding: 0 3px; align-self: start;
