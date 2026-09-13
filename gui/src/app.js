@@ -4395,7 +4395,27 @@ function renderOutScreen() {
     const bar = rows.children[i]?.querySelector(".pbar span");
     if (bar) bar.style.width = `${Math.round(s.out.progress * 100)}%`;
   });
+  followRow(rows, shown.findIndex((s) => s.out.state === "running"));
   paintButtons();
+}
+
+/// Keep the row under the writing head where it can be seen.
+///
+/// The list shows three rows at a time and a disc's run is a dozen or twenty
+/// long, so the row that is actually moving spends most of a run below the
+/// fold -- and the markup above is rebuilt on every progress report, which
+/// puts a scroll back at the top as fast as anybody could set it.
+///
+/// Middled rather than merely brought into view, so that what is around it
+/// is readable too: the row above is what was just written and the row below
+/// is what comes next, and those are the two things somebody looking at a
+/// run wants beside the one in hand. `offsetTop` is the row's place in the
+/// list because the list is positioned; see `#out-list` in the stylesheet.
+function followRow(rows, at) {
+  const row = at >= 0 ? rows.children[at] : null;
+  if (!row) return;
+  const middle = row.offsetTop - (rows.clientHeight - row.offsetHeight) / 2;
+  rows.scrollTop = Math.max(0, Math.min(middle, rows.scrollHeight - rows.clientHeight));
 }
 
 /// Paint the bar for the stretch of the run it is currently about.
