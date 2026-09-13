@@ -5455,9 +5455,9 @@ function jobRunLine(job, i) {
   const left = done > 0.01 ? (spent / done) * (1 - done) : null;
   return `<div class="run">
       <span class="ela">${esc(t("batch.elapsed", { t: clock(spent) }))}</span>
-      <span class="pbar"><span></span></span>
       <span class="pct">${Math.round(done * 100)}%</span>
       <span class="rest">${left === null ? "" : esc(t("batch.left", { t: clock(left) }))}</span>
+      <span class="grow"></span>
       ${stop}
     </div>`;
 }
@@ -5491,7 +5491,9 @@ function renderBatch() {
         <div class="meta">
           <div class="nm">${esc(j.label)}</div>
           <div class="sub dim">${esc(jobLine(j))}</div>
-          <div class="say">${esc(j.note || "")}</div>
+          <div class="say"><span class="fill"></span><span class="what">${esc(
+            j.note || ""
+          )}</span></div>
           ${canStop(j) ? jobRunLine(j, i) : ""}
         </div>
         ${
@@ -5502,12 +5504,12 @@ function renderBatch() {
       </li>`;
     })
     .join("");
-  // The bars are filled from here rather than written into the markup: a
-  // `style` attribute in markup is the one thing the window's content policy
-  // turns off, and the property is not.
+  // The fill behind each sentence is set from here rather than written into
+  // the markup: a `style` attribute in markup is the one thing the window's
+  // content policy turns off, and the property is not.
   batchJobs.forEach((j, i) => {
-    const bar = el("batch-list").children[i]?.querySelector(".pbar span");
-    if (bar) bar.style.width = `${Math.round((j.done || 0) * 100)}%`;
+    const fill = el("batch-list").children[i]?.querySelector(".say .fill");
+    if (fill) fill.style.width = `${j.state === "running" ? Math.round((j.done || 0) * 100) : 0}%`;
   });
   paintBatchButtons();
 }

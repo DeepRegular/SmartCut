@@ -875,22 +875,31 @@ input[type="text"]::placeholder { color: var(--dim); }
   font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
 /* What the job is doing, in a box of its own: it is the line that changes,
-   and the eye should be able to find it without reading the two above. */
+   and the eye should be able to find it without reading the two above.
+
+   The box is also the progress bar. Two boxes one under the other -- one
+   saying what is being written and one saying how far it has got -- were two
+   halves of one sentence given a line each; filling this one behind the words
+   says both in the room the words already take. */
 #batch-list .say {
+  position: relative; overflow: hidden;
   background: var(--sunken); border: 1px solid var(--line); border-radius: 2px;
   padding: 1px 6px; color: var(--dim);
 }
+#batch-list .say .fill {
+  position: absolute; top: 0; bottom: 0; left: 0; width: 0;
+  background: #1d7f99; transition: width .15s;
+}
+/* Over the fill rather than under it, and the same colour either side of its
+   edge: a word half-covered is still a word. */
+#batch-list .say .what { position: relative; display: block; }
 #batch-list li.done .say { color: #7ee787; }
 #batch-list li.error .say { color: #ff9a90; }
 #batch-list li.running .say { color: var(--text); }
 /* The clock, the bar, and the button that calls this job off. */
 #batch-list .run { display: flex; align-items: center; gap: 8px; font-size: 11px; }
 #batch-list .ela, #batch-list .rest { color: var(--dim); }
-#batch-list .pct { color: var(--text); min-width: 34px; text-align: right; }
-#batch-list .pbar {
-  flex: 1; height: 7px; background: var(--sunken); border: 1px solid var(--line); overflow: hidden;
-}
-#batch-list .pbar span { display: block; height: 100%; width: 0; background: var(--copy); }
+#batch-list .pct { color: var(--text); }
 #batch-list .kill {
   background: none; border: 0; color: var(--dim); cursor: pointer;
   font-size: 14px; padding: 0 3px; align-self: start;
