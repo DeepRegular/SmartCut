@@ -107,6 +107,36 @@
                Refused where one is already running: two tools over one queue
                would each believe they owned it. -->
           <button class="menu-item" id="menu-batch" data-i18n="menu.batch">バッチ出力ツール…</button>
+          <!-- The batch tool's own: what to do once the queue is empty. A
+               standing answer about the machine rather than about a job, so
+               it belongs with the program's own items rather than on a screen
+               about the queue.
+
+               Folded away behind the answer it currently holds: three items
+               of which two are always wrong would be two thirds of a menu
+               spent on a question nobody is asking most of the time. Hidden
+               altogether in the list window, which has no queue to finish. -->
+          <button class="menu-item fold" id="menu-after" aria-expanded="false" hidden>
+            <span data-i18n="batch.afterHead">完了後</span>
+            <span class="menu-key">
+              <span id="menu-after-now"></span>
+              <span class="fold-caret">▾</span>
+            </span>
+          </button>
+          <div id="menu-after-body" hidden>
+            <button class="menu-item sub after" id="menu-after-nothing" data-after="nothing">
+              <span data-i18n="batch.afterNothing">何もしない</span>
+              <span class="menu-key tick">✓</span>
+            </button>
+            <button class="menu-item sub after" id="menu-after-sleep" data-after="sleep">
+              <span data-i18n="batch.afterSleep">スリープ</span>
+              <span class="menu-key tick">✓</span>
+            </button>
+            <button class="menu-item sub after" id="menu-after-shutdown" data-after="shutdown">
+              <span data-i18n="batch.afterShutdown">シャットダウン</span>
+              <span class="menu-key tick">✓</span>
+            </button>
+          </div>
           <div class="menu-sep" id="menu-sep-tool"></div>
           <button class="menu-item" id="menu-prefs" data-i18n="menu.prefs">環境設定…</button>
           <button class="menu-item" id="menu-about" data-i18n="menu.about">SmartCut について</button>
@@ -584,32 +614,19 @@
       <ol id="batch-list"></ol>
       <div id="batch-idle" class="batch-idle" data-i18n="batch.idle">保存したプロジェクトを追加してください</div>
 
-      <div class="out-run" id="batch-run-panel">
-        <div class="out-status">
-          <div class="row"><span class="lbl" data-i18n="batch.stateLbl">状況:</span>
-            <span id="batch-state" class="grow"></span></div>
-          <!-- The whole queue, not the recording: the jobs that are settled
-               plus how far the one in hand has got. What that one job is
-               doing is on its own row. -->
-          <div class="row"><span class="lbl" data-i18n="out.progressLbl">進捗:</span>
-            <div class="progress grow"><span id="batch-progress"></span></div>
-            <span id="batch-pct" class="num">0%</span></div>
-          <div class="row"><span class="lbl" data-i18n="batch.afterLbl">完了後:</span>
-            <select id="batch-after">
-              <option value="nothing" data-i18n="batch.afterNothing">何もしない</option>
-              <option value="sleep" data-i18n="batch.afterSleep">スリープ</option>
-              <option value="shutdown" data-i18n="batch.afterShutdown">シャットダウン</option>
-            </select>
-            <span class="grow dim" data-i18n="batch.afterNote">最後のジョブが終わってから実行します</span>
-          </div>
-          <!-- The countdown, which is the only thing standing between a queue
-               that finished and a machine that is off. Hidden until there is
-               one to show. -->
-          <div class="row" id="batch-countdown-row" hidden>
-            <span id="batch-countdown" class="grow"></span>
-            <button id="batch-after-cancel" class="mini" data-i18n="batch.afterCancel">中止</button>
-          </div>
-        </div>
+      <!-- Nothing stands at the foot of this screen. What a queue is doing is
+           on the rows -- one of them is the job in hand and says so -- and
+           what it has done is counted above the list. A line repeating either
+           would be the same thing said twice.
+
+           Except this, which is not about the queue but about the machine:
+           the countdown before it is put to sleep or turned off, and the
+           button that calls that off. It is the only thing between a queue
+           that finished and a machine that is gone, so it appears when there
+           is one and at no other time. -->
+      <div class="afterbar" id="batch-countdown-row" hidden>
+        <span id="batch-countdown" class="grow"></span>
+        <button id="batch-after-cancel" class="mini" data-i18n="batch.afterCancel">中止</button>
       </div>
     </section>
 

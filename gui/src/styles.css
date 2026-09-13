@@ -111,6 +111,20 @@ button.brand:hover, button.brand.open { background: #3a3a3a; border-color: #5c5c
 /* The key that does the same thing, held to the right of the label it
    belongs to. Dim: it is a reminder for next time, not part of the name. */
 .menu-key { margin-left: auto; color: var(--dim); font-size: 11px; }
+/* A label over a group of items that are one answer between them. */
+.menu-head { padding: 5px 10px 2px; color: var(--dim); font-size: 11px; }
+/* The tick on whichever of them is the answer. Held in the menu's key column
+   so that the three labels line up whether or not one of them is ticked. */
+.menu-item .tick { visibility: hidden; color: var(--accent); }
+.menu-item.on .tick { visibility: visible; }
+/* An item that opens rather than does: the answer it currently holds sits
+   where a shortcut key would, with the caret that turns as it opens. */
+.menu-item .menu-key { display: flex; align-items: baseline; gap: 6px; }
+.fold-caret { display: inline-block; transition: transform .12s; }
+.menu-item.fold.open .fold-caret { transform: rotate(180deg); }
+/* What it opens, indented under it. */
+.menu-item.sub { padding-left: 22px; }
+#menu-after-body[hidden] { display: none; }
 .menu-sep { height: 1px; margin: 4px 6px; background: #4a4a4a; }
 
 /* --- 環境設定 ----------------------------------------------------------
@@ -955,6 +969,13 @@ input[type="text"]::placeholder { color: var(--dim); }
   padding: 28px; text-align: center; color: var(--dim);
 }
 .batch-idle[hidden] { display: none; }
+/* The strip that stands between a finished queue and a machine about to go.
+   At the foot of the screen, and only while it is counting. */
+.afterbar {
+  display: flex; align-items: center; gap: 10px; padding: 6px 10px;
+  background: #3a2f18; border-top: 1px solid #000;
+}
+.afterbar[hidden] { display: none; }
 #batch-countdown { color: #ffcc66; }
 /* The batch tool's start-and-stop. It is the only control on that window's
    bar, so it is drawn as one -- the accent the output screen's own start

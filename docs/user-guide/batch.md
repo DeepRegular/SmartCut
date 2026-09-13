@@ -190,8 +190,9 @@ there to answer a question.
 
 ### Sleeping or shutting down at the end
 
-`完了後` takes `何もしない`, `スリープ` or `シャットダウン`, and is remembered
-with the queue. It fires once the queue has run to the end — including a queue
+`完了後`, on the `SmartCut` menu in the corner, folds out to `何もしない`,
+`スリープ` or `シャットダウン`, and shows which of them is the answer without
+being opened. It is remembered with the queue. It fires once the queue has run to the end — including a queue
 that ended with failures, which are still on the screen when the machine comes
 back — and never over a queue somebody stopped.
 

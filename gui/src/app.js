@@ -5380,7 +5380,7 @@ async function refreshQueue() {
       };
     });
   batchAfter = queue && queue.after ? queue.after : "nothing";
-  if (isTool()) el("batch-after").value = batchAfter;
+  if (isTool()) paintAfterMenu();
   renderBatch();
   // What the rows show about each project, for any job not looked at yet.
   // Not awaited: the list is already up, and the rows fill in behind it.
@@ -5573,10 +5573,6 @@ function paintJobProgress(done) {
   const was = Math.round((job.done || 0) * 100);
   job.done = done;
   if (Math.round(done * 100) === was) return;
-  const settled = batchJobs.filter((j) => j.state === "done" || j.state === "error").length;
-  const overall = batchJobs.length ? (settled + done) / batchJobs.length : 0;
-  el("batch-progress").style.width = `${Math.round(overall * 100)}%`;
-  el("batch-pct").textContent = `${Math.round(overall * 100)}%`;
   renderBatch();
 }
 
@@ -6024,13 +6020,44 @@ async function openBatchTool() {
   }
 }
 
-el("batch-after").addEventListener("change", async () => {
-  batchAfter = el("batch-after").value;
-  await saveQueue();
-  // A choice made while the countdown is already running is about the next
-  // run, not this one: the queue it was going to act on is already empty.
-  cancelAfter();
+/// The answer 完了後 currently holds, said on the row that opens it, and the
+/// tick beside whichever of the three it is.
+function paintAfterMenu() {
+  const now = el("menu-after-now");
+  if (now) now.textContent = t(`batch.after${batchAfter[0].toUpperCase()}${batchAfter.slice(1)}`);
+  for (const which of ["nothing", "sleep", "shutdown"]) {
+    const item = el(`menu-after-${which}`);
+    if (item) item.classList.toggle("on", batchAfter === which);
+  }
+}
+
+/// Fold the three away or out. A `function` because opening the menu closes
+/// this, and that happens above here.
+function showAfterFold(on) {
+  const head = el("menu-after");
+  if (!head) return;
+  head.classList.toggle("open", !!on);
+  head.setAttribute("aria-expanded", String(!!on));
+  el("menu-after-body").hidden = !on;
+}
+
+el("menu-after").addEventListener("click", (ev) => {
+  // An item that opens rather than does: the menu stays up.
+  ev.stopPropagation();
+  showAfterFold(el("menu-after-body").hidden);
 });
+
+for (const which of ["nothing", "sleep", "shutdown"]) {
+  el(`menu-after-${which}`).addEventListener("click", async () => {
+    showMenu(false);
+    batchAfter = which;
+    paintAfterMenu();
+    await saveQueue();
+    // A choice made while the countdown is already running is about the next
+    // run, not this one: the queue it was going to act on is already empty.
+    cancelAfter();
+  });
+}
 
 el("batch-go").addEventListener("click", runBatch);
 
@@ -6041,9 +6068,13 @@ el("batch-stop-all").addEventListener("click", () => {
   // And the job under the head. Stopping the queue and letting the disc it
   // is halfway through finish would be a stop nobody asked for.
   abort = true;
-  el("batch-state").textContent = t("batch.stopping");
+  // Said on the row it is about. The one being written takes a moment to
+  // stop -- it finishes the recording in hand -- and a row that went on
+  // saying what it was writing would look like one that had not been told.
+  const now = batchJobs.find((j) => j.state === "running");
+  if (now) now.note = t("batch.stopping");
   if (exporting) el("out-state").textContent = t("out.aborting");
-  paintBatchButtons();
+  renderBatch();
 });
 
 /// A job called off on its own, from the row it is on.
@@ -6082,7 +6113,9 @@ el("batch-list").addEventListener("click", (ev) => {
   // is read by the pass rather than by the loop.
   const running = job.state === "running";
   job.state = "skipped";
-  job.note = t("batch.jobStopped");
+  // Stopping, until it has: the job being written finishes the recording in
+  // hand first, and the loop writes the final word when it comes back to it.
+  job.note = t(running ? "batch.stopping" : "batch.jobStopped");
   if (running) {
     abort = true;
     if (exporting) el("out-state").textContent = t("out.aborting");
@@ -6125,8 +6158,6 @@ async function runBatch() {
   cancelAfter();
   batchRunning = true;
   batchStopped = false;
-  el("batch-progress").style.width = "0%";
-  el("batch-pct").textContent = "0%";
   // The clock on the running row moves between progress reports, and there
   // are none at all while a project is opening.
   const ticking = setInterval(() => batchRunning && renderBatch(), 1000);
@@ -6137,9 +6168,6 @@ async function runBatch() {
   }
   renderBatch();
   await saveQueue();
-  const from = Date.now();
-  let wrote = 0;
-  let failed = 0;
   // By index rather than over the array, because the array is replaced
   // whenever a job is added from the other window; see `takeAdded`.
   for (let i = 0; i < batchJobs.length; i += 1) {
@@ -6157,7 +6185,6 @@ async function runBatch() {
     job.note = t("batch.opening");
     job.began = Date.now();
     job.done = 0;
-    el("batch-state").textContent = t("batch.at", { name: job.label });
     renderBatch();
     await saveQueue();
     // Called off from its own row while this was going on. The click sets the
@@ -6168,7 +6195,6 @@ async function runBatch() {
     if (!(await loadProject(job.path))) {
       job.state = "error";
       job.note = t("batch.cannotOpen");
-      failed += 1;
     } else if (calledOff()) {
       // Nothing to do: the note is the one the click left.
     } else {
@@ -6184,7 +6210,6 @@ async function runBatch() {
       } else if (!list.length) {
         job.state = "error";
         job.note = t("batch.nothingReadable");
-        failed += 1;
       } else {
         job.note = t("batch.writing");
         renderBatch();
@@ -6203,7 +6228,6 @@ async function runBatch() {
           // writing anything.
           job.state = "error";
           job.note = t("batch.refused");
-          failed += 1;
         } else {
           const bad = list.filter((c) => c.out.state === "error").length;
           const good = list.filter((c) => c.out.state === "done").length;
@@ -6211,8 +6235,6 @@ async function runBatch() {
           job.note = bad
             ? t("batch.someFailed", { n: bad, all: list.length })
             : t("batch.wrote", { n: good });
-          if (bad) failed += 1;
-          else wrote += 1;
         }
       }
     }
@@ -6228,15 +6250,7 @@ async function runBatch() {
   }
   batchRunning = false;
   clearInterval(ticking);
-  el("batch-progress").style.width = "100%";
-  el("batch-pct").textContent = "100%";
   show("batch");
-  el("batch-state").textContent = t("batch.summary", {
-    done: wrote,
-    failed: failed ? t("batch.summaryFailed", { n: failed }) : "",
-    stopped: batchStopped ? t("batch.summaryStopped") : "",
-    elapsed: clock((Date.now() - from) / 1000),
-  });
   renderBatch();
   await saveQueue();
   // The machine is only put down over a queue that ran to the end. A queue
@@ -6337,6 +6351,10 @@ async function settleRole() {
   // not, which `runBatch` moves between on its own.
   for (const tab of document.querySelectorAll(".screens .tab")) tab.hidden = true;
   el("batch-bar").hidden = false;
+  // The three that are the tool's own answer about the machine, and the rule
+  // and the label that group them.
+  el("menu-after").hidden = false;
+  paintAfterMenu();
   // And no way to start an export by hand. The list it is holding is a job
   // out of the queue; writing it again from underneath the queue is not
   // something the one control up on the bar should have a rival for.
@@ -6350,14 +6368,9 @@ async function settleRole() {
   // out, and 保存 over the file it was handed is not something a queue should
   // be able to do on its own. The rules that group them go with them, or the
   // menu opens on two lines and two items.
-  for (const id of [
-    "menu-new",
-    "menu-open",
-    "menu-save",
-    "menu-save-as",
-    "menu-sep-work",
-    "menu-sep-tool",
-  ]) {
+  // The rule above them goes too, or the menu opens on a line. The one below
+  // stays: it is what now separates 完了後 from the program's own items.
+  for (const id of ["menu-new", "menu-open", "menu-save", "menu-save-as", "menu-sep-work"]) {
     if (el(id)) el(id).hidden = true;
   }
   show("batch");
@@ -6384,6 +6397,9 @@ const brand = el("brand");
 const brandMenu = el("brand-menu");
 
 function showMenu(on) {
+  // Folded back each time, so that the menu opens on the same six lines it
+  // opened on last time rather than on however it was left.
+  showAfterFold(false);
   brandMenu.hidden = !on;
   brand.setAttribute("aria-expanded", String(!!on));
   brand.classList.toggle("open", !!on);
