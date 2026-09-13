@@ -131,7 +131,7 @@ the list on screen at the end of the queue.
 
 **The bar is what you say to the queue as a whole.** `バッチ開始` starts it and
 `すべて中止` calls off the job being written and every job behind it. Beside
-them are the two things a queue is made of: `ジョブ追加…`, which takes projects
+them are the two things a queue is made of: `ジョブ追加`, which takes projects
 saved earlier, several at a time; and `ジョブ削除`, which takes out the row you
 have clicked, with the `▾` on the end of it holding the two ways of doing that
 in bulk — `出力済のジョブを削除` and `すべて削除`.
