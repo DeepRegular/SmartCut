@@ -317,6 +317,44 @@ This is not the kind of thing a frame-hash comparison reveals, so
 `tests/run_ts_layout_tests.sh` gained a check that the re-encoded head's sequence header
 matches the source.
 
+## The re-encoded head also claimed 104.857 Mbit/s
+
+The same header, two fields further along, and the check above was not looking at them.
+A smart renderer handed one of these files says **`ビットレート（サポートしていません）`**
+and will not touch it:
+
+```
+the recording   bit_rate=50000 (20.000 Mbit/s)  vbv=597   x484
+the head        bit_rate=262143 (104.857 Mbit/s)  vbv=252   x1
+```
+
+262143 is eighteen bits of ones, which is the header's way of saying it does not know.
+libavcodec writes an MPEG-2 sequence header's rate and decoder buffer out of the **rate
+control** it was given — `rc_max_rate` and `rc_buffer_size`, neither of which was being
+set — and given none it writes that. `bit_rate` alone does not reach the header; it is
+what the encoder *spends*, not what it *claims*.
+
+So the recording's own two numbers are read back out of its sequence header
+([`bitstream::mpeg2_rate`](../../rust/crates/core/src/bitstream.rs)) and handed to the
+rate control, and the header the encoder writes then says what the copied pictures
+around it say. Reading them is free — the header is in the bytes, restated at every
+entry point — but it happens in `signalling_of`, which until now returned early for
+everything that was not HDR, which is every ordinary broadcast.
+
+Two things have to be answered before libavcodec will open with them. A target above
+the ceiling it was handed is refused, and a fifth over the measured average routinely
+is more than the recording's own ceiling — so the target comes down to the ceiling,
+which is the most the pictures either side were allowed anyway. And a buffer that
+cannot hold one frame at that target is refused; a recording whose stated buffer will
+not hold one of its own frames is describing something that cannot happen, and there
+the numbers are left alone rather than argued with.
+
+The check now compares the rate and the buffer as well as the size, the aspect and the
+frame rate. **Every cut this program had ever made of a broadcast carried one of these
+headers at the head of each kept range** — it is not a regression but a thing that was
+always there, found because a tool that reads the second header says so out loud where
+a player just refuses the disc.
+
 ## Reading the captions, to draw them over the preview
 
 As far as a cut is concerned an ARIB caption is something to **carry**, not something

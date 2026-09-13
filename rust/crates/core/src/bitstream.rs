@@ -1033,3 +1033,40 @@ mod tests {
         ));
     }
 }
+
+/// What an MPEG-2 sequence header says the stream's rate and buffer are.
+///
+/// Two fields, in the units the header counts them in: the rate in 400 bit/s,
+/// and the buffer a decoder needs in 16384-bit units. Returned as they are
+/// written rather than converted, because what they are for is being written
+/// back unchanged.
+///
+/// **A re-encoded picture has to say the same thing as the copied ones beside
+/// it.** libavcodec fills both from the rate control it was given, and given
+/// none it writes the value that means "unspecified": all eighteen bits set,
+/// which reads as 104.857 Mbit/s. A stream carrying that beside a
+/// broadcast's own 20 Mbit/s is a stream with two different answers in it,
+/// and a tool that reads the second one refuses the file -- which is what
+/// `ビットレート（サポートしていません）` is. See `cut::signalling_of`.
+///
+/// ```text
+///   00 00 01 B3   the sequence header start code
+///   12 bits       horizontal size
+///   12 bits       vertical size
+///    4 bits       aspect ratio
+///    4 bits       frame rate code
+///   18 bits       bit rate, in 400 bit/s
+///    1 bit        marker
+///   10 bits       vbv buffer size, in 16384 bits
+/// ```
+pub fn mpeg2_rate(data: &[u8]) -> Option<(u32, u32)> {
+    let at = data
+        .windows(4)
+        .position(|w| w == [0x00, 0x00, 0x01, 0xB3])?;
+    let h = data.get(at + 4..at + 12)?;
+    let rate = (u32::from(h[4]) << 10) | (u32::from(h[5]) << 2) | (u32::from(h[6]) >> 6);
+    let vbv = ((u32::from(h[6]) & 0x1F) << 5) | (u32::from(h[7]) >> 3);
+    // All ones is the header saying it does not know, which is no more use
+    // to copy than it was to write.
+    (rate != 0 && rate != 0x3_FFFF).then_some((rate, vbv))
+}

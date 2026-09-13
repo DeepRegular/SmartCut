@@ -73,7 +73,7 @@ seq() {
   local a b
   a=$(python3 tests/seq_header.py "$WORK/a.m2v"); b=$(python3 tests/seq_header.py "$WORK/b.m2v")
   local why=""
-  for k in width height frame_rate_code aspect; do
+  for k in width height frame_rate_code aspect bit_rate vbv; do
     [ "$(field "$a" $k)" = "$(field "$b" $k)" ] || why="$why $k($(field "$a" $k)→$(field "$b" $k))"
   done
   if [ -z "$why" ]; then

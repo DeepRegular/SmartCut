@@ -26,6 +26,7 @@ while i + 12 < len(data) and seen < want:
     aspect = h[3] >> 4
     rate = h[3] & 0xF
     bitrate = (h[4] << 10) | (h[5] << 2) | (h[6] >> 6)
+    vbv = ((h[6] & 0x1F) << 5) | (h[7] >> 3)
     # a sequence extension, if present, follows and refines all of this
     ext = ""
     j = i + 12
@@ -48,6 +49,12 @@ while i + 12 < len(data) and seen < want:
         print(f"frame_rate_code={rate}")
         print(f"frame_rate={RATE[rate]}")
         print(f"aspect={aspect}")
+        # What the header says the stream's rate and decoder buffer are, in
+        # the units it counts them in. All ones is the header saying it does
+        # not know, which is what an encoder given no rate control writes and
+        # what a smart renderer handed such a file refuses.
+        print(f"bit_rate={bitrate}")
+        print(f"vbv={vbv}")
     seen += 1
     i += 12
 if seen == 0:

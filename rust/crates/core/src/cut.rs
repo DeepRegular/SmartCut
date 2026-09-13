@@ -2072,6 +2072,10 @@ struct Signalling {
     /// Whether the recording carries Dolby Vision at all, which is what
     /// decides whether `dovi` being false is worth saying out loud.
     has_dovi: bool,
+    /// The rate and the decoder buffer the recording's own MPEG-2 sequence
+    /// header states, in the units it states them in. See
+    /// [`crate::bitstream::mpeg2_rate`].
+    mpeg2_rate: Option<(u32, u32)>,
 }
 
 /// Does this stream declare Dolby Vision?
@@ -2131,6 +2135,22 @@ fn signalling_of(src: &Source, opts: &CutOptions) -> Signalling {
             | ff::ffi::AVColorTransferCharacteristic::AVCOL_TRC_ARIB_STD_B67
     );
     if !hdr && !out.has_dovi {
+        // **Before the way out, not after it.** What the recording's own
+        // sequence header states about its rate is wanted for every
+        // re-encode, and an ordinary broadcast is exactly the case this
+        // return sends home. It costs no decoding: the header is in the
+        // bytes, restated at every entry point of a transport stream.
+        if matches!(src.video.codec.as_str(), "mpeg2video" | "mpeg1video") {
+            for (stream, packet) in ictx.packets().take(64) {
+                if stream.index() != ist {
+                    continue;
+                }
+                out.mpeg2_rate = packet.data().and_then(crate::bitstream::mpeg2_rate);
+                if out.mpeg2_rate.is_some() {
+                    break;
+                }
+            }
+        }
         return out;
     }
     let Ok(mut decoder) = ff::codec::context::Context::from_parameters(params.clone())
@@ -2316,6 +2336,46 @@ fn open_encoder(
     }
     let bit_rate = opts.bit_rate.unwrap_or_else(|| default_bit_rate(src));
     enc.set_bit_rate(bit_rate);
+    // And what the re-encoded pictures are to *say* about the rate, which is
+    // not the same question as what to spend.
+    //
+    // **A sequence header that disagrees with the one beside it is a file a
+    // tool refuses.** libavcodec writes the rate and the decoder buffer of an
+    // MPEG-2 sequence header out of the rate control it was given, and given
+    // none it writes the value that means unspecified -- eighteen bits of
+    // ones, which reads back as 104.857 Mbit/s. Every cut this program made
+    // of a broadcast carried one of those at the head of each kept range,
+    // beside four hundred of the recording's own saying 20. A smart renderer
+    // handed such a file says `ビットレート（サポートしていません）` and will
+    // not touch it; what a recorder does with it was never going to be
+    // better. So the recording's own two numbers go back in, and the header
+    // the encoder writes says what the copied pictures around it say.
+    //
+    // The rate control is told, rather than the header patched afterwards,
+    // because the encoder is entitled to believe what it was told: a buffer
+    // it has been given is a buffer it may fill.
+    if let Some((rate, vbv)) = signalling.mpeg2_rate {
+        let ceiling = i64::from(rate) * 400;
+        let buffer = i64::from(vbv) * 16 * 1024;
+        // libavcodec refuses two things here, and both have to be answered
+        // before it will open: a target above the ceiling it was handed, and
+        // a buffer that cannot hold one frame at that target. The target is
+        // what this *spends*, and a fifth over the measured average is
+        // routinely more than the recording's own ceiling -- so it comes
+        // down to the ceiling, which is the most the pictures around it were
+        // allowed either. A recording whose stated buffer will not hold one
+        // of its own frames is describing something that cannot happen, and
+        // there the numbers are left alone rather than argued with.
+        let spend = (bit_rate as i64).min(ceiling);
+        if buffer * i64::from(num) >= spend * i64::from(den) {
+            enc.set_bit_rate(spend as usize);
+            unsafe {
+                let e = enc.as_mut_ptr();
+                (*e).rc_max_rate = ceiling;
+                (*e).rc_buffer_size = buffer as i32;
+            }
+        }
+    }
 
     let mut eopts = ff::Dictionary::new();
     // mpeg2video and mpeg4 refuse a closed GOP while scene-change detection
