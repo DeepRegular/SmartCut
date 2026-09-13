@@ -878,6 +878,16 @@ input[type="text"]::placeholder { color: var(--dim); }
 #batch-list .sub, #batch-list .say {
   font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
+/* What the project is, and -- while it is being written -- what the pass is
+   doing, at the other end of the same line. The sentence is the half that
+   changes, so it is the half that is not dim; it is up here rather than in
+   the bar so that the numbers in there have the bar to themselves. */
+#batch-list .sub { display: flex; align-items: baseline; gap: 12px; }
+#batch-list .who { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+#batch-list .doingnow {
+  margin-left: auto; min-width: 0; overflow: hidden; text-overflow: ellipsis;
+  color: var(--text);
+}
 /* What the job is doing, in a box of its own: it is the line that changes,
    and the eye should be able to find it without reading the two above.
 

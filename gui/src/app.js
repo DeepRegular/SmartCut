@@ -5444,19 +5444,22 @@ function jobLine(job) {
   return bits.join(t("sep"));
 }
 
-/// What stands in the bar: the clock, what is being written, and how far it
-/// has got. All of it inside the one box, because all of it is about the same
-/// moment -- a job whose turn has not come has only the sentence, having
-/// nothing yet to time or to measure.
+/// What stands in the bar. For the job being written it is the numbers -- how
+/// long it has taken, how far it has got, how long is left -- and nothing
+/// else: the sentence about what is being written goes on the line above, so
+/// that the numbers are not read past to find each other.
+///
+/// For every other job the bar has no numbers, so the box says what the row
+/// has to say instead: waiting, written, failed, called off.
 function jobSaid(job) {
-  const text = `<span class="txt">${esc(job.note || "")}</span>`;
-  if (job.state !== "running") return text;
+  if (job.state !== "running") return `<span class="txt">${esc(job.note || "")}</span>`;
   const done = job.done || 0;
   const spent = job.began ? (Date.now() - job.began) / 1000 : 0;
   const left = done > 0.01 ? (spent / done) * (1 - done) : null;
   return `<span class="ela">${esc(t("batch.elapsed", { t: clock(spent) }))}</span>
-      ${text}
+      <span class="grow"></span>
       <span class="pct">${Math.round(done * 100)}%</span>
+      <span class="grow"></span>
       <span class="rest">${left === null ? "" : esc(t("batch.left", { t: clock(left) }))}</span>`;
 }
 
@@ -5488,7 +5491,14 @@ function renderBatch() {
         ${poster}
         <div class="meta">
           <div class="nm">${esc(j.label)}</div>
-          <div class="sub dim">${esc(jobLine(j))}</div>
+          <div class="sub">
+            <span class="who dim">${esc(jobLine(j))}</span>
+            ${
+              j.state === "running"
+                ? `<span class="doingnow">${esc(j.note || "")}</span>`
+                : ""
+            }
+          </div>
           <div class="doing">
             <div class="say">
               <span class="fill"></span>
