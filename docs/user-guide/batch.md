@@ -127,6 +127,8 @@ the row out does not touch it. To change a job, open it from its own row with
 
 ### The tool is a window of its own
 
+![The batch tool working through its queue](../images/usage-batch.png)
+
 `バッチ出力ツール…` on the SmartCut menu opens **a second window, in a process
 of its own**. That is the point of it: closing the main window — or quitting
 SmartCut entirely — does not stop a queue that is being written.

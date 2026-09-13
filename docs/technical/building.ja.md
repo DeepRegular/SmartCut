@@ -77,19 +77,14 @@ bash tests/run_ts_layout_tests.sh     # TS の出自とシーケンスヘッダ 
 bash tests/run_broadcast_tests.sh     # 字幕・番組情報・音声多重                         11
 bash tests/run_cm_tests.sh            # CM 検出と人間の答えの照合                         5
 bash tests/run_disc_tests.sh          # BDAV と BDMV をフォルダーと .iso から読む       38
-bash tests/run_bdav_tests.sh          # ディスクを書く。索引・イメージ・その中身       53
-bash tests/run_udf_tests.sh           # イメージをファイルシステムとして実物と並べる  26
+bash tests/run_bdav_tests.sh          # ディスクを書く。索引・イメージ・その中身       72
+bash tests/run_udf_tests.sh           # イメージをファイルシステムとして実物と並べる  28
 bash tests/run_dvd_tests.sh           # DVD-Video をフォルダーと .iso から読む          23
 bash tests/run_bd_audio_tests.sh      # ディスクの音声が書き出せるか                    39
 bash tests/run_vc1_tests.sh           # VC-1 エンコーダをデコーダに通す                  4
 ```
 
-**プロキシのスイートは 2 つのフィクスチャで 2 件落ちるが、これは既知である。**
-`opengop points` と `ntsc points` は録画とプロキシのアクセスポイント数を突き合わせる
-検査で、この 2 つでは録画の 10 に対してプロキシが 11 になる。もう 1 つの合成
-フィクスチャは一致し（どちらも 41）、この検査が守ろうとしている実素材も一致する
-（地上波 30 分で 3607、もう 1 本で 1889、いずれも両方同じ）。回帰ではなく、
-数世代前の版でも同じ数だった。
+**どのスイートも全件通る。** 落ちるものがあれば回帰である。
 
 ### フィクスチャ
 

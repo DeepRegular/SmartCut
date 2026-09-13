@@ -76,19 +76,14 @@ bash tests/run_ts_layout_tests.sh     # TS provenance and sequence headers      
 bash tests/run_broadcast_tests.sh     # captions, programme information, multi-audio    11
 bash tests/run_cm_tests.sh            # commercial detection vs a human's answer         5
 bash tests/run_disc_tests.sh          # a BDAV and a BDMV disc, as folders and as .isos 38
-bash tests/run_bdav_tests.sh          # writing a disc: the index, the image, and both   53
-bash tests/run_udf_tests.sh           # the image as a filesystem, beside real discs     26
+bash tests/run_bdav_tests.sh          # writing a disc: the index, the image, and both   72
+bash tests/run_udf_tests.sh           # the image as a filesystem, beside real discs     28
 bash tests/run_dvd_tests.sh           # a DVD-Video disc, as a folder and as an .iso    23
 bash tests/run_bd_audio_tests.sh      # the sound a disc carries, written out             39
 bash tests/run_vc1_tests.sh           # the VC-1 encoder, put through a decoder          4
 ```
 
-**Two of the proxy suite's checks fail on two of the fixtures, and are expected to.**
-`opengop points` and `ntsc points` count the access points either side — the recording's
-ten against the proxy's eleven. The other synthetic fixture agrees (41 access points
-either way) and so does real material, which is what the check exists to protect: 3607
-either way on half an hour of terrestrial, 1889 on the other. It is not a regression;
-the count was the same several releases back.
+**Every suite passes whole.** Anything that fails is a regression.
 
 ### Fixtures
 

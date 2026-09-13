@@ -694,6 +694,11 @@ put in, the track choices, and the output settings.
 
 **New project** in the same menu (`Ctrl+N`) empties all of it.
 
+The menu carries more than projects. **Batch tool…** opens the second window
+that writes queued projects out one after another (see
+[Working through a batch](batch.md#an-overnight-queue-of-projects)), and
+**Preferences…**, **About SmartCut** and **Quit** are here too.
+
 A `.scproj` file is only a few hundred bytes, and it opens on another machine.
 See [Projects](projects.md).
 

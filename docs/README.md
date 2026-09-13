@@ -21,7 +21,7 @@ If this is your first time, start with [Using the GUI](user-guide/gui.md).
 |---|---|
 | [Using the GUI](user-guide/gui.md) | A walkthrough of every screen, with screenshots: adding recordings, cutting, output settings, writing the files |
 | [Commercial detection](user-guide/cm-detection.md) | Finding the commercial breaks automatically: how accurate it is, and what to do when it gets one wrong |
-| [Working through a batch](user-guide/batch.md) | Handling a whole evening of recordings at once: the background jobs, duplicating clips, and the export |
+| [Working through a batch](user-guide/batch.md) | Handling a whole evening of recordings at once: the background jobs, duplicating clips, the export, and the batch tool that writes queued projects out with nobody in the room |
 | [Projects](user-guide/projects.md) | Saving a night's work to a `.scproj` and picking it up later |
 | [Using the command line](user-guide/cli.md) | Every option of the `smartcut` command |
 

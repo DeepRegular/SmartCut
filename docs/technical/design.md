@@ -220,7 +220,20 @@ opens.** There is never a second tool over the queue, so a row that says it is
 running the moment this one opens is running nowhere: it is where a tool went
 away mid job. Back to waiting rather than to failed, because nothing about the
 job failed — it is what 出力開始 does to every row that is not done — and the
-note says why it is back, until the next start clears it.
+note says why it is back, until the next start clears it. 実行中 is written
+into the file for that reason: every other unfinished state goes down as 待機,
+because a run is over when the process that was running it is, but a row left
+mid job is the one thing the next tool has to be able to tell apart.
+
+**A job that throws is a job that failed, and nothing more than that.** The walk
+opens projects, waits for lists and drives the output screen, all of it code
+written for somebody standing at the window, where a mistake is a message and
+the next press puts it right. There is nobody here. So each job is walked inside
+a `try`: what comes out of one is written on its row and the queue goes on to
+the next, which is the whole of what this screen is for. The walk itself is
+inside another, so that however it ends the queue stops saying it is running —
+a queue that says it is running with nothing running is a queue whose バッチ開始
+is switched off for good.
 
 ### Three windows, three sizes and three places
 

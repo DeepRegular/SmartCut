@@ -82,6 +82,13 @@ the marks; **you** decide what to cut.
 `Ctrl+A` then `Ctrl+D`, and come back later. Reading, detection and editing all
 run at the same time, so a batch never stops you from working.
 
+**And it writes them out with nobody in the room.** Line up saved projects in
+a queue and the **batch tool** writes them one after another. The tool is a
+window and a process of its own, so closing the main window does not stop the
+queue, and a job that fails does not stop the ones behind it. It can put the
+machine to sleep or shut it down when the queue is empty. See
+[handling a whole evening](docs/user-guide/batch.md#an-overnight-queue-of-projects).
+
 ## 30-second demo
 
 <img src="docs/images/demo.gif" width="1000"
@@ -370,9 +377,9 @@ ends onto it: neither of them decides anything about a cut.
   │  opening a source    input  netpath  index  seek_index  │
   │                      proxy  thumbs                      │
   │  the cut itself      plan  bitstream  cut  audio  adts  │
-  │  the broadcast       si  arib  caption  series          │
+  │  the broadcast       si  arib  caption  series  text    │
   │  finding the breaks  cm  logo                           │
-  │  discs, both ways    disc  dvd  udf  bdav  udfw         │
+  │  discs, both ways    disc  dvd  udf  bdav  udfw restamp │
   │  subtitles           pgs  vobsub  subs                  │
   │  the editor's view   preview  playback_audio            │
   └────────────┬───────────────────────────┬────────────────┘

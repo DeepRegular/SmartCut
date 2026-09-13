@@ -76,6 +76,13 @@ BD-RE に書くのと同じ **BDAV フォルダー**を書き出します。番�
 を押したら、あとは放っておけます。読み込み・検出・編集は並行して動くので、
 まとめて処理している最中でも操作を続けられます。
 
+**誰もいないあいだに書き出せます。** 保存したプロジェクトをキューに並べておくと、
+**バッチ出力ツール**が順に書き出します。ツールは別ウィンドウ・別プロセスなので、
+本体を閉じてもキューは止まりません。1 件失敗しても次へ進みます。終わったら
+スリープやシャットダウンまで任せられます。詳しくは
+[まとめて処理する](docs/user-guide/batch.ja.md#一晩かけてプロジェクトを順に処理する)に
+あります。
+
 ## 30 秒でわかるデモ
 
 <img src="docs/images/demo.ja.gif" width="1000"
@@ -345,9 +352,9 @@ PCM）を選ぶこともできます。ただしどちらもコピーできる�
   │  ソースを開く        input  netpath  index  seek_index  │
   │                      proxy  thumbs                      │
   │  カットそのもの      plan  bitstream  cut  audio  adts  │
-  │  放送そのもの        si  arib  caption  series          │
+  │  放送そのもの        si  arib  caption  series  text    │
   │  切れ目を探す        cm  logo                           │
-  │  ディスク、両方向    disc  dvd  udf  bdav  udfw         │
+  │  ディスク、両方向    disc  dvd  udf  bdav  udfw restamp │
   │  字幕                pgs  vobsub  subs                  │
   │  編集画面に見せる    preview  playback_audio            │
   └────────────┬───────────────────────────┬────────────────┘
