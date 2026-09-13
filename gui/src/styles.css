@@ -903,10 +903,6 @@ input[type="text"]::placeholder { color: var(--dim); }
 #batch-list .doing { display: flex; align-items: stretch; gap: 8px; }
 #batch-list .say {
   flex: 1; min-width: 0;
-  /* A line's worth of room even when there is nothing in it: an empty bar is
-     still a bar, and a row that shrank for want of numbers would step out of
-     line with the rows either side of it. */
-  min-height: 1.45em;
   position: relative; overflow: hidden;
   background: var(--sunken); border: 1px solid var(--line); border-radius: 2px;
   padding: 1px 6px; color: var(--dim);
@@ -921,6 +917,10 @@ input[type="text"]::placeholder { color: var(--dim); }
    moment and the box is the room that moment has. */
 #batch-list .say .what {
   position: relative; display: flex; align-items: baseline; gap: 10px;
+  /* Spelled out rather than left to the font: the box is drawn at whatever
+     height this line comes to, and a bar that changed thickness between a job
+     that is running and one that has finished would be two bars. */
+  line-height: 15px;
 }
 /* Legible on the filled side and the unfilled side alike, which neither the
    dim grey nor the plain text colour is. */

@@ -5356,14 +5356,25 @@ async function refreshQueue() {
   } catch {
     return;
   }
+  // What the file holds, plus what this session has watched happen to it: how
+  // far a job got and how long it took are not in the file -- they are about
+  // a run rather than about a job -- and a poll that dropped them would empty
+  // the bars two seconds after the queue finished.
+  const watched = new Map(batchJobs.map((j) => [j.path, j]));
   batchJobs = (queue && Array.isArray(queue.jobs) ? queue.jobs : [])
     .filter((j) => j && typeof j.path === "string" && j.path)
-    .map((j) => ({
-      path: j.path,
-      label: j.label || stemOf(j.path),
-      state: j.state || "waiting",
-      note: j.note || "",
-    }));
+    .map((j) => {
+      const was = watched.get(j.path) || {};
+      return {
+        path: j.path,
+        label: j.label || stemOf(j.path),
+        state: j.state || "waiting",
+        note: j.note || "",
+        began: was.began,
+        spent: was.spent,
+        done: was.done,
+      };
+    });
   batchAfter = queue && queue.after ? queue.after : "nothing";
   if (isTool()) el("batch-after").value = batchAfter;
   renderBatch();
@@ -5444,21 +5455,37 @@ function jobLine(job) {
   return bits.join(t("sep"));
 }
 
-/// What stands in the bar: the numbers, and only for the job being written.
+/// How far a job has got, as the bar and the percentage both read it.
+///
+/// A written job is full whatever else is known about it -- a queue reopened
+/// tomorrow has only the states, and a job that reached the end should look
+/// as though it did. Everything else is as far as it actually got, which for
+/// one called off part way through is where it stopped.
+const jobHow = (job) => (job.state === "done" ? 1 : job.done || 0);
+
+/// What stands in the bar: the numbers.
 ///
 /// Everything a row has to say in words -- what is being written, or that it
 /// is waiting, written, failed or called off -- is said on the line above, at
 /// the right. The bar is left the three numbers, one at each end and one in
-/// the middle, so that none of them is read past to find another; and a row
-/// with no numbers to show has an empty bar, which is what an empty bar means.
+/// the middle, so that none of them is read past to find another.
+///
+/// The percentage is always there, so that the box is always a line high and
+/// the bars down the list are all the same bar. The clock appears once the
+/// job has actually run -- a queue reopened tomorrow cannot say how long
+/// yesterday's jobs took -- and stops where the job stopped; what is left is
+/// only ever said about the job being written, since it is the only one with
+/// anything left.
 function jobSaid(job) {
-  if (job.state !== "running") return "";
-  const done = job.done || 0;
-  const spent = job.began ? (Date.now() - job.began) / 1000 : 0;
-  const left = done > 0.01 ? (spent / done) * (1 - done) : null;
-  return `<span class="ela">${esc(t("batch.elapsed", { t: clock(spent) }))}</span>
+  const how = jobHow(job);
+  const spent = job.spent ?? (job.began ? (Date.now() - job.began) / 1000 : null);
+  const left =
+    job.state === "running" && how > 0.01 && spent !== null ? (spent / how) * (1 - how) : null;
+  return `<span class="ela">${
+    spent === null ? "" : esc(t("batch.elapsed", { t: clock(spent) }))
+  }</span>
       <span class="grow"></span>
-      <span class="pct">${Math.round(done * 100)}%</span>
+      <span class="pct">${Math.round(how * 100)}%</span>
       <span class="grow"></span>
       <span class="rest">${left === null ? "" : esc(t("batch.left", { t: clock(left) }))}</span>`;
 }
@@ -5500,11 +5527,9 @@ function renderBatch() {
               <span class="fill"></span>
               <span class="what">${jobSaid(j)}</span>
             </div>
-            ${
-              canStop(j)
-                ? `<button class="jobstop mini" data-stop="${i}">${esc(t("batch.stopJob"))}</button>`
-                : ""
-            }
+            <button class="jobstop mini" data-stop="${i}"${
+              canStop(j) ? "" : " disabled"
+            }>${esc(t("batch.stopJob"))}</button>
           </div>
         </div>
         ${
@@ -5520,11 +5545,7 @@ function renderBatch() {
   // content policy turns off, and the property is not.
   batchJobs.forEach((j, i) => {
     const fill = el("batch-list").children[i]?.querySelector(".say .fill");
-    // Full for a job that is written -- a bar that reached the end and a bar
-    // that was never started should not look the same -- and otherwise as far
-    // as the job in hand has got.
-    const how = j.state === "done" ? 1 : j.state === "running" ? j.done || 0 : 0;
-    if (fill) fill.style.width = `${Math.round(how * 100)}%`;
+    if (fill) fill.style.width = `${Math.round(jobHow(j) * 100)}%`;
   });
   paintBatchButtons();
 }
@@ -6105,6 +6126,10 @@ async function runBatch() {
         }
       }
     }
+    // Where its clock stops. Read back by the row from here on, so that a
+    // finished job goes on saying how long it took rather than how long ago
+    // it started.
+    if (job.began) job.spent = (Date.now() - job.began) / 1000;
     renderBatch();
     // Written down as each job ends, and the jobs added while it ran are
     // taken at the same moment. Both halves of that are the file: the list
