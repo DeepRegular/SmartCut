@@ -82,10 +82,10 @@ says what happened. The other nineteen work as usual.
 
 ## A saved project is also a batch job
 
-The `バッチ出力` tab lines saved projects up in a queue, and the batch tool —
-a window in a process of its own — writes them out one after another
-overnight. A job is a `.scproj` and nothing besides, because the file already
-holds everything a job is. See
+`バッチに登録` on the 出力 screen saves the list and puts it at the end of the
+queue, and the batch tool — a window in a process of its own — writes the
+queue out one job after another overnight. A job is a `.scproj` and nothing
+besides, because the file already holds everything a job is. See
 [Working through a batch](batch.md#an-overnight-queue-of-projects).
 
 ## Files from a newer version

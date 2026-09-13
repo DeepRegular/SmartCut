@@ -13,13 +13,13 @@
          panes, and a window trying to hold all of them at once is what the
          single-screen editor had become.
 
-         The fourth is not a stage and is at the end for that reason: バッチ出力
-         is about a queue of evenings' work rather than about this one list.
-         Here it is where a queue is lined up. What *runs* it is a second
-         process -- this same program started with `--batch`, showing this
-         screen and 出力 and nothing else -- because a queue lined up at
-         midnight has to go on being written when this window is closed. The
-         two share the queue through a file.
+         The fourth tab belongs to the other window. バッチ出力 is a queue of
+         evenings' work rather than anything about this list, and what runs it
+         is a second process -- this same program started with `--batch`,
+         showing that screen and 出力 and nothing else -- because a queue lined
+         up at midnight has to go on being written when this window is closed.
+         So this window does not show the queue at all. It puts a list *into*
+         it, from the button under 出力開始, and opens the tool from the menu.
 
          Cutting is the fourth thing and is not among them: it is done to one
          clip rather than settled once for the list, so it opens a window of
@@ -29,7 +29,9 @@
         <button class="tab active" data-screen="input" data-i18n="tab.input">入力設定</button>
         <button class="tab" data-screen="outset" data-i18n="tab.outset">出力設定</button>
         <button class="tab" data-screen="out" data-i18n="tab.out">出力</button>
-        <button class="tab" data-screen="batch" data-i18n="tab.batch">バッチ出力</button>
+        <!-- The tool's, not this window's: shown only where the window is
+             the batch tool. See `settleRole`. -->
+        <button class="tab" data-screen="batch" data-i18n="tab.batch" hidden>バッチ出力</button>
       </nav>
 
       <!-- The program's name, and the only place it is a control: everything
@@ -65,6 +67,12 @@
             <span data-i18n="menu.saveAs">名前を付けて保存…</span>
             <span class="menu-key">Ctrl+Shift+S</span>
           </button>
+          <div class="menu-sep"></div>
+          <!-- A window of its own, in a process of its own, so it is opened
+               the way a program is opened rather than reached through a tab.
+               Refused where one is already running: two tools over one queue
+               would each believe they owned it. -->
+          <button class="menu-item" id="menu-batch" data-i18n="menu.batch">バッチ出力ツール…</button>
           <div class="menu-sep"></div>
           <button class="menu-item" id="menu-prefs" data-i18n="menu.prefs">環境設定…</button>
           <button class="menu-item" id="menu-about" data-i18n="menu.about">SmartCut について</button>
@@ -521,20 +529,23 @@
          a queue that held a second copy of any of it would be a queue that
          could disagree with the file.
 
-         The screen is in both windows and does a different half of the job in
-         each. Here in the list window it is where a queue is lined up, and the
-         button that starts it starts **the batch tool**, which is this same
-         program in its own process -- so the queue goes on being written when
-         this window is closed, which is the whole of what a queue lined up at
-         midnight is for. In the tool, the same screen grows the buttons that
-         run it. Both read the queue off the same file, a couple of seconds
-         apart, so a job added here while the tool is running reaches it. -->
+         **This screen belongs to the batch tool**, which is this same program
+         in a process of its own (`--batch`); the list window never shows it.
+         Its own process because that is the whole of what a queue lined up at
+         midnight is for: it has to go on being written when the window it was
+         lined up in is closed.
+
+         So the two windows do different halves and never the same one. The
+         list window puts a list into the queue, from the button under 出力開始,
+         and opens the tool from its menu. Everything else -- the order, the
+         removals, starting it, stopping it, what to do when it empties -- is
+         here. The queue is a file, so a job registered while the tool is
+         running still reaches it. -->
     <section id="screen-batch" class="screen" hidden>
       <div class="infobar">
         <span id="batch-total">ジョブ 0 件</span>
         <span class="spacer"></span>
         <button id="batch-add" class="mini" data-i18n="batch.add">プロジェクトを追加…</button>
-        <button id="batch-add-current" class="mini" data-i18n="batch.addCurrent">この一覧を追加</button>
         <button id="batch-up" class="mini" data-i18n="batch.up">上へ</button>
         <button id="batch-down" class="mini" data-i18n="batch.down">下へ</button>
         <button id="batch-remove" class="mini" data-i18n="batch.remove">削除</button>
@@ -544,22 +555,7 @@
       <ol id="batch-list"></ol>
       <div id="batch-idle" class="batch-idle" data-i18n="batch.idle">保存したプロジェクトを追加してください</div>
 
-      <!-- In the list window: the button that starts the tool, and what the
-           tool is doing while it runs. Nothing is written from here. -->
-      <div class="out-run" id="batch-open-panel">
-        <div class="out-buttons">
-          <button id="batch-open" class="primary big" data-i18n="batch.open">バッチ出力ツール</button>
-        </div>
-        <div class="out-status">
-          <div class="row"><span class="lbl" data-i18n="batch.stateLbl">状況:</span>
-            <span id="batch-tool-state" class="grow"></span></div>
-          <div class="row dim" data-i18n="batch.openNote">
-            バッチ出力ツールは別ウィンドウで動きます。この画面を閉じても書き出しは続きます</div>
-        </div>
-      </div>
-
-      <!-- And in the tool: the same queue, with the buttons that run it. -->
-      <div class="out-run" id="batch-run-panel" hidden>
+      <div class="out-run" id="batch-run-panel">
         <div class="out-buttons">
           <button id="batch-run" class="primary big" data-i18n="batch.run">バッチ開始</button>
           <button id="batch-stop" class="mini" data-i18n="batch.stop" disabled>バッチ中止</button>

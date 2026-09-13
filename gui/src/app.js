@@ -5266,17 +5266,17 @@ window.addEventListener("keydown", (ev) => {
 // that could disagree with the file. What the queue keeps is the path, a name
 // to show it under, and whether it has been written yet.
 //
-// **The tool that runs it is a process of its own** -- this same program
+// **The queue belongs to a program of its own** -- this same executable
 // started with `--batch`, which opens this screen and the 出力 screen and
 // nothing else. That is the point of it: a queue lined up at midnight has to
 // go on being written when the window it was lined up in is closed. See
 // `open_batch_tool`.
 //
-// Both windows show this screen and read the queue off the same file, a
-// couple of seconds apart. The list window may add to it, reorder it and
-// clear it while nothing is running, and may add to it at any time -- an
-// append does not touch a row the tool is working on. Everything else about a
-// running queue is the tool's.
+// So the list window never shows this screen. What it does with the queue is
+// put a list into it -- `enlistList`, from the button under 出力開始 -- and
+// open the tool, from the menu. An append is a write that cannot disturb the
+// row the tool is working on, so it needs no turn-taking with it; everything
+// else about the queue is the tool's, which is why it is all on this screen.
 //
 // Running a job is exactly what a person does by hand: open the project, wait
 // for the list to be read, press 出力開始. So that is what this does -- the
@@ -5297,12 +5297,17 @@ let batchAfter = "nothing";
 let batchRunning = false;
 /// Set by バッチ中止, read between jobs and in the wait for the list.
 let batchStopped = false;
-/// Whether a tool is running, as the list window last heard.
-let batchToolLive = false;
 /// The countdown to sleeping or shutting down, while there is one.
 let afterTimer = null;
 
 const isTool = () => batchRole === "batch";
+
+/// Say something where whoever asked for it is looking.
+///
+/// The note line the rest of this window uses is on the input screen, and
+/// somebody who pressed a button on the output screen is not looking at it.
+const sayHere = (text) =>
+  screen === "out" ? (el("out-state").textContent = text) : note(text);
 
 /// Put the queue down whole. Only ever called where this window owns it: the
 /// tool always, and the list window while no tool is running.
@@ -5354,20 +5359,11 @@ async function refreshQueue() {
   renderBatch();
 }
 
-/// The same, plus what the list window has to ask about that the tool does
-/// not: whether a tool is running at all.
+/// The tool's timer. While it is running a job the queue in hand is the truth
+/// and the file is a copy of it, so reading it back would put a row the loop
+/// has just moved on from back on the screen.
 async function watchQueue() {
-  // While the tool is running a job, the queue in hand is the truth and the
-  // file is a copy of it. Reading it back here would put a row the loop has
-  // just moved on from back on the screen.
   if (batchRunning) return;
-  if (!isTool()) {
-    try {
-      batchToolLive = await invoke("batch_live");
-    } catch {
-      batchToolLive = false;
-    }
-  }
   await refreshQueue();
 }
 
@@ -5387,30 +5383,22 @@ function renderBatch() {
       </li>`
     )
     .join("");
-  if (!isTool()) {
-    el("batch-tool-state").textContent = t(
-      batchToolLive ? "batch.toolRunning" : "batch.toolIdle"
-    );
-  }
   paintBatchButtons();
 }
 
 function paintBatchButtons() {
-  // Nothing in the list window may rearrange a queue that is being written:
-  // the tool owns every row's state, and a reorder here would be read back
-  // over the top of it. Adding is the exception -- see `batch_append`.
-  const held = batchRunning || (!isTool() && batchToolLive);
+  // A queue that is being written is not one to rearrange: the row order is
+  // what the loop is walking. Adding is the exception, and is not on this
+  // screen anyway -- see `batch_append`.
   const at = batchJobs.findIndex((j) => j.path === batchPick);
   const left = batchJobs.some((j) => j.state !== "done");
   el("batch-run").disabled = batchRunning || !left || exporting;
   el("batch-stop").disabled = !batchRunning;
-  el("batch-open").disabled = batchToolLive || !left;
   el("batch-add").disabled = batchRunning;
-  el("batch-add-current").disabled = batchRunning;
-  el("batch-up").disabled = held || at <= 0;
-  el("batch-down").disabled = held || at < 0 || at >= batchJobs.length - 1;
-  el("batch-remove").disabled = held || at < 0;
-  el("batch-clear").disabled = held || !batchJobs.length;
+  el("batch-up").disabled = batchRunning || at <= 0;
+  el("batch-down").disabled = batchRunning || at < 0 || at >= batchJobs.length - 1;
+  el("batch-remove").disabled = batchRunning || at < 0;
+  el("batch-clear").disabled = batchRunning || !batchJobs.length;
 }
 
 /// Put a project in the queue, under the name its own file gives it.
@@ -5421,7 +5409,7 @@ function paintBatchButtons() {
 /// it now stands.
 async function addBatchJob(path) {
   if (batchJobs.some((j) => j.path === path)) {
-    note(t("batch.already", { name: stemOf(path) }));
+    sayHere(t("batch.already", { name: stemOf(path) }));
     return false;
   }
   let clipsIn = 0;
@@ -5429,7 +5417,7 @@ async function addBatchJob(path) {
     const doc = JSON.parse(await invoke("read_project", { path }));
     clipsIn = Array.isArray(doc.clips) ? doc.clips.length : 0;
   } catch (e) {
-    note(t("project.cannotOpen", { name: nameOf(path), e }));
+    sayHere(t("project.cannotOpen", { name: nameOf(path), e }));
     return false;
   }
   // Appended by the backend rather than written from here: the tool may be
@@ -5440,7 +5428,7 @@ async function addBatchJob(path) {
       jobs: [{ path, label: stemOf(path), state: "waiting", note: t("batch.clips", { n: clipsIn }) }],
     });
   } catch (e) {
-    note(t("batch.queueFailed", { e: String(e) }));
+    sayHere(t("batch.queueFailed", { e: String(e) }));
     return false;
   }
   await refreshQueue();
@@ -5464,7 +5452,7 @@ el("batch-add").addEventListener("click", async () => {
   for (const path of Array.isArray(picked) ? picked : [picked]) await addBatchJob(path);
 });
 
-/// この一覧を追加, from either of the two screens that offer it.
+/// バッチに登録: put the list on screen into the queue.
 ///
 /// A job is a file, so the list has to be one first: an unsaved list put in
 /// the queue would be a job that ran whatever the file said at midnight
@@ -5472,34 +5460,21 @@ el("batch-add").addEventListener("click", async () => {
 /// a changed one is written, both before anything is queued -- which is also
 /// why this can be declined, and says nothing when it is.
 ///
-/// What comes back is the name it went in under, or "" where it did not go
-/// in. The caller says so, because the two screens have different places to
-/// say it: the list window's note line is on the input screen, and somebody
-/// who pressed this on the output screen is not looking at it.
-async function enlistList() {
+/// The queue is read back first because this window does not otherwise hold
+/// it: without that, a list already in the queue would be reported as added
+/// even though the backend refused it as a duplicate.
+el("enlist-export").addEventListener("click", async () => {
   if (!clips.length) {
-    note(t("project.nothingToSave"));
-    return "";
+    sayHere(t("project.nothingToSave"));
+    return;
   }
   if (!projectPath || dirty()) {
-    if (!(await saveProject())) return "";
+    if (!(await saveProject())) return;
   }
-  return (await addBatchJob(projectPath)) ? stemOf(projectPath) : "";
-}
-
-el("batch-add-current").addEventListener("click", async () => {
-  const name = await enlistList();
-  if (name) note(t("batch.added", { name }));
-});
-
-/// The same, from the output screen, where the queue is the other answer to
-/// the question that screen asks.
-///
-/// Said on the 状況 line rather than in the note line the rest of this uses:
-/// that line is on the input screen, and this button is not.
-el("enlist-export").addEventListener("click", async () => {
-  const name = await enlistList();
-  if (name) el("out-state").textContent = t("batch.added", { name });
+  await refreshQueue();
+  if (await addBatchJob(projectPath)) {
+    sayHere(t("batch.added", { name: stemOf(projectPath) }));
+  }
 });
 
 const moveBatch = async (by) => {
@@ -5537,19 +5512,19 @@ el("batch-clear").addEventListener("click", async () => {
 });
 
 /// Start the tool, which is a second process of this same program.
-el("batch-open").addEventListener("click", async () => {
+///
+/// From the menu rather than from a screen, because that is what it is: a
+/// window of its own, opened the way a program is opened. Refused by the
+/// backend where one is already running, and what comes back then is the
+/// sentence to show.
+async function openBatchTool() {
   try {
     await invoke("open_batch_tool");
+    sayHere(t("batch.opened"));
   } catch (e) {
-    note(String(e));
-    return;
+    sayHere(String(e));
   }
-  note(t("batch.opened"));
-  // It takes a moment to come up and say so; until it has, the button would
-  // otherwise still be offering to start a second one.
-  batchToolLive = true;
-  renderBatch();
-});
+}
 
 el("batch-after").addEventListener("change", async () => {
   batchAfter = el("batch-after").value;
@@ -5771,6 +5746,10 @@ el("batch-after-cancel").addEventListener("click", () => {
 /// built and settled: the answers on them belong to the project being run,
 /// and a tool offering to change them would be offering to change something
 /// it is about to read off a file. So they come off the bar.
+///
+/// And the other way round: the queue is the tool's, so its tab is off the
+/// bar in the list window, which never shows it. What the list window does
+/// with the queue it does from the output screen and the menu.
 async function settleRole() {
   if (!invoke) return;
   try {
@@ -5778,33 +5757,37 @@ async function settleRole() {
   } catch {
     batchRole = "main";
   }
-  el("batch-run-panel").hidden = !isTool();
-  el("batch-open-panel").hidden = isTool();
-  if (isTool()) {
-    for (const which of ["input", "outset"]) {
-      const tab = document.querySelector(`.screens .tab[data-screen="${which}"]`);
-      if (tab) tab.hidden = true;
-    }
-    // Nor has it a list to put in the queue: what it has open is a job out
-    // of the queue already.
-    el("enlist-export").hidden = true;
-    // Nor is there a project to save: what the tool opens it opens to write
-    // out, and 保存 over the file it was handed is not something a queue
-    // should be able to do on its own.
-    for (const id of ["menu-new", "menu-open", "menu-save", "menu-save-as"]) {
-      if (el(id)) el(id).hidden = true;
-    }
-    show("batch");
-    // The window was painted before this answer arrived, so whatever it put
-    // in the title bar was the answer for the other kind of window.
-    shownTitle = "";
-    retitleMain();
-    invoke("center_window");
-    // Saying it is here, so the list window offers to *start* a tool only
-    // where there is not one already. See `batch_live`.
-    invoke("batch_beat");
-    setInterval(() => invoke("batch_beat"), 10000);
+  if (!isTool()) {
+    await refreshQueue();
+    return;
   }
+  const bar = (which, on) => {
+    const tab = document.querySelector(`.screens .tab[data-screen="${which}"]`);
+    if (tab) tab.hidden = !on;
+  };
+  bar("batch", true);
+  bar("input", false);
+  bar("outset", false);
+  // Nor has it a list to put in the queue: what it has open is a job out of
+  // the queue already. Nor another tool to open, being one.
+  el("enlist-export").hidden = true;
+  el("menu-batch").hidden = true;
+  // Nor is there a project to save: what the tool opens it opens to write
+  // out, and 保存 over the file it was handed is not something a queue
+  // should be able to do on its own.
+  for (const id of ["menu-new", "menu-open", "menu-save", "menu-save-as"]) {
+    if (el(id)) el(id).hidden = true;
+  }
+  show("batch");
+  // The window was painted before this answer arrived, so whatever it put in
+  // the title bar was the answer for the other kind of window.
+  shownTitle = "";
+  retitleMain();
+  invoke("center_window");
+  // Saying it is here, so a second tool is refused while this one runs. See
+  // `batch_live`.
+  invoke("batch_beat");
+  setInterval(() => invoke("batch_beat"), 10000);
   await watchQueue();
   setInterval(watchQueue, 2000);
 }
@@ -5965,6 +5948,10 @@ function showPrefs(on) {
   paintCacheUse();
 }
 
+el("menu-batch").addEventListener("click", () => {
+  showMenu(false);
+  openBatchTool();
+});
 el("menu-prefs").addEventListener("click", () => {
   showMenu(false);
   showPrefs(true);

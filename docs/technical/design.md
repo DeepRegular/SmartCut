@@ -44,20 +44,22 @@ encoders are the side that was chosen.
 - The **patent licences** for H.264 and HEVC (MPEG LA, Access Advance) need separate
   consideration for commercial distribution.
 
-## Five screens, three windows
+## Four screens, three windows
 
 The screens are split along the order the work goes in. TMPGEnc MPEG Smart Renderer 6,
 the reference, has the same shape — including **the cut editor being a window of its
 own**.
 
-The list window's four screens are tabs, and only one is up at a time. Three of
-them are **stages you pass through**, not panels laid side by side.
+The list window's three screens are tabs, and only one is up at a time. They are
+**stages you pass through**, not panels laid side by side.
 
-**The fourth is not a stage**, and is last for that reason. `バッチ出力` is a
-queue of saved projects written out one after another: it is about many lists
-rather than about this one. The tab is where a queue is lined up.
+`バッチ出力` is not among them, for the cut editor's reason turned the other way
+round: it is a queue of saved projects written out one after another, which is
+about many lists rather than about this one. It has no tab in the list window at
+all. What that window does with the queue is put a list into it — the button
+under 出力開始 — and open the tool, from the menu.
 
-What runs it is **a second process** — this same executable started with
+The tool is **a second process** — this same executable started with
 `--batch`, which opens the same page with the input and output-settings tabs
 off the bar. Its own process because that is the whole of what a queue is for:
 one lined up at midnight has to go on being written when the window it was
@@ -67,12 +69,12 @@ disc pass, the image and the sidecars by driving the screens that already do
 them, rather than by a second engine that would have to be kept in step with
 the first.
 
-The queue is a file in the config directory, which both processes re-read every
-two seconds. The list window may reorder and clear it only while no tool is
-running; it may *append* at any time, which is a write that cannot disturb a
-row the tool is working on, and the tool picks up what was appended as each job
-ends. A heartbeat file beside it, refreshed every ten seconds and believed for
-thirty, is how the list window knows whether to offer to start a tool.
+The queue is a file in the config directory. The tool re-reads it every two
+seconds and writes it as each job ends; the list window only ever *appends* to
+it, which is a write that cannot disturb the row the tool is working on, so the
+two need no turn-taking. What was appended is picked up as each job ends. A
+heartbeat file beside it, refreshed every ten seconds and believed for thirty,
+is how a second tool is refused while one is running.
 
 **Cutting is not among them, because it is not something settled once for the whole
 list; it is done to one clip at a time.** As a tab it made the same window both the

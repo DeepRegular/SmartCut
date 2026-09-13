@@ -105,9 +105,8 @@ it has written is taken back off the disc as well — the reason is in
 
 ## An overnight queue of projects
 
-One list is one evening's work. `バッチ出力` — the fourth tab — is the other
-axis: **a queue of saved projects, written out one after another with nobody in
-the room.**
+One list is one evening's work. The **batch tool** is the other axis: a queue
+of saved projects, written out one after another with nobody in the room.
 
 A job is a project file and nothing else. A `.scproj` already holds the
 recordings, the cuts, the track choices and the output settings, so the queue
@@ -115,36 +114,31 @@ only has to say which files and in what order.
 
 ```
 ①  cut an evening's recordings and save the project (Ctrl+S)
-②  バッチ出力 → この一覧を追加
+②  出力 tab → バッチに登録
 ③  do the same for the next evening's work
-④  press バッチ出力ツール, then バッチ開始 in the window that opens, and go to bed
+④  menu → バッチ出力ツール…, press バッチ開始 in the window that opens, and go to bed
 ```
 
-The 出力 screen has the same button under 出力開始, called `バッチに登録`: once
-the output settings are settled, the queue is the other answer to the question
-that screen is asking. Either way the list is saved as a project first — you
-are asked for a name if it has not got one.
+### The tool is a window of its own
 
-`プロジェクトを追加…` takes projects saved earlier, several at a time. `上へ`
-and `下へ` reorder the queue, `削除` takes one out, `全消去` empties it.
+`バッチ出力ツール…` on the SmartCut menu opens **a second window, in a process
+of its own**. That is the point of it: closing the main window — or quitting
+SmartCut entirely — does not stop a queue that is being written.
+
+The queue lives there and nowhere else. The tool shows it, orders it, runs it
+and stops it; the main window's only part in it is `バッチに登録`, which puts
+the list on screen at the end of the queue. **That works whether or not the
+tool is open**, and while it is running: an added job lands behind the one
+being written and the tool picks it up when it gets there.
+
+`プロジェクトを追加…` in the tool takes projects saved earlier, several at a
+time. `上へ` and `下へ` reorder the queue, `削除` takes one out, `全消去`
+empties it.
 
 **The queue survives the program.** It is written to a file as it is changed,
 so a queue lined up at midnight is still there in the morning — and a job that
 has been written stays in the list with what it wrote, and is not written
 again. Take it out with `削除` when it is no longer wanted.
-
-### The tool is a window of its own
-
-`バッチ出力ツール` opens **a second window, in a process of its own**. That is
-the point of it: closing the main window — or quitting SmartCut entirely — does
-not stop a queue that is being written. The tool shows the queue and the 出力
-screen and nothing else, and `バッチ開始` is in there rather than here.
-
-Both windows read the same queue, a couple of seconds apart, so the main window
-shows each job's progress as the tool gets to it. **Projects can be added while
-the tool is running**; they land at the end of the queue and the tool picks them
-up when it finishes the job it is on. Reordering and removing wait until it has
-finished — those are the tool's rows while it is working.
 
 Each job runs exactly as it would by hand: the project is opened, the list is
 read, and the 出力 screen writes it — the disc pass, the image and the sidecars

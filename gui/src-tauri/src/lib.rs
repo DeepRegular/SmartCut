@@ -3908,7 +3908,9 @@ fn batch_beat(app: tauri::AppHandle) {
 /// id, which is the one way to ask that means the same thing on all three
 /// platforms -- and the one that cannot mistake some unrelated program that
 /// has since been given the same number for a batch tool.
-#[tauri::command]
+///
+/// Asked only by [`open_batch_tool`]. The window that opens the tool does not
+/// otherwise care: it opens one, and is told if there is already one.
 fn batch_live(app: tauri::AppHandle) -> bool {
     let Ok(dir) = batch_dir(&app) else {
         return false;
@@ -4395,7 +4397,6 @@ pub fn run() {
             batch_write,
             batch_append,
             batch_beat,
-            batch_live,
             open_batch_tool,
             window_role,
             center_window,

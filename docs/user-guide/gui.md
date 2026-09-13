@@ -19,7 +19,7 @@ list to a finished export.
 
 ---
 
-## First: five screens, three windows
+## First: four screens, three windows
 
 The screens are laid out in the order you use them.
 
@@ -29,19 +29,17 @@ The screens are laid out in the order you use them.
 | **Cut editor** | **Its own window** | Open one recording, cut it, press **OK** to go back |
 | **Output settings** | List window, second tab | Where files go, what format, what happens to the sound. **Applies to the whole list** |
 | **Output** | List window, third tab | Write the list out, top to bottom |
-| **Batch** | List window, fourth tab | Line up saved projects in a queue |
-| **Batch tool** | **Its own window, its own process** | Write the queue out, top to bottom. Closing the main window does not stop it. See [Working through a batch](batch.md#an-overnight-queue-of-projects) |
+| **Batch tool** | **Its own window, its own process** | Queue up saved projects and write them out, top to bottom. Closing the main window does not stop it. See [Working through a batch](batch.md#an-overnight-queue-of-projects) |
 
 The cut editor is a separate window because the three tabs above it are
 settings you decide once for the whole list, and cutting is done one recording
 at a time: it needs a moment where you can say "this one is finished". That
 moment is the **OK** button.
 
-The batch tab is not a stage of the work and is last for that reason: it is
-about a queue of lists rather than about this one. What actually writes the
-queue out is a second window in a process of its own, because a queue lined up
-at midnight has to go on being written after the window it was lined up in is
-closed.
+The batch tool has no tab, because it is about a queue of lists rather than
+about this one; it is opened from the `バッチ出力ツール…` item on the menu. Its
+own process, because a queue lined up at midnight has to go on being written
+after the window it was lined up in is closed.
 
 ---
 
@@ -641,8 +639,9 @@ It never leaves a half-written file behind.
 
 `Add to batch` puts the list in the queue instead of writing it now. It is
 saved as a project first — you are asked for a name if it has not got one —
-and goes to the end of the queue, where the
-[batch tool](batch.md#an-overnight-queue-of-projects) writes it later.
+and goes to the end of the queue. What writes it is the
+[batch tool](batch.md#an-overnight-queue-of-projects), which does not have to
+be open for the list to be registered.
 
 **Stopping part way through a disc takes back what was written to it.** The pass
 that builds the index reads every stream back, which is minutes of work nobody
