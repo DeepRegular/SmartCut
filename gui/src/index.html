@@ -488,6 +488,15 @@
         <div class="out-buttons">
           <button id="run-export" class="primary big" data-i18n="out.run">出力開始</button>
           <button id="abort-export" class="mini" data-i18n="out.abort" disabled>出力中止</button>
+          <!-- The other thing to do with a settled list: put it in the queue
+               instead of writing it now. Under the two buttons that write it,
+               because it is the same question asked about a different
+               evening -- and it is the answer somebody wants at exactly this
+               moment, having just settled where the files go.
+
+               Not in the batch tool's own copy of this screen: what it has
+               open there is a job out of the queue already. -->
+          <button id="enlist-export" class="mini" data-i18n="out.enlist">バッチに登録</button>
         </div>
         <div class="out-status">
           <div class="row"><span class="lbl" data-i18n="out.stateLbl">状況:</span>

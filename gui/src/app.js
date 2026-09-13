@@ -1556,6 +1556,7 @@ function paintButtons() {
   el("remove-clip").disabled = !can.remove;
   el("remove-all").disabled = clips.length === 0;
   el("run-export").disabled = ready().length === 0 || exporting || batchRunning;
+  el("enlist-export").disabled = clips.length === 0 || exporting || batchRunning;
   // The queue drives this screen, so what it can do changes with it.
   if (el("batch-run")) paintBatchButtons();
 }
@@ -5463,18 +5464,42 @@ el("batch-add").addEventListener("click", async () => {
   for (const path of Array.isArray(picked) ? picked : [picked]) await addBatchJob(path);
 });
 
-/// この一覧を追加. A job is a file, so the list has to be one first: an
-/// unsaved list put in the queue would be a job that ran whatever the file
-/// said at midnight rather than what is on screen now.
-el("batch-add-current").addEventListener("click", async () => {
+/// この一覧を追加, from either of the two screens that offer it.
+///
+/// A job is a file, so the list has to be one first: an unsaved list put in
+/// the queue would be a job that ran whatever the file said at midnight
+/// rather than what is on screen now. So an unnamed list asks for a name and
+/// a changed one is written, both before anything is queued -- which is also
+/// why this can be declined, and says nothing when it is.
+///
+/// What comes back is the name it went in under, or "" where it did not go
+/// in. The caller says so, because the two screens have different places to
+/// say it: the list window's note line is on the input screen, and somebody
+/// who pressed this on the output screen is not looking at it.
+async function enlistList() {
   if (!clips.length) {
     note(t("project.nothingToSave"));
-    return;
+    return "";
   }
   if (!projectPath || dirty()) {
-    if (!(await saveProject())) return;
+    if (!(await saveProject())) return "";
   }
-  if (await addBatchJob(projectPath)) note(t("batch.added", { name: stemOf(projectPath) }));
+  return (await addBatchJob(projectPath)) ? stemOf(projectPath) : "";
+}
+
+el("batch-add-current").addEventListener("click", async () => {
+  const name = await enlistList();
+  if (name) note(t("batch.added", { name }));
+});
+
+/// The same, from the output screen, where the queue is the other answer to
+/// the question that screen asks.
+///
+/// Said on the 状況 line rather than in the note line the rest of this uses:
+/// that line is on the input screen, and this button is not.
+el("enlist-export").addEventListener("click", async () => {
+  const name = await enlistList();
+  if (name) el("out-state").textContent = t("batch.added", { name });
 });
 
 const moveBatch = async (by) => {
@@ -5760,6 +5785,9 @@ async function settleRole() {
       const tab = document.querySelector(`.screens .tab[data-screen="${which}"]`);
       if (tab) tab.hidden = true;
     }
+    // Nor has it a list to put in the queue: what it has open is a job out
+    // of the queue already.
+    el("enlist-export").hidden = true;
     // Nor is there a project to save: what the tool opens it opens to write
     // out, and 保存 over the file it was handed is not something a queue
     // should be able to do on its own.

@@ -120,6 +120,11 @@ only has to say which files and in what order.
 ④  press バッチ出力ツール, then バッチ開始 in the window that opens, and go to bed
 ```
 
+The 出力 screen has the same button under 出力開始, called `バッチに登録`: once
+the output settings are settled, the queue is the other answer to the question
+that screen is asking. Either way the list is saved as a project first — you
+are asked for a name if it has not got one.
+
 `プロジェクトを追加…` takes projects saved earlier, several at a time. `上へ`
 and `下へ` reorder the queue, `削除` takes one out, `全消去` empties it.
 

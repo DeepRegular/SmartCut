@@ -639,6 +639,11 @@ the time remaining. At the end it says `4 of 4 written`.
 `Stop export` **finishes writing the clip currently in progress**, then stops.
 It never leaves a half-written file behind.
 
+`Add to batch` puts the list in the queue instead of writing it now. It is
+saved as a project first — you are asked for a name if it has not got one —
+and goes to the end of the queue, where the
+[batch tool](batch.md#an-overnight-queue-of-projects) writes it later.
+
 **Stopping part way through a disc takes back what was written to it.** The pass
 that builds the index reads every stream back, which is minutes of work nobody
 wants after saying stop, so it does not run — and without an index, a written

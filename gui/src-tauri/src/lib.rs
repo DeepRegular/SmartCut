@@ -3796,12 +3796,25 @@ struct BatchJob {
 }
 
 /// The queue as it sits on disk.
-#[derive(Serialize, Deserialize, Clone, Default)]
+#[derive(Serialize, Deserialize, Clone)]
 #[serde(default)]
 struct BatchQueue {
     jobs: Vec<BatchJob>,
     /// What to do once it is empty: nothing, sleep or shutdown.
     after: String,
+}
+
+/// Spelled out rather than derived, so that a queue written by a window that
+/// was only adding to it still says what it would do when it empties. The
+/// frontend reads an empty string as this anyway; a file somebody opens
+/// should not need to know that.
+impl Default for BatchQueue {
+    fn default() -> Self {
+        BatchQueue {
+            jobs: Vec::new(),
+            after: "nothing".to_string(),
+        }
+    }
 }
 
 /// Where the queue and the tool's heartbeat live: beside the preferences
