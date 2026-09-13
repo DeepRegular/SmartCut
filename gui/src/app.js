@@ -5710,8 +5710,10 @@ el("enlist-export").addEventListener("click", async () => {
 /// offers and what a short drag comes to.
 async function moveBatch(by) {
   const at = batchJobs.findIndex((j) => j.path === batchPick);
-  const to = at + by;
-  if (batchRunning || at < 0 || to < 0 || to >= batchJobs.length) return;
+  // Clamped, so that the ends of the queue can be asked for by naming a step
+  // bigger than the queue: 先頭へ移動 is "up, as far as up goes".
+  const to = Math.max(0, Math.min(batchJobs.length - 1, at + by));
+  if (batchRunning || at < 0 || to === at) return;
   const [job] = batchJobs.splice(at, 1);
   batchJobs.splice(to, 0, job);
   await saveQueue();
@@ -5741,8 +5743,21 @@ function closeJobMenu() {
 
 function openJobMenu(x, y) {
   const at = batchJobs.findIndex((j) => j.path === batchPick);
+  const job = batchJobs[at] || {};
+  const look = jobLook.get(job.path) || {};
+  // Moving is the loop's business while it runs: it walks the rows by place.
+  el("job-top").disabled = batchRunning || at <= 0;
   el("job-up").disabled = batchRunning || at <= 0;
   el("job-down").disabled = batchRunning || at < 0 || at >= batchJobs.length - 1;
+  el("job-bottom").disabled = batchRunning || at < 0 || at >= batchJobs.length - 1;
+  // Only a job that has finished with this run has anything to put back, and
+  // the one being written is not finished with it.
+  el("job-requeue").disabled = at < 0 || job.state === "waiting" || job.state === "running";
+  el("job-open").disabled = at < 0;
+  // A project that writes beside its recordings has no folder of its own to
+  // be opened at.
+  el("job-folder").disabled = at < 0 || !look.dir;
+  el("job-remove").disabled = batchRunning || at < 0;
   showBatchMenu(false);
   jobMenu.style.left = `${x}px`;
   jobMenu.style.top = `${y}px`;
@@ -5761,6 +5776,71 @@ el("job-up").addEventListener("click", () => {
 el("job-down").addEventListener("click", () => {
   closeJobMenu();
   moveBatch(1);
+});
+el("job-top").addEventListener("click", () => {
+  closeJobMenu();
+  moveBatch(-batchJobs.length);
+});
+el("job-bottom").addEventListener("click", () => {
+  closeJobMenu();
+  moveBatch(batchJobs.length);
+});
+
+/// もう一度出力する: put a job that is finished with this run back in the
+/// queue as one that is not.
+///
+/// The one thing a queue could not do at all. A job that has been written
+/// stays written -- which is what keeps a second run from writing it twice --
+/// and the only way back was to take it out and put it in again, losing its
+/// place. What it was told about the last run goes with it: a row that says
+/// it is waiting should not also be saying how long it took.
+el("job-requeue").addEventListener("click", async () => {
+  closeJobMenu();
+  const job = batchJobs.find((j) => j.path === batchPick);
+  if (!job || job.state === "waiting" || job.state === "running") return;
+  job.state = "waiting";
+  job.note = t("batch.waiting");
+  job.began = undefined;
+  job.spent = undefined;
+  job.done = 0;
+  await saveQueue();
+  renderBatch();
+});
+
+/// プロジェクトを開く: hand the job's file to a list window of its own.
+el("job-open").addEventListener("click", async () => {
+  closeJobMenu();
+  const job = batchJobs.find((j) => j.path === batchPick);
+  if (!job) return;
+  try {
+    await invoke("open_project_window", { path: job.path });
+  } catch (e) {
+    sayHere(String(e));
+  }
+});
+
+/// 出力先フォルダーを開く: the one question a finished queue leaves.
+el("job-folder").addEventListener("click", async () => {
+  closeJobMenu();
+  const job = batchJobs.find((j) => j.path === batchPick);
+  const look = (job && jobLook.get(job.path)) || {};
+  if (!look.dir) return;
+  try {
+    await invoke("show_folder", { path: look.dir });
+  } catch (e) {
+    sayHere(String(e));
+  }
+});
+
+/// ジョブ削除, from under the pointer rather than from the bar.
+el("job-remove").addEventListener("click", async () => {
+  closeJobMenu();
+  const at = batchJobs.findIndex((j) => j.path === batchPick);
+  if (at < 0 || batchRunning) return;
+  batchJobs.splice(at, 1);
+  batchPick = (batchJobs[Math.min(at, batchJobs.length - 1)] || {}).path || "";
+  await saveQueue();
+  renderBatch();
 });
 
 // A press anywhere else shuts it -- `mousedown`, because the press that

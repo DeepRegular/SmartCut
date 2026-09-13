@@ -3956,6 +3956,53 @@ fn center_window(app: tauri::AppHandle) {
     }
 }
 
+/// Open one of the queue's projects in a list window of its own.
+///
+/// The tool cannot show a project -- the two screens where a list is looked at
+/// are off its bar, and the list it holds at any moment is a job it is in the
+/// middle of writing. So a job somebody wants to look at is handed to a fresh
+/// window: this same program, started on that file, which is what the command
+/// line and a file manager already do with a `.scproj`.
+#[tauri::command]
+fn open_project_window(path: String) -> Result<(), String> {
+    let exe = std::env::current_exe().map_err(|e| e.to_string())?;
+    std::process::Command::new(exe)
+        .arg(path)
+        .spawn()
+        .map(|_| ())
+        .map_err(|e| e.to_string())
+}
+
+/// Show a folder in whatever the desktop uses to show folders.
+///
+/// For the one question a finished queue leaves: where did it put them. The
+/// platform's own opener rather than anything of this program's -- a list of
+/// files is a file manager's business, and every desktop already has the one
+/// its owner chose.
+#[tauri::command]
+fn show_folder(path: String) -> Result<(), String> {
+    let dir = std::path::Path::new(&path);
+    if !dir.is_dir() {
+        return Err(trf!(
+            "フォルダーが見つかりません: {}",
+            "No such folder: {}",
+            path
+        ));
+    }
+    let opener = if cfg!(target_os = "windows") {
+        "explorer"
+    } else if cfg!(target_os = "macos") {
+        "open"
+    } else {
+        "xdg-open"
+    };
+    std::process::Command::new(opener)
+        .arg(dir)
+        .spawn()
+        .map(|_| ())
+        .map_err(|e| format!("{opener}: {e}"))
+}
+
 /// Which of the two this window is: the list window, or the batch tool.
 ///
 /// The frontend is the same page either way -- the tool needs the list and
@@ -4398,6 +4445,8 @@ pub fn run() {
             batch_append,
             batch_beat,
             open_batch_tool,
+            open_project_window,
+            show_folder,
             window_role,
             center_window,
             quit,

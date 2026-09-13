@@ -858,8 +858,24 @@
          queue as a whole. Put where the pointer is, like the one above, and
          outside the screens for the same reason. -->
     <div id="job-menu" class="menu at-pointer" hidden>
+      <button class="menu-item" id="job-top" data-i18n="jobmenu.toTop">先頭へ移動</button>
       <button class="menu-item" id="job-up" data-i18n="rowmenu.moveUp">上に移動</button>
       <button class="menu-item" id="job-down" data-i18n="rowmenu.moveDown">下に移動</button>
+      <button class="menu-item" id="job-bottom" data-i18n="jobmenu.toBottom">末尾へ移動</button>
+      <div class="menu-sep"></div>
+      <!-- The one thing a queue could not do at all: a job that has been
+           written stays written, and there was no way back to waiting short
+           of taking it out and putting it in again. -->
+      <button class="menu-item" id="job-requeue" data-i18n="jobmenu.requeue">もう一度出力する</button>
+      <div class="menu-sep"></div>
+      <!-- The two questions a row raises that the tool cannot answer itself:
+           what is in this project, and where did it put things. Both are
+           handed to something that can -- a list window of its own, and the
+           desktop's own file manager. -->
+      <button class="menu-item" id="job-open" data-i18n="jobmenu.openProject">プロジェクトを開く</button>
+      <button class="menu-item" id="job-folder" data-i18n="jobmenu.openFolder">出力先フォルダーを開く</button>
+      <div class="menu-sep"></div>
+      <button class="menu-item" id="job-remove" data-i18n="batch.drop">ジョブ削除</button>
     </div>
 
     <div id="row-menu" class="menu at-pointer" hidden>
