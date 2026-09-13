@@ -70,11 +70,13 @@ step with the first.
 
 **The tool's bar has no tabs.** It has two screens and never a choice between
 them: the queue while it is idle, and what is being written while it is not,
-which the run moves between on its own. What is on the bar instead is the one
-control a queue has — start, and stop — as **one button** that says which of
-them it is about to do. Up there rather than at the foot of a screen because
-the tool leaves that screen while it works, and a stop button that goes away
-while it is wanted is not a stop button. The output screen's own 出力開始 and
+which the run moves between on its own. What is on the bar instead is what a
+queue can be told to do. Starting and stopping are **one button** that says
+which of them it is about to do; beside it is 削除, with the two bulk forms of
+it — the rows already written, and all of them — on a caret hanging off that
+button rather than as controls of their own. All of it up there rather than at
+the foot of a screen because the tool leaves that screen while it works, and a
+stop button that goes away while it is wanted is not a stop button. The output screen's own 出力開始 and
 出力中止 come off in the tool for the same reason the settings screens do: the
 list it is holding is a job out of the queue, and the bar's button is the only
 thing that should be able to start or stop it.

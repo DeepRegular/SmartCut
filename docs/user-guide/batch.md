@@ -129,22 +129,24 @@ The queue lives there and nowhere else. The tool shows it, orders it, runs it
 and stops it; the main window's only part in it is `バッチに登録`, which puts
 the list on screen at the end of the queue.
 
-**One button runs the whole thing**, in the corner of the tool's own bar: it
-says `バッチ開始` while the queue is waiting and `バッチ中止` in red while it is
-being written. The tool has no tabs — it shows the queue while it is idle and
-what is being written while it is not, and moves between the two itself — so
-that button is in reach whichever of them is up. **That works whether or not the
+**One button runs the whole thing**, at the left of the tool's own bar: it says
+`バッチ開始` while the queue is waiting and `バッチ中止` in red while it is being
+written. The tool has no tabs — it shows the queue while it is idle and what is
+being written while it is not, and moves between the two itself — so that
+button is in reach whichever of them is up. Beside it is `ジョブ削除`, which
+takes out the row you have clicked, and the `▾` on the end of it holds the two
+ways of doing that in bulk: `出力済のジョブを削除` and `すべて削除`. **That works whether or not the
 tool is open**, and while it is running: an added job lands behind the one
 being written and the tool picks it up when it gets there.
 
 `プロジェクトを追加…` in the tool takes projects saved earlier, several at a
-time. `上へ` and `下へ` reorder the queue, `削除` takes one out, `全消去`
-empties it.
+time, and `上へ` and `下へ` reorder the queue.
 
 **The queue survives the program.** It is written to a file as it is changed,
 so a queue lined up at midnight is still there in the morning — and a job that
 has been written stays in the list with what it wrote, and is not written
-again. Take it out with `削除` when it is no longer wanted.
+again. `出力済のジョブを削除` clears out that half of it in one go, leaving
+exactly the jobs still to do.
 
 Each job runs exactly as it would by hand: the project is opened, the list is
 read, and the 出力 screen writes it — the disc pass, the image and the sidecars

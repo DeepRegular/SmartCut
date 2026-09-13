@@ -860,7 +860,9 @@ input[type="text"]::placeholder { color: var(--dim); }
 #batch-list .nm { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 #batch-list .where { color: var(--dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 #batch-list .note { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: var(--dim); }
-#batch-list li.picked { background: var(--sunken); }
+#batch-list li:hover { background: #33454f; }
+#batch-list li.picked { background: #175a70; }
+#batch-list li.picked .n, #batch-list li.picked .where { color: #cfe9f2; }
 #batch-list li.done .note { color: #7ee787; }
 #batch-list li.error .note { color: #ff9a90; }
 #batch-list li.running .nm { color: var(--sel); font-weight: 600; }
@@ -885,3 +887,21 @@ input[type="text"]::placeholder { color: var(--dim); }
 #batch-go:hover:not(:disabled) { filter: brightness(1.08); }
 #batch-go.stop { background: #8c3b32; border-color: #a8473c; color: var(--text); }
 #batch-go:disabled { background: #333; border-color: #4a4a4a; color: var(--dim); }
+/* The tool's bar: the run control, then 削除 with its two bulk forms hanging
+   off a caret. `display` spelled out because the attribute loses against it,
+   as everywhere else here. */
+#batch-bar { display: flex; align-items: center; gap: 8px; }
+#batch-bar[hidden] { display: none; }
+/* 削除 and its caret read as one control, so they are drawn as one: no gap,
+   and the seam between them is a single border rather than two. */
+.dropgroup { display: flex; align-items: stretch; position: relative; }
+.dropgroup .mini { border-radius: 0; }
+.dropgroup > .mini:first-child { border-radius: 2px 0 0 2px; }
+.dropmenu { display: flex; }
+.dropmenu .caret {
+  border-left: none; border-radius: 0 2px 2px 0; padding: 3px 7px; line-height: 1;
+}
+.dropmenu .caret.open { background: #3a3a3a; border-color: #5c5c5c; }
+/* Hung under the button it is about, left edges level -- the mirror of the
+   one in the other corner, which hangs off a button at the right. */
+.dropgroup .menu { top: calc(100% + 4px); left: 0; right: auto; min-width: 200px; }

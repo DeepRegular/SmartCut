@@ -254,6 +254,7 @@ function show(name) {
   // it is the cuts. Shut on the way across, or a screen change under an open
   // menu would leave it to reappear later.
   showMenu(false);
+  showBatchMenu(false);
   closeRowMenu();
   if (name === "outset") renderOutset();
   // Coming to the screen is asking it what it has to say, so it goes back to
@@ -5402,8 +5403,21 @@ function paintBatchButtons() {
   el("batch-add").disabled = batchRunning;
   el("batch-up").disabled = batchRunning || at <= 0;
   el("batch-down").disabled = batchRunning || at < 0 || at >= batchJobs.length - 1;
-  el("batch-remove").disabled = batchRunning || at < 0;
-  el("batch-clear").disabled = batchRunning || !batchJobs.length;
+  el("batch-drop").disabled = batchRunning || at < 0;
+  el("batch-more").disabled = batchRunning || !batchJobs.length;
+  el("batch-clear-done").disabled = !batchJobs.some((j) => j.state === "done");
+}
+
+/// The little menu on 削除, which holds the two ways of doing it in bulk.
+///
+/// A `function` rather than a `const`, because `show` closes it and `show` is
+/// declared a long way above this.
+function showBatchMenu(on) {
+  const menu = el("batch-menu");
+  if (!menu) return;
+  menu.hidden = !on;
+  el("batch-more").setAttribute("aria-expanded", String(!!on));
+  el("batch-more").classList.toggle("open", !!on);
 }
 
 /// Put a project in the queue, under the name its own file gives it.
@@ -5494,7 +5508,8 @@ const moveBatch = async (by) => {
 el("batch-up").addEventListener("click", () => moveBatch(-1));
 el("batch-down").addEventListener("click", () => moveBatch(1));
 
-el("batch-remove").addEventListener("click", async () => {
+/// ジョブ削除: the row that is picked.
+el("batch-drop").addEventListener("click", async () => {
   const at = batchJobs.findIndex((j) => j.path === batchPick);
   if (at < 0) return;
   batchJobs.splice(at, 1);
@@ -5503,7 +5518,36 @@ el("batch-remove").addEventListener("click", async () => {
   renderBatch();
 });
 
-el("batch-clear").addEventListener("click", async () => {
+el("batch-more").addEventListener("click", (ev) => {
+  ev.stopPropagation();
+  showBatchMenu(el("batch-menu").hidden);
+});
+// Anywhere else, and Escape, the way the menu in the other corner goes away.
+window.addEventListener("click", () => showBatchMenu(false));
+window.addEventListener("keydown", (ev) => {
+  if (ev.key === "Escape") showBatchMenu(false);
+});
+
+/// 出力済のジョブを削除: the rows that have nothing left to do.
+///
+/// No question asked, unlike すべて削除. What this takes out is the part of
+/// the queue that has already happened, and the rows it leaves are exactly
+/// the ones somebody would have been picking out one at a time.
+el("batch-clear-done").addEventListener("click", async () => {
+  showBatchMenu(false);
+  const gone = batchJobs.filter((j) => j.state === "done").length;
+  if (!gone) return;
+  batchJobs = batchJobs.filter((j) => j.state !== "done");
+  if (!batchJobs.some((j) => j.path === batchPick)) batchPick = "";
+  await saveQueue();
+  renderBatch();
+  sayHere(t("batch.clearedDone", { n: gone }));
+});
+
+/// すべて削除, which is asked about: the rows still waiting are work somebody
+/// lined up, and there is no putting them back.
+el("batch-clear-all").addEventListener("click", async () => {
+  showBatchMenu(false);
   if (!batchJobs.length) return;
   const go = await dialog.ask(t("batch.clearBody", { n: batchJobs.length }), {
     title: t("batch.clearTitle"),
@@ -5774,7 +5818,7 @@ async function settleRole() {
   // them: the queue while it is idle, and what is being written while it is
   // not, which `runBatch` moves between on its own.
   for (const tab of document.querySelectorAll(".screens .tab")) tab.hidden = true;
-  el("batch-go").hidden = false;
+  el("batch-bar").hidden = false;
   // And no way to start an export by hand. The list it is holding is a job
   // out of the queue; writing it again from underneath the queue is not
   // something the one control up on the bar should have a rival for.
