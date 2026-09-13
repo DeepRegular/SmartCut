@@ -197,7 +197,7 @@ only while a single row is picked.
 | `もう一度出力する` | Puts a job that has been written — or failed, or been called off — back in the queue as one that is waiting, in the place it already holds; every picked row it applies to goes back at once. Without it the only way to write a job twice is to take it out and add it again |
 | `プロジェクトを開く` | Opens that job's `.scproj` in a list window of its own, for when a job needs looking at rather than running |
 | `出力先フォルダーを開く` | Shows where it writes, in whatever your desktop uses to show folders |
-| `ジョブ削除` | Takes the picked jobs out of the queue for good |
+| `ジョブ削除` | Takes the picked jobs out of the queue for good. A copy `バッチに登録` wrote for the queue goes with the row; a project you saved yourself is left alone |
 
 **The queue survives the program.** It is written to a file as it is changed,
 so a queue lined up at midnight is still there in the morning — and a job that

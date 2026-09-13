@@ -4898,6 +4898,16 @@ const PROJECT_VERSION = 1;
 /// saved. What 保存 writes over without asking.
 let projectPath = "";
 
+/// The copy of this list that the queue was given, for a list that had no
+/// file of its own to give it -- see `projectForQueue`. Not the project this
+/// window is about, and never shown as one: it is a file in the queue's own
+/// folder that the queue will delete with the job. Held so that registering
+/// the same list twice writes the one copy rather than a second.
+///
+/// Goes with the list it is a copy of: another project opened, or a new one
+/// started, and this one is nobody's copy.
+let tempProject = "";
+
 /// Everything worth keeping, in the shape it goes on disc.
 function captureProject() {
   return {
@@ -5069,7 +5079,12 @@ function touch() {
   retitleMain();
 }
 
-async function writeProject(path) {
+/// Put the list down as a file, and say nothing about it.
+///
+/// The writing half of 保存, without the part that says this is now the
+/// project the window is about -- which is not true of the copy the queue is
+/// given; see `projectForQueue`.
+async function putProject(path) {
   try {
     // Indented, and with the paths first in every row: a project is a plain
     // file about files, and someone who opens one in an editor to see which
@@ -5082,6 +5097,11 @@ async function writeProject(path) {
     note(`${e}`);
     return false;
   }
+  return true;
+}
+
+async function writeProject(path) {
+  if (!(await putProject(path))) return false;
   projectPath = path;
   savedShape = shapeOf();
   retitleMain();
@@ -5149,6 +5169,7 @@ async function newProject() {
   filledIn = null;
   showSettings();
   projectPath = "";
+  tempProject = "";
   savedShape = shapeOf();
   retitleMain();
   show("input");
@@ -5227,6 +5248,7 @@ async function loadProject(path) {
     taken.push([clip, !!saved.cmPending]);
   }
   projectPath = path;
+  tempProject = "";
   savedShape = shapeOf();
   retitleMain();
   // Onto the screen the list is on -- except in the batch tool, which has no
@@ -5910,18 +5932,33 @@ async function projectForQueue() {
   if (projectPath) {
     return !dirty() || (await writeProject(projectPath)) ? projectPath : "";
   }
-  let path;
-  try {
-    path = await invoke("free_path", {
-      dir: projectHome(),
-      stem: autoProjectStem(),
-      ext: PROJECT_EXT,
-    });
-  } catch (e) {
-    sayHere(String(e));
-    return "";
+  // A list with no file of its own is written into the queue's own folder,
+  // not into the output folder: this is a copy the queue asked for rather
+  // than work somebody saved, and a `.scproj` nobody asked for landing beside
+  // the cuts is litter -- there once the job has been written, there once the
+  // job has been taken out of the queue, there for good. In the queue's folder
+  // it is the queue's, and goes when the job goes; see `drop_temp_project`.
+  //
+  // Which is also why it does not become the project this window is about.
+  // The title bar would then name a file in a folder nobody can find, and 保存
+  // would write there instead of asking for a name.
+  let path = tempProject;
+  if (!path) {
+    try {
+      path = await invoke("queue_temp_path", {
+        stem: autoProjectStem(),
+        ext: PROJECT_EXT,
+      });
+    } catch (e) {
+      sayHere(String(e));
+      return "";
+    }
   }
-  return (await writeProject(path)) ? path : "";
+  if (!(await putProject(path))) return "";
+  // Kept, so that a list registered twice is written to the one file and
+  // refused as the duplicate it is, rather than piling up copies of itself.
+  tempProject = path;
+  return path;
 }
 
 /// バッチに登録: put the list on screen into the queue, and open the tool
@@ -6250,11 +6287,31 @@ function jobEdge() {
 /// be the program choosing one nobody pointed at.
 async function dropPicked() {
   if (batchRunning || !batchPicked.size) return;
+  const gone = pickedJobs();
   batchJobs = batchJobs.filter((j) => !batchPicked.has(j.path));
   batchPicked.clear();
   batchAnchor = -1;
   await saveQueue();
   renderBatch();
+  await dropQueuedCopies(gone);
+}
+
+/// Jobs have left the queue for good: throw away the projects that were the
+/// queue's own copies, and leave every other project alone.
+///
+/// Which is which is the backend's to say -- it is the folder the file is in,
+/// see `drop_temp_project` -- so this hands over every path and reads nothing
+/// back. Last, after the queue is written and the rows are gone: the removal
+/// is what was asked for, and a file that will not go is no reason to keep a
+/// row nobody wants.
+async function dropQueuedCopies(gone) {
+  for (const job of gone) {
+    try {
+      await invoke("drop_temp_project", { path: job.path });
+    } catch {
+      /* the row is out, which is what the press was about */
+    }
+  }
 }
 el("batch-drop").addEventListener("click", dropPicked);
 
@@ -6275,15 +6332,16 @@ window.addEventListener("keydown", (ev) => {
 /// the ones somebody would have been picking out one at a time.
 el("batch-clear-done").addEventListener("click", async () => {
   showBatchMenu(false);
-  const gone = batchJobs.filter((j) => j.state === "done").length;
-  if (!gone) return;
+  const gone = batchJobs.filter((j) => j.state === "done");
+  if (!gone.length) return;
   batchJobs = batchJobs.filter((j) => j.state !== "done");
   for (const path of [...batchPicked]) {
     if (!batchJobs.some((j) => j.path === path)) batchPicked.delete(path);
   }
   await saveQueue();
   renderBatch();
-  sayHere(t("batch.clearedDone", { n: gone }));
+  sayHere(t("batch.clearedDone", { n: gone.length }));
+  await dropQueuedCopies(gone);
 });
 
 /// すべて削除, which is asked about: the rows still waiting are work somebody
@@ -6296,11 +6354,13 @@ el("batch-clear-all").addEventListener("click", async () => {
     kind: "warning",
   });
   if (!go) return;
+  const gone = batchJobs;
   batchJobs = [];
   batchPicked.clear();
   batchAnchor = -1;
   await saveQueue();
   renderBatch();
+  await dropQueuedCopies(gone);
 });
 
 /// Start the tool, which is a second process of this same program.
@@ -6397,6 +6457,7 @@ el("batch-list").addEventListener("click", async (ev) => {
   batchPicked.delete(job.path);
   await saveQueue();
   renderBatch();
+  await dropQueuedCopies([job]);
 });
 
 el("batch-list").addEventListener("click", (ev) => {

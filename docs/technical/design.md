@@ -153,9 +153,21 @@ about a queue, and there the one button is right: 出力開始 before a run, 出
 during one, because a list being written has exactly one way of being stopped
 and the pair would have spent its life with one half greyed out. Its neighbour
 バッチに登録 is the other answer to a settled list, and it asks nothing on the
-way: a job is a file, so the list is written — over its own file, or under the
-first row's name where it has none — and the tool is started over the queue it
-just landed in, a queue with nobody over it being a queue nobody writes.
+way: a job is a file, so the list is written — over its own file, or, where it
+has none, as a copy in the queue's own folder under the first row's name — and
+the tool is started over the queue it just landed in, a queue with nobody over
+it being a queue nobody writes.
+
+That copy is the queue's rather than the work's, which settles the two
+questions about it. It is not written where the cuts go: a `.scproj` nobody
+asked for, left beside the recordings after the job has run, is litter. And it
+is deleted with the row that named it, the backend deciding which files those
+are by the folder they are in rather than trusting a flag in the queue — a
+queue that deleted whatever path it was handed would be one removal away from
+deleting somebody's own project. Nor does the copy become the project the list
+window is about: a title bar naming a file in a folder nobody can find, and a
+保存 that wrote there instead of asking for a name, would be the price of
+saying so.
 
 That one button comes off altogether in the tool, for the reason the settings
 screens do: the list it is holding is a job out of the queue, and nothing

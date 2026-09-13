@@ -3739,39 +3739,6 @@ fn write_project(path: String, body: String) -> Result<(), String> {
         .map_err(|e| trf!("保存できません: {} ({})", "Cannot save: {} ({})", path, e))
 }
 
-/// A name nothing in this folder has yet: `stem.ext`, or the first of
-/// `stem-2.ext`, `stem-3.ext` … that is free.
-///
-/// For a list that has no file of its own and is about to need one --
-/// バッチに登録 writes the project itself rather than asking where to put it,
-/// a job being a file. Worked out here because this is the side that can see
-/// the folder: a name the list window merely believed to be free would be a
-/// registration that wrote over somebody's project.
-///
-/// The extension comes from up there with the rest of what a project is.
-#[tauri::command]
-fn free_path(dir: String, stem: String, ext: String) -> Result<String, String> {
-    let dir = std::path::Path::new(&dir);
-    std::fs::create_dir_all(dir)
-        .map_err(|e| trf!("保存できません: {} ({})", "Cannot save: {} ({})", dir.display(), e))?;
-    for n in 1..1000 {
-        let name = if n == 1 {
-            format!("{stem}.{ext}")
-        } else {
-            format!("{stem}-{n}.{ext}")
-        };
-        let at = dir.join(name);
-        if !at.exists() {
-            return Ok(at.to_string_lossy().into_owned());
-        }
-    }
-    Err(trf!(
-        "名前が付けられません: {}",
-        "Cannot find a free name: {}",
-        dir.join(format!("{stem}.{ext}")).display()
-    ))
-}
-
 /// Read one back.
 ///
 /// A missing file is an error here, unlike the keyframe sidecar's: that one
@@ -3874,6 +3841,72 @@ fn batch_dir(app: &tauri::AppHandle) -> Result<std::path::PathBuf, String> {
     })?;
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
     Ok(dir)
+}
+
+/// Where the queue keeps the projects it was handed rather than pointed at.
+///
+/// バッチに登録 writes the list on screen to a file, a job being a file. A
+/// list that has no file of its own gets one here rather than in the output
+/// folder: it is a copy the queue asked for, not work somebody saved, and a
+/// `.scproj` nobody asked for sitting next to the recordings is litter. It is
+/// the queue's to delete, which is what [`drop_temp_project`] is for.
+fn queue_dir(app: &tauri::AppHandle) -> Result<std::path::PathBuf, String> {
+    let dir = batch_dir(app)?.join("queued");
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    Ok(dir)
+}
+
+/// A name nothing in `dir` has yet: `stem.ext`, or the first of `stem-2.ext`,
+/// `stem-3.ext` … that is free.
+///
+/// Worked out on this side because this is the side that can see the folder:
+/// a name the list window merely believed to be free would be a registration
+/// that wrote over the project it was handed last night. The extension comes
+/// from up there with the rest of what a project is.
+fn free_in(dir: &std::path::Path, stem: &str, ext: &str) -> Result<String, String> {
+    for n in 1..1000 {
+        let name = if n == 1 {
+            format!("{stem}.{ext}")
+        } else {
+            format!("{stem}-{n}.{ext}")
+        };
+        let at = dir.join(name);
+        if !at.exists() {
+            return Ok(at.to_string_lossy().into_owned());
+        }
+    }
+    Err(trf!(
+        "名前が付けられません: {}",
+        "Cannot find a free name: {}",
+        dir.join(format!("{stem}.{ext}")).display()
+    ))
+}
+
+/// Where to write a list that is going into the queue without a file of its
+/// own. The name is the list window's; the folder is this side's.
+#[tauri::command]
+fn queue_temp_path(app: tauri::AppHandle, stem: String, ext: String) -> Result<String, String> {
+    free_in(&queue_dir(&app)?, &stem, &ext)
+}
+
+/// Throw away a project the queue wrote for itself, as the job that named it
+/// leaves the queue.
+///
+/// Only ever a file in the folder above, whoever asks: the queue is handed
+/// paths, and a queue that deleted whatever path it was handed would be one
+/// row's removal away from deleting somebody's work. A project that was
+/// saved and then queued is not the queue's to throw away, and a path outside
+/// the folder is answered `false` and left alone -- as is one already gone,
+/// which is the answer for every row of a queue written before this existed.
+#[tauri::command]
+fn drop_temp_project(app: tauri::AppHandle, path: String) -> Result<bool, String> {
+    let dir = queue_dir(&app)?;
+    let at = std::path::Path::new(&path);
+    if at.parent() != Some(dir.as_path()) || !at.is_file() {
+        return Ok(false);
+    }
+    std::fs::remove_file(at).map_err(|e| e.to_string())?;
+    Ok(true)
 }
 
 /// The queue, or an empty one where there has never been a job.
@@ -4537,7 +4570,8 @@ pub fn run() {
             close_editor,
             write_project,
             read_project,
-            free_path,
+            queue_temp_path,
+            drop_temp_project,
             set_dirty,
             after_batch,
             batch_read,

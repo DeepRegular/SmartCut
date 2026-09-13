@@ -83,10 +83,15 @@ says what happened. The other nineteen work as usual.
 ## A saved project is also a batch job
 
 `バッチに登録` on the 出力 screen saves the list, puts it at the end of the
-queue and opens the batch tool over it. A list with no name of its own is
-written under the name of its first row, with no picker in the way. The tool —
+queue and opens the batch tool over it, with no picker in the way. The tool —
 a window in a process of its own — writes the queue out one job after another
-overnight. A job is a `.scproj` and nothing
+overnight.
+
+What is saved is the project you have open. A list that has no name of its own
+is copied into the queue's own folder instead, under the name of its first row,
+and that does not make it a project you have open: the list is still untitled.
+The copy is the queue's, and goes when the job is taken out of the queue — so
+save the list yourself with `名前を付けて保存` if you want to keep it. A job is a `.scproj` and nothing
 besides, because the file already holds everything a job is. See
 [Working through a batch](batch.md#an-overnight-queue-of-projects).
 
