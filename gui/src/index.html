@@ -582,7 +582,11 @@
 
                Not in the batch tool's own copy of this screen: what it has
                open there is a job out of the queue already. -->
-          <button id="enlist-export" class="mini" data-i18n="out.enlist">バッチに登録</button>
+          <!-- No `data-i18n`, for the reason the button above has none: what
+               it says is what pressing it does, which in a window opened on a
+               job out of the queue is バッチを上書き. `paintEnlistButton`
+               writes it. -->
+          <button id="enlist-export" class="mini">バッチに登録</button>
         </div>
         <div class="out-status">
           <div class="row"><span class="lbl" data-i18n="out.stateLbl">状況:</span>

@@ -646,11 +646,12 @@ While it writes, that same button reads `Stop export`. Pressing it **finishes
 writing the clip currently in progress**, then stops. It never leaves a
 half-written file behind.
 
-`Add to batch` puts the list in the queue instead of writing it now. The list
-is saved as a project as it goes, with no picker. A list that has a file of its
-own is written to it; one that has not is copied into the queue's own folder
-under the name of its first row — **never into the output folder** — and that
-copy belongs to the queue: it goes when the job goes. The press also starts the
+`Add to batch` puts the list in the queue instead of writing it now, with no
+picker. **What goes into the queue is a copy of the list, written into a folder
+of the queue's own** — never into the output folder — under the name of the
+project you have open, or of the list's first row where there is none. The copy
+belongs to the queue and goes when the job goes; the project you have open is
+not written to, `Ctrl+S` being what does that. The press also starts the
 [batch tool](batch.md#an-overnight-queue-of-projects) if one is not already up,
 and the job goes to the end of its queue.
 

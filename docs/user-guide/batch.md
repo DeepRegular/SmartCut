@@ -112,6 +112,12 @@ A job is a project file and nothing else. A `.scproj` already holds the
 recordings, the cuts, the track choices and the output settings, so the queue
 only has to say which files and in what order.
 
+**That file is the queue's own copy.** バッチに登録 and ジョブ追加 both write
+one into a folder of the queue's, and it is the copy that runs: editing the
+project you queued from does not change what the queue will write, and taking
+the row out does not touch it. To change a job, open it from its own row with
+`プロジェクトを開く`.
+
 ```
 ①  cut an evening's recordings
 ②  出力 tab → バッチに登録 (one press: it saves the project and opens the tool)
@@ -135,7 +141,8 @@ and picks it up when it gets there.
 **The bar is what you say to the queue as a whole.** `バッチ開始` starts it and
 `すべて中止` calls off the job being written and every job behind it. Beside
 them are the two things a queue is made of: `ジョブ追加`, which takes projects
-saved earlier, several at a time; and `ジョブ削除`, which takes out the rows you
+saved earlier, several at a time — **what it takes is a copy, and the queue
+runs the copy**, leaving the file you picked exactly as it was; and `ジョブ削除`, which takes out the rows you
 have picked, with the `▾` on the end of it holding the two ways of doing that
 in bulk — `出力済のジョブを削除` and `すべて削除`.
 
@@ -195,9 +202,9 @@ only while a single row is picked.
 | | |
 |---|---|
 | `もう一度出力する` | Puts a job that has been written — or failed, or been called off — back in the queue as one that is waiting, in the place it already holds; every picked row it applies to goes back at once. Without it the only way to write a job twice is to take it out and add it again |
-| `プロジェクトを開く` | Opens that job's `.scproj` in a list window of its own, for when a job needs looking at rather than running |
+| `プロジェクトを開く` | Opens that job in a list window of its own, to be worked on. On that window's 出力 screen `バッチに登録` reads **`バッチを上書き`**, and pressing it puts what you have done back into the job in the queue; `Ctrl+S` does the same |
 | `出力先フォルダーを開く` | Shows where it writes, in whatever your desktop uses to show folders |
-| `ジョブ削除` | Takes the picked jobs out of the queue for good. A copy `バッチに登録` wrote for the queue goes with the row; a project you saved yourself is left alone |
+| `ジョブ削除` | Takes the picked jobs out of the queue for good, and the queue's copy of each goes with the row. The project it was copied from is left alone |
 
 **The queue survives the program.** It is written to a file as it is changed,
 so a queue lined up at midnight is still there in the morning — and a job that

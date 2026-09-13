@@ -3817,6 +3817,15 @@ struct BatchJob {
     /// frontend's word for the row's class as much as it is a state.
     state: String,
     note: String,
+    /// When the project behind this row was last written over, in
+    /// milliseconds, or 0 for one nobody has edited since it was queued.
+    ///
+    /// A number the tool compares against rather than reads: what a row shows
+    /// about a project -- how many recordings it holds, the picture off the
+    /// first of them -- is read once and kept, and this is how the window
+    /// that edited the file tells the tool that what it kept is stale. See
+    /// [`batch_touch`].
+    edited: u64,
 }
 
 /// The queue as it sits on disk.
@@ -3894,11 +3903,35 @@ fn free_in(dir: &std::path::Path, stem: &str, ext: &str) -> Result<String, Strin
     ))
 }
 
-/// Where to write a list that is going into the queue without a file of its
-/// own. The name is the list window's; the folder is this side's.
+/// Where to write a list that is going into the queue. The name is the list
+/// window's; the folder is this side's.
 #[tauri::command]
 fn queue_temp_path(app: tauri::AppHandle, stem: String, ext: String) -> Result<String, String> {
     free_in(&queue_dir(&app)?, &stem, &ext)
+}
+
+/// Take a copy of a project that is already on disc, for ジョブ追加.
+///
+/// The queue owns every project it runs, however the project reached it. A
+/// row pointing at somebody's own file is a row that changes when they edit
+/// it and breaks when they move it, and a queue that deleted such a file with
+/// the row would be deleting their work; a copy answers all three. What they
+/// picked is left exactly as it was.
+#[tauri::command]
+fn queue_copy(app: tauri::AppHandle, path: String) -> Result<String, String> {
+    let from = std::path::Path::new(&path);
+    let stem = from
+        .file_stem()
+        .map(|s| s.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "project".into());
+    let ext = from
+        .extension()
+        .map(|s| s.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "scproj".into());
+    let at = free_in(&queue_dir(&app)?, &stem, &ext)?;
+    std::fs::copy(from, &at)
+        .map_err(|e| trf!("開けません: {} ({})", "Cannot open: {} ({})", path, e))?;
+    Ok(at)
 }
 
 /// Throw away a project the queue wrote for itself, as the job that named it
@@ -3971,11 +4004,52 @@ fn batch_append(app: tauri::AppHandle, jobs: Vec<BatchJob>) -> Result<BatchQueue
     Ok(queue)
 }
 
+/// Say that the project behind one row has been written over.
+///
+/// For the window the tool opens with プロジェクトを開く: it writes the file,
+/// and the tool is the one holding a picture and a count read out of the
+/// version before. Read-modify-write like [`batch_append`], and as safe for
+/// the same reason -- what it touches is a field the tool never writes.
+///
+/// `note` is the same sentence [`batch_append`] wrote when the job was added,
+/// said again about the list as it now stands, and it lands only on a row
+/// that is still waiting: a row that has run says how it went, and how many
+/// recordings the project holds is not news worth that line.
+#[tauri::command]
+fn batch_touch(app: tauri::AppHandle, path: String, note: Option<String>) -> Result<(), String> {
+    let mut queue = batch_read(app.clone());
+    let mut found = false;
+    for job in queue.jobs.iter_mut() {
+        if job.path == path {
+            job.edited = now_millis();
+            if let Some(note) = note.clone() {
+                if job.state == "waiting" {
+                    job.note = note;
+                }
+            }
+            found = true;
+        }
+    }
+    if !found {
+        return Ok(());
+    }
+    batch_write(app, queue)
+}
+
 /// How long a tool that has stopped saying anything is still believed.
 ///
 /// Three heartbeats. The tool says so every ten seconds, and a machine busy
 /// enough to write two discs at once is a machine that can miss one.
 const BATCH_BEAT: u64 = 30;
+
+/// The same clock finer, for the one thing a second is not enough for: two
+/// saves of one project inside a second have to read as two.
+fn now_millis() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
+}
 
 fn now_secs() -> u64 {
     std::time::SystemTime::now()
@@ -4097,14 +4171,40 @@ fn center_window(app: tauri::AppHandle, role: State<Role>) {
 /// window: this same program, started on that file, which is what the command
 /// line and a file manager already do with a `.scproj`.
 #[tauri::command]
-fn open_project_window(path: String) -> Result<(), String> {
+fn open_project_window(path: String, queued: bool) -> Result<(), String> {
     let exe = std::env::current_exe().map_err(|e| e.to_string())?;
-    std::process::Command::new(exe)
-        .arg(path)
-        .spawn()
-        .map(|_| ())
-        .map_err(|e| e.to_string())
+    let mut run = std::process::Command::new(exe);
+    run.arg(path);
+    // Which is the whole of the difference: the same list window, told that
+    // the project it is opening is a job somebody has queued. What it does
+    // about that is [`queued_job`].
+    if queued {
+        run.arg(QUEUED_FLAG);
+    }
+    run.spawn().map(|_| ()).map_err(|e| e.to_string())
 }
+
+/// How a window is told that the project on its command line is a queued job.
+/// A flag rather than a second path, because the path is already there --
+/// and because [`Argv`] keeps only the arguments that are not flags.
+const QUEUED_FLAG: &str = "--queued";
+
+/// The queued job this window was opened on, or `None` for a window that is
+/// nobody's job.
+///
+/// The list window asks once, at startup. What it does with the answer is
+/// offer バッチを上書き where it would otherwise offer バッチに登録: a window
+/// opened out of the queue is there to put something back into it.
+#[tauri::command]
+fn queued_job(argv: State<Argv>, queued: State<Queued>) -> Option<String> {
+    if !queued.0 {
+        return None;
+    }
+    argv.0.first().cloned()
+}
+
+/// Whether this window was started on a queued job. See [`QUEUED_FLAG`].
+struct Queued(bool);
 
 /// Show a folder in whatever the desktop uses to show folders.
 ///
@@ -4480,6 +4580,9 @@ pub fn run() {
     // and that nothing about an unsaved list stands in the way of closing it.
     // See the バッチ出力 section.
     let batch = std::env::args().any(|a| a == "--batch");
+    // And started on a job out of the queue, which is the list window again
+    // with one button reading differently. See [`queued_job`].
+    let queued = Queued(std::env::args().any(|a| a == QUEUED_FLAG));
     // The word this window's size is kept under as well as the word the
     // frontend asks for: the tool and the list are one window label and two
     // different windows to size. See [`geometry`].
@@ -4499,6 +4602,7 @@ pub fn run() {
         .manage(Subs::default())
         .manage(BatchStop::default())
         .manage(argv)
+        .manage(queued)
         .manage(Role(role.to_string()))
         // The list window is declared in the configuration rather than built
         // here, so `setup` is the first moment there is one to attach
@@ -4583,7 +4687,10 @@ pub fn run() {
             write_project,
             read_project,
             queue_temp_path,
+            queue_copy,
             drop_temp_project,
+            batch_touch,
+            queued_job,
             set_dirty,
             after_batch,
             batch_read,

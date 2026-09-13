@@ -419,6 +419,7 @@ const CATALOG = {
     "out.run": "出力開始",
     "out.abort": "出力中止",
     "out.enlist": "バッチに登録",
+    "out.overwrite": "バッチを上書き",
     "out.stateLbl": "状況:",
     "out.reencodeLbl": "再エンコード:",
     "out.progressLbl": "進捗:",
@@ -499,6 +500,7 @@ const CATALOG = {
     "batch.someFailed": "{all} 本中 {n} 本が失敗しました",
     "batch.already": "すでにキューに入っています: {name}",
     "batch.added": "キューに追加しました: {name}",
+    "batch.overwritten": "キューのジョブを上書きしました: {name}",
     "batch.stopping": "中止しています…",
     "batch.replaceTitle": "バッチ出力の開始",
     "batch.replaceBody":
@@ -1044,6 +1046,7 @@ const CATALOG = {
     "out.run": "Start export",
     "out.abort": "Stop export",
     "out.enlist": "Add to batch",
+    "out.overwrite": "Overwrite the job",
     "out.stateLbl": "Status:",
     "out.reencodeLbl": "Re-encoded:",
     "out.progressLbl": "Progress:",
@@ -1124,6 +1127,7 @@ const CATALOG = {
     "batch.someFailed": "{n} of {all} failed",
     "batch.already": "Already in the queue: {name}",
     "batch.added": "Added to the queue: {name}",
+    "batch.overwritten": "The job in the queue has been overwritten: {name}",
     "batch.stopping": "Stopping…",
     "batch.replaceTitle": "Start the batch",
     "batch.replaceBody":

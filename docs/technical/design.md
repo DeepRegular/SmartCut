@@ -158,16 +158,28 @@ has none, as a copy in the queue's own folder under the first row's name — and
 the tool is started over the queue it just landed in, a queue with nobody over
 it being a queue nobody writes.
 
-That copy is the queue's rather than the work's, which settles the two
-questions about it. It is not written where the cuts go: a `.scproj` nobody
-asked for, left beside the recordings after the job has run, is litter. And it
-is deleted with the row that named it, the backend deciding which files those
-are by the folder they are in rather than trusting a flag in the queue — a
-queue that deleted whatever path it was handed would be one removal away from
-deleting somebody's own project. Nor does the copy become the project the list
+**The queue owns every project it runs.** Whether a job arrives from
+バッチに登録 or from ジョブ追加, what is queued is a copy in a folder of the
+queue's own, and that settles four questions at once. It is not written where
+the cuts go, a `.scproj` nobody asked for left beside the recordings after the
+job has run being litter. It is deleted with the row that named it — the
+backend deciding which files those are by the folder they are in rather than
+trusting a flag in the queue, since a queue that deleted whatever path it was
+handed would be one removal away from deleting somebody's own project, and a
+flag would have to be right in every queue ever written. The job does not
+change under the queue when somebody edits the project they queued from, or
+break when they move it. And the copy does not become the project the list
 window is about: a title bar naming a file in a folder nobody can find, and a
-保存 that wrote there instead of asking for a name, would be the price of
-saying so.
+保存 that wrote there instead of over the project that is open, would be the
+price of saying so.
+
+What the queue gives up for that is the one thing it had: a job it re-read at
+midnight was a job that could be fixed by fixing the file. So the fixing moves
+onto the row, where the job is. プロジェクトを開く hands the copy to a list
+window told what it is holding — one flag on the command line — and there
+バッチに登録 reads バッチを上書き and writes that file rather than making the
+queue a copy of a copy. The tool is told, because what a row shows about a
+project it read once and kept.
 
 That one button comes off altogether in the tool, for the reason the settings
 screens do: the list it is holding is a job out of the queue, and nothing

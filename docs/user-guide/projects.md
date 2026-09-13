@@ -90,11 +90,13 @@ queue and opens the batch tool over it, with no picker in the way. The tool —
 a window in a process of its own — writes the queue out one job after another
 overnight.
 
-What is saved is the project you have open. A list that has no name of its own
-is copied into the queue's own folder instead, under the name of its first row,
-and that does not make it a project you have open: the list is still untitled.
-The copy is the queue's, and goes when the job is taken out of the queue — so
-save the list yourself with `名前を付けて保存` if you want to keep it. A job is a `.scproj` and nothing
+What is queued is a copy. The queue writes the list as it stands into a folder
+of its own and runs that, under the name of the project you have open or of the
+list's first row where there is none. **The project you have open is not written
+to, and an untitled list stays untitled** — `Ctrl+S` and `名前を付けて保存` are
+still what save your own copy. The queue's copy is the queue's, and goes when
+the job is taken out of it; to change it, open the job from its row in the tool
+with `プロジェクトを開く`. A job is a `.scproj` and nothing
 besides, because the file already holds everything a job is. See
 [Working through a batch](batch.md#an-overnight-queue-of-projects).
 

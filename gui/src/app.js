@@ -1558,7 +1558,7 @@ function paintButtons() {
   el("remove-clip").disabled = !can.remove;
   el("remove-all").disabled = clips.length === 0;
   paintExportButton();
-  el("enlist-export").disabled = clips.length === 0 || exporting || batchRunning;
+  paintEnlistButton();
   // The queue drives this screen, so what it can do changes with it.
   if (el("batch-go")) paintBatchButtons();
 }
@@ -4518,6 +4518,20 @@ function paintExportButton() {
   button.disabled = exporting ? abort : ready().length === 0 || batchRunning;
 }
 
+/// The button beside it, which is about the queue rather than about now.
+///
+/// バッチに登録 in a window with a list of its own, バッチを上書き in one that
+/// was opened on a job out of the queue -- the same act, said about the file
+/// that window is holding. Written here rather than marked up for the reason
+/// the button above it is: the label is what pressing it does, not what the
+/// button is called.
+function paintEnlistButton() {
+  const button = el("enlist-export");
+  if (!button || button.hidden) return;
+  button.textContent = t(queuedJob ? "out.overwrite" : "out.enlist");
+  button.disabled = clips.length === 0 || exporting || batchRunning;
+}
+
 el("run-export").addEventListener("click", () => {
   if (!exporting) {
     runExport();
@@ -4908,6 +4922,14 @@ let projectPath = "";
 /// started, and this one is nobody's copy.
 let tempProject = "";
 
+/// The queued job this window was opened on, or "" for a window that is
+/// nobody's job. Settled once at startup; see `queued_job`.
+///
+/// What it changes is one button: a window opened out of the queue is there
+/// to put something back into it, so バッチに登録 reads バッチを上書き and
+/// writes this file rather than making the queue a copy of its own.
+let queuedJob = "";
+
 /// Everything worth keeping, in the shape it goes on disc.
 function captureProject() {
   return {
@@ -5106,6 +5128,9 @@ async function writeProject(path) {
   savedShape = shapeOf();
   retitleMain();
   note(t("project.saved", { name: nameOf(path) }));
+  // 保存 over the job this window was opened on is バッチを上書き by another
+  // name, and the tool has to hear about it either way.
+  await touchQueuedJob(path);
   return true;
 }
 
@@ -5170,6 +5195,8 @@ async function newProject() {
   showSettings();
   projectPath = "";
   tempProject = "";
+  // An empty list is nobody's job, whatever this window was opened on.
+  queuedJob = "";
   savedShape = shapeOf();
   retitleMain();
   show("input");
@@ -5249,6 +5276,11 @@ async function loadProject(path) {
   }
   projectPath = path;
   tempProject = "";
+  // A window opened on a job that has since been pointed at another project
+  // is not holding that job any more, and バッチを上書き would write this
+  // list into a file it is no longer about. Unless it is the same file --
+  // which is how the window opens in the first place.
+  if (path !== queuedJob) queuedJob = "";
   savedShape = shapeOf();
   retitleMain();
   // Onto the screen the list is on -- except in the batch tool, which has no
@@ -5432,6 +5464,11 @@ async function saveQueue() {
         jobs: batchJobs.map((j) => ({
           path: j.path,
           label: j.label,
+          // Not this side's to set -- the window that wrote the project sets
+          // it -- but this side's to carry, or saving the queue would tell
+          // the next poll that every project had gone back to its first
+          // version. See `batch_touch`.
+          edited: j.edited || 0,
           // A job in the middle of something is not a state to come back in:
           // whatever was running has stopped with the process it ran in.
           state: j.state === "done" || j.state === "error" ? j.state : "waiting",
@@ -5468,11 +5505,16 @@ async function refreshQueue() {
     .filter((j) => j && typeof j.path === "string" && j.path)
     .map((j) => {
       const was = watched.get(j.path) || {};
+      // The project behind this row has been written over since it was last
+      // looked at, so what was kept about it -- the count, the picture, where
+      // it writes -- is a version out of date. See `batch_touch`.
+      if (was.path && (was.edited || 0) !== (j.edited || 0)) jobLook.delete(j.path);
       return {
         path: j.path,
         label: j.label || stemOf(j.path),
         state: j.state || "waiting",
         note: j.note || "",
+        edited: j.edited || 0,
         began: was.began,
         spent: was.spent,
         done: was.done,
@@ -5781,9 +5823,9 @@ function showBatchMenu(on) {
 /// but a path would be a row nobody could tell from the one under it. Read
 /// again when the job runs, so a project edited in between is written out as
 /// it now stands.
-async function addBatchJob(path) {
+async function addBatchJob(path, label = stemOf(path)) {
   if (batchJobs.some((j) => j.path === path)) {
-    sayHere(t("batch.already", { name: stemOf(path) }));
+    sayHere(t("batch.already", { name: label }));
     return false;
   }
   let clipsIn = 0;
@@ -5799,7 +5841,7 @@ async function addBatchJob(path) {
   // above has to survive a job being added below them.
   try {
     await invoke("batch_append", {
-      jobs: [{ path, label: stemOf(path), state: "waiting", note: t("batch.clips", { n: clipsIn }) }],
+      jobs: [{ path, label, state: "waiting", note: t("batch.clips", { n: clipsIn }) }],
     });
   } catch (e) {
     sayHere(t("batch.queueFailed", { e: String(e) }));
@@ -5903,13 +5945,43 @@ el("batch-list").addEventListener("contextmenu", (ev) => {
   openJobMenu(ev.clientX, ev.clientY);
 });
 
+/// ジョブ追加: the queue takes a copy of what was picked and runs the copy.
+///
+/// Same answer as バッチに登録's, and for the same reasons: a row pointing at
+/// somebody's own file is a row that changes when they edit it and breaks
+/// when they move it, and the file could not then be thrown away with the
+/// row. What they picked is left exactly as it was.
+///
+/// The row is named after the file it was made from, which is also what a
+/// second helping of the same project is recognised by -- the copy has a name
+/// of the queue's choosing and no two copies ever share one, so the path
+/// cannot answer that question any more.
+async function addPickedProject(path) {
+  const label = stemOf(path);
+  if (batchJobs.some((j) => j.label === label)) {
+    sayHere(t("batch.already", { name: label }));
+    return;
+  }
+  let copy;
+  try {
+    copy = await invoke("queue_copy", { path });
+  } catch (e) {
+    sayHere(String(e));
+    return;
+  }
+  // A copy of a file that turns out not to be a project is a copy of nothing:
+  // `addBatchJob` has already said so, and the queue should not be left
+  // holding it.
+  if (!(await addBatchJob(copy, label))) await dropQueuedCopies([{ path: copy }]);
+}
+
 el("batch-add").addEventListener("click", async () => {
   const picked = await dialog.open({
     multiple: true,
     filters: [{ name: t("dialog.project"), extensions: [PROJECT_EXT] }],
   });
   if (!picked) return;
-  for (const path of Array.isArray(picked) ? picked : [picked]) await addBatchJob(path);
+  for (const path of Array.isArray(picked) ? picked : [picked]) await addPickedProject(path);
 });
 
 /// The file the queue is to be given, written if it is not already there.
@@ -5929,26 +6001,27 @@ el("batch-add").addEventListener("click", async () => {
 /// Empty for a file that could not be written, which `writeProject` has
 /// already said its own sentence about.
 async function projectForQueue() {
-  if (projectPath) {
-    return !dirty() || (await writeProject(projectPath)) ? projectPath : "";
-  }
-  // A list with no file of its own is written into the queue's own folder,
-  // not into the output folder: this is a copy the queue asked for rather
-  // than work somebody saved, and a `.scproj` nobody asked for landing beside
-  // the cuts is litter -- there once the job has been written, there once the
-  // job has been taken out of the queue, there for good. In the queue's folder
-  // it is the queue's, and goes when the job goes; see `drop_temp_project`.
+  // Always a copy, in the queue's own folder. Never the project this window
+  // has open, and never a file in the output folder.
   //
-  // Which is also why it does not become the project this window is about.
-  // The title bar would then name a file in a folder nobody can find, and 保存
-  // would write there instead of asking for a name.
+  // The queue owns what it runs. A row pointing at somebody's own project is
+  // a row whose job changes when they edit that project and breaks when they
+  // move it, and it could not be thrown away with the row; a `.scproj` nobody
+  // asked for, left in the output folder after the job has run, is litter
+  // with nothing to say when it should go. In the queue's folder the file is
+  // the queue's, and goes when the job goes -- see `drop_temp_project`.
+  //
+  // Which is also why the copy does not become the project this window is
+  // about. The title bar would then name a file in a folder nobody can find,
+  // and 保存 would write there instead of over the project that is open, or
+  // instead of asking for a name. A list that was saved before it was
+  // registered is still saved; one that was not still has the `*` that says
+  // so, registering being no kind of saving.
+  const stem = projectPath ? stemOf(projectPath) : autoProjectStem();
   let path = tempProject;
   if (!path) {
     try {
-      path = await invoke("queue_temp_path", {
-        stem: autoProjectStem(),
-        ext: PROJECT_EXT,
-      });
+      path = await invoke("queue_temp_path", { stem, ext: PROJECT_EXT });
     } catch (e) {
       sayHere(String(e));
       return "";
@@ -5978,17 +6051,61 @@ el("enlist-export").addEventListener("click", async () => {
     sayHere(t("project.nothingToSave"));
     return;
   }
+  // The same button, in a window that was opened out of the queue: what it
+  // has open is a job, and the thing to do with an edited job is put it back.
+  if (queuedJob) {
+    await overwriteQueuedJob();
+    return;
+  }
+  const label = projectPath ? stemOf(projectPath) : autoProjectStem();
   const path = await projectForQueue();
   if (!path) return;
   await refreshQueue();
-  if (!(await addBatchJob(path))) return;
-  sayHere(t("batch.added", { name: stemOf(path) }));
+  if (!(await addBatchJob(path, label))) return;
+  sayHere(t("batch.added", { name: label }));
   try {
     await invoke("open_batch_tool");
   } catch (e) {
     sayHere(String(e));
   }
 });
+
+/// バッチを上書き: write this list back into the job the window was opened on.
+///
+/// No queue to add to and no copy to make: the file is already a row of the
+/// queue, and this is the one window that is allowed to write it. The tool is
+/// told, because what it shows about a project -- how many recordings, the
+/// picture off the first of them -- it read once and kept.
+///
+/// The row keeps its place and its state. A job already written that is
+/// edited here does not go back to 待機 on its own: whether it is to be
+/// written again is もう一度出力する, on the row, where it was before.
+async function overwriteQueuedJob() {
+  if (!(await putProject(queuedJob))) return;
+  await touchQueuedJob(queuedJob);
+  // This list is now what is on disc, wherever the title bar is pointed.
+  if (projectPath === queuedJob) {
+    savedShape = shapeOf();
+    retitleMain();
+  }
+  sayHere(t("batch.overwritten", { name: stemOf(queuedJob) }));
+}
+
+/// Say that a queued project has been written over, where it was this
+/// window's own job. Quiet about failing: the file is written either way, and
+/// the worst of a queue that did not hear is a row saying how many recordings
+/// the job held an hour ago.
+async function touchQueuedJob(path) {
+  if (!invoke || path !== queuedJob) return;
+  try {
+    // With the sentence the row was given when the job was added, said again
+    // about the list as it now stands: it counts the recordings, and this is
+    // the window that has just changed how many there are.
+    await invoke("batch_touch", { path, note: t("batch.clips", { n: clips.length }) });
+  } catch {
+    /* the file is written, which is what the press was about */
+  }
+}
 
 /// Move the picked rows, which is what the right button's menu offers and
 /// what a short drag comes to.
@@ -6120,7 +6237,7 @@ async function openJobProject() {
   const job = onePicked();
   if (!job) return;
   try {
-    await invoke("open_project_window", { path: job.path });
+    await invoke("open_project_window", { path: job.path, queued: true });
   } catch (e) {
     sayHere(String(e));
   }
@@ -6700,6 +6817,14 @@ async function settleRole() {
     batchRole = (await invoke("window_role")) || "main";
   } catch {
     batchRole = "main";
+  }
+  // And whether the project on the command line is a job out of the queue,
+  // which is what プロジェクトを開く opens a window for. Before the project
+  // itself is opened, so the button is right the first time it is painted.
+  try {
+    queuedJob = (await invoke("queued_job")) || "";
+  } catch {
+    queuedJob = "";
   }
   if (!isTool()) {
     await refreshQueue();
