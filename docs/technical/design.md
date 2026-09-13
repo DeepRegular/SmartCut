@@ -60,14 +60,24 @@ all. What that window does with the queue is put a list into it — the button
 under 出力開始 — and open the tool, from the menu.
 
 The tool is **a second process** — this same executable started with
-`--batch`, which opens the same page with the input and output-settings tabs
-off the bar. Its own process because that is the whole of what a queue is for:
-one lined up at midnight has to go on being written when the window it was
-lined up in is closed. And the same page because a job is run the way a person
-runs one — open the project, wait for the list, press 出力開始 — so it gets the
-disc pass, the image and the sidecars by driving the screens that already do
-them, rather than by a second engine that would have to be kept in step with
-the first.
+`--batch`, which opens the same page. Its own process because that is the whole
+of what a queue is for: one lined up at midnight has to go on being written when
+the window it was lined up in is closed. And the same page because a job is run
+the way a person runs one — open the project, wait for the list, press 出力開始 —
+so it gets the disc pass, the image and the sidecars by driving the screens that
+already do them, rather than by a second engine that would have to be kept in
+step with the first.
+
+**The tool's bar has no tabs.** It has two screens and never a choice between
+them: the queue while it is idle, and what is being written while it is not,
+which the run moves between on its own. What is on the bar instead is the one
+control a queue has — start, and stop — as **one button** that says which of
+them it is about to do. Up there rather than at the foot of a screen because
+the tool leaves that screen while it works, and a stop button that goes away
+while it is wanted is not a stop button. The output screen's own 出力開始 and
+出力中止 come off in the tool for the same reason the settings screens do: the
+list it is holding is a job out of the queue, and the bar's button is the only
+thing that should be able to start or stop it.
 
 The queue is a file in the config directory. The tool re-reads it every two
 seconds and writes it as each job ends; the list window only ever *appends* to

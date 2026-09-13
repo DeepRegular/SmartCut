@@ -1558,7 +1558,7 @@ function paintButtons() {
   el("run-export").disabled = ready().length === 0 || exporting || batchRunning;
   el("enlist-export").disabled = clips.length === 0 || exporting || batchRunning;
   // The queue drives this screen, so what it can do changes with it.
-  if (el("batch-run")) paintBatchButtons();
+  if (el("batch-go")) paintBatchButtons();
 }
 
 function paintProps() {
@@ -5392,8 +5392,13 @@ function paintBatchButtons() {
   // screen anyway -- see `batch_append`.
   const at = batchJobs.findIndex((j) => j.path === batchPick);
   const left = batchJobs.some((j) => j.state !== "done");
-  el("batch-run").disabled = batchRunning || !left || exporting;
-  el("batch-stop").disabled = !batchRunning;
+  // The one control, which is whichever of the two the queue is ready for.
+  // Never disabled while it is running: a stop has to be available the moment
+  // it is wanted, and there is nothing else on that bar to want.
+  const go = el("batch-go");
+  go.textContent = t(batchRunning ? "batch.stop" : "batch.run");
+  go.classList.toggle("stop", batchRunning);
+  go.disabled = !batchRunning && (!left || exporting);
   el("batch-add").disabled = batchRunning;
   el("batch-up").disabled = batchRunning || at <= 0;
   el("batch-down").disabled = batchRunning || at < 0 || at >= batchJobs.length - 1;
@@ -5534,16 +5539,20 @@ el("batch-after").addEventListener("change", async () => {
   cancelAfter();
 });
 
-el("batch-stop").addEventListener("click", () => {
+/// The one button: start the queue, or stop it.
+el("batch-go").addEventListener("click", () => {
+  if (!batchRunning) {
+    runBatch();
+    return;
+  }
   batchStopped = true;
   // And the job under the head. Stopping the queue and letting the disc it
   // is halfway through finish would be a stop nobody asked for.
   abort = true;
   el("batch-state").textContent = t("batch.stopping");
   if (exporting) el("out-state").textContent = t("out.aborting");
+  paintBatchButtons();
 });
-
-el("batch-run").addEventListener("click", runBatch);
 
 /// Wait until the index lane has finished with every row of the list it has
 /// just been handed.
@@ -5761,13 +5770,16 @@ async function settleRole() {
     await refreshQueue();
     return;
   }
-  const bar = (which, on) => {
-    const tab = document.querySelector(`.screens .tab[data-screen="${which}"]`);
-    if (tab) tab.hidden = !on;
-  };
-  bar("batch", true);
-  bar("input", false);
-  bar("outset", false);
+  // No tabs at all. The tool has two screens and never a choice between
+  // them: the queue while it is idle, and what is being written while it is
+  // not, which `runBatch` moves between on its own.
+  for (const tab of document.querySelectorAll(".screens .tab")) tab.hidden = true;
+  el("batch-go").hidden = false;
+  // And no way to start an export by hand. The list it is holding is a job
+  // out of the queue; writing it again from underneath the queue is not
+  // something the one control up on the bar should have a rival for.
+  el("run-export").hidden = true;
+  el("abort-export").hidden = true;
   // Nor has it a list to put in the queue: what it has open is a job out of
   // the queue already. Nor another tool to open, being one.
   el("enlist-export").hidden = true;

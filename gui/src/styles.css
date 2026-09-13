@@ -42,7 +42,10 @@ body {
   display: flex; align-items: center; gap: 10px;
   background: #2a2a2a; border-bottom: 1px solid #000; padding: 5px 10px;
 }
-.screens { display: flex; gap: 4px; }
+/* Grown to fill the bar, so that whatever comes after it sits in the corner
+   without having to claim the space itself. The batch tool's bar has no tabs
+   at all and one button; see `#batch-go`. */
+.screens { display: flex; gap: 4px; flex: 1; }
 
 /* One screen at a time. `hidden` has to be spelled out because every screen
    is a flex column, and `display` set on the element beats the attribute's
@@ -871,3 +874,14 @@ input[type="text"]::placeholder { color: var(--dim); }
 }
 .batch-idle[hidden] { display: none; }
 #batch-countdown { color: #ffcc66; }
+/* The batch tool's start-and-stop. It is the only control on that window's
+   bar, so it is drawn as one -- the accent the output screen's own start
+   button is drawn in, and a red while it is the way to stop something that is
+   running. */
+#batch-go {
+  background: var(--accent); color: #201400; border: 1px solid var(--accent);
+  border-radius: 2px; padding: 3px 18px; font: inherit; font-weight: 600; cursor: pointer;
+}
+#batch-go:hover:not(:disabled) { filter: brightness(1.08); }
+#batch-go.stop { background: #8c3b32; border-color: #a8473c; color: var(--text); }
+#batch-go:disabled { background: #333; border-color: #4a4a4a; color: var(--dim); }

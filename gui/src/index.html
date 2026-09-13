@@ -34,6 +34,16 @@
         <button class="tab" data-screen="batch" data-i18n="tab.batch" hidden>バッチ出力</button>
       </nav>
 
+      <!-- The batch tool's one control, and the only thing on its bar. A queue
+           is started and stopped and nothing else, so the two are one button
+           that says which of them it is about to do. Up here rather than at
+           the foot of a screen because the tool leaves that screen while it
+           works -- it goes to 出力 to show what is being written -- and a stop
+           button that goes away while it is wanted is not a stop button.
+
+           Hidden in the list window, which has no queue to start. -->
+      <button id="batch-go" data-i18n="batch.run" hidden>バッチ開始</button>
+
       <!-- The program's name, and the only place it is a control: everything
            that is about the program rather than about the clips hangs off it.
            A menu bar for one item would be a bar mostly made of nothing, and
@@ -556,10 +566,6 @@
       <div id="batch-idle" class="batch-idle" data-i18n="batch.idle">保存したプロジェクトを追加してください</div>
 
       <div class="out-run" id="batch-run-panel">
-        <div class="out-buttons">
-          <button id="batch-run" class="primary big" data-i18n="batch.run">バッチ開始</button>
-          <button id="batch-stop" class="mini" data-i18n="batch.stop" disabled>バッチ中止</button>
-        </div>
         <div class="out-status">
           <div class="row"><span class="lbl" data-i18n="batch.stateLbl">状況:</span>
             <span id="batch-state" class="grow"></span></div>

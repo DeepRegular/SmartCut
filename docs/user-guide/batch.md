@@ -127,7 +127,13 @@ SmartCut entirely — does not stop a queue that is being written.
 
 The queue lives there and nowhere else. The tool shows it, orders it, runs it
 and stops it; the main window's only part in it is `バッチに登録`, which puts
-the list on screen at the end of the queue. **That works whether or not the
+the list on screen at the end of the queue.
+
+**One button runs the whole thing**, in the corner of the tool's own bar: it
+says `バッチ開始` while the queue is waiting and `バッチ中止` in red while it is
+being written. The tool has no tabs — it shows the queue while it is idle and
+what is being written while it is not, and moves between the two itself — so
+that button is in reach whichever of them is up. **That works whether or not the
 tool is open**, and while it is running: an added job lands behind the one
 being written and the tool picks it up when it gets there.
 
@@ -147,7 +153,8 @@ included.
 **A job that fails does not stop the queue.** It is marked in red with what went
 wrong and the next job starts: a night left to run is left because nobody is
 there to answer a question. `バッチ中止` stops both the job under the head and
-the queue behind it.
+the queue behind it; the recording being written is finished first, so nothing
+half-written is left behind, and the jobs it did not reach go back to waiting.
 
 ### Sleeping or shutting down at the end
 
