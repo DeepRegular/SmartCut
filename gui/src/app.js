@@ -5532,15 +5532,13 @@ function renderBatch() {
             <span class="who dim">${esc(jobLine(j))}</span>
             <span class="doingnow ${j.state}">${esc(j.note || "")}</span>
           </div>
-          <div class="doing">
-            <div class="say">
-              <span class="fill"></span>
-              <span class="what">${jobSaid(j)}</span>
-            </div>
-            <button class="jobstop mini" data-stop="${i}"${
-              canStop(j) ? "" : " disabled"
-            }>${esc(t("batch.stopJob"))}</button>
+          <div class="say">
+            <span class="fill"></span>
+            <span class="what">${jobSaid(j)}</span>
           </div>
+          <button class="jobstop mini" data-stop="${i}"${
+            canStop(j) ? "" : " disabled"
+          }>${esc(t("batch.stopJob"))}</button>
         </div>
         ${
           batchRunning

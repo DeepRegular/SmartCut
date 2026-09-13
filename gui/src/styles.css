@@ -890,7 +890,17 @@ input[type="text"]::placeholder { color: var(--dim); }
   background: #000; border: 1px solid #000;
 }
 #batch-list .poster.blank { background: repeating-linear-gradient(45deg, #1a1a1a 0 6px, #141414 6px 12px); }
-#batch-list .meta { min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+/* Two columns, because the right edge of what a row says and the right edge
+   of its bar are the same edge: the button beside the bar takes the second
+   column, and the line above it stops where the bar does rather than running
+   on into the room the button is standing in. */
+#batch-list .meta {
+  min-width: 0; display: grid; grid-template-columns: 1fr auto;
+  column-gap: 8px; row-gap: 2px; align-items: center;
+}
+#batch-list .nm { grid-column: 1 / -1; }
+#batch-list .sub { grid-column: 1; }
+#batch-list .say { grid-column: 1; }
 #batch-list .nm { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-weight: 600; }
 #batch-list .sub, #batch-list .say {
   font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
@@ -915,11 +925,8 @@ input[type="text"]::placeholder { color: var(--dim); }
    saying what is being written and one saying how far it has got -- were two
    halves of one sentence given a line each; filling this one behind the words
    says both in the room the words already take. */
-/* The box and the button that calls the job off, side by side: what is being
-   done, and the way to stop it doing it. */
-#batch-list .doing { display: flex; align-items: stretch; gap: 8px; }
 #batch-list .say {
-  flex: 1; min-width: 0;
+  min-width: 0;
   position: relative; overflow: hidden;
   background: var(--sunken); border: 1px solid var(--line); border-radius: 2px;
   padding: 1px 6px; color: var(--dim);
@@ -993,7 +1000,7 @@ input[type="text"]::placeholder { color: var(--dim); }
 /* The same said to one job, on its row. Held out of the way until the queue
    is running -- there is nothing to call off before that -- and the column it
    sits in stays, so the rows do not shuffle sideways when it appears. */
-.jobstop { padding: 1px 8px; font-size: 11px; justify-self: end; }
+.jobstop { padding: 1px 8px; font-size: 11px; }
 .jobstop[hidden] { visibility: hidden; display: block; }
 #batch-go:disabled { background: #333; border-color: #4a4a4a; color: var(--dim); }
 /* The tool's bar: the run control, then 削除 with its two bulk forms hanging
