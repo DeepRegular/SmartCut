@@ -402,13 +402,12 @@ time.
 
 A mark opens with what kind of mark it is and then the maker who wrote it,
 which is the pair a playlist of several clips has to be read past to reach the
-play item. Both were copied whole out of the authoring tool's disc until a
-recorder's own were read, which put that tool's maker number on every mark
-this ever wrote. A recorder writes 4 on each of its chapter points and one 1
-where the viewer stopped watching, each of them under its own maker number. So
-the kind is now the recorder's, and the maker is nought: this program has no
-number of its own, and nothing follows it in the entry that a maker would have
-to be asked about.
+play item. Both are copied whole out of the authoring tool's disc. A recorder
+writes 4 on each of its chapter points and one 1 where the viewer stopped
+watching, each under its own maker number, and for a day this wrote 4 with a
+maker of nought to match it -- until a disc written that way came back from a
+real recorder listed and unplayable. See
+[what a recorder accepts from a stranger](#what-a-recorder-accepts-from-a-stranger).
 
 ## The lead a disc gives a decoder
 
@@ -700,13 +699,36 @@ both.
 apiece. These are what found the places where the two discs above agreed and
 were both being *copied*: the clock's PID, the cadence of the tables,
 programme nought in the list, the captions' PID, the network number, the
-button on the remote, the audio language field, a mark's kind and maker, the
-file length and the extents' 64 kB boundaries, and the third anchor. Each of
-those was a value the authoring tool's two discs shared, and each was taken as
-settled on that evidence. What the recorder's discs make possible is telling
-apart the things two discs agreed on because that is how it is done, and the
-things two discs agreed on because they happened to be of the same kind of
-material.
+button on the remote, the audio language field, the file length and the
+extents' 64 kB boundaries, and the third anchor. Each of those was a value the
+authoring tool's two discs shared, and each was taken as settled on that
+evidence. What the recorder's discs make possible is telling apart the things
+two discs agreed on because that is how it is done, and the things two discs
+agreed on because they happened to be of the same kind of material.
+
+## What a recorder accepts from a stranger
+
+**A recorder reading its own disc is not evidence about what it accepts from
+somebody else's.** Its own discs carry an aggregate of things nothing here can
+write -- its maker's private data in every index file, its own copy protection
+-- and what it does with those is not what it does with a disc a stranger
+burned.
+
+Four fields were changed to match a recorder's own discs, on nothing more than
+that the recorder wrote them: the clip index's version and application type,
+the playlist's version, and the four bytes a chapter mark opens with. A disc
+written that way came back from a real machine **listed and unplayable, with
+no thumbnails**. The one disc known to play on that machine is the authoring
+tool's, and an index laid beside it field by field differed in those four
+places and in nothing else. All four are back to what the playable disc says.
+
+None of them buys anything. Each was a guess at a field whose meaning is not
+written down anywhere this project can reach, and the rule that came out of it
+is the one above: **where a field's meaning is unknown, follow the disc that
+has been seen to play, not the disc the player wrote.** Everything else the
+recorder's discs settled -- the clock's PID, the cadence of the tables, the
+alignment of the image -- is a thing that could be measured rather than
+guessed, and those stay.
 
 **Round trip.** [`tests/run_bdav_tests.sh`](../../tests/run_bdav_tests.sh)
 writes a disc of two recordings, opens it with this program's own reader —

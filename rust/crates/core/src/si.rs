@@ -725,6 +725,7 @@ fn read_service_within(
     let mut pmts: HashMap<u16, SectionReader> = HashMap::new();
     let mut sdt = SectionReader::default();
     let mut nit = SectionReader::default();
+    let mut sit = SectionReader::default();
 
     let mut transport_stream_id = 0u16;
     // Every service the PAT names, and the PID its map is on.
@@ -742,6 +743,10 @@ fn read_service_within(
     // stream in it is this one is settled by the service, which the map has
     // to arrive before anything knows.
     let mut nit_whole: Option<Vec<u8>> = None;
+    // And, for a recording this program has already cut once, the one table
+    // it carries instead of the four: the network it came off and the button
+    // it was behind are in there and nowhere else. See below.
+    let mut sit_whole: Option<Vec<u8>> = None;
 
     let mut at = base;
     while at + PACKET <= buf.len() {
@@ -859,6 +864,11 @@ fn read_service_within(
                     sdt_whole = Some(sec.to_vec());
                 }
             }),
+            PID_SIT if sit_whole.is_none() => sit.feed(p, |sec| {
+                if sec[0] == TABLE_SIT && sec.len() >= 14 {
+                    sit_whole = Some(sec.to_vec());
+                }
+            }),
             PID_NIT if nit_whole.is_none() => nit.feed(p, |sec| {
                 if sec[0] == TABLE_NIT_ACTUAL && sec.len() >= 16 {
                     nit_whole = Some(sec.to_vec());
@@ -911,6 +921,29 @@ fn read_service_within(
     }
     if let Some(sec) = nit_whole {
         service.ts_information = ts_information(&sec, service.service_id);
+    }
+    // And what a partial transport stream says about itself, which is where
+    // the two facts above live once a recording has been through this
+    // program once. **A cut is read back.** The clip index of a disc is built
+    // by opening the `.m2ts` that was just written and asking it what it
+    // carries -- and that file has no service description, because a partial
+    // stream carries one table instead of four. Read from the SDT alone, the
+    // network a recording came off came back as nought on every disc this
+    // wrote, and the index said so.
+    if let Some(sec) = sit_whole {
+        if service.original_network_id == 0 {
+            // The network identification descriptor: a country, a medium and
+            // the number. See [`network_descriptor`], which writes it.
+            service.original_network_id = sit_transmission(&sec)
+                .and_then(|loop_bytes| descriptor(loop_bytes, 0xC2))
+                .and_then(|d| Some(u16::from_be_bytes([*d.get(5)?, *d.get(6)?])))
+                .unwrap_or(0);
+        }
+        if service.ts_information.is_none() {
+            service.ts_information = sit_transmission(&sec)
+                .and_then(|loop_bytes| descriptor(loop_bytes, 0xCD))
+                .map(<[u8]>::to_vec);
+        }
     }
     Ok(service)
 }
@@ -2595,9 +2628,15 @@ pub fn graft(output: &str, g: &Graft) -> Result<Stats> {
                     continue;
                 }
                 if pending.is_empty() && now >= next_sit {
-                    let c = cc.entry(PID_SIT).or_default();
+                    // Cut up against a counter of its own, because the one
+                    // the PID is really on only advances as a packet *goes
+                    // out*. A section abandoned half sent -- which is what a
+                    // programme boundary does to the one in flight -- would
+                    // otherwise take the numbers of its unsent packets with
+                    // it and leave a hole in the count.
+                    let mut spare = 0u8;
                     scratch.clear();
-                    packetize(PID_SIT, &sit[range], c, &mut scratch);
+                    packetize(PID_SIT, &sit[range], &mut spare, &mut scratch);
                     pending = scratch.chunks(PACKET).map(<[u8]>::to_vec).collect();
                     sent = 0;
                     began = now;
@@ -2609,7 +2648,10 @@ pub fn graft(output: &str, g: &Graft) -> Result<Stats> {
                 // before the next section starts.
                 let whole = (sent + pending.len()) as f64;
                 if !pending.is_empty() && now >= began + SIT_PERIOD * sent as f64 / whole {
-                    let one = pending.pop_front().expect("just checked it was not empty");
+                    let mut one = pending.pop_front().expect("just checked it was not empty");
+                    let c = cc.entry(PID_SIT).or_default();
+                    one[3] = (one[3] & 0xF0) | (*c & 0x0F);
+                    *c = c.wrapping_add(1) & 0x0F;
                     put(&mut dst, arrival, &one)?;
                     sent += 1;
                 }

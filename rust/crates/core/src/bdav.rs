@@ -1103,10 +1103,17 @@ fn audio_attributes(a: &crate::AudioInfo) -> Vec<u8> {
 fn clpi(clip: &Clip) -> Vec<u8> {
     let mut info = Vec::new();
     // Reserved, then the kind of stream this is -- 1, a transport stream --
-    // and what it is for. 2 is what a recorder's own disc says, on all
-    // sixteen clips of the four read here; the authoring tool's discs say 0,
-    // and 0 is what this said until the recorder's were measured.
-    info.extend_from_slice(&[0x00, 0x00, 0x01, 0x02]);
+    // and what it is for.
+    //
+    // **0, which is the authoring tool's answer and not the recorder's.**
+    // A recorder's own discs say 2, on all sixteen clips of the four read
+    // here, and for a while this said 2 with them. Then a disc written that
+    // way came back from a real recorder listed but unplayable, and the one
+    // disc known to play on that machine -- the authoring tool's -- says 0.
+    // What 2 means is not written down anywhere this program can reach; what
+    // is known is which value a machine has been seen to accept from a disc
+    // it did not write itself. See the note on versions below.
+    info.extend_from_slice(&[0x00, 0x00, 0x01, 0x00]);
     // Reserved, and the flag that would say the clip's arrival clock is
     // offset from its neighbour's -- which is a thing only a disc written in
     // several sittings has.
@@ -1197,13 +1204,19 @@ fn clpi(clip: &Clip) -> Vec<u8> {
     let cpi = ep_map(clip);
 
     let mut out = Vec::new();
-    // The version a recorder's own clip index and playlist both carry. The
-    // authoring tool's discs say 0100, which is what this said; nothing here
-    // reads the number back -- our own reader takes either, and so does
-    // everything that has been shown these discs -- so the recorder's is
-    // written, being the newer of the two. The disc's own index keeps 0100,
-    // which is what the recorder writes there.
-    out.extend_from_slice(b"M2TS0110");
+    // The version the authoring tool writes, and the one this writes.
+    //
+    // **A recorder's own discs say 0110 and this followed them for a day.**
+    // What came back was a disc that machine listed and would not play, in
+    // an index that differed from a playable one in this and three other
+    // places and in nothing else. A recorder reading its own disc has an
+    // AGGREGATE of things this cannot write -- its own maker's private data
+    // in every file, its own copy protection -- so what it accepts there is
+    // not evidence about what it accepts from a stranger. The authoring
+    // tool's disc is the one that has been seen to play, and 0100 is what it
+    // says. See `clpi`'s application type and `rpls`'s version and marks,
+    // which came back the same way.
+    out.extend_from_slice(b"M2TS0100");
     let head = 40;
     let sequence_at = head + 4 + info.len();
     let program_at = sequence_at + 4 + sequence.len();
@@ -1340,15 +1353,15 @@ fn rpls(clip_name: &str, clip: &Clip, rec: &Recording) -> Vec<u8> {
         // play item, which is why this program's own reader knows where they
         // are ([`crate::disc`]).
         //
-        // Both were copied whole out of an authoring tool's disc until a
-        // recorder's own were read: `05 00 02 12`, which put that tool's
-        // maker number on every mark this ever wrote. A recorder writes
-        // `04 00 01 08` on each of its chapter points -- 4, and its own
-        // maker -- and one `01` where the viewer stopped watching. So the
-        // kind is now the recorder's, and the maker is nought: this program
-        // has no number of its own, and nothing follows it in the entry that
-        // a maker would have to be asked about.
-        entry[..4].copy_from_slice(&[0x04, 0x00, 0x00, 0x00]);
+        // Copied whole out of the authoring tool's disc, which is the disc
+        // that has been seen to play on a real recorder. A recorder's own
+        // marks say `04 00 01 08` -- kind 4, and its own maker number -- and
+        // writing that, with nought for a maker this program does not have,
+        // was one of four places a disc a recorder refused to play differed
+        // from one it accepted. Neither the kind nor the maker means
+        // anything this program can read, so what goes in is what the
+        // playable disc has. See [`clpi`].
+        entry[..4].copy_from_slice(&[0x05, 0x00, 0x02, 0x12]);
         let when = clip.start as f64 + at * TICK;
         entry[6..10].copy_from_slice(&(when.max(0.0) as u32).to_be_bytes());
         entry[10..14].copy_from_slice(&[0xFF; 4]);
@@ -1358,7 +1371,8 @@ fn rpls(clip_name: &str, clip: &Clip, rec: &Recording) -> Vec<u8> {
     // The description the playlist opens with, written at its own offsets
     // into a field of the size both real discs give it.
     let mut out = vec![0u8; LIST_AT];
-    out[..8].copy_from_slice(b"PLST0110");
+    // 0100, for the reason the clip index carries 0100; see [`clpi`].
+    out[..8].copy_from_slice(b"PLST0100");
     // The six bytes in front of the date are the same on both of those
     // discs, eighteen years and two unrelated tools apart, and what they
     // mean is not written down anywhere this program can reach. Copying a
@@ -1556,7 +1570,7 @@ mod tests {
             ran: Some(30 * 60),
         };
         let raw = rpls("00001", &clip(), &rec);
-        assert_eq!(&raw[..8], b"PLST0110");
+        assert_eq!(&raw[..8], b"PLST0100");
         // The addresses in the header point at sections that are there.
         let list_at = u32::from_be_bytes(raw[8..12].try_into().unwrap()) as usize;
         let marks_at = u32::from_be_bytes(raw[12..16].try_into().unwrap()) as usize;
@@ -1695,7 +1709,7 @@ mod tests {
     #[test]
     fn the_clip_index_reads_back() {
         let raw = clpi(&clip());
-        assert_eq!(&raw[..8], b"M2TS0110");
+        assert_eq!(&raw[..8], b"M2TS0100");
         let program_at = u32::from_be_bytes(raw[12..16].try_into().unwrap()) as usize;
         // One program sequence, whose map is on the PID a Blu-ray puts it
         // on, and the three streams it names.
