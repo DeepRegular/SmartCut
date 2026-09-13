@@ -14,7 +14,8 @@
         "title": "SmartCut",
         "width": 1180,
         "height": 800,
-        "resizable": true
+        "resizable": true,
+        "visible": false
       }
     ],
     "security": {

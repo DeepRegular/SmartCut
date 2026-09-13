@@ -174,6 +174,48 @@ away mid job. Back to waiting rather than to failed, because nothing about the
 job failed — it is what 出力開始 does to every row that is not done — and the
 note says why it is back, until the next start clears it.
 
+### Three windows, three sizes and three places
+
+None of the three holds the same kind of thing, so none of them wants the same
+size. The list is rows and wants height; the editor is a picture over a timeline
+and wants width; the tool is a queue somebody leaves in a corner while it runs —
+and where each one is put is the same kind of answer. Having done it once,
+nobody should have to do it again.
+
+The size is kept per **role** rather than per window label. The tool's window is
+the list window's own `main` label, so labels would make the two of them one
+entry — which is the one thing this is for. The roles are `main`, `batch` and
+`editor`, and they live in `windows.json` in the config directory beside the
+queue. `geometry.rs` is the whole of it.
+
+A place is only used again if the screens there are now agree to it. A config
+directory travels, a laptop is undocked, a second monitor is unplugged, and any
+of those leaves a place that is nowhere; a window at nowhere cannot be dragged
+back. What is checked is the corner of the title bar — the part a person takes
+hold of — against the monitors as they stand. A place that fails is dropped for
+the desktop's own placement, which is what these windows had before any of this:
+the editor centres itself, and the tool asks for the middle once it is up. Both
+of those stand down when the place was used.
+
+What is written is what the window comes back to, not what it covered.
+Maximizing arrives first as a resize to the whole screen, and the window says it
+is maximized only after that, so by the time the flag can be read the covered
+size and corner have already been measured; the step back at the flag is what
+keeps them out of the file. Without it a window creeps a little larger and a
+little further into the corner every time it opens.
+
+The size is cut down to the monitor the window is opening on, and the cut-down
+size is what is then watched and written back, so that one opening on the
+smaller screen is all it takes to come right.
+
+Two units, on purpose. The size is logical pixels, which is what the
+configuration states the defaults in. The place is device pixels, because that
+is what a desktop of two monitors at two scales is laid out in; logical
+coordinates across it mean nothing.
+
+The file is written once, on the way out. Dragging an edge is a hundred resizes
+and none of them is worth a file.
+
 ### The input screen
 
 ```

@@ -23,6 +23,7 @@ use std::sync::Mutex;
 
 #[macro_use]
 mod lang;
+mod geometry;
 mod prefs;
 
 use base64::Engine as _;
@@ -1457,8 +1458,19 @@ async fn open_editor(title: String, app: tauri::AppHandle) -> Result<(), String>
         .inner_size(1240.0, 860.0)
         .min_inner_size(900.0, 620.0)
         .center()
+        // Out of sight until the size it was last left at is on it. A window
+        // that is sized after it is up opens and then jumps. See [`geometry`].
+        .visible(false)
         .build()
         .map_err(|e| e.to_string())?;
+    // Centred again where there is nothing remembered, because the builder
+    // centred a window of the default size and what is there now may be half
+    // a screen wider. A window put back where it was left is left there.
+    if !geometry::restore(&window, EDITOR) && !window.is_maximized().unwrap_or(false) {
+        let _ = window.center();
+    }
+    let _ = window.show();
+    geometry::watch(&window, EDITOR);
     // The list has to know the editor has gone, whichever way it went -- OK,
     // キャンセル, or the title bar's cross. Said from here rather than from the
     // page, because the page going away is the thing being reported.
@@ -3986,7 +3998,13 @@ fn open_batch_tool(app: tauri::AppHandle) -> Result<(), String> {
 /// half off the bottom. Asked after the page is running, which is after the
 /// desktop has had its say.
 #[tauri::command]
-fn center_window(app: tauri::AppHandle) {
+fn center_window(app: tauri::AppHandle, role: State<Role>) {
+    // Unless the tool has already been put back where it was last left. The
+    // desktop's guess is what this is for, and a remembered place is not a
+    // guess. See [`geometry`].
+    if geometry::placed(&role.0) {
+        return;
+    }
     if let Some(w) = app.get_webview_window(MAIN) {
         let _ = w.center();
     }
@@ -4383,10 +4401,13 @@ pub fn run() {
     // and that nothing about an unsaved list stands in the way of closing it.
     // See the バッチ出力 section.
     let batch = std::env::args().any(|a| a == "--batch");
-    let role = Role(match batch {
-        true => "batch".to_string(),
-        false => "main".to_string(),
-    });
+    // The word this window's size is kept under as well as the word the
+    // frontend asks for: the tool and the list are one window label and two
+    // different windows to size. See [`geometry`].
+    let role = match batch {
+        true => "batch",
+        false => "main",
+    };
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .manage(Opened::default())
@@ -4399,11 +4420,14 @@ pub fn run() {
         .manage(Subs::default())
         .manage(BatchStop::default())
         .manage(argv)
-        .manage(role)
+        .manage(Role(role.to_string()))
         // The list window is declared in the configuration rather than built
         // here, so `setup` is the first moment there is one to attach
         // anything to.
         .setup(move |app| {
+            // What the three windows were last left at, before there is a
+            // window on screen to put it on. See [`geometry`].
+            geometry::load(app.handle());
             if let Some(w) = app.get_webview_window(MAIN) {
                 // The tool is named for what it is, at once: the frontend
                 // retitles the list window as a project is opened, and the
@@ -4411,6 +4435,11 @@ pub fn run() {
                 if batch {
                     let _ = w.set_title(tr!("バッチ出力 — SmartCut", "Batch — SmartCut"));
                 }
+                // Declared invisible in the configuration, and shown here
+                // with its name, its size and its place already on it.
+                geometry::restore(&w, role);
+                let _ = w.show();
+                geometry::watch(&w, role);
                 let asker = app.handle().clone();
                 w.on_window_event(move |event| {
                     if let tauri::WindowEvent::CloseRequested { api, .. } = event {
@@ -4497,10 +4526,14 @@ pub fn run() {
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
         .run(move |app, event| {
-            // The tool takes its name off the door as it goes, so that the
-            // list window knows at once. `quit` goes through here too --
+            // The one write of the sizes, on the way out: what a window is at
+            // is watched all along, but dragging an edge is a hundred sizes
+            // and none of them worth a file. `quit` goes through here too --
             // `exit` asks the loop to leave, it does not walk out of it.
             if let tauri::RunEvent::Exit = event {
+                geometry::save(app);
+                // And the tool takes its name off the door as it goes, so
+                // that the list window knows at once. See `batch_gone`.
                 if batch {
                     batch_gone(app);
                 }

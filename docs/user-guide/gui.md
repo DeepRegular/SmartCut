@@ -41,6 +41,14 @@ about this one; it is opened from the `バッチ出力ツール…` item on the 
 own process, because a queue lined up at midnight has to go on being written
 after the window it was lined up in is closed.
 
+Each of the three windows keeps its own size and its own place. Widening the
+list window does not touch the editor's; each one comes back at the size and in
+the spot you last closed it at, and one left maximized comes back maximized.
+
+If a remembered spot is off the screen the next time — a monitor unplugged, the
+settings carried to another machine — that window opens where it used to open
+instead.
+
 ---
 
 ## 1. Line the recordings up
