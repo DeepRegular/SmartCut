@@ -993,10 +993,6 @@ input[type="text"]::placeholder { color: var(--dim); }
   border-radius: 2px; font: inherit; cursor: pointer;
 }
 #batch-go:hover:not(:disabled) { filter: brightness(1.08); }
-/* Stopping is not starting, so it is not drawn as though it were: a plain
-   button while there is nothing to stop, and the red of a stop while there
-   is. */
-#batch-stop-all:not(:disabled) { background: #8c3b32; border-color: #a8473c; color: var(--text); }
 /* The same said to one job, on its row. Held out of the way until the queue
    is running -- there is nothing to call off before that -- and the column it
    sits in stays, so the rows do not shuffle sideways when it appears. */
@@ -1014,7 +1010,7 @@ input[type="text"]::placeholder { color: var(--dim); }
    language, so they line up rather than merely matching in height. */
 #batch-bar > button,
 #batch-bar .dropgroup > .mini {
-  min-width: 112px; padding: 3px 12px; font-weight: 600;
+  min-width: 112px; padding: 3px 12px; font: inherit; font-weight: 600;
 }
 /* The exception, being half of the button beside it rather than a button. */
 #batch-bar .dropmenu .caret { min-width: 0; padding: 3px 7px; font-weight: 400; }
