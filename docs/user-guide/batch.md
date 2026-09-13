@@ -145,8 +145,16 @@ job. On a job whose turn has not come, the queue passes over it. Either way it
 is waiting again the next time you press `バッチ開始`: calling a job off is
 about this run, and `ジョブ削除` is what takes it out for good.
 
-The tool stays on the queue while it works. The row being written says how far
-it has got, and the bar under the list is the whole queue. **That works whether or not the
+The tool stays on the queue while it works, so **each job is a card rather
+than a line**: a picture off its first recording, what it holds and where it
+writes, and — underneath — what it is doing this second. The job being written
+carries its own bar, its elapsed time and an estimate of what is left; the bar
+under the whole list is the queue itself.
+
+The line under a job's name is what its project says about itself: how many
+recordings it holds, whether it writes files or a disc, and the folder it
+writes into. Nothing about the output format, because a smart render mostly
+has none to state — what comes out is what went in, copied. **That works whether or not the
 tool is open**, and while it is running: an added job lands behind the one
 being written and the tool picks it up when it gets there.
 

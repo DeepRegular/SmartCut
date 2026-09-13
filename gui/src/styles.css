@@ -847,20 +847,61 @@ input[type="text"]::placeholder { color: var(--dim); }
    because a queue is the thing being watched here and there is no picture to
    watch: a job is a whole project, and the frame under the head belongs to
    the 出力 screen, which is where it is shown while a job runs. */
+/* A card a job, after the reference tool's own batch window: the number in
+   the gutter, a picture off the first recording, and then what the job is,
+   what it is doing and how far it has got. Taller than a line because a queue
+   is what this window is for -- there is no other screen to put a job's
+   progress on. */
 #batch-list {
   list-style: none; margin: 0; padding: 0; flex: 1; min-height: 0; overflow-y: auto;
   font-size: 12px; font-variant-numeric: tabular-nums;
 }
 #batch-list li {
-  display: grid; grid-template-columns: 30px 1fr 110px 200px 64px;
-  gap: 10px; align-items: center; padding: 5px 10px;
-  border-bottom: 1px solid #2c2c2c; cursor: default;
+  display: grid; grid-template-columns: 30px 96px 1fr 22px;
+  gap: 8px; align-items: start;
+  padding: 6px 8px; border-bottom: 1px solid #000;
+  background: #2b3a44; cursor: pointer;
 }
-#batch-list .n { color: var(--dim); text-align: right; }
-#batch-list .nm { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-#batch-list .where { color: var(--dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-#batch-list .note { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: var(--dim); }
+#batch-list .n { color: var(--dim); text-align: right; padding-top: 1px; }
+/* The same box, and the same reasons, as the clip list's poster. */
+#batch-list .poster {
+  width: 96px; height: 54px; object-fit: contain; display: block;
+  background: #000; border: 1px solid #000;
+}
+#batch-list .poster.blank { background: repeating-linear-gradient(45deg, #1a1a1a 0 6px, #141414 6px 12px); }
+#batch-list .meta { min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+#batch-list .nm { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-weight: 600; }
+#batch-list .sub, #batch-list .say {
+  font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+/* What the job is doing, in a box of its own: it is the line that changes,
+   and the eye should be able to find it without reading the two above. */
+#batch-list .say {
+  background: var(--sunken); border: 1px solid var(--line); border-radius: 2px;
+  padding: 1px 6px; color: var(--dim);
+}
+#batch-list li.done .say { color: #7ee787; }
+#batch-list li.error .say { color: #ff9a90; }
+#batch-list li.running .say { color: var(--text); }
+/* The clock, the bar, and the button that calls this job off. */
+#batch-list .run { display: flex; align-items: center; gap: 8px; font-size: 11px; }
+#batch-list .ela, #batch-list .rest { color: var(--dim); }
+#batch-list .pct { color: var(--text); min-width: 34px; text-align: right; }
+#batch-list .pbar {
+  flex: 1; height: 7px; background: var(--sunken); border: 1px solid var(--line); overflow: hidden;
+}
+#batch-list .pbar span { display: block; height: 100%; width: 0; background: var(--copy); }
+#batch-list .kill {
+  background: none; border: 0; color: var(--dim); cursor: pointer;
+  font-size: 14px; padding: 0 3px; align-self: start;
+}
+#batch-list .kill:hover { color: #ff8a80; }
 #batch-list li:hover { background: #33454f; }
+/* The one being written, and the one the pointer has chosen. Two different
+   things, so they are said two different ways. */
+#batch-list li.running { background: #175a70; }
+#batch-list li.error { background: #4a2b2b; }
+#batch-list li.picked { box-shadow: inset 0 0 0 2px var(--sel); }
 /* Carried with the mouse, the way the clip list carries a row, and drawn the
    same way: the row dimmed where it came from, and the line it would land on
    sitting on the edge of the row it would land above. */
@@ -868,15 +909,6 @@ input[type="text"]::placeholder { color: var(--dim); }
 #batch-list li.dragging { opacity: .45; }
 #batch-list li.dropbefore { box-shadow: inset 0 3px 0 var(--sel); }
 #batch-list li.dropafter { box-shadow: inset 0 -3px 0 var(--sel); }
-#batch-list li.picked { background: #175a70; }
-#batch-list li.picked .n, #batch-list li.picked .where { color: #cfe9f2; }
-#batch-list li.done .note { color: #7ee787; }
-#batch-list li.error .note { color: #ff9a90; }
-#batch-list li.running .nm { color: var(--sel); font-weight: 600; }
-/* An empty queue is a screen with nothing on it, so the line that says so
-   stands in the middle of the room rather than at the bottom of a list of
-   nothing. */
-#batch-list:empty { flex: none; }
 .batch-idle {
   flex: 1; display: flex; align-items: center; justify-content: center;
   padding: 28px; text-align: center; color: var(--dim);

@@ -5367,6 +5367,9 @@ async function refreshQueue() {
   batchAfter = queue && queue.after ? queue.after : "nothing";
   if (isTool()) el("batch-after").value = batchAfter;
   renderBatch();
+  // What the rows show about each project, for any job not looked at yet.
+  // Not awaited: the list is already up, and the rows fill in behind it.
+  if (isTool()) lookAtJobs();
 }
 
 /// The tool's timer. While it is running a job the queue in hand is the truth
@@ -5383,47 +5386,145 @@ async function watchQueue() {
 /// already called off -- is past being stopped.
 const canStop = (job) => batchRunning && (job.state === "running" || job.state === "waiting");
 
+/// What a project says about itself, for the rows to show: where it writes,
+/// how many recordings it holds, and a picture off the first of them.
+///
+/// Read once per job per session and kept here rather than in the queue file,
+/// which holds what a job *is*. This is what it currently looks like, and a
+/// project edited between two runs should look like what it now says.
+const jobLook = new Map();
+
+/// Fill that in for any job that has not been looked at yet.
+///
+/// One at a time, and after the list is already on screen: a picture costs a
+/// seek and a GOP -- see `clip_glance` -- and twenty of them at once would be
+/// twenty recordings opened before the window had drawn anything. The list is
+/// repainted as each answer lands, so the rows fill in the way the clip list's
+/// own do.
+async function lookAtJobs() {
+  for (const job of batchJobs) {
+    if (jobLook.has(job.path)) continue;
+    // Claimed before the first await, or the next pass would read it again.
+    jobLook.set(job.path, {});
+    let doc = null;
+    try {
+      doc = JSON.parse(await invoke("read_project", { path: job.path }));
+    } catch {
+      doc = null;
+    }
+    const settings = (doc && doc.settings) || {};
+    const held = doc && Array.isArray(doc.clips) ? doc.clips : [];
+    const look = {
+      dir: settings.dir || "",
+      disc: settings.mode === "bdav",
+      image: settings.image || "",
+      clips: held.length,
+      poster: "",
+    };
+    jobLook.set(job.path, look);
+    renderBatch();
+    const first = held.length && typeof held[0].path === "string" ? held[0].path : "";
+    if (!first) continue;
+    try {
+      look.poster = (await invoke("clip_glance", { path: first })) || "";
+    } catch {
+      look.poster = "";
+    }
+    renderBatch();
+  }
+}
+
+/// The line under a job's name: what it holds and where it goes.
+function jobLine(job) {
+  const look = jobLook.get(job.path) || {};
+  const bits = [nameOf(job.path)];
+  if (look.clips) bits.push(t("batch.clips", { n: look.clips }));
+  if (look.disc) bits.push(look.image ? t("batch.toImage", { udf: look.image }) : t("batch.toDisc"));
+  if (look.dir) bits.push(look.dir);
+  return bits.join(t("sep"));
+}
+
+/// The line a row grows while there is something on it to stop: how far the
+/// job has got, and the button that calls it off. Only the job being written
+/// has a bar and a clock; one whose turn has not come has only the button.
+function jobRunLine(job, i) {
+  const stop = `<button class="jobstop mini" data-stop="${i}">${esc(t("batch.stopJob"))}</button>`;
+  if (job.state !== "running") return `<div class="run"><span class="grow"></span>${stop}</div>`;
+  const done = job.done || 0;
+  const spent = job.began ? (Date.now() - job.began) / 1000 : 0;
+  const left = done > 0.01 ? (spent / done) * (1 - done) : null;
+  return `<div class="run">
+      <span class="ela">${esc(t("batch.elapsed", { t: clock(spent) }))}</span>
+      <span class="pbar"><span></span></span>
+      <span class="pct">${Math.round(done * 100)}%</span>
+      <span class="rest">${left === null ? "" : esc(t("batch.left", { t: clock(left) }))}</span>
+      ${stop}
+    </div>`;
+}
+
 function renderBatch() {
   // Not while a row is being carried: the list is rebuilt whole, and rebuilt
   // rows are not the ones the drag is holding on to. The poll that would have
   // repainted it comes round again the moment the row lands.
   if (jobDrag) return;
-  el("batch-total").textContent = t("batch.total", {
-    n: batchJobs.length,
-    left: batchJobs.filter((j) => j.state !== "done").length,
+  const count = (state) => batchJobs.filter((j) => j.state === state).length;
+  el("batch-total").textContent = t("batch.counts", {
+    all: batchJobs.length,
+    run: count("running"),
+    wait: count("waiting"),
+    done: count("done"),
+    bad: count("error"),
+    off: count("skipped"),
   });
   el("batch-idle").hidden = batchJobs.length > 0;
   el("batch-list").innerHTML = batchJobs
-    .map(
-      (j, i) => `<li class="${j.state}${j.path === batchPick ? " picked" : ""}" data-i="${i}">
+    .map((j, i) => {
+      const look = jobLook.get(j.path) || {};
+      // A picture, or the hatching the clip list shows where there is not one
+      // yet. The same box either way, so the rows line up while they fill in.
+      const poster = look.poster
+        ? `<img class="poster" src="${look.poster}" alt="" draggable="false">`
+        : `<span class="poster blank"></span>`;
+      return `<li class="${j.state}${j.path === batchPick ? " picked" : ""}" data-i="${i}">
         <span class="n">${i + 1}</span>
-        <span class="nm">${esc(j.label)}</span>
-        <span class="where">${esc(nameOf(j.path))}</span>
-        <span class="note">${esc(j.note || "")}</span>
-        <button class="jobstop mini" data-stop="${i}"${canStop(j) ? "" : " hidden"}
-                >${esc(t("batch.stopJob"))}</button>
-      </li>`
-    )
+        ${poster}
+        <div class="meta">
+          <div class="nm">${esc(j.label)}</div>
+          <div class="sub dim">${esc(jobLine(j))}</div>
+          <div class="say">${esc(j.note || "")}</div>
+          ${canStop(j) ? jobRunLine(j, i) : ""}
+        </div>
+        ${
+          batchRunning
+            ? ""
+            : `<button class="kill" data-kill="${i}" title="${esc(t("batch.drop"))}">×</button>`
+        }
+      </li>`;
+    })
     .join("");
+  // The bars are filled from here rather than written into the markup: a
+  // `style` attribute in markup is the one thing the window's content policy
+  // turns off, and the property is not.
+  batchJobs.forEach((j, i) => {
+    const bar = el("batch-list").children[i]?.querySelector(".pbar span");
+    if (bar) bar.style.width = `${Math.round((j.done || 0) * 100)}%`;
+  });
   paintBatchButtons();
 }
 
-/// How far the job in hand has got, in its own row and in the queue's bar.
-///
-/// `done` is that job's whole list, which is what the row is about: a job is
-/// a project, and the recordings inside it are the job's business rather than
-/// the queue's. The bar above is the queue -- the jobs already settled, plus
-/// this one's share of the one that is not.
-///
-/// Painted only when the rounded percentage changes. The engine reports far
-/// oftener than that, and the list is rebuilt whole to draw it.
 function paintJobProgress(done) {
   if (!batchRunning) return;
   const job = batchJobs.find((j) => j.state === "running");
   if (!job) return;
-  const said = t("batch.writingAt", { pct: Math.round(done * 100) });
-  if (job.note === said) return;
-  job.note = said;
+  // What the pass itself says it is writing, which is the sentence the output
+  // screen would be showing. Said on the card rather than invented again
+  // here: there is one true answer to "what is being written" and it is that
+  // one.
+  const said = el("out-state").textContent;
+  if (exporting && said) job.note = said;
+  const was = Math.round((job.done || 0) * 100);
+  job.done = done;
+  if (Math.round(done * 100) === was) return;
   const settled = batchJobs.filter((j) => j.state === "done" || j.state === "error").length;
   const overall = batchJobs.length ? (settled + done) / batchJobs.length : 0;
   el("batch-progress").style.width = `${Math.round(overall * 100)}%`;
@@ -5504,7 +5605,8 @@ const jobAt = (ev) => {
 /// selection of them -- there is nothing here for a press to hold open.
 el("batch-list").addEventListener("mousedown", (ev) => {
   const job = jobAt(ev);
-  if (!job || ev.button !== 0 || ev.target.closest("[data-stop]")) return;
+  if (!job || ev.button !== 0) return;
+  if (ev.target.closest("[data-stop]") || ev.target.closest("[data-kill]")) return;
   batchPick = job.path;
   renderBatch();
   jobPress = { path: job.path, x: ev.clientX, y: ev.clientY };
@@ -5824,6 +5926,22 @@ el("batch-stop-all").addEventListener("click", () => {
 /// passed over when the loop reaches it. Either way the row says so, and the
 /// job is waiting again at the next バッチ開始: calling a job off is about
 /// this run, and deleting it is what the bar is for.
+/// The × in a row's corner: take that job out of the queue. Only while
+/// nothing is running -- the loop is walking these by place, and a row pulled
+/// out from under it would shift the ones behind. Calling a job off is what
+/// there is for a queue in flight, and that is the 中止 on the row.
+el("batch-list").addEventListener("click", async (ev) => {
+  const at = ev.target.closest("[data-kill]");
+  if (!at || batchRunning) return;
+  ev.stopPropagation();
+  const job = batchJobs[Number(at.dataset.kill)];
+  if (!job) return;
+  batchJobs = batchJobs.filter((j) => j !== job);
+  if (batchPick === job.path) batchPick = "";
+  await saveQueue();
+  renderBatch();
+});
+
 el("batch-list").addEventListener("click", (ev) => {
   const at = ev.target.closest("[data-stop]");
   if (!at) return;
@@ -5881,6 +5999,9 @@ async function runBatch() {
   batchStopped = false;
   el("batch-progress").style.width = "0%";
   el("batch-pct").textContent = "0%";
+  // The clock on the running row moves between progress reports, and there
+  // are none at all while a project is opening.
+  const ticking = setInterval(() => batchRunning && renderBatch(), 1000);
   for (const j of batchJobs) {
     if (j.state === "done") continue;
     j.state = "waiting";
@@ -5906,6 +6027,8 @@ async function runBatch() {
     }
     job.state = "running";
     job.note = t("batch.opening");
+    job.began = Date.now();
+    job.done = 0;
     el("batch-state").textContent = t("batch.at", { name: job.label });
     renderBatch();
     await saveQueue();
@@ -5972,6 +6095,7 @@ async function runBatch() {
     await takeAdded();
   }
   batchRunning = false;
+  clearInterval(ticking);
   el("batch-progress").style.width = "100%";
   el("batch-pct").textContent = "100%";
   show("batch");

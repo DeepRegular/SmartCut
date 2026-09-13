@@ -70,9 +70,18 @@ step with the first.
 
 **The tool's bar has no tabs, and the tool never leaves the queue.** It runs
 one job at a time and the queue is the thing being watched, so the rows carry
-the run: the one in hand says how far it has got, and the bar under the list is
-the queue — the jobs already settled, plus this one's share of the one that is
-not.
+the run. Each is a card after the reference tool's own batch window: a picture
+off the job's first recording, what the project holds and where it writes, the
+sentence the pass itself is saying about what it is writing, and — for the job
+in hand — its own bar, elapsed and estimated remaining. The bar under the list
+is the queue: the jobs already settled, plus this one's share of the one that
+is not.
+
+What a card knows about a project it reads once per session and keeps in
+memory, not in the queue file: the file holds what a job *is*, and this is
+what it currently looks like. The picture costs a seek and a GOP
+(`clip_glance`), so the jobs are looked at one at a time behind an already
+drawn list.
 
 What is on the bar is what can be said to the queue as a whole. `バッチ開始`
 and `すべて中止` are two buttons rather than one that toggles, because they

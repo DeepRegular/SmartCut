@@ -452,7 +452,12 @@ const CATALOG = {
     "out.summaryAborted": "　（中止されました）",
 
     // --- バッチ出力 --------------------------------------------------------
-    "batch.total": "ジョブ {n} 件（未出力 {left} 件）",
+    "batch.counts":
+      "全ジョブ: {all}　実行中: {run}　待ち: {wait}　完了: {done}　失敗: {bad}　中止: {off}",
+    "batch.elapsed": "経過 {t}",
+    "batch.left": "残り {t}",
+    "batch.toDisc": "ディスクを作成",
+    "batch.toImage": "ディスク＋イメージ (UDF {udf})",
     "batch.idle": "保存したプロジェクト（.scproj）を追加してください",
     "batch.add": "ジョブ追加…",
     "batch.drop": "ジョブ削除",
@@ -479,7 +484,6 @@ const CATALOG = {
     "batch.opening": "プロジェクトを開いています…",
     "batch.reading": "一覧を読み込んでいます…",
     "batch.writing": "出力中…",
-    "batch.writingAt": "出力中… {pct}%",
     "batch.skipped": "中止されました",
     "batch.stoppedHere": "出力の途中で中止されました",
     "batch.cannotOpen": "プロジェクトを開けませんでした",
@@ -1071,7 +1075,12 @@ const CATALOG = {
     "out.summaryAborted": "   (stopped)",
 
     // --- batch export ----------------------------------------------------
-    "batch.total": "{n} jobs ({left} not yet written)",
+    "batch.counts":
+      "All: {all}   Running: {run}   Waiting: {wait}   Done: {done}   Failed: {bad}   Stopped: {off}",
+    "batch.elapsed": "Elapsed {t}",
+    "batch.left": "Left {t}",
+    "batch.toDisc": "Writes a disc",
+    "batch.toImage": "Disc and image (UDF {udf})",
     "batch.idle": "Add a saved project (.scproj)",
     "batch.add": "Add jobs…",
     "batch.drop": "Remove job",
@@ -1098,7 +1107,6 @@ const CATALOG = {
     "batch.opening": "Opening the project…",
     "batch.reading": "Reading the list…",
     "batch.writing": "Writing…",
-    "batch.writingAt": "Writing… {pct}%",
     "batch.skipped": "Stopped",
     "batch.stoppedHere": "Stopped part way through",
     "batch.cannotOpen": "The project would not open",
