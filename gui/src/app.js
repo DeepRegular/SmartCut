@@ -4947,16 +4947,33 @@ function captureProject() {
   };
 }
 
-/// Where the picker opens for a list that has no name yet: beside the output
-/// if one has been chosen, and otherwise beside the recordings, because that
-/// is where the work is.
-function defaultProjectPath() {
+/// Where a list that has no name yet belongs: beside the output if one has
+/// been chosen, and otherwise beside the recordings, because that is where
+/// the work is. With its separator, so a name can be put straight after it.
+function projectHome() {
   const first = clips[0];
   const beside = first && first.home
     ? `${first.home.replace(/[/\\]*$/, "")}/`
     : dirOf(first ? first.path : "");
-  const dir = settings.dir ? settings.dir.replace(/[/\\]*$/, "/") : beside;
-  return `${dir}${t("project.untitled")}.${PROJECT_EXT}`;
+  return settings.dir ? settings.dir.replace(/[/\\]*$/, "/") : beside;
+}
+
+/// Where the picker opens for such a list.
+function defaultProjectPath() {
+  return `${projectHome()}${t("project.untitled")}.${PROJECT_EXT}`;
+}
+
+/// And what it is called where nobody is asked -- see `enlistExport`.
+///
+/// The disc's name where a disc is being built, and otherwise the first
+/// recording's, which is what the row at the top of the list says. A queue of
+/// rows called 無題, 無題-2, 無題-3 would be a queue nobody could read, and
+/// the name of the first recording is the one thing about a list that is
+/// already on screen when the button is pressed.
+function autoProjectStem() {
+  const list = ready().length ? ready() : clips;
+  const name = bdavMode() ? discTitleFor(list) : list[0] ? outStem(list[0]) : "";
+  return filenameSafe(name) || t("project.untitled");
 }
 
 /// What the project would be if it were written this instant, as one string.
@@ -5772,13 +5789,48 @@ el("batch-add").addEventListener("click", async () => {
   for (const path of Array.isArray(picked) ? picked : [picked]) await addBatchJob(path);
 });
 
-/// バッチに登録: put the list on screen into the queue.
+/// The file the queue is to be given, written if it is not already there.
 ///
-/// A job is a file, so the list has to be one first: an unsaved list put in
-/// the queue would be a job that ran whatever the file said at midnight
-/// rather than what is on screen now. So an unnamed list asks for a name and
-/// a changed one is written, both before anything is queued -- which is also
-/// why this can be declined, and says nothing when it is.
+/// A job is a file: an unsaved list put in the queue would be a job that ran
+/// whatever the file said at midnight rather than what is on screen now. So
+/// the list becomes one -- written over its own file where it has one, and
+/// otherwise written under a name worked out here.
+///
+/// Without a picker. The one question a save dialog asks is where, and at
+/// this press there is only one answer worth having: with the output, or with
+/// the recordings -- which is where the picker would have opened anyway. A
+/// dialog whose answer is already known is a dialog that stands between the
+/// button and the thing it is named after. Somebody who wants the project
+/// somewhere else has 名前を付けて保存 for that, and it can be moved after.
+///
+/// Empty for a file that could not be written, which `writeProject` has
+/// already said its own sentence about.
+async function projectForQueue() {
+  if (projectPath) {
+    return !dirty() || (await writeProject(projectPath)) ? projectPath : "";
+  }
+  let path;
+  try {
+    path = await invoke("free_path", {
+      dir: projectHome(),
+      stem: autoProjectStem(),
+      ext: PROJECT_EXT,
+    });
+  } catch (e) {
+    sayHere(String(e));
+    return "";
+  }
+  return (await writeProject(path)) ? path : "";
+}
+
+/// バッチに登録: put the list on screen into the queue, and open the tool
+/// over it.
+///
+/// The tool is started because the press means the work is to be written this
+/// way rather than now, and a queue with nothing over it is written by
+/// nobody. One already running is the same request granted -- see
+/// `open_batch_tool` -- and the tool picks the row up within a couple of
+/// seconds of it landing; see `watchQueue`.
 ///
 /// The queue is read back first because this window does not otherwise hold
 /// it: without that, a list already in the queue would be reported as added
@@ -5788,25 +5840,47 @@ el("enlist-export").addEventListener("click", async () => {
     sayHere(t("project.nothingToSave"));
     return;
   }
-  if (!projectPath || dirty()) {
-    if (!(await saveProject())) return;
-  }
+  const path = await projectForQueue();
+  if (!path) return;
   await refreshQueue();
-  if (await addBatchJob(projectPath)) {
-    sayHere(t("batch.added", { name: stemOf(projectPath) }));
+  if (!(await addBatchJob(path))) return;
+  sayHere(t("batch.added", { name: stemOf(path) }));
+  try {
+    await invoke("open_batch_tool");
+  } catch (e) {
+    sayHere(String(e));
   }
 });
 
-/// Move the picked job one place, which is what the right button's menu
-/// offers and what a short drag comes to.
+/// Move the picked rows, which is what the right button's menu offers and
+/// what a short drag comes to.
+///
+/// One place at a time is the clip list's step, and for the same reason it is
+/// written the same way: each picked row moves into the gap beside it unless
+/// the row it would swap with is picked as well, so five rows carried up
+/// together arrive still five rows together. A step bigger than the queue is
+/// 先頭へ移動 and 末尾へ移動 -- the picked rows out and put back at the end
+/// they were sent to, in the order they were in.
 async function moveBatch(by) {
-  const at = batchJobs.findIndex((j) => j.path === batchPick);
-  // Clamped, so that the ends of the queue can be asked for by naming a step
-  // bigger than the queue: 先頭へ移動 is "up, as far as up goes".
-  const to = Math.max(0, Math.min(batchJobs.length - 1, at + by));
-  if (batchRunning || at < 0 || to === at) return;
-  const [job] = batchJobs.splice(at, 1);
-  batchJobs.splice(to, 0, job);
+  if (batchRunning || !batchPicked.size) return;
+  if (Math.abs(by) === 1) {
+    const order = by < 0
+      ? batchJobs.map((_, i) => i)
+      : batchJobs.map((_, i) => batchJobs.length - 1 - i);
+    let moved = false;
+    for (const i of order) {
+      const j = i + by;
+      if (!batchPicked.has(batchJobs[i].path)) continue;
+      if (j < 0 || j >= batchJobs.length || batchPicked.has(batchJobs[j].path)) continue;
+      [batchJobs[i], batchJobs[j]] = [batchJobs[j], batchJobs[i]];
+      moved = true;
+    }
+    if (!moved) return;
+  } else {
+    const held = pickedJobs();
+    const rest = batchJobs.filter((j) => !batchPicked.has(j.path));
+    batchJobs = by < 0 ? [...held, ...rest] : [...rest, ...held];
+  }
   await saveQueue();
   renderBatch();
 }
@@ -6103,13 +6177,13 @@ el("batch-clear-all").addEventListener("click", async () => {
 /// Start the tool, which is a second process of this same program.
 ///
 /// From the menu rather than from a screen, because that is what it is: a
-/// window of its own, opened the way a program is opened. Refused by the
-/// backend where one is already running, and what comes back then is the
-/// sentence to show.
+/// window of its own, opened the way a program is opened. Never two over one
+/// queue; asked for by name like this, a tool that was already up is worth
+/// saying so about, which is the whole of the difference between this caller
+/// and バッチに登録.
 async function openBatchTool() {
   try {
-    await invoke("open_batch_tool");
-    sayHere(t("batch.opened"));
+    sayHere(t((await invoke("open_batch_tool")) ? "batch.opened" : "batch.alreadyUp"));
   } catch (e) {
     sayHere(String(e));
   }

@@ -3739,6 +3739,39 @@ fn write_project(path: String, body: String) -> Result<(), String> {
         .map_err(|e| trf!("保存できません: {} ({})", "Cannot save: {} ({})", path, e))
 }
 
+/// A name nothing in this folder has yet: `stem.ext`, or the first of
+/// `stem-2.ext`, `stem-3.ext` … that is free.
+///
+/// For a list that has no file of its own and is about to need one --
+/// バッチに登録 writes the project itself rather than asking where to put it,
+/// a job being a file. Worked out here because this is the side that can see
+/// the folder: a name the list window merely believed to be free would be a
+/// registration that wrote over somebody's project.
+///
+/// The extension comes from up there with the rest of what a project is.
+#[tauri::command]
+fn free_path(dir: String, stem: String, ext: String) -> Result<String, String> {
+    let dir = std::path::Path::new(&dir);
+    std::fs::create_dir_all(dir)
+        .map_err(|e| trf!("保存できません: {} ({})", "Cannot save: {} ({})", dir.display(), e))?;
+    for n in 1..1000 {
+        let name = if n == 1 {
+            format!("{stem}.{ext}")
+        } else {
+            format!("{stem}-{n}.{ext}")
+        };
+        let at = dir.join(name);
+        if !at.exists() {
+            return Ok(at.to_string_lossy().into_owned());
+        }
+    }
+    Err(trf!(
+        "名前が付けられません: {}",
+        "Cannot find a free name: {}",
+        dir.join(format!("{stem}.{ext}")).display()
+    ))
+}
+
 /// Read one back.
 ///
 /// A missing file is an error here, unlike the keyframe sidecar's: that one
@@ -3971,22 +4004,23 @@ fn batch_live(app: tauri::AppHandle) -> bool {
 
 /// Start the batch tool: this same program, with `--batch`.
 ///
-/// Refused where one is already running. Two tools over one queue would each
+/// One is never started over another. Two tools over one queue would each
 /// believe they owned it, and the file says which jobs are done.
+///
+/// `false` for a tool that was already there, rather than an error: it is
+/// news only where somebody asked for the tool by name. バッチに登録 also
+/// wants one up, and for that press "there is one already" is the request
+/// granted, not refused.
 #[tauri::command]
-fn open_batch_tool(app: tauri::AppHandle) -> Result<(), String> {
+fn open_batch_tool(app: tauri::AppHandle) -> Result<bool, String> {
     if batch_live(app) {
-        return Err(tr!(
-            "バッチ出力ツールはすでに起動しています",
-            "The batch tool is already running"
-        )
-        .to_string());
+        return Ok(false);
     }
     let exe = std::env::current_exe().map_err(|e| e.to_string())?;
     std::process::Command::new(exe)
         .arg("--batch")
         .spawn()
-        .map(|_| ())
+        .map(|_| true)
         .map_err(|e| e.to_string())
 }
 
@@ -4503,6 +4537,7 @@ pub fn run() {
             close_editor,
             write_project,
             read_project,
+            free_path,
             set_dirty,
             after_batch,
             batch_read,

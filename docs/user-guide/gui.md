@@ -642,14 +642,16 @@ There is a great deal more of this in [Writing a disc](../technical/bdav.md).
 progress and result, and above them are the overall state, the elapsed time and
 the time remaining. At the end it says `4 of 4 written`.
 
-`Stop export` **finishes writing the clip currently in progress**, then stops.
-It never leaves a half-written file behind.
+While it writes, that same button reads `Stop export`. Pressing it **finishes
+writing the clip currently in progress**, then stops. It never leaves a
+half-written file behind.
 
-`Add to batch` puts the list in the queue instead of writing it now. It is
-saved as a project first — you are asked for a name if it has not got one —
-and goes to the end of the queue. What writes it is the
-[batch tool](batch.md#an-overnight-queue-of-projects), which does not have to
-be open for the list to be registered.
+`Add to batch` puts the list in the queue instead of writing it now. The list
+is saved as a project as it goes, with no picker: under the name of its first
+row, in the output folder, or beside the recordings where no output folder has
+been chosen. The press also starts the
+[batch tool](batch.md#an-overnight-queue-of-projects) if one is not already up,
+and the job goes to the end of its queue.
 
 **Stopping part way through a disc takes back what was written to it.** The pass
 that builds the index reads every stream back, which is minutes of work nobody

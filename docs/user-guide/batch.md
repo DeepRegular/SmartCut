@@ -113,10 +113,10 @@ recordings, the cuts, the track choices and the output settings, so the queue
 only has to say which files and in what order.
 
 ```
-①  cut an evening's recordings and save the project (Ctrl+S)
-②  出力 tab → バッチに登録
+①  cut an evening's recordings
+②  出力 tab → バッチに登録 (one press: it saves the project and opens the tool)
 ③  do the same for the next evening's work
-④  menu → バッチ出力ツール…, press バッチ開始 in the window that opens, and go to bed
+④  press バッチ開始 in the tool's window, and go to bed
 ```
 
 ### The tool is a window of its own
@@ -127,16 +127,27 @@ SmartCut entirely — does not stop a queue that is being written.
 
 The queue lives there and nowhere else. The tool shows it, orders it, runs it
 and stops it; the main window's only part in it is `バッチに登録`, which puts
-the list on screen at the end of the queue. **That works whether or not the
-tool is open**, and while it is running: an added job lands behind the one
-being written and the tool picks it up when it gets there.
+the list on screen at the end of the queue — **and starts the tool if one is
+not already up**. It works while the queue is running, too: an added job lands
+behind the one being written, and the tool notices it within a second or two
+and picks it up when it gets there.
 
 **The bar is what you say to the queue as a whole.** `バッチ開始` starts it and
 `すべて中止` calls off the job being written and every job behind it. Beside
 them are the two things a queue is made of: `ジョブ追加`, which takes projects
-saved earlier, several at a time; and `ジョブ削除`, which takes out the row you
-have clicked, with the `▾` on the end of it holding the two ways of doing that
+saved earlier, several at a time; and `ジョブ削除`, which takes out the rows you
+have picked, with the `▾` on the end of it holding the two ways of doing that
 in bulk — `出力済のジョブを削除` and `すべて削除`.
+
+**Rows are picked the way they are picked on the input screen**: a click for
+that row, Ctrl for one more or one fewer, Shift for everything between here and
+the last plain click, and a click on the empty part of the list to let them all
+go. What is picked moves together and is taken out together.
+
+The keys are the same too. `↑` and `↓` move the picking, `Shift` with them
+stretches it, `Ctrl+A` takes the lot and `Delete` takes the picked rows out.
+`Enter` opens the project of a single picked row in a window of its own, and so
+does a double click on the row.
 
 **A single job is called off from its own row.** While the queue is running
 each row that still has something to do carries a `中止`. On the job being
