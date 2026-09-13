@@ -5471,16 +5471,22 @@ const jobHow = (job) => (job.state === "done" ? 1 : job.done || 0);
 /// the middle, so that none of them is read past to find another.
 ///
 /// The percentage is always there, so that the box is always a line high and
-/// the bars down the list are all the same bar. The clock appears once the
+/// the bars down the list are all the same bar. The two clocks appear once the
 /// job has actually run -- a queue reopened tomorrow cannot say how long
-/// yesterday's jobs took -- and stops where the job stopped; what is left is
-/// only ever said about the job being written, since it is the only one with
-/// anything left.
+/// yesterday's jobs took -- and stay once it has stopped: what is left of a
+/// job that has ended is none of it, which is worth saying rather than
+/// leaving the row to be read with a gap where the answer was.
 function jobSaid(job) {
   const how = jobHow(job);
   const spent = job.spent ?? (job.began ? (Date.now() - job.began) / 1000 : null);
   const left =
-    job.state === "running" && how > 0.01 && spent !== null ? (spent / how) * (1 - how) : null;
+    spent === null
+      ? null
+      : job.state !== "running"
+        ? 0
+        : how > 0.01
+          ? (spent / how) * (1 - how)
+          : null;
   return `<span class="ela">${
     spent === null ? "" : esc(t("batch.elapsed", { t: clock(spent) }))
   }</span>
