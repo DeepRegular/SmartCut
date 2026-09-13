@@ -971,11 +971,6 @@ input[type="text"]::placeholder { color: var(--dim); }
 #batch-list li.dragging { opacity: .45; }
 #batch-list li.dropbefore { box-shadow: inset 0 3px 0 var(--sel); }
 #batch-list li.dropafter { box-shadow: inset 0 -3px 0 var(--sel); }
-.batch-idle {
-  flex: 1; display: flex; align-items: center; justify-content: center;
-  padding: 28px; text-align: center; color: var(--dim);
-}
-.batch-idle[hidden] { display: none; }
 /* The strip that stands between a finished queue and a machine about to go.
    At the foot of the screen, and only while it is counting. */
 .afterbar {

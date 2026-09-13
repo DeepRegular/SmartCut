@@ -5548,7 +5548,6 @@ function renderBatch() {
     bad: count("error"),
     off: count("skipped"),
   });
-  el("batch-idle").hidden = batchJobs.length > 0;
   el("batch-list").innerHTML = batchJobs
     .map((j, i) => {
       const look = jobLook.get(j.path) || {};
