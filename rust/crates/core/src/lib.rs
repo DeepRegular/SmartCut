@@ -33,6 +33,7 @@ pub mod seek_index;
 pub mod series;
 pub mod si;
 pub mod subs;
+pub mod text;
 pub mod thumbs;
 pub mod udf;
 pub mod udfw;

@@ -1282,11 +1282,15 @@ pub fn programme(input: &crate::input::Input, service_id: u16) -> Result<Program
                 }
                 let len = (((event[10] & 0x0F) as usize) << 8) | event[11] as usize;
                 if let Some(loop_bytes) = event.get(12..12 + len) {
-                    out.name = out.name.take().or_else(|| event_name(loop_bytes));
+                    // Which network the table came off, which is what says
+                    // how its text is written; see [`crate::text`].
+                    let written =
+                        crate::text::Written::of_network(((sec[10] as u16) << 8) | sec[11] as u16);
+                    out.name = out.name.take().or_else(|| event_name(loop_bytes, written));
                     out.description = out
                         .description
                         .take()
-                        .or_else(|| event_description(loop_bytes));
+                        .or_else(|| event_description(loop_bytes, written));
                 }
             }),
             PID_SDT => sdt.feed(p, |sec| {
@@ -1294,7 +1298,11 @@ pub fn programme(input: &crate::input::Input, service_id: u16) -> Result<Program
                     return;
                 }
                 if let Some(d) = service_descriptor(sec, want) {
-                    out.channel = out.channel.take().or_else(|| service_name(d));
+                    // As above: the network the description came off says
+                    // how the name on it is written.
+                    let written =
+                        crate::text::Written::of_network(((sec[8] as u16) << 8) | sec[9] as u16);
+                    out.channel = out.channel.take().or_else(|| service_name(d, written));
                 }
             }),
             PID_SIT => sit.feed(p, |sec| {
@@ -1321,14 +1329,21 @@ pub fn programme(input: &crate::input::Input, service_id: u16) -> Result<Program
                 if out.channel_number == 0 {
                     out.channel_number = three_digit(whose, remote_key);
                 }
-                out.name = out.name.take().or_else(|| event_name(described));
+                // A partial stream carries no network number -- it is one
+                // service off one multiplex, and the table that named the
+                // network is not in it -- so its text is read the way text
+                // is read when nothing says otherwise. Which is right: the
+                // table is written by a Japanese recorder, or by this
+                // program, and both write ARIB.
+                let written = crate::text::Written::default();
+                out.name = out.name.take().or_else(|| event_name(described, written));
                 out.description = out
                     .description
                     .take()
-                    .or_else(|| event_description(described));
+                    .or_else(|| event_description(described, written));
                 out.channel = out.channel.take().or_else(|| {
                     let whole = descriptor(described, 0x48)?;
-                    service_name(&[&[0x48, whole.len() as u8], whole].concat())
+                    service_name(&[&[0x48, whole.len() as u8], whole].concat(), written)
                 });
             }),
             PID_NIT if remote_key.is_none() => nit.feed(p, |sec| {
@@ -1387,12 +1402,13 @@ fn sit_service(sec: &[u8]) -> Option<(u16, &[u8])> {
 /// The event name out of a descriptor loop.
 ///
 /// A short event descriptor names the programme and then describes it; only
-/// the first is wanted, and it is ARIB text like everything else a
-/// broadcaster writes.
-fn event_name(loop_bytes: &[u8]) -> Option<String> {
+/// the first is wanted, and it is ARIB text where a broadcaster wrote it and
+/// whatever the muxer that rewrote the tables used where one did. See
+/// [`crate::text`].
+fn event_name(loop_bytes: &[u8], written: crate::text::Written) -> Option<String> {
     let d = descriptor(loop_bytes, 0x4D)?;
     let len = *d.get(3)? as usize;
-    let text = crate::arib::one_line(&crate::arib::decode(d.get(4..4 + len)?));
+    let text = crate::arib::one_line(&crate::text::decode(d.get(4..4 + len)?, written));
     (!text.is_empty()).then_some(text)
 }
 
@@ -1407,14 +1423,14 @@ fn event_name(loop_bytes: &[u8]) -> Option<String> {
 /// An item whose name is empty is the previous item continued: the list is
 /// spread over as many descriptors as it needs, and one item may straddle
 /// two of them.
-fn event_description(loop_bytes: &[u8]) -> Option<String> {
+fn event_description(loop_bytes: &[u8], written: crate::text::Written) -> Option<String> {
     let mut out = String::new();
     if let Some(d) = descriptor(loop_bytes, 0x4D) {
         let name = *d.get(3)? as usize;
         let at = 4 + name;
         let len = *d.get(at)? as usize;
         if let Some(text) = d.get(at + 1..at + 1 + len) {
-            out.push_str(&crate::arib::decode(text));
+            out.push_str(&crate::text::decode(text, written));
         }
     }
 
@@ -1437,7 +1453,10 @@ fn event_description(loop_bytes: &[u8]) -> Option<String> {
             ) else {
                 break;
             };
-            let (name, text) = (crate::arib::decode(name), crate::arib::decode(text));
+            let (name, text) = (
+                crate::text::decode(name, written),
+                crate::text::decode(text, written),
+            );
             match (name.is_empty(), items.last_mut()) {
                 (true, Some(last)) => last.1.push_str(&text),
                 _ => items.push((name, text)),
@@ -1484,12 +1503,12 @@ fn every_descriptor(loop_bytes: &[u8], tag: u8) -> Vec<&[u8]> {
 ///
 /// The provider comes first and is not it: on a Japanese broadcast that
 /// field is usually empty and never what a listing shows.
-fn service_name(whole: &[u8]) -> Option<String> {
+fn service_name(whole: &[u8], written: crate::text::Written) -> Option<String> {
     let body = whole.get(2..)?;
     let provider = *body.get(1)? as usize;
     let len = *body.get(2 + provider)? as usize;
     let at = 3 + provider;
-    let text = crate::arib::one_line(&crate::arib::decode(body.get(at..at + len)?));
+    let text = crate::arib::one_line(&crate::text::decode(body.get(at..at + len)?, written));
     (!text.is_empty()).then_some(text)
 }
 

@@ -172,6 +172,64 @@ before, first description first. `si::recorded_service` is that pass, and what i
 finds filters both the event information and the service description, which carries
 several services in the one section too.
 
+## A file another tool multiplexed does not name its channel in ARIB
+
+Every name a table carries was read as ARIB STD-B24 text, because every recording this
+program had been given was a Japanese broadcast's. A file that has been through
+`ffmpeg` is not one. The muxer writes a service description of its own, and puts in it
+what the rest of the world puts there: the character tables of DVB EN 300 468. Read
+against ARIB's code table, `Service01` comes back as five kanji — the alphanumerics are
+not invoked when a name begins, so the bytes are read two at a time as JIS — and a name
+with a Japanese character in it comes back as nothing anybody typed.
+
+`ffmpeg -i rec.ts -c copy -f mpegts out.ts` writes exactly that: `FFmpeg` as the
+provider, `Service01` as the name, and 0xFF01 as the network. The channel a cut off
+that file carried onto a disc was five kanji, and the recording it came from had been
+named correctly an hour earlier.
+
+`text::decode` decides which of the two conventions a field is in, in three steps.
+
+**The selector.** DVB puts a byte below 0x20 in front of text that is not in its
+default table, and that byte says which table. 0x10 to 0x15 — the two Chinese tables,
+Korean, UTF-16, and the UTF-8 `ffmpeg` writes a non-ASCII name in — are codes ARIB
+assigns nothing to, so a field beginning with one of them is read as DVB text whatever
+the recording is. The rest overlap with ARIB's own control codes: 0x07 is a bell, 0x09
+to 0x0B move a caption's cursor. Those are read as selectors only where the recording
+is a DVB one already, by the next step.
+
+**The network.** A service description and an event information section each say which
+network they came off. Japan's are 4, 6 and 7 for the satellites and 0x7880 to 0x7FE8
+for the terrestrial multiplexes; anything else is somebody else's network, or a muxer's
+invention, and its text is DVB's. A section that leaves the field at zero has said
+nothing, and ARIB stands — which is also what a partial transport stream gets, since it
+carries no network table at all.
+
+**The bytes.** A Japanese recording whose tables a muxer rewrote keeps its network
+number and loses its encoding, so one check rescues that case: a field that is
+well-formed UTF-8 carrying a character outside ASCII *and* carries a byte from 0x80 to
+0x9F is UTF-8. Both halves are needed. Valid UTF-8 happens to a short run of ARIB
+graphic bytes now and again; a byte in 0x80 to 0x9F is a C1 control code with
+parameters behind it, which is not something a channel name contains.
+
+Measured over the corpus of 2,979 recordings, 13,788 name and description fields:
+**none begins with a byte either of the first two rules would divert** — 9,331 begin
+with 0x0E, the locking shift into katakana, and 3,281 with 0x1B, an escape — and
+**none is taken for a muxer's UTF-8 by the third**. Every network number in the corpus
+is one of Japan's. The reading of a broadcast's own recording is unchanged, field for
+field.
+
+What is decided here is only how a name is *read*. The tables themselves are copied
+into the output as the bytes they arrived as, so a player decodes them exactly as it
+would have decoded the recording; a disc this program writes gets the name back in
+ARIB's code, because that is what a recorder draws.
+
+The default DVB table is ISO 6937, which is ASCII in the low half and writes an accent
+in front of the letter it belongs to: `0xC2 0x65` is `é`. That is decoded, and the
+letters that have a character of their own get it rather than a combining mark, because
+a name is compared, sorted and written into a file name. UTF-8 is tried first, though:
+a muxer that writes a name of its own writes whatever the operating system handed it,
+and fewer of them write the selector that would have said so than write the text.
+
 ## What is put back is trimmed to what was written
 
 The same reasoning is needed one step further along. The broadcast describes the data
