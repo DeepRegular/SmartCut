@@ -129,15 +129,24 @@ The queue lives there and nowhere else. The tool shows it, orders it, runs it
 and stops it; the main window's only part in it is `バッチに登録`, which puts
 the list on screen at the end of the queue.
 
-**One button runs the whole thing**, at the left of the tool's own bar: it says
-`バッチ開始` while the queue is waiting and `バッチ中止` in red while it is being
-written. The tool has no tabs — it shows the queue while it is idle and what is
-being written while it is not, and moves between the two itself — so that
-button is in reach whichever of them is up. Beside it are the two things a
-queue is made of: `ジョブ追加…`, which takes projects saved earlier, several at
-a time; and `ジョブ削除`, which takes out the row you have clicked, with the
-`▾` on the end of it holding the two ways of doing that in bulk —
-`出力済のジョブを削除` and `すべて削除`. **That works whether or not the
+**The bar is what you say to the queue as a whole.** `バッチ開始` starts it and
+`すべて中止` calls off the job being written and every job behind it. Beside
+them are the two things a queue is made of: `ジョブ追加…`, which takes projects
+saved earlier, several at a time; and `ジョブ削除`, which takes out the row you
+have clicked, with the `▾` on the end of it holding the two ways of doing that
+in bulk — `出力済のジョブを削除` and `すべて削除`.
+
+**A single job is called off from its own row.** While the queue is running
+each row that still has something to do carries a `中止`. On the job being
+written it stops the way `出力中止` does — the recording in hand is finished
+first, so nothing half-written is left behind, which for a job of one
+recording means that one is written anyway — and the queue goes on to the next
+job. On a job whose turn has not come, the queue passes over it. Either way it
+is waiting again the next time you press `バッチ開始`: calling a job off is
+about this run, and `ジョブ削除` is what takes it out for good.
+
+The tool stays on the queue while it works. The row being written says how far
+it has got, and the bar under the list is the whole queue. **That works whether or not the
 tool is open**, and while it is running: an added job lands behind the one
 being written and the tool picks it up when it gets there.
 
@@ -158,9 +167,7 @@ included.
 
 **A job that fails does not stop the queue.** It is marked in red with what went
 wrong and the next job starts: a night left to run is left because nobody is
-there to answer a question. `バッチ中止` stops both the job under the head and
-the queue behind it; the recording being written is finished first, so nothing
-half-written is left behind, and the jobs it did not reach go back to waiting.
+there to answer a question.
 
 ### Sleeping or shutting down at the end
 

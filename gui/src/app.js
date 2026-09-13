@@ -4431,7 +4431,9 @@ if (listen) {
     renderOutScreen();
     const all = ready();
     const finished = all.filter((c) => c.out.state === "done").length;
-    paintOutProgress(all.length ? (finished + done) / all.length : 0);
+    const overall = all.length ? (finished + done) / all.length : 0;
+    paintOutProgress(overall);
+    paintJobProgress(overall);
   });
 }
 
@@ -5172,7 +5174,9 @@ async function loadProject(path) {
   projectPath = path;
   savedShape = shapeOf();
   retitleMain();
-  show("input");
+  // Onto the screen the list is on -- except in the batch tool, which has no
+  // such screen on its bar and is never looking at anything but its queue.
+  if (!isTool()) show("input");
   renderList();
   note(
     refused
@@ -5297,7 +5301,7 @@ let batchPick = "";
 /// shows the queue but never runs it, so it never acts on this.
 let batchAfter = "nothing";
 let batchRunning = false;
-/// Set by バッチ中止, read between jobs and in the wait for the list.
+/// Set by すべて中止, read between jobs and in the wait for the list.
 let batchStopped = false;
 /// The countdown to sleeping or shutting down, while there is one.
 let afterTimer = null;
@@ -5373,6 +5377,12 @@ async function watchQueue() {
   await refreshQueue();
 }
 
+/// Whether this job is one a row's own 中止 can still be about: the one being
+/// written, or one whose turn has not come. A queue that is not running has
+/// nothing to call off, and a job that is finished -- written, failed or
+/// already called off -- is past being stopped.
+const canStop = (job) => batchRunning && (job.state === "running" || job.state === "waiting");
+
 function renderBatch() {
   // Not while a row is being carried: the list is rebuilt whole, and rebuilt
   // rows are not the ones the drag is holding on to. The poll that would have
@@ -5390,10 +5400,35 @@ function renderBatch() {
         <span class="nm">${esc(j.label)}</span>
         <span class="where">${esc(nameOf(j.path))}</span>
         <span class="note">${esc(j.note || "")}</span>
+        <button class="jobstop mini" data-stop="${i}"${canStop(j) ? "" : " hidden"}
+                >${esc(t("batch.stopJob"))}</button>
       </li>`
     )
     .join("");
   paintBatchButtons();
+}
+
+/// How far the job in hand has got, in its own row and in the queue's bar.
+///
+/// `done` is that job's whole list, which is what the row is about: a job is
+/// a project, and the recordings inside it are the job's business rather than
+/// the queue's. The bar above is the queue -- the jobs already settled, plus
+/// this one's share of the one that is not.
+///
+/// Painted only when the rounded percentage changes. The engine reports far
+/// oftener than that, and the list is rebuilt whole to draw it.
+function paintJobProgress(done) {
+  if (!batchRunning) return;
+  const job = batchJobs.find((j) => j.state === "running");
+  if (!job) return;
+  const said = t("batch.writingAt", { pct: Math.round(done * 100) });
+  if (job.note === said) return;
+  job.note = said;
+  const settled = batchJobs.filter((j) => j.state === "done" || j.state === "error").length;
+  const overall = batchJobs.length ? (settled + done) / batchJobs.length : 0;
+  el("batch-progress").style.width = `${Math.round(overall * 100)}%`;
+  el("batch-pct").textContent = `${Math.round(overall * 100)}%`;
+  renderBatch();
 }
 
 function paintBatchButtons() {
@@ -5402,13 +5437,10 @@ function paintBatchButtons() {
   // screen anyway -- see `batch_append`.
   const at = batchJobs.findIndex((j) => j.path === batchPick);
   const left = batchJobs.some((j) => j.state !== "done");
-  // The one control, which is whichever of the two the queue is ready for.
-  // Never disabled while it is running: a stop has to be available the moment
-  // it is wanted, and there is nothing else on that bar to want.
-  const go = el("batch-go");
-  go.textContent = t(batchRunning ? "batch.stop" : "batch.run");
-  go.classList.toggle("stop", batchRunning);
-  go.disabled = !batchRunning && (!left || exporting);
+  el("batch-go").disabled = batchRunning || !left || exporting;
+  // Never disabled while the queue runs: a stop has to be there the moment it
+  // is wanted.
+  el("batch-stop-all").disabled = !batchRunning;
   el("batch-add").disabled = batchRunning;
   el("batch-drop").disabled = batchRunning || at < 0;
   el("batch-more").disabled = batchRunning || !batchJobs.length;
@@ -5472,7 +5504,7 @@ const jobAt = (ev) => {
 /// selection of them -- there is nothing here for a press to hold open.
 el("batch-list").addEventListener("mousedown", (ev) => {
   const job = jobAt(ev);
-  if (!job || ev.button !== 0) return;
+  if (!job || ev.button !== 0 || ev.target.closest("[data-stop]")) return;
   batchPick = job.path;
   renderBatch();
   jobPress = { path: job.path, x: ev.clientX, y: ev.clientY };
@@ -5770,12 +5802,11 @@ el("batch-after").addEventListener("change", async () => {
   cancelAfter();
 });
 
-/// The one button: start the queue, or stop it.
-el("batch-go").addEventListener("click", () => {
-  if (!batchRunning) {
-    runBatch();
-    return;
-  }
+el("batch-go").addEventListener("click", runBatch);
+
+/// すべて中止: this job and every job behind it.
+el("batch-stop-all").addEventListener("click", () => {
+  if (!batchRunning) return;
   batchStopped = true;
   // And the job under the head. Stopping the queue and letting the disc it
   // is halfway through finish would be a stop nobody asked for.
@@ -5783,6 +5814,34 @@ el("batch-go").addEventListener("click", () => {
   el("batch-state").textContent = t("batch.stopping");
   if (exporting) el("out-state").textContent = t("out.aborting");
   paintBatchButtons();
+});
+
+/// A job called off on its own, from the row it is on.
+///
+/// The one being written stops the way 出力中止 stops it -- the recording in
+/// hand is finished first, so nothing half-written is left behind -- and the
+/// queue goes on to the next job. One whose turn has not come is simply
+/// passed over when the loop reaches it. Either way the row says so, and the
+/// job is waiting again at the next バッチ開始: calling a job off is about
+/// this run, and deleting it is what the bar is for.
+el("batch-list").addEventListener("click", (ev) => {
+  const at = ev.target.closest("[data-stop]");
+  if (!at) return;
+  ev.stopPropagation();
+  const job = batchJobs[Number(at.dataset.stop)];
+  if (!job || !canStop(job)) return;
+  // The same mark either way, because the loop takes it the same way: at the
+  // next moment control comes back to it. `abort` is the other half, and only
+  // for a job whose cut is already running -- it is what stops that, and it
+  // is read by the pass rather than by the loop.
+  const running = job.state === "running";
+  job.state = "skipped";
+  job.note = t("batch.jobStopped");
+  if (running) {
+    abort = true;
+    if (exporting) el("out-state").textContent = t("out.aborting");
+  }
+  renderBatch();
 });
 
 /// Wait until the index lane has finished with every row of the list it has
@@ -5809,7 +5868,7 @@ function listSettled() {
 /// one starts: a queue left overnight is left because nobody is there to
 /// answer a question, and a run that stopped at job two because job two's
 /// folder was full would have wasted the night on the four behind it. Only
-/// バッチ中止 stops the walk.
+/// すべて中止 stops the walk; a row's own 中止 stops only that job.
 async function runBatch() {
   if (batchRunning || exporting) return;
   await refreshQueue();
@@ -5820,6 +5879,8 @@ async function runBatch() {
   cancelAfter();
   batchRunning = true;
   batchStopped = false;
+  el("batch-progress").style.width = "0%";
+  el("batch-pct").textContent = "0%";
   for (const j of batchJobs) {
     if (j.state === "done") continue;
     j.state = "waiting";
@@ -5835,6 +5896,9 @@ async function runBatch() {
   for (let i = 0; i < batchJobs.length; i += 1) {
     const job = batchJobs[i];
     if (job.state === "done") continue;
+    // Called off from its own row before its turn came. The note it carries
+    // is the one that click left on it.
+    if (job.state === "skipped") continue;
     if (batchStopped) {
       job.state = "skipped";
       job.note = t("batch.skipped");
@@ -5845,16 +5909,25 @@ async function runBatch() {
     el("batch-state").textContent = t("batch.at", { name: job.label });
     renderBatch();
     await saveQueue();
+    // Called off from its own row while this was going on. The click sets the
+    // state and the note; all that is left here is to take the hint at the
+    // next moment control comes back, which is why it is asked after each of
+    // the three waits below rather than once.
+    const calledOff = () => job.state === "skipped";
     if (!(await loadProject(job.path))) {
       job.state = "error";
       job.note = t("batch.cannotOpen");
       failed += 1;
+    } else if (calledOff()) {
+      // Nothing to do: the note is the one the click left.
     } else {
       job.note = t("batch.reading");
       renderBatch();
       await listSettled();
       const list = ready();
-      if (batchStopped) {
+      if (calledOff()) {
+        // As above.
+      } else if (batchStopped) {
         job.state = "skipped";
         job.note = t("batch.skipped");
       } else if (!list.length) {
@@ -5864,22 +5937,22 @@ async function runBatch() {
       } else {
         job.note = t("batch.writing");
         renderBatch();
-        // Onto the screen that shows what is being written. A queue running
-        // behind a settings screen would be a queue with nothing to watch.
-        show("out");
         await runExport();
-        // A run that never started: `runExport` turns back at the door when
-        // a disc has nowhere to be written or a date cannot be read, and says
-        // so on the screen it sends you to. Here there is nobody on that
-        // screen.
-        if (list.every((c) => c.out.state === "idle")) {
+        // `runExport` turns back at the door onto the settings screen when a
+        // disc has nowhere to be written. There is nobody on that screen
+        // here, and this window is its queue.
+        show("batch");
+        if (calledOff() || abort) {
+          // Either this job was called off or the whole queue was; which of
+          // them decides whether there is a next job.
+          job.state = "skipped";
+          job.note = t(batchStopped ? "batch.stoppedHere" : "batch.jobStopped");
+        } else if (list.every((c) => c.out.state === "idle")) {
+          // A run that never started: the guard above sent it back without
+          // writing anything.
           job.state = "error";
           job.note = t("batch.refused");
           failed += 1;
-        } else if (abort) {
-          job.state = "skipped";
-          job.note = t("batch.stoppedHere");
-          batchStopped = true;
         } else {
           const bad = list.filter((c) => c.out.state === "error").length;
           const good = list.filter((c) => c.out.state === "done").length;
@@ -5899,6 +5972,8 @@ async function runBatch() {
     await takeAdded();
   }
   batchRunning = false;
+  el("batch-progress").style.width = "100%";
+  el("batch-pct").textContent = "100%";
   show("batch");
   el("batch-state").textContent = t("batch.summary", {
     done: wrote,

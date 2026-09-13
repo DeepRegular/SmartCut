@@ -68,21 +68,31 @@ so it gets the disc pass, the image and the sidecars by driving the screens that
 already do them, rather than by a second engine that would have to be kept in
 step with the first.
 
-**The tool's bar has no tabs.** It has two screens and never a choice between
-them: the queue while it is idle, and what is being written while it is not,
-which the run moves between on its own. What is on the bar instead is what a
-queue can be told to do. Starting and stopping are **one button** that says
-which of them it is about to do; beside it is 削除, with the two bulk forms of
-it — the rows already written, and all of them — on a caret hanging off that
-button rather than as controls of their own. All of it up there rather than at
-the foot of a screen because the tool leaves that screen while it works, and a
-stop button that goes away while it is wanted is not a stop button. Where a job
-sits in the queue is not on the bar at all: that is about one row rather than
-about the queue, so it is on the row — under the right button, and under the
-pointer that drags it, both following the clip list's own. The output screen's own 出力開始 and
-出力中止 come off in the tool for the same reason the settings screens do: the
-list it is holding is a job out of the queue, and the bar's button is the only
-thing that should be able to start or stop it.
+**The tool's bar has no tabs, and the tool never leaves the queue.** It runs
+one job at a time and the queue is the thing being watched, so the rows carry
+the run: the one in hand says how far it has got, and the bar under the list is
+the queue — the jobs already settled, plus this one's share of the one that is
+not.
+
+What is on the bar is what can be said to the queue as a whole. `バッチ開始`
+and `すべて中止` are two buttons rather than one that toggles, because they
+are not the same act said backwards: stopping the lot is one of *two* ways to
+stop something here. Beside them are ジョブ追加 and ジョブ削除, the latter with
+its two bulk forms — the rows already written, and all of them — on a caret
+hanging off it rather than as controls of their own.
+
+**What is about one job is on that job's row.** Its own `中止`, which appears
+only while the queue is running: the job being written stops the way 出力中止
+stops it — the recording in hand is finished first — and the queue goes on to
+the next, while one whose turn has not come is passed over when the loop
+reaches it. Either way it is waiting again at the next start, because calling a
+job off is about this run and deleting it is what the bar is for. Where it sits
+in the queue is on the row too, under the right button and under the pointer
+that drags it, both following the clip list's own.
+
+The output screen's own 出力開始 and 出力中止 come off in the tool for the reason
+the settings screens do: the list it is holding is a job out of the queue, and
+nothing should be able to start or stop it but the bar and the row.
 
 The queue is a file in the config directory. The tool re-reads it every two
 seconds and writes it as each job ends; the list window only ever *appends* to

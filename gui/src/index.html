@@ -28,14 +28,16 @@
       <!-- The batch tool's controls, and the whole of its bar. Hidden in the
            list window, which has no queue to run.
 
-           Up here rather than at the foot of a screen because the tool leaves
-           that screen while it works -- it goes to 出力 to show what is being
-           written -- and a button that goes away while it is wanted is not a
-           button. A queue is started and stopped and nothing else, so those
-           two are one button that says which of them it is about to do; what
-           is beside it is the other thing a queue needs, which is emptying. -->
+           What is on it is what can be said to the queue as a whole: start
+           it, stop all of it, and put jobs in and take them out. Stopping one
+           job is not up here -- that is said to the job, on its own row,
+           which is where its own 中止 sits while the queue is running. -->
       <div id="batch-bar" hidden>
         <button id="batch-go" data-i18n="batch.run">バッチ開始</button>
+        <!-- Stopping is not starting said backwards, and it is not the only
+             way to stop something: a job can be called off on its own, from
+             the row it is on. This one calls off the lot. -->
+        <button id="batch-stop-all" class="mini" data-i18n="batch.stopAll" disabled>すべて中止</button>
         <!-- What goes in, next to what comes out. The picker takes several at
              once, so this is the only way a queue is filled from the tool --
              the other is バッチに登録 in the list window. -->
@@ -586,6 +588,12 @@
         <div class="out-status">
           <div class="row"><span class="lbl" data-i18n="batch.stateLbl">状況:</span>
             <span id="batch-state" class="grow"></span></div>
+          <!-- The whole queue, not the recording: the jobs that are settled
+               plus how far the one in hand has got. What that one job is
+               doing is on its own row. -->
+          <div class="row"><span class="lbl" data-i18n="out.progressLbl">進捗:</span>
+            <div class="progress grow"><span id="batch-progress"></span></div>
+            <span id="batch-pct" class="num">0%</span></div>
           <div class="row"><span class="lbl" data-i18n="batch.afterLbl">完了後:</span>
             <select id="batch-after">
               <option value="nothing" data-i18n="batch.afterNothing">何もしない</option>

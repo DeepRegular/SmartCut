@@ -852,7 +852,7 @@ input[type="text"]::placeholder { color: var(--dim); }
   font-size: 12px; font-variant-numeric: tabular-nums;
 }
 #batch-list li {
-  display: grid; grid-template-columns: 30px 1fr 110px 200px;
+  display: grid; grid-template-columns: 30px 1fr 110px 200px 64px;
   gap: 10px; align-items: center; padding: 5px 10px;
   border-bottom: 1px solid #2c2c2c; cursor: default;
 }
@@ -892,7 +892,15 @@ input[type="text"]::placeholder { color: var(--dim); }
   border-radius: 2px; padding: 3px 18px; font: inherit; font-weight: 600; cursor: pointer;
 }
 #batch-go:hover:not(:disabled) { filter: brightness(1.08); }
-#batch-go.stop { background: #8c3b32; border-color: #a8473c; color: var(--text); }
+/* Stopping is not starting, so it is not drawn as though it were: a plain
+   button while there is nothing to stop, and the red of a stop while there
+   is. */
+#batch-stop-all:not(:disabled) { background: #8c3b32; border-color: #a8473c; color: var(--text); }
+/* The same said to one job, on its row. Held out of the way until the queue
+   is running -- there is nothing to call off before that -- and the column it
+   sits in stays, so the rows do not shuffle sideways when it appears. */
+.jobstop { padding: 1px 8px; font-size: 11px; justify-self: end; }
+.jobstop[hidden] { visibility: hidden; display: block; }
 #batch-go:disabled { background: #333; border-color: #4a4a4a; color: var(--dim); }
 /* The tool's bar: the run control, then 削除 with its two bulk forms hanging
    off a caret. `display` spelled out because the attribute loses against it,
