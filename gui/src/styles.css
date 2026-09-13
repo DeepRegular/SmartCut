@@ -881,7 +881,11 @@ input[type="text"]::placeholder { color: var(--dim); }
    saying what is being written and one saying how far it has got -- were two
    halves of one sentence given a line each; filling this one behind the words
    says both in the room the words already take. */
+/* The box and the button that calls the job off, side by side: what is being
+   done, and the way to stop it doing it. */
+#batch-list .doing { display: flex; align-items: stretch; gap: 8px; }
 #batch-list .say {
+  flex: 1; min-width: 0;
   position: relative; overflow: hidden;
   background: var(--sunken); border: 1px solid var(--line); border-radius: 2px;
   padding: 1px 6px; color: var(--dim);
@@ -897,7 +901,7 @@ input[type="text"]::placeholder { color: var(--dim); }
 #batch-list li.error .say { color: #ff9a90; }
 #batch-list li.running .say { color: var(--text); }
 /* The clock, the bar, and the button that calls this job off. */
-#batch-list .run { display: flex; align-items: center; gap: 8px; font-size: 11px; }
+#batch-list .run { display: flex; align-items: center; gap: 10px; font-size: 11px; }
 #batch-list .ela, #batch-list .rest { color: var(--dim); }
 #batch-list .pct { color: var(--text); }
 #batch-list .kill {

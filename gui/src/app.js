@@ -5444,12 +5444,10 @@ function jobLine(job) {
   return bits.join(t("sep"));
 }
 
-/// The line a row grows while there is something on it to stop: how far the
-/// job has got, and the button that calls it off. Only the job being written
-/// has a bar and a clock; one whose turn has not come has only the button.
-function jobRunLine(job, i) {
-  const stop = `<button class="jobstop mini" data-stop="${i}">${esc(t("batch.stopJob"))}</button>`;
-  if (job.state !== "running") return `<div class="run"><span class="grow"></span>${stop}</div>`;
+/// The clock under the bar, which only the job being written has: a job whose
+/// turn has not come has nothing to time.
+function jobRunLine(job) {
+  if (job.state !== "running") return "";
   const done = job.done || 0;
   const spent = job.began ? (Date.now() - job.began) / 1000 : 0;
   const left = done > 0.01 ? (spent / done) * (1 - done) : null;
@@ -5457,8 +5455,6 @@ function jobRunLine(job, i) {
       <span class="ela">${esc(t("batch.elapsed", { t: clock(spent) }))}</span>
       <span class="pct">${Math.round(done * 100)}%</span>
       <span class="rest">${left === null ? "" : esc(t("batch.left", { t: clock(left) }))}</span>
-      <span class="grow"></span>
-      ${stop}
     </div>`;
 }
 
@@ -5491,10 +5487,17 @@ function renderBatch() {
         <div class="meta">
           <div class="nm">${esc(j.label)}</div>
           <div class="sub dim">${esc(jobLine(j))}</div>
-          <div class="say"><span class="fill"></span><span class="what">${esc(
-            j.note || ""
-          )}</span></div>
-          ${canStop(j) ? jobRunLine(j, i) : ""}
+          <div class="doing">
+            <div class="say"><span class="fill"></span><span class="what">${esc(
+              j.note || ""
+            )}</span></div>
+            ${
+              canStop(j)
+                ? `<button class="jobstop mini" data-stop="${i}">${esc(t("batch.stopJob"))}</button>`
+                : ""
+            }
+          </div>
+          ${jobRunLine(j)}
         </div>
         ${
           batchRunning
