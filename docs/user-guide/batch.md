@@ -133,14 +133,15 @@ the list on screen at the end of the queue.
 `バッチ開始` while the queue is waiting and `バッチ中止` in red while it is being
 written. The tool has no tabs — it shows the queue while it is idle and what is
 being written while it is not, and moves between the two itself — so that
-button is in reach whichever of them is up. Beside it is `ジョブ削除`, which
-takes out the row you have clicked, and the `▾` on the end of it holds the two
-ways of doing that in bulk: `出力済のジョブを削除` and `すべて削除`. **That works whether or not the
+button is in reach whichever of them is up. Beside it are the two things a
+queue is made of: `ジョブ追加…`, which takes projects saved earlier, several at
+a time; and `ジョブ削除`, which takes out the row you have clicked, with the
+`▾` on the end of it holding the two ways of doing that in bulk —
+`出力済のジョブを削除` and `すべて削除`. **That works whether or not the
 tool is open**, and while it is running: an added job lands behind the one
 being written and the tool picks it up when it gets there.
 
-`プロジェクトを追加…` in the tool takes projects saved earlier, several at a
-time, and `上へ` and `下へ` reorder the queue.
+`上へ` and `下へ` under the bar reorder the queue.
 
 **The queue survives the program.** It is written to a file as it is changed,
 so a queue lined up at midnight is still there in the morning — and a job that

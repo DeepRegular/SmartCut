@@ -454,7 +454,7 @@ const CATALOG = {
     // --- バッチ出力 --------------------------------------------------------
     "batch.total": "ジョブ {n} 件（未出力 {left} 件）",
     "batch.idle": "保存したプロジェクト（.scproj）を追加してください",
-    "batch.add": "プロジェクトを追加…",
+    "batch.add": "ジョブ追加…",
     "batch.up": "上へ",
     "batch.down": "下へ",
     "batch.drop": "ジョブ削除",
@@ -1072,7 +1072,7 @@ const CATALOG = {
     // --- batch export ----------------------------------------------------
     "batch.total": "{n} jobs ({left} not yet written)",
     "batch.idle": "Add a saved project (.scproj)",
-    "batch.add": "Add projects…",
+    "batch.add": "Add jobs…",
     "batch.up": "Up",
     "batch.down": "Down",
     "batch.drop": "Remove job",
