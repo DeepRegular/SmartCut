@@ -127,7 +127,9 @@ SmartCut entirely — does not stop a queue that is being written.
 
 The queue lives there and nowhere else. The tool shows it, orders it, runs it
 and stops it; the main window's only part in it is `バッチに登録`, which puts
-the list on screen at the end of the queue.
+the list on screen at the end of the queue. **That works whether or not the
+tool is open**, and while it is running: an added job lands behind the one
+being written and the tool picks it up when it gets there.
 
 **The bar is what you say to the queue as a whole.** `バッチ開始` starts it and
 `すべて中止` calls off the job being written and every job behind it. Beside
@@ -146,19 +148,27 @@ is waiting again the next time you press `バッチ開始`: calling a job off is
 about this run, and `ジョブ削除` is what takes it out for good.
 
 The tool stays on the queue while it works, so **each job is a card rather
-than a line**: a picture off its first recording, what it holds and where it
-writes, and — underneath — what it is doing this second. **That line is also
-the progress bar**: it fills in behind the words as the job is written, so the
-sentence and how far it has got are in the same box. The elapsed time, the
-percentage and an estimate of what is left sit under it. The bar under the
-whole list is the queue itself.
+than a line**. It leads with **where the job writes** — the folder the project
+names, the folder of its own under it where there is one, and `/BDAV` where it
+is a disc; a project that writes beside its recordings says so instead, there
+being no one folder to name. Under that line is which project it is and how
+many recordings it holds, and under that, the bar.
 
-The line under a job's name is what its project says about itself: how many
-recordings it holds, whether it writes files or a disc, and the folder it
-writes into. Nothing about the output format, because a smart render mostly
-has none to state — what comes out is what went in, copied. **That works whether or not the
-tool is open**, and while it is running: an added job lands behind the one
-being written and the tool picks it up when it gets there.
+**The bar is a box that fills in**, and the numbers stand in it: the elapsed
+time on the left, the percentage in the middle, an estimate of what is left on
+the right, with the job's own `中止` beside it. They stay once the job has
+finished — the clock stops where the job stopped, what is left reads zero, and
+the bar keeps what it reached — so a queue that has run can be read afterwards.
+`中止` stays on every row too, and is live only while there is something on
+that row to stop.
+
+**Everything a row says in words is at the right of the line above the bar** —
+what is being written, or that the job is waiting, written, failed or called
+off — and it stops where the bar stops. So a bar with nothing in it is a job
+that has not started, and one filled end to end is a job that is written.
+
+Nothing on a card says what the output format is, because a smart render mostly
+has none to state: what comes out is what went in, copied.
 
 **The order is the running order**, and a row is moved by dragging it: press
 it, carry it to where it belongs, and a line shows the gap it will drop into.

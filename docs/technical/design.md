@@ -53,7 +53,13 @@ own**.
 The list window's three screens are tabs, and only one is up at a time. They are
 **stages you pass through**, not panels laid side by side.
 
-`バッチ出力` is not among them, for the cut editor's reason turned the other way
+**Cutting is not among them, because it is not something settled once for the whole
+list; it is done to one clip at a time.** As a tab it made the same window both the
+list and the thing being edited, and there was no moment anywhere that meant "done with
+this one". That moment is the OK button, and it belongs in a window of its own —
+`editor.html`, built by `open_editor` on the Rust side.
+
+`バッチ出力` is not among them either, for that reason turned the other way
 round: it is a queue of saved projects written out one after another, which is
 about many lists rather than about this one. It has no tab in the list window at
 all. What that window does with the queue is put a list into it — the button
@@ -71,11 +77,42 @@ step with the first.
 **The tool's bar has no tabs, and the tool never leaves the queue.** It runs
 one job at a time and the queue is the thing being watched, so the rows carry
 the run. Each is a card after the reference tool's own batch window: a picture
-off the job's first recording, what the project holds and where it writes, the
-sentence the pass itself is saying about what it is writing, and — for the job
-in hand — its own bar, elapsed and estimated remaining. The bar under the list
-is the queue: the jobs already settled, plus this one's share of the one that
-is not.
+off the job's first recording, then where the job writes — which is what a card
+leads with, the folder being the first thing one job differs from the next by —
+then which project it is and what it holds, with the sentence the pass itself
+is saying at the right of that line, and then the bar.
+
+The bar is a box that fills in, and what stands in it is the numbers: elapsed,
+percentage, estimated remaining. The sentence is not in there with them — it is
+the length of a sentence, and the three numbers would be read past each other
+to be found. It stops where the bar stops all the same: the card's lines are a
+two-column grid with the 中止 in the second column, so the right edge of what a
+row says and the right edge of its bar are the same edge by construction rather
+than by a number kept level with whatever the button's label comes to.
+
+Everything a row says in words is on that line above the bar, at the right:
+what is being written while it is, and what state the row is in when it is not.
+Which leaves the bar to mean one thing only — empty for a job that has not
+started, as far along as it got for one that ran, full for one that is written
+— rather than being a bar sometimes and a label the rest of the time.
+
+The numbers outlive the run. A job's clock is frozen where the job ended, and
+how far it got is carried across the two-second re-read of the queue file:
+that file holds what a job *is*, and how long it took is about a run rather
+than about a job, so a poll that took the file at its word would empty every
+bar two seconds after the queue finished. The percentage is always drawn, for
+the same reason the box has one line-height whatever is in it — a bar that
+changed thickness between a job that is running and one that has finished
+would be two different bars.
+
+**Nothing stands at the foot of the screen.** A line saying which job is
+running, and a bar saying how far the queue has got, were both being read off
+the rows already: one of them is lit and says what it is doing, and the
+counters above the list say how many are written. 完了後 is not on a screen
+either — it is a standing answer about the machine rather than about a job, so
+it folds out of the menu in the corner, where the rest of what is about the
+program lives. What the foot does carry, and only while it is counting, is the
+minute before the machine is put down.
 
 What a card knows about a project it reads once per session and keeps in
 memory, not in the queue file: the file holds what a job *is*, and this is
@@ -90,23 +127,27 @@ stop something here. Beside them are ジョブ追加 and ジョブ削除, the la
 its two bulk forms — the rows already written, and all of them — on a caret
 hanging off it rather than as controls of their own.
 
-**What is about one job is on that job's row.** Its own `中止`, which appears
-only while the queue is running: the job being written stops the way 出力中止
-stops it — the recording in hand is finished first — and the queue goes on to
-the next, while one whose turn has not come is passed over when the loop
-reaches it. Either way it is waiting again at the next start, because calling a
-job off is about this run and deleting it is what the bar is for. Where it sits
-in the queue is on the row too, under the right button and under the pointer
-that drags it, both following the clip list's own.
+**What is about one job is on that job's row.** Its own `中止` stands on every
+row and is live only while there is something on that row to stop: the job
+being written stops the way 出力中止 stops it — the recording in hand is
+finished first — and the queue goes on to the next, while one whose turn has
+not come is passed over when the loop reaches it. Either way it is waiting
+again at the next start, because calling a job off is about this run and
+deleting it is what the bar is for. Where it sits in the queue is on the row
+too, under the right button and under the pointer that drags it, both following
+the clip list's own; and the rest of what one job needs — the ends of the
+queue, putting a written job back, opening its project or the folder it writes
+into — is on that same menu, since none of it is about the queue.
 
 The output screen's own 出力開始 and 出力中止 come off in the tool for the reason
 the settings screens do: the list it is holding is a job out of the queue, and
 nothing should be able to start or stop it but the bar and the row. The menu in
 the corner goes the same way — the four items about a project, and the one that
 opens a batch tool, are not things a batch tool has any business offering, and
-neither are the keys that do the same. What is left of it there is 環境設定 and
-the about box, which are about the program rather than about any list: the tool
-is the process doing the cutting, so the answers on that panel are its own.
+neither are the keys that do the same. What is left of it there is 完了後,
+環境設定 and the about box, which are about the program rather than about any
+list: the tool is the process doing the cutting, so the answers on that panel
+are its own.
 
 The queue is a file in the config directory. The tool re-reads it every two
 seconds and writes it as each job ends; the list window only ever *appends* to
@@ -114,12 +155,6 @@ it, which is a write that cannot disturb the row the tool is working on, so the
 two need no turn-taking. What was appended is picked up as each job ends. A
 heartbeat file beside it, refreshed every ten seconds and believed for thirty,
 is how a second tool is refused while one is running.
-
-**Cutting is not among them, because it is not something settled once for the whole
-list; it is done to one clip at a time.** As a tab it made the same window both the
-list and the thing being edited, and there was no moment anywhere that meant "done with
-this one". That moment is the OK button, and it belongs in a window of its own —
-`editor.html`, built by `open_editor` on the Rust side.
 
 ### The input screen
 

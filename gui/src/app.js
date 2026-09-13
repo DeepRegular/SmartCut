@@ -5431,6 +5431,9 @@ async function lookAtJobs() {
     const held = doc && Array.isArray(doc.clips) ? doc.clips : [];
     const look = {
       dir: settings.dir || "",
+      // "" is a folder somebody emptied on purpose and null is one nobody has
+      // settled; neither is a folder. See `settings.subfolder`.
+      sub: settings.subfolder || "",
       disc: settings.mode === "bdav",
       image: settings.image || "",
       clips: held.length,
@@ -5449,13 +5452,26 @@ async function lookAtJobs() {
   }
 }
 
-/// The line under a job's name: what it holds and where it goes.
+/// Where the job writes, which is the line a card leads with.
+///
+/// The folder the project names, and the folder of its own under that where
+/// it has settled one. A disc goes into `BDAV` beneath it, said the way the
+/// output settings screen says it. A project that writes beside its
+/// recordings names no folder at all, and there is no one folder to name for
+/// it: three recordings off three disks are three answers.
+function jobPath(job) {
+  const look = jobLook.get(job.path) || {};
+  if (!look.dir) return t("outset.sameAsInput");
+  const dir = look.sub ? `${look.dir.replace(/[/\\]+$/, "")}/${look.sub}` : look.dir;
+  return look.disc ? t("outset.discPath", { dir }) : dir;
+}
+
+/// The line under it: which project this is and what it holds.
 function jobLine(job) {
   const look = jobLook.get(job.path) || {};
   const bits = [nameOf(job.path)];
   if (look.clips) bits.push(t("batch.clips", { n: look.clips }));
   if (look.disc) bits.push(look.image ? t("batch.toImage", { udf: look.image }) : t("batch.toDisc"));
-  if (look.dir) bits.push(look.dir);
   return bits.join(t("sep"));
 }
 
@@ -5527,7 +5543,7 @@ function renderBatch() {
         <span class="n">${i + 1}</span>
         ${poster}
         <div class="meta">
-          <div class="nm">${esc(j.label)}</div>
+          <div class="nm">${esc(jobPath(j))}</div>
           <div class="sub">
             <span class="who dim">${esc(jobLine(j))}</span>
             <span class="doingnow ${j.state}">${esc(j.note || "")}</span>
