@@ -858,14 +858,18 @@ input[type="text"]::placeholder { color: var(--dim); }
 }
 #batch-list li {
   display: grid; grid-template-columns: 30px 96px 1fr 22px;
-  gap: 8px; align-items: start;
+  gap: 8px; align-items: stretch;
   padding: 6px 8px; border-bottom: 1px solid #000;
   background: #2b3a44; cursor: pointer;
 }
-#batch-list .n { color: var(--dim); text-align: right; padding-top: 1px; }
-/* The same box, and the same reasons, as the clip list's poster. */
+#batch-list .n { color: var(--dim); text-align: right; padding-top: 1px; align-self: start; }
+/* The same box, and the same reasons, as the clip list's poster -- except for
+   its height, which is the card's rather than a number: the three lines beside
+   it are what a card is, and a picture ending short of them or running past
+   them would be a ragged edge down the whole list. `contain` keeps the
+   recording's own shape inside whatever height that comes to. */
 #batch-list .poster {
-  width: 96px; height: 54px; object-fit: contain; display: block;
+  width: 96px; height: auto; object-fit: contain; display: block;
   background: #000; border: 1px solid #000;
 }
 #batch-list .poster.blank { background: repeating-linear-gradient(45deg, #1a1a1a 0 6px, #141414 6px 12px); }
@@ -913,6 +917,7 @@ input[type="text"]::placeholder { color: var(--dim); }
 #batch-list .kill {
   background: none; border: 0; color: var(--dim); cursor: pointer;
   font-size: 14px; padding: 0 3px; align-self: start;
+  line-height: 1.1;
 }
 #batch-list .kill:hover { color: #ff8a80; }
 #batch-list li:hover { background: #33454f; }
