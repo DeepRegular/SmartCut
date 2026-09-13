@@ -3895,10 +3895,48 @@ fn now_secs() -> u64 {
 }
 
 /// The tool saying it is still here. Called on a timer by the batch window.
+///
+/// Its own name goes in beside the time, for [`batch_gone`]: a beat is taken
+/// away by the tool that wrote it and by nobody else.
 #[tauri::command]
 fn batch_beat(app: tauri::AppHandle) {
     if let Ok(dir) = batch_dir(&app) {
-        let _ = std::fs::write(dir.join("batch.beat"), now_secs().to_string());
+        let beat = format!("{} {}", std::process::id(), now_secs());
+        let _ = std::fs::write(dir.join("batch.beat"), beat);
+    }
+}
+
+/// The tool saying it has gone. Called as its process leaves.
+///
+/// Without this the tool is believed for [`BATCH_BEAT`] seconds after its
+/// window is closed, and somebody who closes it with the cross and opens it
+/// again is told there is already one running -- which is a program that has
+/// not noticed its own window close. The clock is still what decides, because
+/// a tool that is killed outright never gets here; this is the fast path out
+/// of it, not a replacement for it.
+///
+/// Only this process's own beat is taken away. A tool wedged past
+/// [`BATCH_BEAT`] lets a second one start, and the first one leaving must not
+/// then clear the second one's name off the door.
+fn batch_gone(app: &tauri::AppHandle) {
+    let Ok(dir) = batch_dir(app) else { return };
+    let beat = dir.join("batch.beat");
+    if beating(&beat).is_some_and(|(whose, _)| whose == Some(std::process::id())) {
+        let _ = std::fs::remove_file(&beat);
+    }
+}
+
+/// What the heartbeat file says: which process wrote it, and when.
+///
+/// `"pid seconds"`. A file written before the pid was in there reads as a
+/// time with nobody's name on it, which is a beat only the clock can retire.
+fn beating(path: &std::path::Path) -> Option<(Option<u32>, u64)> {
+    let text = std::fs::read_to_string(path).ok()?;
+    let mut said = text.split_whitespace();
+    let first = said.next()?;
+    match said.next() {
+        Some(at) => Some((first.parse().ok(), at.parse().ok()?)),
+        None => Some((None, first.parse().ok()?)),
     }
 }
 
@@ -3915,10 +3953,8 @@ fn batch_live(app: tauri::AppHandle) -> bool {
     let Ok(dir) = batch_dir(&app) else {
         return false;
     };
-    std::fs::read_to_string(dir.join("batch.beat"))
-        .ok()
-        .and_then(|s| s.trim().parse::<u64>().ok())
-        .is_some_and(|at| now_secs().saturating_sub(at) < BATCH_BEAT)
+    beating(&dir.join("batch.beat"))
+        .is_some_and(|(_, at)| now_secs().saturating_sub(at) < BATCH_BEAT)
 }
 
 /// Start the batch tool: this same program, with `--batch`.
@@ -4458,8 +4494,18 @@ pub fn run() {
             clear_cache,
             versions
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application")
+        .run(move |app, event| {
+            // The tool takes its name off the door as it goes, so that the
+            // list window knows at once. `quit` goes through here too --
+            // `exit` asks the loop to leave, it does not walk out of it.
+            if let tauri::RunEvent::Exit = event {
+                if batch {
+                    batch_gone(app);
+                }
+            }
+        });
 }
 
 #[cfg(test)]

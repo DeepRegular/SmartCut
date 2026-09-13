@@ -5387,6 +5387,32 @@ async function refreshQueue() {
   if (isTool()) lookAtJobs();
 }
 
+/// Take back a job left saying it was running, which is a job whose tool went
+/// away under it -- closed with the cross, or killed, part way through.
+///
+/// Only the tool calls this, and only as it opens. Nothing else could leave
+/// such a row: there is never a second tool over the queue (see `batch_live`),
+/// so a row that says it is running when this window opens is running nowhere.
+///
+/// Back to 待機 rather than to 失敗, because nothing about the job failed --
+/// it is where 出力開始 would put it anyway, which is what makes the queue
+/// pick it up again. The note is the one thing left to say, and it is gone
+/// the moment the queue is started.
+async function takeBackInterrupted() {
+  let any = false;
+  for (const job of batchJobs) {
+    if (job.state !== "running") continue;
+    job.state = "waiting";
+    job.note = t("batch.interrupted");
+    job.began = undefined;
+    job.done = undefined;
+    any = true;
+  }
+  if (!any) return;
+  renderBatch();
+  await saveQueue();
+}
+
 /// The tool's timer. While it is running a job the queue in hand is the truth
 /// and the file is a copy of it, so reading it back would put a row the loop
 /// has just moved on from back on the screen.
@@ -6415,6 +6441,9 @@ async function settleRole() {
   invoke("batch_beat");
   setInterval(() => invoke("batch_beat"), 10000);
   await watchQueue();
+  // Before the timer, so that a row left over from a tool that went away mid
+  // job is mended once rather than found again on every poll.
+  await takeBackInterrupted();
   setInterval(watchQueue, 2000);
 }
 

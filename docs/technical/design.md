@@ -157,7 +157,22 @@ seconds and writes it as each job ends; the list window only ever *appends* to
 it, which is a write that cannot disturb the row the tool is working on, so the
 two need no turn-taking. What was appended is picked up as each job ends. A
 heartbeat file beside it, refreshed every ten seconds and believed for thirty,
-is how a second tool is refused while one is running.
+is how a second tool is refused while one is running. **The tool takes its own
+heartbeat away as it goes**: telling somebody who closed the tool with the cross
+and opened it again that there is already one running is a program that has not
+noticed its own window close. The thirty seconds stay, because a tool that is
+killed outright never gets to take anything away — the clock is still what
+decides, and this is only the fast way out of it. What it takes away is its own
+heartbeat alone, which is why the process id is written beside the time: a tool
+wedged past the thirty seconds lets a second one start, and the first one
+leaving must not then clear the second one's name off the door.
+
+**A row still saying it is running is taken back to waiting as the tool
+opens.** There is never a second tool over the queue, so a row that says it is
+running the moment this one opens is running nowhere: it is where a tool went
+away mid job. Back to waiting rather than to failed, because nothing about the
+job failed — it is what 出力開始 does to every row that is not done — and the
+note says why it is back, until the next start clears it.
 
 ### The input screen
 
