@@ -150,8 +150,10 @@ about this run, and `ジョブ削除` is what takes it out for good.
 The tool stays on the queue while it works, so **each job is a card rather
 than a line**. It leads with **where the job writes** — the folder the project
 names, the folder of its own under it where there is one, and `/BDAV` where it
-is a disc; a project that writes beside its recordings says so instead, there
-being no one folder to name. Under that line is which project it is and how
+is a disc. A project with no folder of its own writes beside its recordings, so
+that is the folder shown; where the recordings come from more than one folder
+there is no single answer, and the line names the first with a word for how
+many others there are. Under that line is which project it is and how
 many recordings it holds, and under that, the bar.
 
 **The bar is a box that fills in**, and the numbers stand in it: the elapsed

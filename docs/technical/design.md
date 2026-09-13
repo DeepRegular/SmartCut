@@ -78,7 +78,10 @@ step with the first.
 one job at a time and the queue is the thing being watched, so the rows carry
 the run. Each is a card after the reference tool's own batch window: a picture
 off the job's first recording, then where the job writes — which is what a card
-leads with, the folder being the first thing one job differs from the next by —
+leads with, the folder being the first thing one job differs from the next by,
+and worked out the way `outputBase` works it out, so that a project with no
+folder of its own names the one its recordings sit in rather than saying it
+has none —
 then which project it is and what it holds, with the sentence the pass itself
 is saying at the right of that line, and then the bar.
 

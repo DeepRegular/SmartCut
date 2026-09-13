@@ -5429,8 +5429,19 @@ async function lookAtJobs() {
     }
     const settings = (doc && doc.settings) || {};
     const held = doc && Array.isArray(doc.clips) ? doc.clips : [];
+    // Where a project with no folder of its own writes: beside each recording,
+    // which is `home` for one read off a disc and the recording's own folder
+    // otherwise -- the same answer `outputBase` arrives at. Kept as the
+    // distinct ones, because a list drawn from three folders has three.
+    const beside = [];
+    for (const c of held) {
+      if (!c || typeof c.path !== "string") continue;
+      const at = c.home ? c.home.replace(/[/\\]+$/, "") : dirOf(c.path).replace(/[/\\]+$/, "");
+      if (at && !beside.includes(at)) beside.push(at);
+    }
     const look = {
       dir: settings.dir || "",
+      beside,
       // "" is a folder somebody emptied on purpose and null is one nobody has
       // settled; neither is a folder. See `settings.subfolder`.
       sub: settings.subfolder || "",
@@ -5461,9 +5472,16 @@ async function lookAtJobs() {
 /// it: three recordings off three disks are three answers.
 function jobPath(job) {
   const look = jobLook.get(job.path) || {};
-  if (!look.dir) return t("outset.sameAsInput");
-  const dir = look.sub ? `${look.dir.replace(/[/\\]+$/, "")}/${look.sub}` : look.dir;
-  return look.disc ? t("outset.discPath", { dir }) : dir;
+  const beside = look.beside || [];
+  // A project with no folder of its own writes beside its recordings, so that
+  // is the folder to name -- and where the recordings came from more than one
+  // folder, the first of them with a word for the rest. There is no one
+  // answer there, and `/somewhere` alone would be the wrong half of it.
+  const root = look.dir || beside[0] || "";
+  if (!root) return t("outset.sameAsInput");
+  const at = look.sub ? `${root.replace(/[/\\]+$/, "")}/${look.sub}` : root;
+  if (look.disc) return t("outset.discPath", { dir: at });
+  return look.dir || beside.length < 2 ? at : t("batch.andElsewhere", { dir: at, n: beside.length - 1 });
 }
 
 /// The line under it: which project this is and what it holds.
