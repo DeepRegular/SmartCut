@@ -80,6 +80,14 @@ A recording named in the project may have been moved to another folder, or
 deleted. The **project still opens normally.** Only the row for that recording
 says what happened. The other nineteen work as usual.
 
+## A saved project is also a batch job
+
+The `バッチ出力` tab lines saved projects up in a queue, and the batch tool —
+a window in a process of its own — writes them out one after another
+overnight. A job is a `.scproj` and nothing besides, because the file already
+holds everything a job is. See
+[Working through a batch](batch.md#an-overnight-queue-of-projects).
+
 ## Files from a newer version
 
 A `.scproj` carries a version number. **A file saved by a newer version than

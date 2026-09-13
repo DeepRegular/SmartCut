@@ -3762,6 +3762,241 @@ fn quit(app: tauri::AppHandle) {
     app.exit(0);
 }
 
+// --- バッチ出力 -----------------------------------------------------------
+//
+// The queue of projects to write out, and the second process that writes
+// them. Both halves are here because both are about a file two programs
+// share.
+//
+// **The batch tool is a process of its own.** It is this same executable
+// started with `--batch`: the window it opens is the same window, showing the
+// queue and the output screen and nothing else, so a job runs through exactly
+// the code a person runs it through by hand. Its own process because that is
+// what the thing is for -- a queue lined up at midnight has to go on running
+// when the window it was lined up in is closed.
+//
+// Which leaves the queue itself, which both processes read and one of them
+// writes. A file, then, rather than the window's own store: a job added in
+// the main window while the tool is running has to reach the tool, and the
+// tool's progress has to reach the window. Re-read on a timer by both -- two
+// seconds, which is a queue -- and written whole by whichever of them changed
+// it, with the tool's changes winning while it runs because the main window's
+// side of it is then append-only. See `batch_append`.
+
+/// One job: the project to write out, and how it went.
+#[derive(Serialize, Deserialize, Clone, Default)]
+#[serde(default)]
+struct BatchJob {
+    path: String,
+    label: String,
+    /// waiting, running, done, error or skipped. A string because it is the
+    /// frontend's word for the row's class as much as it is a state.
+    state: String,
+    note: String,
+}
+
+/// The queue as it sits on disk.
+#[derive(Serialize, Deserialize, Clone, Default)]
+#[serde(default)]
+struct BatchQueue {
+    jobs: Vec<BatchJob>,
+    /// What to do once it is empty: nothing, sleep or shutdown.
+    after: String,
+}
+
+/// Where the queue and the tool's heartbeat live: beside the preferences
+/// rather than in the caches, because neither is something a person clearing
+/// their scratch files means to throw away.
+fn batch_dir(app: &tauri::AppHandle) -> Result<std::path::PathBuf, String> {
+    let dir = app.path().app_config_dir().map_err(|e| {
+        format!(
+            "{}: {e}",
+            tr!("設定の置き場が分かりません", "No config directory")
+        )
+    })?;
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    Ok(dir)
+}
+
+/// The queue, or an empty one where there has never been a job.
+///
+/// A file that will not parse is an empty queue as well. It is a list of work
+/// to do rather than the work itself, and a tool that refused to start
+/// because of it would be a tool nobody could clear.
+#[tauri::command]
+fn batch_read(app: tauri::AppHandle) -> BatchQueue {
+    let Ok(dir) = batch_dir(&app) else {
+        return BatchQueue::default();
+    };
+    std::fs::read_to_string(dir.join("batch.json"))
+        .ok()
+        .and_then(|body| serde_json::from_str(&body).ok())
+        .unwrap_or_default()
+}
+
+/// Put the queue down whole.
+///
+/// Written beside itself and renamed over, so that a process reading it while
+/// this runs reads one state or the other and never half of each.
+#[tauri::command]
+fn batch_write(app: tauri::AppHandle, queue: BatchQueue) -> Result<(), String> {
+    let dir = batch_dir(&app)?;
+    let body = serde_json::to_string_pretty(&queue).map_err(|e| e.to_string())?;
+    let temp = dir.join("batch.json.new");
+    std::fs::write(&temp, body).map_err(|e| e.to_string())?;
+    std::fs::rename(&temp, dir.join("batch.json")).map_err(|e| e.to_string())
+}
+
+/// Add to the end of the queue without touching the rest of it.
+///
+/// What the main window uses, and the reason the two processes do not have to
+/// take turns: the tool owns every other field of every other row, so a job
+/// handed over while it is running lands behind the one it is working on and
+/// nothing it has written is read back stale and put down again.
+///
+/// A path already in the queue is not added twice.
+#[tauri::command]
+fn batch_append(app: tauri::AppHandle, jobs: Vec<BatchJob>) -> Result<BatchQueue, String> {
+    let mut queue = batch_read(app.clone());
+    for job in jobs {
+        if queue.jobs.iter().any(|j| j.path == job.path) {
+            continue;
+        }
+        queue.jobs.push(job);
+    }
+    batch_write(app, queue.clone())?;
+    Ok(queue)
+}
+
+/// How long a tool that has stopped saying anything is still believed.
+///
+/// Three heartbeats. The tool says so every ten seconds, and a machine busy
+/// enough to write two discs at once is a machine that can miss one.
+const BATCH_BEAT: u64 = 30;
+
+fn now_secs() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
+
+/// The tool saying it is still here. Called on a timer by the batch window.
+#[tauri::command]
+fn batch_beat(app: tauri::AppHandle) {
+    if let Ok(dir) = batch_dir(&app) {
+        let _ = std::fs::write(dir.join("batch.beat"), now_secs().to_string());
+    }
+}
+
+/// Whether a batch tool is running.
+///
+/// By the clock rather than by asking the operating system about a process
+/// id, which is the one way to ask that means the same thing on all three
+/// platforms -- and the one that cannot mistake some unrelated program that
+/// has since been given the same number for a batch tool.
+#[tauri::command]
+fn batch_live(app: tauri::AppHandle) -> bool {
+    let Ok(dir) = batch_dir(&app) else {
+        return false;
+    };
+    std::fs::read_to_string(dir.join("batch.beat"))
+        .ok()
+        .and_then(|s| s.trim().parse::<u64>().ok())
+        .is_some_and(|at| now_secs().saturating_sub(at) < BATCH_BEAT)
+}
+
+/// Start the batch tool: this same program, with `--batch`.
+///
+/// Refused where one is already running. Two tools over one queue would each
+/// believe they owned it, and the file says which jobs are done.
+#[tauri::command]
+fn open_batch_tool(app: tauri::AppHandle) -> Result<(), String> {
+    if batch_live(app) {
+        return Err(tr!(
+            "バッチ出力ツールはすでに起動しています",
+            "The batch tool is already running"
+        )
+        .to_string());
+    }
+    let exe = std::env::current_exe().map_err(|e| e.to_string())?;
+    std::process::Command::new(exe)
+        .arg("--batch")
+        .spawn()
+        .map(|_| ())
+        .map_err(|e| e.to_string())
+}
+
+/// Put this window in the middle of the screen.
+///
+/// The tool asks once it is up rather than being placed as it is built: a
+/// window started from another window is placed by the desktop against the
+/// one that started it, and on the screen this was tested on that left it
+/// half off the bottom. Asked after the page is running, which is after the
+/// desktop has had its say.
+#[tauri::command]
+fn center_window(app: tauri::AppHandle) {
+    if let Some(w) = app.get_webview_window(MAIN) {
+        let _ = w.center();
+    }
+}
+
+/// Which of the two this window is: the list window, or the batch tool.
+///
+/// The frontend is the same page either way -- the tool needs the list and
+/// the output screen to do the work -- so this is what it asks to know which
+/// of its screens to put on the bar.
+#[tauri::command]
+fn window_role(role: State<Role>) -> String {
+    role.0.clone()
+}
+
+struct Role(String);
+
+/// Put the machine to sleep, or turn it off, now that the queue is empty.
+///
+/// The one thing a batch tool is for that a list of jobs is not: somebody who
+/// queues six discs at midnight is not sitting there at four. The frontend
+/// asks for this only after the countdown on the batch screen has run out
+/// with nobody stopping it, so by the time it arrives here the answer has
+/// been given twice.
+///
+/// Handed to the platform's own command rather than done here. Each of these
+/// is what the machine's own menu would have run, and the ones that need to
+/// be root say so themselves rather than being run as root by this: a
+/// program that cuts video has no business holding that.
+#[tauri::command]
+fn after_batch(what: String) -> Result<(), String> {
+    let sleep = what == "sleep";
+    let (program, args): (&str, &[&str]) = if cfg!(target_os = "windows") {
+        match sleep {
+            // The documented way to suspend from a command line, and the
+            // only one: Windows has no `shutdown` switch for sleep. The
+            // three numbers are hibernate-no, force-yes, wake-events-no.
+            true => ("rundll32.exe", &["powrprof.dll,SetSuspendState", "0,1,0"]),
+            false => ("shutdown", &["/s", "/t", "0"]),
+        }
+    } else if cfg!(target_os = "macos") {
+        match sleep {
+            true => ("pmset", &["sleepnow"]),
+            false => (
+                "osascript",
+                &["-e", "tell application \"System Events\" to shut down"],
+            ),
+        }
+    } else {
+        match sleep {
+            true => ("systemctl", &["suspend"]),
+            false => ("systemctl", &["poweroff"]),
+        }
+    };
+    std::process::Command::new(program)
+        .args(args)
+        .spawn()
+        .map(|_| ())
+        .map_err(|e| format!("{program}: {e}"))
+}
+
 /// The language this side should write in, as the frontend settled it.
 ///
 /// Said once at startup and again whenever it is changed in 環境設定. The
@@ -4045,6 +4280,15 @@ pub fn run() {
     prefs::from_env();
 
     let argv = Argv(std::env::args().skip(1).filter(|a| !a.starts_with('-')).collect());
+    // Started as the batch tool rather than as the list window. The same
+    // program and the same page; what differs is which screens are on the bar
+    // and that nothing about an unsaved list stands in the way of closing it.
+    // See the バッチ出力 section.
+    let batch = std::env::args().any(|a| a == "--batch");
+    let role = Role(match batch {
+        true => "batch".to_string(),
+        false => "main".to_string(),
+    });
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .manage(Opened::default())
@@ -4057,11 +4301,18 @@ pub fn run() {
         .manage(Subs::default())
         .manage(BatchStop::default())
         .manage(argv)
+        .manage(role)
         // The list window is declared in the configuration rather than built
         // here, so `setup` is the first moment there is one to attach
         // anything to.
-        .setup(|app| {
+        .setup(move |app| {
             if let Some(w) = app.get_webview_window(MAIN) {
+                // The tool is named for what it is, at once: the frontend
+                // retitles the list window as a project is opened, and the
+                // tool opens one per job.
+                if batch {
+                    let _ = w.set_title(tr!("バッチ出力 — SmartCut", "Batch — SmartCut"));
+                }
                 let asker = app.handle().clone();
                 w.on_window_event(move |event| {
                     if let tauri::WindowEvent::CloseRequested { api, .. } = event {
@@ -4126,6 +4377,15 @@ pub fn run() {
             write_project,
             read_project,
             set_dirty,
+            after_batch,
+            batch_read,
+            batch_write,
+            batch_append,
+            batch_beat,
+            batch_live,
+            open_batch_tool,
+            window_role,
+            center_window,
             quit,
             set_lang,
             os_locale,

@@ -233,7 +233,12 @@ const ready = () => clips.filter((c) => c.state === "ready");
 
 // --- screens ------------------------------------------------------------
 
-const SCREENS = { input: "screen-input", outset: "screen-outset", out: "screen-out" };
+const SCREENS = {
+  input: "screen-input",
+  outset: "screen-outset",
+  out: "screen-out",
+  batch: "screen-batch",
+};
 let screen = "input";
 
 function show(name) {
@@ -258,6 +263,7 @@ function show(name) {
     heldAfterRun = false;
     renderOutScreen();
   }
+  if (name === "batch") renderBatch();
 }
 
 for (const b of document.querySelectorAll(".screens .tab")) {
@@ -1549,7 +1555,9 @@ function paintButtons() {
   el("select-all").disabled = clips.length === 0;
   el("remove-clip").disabled = !can.remove;
   el("remove-all").disabled = clips.length === 0;
-  el("run-export").disabled = ready().length === 0 || exporting;
+  el("run-export").disabled = ready().length === 0 || exporting || batchRunning;
+  // The queue drives this screen, so what it can do changes with it.
+  if (el("batch-run")) paintBatchButtons();
 }
 
 function paintProps() {
@@ -4960,6 +4968,17 @@ let shownDirty = null;
 function retitleMain() {
   if (!invoke) return;
   const unsaved = dirty();
+  // The batch tool is named for what it is, whatever project it happens to
+  // have open: the list it is holding is one job of a queue, not the work.
+  // Nor is there unsaved work in it to stop it closing -- a job it did not
+  // finish is a job still in the queue.
+  if (isTool()) {
+    if (shownTitle !== t("batch.windowTitle")) {
+      shownTitle = t("batch.windowTitle");
+      invoke("retitle_main", { title: shownTitle });
+    }
+    return;
+  }
   const title =
     !projectPath && !clips.length && !unsaved
       ? "SmartCut"
@@ -5090,7 +5109,8 @@ async function openProject() {
   await loadProject(Array.isArray(picked) ? picked[0] : picked);
 }
 
-/// Put a project file's list up, in place of whatever is there.
+/// Put a project file's list up, in place of whatever is there. `false` where
+/// the file could not be read, or is from a later version of the program.
 ///
 /// A recording the file names that is no longer where it was is not stopped
 /// on: the row goes up like any other and the index pass says what happened
@@ -5103,14 +5123,14 @@ async function loadProject(path) {
     doc = JSON.parse(await invoke("read_project", { path }));
   } catch (e) {
     note(t("project.cannotOpen", { name: nameOf(path), e }));
-    return;
+    return false;
   }
   // A number this program has never heard of is a file from a later one, and
   // what it would lose on the way in is exactly the part it does not
   // recognise. Dropping somebody's cuts quietly is worse than not opening.
   if (!doc || typeof doc.smartcut !== "number" || doc.smartcut > PROJECT_VERSION) {
     note(t("project.wrongFormat", { name: nameOf(path) }));
-    return;
+    return false;
   }
   // Not merely emptied: a lane reading a row has to be told to stop, and the
   // editor open on one has nothing left to be about. All of which `remove`
@@ -5161,6 +5181,10 @@ async function loadProject(path) {
   })();
   fillFirstLook();
   pump();
+  // Whether the list is up, for the one caller that has something to do
+  // about it: バッチ出力 runs the job after this one rather than writing out
+  // whatever was on screen when the file turned out to be missing.
+  return true;
 }
 
 // The window's cross, over work that is not on disc. Rust holds the close
@@ -5227,6 +5251,535 @@ window.addEventListener("keydown", (ev) => {
     newProject();
   }
 });
+
+// --- バッチ出力 -----------------------------------------------------------
+//
+// A queue of saved projects, written out one after another without anybody in
+// the room. The 出力 screen already writes a whole list in one pass; what this
+// adds is the other axis -- six lists, settled on six different evenings, each
+// with its own output folder and its own idea of what the disc is called.
+//
+// **A job is a `.scproj` and nothing else.** A project already holds the
+// recordings, the cuts and the output settings, which is the whole of what a
+// job is, so a queue that held a second copy of any of it would be a queue
+// that could disagree with the file. What the queue keeps is the path, a name
+// to show it under, and whether it has been written yet.
+//
+// **The tool that runs it is a process of its own** -- this same program
+// started with `--batch`, which opens this screen and the 出力 screen and
+// nothing else. That is the point of it: a queue lined up at midnight has to
+// go on being written when the window it was lined up in is closed. See
+// `open_batch_tool`.
+//
+// Both windows show this screen and read the queue off the same file, a
+// couple of seconds apart. The list window may add to it, reorder it and
+// clear it while nothing is running, and may add to it at any time -- an
+// append does not touch a row the tool is working on. Everything else about a
+// running queue is the tool's.
+//
+// Running a job is exactly what a person does by hand: open the project, wait
+// for the list to be read, press 出力開始. So that is what this does -- the
+// same `loadProject` and the same `runExport`, in a loop -- rather than a
+// second engine that would have to be kept in step with the first. A job gets
+// the disc pass, the image, the sidecars and the failures of the screen it is
+// driving, because it *is* the screen it is driving.
+
+/// Which window this is: "main" for the list window, "batch" for the tool.
+let batchRole = "main";
+/// The jobs, in the order they will run.
+let batchJobs = [];
+/// Which row the ↑↓ and 削除 buttons are about, by path, or "".
+let batchPick = "";
+/// What to do when the queue empties. The tool's answer; the list window
+/// shows the queue but never runs it, so it never acts on this.
+let batchAfter = "nothing";
+let batchRunning = false;
+/// Set by バッチ中止, read between jobs and in the wait for the list.
+let batchStopped = false;
+/// Whether a tool is running, as the list window last heard.
+let batchToolLive = false;
+/// The countdown to sleeping or shutting down, while there is one.
+let afterTimer = null;
+
+const isTool = () => batchRole === "batch";
+
+/// Put the queue down whole. Only ever called where this window owns it: the
+/// tool always, and the list window while no tool is running.
+async function saveQueue() {
+  if (!invoke) return;
+  try {
+    await invoke("batch_write", {
+      queue: {
+        jobs: batchJobs.map((j) => ({
+          path: j.path,
+          label: j.label,
+          // A job in the middle of something is not a state to come back in:
+          // whatever was running has stopped with the process it ran in.
+          state: j.state === "done" || j.state === "error" ? j.state : "waiting",
+          note: j.note || "",
+        })),
+        after: batchAfter,
+      },
+    });
+  } catch (e) {
+    note(t("batch.queueFailed", { e: String(e) }));
+  }
+}
+
+/// Read the queue back off the file.
+///
+/// On a timer in both windows: it is how the list window watches the tool get
+/// on with it, and how the tool notices a job added while it runs. The row
+/// somebody had picked is kept by path rather than by place, because the
+/// place can have moved.
+async function refreshQueue() {
+  if (!invoke) return;
+  let queue;
+  try {
+    queue = await invoke("batch_read");
+  } catch {
+    return;
+  }
+  batchJobs = (queue && Array.isArray(queue.jobs) ? queue.jobs : [])
+    .filter((j) => j && typeof j.path === "string" && j.path)
+    .map((j) => ({
+      path: j.path,
+      label: j.label || stemOf(j.path),
+      state: j.state || "waiting",
+      note: j.note || "",
+    }));
+  batchAfter = queue && queue.after ? queue.after : "nothing";
+  if (isTool()) el("batch-after").value = batchAfter;
+  renderBatch();
+}
+
+/// The same, plus what the list window has to ask about that the tool does
+/// not: whether a tool is running at all.
+async function watchQueue() {
+  // While the tool is running a job, the queue in hand is the truth and the
+  // file is a copy of it. Reading it back here would put a row the loop has
+  // just moved on from back on the screen.
+  if (batchRunning) return;
+  if (!isTool()) {
+    try {
+      batchToolLive = await invoke("batch_live");
+    } catch {
+      batchToolLive = false;
+    }
+  }
+  await refreshQueue();
+}
+
+function renderBatch() {
+  el("batch-total").textContent = t("batch.total", {
+    n: batchJobs.length,
+    left: batchJobs.filter((j) => j.state !== "done").length,
+  });
+  el("batch-idle").hidden = batchJobs.length > 0;
+  el("batch-list").innerHTML = batchJobs
+    .map(
+      (j, i) => `<li class="${j.state}${j.path === batchPick ? " picked" : ""}" data-i="${i}">
+        <span class="n">${i + 1}</span>
+        <span class="nm">${esc(j.label)}</span>
+        <span class="where">${esc(nameOf(j.path))}</span>
+        <span class="note">${esc(j.note || "")}</span>
+      </li>`
+    )
+    .join("");
+  if (!isTool()) {
+    el("batch-tool-state").textContent = t(
+      batchToolLive ? "batch.toolRunning" : "batch.toolIdle"
+    );
+  }
+  paintBatchButtons();
+}
+
+function paintBatchButtons() {
+  // Nothing in the list window may rearrange a queue that is being written:
+  // the tool owns every row's state, and a reorder here would be read back
+  // over the top of it. Adding is the exception -- see `batch_append`.
+  const held = batchRunning || (!isTool() && batchToolLive);
+  const at = batchJobs.findIndex((j) => j.path === batchPick);
+  const left = batchJobs.some((j) => j.state !== "done");
+  el("batch-run").disabled = batchRunning || !left || exporting;
+  el("batch-stop").disabled = !batchRunning;
+  el("batch-open").disabled = batchToolLive || !left;
+  el("batch-add").disabled = batchRunning;
+  el("batch-add-current").disabled = batchRunning;
+  el("batch-up").disabled = held || at <= 0;
+  el("batch-down").disabled = held || at < 0 || at >= batchJobs.length - 1;
+  el("batch-remove").disabled = held || at < 0;
+  el("batch-clear").disabled = held || !batchJobs.length;
+}
+
+/// Put a project in the queue, under the name its own file gives it.
+///
+/// The file is read here only to count the recordings: a row that said nothing
+/// but a path would be a row nobody could tell from the one under it. Read
+/// again when the job runs, so a project edited in between is written out as
+/// it now stands.
+async function addBatchJob(path) {
+  if (batchJobs.some((j) => j.path === path)) {
+    note(t("batch.already", { name: stemOf(path) }));
+    return false;
+  }
+  let clipsIn = 0;
+  try {
+    const doc = JSON.parse(await invoke("read_project", { path }));
+    clipsIn = Array.isArray(doc.clips) ? doc.clips.length : 0;
+  } catch (e) {
+    note(t("project.cannotOpen", { name: nameOf(path), e }));
+    return false;
+  }
+  // Appended by the backend rather than written from here: the tool may be
+  // partway down the queue, and everything it has written about the rows
+  // above has to survive a job being added below them.
+  try {
+    await invoke("batch_append", {
+      jobs: [{ path, label: stemOf(path), state: "waiting", note: t("batch.clips", { n: clipsIn }) }],
+    });
+  } catch (e) {
+    note(t("batch.queueFailed", { e: String(e) }));
+    return false;
+  }
+  await refreshQueue();
+  return true;
+}
+
+el("batch-list").addEventListener("click", (ev) => {
+  const li = ev.target.closest("li[data-i]");
+  if (!li || batchRunning) return;
+  const job = batchJobs[Number(li.dataset.i)];
+  batchPick = job ? job.path : "";
+  renderBatch();
+});
+
+el("batch-add").addEventListener("click", async () => {
+  const picked = await dialog.open({
+    multiple: true,
+    filters: [{ name: t("dialog.project"), extensions: [PROJECT_EXT] }],
+  });
+  if (!picked) return;
+  for (const path of Array.isArray(picked) ? picked : [picked]) await addBatchJob(path);
+});
+
+/// この一覧を追加. A job is a file, so the list has to be one first: an
+/// unsaved list put in the queue would be a job that ran whatever the file
+/// said at midnight rather than what is on screen now.
+el("batch-add-current").addEventListener("click", async () => {
+  if (!clips.length) {
+    note(t("project.nothingToSave"));
+    return;
+  }
+  if (!projectPath || dirty()) {
+    if (!(await saveProject())) return;
+  }
+  if (await addBatchJob(projectPath)) note(t("batch.added", { name: stemOf(projectPath) }));
+});
+
+const moveBatch = async (by) => {
+  const at = batchJobs.findIndex((j) => j.path === batchPick);
+  const to = at + by;
+  if (at < 0 || to < 0 || to >= batchJobs.length) return;
+  const [job] = batchJobs.splice(at, 1);
+  batchJobs.splice(to, 0, job);
+  await saveQueue();
+  renderBatch();
+};
+el("batch-up").addEventListener("click", () => moveBatch(-1));
+el("batch-down").addEventListener("click", () => moveBatch(1));
+
+el("batch-remove").addEventListener("click", async () => {
+  const at = batchJobs.findIndex((j) => j.path === batchPick);
+  if (at < 0) return;
+  batchJobs.splice(at, 1);
+  batchPick = (batchJobs[Math.min(at, batchJobs.length - 1)] || {}).path || "";
+  await saveQueue();
+  renderBatch();
+});
+
+el("batch-clear").addEventListener("click", async () => {
+  if (!batchJobs.length) return;
+  const go = await dialog.ask(t("batch.clearBody", { n: batchJobs.length }), {
+    title: t("batch.clearTitle"),
+    kind: "warning",
+  });
+  if (!go) return;
+  batchJobs = [];
+  batchPick = "";
+  await saveQueue();
+  renderBatch();
+});
+
+/// Start the tool, which is a second process of this same program.
+el("batch-open").addEventListener("click", async () => {
+  try {
+    await invoke("open_batch_tool");
+  } catch (e) {
+    note(String(e));
+    return;
+  }
+  note(t("batch.opened"));
+  // It takes a moment to come up and say so; until it has, the button would
+  // otherwise still be offering to start a second one.
+  batchToolLive = true;
+  renderBatch();
+});
+
+el("batch-after").addEventListener("change", async () => {
+  batchAfter = el("batch-after").value;
+  await saveQueue();
+  // A choice made while the countdown is already running is about the next
+  // run, not this one: the queue it was going to act on is already empty.
+  cancelAfter();
+});
+
+el("batch-stop").addEventListener("click", () => {
+  batchStopped = true;
+  // And the job under the head. Stopping the queue and letting the disc it
+  // is halfway through finish would be a stop nobody asked for.
+  abort = true;
+  el("batch-state").textContent = t("batch.stopping");
+  if (exporting) el("out-state").textContent = t("out.aborting");
+});
+
+el("batch-run").addEventListener("click", runBatch);
+
+/// Wait until the index lane has finished with every row of the list it has
+/// just been handed.
+///
+/// `ready()` is what the output pass writes, and a row is only in it once it
+/// has been read. Pressing 出力開始 the instant a project opens would write
+/// whichever rows happened to be done -- which by hand is impossible to do,
+/// because by hand there is a person waiting for the list to settle.
+function listSettled() {
+  return new Promise((done) => {
+    const tick = () => {
+      if (batchStopped) return done();
+      if (!clips.some((c) => c.state === "queued" || c.state === "indexing")) return done();
+      setTimeout(tick, 250);
+    };
+    tick();
+  });
+}
+
+/// Walk the queue.
+///
+/// Every job is attempted. One that fails is recorded as failed and the next
+/// one starts: a queue left overnight is left because nobody is there to
+/// answer a question, and a run that stopped at job two because job two's
+/// folder was full would have wasted the night on the four behind it. Only
+/// バッチ中止 stops the walk.
+async function runBatch() {
+  if (batchRunning || exporting) return;
+  await refreshQueue();
+  if (!batchJobs.some((j) => j.state !== "done")) return;
+  // The list on screen is about to be replaced, once per job. Asked once,
+  // here, and never again while the queue runs.
+  if (!(await askReplace(t("batch.replaceTitle"), t("batch.replaceBody")))) return;
+  cancelAfter();
+  batchRunning = true;
+  batchStopped = false;
+  for (const j of batchJobs) {
+    if (j.state === "done") continue;
+    j.state = "waiting";
+    j.note = t("batch.waiting");
+  }
+  renderBatch();
+  await saveQueue();
+  const from = Date.now();
+  let wrote = 0;
+  let failed = 0;
+  // By index rather than over the array, because the array is replaced
+  // whenever a job is added from the other window; see `takeAdded`.
+  for (let i = 0; i < batchJobs.length; i += 1) {
+    const job = batchJobs[i];
+    if (job.state === "done") continue;
+    if (batchStopped) {
+      job.state = "skipped";
+      job.note = t("batch.skipped");
+      continue;
+    }
+    job.state = "running";
+    job.note = t("batch.opening");
+    el("batch-state").textContent = t("batch.at", { name: job.label });
+    renderBatch();
+    await saveQueue();
+    if (!(await loadProject(job.path))) {
+      job.state = "error";
+      job.note = t("batch.cannotOpen");
+      failed += 1;
+    } else {
+      job.note = t("batch.reading");
+      renderBatch();
+      await listSettled();
+      const list = ready();
+      if (batchStopped) {
+        job.state = "skipped";
+        job.note = t("batch.skipped");
+      } else if (!list.length) {
+        job.state = "error";
+        job.note = t("batch.nothingReadable");
+        failed += 1;
+      } else {
+        job.note = t("batch.writing");
+        renderBatch();
+        // Onto the screen that shows what is being written. A queue running
+        // behind a settings screen would be a queue with nothing to watch.
+        show("out");
+        await runExport();
+        // A run that never started: `runExport` turns back at the door when
+        // a disc has nowhere to be written or a date cannot be read, and says
+        // so on the screen it sends you to. Here there is nobody on that
+        // screen.
+        if (list.every((c) => c.out.state === "idle")) {
+          job.state = "error";
+          job.note = t("batch.refused");
+          failed += 1;
+        } else if (abort) {
+          job.state = "skipped";
+          job.note = t("batch.stoppedHere");
+          batchStopped = true;
+        } else {
+          const bad = list.filter((c) => c.out.state === "error").length;
+          const good = list.filter((c) => c.out.state === "done").length;
+          job.state = bad ? "error" : "done";
+          job.note = bad
+            ? t("batch.someFailed", { n: bad, all: list.length })
+            : t("batch.wrote", { n: good });
+          if (bad) failed += 1;
+          else wrote += 1;
+        }
+      }
+    }
+    renderBatch();
+    // Written down as each job ends, and the jobs added while it ran are
+    // taken at the same moment. Both halves of that are the file: the list
+    // window appends to it, and this is where what it appended is noticed.
+    await takeAdded();
+  }
+  batchRunning = false;
+  show("batch");
+  el("batch-state").textContent = t("batch.summary", {
+    done: wrote,
+    failed: failed ? t("batch.summaryFailed", { n: failed }) : "",
+    stopped: batchStopped ? t("batch.summaryStopped") : "",
+    elapsed: clock((Date.now() - from) / 1000),
+  });
+  renderBatch();
+  await saveQueue();
+  // The machine is only put down over a queue that ran to the end. A queue
+  // somebody stopped is a queue somebody is standing at.
+  if (!batchStopped) startAfter();
+}
+
+/// Put the queue down, and pick up any job the other window added while this
+/// one was busy.
+///
+/// The rows in hand win for everything they are about -- they are what has
+/// just been written -- and anything in the file this loop has never seen is
+/// added to the end, which is where the other window put it.
+async function takeAdded() {
+  let queue = null;
+  try {
+    queue = await invoke("batch_read");
+  } catch {
+    queue = null;
+  }
+  const added = ((queue && queue.jobs) || [])
+    .filter((j) => j && j.path && !batchJobs.some((mine) => mine.path === j.path))
+    .map((j) => ({
+      path: j.path,
+      label: j.label || stemOf(j.path),
+      state: "waiting",
+      note: j.note || t("batch.waiting"),
+    }));
+  batchJobs = batchJobs.concat(added);
+  if (added.length) renderBatch();
+  await saveQueue();
+}
+
+/// The countdown to sleeping or shutting down.
+///
+/// A minute, and a button. Failures do not cancel it: 完了後 is an answer
+/// about the queue finishing rather than about it succeeding, and a run that
+/// wrote nine discs and failed the tenth is still a run somebody went to bed
+/// over. What the failures get is the list, which is on screen when the
+/// machine comes back.
+function startAfter() {
+  if (batchAfter === "nothing" || !invoke) return;
+  const what = batchAfter;
+  let left = 60;
+  el("batch-countdown-row").hidden = false;
+  const tick = () => {
+    el("batch-countdown").textContent = t(
+      what === "sleep" ? "batch.sleepIn" : "batch.shutdownIn",
+      { s: left }
+    );
+    if (left <= 0) {
+      cancelAfter();
+      invoke("after_batch", { what }).catch((e) => note(t("batch.afterFailed", { e: String(e) })));
+      return;
+    }
+    left -= 1;
+    afterTimer = setTimeout(tick, 1000);
+  };
+  tick();
+}
+
+function cancelAfter() {
+  if (afterTimer) clearTimeout(afterTimer);
+  afterTimer = null;
+  el("batch-countdown-row").hidden = true;
+}
+
+el("batch-after-cancel").addEventListener("click", () => {
+  cancelAfter();
+  note(t("batch.afterCancelled"));
+});
+
+/// Which window this is, and what that window shows.
+///
+/// The tool is the same page as the list window because it needs the list and
+/// the output screen to do the work -- it opens a project per job, the way a
+/// person would. What it does not need is the two screens where a list is
+/// built and settled: the answers on them belong to the project being run,
+/// and a tool offering to change them would be offering to change something
+/// it is about to read off a file. So they come off the bar.
+async function settleRole() {
+  if (!invoke) return;
+  try {
+    batchRole = (await invoke("window_role")) || "main";
+  } catch {
+    batchRole = "main";
+  }
+  el("batch-run-panel").hidden = !isTool();
+  el("batch-open-panel").hidden = isTool();
+  if (isTool()) {
+    for (const which of ["input", "outset"]) {
+      const tab = document.querySelector(`.screens .tab[data-screen="${which}"]`);
+      if (tab) tab.hidden = true;
+    }
+    // Nor is there a project to save: what the tool opens it opens to write
+    // out, and 保存 over the file it was handed is not something a queue
+    // should be able to do on its own.
+    for (const id of ["menu-new", "menu-open", "menu-save", "menu-save-as"]) {
+      if (el(id)) el(id).hidden = true;
+    }
+    show("batch");
+    // The window was painted before this answer arrived, so whatever it put
+    // in the title bar was the answer for the other kind of window.
+    shownTitle = "";
+    retitleMain();
+    invoke("center_window");
+    // Saying it is here, so the list window offers to *start* a tool only
+    // where there is not one already. See `batch_live`.
+    invoke("batch_beat");
+    setInterval(() => invoke("batch_beat"), 10000);
+  }
+  await watchQueue();
+  setInterval(watchQueue, 2000);
+}
 
 // --- the program's own menu ----------------------------------------------
 //
@@ -5688,6 +6241,7 @@ function relocalise() {
   renderList();
   renderOutset();
   renderOutScreen();
+  renderBatch();
   paintQueueNote();
   paintAbout();
   // The editor's window title is this window's doing -- it names the clip,
@@ -5796,6 +6350,11 @@ tellBackend(invoke)
     return null;
   })
   .then(() => prefs.tellBackend(invoke))
+  // Which window this is, and the queue it is to show. Before the list: the
+  // tool has no list to open and the two screens where one is built come off
+  // its bar, so a window that painted them and took them away a tick later
+  // would be a window that flickered into being the wrong program.
+  .then(() => settleRole())
   // The one of them that can be refused is the folder for the scratch files,
   // and a folder that was there when it was chosen can be gone by the next
   // start -- an external disk, a share that is not mounted yet. Said on the

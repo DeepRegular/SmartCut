@@ -103,6 +103,64 @@ half-written file behind. (If you stop it while it is writing a BDAV disc, what
 it has written is taken back off the disc as well — the reason is in
 [Using the GUI](gui.md#4-export).)
 
+## An overnight queue of projects
+
+One list is one evening's work. `バッチ出力` — the fourth tab — is the other
+axis: **a queue of saved projects, written out one after another with nobody in
+the room.**
+
+A job is a project file and nothing else. A `.scproj` already holds the
+recordings, the cuts, the track choices and the output settings, so the queue
+only has to say which files and in what order.
+
+```
+①  cut an evening's recordings and save the project (Ctrl+S)
+②  バッチ出力 → この一覧を追加
+③  do the same for the next evening's work
+④  press バッチ出力ツール, then バッチ開始 in the window that opens, and go to bed
+```
+
+`プロジェクトを追加…` takes projects saved earlier, several at a time. `上へ`
+and `下へ` reorder the queue, `削除` takes one out, `全消去` empties it.
+
+**The queue survives the program.** It is written to a file as it is changed,
+so a queue lined up at midnight is still there in the morning — and a job that
+has been written stays in the list with what it wrote, and is not written
+again. Take it out with `削除` when it is no longer wanted.
+
+### The tool is a window of its own
+
+`バッチ出力ツール` opens **a second window, in a process of its own**. That is
+the point of it: closing the main window — or quitting SmartCut entirely — does
+not stop a queue that is being written. The tool shows the queue and the 出力
+screen and nothing else, and `バッチ開始` is in there rather than here.
+
+Both windows read the same queue, a couple of seconds apart, so the main window
+shows each job's progress as the tool gets to it. **Projects can be added while
+the tool is running**; they land at the end of the queue and the tool picks them
+up when it finishes the job it is on. Reordering and removing wait until it has
+finished — those are the tool's rows while it is working.
+
+Each job runs exactly as it would by hand: the project is opened, the list is
+read, and the 出力 screen writes it — the disc pass, the image and the sidecars
+included.
+
+**A job that fails does not stop the queue.** It is marked in red with what went
+wrong and the next job starts: a night left to run is left because nobody is
+there to answer a question. `バッチ中止` stops both the job under the head and
+the queue behind it.
+
+### Sleeping or shutting down at the end
+
+`完了後` takes `何もしない`, `スリープ` or `シャットダウン`, and is remembered
+with the queue. It fires once the queue has run to the end — including a queue
+that ended with failures, which are still on the screen when the machine comes
+back — and never over a queue somebody stopped.
+
+Before anything happens there is **a minute's countdown with a 中止 button**
+next to it. A machine that turns itself off is a machine that should say so
+first.
+
 ## Recordings on a network share (NAS)
 
 Recordings on a NAS can be dropped in like any other, and a share can be used as

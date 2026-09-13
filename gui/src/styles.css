@@ -815,6 +815,9 @@ input[type="text"]::placeholder { color: var(--dim); }
 .out-idle[hidden] { display: none; }
 #screen-out .panel { margin: 8px 8px 0; }
 .out-run { display: flex; gap: 10px; padding: 8px; align-items: stretch; }
+/* `display` on the element beats the attribute, as with `.screen`. The batch
+   screen has one of these per window role and shows the one it is. */
+.out-run[hidden] { display: none; }
 .out-buttons { display: flex; flex-direction: column; gap: 6px; width: 132px; flex: none; }
 .primary.big { padding: 14px 10px; font-size: 13px; }
 .out-status {
@@ -836,3 +839,35 @@ input[type="text"]::placeholder { color: var(--dim); }
 #out-list li.done .note { color: #7ee787; }
 #out-list li.error .note { color: #ff9a90; }
 #out-list li.running .nm { color: var(--sel); font-weight: 600; }
+
+/* バッチ出力. The queue takes the room the 出力 screen gives its stage,
+   because a queue is the thing being watched here and there is no picture to
+   watch: a job is a whole project, and the frame under the head belongs to
+   the 出力 screen, which is where it is shown while a job runs. */
+#batch-list {
+  list-style: none; margin: 0; padding: 0; flex: 1; min-height: 0; overflow-y: auto;
+  font-size: 12px; font-variant-numeric: tabular-nums;
+}
+#batch-list li {
+  display: grid; grid-template-columns: 30px 1fr 110px 200px;
+  gap: 10px; align-items: center; padding: 5px 10px;
+  border-bottom: 1px solid #2c2c2c; cursor: default;
+}
+#batch-list .n { color: var(--dim); text-align: right; }
+#batch-list .nm { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+#batch-list .where { color: var(--dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+#batch-list .note { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: var(--dim); }
+#batch-list li.picked { background: var(--sunken); }
+#batch-list li.done .note { color: #7ee787; }
+#batch-list li.error .note { color: #ff9a90; }
+#batch-list li.running .nm { color: var(--sel); font-weight: 600; }
+/* An empty queue is a screen with nothing on it, so the line that says so
+   stands in the middle of the room rather than at the bottom of a list of
+   nothing. */
+#batch-list:empty { flex: none; }
+.batch-idle {
+  flex: 1; display: flex; align-items: center; justify-content: center;
+  padding: 28px; text-align: center; color: var(--dim);
+}
+.batch-idle[hidden] { display: none; }
+#batch-countdown { color: #ffcc66; }

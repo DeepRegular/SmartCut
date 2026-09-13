@@ -19,7 +19,7 @@ list to a finished export.
 
 ---
 
-## First: four screens, two windows
+## First: five screens, three windows
 
 The screens are laid out in the order you use them.
 
@@ -29,11 +29,19 @@ The screens are laid out in the order you use them.
 | **Cut editor** | **Its own window** | Open one recording, cut it, press **OK** to go back |
 | **Output settings** | List window, second tab | Where files go, what format, what happens to the sound. **Applies to the whole list** |
 | **Output** | List window, third tab | Write the list out, top to bottom |
+| **Batch** | List window, fourth tab | Line up saved projects in a queue |
+| **Batch tool** | **Its own window, its own process** | Write the queue out, top to bottom. Closing the main window does not stop it. See [Working through a batch](batch.md#an-overnight-queue-of-projects) |
 
-Only the cut editor is a separate window. The other three are settings you
-decide once for the whole list, but cutting is done one recording at a time, and
-it needs a moment where you can say "this one is finished". That moment is the
-**OK** button.
+The cut editor is a separate window because the three tabs above it are
+settings you decide once for the whole list, and cutting is done one recording
+at a time: it needs a moment where you can say "this one is finished". That
+moment is the **OK** button.
+
+The batch tab is not a stage of the work and is last for that reason: it is
+about a queue of lists rather than about this one. What actually writes the
+queue out is a second window in a process of its own, because a queue lined up
+at midnight has to go on being written after the window it was lined up in is
+closed.
 
 ---
 
