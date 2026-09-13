@@ -577,8 +577,6 @@
       <div class="infobar">
         <span id="batch-total">ジョブ 0 件</span>
         <span class="spacer"></span>
-        <button id="batch-up" class="mini" data-i18n="batch.up">上へ</button>
-        <button id="batch-down" class="mini" data-i18n="batch.down">下へ</button>
       </div>
 
       <ol id="batch-list"></ol>
@@ -846,6 +844,16 @@
          Outside the screens rather than in the list, because it is put where
          the pointer is: a `position: fixed` box has no business being nested
          inside the thing it is drawn over. -->
+    <!-- And the same on a job in the batch tool. Two items, because moving a
+         job is the only thing that is about *that* job rather than about the
+         queue: adding and removing are on the bar, where they are about the
+         queue as a whole. Put where the pointer is, like the one above, and
+         outside the screens for the same reason. -->
+    <div id="job-menu" class="menu at-pointer" hidden>
+      <button class="menu-item" id="job-up" data-i18n="rowmenu.moveUp">上に移動</button>
+      <button class="menu-item" id="job-down" data-i18n="rowmenu.moveDown">下に移動</button>
+    </div>
+
     <div id="row-menu" class="menu at-pointer" hidden>
       <button class="menu-item" id="row-edit">
         <span data-i18n="rowmenu.edit">カット編集</span>

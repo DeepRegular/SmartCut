@@ -141,7 +141,10 @@ a time; and `ジョブ削除`, which takes out the row you have clicked, with th
 tool is open**, and while it is running: an added job lands behind the one
 being written and the tool picks it up when it gets there.
 
-`上へ` and `下へ` under the bar reorder the queue.
+**The order is the running order**, and a row is moved by dragging it: press
+it, carry it to where it belongs, and a line shows the gap it will drop into.
+Escape puts it back. A right click on a row offers `上に移動` and `下に移動`
+for the same job one step at a time.
 
 **The queue survives the program.** It is written to a file as it is changed,
 so a queue lined up at midnight is still there in the morning — and a job that

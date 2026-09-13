@@ -861,6 +861,13 @@ input[type="text"]::placeholder { color: var(--dim); }
 #batch-list .where { color: var(--dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 #batch-list .note { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: var(--dim); }
 #batch-list li:hover { background: #33454f; }
+/* Carried with the mouse, the way the clip list carries a row, and drawn the
+   same way: the row dimmed where it came from, and the line it would land on
+   sitting on the edge of the row it would land above. */
+#batch-list.reordering, #batch-list.reordering li { cursor: grabbing; }
+#batch-list li.dragging { opacity: .45; }
+#batch-list li.dropbefore { box-shadow: inset 0 3px 0 var(--sel); }
+#batch-list li.dropafter { box-shadow: inset 0 -3px 0 var(--sel); }
 #batch-list li.picked { background: #175a70; }
 #batch-list li.picked .n, #batch-list li.picked .where { color: #cfe9f2; }
 #batch-list li.done .note { color: #7ee787; }

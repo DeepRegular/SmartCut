@@ -255,6 +255,7 @@ function show(name) {
   // menu would leave it to reappear later.
   showMenu(false);
   showBatchMenu(false);
+  closeJobMenu();
   closeRowMenu();
   if (name === "outset") renderOutset();
   // Coming to the screen is asking it what it has to say, so it goes back to
@@ -5300,6 +5301,10 @@ let batchRunning = false;
 let batchStopped = false;
 /// The countdown to sleeping or shutting down, while there is one.
 let afterTimer = null;
+/// The button is down on a row of the queue, and it is not (yet) a drag.
+let jobPress = null;
+/// The drag proper: which row is being carried, and where it would land.
+let jobDrag = null;
 
 const isTool = () => batchRole === "batch";
 
@@ -5369,6 +5374,10 @@ async function watchQueue() {
 }
 
 function renderBatch() {
+  // Not while a row is being carried: the list is rebuilt whole, and rebuilt
+  // rows are not the ones the drag is holding on to. The poll that would have
+  // repainted it comes round again the moment the row lands.
+  if (jobDrag) return;
   el("batch-total").textContent = t("batch.total", {
     n: batchJobs.length,
     left: batchJobs.filter((j) => j.state !== "done").length,
@@ -5401,8 +5410,6 @@ function paintBatchButtons() {
   go.classList.toggle("stop", batchRunning);
   go.disabled = !batchRunning && (!left || exporting);
   el("batch-add").disabled = batchRunning;
-  el("batch-up").disabled = batchRunning || at <= 0;
-  el("batch-down").disabled = batchRunning || at < 0 || at >= batchJobs.length - 1;
   el("batch-drop").disabled = batchRunning || at < 0;
   el("batch-more").disabled = batchRunning || !batchJobs.length;
   el("batch-clear-done").disabled = !batchJobs.some((j) => j.state === "done");
@@ -5454,12 +5461,33 @@ async function addBatchJob(path) {
   return true;
 }
 
-el("batch-list").addEventListener("click", (ev) => {
+const jobAt = (ev) => {
   const li = ev.target.closest("li[data-i]");
-  if (!li || batchRunning) return;
-  const job = batchJobs[Number(li.dataset.i)];
-  batchPick = job ? job.path : "";
+  return li ? batchJobs[Number(li.dataset.i)] : null;
+};
+
+/// Picking a row and starting to carry it are the same press: which of the
+/// two it was is settled by whether the pointer travels. Picked on the way
+/// down either way, because a queue has one row picked rather than a
+/// selection of them -- there is nothing here for a press to hold open.
+el("batch-list").addEventListener("mousedown", (ev) => {
+  const job = jobAt(ev);
+  if (!job || ev.button !== 0) return;
+  batchPick = job.path;
   renderBatch();
+  jobPress = { path: job.path, x: ev.clientX, y: ev.clientY };
+});
+
+el("batch-list").addEventListener("contextmenu", (ev) => {
+  const job = jobAt(ev);
+  if (!job) return;
+  ev.preventDefault();
+  // The menu is about the row it was opened on, so that row becomes the
+  // picked one -- a menu doing its work to a row nobody pointed at is the
+  // one thing it must not do.
+  batchPick = job.path;
+  renderBatch();
+  openJobMenu(ev.clientX, ev.clientY);
 });
 
 el("batch-add").addEventListener("click", async () => {
@@ -5496,17 +5524,176 @@ el("enlist-export").addEventListener("click", async () => {
   }
 });
 
-const moveBatch = async (by) => {
+/// Move the picked job one place, which is what the right button's menu
+/// offers and what a short drag comes to.
+async function moveBatch(by) {
   const at = batchJobs.findIndex((j) => j.path === batchPick);
   const to = at + by;
-  if (at < 0 || to < 0 || to >= batchJobs.length) return;
+  if (batchRunning || at < 0 || to < 0 || to >= batchJobs.length) return;
   const [job] = batchJobs.splice(at, 1);
   batchJobs.splice(to, 0, job);
   await saveQueue();
   renderBatch();
-};
-el("batch-up").addEventListener("click", () => moveBatch(-1));
-el("batch-down").addEventListener("click", () => moveBatch(1));
+}
+
+// --- the menu on the right button, and carrying a row -------------------
+//
+// Where a job goes in the queue is the one thing that is about *that* job
+// rather than about the queue: adding and removing are on the bar, where they
+// are about the queue as a whole. So it is on the row -- under the right
+// button, and under the pointer that drags it.
+//
+// Both follow the clip list, which does the same two things to the same kind
+// of row; see 並べ替え（ドラッグ）there. Plain mouse events rather than HTML5
+// drag and drop, because Tauri takes the window's drags before the page sees
+// them. What differs is that a queue has one row picked rather than a
+// selection of them, which is most of why this is shorter.
+
+const jobMenu = el("job-menu");
+
+/// A declaration rather than a `const`, because `show` is above this and puts
+/// the menu away.
+function closeJobMenu() {
+  if (jobMenu) jobMenu.hidden = true;
+}
+
+function openJobMenu(x, y) {
+  const at = batchJobs.findIndex((j) => j.path === batchPick);
+  el("job-up").disabled = batchRunning || at <= 0;
+  el("job-down").disabled = batchRunning || at < 0 || at >= batchJobs.length - 1;
+  showBatchMenu(false);
+  jobMenu.style.left = `${x}px`;
+  jobMenu.style.top = `${y}px`;
+  jobMenu.hidden = false;
+  // Measured once it is up and its labels are in it, and held inside the
+  // window, the way the clip list's own menu is.
+  const box = jobMenu.getBoundingClientRect();
+  jobMenu.style.left = `${Math.max(0, Math.min(x, window.innerWidth - box.width - 2))}px`;
+  jobMenu.style.top = `${Math.max(0, Math.min(y, window.innerHeight - box.height - 2))}px`;
+}
+
+el("job-up").addEventListener("click", () => {
+  closeJobMenu();
+  moveBatch(-1);
+});
+el("job-down").addEventListener("click", () => {
+  closeJobMenu();
+  moveBatch(1);
+});
+
+// A press anywhere else shuts it -- `mousedown`, because the press that
+// opened it was a right button and a right button elsewhere is a click that
+// never arrives.
+window.addEventListener("mousedown", (ev) => {
+  if (!ev.target.closest("#job-menu")) closeJobMenu();
+});
+window.addEventListener("wheel", closeJobMenu, true);
+window.addEventListener("keydown", (ev) => {
+  if (ev.key === "Escape") closeJobMenu();
+});
+
+/// Where the pointer would put the row: an index into `batchJobs` counted the
+/// way an insertion is -- 0 above the first, `length` below the last. The
+/// half-way line of a row is where it changes.
+function jobDropAt(y) {
+  const rows = el("batch-list").children;
+  for (let i = 0; i < rows.length; i++) {
+    const r = rows[i].getBoundingClientRect();
+    if (y < r.top + r.height / 2) return i;
+  }
+  return rows.length;
+}
+
+/// The carried row dimmed, and a line where it would land.
+function paintJobDrag() {
+  const rows = el("batch-list").children;
+  for (let i = 0; i < rows.length; i++) {
+    const job = batchJobs[i];
+    rows[i].classList.toggle("dragging", !!jobDrag && !!job && job.path === jobDrag.path);
+    rows[i].classList.toggle("dropbefore", !!jobDrag && jobDrag.at === i);
+    rows[i].classList.toggle(
+      "dropafter",
+      !!jobDrag && jobDrag.at === rows.length && i === rows.length - 1
+    );
+  }
+}
+
+function clearJobDrag() {
+  jobPress = null;
+  if (!jobDrag) return;
+  jobDrag = null;
+  el("batch-list").classList.remove("reordering");
+  paintJobDrag();
+}
+
+/// Take the carried row out and put it back in at the drop. The index counted
+/// the row being carried, so what it means once that row is out is however
+/// many of the rows left were above it.
+async function endJobDrag() {
+  const { path, at } = jobDrag;
+  const from = batchJobs.findIndex((j) => j.path === path);
+  clearJobDrag();
+  if (from < 0) return;
+  const to = at > from ? at - 1 : at;
+  if (to === from) {
+    paintJobDrag();
+    return;
+  }
+  const [job] = batchJobs.splice(from, 1);
+  batchJobs.splice(to, 0, job);
+  await saveQueue();
+  renderBatch();
+}
+
+window.addEventListener("mousemove", (ev) => {
+  if (!jobPress && !jobDrag) return;
+  if (!jobDrag) {
+    // Far enough that a click under an unsteady hand is still a click.
+    if (Math.abs(ev.clientX - jobPress.x) + Math.abs(ev.clientY - jobPress.y) < 4) return;
+    if (batchRunning) return;
+    jobDrag = { path: jobPress.path, at: batchJobs.findIndex((j) => j.path === jobPress.path) };
+    el("batch-list").classList.add("reordering");
+  }
+  jobDrag.y = ev.clientY;
+  jobDrag.at = jobDropAt(ev.clientY);
+  paintJobDrag();
+  jobEdge();
+});
+
+window.addEventListener("mouseup", () => {
+  if (jobDrag) endJobDrag();
+  jobPress = null;
+});
+
+// Escape puts it back, and so does the pointer leaving the window: neither
+// should land a row somewhere unasked.
+window.addEventListener(
+  "keydown",
+  (ev) => {
+    if (!jobDrag || ev.key !== "Escape") return;
+    ev.stopPropagation();
+    clearJobDrag();
+  },
+  true
+);
+window.addEventListener("blur", () => clearJobDrag());
+
+/// Reaching the ends of a long queue without letting go: while the pointer is
+/// held near the top or bottom of the list, the list comes to it.
+function jobEdge() {
+  if (!jobDrag) return;
+  const wrap = el("batch-list");
+  const r = wrap.getBoundingClientRect();
+  const EDGE = 28;
+  const over = Math.min(jobDrag.y - (r.top + EDGE), 0) || Math.max(jobDrag.y - (r.bottom - EDGE), 0);
+  if (!over) return;
+  const was = wrap.scrollTop;
+  wrap.scrollTop += Math.max(-EDGE, Math.min(EDGE, over)) * 0.5;
+  if (wrap.scrollTop !== was) {
+    jobDrag.at = jobDropAt(jobDrag.y);
+    paintJobDrag();
+  }
+}
 
 /// ジョブ削除: the row that is picked.
 el("batch-drop").addEventListener("click", async () => {
