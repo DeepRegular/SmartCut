@@ -78,7 +78,7 @@ bash tests/run_broadcast_tests.sh     # 字幕・番組情報・音声多重    
 bash tests/run_cm_tests.sh            # CM 検出と人間の答えの照合                         5
 bash tests/run_disc_tests.sh          # BDAV と BDMV をフォルダーと .iso から読む       38
 bash tests/run_bdav_tests.sh          # ディスクを書く。索引・イメージ・その中身       72
-bash tests/run_udf_tests.sh           # イメージをファイルシステムとして実物と並べる  28
+bash tests/run_udf_tests.sh           # イメージをファイルシステムとして実物と並べる  33
 bash tests/run_dvd_tests.sh           # DVD-Video をフォルダーと .iso から読む          23
 bash tests/run_bd_audio_tests.sh      # ディスクの音声が書き出せるか                    39
 bash tests/run_vc1_tests.sh           # VC-1 エンコーダをデコーダに通す                  4
@@ -117,8 +117,9 @@ SmartCut 自身の読み手で開く。そのうえで `bdav_index.py` が、索
 
 そのうえで、`$SMARTCUT_DISCS`（既定は `~/Documents/claude/TMPGEnc`）にある実物の
 イメージを書き手ごとに 1 枚ずつ、同じ報告で横に並べる。こちらの流儀がレコーダーや
-ライティングソフトとどこで違うかが、再生できないディスクを見る前に分かる。並んだ
-違いは失敗ではない。レコーダーは区画を overwritable で書き、アンカーを 3 つ置き、
+ライティングソフトとどこで違うかが、再生できないディスクを見る前に分かる。
+**だから上の件数は、走らせる機械にあるイメージで決まる。**ここでは書き手が 5 つ
+揃っていて 33 件、3 つだったときは 28 件だった。並んだ違いは失敗ではない。レコーダーは区画を overwritable で書き、アンカーを 3 つ置き、
 削除済みのファイル識別子をディレクトリに残す。どれも規格の内である。この比較は
 すぐに役に立った。メタデータ区画の控えを説明するエントリーが本体のすぐ隣に
 書かれていて、クラスタ 1 つ読めなくなれば両方失う状態だったのを見つけたのがこれで
