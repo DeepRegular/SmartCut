@@ -5418,24 +5418,35 @@ async function loadProject(path) {
   // `outputSettled`.
   const said = doc.settings && typeof doc.settings === "object" ? doc.settings : null;
   outputSettled = !!said;
+  // **Whatever the file does not answer for is the standing answer, never the
+  // last project's.** Put back before the file is read rather than only where
+  // there is nothing to read: a project holds an output settled by a version
+  // of this program that had fewer things to settle -- or was written by
+  // hand -- and every key it is silent about would otherwise keep whatever
+  // the list opened before it was carrying. In the batch tool, which opens
+  // one project after another in the same window with nobody watching, that
+  // is a job that writes a BDAV disc because the job in front of it did,
+  // under the disc title that job was given.
+  //
+  // 環境設定's names go on top, because those three are as much about the
+  // person as about the work: somebody who writes `編集_` in front of every
+  // file writes it in front of a project that never said.
+  for (const key of Object.keys(SETTING_DEFAULTS)) settings[key] = SETTING_DEFAULTS[key];
+  applyNameDefaults();
   if (said) {
     // Key by key rather than wholesale, so that a file cannot put anything in
-    // `settings` that the output screen has no control for.
+    // `settings` that the output screen has no control for. What it leaves
+    // out keeps the answer put back above -- which for `subfolder` is null,
+    // so a project written before there were folders of their own opens
+    // unsettled and the name follows the project just opened.
     for (const key of Object.keys(settings)) {
       if (key in said) settings[key] = said[key];
     }
-    // A project written before there were folders of their own says nothing
-    // about one, and what the last list settled has nothing to do with this
-    // one: back to unsettled, so the name follows the project just opened.
-    if (!("subfolder" in said)) settings.subfolder = null;
   } else {
     // Nothing to put back, so what this list is written with is the standing
-    // answer -- the program's defaults, 環境設定's names over the top of
-    // them, and whatever is being carried from the last session. The three
-    // 新規作成 puts back, for the same reason: the project that was open a
-    // moment ago has nothing to say about this one.
-    for (const key of Object.keys(SETTING_DEFAULTS)) settings[key] = SETTING_DEFAULTS[key];
-    applyNameDefaults();
+    // answer -- the three above, and whatever is being carried from the last
+    // session. What 新規作成 puts back, for the same reason: the project that
+    // was open a moment ago has nothing to say about this one.
     restoreOutput();
   }
   filledIn = null;
