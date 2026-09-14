@@ -4217,6 +4217,15 @@ async function reencodeOf(clip) {
 /// under it -- see `paintShotsNote`.
 let onShow = null;
 
+/// The picture that is on the stage at this moment, or null where there is
+/// none.
+///
+/// Kept beside the element rather than read back off it, because the batch
+/// tool puts this frame on the row of the queue it belongs to, and that row is
+/// drawn from what is known rather than from the screen it is following. See
+/// `followJob`.
+let stageSrc = null;
+
 /// Put the line under the stage up, picture half and audio half.
 ///
 /// The picture half is worked out once and cached with the frames, because
@@ -4354,6 +4363,7 @@ function stageShot(i, note = "", poster = null) {
     if (poster) img.src = poster;
     else img.removeAttribute("src");
     img.hidden = !poster;
+    stageSrc = poster || null;
     // No frame on the stage, so no frame number or timecode to put under it.
     el("out-ovl-main").hidden = true;
     el("out-ovl-frame").textContent = "—";
@@ -4371,6 +4381,7 @@ function stageShot(i, note = "", poster = null) {
   img.hidden = !shot;
   if (shot) img.src = shot.url;
   else img.removeAttribute("src");
+  stageSrc = shot ? shot.url : null;
   el("out-ovl-frame").textContent = String(Math.round(r.out[i] * clip.info.fps));
   el("out-ovl-time").textContent = fmt(r.out[i]);
   el("out-ovl-kind").textContent = t("out.ovlKind", { i: i + 1, n: r.segs.length });
@@ -4533,6 +4544,10 @@ function paintOutProgress(overall, since = began) {
     overall > 0.01
       ? t("out.left", { t: clock((spent / overall) * (1 - overall)) })
       : t("out.leftUnknown");
+  // Every pass of a run reports through here -- the cuts, the index, the
+  // image -- so this is where the row of the queue the run belongs to hears
+  // about all three. See `paintJobProgress`.
+  paintJobProgress(overall, since);
 }
 
 if (listen) {
@@ -4548,7 +4563,6 @@ if (listen) {
     const finished = all.filter((c) => c.out.state === "done").length;
     const overall = all.length ? (finished + done) / all.length : 0;
     paintOutProgress(overall);
-    paintJobProgress(overall);
   });
 }
 
@@ -4557,26 +4571,30 @@ if (listen) {
   // which on a disc is twenty thousand times. Painting a whole list for each
   // of those is work nobody can see: the screen only changes when the
   // rounded percentage does.
-  const stepped = (step, done) => {
+  //
+  // `said` is the line the status is to be left on, and it goes up before the
+  // bars are painted rather than after: the batch tool's card reads that line
+  // as the run moves -- see `followJob` -- and a card painted first would be a
+  // card a step behind the step it is about.
+  const stepped = (step, done, said) => {
     const was = Math.round(step.progress * 100);
     step.progress = done;
     step.note = `${Math.round(done * 100)}%`;
-    if (Math.round(done * 100) === was) return false;
+    if (Math.round(done * 100) === was) return;
+    el("out-state").textContent = said;
     paintOutProgress(done, phaseBegan);
     renderOutScreen();
-    return true;
   };
 
   listen("image-progress", (ev) => {
     if (!exporting) return;
     const step = discStep("image");
     if (!step) return;
-    if (stepped(step, ev.payload)) {
-      el("out-state").textContent = t("out.imaging", {
-        udf: settings.image,
-        pct: Math.round(ev.payload * 100),
-      });
-    }
+    stepped(
+      step,
+      ev.payload,
+      t("out.imaging", { udf: settings.image, pct: Math.round(ev.payload * 100) })
+    );
   });
 
   // The pass that writes the disc's index reads every stream back, which on
@@ -4590,10 +4608,7 @@ if (listen) {
     if (!step) return;
     const k = step.clips.indexOf(clip);
     const overall = k < 0 ? done : (k + done) / step.clips.length;
-    if (stepped(step, overall)) {
-      el("out-state").textContent =
-        `${t("out.bdavIndexing", { clip })} ${Math.round(done * 100)}%`;
-    }
+    stepped(step, overall, `${t("out.bdavIndexing", { clip })} ${Math.round(done * 100)}%`);
   });
 }
 
@@ -5712,6 +5727,13 @@ async function refreshQueue() {
         began: was.began,
         spent: was.spent,
         done: was.done,
+        since: was.since,
+        // The frame the job was last seen on and the recording it came out
+        // of: watched rather than written down, like the two above, and a
+        // poll that dropped them would take the picture off the card a
+        // second after the queue finished with it.
+        shot: was.shot,
+        now: was.now,
       };
     });
   batchAfter = queue && queue.after ? queue.after : "nothing";
@@ -5810,6 +5832,10 @@ async function lookAtJobs() {
       const at = c.home ? c.home.replace(/[/\\]+$/, "") : dirOf(c.path).replace(/[/\\]+$/, "");
       if (at && !beside.includes(at)) beside.push(at);
     }
+    // The recording the row leads with, named the way the list window would
+    // name that row: what somebody typed over it, else what the disc it came
+    // off called it, else the file. See `makeClip`.
+    const lead = held.find((c) => c && typeof c.path === "string" && c.path);
     const look = {
       dir: settings.dir || "",
       beside,
@@ -5819,6 +5845,7 @@ async function lookAtJobs() {
       disc: settings.mode === "bdav",
       image: settings.image || "",
       clips: held.length,
+      lead: lead ? lead.renamed || lead.name || nameOf(lead.path) : "",
       poster: "",
     };
     jobLook.set(job.path, look);
@@ -5855,11 +5882,41 @@ function jobPath(job) {
   return look.dir || beside.length < 2 ? at : t("batch.andElsewhere", { dir: at, n: beside.length - 1 });
 }
 
-/// The line under it: which project this is and what it holds.
+/// The line under it: the recordings, and what is to become of them.
+///
+/// **Recordings, whatever the job is doing.** While it runs, the one the pass
+/// has open -- a queue at work is watched to see how far it has got, and the
+/// recording being read is the answer. Before and after, the first of them,
+/// with a word for how many more there are.
+///
+/// The project's own file is not named here, and this is the one place it
+/// could have been. A job runs a copy the queue made for itself, in a folder
+/// of the queue's own (see `queue_copy`), so the name on that file is a fact
+/// about this program's scratch space rather than about the evening's work --
+/// and it would be the one thing on the card that was neither a recording nor
+/// a folder anybody chose. What the job was registered under stands in for a
+/// project that cannot be read to say anything else, which is a name somebody
+/// gave it rather than a file.
+///
+/// See `followJob` for where the running name comes from and when it goes.
 function jobLine(job) {
   const look = jobLook.get(job.path) || {};
-  const bits = [nameOf(job.path)];
-  if (look.clips) bits.push(t("batch.clips", { n: look.clips }));
+  const bits = [];
+  if (job.state === "running" && job.now) {
+    // The count stays beside it: the name no longer says which recording of
+    // the job this is, and how many there are is how big the job is. Not for
+    // a job of one, where it says nothing the name has not -- the same reason
+    // the resting line folds the count into "ほか n 本" and leaves it out
+    // where there is no other recording to be among.
+    bits.push(job.now);
+    if (look.clips > 1) bits.push(t("batch.clips", { n: look.clips }));
+  } else if (look.lead) {
+    bits.push(
+      look.clips > 1 ? t("batch.andMore", { name: look.lead, n: look.clips - 1 }) : look.lead
+    );
+  } else {
+    bits.push(job.label);
+  }
   if (look.disc) bits.push(look.image ? t("batch.toImage", { udf: look.image }) : t("batch.toDisc"));
   return bits.join(t("sep"));
 }
@@ -5888,13 +5945,19 @@ const jobHow = (job) => (job.state === "done" ? 1 : job.done || 0);
 function jobSaid(job) {
   const how = jobHow(job);
   const spent = job.spent ?? (job.began ? (Date.now() - job.began) / 1000 : null);
+  // Time gone is the whole job; time left is worked out inside the stretch
+  // the bar is currently about, which for a disc is the index or the image
+  // rather than the job. The output screen's clock is read the same way and
+  // for the same reason: the rate of the cuts says nothing about the rate of
+  // the pass that wraps them. See `paintOutProgress`.
+  const inHand = job.state === "running" ? (Date.now() - (job.since || job.began)) / 1000 : spent;
   const left =
     spent === null
       ? null
       : job.state !== "running"
         ? 0
         : how > 0.01
-          ? (spent / how) * (1 - how)
+          ? (inHand / how) * (1 - how)
           : null;
   return `<span class="ela">${
     spent === null ? "" : esc(t("batch.elapsed", { t: clock(spent) }))
@@ -5927,10 +5990,13 @@ function renderBatch() {
   el("batch-list").innerHTML = batchJobs
     .map((j, i) => {
       const look = jobLook.get(j.path) || {};
-      // A picture, or the hatching the clip list shows where there is not one
-      // yet. The same box either way, so the rows line up while they fill in.
-      const poster = look.poster
-        ? `<img class="poster" src="${look.poster}" alt="" draggable="false">`
+      // The frame the run is on, where the run has reached this row; the
+      // first recording's own picture until then. A picture either way, or
+      // the hatching the clip list shows where there is not one yet -- the
+      // same box in all three, so the rows line up while they fill in.
+      const shot = j.shot || look.poster;
+      const poster = shot
+        ? `<img class="poster" src="${shot}" alt="" draggable="false">`
         : `<span class="poster blank"></span>`;
       return `<li class="${j.state}${batchPicked.has(j.path) ? " picked" : ""}" data-i="${i}">
         <span class="n">${i + 1}</span>
@@ -5968,20 +6034,60 @@ function renderBatch() {
   paintBatchButtons();
 }
 
-function paintJobProgress(done) {
-  if (!batchRunning) return;
-  const job = batchJobs.find((j) => j.state === "running");
-  if (!job) return;
+/// The job this window is writing at this moment. Null between jobs, and in
+/// the list window, where the queue is watched rather than run.
+const runningJob = () =>
+  batchRunning && exporting ? batchJobs.find((j) => j.state === "running") || null : null;
+
+/// Carry what the 出力 screen is showing onto the card of the job it is
+/// showing it for. True where any of it changed, which is when the card has
+/// to be drawn again.
+///
+/// The tool drives that screen with nobody looking at it -- the queue is what
+/// is on screen while it runs -- so everything the screen says about the job
+/// in hand has to reach the one row that is about that job.
+function followJob(job) {
+  const was = [job.note, job.shot, job.now];
   // What the pass itself says it is writing, which is the sentence the output
   // screen would be showing. Said on the card rather than invented again
   // here: there is one true answer to "what is being written" and it is that
-  // one.
+  // one -- and it is the answer for the passes that wrap a disc as much as
+  // for the cuts.
   const said = el("out-state").textContent;
-  if (exporting && said) job.note = said;
-  const was = Math.round((job.done || 0) * 100);
+  if (said) job.note = said;
+  // The frame on the stage, which through the cuts is the picture the encoder
+  // is making. It is the one thing about the output this program is answerable
+  // for -- every other frame is copied -- and there is no reason for somebody
+  // watching a queue to see less of it than somebody watching one list. Held
+  // on the row rather than read off the screen as the row is drawn, so that a
+  // job that has run goes on showing the frame it ended on, the way the stage
+  // itself holds that frame.
+  if (stageSrc) job.shot = stageSrc;
+  // And the recording that frame came out of. Left standing between two
+  // recordings, because the gap is the width of one `await`; taken away when
+  // the disc passes begin, because those read the written streams back rather
+  // than anybody's recording, and a card still naming one would be naming a
+  // file nothing is reading.
+  if (writing) job.now = clipLabel(writing);
+  else if (discSteps.some((s) => s.state === "running")) job.now = "";
+  return job.note !== was[0] || job.shot !== was[1] || job.now !== was[2];
+}
+
+/// How far the run has got, onto the row whose job it is.
+///
+/// `since` is when the stretch that number is about began: the run itself
+/// while the cuts are written, and each of the two passes a disc is finished
+/// with while it is the one working. The bar starts again for each of them,
+/// the way the output screen's own bar does -- a bar that sat full while the
+/// image was still being written was saying the job was over.
+function paintJobProgress(done, since) {
+  const job = runningJob();
+  if (!job) return;
+  const moved = Math.round((job.done || 0) * 100) !== Math.round(done * 100);
   job.done = done;
-  if (Math.round(done * 100) === was) return;
-  renderBatch();
+  job.since = since;
+  const changed = followJob(job);
+  if (changed || moved) renderBatch();
 }
 
 function paintBatchButtons() {
@@ -6434,6 +6540,11 @@ el("job-requeue").addEventListener("click", async () => {
     job.began = undefined;
     job.spent = undefined;
     job.done = 0;
+    job.since = undefined;
+    // Including the frame the last run left on it, which was a picture of
+    // work this row is no longer saying it has done.
+    job.shot = undefined;
+    job.now = undefined;
   }
   await saveQueue();
   renderBatch();
@@ -6842,8 +6953,15 @@ async function runBatch() {
   batchRunning = true;
   batchStopped = false;
   // The clock on the running row moves between progress reports, and there
-  // are none at all while a project is opening.
-  const ticking = setInterval(() => batchRunning && renderBatch(), 1000);
+  // are none at all while a project is opening. The frame and the sentence
+  // are taken at the same beat: the stage moves on at the head of each
+  // recording, which is a moment no report falls on.
+  const ticking = setInterval(() => {
+    if (!batchRunning) return;
+    const job = runningJob();
+    if (job) followJob(job);
+    renderBatch();
+  }, 1000);
   for (const j of batchJobs) {
     if (j.state === "done") continue;
     j.state = "waiting";

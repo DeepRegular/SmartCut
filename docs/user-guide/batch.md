@@ -173,8 +173,26 @@ names, the folder of its own under it where there is one, and `/BDAV` where it
 is a disc. A project with no folder of its own writes beside its recordings, so
 that is the folder shown; where the recordings come from more than one folder
 there is no single answer, and the line names the first with a word for how
-many others there are. Under that line is which project it is and how
-many recordings it holds, and under that, the bar.
+many others there are. Under that line is a name and how many recordings the
+job holds, and under that, the bar.
+
+**The picture is the frame being made.** Until the job's turn comes it is the
+first recording's own picture; once the job is being written it is the frame
+the output screen's preview is showing, which is a frame that is actually being
+re-encoded — the joins, and nothing else, since every other frame is copied out
+of the recording bit for bit. What somebody watching one list sees on that
+screen is on the card here, without the screen. The last frame of a job stays
+on its card afterwards.
+
+**The line under it names the recordings.** While the job is being written it
+is the one the pass has open; waiting its turn and once it is written, the
+first of them with a word for how many more there are. Either way it is the
+name that recording had in the list.
+
+The project's own file is not named anywhere on the card. The queue runs a copy
+it made for itself, in a folder of its own, so that name is a fact about this
+program's scratch space rather than about the evening's work. A project that
+cannot be read falls back to the name the job was queued under.
 
 **The bar is a box that fills in**, and the numbers stand in it: the elapsed
 time on the left, the percentage in the middle, an estimate of what is left on
@@ -183,6 +201,12 @@ finished — the clock stops where the job stopped, what is left reads zero, and
 the bar keeps what it reached — so a queue that has run can be read afterwards.
 `中止` stays on every row too, and is live only while there is something on
 that row to stop.
+
+**A job that writes a disc fills the bar three times**: the cuts, the index,
+and the image. The percentage and the estimate are about the pass in hand, so
+the bar starts again as each one begins; only the clock counts from the head of
+the job. Which of the three is running is said on the line above the bar, with
+the image's own percentage in it.
 
 **Everything a row says in words is at the right of the line above the bar** —
 what is being written, or that the job is waiting, written, failed or called
