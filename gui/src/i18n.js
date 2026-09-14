@@ -441,7 +441,9 @@ const CATALOG = {
     "out.ovlNote": "{n} フレーム",
     "out.aborting": "中止します（いま書き出しているクリップは最後まで書き終えます）",
     "out.skipped": "中止",
+    "outset.branched": "同名のフォルダーあり → {name}",
     "out.sameName": "入力と同じ名前になります",
+    "out.branched": "「{asked}」フォルダーが既にあるので「{name}」に書き出します",
     "out.writing": "\"{name}\" を出力中…",
     "out.writingCopy": "\"{name}\" を出力中: 映像を無劣化出力しています…",
     "out.writingMost":
@@ -1069,7 +1071,9 @@ const CATALOG = {
     "out.ovlNote": "{n} frames",
     "out.aborting": "Stopping (the clip being written now is finished first)",
     "out.skipped": "Stopped",
+    "outset.branched": "already there → {name}",
     "out.sameName": "This would overwrite the input",
+    "out.branched": "A folder called \"{asked}\" was already there, so this run writes into \"{name}\"",
     "out.writing": "Writing \"{name}\"…",
     "out.writingCopy": "Writing \"{name}\": copying the video losslessly…",
     "out.writingMost":

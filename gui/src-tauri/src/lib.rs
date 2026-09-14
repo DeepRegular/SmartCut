@@ -3019,6 +3019,44 @@ async fn audio_limits(
     .await
 }
 
+/// A name for the folder a run makes that none of `dirs` already has.
+///
+/// A run writing into a folder of its own makes that folder as the first cut
+/// is written, and one of the same name already there would have this run's
+/// files laid over the last one's -- same list, same prefix, same numbering,
+/// so the names land on top of each other and the earlier run is gone without
+/// a word. The name is branched instead: `night`, then `night-2`, `night-3`,
+/// which is the count [`free_in`] gives a queued project's copy, and for the
+/// same reason.
+///
+/// Asked about every folder the run will write into rather than one. With no
+/// output folder chosen the cuts go beside the recordings they were made
+/// from, so a list gathered out of three folders is three of these folders;
+/// one answer for the whole list is what the screen shows and what the run
+/// writes, so the branch has to be free in all of them.
+///
+/// Never asked for a disc. A second run onto one adds to it -- that is how a
+/// disc gets filled over a week -- so a folder already there is the point
+/// rather than the problem. See [`bdav_prepare`].
+#[tauri::command]
+fn free_folder(dirs: Vec<String>, name: String) -> Result<String, String> {
+    // Shares resolved the way they are everywhere else. One that is not
+    // connected is left out rather than refused: the run is about to fail on
+    // it with a sentence of its own, and a folder nothing can look at is not
+    // a folder that is in the way.
+    let ats: Vec<std::path::PathBuf> = dirs.iter().filter_map(|d| local_path(d).ok()).collect();
+    for n in 1..1000 {
+        let branched = if n == 1 { name.clone() } else { format!("{name}-{n}") };
+        if ats.iter().all(|at| !at.join(&branched).exists()) {
+            return Ok(branched);
+        }
+    }
+    Err(trf!(
+        "フォルダーの名前が付けられません: {name}",
+        "Cannot find a free folder name: {name}"
+    ))
+}
+
 /// Write one clip out.
 ///
 /// `path` names the recording to cut; without it the one that is open in the
@@ -4701,6 +4739,7 @@ pub fn run() {
             open_project_window,
             show_folder,
             window_role,
+            free_folder,
             center_window,
             quit,
             close_main,

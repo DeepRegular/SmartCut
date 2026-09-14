@@ -3693,7 +3693,8 @@ function outDir() {
   return runDir ?? settings.dir;
 }
 
-/// The name of the folder this run makes, as it stands right now.
+/// The name the folder this run makes is asked to have, before anything is
+/// done about one of that name already being there.
 ///
 /// The one on the screen where somebody has settled one, and otherwise the
 /// one the screen *would* fill in. Worked out here rather than read out of
@@ -3701,11 +3702,82 @@ function outDir() {
 /// the settings screen ever having been drawn, and a folder that appears
 /// only for people who went and looked at it is not a folder anybody can
 /// rely on.
-function subfolderNow() {
-  if (runFolder !== null) return runFolder;
+function subfolderAsked() {
   if (!subfolderWanted()) return "";
   const chosen = settings.subfolder === null ? autoSubfolder(ready()) : settings.subfolder;
   return filenameSafe(chosen || "");
+}
+
+/// The folders this run makes its own folder in.
+///
+/// The one that was typed where there is one, and otherwise one per folder
+/// the recordings came out of: a list gathered from three evenings makes
+/// three of these, each beside its own recordings. See `outputBase`.
+function outParents() {
+  const at = outDir();
+  const bare = (p) => p.replace(/[/\\]*$/, "");
+  if (at) return [bare(at)];
+  const seen = new Set();
+  for (const clip of ready()) {
+    seen.add(bare(clip.home || dirOf(clip.path)));
+  }
+  return [...seen];
+}
+
+/// The 枝番 the folder has been given, and the half of the question it
+/// answers that is cheap to ask again.
+///
+/// A folder of the name already being there is not something this side can
+/// know, so it is asked of the backend -- see `free_folder` -- and the answer
+/// is kept, because `subfolderNow` is read once per path on a screen that
+/// draws a path per row.
+let freeFolder = { dir: null, asked: null, name: "" };
+
+/// The whole question as it was last put, the folders included. Kept apart
+/// from the answer because the folders have to be read out of the list, and
+/// that is worth doing where the asking happens rather than once per path.
+let folderAsked = null;
+
+/// Ask what the folder is really going to be called, where the answer on
+/// hand is not about this question. `true` when the name moved, which is the
+/// caller's cue to draw again.
+///
+/// `force` for the run itself: the answer on screen can be minutes old, and
+/// a folder can appear in between -- another window, the queue, a hand.
+async function askFreeFolder(force = false) {
+  if (!invoke || bdavMode()) return false;
+  const asked = subfolderAsked();
+  if (!asked) return false;
+  const dir = outDir();
+  const dirs = outParents();
+  const key = JSON.stringify([dir, asked, dirs]);
+  if (!force && folderAsked === key) return false;
+  folderAsked = key;
+  let name = asked;
+  try {
+    name = await invoke("free_folder", { dirs, name: asked });
+  } catch {
+    // A folder nothing can look at is one this run is about to fail on with
+    // a sentence of its own. The plain name, which is what there was before
+    // there was a branch.
+  }
+  const moved = freeFolder.dir !== dir || freeFolder.asked !== asked || freeFolder.name !== name;
+  freeFolder = { dir, asked, name };
+  return moved;
+}
+
+/// The name of the folder this run makes, as it stands right now: what it was
+/// asked to be called, with whatever 枝番 that name turned out to need.
+///
+/// The plain name until an answer is in, which is one redraw and is also the
+/// answer in every case where nothing is in the way. A disc is never
+/// branched: a second run onto one adds to it, so the folder already being
+/// there is the point rather than the problem.
+function subfolderNow() {
+  if (runFolder !== null) return runFolder;
+  const asked = subfolderAsked();
+  if (!asked || bdavMode()) return asked;
+  return freeFolder.dir === outDir() && freeFolder.asked === asked ? freeFolder.name : asked;
 }
 
 /// The folder above, with the one this run makes under it. No trailing
@@ -3955,6 +4027,20 @@ function renderOutset() {
   if (list.some((c) => String(c.id) === was)) select.value = was;
   const clip = byId(Number(select.value)) || list[0];
   settleSubfolder(list);
+  // And what that folder is going to be called once the folders it goes in
+  // have been looked at. Asked the way the disc's own name is: not waited
+  // for, and it redraws when the answer is in, which the stored answer then
+  // stops from asking again.
+  askFreeFolder().then((moved) => moved && (renderOutset(), renderOutScreen()));
+  // And what it is going to be called, where that is not what the field
+  // says. The field keeps the name that was asked for: one that rewrote
+  // itself would argue with the hand in it, and a 枝番 put back into the name
+  // would be branched again the next time round. So the difference is said
+  // beside it instead.
+  const asked = subfolderAsked();
+  const lands = subfolderNow();
+  el("out-subfolder-note").textContent =
+    lands && lands !== asked ? t("outset.branched", { name: lands }) : "";
   const box = el("outset-format");
   if (!clip) {
     box.textContent = t("outset.noReady");
@@ -4349,6 +4435,10 @@ function finishStep(key, state) {
 }
 
 function renderOutScreen() {
+  // The same ask the settings screen makes, because this screen shows the
+  // path too and a run can be started from here without that one ever having
+  // been drawn. See `askFreeFolder`.
+  askFreeFolder().then((moved) => moved && renderOutScreen());
   // Where the files actually land, folder of their own included: this line
   // is read while the run is watched, and a path that is one level off the
   // one being written to is worse than no line at all.
@@ -4590,7 +4680,17 @@ async function runExport() {
   }
   // Settled before the first byte and held until the last: see `runDir`.
   runDir = settings.dir;
+  // Asked again here rather than taken off the screen: what is on screen can
+  // be minutes old, and a folder of that name can have appeared in between
+  // -- another window, the queue, a hand. A disc is not asked at all; a
+  // second run onto one adds to it.
+  const asked = subfolderAsked();
+  if (!disc) await askFreeFolder(true);
   runFolder = subfolderNow();
+  // Said rather than done quietly. A run that wrote somewhere other than
+  // where the screen had been saying is a run somebody would go looking for
+  // in the wrong folder.
+  if (runFolder !== asked) note(t("out.branched", { asked, name: runFolder }));
 
   // And under which number. Settled before anything is written: the
   // numbering depends on what the disc already holds, and asking a recording
@@ -4847,6 +4947,11 @@ async function runExport() {
   exporting = false;
   runDir = null;
   runFolder = null;
+  // The folder this run made is now a folder that is there, which is the one
+  // stale answer worth throwing away by hand: the next draw asks again, and
+  // the screen says the branch the *next* run would be given rather than the
+  // one this run took. See `askFreeFolder`.
+  folderAsked = null;
   writing = null;
   paintExportButton();
   const failed = list.filter((c) => c.out.state === "error").length;
