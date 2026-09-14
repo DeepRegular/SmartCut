@@ -199,13 +199,28 @@ const PTS_WRAP: f64 = 8589934592.0 / 90000.0;
 /// ends. Left as it was it sorted to the front of the list and was read as a
 /// break at the head, which is a block running backwards.
 ///
-/// `None` for a time that is nowhere near the recording even after that.
+/// `None` for a mark that is nowhere near the recording even after that.
 /// Only the direction that was measured is mended; the other way round would
 /// mean the recording's own start time had been read past a wrap that its
 /// packets had not, and a mark this has no reading of is better dropped than
 /// guessed at.
+///
+/// **Only a mark that was mended is measured against the length.** A mark
+/// that needed no wrap taking out of it was never in question -- it is the
+/// stream's own time for a packet the stream carries -- and the length it
+/// would be measured against is not a fact: it is what the container says,
+/// which is 0 where the container does not say, and on a program stream can
+/// be wildly wrong (see [`crate::Outline::duration`]). Held to it, a
+/// recording whose header is silent would have every one of its marks thrown
+/// away and the whole reading lost. What the test is for is the mark that has
+/// just had twenty-six hours added to it, where the length is the only way to
+/// tell a junction brought back into the recording from one that has landed
+/// somewhere else entirely.
 fn unwrapped(t: f64, duration: f64) -> Option<f64> {
     let turns = (-t / PTS_WRAP).ceil().max(0.0);
+    if turns == 0.0 {
+        return Some(t);
+    }
     let t = t + turns * PTS_WRAP;
     (t <= duration + 1.0).then_some(t)
 }
@@ -1416,5 +1431,24 @@ mod tests {
         assert_eq!(run.text, "〓");
         assert!(run.glyph.is_none());
         assert_eq!(run.advance, 40);
+    }
+
+    /// The 33-bit clock starting again under a recording, and what is not
+    /// measured against a length the container may not know.
+    #[test]
+    fn a_mark_from_before_the_clock_wrapped_is_brought_back() {
+        // The recording that was found: a mark at -93848.7 in a recording of
+        // 1807.1, which is one whole wrap short of where that programme ends.
+        let t = unwrapped(-93848.7, 1807.1).expect("a real junction, one wrap back");
+        assert!((t - 1595.0).abs() < 0.1, "{t}");
+        // One that lands nowhere even after the wrap is taken out is dropped:
+        // there is nothing else to read it as.
+        assert!(unwrapped(-1.0, 1807.1).is_none());
+        // A mark the stream's own clock puts inside the recording is kept
+        // whatever the header says the length is -- 0 for a container that
+        // does not say, and eight seconds for the four-gigabyte program
+        // streams that say wrongly.
+        assert_eq!(unwrapped(1595.0, 0.0), Some(1595.0));
+        assert_eq!(unwrapped(1595.0, 8.0), Some(1595.0));
     }
 }
