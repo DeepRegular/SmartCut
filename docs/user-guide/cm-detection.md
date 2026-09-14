@@ -61,15 +61,26 @@ There are three cues. It uses whichever ones the recording carries.
 | **Silence** | silences that line up on the fifteen-second grid | 3 s |
 | **Station logo** | the corner logo that is on during the programme and gone during the commercials | 30 s |
 
-Only the first of those is **an actual signal rather than a guess**. So when a
-recording carries subtitle marks they are always used, and the other two cues
-are for recordings that do not. Stations divide cleanly into those that write
-the marks and those that do not, which is why all three are needed.
+Only the first of those is **an actual signal rather than a guess**, so where a
+recording carries subtitle marks they are what is read, and the other two cues
+are for recordings that do not.
 
-**When the subtitle marks are found, the logo is not read at all.** It is more
-reliable and ten times faster, so the logo pass is skipped even with "use the
-logo too" ticked. On the Nihonkai TV recording that took the analysis from 50
-seconds to 7.
+**The marks have to be a reading of the whole recording, though.** Stations do
+not divide into two kinds but three: those that mark every switch, those that
+mark none, and those that mark only where the programme stops and starts and
+nothing between. The third kind is exact about the few breaks it names and
+silent about the rest, and read *instead of* the other two it gave one
+commercial block on a recording that has four.
+
+So the marks are checked for one **inside** a break — two of them fifteen
+seconds apart, which is one commercial ending and the next beginning. Where
+there are none, the recording is treated as one that carries no marks at all
+and the logo and the silences decide. The screen says which happened.
+
+**When the subtitle marks are the ones used, the logo is not read at all.** It
+is more reliable and ten times faster, so the logo pass is skipped even with
+"use the logo too" ticked. On the Nihonkai TV recording that took the analysis
+from 50 seconds to 7.
 
 There are three possible answers: **subtitle marks**, **logo and silence**, and
 **no commercials**. The last one is a recording where the logo never went away
