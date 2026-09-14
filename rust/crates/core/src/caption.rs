@@ -184,6 +184,32 @@ fn is_reset(payload: &[u8], scratch: &mut Vec<u8>) -> bool {
     found
 }
 
+/// How long the clock a transport stream carries its times on runs before it
+/// starts again: 2^33 ticks of 90 kHz, a little over 26 hours.
+const PTS_WRAP: f64 = 8589934592.0 / 90000.0;
+
+/// A mark's time with the clock's own wrap taken back out of it.
+///
+/// A recording that begins late enough in the broadcaster's day crosses the
+/// point where the 33-bit clock starts again, and every packet after the
+/// crossing then reads as a moment twenty-six hours before the recording
+/// began. Measured across fifty half-hour recordings, one carried such a
+/// mark -- and it was a real junction: brought back by one whole wrap it
+/// lands at 1595.0 in a recording of 1807.1, which is where that programme
+/// ends. Left as it was it sorted to the front of the list and was read as a
+/// break at the head, which is a block running backwards.
+///
+/// `None` for a time that is nowhere near the recording even after that.
+/// Only the direction that was measured is mended; the other way round would
+/// mean the recording's own start time had been read past a wrap that its
+/// packets had not, and a mark this has no reading of is better dropped than
+/// guessed at.
+fn unwrapped(t: f64, duration: f64) -> Option<f64> {
+    let turns = (-t / PTS_WRAP).ceil().max(0.0);
+    let t = t + turns * PTS_WRAP;
+    (t <= duration + 1.0).then_some(t)
+}
+
 /// Times, in seconds from the start of the recording, at which the caption
 /// service was reset.
 ///
@@ -221,7 +247,9 @@ pub fn resets_with(
         };
         let t = pts as f64 * tb - src.start_time;
         if is_reset(data, &mut scratch) {
-            out.push(t);
+            if let Some(t) = unwrapped(t, src.duration) {
+                out.push(t);
+            }
         }
         if let Some(f) = progress.as_mut() {
             let done = (t / src.duration.max(1e-9)).clamp(0.0, 1.0);

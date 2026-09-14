@@ -10,7 +10,9 @@ use smartcut_core as sc;
 
 fn blocks_of(src: &sc::Source) -> Vec<(f64, f64)> {
     let opts = sc::DetectOptions::default();
-    let resets = sc::caption::resets_with(src, None).ok();
+    let resets = sc::caption::resets_with(src, None)
+        .ok()
+        .filter(|r| sc::cm_marks_every_junction(r));
     let silences = match &resets {
         Some(_) => Vec::new(),
         None => sc::find_silences_with(src, &opts, None).unwrap_or_default(),

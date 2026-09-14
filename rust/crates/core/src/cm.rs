@@ -465,6 +465,62 @@ const RESET_GRID: f64 = 0.35;
 /// other end is, so nothing is offered.
 const RESET_EDGE: f64 = 15.0;
 
+/// How many 15-second units may lie between two resets and still be one break.
+///
+/// The silences are held to eight -- two minutes -- because a chain of them
+/// forming by accident is the whole of what that reading has to defend
+/// against. A reset is not an accident. It is a mark the broadcaster's own
+/// equipment stamped on the junction, and the tolerance it is held to says
+/// as much: 0.35 s against the silences' adaptive slack.
+///
+/// What eight cost instead was the stations that mark only the two ends of a
+/// break rather than every junction inside it. There the whole break is one
+/// gap, and a break is routinely longer than two minutes: measured across a
+/// season of one BS channel's anime slots, the mid-programme break is 135 s
+/// (nine units) or 150 s (ten) every time, and every one of them was thrown
+/// away for being too long to be a break.
+///
+/// Twelve. Three minutes is longer than any mid-programme break measured and
+/// far short of the stretch of programme that separates two of them, which
+/// runs to twenty-five units and more. A station that marks every junction is
+/// unaffected either way -- its resets are one unit apart, and a long break
+/// there is a chain of ones.
+const RESET_UNITS: f64 = 12.0;
+
+/// How many of a recording's resets must sit one unit from the next before
+/// the station counts as marking every junction rather than only the places
+/// its programme stops and starts.
+const RESET_INTERIOR: usize = 3;
+
+/// Whether these marks are a reading of the recording's breaks, or only notes
+/// on where some of them are.
+///
+/// Every station that marks anything marks the two ends of a break, so the
+/// ends say nothing about which kind of station this is. What does is a mark
+/// *inside* a break: two resets one 15-second unit apart, which is one
+/// commercial ending and the next beginning. A station that marks every
+/// junction leaves a run of those across each break; a station that marks
+/// only where the programme stops and starts leaves none at all.
+///
+/// Measured over fifty half-hour recordings. The twenty-four from three
+/// stations that mark throughout carry between 5 and 30 such adjacent pairs;
+/// the twenty-six from a station that marks only the ends carry between 0 and
+/// 2. [`RESET_INTERIOR`] sits in the middle of that gap.
+///
+/// It matters because the resets are read *instead of* the logo and the
+/// silences rather than beside them. Where they are a complete reading that
+/// is right, and the measurements behind the preference order say so: a mark
+/// is exact where the other two guess. Where they are not, the preference
+/// order reads six marks, emits one break, and never looks at the recording
+/// that has four -- which is what the logo, left unread, had found.
+pub fn marks_every_junction(resets: &[f64]) -> bool {
+    resets
+        .windows(2)
+        .filter(|w| (w[1] - w[0] - 15.0).abs() <= RESET_GRID)
+        .count()
+        >= RESET_INTERIOR
+}
+
 /// Group caption resets into breaks.
 ///
 /// The same shape as [`blocks`] -- junctions a whole number of 15-second
@@ -478,7 +534,7 @@ pub fn blocks_from_resets(resets: &[f64], duration: f64) -> Vec<Block> {
     let on_grid = |a: f64, b: f64| {
         let gap = b - a;
         let units = (gap / 15.0).round();
-        (1.0..=8.0).contains(&units) && (gap - units * 15.0).abs() <= RESET_GRID
+        (1.0..=RESET_UNITS).contains(&units) && (gap - units * 15.0).abs() <= RESET_GRID
     };
 
     let mut runs: Vec<Vec<f64>> = Vec::new();

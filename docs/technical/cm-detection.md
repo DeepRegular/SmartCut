@@ -333,6 +333,70 @@ getting one or two resets only happens when the subtitle service started or ende
 somewhere in the recording — which is a fact about the subtitles, not about the
 seams.
 
+### A station that marks only where the programme stops and starts
+
+The preference order reads the resets *instead of* the logo and the silences rather
+than beside them, which is right where the marks are a reading of the whole
+recording. On one BS station they are not. It marks the two ends of each break and
+nothing between, so half an hour of anime carries six or seven marks where a marking
+station carries twenty-six. Read instead of the other two, six marks produced one
+break on a recording that has four, and the logo -- strong, and right about all four
+-- was never looked at.
+
+**What tells the two kinds of station apart is a mark inside a break**: two resets one
+15-second unit apart, which is one commercial ending and the next beginning. Both
+kinds mark the ends, so the ends say nothing.
+
+| | Adjacent pairs, per half-hour recording |
+|---|---|
+| Three stations that mark throughout (24 recordings) | 5 – 30 |
+| The station that marks only the ends (26 recordings) | 0 – 2 |
+
+`marks_every_junction` asks for three of them (`RESET_INTERIOR`), the middle of that
+gap. Below it the marks are dropped and the caller falls back exactly as it does for
+a recording that carries none. Nothing else measured was as clean: the count of marks
+separates as well (5–10 against 18–35) but has to be read against the recording's
+length, and the longest run of marks separates with a margin of one.
+
+Two recordings were then checked against the pictures. Both gained the two blocks the
+marks are silent about -- the spot at the head, and the promos and shopping at the end
+-- which is 221 s and 231 s of commercial that had been left in, and neither lost
+anything.
+
+### A break longer than two minutes, marked only at its ends
+
+The grid that chains silences allows neighbours up to eight units -- two minutes --
+apart, because a chain forming by accident is the whole of what that reading defends
+against. The resets were held to the same eight. On a station that marks only the
+ends, the whole break is one gap.
+
+Measured over a season of one channel's anime slots -- 68 recordings, 26 carrying
+three marks or more -- raising the limit added **twenty blocks, every one of them
+135 s (nine units) or 150 s (ten)**. Nothing appeared at eleven units or beyond, at
+any limit tried up to twenty: those two lengths are what that channel's mid-programme
+break is, and the programme between two breaks runs to twenty-five units and more.
+`RESET_UNITS` is twelve, three minutes.
+
+A station that marks every junction is untouched. The 134.9-second break pinned in
+the suite is nine units too and was never at risk: its marks are one unit apart, so
+the break is a chain of ones.
+
+### A mark from before the clock started again
+
+A transport stream carries its times on a 33-bit 90 kHz clock, which starts again
+every twenty-six hours. One recording of the fifty crossed that point, and the mark
+after the crossing came back as -93848.7 s. Sorted, it went to the front of the list,
+where a lone mark is read as a break running from the start of the recording to it --
+a block that ends twenty-six hours before it begins.
+
+It was a real junction. Brought back by one whole wrap it lands at 1595.0 in a
+recording of 1807.1, which is where that programme ends and the promos begin; the
+logo, read separately, puts the same boundary at 1599.3. `resets_with` now adds whole
+wraps until a mark is no longer in the past, and drops what still does not fit inside
+the recording. Only that direction is mended: the other way round would mean the
+recording's own start time had been read past a wrap its packets had not, which was
+not measured, and a mark with no reading is better dropped than guessed at.
+
 ### When the fallback is not good enough
 
 That fix goes as far as "nothing at all comes out"; whether what does come out is

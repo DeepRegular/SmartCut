@@ -2518,7 +2518,13 @@ fn detect_now(
             (*reporter)(tr!("字幕を調べています", "Reading the captions"), f * CAPTION_SHARE)
         })),
     )
-    .ok();
+    .ok()
+    // And only where the station marks every junction rather than only the
+    // places its programme stops and starts. A sparse marking is exact about
+    // the few breaks it names and silent about the rest, and read instead of
+    // the other two it emits one break where the recording has four. See
+    // [`smartcut_core::cm_marks_every_junction`].
+    .filter(|r| smartcut_core::cm_marks_every_junction(r));
 
     // With the resets in hand neither of the other two reads anything:
     // the audio is a few seconds, but the logo is two passes over the
@@ -2624,7 +2630,13 @@ fn cm_dir(app: &tauri::AppHandle) -> Result<std::path::PathBuf, String> {
 /// Bumped when what is written here stops meaning what it used to -- a change
 /// to the detection that would make yesterday's answer the wrong one. Every
 /// cached detection is then ignored, and the recordings are read again.
-const CM_VERSION: u32 = 1;
+///
+/// 2: the caption resets stopped being read instead of the logo on stations
+/// that mark only the ends of their breaks, breaks longer than two minutes
+/// stopped being thrown away, and a mark from before the clock wrapped
+/// stopped being read as a block at the head. Every recording those touch was
+/// remembered with an answer this version would not give.
+const CM_VERSION: u32 = 2;
 
 /// Where this recording's detection belongs.
 ///

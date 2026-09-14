@@ -883,9 +883,19 @@ fn main() -> Result<()> {
         // stream that needs no decoding. When they are absent -- and on
         // several channels they are -- nothing is lost by having looked.
         let resets = match smartcut_core::caption::resets(&src) {
-            Ok(r) => {
+            // And read instead of the other two only where the station marks
+            // every junction rather than only the places its programme stops
+            // and starts; see `cm_marks_every_junction`.
+            Ok(r) if smartcut_core::cm_marks_every_junction(&r) => {
                 println!("\n字幕リセット : {} 箇所", r.len());
                 Some(r)
+            }
+            Ok(r) => {
+                println!(
+                    "\n字幕リセット : {} 箇所 — 継ぎ目ごとには打たれていないので、ロゴと無音で判定します",
+                    r.len()
+                );
+                None
             }
             Err(e) => {
                 println!("\n字幕リセット : ありません（{e}）");
