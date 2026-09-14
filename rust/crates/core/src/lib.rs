@@ -345,15 +345,15 @@ pub struct Source {
     /// about "the sound on pid 0x0102" of an MP4 is a note using a word for
     /// something that is not there. See [`track_name`].
     pub on_a_ts: bool,
-    /// The seams, in seconds: where a recording that is several stretches of
-    /// one clip joined together passes from one stretch to the next.
+    /// The seams: where a recording that is several stretches of one clip
+    /// joined together passes from one stretch to the next.
     ///
     /// Empty for every ordinary recording. Where there are some, a copy
     /// cannot be carried across one -- the pictures on the far side reference
     /// pictures the recorder made minutes earlier and did not write down --
     /// so a cut is planned as though the seam were a cut of its own. See
     /// [`plan::plan_on`] and [`restamp`].
-    pub joins: Vec<f64>,
+    pub joins: Vec<restamp::Seam>,
     /// Whether a raw byte offset may be seeked to.
     ///
     /// True of the stream formats, which are demuxed by reading forward from
@@ -871,7 +871,7 @@ pub struct Outline {
     /// Whether a track's `pid` is really a PID. See [`Source::on_a_ts`].
     pub on_a_ts: bool,
     /// See [`Source::joins`].
-    pub joins: Vec<f64>,
+    pub joins: Vec<restamp::Seam>,
 }
 
 impl Outline {
@@ -1204,7 +1204,23 @@ fn outline_of(path: &str) -> Result<(Outline, input::Demux)> {
 
     let outline = Outline {
         path: path.to_string(),
-        joins: input::joins(&input),
+        // On the same clock as everything else here. [`input::joins`] answers
+        // on the demuxer's own, which a recording that does not begin at zero
+        // -- a transport stream almost never does -- reads seconds later than
+        // the times a cut is asked for. Left uncorrected, a seam was planned
+        // that far into the stretch *after* it: the range before it asked to
+        // re-encode pictures that belong to the next recording and cannot be
+        // decoded from this one, so the last seconds of every stretch were
+        // quietly lost, and where nothing at all in that window would decode
+        // the cut stopped with "no pictures decoded". On one clip the error
+        // was five seconds.
+        joins: input::joins(&input)
+            .into_iter()
+            .map(|s| restamp::Seam {
+                time: s.time - start_time,
+                ..s
+            })
+            .collect(),
         input,
         video,
         audio,

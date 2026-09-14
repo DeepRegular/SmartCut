@@ -620,6 +620,30 @@ position that would go backwards is stepped on by whole seventeen-bit turns
 until it does not. Nineteen of the twenty clips come out byte for byte as they
 did before.
 
+**A stale coarse entry states its top stale in both fields**, so the time is
+carried the same way. The eleven bits a fine entry holds of the timestamp run
+out every 2^20 ticks, which is 11.65 seconds and two of the coarse entry's own
+steps, and where the coarse entry has not been stepped on the time reads a
+whole turn early. The correction is the position's, with one difference that
+matters: **a time only climbs inside one stretch.** A clip written in several
+goes holds a clock per stretch, and one of them starting again is not a map out
+of step — on the discs here a stretch has begun seven seconds before the one in
+front of it ended — so the watermark is dropped at every seam and a map whose
+clocks restart is left exactly as it reads. Checked against the pictures
+themselves: on three of the four clips measured, every one of 3,592 to 3,615
+entry points names a picture that is there at the time stated, before the
+correction and after it.
+
+**The fourth clip is a map describing something else.** One stretch of it —
+357 points, a tenth of the clip — states times about six seconds in front of
+the pictures they index, and positions that land on no picture at all; the
+other five stretches of the same clip are exact. Nothing above repairs that,
+because nothing in it is a bit out of place: the recorder wrote a map for a
+stretch it did not then write. What the cut does is say so. A copy that reaches
+an entry point's time and finds no picture there reports how far past it the
+first picture it could have started on is, so a reading that is eight seconds
+out is not mistaken for a seek that needed a wider margin.
+
 **What the map cannot say** is whether a GOP is open, or whether the leading
 pictures hanging off one may be thrown away — that is in the bitstream, not in
 any index. So the points arrive with `leading_known: false` and
@@ -744,11 +768,19 @@ read from the front reads at the times it always did.
 A play item's IN is a picture; the sound at that moment began a frame or two
 before it, and the file holds those frames. Given a place that begins at the
 picture, they land behind the end of the stretch in front, where the output
-timeline has already been written, and the cut leaves them out. Measured on the
-recording here, a seam costs 8 sound frames on each track and 3 pictures. The
-instants themselves are covered by the stretch in front of them, so what is
-left out is the second account of them and not a hole — which is what the note
-at the end of a cut now says. It used to say the recording was damaged.
+timeline has already been written, and the cut leaves them out. The instants
+themselves are covered by the stretch in front of them, so what is left out is
+the second account of them and not a hole — which is what the note at the end
+of a cut now says. It used to say the recording was damaged.
+
+**And neither reading is a bound.** Both understate a stretch, so two of them
+can be placed so as to overlap: on one clip measured here a stretch begins 0.46
+seconds inside the tail of the one before it, and for that stretch of file a
+time picks out two stretches rather than one. So **which stretch a packet
+belongs to is asked of its position and never of its clock.**
+`restamp::Seam` carries both halves for that reason — the time, which is what
+the planner cuts at because a range is a range of times, and the byte, which is
+the boundary the recorder actually wrote.
 
 The row is then the whole clip under the plain name it always had:
 
@@ -767,10 +799,42 @@ reference pictures from before the recorder stopped, which were never written
 down; copied straight across, a decoder shows the wreckage until the next
 picture that restarts it, which on a recorder's own stream can be a minute
 later. So `plan::plan_on` cuts every kept range at the seams before planning
-it, and the far side of each opens with a re-encoded head that starts a coded
-video sequence of its own. The output timeline closes up behind it because a
-segment occupies the fields it writes and not the times it came from. On the
-recording measured, a full cut is 6 ranges and **99.4% copied**.
+it. The output timeline closes up behind each one because a segment occupies
+the fields it writes and not the times it came from. On the recording measured,
+a full cut is 5 ranges and **99.7% copied**.
+
+Four things have to hold for that cut to land where it is meant to, and none of
+them did until these recordings were cut end to end:
+
+- **The seam has to be on the clock the cut is asked in.** `input::joins`
+  answers on the demuxer's own, and a transport stream does not start at zero.
+  Uncorrected, every seam was planned that far *into* the stretch after it —
+  1.1 seconds on one clip, 5.0 on another — so the range in front of it asked
+  for pictures belonging to the next recording and the copy ran across the real
+  seam.
+- **The decoder is shown one stretch and no more.** Handed the far side as
+  well, libavcodec throws the near side away: the stretch after a seam opens on
+  an IDR saying the pictures still waiting to be reordered are not to be shown,
+  and the last second of the stretch before it — pictures that are complete and
+  only waiting their turn — goes unshown with them. So `cut::reencode_segment`
+  stops feeding at the seam's byte and drains the decoder there, which is what
+  hands those pictures back.
+- **The far side begins at the first entry point**, not at the seam. What lies
+  between the two is the stretch's leading pictures, and nothing in the file
+  decodes them. Planned as an ordinary head, that window asked the cutter to
+  re-encode pictures that are not there and the cut stopped: `segment …: no
+  pictures decoded`. `plan::past_the_seam` starts the range at the entry point,
+  which is where a player starts too. The sound recorded alongside goes with
+  them — about a third of a second — because sound kept past the picture it
+  belongs with puts the rest of the range out of step.
+- **The read has to start inside the right stretch.** A time on the far side of
+  a seam cannot be seeked to as a time: libavformat searches a transport stream
+  by reading timestamps at byte positions, and over a seam the times stop
+  climbing with the bytes. A copy that began just after one found the
+  *previous* stretch's last entry point first — written earlier, presenting
+  later — read that as a seek that had overshot, and stopped. Where the landing
+  would fall in front of the seam, `cut::seek_into` seeks to the seam's own
+  byte instead.
 
 A row is joined only where the playlist accounts for the whole clip: every
 sequence it holds, in the order the file holds them, one play item each.
@@ -790,6 +854,26 @@ each after the one before it, and all of them inside the file.
 rows now list as 20, each the length its own index states — 44:19 to 47:57
 against broadcast lengths of 44:41 and 45:10. The four reference discs, the
 pressed Blu-rays and the DVDs list exactly as they did.
+
+**And cut**, all twenty end to end: 19 are written where 17 were before. On a
+title that was written either way, the largest hole in the output's pictures
+falls from 0.751 seconds to 0.083 — a seam costs three pictures now, not a
+second's worth of them — and the 68 pictures that could not be placed on the
+output timeline are none. The sound at a seam still has a hole in it, 0.38 and
+0.84 seconds on that title, and the same hole is there either way: it is in the
+recording. A transport stream carries a moment's sound about a second behind
+its picture, so a recorder that stops writing stops having written that second.
+
+The one recording that still stops is a stretch whose own entry-point map runs
+about twenty seconds behind the pictures it indexes, while every other stretch
+of the same clip agrees with its own to a thousandth of a second. That is a
+fault in the index and not in the seam, and nothing above addresses it: the
+copy is asked for an entry point the stream does not carry there, meets a
+picture ten seconds later instead, and reports a seek it thinks overshot.
+
+Ordinary recordings are untouched by any of this, and measured to be: cuts of
+three broadcast transport streams, of two reference Blu-rays and of two DVD
+titles are **byte for byte** what they were before.
 
 ## DVD-Video
 

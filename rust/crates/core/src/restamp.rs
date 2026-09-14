@@ -65,6 +65,24 @@ pub struct Piece {
     pub from: i64,
 }
 
+/// Where one stretch of a joined clip gives way to the next.
+///
+/// **Both halves are needed and they answer different questions.** The time
+/// is what the planner cuts at, because a range is a range of times. The byte
+/// is what says which stretch a packet belongs to, and only it can: where a
+/// stretch begins is read off an index that understates it at both ends, so
+/// two stretches can overlap by a fraction of a second on the joined clock
+/// and a time then picks out both of them. The byte is the boundary the
+/// recorder actually wrote.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Seam {
+    /// The first byte of the stretch after the seam, counted from the front
+    /// of the clip.
+    pub at: u64,
+    /// When that stretch begins, in seconds on the joined clock.
+    pub time: f64,
+}
+
 /// The correction to apply to a clip, piece by piece.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Restamp {
@@ -95,13 +113,17 @@ impl Restamp {
         &self.pieces
     }
 
-    /// The seams, in seconds on the joined clock: where each stretch after
-    /// the first begins. Empty where there is only one stretch.
-    pub fn joins(&self) -> Vec<f64> {
+    /// The seams: where each stretch after the first begins, in bytes into
+    /// the clip and in seconds on the joined clock. Empty where there is only
+    /// one stretch.
+    pub fn seams(&self) -> Vec<Seam> {
         self.pieces
             .iter()
             .skip(1)
-            .map(|p| p.from as f64 / TICK)
+            .map(|p| Seam {
+                at: p.at,
+                time: p.from as f64 / TICK,
+            })
             .collect()
     }
 

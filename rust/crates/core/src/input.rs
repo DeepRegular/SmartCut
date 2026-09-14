@@ -498,15 +498,15 @@ fn open_with(url: &str, generate_pts: bool, all_maps: bool, deep_probe: bool) ->
     Ok(Demux::plain(ff::format::input_with_dictionary(&url, opts)?))
 }
 
-/// The seams in a recording, in seconds on the clock the demuxer will
-/// report. Empty for everything that is one run of time, which is every
-/// recording but a recorder's clip written in several stretches.
+/// The seams in a recording, timed on the clock the demuxer will report.
+/// Empty for everything that is one run of time, which is every recording but
+/// a recorder's clip written in several stretches.
 ///
 /// Read back out of the name rather than off the disc a second time: the
 /// table travelled there when the recording was parsed, and this is the one
-/// place downstream that needs it. See [`crate::restamp::Restamp::joins`].
-pub fn joins(input: &Input) -> Vec<f64> {
-    split_restamp(&input.url).map_or_else(Vec::new, |(table, _)| table.joins())
+/// place downstream that needs it. See [`crate::restamp::Restamp::seams`].
+pub fn joins(input: &Input) -> Vec<crate::restamp::Seam> {
+    split_restamp(&input.url).map_or_else(Vec::new, |(table, _)| table.seams())
 }
 
 /// Split a `restamp:` URL into the table and the URL it wraps. `None` for

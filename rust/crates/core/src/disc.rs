@@ -1693,14 +1693,28 @@ fn entry_points(raw: &[u8]) -> Vec<(f64, u64)> {
         // a file only goes one way, which is what the correction below leans
         // on.
         let mut behind = 0u64;
+        // The last time handed out, and where the stretch it belongs to ends.
+        //
+        // **A time only climbs inside one stretch.** A clip a recorder wrote
+        // in several goes holds a clock per stretch, and one of them starting
+        // again is not a map out of step -- on the discs here a stretch has
+        // begun 7 seconds before the one in front of it ended. So the same
+        // correction the positions get is made against a watermark that is
+        // dropped at every seam, and a map whose clocks restart is left
+        // exactly as it reads. See [`sequence_starts`].
+        let seams: Vec<u64> = sequence_starts(raw).into_iter().skip(1).map(|s| s.at).collect();
+        let mut seam = 0usize;
+        let mut earlier = 0u64;
         for (k, &(first, pts_hi, spn_hi)) in coarse.iter().enumerate() {
             let last = coarse.get(k + 1).map_or(fine_n, |c| c.0);
             // The top of the packet number comes from the coarse entry and
-            // the bottom seventeen bits from the fine one.
+            // the bottom seventeen bits from the fine one, and the top of the
+            // timestamp likewise.
             let mut top = spn_hi & !0x1_FFFF;
+            let mut ceiling = pts_hi << 19;
             for f in first..last.min(fine_n) {
                 let v = u32be(raw, fine_at + f * 4);
-                let pts = (pts_hi << 19) | (((v >> 17) & 0x7FF) as u64) << 9;
+                let mut pts = ceiling | (((v >> 17) & 0x7FF) as u64) << 9;
                 let mut spn = top | (v & 0x1_FFFF) as u64;
                 // **A coarse entry does not always carry the top it should.**
                 // The seventeen bits a fine entry holds run out every 131072
@@ -1721,6 +1735,28 @@ fn entry_points(raw: &[u8]) -> Vec<(f64, u64)> {
                     turns += 1;
                 }
                 behind = spn;
+                // **And the timestamp is carried the same way.** A coarse
+                // entry that states a stale top states it in both of its
+                // fields: the eleven bits a fine entry holds of the time run
+                // out every 2^20 ticks, and where the coarse entry has not
+                // been stepped on the time reads a whole turn -- 11.65
+                // seconds -- early. Measured on one clip of the recorder's
+                // discs here, the map turns round and goes back that far
+                // twice inside a single stretch. A player is being told when
+                // the next picture is and the next picture is later, so the
+                // time is stepped on by whole turns until it does not go
+                // backwards.
+                while spn >= seams.get(seam).copied().unwrap_or(u64::MAX) {
+                    seam += 1;
+                    earlier = 0;
+                }
+                let mut turns = 0;
+                while pts < earlier && turns < TURNS {
+                    ceiling += 0x10_0000;
+                    pts += 0x10_0000;
+                    turns += 1;
+                }
+                earlier = pts;
                 // A source packet is 192 bytes: a transport packet behind the
                 // four that say when it arrived.
                 out.push((pts as f64 / 90_000.0, spn * SOURCE_PACKET));
@@ -2365,10 +2401,14 @@ mod tests {
         assert!((moved(2_000) - 2.0).abs() < 1e-9);
         // And a byte inside a stretch is corrected like the stretch.
         assert_eq!(moved(1_500), moved(1_000));
-        let joins = table.joins();
+        let joins = table.seams();
         assert_eq!(joins.len(), 2);
-        assert!((joins[0] - 11.0).abs() < 1e-9);
-        assert!((joins[1] - 12.0).abs() < 1e-9);
+        assert!((joins[0].time - 11.0).abs() < 1e-9);
+        assert!((joins[1].time - 12.0).abs() < 1e-9);
+        // And each says where in the file the stretch after it begins, which
+        // is what tells a packet of one stretch from a packet of another.
+        assert_eq!(joins[0].at, 1_000 * SOURCE_PACKET);
+        assert_eq!(joins[1].at, 2_000 * SOURCE_PACKET);
         // A clip of one stretch has nothing to join.
         assert!(joined(&clpi_timed(&[(0, 0, 45_000, 495_000)]), 3_000).is_none());
         // Nor has a table that does not read as one.
@@ -2762,6 +2802,32 @@ mod tests {
         assert_eq!(found[3].1, (9 + 131_072) * 192);
         // And every position still climbs.
         assert!(found.windows(2).all(|w| w[0].1 < w[1].1));
+    }
+
+    /// And the same coarse entry states a stale top in its other field, so
+    /// the time is carried forward the same way -- but only inside one
+    /// stretch, because a clip written in several goes starts its clock again
+    /// at every seam.
+    #[test]
+    fn an_entry_point_time_never_goes_backwards_inside_a_stretch() {
+        // Two coarse entries at the same top, the second of which should have
+        // been stepped on: one turn of the fine time field is 2^20 ticks,
+        // which is two of the coarse entry's own steps.
+        let raw = clpi_with_ep_map(
+            &[(0, 4, 0), (2, 4, 200)],
+            &[(0, 0), (2000, 100), (100, 200)],
+        );
+        let found = entry_points(&raw);
+        assert_eq!(found.len(), 3);
+        let ticks = |t: f64| (t * 90_000.0).round() as u64;
+        assert_eq!(ticks(found[0].0), 4 << 19);
+        assert_eq!(ticks(found[1].0), (4 << 19) | (2000 << 9));
+        // Stated as (4 << 19) | (100 << 9), which is behind the one before
+        // it. A whole turn is added, which is what the coarse entry should
+        // have said.
+        assert_eq!(ticks(found[2].0), (6 << 19) | (100 << 9));
+        // And every time still climbs.
+        assert!(found.windows(2).all(|w| w[0].0 < w[1].0));
     }
 
     #[test]

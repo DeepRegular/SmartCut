@@ -1520,6 +1520,78 @@ fn ts_layout(ictx: &ff::format::context::Input, video_index: usize) -> Option<Ts
     }
 }
 
+/// The bytes of the clip one segment's pictures come out of.
+///
+/// **A stretch is told from the one beside it by where it is in the file, not
+/// by when it plays.** Where a stretch begins is read off an index that
+/// understates it at both ends -- see [`crate::disc`] -- so two stretches can
+/// overlap by a fraction of a second on the joined clock, and on one recorder
+/// clip measured here they overlap by 0.46 of one. A packet's time then says
+/// nothing about which of the two wrote it; its position says exactly.
+///
+/// A segment never spans a seam, because [`crate::plan::plan_on`] cuts at
+/// them, so the stretch is the one this segment's times fall in and what
+/// comes back is that stretch's first and last byte. `None` either side where
+/// there is no seam that way, which for an ordinary recording is both.
+fn stretch_bytes(
+    src: &Source,
+    seg: &Segment,
+    tol: f64,
+) -> (Option<crate::restamp::Seam>, Option<u64>) {
+    let floor = src
+        .joins
+        .iter()
+        .copied()
+        .filter(|j| j.time <= seg.start + tol)
+        .next_back();
+    let wall = src
+        .joins
+        .iter()
+        .find(|j| j.time >= seg.end - tol)
+        .map(|j| j.at);
+    (floor, wall)
+}
+
+/// Put the read where a segment begins, and never in front of the stretch
+/// that segment belongs to.
+///
+/// **A time on the far side of a seam cannot be seeked to as a time.**
+/// libavformat searches a transport stream by reading timestamps at byte
+/// positions, which works only while the times climb with the bytes. Over a
+/// seam they do not: the stretches can overlap, and the search then settles
+/// past the entry point it was asked for -- which the copy reads, rightly, as
+/// a seek that overshot, and the cut stops. It stopped on a whole recording
+/// here, every time.
+///
+/// So where the landing would fall in front of the seam, the seam's own byte
+/// is seeked to instead. That is where the stretch begins, so the read picks
+/// up ahead of the entry point with none of the stretch before it in the way.
+fn seek_into(
+    ictx: &mut ff::format::context::Input,
+    src: &Source,
+    time: f64,
+    floor: Option<crate::restamp::Seam>,
+) -> Result<()> {
+    if let Some(seam) = floor.filter(|_| src.byte_seekable) {
+        if time - src.seek_margin < seam.time {
+            // Stream index -1 with AVSEEK_FLAG_BYTE means the timestamp is a
+            // byte offset. See [`crate::index`], which seeks the same way.
+            let placed = unsafe {
+                ff::ffi::av_seek_frame(
+                    ictx.as_mut_ptr(),
+                    -1,
+                    seam.at as i64,
+                    ff::ffi::AVSEEK_FLAG_BYTE,
+                ) >= 0
+            };
+            if placed {
+                return Ok(());
+            }
+        }
+    }
+    seek_to(ictx, src, time)
+}
+
 fn seek_to(ictx: &mut ff::format::context::Input, src: &Source, time: f64) -> Result<()> {
     let landing = (time - src.seek_margin).max(0.0);
     // Asking for the beginning has to mean the beginning. Aiming at the
@@ -1742,7 +1814,15 @@ fn copy_segment(
     let in_tb = f64::from(ictx.stream(ist_index).unwrap().time_base());
     let fd = src.video.frame_duration();
     let field = fd / 2.0;
-    seek_to(&mut ictx, src, seg.start)?;
+    // The stretch this segment copies, as bytes. A copy that begins just
+    // after a seam is looking for an entry point that the stretch before it
+    // can reach over: the last entry point of that stretch is written earlier
+    // in the file but presents later on the joined clock, so it arrived
+    // first, looked like a seek that had overshot, and stopped the cut. See
+    // [`stretch_bytes`].
+    let (floor, wall) = stretch_bytes(src, seg, fd / 2.0);
+    let mut read_at: Option<u64> = None;
+    seek_into(&mut ictx, src, seg.start, floor)?;
     // Anchored on the first picture actually emitted, not on the planner's
     // idealised time for it.
     let mut anchor: Option<f64> = None;
@@ -1753,6 +1833,9 @@ fn copy_segment(
 
     let mut started = false;
     let mut overshot = false;
+    // The first picture met past the entry point that was asked for, where
+    // the entry point itself never turned up.
+    let mut instead: Option<f64> = None;
     let mut video_done = false;
     // One flag per stream being gathered. The read stops when every one of
     // them has run past this segment, not when the first does: the sound of
@@ -1769,6 +1852,13 @@ fn copy_segment(
 
     for (stream, packet) in ictx.packets() {
         let index = stream.index();
+        // Where the read has got to, in bytes into the clip. Not every packet
+        // says -- the second field of a pair does not -- so the last one that
+        // did stands in for those that do not, which is what the position
+        // means anyway: the read goes one way through the file.
+        if packet.position() >= 0 {
+            read_at = Some(packet.position() as u64);
+        }
         if index != ist_index {
             if let Some(k) = ctx.audio.iter().position(|a| a.in_index == index) {
                 if !audio_done[k] {
@@ -1819,16 +1909,25 @@ fn copy_segment(
             }
             continue;
         }
+        // Pictures from the stretches either side of this one are not this
+        // segment's to copy, whatever their times say. See `floor`/`wall`.
+        if read_at.zip(floor).is_some_and(|(at, f)| at < f.at)
+            || read_at.zip(wall).is_some_and(|(at, w)| at >= w)
+        {
+            continue;
+        }
         let Some(pts) = packet.pts() else { continue };
         let t = pts as f64 * in_tb - src.start_time;
 
         if !started {
             // Roll forward to the entry point.
             if !(packet.is_key() && (t - seg.start).abs() < fd / 2.0) {
-                // A keyframe beyond the target means the seek overshot and
-                // the entry point is already behind us.
+                // A keyframe beyond the target means the entry point is
+                // already behind us, and this is the first picture a copy
+                // could have started on instead.
                 if packet.is_key() && t > seg.start + fd {
                     overshot = true;
+                    instead = Some(t);
                     break;
                 }
                 continue;
@@ -1923,10 +2022,23 @@ fn copy_segment(
         })?;
     }
     if !started {
-        if overshot {
+        // **Two things look the same here and only one of them is a seek.**
+        // Either the read landed past the entry point, which a larger margin
+        // would cure, or the recording carries no picture there at all --
+        // which is what a disc index that disagrees with its own stream reads
+        // like, and measured here on one clip of one recorder's disc, where a
+        // whole stretch of the entry-point map states times six seconds in
+        // front of the pictures it indexes. How far the first picture that
+        // could have started a copy is past the entry point tells them apart,
+        // so it is said rather than guessed at.
+        if let Some(found) = instead.filter(|_| overshot) {
             bail!(
-                "seek overshot the entry point at {:.3}s (margin {:.1}s was not enough)",
+                "the entry point at {:.3}s was passed without being met, and the first picture a \
+                 copy could start on is {:.3}s further on, at {found:.3}s. Either the read \
+                 overshot it, with {:.1}s of margin allowed for that, or the recording carries no \
+                 entry point there and its index is describing something else.",
                 seg.start,
+                found - seg.start,
                 src.seek_margin
             );
         }
@@ -2568,7 +2680,9 @@ fn reencode_segment(
         .video()?;
     let mut encoder = Pictures::open(src, &params, opts, ctx.signalling)?;
 
-    seek_to(&mut ictx, src, seg.seek_from)?;
+    let (floor, wall) = stretch_bytes(src, seg, tol);
+    let mut read_at: Option<u64> = None;
+    seek_into(&mut ictx, src, seg.seek_from, floor)?;
 
     let mut frame = ff::frame::Video::empty();
     let mut audio_done = vec![false; ctx.audio.len()];
@@ -2589,6 +2703,24 @@ fn reencode_segment(
     let mut past_end = false;
     // Packets libavcodec would not take. See where they are counted.
     let mut damaged = 0usize;
+    // **The decoder is shown one stretch of a joined clip and no more.**
+    //
+    // A seam is where the recorder stopped and started again, and the
+    // pictures on either side of one were made minutes apart. Handed both,
+    // libavcodec throws the first lot away: the stretch after a seam opens on
+    // an IDR that says the pictures still waiting to be reordered are not to
+    // be shown, and the last second of the stretch before it -- pictures that
+    // are complete and only waiting their turn -- goes unshown with them.
+    // That second is exactly what a range ending at a seam asks to be
+    // re-encoded, so a cut of a recorder's clip lost it quietly, and where
+    // nothing else fell in the window it stopped with nothing decoded.
+    //
+    // So the far side is never fed: reaching it drains the decoder instead,
+    // which is what hands back the pictures it was holding. See
+    // [`stretch_bytes`] for why this is asked of the position rather than the
+    // time, and [`crate::plan::plan_on`], which cuts at seams for the same
+    // reason this stops at them.
+    let mut drained = false;
 
     macro_rules! feed {
         () => {
@@ -2635,6 +2767,13 @@ fn reencode_segment(
 
     for (stream, packet) in ictx.packets() {
         let index = stream.index();
+        // Where the read has got to, in bytes into the clip. Not every packet
+        // says -- the second field of a pair does not -- so the last one that
+        // did stands in for those that do not, which is what the position
+        // means anyway: the read goes one way through the file.
+        if packet.position() >= 0 {
+            read_at = Some(packet.position() as u64);
+        }
         if index != ist_index {
             if let Some(k) = ctx.audio.iter().position(|a| a.in_index == index) {
                 if !audio_done[k] {
@@ -2677,6 +2816,22 @@ fn reencode_segment(
                 break;
             }
         }
+        // The stretch this segment belongs to, and nothing either side of it.
+        // See `stretch_bytes`.
+        if read_at.zip(floor).is_some_and(|(at, f)| at < f.at) {
+            continue;
+        }
+        if drained || read_at.zip(wall).is_some_and(|(at, w)| at >= w) {
+            if !drained {
+                drained = true;
+                // Past the end in the only sense that matters here: there are
+                // no more pictures this segment can be given.
+                past_end = true;
+                decoder.send_eof()?;
+                feed!();
+            }
+            continue;
+        }
         // A packet the decoder will not take is not a reason to stop.
         //
         // A recording of a broadcast has holes in it -- a burst of noise, a
@@ -2695,8 +2850,10 @@ fn reencode_segment(
         // picks out exactly the pictures this segment owns.
         feed!();
     }
-    decoder.send_eof()?;
-    feed!();
+    if !drained {
+        decoder.send_eof()?;
+        feed!();
+    }
     let _ = past_end; // only the loop above acts on it
     if let Pictures::Libav(enc) = &mut encoder {
         enc.send_eof()?;

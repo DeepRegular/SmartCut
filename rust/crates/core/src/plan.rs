@@ -22,6 +22,7 @@
 //!
 //! For a closed GOP `lead_start == time` and both collapse to the simple case.
 
+use crate::restamp::Seam;
 use crate::{AccessPoint, VideoInfo};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -314,7 +315,9 @@ pub fn plan(
 /// table. So this is the entry point for a caller that has the recording in
 /// hand, and [`plan`] stays the arithmetic.
 pub fn plan_on(src: &crate::Source, ranges: &[(f64, f64)], opts: &PlanOptions) -> Vec<RangePlan> {
-    let ranges = at_the_seams(ranges, &src.joins);
+    let seams = seam_times(&src.joins);
+    let ranges = at_the_seams(ranges, &seams);
+    let ranges = past_the_seam(&ranges, &seams, &src.points, &src.video);
     let mut plans = plan(&src.video, src.duration, &src.points, &ranges, opts);
     for p in &mut plans {
         clean_the_join(src, p, opts);
@@ -361,6 +364,55 @@ fn at_the_seams(ranges: &[(f64, f64)], joins: &[f64]) -> Vec<(f64, f64)> {
         out.push((at, b));
     }
     out
+}
+
+/// The seams, as the times the planner works in.
+fn seam_times(joins: &[Seam]) -> Vec<f64> {
+    joins.iter().map(|s| s.time).collect()
+}
+
+/// Begin a range that begins at a seam at the first entry point past it.
+///
+/// **What a stretch holds in front of its first entry point cannot be
+/// decoded.** Those are the pictures the recorder wrote before it had coded
+/// anything to predict them from -- they reference pictures from before it
+/// stopped, which are minutes of broadcast away and were never written down.
+/// Where a stretch begins is read off an index that does not state that
+/// window, so the seam lands inside it or a little in front of it, and either
+/// way there is nothing between the seam and the entry point that this can
+/// re-encode.
+///
+/// Planned as an ordinary head, that window asked the cutter for pictures
+/// that are not there, and the cut stopped with nothing decoded in it. So the
+/// range starts at the first entry point instead.
+///
+/// A player shows no more of it than this does: a disc's own play item starts
+/// at an entry point for the same reason. What the range gives up with them
+/// is the sound recorded alongside -- a third of a second on the recordings
+/// measured here -- because sound kept past the picture it belongs with is
+/// sound the rest of the range is out of step with.
+fn past_the_seam(
+    ranges: &[(f64, f64)],
+    joins: &[f64],
+    points: &[AccessPoint],
+    video: &VideoInfo,
+) -> Vec<(f64, f64)> {
+    if joins.is_empty() {
+        return ranges.to_vec();
+    }
+    let eps = video.frame_duration() / 2.0;
+    ranges
+        .iter()
+        .map(|&(a, b)| {
+            if !joins.iter().any(|&j| (a - j).abs() <= eps) {
+                return (a, b);
+            }
+            match points.iter().find(|p| p.time >= a - eps) {
+                Some(p) if p.time > a && p.time < b => (p.time, b),
+                _ => (a, b),
+            }
+        })
+        .collect()
 }
 
 /// Move the start of a range's copied body onto an entry point that restarts
@@ -583,6 +635,42 @@ mod tests {
         assert_eq!(
             at_the_seams(&[(5.0, 15.0), (30.0, 35.0)], &joins),
             vec![(5.0, 10.0), (10.0, 15.0), (30.0, 35.0)]
+        );
+    }
+
+    /// And the far side of a seam begins at the first entry point, because
+    /// the pictures in front of it reference a recording that is not here.
+    /// See [`past_the_seam`].
+    #[test]
+    fn a_range_at_a_seam_begins_at_the_first_entry_point() {
+        let video = video();
+        let fd = video.frame_duration();
+        let points = points(40, fd);
+        // A seam a little in front of the fourth entry point, which is where
+        // one lands: a stretch is placed by a reading of where it starts that
+        // is made wide on purpose.
+        let seam = points[4].time - 0.3;
+        let joins = [seam];
+        assert_eq!(
+            past_the_seam(&[(0.0, seam), (seam, 20.0)], &joins, &points, &video),
+            vec![(0.0, seam), (points[4].time, 20.0)]
+        );
+        // A range that begins anywhere else is left where the caller put it,
+        // seam or no seam.
+        assert_eq!(
+            past_the_seam(&[(1.0, 20.0)], &joins, &points, &video),
+            vec![(1.0, 20.0)]
+        );
+        // A recording with no seams is planned exactly as it was.
+        assert_eq!(
+            past_the_seam(&[(1.0, 20.0)], &[], &points, &video),
+            vec![(1.0, 20.0)]
+        );
+        // A seam already on an entry point moves nothing.
+        let on = [points[4].time];
+        assert_eq!(
+            past_the_seam(&[(points[4].time, 20.0)], &on, &points, &video),
+            vec![(points[4].time, 20.0)]
         );
     }
 }
