@@ -2530,6 +2530,9 @@ function bindSetting(id, key, kind = "value") {
   const input = el(id);
   const read = () => {
     settings[key] = kind === "checked" ? input.checked : input.value;
+    // Which is the whole of what settles the output: a control on this
+    // screen used by a hand. See `outputSettled`.
+    settleOutput();
     renderOutset();
     renderOutScreen();
     rememberOutput();
@@ -3806,6 +3809,7 @@ el("browse-dir").addEventListener("click", async (ev) => {
   const picked = await dialog.open({ directory: true, multiple: false });
   if (!picked) return;
   settings.dir = picked;
+  settleOutput();
   el("out-dir").value = picked;
   renderOutset();
   renderOutScreen();
@@ -3866,6 +3870,7 @@ for (const b of document.querySelectorAll(".modes .tab")) {
   b.addEventListener("click", () => {
     if (settings.mode === b.dataset.mode) return;
     settings.mode = b.dataset.mode;
+    settleOutput();
     renderOutset();
     renderOutScreen();
     rememberOutput();
@@ -4930,12 +4935,48 @@ let tempProject = "";
 /// writes this file rather than making the queue a copy of its own.
 let queuedJob = "";
 
+/// Whether the output settings are this list's answer, or merely what the
+/// program happens to be holding.
+///
+/// A list saved from the 入力 screen has been given no output. What
+/// `settings` holds at that moment is the program's own defaults, 環境設定's
+/// standing answer for what a cut is called, and whatever the last session
+/// was carrying -- none of which anybody has said about *this* work. Written
+/// down they would stop being standing answers and become the project's own,
+/// and the file would go on answering with them long after 環境設定 had been
+/// told otherwise.
+///
+/// So they go in only once somebody has settled them, which is the moment a
+/// control on the output settings screen is used. Until then the file says
+/// nothing about the output at all, and opening it asks the standing answer
+/// again -- the same three things 新規作成 puts back.
+///
+/// Being drawn is not settling. The output settings screen fills in a folder
+/// name and a disc title by itself, from the recordings; those are what it
+/// *would* write, worked out again as readily next time, and nobody has
+/// chosen them by walking past them.
+let outputSettled = false;
+
+/// Somebody has just answered for this project's output.
+function settleOutput() {
+  outputSettled = true;
+}
+
 /// Everything worth keeping, in the shape it goes on disc.
-function captureProject() {
+///
+/// `settled` is whether the output settings are part of it, which for a
+/// project somebody is saving is `outputSettled`. A queue copy passes `true`
+/// whatever this window has been shown: the job is to be written the way the
+/// window would write it now, and one that worked its output out again in
+/// another process, hours later and from that process's preferences, would
+/// not be the run that was asked for.
+function captureProject(settled = outputSettled) {
   return {
     smartcut: PROJECT_VERSION,
     saved: new Date().toISOString(),
-    settings: { ...settings },
+    // Left out altogether rather than written empty: a reader has to be able
+    // to tell "nobody has said" from "somebody said none of it".
+    settings: settled ? { ...settings } : undefined,
     clips: clips.map((c) => ({
       path: c.path,
       // What somebody renamed the row to. The one name in the list that
@@ -5016,7 +5057,12 @@ function autoProjectStem() {
 /// recording, and opening the project again works the flag out from it.
 function shapeOf() {
   return JSON.stringify({
-    settings,
+    // The same question the file answers: an output nobody has settled is
+    // not written, so it is not something the file can be behind on either.
+    // Without this, walking onto the output settings screen -- which fills
+    // the folder name in by itself -- would put a `*` in the title over a
+    // change no save would record and no save could clear.
+    settings: outputSettled ? settings : null,
     clips: clips.map((c) => ({
       path: c.path,
       renamed: c.renamed,
@@ -5105,15 +5151,16 @@ function touch() {
 ///
 /// The writing half of 保存, without the part that says this is now the
 /// project the window is about -- which is not true of the copy the queue is
-/// given; see `projectForQueue`.
-async function putProject(path) {
+/// given; see `projectForQueue`. That copy is also the one caller that asks
+/// for the output settings whether or not they have been settled.
+async function putProject(path, settled = outputSettled) {
   try {
     // Indented, and with the paths first in every row: a project is a plain
     // file about files, and someone who opens one in an editor to see which
     // recordings it names should be able to read it.
     await invoke("write_project", {
       path,
-      body: JSON.stringify(captureProject(), null, 2),
+      body: JSON.stringify(captureProject(settled), null, 2),
     });
   } catch (e) {
     note(`${e}`);
@@ -5191,6 +5238,8 @@ async function newProject() {
   for (const key of Object.keys(SETTING_DEFAULTS)) settings[key] = SETTING_DEFAULTS[key];
   applyNameDefaults();
   restoreOutput();
+  // And nobody has answered for this list's output, whatever is in force.
+  outputSettled = false;
   filledIn = null;
   showSettings();
   projectPath = "";
@@ -5244,15 +5293,31 @@ async function loadProject(path) {
   // editor open on one has nothing left to be about. All of which `remove`
   // already knows how to do.
   await remove(clips.slice());
-  // Key by key rather than wholesale, so that a file cannot put anything in
-  // `settings` that the output screen has no control for.
-  for (const key of Object.keys(settings)) {
-    if (doc.settings && key in doc.settings) settings[key] = doc.settings[key];
+  // Whether this project has an output of its own. One saved from the 入力
+  // screen has not been given one and says nothing about it; see
+  // `outputSettled`.
+  const said = doc.settings && typeof doc.settings === "object" ? doc.settings : null;
+  outputSettled = !!said;
+  if (said) {
+    // Key by key rather than wholesale, so that a file cannot put anything in
+    // `settings` that the output screen has no control for.
+    for (const key of Object.keys(settings)) {
+      if (key in said) settings[key] = said[key];
+    }
+    // A project written before there were folders of their own says nothing
+    // about one, and what the last list settled has nothing to do with this
+    // one: back to unsettled, so the name follows the project just opened.
+    if (!("subfolder" in said)) settings.subfolder = null;
+  } else {
+    // Nothing to put back, so what this list is written with is the standing
+    // answer -- the program's defaults, 環境設定's names over the top of
+    // them, and whatever is being carried from the last session. The three
+    // 新規作成 puts back, for the same reason: the project that was open a
+    // moment ago has nothing to say about this one.
+    for (const key of Object.keys(SETTING_DEFAULTS)) settings[key] = SETTING_DEFAULTS[key];
+    applyNameDefaults();
+    restoreOutput();
   }
-  // A project written before there were folders of their own says nothing
-  // about one, and what the last list settled has nothing to do with this
-  // one: back to unsettled, so the name follows the project just opened.
-  if (!doc.settings || !("subfolder" in doc.settings)) settings.subfolder = null;
   filledIn = null;
   showSettings();
   const taken = [];
@@ -6057,7 +6122,7 @@ async function projectForQueue() {
       return "";
     }
   }
-  if (!(await putProject(path))) return "";
+  if (!(await putProject(path, true))) return "";
   // Kept, so that a list registered twice is written to the one file and
   // refused as the duplicate it is, rather than piling up copies of itself.
   tempProject = path;
@@ -6118,7 +6183,7 @@ el("enlist-export").addEventListener("click", async () => {
 /// edited here does not go back to 待機 on its own: whether it is to be
 /// written again is もう一度出力する, on the row, where it was before.
 async function overwriteQueuedJob() {
-  if (!(await putProject(queuedJob))) return;
+  if (!(await putProject(queuedJob, true))) return;
   await touchQueuedJob(queuedJob);
   // This list is now what is on disc, wherever the title bar is pointed.
   if (projectPath === queuedJob) {
@@ -7213,6 +7278,9 @@ el("pref-forget-output").addEventListener("click", () => {
   // 環境設定 is the default: it is on this very panel, and a button that put
   // `cut_` back over the answer two rows above it would be arguing.
   applyNameDefaults();
+  // The defaults are what nobody has answered, here as at the start: a list
+  // put back to them has no output of its own to write down.
+  outputSettled = false;
   filledIn = null;
   // Which writes the defaults back over what was being carried: from here on
   // that is what a restart restores, because it is what is now in force.

@@ -542,6 +542,12 @@ It is answered by **comparing**, not by raising a flag. `shapeOf()` is what the 
 would be if it were written this instant — the settings and, per row, the path and the
 edit — as one string, and what was last written or read is kept beside it.
 
+It is what would be written, not what is in force, which is where `outputSettled` comes
+in: an output nobody has settled is not written, so it is left out of the shape too.
+Otherwise walking onto the output settings screen — which fills a folder name in by
+itself — would put a `*` in the title over a change no save would record and no save
+could clear.
+
 A flag would have to be lowered again by everything that puts the work back where it was:
 cancelling out of the editor, a clip added and then removed. The one place that forgets is
 a program insisting there is something to lose when there is not, which is the state in

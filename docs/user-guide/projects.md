@@ -49,7 +49,7 @@ A project saves **the things you decided**:
 - the programme names and chapters read from a disc, and what a disc written
   from the list will say about each recording — the name, the channel, when it
   was recorded and what it was about, including anything typed over
-- the output settings
+- the output settings, once you have settled any of them
 
 It does not save **anything it can work out again**. Length, resolution and
 frame rate come straight from the file next time it is opened. The seek index
@@ -59,6 +59,26 @@ are read back from there.
 That keeps the file tiny: **a few hundred bytes even for a list of twenty**.
 It is only text, so it opens on another machine, and it opens after you have
 cleared the cache. Whatever is missing simply gets read again.
+
+### The output settings go in once you have settled them
+
+A list saved from the 入力 screen has not been given an output yet. What the
+program is holding at that moment is its own defaults, whatever 環境設定 says
+a cut is called, and whatever the last session was carrying — none of it an
+answer you gave about this work. So none of it is written down, and opening
+that project later asks those standing answers again. Which is what you want
+when you have since changed them.
+
+Use one control on the 出力設定 screen and the whole panel becomes this
+project's own answer: saved with it, and put back exactly as it was when it
+is opened. Merely walking onto that screen is not using it. The folder name
+and the disc title it fills in for you are worked out from the recordings,
+and are worked out again next time.
+
+A batch job is the exception. `バッチに登録` writes the output settings into
+the queue's copy whether or not you have been to that screen, because a job is
+to be written the way this window would write it now — not the way another
+process would work it out hours later.
 
 ## The `*` in the title bar means "not saved yet"
 
