@@ -882,7 +882,11 @@ input[type="text"]::placeholder { color: var(--dim); }
   padding: 6px 8px; border-bottom: 1px solid #000;
   background: #2b3a44; cursor: pointer;
 }
-#batch-list .n { color: var(--dim); text-align: right; padding-top: 1px; align-self: start; }
+/* Down the middle of the card rather than up against its first line. The
+   row is three lines tall and the number is about the whole of it, not about
+   the name at the top -- and the cards are not all the same height, so a
+   number pinned to the top of each one wandered up and down the list. */
+#batch-list .n { color: var(--dim); text-align: right; align-self: center; }
 /* The same box, and the same reasons, as the clip list's poster -- except for
    its height, which is the card's rather than a number: the three lines beside
    it are what a card is, and a picture ending short of them or running past
