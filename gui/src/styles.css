@@ -780,6 +780,12 @@ input[type="text"]::placeholder { color: var(--dim); }
 .row > span:first-child { color: var(--dim); min-width: 132px; }
 .row .lbl { color: var(--dim); min-width: 48px; }
 .row .num { color: var(--dim); font-variant-numeric: tabular-nums; white-space: nowrap; }
+/* The folder note says nothing until a folder of that name is in the way, and
+   an empty one would still stand in the row's flex line, with the gap beside
+   it taken out of the field it is about. The other notes in these rows are
+   allowed their room: theirs is a count that comes and goes as it is typed
+   into, and a field that changed width under the hand would be worse. */
+#out-subfolder-note:empty { display: none; }
 .row input[type="text"], .row select, .row .drop, .row textarea { flex: 1; min-width: 0; }
 .row input[readonly] { color: var(--dim); }
 /* A field holding a count rather than a name: the three digits a channel is
