@@ -319,7 +319,7 @@ and every one has a test pinning the reproduction:
   numbered by different encoders. Where they overlap, one picture of the outgoing
   scene comes back a frame *after* the incoming one.
 
-There are ten of them, in [the pitfalls](docs/technical/algorithm.md#pitfalls),
+There are eleven of them, in [the pitfalls](docs/technical/algorithm.md#pitfalls),
 in the order they were hit. If you read one page of the documentation, make it
 that one.
 

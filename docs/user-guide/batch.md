@@ -244,8 +244,8 @@ belongs to the file manager or the keyring, not to a video editor. Given a share
 that is not connected, it stops and says where to connect it.
 
 ```
-\\nas\rec is not connected. Open smb://nas/rec in your file manager and add
-the files again. (Connected shares: \\nas\video)
+Not connected to \\nas\rec. Open smb://nas/rec in the file manager and add it
+again. (shares connected now: \\nas\video)
 ```
 
 ## Saving part-way through

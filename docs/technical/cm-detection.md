@@ -147,8 +147,10 @@ counts.
 
 The seconds budget catches large mistakes; boundary precision is measured with a
 different ruler, the multiple of 15. The detector does not use that property, so it
-is independent evidence, and it works down to sub-second scale. If it is ever used
-by the detector, an independent replacement check has to exist first.
+is independent evidence, and it works down to sub-second scale. Across the three
+recordings that contain commercials, every block comes out exact: 150.0 / 120.0 /
+120.0 / 60.0 s, 135.0 / 105.0 s, and 300.0 s. If the property is ever used by the
+detector, an independent replacement check has to exist first.
 
 The BS Fuji ground truth (with slot idents) was checked frame by frame: 3.930 is the
 slot ident's first picture, 189.916 the commercial's first, and 324.818 the first of
@@ -430,6 +432,9 @@ that contains the grey area of promos, there is no target to move `fill` or
 Silence and logo *guess* at "programme or commercial"; a reset reads the mark the
 broadcaster's own equipment stamped on the seam. And it needs no decoding: select a
 PID and read packets, 3 seconds for a 3.7 GB recording, against 30 for the logo.
+Where the resets are used the logo pass is skipped outright, "use the logo too"
+ticked or not: on the Nihonkai TV recording that took the whole analysis from 50
+seconds to 7.
 
 There are two costs.
 

@@ -65,37 +65,25 @@ Only the first of those is **an actual signal rather than a guess**, so where a
 recording carries subtitle marks they are what is read, and the other two cues
 are for recordings that do not.
 
-**The marks have to be a reading of the whole recording, though.** Stations do
-not divide into two kinds but three: those that mark every switch, those that
-mark none, and those that mark only where the programme stops and starts and
-nothing between. The third kind is exact about the few breaks it names and
-silent about the rest, and read *instead of* the other two it gave one
-commercial block on a recording that has four.
+**Not every recording's marks cover the whole of it.** Some stations mark only
+where the programme stops and starts and nothing in between. Marks like that
+are put aside, and the logo and the silences decide instead.
 
-So the marks are checked for one **inside** a break — two of them fifteen
-seconds apart, which is one commercial ending and the next beginning. Where
-there are none, the recording is treated as one that carries no marks at all
-and the logo and the silences decide. The screen says which happened.
-
-**When the subtitle marks are the ones used, the logo is not read at all.** It
-is more reliable and ten times faster, so the logo pass is skipped even with
-"use the logo too" ticked. On the Nihonkai TV recording that took the analysis
-from 50 seconds to 7.
+**Where the marks are used, the logo is not read at all**, even with "use the
+logo too" ticked. The marks are the better answer, and the analysis finishes in
+a fraction of the time.
 
 There are three possible answers: **subtitle marks**, **logo and silence**, and
 **no commercials**. The last one is a recording where the logo never went away
 from start to finish — that is an answer, not a failure to find anything. Which
 one was used is shown next to the number of blocks.
 
-## Check that the blocks are multiples of fifteen seconds
+## A quick check: the blocks should be multiples of fifteen
 
-On the three recordings that contained commercials, every detected block came
-out as **an exact multiple of fifteen seconds** (150.0 / 120.0 / 120.0 / 60.0 s,
-135.0 / 105.0 s, and 300.0 s).
-
-The detector does not use that property at all, which is exactly why it makes
-good independent evidence that the boundaries landed where they should.
-**A block of 119.8 seconds instead of 120.0 means something is slightly off.**
+Commercials are sold in fifteen-second units, so a detected block ought to come
+out at 60, 120 or 135 seconds and not at something in between. **A block of
+119.8 seconds where it should be 120.0 means a boundary landed slightly off** —
+worth a look before you cut.
 
 ## When it gets one wrong
 

@@ -186,8 +186,7 @@ VM 上の wine 10.0 で確認している。
   39 個）も同一で、境界の部分 GOP に対する再エンコード 0.3% も同じである。なお
   **ポータブル zip の `smartcut.exe` は GUI** なので、CLI は別途ビルドする。
 
-  ```bash
-  cd rust && FFMPEG_DIR=~/win-deps/ffmpeg-7.1.1-full_build-shared \
+  ```bashcd rust && FFMPEG_DIR=~/win-deps/ffmpeg-7.1.1-full_build-shared \
     XWIN_ACCEPT_LICENSE=1 cargo xwin build --release \
     --target x86_64-pc-windows-msvc -p smartcut-cli
   ```
@@ -225,17 +224,17 @@ exe に刻印するためで、インストーラ側は `NSIS`、ポータブル
   「いちばん近い形式」である。cpal はこれを非対応として扱い（`is_format_supported` が
   `S_FALSE` を `Ok(false)` に潰す）、開かないまま `StreamConfigNotSupported` で終わる。
 
-  ミキシング形式はサウンド設定で決まるので、**出力を 44.1kHz にしている PC では
-  48kHz の放送が完全に無音**になっていた。5.1ch の放送をステレオ出力へ送った場合も
+  ミキシング形式はサウンド設定で決まるので、**出力を 44.1 kHz にしている PC では
+  48 kHz の放送が完全に無音**になっていた。5.1ch の放送をステレオ出力へ送った場合も
   同様である。デバイスにミキシング形式を尋ねてそれに合わせ、swresample によるレート
   変換とチャンネルレイアウト変換を追加して修正した（`playback_audio::candidates`）。
   **素材自身の形式は最初の候補として残してある**ので、Linux では従来どおり無変換で
   再生される。固定期間を外した候補も末尾に追加した。ALSA の
-  `snd_pcm_hw_params_set_buffer_size` は割り切れないサイズを拒否するので、44.1kHz の
+  `snd_pcm_hw_params_set_buffer_size` は割り切れないサイズを拒否するので、44.1 kHz の
   882 フレームが一部のカードで失敗するためである。
 
 - **`resampling::Context::run` の出力フレームは、入力と同じサンプル数しか持たない。**
-  レートを上げる場合（48kHz → 96kHz など）これでは足りず、swresample は溢れたぶんを
+  レートを上げる場合（48 kHz → 96 kHz など）これでは足りず、swresample は溢れたぶんを
   内部に貯める。クラッシュも破綻もしないが、貯まったものは二度と出てこないので、再生を
   続けるかぎり遅延とメモリが増え続ける。現在は出力フレームを
   `入力サンプル数 × 出力レート ÷ 入力レート` で確保している。

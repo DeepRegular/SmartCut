@@ -535,8 +535,8 @@ That the window has gone at all is reported from Rust, by `on_window_event` as
 
 ### Projects: saved or not, worked out rather than remembered
 
-What a project file contains, and why, is in [projects](../user-guide/projects.md). The
-implementation detail worth noting here is how "is there unsaved work" is decided.
+What a project file holds is in [projects](../user-guide/projects.md). What is worth
+setting down here is how "is there unsaved work" is decided.
 
 It is answered by **comparing**, not by raising a flag. `shapeOf()` is what the project
 would be if it were written this instant — the settings and, per row, the path and the

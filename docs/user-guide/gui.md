@@ -118,9 +118,8 @@ whole disc, which is what you want for a season set.
 | DVD-Video | the disc name plus a title number |
 
 **Opening is instant.** A disc carries its own list of the places playback can
-start from, so SmartCut reads that rather than examining the whole recording. On
-an 81 GB, 2 hour 34 title, that took what used to be 8 minutes 45 down to under
-a second.
+start from, so SmartCut reads that rather than examining the whole recording.
+Even an 81 GB title of 2 hours 34 is on the list in under a second.
 
 **The chapters the disc set are on the timeline from the start**, because on a
 Japanese recording the chapter marks are frequently the commercial breaks
@@ -821,7 +820,7 @@ can quote it straight into a bug report.
 | What you see | What to do |
 |---|---|
 | **Dropping a file does nothing** | Check the extension is one of `.ts` `.m2ts` `.mts` `.m2t` `.mp4` `.mkv` `.mov` `.m4v` `.vob` `.mpg` `.mpeg` `.m2p`. Dropping a folder brings in the supported files inside it |
-| **"`\\nas\rec` is not connected"** | Open that share in your file manager first. SmartCut does not mount anything itself |
+| **"`Not connected to \\nas\rec`"** | Open that share in your file manager first. SmartCut does not mount anything itself |
 | **Captions are missing from the output** | Captions can only be kept when writing a `.ts`. Check the container in the output settings |
 | **The editor's picture is coarse or slow to appear** | It is still being read. Once the reading finishes the preview is frame-accurate, and once the thumbnails are built the filmstrip fills completely ([Usable from the moment it opens](#usable-from-the-moment-it-opens)). The index is built once only |
 | **I want zero re-encoding** | Select the range and press `Snap to lossless`. If that still does not reach zero, this material cannot put the cut points on key frames |
