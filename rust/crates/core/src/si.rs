@@ -133,17 +133,18 @@ const DROP_DESCRIPTORS: [u8; 5] = [0x09, 0xC1, 0xC8, 0xDE, 0xF6];
 /// TOT instead says the same things in the shape they arrived in, which is
 /// what the tools built around Japanese recordings read.
 ///
-/// The first is the standard answer to "what is a recording", so it is the
-/// default. The second is kept because it is what most software downstream
-/// of this one actually looks at.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+/// Which of the two is right depends on where the cut is going rather than
+/// on anybody's preference, so neither is *the* default; see
+/// [`crate::cut::tables_for`]. A Blu-ray clip has to be a partial stream --
+/// that is what the format is -- and a `.ts` is opened by players and
+/// recorder software that read SDT and EIT and know nothing of a SIT.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Tables {
     /// The muxer's own, which describe the streams and nothing else.
     Muxer,
     /// The recording's own SDT, EIT and TOT, put back where they belong.
     Broadcast,
     /// One selection information table, the way a recording is written down.
-    #[default]
     Partial,
 }
 
@@ -3356,5 +3357,53 @@ mod tests {
             &mut buf,
         );
         assert_eq!(recorded_service(&buf, 0, PACKET), None);
+    }
+
+    /// A time and offset table reading `mjd`, `hh:mm:ss`, with a CRC over it.
+    fn tot(mjd: u16, h: u8, m: u8, sec: u8) -> Vec<u8> {
+        let bcd = |v: u8| (v / 10) << 4 | (v % 10);
+        let mut s = vec![
+            TABLE_TOT,
+            0x70,
+            0x00,
+            (mjd >> 8) as u8,
+            mjd as u8,
+            bcd(h),
+            bcd(m),
+            bcd(sec),
+            0xF0,
+            0x00,
+        ];
+        finish_section(&mut s);
+        s
+    }
+
+    #[test]
+    fn the_clock_runs_on_from_where_the_range_opened() {
+        // Ten seconds into a range that opened at 23:59:55 on MJD 61000:
+        // the day turns over, and the clock reads five past midnight on the
+        // day after. A cut that crosses midnight is the ordinary case for a
+        // programme that starts at half past eleven.
+        let moved = advance_time(&tot(61_000, 23, 59, 55), 10.0).expect("a well formed table");
+        assert_eq!(&moved[3..8], &[0xEE, 0x49, 0x00, 0x00, 0x05]);
+        // And what it says is checkable: the offset table carries a CRC,
+        // which has to be the one over the bytes as they now read.
+        let body = moved.len() - 4;
+        assert_eq!(
+            crc32(&moved[..body]),
+            u32::from_be_bytes(moved[body..].try_into().expect("four bytes")),
+        );
+        // A range that opened at the start needs no arithmetic at all.
+        assert_eq!(
+            advance_time(&tot(61_000, 9, 0, 0), 0.0).expect("a well formed table"),
+            tot(61_000, 9, 0, 0),
+        );
+        // Two days of it, which is longer than any one recording but is what
+        // the loop rather than a single subtraction is there for.
+        let moved = advance_time(&tot(61_000, 12, 0, 0), 2.0 * 86_400.0 + 60.0)
+            .expect("a well formed table");
+        assert_eq!(&moved[3..8], &[0xEE, 0x4A, 0x12, 0x01, 0x00]);
+        // Too short to hold a time: nothing to move, and nothing written.
+        assert_eq!(advance_time(&[TABLE_TOT, 0x70, 0x00], 1.0), None);
     }
 }

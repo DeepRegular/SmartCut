@@ -73,9 +73,11 @@ for name in atx.ts full_ntv.ts terrestrial_nhke.ts animax_anime_01.ts; do
   if [ ! -f "$src" ]; then skip "$name" "no $name"; continue; fi
   a=$(tables "$src")
 
-  # --- the default: a partial transport stream ---------------------------
+  # --- a partial transport stream, which --tables partial asks for -------
+  # The shape a disc's stream is written in, and what a `.m2ts` gets without
+  # being asked; `run_bdav_tests.sh` is where that default is checked.
   out="$WORK/out.ts"
-  "$BIN" "$src" --keep 20.0-80.0 --keep 120.0-180.0 -o "$out" >/dev/null 2>&1
+  "$BIN" "$src" --keep 20.0-80.0 --keep 120.0-180.0 --tables partial -o "$out" >/dev/null 2>&1
   if [ ! -s "$out" ]; then bad "$name 部分TS" "出力が空"; continue; fi
   b=$(tables "$out")
   why=$(common "$a" "$b")
@@ -106,11 +108,13 @@ for name in atx.ts full_ntv.ts terrestrial_nhke.ts animax_anime_01.ts; do
   fi
   rm -f "$out"
 
-  # --- and the broadcast's own tables, which --tables broadcast keeps -----
+  # --- and the broadcast's own tables, which a .ts gets by default -------
+  # No --tables here on purpose: what a player opening the file reads is
+  # EIT, SDT and TOT, so that is what an unasked-for `.ts` carries.
   # Written over the first one rather than beside it: two cuts of a
   # broadcast recording are a third of a gigabyte, and a test suite that
   # needs both at once fails on a small /tmp for a reason that is not a bug.
-  "$BIN" "$src" --keep 20.0-80.0 --keep 120.0-180.0 --tables broadcast -o "$out" >/dev/null 2>&1
+  "$BIN" "$src" --keep 20.0-80.0 --keep 120.0-180.0 -o "$out" >/dev/null 2>&1
   if [ ! -s "$out" ]; then bad "$name 放送テーブル" "出力が空"; else
     c=$(tables "$out")
     why=$(common "$a" "$c")

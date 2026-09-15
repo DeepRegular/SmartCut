@@ -73,7 +73,7 @@ copy, so **the whole track is re-encoded**.
 
 | Option | Meaning |
 |---|---|
-| `--tables partial\|broadcast\|muxer` | How the `.ts` describes its own contents. `partial`, the default, writes a partial transport stream (the standard shape for a recording); `broadcast` puts the recording's own programme tables back; `muxer` adds nothing. `--no-tables` is the old name for `muxer` |
+| `--tables partial\|broadcast\|muxer` | How a transport stream describes its own contents. Unsaid, a `.ts` gets `broadcast` — the recording's own SDT, EIT and TOT, which is where a player reads the programme name, the station and the clock — and a `.m2ts` gets `partial`, the shape a disc's stream is written in. `muxer` adds nothing. `--no-tables` is the old name for `muxer` |
 
 ## Writing a disc (BDAV)
 

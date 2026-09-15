@@ -71,7 +71,7 @@ smartcut input.ts --cut 8.0-20.0 --bdav ~/disc  # ファイルではなくディ
 
 | オプション | 意味 |
 |---|---|
-| `--tables partial\|broadcast\|muxer` | `.ts` が自分の中身をどう名乗るか。既定の `partial` は**部分 TS**（録画向けの標準的な書き方）、`broadcast` は録画自身の番組情報をそのまま戻し、`muxer` は何も足しません。`--no-tables` は `muxer` の古い名前です |
+| `--tables partial\|broadcast\|muxer` | TS が自分の中身をどう名乗るか。指定が無ければ `.ts` は `broadcast`（録画自身の SDT・EIT・TOT。プレーヤーが番組名・放送局名・時刻を読む場所）、`.m2ts` は `partial`（**部分 TS**。ディスクのストリームの書き方）になります。`muxer` は何も足しません。`--no-tables` は `muxer` の古い名前です |
 
 ## ディスク（BDAV）として書く
 

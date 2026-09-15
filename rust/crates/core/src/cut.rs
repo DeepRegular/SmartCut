@@ -252,10 +252,8 @@ pub struct CutOptions {
     /// Not an index, because a DVD's subtitles may have none: see
     /// [`crate::SubpictureInfo`].
     pub drop_subpictures: Vec<i32>,
-    /// Which account of itself the output carries.
-    ///
-    /// Defaults to a partial transport stream, which is what a cut of a
-    /// broadcast is: [`crate::si::Tables::Partial`].
+    /// Which account of itself the output carries. `None` takes whichever
+    /// suits where the cut is going; see [`tables_for`].
     ///
     /// The muxer writes a description of the streams and stops there. What
     /// the other two settings restore is everything else a broadcast says
@@ -264,7 +262,7 @@ pub struct CutOptions {
     /// table a recording is written down in or in the shape the broadcast
     /// sent them. See [`crate::si::Tables`]. Only means anything writing a
     /// transport stream.
-    pub tables: crate::si::Tables,
+    pub tables: Option<crate::si::Tables>,
 }
 
 /// How far past a segment's end the reader will go for a stream that has
@@ -1509,6 +1507,38 @@ fn writing_ts(path: &str) -> bool {
             .as_deref(),
         Some("ts" | "m2ts" | "mts" | "m2t")
     )
+}
+
+/// Which account of itself a cut carries where the caller has not said.
+///
+/// There are two honest answers and the file name picks between them,
+/// because what is being written decides which is right.
+///
+/// A Blu-ray clip is a partial transport stream. That is not a preference;
+/// it is what the format is, and it is what a recorder's own disc and every
+/// authoring tool's disc carries -- one selection information table and
+/// none of the tables that describe a live multiplex. So a `.m2ts` -- the
+/// standalone one as much as the one being written onto a disc -- gets
+/// [`crate::si::Tables::Partial`]. It is the same test the framing is
+/// chosen by ([`writing_m2ts`]), because it is the same question: this is
+/// the shape a disc's stream is written in.
+///
+/// Everything else is a file, and the software that opens one reads the
+/// broadcast's own tables. A player shows the programme name, the station
+/// and the clock out of EIT, SDT and TOT, on the PIDs a broadcast puts them
+/// on; handed a cut that says all of it in a SIT instead, it finds nothing
+/// and shows nothing. The standards' answer to "what is a recording" is the
+/// partial stream, but nothing downstream of here asks that question -- so a
+/// `.ts` gets [`crate::si::Tables::Broadcast`], and `--tables partial` is
+/// how to ask for the other one anyway.
+///
+/// Anything that is not a transport stream at all ignores the answer.
+pub fn tables_for(output: &str, asked: Option<crate::si::Tables>) -> crate::si::Tables {
+    asked.unwrap_or(if writing_m2ts(output) {
+        crate::si::Tables::Partial
+    } else {
+        crate::si::Tables::Broadcast
+    })
 }
 
 /// Read the layout off the input, when the input is a transport stream at all.
@@ -4079,7 +4109,11 @@ pub fn cut_with_progress(
     // with it: an event information section names its service by transport
     // stream and by network, and a player that finds those disagreeing with
     // the tables around them is right to believe neither.
-    let wants_tables = to_ts && opts.tables != crate::si::Tables::Muxer;
+    // Which of the three shapes this cut is being written in, settled once
+    // here so that what is read off the recording and what is written back
+    // are answering the same question. See [`tables_for`].
+    let want = tables_for(output, opts.tables);
+    let wants_tables = to_ts && want != crate::si::Tables::Muxer;
     let ours = u16::try_from(video_pid).unwrap_or(0);
     // Every stream the cut is going to carry, so the map that comes back is
     // one that describes them all rather than whichever arrived first. See
@@ -5135,7 +5169,7 @@ pub fn cut_with_progress(
             // The recording's own tables where it had some; where it had
             // none, only the map is being corrected.
             if tables.is_some() {
-                opts.tables
+                want
             } else {
                 crate::si::Tables::Muxer
             },
@@ -5331,5 +5365,31 @@ mod tests {
         let can = writable_sound(&[unnamed], &CutOptions::default(), &offered());
         assert_eq!(can.codecs.len(), offered().codecs.len());
         assert_eq!(can.bit_rates, offered().bit_rates);
+    }
+
+    #[test]
+    fn a_file_carries_the_broadcast_and_a_clip_is_a_partial_stream() {
+        use crate::si::Tables;
+        // What a player opens is a `.ts`, and what it reads there is the
+        // broadcast's own EIT, SDT and TOT.
+        assert_eq!(tables_for("cut.ts", None), Tables::Broadcast);
+        assert_eq!(tables_for("/tmp/CUT.TS", None), Tables::Broadcast);
+        // A Blu-ray clip is a partial transport stream because that is what
+        // the format is -- on a disc under `--bdav` or standing on its own.
+        assert_eq!(tables_for("BDAV/STREAM/00001.m2ts", None), Tables::Partial);
+        assert_eq!(tables_for("cut.M2TS", None), Tables::Partial);
+        // Not a transport stream at all: the answer is never looked at, and
+        // the one given here is the file-shaped one.
+        assert_eq!(tables_for("cut.mp4", None), Tables::Broadcast);
+    }
+
+    #[test]
+    fn asking_for_a_shape_overrides_the_name() {
+        use crate::si::Tables;
+        for name in ["cut.ts", "cut.m2ts"] {
+            for want in [Tables::Muxer, Tables::Broadcast, Tables::Partial] {
+                assert_eq!(tables_for(name, Some(want)), want);
+            }
+        }
     }
 }

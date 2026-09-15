@@ -46,9 +46,9 @@ are restored by the pass described below.
 
 ## Putting the recording's own tables back
 
-> Since 0.3.1 the default output is the partial transport stream described further
-> down. This section is what `--tables broadcast` does — and the machinery under it is
-> what both shapes are built on.
+> Since 0.6.5 this is what a `.ts` carries unless asked otherwise; a `.m2ts` is
+> written as the partial transport stream described further down, because that is
+> what a disc's stream is. The machinery under it is what both shapes are built on.
 
 A broadcast also talks about itself. Which service this is, what the station is
 called, what is on now and what follows, what time it is: PAT, PMT, SDT, EIT, TOT.
@@ -266,7 +266,7 @@ about what came next on the air, a programme whose streams were never going to b
 here. Judging its tags against what this file carries would be meaningless, and would
 throw away the one true thing it says.
 
-## Written as a partial transport stream (the default)
+## Written as a partial transport stream (`--tables partial`, and every `.m2ts`)
 
 A cut of a broadcast recording is, in the standards' terms, a **partial transport
 stream**. DVB describes one in EN 300 468 Annex C and ARIB in TR-B15; a Blu-ray
@@ -318,14 +318,26 @@ Nothing of it goes out in front of the first map. A stream opens with what its t
 are about, not with a description of them; both reference discs do, and libavformat
 wrote its service description first.
 
-## Written with the broadcast's own tables (`--tables broadcast`)
+## Which of the two a cut gets
 
-The partial stream is the standard's answer, but **what the software around Japanese
+The file name decides, because what is being written decides which answer is right.
+
+A `.m2ts` is a Blu-ray clip. A partial stream is not a preference there, it is what the
+format is — so a `.m2ts` gets one, whether it is going onto a disc under `--bdav` or
+standing on its own. It is the same test the framing is chosen by.
+
+Everything else is a file somebody opens, and **what the software around Japanese
 recordings actually reads is SDT and EIT**. TVTest does, EDCB does, ffmpeg does; none of
 them reads a SIT. Run `ffprobe` over a partial stream and no service name comes back —
-the same is true of TMSR's output.
+the same is true of TMSR's output. Play one through TvtPlay and TVTest has no programme
+name, no station and no clock to show, because the PIDs it looks on are empty. So a
+`.ts` gets the broadcast's own tables.
 
-So the older shape is still there. `--tables broadcast` rebuilds the PMT, replaces the
+Until 0.6.5 the partial stream was the default for both, on the grounds that it is the
+standards' answer to "what is a recording". Nothing downstream of here asks that
+question, and a cut nothing could read the programme out of was the price.
+
+`--tables` overrides either way. `--tables broadcast` rebuilds the PMT, replaces the
 SDT with the recording's own, and injects EIT present/following and TOT on the PIDs they
 belong on. The clock in the TOT runs on from the source time each range opened at, so it
 jumps at every cut — which is what keeping the broadcast's own wall clock means.

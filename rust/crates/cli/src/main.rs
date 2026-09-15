@@ -211,6 +211,11 @@ fn usage() -> String {
      out of the display sets it draws them with; sup writes those \
      display sets themselves, into a .sup beside the cut, which is the \
      one destination that converts a Blu-ray's subtitles not at all\n\
+     --tables says how a transport stream describes itself; unsaid, a .ts \
+     carries the broadcast's own SDT, EIT and TOT, which is where a player \
+     reads the programme name, the station and the clock, and a Blu-ray \
+     clip is written as a partial transport stream, which is what that \
+     format is\n\
      --bdav writes the cut onto a disc of recordings in FOLDER rather than \
      into a file; --disc-title, --programme, --channel, --about and --made \
      fill in what its index says, which is otherwise taken from what the \
@@ -260,9 +265,10 @@ fn main() -> Result<()> {
     let mut drop_streams: Vec<usize> = Vec::new();
     let mut drop_subpictures: Vec<i32> = Vec::new();
     let mut subtitles = smartcut_core::cut::Subtitles::default();
-    // A cut of a broadcast is a partial transport stream unless asked for
-    // in one of the other two shapes. See `smartcut_core::si::Tables`.
-    let mut tables = smartcut_core::si::Tables::default();
+    // Unsaid, the shape follows where the cut is going: a `.ts` carries the
+    // broadcast's own tables and a Blu-ray clip is a partial transport
+    // stream. See `smartcut_core::tables_for`.
+    let mut tables: Option<smartcut_core::si::Tables> = None;
     // Where a disc of recordings is being built, and what to call it and the
     // recording going onto it. See `smartcut_core::bdav`.
     let mut bdav: Option<String> = None;
@@ -456,15 +462,15 @@ fn main() -> Result<()> {
                 let v = args
                     .get(i)
                     .context("--tables needs partial, broadcast or muxer")?;
-                tables = match v.as_str() {
+                tables = Some(match v.as_str() {
                     "partial" => smartcut_core::si::Tables::Partial,
                     "broadcast" => smartcut_core::si::Tables::Broadcast,
                     "muxer" | "none" => smartcut_core::si::Tables::Muxer,
                     other => bail!("--tables wants partial, broadcast or muxer, got {other:?}"),
-                };
+                });
             }
             // What the option was called when there were only two answers.
-            "--no-tables" => tables = smartcut_core::si::Tables::Muxer,
+            "--no-tables" => tables = Some(smartcut_core::si::Tables::Muxer),
             "--proxy" => make_proxy = true,
             "--as-proxy" => as_proxy = true,
             "--analyze" => analyze = true,
@@ -1311,7 +1317,7 @@ fn main() -> Result<()> {
          stream(s){graphics}{subpictures}{}",
         src.audios.len(),
         src.captions.len(),
-        match (to_ts, tables) {
+        match (to_ts, smartcut_core::tables_for(&out, tables)) {
             (true, smartcut_core::si::Tables::Partial) => ", written as a partial transport stream",
             (true, smartcut_core::si::Tables::Broadcast) => ", the broadcast's own tables",
             (true, smartcut_core::si::Tables::Muxer) => ", tables left to the muxer",
