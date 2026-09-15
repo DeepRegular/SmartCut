@@ -66,6 +66,15 @@ pub const AHEAD: f64 = 30.0;
 pub enum Kind {
     /// A broadcast's ARIB captions: characters, read here.
     Caption,
+    /// The crawl a station writes across whatever is on air, in the same
+    /// characters on a stream of its own. Read exactly as the captions are;
+    /// kept apart because it belongs to the hour rather than to the
+    /// programme, and a viewer looking for a line of dialogue should not be
+    /// shown an earthquake instead.
+    Superimpose,
+    /// A 4K recording's subtitles, which are TTML documents rather than ARIB
+    /// text. See [`crate::ttml`].
+    Ttml,
     /// A Blu-ray's graphics: pictures, decoded by libavcodec.
     Graphics,
     /// A DVD's subtitles: pictures too, and a palette that is not in the
@@ -97,7 +106,11 @@ pub fn tracks(
 ) -> Vec<Track> {
     let captions = captions.iter().map(|c| Track {
         id: c.pid,
-        kind: Kind::Caption,
+        kind: match (c.kind, c.format) {
+            (crate::TextKind::Superimpose, _) => Kind::Superimpose,
+            (_, crate::TextFormat::Ttml) => Kind::Ttml,
+            _ => Kind::Caption,
+        },
         language: c.language.clone(),
     });
     let graphics = graphics.iter().map(|g| Track {
@@ -155,6 +168,8 @@ pub struct Reader {
     start_time: f64,
     /// Which track, by the number the recording gives it.
     id: i32,
+    /// See [`crate::CaptionInfo::base`].
+    base: f64,
     kind: Kind,
     /// The picture the subtitles are drawn over, which is what a disc's
     /// positions are measured against.
@@ -187,10 +202,18 @@ impl Reader {
                     .map(|s| s.palette)
                     .unwrap_or_else(vobsub::Palette::grey)
             });
+        // Where a TTML document's times are counted from. Zero for
+        // everything else, whose packets carry times of their own.
+        let base = src
+            .captions
+            .iter()
+            .find(|c| c.pid == id)
+            .map_or(0.0, |c| c.base);
         Ok(Reader {
             url: src.input.url.clone(),
             start_time: src.start_time,
             id,
+            base,
             kind: track.kind,
             screen: (src.video.width as u16, src.video.height as u16),
             palette,
@@ -230,6 +253,7 @@ impl Reader {
         let from = (t - LOOKBACK).max(0.0);
         let to = t + AHEAD;
         let (id, kind, screen, start_time) = (self.id, self.kind, self.screen, self.start_time);
+        let base = self.base;
         let video = self.video;
         let ictx = match self.ictx.as_mut() {
             Some(c) => c,
@@ -250,8 +274,14 @@ impl Reader {
                 let keep = id;
                 let pictures = video;
                 for stream in c.streams() {
-                    let mine = stream.parameters().medium() == ff::media::Type::Subtitle
-                        && stream.id() == keep;
+                    // A crawl and a 4K recording's subtitles arrive as data
+                    // rather than as subtitles -- libav has no name for
+                    // either -- so what makes a stream this reader's is its
+                    // number, and the medium only says which it cannot be.
+                    let mine = matches!(
+                        stream.parameters().medium(),
+                        ff::media::Type::Subtitle | ff::media::Type::Data
+                    ) && stream.id() == keep;
                     let discard = match () {
                         _ if mine => continue,
                         _ if stream.index() == pictures => ff::Discard::NonKey,
@@ -270,7 +300,7 @@ impl Reader {
         let mut events: Vec<Event> = Vec::new();
         let mut layout = caption::Layout::default();
         let mut decoder = match kind {
-            Kind::Caption => None,
+            Kind::Caption | Kind::Superimpose | Kind::Ttml => None,
             Kind::Graphics => Some(pictures_decoder(
                 ff::codec::Id::HDMV_PGS_SUBTITLE,
                 screen,
@@ -308,7 +338,11 @@ impl Reader {
             let Some(&(stream_id, tb, medium)) = streams.get(packet.stream()) else {
                 continue;
             };
-            let mine = stream_id == id && medium == ff::media::Type::Subtitle;
+            let mine = stream_id == id
+                && matches!(
+                    medium,
+                    ff::media::Type::Subtitle | ff::media::Type::Data
+                );
             if !mine {
                 // A picture's entry point, which is here to be a clock.
                 let past = packet
@@ -325,6 +359,31 @@ impl Reader {
             let at = pts as f64 * tb - start_time;
             if at > to {
                 break;
+            }
+            if kind == Kind::Ttml {
+                // The packet's own stamp is a counter, so what says the read
+                // has gone past the window is the document.
+                if crate::ttml::cue(data).is_some_and(|(begin, _)| base + begin > to) {
+                    break;
+                }
+                // A document says when it goes up and when it comes down,
+                // and the packet it arrives in says nothing: a recorder
+                // stamps these with a counter. So the times come out of the
+                // document, counted from where the disc says the clip
+                // begins to present. See [`crate::ttml`].
+                if let Some(written) = crate::ttml::written(data) {
+                    for page in written.pages {
+                        events.push(Event {
+                            at: base + f64::from(page.at),
+                            until: page.until.map(|u| base + f64::from(u)),
+                            shown: Some(Shown::Text {
+                                plane: written.plane,
+                                runs: page.runs,
+                            }),
+                        });
+                    }
+                }
+                continue;
             }
             match decoder.as_mut() {
                 None => {

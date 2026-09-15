@@ -367,6 +367,21 @@ impl ElementaryStream {
     pub fn component_tag(&self) -> Option<u8> {
         descriptor(&self.descriptors, 0x52).and_then(|d| d.first().copied())
     }
+
+    /// What kind of data the stream carries, out of the data component
+    /// descriptor: 0x0008 is ARIB STD-B24, the character code a high
+    /// definition broadcast writes its captions and its crawls in.
+    ///
+    /// A 4K recording carries neither this descriptor nor that code. Its
+    /// subtitles are TTML -- an XML document per caption -- and the stream
+    /// is described by a language and a byte this program has no use for.
+    /// So "has the descriptor" is the question rather than "which code",
+    /// and the absence of it is what says the text is not ARIB's.
+    pub fn data_component_id(&self) -> Option<u16> {
+        descriptor(&self.descriptors, 0xFD)
+            .filter(|d| d.len() >= 2)
+            .map(|d| u16::from_be_bytes([d[0], d[1]]))
+    }
 }
 
 /// What the recording says about itself.
@@ -687,6 +702,30 @@ fn names(service: &Service, wanted: &[u16]) -> usize {
 /// further, once, when the first pass did not find everything -- a map that
 /// changes does it near the start, and a recording that never names a stream
 /// in its first minute was never going to.
+/// The recording's own map, read for what it says about its streams rather
+/// than to be written back.
+///
+/// **Nothing in an elementary stream says whether it is the subtitles or the
+/// crawl.** Both are ARIB STD-B24 text under stream type 0x06, and libav
+/// tells them apart only far enough to call one of them `arib_caption` and
+/// the other `bin_data` -- which is also what it calls a 4K recording's
+/// subtitles, that being neither. What separates the three is the component
+/// tag the map carries, so the map is read here, once, and the streams it
+/// describes are handed back for the caller to match against what the
+/// demuxer found.
+///
+/// A window of its own, smaller than [`read_service`]'s: this is asked at
+/// every open rather than at every cut, and a tag that is in the map at all
+/// is in the first copy of it. A recording with no map -- a disc's clip
+/// aside, anything that is not a transport stream -- answers with nothing,
+/// and the caller falls back on what the demuxer alone could see.
+pub fn stream_tags(input: &crate::input::Input, video_pid: u16) -> Vec<ElementaryStream> {
+    const WINDOW: usize = 4 << 20;
+    read_service_within(input, video_pid, &[], WINDOW)
+        .map(|s| s.streams)
+        .unwrap_or_default()
+}
+
 pub fn read_service(
     input: &crate::input::Input,
     video_pid: u16,

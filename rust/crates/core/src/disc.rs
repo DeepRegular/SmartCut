@@ -1256,7 +1256,9 @@ fn disc_name(xml: &str) -> Option<String> {
 /// The bytes can only be asked so far. ARIB text shifts between its character
 /// sets with the control bytes `0E`, `0F` and `1B`, which no UTF-8 text holds,
 /// and single-shifts with `89` and `8A`, which no valid UTF-8 sequence begins
-/// with. But a name written entirely in kanji needs no shift at all, since
+/// with. A line break is not one of them: a programme description runs to
+/// several lines in both encodings, and `0A` in the middle of one says
+/// nothing about which it is. But a name written entirely in kanji needs no shift at all, since
 /// kanji is where the decoder starts, and such a name is a run of bytes below
 /// `0x80` that is also valid UTF-8 -- read as UTF-8 it would come back as the
 /// nonsense Latin the pairs spell. So a file that says 2.00 is read as UTF-8,
@@ -1272,7 +1274,8 @@ fn recorded_text(magic: &[u8], bytes: &[u8]) -> String {
     let Ok(text) = std::str::from_utf8(bytes) else {
         return arib::decode(bytes);
     };
-    let shifts = bytes.iter().any(|b| *b < 0x20);
+    const SHIFTS: [u8; 4] = [0x0C, 0x0E, 0x0F, 0x1B];
+    let shifts = bytes.iter().any(|b| SHIFTS.contains(b) || (0x1C..0x20).contains(b));
     let beyond_ascii = bytes.iter().any(|b| *b >= 0x80);
     if !shifts && (major >= 2 || beyond_ascii) {
         return text.to_string();
@@ -1858,6 +1861,38 @@ pub fn clip_entry_points(path: &str) -> Option<Vec<(f64, u64)>> {
         }
     }
     (!points.is_empty()).then_some(points)
+}
+
+/// The moment a clip begins to *present*, on the clock the demuxer reports.
+///
+/// Not where the file begins. A recorder writes a few seconds of pictures in
+/// front of the recording -- what a decoder needs before the first one that
+/// is shown -- and the disc's index says where the showing starts. It is the
+/// same number a playlist's `IN_time` carries, read off the clip's own index
+/// so that a clip opened on its own still has it.
+///
+/// **This is the zero a 4K recording's subtitles count from.** Their times
+/// are inside the documents rather than on the packets, and they are counted
+/// from here; see [`crate::ttml`]. Measured on two clips whose presentation
+/// starts differ by half a second, the first caption of each falls exactly
+/// five seconds after this and on the frame the programme's title sequence
+/// cuts in.
+///
+/// `None` for anything that is not a clip on a disc, and for a disc whose
+/// index does not read.
+pub fn clip_presentation_start(path: &str) -> Option<f64> {
+    let (root, clip) = clip_on_a_disc(path)?;
+    let mut vol = Volume::open(Path::new(root)).ok()?;
+    let raw = vol.read(&format!("CLIPINF/{clip}.clpi")).ok()?;
+    let starts = sequence_starts(&raw);
+    // A name that plays one sequence is opened as those bytes alone, and the
+    // sequence it plays is the one whose packets it begins at.
+    let wanted = crate::input::clip_window(path).map(|(_, first, _)| first * SOURCE_PACKET);
+    match wanted {
+        Some(at) => starts.iter().find(|s| s.at == at),
+        None => starts.first(),
+    }
+    .map(|s| s.start)
 }
 
 /// Where each of a clip's sequences begins, in source packets, and which
@@ -3085,6 +3120,14 @@ mod tests {
         // And UTF-8 is read out of a 1.00 file too where the bytes could
         // only have been written that way.
         assert_eq!(recorded_text(b"BDAV0100", "星降る夜".as_bytes()), "星降る夜");
+        // A description runs to several lines in both encodings, so the
+        // line break in the middle of one settles nothing and is not read
+        // as a shift.
+        let lines = "ある日届いた依頼の手紙。
+おしらせ
+
+番組内容";
+        assert_eq!(recorded_text(b"PLST0200", lines.as_bytes()), lines);
     }
 
     #[test]

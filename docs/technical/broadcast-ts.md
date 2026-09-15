@@ -233,11 +233,18 @@ and fewer of them write the selector that would have said so than write the text
 ## What is put back is trimmed to what was written
 
 The same reasoning is needed one step further along. The broadcast describes the data
-broadcast and the superimposed crawl as streams it is sending, and a cut carries
-neither. Copy the programme description across whole and **the output announces an
-entry point into something that is not in the file** — on a BS Fuji recording, a data
-content descriptor pointing at the data broadcast (component tag 0x40) survived into a
-file that has no data broadcast in it.
+broadcast as a stream it is sending, and a cut does not carry it. Copy the programme
+description across whole and **the output announces an entry point into something that
+is not in the file** — on a BS Fuji recording, a data content descriptor pointing at the
+data broadcast (component tag 0x40) survived into a file that has no data broadcast in
+it.
+
+The crawl used to be in that sentence and is not any more: it is carried now, so the
+descriptors naming it stay. See [The crawl, and the other kind of
+subtitles](disc.md#the-crawl-and-the-other-kind-of-subtitles). What decides this is the
+list of streams the cut actually writes, not a list of kinds, so a stream that starts
+being carried stops being trimmed out of the description without anything here being
+changed.
 
 ARIB names a stream by a one-byte component tag rather than by PID. Three descriptors
 point at another stream that way — component (0x50), audio component (0xC4) and data

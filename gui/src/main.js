@@ -2977,7 +2977,11 @@ function renderTracks() {
     });
     const label = document.createElement("label");
     label.htmlFor = box.id;
-    const kinds = { audio: "tracks.audio", graphics: "tracks.graphics" };
+    const kinds = {
+      audio: "tracks.audio",
+      graphics: "tracks.graphics",
+      superimpose: "tracks.superimpose",
+    };
     const kind = tr(kinds[track.kind] || "tracks.caption");
     const bits = [kind, track.detail];
     if (track.language) bits.push(track.language);

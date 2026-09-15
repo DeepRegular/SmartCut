@@ -77,10 +77,15 @@ impl std::error::Error for NoResets {}
 /// Walk one PES payload's data groups, handing each to `visit`.
 ///
 /// The payload libav hands over starts at the data identifier, so the PES
-/// header is already off. Superimpose (0x81) is skipped: it carries emergency
-/// crawls and station bugs, which come and go for their own reasons.
+/// header is already off. Both identifiers are read -- 0x80 the captions and
+/// 0x81 the superimposed crawl -- because the two are the same text in the
+/// same shape, sent on streams of their own, and a caller has already chosen
+/// which stream it is reading. What the crawl is *for* differs: it carries
+/// an earthquake, a vote count, a missing child, and it belongs to the hour
+/// rather than to the programme. That is a reason to keep it on its own
+/// track, which the caller does, not a reason to be unable to read it.
 pub fn data_groups(payload: &[u8], mut visit: impl FnMut(u8, &[u8])) {
-    if payload.len() < 3 || payload[0] != 0x80 {
+    if payload.len() < 3 || !matches!(payload[0], 0x80 | 0x81) {
         return;
     }
     let mut i = 3 + (payload[2] & 0x0F) as usize;
@@ -1047,6 +1052,31 @@ mod tests {
 
     /// Two kanji, in the set a caption starts in.
     const KANJI: [u8; 4] = [0x30, 0x21, 0x30, 0x22];
+
+    /// The crawl is read the same way the captions are, and says so by the
+    /// identifier its PES payload opens with: 0x80 the captions, 0x81 the
+    /// crawl. Anything else is not text this reads at all.
+    #[test]
+    fn reads_the_crawl_as_well_as_the_captions() {
+        let group = |identifier: u8| {
+            let text = statement(0, 0, &KANJI);
+            let units = body(&[(0x20, text)]);
+            let mut payload = vec![identifier, 0xFF, 0xF0];
+            let n = units.len();
+            payload.extend_from_slice(&[1 << 2, 0, 0, (n >> 8) as u8, n as u8]);
+            payload.extend_from_slice(&units);
+            payload.extend_from_slice(&[0, 0]); // the CRC, which this does not check
+            payload
+        };
+        for identifier in [0x80, 0x81] {
+            let mut seen = Vec::new();
+            data_groups(&group(identifier), |id, _| seen.push(id));
+            assert_eq!(seen, vec![1], "identifier {identifier:#04x}");
+        }
+        let mut seen = Vec::new();
+        data_groups(&group(0x82), |id, _| seen.push(id));
+        assert!(seen.is_empty());
+    }
 
     /// A data group body: what a statement arrives as, which is the text
     /// and whatever else the broadcaster sent with it.

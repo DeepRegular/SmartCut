@@ -204,6 +204,8 @@ fn subtitle_tracks_of(
             id: t.id,
             kind: match t.kind {
                 smartcut_core::subs::Kind::Caption => "caption",
+                smartcut_core::subs::Kind::Superimpose => "superimpose",
+                smartcut_core::subs::Kind::Ttml => "ttml",
                 smartcut_core::subs::Kind::Graphics => "graphics",
                 smartcut_core::subs::Kind::Subpicture => "subpicture",
             }
@@ -2332,10 +2334,18 @@ async fn tracks(path: String) -> Result<Vec<StreamInfo>, String> {
         for c in &src.captions {
             out.push(StreamInfo {
                 index: c.stream_index,
-                kind: "caption".into(),
+                kind: match c.kind {
+                    smartcut_core::TextKind::Caption => "caption",
+                    smartcut_core::TextKind::Superimpose => "superimpose",
+                }
+                .into(),
                 pid: c.pid,
                 language: c.language.clone(),
-                detail: "ARIB STD-B24".into(),
+                detail: match c.format {
+                    smartcut_core::TextFormat::Arib => "ARIB STD-B24",
+                    smartcut_core::TextFormat::Ttml => "ARIB-TTML",
+                }
+                .into(),
                 main: false,
                 optional: true,
             });

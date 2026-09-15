@@ -337,6 +337,13 @@ struct CaptionCtx {
     in_index: usize,
     in_tb: f64,
     offset: f64,
+    /// See [`CaptionTrack::ttml`].
+    ttml: bool,
+    base: f64,
+    /// The whole kept range, which is what a TTML document's times are
+    /// clipped to -- a caption may straddle either end of one, and what it
+    /// says is shown for as much of it as the cut keeps.
+    range: (f64, f64),
 }
 
 /// Where a graphics stream sits on the output timeline.
@@ -506,6 +513,10 @@ struct CaptionTrack {
     out_tb: f64,
     in_index: usize,
     in_tb: f64,
+    /// Whether the times are inside the documents rather than on the
+    /// packets, and where they are counted from. See [`crate::ttml`].
+    ttml: bool,
+    base: f64,
     written: i64,
     /// The moment given to the last statement written. A muxer refuses a
     /// packet that does not come after the one before it, and says only
@@ -1230,9 +1241,13 @@ fn take_caption(
     caption: &CaptionCtx,
     src: &Source,
     seg: &Segment,
+    first_segment: bool,
     packet: ff::Packet,
     writer: &mut Writer,
 ) -> Result<bool> {
+    if caption.ttml {
+        return take_ttml(caption, seg, first_segment, packet, writer);
+    }
     let Some(pts) = packet.pts() else {
         return Ok(false);
     };
@@ -1243,6 +1258,58 @@ fn take_caption(
     if t >= seg.start {
         writer.push_caption(caption.track, packet, t + caption.offset)?;
     }
+    Ok(false)
+}
+
+/// Take one document of a 4K recording's subtitles.
+///
+/// **The times are in the document and the packet has none**, so none of
+/// what [`take_caption`] does applies: a recorder stamps these packets with
+/// a counter, and the document says `begin` and `end` on the clip's own
+/// presentation clock. See [`crate::ttml`].
+///
+/// So a document is claimed by the segment its beginning falls in -- or, for
+/// one already on screen when the range opened, by the range's first segment
+/// -- and what is written is the same document with its times moved onto the
+/// output's clock and clipped to the range. A caption that would have run
+/// past the end of a range ends with it; a caption that belongs to no kept
+/// range is not carried at all.
+fn take_ttml(
+    caption: &CaptionCtx,
+    seg: &Segment,
+    first_segment: bool,
+    packet: ff::Packet,
+    writer: &mut Writer,
+) -> Result<bool> {
+    let Some(data) = packet.data() else {
+        return Ok(false);
+    };
+    let Some((begin, end)) = crate::ttml::cue(data) else {
+        return Ok(false);
+    };
+    let (begin, end) = (begin + caption.base, end + caption.base);
+    // Documents arrive in the order they are shown, so one that begins past
+    // this segment is the end of what this segment can hold.
+    if begin >= seg.end {
+        return Ok(true);
+    }
+    let claimed = begin >= seg.start || (first_segment && end > caption.range.0);
+    if !claimed {
+        return Ok(false);
+    }
+    // The document counts from the clip's presentation start and the cut
+    // counts from the file's beginning, so both the window the document is
+    // clipped to and the move it is given are put on the document's own
+    // clock. What comes out is counted from the first picture of the cut,
+    // which is where a file with no playlist in front of it begins.
+    let window = (caption.range.0 - caption.base, caption.range.1 - caption.base);
+    let Some(bytes) = crate::ttml::retimed(data, caption.base + caption.offset, window) else {
+        return Ok(false);
+    };
+    let at = begin.max(caption.range.0) + caption.offset;
+    let mut out = ff::Packet::copy(&bytes);
+    out.set_flags(ff::packet::Flags::KEY);
+    writer.push_caption(caption.track, out, at)?;
     Ok(false)
 }
 
@@ -1867,7 +1934,8 @@ fn copy_segment(
                 }
             } else if let Some(k) = ctx.captions.iter().position(|c| c.in_index == index) {
                 if !caption_done[k] {
-                    caption_done[k] = take_caption(&ctx.captions[k], src, seg, packet, writer)?;
+                    caption_done[k] =
+                        take_caption(&ctx.captions[k], src, seg, first_segment, packet, writer)?;
                 }
             } else if let Some(k) = ctx.graphics.iter().position(|g| g.in_index == index) {
                 if !graphics_done[k] {
@@ -2782,7 +2850,8 @@ fn reencode_segment(
                 }
             } else if let Some(k) = ctx.captions.iter().position(|c| c.in_index == index) {
                 if !caption_done[k] {
-                    caption_done[k] = take_caption(&ctx.captions[k], src, seg, packet, writer)?;
+                    caption_done[k] =
+                        take_caption(&ctx.captions[k], src, seg, first_segment, packet, writer)?;
                 }
             } else if let Some(k) = ctx.graphics.iter().position(|g| g.in_index == index) {
                 if !graphics_done[k] {
@@ -4453,6 +4522,8 @@ pub fn cut_with_progress(
                 .map_or(1.0 / 90_000.0, |s| f64::from(s.time_base())),
             in_index: info.stream_index,
             in_tb: info.time_base,
+            ttml: info.format == crate::TextFormat::Ttml,
+            base: info.base,
             written: 0,
             last_out: None,
         })
@@ -4722,6 +4793,9 @@ pub fn cut_with_progress(
                 in_index: t.in_index,
                 in_tb: t.in_tb,
                 offset: target_start - plan.t_in,
+                ttml: t.ttml,
+                base: t.base,
+                range: (plan.t_in, plan.t_out),
             })
             .collect();
         let graphics_ctx: Vec<GraphicsCtx> = writer

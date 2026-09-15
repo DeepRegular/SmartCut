@@ -37,6 +37,7 @@ pub mod si;
 pub mod subs;
 pub mod text;
 pub mod thumbs;
+pub mod ttml;
 pub mod udf;
 pub mod udfw;
 pub mod vobsub;
@@ -201,19 +202,105 @@ pub struct AudioInfo {
     pub bit_rate: Option<usize>,
 }
 
-/// A caption stream: the subtitles the broadcast itself sends.
+/// Which of the two text streams a broadcast sends this is.
+///
+/// They are the same kind of stream doing different jobs. The captions are
+/// the programme's own subtitles and belong to it; the crawl is the station
+/// writing across whatever is on air -- an earthquake, a vote count, a
+/// missing child -- and belongs to the hour rather than to the programme.
+/// Both are carried, and a reader is told which it is looking at.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TextKind {
+    Caption,
+    Superimpose,
+}
+
+/// And which of the two ways it is written.
+///
+/// A high definition broadcast writes ARIB STD-B24: characters, where to put
+/// them, and what to draw them in, as a byte stream with shifts and escapes
+/// in it. A 4K broadcast writes TTML instead -- an XML document per caption,
+/// with the words in it and the region they go in stated in pixels. Nothing
+/// decodes either one for us; see [`crate::caption`] and [`crate::ttml`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TextFormat {
+    Arib,
+    Ttml,
+}
+
+/// Which of the three text streams a stream is, from what the recording's
+/// own map says about it and what libav made of it.
+///
+/// **libav names one of them and lumps the other two together.** The captions
+/// of a high definition broadcast come back as `arib_caption`; its crawl and
+/// a 4K recording's subtitles both come back as `bin_data`, which is to say
+/// as bytes of no stated kind. What tells those apart is the component tag
+/// the map carries -- 0x30..0x37 the captions, 0x38..0x3F the crawl -- and
+/// whether the map also carries the data component descriptor that says the
+/// text is ARIB's. A 4K recording carries neither that descriptor nor ARIB
+/// text: its subtitles are TTML documents. See [`crate::ttml`].
+///
+/// `named` is libav's own answer, which stands in for the map on a recording
+/// whose map could not be read -- a clip taken off a disc, or a broadcast
+/// that adds its caption stream to the map a minute in.
+fn text_stream(
+    tag: Option<u8>,
+    data_component_id: Option<u16>,
+    named: bool,
+) -> Option<(TextKind, TextFormat)> {
+    let kind = match tag {
+        Some(0x30..=0x37) => TextKind::Caption,
+        Some(0x38..=0x3F) => TextKind::Superimpose,
+        _ if named => TextKind::Caption,
+        _ => return None,
+    };
+    let format = match data_component_id {
+        // 0x0008 is ARIB STD-B24, which is what a high definition broadcast
+        // writes both of these in.
+        Some(0x0008) => TextFormat::Arib,
+        Some(_) => TextFormat::Arib,
+        None if named => TextFormat::Arib,
+        None => TextFormat::Ttml,
+    };
+    Some((kind, format))
+}
+
+/// A caption stream: the subtitles the broadcast itself sends, or the crawl
+/// it writes over them.
 ///
 /// Kept as its own thing rather than as one more elementary stream, because
 /// it is the one non-audio stream that can be put on a cut timeline. Its
 /// packets carry a presentation time each, so they shift with the pictures
 /// the way audio frames do -- and unlike audio there is nothing to splice,
 /// since a caption statement is whole in one packet.
+///
+/// A 4K recording's subtitles are the exception to that presentation time,
+/// and [`crate::ttml`] is where it is dealt with: the packets carry a
+/// counter where the clock should be, and the times the words are shown at
+/// are inside the document.
 #[derive(Debug, Clone)]
 pub struct CaptionInfo {
     pub stream_index: usize,
     pub pid: i32,
     pub language: Option<String>,
     pub time_base: f64,
+    pub kind: TextKind,
+    pub format: TextFormat,
+    /// The moment the times inside a TTML document are counted from, on the
+    /// same clock as everything else here -- which is to say where the disc
+    /// says this clip begins to present, less where the file begins. Zero
+    /// for ARIB text, whose packets carry their own times.
+    pub base: f64,
+}
+
+impl CaptionInfo {
+    /// Whether this is the ARIB text [`crate::caption`] reads. The other two
+    /// -- a 4K recording's TTML, and a crawl in either -- are carried, and
+    /// only the captions themselves are read for where a break is or turned
+    /// into the pictures a disc draws.
+    pub fn is_arib_caption(&self) -> bool {
+        self.kind == TextKind::Caption && self.format == TextFormat::Arib
+    }
 }
 
 /// A graphics stream: the subtitles a disc draws rather than writes.
@@ -989,6 +1076,9 @@ fn outline_of(path: &str) -> Result<(Outline, input::Demux)> {
             }
         })?;
     let stream_index = stream.index();
+    // The PID the pictures arrive on, which is how the recording's own
+    // service is told from the others its map may name.
+    let video_id = stream.id();
     let time_base = f64::from(stream.time_base());
     let params = stream.parameters();
     let codec = format!("{:?}", params.id()).to_lowercase();
@@ -1080,18 +1170,60 @@ fn outline_of(path: &str) -> Result<(Outline, input::Demux)> {
         .and_then(|i| audios.iter().find(|a| a.stream_index == i).cloned())
         .or_else(|| audios.first().cloned());
 
-    // Captions are subtitles here only in the sense libav means it: an ARIB
-    // caption stream is not decoded, it is carried. A disc's subtitles are
-    // the other kind and are gathered separately, just below.
-    let captions: Vec<CaptionInfo> = ictx
+    // What the recording's own map calls its streams. Only a transport
+    // stream has one, and only the text streams below are asked about it:
+    // everything else here the demuxer already named well enough.
+    let described = if on_a_ts {
+        si::stream_tags(&input, u16::try_from(video_id).unwrap_or(0))
+    } else {
+        Vec::new()
+    };
+    // Which of the three text streams a stream is, where it is one at all.
+    //
+    // **libav names one of them and lumps the other two together.** The
+    // captions of a high definition broadcast come back as `arib_caption`;
+    // its crawl and a 4K recording's subtitles both come back as `bin_data`,
+    // which is to say as bytes of no stated kind. What tells those apart is
+    // the component tag in the recording's own map -- 0x30..0x37 the
+    // captions, 0x38..0x3F the crawl -- and whether the map also carries the
+    // data component descriptor that says the text is ARIB's.
+    let text_of = |pid: i32, id: ff::codec::Id| -> Option<(TextKind, TextFormat)> {
+        let told = described.iter().find(|e| i32::from(e.pid) == pid);
+        text_stream(
+            told.and_then(si::ElementaryStream::component_tag),
+            told.and_then(si::ElementaryStream::data_component_id),
+            id == ff::codec::Id::ARIB_CAPTION,
+        )
+    };
+    // Captions are subtitles here only in the sense libav means it: neither
+    // an ARIB caption stream nor a 4K recording's TTML is decoded to be
+    // carried, they are copied. A disc's subtitles are the other kind and
+    // are gathered separately, just below.
+    let mut captions: Vec<CaptionInfo> = ictx
         .streams()
-        .filter(|s| s.parameters().id() == ff::codec::Id::ARIB_CAPTION)
         .filter(|s| !indexed(s.id()))
-        .map(|s| CaptionInfo {
-            stream_index: s.index(),
-            pid: s.id(),
-            language: s.metadata().get("language").map(str::to_string),
-            time_base: f64::from(s.time_base()),
+        .filter(|s| {
+            matches!(
+                s.parameters().id(),
+                ff::codec::Id::ARIB_CAPTION | ff::codec::Id::BIN_DATA
+            )
+        })
+        .filter_map(|s| {
+            let (kind, format) = text_of(s.id(), s.parameters().id())?;
+            Some(CaptionInfo {
+                stream_index: s.index(),
+                pid: s.id(),
+                language: s.metadata().get("language").map(str::to_string),
+                time_base: f64::from(s.time_base()),
+                kind,
+                format,
+                // On the demuxer's own clock for the moment; rebased below,
+                // where the file's own beginning is worked out.
+                base: match format {
+                    TextFormat::Arib => 0.0,
+                    TextFormat::Ttml => disc::clip_presentation_start(path).unwrap_or(0.0),
+                },
+            })
         })
         .collect();
 
@@ -1142,6 +1274,12 @@ fn outline_of(path: &str) -> Result<(Outline, input::Demux)> {
                     what,
                 });
             }
+            // Nor is a text stream this cut carries -- the captions, and
+            // the crawl beside them. What is left here is the `bin_data`
+            // the map had nothing to say about.
+            if captions.iter().any(|c| c.stream_index == s.index()) {
+                return None;
+            }
             match (p.medium(), p.id()) {
                 // Not dropped at all: this is the event information table,
                 // and where it belongs is not in a stream. See [`si`], which
@@ -1181,6 +1319,15 @@ fn outline_of(path: &str) -> Result<(Outline, input::Demux)> {
             },
         )
     };
+
+    // Everything else here is counted from where the file begins, so the
+    // clock a TTML document's times are counted from is put on the same
+    // footing now that that is known.
+    for c in captions.iter_mut() {
+        if c.format == TextFormat::Ttml {
+            c.base -= start_time;
+        }
+    }
 
     let video = VideoInfo {
         stream_index,
@@ -1244,6 +1391,37 @@ fn outline_of(path: &str) -> Result<(Outline, input::Demux)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The three text streams, told apart by what a recording's own map says
+    /// about them -- the tags and descriptors here are the ones read off a
+    /// high definition broadcast and a 4K recorder's disc.
+    #[test]
+    fn tells_the_text_streams_apart() {
+        // A high definition broadcast: captions and crawl, both ARIB.
+        assert_eq!(
+            text_stream(Some(0x30), Some(0x0008), true),
+            Some((TextKind::Caption, TextFormat::Arib))
+        );
+        assert_eq!(
+            text_stream(Some(0x38), Some(0x0008), false),
+            Some((TextKind::Superimpose, TextFormat::Arib))
+        );
+        // A 4K recording: the captions' own tag, no data component
+        // descriptor, and libav with no name for it.
+        assert_eq!(
+            text_stream(Some(0x30), None, false),
+            Some((TextKind::Caption, TextFormat::Ttml))
+        );
+        // A recording that adds its caption stream to the map after the
+        // opening, which libav finds for itself.
+        assert_eq!(
+            text_stream(None, None, true),
+            Some((TextKind::Caption, TextFormat::Arib))
+        );
+        // The data broadcast, which is neither and is not carried.
+        assert_eq!(text_stream(Some(0x40), None, false), None);
+        assert_eq!(text_stream(None, None, false), None);
+    }
 
     fn sound(stream_index: usize, pid: i32, codec: &str, channels: u16) -> AudioInfo {
         AudioInfo {

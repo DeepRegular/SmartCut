@@ -290,6 +290,58 @@ dozen namespaces declared and one interesting element in it, and pulling in an
 XML parser just to reach `<di:name>` would be by far the largest dependency in
 the program.
 
+## The crawl, and the other kind of subtitles
+
+A broadcast sends more text than the subtitles. Beside them runs the **crawl** — the
+line a station writes across whatever is on air, for an earthquake, a vote count, a
+missing child — on a stream of its own, in the same ARIB characters. And a **4K**
+broadcast writes its subtitles in another format entirely: TTML, an XML document per
+caption, with the words in it and the region they go in stated in pixels.
+
+**libav names one of these three and lumps the other two together.** A high definition
+broadcast's captions come back as `arib_caption`; its crawl and a 4K recording's
+subtitles both come back as `bin_data`, bytes of no stated kind. Read that way, a 4K
+disc's subtitles were reported as "superimposed text" and left behind, which is two
+mistakes in one line.
+
+What tells them apart is the recording's own map. ARIB names a stream by a one-byte
+component tag: 0x30..0x37 are the captions and 0x38..0x3F the crawl. Beside it sits the
+data component descriptor, which says the text is ARIB STD-B24 — and a 4K recording
+carries neither that descriptor nor that text. So the map is read at every open
+(`si::stream_tags`), and the three are told apart by tag and descriptor together;
+`lib::text_stream` is the whole of that rule, and libav's own name stands in where the
+map could not be read.
+
+All three are carried into a `.ts`, and all three can be put on screen in the preview.
+Only the first is read for anything else: where a break is ([`caption::resets`]) and
+what the disc's own subtitles are turned into are the programme's captions and not the
+station's crawl.
+
+### A 4K subtitle's times are inside the document
+
+Two things about the TTML stream are unlike every other stream a cut moves.
+
+**The packets carry a counter where a clock should be.** A recorder stamps them 1, 2, 3
+— the presentation time of the first document is `1`, of the second `2` — and the times
+the words are shown at are inside the document, as text: `begin="00:02:21.667"`.
+
+**Those times are counted from where the clip begins to present**, which is not where
+the file begins. The disc's index says where that is — the same number the playlist's
+`IN_time` carries — and `disc::clip_presentation_start` reads it. Measured on two clips
+whose presentation starts differ by half a second, the first caption of each falls
+exactly five seconds after this, on the frame the title sequence cuts in. Against the
+file's own beginning, those two would be 1.2 and 1.7 seconds out.
+
+So a cut cannot move these packets the way it moves every other stream. What it does
+instead (`cut::take_ttml`) is move the times *inside* each document and write it back:
+a caption that falls in no kept range is left behind, one that straddles the start of a
+range begins with it, and one that would run past the end of a range ends with it. The
+document's length does not change — `HH:MM:SS.mmm` is a fixed width — which matters
+because the twelve bytes a recorder writes in front of each document count it.
+
+What comes out is counted from the first picture of the cut, which is where a file with
+no playlist in front of it begins.
+
 ## What a row is
 
 **One clip, one row** — not one playlist, one row.

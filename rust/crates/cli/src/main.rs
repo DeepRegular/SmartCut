@@ -726,10 +726,18 @@ fn main() -> Result<()> {
         } else {
             String::new()
         };
-        println!(
-            "caption:{lang} ARIB STD-B24   [stream {}{pid}]",
-            c.stream_index
-        );
+        // What it is and what it is written in. A station's crawl is named
+        // apart from the programme's own subtitles: both are carried, and
+        // only one of them is the programme's.
+        let what = match c.kind {
+            smartcut_core::TextKind::Caption => "caption",
+            smartcut_core::TextKind::Superimpose => "crawl  ",
+        };
+        let form = match c.format {
+            smartcut_core::TextFormat::Arib => "ARIB STD-B24",
+            smartcut_core::TextFormat::Ttml => "ARIB-TTML",
+        };
+        println!("{what}:{lang} {form}   [stream {}{pid}]", c.stream_index);
     }
     for g in &src.graphics {
         let lang = g
