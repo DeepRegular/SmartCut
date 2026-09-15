@@ -8,7 +8,6 @@
 //! usage: ttmldiag <file> [count]
 
 use anyhow::{anyhow, Result};
-use ffmpeg_next as ff;
 use smartcut_core as sc;
 
 fn main() -> Result<()> {

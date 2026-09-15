@@ -101,7 +101,7 @@ pub fn cache_dir() -> Option<PathBuf> {
     CACHE_DIR.read().ok().and_then(|held| held.clone())
 }
 
-/// Settle the four the frontend owns. The folder has already been checked by
+/// Settle the five the frontend owns. The folder has already been checked by
 /// the caller -- see `set_prefs` -- so what arrives here is a folder that
 /// exists and can be written to, or nothing at all.
 pub fn set(clean_joins: bool, proxy: bool, proxy_width: u32, ffmpeg_log: u8, dir: Option<PathBuf>) {

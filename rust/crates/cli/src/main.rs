@@ -185,6 +185,44 @@ fn list_disc(input: &str, disc: &smartcut_core::disc::Disc) {
     println!("\nname one with --title N to open it");
 }
 
+/// How to call this, for somebody who asked and for somebody who did not.
+///
+/// One text for both: `--help` prints it and stops, and a run with no
+/// recording named ends with it as the error. A summary rather than the
+/// whole list -- every option is in `docs/user-guide/cli.md`, and a screen
+/// of forty rows is one nobody reads to the end of.
+fn usage() -> String {
+    "usage: smartcut <input> [--keep START-END]... [--cut START-END]... \
+     [--drop-stream INDEX]... [--drop-subpicture ID]... \
+     [--subtitles pgs|beside|sup] [--tables partial|broadcast|muxer] [--no-open-gop] \
+     [--clean-joins] \
+     [--vc1-quant 3..31] [--title N] [-o OUTPUT | --bdav FOLDER]\n\
+     <input> is a recording, or a disc -- a BDAV, BDMV or VIDEO_TS folder, \
+     or an .iso of one -- whose recordings are listed when no --title \
+     is given\n\
+     --clean-joins spends up to two seconds of re-encoding at the start \
+     of each range to reach an entry point the copy can be spliced onto \
+     without a picture coming out of the decoder in the wrong order; \
+     what it costs is that those seconds stop being an exact copy\n\
+     --subtitles says where the subtitles a disc draws go: pgs, the \
+     default, puts them inside the cut, which only a .ts or an .m2ts \
+     can hold; beside writes them as the .idx and .sub pair next to it, \
+     which is a DVD's own subtitles untouched and a Blu-ray's read back \
+     out of the display sets it draws them with; sup writes those \
+     display sets themselves, into a .sup beside the cut, which is the \
+     one destination that converts a Blu-ray's subtitles not at all\n\
+     --bdav writes the cut onto a disc of recordings in FOLDER rather than \
+     into a file; --disc-title, --programme, --channel, --about and --made \
+     fill in what its index says, which is otherwise taken from what the \
+     recording says about itself; --iso 2.50|2.60 wraps the finished disc \
+     in a UDF image beside it, and --iso-only takes the folder away \
+     once the image has been made of it; --iso-access overwritable has \
+     that image describe a disc a recorder may go on managing, where the \
+     default read-only describes one nothing will write to again\n\
+     every option is in docs/user-guide/cli.md"
+        .to_string()
+}
+
 fn main() -> Result<()> {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let mut input = None;
@@ -244,6 +282,14 @@ fn main() -> Result<()> {
     let mut i = 0;
     while i < args.len() {
         match args[i].as_str() {
+            // Asked for rather than stumbled into, so it goes to stdout and
+            // the run ends well. Before everything else: somebody who types
+            // this wants the text, not an argument three places later being
+            // held against them.
+            "--help" | "-h" => {
+                println!("{}", usage());
+                return Ok(());
+            }
             "--keep" => {
                 i += 1;
                 keeps.push(parse_range(args.get(i).context("--keep needs a range")?)?);
@@ -508,37 +554,7 @@ fn main() -> Result<()> {
     if iso_access != smartcut_core::udfw::Access::default() && iso.is_none() {
         bail!("--iso-access needs --iso 2.50|2.60: it is a thing the image says");
     }
-    let Some(input) = input else {
-        bail!(
-            "usage: smartcut <input> [--keep START-END]... [--cut START-END]... \
-             [--drop-stream INDEX]... [--drop-subpicture ID]... \
-             [--subtitles pgs|beside|sup] [--tables partial|broadcast|muxer] [--no-open-gop] \
-             [--clean-joins] \
-             [--vc1-quant 3..31] [--title N] [-o OUTPUT | --bdav FOLDER]\n\
-             <input> is a recording, or a disc -- a BDAV, BDMV or VIDEO_TS folder, \
-             or an .iso of one -- whose recordings are listed when no --title \
-             is given\n\
-             --clean-joins spends up to two seconds of re-encoding at the start \
-             of each range to reach an entry point the copy can be spliced onto \
-             without a picture coming out of the decoder in the wrong order; \
-             what it costs is that those seconds stop being an exact copy\n\
-             --subtitles says where the subtitles a disc draws go: pgs, the \
-             default, puts them inside the cut, which only a .ts or an .m2ts \
-             can hold; beside writes them as the .idx and .sub pair next to it, \
-             which is a DVD's own subtitles untouched and a Blu-ray's read back \
-             out of the display sets it draws them with; sup writes those \
-             display sets themselves, into a .sup beside the cut, which is the \
-             one destination that converts a Blu-ray's subtitles not at all\n\
-             --bdav writes the cut onto a disc of recordings in FOLDER rather than \
-             into a file; --disc-title, --programme, --channel, --about and --made \
-             fill in what its index says, which is otherwise taken from what the \
-             recording says about itself; --iso 2.50|2.60 wraps the finished disc \
-             in a UDF image beside it, and --iso-only takes the folder away \
-             once the image has been made of it; --iso-access overwritable has \
-             that image describe a disc a recorder may go on managing, where the \
-             default read-only describes one nothing will write to again"
-        );
-    };
+    let Some(input) = input else { bail!(usage()) };
     // A share the machine has already mounted may be named the way it is
     // written down -- `smb://nas/rec/a.ts` or `\\nas\rec\a.ts` -- rather than
     // by the mount point it happens to have been given.
@@ -1012,7 +1028,7 @@ fn main() -> Result<()> {
         // A recording inside a disc image has nothing to be written beside,
         // so the name has to be given rather than derived.
         if output.is_none() && src.input.nested() {
-            bail!("--make-proxy on a recording inside a disc needs -o");
+            bail!("--proxy on a recording inside a disc needs -o");
         }
         let out = output.clone().unwrap_or_else(|| {
             std::path::Path::new(&src.path)

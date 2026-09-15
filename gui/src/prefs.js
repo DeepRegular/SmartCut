@@ -154,7 +154,7 @@ export function all() {
   return out;
 }
 
-/// The four the engine side acts on, in the shape its `set_prefs` wants.
+/// The five the engine side acts on, in the shape its `set_prefs` wants.
 export function forBackend() {
   return {
     cleanJoins: !!get("cleanJoins"),
