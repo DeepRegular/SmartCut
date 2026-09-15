@@ -92,8 +92,18 @@ pub struct Track {
     pub language: Option<String>,
 }
 
-/// Every subtitle track a recording carries, in the order the recording
-/// names them.
+/// Every subtitle track a recording carries: the subtitles first, then the
+/// crawl, then what a disc draws.
+///
+/// **Not the order the recording names them in.** A broadcast puts its
+/// caption stream and its crawl in the map in whichever order it pleases,
+/// and it is not the same order twice: of twenty-five recordings taken at
+/// random off one shelf, six list the crawl first. A list that reshuffles
+/// itself between one recording and the next is one nobody can reach into
+/// without reading it, and the subtitles are what somebody opening this is
+/// nearly always after -- the crawl belongs to the hour rather than to the
+/// programme. So the kind decides the order, and the recording's own order
+/// decides it within a kind, which is what tells two languages apart.
 ///
 /// Takes the three lists rather than the recording, because the window asks
 /// this of a file it has only glanced at: an [`crate::Outline`] carries the
@@ -123,7 +133,17 @@ pub fn tracks(
         kind: Kind::Subpicture,
         language: s.language.clone(),
     });
-    captions.chain(graphics).chain(subpictures).collect()
+    let mut out: Vec<Track> = captions.chain(graphics).chain(subpictures).collect();
+    // A stable sort, so that two tracks of one kind stay in the order the
+    // recording named them in.
+    out.sort_by_key(|t| match t.kind {
+        Kind::Caption => 0,
+        Kind::Ttml => 1,
+        Kind::Superimpose => 2,
+        Kind::Graphics => 3,
+        Kind::Subpicture => 4,
+    });
+    out
 }
 
 /// What is on screen: characters to draw, or a picture to put up.
@@ -557,4 +577,76 @@ fn png(drawn: &Drawn) -> Result<Vec<u8>> {
         return Err(anyhow!("the PNG encoder produced nothing"));
     }
     Ok(out)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn text(pid: i32, kind: crate::TextKind, format: crate::TextFormat) -> crate::CaptionInfo {
+        crate::CaptionInfo {
+            stream_index: 0,
+            pid,
+            language: None,
+            time_base: 0.0,
+            kind,
+            format,
+            base: 0.0,
+        }
+    }
+
+    fn drawn(pid: i32) -> crate::GraphicsInfo {
+        crate::GraphicsInfo {
+            stream_index: 0,
+            pid,
+            language: Some("eng".into()),
+            time_base: 0.0,
+        }
+    }
+
+    /// A broadcast lists its caption stream and its crawl in the map in
+    /// whichever order it pleases. The list a window offers does not.
+    #[test]
+    fn the_subtitles_come_before_the_crawl_whichever_way_the_map_had_them() {
+        use crate::{TextFormat::Arib, TextKind::*};
+        let crawl_first = [text(0x1c02, Superimpose, Arib), text(0x120f, Caption, Arib)];
+        assert_eq!(
+            tracks(&crawl_first, &[], &[])
+                .iter()
+                .map(|t| (t.kind, t.id))
+                .collect::<Vec<_>>(),
+            [(Kind::Caption, 0x120f), (Kind::Superimpose, 0x1c02)]
+        );
+        // And the other way round comes out the same, rather than reversed.
+        let caption_first = [text(0x0130, Caption, Arib), text(0x0138, Superimpose, Arib)];
+        assert_eq!(
+            tracks(&caption_first, &[], &[])
+                .iter()
+                .map(|t| (t.kind, t.id))
+                .collect::<Vec<_>>(),
+            [(Kind::Caption, 0x0130), (Kind::Superimpose, 0x0138)]
+        );
+        // A 4K recording's subtitles are subtitles, and go where those go.
+        use crate::TextFormat::Ttml;
+        let four_k = [text(0x1c00, Superimpose, Arib), text(0x1c01, Caption, Ttml)];
+        assert_eq!(
+            tracks(&four_k, &[], &[])
+                .iter()
+                .map(|t| t.kind)
+                .collect::<Vec<_>>(),
+            [Kind::Ttml, Kind::Superimpose]
+        );
+    }
+
+    /// Two tracks of one kind keep the order the recording named them in:
+    /// that is all a disc says about which of its two English subtitles is
+    /// which.
+    #[test]
+    fn two_of_a_kind_stay_as_the_recording_had_them() {
+        let two = [drawn(0x1201), drawn(0x1200)];
+        assert_eq!(
+            tracks(&[], &two, &[]).iter().map(|t| t.id).collect::<Vec<_>>(),
+            [0x1201, 0x1200]
+        );
+    }
 }

@@ -586,9 +586,9 @@ const CATALOG = {
     // --- プレビューの字幕 -----------------------------------------------
     "subs.label": "字幕",
     "subs.off": "表示しない",
-    "subs.kind.caption": "文字",
+    "subs.kind.caption": "字幕",
     "subs.kind.superimpose": "文字スーパー",
-    "subs.kind.ttml": "文字（4K）",
+    "subs.kind.ttml": "字幕（4K）",
     "subs.kind.graphics": "PGS",
     "subs.kind.subpicture": "サブピクチャ",
     "subs.failed": "字幕を読めませんでした: {e}",
@@ -1222,9 +1222,9 @@ const CATALOG = {
     // --- subtitles over the preview --------------------------------------
     "subs.label": "Subtitles",
     "subs.off": "Off",
-    "subs.kind.caption": "text",
+    "subs.kind.caption": "subtitles",
     "subs.kind.superimpose": "crawl",
-    "subs.kind.ttml": "text (4K)",
+    "subs.kind.ttml": "subtitles (4K)",
     "subs.kind.graphics": "PGS",
     "subs.kind.subpicture": "subpicture",
     "subs.failed": "Could not read the subtitles: {e}",

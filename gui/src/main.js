@@ -731,16 +731,21 @@ function paintSubsPicker() {
 
 /// What to call one track in the list.
 ///
-/// The language where the recording gives one, and what kind of subtitle it
-/// is where two tracks would otherwise read the same -- a disc with two
-/// English tracks says which is which by number, because that is all the
-/// disc says about them either.
+/// Its number in the list, then the language where the recording gives one,
+/// then what kind of subtitle it is. The number goes in front, the way a
+/// row's number does in the clip list: it is the track's place in the list
+/// and not a count of anything about the track, and read after the name it
+/// looked like one -- `字幕 1` beside `文字スーパー 2` reads as a first
+/// subtitle and a second crawl.
+///
+/// Only where there is more than one to choose between. A recording carrying
+/// one is a recording with nothing to tell apart, and a lone `1` in front of
+/// it is a column heading for a column of one.
 function subsLabel(track, all) {
   const kind = tr(`subs.kind.${track.kind}`);
   const lang = track.language ? lang3(track.language) : null;
-  const same = all.filter((t) => (t.language || "") === (track.language || ""));
-  const number = same.length > 1 ? ` ${same.indexOf(track) + 1}` : "";
-  return lang ? `${lang}${number} (${kind})` : `${kind}${number}`;
+  const number = all.length > 1 ? `${all.indexOf(track) + 1} ` : "";
+  return lang ? `${number}${lang} (${kind})` : `${number}${kind}`;
 }
 
 /// A three letter language code as something to read, where it is one of the
