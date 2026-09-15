@@ -1,10 +1,22 @@
 use anyhow::{bail, Context, Result};
 use smartcut_core::{cut, index, plan_on, CutOptions, PlanOptions};
 
+/// HH:MM:SS.mmm.
+///
+/// Rounded to milliseconds once, and every field read back out of that
+/// count. Field by field the seconds were rounded on their own while the
+/// hours and minutes were floored, so a time a hair under a minute came out
+/// as `00:00:60.000` -- a reading no clock has.
 fn fmt_hms(t: f64) -> String {
-    let h = (t / 3600.0).floor() as i64;
-    let m = ((t % 3600.0) / 60.0).floor() as i64;
-    format!("{h:02}:{m:02}:{:06.3}", t % 60.0)
+    let sign = if t < 0.0 { "-" } else { "" };
+    let ms = (t.abs() * 1000.0).round() as i64;
+    format!(
+        "{sign}{:02}:{:02}:{:02}.{:03}",
+        ms / 3_600_000,
+        (ms / 60_000) % 60,
+        (ms / 1000) % 60,
+        ms % 1000
+    )
 }
 
 fn parse_time(s: &str) -> Result<f64> {
@@ -1435,6 +1447,19 @@ fn main() -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_clock_never_reads_sixty() {
+        assert_eq!(fmt_hms(0.0), "00:00:00.000");
+        assert_eq!(fmt_hms(3661.5), "01:01:01.500");
+        assert_eq!(fmt_hms(90.09), "00:01:30.090");
+        // A hair under a minute is that minute, not its sixtieth second.
+        assert_eq!(fmt_hms(59.9999), "00:01:00.000");
+        assert_eq!(fmt_hms(3599.9999), "01:00:00.000");
+        // And the sign goes in front of the whole reading, not into each
+        // field of it.
+        assert_eq!(fmt_hms(-12.34), "-00:00:12.340");
+    }
 
     #[test]
     fn a_range_has_to_be_one() {

@@ -8,27 +8,43 @@
 
 import { t } from "./i18n.js";
 
+/// A hair over, so that a sum lands on the mark it should be on.
+///
+/// These are floored on purpose -- a timecode names the hundredth an instant
+/// falls in, the way a frame counter does -- and a floor is unforgiving of a
+/// number that is a hair under the mark. Two commercial blocks of 60.06 and
+/// 30.03 seconds add up to 90.08999999999999, and the list printed the total
+/// as 00:01:30.08 while the engine's own line called it 90.090. The nudge is
+/// far below a hundredth of a second and far above what a handful of
+/// additions can lose.
+const HAIR = 1e-6;
+
 /// HH:MM:SS.cc, the way the reference tool writes an instant.
 export function fmt(t) {
   if (!isFinite(t)) return "--:--:--.--";
   const sign = t < 0 ? "-" : "";
-  t = Math.abs(t);
+  // One count of hundredths, and every field read back out of it. Field by
+  // field, each with its own floor, a number sitting a hair under a whole
+  // second loses the second as well as the hundredths. See [`HAIR`].
+  const cc = Math.floor(Math.abs(t) * 100 + HAIR);
   const p = (v) => String(v).padStart(2, "0");
-  return `${sign}${p(Math.floor(t / 3600))}:${p(Math.floor((t % 3600) / 60))}:${p(
-    Math.floor(t % 60)
-  )}.${p(Math.floor((t % 1) * 100))}`;
+  return `${sign}${p(Math.floor(cc / 360000))}:${p(Math.floor(cc / 6000) % 60)}:${p(
+    Math.floor(cc / 100) % 60
+  )}.${p(cc % 100)}`;
 }
 
 /// HH:MM:SS, for a stretch of time being counted rather than pointed at.
 export function clock(t) {
   if (!isFinite(t) || t < 0) return "--:--:--";
+  const s = Math.floor(t + HAIR);
   const p = (v) => String(v).padStart(2, "0");
-  return `${p(Math.floor(t / 3600))}:${p(Math.floor((t % 3600) / 60))}:${p(Math.floor(t % 60))}`;
+  return `${p(Math.floor(s / 3600))}:${p(Math.floor(s / 60) % 60)}:${p(s % 60)}`;
 }
 
 /// "28分5秒", the way the reference tool puts a clip's length.
 export function coarse(secs) {
   if (!isFinite(secs)) return "—";
+  secs = Math.floor(secs + HAIR);
   const h = Math.floor(secs / 3600);
   const m = Math.floor((secs % 3600) / 60);
   const s = Math.floor(secs % 60);
