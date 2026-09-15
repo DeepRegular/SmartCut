@@ -264,10 +264,14 @@ A disc's lossless audio — DTS-HD and TrueHD — is carried byte for byte and n
 re-encoded.
 
 **Broadcast extras (when writing a `.ts`):** captions are carried across byte
-for byte. Programme information, the station name and the broadcast clock are
-put back afterwards, and every stream goes back where it arrived. Superimposed
-text and data broadcasting cannot be carried on a cut timeline, and SmartCut
-says so rather than dropping them quietly.
+for byte, and so is the **crawl** — the line a station writes across whatever is
+on air, for an earthquake or a vote count — which travels on a stream of its own
+and stays on one. A **4K** broadcast writes its subtitles as XML rather than as
+ARIB characters; those are carried too, with the times moved *inside* each
+document, since that is where a 4K recorder puts them. Programme information, the
+station name and the broadcast clock are put back afterwards, and every stream
+goes back where it arrived. Data broadcasting cannot be carried on a cut
+timeline, and SmartCut says so rather than dropping it quietly.
 
 **A disc's subtitles (when writing a `.ts` or `.m2ts`):** a Blu-ray draws its
 subtitles rather than writing them, so what travels is a picture spread over

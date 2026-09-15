@@ -434,10 +434,13 @@ still a track that was in the recording, and dropping it silently would mean the
 program deciding what the recording is for.
 
 - **Captions can only be kept when writing a `.ts`.**
-- Superimposed text and data broadcasting cannot be carried on a cut timeline at
-  all, so they appear as `not carried` rather than as choices. For a recording
-  off a disc, a menu and the text subtitles drawn with the disc's own typeface
-  say the same thing.
+- **The crawl is a track of its own, not part of the captions.** It belongs to
+  the hour rather than to the programme — an earthquake warning is not a line of
+  dialogue — so it is listed and switched separately. A 4K broadcast's subtitles,
+  which are XML rather than ARIB characters, are a track of their own too.
+- Data broadcasting cannot be carried on a cut timeline at all, so it appears as
+  `not carried` rather than as a choice. For a recording off a disc, a menu and
+  the text subtitles drawn with the disc's own typeface say the same thing.
 - **A Blu-ray's subtitles are a choice here like any other track.** A DVD's are
   not: they go wherever the output settings send them, and the list says so on a
   line of its own — `inside the cut or beside it, as the output settings say`.

@@ -259,8 +259,9 @@ These only surfaced on real material:
   Field pictures are read but written back as interlaced frames.
 - **One video track only**, and in the Python reference implementation one audio track
   only. The Rust engine reads every sound track the recording carries and writes them
-  all, and carries both kinds of subtitle across when writing a `.ts`: the ARIB
-  caption stream a broadcast sends, and the PGS a disc draws (see
+  all, and carries every kind of subtitle across when writing a `.ts`: the ARIB
+  caption stream a broadcast sends, the crawl it sends beside it, the TTML a 4K
+  broadcast sends instead, and the PGS a disc draws (see
   [audio](audio.md#multi-audio-broadcasts),
   [broadcast workflow compatibility](broadcast-ts.md) and
   [the subtitles a disc draws](disc.md#the-subtitles-a-disc-draws)). A DVD's
