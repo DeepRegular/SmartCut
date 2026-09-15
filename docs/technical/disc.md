@@ -260,6 +260,28 @@ Two things are worth getting right:
   `、` `・`. Miss them and a programme name reads
   `#07〓架空の休息日の過ごし方。」`.
 
+### Unless it is UTF-8, which is what a 4K recorder writes
+
+**A 4K recorder writes the name in UTF-8**, with the symbols a broadcast sends as
+characters of its own — `🆞`, `🈔` — already turned into the Unicode ones. Read as
+ARIB, its `ＮＨＫ　ＢＳ` comes back as `わぜぎわぜえわぜかゃわぜあわぜこ`, and every
+row of such a disc is named in nonsense.
+
+What says which is the version the file carries. A 4K recording's playlists and clip
+indexes are version 2.00 — `PLST0200`, `M2TS0200` — against the `0100` an authoring
+tool writes and the `0110` an HD recorder writes. `info.bdav` stays at `BDAV0100` even
+on a 2.00 disc, so the version cannot be the whole answer and the bytes are asked as
+well.
+
+The bytes can only be asked so far. ARIB text shifts between its character sets with
+`0E`, `0F` and `1B`, which no UTF-8 text holds, and single-shifts with `89` and `8A`,
+which no valid UTF-8 sequence begins with. **But a name written entirely in kanji needs
+no shift at all** — kanji is where the decoder starts — and such a name is a run of
+bytes below `0x80` that is also valid UTF-8, which read that way would come back as the
+Latin nonsense the pairs spell. So a file that says 2.00 is read as UTF-8, and a file
+that does not only where the bytes carry a character ARIB could not have written them
+as. That is `disc::recorded_text`.
+
 A `.mpls` carries no name at all, because a film's titles live in the menu,
 which is a Java application. So a pressed disc's rows are named by the disc and
 the clip: `Anime Box Season 1 00014`. What the disc calls itself comes out of
@@ -405,8 +427,18 @@ the recording.
 
 ### The sound a disc carries
 
-A broadcast recording carries AAC and nothing else. A disc carries five other
-things, and each of them is a different problem on the way out.
+A broadcast recording carries AAC and nothing else — in one of its two framings.
+An HD recording's is MPEG-2 AAC in ADTS frames, stream type `0x0F`; a 4K
+recording's is MPEG-4 AAC in LATM ones, stream type `0x11`, and a row of one says
+so. Which framing a track is in decides how the frames at a cut's boundaries are
+written; see [The other framing](audio.md#the-other-framing-latm-4k-recordings).
+A 4K recorder also writes `15` where the index states the sampling frequency,
+which is not one of the rates it can name, so the row names none: the frames
+say what they run at and the track's own line says 48 kHz once the recording is
+open.
+
+A disc carries five other things, and each of them is a different problem on the
+way out.
 
 | On the disc | What a cut does with it |
 |---|---|

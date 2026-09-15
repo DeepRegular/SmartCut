@@ -123,8 +123,8 @@ same "BDAV: a disc of recordings is all offered" "0" "$(grep -cP '^\*' <<<"$av_i
 # that cut the language field short would show none rather than three bytes of
 # whatever followed; that case is `disc::tests::clpi_short`, because these
 # fixtures name a language on every track (see `disc_index.py`).
-has "BDAV: the sound is listed by PID" "0x1100  AAC stereo 48kHz jpn" "$av_iso"
-has "BDAV: the second sound track too" "0x1101  AAC stereo 48kHz eng" "$av_iso"
+has "BDAV: the sound is listed by PID" "0x1100  MPEG-2 AAC stereo 48kHz jpn" "$av_iso"
+has "BDAV: the second sound track too" "0x1101  MPEG-2 AAC stereo 48kHz eng" "$av_iso"
 has "BDAV: the captions are listed as what the index says" \
   "0x1102  stream type 0x06" "$av_iso"
 has "BDMV: the sound is listed by PID" "0x1100  TrueHD multi 48kHz jpn" "$mv_iso"

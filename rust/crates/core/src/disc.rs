@@ -1238,9 +1238,51 @@ fn disc_name(xml: &str) -> Option<String> {
     None
 }
 
+/// Read text a recorder wrote into its index, in whichever of the two
+/// encodings it used.
+///
+/// **ARIB text is no longer the only answer.** Every recorder and authoring
+/// tool read before this one wrote the broadcast's own encoding straight into
+/// the playlist; the 4K recorder read on 2026-09-15 writes UTF-8 instead, with
+/// the symbols a broadcast sends as its own characters -- `[新]` and the rest
+/// -- already turned into the Unicode ones. Read as ARIB, its `ＮＨＫ　ＢＳ`
+/// comes back as `わぜぎわぜえわぜかゃわぜあわぜこ`.
+///
+/// What says which is the version the file carries: `PLST0200` and `M2TS0200`
+/// against the `0100` and `0110` of every disc before it, which is the version
+/// 4K recordings are written at. `info.bdav` stays at `BDAV0100` even there,
+/// so the version cannot be the whole answer and the bytes are asked as well.
+///
+/// The bytes can only be asked so far. ARIB text shifts between its character
+/// sets with the control bytes `0E`, `0F` and `1B`, which no UTF-8 text holds,
+/// and single-shifts with `89` and `8A`, which no valid UTF-8 sequence begins
+/// with. But a name written entirely in kanji needs no shift at all, since
+/// kanji is where the decoder starts, and such a name is a run of bytes below
+/// `0x80` that is also valid UTF-8 -- read as UTF-8 it would come back as the
+/// nonsense Latin the pairs spell. So a file that says 2.00 is read as UTF-8,
+/// and a file that does not only where the bytes carry a character ARIB could
+/// not have written them as: a valid multi-byte sequence and no shifts.
+/// Everything else is ARIB, as it has always been.
+fn recorded_text(magic: &[u8], bytes: &[u8]) -> String {
+    let major = magic
+        .get(4..6)
+        .and_then(|v| std::str::from_utf8(v).ok())
+        .and_then(|v| v.parse::<u32>().ok())
+        .unwrap_or(0);
+    let Ok(text) = std::str::from_utf8(bytes) else {
+        return arib::decode(bytes);
+    };
+    let shifts = bytes.iter().any(|b| *b < 0x20);
+    let beyond_ascii = bytes.iter().any(|b| *b >= 0x80);
+    if !shifts && (major >= 2 || beyond_ascii) {
+        return text.to_string();
+    }
+    arib::decode(bytes)
+}
+
 /// What a disc of recordings calls itself, out of `info.bdav`.
 ///
-/// ARIB text, like every other name a recorder writes, and counted the way a
+/// Recorder text, read as [`recorded_text`] reads it, and counted the way a
 /// playlist counts the programme's: a length byte and then that many bytes.
 /// Read instead as a field running to the first zero, as this did before,
 /// every byte of every real disc's name came out one place early -- a
@@ -1257,7 +1299,7 @@ fn info_name(raw: &[u8]) -> Option<String> {
     let end = (u32be(raw, 8) as usize).min(raw.len());
     let len = usize::from(*raw.get(NAME_AT)?);
     let text = raw.get(NAME_AT + 1..(NAME_AT + 1 + len).min(end))?;
-    let name = arib::one_line(&arib::decode(text));
+    let name = arib::one_line(&recorded_text(raw, text));
     (!name.is_empty()).then_some(name)
 }
 
@@ -1532,7 +1574,7 @@ fn app_info(raw: &[u8], list_at: usize) -> AppInfo {
         if len == 0 || at + len > end {
             return None;
         }
-        let read = arib::decode(raw.get(at..at + len)?);
+        let read = recorded_text(raw, raw.get(at..at + len)?);
         let read = read.trim().to_string();
         (!read.is_empty()).then_some(read)
     };
@@ -2155,7 +2197,12 @@ fn track_of(pid: i32, attr: &[u8]) -> Option<Track> {
             let name = match coding {
                 0x03 => "MPEG-1 audio",
                 0x04 => "MPEG-2 audio",
-                0x0F | 0x11 => "AAC",
+                // The two AACs a broadcast sends, which are two framings of
+                // the same codec: an HD recording's is MPEG-2 AAC in ADTS
+                // frames, a 4K recording's MPEG-4 AAC in LATM ones. The
+                // stream type is where a disc says which.
+                0x0F => "MPEG-2 AAC",
+                0x11 => "MPEG-4 AAC",
                 0x80 => "LPCM",
                 0x81 => "AC-3",
                 0x82 => "DTS",
@@ -2174,6 +2221,11 @@ fn track_of(pid: i32, attr: &[u8]) -> Option<Track> {
                 12 => "stereo+multi",
                 _ => "",
             };
+            // The rates a disc can name. A 4K recorder writes 15 for its
+            // AAC -- not one of them, and not a rate: the frames say what
+            // they run at and the index leaves it to them. Saying nothing is
+            // the honest reading of that, and the track's own line says 48
+            // kHz once the recording is open.
             let rate = match b & 0x0F {
                 1 => "48kHz",
                 4 => "96kHz",
@@ -2859,28 +2911,38 @@ mod tests {
         assert_eq!(clip_on_a_disc("/rec/BDMV/STREAM/"), None);
     }
 
-    /// What a recorder writes, read off a real disc: a different magic, three
-    /// streams, a language field cut short, and a private stream that says
-    /// nothing about itself.
-    #[test]
-    fn reads_what_a_recorder_wrote() {
+    /// A recorder's clip index, holding these streams: the header, the
+    /// address the programme information sits at, and one entry per stream.
+    fn clip_index(magic: &[u8; 8], streams: &[(u16, Vec<u8>)]) -> Vec<u8> {
         let mut raw = vec![0u8; 40];
-        raw[..8].copy_from_slice(b"M2TS0100");
+        raw[..8].copy_from_slice(magic);
         raw[12..16].copy_from_slice(&40u32.to_be_bytes());
         raw.extend_from_slice(&26u32.to_be_bytes());
         raw.extend_from_slice(&[0, 1]);
         raw.extend_from_slice(&0u32.to_be_bytes());
         raw.extend_from_slice(&0x0100u16.to_be_bytes());
-        raw.extend_from_slice(&[3, 0]);
-        for (pid, attr) in [
-            (0x1100u16, vec![0x02u8, 0x44, 0x30]),
-            (0x1101, vec![0x0F, 0x31, 0x00]),
-            (0x1102, vec![0x06]),
-        ] {
+        raw.extend_from_slice(&[streams.len() as u8, 0]);
+        for (pid, attr) in streams {
             raw.extend_from_slice(&pid.to_be_bytes());
             raw.push(attr.len() as u8);
-            raw.extend_from_slice(&attr);
+            raw.extend_from_slice(attr);
         }
+        raw
+    }
+
+    /// What a recorder writes, read off a real disc: a different magic, three
+    /// streams, a language field cut short, and a private stream that says
+    /// nothing about itself.
+    #[test]
+    fn reads_what_a_recorder_wrote() {
+        let raw = clip_index(
+            b"M2TS0100",
+            &[
+                (0x1100u16, vec![0x02u8, 0x44, 0x30]),
+                (0x1101, vec![0x0F, 0x31, 0x00]),
+                (0x1102, vec![0x06]),
+            ],
+        );
         let found = tracks(&raw);
         assert_eq!(found.len(), 3);
         assert_eq!(
@@ -2889,7 +2951,7 @@ mod tests {
         );
         assert_eq!(
             (found[1].kind, found[1].detail.as_str()),
-            ("audio", "AAC stereo 48kHz")
+            ("audio", "MPEG-2 AAC stereo 48kHz")
         );
         // Three bytes of attributes leave no room for a language, and a
         // language guessed at is worse than none.
@@ -2901,6 +2963,30 @@ mod tests {
             ("other", "stream type 0x06")
         );
         assert!(found.iter().all(|t| t.carried));
+    }
+
+    /// The same, off a 4K recorder's index: HEVC at 2160p, MPEG-4 AAC, and a
+    /// sampling frequency the disc declines to name.
+    #[test]
+    fn reads_what_a_4k_clip_holds() {
+        let found = tracks(&clip_index(
+            b"M2TS0200",
+            &[
+                (0x1011u16, vec![0x24u8, 0x87, 0x30, 0x20, 0x30]),
+                (0x1100, vec![0x11, 0x3F, 0x02]),
+                (0x1C00, vec![0x06]),
+            ],
+        ));
+        assert_eq!(
+            (found[0].kind, found[0].detail.as_str()),
+            ("video", "HEVC 2160p 59.94fps")
+        );
+        // Stereo, at a rate the index writes as 15 -- which is not one of
+        // the rates it can name, so it names none.
+        assert_eq!(
+            (found[1].kind, found[1].detail.as_str()),
+            ("audio", "MPEG-4 AAC stereo")
+        );
     }
 
     /// What a recorder writes into a playlist about the recording rather
@@ -2949,6 +3035,56 @@ mod tests {
         let mut wild = raw.clone();
         wild[88] = 255;
         assert!(app_info(&wild, 100).name.is_none());
+    }
+
+    /// The same fields on a 4K recorder's disc, where the text is UTF-8 and
+    /// the file says so by being version 2.00. The bytes are the ones a
+    /// Panasonic recorder wrote: the symbols a broadcast sends as characters
+    /// of its own arrive as the Unicode ones, `🆞` here.
+    #[test]
+    fn reads_a_4k_playlist_written_in_utf8() {
+        let list_at = 1546;
+        let mut raw = vec![0u8; list_at];
+        raw[..8].copy_from_slice(b"PLST0200");
+        raw[64..66].copy_from_slice(&101u16.to_be_bytes());
+        let channel = "ＮＨＫ　ＢＳ".as_bytes();
+        raw[67] = channel.len() as u8;
+        raw[68..68 + channel.len()].copy_from_slice(channel);
+        let name = "🆞シャーロック".as_bytes();
+        raw[88] = name.len() as u8;
+        raw[89..89 + name.len()].copy_from_slice(name);
+
+        let said = app_info(&raw, list_at);
+        // One line, so the ideographic space between the two halves of the
+        // channel's name arrives as an ordinary one.
+        assert_eq!(said.channel.as_deref(), Some("ＮＨＫ ＢＳ"));
+        assert_eq!(said.name.as_deref(), Some("🆞シャーロック"));
+    }
+
+    /// Which encoding a name is in is asked of the bytes as well as of the
+    /// version, because `info.bdav` stays at 1.00 on a disc whose playlists
+    /// are 2.00.
+    #[test]
+    fn tells_the_two_encodings_apart() {
+        // Kanji with the shift in front of it taken away: ARIB starts in
+        // the kanji set, so these bytes are still a name in it -- and they
+        // are valid UTF-8 as well, which is the case the version has to
+        // settle. Every encoder met so far writes the shift, this one
+        // included, so the bytes are cut by hand to make the awkward one.
+        let kanji = crate::arib::encode("衛星第一")[2..].to_vec();
+        assert!(kanji.iter().all(|b| *b < 0x80));
+        assert_eq!(recorded_text(b"BDAV0100", &kanji), "衛星第一");
+        assert_eq!(recorded_text(b"PLST0200", "衛星第一".as_bytes()), "衛星第一");
+        // The same bytes on a 2.00 disc are the UTF-8 they look like.
+        assert_ne!(recorded_text(b"PLST0200", &kanji), "衛星第一");
+        // A shift into the alphanumeric set and back is ARIB whatever the
+        // version says, since no UTF-8 text holds those bytes.
+        let mixed = crate::arib::encode("NHK総合");
+        assert!(mixed.iter().any(|b| *b < 0x20));
+        assert_eq!(recorded_text(b"PLST0200", &mixed), "NHK総合");
+        // And UTF-8 is read out of a 1.00 file too where the bytes could
+        // only have been written that way.
+        assert_eq!(recorded_text(b"BDAV0100", "星降る夜".as_bytes()), "星降る夜");
     }
 
     #[test]
