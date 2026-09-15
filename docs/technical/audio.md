@@ -241,6 +241,34 @@ put to a decoder; both are about the bytes.
 There is more on why this matters downstream in
 [broadcast workflow compatibility](broadcast-ts.md#audio-can-be-written-out-on-its-own-as-aac).
 
+### The other framing: LATM (4K recordings)
+
+A 4K broadcast carries the same codec framed the other way the standard allows. Its
+sound is MPEG-4 AAC LC at 48 kHz in **LOAS/LATM** frames: a sync word, a length, and an
+`AudioMuxElement` that states the stream's configuration in bits rather than in a fixed
+header. A transport stream declares it as stream type `0x11` where ADTS AAC is `0x0F`,
+and libav gives the wrapper a codec id of its own, `aac_latm`.
+
+Two things follow, and both used to end smart rendering for such a track:
+
+- **No encoder answers to `aac_latm`.** It is a framing, not a codec. What writes a
+  frame for one of these tracks is the plain AAC encoder — `audio::encoder_for` — and
+  what puts the wrapper back on is `latm.rs`.
+- **The wrapper has to be written here**, for the same reason the ADTS header does: the
+  encoder hands back a raw frame and every muxer leaves a packet alone once it holds
+  one. A payload spliced in with no sync word in front of it is not a frame at all.
+
+So `latm.rs` writes the one shape a recorder uses — one program, one layer, AAC LC at
+1024 samples, the configuration restated in every frame — and reads the recording's own
+frames first to be sure that is the shape they are in. A rate written out in full, or a
+channel arrangement described inside the frame, is declined, and those tracks are copied
+as they were before. `aac::Framing` is which of the two a track uses; everything above
+this line works the same either way.
+
+Measured on a 4K recorder's disc: a two-range cut re-encodes four frames per track at
+the seams, the whole track decodes with no errors, and the largest sample-to-sample step
+across the seam is the same size as the ones either side of it.
+
 ## Downmixing (`--audio-channels`)
 
 Some recordings carry 5.1, and a good many of the places they end up do not want it: a

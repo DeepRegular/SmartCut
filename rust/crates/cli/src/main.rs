@@ -671,9 +671,8 @@ fn main() -> Result<()> {
     // re-encodes any of it: a broadcast is MPEG-2 AAC, and a frame this tool
     // writes has to say the same. Read off the main track; a recording does
     // not mix the two within itself.
-    let form = match smartcut_core::adts::of_source(&src) {
-        Some(f) if f.mpeg2 => "  MPEG-2 ADTS".to_string(),
-        Some(_) => "  MPEG-4 ADTS".to_string(),
+    let form = match smartcut_core::aac::of_source(&src) {
+        Some(f) => format!("  {}", f.as_str()),
         None => String::new(),
     };
     for (n, a) in src.audios.iter().enumerate() {

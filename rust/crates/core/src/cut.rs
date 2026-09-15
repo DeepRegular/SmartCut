@@ -2996,12 +2996,12 @@ struct AudioSetup {
     /// The fold, when there is one: what it was, and what it became.
     downmix: Option<(u16, u16)>,
     /// What the recording's own frames of this track look like from outside.
-    /// Only an answer for ADTS AAC, which is what a Japanese broadcast
-    /// carries; anything else leaves the frames this tool encodes unframed,
+    /// Only an answer for AAC -- ADTS from an HD broadcast, LATM from a 4K
+    /// one; anything else leaves the frames this tool encodes unframed,
     /// exactly as the packets they sit among are.
-    source_adts: Option<crate::adts::AdtsFormat>,
+    source_adts: Option<crate::aac::Framing>,
     /// How the frames this cut encodes for the track are framed.
-    frame_as: Option<crate::adts::AdtsFormat>,
+    frame_as: Option<crate::aac::Framing>,
     aac: AacVersion,
     bit_rate: usize,
 }
@@ -3318,7 +3318,7 @@ fn plan_audio(
     // before the codec is settled, which is exactly where it means
     // something: an LPCM track is 16 bit or it is 24, and that is the choice.
     let bits = opts.audio_bits.unwrap_or(source_bits);
-    let source_adts = crate::adts::framing(&mut probe, info.stream_index);
+    let source_adts = crate::aac::framing(&mut probe, info.stream_index);
     drop(probe);
     // What the track is written as. Settled before the mode, because it can
     // decide it: there is no copying a frame into a codec it is not in.
@@ -3508,7 +3508,9 @@ fn plan_audio(
     // is the exception: nothing is copied there, so there is nothing to
     // disagree with.
     let aac = match (opts.aac.forced(), source_adts) {
-        (Some(want), Some(f)) if f.mpeg2 != want && mode != AudioMode::Reencode => {
+        (Some(want), Some(crate::aac::Framing::Adts(f)))
+            if f.mpeg2 != want && mode != AudioMode::Reencode =>
+        {
             eprintln!(
                 "note: --aac {} was asked for, but this recording carries MPEG-{} AAC{} and \
                  its own frames are copied unchanged. Writing the few frames this cut \
@@ -3542,7 +3544,10 @@ fn plan_audio(
     // nothing else's: a header in front of an AC-3 frame is six bytes of
     // nonsense that a decoder will try to read as a frame.
     let frame_as = match (mode, source_adts) {
-        _ if target != ff::codec::Id::AAC => None,
+        // Either AAC: `aac` is what an HD recording's frames are declared as
+        // and `aac_latm` what a 4K recording's are, and a frame written for
+        // one of those tracks is framed the way the track's own frames are.
+        _ if !matches!(target, ff::codec::Id::AAC | ff::codec::Id::AAC_LATM) => None,
         (AudioMode::Smart, Some(f)) => Some(f.as_version(aac)),
         (AudioMode::Reencode, Some(f)) if to_ts => {
             let mut f = f.as_version(aac);

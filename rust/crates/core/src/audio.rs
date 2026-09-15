@@ -37,7 +37,8 @@ use anyhow::{anyhow, Result};
 use ffmpeg_next as ff;
 use std::collections::HashMap;
 
-use crate::adts::{AacVersion, AdtsFormat};
+use crate::aac::Framing;
+use crate::adts::AacVersion;
 use crate::{AudioInfo, Source};
 
 /// How long the fade into and out of a silenced stretch is, in samples.
@@ -219,6 +220,21 @@ pub fn writable_rate(id: ff::codec::Id, want: u32) -> u32 {
 /// [`crate::cut`] and Blu-ray LPCM. `like` is the width the samples are
 /// wanted at, which is where the encoder's format is picked from -- the
 /// recording's own unless a width was asked for.
+/// The encoder that writes frames a recording's own decoder would take.
+///
+/// The recording's own codec, with one exception: **LATM is a framing rather
+/// than a codec of its own.** A 4K broadcast's sound is the same AAC an HD
+/// broadcast sends, wrapped the other way the standard allows, and libav
+/// gives the wrapper its own codec id -- `aac_latm` -- which no encoder
+/// answers to. What writes a frame for such a track is the AAC encoder, and
+/// what puts the wrapper back on is [`crate::latm`].
+fn encoder_for(id: ff::codec::Id) -> ff::codec::Id {
+    match id {
+        ff::codec::Id::AAC_LATM => ff::codec::Id::AAC,
+        other => other,
+    }
+}
+
 fn open_encoder(
     id: ff::codec::Id,
     like: ff::format::Sample,
@@ -430,8 +446,9 @@ pub struct Reencoder {
     /// Last source packet consumed, so a frame offered twice is ignored.
     last_pts: Option<i64>,
     /// Set when the frames are to leave here already framed, which is what
-    /// keeps a re-encoded transport stream MPEG-2 AAC throughout.
-    adts: Option<AdtsFormat>,
+    /// keeps a re-encoded transport stream MPEG-2 AAC throughout -- and what
+    /// gives a 4K recording's LATM frames their sync word.
+    framing: Option<Framing>,
     /// What the encoder takes, and the conversion into it -- both idle when
     /// that is the planar float these buffers already hold, which is AAC's
     /// and AC-3's; LPCM, MP2 and DTS all want integers.
@@ -464,7 +481,7 @@ impl Reencoder {
         channels: u16,
         rate: u32,
         bit_rate: usize,
-        adts: Option<AdtsFormat>,
+        framing: Option<Framing>,
     ) -> Result<Self> {
         let decoder = ff::codec::context::Context::from_parameters(params.clone())?
             .decoder()
@@ -508,7 +525,7 @@ impl Reencoder {
             ready: vec![Vec::new(); channels as usize],
             fed: 0,
             last_pts: None,
-            adts,
+            framing,
             enc_format,
             to_encoder: None,
             feeding: ff::frame::Audio::empty(),
@@ -719,7 +736,7 @@ impl Reencoder {
             let Some(pts) = at_sample(&packet) else {
                 continue;
             };
-            let packet = match &self.adts {
+            let packet = match &self.framing {
                 Some(f) => {
                     let mut framed = ff::Packet::copy(&f.wrap(packet.data().unwrap_or(&[])));
                     framed.set_flags(ff::packet::Flags::KEY);
@@ -868,7 +885,7 @@ pub fn boundary_patches(
     audio: &AudioInfo,
     windows: &[(i64, i64)],
     bit_rate: usize,
-    adts: Option<AdtsFormat>,
+    framing: Option<Framing>,
     aac: AacVersion,
 ) -> Result<HashMap<i64, Patch>> {
     let mut out = HashMap::new();
@@ -881,7 +898,7 @@ pub fn boundary_patches(
         .ok_or_else(|| anyhow!("audio stream {} vanished", audio.stream_index))?;
     let params = stream.parameters();
     let rate = audio.sample_rate as f64;
-    let adts = adts.map(|f| f.as_version(aac));
+    let framing = framing.map(|f| f.as_version(aac));
 
     // Two ways a track can turn out not to be one whose frames this
     // rewrites, and both end the same way: say so and copy. Smart rendering
@@ -908,7 +925,7 @@ pub fn boundary_patches(
         return Ok(out);
     }
     let probe = match open_encoder(
-        params.id(),
+        encoder_for(params.id()),
         sample_format(&params),
         audio.sample_rate,
         audio.channels,
@@ -945,7 +962,7 @@ pub fn boundary_patches(
                 &params,
                 audio,
                 bit_rate,
-                adts.as_ref(),
+                framing.as_ref(),
                 &mut out,
             )?;
         }
@@ -1073,7 +1090,7 @@ fn patch_run(
     params: &ff::codec::Parameters,
     audio: &AudioInfo,
     bit_rate: usize,
-    adts: Option<&AdtsFormat>,
+    framing: Option<&Framing>,
     out: &mut HashMap<i64, Patch>,
 ) -> Result<()> {
     // The guard sits on the kept side; the lead-in and lead-out are one frame
@@ -1115,7 +1132,7 @@ fn patch_run(
     // `avcodec_open2` can answer.
     let open = |rate| {
         open_encoder(
-            params.id(),
+            encoder_for(params.id()),
             sample_format(params),
             audio.sample_rate,
             audio.channels,
@@ -1224,7 +1241,7 @@ fn patch_run(
         if i < emit_first || i > emit_last {
             continue;
         }
-        let bytes = match adts {
+        let bytes = match framing {
             Some(f) => f.wrap(&data),
             None => data,
         };

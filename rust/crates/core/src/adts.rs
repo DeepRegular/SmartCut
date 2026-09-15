@@ -164,46 +164,6 @@ impl AdtsFormat {
     }
 }
 
-/// Read the fixed header off the recording's audio frames.
-///
-/// Reads forward from wherever the context is, which at the point this is
-/// called is the beginning: a transport stream interleaves its audio finely
-/// enough that the frames turn up within a few hundred kilobytes.
-///
-/// Not the *first* audio packet, though -- a recording starts wherever the
-/// tuner was told to start, and its opening audio packet is regularly the
-/// tail of a frame whose header went out before the recording began. So this
-/// keeps looking until a packet parses.
-///
-/// `None` means the frames are not ADTS at all -- raw AAC in an MP4, or some
-/// other codec entirely -- in which case nothing should be framing anything.
-pub fn framing(
-    ictx: &mut ffmpeg_next::format::context::Input,
-    audio_index: usize,
-) -> Option<AdtsFormat> {
-    let mut seen = 0;
-    for (stream, packet) in ictx.packets().take(8192) {
-        if stream.index() != audio_index {
-            continue;
-        }
-        if let Some(f) = packet.data().and_then(AdtsFormat::parse) {
-            return Some(f);
-        }
-        seen += 1;
-        if seen > 64 {
-            return None;
-        }
-    }
-    None
-}
-
-/// As [`framing`], for a recording that is not open.
-pub fn of_source(src: &crate::Source) -> Option<AdtsFormat> {
-    let audio = src.audio.as_ref()?;
-    let mut ictx = crate::input::demux(&src.input.url).ok()?;
-    framing(&mut ictx, audio.stream_index)
-}
-
 /// The `channel_config` a channel count is written as, where there is one.
 ///
 /// The configurations run 1..=6 for mono through 5.1 and 7 for 7.1; anything

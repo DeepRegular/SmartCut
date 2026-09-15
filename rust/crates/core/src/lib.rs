@@ -9,6 +9,7 @@
 use anyhow::{anyhow, Result};
 use ffmpeg_next as ff;
 
+pub mod aac;
 pub mod adts;
 pub mod arib;
 pub mod audio;
@@ -21,6 +22,7 @@ pub mod disc;
 pub mod dvd;
 pub mod index;
 pub mod input;
+pub mod latm;
 pub mod logo;
 pub mod netpath;
 pub mod pgs;
@@ -39,7 +41,9 @@ pub mod udf;
 pub mod udfw;
 pub mod vobsub;
 
+pub use aac::Framing;
 pub use adts::{AacVersion, AdtsFormat};
+pub use latm::LatmFormat;
 pub use cm::{
     blocks as cm_blocks, blocks_from_logo as cm_blocks_from_logo,
     blocks_from_resets as cm_blocks_from_resets, candidates as cm_candidates, find_silences,
