@@ -2993,8 +2993,15 @@ function renderTracks() {
     list.appendChild(li);
   }
   /// What the engine calls each kind, and what this window calls it back.
+  ///
+  /// A crawl is named twice over, and not with the same words: the list
+  /// above calls a track by what it is, and this line finishes the sentence
+  /// "not carried: ...". Two names for the one kind, which is why the second
+  /// is `tracks.gone.superimpose` -- while both were `tracks.superimpose`
+  /// the catalogue held the name twice and the later one won, so the English
+  /// list said "superimposed text" where it meant "Crawl".
   const named = {
-    superimpose: "tracks.superimpose",
+    superimpose: "tracks.gone.superimpose",
     data: "tracks.data",
     substream: "tracks.substream",
     menu: "tracks.menu",
