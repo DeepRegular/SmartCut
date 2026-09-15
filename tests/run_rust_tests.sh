@@ -107,5 +107,22 @@ for src in h264.mp4 hevc.mp4; do
   fi
 done
 
+# --- a cut that keeps nothing ---------------------------------------------
+#
+# Cutting the whole of a recording away is a mistake, not a very short cut,
+# and it used to be carried the whole way through: the plan said "0 range(s),
+# -0.000s output", the muxer was handed nothing, and a nought-byte file was
+# reported as written. Refused now, and the file is never made.
+gone="$OUT/nothing-kept.ts"
+rm -f "$gone"
+say=$("$BIN" "$FX/mpeg2.ts" --cut 0-9999 -o "$gone" 2>&1)
+if echo "$say" | grep -q "nothing left to write" && [ ! -e "$gone" ]; then
+  printf "  ok    %-26s refused, and no file made\n" "everything cut away"
+  pass=$((pass+1))
+else
+  printf "  FAIL  %-26s %s\n" "everything cut away" "$(echo "$say" | tail -1)"
+  fail=$((fail+1))
+fi
+
 echo "=== $pass passed, $fail failed ==="
 [ "$fail" -eq 0 ]

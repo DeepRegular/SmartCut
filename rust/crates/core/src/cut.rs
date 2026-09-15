@@ -3914,6 +3914,16 @@ pub fn cut_with_progress(
 ) -> Result<()> {
     crate::init()?;
 
+    // Nothing kept is not a short cut, it is a job with no output in it.
+    // Refused before the file is created rather than after: a plan of no
+    // ranges used to run the whole way through and leave a nought-byte file
+    // behind, reported as written. Every caller can reach this -- the window
+    // by cutting a clip away entirely, the command line by `--cut` covering
+    // the recording -- so it is answered here rather than in each of them.
+    if plans.is_empty() {
+        anyhow::bail!("nothing is kept: every part of this recording has been cut away");
+    }
+
     let (ictx, ist_index) = open_input(&src.input.url)?;
     let params = ictx.stream(ist_index).unwrap().parameters();
     let extradata = unsafe {

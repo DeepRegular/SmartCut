@@ -1074,6 +1074,16 @@ fn main() -> Result<()> {
     } else {
         vec![(0.0, src.duration)]
     };
+    // Cutting the whole of a recording away leaves nothing to write. Said
+    // here rather than carried: a plan of no ranges went all the way to a
+    // nought-byte file reported as "wrote", which is the same mistake
+    // [`parse_range`] stopped a backwards range making.
+    if ranges.is_empty() {
+        bail!(
+            "the cuts cover the whole of {}, so there is nothing left to write",
+            fmt_hms(src.duration)
+        );
+    }
     // A range that starts after the last picture selects nothing at all.
     // Said here, where the recording's length is finally known, rather than
     // left to the encoder to discover: that happened after the output file

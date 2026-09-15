@@ -4288,6 +4288,20 @@ async function showReencode(clip) {
     if (token !== shotsToken) return;
     onShow = { clip, r, at: -1, note: null };
     const redone = r.segs.reduce((n, g) => n + g.frames, 0);
+    // No segments to re-encode is two different states wearing one face.
+    // Usually it is the best one -- every cut landed on an access point --
+    // but a clip whose cuts cover the whole recording has no segments of any
+    // kind, and saying "the whole clip is copied losslessly" over the top of
+    // that promised a file the engine then refused to write.
+    if (!rangesOf(clip).length) {
+      onShow.note = {
+        className: "grow dim",
+        text: t("out.allCutNote", { clip: clipLabel(clip) }),
+      };
+      paintShotsNote();
+      stageShot(null, t("out.allCutStage"));
+      return;
+    }
     if (!r.segs.length) {
       // Cuts that all landed on access points, or no cuts at all. Worth
       // saying rather than leaving it blank: it is the best outcome this
@@ -4749,6 +4763,16 @@ async function runExport() {
     const out = disc ? slots[i].path : outputPath(clip);
     if (out === clip.path) {
       clip.out = { state: "error", progress: 0, note: t("out.sameName") };
+      renderOutScreen();
+      continue;
+    }
+    // A clip whose cuts cover the whole recording. The engine refuses it too
+    // -- nothing is kept, so there is no file to write -- but it is said
+    // here, in the words the editor used when the last cut closed the last
+    // range, rather than handed back as an engine's sentence at the end of a
+    // run that looked like it was going to write something.
+    if (!rangesOf(clip).length) {
+      clip.out = { state: "error", progress: 0, note: t("out.allCut") };
       renderOutScreen();
       continue;
     }
