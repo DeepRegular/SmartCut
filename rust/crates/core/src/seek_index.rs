@@ -49,7 +49,15 @@ static SERIAL: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(
 /// Nothing in an
 /// index says which source made it, and a saved one is simply believed, so a
 /// DVD opened before this stayed broken however often it was opened again.
-pub const VERSION: u32 = 4;
+///
+/// 5: an HEVC recording's leading pictures are droppable by the standard's
+/// own rule rather than by what each picture says about itself
+/// ([`crate::bitstream::leading_always_droppable`]), and an index written
+/// before that says they are not. Nothing in the file says which codec it was
+/// made for, and a saved index is believed, so a 4K recording opened before
+/// this would go on re-encoding thirteen seconds at a cut's head however
+/// often it was opened again.
+pub const VERSION: u32 = 5;
 
 const MAGIC: &[u8; 4] = b"SCIX";
 

@@ -82,6 +82,25 @@ const H264_VCL: std::ops::RangeInclusive<u8> = 1..=5;
 /// HEVC leading pictures: the `_N` variants are sub-layer non-reference.
 const HEVC_LEADING_NONREF: [u8; 2] = [6, 8]; // RADL_N, RASL_N
 
+/// Can every leading picture of an entry point be cut away, whatever this
+/// recording's encoder did?
+///
+/// **HEVC states as a rule what other codecs only usually manage.** Its
+/// leading pictures -- RADL and RASL -- may not be used as reference
+/// pictures for the trailing pictures of the same entry point, so a copy
+/// that starts there and leaves all of them behind cannot be missing a
+/// reference. RASL pictures are more than droppable: a decoder handed the
+/// stream from that entry point onwards is required to discard them itself,
+/// since what they reference is on the other side of the cut.
+///
+/// Nothing else here can be told that in advance. An H.264 encoder is free
+/// to build a pyramid whose leading pictures reference each other, and one
+/// of those *is* a reference for what follows, so those are measured picture
+/// by picture in [`is_reference`] and taken at their word.
+pub fn leading_always_droppable(codec: &str) -> bool {
+    codec == "hevc"
+}
+
 /// Is the picture in this packet used as a reference by later pictures?
 ///
 /// Decides whether a leading picture may simply be cut out of a copied

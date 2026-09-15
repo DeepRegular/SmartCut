@@ -87,9 +87,19 @@ itself a reference picture**:
 
 - **MPEG-2**: B pictures are never referenced, so leading pictures can simply be
   dropped. Even an open GOP works as a copy start point.
-- **H.264 / HEVC** (x264's `open-gop` and equivalents): B pyramids mean a leading
-  picture can be a reference picture. Drop it and every later frame that referenced
-  it breaks, taking the whole GOP with it.
+- **H.264** (x264's `open-gop` and equivalents): B pyramids mean a leading picture can
+  be a reference picture. Drop it and every later frame that referenced it breaks,
+  taking the whole GOP with it.
+- **HEVC**: leading pictures are RADL and RASL, and the standard forbids either from
+  being a reference for the trailing pictures of the same entry point. So they can
+  always be dropped, whatever the encoder did — and RASL pictures *must* be, since
+  what they reference lies on the far side of the cut. That is
+  `bitstream::leading_always_droppable`, and it is what lets a copy start at the next
+  entry point rather than at the next one nobody measured. A 4K broadcast is the case
+  that needed it: every entry point of one is a CRA, none is an IDR, and measured
+  picture by picture they all read as un-startable. A minute cut out of one
+  re-encoded 13.3 seconds of its head before this and 0.44 after — 22.8% of the
+  range against 1.4%.
 - **VC-1**: B pictures are never referenced either, so it behaves like MPEG-2 — but
   its picture header cannot be read on its own. Even whether a picture states its
   type in three bits or in one is settled in the *sequence* header, which a transport

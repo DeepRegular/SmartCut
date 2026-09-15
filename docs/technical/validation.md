@@ -200,8 +200,10 @@ These only surfaced on real material:
   Matroska and MPEG-TS reject it, which is why MKV output is remuxed via MP4. From the
   second frame on the spacing is perfectly uniform. This does not happen in the libav
   implementation, which assigns PTS/DTS per packet itself.
-- **An H.264/HEVC open GOP whose leading pictures are reference pictures cannot be
+- **An H.264 open GOP whose leading pictures are reference pictures cannot be
   used as a copy start point** (see [pitfall 3](algorithm.md#3-leading-pictures--the-heart-of-the-open-gop-problem)).
+  HEVC is no longer one of these: its leading pictures are barred from being
+  references for trailing pictures, so a copy may start at any of its entry points.
   This is inherent: avoiding it would mean keeping the leading pictures in the
   bitstream and hiding them with an edit list, which the elementary-stream
   concatenation approach cannot express. It is a non-issue on material with regular

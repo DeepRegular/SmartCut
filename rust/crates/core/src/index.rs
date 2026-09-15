@@ -216,7 +216,7 @@ pub fn walk(
         .map(|span| video_bytes as f64 * 8.0 / span)
         .filter(|r| r.is_finite() && *r > 0.0);
     Ok(Index {
-        points: points_from(&packets),
+        points: points_from(&packets, &codec),
         leading_known: true,
         pulldown: Some(pulldown),
         bit_rate,
@@ -526,7 +526,11 @@ struct PacketView {
 }
 
 /// The access point rooted at `i`, from the packets that follow it.
-fn point_at(packets: &[PacketView], i: usize) -> AccessPoint {
+///
+/// `always_droppable` is the codec answering for its leading pictures where
+/// it can, rather than each picture answering for itself; see
+/// [`bitstream::leading_always_droppable`].
+fn point_at(packets: &[PacketView], i: usize, always_droppable: bool) -> AccessPoint {
     let pkt = &packets[i];
     let mut lead_start = pkt.pts;
     let mut lead_indices = Vec::new();
@@ -538,7 +542,7 @@ fn point_at(packets: &[PacketView], i: usize) -> AccessPoint {
         if next.pts < pkt.pts {
             lead_start = lead_start.min(next.pts);
             lead_indices.push(j + 1);
-            droppable &= !next.reference;
+            droppable &= always_droppable || !next.reference;
         }
     }
     AccessPoint {
@@ -551,10 +555,11 @@ fn point_at(packets: &[PacketView], i: usize) -> AccessPoint {
 }
 
 /// Derive access points from a run of packets in decode order.
-fn points_from(packets: &[PacketView]) -> Vec<AccessPoint> {
+fn points_from(packets: &[PacketView], codec: &str) -> Vec<AccessPoint> {
+    let always_droppable = bitstream::leading_always_droppable(codec);
     let mut points: Vec<AccessPoint> = (0..packets.len())
         .filter(|&i| packets[i].key)
-        .map(|i| point_at(packets, i))
+        .map(|i| point_at(packets, i, always_droppable))
         .collect();
     points.sort_by(|a, b| {
         a.time
@@ -593,6 +598,7 @@ pub fn refine_leading(
 ) -> Result<()> {
     /// How many entry points either side of a boundary are measured.
     const SKIRT: usize = 24;
+    let always_droppable = bitstream::leading_always_droppable(&video.codec);
     let mut ictx = crate::input::demux(url)?;
     // How far `SKIRT` points reaches in seconds, so the test below can stay a
     // comparison of times: the points are sorted by time and a boundary can
@@ -619,7 +625,7 @@ pub fn refine_leading(
                 p.key && ((p.pts - slot.time).abs() < half || (p.dts - slot.time).abs() < half)
             });
             if let Some(i) = hit {
-                let found = point_at(&window, i);
+                let found = point_at(&window, i, always_droppable);
                 slot.time = found.time;
                 slot.lead_start = found.lead_start;
                 slot.lead_indices = found.lead_indices;
