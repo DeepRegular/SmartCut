@@ -61,7 +61,7 @@ AppImage・tar.gz・deb・Windows インストーラの作り方は[配布](dist
 
 ```bash
 bash tests/run_tests.sh               # Python E2E                                      13
-bash tests/run_rust_tests.sh          # Rust E2E（コンテナ索引で +11）                   15
+bash tests/run_rust_tests.sh          # Rust E2E（コンテナ索引で +11）                   16
 bash tests/run_audio_tests.sh         # A/V 同期（copy と reencode で +10）               5
 bash tests/run_audio_content_tests.sh # 実素材の音声が正しい位置にあるか                  6
 bash tests/run_aac_tests.sh           # 出力の AAC フレームが何でできているか             8
@@ -69,12 +69,13 @@ bash tests/run_downmix_tests.sh       # 5.1ch をステレオに畳んだとき�
 bash tests/run_audio_codec_tests.sh   # 音声を別のコーデックで書き出せるか               39
 bash tests/run_audio_smart_tests.sh   # コーデックごとのスマートレンダリング             20
 bash tests/run_audio_format_tests.sh  # 音声のサンプリングレートと量子化ビット数         23
+bash tests/run_audio_head_tests.sh    # 冒頭が前の番組になっている録画                   12
 bash tests/run_preview_tests.sh       # スクラブで指定した時刻の絵が出るか                7
 bash tests/run_index_tests.sh         # 索引が走査と同じ答えを返すか                     27
 bash tests/run_proxy_tests.sh         # プロキシが録画の代役になれるか                   22
 bash tests/run_scene_tests.sh         # シーン検出と CM 境界の照合                        1
 bash tests/run_ts_layout_tests.sh     # TS の出自とシーケンスヘッダ                       5
-bash tests/run_broadcast_tests.sh     # 字幕・番組情報・音声多重                         11
+bash tests/run_broadcast_tests.sh     # 字幕・番組情報・データ放送・音声多重             17
 bash tests/run_cm_tests.sh            # CM 検出と人間の答えの照合                         5
 bash tests/run_disc_tests.sh          # BDAV と BDMV をフォルダーと .iso から読む       38
 bash tests/run_bdav_tests.sh          # ディスクを書く。索引・イメージ・その中身       72

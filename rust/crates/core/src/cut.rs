@@ -3111,14 +3111,11 @@ struct AudioSetup {
     sample_rate: u32,
     /// The fold, when there is one: what it was, and what it became.
     downmix: Option<(u16, u16)>,
-    /// What the recording's own frames of this track look like from outside.
-    /// Only an answer for AAC -- ADTS from an HD broadcast, LATM from a 4K
-    /// one; anything else leaves the frames this tool encodes unframed,
-    /// exactly as the packets they sit among are.
-    source_adts: Option<crate::aac::Framing>,
-    /// How the frames this cut encodes for the track are framed.
+    /// How the frames this cut encodes for the track are framed, where they
+    /// are framed at all. Only an answer for AAC -- ADTS from an HD
+    /// broadcast, LATM from a 4K one; anything else leaves the frames this
+    /// tool encodes unframed, exactly as the packets they sit among are.
     frame_as: Option<crate::aac::Framing>,
-    aac: AacVersion,
     bit_rate: usize,
 }
 
@@ -3664,16 +3661,22 @@ fn plan_audio(
         // and `aac_latm` what a 4K recording's are, and a frame written for
         // one of those tracks is framed the way the track's own frames are.
         _ if !matches!(target, ff::codec::Id::AAC | ff::codec::Id::AAC_LATM) => None,
-        (AudioMode::Smart, Some(f)) => Some(f.as_version(aac)),
-        (AudioMode::Reencode, Some(f)) if to_ts => {
-            let mut f = f.as_version(aac);
-            if let Some((_, to)) = downmix {
-                f = f.with_channels(to);
-            }
-            if resampled.is_some() {
-                f = f.with_rate(sample_rate);
-            }
-            Some(f)
+        (AudioMode::Smart, Some(f)) | (AudioMode::Reencode, Some(f))
+            if mode == AudioMode::Smart || to_ts =>
+        {
+            // The header says what the frame behind it is, and the frames
+            // behind these are the ones written here rather than the ones
+            // the recording opened with. Both numbers are restated whether
+            // or not anything asked them to change: a fold and a resample
+            // are the two ways a caller moves them, and a recording that
+            // opens on the programme before it can have had either wrong
+            // from the start -- see [`crate::audio::settled_shape`]. Where
+            // nothing has moved, restating them writes the same header.
+            Some(
+                f.as_version(aac)
+                    .with_channels(channels)
+                    .with_rate(sample_rate),
+            )
         }
         _ => None,
     };
@@ -3690,7 +3693,19 @@ fn plan_audio(
         if recoded {
             return derived_bit_rate(target, channels);
         }
-        let src_rate = info.bit_rate.unwrap_or(192_000);
+        // What the recording spent, where it said. Where it did not -- a
+        // transport stream states a bitrate for almost nothing it carries --
+        // a figure has to stand in, and the 192 kbit/s that stood in is a
+        // stereo figure. On 5.1 it is half what the recording itself spent,
+        // and the frames written at a seam come back at half the size of the
+        // ones they are spliced between. So the stand-in follows the channel
+        // count upward. Never downward: writing a mono track's few
+        // re-encoded frames at the stereo figure costs a few bytes and loses
+        // nothing, and quietly halving what a track is written at on a guess
+        // is not the same kind of act.
+        let src_rate = info
+            .bit_rate
+            .unwrap_or_else(|| derived_bit_rate(target, channels).max(192_000));
         match downmix {
             Some((from, to)) if from > 0 => (src_rate * to as usize / from as usize).max(128_000),
             _ => src_rate,
@@ -3711,10 +3726,10 @@ fn plan_audio(
     // And none of it is a question about a track no encoder is opened for.
     // A lossless track is carried through frame by frame, so the rate above
     // is a number nothing reads -- and where the recording never said what
-    // its own rate was, that number is the 192 kbit/s standing in for it,
-    // which no DTS encoder would open at either. A cut of a Blu-ray said so
-    // twice per track, in the same breath as saying the track was being
-    // carried through untouched.
+    // its own rate was, that number is whatever stood in for it, which the
+    // encoder named beside it need never have accepted. A cut of a Blu-ray
+    // said so twice per track, in the same breath as saying the track was
+    // being carried through untouched.
     let ordinary = derived_bit_rate(target, channels);
     let refused = bit_rate > 0
         && !lossless
@@ -3754,9 +3769,7 @@ fn plan_audio(
         channels,
         sample_rate,
         downmix,
-        source_adts,
         frame_as,
-        aac,
         bit_rate,
     })
 }
@@ -4477,6 +4490,23 @@ pub fn cut_with_progress(
             }
             _ => ost.set_parameters(params),
         }
+        // The recording's parameters describe the frames at the head of the
+        // file, and on a broadcast those are the end of the programme before
+        // this one: a recording whose every frame is stereo can be described
+        // mono by three seconds of the bulletin that ran ahead of it. What
+        // the stream declares is what the frames are. See
+        // [`crate::audio::settled_shape`]; where nothing was corrected the
+        // two already agree and this does nothing.
+        unsafe {
+            let p = ost.parameters().as_mut_ptr();
+            if (*p).ch_layout.nb_channels != i32::from(setup.channels) {
+                ff::ffi::av_channel_layout_uninit(&mut (*p).ch_layout);
+                ff::ffi::av_channel_layout_default(&mut (*p).ch_layout, i32::from(setup.channels));
+            }
+            if (*p).sample_rate != setup.sample_rate as i32 {
+                (*p).sample_rate = setup.sample_rate as i32;
+            }
+        }
         // The rate the track is written at, which is the recording's own
         // unless one was asked for.
         ost.set_time_base(ff::Rational::new(1, setup.sample_rate as i32));
@@ -4626,14 +4656,16 @@ pub fn cut_with_progress(
                         )
                     })
                     .collect();
-                let rate = opts.audio_bit_rate.or(a.bit_rate).unwrap_or(192_000);
+                // The rate the track is written at, settled once in
+                // [`plan_audio`]: the frames at a seam are spliced in among
+                // the recording's own and have to have been written at what
+                // the rest of it was.
                 crate::audio::boundary_patches(
                     src,
                     a,
                     &windows,
-                    rate,
-                    setup.source_adts,
-                    setup.aac,
+                    setup.bit_rate,
+                    setup.frame_as,
                 )?
             }
             _ => Default::default(),

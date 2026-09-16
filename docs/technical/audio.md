@@ -269,6 +269,68 @@ Measured on a 4K recorder's disc: a two-range cut re-encodes four frames per tra
 the seams, the whole track decodes with no errors, and the largest sample-to-sample step
 across the seam is the same size as the ones either side of it.
 
+## The opening is not the recording
+
+libavformat describes a track from the first frames it meets, a few megabytes into the
+file. On a broadcast recording those frames are regularly **not the programme's**. A
+tuner is told to start early, so the file opens on the end of whatever was on before —
+and the sound of that can be a different shape. A bulletin read in mono ahead of a
+documentary in stereo is an ordinary evening's television.
+
+Three seconds of it was enough to have a fifty minute stereo track called mono, and
+everything downstream believed it:
+
+- the encoder opened for the frames at a seam was opened with one channel, so two
+  frames of every boundary came back mono among the stereo ones around them;
+- the ADTS header written in front of them said one channel as well, which is what a
+  transport stream's decoder reads;
+- a whole-track re-encode folded the programme's two channels into one from beginning
+  to end;
+- and a BDAV clip index written from the cut described the track as mono, because that
+  is the number it is given.
+
+**The bitrate is read off the same frames**, and is wrong for the same reason. A stereo
+opening in front of a 5.1 programme has the container state 208 kbit/s for a track
+carried at 386, and a whole-track re-encode then spends a stereo programme's rate on six
+channels. So it is given up along with the rest of the opening's description rather than
+guessed at — measuring the real one means reading a second of sound at each place looked
+at, a hundred times what this check costs — and `derived_bit_rate`, which is what a codec
+is worth at a given channel count, stands in: 384 kbit/s for 5.1 AAC, which is what the
+recording was carried at. That stand-in also stopped being a flat 192 kbit/s, a figure
+that is stereo's; it follows the channel count upward now, and never downward.
+
+So the frames are asked again. `audio::settled_shape` seeks to four places spread
+through the recording, decodes one frame at each, and takes the channel count and the
+rate a majority of them agree on. Where that disagrees with the probe, the recording's
+own answer replaces it and a note says so once. The whole check costs about 10 ms on a
+5.8 GB recording — four seeks and four frames — and it is asked only of a recording made
+off the air. A disc's clip is a transport stream too, and is one programme from its
+first frame: nothing in it can disagree with its own opening, and inside an image every
+one of those seeks is a walk of the volume as well.
+
+Three things follow from taking a majority rather than a first answer:
+
+- **A recording that really is mono stays mono.** Every place looked at agrees with the
+  probe, and nothing is corrected.
+- **A recording holding more than one programme is left alone.** The places looked at do
+  not agree among themselves, there is no such thing as its own shape, and the probe's
+  answer is as good as any other.
+- **The frames the cut writes are framed as the cut writes them**, not as the recording
+  opened. `frame_as` restates the channel count and the rate in the ADTS or LATM header
+  whether or not anything asked them to change, and `boundary_patches` is handed that
+  header rather than the one read off the head of the file. Stereo samples behind a
+  header announcing one channel was the fault in its plainest form, and it was twice per
+  seam.
+
+`tests/run_audio_head_tests.sh` builds that recording in miniature — four seconds of
+mono concatenated to forty of stereo, on one PID — and checks the cut of it three ways:
+the track is described as stereo, every ADTS header in the output says two channels
+while all but the boundary frames are still the recording's own bytes, and a whole-track
+re-encode comes out stereo. Beside it the same shape with 5.1 behind a stereo opening,
+where the re-encode is checked for its rate as well as its channels; and a guard, a
+recording that is mono throughout, which has to come out mono. Against the binary from
+before the fix, seven of the twelve fail.
+
 ## Downmixing (`--audio-channels`)
 
 Some recordings carry 5.1, and a good many of the places they end up do not want it: a

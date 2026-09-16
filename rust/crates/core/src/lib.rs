@@ -457,6 +457,39 @@ pub struct Source {
     pub byte_seekable: bool,
 }
 
+/// How to name one track where a person will read it.
+///
+/// `pid 0x1100` off a transport stream, `stream 1` out of anything else. The
+/// number in [`AudioInfo::pid`] is whatever the container calls the track, and
+/// only one kind of container calls it a PID. See [`Source::on_a_ts`].
+pub fn track_name(on_a_ts: bool, pid: i32, stream_index: usize) -> String {
+    if on_a_ts {
+        format!("pid 0x{pid:04x}")
+    } else {
+        format!("stream {stream_index}")
+    }
+}
+
+/// Say something about a recording once, however many times it is opened.
+///
+/// A single run opens the same file more than once -- the outline a list row
+/// is filled from, the scan that indexes it, the cut's own look at it -- and
+/// a note about what is in the recording is as true the third time as the
+/// first and no more use to anybody. Keyed on the line itself, so two tracks
+/// with the same thing to say about them still say it twice.
+fn note_once(line: String) {
+    use std::collections::HashSet;
+    use std::sync::{Mutex, OnceLock};
+    static SAID: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
+    let fresh = SAID
+        .get_or_init(Mutex::default)
+        .lock()
+        .map_or(true, |mut said| said.insert(line.clone()));
+    if fresh {
+        eprintln!("{line}");
+    }
+}
+
 /// Start libav, and stop it talking over the top of this program.
 ///
 /// **What libav prints is not addressed to anyone here.** It is a running
@@ -473,19 +506,6 @@ pub struct Source {
 /// `1` for the warnings, `2` for everything libav has to say. Nothing is
 /// lost by the default -- a call that fails returns its error, which is
 /// carried and reported here rather than printed there.
-/// How to name one track where a person will read it.
-///
-/// `pid 0x1100` off a transport stream, `stream 1` out of anything else. The
-/// number in [`AudioInfo::pid`] is whatever the container calls the track, and
-/// only one kind of container calls it a PID. See [`Source::on_a_ts`].
-pub fn track_name(on_a_ts: bool, pid: i32, stream_index: usize) -> String {
-    if on_a_ts {
-        format!("pid 0x{pid:04x}")
-    } else {
-        format!("stream {stream_index}")
-    }
-}
-
 pub fn init() -> Result<()> {
     ff::init().map_err(|e| anyhow!("ffmpeg init failed: {e}"))?;
     let level = match std::env::var("SMARTCUT_FFMPEG_LOG").as_deref() {
@@ -1107,6 +1127,29 @@ fn outline_of(path: &str) -> Result<(Outline, input::Demux)> {
     let framing = bitstream::framing_from_extradata(&codec, &extradata);
     let frame_rate = f64::from(stream.avg_frame_rate());
 
+    // Read before the sound is described rather than with the rest of the
+    // file's own numbers below, because describing the sound needs them: see
+    // [`audio::settled_shape`], which is told where the middle of the
+    // recording is.
+    let (duration, start_time) = unsafe {
+        let p = ictx.as_ptr();
+        let tb = ff::ffi::AV_TIME_BASE as f64;
+        let d = (*p).duration;
+        let s = (*p).start_time;
+        (
+            if d == ff::ffi::AV_NOPTS_VALUE {
+                0.0
+            } else {
+                d as f64 / tb
+            },
+            if s == ff::ffi::AV_NOPTS_VALUE {
+                0.0
+            } else {
+                s as f64 / tb
+            },
+        )
+    };
+
     let read_audio = |a: &ff::format::stream::Stream| {
         let p = a.parameters();
         let (sample_rate, channels, bit_rate) = unsafe {
@@ -1160,7 +1203,50 @@ fn outline_of(path: &str) -> Result<(Outline, input::Demux)> {
             described
         })
         .collect();
-    let (audios, folded) = one_track_per_pid(audios, on_a_ts);
+    let (mut audios, folded) = one_track_per_pid(audios, on_a_ts);
+    // What the probe described is the head of the file, and the head of a
+    // broadcast recording is the end of the programme before it. Where that
+    // programme's sound was a different shape from this one's -- mono read
+    // ahead of a stereo programme, which is an ordinary evening -- the
+    // description is corrected to the recording's own. See
+    // [`audio::settled_shape`].
+    //
+    // Asked of a recording made off the air and of nothing else. A disc's
+    // clip is a transport stream too, and is one programme from its first
+    // frame: nothing in it can disagree with its own opening, and the seeks
+    // this costs are not free enough to spend on finding that out -- least
+    // of all inside an image, where every one of them is a walk of the
+    // volume as well.
+    if on_a_ts && disc::clip_on_a_disc(path).is_none() {
+        for a in audios.iter_mut() {
+            let Some((channels, sample_rate)) =
+                audio::settled_shape(&input.url, a, start_time, duration)
+            else {
+                continue;
+            };
+            note_once(format!(
+                "note: the sound on {} is {} channel(s) at {} Hz where this recording opens, \
+                 and {channels} at {sample_rate} Hz through the rest of it -- the opening \
+                 belongs to the programme before this one, which a tuner told to start \
+                 early records the end of. The recording's own is followed.",
+                track_name(on_a_ts, a.pid, a.stream_index),
+                a.channels,
+                a.sample_rate,
+            ));
+            a.channels = channels;
+            a.sample_rate = sample_rate;
+            // And the rate the container stated, which was read off the same
+            // frames and describes the same wrong programme: 208 kbit/s for a
+            // stereo opening in front of a 5.1 programme carried at 386. Left
+            // in, it is what a whole-track re-encode would spend on six
+            // channels. There is no measuring the real one here without
+            // reading a second of sound at each place looked at, which is a
+            // hundred times what this check costs, so it is given up rather
+            // than guessed at: what a codec is worth at this many channels
+            // stands in for it. See `derived_bit_rate` in [`cut`].
+            a.bit_rate = None;
+        }
+    }
     // Which of them is the main sound. libav's own answer, since it weighs
     // the disposition flags a container may carry; the first track when it
     // has no opinion, which is what a broadcast recording amounts to.
@@ -1301,25 +1387,6 @@ fn outline_of(path: &str) -> Result<(Outline, input::Demux)> {
         })
         .collect();
     dropped.extend(folded);
-
-    let (duration, start_time) = unsafe {
-        let p = ictx.as_ptr();
-        let tb = ff::ffi::AV_TIME_BASE as f64;
-        let d = (*p).duration;
-        let s = (*p).start_time;
-        (
-            if d == ff::ffi::AV_NOPTS_VALUE {
-                0.0
-            } else {
-                d as f64 / tb
-            },
-            if s == ff::ffi::AV_NOPTS_VALUE {
-                0.0
-            } else {
-                s as f64 / tb
-            },
-        )
-    };
 
     // Everything else here is counted from where the file begins, so the
     // clock a TTML document's times are counted from is put on the same

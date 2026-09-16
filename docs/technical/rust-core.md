@@ -306,5 +306,6 @@ The audio side of the engine is large enough to have its own page. It covers:
 | [Cutting per interval](audio.md#cutting-per-interval-and-the-drift-that-nearly-happened) | Why an MP4 `stts` track accumulates drift, and how it is bounded |
 | [Smart rendering applied to audio](audio.md#smart-rendering-applied-to-audio) | Re-encoding only the straddling frames, the guard frame, and the silence test |
 | [Writing MPEG-2 AAC](audio.md#writing-mpeg-2-aac---aac) | Why the ADTS headers are built here rather than by a muxer |
+| [The opening is not the recording](audio.md#the-opening-is-not-the-recording) | Why a broadcast recording's own frames settle what its sound is, and the probe does not |
 | [Downmixing](audio.md#downmixing---audio-channels) | Folding 5.1 to stereo, and why it forces a whole-track re-encode |
 | [Multi-audio broadcasts](audio.md#multi-audio-broadcasts) | Cutting every sound track independently |

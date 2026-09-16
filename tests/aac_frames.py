@@ -8,10 +8,16 @@ bytes, unchanged? A smart-rendered cut has to answer "all of them" and
 
     python3 tests/aac_frames.py out.aac [source.aac] [--mpeg 2]
         [--max-reencoded N] [--profile 1] [--payload-only 1] [--hz 48000]
+        [--channels 2]
 
 `--hz` requires every frame's header to name that sample rate, which is the
 rate a transport stream's decoder actually reads -- an encoder resampled to
 44.1 kHz whose frames still say 48 plays the whole track at the wrong speed.
+
+`--channels` requires every frame's header to name that many channels, which
+is the same kind of claim `--hz` makes: a header is what a transport stream's
+decoder believes, so a stereo frame behind a header saying one channel is a
+frame that plays as something the encoder never wrote.
 
 `--payload-only` compares what is inside the frames rather than the frames
 themselves, which is the only comparison an MP4 can answer: its muxer keeps
@@ -124,6 +130,9 @@ def main(argv):
         if "hz" in flags and RATES[head["rate"]] != int(flags["hz"]):
             bad.append("%d frame(s) say %s Hz, wanted %s"
                        % (n, RATES[head["rate"]], flags["hz"]))
+        if "channels" in flags and head["channels"] != int(flags["channels"]):
+            bad.append("%d frame(s) say %d channel(s), wanted %s"
+                       % (n, head["channels"], flags["channels"]))
         if head["blocks"] != 1:
             bad.append("%d frame(s) carry %d raw data blocks" % (n, head["blocks"]))
 

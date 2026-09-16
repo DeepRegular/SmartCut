@@ -460,7 +460,7 @@ pub fn carry_disc_languages(src: &mut crate::Source) {
 /// The shape is the same on both dialects and is the only thing being asked
 /// for: which disc, and which clip on it. Anything else is not on a disc as
 /// far as this is concerned.
-fn clip_on_a_disc(path: &str) -> Option<(&str, &str)> {
+pub(crate) fn clip_on_a_disc(path: &str) -> Option<(&str, &str)> {
     // A name that plays one sequence of a clip still names the clip, and the
     // index beside it is the clip's.
     let path = crate::input::clip_window(path).map_or(path, |(base, _, _)| base);

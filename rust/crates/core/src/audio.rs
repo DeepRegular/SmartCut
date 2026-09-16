@@ -38,7 +38,6 @@ use ffmpeg_next as ff;
 use std::collections::HashMap;
 
 use crate::aac::Framing;
-use crate::adts::AacVersion;
 use crate::{AudioInfo, Source};
 
 /// How long the fade into and out of a silenced stretch is, in samples.
@@ -870,6 +869,130 @@ impl Decoded {
     }
 }
 
+/// What a track's frames really are, past the head of the recording.
+///
+/// libavformat describes a track from the first frames it meets, a few
+/// megabytes into the file, and on a broadcast recording those frames are
+/// regularly not the programme's. A tuner is told to start early, so the
+/// recording opens on the end of whatever was on before it -- and the sound of
+/// that can be a different shape. A bulletin read in mono ahead of a
+/// documentary in stereo is an ordinary evening's television, and three
+/// seconds of it at the head of a fifty minute recording was enough to have
+/// the whole track called mono.
+///
+/// Everything downstream believes the probe. The encoder opened for the frames
+/// at a seam was opened mono, so two frames of every boundary came back with
+/// one channel among the stereo ones around them; the ADTS header written in
+/// front of them said mono as well; and a whole-track re-encode folded the
+/// programme's two channels into one from beginning to end.
+///
+/// So the frames are asked again, at a few places spread through the
+/// recording, and what most of them say is what the track is. Sampled rather
+/// than read whole: the answer wanted here is the one that describes most of
+/// the recording, since a cut writes one track of one shape whichever way this
+/// goes, and reading fifty minutes of sound to settle a question about two
+/// numbers is not a price a list of files can pay.
+///
+/// **The opening is read as a frame too, rather than taken from the probe.**
+/// A description and a frame can disagree for reasons that have nothing to do
+/// with a change of programme -- parametric stereo is declared as one channel
+/// and decodes as two -- and what is being looked for here is a recording
+/// disagreeing with itself. Frame against frame is the only comparison that
+/// says that.
+///
+/// `None` where there is nothing to correct: the recording agrees with its own
+/// opening, it is too short to have a middle, its frames are carried through
+/// byte for byte, or none of them would decode.
+pub fn settled_shape(
+    url: &str,
+    audio: &AudioInfo,
+    start_time: f64,
+    duration: f64,
+) -> Option<(u16, u32)> {
+    /// Where to look, as fractions of the recording. Four of them, spread so
+    /// that no two land in the same programme's worth of a recording that
+    /// holds more than one.
+    const AT: [f64; 4] = [0.125, 0.375, 0.625, 0.875];
+    /// Under this there is no middle to sample: the head is the recording.
+    const SHORTEST: f64 = 30.0;
+
+    if duration < SHORTEST {
+        return None;
+    }
+    let mut ictx = crate::input::demux(url).ok()?;
+    let params = ictx.stream(audio.stream_index)?.parameters();
+    // Sound that is carried through byte for byte is described by the
+    // container and by nothing this could decode. Asking its decoder would be
+    // a worse answer rather than a better one -- DTS-HD hands back the core
+    // it can decode, six channels of an eight channel track -- and none of
+    // these changes shape part-way through anyway. That is a broadcast's
+    // habit, not a disc's.
+    if carried_whole(params.id()) {
+        return None;
+    }
+    // Read from where the context stands, which is the beginning.
+    let opening = frame_shape(&mut ictx, &params, audio.stream_index)?;
+    let mut seen: Vec<(u16, u32)> = Vec::new();
+    for fraction in AT {
+        let at = ((start_time + duration * fraction) * ff::ffi::AV_TIME_BASE as f64) as i64;
+        if ictx.seek(at, ..at).is_err() {
+            continue;
+        }
+        if let Some(shape) = frame_shape(&mut ictx, &params, audio.stream_index) {
+            seen.push(shape);
+        }
+    }
+    // A majority, rather than whichever shape happened to be sampled last.
+    // Where the places looked at do not agree among themselves the recording
+    // holds more than one programme and there is no such thing as its own
+    // shape; the probe's answer is as good as any other and is the one every
+    // other part of this already has.
+    let settled = *seen
+        .iter()
+        .max_by_key(|shape| seen.iter().filter(|other| other == shape).count())?;
+    let agreed = seen.iter().filter(|shape| **shape == settled).count();
+    if agreed * 2 <= seen.len() || settled == opening {
+        return None;
+    }
+    (settled != (audio.channels, audio.sample_rate)).then_some(settled)
+}
+
+/// The shape of the first frame that decodes from where the context stands.
+///
+/// A frame rather than a packet, because this has to hold for every codec a
+/// recording carries and only the decoder knows where each one keeps the
+/// answer. The samples are thrown away -- the frame straight after a seek is
+/// missing half its window and is wrong for any other purpose -- but what it
+/// says about itself is read off its header and is right.
+fn frame_shape(
+    ictx: &mut ff::format::context::Input,
+    params: &ff::codec::Parameters,
+    stream_index: usize,
+) -> Option<(u16, u32)> {
+    let mut decoder = ff::codec::context::Context::from_parameters(params.clone())
+        .ok()?
+        .decoder()
+        .audio()
+        .ok()?;
+    let mut frame = ff::frame::Audio::empty();
+    for (stream, packet) in ictx.packets().take(4096) {
+        if stream.index() != stream_index {
+            continue;
+        }
+        if decoder.send_packet(&packet).is_err() {
+            continue;
+        }
+        while decoder.receive_frame(&mut frame).is_ok() {
+            let channels = unsafe { (*frame.as_ptr()).ch_layout.nb_channels } as u16;
+            let rate = frame.rate();
+            if channels > 0 && rate > 0 {
+                return Some((channels, rate));
+            }
+        }
+    }
+    None
+}
+
 /// Re-encode the frames a keep-range's edges fall inside.
 ///
 /// The result maps a source packet's `pts` to the bytes that should be
@@ -880,13 +1003,18 @@ impl Decoded {
 /// exactly the samples the frames they replace covered. Runs from different
 /// edges may overlap on a very short range; they agree where they do, because
 /// the mask both are built against is the whole range.
+///
+/// `framing` is how the frames written here are to be framed, which is the
+/// cut's answer rather than the recording's first frames': see `frame_as` in
+/// [`crate::cut`]. A header that disagreed with the frame behind it was the
+/// whole of the fault [`settled_shape`] describes -- stereo samples under a
+/// header announcing one channel, twice per seam.
 pub fn boundary_patches(
     src: &Source,
     audio: &AudioInfo,
     windows: &[(i64, i64)],
     bit_rate: usize,
     framing: Option<Framing>,
-    aac: AacVersion,
 ) -> Result<HashMap<i64, Patch>> {
     let mut out = HashMap::new();
     if windows.is_empty() {
@@ -898,7 +1026,6 @@ pub fn boundary_patches(
         .ok_or_else(|| anyhow!("audio stream {} vanished", audio.stream_index))?;
     let params = stream.parameters();
     let rate = audio.sample_rate as f64;
-    let framing = framing.map(|f| f.as_version(aac));
 
     // Two ways a track can turn out not to be one whose frames this
     // rewrites, and both end the same way: say so and copy. Smart rendering
