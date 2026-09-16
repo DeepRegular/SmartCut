@@ -74,6 +74,16 @@ pub fn shots_at(src: &Source, times: &[f64], width: u32) -> Result<Vec<Option<Sh
     // there is nothing faster to read from.
     let keys = times.iter().all(|&t| on_point(&src.points, t, fd / 2.0));
 
+    // One pool for the whole request, not one per run. The strip's wider
+    // settings ask for a run per cell -- the cells are further apart than a
+    // run is walked through -- and a pool costs a decoder per worker to open,
+    // which on 4K is not something to do a dozen times over. Opened on the
+    // first run rather than here, out of the demuxer that run had to open
+    // anyway: opening one only to read the stream's parameters off it is a
+    // quarter of a second on a transport stream, which is most of what a
+    // refresh is allowed.
+    let mut pool: Option<StripPool> = None;
+
     let mut out: Vec<Option<Shot>> = (0..times.len()).map(|_| None).collect();
     let mut start = 0usize;
     for i in 1..=times.len() {
@@ -81,7 +91,8 @@ pub fn shots_at(src: &Source, times: &[f64], width: u32) -> Result<Vec<Option<Sh
         if !split {
             continue;
         }
-        for (k, shot) in collect_run(src, &times[start..i], width, fd, keys)?
+        let decoding = keys.then_some(&mut pool);
+        for (k, shot) in collect_run(src, &times[start..i], width, fd, decoding)?
             .into_iter()
             .enumerate()
         {
@@ -98,6 +109,112 @@ fn on_point(points: &[AccessPoint], t: f64, tol: f64) -> bool {
     points.get(i).is_some_and(|p| (p.time - t).abs() <= tol)
 }
 
+/// What a stretch of a recording's entry pictures amounts to before any of
+/// them is decoded: what to build a decoder from, where the first of them
+/// presents, and the packets of each picture that was asked to be kept,
+/// against its own instant.
+type EntryRun = (ff::codec::Parameters, Option<f64>, Vec<(f64, Vec<ff::Packet>)>);
+
+/// What the film strip's own decoder pool hands back: a picture's instant,
+/// what kind it is, and the image itself, made on the worker that decoded it.
+type StripPool = crate::entrypool::Pool<(f64, &'static str, Vec<u8>)>;
+
+/// The slots one run of the film strip is being filled into.
+///
+/// Every slot wants the picture nearest its own instant and will not take one
+/// further off than `window`, so a picture is offered to all of them and the
+/// ones it improves keep a copy. A slot with no picture near it stays empty
+/// rather than borrowing its neighbour's: the strip keeps the playhead in its
+/// middle cell, and that only holds if the cells stay where they were put.
+/// `P` is whatever the caller is filling them with: a decoded frame where the
+/// run is walked through, an encoded image where it came off the pool, which
+/// made it on the worker. Encoding is what [`Self::finish`] is for, and it
+/// happens once per slot: a slot in a walked run is replaced by every nearer
+/// picture that goes past, and encoding on the way in cost one for each of
+/// them.
+struct Slots<'a, P> {
+    wanted: &'a [f64],
+    window: f64,
+    got: Vec<Option<(f64, &'static str, P)>>,
+}
+
+impl<'a, P: Clone> Slots<'a, P> {
+    fn new(wanted: &'a [f64], window: f64) -> Self {
+        Self {
+            wanted,
+            window,
+            got: (0..wanted.len()).map(|_| None).collect(),
+        }
+    }
+
+    /// Whether any slot would take a picture at `t`.
+    ///
+    /// Exact rather than a guess: a slot is only ever filled by a picture
+    /// inside its window, and only ever replaced by a nearer one, so a
+    /// picture outside every window cannot be taken by anything. Asked before
+    /// a picture is decoded at all, where the caller is in a position to
+    /// choose.
+    fn open_to(&self, t: f64) -> bool {
+        self.wanted.iter().any(|w| (t - w).abs() <= self.window)
+    }
+
+    /// Offer a picture. `hold` is asked for only if a slot takes it.
+    fn offer(
+        &mut self,
+        t: f64,
+        kind: &'static str,
+        mut hold: impl FnMut() -> Result<P>,
+    ) -> Result<()> {
+        let mut made: Option<P> = None;
+        for (i, &w) in self.wanted.iter().enumerate() {
+            let better = match &self.got[i] {
+                Some((have, _, _)) => (t - w).abs() < (have - w).abs(),
+                None => (t - w).abs() <= self.window,
+            };
+            if !better {
+                continue;
+            }
+            let held = match &made {
+                Some(p) => p.clone(),
+                None => made.insert(hold()?).clone(),
+            };
+            self.got[i] = Some((t, kind, held));
+        }
+        Ok(())
+    }
+
+    /// The run's answer, once nothing more is coming.
+    fn finish(
+        mut self,
+        fd: f64,
+        image: impl Fn(P) -> Result<Vec<u8>>,
+    ) -> Result<Vec<Option<Shot>>> {
+        // Two slots can round to the same picture -- the strip's spacing need
+        // not be a whole number of picture intervals, and under pulldown it
+        // never is. The later slot gives it up rather than repeating it.
+        for i in (1..self.got.len()).rev() {
+            let dup = match (&self.got[i], &self.got[i - 1]) {
+                (Some(a), Some(b)) => (a.0 - b.0).abs() < fd / 2.0,
+                _ => false,
+            };
+            if dup {
+                self.got[i] = None;
+            }
+        }
+        self.got
+            .into_iter()
+            .map(|slot| match slot {
+                Some((time, kind, held)) => Ok(Some(Shot {
+                    jpeg: image(held)?,
+                    time,
+                    kind,
+                })),
+                None => Ok(None),
+            })
+            .collect()
+    }
+}
+
 /// One seek, then a straight decode filling every slot with the nearest
 /// picture to it.
 fn collect_run(
@@ -105,7 +222,7 @@ fn collect_run(
     wanted: &[f64],
     width: u32,
     fd: f64,
-    keys: bool,
+    pool: Option<&mut Option<StripPool>>,
 ) -> Result<Vec<Option<Shot>>> {
     let first = wanted[0];
     let last = *wanted.last().unwrap();
@@ -116,55 +233,177 @@ fn collect_run(
     };
     let window = spacing.max(fd);
     let from = entry_before(&src.points, first);
+    if let Some(pool) = pool {
+        return entry_run(src, wanted, width, fd, from, window, pool);
+    }
 
-    let mut got: Vec<Option<(f64, &'static str, ff::frame::Video)>> = Vec::new();
+    let sar = src.video.sample_aspect_ratio;
+    let mut got = Slots::new(wanted, window);
     for (attempt, margin) in [0.0, src.seek_margin].into_iter().enumerate() {
-        let mut slots: Vec<Option<(f64, &'static str, ff::frame::Video)>> =
-            (0..wanted.len()).map(|_| None).collect();
-        let began = walk(src, from, margin, keys, |t, frame| {
+        let mut slots = Slots::new(wanted, window);
+        let mut failed = None;
+        let began = walk(src, from, margin, false, |t, frame| {
             if t > last + fd {
                 return false;
             }
-            for (i, &w) in wanted.iter().enumerate() {
-                let better = match &slots[i] {
-                    Some((have, _, _)) => (t - w).abs() < (have - w).abs(),
-                    None => (t - w).abs() <= window,
-                };
-                if better {
-                    slots[i] = Some((t, kind_of(frame), frame.clone()));
-                }
+            if let Err(e) = slots.offer(t, kind_of(frame), || Ok(frame.clone())) {
+                failed = Some(e);
+                return false;
             }
             true
         })?;
+        if let Some(e) = failed {
+            return Err(e);
+        }
         got = slots;
         if !landed_late(began, first, window / 2.0) || attempt == 1 {
             break;
         }
     }
+    got.finish(fd, |frame| encode_jpeg(&frame, sar, width))
+}
 
-    // Two slots can round to the same picture -- the strip's spacing need not
-    // be a whole number of picture intervals, and under pulldown it never is.
-    // The later slot gives it up rather than repeating it.
-    for i in (1..got.len()).rev() {
-        let dup = match (&got[i], &got[i - 1]) {
-            (Some(a), Some(b)) => (a.0 - b.0).abs() < fd / 2.0,
-            _ => false,
-        };
-        if dup {
-            got[i] = None;
+/// As [`collect_run`], for a run whose every slot stands on an entry point.
+///
+/// **The pictures are decoded on every core**, which is the whole reason this
+/// is a path of its own: an entry picture decodes on its own, and the strip
+/// asks for a dozen or more of them at once. Decoded one at a time a refresh
+/// costs a picture apiece -- 28 ms each on the recorder's 4K material, so
+/// four hundred milliseconds of strip standing still behind a playhead that
+/// has moved on, which is exactly how it looked. See [`crate::entrypool`].
+///
+/// Nothing else about the run changes: the packets are gathered in the order
+/// the file holds them, the answers are put back in that order, and the slots
+/// are filled from them exactly as [`collect_run`] fills them.
+fn entry_run(
+    src: &Source,
+    wanted: &[f64],
+    width: u32,
+    fd: f64,
+    from: f64,
+    window: f64,
+    pool: &mut Option<StripPool>,
+) -> Result<Vec<Option<Shot>>> {
+    let first = wanted[0];
+    let last = *wanted.last().unwrap();
+    let mut got = Slots::new(wanted, window);
+    for (attempt, margin) in [0.0, src.seek_margin].into_iter().enumerate() {
+        let mut slots = Slots::new(wanted, window);
+        // Only the pictures a slot could take are even held on to. At the
+        // strip's wider settings a run is a single cell and the seek lands a
+        // GOP or more before it, so this is most of what goes past -- and at
+        // 4K a packet nobody wants is a megabyte nobody wants.
+        let (params, began, run) =
+            entry_packets(src, from, margin, last + fd, |t| slots.open_to(t))?;
+        if pool.is_none() {
+            let sar = src.video.sample_aspect_ratio;
+            // No wider than this run has pictures to decode. A pool costs a
+            // decoder and a thread per worker to open, and at the strip's
+            // wider settings a run is a single cell: sixteen decoders opened
+            // to decode one picture cost more than the picture does, and on
+            // MPEG-2 that showed up as a refresh a third slower than before
+            // there was a pool at all. Later runs of the same request are
+            // about the same size, so the first one's width fits them.
+            let workers = crate::entrypool::width(0, &src.video).min(run.len().max(1));
+            *pool = Some(crate::entrypool::Pool::new(
+                params,
+                &src.video,
+                src.start_time,
+                workers,
+                move |t, frame| Ok((t, kind_of(frame), encode_jpeg(frame, sar, width)?)),
+            )?);
+        }
+        let pool = pool.as_mut().expect("just made");
+        for (_, packets) in run {
+            pool.push(packets);
+            for made in std::iter::from_fn(|| pool.ready()) {
+                for (t, kind, jpeg) in made? {
+                    slots.offer(t, kind, || Ok(jpeg.clone()))?;
+                }
+            }
+        }
+        for made in pool.drain() {
+            for (t, kind, jpeg) in made? {
+                slots.offer(t, kind, || Ok(jpeg.clone()))?;
+            }
+        }
+        got = slots;
+        if !landed_late(began, first, window / 2.0) || attempt == 1 {
+            break;
         }
     }
+    // Already encoded, on the worker that decoded it.
+    got.finish(fd, Ok)
+}
 
-    got.into_iter()
-        .map(|slot| match slot {
-            Some((t, kind, f)) => Ok(Some(Shot {
-                jpeg: encode_jpeg(&f, src.video.sample_aspect_ratio, width)?,
-                time: t,
-                kind,
-            })),
-            None => Ok(None),
-        })
-        .collect()
+/// The entry pictures of a stretch of the recording, as packets, decoding
+/// none of them.
+///
+/// Answers with the instant the first of them presents at as well, which is
+/// what says whether the seek landed past what was asked for -- an entry
+/// picture presents at its own packet's timestamp, so this is the same answer
+/// [`walk`] gives by decoding one -- and with what a decoder for them has to
+/// be built from, so that nothing else has to open the recording to find out.
+fn entry_packets(
+    src: &Source,
+    from: f64,
+    margin: f64,
+    until: f64,
+    keep: impl Fn(f64) -> bool,
+) -> Result<EntryRun> {
+    let mut ictx = crate::input::demux(&src.input.url)?;
+    place(&mut ictx, src, from, margin)?;
+    let idx = src.video.stream_index;
+    let params = ictx
+        .stream(idx)
+        .ok_or_else(|| anyhow!("stream {idx} vanished"))?
+        .parameters();
+    let mut entries = crate::EntryPictures::new(&src.video);
+    let mut out: Vec<(f64, Vec<ff::Packet>)> = Vec::new();
+    let mut first = None;
+    let mut pending: Vec<ff::Packet> = Vec::new();
+    let mut at: Option<f64> = None;
+    for (stream, packet) in ictx.packets() {
+        if stream.index() != idx {
+            continue;
+        }
+        let step = entries.step(&packet);
+        if step == crate::Step::Skip {
+            continue;
+        }
+        // The second field of a pair often carries no timestamp of its own,
+        // so the picture is timed by the first packet of it that has one --
+        // and a packet without one is still half a picture and stays with its
+        // partner. Dropping it on the spot would leave the partner to be read
+        // as a picture of its own, which decodes to nothing.
+        if at.is_none() {
+            at = packet
+                .pts()
+                .map(|pts| pts as f64 * src.video.time_base - src.start_time);
+        }
+        pending.push(packet);
+        if step == crate::Step::Half {
+            continue;
+        }
+        let Some(when) = at.take() else {
+            pending.clear();
+            continue;
+        };
+        // Set before the run is cut short, exactly as `walk` sets it: a
+        // landing past everything asked for is what says the seek has to be
+        // tried again, and that has to be reported rather than dropped.
+        if first.is_none() {
+            first = Some(when);
+        }
+        if when > until {
+            break;
+        }
+        let packets = std::mem::take(&mut pending);
+        if keep(when) {
+            out.push((when, packets));
+        }
+    }
+    Ok((params, first, out))
 }
 
 /// What to do with a picture that has just been decoded.
@@ -788,6 +1027,43 @@ pub(crate) fn encode_jpeg(picture: &ff::frame::Video, sar: f64, width: u32) -> R
     Ok(out)
 }
 
+/// Put a freshly opened demuxer at the access point `from`.
+///
+/// Shared by everything that reads a stretch of a recording rather than the
+/// whole of it, so that they all land in the same place: the two of them
+/// disagreeing is a run of pictures that is a GOP out on one path and not on
+/// the other.
+fn place(ictx: &mut crate::input::Demux, src: &Source, from: f64, margin: f64) -> Result<()> {
+    // The index knows the byte `from` begins at, so on the first attempt
+    // there is nothing to approximate and no margin to spend. The timestamp
+    // seek below is what is left for the containers and indexes that cannot
+    // say -- and for the second attempt, which only happens now when the
+    // first somehow still landed late.
+    if margin == 0.0 && crate::index::seek_to_entry(ictx, src, from).is_some() {
+        return Ok(());
+    }
+    let landing = (from - margin).max(0.0);
+    // Asking for the beginning has to mean the beginning, exactly as in
+    // `cut::seek_to`: aiming at the container's own start time lands
+    // *past* the file's first entry point, and that is the one place the
+    // back-off above has nothing earlier to fall back to. A recording
+    // whose first entry point sits at time zero -- which is most of them
+    // once the times are rebased -- could not have its opening pictures
+    // read at all, and the film strip drew its first cell blank while a
+    // proxy was being built.
+    //
+    // The threshold is that first entry point rather than zero, because
+    // nothing before it can be decoded anyway: aiming at it would land
+    // past it and cost a whole second pass to find that out.
+    let target = if src.points.first().is_none_or(|p| landing <= p.time) {
+        i64::MIN / 2
+    } else {
+        ((landing + src.start_time) * ff::ffi::AV_TIME_BASE as f64) as i64
+    };
+    let _ = ictx.seek(target, ..target);
+    Ok(())
+}
+
 /// Decode forward from an access point, handing each picture to `visit`.
 ///
 /// Returns the presentation time of the first picture that came out, which is
@@ -811,33 +1087,7 @@ fn walk(
     let mut ictx = crate::input::demux(&src.input.url)?;
     let idx = src.video.stream_index;
     let in_tb = src.video.time_base;
-    // The index knows the byte `from` begins at, so on the first attempt
-    // there is nothing to approximate and no margin to spend. The timestamp
-    // seek below is what is left for the containers and indexes that cannot
-    // say -- and for the second attempt, which only happens now when the
-    // first somehow still landed late.
-    let placed = margin == 0.0 && crate::index::seek_to_entry(&mut ictx, src, from).is_some();
-    if !placed {
-        let landing = (from - margin).max(0.0);
-        // Asking for the beginning has to mean the beginning, exactly as in
-        // `cut::seek_to`: aiming at the container's own start time lands
-        // *past* the file's first entry point, and that is the one place the
-        // back-off below has nothing earlier to fall back to. A recording
-        // whose first entry point sits at time zero -- which is most of them
-        // once the times are rebased -- could not have its opening pictures
-        // read at all, and the film strip drew its first cell blank while a
-        // proxy was being built.
-        //
-        // The threshold is that first entry point rather than zero, because
-        // nothing before it can be decoded anyway: aiming at it would land
-        // past it and cost a whole second pass to find that out.
-        let target = if src.points.first().is_none_or(|p| landing <= p.time) {
-            i64::MIN / 2
-        } else {
-            ((landing + src.start_time) * ff::ffi::AV_TIME_BASE as f64) as i64
-        };
-        let _ = ictx.seek(target, ..target);
-    }
+    place(&mut ictx, src, from, margin)?;
 
     let params = ictx
         .stream(idx)

@@ -404,7 +404,9 @@ why they are shaped that way.
 
 They are split because **their costs are different in kind.** The walk is disk-bound:
 one core reading at a gigabyte a second and touching no decoder at all. The thumbnails
-are CPU-bound: every key picture through libavcodec, around four seconds a gigabyte. A
+are CPU-bound: every key picture through libavcodec, on as many cores as the lane is
+allowed ([`entrypool`](#one-picture-at-a-time-left-the-machine-idle-entrypoolrs)) — a
+second or so a gigabyte of broadcast MPEG-2, ten on the 4K a recorder writes. A
 detection is one core and a great deal of waiting, because libavcodec threads none of
 what it reads — neither captions, nor audio, nor a logo.
 
@@ -1260,11 +1262,14 @@ used to be a count and is now a size; [why](#the-cap-on-held-pictures-is-a-size-
 
 | Material | Scan time | Thumbnails | Scenes |
 |---|---|---|---|
-| Nihonkai TV, 30 min (3.5 GB) | 21.6 s | 3606 / 37 MB (0.50 s apart) | 602 (3.0 s apart) |
-| AT-X, 30 min (1.8 GB) | 8.8 s | 1863 / 14 MB (1.00 s apart) | 360 (5.0 s apart) |
-| NHK E-Tele, 6.5 min (700 MB) | 3.2 s | 774 / 5 MB (0.50 s apart) | 129 (3.0 s apart) |
+| Nihonkai TV, 30 min (3.5 GB) | 4.6 s | 3607 / 37 MB (0.50 s apart) | 602 (3.0 s apart) |
+| AT-X, 30 min (1.8 GB) | 2.1 s | 1889 / 14 MB (1.00 s apart) | 360 (5.0 s apart) |
+| NHK E-Tele, 6.5 min (700 MB) | 0.8 s | 776 / 5 MB (0.50 s apart) | 129 (3.0 s apart) |
 
-Peak resident memory is 112 MB for a 30-minute recording.
+On the four-core VM, and with the pictures spread over those four cores; one decoder took 8.2,
+3.6 and 1.5 seconds for the same three. See [one picture at a time left the machine
+idle](#one-picture-at-a-time-left-the-machine-idle-entrypoolrs). Peak resident memory is 125 MB
+for a 30-minute recording.
 
 **The scene threshold comes from the material.** The baseline is "3× the typical difference",
 but on a quiet educational programme the typical value is 0.0016, too small to mean anything,
@@ -1272,6 +1277,77 @@ so there is a floor. On material that moves throughout, marks would appear every
 so there is a ceiling of "one every 3 seconds on average", with the threshold taken as the
 quantile that implies. On AT-X the material-derived value won (median 0.0672 × 3); on the
 other two the ceiling did.
+
+### One picture at a time left the machine idle (`entrypool.rs`)
+
+**An entry picture decodes on its own, so each one is drained and flushed by itself.** That is
+not incidental. A decoder handed a *subset* of a stream's packets cannot order what comes out
+of it: it orders by picture order count, and the counts of pictures that were not consecutive
+in the stream say nothing about which of them comes first. Fed the entry pictures of a Blu-ray
+alone, one h.264 decoder handed back 1814 of the disc's 1992, a tenth of them out of order and
+one of them eight seconds early. Draining each picture as it is sent is what makes the order
+that comes out the order the file holds.
+
+**It is also what left fifteen cores of sixteen idle.** libavcodec threads a decode two ways.
+By frame, which needs several pictures in flight — and the flush is exactly what stops that.
+By slice, which needs the picture to be coded in several — which of this material only MPEG-2
+is, carrying a slice per macroblock row. Decoding 400 entry pictures with the decoder's thread
+count set to 1 and then to 16 gave **the same figure either way** on H.264 and on HEVC; on
+MPEG-2 it gave 287 a second against 766 (`examples/thumbcost.rs`).
+
+**That is the whole of why the pass felt different on everything except MPEG-2**, and why
+"adding a file is slow" and "the film strip does not follow in the cut editor" were one
+complaint rather than two. A 53-minute 4K recording off a recorder's BD-RE took **3 minutes
+21 seconds**, nearly all of it one core decoding; and until that finishes there is nothing held
+for the strip to answer from, so every cell of it is decoded out of the recording as well.
+
+So the pictures are spread. One demuxer hands each entry picture's packets to whichever worker
+is free, every worker holds a decoder of its own, and what comes back is put into the file's
+order again before the collector sees it. **Each worker does to its picture exactly what the
+single decoder did to every picture** — send, drain, flush — so the answer is the same answer.
+`examples/poolcheck.rs` builds the track both ways and compares it picture for picture.
+
+| Whole recording, 16 cores | As one decoder | On a pool |
+|---|---|---|
+| MPEG-2 1920×1080 broadcast, 2 m 43 s | 0.64 s | **0.26 s** |
+| VC-1 1920×1080 Blu-ray, 1 m 2 s | 0.72 s | **0.17 s** |
+| H.264 1440×1080 recorder BD-RE, 46 min | 43.9 s | **5.5 s** |
+| HEVC 3840×2160 recorder BD-RE, 53 min | 200.8 s | **34.2 s** |
+
+**What a caller makes of a picture goes with it.** `make` runs on the worker, so scaling a 4K
+frame down to 192 pixels and encoding the JPEG are spread too, and what crosses back between
+the threads is the thumbnail rather than the picture. `Collector::take` — measuring a picture
+against the one before it, and the thinning — stays on the one thread and in the file's order,
+because that is the half that cannot be done out of order.
+
+**The width is a memory budget, not a core count.** Every worker holds a decoder with a handful
+of frames in it however promptly it is flushed, and a 4K 10-bit picture is 25 MB: sixteen
+workers on the 4K material reached 1.4 GB resident against the single decoder's 0.4 GB. So what
+is spent is what the frames may come to — 768 MB — which gives 4K seven workers and everything
+smaller the machine. It costs almost nothing, the gain having flattened out well before sixteen
+anyway: 161 pictures a second at eight workers against 174 at sixteen. On the four-core VM,
+where the budget never binds, peak resident memory over a 30-minute broadcast recording went
+from 114 MB to 125 MB.
+
+**The film strip's own decode is spread the same way**, which is the other half of the
+complaint: while the pass is still running the strip has nothing to answer from and decodes
+every cell it draws. On the 4K material at `GOP・6 秒`, with nothing held, a refresh of 11
+cells went from **482 ms to 196 ms** (`SC_ALLCELLS=1 examples/stripcost.rs`).
+
+The strip's wider settings ask for a run per cell rather than one run of a dozen, and there a
+pool buys nothing — so it is opened no wider than the first run has pictures for. Sixteen
+decoders opened to decode one picture cost more than the picture does: on MPEG-2 at `GOP・3 分`
+that showed up as a refresh a third slower than before there was a pool at all.
+
+**And it found a picture that had been wrong all along.** Comparing the two ways on broadcast
+MPEG-2 turned up three pictures of 314 that differed, all of them in the first twenty seconds —
+and the single decoder's were the wrong ones. It gave a different picture on each run, one of
+them visibly torn into vertical bands. Sixteen frame threads flushed between every picture is
+not a thing that has to be deterministic, and at the head of a recording, where the first GOPs
+are only half there, it was not. What the pool gives is the same picture every time.
+
+`SMARTCUT_PICTURE_CORES=1` puts one decoder back, which is how the two are compared on one
+machine.
 
 ### `Track::interval` is measured, not asked for
 
@@ -1352,7 +1428,11 @@ scene change on top of one every second or so, so it carries about twice the ent
 broadcast does and a pair of them can be 0.067 s apart — which the floor thins away even on a
 short recording, where a film's floor is nowhere near. And VC-1 is dear to decode: a refresh
 answered by decoding costs **250–780 ms** on 1080p VC-1 against **80–100 ms** on 1440×1080
-MPEG-2, so the same fallback that broadcast material survives is one a disc does not.
+MPEG-2, so the same fallback that broadcast material survives is one a disc does not. (Those
+are one decoder's figures. The fallback is now spread over the cores as well — see [one
+picture at a time left the machine
+idle](#one-picture-at-a-time-left-the-machine-idle-entrypoolrs) — which shortens it without
+making it a thing to rely on.)
 
 **The budget is 256 MB and it is spent against measured pictures, not assumed ones.** The
 collector counts what it has been offered, what it has kept and what the kept ones weigh, and

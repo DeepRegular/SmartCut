@@ -24,7 +24,7 @@ The rows fill in immediately. Behind them, SmartCut is doing three jobs at once.
 | Background job | What it does | How long it takes |
 |---|---|---|
 | **Loading** | builds the seek index, used for seeking and cutting | about 1 second per GB |
-| **Thumbnails** | makes the filmstrip pictures and finds scene changes | about 4 seconds per GB |
+| **Thumbnails** | makes the filmstrip pictures and finds scene changes | one or two seconds per GB, longer on 4K |
 | **Commercial detection** | looks for the commercial breaks (started by `Ctrl+D`) | 10–60 seconds for a 30-minute recording |
 
 Two jobs of the same kind run one after another; jobs of different kinds run at

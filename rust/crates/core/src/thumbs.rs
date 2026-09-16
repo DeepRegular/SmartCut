@@ -64,12 +64,14 @@ pub struct ThumbOptions {
     /// Never report scenes closer together, on average, than this. A guard
     /// against material where the whole picture churns.
     pub min_spacing: f64,
-    /// How many cores the decoder may have. Zero, the default, is all of
+    /// How many cores the pass may decode on. Zero, the default, is all of
     /// them.
     ///
     /// Said only by the clip list, whose passes run behind an open cut
-    /// editor and must leave it something to decode with. See
-    /// [`crate::video_decoder_with`].
+    /// editor and must leave it something to decode with. What it buys is a
+    /// decoder apiece rather than threads inside one; see
+    /// [`crate::entrypool::width`], which is also where a large picture
+    /// brings the number down again.
     pub threads: usize,
 }
 
@@ -213,6 +215,9 @@ const SIG_W: usize = 16;
 const SIG_H: usize = 9;
 const SIG: usize = SIG_W * SIG_H;
 
+/// What a picture is reduced to for the scene index; see [`signature`].
+pub type Signature = [u8; SIG];
+
 /// Reduce a picture to a grid of block averages of its luma.
 ///
 /// Coarse on purpose: a scene change moves whole regions of the picture, and
@@ -254,6 +259,41 @@ fn signature(frame: &ff::frame::Video) -> [u8; SIG] {
 fn distance(a: &[u8; SIG], b: &[u8; SIG]) -> f64 {
     let sum: u32 = a.iter().zip(b).map(|(x, y)| x.abs_diff(*y) as u32).sum();
     sum as f64 / (SIG as f64 * 255.0)
+}
+
+/// What one entry picture amounts to once it has been looked at, and all that
+/// is kept of it: its signature, for the picture after it to be measured
+/// against, and its image where one was made.
+///
+/// The split exists so the expensive half can happen anywhere. Reducing a
+/// picture and encoding it are per-picture work that nothing else depends on,
+/// so they run on whichever core decoded it -- see [`crate::entrypool`] --
+/// while [`Collector::take`], which has to see the pictures in the order the
+/// file holds them, stays on the one thread and is cheap.
+pub struct Made {
+    pub time: f64,
+    pub sig: Signature,
+    /// `None` where the picture was not worth holding an image of, which the
+    /// caller decides with [`Collector::wants`].
+    pub jpeg: Option<Vec<u8>>,
+}
+
+/// Reduce a picture, and encode it where it is going to be kept.
+pub fn look(
+    time: f64,
+    frame: &ff::frame::Video,
+    sar: f64,
+    width: u32,
+    keeping: bool,
+) -> Result<Made> {
+    Ok(Made {
+        time,
+        sig: signature(frame),
+        jpeg: match keeping {
+            true => Some(crate::preview::encode_jpeg(frame, sar, width)?),
+            false => None,
+        },
+    })
 }
 
 /// Somewhere to hand key pictures as they come out of a decoder.
@@ -409,21 +449,51 @@ impl<'a> Collector<'a> {
         }
     }
 
+    /// Whether a picture at `time` is far enough from the last one held to be
+    /// worth an image of its own.
+    ///
+    /// Asked before the picture is encoded, so that a pass which is thinning
+    /// does not pay for images it is about to drop. A caller that cannot ask
+    /// -- one encoding on another thread, which does not know where the
+    /// thinning has got to -- encodes anyway and [`Self::take`] drops it.
+    pub fn wants(&self, time: f64) -> bool {
+        time >= self.keep_from
+    }
+
+    /// Whether this picture is worth looking at at all.
+    pub fn open_to(&self, time: f64) -> bool {
+        time >= -1.0
+    }
+
     /// Offer a key picture, presented at `time`.
     pub fn feed(&mut self, time: f64, frame: &ff::frame::Video) -> Result<()> {
-        if time < -1.0 {
+        if !self.open_to(time) {
             return Ok(());
+        }
+        let made = look(time, frame, self.sar, self.opts.width, self.wants(time))?;
+        self.take(made);
+        Ok(())
+    }
+
+    /// Offer a key picture that has already been looked at.
+    ///
+    /// The order-dependent half of [`Self::feed`], and the only half that has
+    /// to happen on one thread: a picture is measured against the one before
+    /// it, and how finely they are held depends on what the ones already held
+    /// have come to.
+    pub fn take(&mut self, made: Made) {
+        let Made { time, sig, jpeg } = made;
+        if !self.open_to(time) {
+            return;
         }
         self.seen = time;
         self.fed += 1;
-        let sig = signature(frame);
         if let Some(p) = &self.prev {
             self.diffs.push((time, distance(p, &sig)));
         }
         self.prev = Some(sig);
 
-        if time >= self.keep_from {
-            let jpeg = crate::preview::encode_jpeg(frame, self.sar, self.opts.width)?;
+        if let Some(jpeg) = jpeg.filter(|_| self.wants(time)) {
             if let Some(prev) = self.last_kept {
                 self.gaps.push(time - prev);
             }
@@ -436,7 +506,6 @@ impl<'a> Collector<'a> {
             self.keep_from = time + self.min_gap();
             self.thumbs.push(Thumb { time, jpeg });
         }
-        Ok(())
     }
 
     /// The finished track. `duration` is the recording's real length, which
@@ -522,6 +591,13 @@ pub fn build(
 /// not copied**: what comes back then holds only the tail, and a caller that
 /// took some owns them and must put the two halves back together.
 ///
+/// **The pictures are decoded on every core the pass is allowed**, which is
+/// what [`crate::entrypool`] is for and where the ten seconds above comes
+/// from: an entry picture decodes on its own, so which core it decodes on is
+/// nobody's business but the pool's. What is still done here, on this thread
+/// and in the order the file holds them, is [`Collector::take`] -- the
+/// measuring against the picture before, and the thinning.
+///
 /// `stop` is asked between packets; answering true abandons the pass.
 pub fn build_with(
     src: &Source,
@@ -537,20 +613,34 @@ pub fn build_with(
         .stream(idx)
         .ok_or_else(|| anyhow!("video stream vanished"))?
         .parameters();
-    let mut decoder = crate::video_decoder_with(params, opts.threads)?;
 
     let mut collector = Collector::new(src, opts);
     let mut entries = crate::EntryPictures::new(&src.video);
     let mut told = -1.0;
-    let mut frame = ff::frame::Video::empty();
     let mut shared = std::time::Instant::now();
 
-    let mut take = |frame: &ff::frame::Video| -> Result<()> {
-        let Some(pts) = frame.pts() else {
-            return Ok(());
-        };
-        let t = pts as f64 * src.video.time_base - src.start_time;
-        collector.feed(t, frame)?;
+    let (sar, width) = (src.video.sample_aspect_ratio, opts.width);
+    let mut pool = crate::entrypool::Pool::new(
+        params,
+        &src.video,
+        src.start_time,
+        crate::entrypool::width(opts.threads, &src.video),
+        // The worker cannot ask how far the thinning has got -- that answer
+        // depends on the pictures in front of this one, which may still be
+        // being decoded elsewhere -- so it makes the image every time and
+        // `take` drops the ones it turns out not to want. Nothing is thinned
+        // at all unless the recording's entry points would not fit in memory;
+        // see [`Collector::min_gap`].
+        move |t, frame| look(t, frame, sar, width, true),
+    )?;
+
+    // A picture that has come back, measured against its neighbours and
+    // either held or dropped. The progress and the hand-over both belong
+    // here rather than beside the decode: they are about how much of the
+    // recording has been *collected*, and that is this thread's business.
+    let mut take = |collector: &mut Collector, made: Made| {
+        let t = made.time;
+        collector.take(made);
         if let Some(f) = progress.as_mut() {
             let done = (t / src.duration.max(1e-9)).clamp(0.0, 1.0);
             if done - told >= 0.01 {
@@ -564,9 +654,11 @@ pub fn build_with(
                 f(collector.take_new());
             }
         }
-        Ok(())
     };
 
+    // One picture's packets: the key packet, and the one behind it where the
+    // material is field coded and the picture is two.
+    let mut pending: Vec<ff::Packet> = Vec::new();
     for (stream, packet) in ictx.packets() {
         if let Some(f) = stop.as_ref() {
             if f() {
@@ -593,36 +685,39 @@ pub fn build_with(
         // Which packets those are is [`crate::EntryPictures`]: a key packet
         // is the whole of an entry picture until the material is PAFF, where
         // it is the first field of one and the packet behind it is the rest.
-        let step = entries.step(&packet);
-        if step == crate::Step::Skip {
-            continue;
+        match entries.step(&packet) {
+            crate::Step::Skip => continue,
+            // Half a picture: nothing can come out until its partner goes in,
+            // and the partner is the next packet, so the pair is one job.
+            crate::Step::Half => pending.push(packet),
+            crate::Step::Whole => {
+                pending.push(packet);
+                pool.push(std::mem::take(&mut pending));
+                // Whatever the pool has finished in the meantime, in the
+                // order the file holds it -- which is what the drain below
+                // each picture used to buy, and buys here still. A decoder
+                // orders what it hands back by the picture order count, and
+                // the counts of pictures that were not consecutive in the
+                // stream say nothing about which of them comes first: fed the
+                // entry pictures of a Blu-ray alone, one h.264 decoder handed
+                // back 1814 of the disc's 1992, a tenth of them out of order
+                // and one of them eight seconds early. Both halves of that
+                // are damage -- a picture arriving before one already
+                // collected is measured against the wrong neighbour, and one
+                // arriving behind the spacing is dropped for being too close
+                // to it.
+                while let Some(made) = pool.ready() {
+                    for m in made? {
+                        take(&mut collector, m);
+                    }
+                }
+            }
         }
-        if decoder.send_packet(&packet).is_err() {
-            entries.broke();
-            continue;
+    }
+    for made in pool.drain() {
+        for m in made? {
+            take(&mut collector, m);
         }
-        // Half a picture: nothing can come out until its partner goes in, and
-        // draining here would flush the half away.
-        if step == crate::Step::Half {
-            continue;
-        }
-        // Drained on its own, because it was sent on its own. A decoder
-        // orders what it hands back by the picture order count, and the
-        // counts of pictures that were not consecutive in the stream say
-        // nothing about which of them comes first: fed the entry pictures of
-        // a Blu-ray alone, one h.264 decoder handed back 1814 of the disc's
-        // 1992, a tenth of them out of order and one of them eight seconds
-        // early. Both halves of that are damage here -- a picture arriving
-        // before one already collected is measured against the wrong
-        // neighbour, and one arriving behind the spacing is dropped for
-        // being too close to it. Draining each picture as it is sent costs
-        // nothing measurable and makes what comes out the order the file
-        // holds. See the same drain in `preview::walk`.
-        let _ = decoder.send_eof();
-        while decoder.receive_frame(&mut frame).is_ok() {
-            take(&frame)?;
-        }
-        decoder.flush();
     }
     if let Some(f) = progress.as_mut() {
         f(1.0);

@@ -145,7 +145,7 @@ Behind that, the **preparation** runs.
 | What the row says | What is happening |
 |---|---|
 | `Reading` | Building the index used for seeking and cutting — the window calls it the seek index (about 1 second per GB) |
-| `Thumbnails` | Building the filmstrip pictures and finding the scene changes (about 4 seconds per GB) |
+| `Thumbnails` | Building the filmstrip pictures and finding the scene changes (one or two seconds per GB, longer on 4K) |
 | `Queued` | Its turn has not come yet |
 | `Indexed in 2s` | The index was built just now |
 | `Index from an earlier run` | An index from last time could be reused, so the reading pass was skipped |
@@ -251,7 +251,7 @@ in three stages.**
 |---|---|
 | **The moment it opens** (30 ms) | Length, resolution, fps, audio, codec; the timeline, the scrubber, keyframes, **cutting itself**, track choices, commercial detection |
 | **When the reading finishes** (about 1 s per GB) | How many lossless points there are, `Snap to lossless`, a frame-accurate preview, the export plan, playback |
-| **When the thumbnails are built** (about 4 s per GB) | Every picture in the filmstrip, the scene changes, the scrubber's hover preview |
+| **When the thumbnails are built** (one or two seconds per GB, longer on 4K) | Every picture in the filmstrip, the scene changes, the scrubber's hover preview |
 
 **Only two things wait.** `Snap to lossless` has nothing to snap to yet, and
 `Play` has no exact place to start from yet. Everything else works from the

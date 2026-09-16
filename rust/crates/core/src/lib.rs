@@ -21,6 +21,7 @@ pub mod cm;
 pub mod cut;
 pub mod disc;
 pub mod dvd;
+pub mod entrypool;
 pub mod index;
 pub mod input;
 pub mod latm;

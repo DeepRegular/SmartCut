@@ -130,7 +130,10 @@ fn main() -> Result<()> {
         let held = track
             .spacing_over(cs[0], cs[cs.len() - 1])
             .unwrap_or(track.interval);
-        let want: Vec<f64> = if gap < held * 0.9 {
+        // `SC_ALLCELLS=1` is the strip as it stands while the pass that makes
+        // the held pictures is still running: nothing to answer from, so every
+        // cell is decoded out of the recording.
+        let want: Vec<f64> = if std::env::var("SC_ALLCELLS").is_ok() || gap < held * 0.9 {
             fell_back += 1;
             cs.clone()
         } else {
