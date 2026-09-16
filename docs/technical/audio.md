@@ -331,6 +331,17 @@ where the re-encode is checked for its rate as well as its channels; and a guard
 recording that is mono throughout, which has to come out mono. Against the binary from
 before the fix, seven of the twelve fail.
 
+**The preview player had the same fact to reckon with, and did not.** The sound the
+window plays goes through one swresample context, built from the first frame it decodes
+and configured for that frame's format, layout and rate. swresample will not take a
+frame that is not the shape its context was built for: at the change of programme it
+answered `Input changed`, the error ended the playback thread, and the sound stopped at
+the instant the programme began while the picture played on. Measured on a fifty minute
+recording that opens on three seconds of mono, 151 frames converted and every one after
+them failed. `playback_audio::resample` now asks each arriving frame what shape it is
+and builds a fresh context where it differs from the last, which costs one allocation at
+the change and carries the whole recording.
+
 ## Downmixing (`--audio-channels`)
 
 Some recordings carry 5.1, and a good many of the places they end up do not want it: a

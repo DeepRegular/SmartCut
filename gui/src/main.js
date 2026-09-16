@@ -2060,11 +2060,15 @@ function startPlay() {
   stripTimer = null;
   askStrip();
   reelRaf = requestAnimationFrame(reelTick);
-  // Every picture shown costs a JPEG and a data URL, so how many are worth
-  // asking for depends on what is being read: a dozen a second is all a full
-  // MPEG-2 decode can keep up with anyway, while a proxy can hand over
-  // enough to look like motion.
-  const fps = proxied ? 24 : 15;
+  // The recording's own rate, so that playback moves the way the recording
+  // does. Asking for less was the safe thing while nothing dropped a picture
+  // that had already come due -- a machine that could not keep up ran the
+  // whole preview slow, and slow against sound that plays at the card's own
+  // speed is out of step. Now the pacing lets a late picture go by (see
+  // `play` in the Rust side), so asking for every one of them costs nothing
+  // on a machine that cannot show them all: what it cannot do it skips, and
+  // what it can it shows at the right moment.
+  const fps = src.fps > 0 ? src.fps : 30;
   // Capped at 1280 whatever the stage asks for. Each picture costs a scale,
   // a JPEG and a data URL, so this is the one place where dropping below the
   // stage's full request buys back frame rate -- and where there is a proxy,

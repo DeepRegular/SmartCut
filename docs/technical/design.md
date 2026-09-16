@@ -1078,8 +1078,13 @@ it feels faster.
 ## Playback
 
 **It plays** (`▶ Play` / `Space`). The pictures come at the stage's own width, capped at
-1280, at 24 a second from the proxy or 15 reading the recording directly. Each one becomes a
-JPEG and a data URL, so how many are requested depends on what is being read.
+1280, and at the recording's own frame rate. Each one becomes a JPEG and a data URL, so on a
+machine that cannot make that many the pacing lets the late ones go by: a picture more than
+two frames past its moment is decoded and dropped rather than shown, since the sound runs on
+the card's clock and waits for nothing. What that buys is that playback is never slow — it is
+in time at whatever rate the machine can draw. Asking for fewer pictures outright, which is
+what this did before there was anything to drop a late one, made the whole preview run slow
+instead.
 
 **The audio plays with it.** This is playback for **checking that the seams are right**, not
 for watching the programme, and that is enough for it. The clock runs on the edited
@@ -1091,8 +1096,15 @@ card's own clock plays them at the right rate. That is independent of the video'
 clock, so they drift apart slowly over a long run, which is accepted for the same reason
 `audio.rs` allows 10.7 ms of error at a seam.
 
-**During playback the strip is slid, not rebuilt.** Pictures only arrive 15 times a second,
-so redrawing the window on each arrival gives 15 jumps a second. So the cells sit on **a reel
+**Closing the window stops it.** The two threads watch one flag and have no handle on the
+window, so until the editor's `Destroyed` and `CloseRequested` events cleared that flag they
+played on after the window went: the pictures went nowhere, but the audio thread paced itself
+against the sound card and kept the sound coming for whatever was left of the recording —
+three quarters of an hour, where the editor was closed near the start of a programme. It was
+reported from Windows as music playing from nowhere.
+
+**During playback the strip is slid, not rebuilt.** A picture arrives every frame, and
+redrawing the window on each arrival would give thirty jumps a second. So the cells sit on **a reel
 wider than the window** and playback merely rewrites `translateX`. Playback advances the
 edited timeline at 1× wall clock, so the current position between two pictures is computed,
 not guessed — from the last picture's time and when it arrived — and re-placed on every

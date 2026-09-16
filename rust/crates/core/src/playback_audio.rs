@@ -92,6 +92,18 @@ const PACKED_F32: ff::format::Sample = ff::format::Sample::F32(ff::format::sampl
 /// The rate and the channel layout only have to be converted when the card
 /// would not take the source's own, which is the ordinary case on Windows and
 /// never happens on Linux -- see `candidates`.
+///
+/// **The shape it converts from is the frame's, not the track's, and it is
+/// asked again of every frame.** A broadcast recording changes shape
+/// part-way through: a tuner told to start early opens on the end of the
+/// programme before, and a bulletin read in mono ahead of a documentary in
+/// stereo is an ordinary evening's television. swresample will not take a
+/// frame that is not the shape its context was built for, and the refusal
+/// arrived here as an error that ended the playback thread -- so the sound
+/// stopped at the instant the programme began, with the picture playing on.
+/// A fresh context at the change costs one allocation and carries on. See
+/// [`crate::audio::settled_shape`], which is the same fact answered for the
+/// side that writes.
 fn resample<'a>(
     resampler: &mut Option<ff::software::resampling::Context>,
     out: &'a mut ff::frame::Audio,
@@ -99,6 +111,17 @@ fn resample<'a>(
     rate: u32,
     layout: ff::channel_layout::ChannelLayout,
 ) -> Result<&'a [f32]> {
+    let arriving = ff::software::resampling::context::Definition {
+        format: frame.format(),
+        channel_layout: frame.channel_layout(),
+        rate: frame.rate(),
+    };
+    if resampler
+        .as_ref()
+        .is_some_and(|ctx| *ctx.input() != arriving)
+    {
+        *resampler = None;
+    }
     let ctx = match resampler {
         Some(ctx) => ctx,
         None => {

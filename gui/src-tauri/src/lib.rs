@@ -1476,8 +1476,28 @@ async fn open_editor(title: String, app: tauri::AppHandle) -> Result<(), String>
     // The list has to know the editor has gone, whichever way it went -- OK,
     // キャンセル, or the title bar's cross. Said from here rather than from the
     // page, because the page going away is the thing being reported.
+    //
+    // **And playback has to be told, because nothing else tells it.** The two
+    // threads [`play`] starts watch `Playing` and nothing else -- not the
+    // window, which they have no handle on. Left running, the picture goes
+    // to a window that is not there and the sound keeps coming out of the
+    // machine: the audio thread is pacing itself against the sound card, so
+    // it plays on for whatever was left of the recording, which is the rest
+    // of the programme when the editor is closed near the start of one.
+    // Reported from Windows as music coming from nowhere, and it was this.
+    // `CloseRequested` as well as `Destroyed`, so the sound stops as the
+    // window goes rather than after it.
     let teller = app.clone();
     window.on_window_event(move |event| {
+        if matches!(
+            event,
+            tauri::WindowEvent::CloseRequested { .. } | tauri::WindowEvent::Destroyed
+        ) {
+            teller
+                .state::<Playing>()
+                .0
+                .store(false, Ordering::SeqCst);
+        }
         if matches!(event, tauri::WindowEvent::Destroyed) {
             let _ = teller.emit("editor-closed", ());
         }
@@ -3579,13 +3599,34 @@ async fn play(
                     let now = began.elapsed();
                     if due > now {
                         std::thread::sleep(due - now);
+                    } else if out_t + 2.0 * gap < now.as_secs_f64() {
+                        // Already more than two pictures late. Showing it
+                        // would put the picture further behind the sound
+                        // rather than catch it up -- the sound plays at the
+                        // card's own speed and waits for nothing -- so it
+                        // goes by instead. A skip costs the decode and no
+                        // more, which is what lets the window ask for the
+                        // recording's full rate on a machine that cannot
+                        // encode that many: the ones it can encode are still
+                        // shown at the moment they are due.
+                        return smartcut_core::Pace::Skip;
                     }
-                    // Only so many pictures a second are worth sending: each
-                    // one is a JPEG to encode and a data URL for the webview
-                    // to take apart, and beyond a dozen or so nothing is
-                    // gained by the eye. Everything between costs a decode
-                    // and no more.
-                    if out_t + 1e-9 < next_show {
+                    // And no more often than the rate asked for, which is the
+                    // recording's own: each picture shown is a JPEG to encode
+                    // and a data URL for the webview to take apart, and a
+                    // second picture inside one frame's worth of time is one
+                    // nobody sees. Everything between costs a decode and no
+                    // more.
+                    //
+                    // Half a frame of slack, not a hair's breadth. At the
+                    // recording's own rate every picture lands on the moment
+                    // this last asked for, and the two numbers are arrived at
+                    // differently -- one by adding `gap` up, the other read
+                    // off a timestamp -- so they agree to a rounding error
+                    // rather than exactly. Judged on that error, every other
+                    // picture would fall on the wrong side of it and be
+                    // dropped.
+                    if out_t + gap / 2.0 < next_show {
                         return smartcut_core::Pace::Skip;
                     }
                     next_show = out_t + gap;
