@@ -220,6 +220,14 @@
           <button class="tab active" data-mode="file" data-i18n="outset.tabFile">ファイル出力</button>
           <button class="tab" data-mode="bdav" data-i18n="outset.tabBdav">BDAV 出力</button>
         </nav>
+        <!-- And here, because a run that will not start sends somebody to
+             this screen to fix what stopped it -- a disc with nowhere to be
+             written, a recording whose broadcast time will not parse -- and
+             the sentence saying which was left on the screen they came
+             from. Beside the tabs rather than in place of the standing hint
+             to the right of them: that hint is true whether or not anything
+             has happened. -->
+        <span class="dim" id="outset-note"></span>
         <span class="spacer"></span>
         <span class="dim" data-i18n="outset.barNote">ここでの設定は一覧のすべてのクリップに使われます</span>
       </div>
@@ -611,6 +619,18 @@
             <span id="out-elapsed" class="num"></span>
             <span id="out-left" class="num"></span>
           </div>
+          <!-- What the run had to say that is not the state it is in: the
+               folder it was given a branch number for, a disc index that
+               would not write, an image that could not be made, a folder
+               taken away once the image held it. The line the rest of this
+               window says such things on is on the input screen, and a run
+               is started and watched from here -- so none of it was ever in
+               front of the person it was for. It stays up after the run, the
+               way the summary beside it does. See `paintQueueNote`. -->
+          <div class="row" id="row-out-note" hidden>
+            <span class="lbl"></span>
+            <span id="out-note" class="grow dim"></span>
+          </div>
           <ol id="out-list"></ol>
         </div>
       </div>
@@ -639,6 +659,10 @@
       <div class="infobar">
         <span id="batch-total">ジョブ 0 件</span>
         <span class="spacer"></span>
+        <!-- And here for the tool, which has no input screen to put its own
+             sentences on: a job that would not open, a project already in the
+             queue, a run thrown out part way. See `paintQueueNote`. -->
+        <span class="dim" id="batch-note"></span>
       </div>
 
       <!-- An empty queue says so by being empty: the count above the list

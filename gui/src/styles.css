@@ -272,6 +272,9 @@ button.brand:hover, button.brand.open { background: #3a3a3a; border-color: #5c5c
   padding: 4px 10px; color: var(--dim); font-variant-numeric: tabular-nums;
 }
 .spacer { flex: 1; }
+/* Empty until the window has something to say, and taking none of the bar's
+   gap until then. The same reason `#out-subfolder-note` does it. */
+#outset-note:empty, #batch-note:empty { display: none; }
 
 /* The two shapes of the output settings screen, chosen the way the screens
    themselves are. A level in, so a size down: the same control, not a second

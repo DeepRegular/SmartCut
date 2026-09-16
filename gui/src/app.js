@@ -902,6 +902,16 @@ function note(text) {
 /// One line, three lanes. Composed from what is running rather than written
 /// by whichever pass spoke last, because all three want this line and none
 /// may have it to itself.
+///
+/// And then the same sentence on the three screens that have no lanes to
+/// share a line with. The lanes stay here: what they are doing is about the
+/// list, and the list is this screen. What `sticky` holds is not -- a run is
+/// started and watched on the output screen and says four or five things
+/// while it goes, and a run that will not start sends somebody to the
+/// settings screen to fix what stopped it. Both were being written onto a
+/// line neither screen shows, and the batch tool, which is this same page
+/// with the input screen never drawn, showed none of it at all. See `note`
+/// and `sayHere`.
 function paintQueueNote() {
   const bits = [];
   const ix = clips.find((c) => c.state === "indexing");
@@ -911,6 +921,10 @@ function paintQueueNote() {
   if (pic) bits.push(t("queue.picturing", { clip: clipLabel(pic) }));
   if (cm) bits.push(t("queue.detecting", { clip: clipLabel(cm) }));
   el("queue-note").textContent = bits.length ? bits.join(t("sep")) : sticky;
+  el("out-note").textContent = sticky;
+  el("row-out-note").hidden = !sticky;
+  el("outset-note").textContent = sticky;
+  el("batch-note").textContent = sticky;
 }
 
 /// The next clip for a lane, or nothing. Each lane works down the list in
@@ -3795,6 +3809,12 @@ async function askFreeFolder(force = false) {
 /// answer in every case where nothing is in the way. A disc is never
 /// branched: a second run onto one adds to it, so the folder already being
 /// there is the point rather than the problem.
+///
+/// After a run this is the folder that run wrote, and it stays that until
+/// the question is put again -- by the next run, or by a hand on the name or
+/// the folder above. The folder the run just made is in the way of the next
+/// one, but saying so the instant it is finished would move the path out
+/// from under somebody still reading it.
 function subfolderNow() {
   if (runFolder !== null) return runFolder;
   const asked = subfolderAsked();
@@ -4698,6 +4718,11 @@ async function runExport() {
   // makes it, so what the list holds is already what is on screen in there.
   const list = ready();
   if (!list.length) return;
+  // The last run's sentence goes down before this one has anything to say.
+  // It stands after a run ends -- which is what makes it readable at all --
+  // and a folder the *previous* run was given a branch number for, left on
+  // screen while this one writes, is a sentence about the wrong run.
+  note("");
   // A disc is built somewhere. There is no "beside the input" for one: the
   // recordings in a list can come from four folders and a disc is one place.
   const disc = bdavMode();
@@ -5013,11 +5038,16 @@ async function runExport() {
   exporting = false;
   runDir = null;
   runFolder = null;
-  // The folder this run made is now a folder that is there, which is the one
-  // stale answer worth throwing away by hand: the next draw asks again, and
-  // the screen says the branch the *next* run would be given rather than the
-  // one this run took. See `askFreeFolder`.
-  folderAsked = null;
+  // The answer about the folder is left standing rather than thrown away.
+  // The folder this run made is now a folder that is there, so asking again
+  // here would answer with the branch the *next* run would be given -- and
+  // the path on screen would turn into `night-2` the moment a run that
+  // wrote into `night` finished, which reads as the output having gone
+  // somewhere other than where it was being watched. So the screen goes on
+  // naming the folder this run wrote. The next run puts the question again
+  // itself, with `force`, and says out loud where the name moved to; and a
+  // hand on the name or on the folder above asks again as it is typed. See
+  // `askFreeFolder`.
   writing = null;
   paintExportButton();
   const failed = list.filter((c) => c.out.state === "error").length;
