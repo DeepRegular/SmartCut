@@ -948,6 +948,25 @@ output timeline are none. The sound at a seam still has a hole in it, 0.38 and
 recording. A transport stream carries a moment's sound about a second behind
 its picture, so a recorder that stops writing stops having written that second.
 
+**A seam can still cost more than three pictures, and one measured here costs
+22.** What a copy may start at depends on the leading pictures hanging off the
+entry point it starts at, and that is measured — by `index::refine_leading` —
+only around the boundaries the *caller* asked for. A seam is a boundary the
+planner makes afterwards, so the point a range begins at there was never
+asked, and an index that did not read the pictures says every point is safe.
+On a recorder's stream that is often not so: a walk over one of these clips
+calls 5,440 of its 5,444 entry points open with referenced leading pictures.
+Copied from one of those, a decoder shows nothing until it recovers. Measured
+over a whole title: nothing at two of its four seams, 0.067 seconds at the
+third and **0.734 at the fourth** — the packets are written, the pictures are
+simply not ones a decoder will put on screen.
+
+Honouring the measurement at the seams is the obvious answer and is not taken,
+because on this material it is not a small price: a copy can only resume about
+18 seconds later, which is 72 seconds of re-encoding on a title that is
+otherwise 99.7% copied. That is the trade `--clean-joins` is already offered
+for and defaulted off for. Left as it is, and written down here.
+
 ### A stretch whose map is about something else
 
 The twentieth recording used to stop here, and it is a different fault from
