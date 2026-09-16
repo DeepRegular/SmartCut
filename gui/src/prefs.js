@@ -78,6 +78,19 @@ const DEFAULTS = {
   /// front of a name that did not need one costs nothing to read past.
   outNumber: true,
   outDigits: 2,
+  /// Whether a cut written as a `.ts` carries the recording's data broadcast
+  /// -- what is behind the blue button.
+  ///
+  /// Not on the output settings screen and not in a `.scproj`, unlike the
+  /// prefix above. It was a per-run box there, and a per-run box is the wrong
+  /// shape for this question: it could only appear for a list that held a
+  /// recording carrying a carousel and only while a `.ts` was being written,
+  /// so somebody who never wants one in their files had to notice the row on
+  /// whichever evening it turned up. Asked once, here, it holds for every run.
+  ///
+  /// On, like the engine's own answer: a cut is meant to be the recording,
+  /// shorter, and what is behind the blue button was in the recording.
+  dataBroadcast: true,
   /// Whether the cut editor draws the subtitles over the picture from the
   /// moment a recording opens, rather than waiting to be asked each time.
   subsOn: false,

@@ -2298,12 +2298,6 @@ const settings = {
   keyframes: false,
   // Where the subtitles a disc draws go. See `outset.subtitles`.
   subtitles: "pgs",
-  /// Whether the recording's data broadcast travels with the cut. On, like
-  /// the engine's own answer: a cut is meant to be the recording, shorter,
-  /// and what is behind the blue button was in the recording. Turned off for
-  /// the runs where the size matters more than the pages -- a carousel is
-  /// between a hundredth and a fifth of what a multiplex spends.
-  dataBroadcast: true,
 };
 
 /// The settings as the program starts with them, kept because 新規作成 has to
@@ -2606,7 +2600,6 @@ bindSetting("out-audio-bitrate", "audioBitrate");
 bindSetting("out-audio-rate", "audioRate");
 bindSetting("out-audio-bits", "audioBits");
 bindSetting("out-subtitles", "subtitles");
-bindSetting("out-data-broadcast", "dataBroadcast", "checked");
 bindSetting("out-keyframes", "keyframes", "checked");
 
 // --- drop-downs that open upward -----------------------------------------
@@ -3651,20 +3644,6 @@ function drawnSubtitles() {
   return dvd ? "dvd" : bdmv ? "bdmv" : null;
 }
 
-/// Whether the data broadcast question is one this list can be asked.
-///
-/// Two things have to hold: some recording in the list carries one, and what
-/// it would be written into can hold one. A carousel goes in with the
-/// broadcast's own tables, which only a plain `.ts` carries -- a disc's own
-/// framing has nowhere to put it, and nothing else is a transport stream at
-/// all. Asked of a list that cannot use the answer, the row would be a
-/// question whose yes does nothing.
-function dataBroadcastPossible() {
-  if (bdavMode()) return false;
-  return ready().some(
-    (c) => c.info && c.info.data_broadcast && containerFor(c) === "ts",
-  );
-}
 
 /// Word the three destinations for the disc the list came off.
 ///
@@ -3954,7 +3933,6 @@ function paintMode() {
   // The same rule, for the stream only a receiver reads: asked about where
   // a recording in the list has one and the run is writing the one shape
   // that can hold one.
-  el("row-data-broadcast").hidden = !dataBroadcastPossible();
   // Only where a run would actually use one -- a single file has nothing to
   // be grouped with, and a row offering to make it a folder is a question
   // nobody asked.
@@ -4863,7 +4841,9 @@ async function runExport() {
         // track switched back on in the editor be switched off again here.
         dropPids: clip.edit ? [] : clip.dropPids,
         subtitles: settings.subtitles,
-        dataBroadcast: settings.dataBroadcast,
+        // A standing answer rather than one of this project's: the box is
+        // in 環境設定. See `prefs.dataBroadcast`.
+        dataBroadcast: prefs.get("dataBroadcast") !== false,
       });
       // The head is past everything now, so the stage catches up with it: the
       // frame left standing is the last one the encoder made, rather than
@@ -7444,6 +7424,7 @@ function paintPrefs() {
   el("pref-prefix").value = String(prefs.get("outPrefix") ?? "");
   el("pref-number").checked = !!prefs.get("outNumber");
   el("pref-digits").value = String(Number(prefs.get("outDigits")) || 2);
+  el("pref-data-broadcast").checked = prefs.get("dataBroadcast") !== false;
   el("pref-keep-output").checked = !!prefs.get("keepOutput");
   el("pref-clean-joins").checked = !!prefs.get("cleanJoins");
   el("pref-proxy").checked = !!prefs.get("proxy");
@@ -7577,6 +7558,13 @@ el("pref-digits").addEventListener("change", (ev) => {
   settings.digits = String(digits);
   showSettings();
   touch();
+});
+
+// What a cut carries. Unlike the three above it has no second home on the
+// output settings screen, so there is nothing to write it into: the next run
+// reads it from here. See `prefs.dataBroadcast`.
+el("pref-data-broadcast").addEventListener("change", (ev) => {
+  prefs.set("dataBroadcast", ev.target.checked);
 });
 
 el("pref-keep-output").addEventListener("change", (ev) => {

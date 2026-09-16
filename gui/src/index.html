@@ -535,14 +535,6 @@
               </select>
             </span>
           </div>
-          <!-- Only where a recording in the list carries one, and only
-               into a .ts: a carousel is written by the pass that puts the
-               broadcast's own tables back, and no other shape has a place
-               for it. See `carousel.rs`. -->
-          <div class="opts" id="row-data-broadcast" hidden>
-            <label class="opt"><input id="out-data-broadcast" type="checkbox" />
-              <span data-i18n="outset.dataBroadcast">データ放送も残す (.ts のみ・ファイルは大きくなる)</span></label>
-          </div>
           <div class="opts" id="row-keyframes">
             <label class="opt"><input id="out-keyframes" type="checkbox" />
               <span data-i18n="outset.keyframeSidecar">キーフレーム情報を別ファイル (.keyframe) で出力する</span></label>
@@ -769,6 +761,14 @@
                   <option value="4">4</option>
                 </select>
               </div>
+              <!-- What a cut carries, rather than what it is called, and
+                   here for a reason the two above do not have: the box this
+                   is the default for is not always on screen. It appears only
+                   for a list holding a recording that carries a data
+                   broadcast, and only while a `.ts` is being written. -->
+              <label class="opt"><input id="pref-data-broadcast" type="checkbox" />
+                <span data-i18n="prefs.dataBroadcast">データ放送も残す（.ts のみ）</span></label>
+              <p class="dim" data-i18n="prefs.dataBroadcastNote"></p>
               <label class="opt"><input id="pref-keep-output" type="checkbox" />
                 <span data-i18n="prefs.keepOutput">出力設定を次回の起動に引き継ぐ</span></label>
               <p class="dim" data-i18n="prefs.keepOutputNote"></p>

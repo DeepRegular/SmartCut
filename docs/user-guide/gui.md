@@ -438,9 +438,9 @@ program deciding what the recording is for.
   the hour rather than to the programme — an earthquake warning is not a line of
   dialogue — so it is listed and switched separately. A 4K broadcast's subtitles,
   which are XML rather than ARIB characters, are a track of their own too.
-- Data broadcasting is not a track this menu switches: it is one answer for the
-  whole run, on the output settings screen, because it can only go into a `.ts`.
-  Left off there, it appears here as `not carried`. For a recording off a disc, a
+- Data broadcasting is not a track this menu switches: it is one standing
+  answer, in [the preferences](#output-settings), because it can only go into
+  a `.ts`. Left off there, it appears here as `not carried`. For a recording off a disc, a
   menu and the text subtitles drawn with the disc's own typeface really cannot be
   carried, and say so here.
 - **A Blu-ray's subtitles are a choice here like any other track.** A DVD's are
@@ -488,7 +488,7 @@ What is set on either tab stays there when you switch.
 |---|---|
 | **Output folder** | Empty means alongside the input. Use `Browse`, or type a path (an SMB path is fine) |
 | **Subfolder** | A folder of that name under the output folder, which is where the run writes. Offered where there is more than one file. Emptied, the run writes straight into the folder above. **A folder of that name already there gets a branch number** — `night`, then `night-2`, `night-3` — so a second run never lands on the first one's files. The field keeps the name you gave; `already there → night-2` beside it says where the run will actually write |
-| **Filename prefix** | `cut_` by default, in front of the name. What it starts as is a [preference](#output-settings-1) |
+| **Filename prefix** | `cut_` by default, in front of the name. What it starts as is a [preference](#output-settings) |
 | **Number** | Puts the row's number in the list behind the prefix, in 2 to 4 digits. **On by default**, so `cut_01_recording.ts`; turned off, `cut_recording.ts`. For a list whose order means something and a folder that sorts by name |
 | **Container** | The file format. `Same as the input`, or a specific one |
 | **Audio** | `Smart rendering (default)` / `Copy through` / `Re-encode everything` |
@@ -498,7 +498,6 @@ What is set on either tab stays there when you switch.
 | **Bit depth** | `Same as the input`, 16 or 24 bit (only meaningful for linear PCM) |
 | **Audio bitrate** | For frames that are rebuilt. `Leave it to the engine` is the safe answer |
 | **A disc's subtitles** | Shown only for a recording off a disc. `Inside the cut (PGS)` by default — one file, with its subtitles in it — or beside the cut: `.idx / .sub`, the pair every player and subtitle tool reads, or `.sup`, the display sets themselves. **The line says which destination leaves them untouched**, and that is a different one for a DVD than for a Blu-ray |
-| **Keep the data broadcast (.ts only; the file gets bigger)** | Carries the recording's data broadcast — what is behind the blue button — into the cut. Shown **only where a recording in the list has one and the run is writing `.ts`**, and **on** there: a cut is meant to be the recording, shorter. Clear it for the runs where size matters more than the pages — a carousel is between a hundredth and a fifth of the file depending on the station |
 | **Write the keyframes to a separate .keyframe file** | Puts a `.keyframe` file next to the video, under the same name |
 
 A `.keyframe` file is **frame numbers and nothing else, with no header**, counted
@@ -737,6 +736,14 @@ effect as you make it.
 (with its digits) are what the fields of the same name on the output screen start
 as; the number is on by default. Changing one here puts it into the settings in
 force as well. A project that is opened brings its own and wins.
+
+**Keep the data broadcast (.ts only)** carries the pages behind the blue button
+into the cut. Only a `.ts` that keeps the broadcast's own tables can hold one, so
+a disc and an `.mp4` never get it whatever this says. **On** to begin with: a cut
+is meant to be the recording, shorter. Clear it for the runs where size matters
+more than the pages — a carousel is between a hundredth and a fifth of the file
+depending on the station. Unlike the three above it is only here: it is a
+standing answer, not something a project carries.
 
 **Carry the output settings over to the next start** remembers them and puts
 them back at the next start and on **New project**: the folder, the file name

@@ -300,9 +300,8 @@ Which leaves where it goes and how it is declared:
 
 - **It is carried unless it is turned down.** A cut is meant to be the recording,
   shorter, and what is behind the blue button was in the recording. `--no-data-broadcast`
-  leaves it out, and the output settings screen has the same question as a checkbox —
-  shown, and ticked, only where a recording in the list has one and the run is writing
-  `.ts`. What turning it down buys is size.
+  leaves it out, and the window has the same question as a checkbox under 環境設定 →
+  output settings, ticked to begin with. What turning it down buys is size.
 - **A plain `.ts` that keeps the broadcast's own tables** is the only place it can go.
   A carousel is written by the table pass, so `--tables muxer` has no pass to write it
   in; a Blu-ray's own framing has nowhere to put it, which is why a recorder dubbing to

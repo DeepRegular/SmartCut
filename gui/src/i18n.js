@@ -100,6 +100,11 @@ const CATALOG = {
       "一覧の並び順を、書き出したファイル名に残します。番号は一覧に出ている行番号です。" +
       "例: cut_03_録画.ts",
     "prefs.digits": "連番の桁数:",
+    "prefs.dataBroadcast": "データ放送も残す（.ts のみ）",
+    "prefs.dataBroadcastNote":
+      "青いボタンの先にあるページを、カットにも残します。入るのは放送自身のテーブルを持つ .ts だけです。" +
+      "ディスクの形式にも MP4 にも置き場所がないので、そちらには入りません。" +
+      "カルーセルは多重全体の 1/100 から 1/5 を占めるので、外すとそのぶん小さくなります。",
     "prefs.keepOutput": "出力設定を次回の起動に引き継ぐ",
     "prefs.keepOutputNote":
       "保存先・ファイル名・コンテナ・音声の扱いを保存し、次回の起動と新規作成時に復元します。" +
@@ -317,7 +322,6 @@ const CATALOG = {
     "outset.audioRate": "サンプリング周波数:",
     "outset.audioBits": "量子化ビット数:",
     "outset.audioBitrate": "音声ビットレート:",
-    "outset.dataBroadcast": "データ放送も残す (.ts のみ・ファイルは大きくなる)",
     "outset.keyframeSidecar": "キーフレーム情報を別ファイル (.keyframe) で出力する",
     "container.same": "入力と同じ",
     "container.ts": "MPEG-2 トランスポート (.ts)",
@@ -630,9 +634,9 @@ const CATALOG = {
     "tracks.substream": "同じ PID に畳み込まれた互換用ストリーム",
     "tracks.menu": "メニュー",
     "tracks.textst": "テキスト字幕（書体はディスク側にあります）",
-    "tracks.settled": "{what} — 出力設定で決めます   PID 0x{pid}",
+    "tracks.settled": "{what} — 環境設定で決めます   PID 0x{pid}",
     "tracks.settledNote":
-      "データ放送は、ここではなく出力設定でまとめて答えます。置けるのは .ts だけで、既定では残します。",
+      "データ放送は、ここではなく環境設定で答えます。置けるのは .ts だけで、既定では残します。",
     "tracks.droppedNote":
       "これらはここでは選べません。文字スーパーはパケットに時刻が無く、メニューやテキスト字幕はディスク側にあるものです。",
     "tracks.substreamNote":
@@ -757,6 +761,11 @@ const CATALOG = {
       "Carries the order of the list into the names that are written. The number is the one beside " +
       "the row: cut_03_recording.ts",
     "prefs.digits": "Digits in the number:",
+    "prefs.dataBroadcast": "Keep the data broadcast (.ts only)",
+    "prefs.dataBroadcastNote":
+      "Carries the pages behind the blue button into the cut. Only a .ts that keeps the broadcast's own " +
+      "tables can hold one; a disc's framing and an MP4 have nowhere to put it. A carousel is between a " +
+      "hundredth and a fifth of what a multiplex spends, so clearing this is what makes the file smaller.",
     "prefs.keepOutput": "Carry the output settings over to the next start",
     "prefs.keepOutputNote":
       "Remembers the folder, the file name, the container and what is done to the audio, and puts them " +
@@ -965,7 +974,6 @@ const CATALOG = {
     "outset.audioRate": "Sample rate:",
     "outset.audioBits": "Bit depth:",
     "outset.audioBitrate": "Audio bitrate:",
-    "outset.dataBroadcast": "Keep the data broadcast (.ts only; the file gets bigger)",
     "outset.keyframeSidecar": "Write the keyframes to a separate .keyframe file",
     "container.same": "Same as the input",
     "container.ts": "MPEG-2 transport (.ts)",
@@ -1270,9 +1278,9 @@ const CATALOG = {
     "tracks.substream": "a compatibility stream folded into this PID",
     "tracks.menu": "a menu",
     "tracks.textst": "text subtitles (the fonts are on the disc)",
-    "tracks.settled": "{what} — answered on the output settings screen   PID 0x{pid}",
+    "tracks.settled": "{what} — answered in the preferences   PID 0x{pid}",
     "tracks.settledNote":
-      "The data broadcast is answered once on the output settings screen rather than per track here. Only a .ts can hold one, and it is kept by default.",
+      "The data broadcast is answered in the preferences rather than per track here. Only a .ts can hold one, and it is kept by default.",
     "tracks.droppedNote":
       "These are not choices here: superimposed text arrives with no time on its packets, and a menu or a disc's text subtitles live on the disc rather than in the stream.",
     "tracks.substreamNote":

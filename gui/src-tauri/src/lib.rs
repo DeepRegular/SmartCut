@@ -253,8 +253,6 @@ struct SourceInfo {
     /// written on the stream's own clock, and this is what puts them on the
     /// timeline the editor draws.
     start_time: f64,
-    /// Whether the recording carries a data broadcast. See [`ClipInfo`].
-    data_broadcast: bool,
 }
 
 /// One row of the clip list, once the recording behind it has been read.
@@ -298,11 +296,6 @@ struct ClipInfo {
     /// in which case this cost a read and not a pass over the recording.
     cached: bool,
     seconds: f64,
-    /// Whether the recording carries a data broadcast -- what is behind the
-    /// blue button. Carried into the cut only if asked for, and the question
-    /// is only put on the output screen where some recording in the list has
-    /// one. See [`smartcut_core::carousel`].
-    data_broadcast: bool,
 }
 
 /// What the container itself says about a recording, had in tens of
@@ -773,7 +766,6 @@ async fn open_outline(path: String) -> Result<SourceInfo, String> {
             points: Vec::new(),
             unusable_points: 0,
             start_time: o.start_time,
-            data_broadcast: o.dropped.iter().any(|d| d.what == "data"),
         })
     })
     .await
@@ -994,7 +986,6 @@ fn info_of(src: &Source) -> SourceInfo {
         points: src.points.iter().map(|p| p.time).collect(),
         unusable_points: src.points.iter().filter(|p| p.open_gop() && !p.droppable).count(),
         start_time: src.start_time,
-        data_broadcast: src.dropped.iter().any(|d| d.what == "data"),
     }
 }
 
@@ -1809,7 +1800,6 @@ fn clip_info_of(path: &str, src: &Source, cached: bool, seconds: f64) -> ClipInf
         pictures: None,
         cached,
         seconds,
-        data_broadcast: src.dropped.iter().any(|d| d.what == "data"),
     }
 }
 
