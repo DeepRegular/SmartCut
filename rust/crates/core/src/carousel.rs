@@ -1,7 +1,7 @@
 //! The data broadcast, carried across a cut.
 //!
 //! A Japanese broadcast sends more than pictures, sound and captions. Behind
-//! the blue button there is a small application -- the local forecast, the
+//! the d button there is a small application -- the local forecast, the
 //! programme's own pages, the traffic on the roads -- sent as a *carousel*:
 //! a set of modules repeated end to end for as long as the programme runs,
 //! so that a receiver switching on at any moment has the whole of it within

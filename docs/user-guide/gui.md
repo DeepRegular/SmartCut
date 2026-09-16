@@ -310,7 +310,7 @@ hole, and the frame counter counts the length that will actually be written.
 | **Wheel** over the filmstrip | One frame per notch. Hold `Shift` to hop from lossless point to lossless point |
 | **Drag** the scrubber | Move the playhead. Grab near the IN or OUT mark and you move that mark instead |
 | **Hover** the scrubber | Shows the frame at that moment in a small picture |
-| `Space` or **▶ Play** | Play from here, picture and sound. Press again to stop |
+| `Space` or **▶ Play** | Play from here, picture and sound. Press again to stop. The picture runs at the recording's own frame rate; where the machine cannot decode and draw that many, it shows fewer rather than falling behind the sound |
 | `←` `→` | Back and forward one frame. Hold to repeat |
 | `Shift+←` `Shift+→` | One second |
 | `S` / `Shift+S` | Next / previous scene change |
@@ -737,7 +737,7 @@ effect as you make it.
 as; the number is on by default. Changing one here puts it into the settings in
 force as well. A project that is opened brings its own and wins.
 
-**Keep the data broadcast (.ts only)** carries the pages behind the blue button
+**Keep the data broadcast (.ts only)** carries the pages behind the d button
 into the cut. Only a `.ts` that keeps the broadcast's own tables can hold one, so
 a disc and an `.mp4` never get it whatever this says. **On** to begin with: a cut
 is meant to be the recording, shorter. Clear it for the runs where size matters

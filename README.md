@@ -54,7 +54,7 @@ and often none at all.
 30-minute recording is written out in well under a minute.
 
 **Broadcast recordings come through intact.** Captions, programme information,
-the station name, the data broadcast behind the blue button, both languages of a
+the station name, the data broadcast behind the d button, both languages of a
 bilingual broadcast, interlacing and 2:3 pulldown all survive. The output still looks like a recording, so it opens in
 whatever you already use for recordings.
 

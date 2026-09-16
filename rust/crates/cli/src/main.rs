@@ -216,7 +216,7 @@ fn usage() -> String {
      reads the programme name, the station and the clock, and a Blu-ray \
      clip is written as a partial transport stream, which is what that \
      format is\n\
-     --no-data-broadcast leaves out what is behind the blue button -- the \
+     --no-data-broadcast leaves out what is behind the d button -- the \
      carousel a station sends its pages on -- which is otherwise carried \
      into any .ts that keeps the broadcast's own tables, that being the \
      only shape which can hold one. What it costs is size: a carousel is \

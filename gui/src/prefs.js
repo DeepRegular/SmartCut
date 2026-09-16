@@ -79,7 +79,7 @@ const DEFAULTS = {
   outNumber: true,
   outDigits: 2,
   /// Whether a cut written as a `.ts` carries the recording's data broadcast
-  /// -- what is behind the blue button.
+  /// -- what is behind the d button.
   ///
   /// Not on the output settings screen and not in a `.scproj`, unlike the
   /// prefix above. It was a per-run box there, and a per-run box is the wrong
@@ -89,7 +89,7 @@ const DEFAULTS = {
   /// whichever evening it turned up. Asked once, here, it holds for every run.
   ///
   /// On, like the engine's own answer: a cut is meant to be the recording,
-  /// shorter, and what is behind the blue button was in the recording.
+  /// shorter, and what is behind the d button was in the recording.
   dataBroadcast: true,
   /// Whether the cut editor draws the subtitles over the picture from the
   /// moment a recording opens, rather than waiting to be asked each time.

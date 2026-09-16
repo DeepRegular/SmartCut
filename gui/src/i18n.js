@@ -89,22 +89,23 @@ const CATALOG = {
     "prefs.counter": "カット編集で、フレーム番号と時刻を画面に重ねる",
     "prefs.subs": "カット編集で、最初から字幕を表示する",
     "prefs.subsNote":
-      "字幕を持つ録画でのみ有効です。編集中に切り替えられます。",
+      "字幕のある録画でのみ有効です。編集中に切り替えられます。",
     "prefs.groupOut": "出力設定",
     "prefs.prefix": "ファイル名の接頭辞:",
     "prefs.prefixNote":
-      "新しいプロジェクトの初期値です。ここで変えると、いま開いている出力設定にも入ります。" +
+      "新しいプロジェクトの初期値です。ここで変更すると、いま開いている出力設定にも反映されます。" +
       "プロジェクトを開いたときは、そのプロジェクトの設定が優先されます。",
     "prefs.number": "接頭辞のうしろに一覧の連番を付ける",
     "prefs.numberNote":
-      "一覧の並び順を、書き出したファイル名に残します。番号は一覧に出ている行番号です。" +
+      "一覧の並び順を、出力するファイル名に残します。番号は一覧の行番号です。" +
       "例: cut_03_録画.ts",
     "prefs.digits": "連番の桁数:",
     "prefs.dataBroadcast": "データ放送も残す（.ts のみ）",
     "prefs.dataBroadcastNote":
-      "青いボタンの先にあるページを、カットにも残します。入るのは放送自身のテーブルを持つ .ts だけです。" +
-      "ディスクの形式にも MP4 にも置き場所がないので、そちらには入りません。" +
-      "カルーセルは多重全体の 1/100 から 1/5 を占めるので、外すとそのぶん小さくなります。",
+      "リモコンの d ボタンで見られるデータ放送のページを、カットした出力にも残します。" +
+      "残せるのは、放送のテーブルをそのまま引き継ぐ .ts で出力するときだけです。" +
+      "ディスクの形式にも MP4 にも入れる場所がないので、そちらには残りません。" +
+      "データ放送は録画全体の 1〜20% ほどを占めるので、残さなければそのぶん小さくなります。",
     "prefs.keepOutput": "出力設定を次回の起動に引き継ぐ",
     "prefs.keepOutputNote":
       "保存先・ファイル名・コンテナ・音声の扱いを保存し、次回の起動と新規作成時に復元します。" +
@@ -117,11 +118,11 @@ const CATALOG = {
     "prefs.cleanJoins": "範囲の先頭を整え直す（継ぎ目の乱れを防ぐ）",
     "prefs.cleanJoinsNote":
       "開いた GOP から始まる範囲で、先頭の最大 2 秒を再エンコードします。" +
-      "継ぎ目の乱れは減りますが、無劣化でコピーされる区間はその分減ります。",
+      "継ぎ目の乱れは減りますが、そのぶん無劣化でコピーされる区間が短くなります。",
     "prefs.proxy": "プロキシを作ってから編集する",
     "prefs.proxyNote":
       "録画全体を再エンコードし、軽い映像で編集します。1 時間あたり数分の時間と数 GB の容量が必要です。" +
-      "1 フレームの展開が重い素材では効果的です。",
+      "1 フレームの展開に時間がかかる素材で効果があります。",
     "prefs.proxyWidth": "プロキシの幅:",
     "prefs.proxyWidth.auto": "自動（1280）",
     "prefs.groupData": "作業データ",
@@ -131,7 +132,7 @@ const CATALOG = {
     "prefs.cacheDirReset": "既定",
     "prefs.cacheDirNote":
       "シークインデックス・プロキシ・CM 検出の結果を保存する場所です。" +
-      "変更後に作成されたものだけが新しい場所に保存され、既存のものはそのまま残ります。",
+      "変更後に作成したものだけが新しい場所に保存され、これまでのものは元の場所に残ります。",
     "prefs.cacheDirFailed": "その場所には書き込めません: {e}",
     "prefs.cacheKind.index": "シークインデックス",
     "prefs.cacheKind.proxy": "プロキシ",
@@ -219,9 +220,9 @@ const CATALOG = {
     "props.body":
       "クリップ名:　{name}{copy}\n{path}\n映像:　{codec}, {w}x{h}, {fps} fps, {flags}\n" +
       "音声:　{audio}\n長さ:　{len} ({frames} フレーム)　無劣化点 {points} 個{unusable}" +
-      "\nシーン {scenes} 箇所　索引 {index}{cm}",
+      "\nシーン {scenes} 箇所　インデックス {index}{cm}",
     "props.copyOf": "（同じ録画の {n} 本目）",
-    "props.unusable": "（うち {n} 個は開始に使えません）",
+    "props.unusable": "（うち {n} 個は開始位置には使えません）",
     // Sits inside "無劣化点 {points} 個" and two lines like it, so it has
     // to read as a missing number rather than as a word: 無劣化点 解析待ち
     // 個 is not a sentence anybody wants to read.
@@ -229,7 +230,7 @@ const CATALOG = {
     "props.cm": "\nCM:　{note}",
     "media.interlaced": "インターレース (TFF)",
     "media.progressive": "プログレッシブ",
-    "media.pulldown": "2:3プルダウン",
+    "media.pulldown": "2:3 プルダウン",
     "media.audioYes": "あり",
     "media.audioNo": "なし",
 
@@ -265,11 +266,11 @@ const CATALOG = {
     "disc.menu": "メニュー",
     "disc.other": "その他",
     "disc.pid": "PID 0x{pid}",
-    "disc.gone": "カットでは持ち出せません",
+    "disc.gone": "カットした出力には残せません",
     "disc.needed": "映像は外せません",
     "disc.apply": "同じ構成のクリップすべてに適用",
     "disc.applied": "{n} クリップに同じ選択を適用しました",
-    "disc.hidden": "ほか {n} クリップは短いため隠れています",
+    "disc.hidden": "短いクリップ {n} 本は表示していません",
     "dialog.project": "SmartCut プロジェクト",
     "queue.indexing": "シーク用インデックスを作成中: {clip}",
     "queue.picturing": "サムネイルを作成中: {clip}",
@@ -294,11 +295,11 @@ const CATALOG = {
     "phase.queued": "待機中",
     "phase.reading": "読み込み中",
     "phase.pictures": "サムネイル",
-    "phase.noPictures": "サムネイルは作成できず（切り出しには影響しません）",
+    "phase.noPictures": "サムネイルを作成できませんでした（切り出しには影響しません）",
     "phase.detecting": "検出中",
     "phase.stopped": "中止しました",
-    "phase.indexReused": "前回の索引を再利用",
-    "phase.indexBuilt": "索引 {s} 秒",
+    "phase.indexReused": "前回のインデックスを再利用",
+    "phase.indexBuilt": "インデックス {s} 秒",
     "cm.previous": "{note}（前回の検出）",
     "cm.failed": "検出できません: {e}",
 
@@ -366,12 +367,12 @@ const CATALOG = {
     // 索引の欄が空のまま書かれるときに、その欄が見せるもの。録画が何も
     // 言わなかったときも、消したときも同じ結果になる——どちらもディスクには
     // 何も入らない。番号だけ短いのは、欄が 3 桁ぶんしかないからです。
-    "outset.fieldBlank": "（書きません）",
+    "outset.fieldBlank": "（記入なし）",
     "outset.tabFile": "ファイル出力",
     "outset.tabBdav": "BDAV 出力",
     "outset.discHead": "ディスク設定",
     "outset.subfolder": "サブフォルダー:",
-    "outset.subfolderNone": "（作らず、上のフォルダーに直接出力）",
+    "outset.subfolderNone": "（作らずに上のフォルダーへ直接出力）",
     "outset.discTitle": "ディスクタイトル:",
     "outset.image": "イメージ:",
     "image.none": "作らない（フォルダーのまま）",
@@ -402,14 +403,14 @@ const CATALOG = {
     // --- 出力画面 --------------------------------------------------------
     "out.idle": "出力するクリップを一覧に追加してください",
     "out.needDiscFolder":
-      "BDAV 出力にはディスクを作る場所が要ります。出力先フォルダーを選んでください",
+      "BDAV 出力にはディスクを作成する場所が必要です。出力先フォルダーを選んでください",
     "out.madeUnreadable":
-      "「{name}」の記録日時が日時として読めません。YYYY-MM-DD HH:MM:SS の形で入れてください",
+      "「{name}」の記録日時を日時として読み取れません。YYYY-MM-DD HH:MM:SS の形式で入力してください",
     // 出力一覧に並ぶ、カットのあとに続く 2 行。
-    "out.stepIndex": "ディスクの索引",
+    "out.stepIndex": "ディスクの管理情報",
     "out.stepImage": "ディスクイメージ（UDF {udf}）",
     "out.stepFailed": "失敗",
-    "out.bdavIndexing": "ディスクの索引を作成中: 録画 {clip}",
+    "out.bdavIndexing": "ディスクの管理情報を作成中: 録画 {clip}",
     "out.imaging": "イメージを作成中（UDF {udf}）: {pct}%",
     "out.imageDone": "イメージを作成しました: {path}",
     "out.imageFailed": "イメージを作成できませんでした: {e}",
@@ -417,9 +418,9 @@ const CATALOG = {
     "out.folderStays": "フォルダーを削除できませんでした: {e}",
     "out.bdavDone": "ディスクを作成しました: {path}（録画 {n} 本）",
     "out.discarded": "中止したため取り消しました",
-    "out.bdavDiscarded": "索引の付かない録画 {n} 本をディスクから取り除きました",
-    "out.bdavLeftover": "書きかけの録画を片付けられませんでした: {e}",
-    "out.bdavFailed": "ディスクの索引を作成できませんでした: {e}",
+    "out.bdavDiscarded": "管理情報を作れなかった録画 {n} 本をディスクから取り除きました",
+    "out.bdavLeftover": "書きかけの録画を削除できませんでした: {e}",
+    "out.bdavFailed": "ディスクの管理情報を作成できませんでした: {e}",
     "out.run": "出力開始",
     "out.abort": "出力中止",
     "out.enlist": "バッチに登録",
@@ -529,15 +530,15 @@ const CATALOG = {
     "editor.loading": "読み込み中…",
     "editor.analysing": "解析中…",
     "editor.counterShow": "カウンタ",
-    "editor.counterShow.title": "フレーム番号と時刻をプレビューの絵の上に出す",
+    "editor.counterShow.title": "フレーム番号と時刻をプレビュー映像の上に表示する",
     "editor.detectCm": "CM を検出",
     "editor.detectCm.title": "CM らしい区間を探してキーフレームを立てる (Ctrl+D)",
-    "editor.detecting": "検出中…（映像も読みます）",
+    "editor.detecting": "検出中…（映像も読み込みます）",
     "editor.detectingPct": "検出中 {pct}%",
     "editor.keyframes": "キーフレーム",
     "editor.keyCount": "{n} 個",
     "editor.keyframes.empty":
-      "まだありません。「⚑ キーフレーム」でいまの位置を登録できます。CM を検出すると、本編と CM それぞれの先頭が自動で並びます。",
+      "まだありません。「⚑ キーフレーム」で現在の位置を登録できます。CM を検出すると、本編と CM それぞれの先頭が自動で並びます。",
     "editor.keyframes.kill": "このキーフレームを消す",
     "editor.searching": "サーチ中",
     "editor.searchKind": "サーチ",
@@ -546,7 +547,7 @@ const CATALOG = {
     "editor.counter": "{at} / {all}   {t}",
     "editor.frameKind": "{kind} フレーム",
     "editor.frameKindPoint": "{kind} フレーム — 無劣化点",
-    "editor.frameKindNear": "{kind} フレーム — 近くの絵（解析中）",
+    "editor.frameKindNear": "{kind} フレーム — 近くのフレーム（解析中）",
     "editor.previewFailed": "プレビュー失敗: {e}",
     "editor.stripHint":
       "クリックで移動／<b>右ドラッグ</b>で前後にサーチ（右へ＝送り・左へ＝戻し）／中クリックで次のシーン／ホイールで 1 フレーム送り（Shift で GOP 単位）／Space で再生",
@@ -606,29 +607,29 @@ const CATALOG = {
     "tracks.button.title": "この録画のどのストリームを書き出すか選ぶ",
     "tracks.title": "書き出すトラック",
     "tracks.note":
-      "外したトラックは出力に入りません。字幕は TS に書き出すときだけ残せます。",
+      "チェックを外したトラックは出力に含まれません。字幕を残せるのは TS で出力するときだけです。",
     "tracks.audio": "音声",
     "tracks.caption": "字幕",
     "tracks.superimpose": "文字スーパー",
     "tracks.graphics": "字幕（ディスクの図形）",
-    "tracks.beside": "字幕 {lang}: 出力の設定どおり、カットの中か傍らに   id 0x{pid}",
+    "tracks.beside": "字幕 {lang}: 出力設定に従って、出力ファイルの中か別ファイルに出力   id 0x{pid}",
     "outset.subtitles": "ディスクの字幕:",
-    "subtitles.beside": "カットの傍らに (.idx / .sub)",
-    "subtitles.sup": "カットの傍らに (.sup／PGS そのまま)",
-    "subtitles.pgs": "カットの中に (PGS)",
+    "subtitles.beside": "別ファイルに出力 (.idx / .sub)",
+    "subtitles.sup": "別ファイルに出力 (.sup／PGS のまま)",
+    "subtitles.pgs": "出力ファイルに含める (PGS)",
     // どの行き先が無加工かはディスクによって違うので、それを言う。
     // `paintSubtitleChoices` を参照。
     "outset.subtitles.dvd": "DVD の字幕:",
-    "subtitles.pgs.dvd": "変換してカットの中に (PGS)",
-    "subtitles.beside.dvd": "そのまま傍らに (.idx / .sub)",
-    "subtitles.sup.dvd": "変換して傍らに (.sup)",
+    "subtitles.pgs.dvd": "変換して出力ファイルに含める (PGS)",
+    "subtitles.beside.dvd": "そのまま別ファイルに出力 (.idx / .sub)",
+    "subtitles.sup.dvd": "変換して別ファイルに出力 (.sup)",
     "outset.subtitles.bdmv": "Blu-ray の字幕:",
-    "subtitles.pgs.bdmv": "そのままカットの中に (PGS)",
-    "subtitles.beside.bdmv": "変換して傍らに (.idx / .sub)",
-    "subtitles.sup.bdmv": "そのまま傍らに (.sup)",
+    "subtitles.pgs.bdmv": "そのまま出力ファイルに含める (PGS)",
+    "subtitles.beside.bdmv": "変換して別ファイルに出力 (.idx / .sub)",
+    "subtitles.sup.bdmv": "そのまま別ファイルに出力 (.sup)",
     "tracks.main": "主音声",
     "tracks.pid": "PID 0x{pid}",
-    "tracks.dropped": "持ち出せません: {what}   PID 0x{pid}",
+    "tracks.dropped": "出力できません: {what}   PID 0x{pid}",
     "tracks.gone.superimpose": "文字スーパー",
     "tracks.data": "データ放送",
     "tracks.substream": "同じ PID に畳み込まれた互換用ストリーム",
@@ -636,13 +637,13 @@ const CATALOG = {
     "tracks.textst": "テキスト字幕（書体はディスク側にあります）",
     "tracks.settled": "{what} — 環境設定で決めます   PID 0x{pid}",
     "tracks.settledNote":
-      "データ放送は、ここではなく環境設定で答えます。置けるのは .ts だけで、既定では残します。",
+      "データ放送を残すかどうかは、ここではなく環境設定で決めます。残せるのは .ts のときだけで、初期設定では残します。",
     "tracks.droppedNote":
-      "これらはここでは選べません。文字スーパーはパケットに時刻が無く、メニューやテキスト字幕はディスク側にあるものです。",
+      "これらは選べません。文字スーパーはパケットに時刻を持たず、メニューとテキスト字幕はディスク側の仕組みだからです。",
     "tracks.substreamNote":
-      "Blu-ray のロスレス音声は、それを再生できない機器のために AC-3 を同じ PID へ畳み込んで送ってきます。1 つの PID に 2 本は書き戻せないので、トラック本体（TrueHD）を書き出し、内側の AC-3 は落とします。",
+      "Blu-ray のロスレス音声には、それを再生できない機器のために AC-3 が同じ PID へ重ねて入っています。1 つの PID に 2 本を書き戻すことはできないので、本体のトラック（TrueHD）だけを出力し、内側の AC-3 は除きます。",
     "tracks.tablesNote":
-      "番組情報（EIT）・放送局名・放送時刻は、TS に書き出すときはそのまま引き継ぎます。トラックではないので、ここには並びません。",
+      "番組情報（EIT）・放送局名・放送時刻は、TS に書き出すときはそのまま引き継ぎます。トラックではないので、この一覧には並びません。",
     "tracks.none": "この録画には選べるトラックがありません。",
     "tracks.failed": "トラックを読めませんでした: {e}",
     "tracks.close": "閉じる",
@@ -655,20 +656,20 @@ const CATALOG = {
       "無劣化点: {points}   {w}x{h}   {fps} fps   {flags}   {audio}   {codec}{unusable}",
     "editor.infoAudioYes": "音声あり",
     "editor.infoAudioNo": "音声なし",
-    "editor.infoUnusable": "   （うち {n} 個は開始に使えません）",
+    "editor.infoUnusable": "   （うち {n} 個は開始位置には使えません）",
     "editor.hoverWarming": "準備中",
     "editor.hoverScene": "シーン",
     "warm.start": "準備中 0%",
     "warm.progress": "{phase}準備中 {pct}%",
     "warm.failed": "準備: {e}",
     "warm.proxy": "プロキシ {w}x{h} {mb}MB（{how}{s}秒）",
-    "warm.proxyReused": "前回のを再利用 ",
+    "warm.proxyReused": "前回のものを再利用 ",
     "warm.proxyBuilt": "作成 ",
     "warm.noProxy": "プロキシなし（{note}）",
     "warm.index": "シーク用インデックス {mb}MB{how}",
-    "warm.indexReused": "（前回のを再利用）",
+    "warm.indexReused": "（前回のものを再利用）",
     "warm.indexBuilt": "（作成 {s}秒）",
-    "warm.noIndex": "シーク用インデックスは保存できず",
+    "warm.noIndex": "シーク用インデックスを保存できませんでした",
     "warm.thumbs": "サムネイル {n} 枚 {gap}s 間隔",
     "warm.scenes": "シーン {n} 箇所",
     "plan.openFile": "ファイルを開いてください",
@@ -763,7 +764,7 @@ const CATALOG = {
     "prefs.digits": "Digits in the number:",
     "prefs.dataBroadcast": "Keep the data broadcast (.ts only)",
     "prefs.dataBroadcastNote":
-      "Carries the pages behind the blue button into the cut. Only a .ts that keeps the broadcast's own " +
+      "Carries the pages behind the d button into the cut. Only a .ts that keeps the broadcast's own " +
       "tables can hold one; a disc's framing and an MP4 have nowhere to put it. A carousel is between a " +
       "hundredth and a fifth of what a multiplex spends, so clearing this is what makes the file smaller.",
     "prefs.keepOutput": "Carry the output settings over to the next start",

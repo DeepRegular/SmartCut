@@ -273,7 +273,7 @@ throw away the one true thing it says.
 > Since 0.6.6 a `.ts` carries this too, unless asked not to. Nothing else can
 > carry it at all.
 
-Behind the blue button is a small application — the local forecast, the programme's own
+Behind the d button is a small application — the local forecast, the programme's own
 pages, the traffic on the roads — sent as a **carousel**: a set of modules repeated end
 to end for as long as the programme runs, so that a receiver switching on at any moment
 has the whole of it within a few seconds. Of forty recordings sampled at random from
@@ -299,7 +299,7 @@ They are placed, renumbered and otherwise left exactly as they arrived.
 Which leaves where it goes and how it is declared:
 
 - **It is carried unless it is turned down.** A cut is meant to be the recording,
-  shorter, and what is behind the blue button was in the recording. `--no-data-broadcast`
+  shorter, and what is behind the d button was in the recording. `--no-data-broadcast`
   leaves it out, and the window has the same question as a checkbox under 環境設定 →
   output settings, ticked to begin with. What turning it down buys is size.
 - **A plain `.ts` that keeps the broadcast's own tables** is the only place it can go.
