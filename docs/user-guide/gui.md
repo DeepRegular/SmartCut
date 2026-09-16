@@ -647,6 +647,11 @@ There is a great deal more of this in [Writing a disc](../technical/bdav.md).
 progress and result, and above them are the overall state, the elapsed time and
 the time remaining. At the end it says `4 of 4 written`.
 
+**Anything the run has to say that is not its state gets a line of its own under
+the bar** — the folder it was given a branch number for, a disc index or an image
+that would not write, a folder taken away once the image held it. It stays up
+after the run, and the next run puts it down as it starts.
+
 While it writes, that same button reads `Stop export`. Pressing it **finishes
 writing the clip currently in progress**, then stops. It never leaves a
 half-written file behind.

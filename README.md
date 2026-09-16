@@ -54,8 +54,8 @@ and often none at all.
 30-minute recording is written out in well under a minute.
 
 **Broadcast recordings come through intact.** Captions, programme information,
-the station name, both languages of a bilingual broadcast, interlacing and 2:3
-pulldown all survive. The output still looks like a recording, so it opens in
+the station name, the data broadcast behind the blue button, both languages of a
+bilingual broadcast, interlacing and 2:3 pulldown all survive. The output still looks like a recording, so it opens in
 whatever you already use for recordings.
 
 **A night's cuts can leave as a disc.** Not only as files. SmartCut can write a
