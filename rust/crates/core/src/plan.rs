@@ -316,7 +316,7 @@ pub fn plan(
 /// hand, and [`plan`] stays the arithmetic.
 pub fn plan_on(src: &crate::Source, ranges: &[(f64, f64)], opts: &PlanOptions) -> Vec<RangePlan> {
     let seams = seam_times(&src.joins);
-    let ranges = at_the_seams(ranges, &seams);
+    let ranges = at_the_seams(ranges, &src.joins);
     let ranges = past_the_seam(&ranges, &seams, &src.points, &src.video);
     let mut plans = plan(&src.video, src.duration, &src.points, &ranges, opts);
     for p in &mut plans {
@@ -348,17 +348,31 @@ const SLIVER: f64 = 0.1;
 ///
 /// Costs a second or two of re-encoding per seam, which is what a cut costs
 /// anywhere. A recording with no seams is planned exactly as it was.
-fn at_the_seams(ranges: &[(f64, f64)], joins: &[f64]) -> Vec<(f64, f64)> {
+fn at_the_seams(ranges: &[(f64, f64)], joins: &[Seam]) -> Vec<(f64, f64)> {
     if joins.is_empty() {
         return ranges.to_vec();
     }
     let mut out = Vec::new();
     for &(a, b) in ranges {
         let mut at = a;
-        for &seam in joins {
-            if seam > at + SLIVER && seam < b - SLIVER {
-                out.push((at, seam));
-                at = seam;
+        for seam in joins {
+            if seam.time > at + SLIVER && seam.time < b - SLIVER {
+                // `ends` and `time` are the same instant on every recording
+                // whose sequence table describes the pictures it has. Where
+                // they are not, what lies between them is a stretch of the
+                // joined clock the recording holds nothing at -- see
+                // [`crate::restamp::Seam`] -- and the range stops at the last
+                // picture rather than reaching past it.
+                let stops = seam.ends.min(seam.time);
+                // A mend can pull `ends` back past the start of the piece
+                // being cut -- a whole stretch whose pictures end before the
+                // range reached it. There is nothing to keep there, and a
+                // range of no length is not one: the cutter would be asked
+                // for a segment with no picture in it.
+                if stops > at {
+                    out.push((at, stops));
+                }
+                at = seam.time;
             }
         }
         out.push((at, b));
@@ -620,7 +634,15 @@ mod tests {
     /// cannot be carried across one. See [`at_the_seams`].
     #[test]
     fn a_range_is_cut_at_the_seams() {
-        let joins = [10.0, 25.0];
+        fn seam(at: u64, time: f64) -> Seam {
+            Seam {
+                at,
+                time,
+                ends: time,
+            }
+        }
+
+        let joins = [seam(0, 10.0), seam(0, 25.0)];
         assert_eq!(
             at_the_seams(&[(0.0, 40.0)], &joins),
             vec![(0.0, 10.0), (10.0, 25.0), (25.0, 40.0)]
@@ -636,6 +658,42 @@ mod tests {
             at_the_seams(&[(5.0, 15.0), (30.0, 35.0)], &joins),
             vec![(5.0, 10.0), (10.0, 15.0), (30.0, 35.0)]
         );
+    }
+
+    /// A stretch whose sequence table claims more time than it holds
+    /// pictures: the range before the seam stops at the last picture, and the
+    /// one after it still begins where the next stretch does. What lies
+    /// between is a stretch of clock the recording has nothing at.
+    /// See [`crate::index::mend_stretches`].
+    #[test]
+    fn a_stretch_that_ends_early_ends_the_range_early() {
+        let joins = [Seam {
+            at: 0,
+            time: 25.0,
+            ends: 22.0,
+        }];
+        assert_eq!(
+            at_the_seams(&[(0.0, 40.0)], &joins),
+            vec![(0.0, 22.0), (25.0, 40.0)]
+        );
+        // Never past the seam, whatever a mend came back with.
+        let joins = [Seam {
+            at: 0,
+            time: 25.0,
+            ends: 30.0,
+        }];
+        assert_eq!(
+            at_the_seams(&[(0.0, 40.0)], &joins),
+            vec![(0.0, 25.0), (25.0, 40.0)]
+        );
+        // Pulled back past the start of the piece it is cutting, there is
+        // nothing to keep in front of the seam and no range is made for it.
+        let joins = [Seam {
+            at: 0,
+            time: 25.0,
+            ends: 5.0,
+        }];
+        assert_eq!(at_the_seams(&[(20.0, 40.0)], &joins), vec![(25.0, 40.0)]);
     }
 
     /// And the far side of a seam begins at the first entry point, because

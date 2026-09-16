@@ -81,6 +81,15 @@ pub struct Seam {
     pub at: u64,
     /// When that stretch begins, in seconds on the joined clock.
     pub time: f64,
+    /// When the stretch *before* it stops, on the same clock.
+    ///
+    /// The same instant as `time` on every clip whose sequence table can be
+    /// believed, which is why it is written down separately only here: a
+    /// recorder that gives a sequence a span longer than the pictures in it
+    /// leaves a range planned to `time` asking for pictures the stretch does
+    /// not have. See [`crate::index::mend_stretches`], which is the one place
+    /// that moves this, and only ever earlier.
+    pub ends: f64,
 }
 
 /// The correction to apply to a clip, piece by piece.
@@ -123,6 +132,7 @@ impl Restamp {
             .map(|p| Seam {
                 at: p.at,
                 time: p.from as f64 / TICK,
+                ends: p.from as f64 / TICK,
             })
             .collect()
     }

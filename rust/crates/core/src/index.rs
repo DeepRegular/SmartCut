@@ -641,6 +641,182 @@ pub fn refine_leading(
     Ok(())
 }
 
+/// How far a stretch's first entry point may be from the first picture at
+/// that stretch's first byte before the map is judged not to be describing
+/// the stretch at all.
+///
+/// Wide, deliberately. What this catches is a map that is seconds out, and a
+/// map that is a frame or two out is a map doing its job: the point a
+/// recorder writes is the picture a player starts at, and where it names one
+/// picture either side of the one the demuxer hands back, nothing downstream
+/// notices.
+const STRETCH_SLACK: f64 = 1.0;
+
+/// The first key picture at or after `byte`, on the clock the points are on.
+///
+/// Placed by byte rather than by time on purpose: the question being asked is
+/// what the stream holds at a position, and the times are the very thing
+/// under suspicion.
+fn key_at_byte(
+    ictx: &mut ff::format::context::Input,
+    video: &VideoInfo,
+    start_time: f64,
+    byte: u64,
+) -> Option<f64> {
+    unsafe {
+        if ff::ffi::av_seek_frame(ictx.as_mut_ptr(), -1, byte as i64, ff::ffi::AVSEEK_FLAG_BYTE) < 0
+        {
+            return None;
+        }
+    }
+    for (s, p) in ictx.packets().take(8192) {
+        if s.index() != video.stream_index || !p.is_key() {
+            continue;
+        }
+        if p.position() >= 0 && (p.position() as u64) < byte {
+            continue;
+        }
+        if let Some(pts) = p.pts() {
+            return Some(pts as f64 * video.time_base - start_time);
+        }
+    }
+    None
+}
+
+/// The entry points one stretch of a clip really has, read off the stream.
+///
+/// Shaped like the ones [`DiscIndex`] hands over rather than like the walk's:
+/// where the leading pictures go is not asked, because the caller is mending
+/// an index that never said and [`refine_leading`] measures the handful that
+/// matter. What this supplies is the pair the map got wrong — a time and the
+/// byte it belongs to.
+/// Comes back with where the stretch's pictures end as well, which is the
+/// other thing the map got wrong: a sequence whose entries are six seconds
+/// out also has a span six seconds too long, and a range planned to that span
+/// asks the cutter to re-encode a window with nothing in it.
+fn stretch_points(
+    ictx: &mut ff::format::context::Input,
+    video: &VideoInfo,
+    start_time: f64,
+    lo: u64,
+    hi: u64,
+) -> (Vec<AccessPoint>, Option<f64>) {
+    unsafe {
+        if ff::ffi::av_seek_frame(ictx.as_mut_ptr(), -1, lo as i64, ff::ffi::AVSEEK_FLAG_BYTE) < 0 {
+            return (Vec::new(), None);
+        }
+    }
+    let mut out = Vec::new();
+    let mut last = f64::NEG_INFINITY;
+    let mut read_at = lo;
+    for (s, p) in ictx.packets() {
+        if p.position() >= 0 {
+            read_at = p.position() as u64;
+        }
+        if read_at >= hi {
+            break;
+        }
+        if s.index() != video.stream_index || read_at < lo {
+            continue;
+        }
+        let Some(pts) = p.pts() else { continue };
+        let t = pts as f64 * video.time_base - start_time;
+        last = last.max(t);
+        if p.is_key() {
+            out.push(AccessPoint {
+                time: t,
+                lead_start: t,
+                lead_indices: Vec::new(),
+                droppable: true,
+                pos: read_at as i64,
+            });
+        }
+    }
+    // The last picture's own instant, not the end of the time it occupies.
+    // A range that ends at the latter asks for one more picture than the
+    // stretch has, and a re-encode of one picture that is not there is the
+    // same failure in miniature as the one this whole function exists to
+    // stop. Ending on it instead leaves that picture out of the cut, which
+    // at a seam that already gives up a third of a second is nothing.
+    let end = last.is_finite().then_some(last);
+    (out, end)
+}
+
+/// Replace the entry points of any stretch whose map does not describe it.
+///
+/// **A recorder can write a map that is not about the stream it sits beside.**
+/// The clips a BD recorder writes hold several arrival-time sequences (see
+/// [`crate::restamp`]), and on one of the twenty measured here the fourth
+/// sequence's entries carry times six seconds ahead of the pictures at the
+/// positions they name — and the first two of them a further 11.65 seconds,
+/// which is one turn of the eleven bits a fine entry keeps. Nothing in the
+/// map says so. What the cut saw was an entry point that was "passed without
+/// being met": it seeked to a time the map gave, read forward, and the
+/// picture it was promised was eight seconds further on. That stopped the
+/// whole recording, and it was the one title of twenty that could not be
+/// written.
+///
+/// So each stretch is asked one question that costs a seek and a short read:
+/// is the first picture at your first byte the one your first entry point
+/// names? Where it is not, the stretch's entries are thrown away and the
+/// stream is read for them instead — that stretch only, which is a few
+/// hundred megabytes rather than the whole clip, and only on a clip that
+/// carries seams at all.
+///
+/// **The seam after a mended stretch is pulled back to where its pictures
+/// end.** The span the table gives a bad sequence is as wrong as its entries:
+/// on the clip measured here it claims 316 seconds for 289 seconds of
+/// pictures, and a range planned to that span ends 8.8 seconds past the last
+/// picture there is — which is a re-encode with nothing in it, and the cut
+/// stops on that instead. Only ever pulled back, never pushed out: a seam is
+/// where the recorder stopped, and the sequence after it begins where the
+/// table says.
+///
+/// Returns where it mended, for the caller to say so.
+pub fn mend_stretches(
+    url: &str,
+    video: &VideoInfo,
+    start_time: f64,
+    joins: &mut [crate::restamp::Seam],
+    points: &mut Vec<AccessPoint>,
+) -> Result<Vec<f64>> {
+    if joins.is_empty() {
+        return Ok(Vec::new());
+    }
+    let mut ictx = crate::input::demux(url)?;
+    let mut mended = Vec::new();
+    for i in 0..joins.len() {
+        let (at, time) = (joins[i].at, joins[i].time);
+        let hi = joins.get(i + 1).map_or(u64::MAX, |j| j.at);
+        let Some(first) = key_at_byte(&mut ictx, video, start_time, at) else {
+            continue;
+        };
+        let claimed = points
+            .iter()
+            .find(|p| p.pos >= 0 && (p.pos as u64) >= at && (p.pos as u64) < hi)
+            .map(|p| p.time);
+        if claimed.is_some_and(|t| (t - first).abs() <= STRETCH_SLACK) {
+            continue;
+        }
+        let (fresh, end) = stretch_points(&mut ictx, video, start_time, at, hi);
+        if fresh.is_empty() {
+            continue;
+        }
+        points.retain(|p| p.pos < 0 || (p.pos as u64) < at || (p.pos as u64) >= hi);
+        points.extend(fresh);
+        points.sort_by(|a, b| {
+            a.time
+                .partial_cmp(&b.time)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+        if let (Some(end), Some(next)) = (end, joins.get_mut(i + 1)) {
+            next.ends = next.ends.min(end);
+        }
+        mended.push(time);
+    }
+    Ok(mended)
+}
+
 /// Packets around one access point, in decode order.
 fn window_at(
     ictx: &mut ff::format::context::Input,

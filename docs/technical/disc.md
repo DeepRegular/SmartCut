@@ -939,7 +939,7 @@ rows now list as 20, each the length its own index states — 44:19 to 47:57
 against broadcast lengths of 44:41 and 45:10. The four reference discs, the
 pressed Blu-rays and the DVDs list exactly as they did.
 
-**And cut**, all twenty end to end: 19 are written where 17 were before. On a
+**And cut**, all twenty end to end: 19 are written where 17 were before, and the twentieth is [the section below](#a-stretch-whose-map-is-about-something-else). On a
 title that was written either way, the largest hole in the output's pictures
 falls from 0.751 seconds to 0.083 — a seam costs three pictures now, not a
 second's worth of them — and the 68 pictures that could not be placed on the
@@ -948,12 +948,30 @@ output timeline are none. The sound at a seam still has a hole in it, 0.38 and
 recording. A transport stream carries a moment's sound about a second behind
 its picture, so a recorder that stops writing stops having written that second.
 
-The one recording that still stops is a stretch whose own entry-point map runs
-about twenty seconds behind the pictures it indexes, while every other stretch
-of the same clip agrees with its own to a thousandth of a second. That is a
-fault in the index and not in the seam, and nothing above addresses it: the
-copy is asked for an entry point the stream does not carry there, meets a
-picture ten seconds later instead, and reports a seek it thinks overshot.
+### A stretch whose map is about something else
+
+The twentieth recording used to stop here, and it is a different fault from
+every one above: the seam is where the recorder says it is, and the *entries*
+are wrong. One stretch of one clip — the fourth of six — carries entry points
+six seconds ahead of the pictures at the positions they name, and its first two
+a further 11.65 seconds, which is one turn of the eleven bits a fine entry
+keeps. Its span is wrong by as much again: 316 seconds claimed for 289 seconds
+of pictures. Every other stretch of the same clip, and all 3,592 to 3,615
+entries of the other seven clips on that disc, agree with the stream to a
+thousandth of a second.
+
+Nothing in the map says which of its sequences can be believed, so each one is
+asked, at the cost of a seek and a short read: **is the first picture at your
+first byte the one your first entry names?** Where it is not, that stretch's
+entries are thrown away and the stream is read for its own — that stretch only,
+a few hundred megabytes rather than the whole clip — and the seam behind it is
+pulled back to the last picture the stretch really has. `index::mend_stretches`.
+
+Asked only of a clip that has seams, which is a clip a recorder wrote, and only
+of an index that did not come from the stream, because a walk cannot disagree
+with what it read. Over the twenty recordings it fires on one stretch of one
+clip; the other nineteen plan exactly as they did, to the copied second. The
+mended one is written at 99.8% copied, which is what its neighbours cost.
 
 Ordinary recordings are untouched by any of this, and measured to be: cuts of
 three broadcast transport streams, of two reference Blu-rays and of two DVD

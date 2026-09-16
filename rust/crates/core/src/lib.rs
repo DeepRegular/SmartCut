@@ -886,7 +886,7 @@ fn assemble(
         start_time,
         byte_seekable,
         on_a_ts,
-        joins,
+        mut joins,
     } = outline;
     let mut points = idx.points;
     if points.is_empty() {
@@ -900,6 +900,33 @@ fn assemble(
     for p in points.iter_mut() {
         p.time = p.time.max(0.0);
         p.lead_start = p.lead_start.max(0.0);
+    }
+
+    // A map the recording did not read for itself can be about something
+    // else. See [`index::mend_stretches`]: on one recorder clip of the twenty
+    // measured here, one of its six stretches carries entry points six
+    // seconds ahead of the pictures they name, and the cut of that clip
+    // stopped. Asked only of a clip that has seams -- which is a clip a
+    // recorder wrote -- and only of an index that did not come from the
+    // stream, since a walk cannot disagree with what it read.
+    let mut mended_any = false;
+    if !idx.leading_known && !joins.is_empty() {
+        match index::mend_stretches(&input.url, &video, start_time, &mut joins, &mut points) {
+            Ok(mended) => {
+                mended_any = !mended.is_empty();
+                for at in mended {
+                    note_once(format!(
+                        "note: the entry points this disc records for the stretch of {path} \
+                         beginning at {at:.3}s do not name the pictures they sit in front of, \
+                         so that stretch was read for its own. The rest of the map is used as \
+                         it stands.",
+                    ));
+                }
+            }
+            // Nothing here is worth failing an open over: the map is what
+            // it was, and a cut that lands in a bad stretch says so itself.
+            Err(e) => eprintln!("note: could not check this recording's entry-point map: {e}"),
+        }
     }
 
     let gaps: Vec<f64> = points.windows(2).map(|w| w[1].time - w[0].time).collect();
@@ -917,7 +944,22 @@ fn assemble(
     // program stream; see [`index::Index::end`]. Only ever longer, so that a
     // container which knows its own length keeps it: trailing sound after the
     // last picture is part of a recording, and the pictures do not bound it.
-    let duration = match idx.end {
+    //
+    // Taken again off the points where a stretch was mended, because that is
+    // what it was taken off the first time: an index with no length in it
+    // stands the last entry point up as one, and a mended stretch may have
+    // moved which entry point that is.
+    let end = match (idx.end, mended_any) {
+        (Some(_), true) => {
+            let last = points
+                .iter()
+                .map(|p| p.time)
+                .fold(f64::NEG_INFINITY, f64::max);
+            last.is_finite().then(|| last + video.frame_duration())
+        }
+        (end, _) => end,
+    };
+    let duration = match end {
         Some(end) if end > duration => end,
         _ => duration,
     };
@@ -1437,6 +1479,7 @@ fn outline_of(path: &str) -> Result<(Outline, input::Demux)> {
             .into_iter()
             .map(|s| restamp::Seam {
                 time: s.time - start_time,
+                ends: s.ends - start_time,
                 ..s
             })
             .collect(),
