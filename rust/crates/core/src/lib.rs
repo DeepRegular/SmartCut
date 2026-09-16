@@ -15,6 +15,7 @@ pub mod arib;
 pub mod audio;
 pub mod bdav;
 pub mod bitstream;
+pub mod carousel;
 pub mod caption;
 pub mod cm;
 pub mod cut;

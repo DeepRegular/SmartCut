@@ -270,8 +270,12 @@ and stays on one. A **4K** broadcast writes its subtitles as XML rather than as
 ARIB characters; those are carried too, with the times moved *inside* each
 document, since that is where a 4K recorder puts them. Programme information, the
 station name and the broadcast clock are put back afterwards, and every stream
-goes back where it arrived. Data broadcasting cannot be carried on a cut
-timeline, and SmartCut says so rather than dropping it quietly.
+goes back where it arrived. **Data broadcasting** — what is behind the blue
+button — is carried too: it cannot go through the muxer at all, so its packets
+are taken out of the recording and dealt back into the finished file byte for
+byte, and a receiver reassembles the same pages. `--no-data-broadcast` leaves it
+out, which is worth asking for when size matters more than the pages: a carousel
+is between a hundredth and a fifth of what a multiplex spends.
 
 **A disc's subtitles (when writing a `.ts` or `.m2ts`):** a Blu-ray draws its
 subtitles rather than writing them, so what travels is a picture spread over

@@ -233,18 +233,20 @@ and fewer of them write the selector that would have said so than write the text
 ## What is put back is trimmed to what was written
 
 The same reasoning is needed one step further along. The broadcast describes the data
-broadcast as a stream it is sending, and a cut does not carry it. Copy the programme
-description across whole and **the output announces an entry point into something that
-is not in the file** — on a BS Fuji recording, a data content descriptor pointing at the
-data broadcast (component tag 0x40) survived into a file that has no data broadcast in
-it.
+broadcast as a stream it is sending, and a cut written where one cannot go does not
+carry it. Copy the programme description across whole and **the output announces an
+entry point into something that is not in the file** — on a BS Fuji recording, a data
+content descriptor pointing at the data broadcast (component tag 0x40) survived into a
+file that has no data broadcast in it.
 
-The crawl used to be in that sentence and is not any more: it is carried now, so the
-descriptors naming it stay. See [The crawl, and the other kind of
-subtitles](disc.md#the-crawl-and-the-other-kind-of-subtitles). What decides this is the
-list of streams the cut actually writes, not a list of kinds, so a stream that starts
-being carried stops being trimmed out of the description without anything here being
-changed.
+Two things have come out of that sentence since. The crawl is carried now, so the
+descriptors naming it stay — see [The crawl, and the other kind of
+subtitles](disc.md#the-crawl-and-the-other-kind-of-subtitles). The data broadcast is
+carried into a `.ts` now as well, and then the same data content descriptor is true
+again and stays; see [Carrying the data
+broadcast](#carrying-the-data-broadcast). What decides this is the list of streams the
+cut actually writes, not a list of kinds, so a stream that starts being carried stops
+being trimmed out of the description without anything here being changed.
 
 ARIB names a stream by a one-byte component tag rather than by PID. Three descriptors
 point at another stream that way — component (0x50), audio component (0xC4) and data
@@ -265,6 +267,73 @@ arrive as two sections, and only the first is about this file. The second is a n
 about what came next on the air, a programme whose streams were never going to be in
 here. Judging its tags against what this file carries would be meaningless, and would
 throw away the one true thing it says.
+
+## Carrying the data broadcast
+
+> Since 0.6.6 a `.ts` carries this too, unless asked not to. Nothing else can
+> carry it at all.
+
+Behind the blue button is a small application — the local forecast, the programme's own
+pages, the traffic on the roads — sent as a **carousel**: a set of modules repeated end
+to end for as long as the programme runs, so that a receiver switching on at any moment
+has the whole of it within a few seconds. Of forty recordings sampled at random from
+the corpus, **thirty carry one**, every one of them as stream type 0x0D with a
+component tag from 0x40 up. What it costs is not small: 0.9% of the packets on a
+channel that sends a title card, 10 to 14% on the terrestrial stations, and 22% on the
+satellite service with the most pages.
+
+**It cannot travel through the muxer at all.** A carousel is sent as sections rather
+than as a stream of PES packets, and libavformat's demuxer delivers sections only for
+the tables it reads itself. The stream is listed — `Unknown: none ([13][0][0][0] /
+0x000D)` — and nothing ever comes out of it. Asked to copy one with `-copy_unknown`,
+ffmpeg writes an entry into its map and **not one packet** behind it, which is a file
+that announces a data broadcast and does not have one.
+
+So the packets are taken out of the recording as bytes and put into the finished file
+as bytes, by the pass that is already putting the tables back. That pass reads the cut
+packet by packet and knows what time each one is at; carrying the carousel is a matter
+of reading the recording alongside it and dealing the packets back in where they were
+sent. Nothing in them is timed — a section carries no stamp — so nothing is spliced.
+They are placed, renumbered and otherwise left exactly as they arrived.
+
+Which leaves where it goes and how it is declared:
+
+- **It is carried unless it is turned down.** A cut is meant to be the recording,
+  shorter, and what is behind the blue button was in the recording. `--no-data-broadcast`
+  leaves it out, and the output settings screen has the same question as a checkbox —
+  shown, and ticked, only where a recording in the list has one and the run is writing
+  `.ts`. What turning it down buys is size.
+- **A plain `.ts` that keeps the broadcast's own tables** is the only place it can go.
+  A carousel is written by the table pass, so `--tables muxer` has no pass to write it
+  in; a Blu-ray's own framing has nowhere to put it, which is why a recorder dubbing to
+  a disc drops it too; and an MP4 is not a transport stream. Into those it is left out
+  quietly, and `--data-broadcast` — asking outright — is what makes the cut say so.
+- **The map names it** the way the recording named it, its own entry with its own data
+  component descriptor, and the programme description stops being trimmed of the
+  descriptors that point at it.
+
+Three things have to hold for what comes out to be usable, and all three are checked
+against real recordings by `tests/run_broadcast_tests.sh`:
+
+- **Every module is whole.** A receiver reassembles a module out of its blocks and
+  cannot draw a page missing any of them. The carousel goes round every 3 to 6.5
+  seconds — measured over the 22 modules of one satellite service — so a kept range of
+  any ordinary length holds a whole turn of it. What a cut point does is interrupt a
+  module part way through, and a receiver that misses a block waits for the next time
+  round, which is what it does off the air whenever reception drops.
+- **Every module is the recording's own**, block for block. Nothing here is rewritten.
+- **The count still runs.** The continuity counter is renumbered, because what fell
+  between two kept ranges was not written and a gap in the count is packets a receiver
+  believes it missed.
+
+Measured on a terrestrial recording with seven carousel PIDs and a satellite one with
+nine: every module whole, every module identical to the recording's, no gap in any
+count.
+
+One thing does not survive, and cannot. A carousel that is synchronised to the
+programme — an event message timed against the stream — is timed against a stream that
+has had pieces taken out of it. The pages load; a page that was to turn at a particular
+moment no longer has that moment.
 
 ## Written as a partial transport stream (`--tables partial`, and every `.m2ts`)
 

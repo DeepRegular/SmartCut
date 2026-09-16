@@ -74,6 +74,7 @@ copy, so **the whole track is re-encoded**.
 | Option | Meaning |
 |---|---|
 | `--tables partial\|broadcast\|muxer` | How a transport stream describes its own contents. Unsaid, a `.ts` gets `broadcast` — the recording's own SDT, EIT and TOT, which is where a player reads the programme name, the station and the clock — and a `.m2ts` gets `partial`, the shape a disc's stream is written in. `muxer` adds nothing. `--no-tables` is the old name for `muxer` |
+| `--no-data-broadcast` | Leave out the recording's data broadcast — what is behind the blue button. It is otherwise carried into any `.ts` that keeps the broadcast's own tables, which is the only shape that can hold one: the modules come out whole and byte for byte, so a receiver draws the same pages. What turning it down buys is size — a carousel is between a hundredth and a fifth of what a broadcast multiplex spends. `--data-broadcast` asks for it outright, which only changes what is said when it cannot be carried |
 
 ## Writing a disc (BDAV)
 

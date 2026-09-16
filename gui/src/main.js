@@ -2958,7 +2958,14 @@ function renderTracks() {
   // Listed to be honest about them, not to be chosen between, so they go
   // under the tracks that are a choice rather than among them -- with the
   // reason said once at the end and not after each.
-  const dropped = trackList.filter((k) => !k.optional && k.kind !== "subpicture");
+  const dropped = trackList.filter(
+    (k) => !k.optional && k.kind !== "subpicture" && k.detail !== "data",
+  );
+  // The data broadcast is carried, and not by a choice made here: it is one
+  // answer for the whole run, on the output settings screen, because only a
+  // `.ts` can hold one. Listing it as "not carried" was true before that
+  // screen had the question and is not true now.
+  const settled = trackList.filter((k) => !k.optional && k.detail === "data");
   // A DVD's subtitles are not a choice made here and are not dropped either:
   // they travel beside the cut. Said on their own line, because either of the
   // lists they would otherwise land in would be saying something untrue.
@@ -3021,6 +3028,15 @@ function renderTracks() {
     });
     list.appendChild(li);
   }
+  for (const track of settled) {
+    const li = document.createElement("li");
+    li.className = "dim";
+    li.textContent = tr("tracks.settled", {
+      what: tr("tracks.data"),
+      pid: track.pid.toString(16).padStart(4, "0"),
+    });
+    list.appendChild(li);
+  }
   for (const track of beside) {
     const li = document.createElement("li");
     li.className = "dim";
@@ -3030,13 +3046,15 @@ function renderTracks() {
     });
     list.appendChild(li);
   }
-  // Two reasons, each said only where it applies: what cannot go on a cut
-  // timeline at all, and what could have but has nowhere to be written.
-  for (const [key, when] of [
-    ["tracks.droppedNote", (k) => k.detail !== "substream"],
-    ["tracks.substreamNote", (k) => k.detail === "substream"],
+  // Three reasons, each said only where it applies: what cannot go on a cut
+  // timeline at all, what could have but has nowhere to be written, and what
+  // travels by an answer given on another screen.
+  for (const [key, when, from] of [
+    ["tracks.droppedNote", (k) => k.detail !== "substream", dropped],
+    ["tracks.substreamNote", (k) => k.detail === "substream", dropped],
+    ["tracks.settledNote", () => true, settled],
   ]) {
-    if (!dropped.some(when)) continue;
+    if (!from.some(when)) continue;
     const note = document.createElement("li");
     note.className = "dim small";
     note.textContent = tr(key);

@@ -527,6 +527,14 @@
               </select>
             </span>
           </div>
+          <!-- Only where a recording in the list carries one, and only
+               into a .ts: a carousel is written by the pass that puts the
+               broadcast's own tables back, and no other shape has a place
+               for it. See `carousel.rs`. -->
+          <div class="opts" id="row-data-broadcast" hidden>
+            <label class="opt"><input id="out-data-broadcast" type="checkbox" />
+              <span data-i18n="outset.dataBroadcast">データ放送も残す (.ts のみ・ファイルは大きくなる)</span></label>
+          </div>
           <div class="opts" id="row-keyframes">
             <label class="opt"><input id="out-keyframes" type="checkbox" />
               <span data-i18n="outset.keyframeSidecar">キーフレーム情報を別ファイル (.keyframe) で出力する</span></label>

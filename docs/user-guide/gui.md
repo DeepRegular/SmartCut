@@ -438,9 +438,11 @@ program deciding what the recording is for.
   the hour rather than to the programme — an earthquake warning is not a line of
   dialogue — so it is listed and switched separately. A 4K broadcast's subtitles,
   which are XML rather than ARIB characters, are a track of their own too.
-- Data broadcasting cannot be carried on a cut timeline at all, so it appears as
-  `not carried` rather than as a choice. For a recording off a disc, a menu and
-  the text subtitles drawn with the disc's own typeface say the same thing.
+- Data broadcasting is not a track this menu switches: it is one answer for the
+  whole run, on the output settings screen, because it can only go into a `.ts`.
+  Left off there, it appears here as `not carried`. For a recording off a disc, a
+  menu and the text subtitles drawn with the disc's own typeface really cannot be
+  carried, and say so here.
 - **A Blu-ray's subtitles are a choice here like any other track.** A DVD's are
   not: they go wherever the output settings send them, and the list says so on a
   line of its own — `inside the cut or beside it, as the output settings say`.
@@ -496,6 +498,7 @@ What is set on either tab stays there when you switch.
 | **Bit depth** | `Same as the input`, 16 or 24 bit (only meaningful for linear PCM) |
 | **Audio bitrate** | For frames that are rebuilt. `Leave it to the engine` is the safe answer |
 | **A disc's subtitles** | Shown only for a recording off a disc. `Inside the cut (PGS)` by default — one file, with its subtitles in it — or beside the cut: `.idx / .sub`, the pair every player and subtitle tool reads, or `.sup`, the display sets themselves. **The line says which destination leaves them untouched**, and that is a different one for a DVD than for a Blu-ray |
+| **Keep the data broadcast (.ts only; the file gets bigger)** | Carries the recording's data broadcast — what is behind the blue button — into the cut. Shown **only where a recording in the list has one and the run is writing `.ts`**, and **on** there: a cut is meant to be the recording, shorter. Clear it for the runs where size matters more than the pages — a carousel is between a hundredth and a fifth of the file depending on the station |
 | **Write the keyframes to a separate .keyframe file** | Puts a `.keyframe` file next to the video, under the same name |
 
 A `.keyframe` file is **frame numbers and nothing else, with no header**, counted

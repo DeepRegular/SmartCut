@@ -195,7 +195,7 @@ fn usage() -> String {
     "usage: smartcut <input> [--keep START-END]... [--cut START-END]... \
      [--drop-stream INDEX]... [--drop-subpicture ID]... \
      [--subtitles pgs|beside|sup] [--tables partial|broadcast|muxer] [--no-open-gop] \
-     [--clean-joins] \
+     [--clean-joins] [--no-data-broadcast] \
      [--vc1-quant 3..31] [--title N] [-o OUTPUT | --bdav FOLDER]\n\
      <input> is a recording, or a disc -- a BDAV, BDMV or VIDEO_TS folder, \
      or an .iso of one -- whose recordings are listed when no --title \
@@ -216,6 +216,11 @@ fn usage() -> String {
      reads the programme name, the station and the clock, and a Blu-ray \
      clip is written as a partial transport stream, which is what that \
      format is\n\
+     --no-data-broadcast leaves out what is behind the blue button -- the \
+     carousel a station sends its pages on -- which is otherwise carried \
+     into any .ts that keeps the broadcast's own tables, that being the \
+     only shape which can hold one. What it costs is size: a carousel is \
+     between a hundredth and a fifth of what a multiplex spends\n\
      --bdav writes the cut onto a disc of recordings in FOLDER rather than \
      into a file; --disc-title, --programme, --channel, --about and --made \
      fill in what its index says, which is otherwise taken from what the \
@@ -269,6 +274,13 @@ fn main() -> Result<()> {
     // broadcast's own tables and a Blu-ray clip is a partial transport
     // stream. See `smartcut_core::tables_for`.
     let mut tables: Option<smartcut_core::si::Tables> = None;
+    // Whether the recording's data broadcast travels with the cut. Nothing
+    // said leaves it to the engine, which carries it wherever it can be
+    // carried -- a cut is meant to be the recording, shorter, and that was
+    // in the recording. `--no-data-broadcast` is how to say no: a carousel
+    // is between a hundredth and a fifth of what a multiplex spends. See
+    // `smartcut_core::carousel`.
+    let mut data_broadcast: Option<bool> = None;
     // Where a disc of recordings is being built, and what to call it and the
     // recording going onto it. See `smartcut_core::bdav`.
     let mut bdav: Option<String> = None;
@@ -471,6 +483,8 @@ fn main() -> Result<()> {
             }
             // What the option was called when there were only two answers.
             "--no-tables" => tables = Some(smartcut_core::si::Tables::Muxer),
+            "--data-broadcast" => data_broadcast = Some(true),
+            "--no-data-broadcast" => data_broadcast = Some(false),
             "--proxy" => make_proxy = true,
             "--as-proxy" => as_proxy = true,
             "--analyze" => analyze = true,
@@ -797,9 +811,25 @@ fn main() -> Result<()> {
             .unwrap_or_default();
         println!("subtitle:{lang} subpicture   [id 0x{:02x}]", s.id);
     }
+    // The data broadcast, unless it has been turned down. Listed with the
+    // streams that are carried because that is what it is -- and where the
+    // output turns out to be a shape that cannot hold one, the engine says
+    // so at the cut rather than this promising otherwise here.
+    if data_broadcast != Some(false) {
+        for d in src.dropped.iter().filter(|d| d.what == "data") {
+            println!(
+                "data   : carousel   [{}]",
+                smartcut_core::track_name(src.on_a_ts, d.pid, d.stream_index)
+            );
+        }
+    }
     // Said out loud rather than dropped in silence: these are streams a cut
     // has no way to carry. See `smartcut_core::DroppedStream`.
-    for d in &src.dropped {
+    for d in src
+        .dropped
+        .iter()
+        .filter(|d| !(data_broadcast != Some(false) && d.what == "data"))
+    {
         println!(
             "        not carried: {} on {}",
             d.describe(),
@@ -1312,9 +1342,20 @@ fn main() -> Result<()> {
             src.subpictures.len()
         )
     };
+    // Said out loud only where it is actually going in: asked for on a
+    // recording that carries none, or in a shape that cannot hold one, the
+    // engine says so itself rather than this promising it here.
+    let data = if data_broadcast != Some(false)
+        && to_ts
+        && src.dropped.iter().any(|d| d.what == "data")
+    {
+        ", the data broadcast"
+    } else {
+        ""
+    };
     println!(
         "         {kept_audio} of {} sound track(s), {kept_caps} of {} caption \
-         stream(s){graphics}{subpictures}{}",
+         stream(s){graphics}{subpictures}{data}{}",
         src.audios.len(),
         src.captions.len(),
         match (to_ts, smartcut_core::tables_for(&out, tables)) {
@@ -1340,6 +1381,7 @@ fn main() -> Result<()> {
             drop_subpictures,
             subtitles,
             tables,
+            data_broadcast,
             vc1_quant,
             ..Default::default()
         },

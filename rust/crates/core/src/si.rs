@@ -179,13 +179,13 @@ fn find_sync(buf: &[u8], stride: usize) -> Option<usize> {
 /// four bytes of arrival time in front of each -- which is what a Blu-ray
 /// recording is, and what a `.m2ts` taken off one still is. Nothing else
 /// gets this far: libavformat has already agreed the file is MPEG-TS.
-fn framing(buf: &[u8]) -> Option<(usize, usize)> {
+pub(crate) fn framing(buf: &[u8]) -> Option<(usize, usize)> {
     [PACKET, M2TS_PACKET]
         .into_iter()
         .find_map(|stride| find_sync(buf, stride).map(|at| (at, stride)))
 }
 
-fn pid_of(p: &[u8]) -> u16 {
+pub(crate) fn pid_of(p: &[u8]) -> u16 {
     (((p[1] & 0x1F) as u16) << 8) | p[2] as u16
 }
 
@@ -205,7 +205,7 @@ fn payload_start(p: &[u8]) -> Option<usize> {
 /// The clock is the only timeline the finished file has that can be read
 /// without decoding anything, which is what decides where an injected
 /// section goes.
-fn pcr_of(p: &[u8]) -> Option<i64> {
+pub(crate) fn pcr_of(p: &[u8]) -> Option<i64> {
     let afc = (p[3] >> 4) & 0x03;
     if afc < 2 || p[4] < 7 {
         return None;
@@ -1026,7 +1026,7 @@ impl Snapshot {
     }
 }
 
-fn read_fully<R: Read>(f: &mut R, buf: &mut [u8]) -> Result<usize> {
+pub(crate) fn read_fully<R: Read>(f: &mut R, buf: &mut [u8]) -> Result<usize> {
     let mut got = 0;
     while got < buf.len() {
         match f.read(&mut buf[got..])? {
@@ -1710,6 +1710,11 @@ pub struct GraftRange {
     pub start: f64,
     /// The tables that were in force at the source point it opens on.
     pub snapshot: Snapshot,
+    /// Where in the recording this range came from, for the streams that are
+    /// carried as bytes rather than muxed. `None` where nothing is being
+    /// carried that way, or where the index could not say which byte the
+    /// range opens on. See [`crate::carousel`].
+    pub source: Option<crate::carousel::Span>,
 }
 
 /// Everything the pass needs to put the recording's own tables back.
@@ -1722,6 +1727,20 @@ pub struct Graft<'a> {
     pub ranges: Vec<GraftRange>,
     /// Which account of itself the output is to carry.
     pub tables: Tables,
+    /// The recording, for the streams this pass carries across itself.
+    ///
+    /// A data broadcast cannot be muxed -- libavformat delivers no packets
+    /// for a stream of sections -- so its bytes are read out of the recording
+    /// here and dealt back into the output as it is written. `None`, or an
+    /// empty `carry`, and nothing extra is read. See [`crate::carousel`].
+    pub input: Option<&'a crate::input::Input>,
+    /// Which of the recording's PIDs are carried that way.
+    pub carry: Vec<u16>,
+    /// The PID the *recording's* clock is on, which is what those packets are
+    /// timed by. Not always the same PID as the output's: a satellite service
+    /// in the sample keeps its clock on a PID of its own, and a cut of one
+    /// puts it back in the pictures.
+    pub source_pcr_pid: u16,
 }
 
 #[derive(Debug, Default, Clone, Copy)]
@@ -1740,6 +1759,9 @@ pub struct Stats {
     pub pat: usize,
     /// Clock references moved onto a PID of their own. See [`graft`].
     pub pcr: usize,
+    /// Packets of the data broadcast carried across from the recording. See
+    /// [`crate::carousel`].
+    pub data: usize,
 }
 
 /// How often each table is repeated through the output.
@@ -2485,6 +2507,20 @@ pub fn graft(output: &str, g: &Graft) -> Result<Stats> {
             )
         });
         let sdt_section = g.service.sdt.clone();
+        // What the data broadcast will add to the file, measured off the
+        // recording before any of it is added: the one table that states a
+        // rate has to state it for a stream this pass has not finished
+        // writing. Measured only where such a table is being written, since
+        // it is a read of its own; see [`crate::carousel::rate`].
+        let data_rate = |g: &Graft| match (g.input, g.carry.is_empty()) {
+            (Some(input), false) => crate::carousel::rate(
+                input,
+                &g.carry,
+                g.source_pcr_pid,
+                g.ranges.first().and_then(|r| r.source).map_or(0, |s| s.pos),
+            ),
+            _ => 0.0,
+        };
         // One selection information table per range, so a cut spanning two
         // programmes names each over its own stretch -- the same reason the
         // event information is read per range. A range whose table comes out
@@ -2493,7 +2529,7 @@ pub fn graft(output: &str, g: &Graft) -> Result<Stats> {
         // it already has.
         let sit = if g.tables == Tables::Partial {
             // Measured before the pass, against the file as the muxer left
-            // it, plus what these tables will add to it.
+            // it, plus what these tables and the data broadcast will add.
             // The largest a section can be, since which range holds the
             // largest table is not known before the rate they all carry is.
             let biggest = SECTION_MAX.div_ceil(PACKET - 5) as f64;
@@ -2501,7 +2537,7 @@ pub fn graft(output: &str, g: &Graft) -> Result<Stats> {
                 output,
                 pcr_pid,
                 stride,
-                biggest * PACKET as f64 * 8.0 / SIT_PERIOD,
+                biggest * PACKET as f64 * 8.0 / SIT_PERIOD + data_rate(g),
             )?;
             let mut sections: Vec<Vec<u8>> = Vec::with_capacity(g.ranges.len());
             let mut version = 0u8;
@@ -2553,6 +2589,14 @@ pub fn graft(output: &str, g: &Graft) -> Result<Stats> {
         // Which range the clock is inside, so a cut spanning two programmes
         // describes each of them over its own stretch.
         let mut range = 0usize;
+        // The recording's own data broadcast, read alongside the cut and
+        // dealt back into it: one reader per kept range, opened as the clock
+        // reaches that range. See [`crate::carousel`].
+        let carrying = g.input.is_some() && !g.carry.is_empty();
+        let mut carousel: Option<crate::carousel::Reader> = None;
+        // Which range the reader in hand was opened for. Nothing is open to
+        // begin with, and the first packet written opens the first one.
+        let mut reading = usize::MAX;
         // Whether the map has gone out yet. A stream opens with the map and
         // not with a description of what the map is about -- both reference
         // discs do, and libavformat writes its service description first --
@@ -2673,6 +2717,55 @@ pub fn graft(output: &str, g: &Graft) -> Result<Stats> {
                 }
             }
             dst.write_all(&frame)?;
+
+            // The data broadcast, one packet at a time. A packet per packet
+            // written is far more than the rate it arrived at -- the busiest
+            // carousel in the sample is a fifth of a multiplex, and this is
+            // room for a half -- so the stream comes out spread the way it
+            // went in rather than in a burst at every clock reference, which
+            // is what taking everything due at once would do.
+            if carrying {
+                if reading != range {
+                    reading = range;
+                    carousel = match (g.input, g.ranges[range].source) {
+                        (Some(input), Some(span)) => crate::carousel::Reader::open(
+                            input,
+                            &g.carry,
+                            g.source_pcr_pid,
+                            span,
+                            g.ranges[range].start,
+                        )
+                        // A cut that came out right is not worth failing over
+                        // a stream nothing but a receiver reads. Say what was
+                        // lost and carry on writing the file.
+                        .map_err(|e| {
+                            eprintln!("note: the data broadcast could not be read back: {e}");
+                        })
+                        .ok(),
+                        _ => None,
+                    };
+                }
+                if let Some(reader) = carousel.as_mut() {
+                    if let Some(mut one) = reader.due(now)? {
+                        // Renumbered because the stream is no longer
+                        // continuous: what fell between two kept ranges was
+                        // not written, and a receiver reads a gap in the
+                        // count as packets it missed. The counter advances
+                        // for a packet *with a payload*; one without repeats
+                        // the number the packet before it carried, which is
+                        // what the standard says and what a receiver checks.
+                        let c = cc.entry(pid_of(&one)).or_default();
+                        if one[3] & 0x10 != 0 {
+                            one[3] = (one[3] & 0xF0) | (*c & 0x0F);
+                            *c = c.wrapping_add(1) & 0x0F;
+                        } else {
+                            one[3] = (one[3] & 0xF0) | (c.wrapping_sub(1) & 0x0F);
+                        }
+                        put(&mut dst, arrival, &one)?;
+                        stats.data += 1;
+                    }
+                }
+            }
 
             // A partial stream has said everything it has to say in the one
             // table; the tables below are the ones it exists instead of. It
@@ -2977,6 +3070,9 @@ mod tests {
             pcr_pid: 0x1011,
             ranges: Vec::new(),
             tables: Tables::Muxer,
+            input: None,
+            carry: Vec::new(),
+            source_pcr_pid: 0x1011,
         };
         let sec = build_pmt(
             &graft,
@@ -3020,6 +3116,23 @@ mod tests {
         assert_eq!(
             &out[26..out.len() - 4],
             [component(0x00), short_event()].concat()
+        );
+    }
+
+    /// And the other way round: a cut that carries the data broadcast is a
+    /// cut the description still fits, so nothing comes out of the event at
+    /// all. What decides it is whether the component is carried, which is
+    /// the same question for a carousel as for a sound track.
+    #[test]
+    fn the_description_of_a_carried_carousel_travels() {
+        let sec = eit(0, &[component(0x00), short_event(), data_content(0x40)]);
+        let carrying = Components {
+            described: [0x00, 0x10, 0x30, 0x38, 0x40].into_iter().collect(),
+            carried: [0x00, 0x10, 0x30, 0x40].into_iter().collect(),
+        };
+        assert!(
+            prune_events(&sec, &carrying).is_none(),
+            "an event that describes only what the cut has is left as it came"
         );
     }
 

@@ -317,6 +317,7 @@ const CATALOG = {
     "outset.audioRate": "サンプリング周波数:",
     "outset.audioBits": "量子化ビット数:",
     "outset.audioBitrate": "音声ビットレート:",
+    "outset.dataBroadcast": "データ放送も残す (.ts のみ・ファイルは大きくなる)",
     "outset.keyframeSidecar": "キーフレーム情報を別ファイル (.keyframe) で出力する",
     "container.same": "入力と同じ",
     "container.ts": "MPEG-2 トランスポート (.ts)",
@@ -629,8 +630,11 @@ const CATALOG = {
     "tracks.substream": "同じ PID に畳み込まれた互換用ストリーム",
     "tracks.menu": "メニュー",
     "tracks.textst": "テキスト字幕（書体はディスク側にあります）",
+    "tracks.settled": "{what} — 出力設定で決めます   PID 0x{pid}",
+    "tracks.settledNote":
+      "データ放送は、ここではなく出力設定でまとめて答えます。置けるのは .ts だけで、既定では残します。",
     "tracks.droppedNote":
-      "これらは切ったタイムラインに載せられません。文字スーパーはパケットに時刻がなく、データ放送はストリームではなく断片の繰り返しだからです。",
+      "これらはここでは選べません。文字スーパーはパケットに時刻が無く、メニューやテキスト字幕はディスク側にあるものです。",
     "tracks.substreamNote":
       "Blu-ray のロスレス音声は、それを再生できない機器のために AC-3 を同じ PID へ畳み込んで送ってきます。1 つの PID に 2 本は書き戻せないので、トラック本体（TrueHD）を書き出し、内側の AC-3 は落とします。",
     "tracks.tablesNote":
@@ -961,6 +965,7 @@ const CATALOG = {
     "outset.audioRate": "Sample rate:",
     "outset.audioBits": "Bit depth:",
     "outset.audioBitrate": "Audio bitrate:",
+    "outset.dataBroadcast": "Keep the data broadcast (.ts only; the file gets bigger)",
     "outset.keyframeSidecar": "Write the keyframes to a separate .keyframe file",
     "container.same": "Same as the input",
     "container.ts": "MPEG-2 transport (.ts)",
@@ -1265,8 +1270,11 @@ const CATALOG = {
     "tracks.substream": "a compatibility stream folded into this PID",
     "tracks.menu": "a menu",
     "tracks.textst": "text subtitles (the fonts are on the disc)",
+    "tracks.settled": "{what} — answered on the output settings screen   PID 0x{pid}",
+    "tracks.settledNote":
+      "The data broadcast is answered once on the output settings screen rather than per track here. Only a .ts can hold one, and it is kept by default.",
     "tracks.droppedNote":
-      "These cannot be put on a cut timeline: superimposed text arrives with no time on its packets, and a data broadcast is a carousel of sections rather than a stream.",
+      "These are not choices here: superimposed text arrives with no time on its packets, and a menu or a disc's text subtitles live on the disc rather than in the stream.",
     "tracks.substreamNote":
       "A Blu-ray's lossless sound carries an AC-3 core folded into the same PID, for players that cannot decode the rest. Two streams cannot be written back onto one PID, so the track itself (the TrueHD) is written and the core folded inside it is left out.",
     "tracks.tablesNote":

@@ -263,6 +263,23 @@ pub struct CutOptions {
     /// sent them. See [`crate::si::Tables`]. Only means anything writing a
     /// transport stream.
     pub tables: Option<crate::si::Tables>,
+    /// Whether to carry the recording's data broadcast into the cut.
+    ///
+    /// `None` takes the answer that suits where the cut is going, which is
+    /// to carry it wherever it can be carried: **a cut of a recording is
+    /// meant to be the recording, shorter**, and what is behind the blue
+    /// button was in the recording. `Some(false)` leaves it out, which is
+    /// what to ask for when the file matters more than the pages -- a
+    /// carousel is between a hundredth and a fifth of what a broadcast
+    /// multiplex spends.
+    ///
+    /// Only means anything writing a plain `.ts` that keeps the broadcast's
+    /// own tables. A carousel cannot be muxed at all -- see
+    /// [`crate::carousel`] -- so it is carried by the same pass that puts the
+    /// tables back, and a disc's own framing has no place to put it. Asked
+    /// for outright where it cannot go, the cut says so; left to the default
+    /// it goes quietly, because a default cannot be disappointed.
+    pub data_broadcast: Option<bool>,
 }
 
 /// How far past a segment's end the reader will go for a stream that has
@@ -3802,6 +3819,7 @@ fn graft_tables(
     captions: &[crate::CaptionInfo],
     graphics: &[crate::GraphicsInfo],
     converted: &[crate::SubpictureInfo],
+    data: &[u16],
     video_pid: i32,
     pids: &Pids,
     range_starts: &[f64],
@@ -3903,20 +3921,57 @@ fn graft_tables(
         });
     }
 
-    let ranges = plans
+    // The data broadcast is announced the way the recording announced it:
+    // the map's own entry, with the data component descriptor beside it that
+    // says which kind of carousel this is. There is nothing to correct --
+    // what goes into the file is the packets that came out of the recording,
+    // byte for byte -- and a stream named as faithful is one whose
+    // description in the programme and the event still stands.
+    for pid in data {
+        streams.push(crate::si::GraftStream {
+            pid: *pid,
+            was: *pid,
+            faithful: true,
+            declared: None,
+            language: None,
+            extra: Vec::new(),
+        });
+    }
+
+    let ranges: Vec<crate::si::GraftRange> = plans
         .iter()
         .zip(range_starts)
         .map(|(plan, &start)| {
-            let pos = src
+            let anchor = src
                 .points
                 .iter()
-                .rfind(|p| p.time <= plan.t_in + 1e-6 && p.pos >= 0)
-                .map_or(0, |p| p.pos);
+                .rfind(|p| p.time <= plan.t_in + 1e-6 && p.pos >= 0);
+            let pos = anchor.map_or(0, |p| p.pos);
             let snapshot =
                 crate::si::snapshot_at(&src.input, pos, service.service_id).unwrap_or_default();
-            crate::si::GraftRange { start, snapshot }
+            // Where this range sits in the recording, for the streams read
+            // out of it directly. Only where the index knows the byte: the
+            // alternative is reading from the head of the file to find a
+            // range forty minutes in, which is gigabytes to carry a stream
+            // that is a hundredth of them. See [`crate::carousel::Span`].
+            let source = anchor.map(|p| crate::carousel::Span {
+                pos: p.pos,
+                skip: plan.t_in - p.time,
+                length: plan.t_out - plan.t_in,
+            });
+            crate::si::GraftRange {
+                start,
+                snapshot,
+                source,
+            }
         })
         .collect();
+    if !data.is_empty() && ranges.iter().any(|r| r.source.is_none()) {
+        eprintln!(
+            "note: the index does not know which byte every kept range opens on, so the data \
+             broadcast is carried only for those it does know."
+        );
+    }
 
     crate::si::graft(
         output,
@@ -3926,6 +3981,16 @@ fn graft_tables(
             pcr_pid: pids.out(video_pid) as u16,
             ranges,
             tables,
+            input: (!data.is_empty()).then_some(&src.input),
+            carry: data.to_vec(),
+            // The recording's own clock, which is not always on its
+            // pictures: a satellite service in the sample keeps it on a PID
+            // of its own, and the cut puts it back in the pictures.
+            source_pcr_pid: if service.pcr_pid > 0 {
+                service.pcr_pid
+            } else {
+                video_pid as u16
+            },
         },
     )
 }
@@ -4115,6 +4180,35 @@ pub fn cut_with_progress(
     let want = tables_for(output, opts.tables);
     let wants_tables = to_ts && want != crate::si::Tables::Muxer;
     let ours = u16::try_from(video_pid).unwrap_or(0);
+    // The data broadcast, which is carried by the table pass rather than by
+    // the muxer and so is only possible where that pass runs at all. What is
+    // asked for here is what the demuxer called data; which of those are
+    // really a carousel is settled against the recording's own map below,
+    // where the map has been read. See [`crate::carousel`].
+    let wants_data = opts.data_broadcast.unwrap_or(true);
+    let asked_for_data = wants_data && wants_tables && !writing_m2ts(output);
+    let maybe_data: Vec<u16> = if asked_for_data {
+        src.dropped
+            .iter()
+            .filter(|d| d.what == "data" && d.pid > 0)
+            .map(|d| d.pid as u16)
+            .collect()
+    } else {
+        Vec::new()
+    };
+    // Only where it was asked for outright. The default is an answer about
+    // what suits the output, and an output that cannot hold one is not a
+    // disappointment to report.
+    if opts.data_broadcast == Some(true)
+        && !asked_for_data
+        && src.dropped.iter().any(|d| d.what == "data")
+    {
+        eprintln!(
+            "note: a data broadcast can only be carried into a plain .ts that keeps the \
+             broadcast's own tables -- it is written by the pass that puts those back, and \
+             nothing else can write it. It is left out of this one."
+        );
+    }
     // Every stream the cut is going to carry, so the map that comes back is
     // one that describes them all rather than whichever arrived first. See
     // [`crate::si::read_service`].
@@ -4122,6 +4216,7 @@ pub fn cut_with_progress(
         .chain(audios.iter().map(|a| a.pid as u16))
         .chain(captions.iter().map(|c| c.pid as u16))
         .chain(graphics.iter().map(|g| g.pid as u16))
+        .chain(maybe_data.iter().copied())
         .filter(|pid| *pid != 0)
         .collect();
     let tables = match wants_tables.then(|| crate::si::read_service(&src.input, ours, &carried)) {
@@ -4132,6 +4227,33 @@ pub fn cut_with_progress(
         }
         None => None,
     };
+    // Which of those streams is really a data broadcast, as against the
+    // other things a demuxer has no name for. The map is what says so, and
+    // the map has now been read: a carousel is sent as DSM-CC sections and
+    // announces itself as such. Anything else the demuxer could not place
+    // stays where it was left.
+    let data: Vec<u16> = tables.as_ref().map_or_else(Vec::new, |service| {
+        maybe_data
+            .iter()
+            .copied()
+            .filter(|pid| {
+                service
+                    .stream(*pid)
+                    .is_some_and(|es| es.stream_type == crate::carousel::DSMCC_SECTIONS)
+            })
+            .collect()
+    });
+    // Said only where it was asked for outright and there was something to
+    // carry that could not be placed. A recording with no data streams at
+    // all raises no question, and a run taking the default is told what was
+    // left behind by the listing, which says `not carried` beside it.
+    if opts.data_broadcast == Some(true) && data.is_empty() && !maybe_data.is_empty() {
+        eprintln!(
+            "note: the map this recording opens on does not name its data broadcast as one -- \
+             a station takes it out of the map between programmes, and a recording that \
+             begins before one starts can open on a map without it. Nothing is carried."
+        );
+    }
 
     // The muxer's options are strings, and have to outlive the dictionary
     // they go into.
@@ -5161,6 +5283,11 @@ pub fn cut_with_progress(
             &captions,
             &graphics,
             &converted_streams,
+            // Only where the broadcast's own tables are going in: the map
+            // that names the carousel is written by the same pass that
+            // carries it, and a file with the packets and no entry for them
+            // is a file nothing can find them in.
+            if tables.is_some() { data.as_slice() } else { &[] },
             video_pid,
             &pids,
             &range_starts,
@@ -5177,8 +5304,16 @@ pub fn cut_with_progress(
             Ok(stats) if std::env::var("SMARTCUT_DEBUG").is_ok() => {
                 eprintln!(
                     "  tables: {} list, {} map, {} service, {} event, {} clock, \
-                     {} selection; {} clock references given a PID of their own",
-                    stats.pat, stats.pmt, stats.sdt, stats.eit, stats.tot, stats.sit, stats.pcr
+                     {} selection; {} clock references given a PID of their own; \
+                     {} data broadcast packets carried",
+                    stats.pat,
+                    stats.pmt,
+                    stats.sdt,
+                    stats.eit,
+                    stats.tot,
+                    stats.sit,
+                    stats.pcr,
+                    stats.data
                 );
             }
             Ok(_) => {}

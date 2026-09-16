@@ -142,6 +142,48 @@ for name in atx.ts full_ntv.ts terrestrial_nhke.ts animax_anime_01.ts; do
 
 done
 
+# --- データ放送 -----------------------------------------------------------
+#
+# What is behind the blue button, which is the one stream in a recording that
+# cannot go through the muxer at all: a carousel is sent as sections, and
+# libav delivers no packets for those. So it is carried across as bytes by
+# the pass that puts the tables back, and what says whether that worked is
+# whether the modules a receiver would reassemble are still whole, still the
+# recording's own, and still counted without a gap. See `tests/carousel.py`.
+echo
+echo "データ放送がカットにも残るか"
+for name in atx.ts full_ntv.ts terrestrial_nhke.ts; do
+  src="$MEDIA/$name"
+  if [ ! -f "$src" ]; then skip "$name のデータ放送" "no $name"; continue; fi
+  out="$WORK/data.ts"
+  # No flag: carrying it is what a .ts does unless it is turned down.
+  "$BIN" "$src" --keep 20.0-80.0 --keep 120.0-180.0 -o "$out" >/dev/null 2>&1
+  if [ ! -s "$out" ]; then bad "$name のデータ放送" "出力が空"; continue; fi
+  car=$(python3 tests/carousel.py "$src" "$out")
+  if [ "$(field "$car" source)" = "0" ]; then
+    skip "$name のデータ放送" "この録画にデータ放送はありません"
+    rm -f "$out"; continue
+  elif [ "$(field "$car" ok)" = "1" ]; then
+    ok "$name のデータ放送" \
+       "$(field "$car" whole)/$(field "$car" modules) モジュールそのまま、$(field "$car" packets) パケット、PID $(field "$car" cut_pids)"
+  else
+    bad "$name のデータ放送" "$(field "$car" why)"
+  fi
+  # And the same recording with it turned down, which is what somebody who
+  # wants the smaller file asks for: none of it travels, and the map says
+  # nothing about it either. A file with the packets and no entry would be a
+  # file nothing can find them in, and a map with an entry and no packets is
+  # a player sent looking for a stream that is not there.
+  "$BIN" "$src" --keep 20.0-80.0 --no-data-broadcast -o "$out" >/dev/null 2>&1
+  left=$(python3 tests/carousel.py "$src" "$out" | sed -n 's/^cut_pids=//p')
+  if [ -z "$left" ]; then
+    ok "$name 断れば残らない" "map にデータ放送なし"
+  else
+    bad "$name 断れば残らない" "PID $left が残っている"
+  fi
+  rm -f "$out"
+done
+
 # --- 音声多重 -------------------------------------------------------------
 #
 # No recording to hand carries two sound tracks, so one is built: a real
