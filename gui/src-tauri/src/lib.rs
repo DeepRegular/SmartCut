@@ -3281,8 +3281,13 @@ async fn export(
             &plans,
             &output,
             &opts,
-            Some(Box::new(move |f| {
-                let _ = reporter.emit("export-progress", (whose.clone(), f));
+            // Which of the two passes, as well as how far: the second is a
+            // read and a write of the whole finished file, and a window that
+            // says 出力中 through it is a window saying the wrong thing for
+            // a third of the run. See [`smartcut_core::cut::Pass`].
+            Some(Box::new(move |pass, f| {
+                let tables = pass == smartcut_core::cut::Pass::Tables;
+                let _ = reporter.emit("export-progress", (whose.clone(), tables, f));
             })),
         )
         .map_err(|e| e.to_string())?;

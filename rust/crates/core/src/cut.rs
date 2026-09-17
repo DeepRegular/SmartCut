@@ -3838,6 +3838,7 @@ fn graft_tables(
     range_starts: &[f64],
     plans: &[RangePlan],
     output: &str,
+    on: Option<&(dyn Fn(f64) + Sync)>,
     tables: crate::si::Tables,
 ) -> Result<crate::si::Stats> {
     // A disc's own stream says once, on the pictures, that the stream types
@@ -3988,6 +3989,7 @@ fn graft_tables(
 
     crate::si::graft(
         output,
+        on,
         &crate::si::Graft {
             service,
             streams,
@@ -4012,13 +4014,39 @@ pub fn cut(src: &Source, plans: &[RangePlan], output: &str, opts: &CutOptions) -
     cut_with_progress(src, plans, output, opts, None)
 }
 
+/// Which of a cut's two passes a report is about.
+///
+/// A transport stream is written twice: once by the muxer, and once again by
+/// the pass that puts the recording's own tables back over what the muxer
+/// wrote -- which is a read and a write of the whole finished file. See
+/// [`crate::si::graft`]. Until this said so, the second pass reported nothing
+/// at all: the bar reached the end of the first one and the window then sat
+/// still for as long again.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Pass {
+    /// Copying and re-encoding into the output.
+    Writing,
+    /// Putting the recording's own tables back over the muxer's.
+    Tables,
+}
+
+/// How much of the whole the writing pass is, where the tables are going back
+/// in as well.
+///
+/// Measured on a 700 MB broadcast recording copied whole: 3.16 s to write it
+/// and 1.29 s to visit it again. It is only an estimate for other material --
+/// a cut that re-encodes a great deal spends longer in the first pass than
+/// this says -- but an estimate is what a bar is, and standing still at the
+/// end of the first pass was not an estimate, it was wrong.
+const WRITING_SHARE: f64 = 0.7;
+
 /// As [`cut`], reporting how far along it is.
 pub fn cut_with_progress(
     src: &Source,
     plans: &[RangePlan],
     output: &str,
     opts: &CutOptions,
-    progress: Option<Box<dyn Fn(f64) + Send + Sync>>,
+    progress: Option<Box<dyn Fn(Pass, f64) + Send + Sync>>,
 ) -> Result<()> {
     crate::init()?;
 
@@ -4855,6 +4883,25 @@ pub fn cut_with_progress(
     // as many as 256 of them, so one of sixteen is built as the subtitles go
     // past and written over the top of this at the end. See
     // [`crate::vobsub::Ink`].
+    // The one reporter, shared by the two passes that a transport stream is
+    // written in, and throttled once for both of them: what a caller is shown
+    // is a single bar over the whole job, so it has to be a single sequence.
+    // See [`Pass`] and [`WRITING_SHARE`].
+    let share = if wants_tables { WRITING_SHARE } else { 1.0 };
+    let progress = progress.map(std::sync::Arc::new);
+    let told = std::sync::Arc::new(std::sync::Mutex::new(crate::Told::new()));
+    let say = |pass: Pass, base: f64, span: f64| {
+        let (p, told) = (progress.clone(), told.clone());
+        p.map(move |p| {
+            Box::new(move |f: f64| {
+                let done = base + f * span;
+                told.lock().unwrap().at(Some(&|d: f64| p(pass, d)), done);
+            }) as Box<dyn Fn(f64) + Send + Sync>
+        })
+    };
+    let writing_report = say(Pass::Writing, 0.0, share);
+    let tables_report = say(Pass::Tables, share, 1.0 - share);
+
     let wanted = (!subpictures.is_empty() && converted.is_empty()) || !aside_streams.is_empty();
     let subpictures = wanted.then(|| {
         let from_disc = !subpictures.is_empty() && converted.is_empty();
@@ -4906,7 +4953,7 @@ pub fn cut_with_progress(
         graphics: graphics_tracks,
         subpictures,
         converted,
-        progress,
+        progress: writing_report,
         expected: plans
             .iter()
             .flat_map(|p| &p.segments)
@@ -5275,7 +5322,9 @@ pub fn cut_with_progress(
     // muxer, but the file handle is the output context's and only dropping it
     // gives it up -- and the graft finishes by renaming its rewritten copy
     // over this file, which Windows refuses to do while the file is open.
-    let progress = writer.progress.take();
+    // The writing pass's own reporter goes with it; what is left to report is
+    // the tables, which have their own.
+    drop(writer.progress.take());
     drop(writer);
 
     // A recording that never was a broadcast has no account of itself to put
@@ -5325,6 +5374,7 @@ pub fn cut_with_progress(
             &range_starts,
             plans,
             output,
+            tables_report.as_ref().map(|f| &**f as &(dyn Fn(f64) + Sync)),
             // The recording's own tables where it had some; where it had
             // none, only the map is being corrected.
             if tables.is_some() {
@@ -5358,8 +5408,10 @@ pub fn cut_with_progress(
         }
     }
 
+    // Whichever pass was the last one, ending on the end of it. A cut whose
+    // tables were not going back in never left the first.
     if let Some(report) = &progress {
-        report(1.0);
+        report(if share < 1.0 { Pass::Tables } else { Pass::Writing }, 1.0);
     }
     Ok(())
 }

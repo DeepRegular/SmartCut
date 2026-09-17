@@ -4443,6 +4443,14 @@ let abort = false;
 /// The row being written, so a progress event can be told apart from a stale
 /// one belonging to the row before it.
 let writing = null;
+/// Whether the row being written is in its second pass -- the one that puts
+/// the broadcast's own tables back. Held so the sentence is written once, on
+/// the report that crosses over, rather than on every one after it.
+let writingTables = false;
+/// What that row's output file is called, for the sentence the second pass
+/// writes. Held because the report carries the recording's path and the
+/// sentence is about the file being written.
+let writingName = "";
 let began = 0;
 /// What a disc run does after the last cut: the index the recordings are
 /// wrapped in, and the image the folder is wrapped in. Both are minutes of
@@ -4590,12 +4598,30 @@ function paintOutProgress(overall, since = began) {
 
 if (listen) {
   listen("export-progress", (ev) => {
-    const [path, done] = ev.payload;
+    const [path, tables, done] = ev.payload;
     if (!writing || writing.path !== path) return;
     const clip = writing;
+    const was = Math.round(clip.out.progress * 100);
     clip.out.progress = done;
     clip.out.note = `${Math.round(done * 100)}%`;
+    // Outside the guard below: this is what moves the stage on to the next
+    // stretch of the cut, and a stretch can begin between two whole percent.
     followWrite(done);
+    // The second pass over the file, which a `.ts` always has: the tables the
+    // muxer cannot write, put back over the ones it did. It is a read and a
+    // write of the whole finished file, so a window still saying 出力中
+    // through it is saying the wrong thing for a third of the run.
+    if (tables !== writingTables) {
+      writingTables = tables;
+      if (tables) {
+        el("out-state").textContent = t("out.writingTables", { name: writingName });
+      }
+    } else if (Math.round(done * 100) === was) {
+      // Nothing anybody can see has changed, and what this skips is the
+      // whole row list rebuilt from markup plus a layout read to keep the
+      // moving row in view. The reports come in twice a second either way.
+      return;
+    }
     renderOutScreen();
     const all = ready();
     const finished = all.filter((c) => c.out.state === "done").length;
@@ -4806,8 +4832,11 @@ async function runExport() {
       continue;
     }
     writing = clip;
+    // A fresh row is in its first pass, whatever the row before it ended in.
+    writingTables = false;
+    writingName = nameOf(out);
     clip.out = { state: "running", progress: 0, note: "0%" };
-    el("out-state").textContent = t("out.writing", { name: nameOf(out) });
+    el("out-state").textContent = t("out.writing", { name: writingName });
     renderOutScreen();
     // Before the cut starts, not during: the plan and the frames are reads of
     // the same recording the cut is about to stream off the disc.

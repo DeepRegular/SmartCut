@@ -457,6 +457,7 @@ const CATALOG = {
     "out.writingMost":
       "\"{name}\" を出力中: {n} 箇所を再エンコードし、ほかは無劣化でコピーしています…",
     "out.writingAll": "\"{name}\" を出力中: 映像を再エンコードしています…",
+    "out.writingTables": "\"{name}\" を仕上げ中: 放送の番組情報を書き戻しています…",
     "out.done": "完了{extra}",
     "out.doneKeyframes": " / キーフレーム {n} 個",
     "out.summary": "{done} / {all} 本を出力しました{failed}{aborted}　経過 {elapsed}",
@@ -1101,6 +1102,7 @@ const CATALOG = {
     "out.writingMost":
       "Writing \"{name}\": re-encoding {n} place{n?s}, copying the rest losslessly…",
     "out.writingAll": "Writing \"{name}\": re-encoding the video…",
+    "out.writingTables": "Finishing \"{name}\": putting the broadcast's own tables back…",
     "out.done": "Done{extra}",
     "out.doneKeyframes": " / {n} keyframe{n?s}",
     "out.summary": "{done} of {all} written{failed}{aborted}   elapsed {elapsed}",

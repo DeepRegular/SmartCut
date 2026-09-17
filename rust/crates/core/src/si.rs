@@ -2463,7 +2463,7 @@ fn framing_of(path: &str) -> Result<usize> {
 /// output to write over. Everything else is passed through untouched --
 /// which is the point: the pictures and the sound this walks past are the
 /// ones that were copied bit for bit, and they stay that way.
-pub fn graft(output: &str, g: &Graft) -> Result<Stats> {
+pub fn graft(output: &str, on: Option<&(dyn Fn(f64) + Sync)>, g: &Graft) -> Result<Stats> {
     if g.ranges.is_empty() {
         bail!("nothing to graft onto: no ranges");
     }
@@ -2488,6 +2488,14 @@ pub fn graft(output: &str, g: &Graft) -> Result<Stats> {
     // a copy of the whole file.
     let temp = format!("{output}.si");
     let mut stats = Stats::default();
+    // How far through, for a caller that is showing somebody a bar. This is a
+    // second pass over a file that has just been written -- the cut says it
+    // is finished and then this reads all of it and writes all of it again --
+    // and until it said so, that was a window with nothing moving on it for
+    // as long as the cut itself had taken.
+    let whole = std::fs::metadata(output).map(|m| m.len().max(1)).unwrap_or(1);
+    let mut told = crate::Told::new();
+    let mut read: u64 = 0;
     let outcome = (|| -> Result<()> {
         let mut src = BufReader::with_capacity(1 << 20, std::fs::File::open(output)?);
         let mut dst = std::io::BufWriter::with_capacity(1 << 20, std::fs::File::create(&temp)?);
@@ -2620,6 +2628,8 @@ pub fn graft(output: &str, g: &Graft) -> Result<Stats> {
             Ok(())
         };
         loop {
+            read += stride as u64;
+            told.at(on, read as f64 / whole as f64);
             match src.read_exact(&mut frame) {
                 Ok(()) => {}
                 Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => break,
