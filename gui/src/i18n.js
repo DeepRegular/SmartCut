@@ -694,10 +694,10 @@ const CATALOG = {
     "dur.h": "{h}h ",
     "dur.m": "{m}m ",
     "dur.s": "{s}s",
-    "cm.how.captions": "{n} caption resets",
+    "cm.how.captions": "{n} caption reset{n?s}",
     "cm.how.logo": "logo + silence",
     "cm.how.silence": "silence only (no logo)",
-    "cm.found": "{how}: {n} blocks / {total} in total",
+    "cm.found": "{how}: {n} block{n?s} / {total} in total",
     "cm.none": "{how}: nothing that looks like a commercial",
 
     // --- the window furniture -------------------------------------------
@@ -719,9 +719,9 @@ const CATALOG = {
     "project.untitled": "Untitled",
     "project.windowTitle": "{mark}{name} — SmartCut",
     "project.saved": "Project saved: {name}",
-    "project.opened": "Project opened: {name} ({n} clips)",
+    "project.opened": "Project opened: {name} ({n} clip{n?s})",
     "project.refused":
-      "Project opened: {name} ({n} clips; {bad} left out, being names of something other than a file)",
+      "Project opened: {name} ({n} clip{n?s}; {bad} left out, being names of something other than a file)",
     "project.nothingToSave": "The list is empty — there is nothing to save",
     "project.cannotOpen": "Cannot open the project: {name} ({e})",
     "project.wrongFormat":
@@ -798,7 +798,7 @@ const CATALOG = {
     "prefs.cacheKind.index": "Seek indexes",
     "prefs.cacheKind.proxy": "Proxies",
     "prefs.cacheKind.cm": "Commercial detections",
-    "prefs.cacheFiles": "{n} files",
+    "prefs.cacheFiles": "{n} file{n?s}",
     "prefs.cacheTotal": "{size} in all",
     "prefs.cacheEmpty": "Nothing here yet",
     "prefs.cacheClear": "Delete all",
@@ -869,12 +869,12 @@ const CATALOG = {
     "rowmenu.remove": "Remove clip",
     "props.head": "Quick properties",
     "props.none": "No clip selected",
-    "props.many": "{n} clips selected",
+    "props.many": "{n} clip{n?s} selected",
     "props.queued": "{name}\nWaiting to be read",
     "props.error": "{name}\n{error}",
     "props.body":
       "Clip:  {name}{copy}\n{path}\nVideo:  {codec}, {w}x{h}, {fps} fps, {flags}\n" +
-      "Audio:  {audio}\nLength:  {len} ({frames} frames)   {points} lossless points{unusable}" +
+      "Audio:  {audio}\nLength:  {len} ({frames} frame{frames?s})   {points} lossless points{unusable}" +
       "\n{scenes} scenes   index {index}{cm}",
     "props.copyOf": " (copy {n} of this recording)",
     "props.unusable": " ({n} of them cannot start a cut)",
@@ -933,8 +933,8 @@ const CATALOG = {
     "row.cmRunning": "Detecting commercials {pct}% — {phase}",
     "row.cmQueued": "Commercial detection queued",
     "row.cmNote": "Commercials: {note}",
-    "row.cuts": "{n} cuts — {kept} out",
-    "row.keyframes": "{n} keyframes",
+    "row.cuts": "{n} cut{n?s} — {kept} out",
+    "row.keyframes": "{n} keyframe{n?s}",
     "badge.smart": "Smart",
     "badge.error": "Error",
     "badge.indexing": "Reading",
@@ -1088,9 +1088,9 @@ const CATALOG = {
     "out.audioAsCodec": "(the audio is re-encoded as {codec})",
     "out.audioDownmixed": "(the audio is downmixed {from} → {to} and re-encoded)",
     "out.audioUpmixed": "(the audio is spread {from} → {to} and re-encoded)",
-    "out.shots": "{clip} — {n} places / {frames} frames (everything else is copied byte for byte)",
+    "out.shots": "{clip} — {n} place{n?s} / {frames} frame{frames?s} (everything else is copied byte for byte)",
     "out.ovlKind": "Re-encode {i} of {n}",
-    "out.ovlNote": "{n} frames",
+    "out.ovlNote": "{n} frame{n?s}",
     "out.aborting": "Stopping (the clip being written now is finished first)",
     "out.skipped": "Stopped",
     "outset.branched": "already there → {name}",
@@ -1099,10 +1099,10 @@ const CATALOG = {
     "out.writing": "Writing \"{name}\"…",
     "out.writingCopy": "Writing \"{name}\": copying the video losslessly…",
     "out.writingMost":
-      "Writing \"{name}\": re-encoding {n} places, copying the rest losslessly…",
+      "Writing \"{name}\": re-encoding {n} place{n?s}, copying the rest losslessly…",
     "out.writingAll": "Writing \"{name}\": re-encoding the video…",
     "out.done": "Done{extra}",
-    "out.doneKeyframes": " / {n} keyframes",
+    "out.doneKeyframes": " / {n} keyframe{n?s}",
     "out.summary": "{done} of {all} written{failed}{aborted}   elapsed {elapsed}",
     "out.summaryFailed": "   {n} failed",
     "out.summaryAborted": "   (stopped)",
@@ -1112,7 +1112,7 @@ const CATALOG = {
       "All: {all}   Running: {run}   Waiting: {wait}   Done: {done}   Failed: {bad}   Stopped: {off}",
     "batch.elapsed": "Elapsed {t}",
     "batch.left": "Left {t}",
-    "batch.andElsewhere": "{dir} and {n} other folders",
+    "batch.andElsewhere": "{dir} and {n} other folder{n?s}",
     "batch.andMore": "{name} and {n} more",
     "batch.toDisc": "Writes a disc",
     "batch.toImage": "Disc and image (UDF {udf})",
@@ -1126,7 +1126,7 @@ const CATALOG = {
     "batch.moreTitle": "Remove in bulk",
     "batch.clearDone": "Remove the jobs already written",
     "batch.clearAll": "Remove all",
-    "batch.clearedDone": "{n} written jobs removed",
+    "batch.clearedDone": "{n} written job{n?s} removed",
     "batch.windowTitle": "Batch — SmartCut",
     "batch.opened": "The batch tool has been started",
     "batch.alreadyUp": "The batch tool is already running",
@@ -1140,7 +1140,7 @@ const CATALOG = {
     "batch.afterSleep": "Sleep",
     "batch.afterShutdown": "Shut down",
     "batch.afterCancel": "Cancel",
-    "batch.clips": "{n} clips",
+    "batch.clips": "{n} clip{n?s}",
     "batch.waiting": "Waiting",
     "batch.opening": "Opening the project…",
     "batch.reading": "Reading the list…",
@@ -1162,7 +1162,7 @@ const CATALOG = {
     "batch.replaceBody":
       "The batch opens each project in the queue in turn, which replaces the list on screen. Unsaved changes to it will be lost. Go ahead?",
     "batch.clearTitle": "Clear the queue",
-    "batch.clearBody": "Remove all {n} jobs from the queue?",
+    "batch.clearBody": "Remove all {n} job{n?s} from the queue?",
     "batch.sleepIn": "Sleeping in {s} seconds",
     "batch.shutdownIn": "Shutting down in {s} seconds",
     "batch.afterCancelled": "The action after the batch was cancelled",
@@ -1314,22 +1314,22 @@ const CATALOG = {
     "warm.indexReused": " (reused)",
     "warm.indexBuilt": " (built in {s}s)",
     "warm.noIndex": "Seek index could not be saved",
-    "warm.thumbs": "{n} thumbnails every {gap}s",
-    "warm.scenes": "{n} scenes",
+    "warm.thumbs": "{n} thumbnail{n?s} every {gap}s",
+    "warm.scenes": "{n} scene{n?s}",
     "plan.openFile": "Open a file",
     "plan.reading": "Reading the recording. What copies losslessly is known once it has been read",
     "plan.allCut": "Everything has been cut",
     "plan.text":
-      "Output {total} ({ranges} ranges, {cuts} cuts) — copied losslessly {copied}s ({pct})" +
+      "Output {total} ({ranges} range{ranges?s}, {cuts} cut{cuts?s}) — copied losslessly {copied}s ({pct})" +
       " / re-encoded {reencoded}s",
     "plan.lossless": "Video completely lossless",
-    "plan.reencoded": "{n} frames re-encoded",
+    "plan.reencoded": "{n} frame{n?s} re-encoded",
     "plan.segCopy": "copy      ",
     "plan.segEncode": "re-encode ",
     "plan.failed": "Cannot plan: {e}",
     "keyframes.readFailed": "Cannot read the keyframes: {e}",
-    "keyframes.read": "Read {n} keyframes from {file}",
-    "keyframes.chapters": "Read {n} chapters off the disc as keyframes",
+    "keyframes.read": "Read {n} keyframe{n?s} from {file}",
+    "keyframes.chapters": "Read {n} chapter{n?s} off the disc as keyframes",
   },
 };
 
@@ -1389,11 +1389,21 @@ export const currentLang = () => lang;
 /// A name with nothing to put in it is left standing rather than blanked,
 /// because a line printing `{clip}` is a bug you can see and read, and a line
 /// that quietly lost half its sentence is one you cannot.
+///
+/// `{name?s}` is the other form: not the number but what the number does to
+/// the word after it. It writes `s` unless `vars.name` is exactly 1, so
+/// `{cuts} cut{cuts?s}` is "1 cut" and "2 cuts". English needs it and
+/// Japanese does not, which is why it appears in one catalogue and not the
+/// other -- and why the line it belongs to is the English line rather than
+/// something `t` works out for both. The suffix is whatever is written
+/// there, so `{n} box{n?es}` works the same way.
 function fill(text, vars) {
   if (!vars) return text;
-  return text.replace(/\{(\w+)\}/g, (whole, name) =>
-    name in vars ? String(vars[name]) : whole
-  );
+  return text.replace(/\{(\w+)(?:\?([^{}]*))?\}/g, (whole, name, plural) => {
+    if (!(name in vars)) return whole;
+    if (plural === undefined) return String(vars[name]);
+    return Number(vars[name]) === 1 ? "" : plural;
+  });
 }
 
 /// One line, in the language in force.
