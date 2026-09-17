@@ -2416,3 +2416,35 @@ the image's read and write. The one that could go is the stamp's first read — 
 references it is looking for go past the cutter as it writes, and a cut that wrote the arrival
 times as it went would leave nothing to survey. That is a change to the cutter, not to the
 disc, and it has not been made.
+
+### What an event is for, and what a window's own thread is for
+
+Two things the disc pass turned up are not about discs at all.
+
+**A picture is not a message.** Playback sent every picture out as an event, and
+an event is JSON, so a picture had to be written out in base64 first and parsed
+back at the other end. At the stage's playback width that is **99 KB of JPEG
+written out as 132 KB of text, thirty times a second** — 4 MB/s of string for
+the window to take apart, which was the largest sustained thing this program
+asked a window to do. The pictures go down a `Channel` now, which hands a large
+payload over as bytes: nothing to encode, a quarter less to carry, and the
+decode is the browser's own. The instant goes in front of the picture in the
+same message, because the large ones are fetched by the window in its own time
+and two fetches can finish in the other order — a picture older than the one on
+the stage is dropped.
+
+`img-src` gains `blob:`, which is the window's own bytes under its own origin
+and less than the `data:` that was already allowed. Without it the stage stayed
+black while the counter under it went on counting, which is the shape of bug
+that gets shipped.
+
+**A command that is not `async` runs on the thread the window is drawn on.**
+Seven of them touched paths somebody had chosen. `resolve_paths` is the one
+that showed: it is what every way of adding clips goes through, and what it
+does to each input is a `stat`, and for a folder a walk of it, and for a disc a
+read of its index. Dropping a folder froze the window until the folder had been
+read; dropping one on a share that had gone to sleep froze it until the share
+woke up. Those seven answer off that thread now. What is left on it is what
+belongs there: window titles, flags, the preferences, this program's own
+configuration file, and `hover_thumb`, which answers a pointer out of pictures
+already in memory and would be slower for a thread hop rather than faster.
