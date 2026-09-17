@@ -135,17 +135,30 @@ fn pick<'a>(
 /// Blu-ray holds 25,025,314,816 bytes, i.e. 23.3 of what a file manager calls
 /// a gigabyte.
 fn disc_size(v: &str) -> Result<u64> {
-    let key = v.trim().to_ascii_lowercase();
-    let key = key.trim_start_matches("bd").trim_start_matches('-');
+    let lower = v.trim().to_ascii_lowercase();
+    let key = lower.trim_start_matches("bd").trim_start_matches('-');
     if let Some(d) = smartcut_core::fit::DISCS
         .iter()
         .find(|d| (d.bytes / 1_000_000_000).to_string() == key)
     {
         return Ok(d.bytes);
     }
+    // **`bd30` is a disc that was misremembered, not a size of thirty bytes.**
+    // Anything named like one of the discs is answered as a disc, or the
+    // message sends somebody looking for what is wrong with their number.
+    let discs = || {
+        smartcut_core::fit::DISCS
+            .iter()
+            .map(|d| format!("bd{}", d.bytes / 1_000_000_000))
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
+    if lower.starts_with("bd") {
+        bail!("--fit {v:?}: no such disc. The discs are {}", discs());
+    }
     let n: u64 = key
         .parse()
-        .with_context(|| format!("--fit wants bd25, bd50, bd100, bd128 or a size in bytes, got {v:?}"))?;
+        .with_context(|| format!("--fit wants {} or a size in bytes, got {v:?}", discs()))?;
     if n < 1_000_000 {
         bail!("--fit {v:?}: that is not a size anything can be written onto");
     }
@@ -246,9 +259,10 @@ fn usage() -> String {
      into any .ts that keeps the broadcast's own tables, that being the \
      only shape which can hold one. What it costs is size: a carousel is \
      between a hundredth and a fifth of what a multiplex spends\n\
-     --fit bd25|bd50|bd100|bd128|BYTES writes the pictures back smaller, by \n\
-     as much as it takes for the output to fit that much room -- MPEG-2 only, \n\
-     and see --video-share to name the share outright;\n\
+     --fit bd25|bd50|bd100|bd128|BYTES writes the pictures back smaller, by \
+     as much as it takes for the output to fit that much room, and does \
+     nothing to them where it already fits; MPEG-2 only, and --video-share \
+     names the share outright rather than working it out from a size\n\
      --bdav writes the cut onto a disc of recordings in FOLDER rather than \
      into a file; --disc-title, --programme, --channel, --about and --made \
      fill in what its index says, which is otherwise taken from what the \

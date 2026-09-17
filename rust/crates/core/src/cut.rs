@@ -2781,6 +2781,18 @@ fn frame_rate_parts(fps: f64) -> (i64, i64) {
 /// material it was wrong by a factor of five or six: a 27 Mbit/s Blu-ray was
 /// re-encoded at 4.5, and 70 Mbit/s of UHD at 15.9. Where the count is there,
 /// it is the answer.
+fn default_bit_rate(src: &Source) -> usize {
+    let v = &src.video;
+    if let Some(measured) = v.bit_rate.filter(|r| r.is_finite() && *r > 0.0) {
+        return (measured * 1.2) as usize;
+    }
+    if let Some(rest) = pictures_less_the_sound(src) {
+        return (rest * 1.2) as usize;
+    }
+    let px = v.width as f64 * v.height as f64 * v.frame_rate.max(1.0);
+    (px * 0.08) as usize
+}
+
 /// Whether this run writes its pictures back smaller, and what with.
 ///
 /// Only MPEG-2, and only where a share was asked for. A recording in
@@ -2802,18 +2814,6 @@ fn shrink_for(src: &Source, opts: &CutOptions) -> Option<Shrink> {
         share,
         declined: None,
     })
-}
-
-fn default_bit_rate(src: &Source) -> usize {
-    let v = &src.video;
-    if let Some(measured) = v.bit_rate.filter(|r| r.is_finite() && *r > 0.0) {
-        return (measured * 1.2) as usize;
-    }
-    if let Some(rest) = pictures_less_the_sound(src) {
-        return (rest * 1.2) as usize;
-    }
-    let px = v.width as f64 * v.height as f64 * v.frame_rate.max(1.0);
-    (px * 0.08) as usize
 }
 
 /// What is left of the file's own bit rate once the sound is taken off it.
