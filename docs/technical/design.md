@@ -2370,3 +2370,49 @@ a disc now, and nobody has held the right button down over a real one and looked
 that is left is the round trip and the pictures themselves: a reel of thirty cells is a third
 of a megabyte of JPEG through the bridge, fourteen times a second, and that has never been
 measured on either kind of material.
+
+### Making a disc says where it has got to (`Told`)
+
+**Report: on Windows the gaps between "written", "index" and "image" are very long.** They
+are, and three quarters of the first gap was a pass that said nothing at all.
+
+Measured on the VM, over a 617 MB stream written into a `BDAV` folder:
+
+| after the cut is written | read | written | reports |
+|---|---:|---:|---:|
+| `bdav::stamp` — the arrival times | 1233 MB | 617 MB | **0** |
+| `read_clip` — the entry points | 623 MB | — | **5** |
+| `udfw::write` — the image | 617 MB | 617 MB | **591** |
+
+Three different ways of being wrong about the same thing.
+
+**The stamping pass said nothing** because the progress callback was only ever handed to the
+pass behind it. It is the larger pass of the two — it reads the stream to find the clock
+references, then reads it again to write the times out — so on a disc's worth of recordings
+the bar sat at 0% through most of the step and then jumped. It now reports from both of its
+passes, and the step is split three parts to one between them, which is what the figures
+above say they cost.
+
+**The entry point pass counted packets**, one report in every 2048, chosen when the packets
+in question were a broadcast recording's and a couple of thousand of them was a dozen reports
+a second. A packet out of a Blu-ray's stream is a whole picture, and the same rule came to
+five reports for the whole of a 617 MB clip: a bar that stands still and then jumps. It counts
+bytes now.
+
+**The image said something every megabyte**, which on a 20 GB disc is twenty thousand messages
+for a bar with a hundred steps. Every one of them crosses from Rust into the window, and the
+window this program is looked at through is not the same one on both platforms.
+
+So how often a pass says where it is stopped being each pass's own guess: [`Told`] passes on a
+fraction only when it has moved **a five-hundredth** of the whole since the last one. The bar
+has a hundred steps, so that is smooth, and it is a bound rather than a rate that depends on
+what the pass happens to be reading. The three passes above now report 500, 70 and 295 times,
+and the reports are evenly spread: over a whole `bdav::write` the largest gap between two of
+them is 1.2% of the step.
+
+**What has not changed is the work.** Making a disc out of a written stream reads it four times
+over and writes it twice: the stamp's two reads and one write, the entry point pass's read, and
+the image's read and write. The one that could go is the stamp's first read — the clock
+references it is looking for go past the cutter as it writes, and a cut that wrote the arrival
+times as it went would leave nothing to survey. That is a change to the cutter, not to the
+disc, and it has not been made.

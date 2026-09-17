@@ -143,16 +143,18 @@ pub fn walk(
     // declares no bit rate per stream, and the container's overall figure
     // counts the sound and the tables in with the pictures.
     let mut video_bytes: u64 = 0;
-    // Said on a count rather than on every packet: a gigabyte is on the
-    // order of a hundred thousand of them and the bar has 100 steps, so
-    // the rest of the calls would draw nothing. One in a couple of
-    // thousand works out at a dozen or so a second on a broadcast
-    // recording, which is a bar that moves without being a bar that is
-    // redrawn for nothing.
+    // How far through is worked out from the byte the packet came from and
+    // not from a count of packets. The count was one in a couple of
+    // thousand, which is a dozen a second on a broadcast recording and was
+    // chosen for that -- but a packet is one picture where the stream is a
+    // Blu-ray's, and on a 617 MB clip that same count came to **five**
+    // reports for the whole pass. A bar that stands still and then jumps.
+    // What is offered is throttled where it is decided, in [`crate::Told`].
+    let mut told = crate::Told::new();
     let mut seen: u64 = 0;
     for (s, p) in ictx.packets() {
         seen += 1;
-        if seen.is_multiple_of(2048) {
+        if seen.is_multiple_of(256) {
             // Asked on the same count as the progress, but not behind it: a
             // pass with nobody watching still has to be stoppable.
             if let Some(f) = stop {
@@ -160,10 +162,10 @@ pub fn walk(
                     bail!("abandoned");
                 }
             }
-            if let (Some(on), Some(total)) = (on, total) {
+            if let Some(total) = total {
                 let pos = p.position();
                 if pos > 0 {
-                    on((pos as f64 / total).clamp(0.0, 1.0));
+                    told.at(on, (pos as f64 / total).clamp(0.0, 1.0));
                 }
             }
         }

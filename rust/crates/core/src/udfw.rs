@@ -301,6 +301,10 @@ pub fn write(
 
     let total: u64 = tree.iter().map(|n| n.size).sum();
     let mut done = 0u64;
+    // Not on every megabyte, which on a disc's worth of recordings was
+    // twenty thousand messages for a bar with a hundred steps. See
+    // [`crate::Told`].
+    let mut told = crate::Told::new();
     for node in tree.iter().filter(|n| !n.is_dir()) {
         out.pad_to(PARTITION + node.data as u64)?;
         let path = node.source.as_ref().expect("a file has a path");
@@ -315,9 +319,7 @@ pub fn write(
             out.write_all(&buf[..want])?;
             left -= want as u64;
             done += want as u64;
-            if let Some(f) = on {
-                f(done as f64 / total.max(1) as f64);
-            }
+            told.at(on, done as f64 / total.max(1) as f64);
         }
         out.align()?;
     }

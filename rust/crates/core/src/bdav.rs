@@ -354,8 +354,24 @@ pub fn write(
                 stream.display()
             );
         }
-        let timing = stamp(&stream)?;
-        let clip = read_clip(&stream, &timing, on.map(|f| (f, rec.clip.as_str())))?;
+        // Where the clip's own bar stands when the arrival times are done.
+        // The two passes are not the same size: stamping reads the stream
+        // twice and writes it once, the entry point pass reads it once.
+        // Measured on a 617 MB stream, 1233 MB read and 617 written against
+        // 623 read. So three parts to one, and the bar moves at one speed
+        // through a recording instead of standing still for the first three
+        // quarters of it -- which is what it did, because stamping said
+        // nothing at all.
+        const STAMPED: f64 = 0.75;
+        let name = rec.clip.as_str();
+        let stamping = on.map(|f| move |done: f64| f(name, done * STAMPED));
+        let scanning = on.map(|f| move |done: f64| f(name, STAMPED + done * (1.0 - STAMPED)));
+        let timing = stamp(&stream, stamping.as_ref().map(|f| f as &(dyn Fn(f64) + Sync)))?;
+        let clip = read_clip(
+            &stream,
+            &timing,
+            scanning.as_ref().map(|f| f as &(dyn Fn(f64) + Sync)),
+        )?;
         std::fs::write(
             root.join("CLIPINF").join(format!("{}.clpi", rec.clip)),
             clpi(&clip),
@@ -548,8 +564,25 @@ fn choose_step(anchors: &[(u32, i64)]) -> i64 {
 ///
 /// The file is rewritten beside itself and renamed over, so a failure leaves
 /// the stream as it was rather than half stamped.
-pub fn stamp(path: &Path) -> Result<Timing> {
-    let (read, anchors, pictures) = survey(path)?;
+///
+/// `on` is told how far through, counting both passes as one: this is three
+/// quarters of what making a disc out of a written stream costs, and it used
+/// to say nothing while it did it.
+pub fn stamp(path: &Path, on: Option<&(dyn Fn(f64) + Sync)>) -> Result<Timing> {
+    // What the two passes are measured against. The file is a whole number
+    // of source packets, so its length is how many there are to get through;
+    // zero would only mean an empty stream, which the passes below find out
+    // about in their own way.
+    let packets = std::fs::metadata(path)
+        .map(|m| (m.len() / SOURCE_PACKET as u64).max(1))
+        .unwrap_or(1);
+    // The reading pass is one read and the rewriting pass is a read and a
+    // write, so the first is a third of the work and the second the rest.
+    const SURVEYED: f64 = 1.0 / 3.0;
+    let mut told = crate::Told::new();
+    let (read, anchors, pictures) = survey(path, &mut |i: u64| {
+        told.at(on, i as f64 / packets as f64 * SURVEYED)
+    })?;
     let step = choose_step(&anchors);
     let plan = Schedule::new(&anchors, step);
 
@@ -580,6 +613,7 @@ pub fn stamp(path: &Path) -> Result<Timing> {
             dst.write_all(&frame)?;
             last = at;
             i += 1;
+            told.at(on, SURVEYED + f64::from(i) / packets as f64 * (1.0 - SURVEYED));
         }
         // And the null packets that make the file a whole number of the unit
         // a recorder writes in, arriving at the rate everything else did.
@@ -625,7 +659,7 @@ pub fn stamp(path: &Path) -> Result<Timing> {
 /// video's own PID says a new payload does. Which PID that is comes out of
 /// the stream's own tables, read here rather than asked of libavformat: this
 /// pass is already reading every packet.
-fn survey(path: &Path) -> Result<(u32, Vec<(u32, i64)>, Vec<u32>)> {
+fn survey(path: &Path, told: &mut dyn FnMut(u64)) -> Result<(u32, Vec<(u32, i64)>, Vec<u32>)> {
     let mut src = BufReader::with_capacity(1 << 20, std::fs::File::open(path)?);
     let mut frame = [0u8; SOURCE_PACKET];
     let mut anchors: Vec<(u32, i64)> = Vec::new();
@@ -667,6 +701,7 @@ fn survey(path: &Path) -> Result<(u32, Vec<(u32, i64)>, Vec<u32>)> {
             anchors.push((i, now));
         }
         i += 1;
+        told(u64::from(i));
     }
     Ok((i, anchors, pictures))
 }
@@ -844,21 +879,13 @@ fn ends_within(packets: u32) -> u8 {
 fn read_clip(
     stream: &Path,
     timing: &Timing,
-    on: Option<(&(dyn Fn(&str, f64) + Sync), &str)>,
+    on: Option<&(dyn Fn(f64) + Sync)>,
 ) -> Result<Clip> {
     let path = stream.to_string_lossy().into_owned();
     // Every entry point in the stream, which is a pass over the whole of it.
     // The same pass the editor makes when a recording is opened, for the
     // same answer: where a player may begin.
-    let told = on.map(|(f, clip)| {
-        let name = clip.to_string();
-        move |done: f64| f(&name, done)
-    });
-    let src = crate::scan_reporting(
-        &path,
-        &crate::index::PacketScan,
-        told.as_ref().map(|f| f as &(dyn Fn(f64) + Sync)),
-    )?;
+    let src = crate::scan_reporting(&path, &crate::index::PacketScan, on)?;
     let video_pid = video_pid(&path, src.video.stream_index)?;
     // The map has to describe the sound and the captions as well as the
     // pictures: what it says about each is what this writes into the disc's

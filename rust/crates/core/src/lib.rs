@@ -574,6 +574,52 @@ pub fn libav() -> Libav {
     }
 }
 
+/// How often a pass says where it has got to.
+///
+/// A pass over a recording knows after every piece it reads how far along it
+/// is. Saying so every time is a message a window has to carry, decode and
+/// draw for a bar that has not moved: writing a 20 GB image a megabyte at a
+/// time came to twenty thousand of them, all but a hundred of which said
+/// what the one before had said. Saying so too rarely is the same fault the
+/// other way -- the pass that reads a stream back for its entry points
+/// counted packets rather than bytes, and a stream of whole pictures made
+/// that five reports in six hundred megabytes, which is a bar that stands
+/// still and then jumps.
+///
+/// So neither is left to what the pass happens to be reading: **a
+/// five-hundredth of the whole**. The bar has a hundred steps, so it moves
+/// smoothly, and the count is bounded whatever the pass is over.
+pub struct Told {
+    said: f64,
+}
+
+/// How much of a pass has to have gone by before it is worth saying so.
+const TOLD_STEP: f64 = 0.002;
+
+impl Default for Told {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Told {
+    /// Nothing said yet, so that the first thing offered is said.
+    pub fn new() -> Self {
+        Self { said: f64::NEG_INFINITY }
+    }
+
+    /// Offer `done`, a fraction of the whole, to whoever is waiting. It goes
+    /// no further unless the pass has moved far enough since the last one.
+    pub fn at(&mut self, on: Option<&(dyn Fn(f64) + Sync)>, done: f64) {
+        let Some(f) = on else { return };
+        if done - self.said < TOLD_STEP {
+            return;
+        }
+        self.said = done;
+        f(done.clamp(0.0, 1.0));
+    }
+}
+
 /// A video decoder allowed to use every core.
 ///
 /// libavcodec threads only when it is told a number, and its own default is
