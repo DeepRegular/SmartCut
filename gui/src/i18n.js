@@ -1029,10 +1029,10 @@ const CATALOG = {
     "outset.audioLine": "{mode} ({detail})",
     "outset.format":
       "Video:  {codec}, {w}x{h}, {fps} fps, {scan}\nAudio:  {audio}\n" +
-      "Ranges:  {keeps} kept / {kept} out (of {dur}, {cuts} cuts)\nWritten to:  {out}{side}",
+      "Ranges:  {keeps} kept / {kept} out (of {dur}, {cuts} cut{cuts?s})\nWritten to:  {out}{side}",
     "outset.formatBdav":
       "Video:  {codec}, {w}x{h}, {fps} fps, {scan}\nAudio:  {audio}\n" +
-      "Ranges:  {keeps} kept / {kept} out (of {dur}, {cuts} cuts)\n" +
+      "Ranges:  {keeps} kept / {kept} out (of {dur}, {cuts} cut{cuts?s})\n" +
       "Chapters:  {marks}\nDisc:  {out}",
     "outset.fieldBlank": "(left blank)",
     "outset.tabFile": "Files",
@@ -1203,8 +1203,8 @@ const CATALOG = {
       "The batch opens each project in the queue in turn, which replaces the list on screen. Unsaved changes to it will be lost. Go ahead?",
     "batch.clearTitle": "Clear the queue",
     "batch.clearBody": "Remove all {n} job{n?s} from the queue?",
-    "batch.sleepIn": "Sleeping in {s} seconds",
-    "batch.shutdownIn": "Shutting down in {s} seconds",
+    "batch.sleepIn": "Sleeping in {s} second{s?s}",
+    "batch.shutdownIn": "Shutting down in {s} second{s?s}",
     "batch.afterCancelled": "The action after the batch was cancelled",
     "batch.afterFailed": "The action after the batch would not run: {e}",
 
