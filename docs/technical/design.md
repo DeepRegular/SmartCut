@@ -2438,6 +2438,21 @@ and less than the `data:` that was already allowed. Without it the stage stayed
 black while the counter under it went on counting, which is the shape of bug
 that gets shipped.
 
+**Nor is a picture an answer.** The film strip asks for thirty cells at a time,
+and each came back as a data URL inside the JSON: 0.21 MB of JPEG written out
+as 0.28 MB of text for the window to parse and decode, as often as four times a
+second while somebody drags. The editor's pictures are now kept where the
+window can fetch them — a `shot://` scheme of their own, 1.8 KB of addresses
+in the answer instead of 0.28 MB of text — and because an address is never
+reused, the window is told it may keep what it has fetched for ever, which is
+worth having: a strip asks for the same cells over and over. What holds them is
+bounded and evicts the oldest; the cap is a hundred times what is on screen at
+once, so a picture being looked at is never one that has been dropped.
+
+The strip, the stage and the scrub stand-in go this way. The clip list's own
+posters do not: a row holds its picture for as long as the row exists, and a
+cache that may drop it is the wrong place to keep it.
+
 **A command that is not `async` runs on the thread the window is drawn on.**
 Seven of them touched paths somebody had chosen. `resolve_paths` is the one
 that showed: it is what every way of adding clips goes through, and what it

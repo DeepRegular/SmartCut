@@ -1070,12 +1070,80 @@ fn as_url(jpeg: &[u8]) -> String {
     format!("data:image/jpeg;base64,{}", base64::engine::general_purpose::STANDARD.encode(jpeg))
 }
 
+/// Pictures the editor is looking at, kept where the window can fetch them
+/// rather than written into the answer.
+///
+/// A picture written into an answer has to be base64 first, because an answer
+/// is JSON. A strip refresh is thirty cells: at 200 px that is 0.21 MB of
+/// JPEG written out as 0.28 MB of text, inside a 0.37 MB string for the
+/// window to parse, up to four times a second while somebody drags. Handed
+/// over as an address instead, the bytes travel the road an ordinary image
+/// travels -- no encoding at either end, and the window's own cache keeps
+/// the ones it has already been given, which matters because a strip asks
+/// for the same cells over and over.
+///
+/// Bounded, because nothing here is ever given back: the oldest go when the
+/// room runs out. The cap is far above what the editor holds at once -- a
+/// reel is forty cells and the cards fifty, and the stage one picture -- so a
+/// picture on screen is never one that has been dropped.
+#[derive(Default)]
+struct Shots(std::sync::Mutex<ShotStore>);
+
+#[derive(Default)]
+struct ShotStore {
+    /// By the number it was given, which is also the order they arrived in.
+    held: std::collections::BTreeMap<u64, Vec<u8>>,
+    bytes: usize,
+    next: u64,
+}
+
+/// What the pictures held for the windows may come to.
+///
+/// A hundred times what is on screen at once and then some: a reel of cells
+/// is a third of a megabyte and a stage picture a tenth of one. The window
+/// keeps its own copy of whatever it has fetched, so this is the second of
+/// two caches and does not need to be the larger.
+const SHOT_ROOM: usize = 32 << 20;
+
+/// Keep `jpeg` and hand back the address the window fetches it by.
+///
+/// The number is never reused, so what is behind an address never changes and
+/// the window is told it may keep it for ever.
+fn shot_url(app: &tauri::AppHandle, jpeg: &[u8]) -> String {
+    let state = app.state::<Shots>();
+    let mut store = locked(&state.0);
+    let id = store.next;
+    store.next += 1;
+    store.bytes += jpeg.len();
+    store.held.insert(id, jpeg.to_vec());
+    while store.bytes > SHOT_ROOM {
+        let Some(oldest) = store.held.keys().next().copied() else {
+            break;
+        };
+        if let Some(gone) = store.held.remove(&oldest) {
+            store.bytes -= gone.len();
+        }
+    }
+    // What the frontend's own `convertFileSrc` does with a path: a scheme of
+    // its own everywhere but Windows, where a custom scheme is served under
+    // `http` on a host of its own.
+    if cfg!(windows) {
+        format!("http://{SHOT_SCHEME}.localhost/{id}")
+    } else {
+        format!("{SHOT_SCHEME}://localhost/{id}")
+    }
+}
+
+/// The scheme those addresses are on. Named in the window's content policy
+/// too; see `tauri.conf.json`.
+const SHOT_SCHEME: &str = "shot";
+
 #[tauri::command]
 async fn preview(time: f64, width: u32, app: tauri::AppHandle) -> Result<Shot, String> {
     off_thread(move || {
         with_pictures(&app, |src, marks| {
             let s = smartcut_core::shot_at(src, time, width).map_err(|e| e.to_string())?;
-            Ok(Shot { url: as_url(&s.jpeg), time: s.time, kind: kind_of(&s, src, marks) })
+            Ok(Shot { url: shot_url(&app, &s.jpeg), time: s.time, kind: kind_of(&s, src, marks) })
         })
     })
     .await
@@ -1214,7 +1282,7 @@ fn thumbs_now(
                         .map(|&t| {
                             let tol = (fd * 2.0).min(to_neighbour(&src.points, t) / 2.0);
                             track.nearest(t).filter(|h| (h.time - t).abs() <= tol).map(|h| Shot {
-                                url: as_url(&h.jpeg),
+                                url: shot_url(app, &h.jpeg),
                                 time: h.time,
                                 kind: "I".into(),
                             })
@@ -1229,7 +1297,7 @@ fn thumbs_now(
                 let shots = smartcut_core::shots_at(src, &want, width).map_err(|e| e.to_string())?;
                 for (&i, shot) in holes.iter().zip(shots) {
                     out[i] = shot.map(|s| Shot {
-                        url: as_url(&s.jpeg),
+                        url: shot_url(app, &s.jpeg),
                         time: s.time,
                         kind: kind_of(&s, src, marks),
                     });
@@ -1242,7 +1310,11 @@ fn thumbs_now(
         Ok(shots
             .into_iter()
             .map(|o| {
-                o.map(|s| Shot { url: as_url(&s.jpeg), time: s.time, kind: kind_of(&s, src, marks) })
+                o.map(|s| Shot {
+                    url: shot_url(app, &s.jpeg),
+                    time: s.time,
+                    kind: kind_of(&s, src, marks),
+                })
             })
             .collect())
     })
@@ -2215,13 +2287,13 @@ fn touch(path: &std::path::Path) {
 /// demand: this answers a pointer moving across the scrubber, and a decode
 /// would take longer than the pointer stays anywhere.
 #[tauri::command]
-fn hover_thumb(time: f64, thumbs: State<Thumbs>) -> Option<Shot> {
+fn hover_thumb(time: f64, thumbs: State<Thumbs>, app: tauri::AppHandle) -> Option<Shot> {
     let guard = locked(&thumbs.0);
     // `nearest` will hand back the last picture it has for any time past the
     // end of a track that is still being built -- the wrong picture, where
     // none is the honest answer.
     let t = guard.as_ref().filter(|t| time <= t.covered)?.nearest(time)?;
-    Some(Shot { url: as_url(&t.jpeg), time: t.time, kind: "I".into() })
+    Some(Shot { url: shot_url(&app, &t.jpeg), time: t.time, kind: "I".into() })
 }
 
 /// The next cut in `dir`, refined from the key picture that reported it to
@@ -4796,6 +4868,32 @@ pub fn run() {
         false => "main",
     };
     tauri::Builder::default()
+        // Where the editor's pictures are fetched from. See [`shot_url`].
+        .register_uri_scheme_protocol(SHOT_SCHEME, |ctx, request| {
+            let held = request
+                .uri()
+                .path()
+                .trim_start_matches('/')
+                .parse::<u64>()
+                .ok()
+                .and_then(|id| {
+                    let state = ctx.app_handle().state::<Shots>();
+                    let store = locked(&state.0);
+                    store.held.get(&id).cloned()
+                });
+            let (status, body) = match held {
+                Some(jpeg) => (200, jpeg),
+                // A picture that has gone. Nothing on screen should reach
+                // this: see the room [`shot_url`] keeps.
+                None => (404, Vec::new()),
+            };
+            tauri::http::Response::builder()
+                .status(status)
+                .header("Content-Type", "image/jpeg")
+                .header("Cache-Control", "public, max-age=31536000, immutable")
+                .body(body)
+                .expect("a response of bytes")
+        })
         .plugin(tauri_plugin_dialog::init())
         .manage(Opened::default())
         .manage(Proxy::default())
@@ -4806,6 +4904,7 @@ pub fn run() {
         .manage(Playing::default())
         .manage(Subs::default())
         .manage(BatchStop::default())
+        .manage(Shots::default())
         .manage(argv)
         .manage(queued)
         .manage(Role(role.to_string()))
