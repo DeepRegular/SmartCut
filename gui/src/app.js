@@ -4069,14 +4069,16 @@ function paintIndexFields() {
 let room = null;
 let roomOf = "";
 
-/// A disc's own gigabytes, which are not a file manager's.
+/// How much of a disc something takes, in gibibytes.
 ///
-/// `size` in `shared.js` counts in 1024s, which is right for a file and wrong
-/// here: a disc sold as 25GB holds 25,025,314,816 bytes, and a gauge that
-/// called it 23.3 GB beside a control saying 25GB would be two numbers for
-/// one thing.
-function discGb(bytes) {
-  return `${(bytes / 1e9).toFixed(1)} GB`;
+/// A disc sold as 25GB holds 25,025,314,816 bytes, and that is the number the
+/// engine does its arithmetic against -- but 25.0 is the label on the box
+/// rather than a size anything on either platform reports. Counted in 1024s
+/// and named GiB, the gauge reads as the same kind of number as the file
+/// manager beside it, and the unit says plainly that it is not the 25 on the
+/// control above: one names the disc, the other says what is spoken for.
+function discGiB(bytes, digits = 1) {
+  return `${(bytes / 2 ** 30).toFixed(digits)} GiB`;
 }
 
 /// What the list costs the disc, as the engine works it out.
@@ -4179,7 +4181,7 @@ async function renderGauge() {
       at += bytes;
       const cls = ["gauge-seg", clipRoom.can_shrink ? "" : "fixed", over ? "over" : ""];
       const seg = span(cls.filter(Boolean).join(" "), { flexGrow: grow(bytes) });
-      seg.title = `${clipLabel(c.clip)} — ${discGb(bytes)}`;
+      seg.title = `${clipLabel(c.clip)} — ${discGiB(bytes)}`;
       box.appendChild(seg);
     });
     // What is left of the disc, so that the segments keep their share of the
@@ -4202,7 +4204,7 @@ async function renderGauge() {
     const label = span("gauge-what");
     label.textContent = what;
     const size = span("gauge-size");
-    size.textContent = discGb(bytes);
+    size.textContent = discGiB(bytes);
     row.append(label, bar(share), size);
     return row;
   };
@@ -4214,12 +4216,12 @@ async function renderGauge() {
   if (shrinking) shown.push(line(t("gauge.fitted"), Math.max(r.share, r.floor), after));
 
   const words = {
-    used: discGb(r.bytes),
-    disc: discGb(r.capacity),
+    used: discGiB(r.bytes),
+    disc: discGiB(r.capacity),
     pct: ((r.bytes / r.capacity) * 100).toFixed(1),
     n: costs.length,
     dur: coarse(seconds),
-    over: discGb(Math.max(0, r.bytes - r.usable)),
+    over: discGiB(Math.max(0, r.bytes - r.usable)),
     share: (Math.max(r.share, r.floor) * 100).toFixed(1),
     floor: (r.floor * 100).toFixed(0),
   };
@@ -5231,9 +5233,9 @@ async function runExport() {
         if (wroteBytes > 0 && capacity > 0) {
           note(
             t(wroteBytes > capacity ? "out.discTooBig" : "out.discSize", {
-              used: `${(wroteBytes / 1e9).toFixed(2)} GB`,
-              disc: `${(capacity / 1e9).toFixed(1)} GB`,
-              over: `${((wroteBytes - capacity) / 1e9).toFixed(2)} GB`,
+              used: discGiB(wroteBytes, 2),
+              disc: discGiB(capacity),
+              over: discGiB(wroteBytes - capacity, 2),
             })
           );
         }

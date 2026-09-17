@@ -353,10 +353,10 @@
             <span data-i18n="outset.disc">ディスク:</span>
             <span class="drop">
               <!-- The sizes are the discs' own, which are not powers of two:
-                   a "25GB" Blu-ray holds 25,025,314,816 bytes, which a file
-                   manager calls 23.3 GB. The same four are in
-                   `smartcut_core::fit::DISCS`, which is what the engine
-                   works the arithmetic out against. -->
+                   a "25GB" Blu-ray holds 25,025,314,816 bytes, which the
+                   gauge below and every file manager call 23.3 GiB. The same
+                   four are in `smartcut_core::fit::DISCS`, which is what the
+                   engine works the arithmetic out against. -->
               <select id="out-disc">
                 <option value="25025314816" selected data-i18n="disc.bd25">BD-R / BD-RE 25GB（1層）</option>
                 <option value="50050629632" data-i18n="disc.bd50">BD-R / BD-RE DL 50GB（2層）</option>
@@ -369,7 +369,7 @@
           </div>
           <!-- And what that comes to. Drawn rather than written out: what a
                list of recordings does to a disc is a length against a length,
-               and a sentence saying "27.8 GB of 25.0 GB" makes the reader do
+               and a sentence saying "25.9 GiB of 23.3 GiB" makes the reader do
                the picture in their head. The sentence is under it all the
                same, because the picture cannot say which recording is which
                or what the pictures would be written at. -->

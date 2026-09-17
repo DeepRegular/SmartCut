@@ -53,14 +53,16 @@ export function coarse(secs) {
   );
 }
 
-/// "2.9 GB", how much of a disc a clip takes.
+/// "2.9 GiB", how much of a disc a clip takes.
 ///
 /// Powers of two, which is what every file manager on both platforms this
 /// ships to reports, so that a number read here and a number read there are
-/// the same number.
+/// the same number -- and named for the arithmetic that was done, so that it
+/// reads as the same kind of number as the disc gauge, which counts the same
+/// way.
 export function size(bytes) {
   if (!isFinite(bytes) || bytes < 0) return "—";
-  const units = ["B", "KB", "MB", "GB", "TB"];
+  const units = ["B", "KiB", "MiB", "GiB", "TiB"];
   let n = bytes;
   let at = 0;
   while (n >= 1024 && at < units.length - 1) {
