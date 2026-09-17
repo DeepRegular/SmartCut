@@ -2040,6 +2040,45 @@ function reelTick() {
   reelRaf = requestAnimationFrame(reelTick);
 }
 
+/// The picture on the stage while playback runs, as a URL that has to be
+/// handed back. A blob URL holds its bytes until it is revoked, and thirty a
+/// second is a leak with a shape.
+let playUrl = null;
+/// The instant of the last picture actually shown, so a picture that arrives
+/// after a newer one can be dropped instead of stepping the stage backwards.
+let playAt = -Infinity;
+
+/// Give back the blob the stage is holding, if it is holding one.
+function dropPlayUrl() {
+  if (!playUrl) return;
+  URL.revokeObjectURL(playUrl);
+  playUrl = null;
+}
+
+/// One picture off the playback channel: eight bytes of instant, then the
+/// JPEG. See the `play` command for why the two travel as one message.
+function showPlayFrame(buf) {
+  if (!playing || !buf || buf.byteLength <= 8) return;
+  const t = new DataView(buf).getFloat64(0, true);
+  // The large payloads are fetched by this window rather than handed to it,
+  // and two fetches can finish in the other order. A picture older than the
+  // one on the stage is one nobody wants back.
+  if (t < playAt) return;
+  playAt = t;
+  const was = playUrl;
+  playUrl = URL.createObjectURL(new Blob([new Uint8Array(buf, 8)], { type: "image/jpeg" }));
+  playhead = t;
+  el("preview").src = playUrl;
+  shownTime = t;
+  if (was) URL.revokeObjectURL(was);
+  updateReadouts();
+  draw();
+  showSubs(t);
+  // The strip is not redrawn here -- it is already sliding, and this is
+  // what it slides against.
+  anchorPlay(srcToOutSeam(t));
+}
+
 function setPlaying(on) {
   playing = on;
   el("play").textContent = tr(on ? "t.stop" : "t.play");
@@ -2048,6 +2087,9 @@ function setPlaying(on) {
     playAnchor = null;
     if (reelRaf) cancelAnimationFrame(reelRaf);
     reelRaf = 0;
+    // The stage is about to be given a picture of its own; the blob behind
+    // the last played one is nobody's after that.
+    dropPlayUrl();
   }
 }
 
@@ -2070,12 +2112,20 @@ function startPlay() {
   // what it can it shows at the right moment.
   const fps = src.fps > 0 ? src.fps : 30;
   // Capped at 1280 whatever the stage asks for. Each picture costs a scale,
-  // a JPEG and a data URL, so this is the one place where dropping below the
-  // stage's full request buys back frame rate -- and where there is a proxy,
-  // 1280 is also its own width, past which the extra pixels are invented.
+  // a JPEG and a trip through the channel, so this is the one place where
+  // dropping below the stage's full request buys back frame rate -- and
+  // where there is a proxy, 1280 is also its own width, past which the extra
+  // pixels are invented.
   const width = Math.min(stageWidth(), 1280);
+  // A channel of its own for the pictures. An event would carry each one as
+  // JSON, which means base64, which at this width is 4 MB/s of text a second
+  // for the window to parse; a channel carries the bytes. See `play` on the
+  // Rust side.
+  const frames = new T.core.Channel();
+  frames.onmessage = showPlayFrame;
+  playAt = -Infinity;
   // not awaited: it resolves when playback ends, and `play-ended` says so
-  invoke("play", { ranges: outputRanges(), from: playhead, width, fps }).catch((e) => {
+  invoke("play", { ranges: outputRanges(), from: playhead, width, fps, frames }).catch((e) => {
     el("status").textContent = tr("editor.playFailed", { e });
     setPlaying(false);
   });
@@ -3125,19 +3175,6 @@ el("detect-cm").addEventListener("click", async () => {
 });
 
 if (listen) {
-  listen("play-frame", (ev) => {
-    if (!playing) return;
-    const [t, url] = ev.payload;
-    playhead = t;
-    el("preview").src = url;
-    shownTime = t;
-    updateReadouts();
-    draw();
-    showSubs(t);
-    // The strip is not redrawn here -- it is already sliding, and this is
-    // what it slides against.
-    anchorPlay(srcToOutSeam(t));
-  });
   listen("play-ended", () => {
     if (!playing) return;
     setPlaying(false);

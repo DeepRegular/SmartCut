@@ -3562,6 +3562,7 @@ async fn play(
     from: f64,
     width: u32,
     fps: f64,
+    frames: tauri::ipc::Channel<tauri::ipc::InvokeResponseBody>,
 ) -> Result<(), String> {
     // The pictures come from the proxy when there is one; the sound always
     // comes from the recording, which is where the audio actually is.
@@ -3665,8 +3666,25 @@ async fn play(
                     next_show = out_t + gap;
                     smartcut_core::Pace::Show
                 },
+                // Down a channel rather than out as an event, and as the
+                // JPEG's own bytes rather than as a data URL. An event is
+                // JSON, so a picture has to be base64 first: at 1280 wide
+                // that is 99 KB of JPEG written out as 132 KB of text,
+                // thirty times a second -- 4 MB/s of string for the window
+                // to parse and decode back. A channel hands a large payload
+                // over as bytes, which is a quarter less to carry and
+                // nothing to encode at either end.
+                //
+                // The instant goes in front of the picture rather than
+                // beside it, because one message is one message: two would
+                // be two things to keep in step, and the large ones are
+                // fetched by the window in their own time and can arrive
+                // out of order. Eight bytes, little endian, then the JPEG.
                 |t, jpeg| {
-                    let _ = app.emit("play-frame", (t, as_url(&jpeg)));
+                    let mut body = Vec::with_capacity(8 + jpeg.len());
+                    body.extend_from_slice(&t.to_le_bytes());
+                    body.extend_from_slice(&jpeg);
+                    let _ = frames.send(tauri::ipc::InvokeResponseBody::Raw(body));
                 },
             );
             if let Err(e) = r {
