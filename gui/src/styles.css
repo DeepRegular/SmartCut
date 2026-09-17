@@ -277,10 +277,11 @@ button.brand:hover, button.brand.open { background: #3a3a3a; border-color: #5c5c
 #outset-note:empty, #batch-note:empty { display: none; }
 
 /* The two shapes of the output settings screen, chosen the way the screens
-   themselves are. A level in, so a size down: the same control, not a second
-   row of the same weight. */
+   themselves are -- and drawn at that size too. A size down read as a lesser
+   control rather than as a level in, and the two rows of tabs sitting one
+   under the other look wrong unless they match. The bar grows to hold them;
+   it has never been anything but as tall as what is on it. */
 .modes { display: flex; gap: 6px; margin: -1px 0; }
-.modes .tab { padding: 2px 14px; font-size: 12px; }
 
 main { flex: 1; min-height: 0; display: flex; gap: 0; }
 .editor {
@@ -836,6 +837,69 @@ input[type="text"]::placeholder { color: var(--dim); }
 .row.tall { align-items: flex-start; }
 .row.tall > span:first-child { padding-top: 5px; }
 .row.tall .num { padding-top: 5px; }
+/* --- the disc gauge -----------------------------------------------------
+   What a night's cuts do to a disc, drawn to scale. The bar is as long as
+   the larger of the two -- what the recordings come to, or what the disc
+   holds -- so that a list which overflows shows how far past the edge it
+   goes rather than simply filling the bar and stopping.
+
+   **The shares are flex-grow, and they are set through the DOM.** Both
+   halves of that were learned the same way, from a gauge that drew as an
+   empty outline with every share sitting correctly in the markup: this
+   window's content policy is `style-src 'self'`, so a `style` attribute that
+   arrives as text is dropped, and the sizes have to be set as properties by
+   the code that builds the elements -- which is what every other bar in this
+   program already does. The shares themselves go to the flex algorithm
+   rather than being written as widths, so that nothing has to resolve a
+   percentage against a box whose size is still being worked out.
+
+   **Every name here is its own**, too. This sheet is shared by both windows,
+   and `.bar` was already the cut editor's plan bar -- whose
+   `.bar span { width: 0 }` reached straight into this one's segments. */
+.row.gauge-row { align-items: flex-start; }
+/* On the first bar's line, not above it: the bar is taller than the words
+   beside it, so the label needs the half-difference to sit level with them. */
+.row.gauge-row > span:first-child { padding-top: 1px; }
+.gauge { flex: 1; min-width: 0; }
+.gauge .gauge-line { display: flex; align-items: center; gap: 8px; margin-bottom: 5px; }
+.gauge .gauge-what { color: var(--dim); width: 7.5em; text-align: right; flex: none; }
+.gauge .gauge-size { color: var(--dim); flex: none; font-variant-numeric: tabular-nums; }
+/* As tall as a `select`, which is what it sits under: the rows of this panel
+   are a column of controls of one height, and a bar thinner than the rest
+   read as an afterthought rather than as the answer to the row above it. */
+.gauge .gauge-bar {
+  position: relative; flex: 1; min-width: 0; height: 22px; display: flex;
+  background: var(--sunken); border: 1px solid var(--line); overflow: hidden;
+}
+/* One recording. Two shades in turn, so that where one ends and the next
+   begins can be seen without a line between them -- a line at every join is a
+   list of forty recordings drawn as forty lines. */
+.gauge .gauge-seg, .gauge .gauge-rest { flex-basis: 0; min-width: 0; }
+.gauge .gauge-seg { background: var(--copy); }
+.gauge .gauge-seg:nth-child(even) { background: #0f93a8; }
+/* A recording whose pictures cannot be written back smaller: it takes its
+   room on the disc and gives none of it back, and the second bar shows it
+   exactly as long as the first. */
+.gauge .gauge-seg.fixed { background: repeating-linear-gradient(45deg, #5a5a5a 0 4px, #6a6a6a 4px 8px); }
+/* Past the edge of the disc. */
+.gauge .gauge-seg.over { background: #b0402f; }
+.gauge .gauge-seg.over:nth-child(even) { background: #c04a38; }
+/* Where the disc ends, and where the margin this keeps back begins. The first
+   is a hard line; the second is what the run actually aims at. Laid over the
+   segments in a row of their own, so that the marks are visible on top of
+   whatever they land on. */
+.gauge .gauge-mark { position: absolute; inset: 0; display: flex; pointer-events: none; }
+/* The two marks are the only things in that row with a size of their own.
+   `flex-basis` is what decides a flex item's width, `width` is not, so the
+   spacers either side take their share through the basis and the marks take
+   theirs through it as well -- two pixels and one. */
+.gauge .gauge-mark > span { flex-basis: 0; min-width: 0; }
+.gauge .gauge-edge { flex: 0 0 2px; background: var(--text); }
+.gauge .gauge-edge.soft { flex-basis: 1px; background: var(--dim); opacity: .7; }
+.gauge .gauge-note { color: var(--dim); }
+.gauge .gauge-note.over { color: #f08a70; }
+.gauge .gauge-note.good { color: #7fd0a0; }
+
 .row textarea {
   background: #141414; color: var(--text); border: 1px solid var(--line);
   border-radius: 2px; padding: 4px 8px; resize: vertical;

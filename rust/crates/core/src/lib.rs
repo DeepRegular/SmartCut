@@ -22,6 +22,7 @@ pub mod cut;
 pub mod disc;
 pub mod dvd;
 pub mod entrypool;
+pub mod fit;
 pub mod index;
 pub mod input;
 pub mod latm;
@@ -55,8 +56,8 @@ pub use cm::{
     refine_boundaries as cm_refine_boundaries, DetectOptions,
 };
 pub use cut::{
-    cut, cut_with_progress, tables_for, writable_sound, write_audio_es, AudioCodec, AudioMode,
-    CutOptions, SoundAsIs, SoundChoices,
+    can_carry_data_broadcast, cut, cut_with_progress, tables_for, writable_sound, write_audio_es,
+    AudioCodec, AudioMode, CutOptions, SoundAsIs, SoundChoices,
 };
 pub use index::{ContainerIndex, DiscIndex, IndexSource, PacketScan};
 pub use plan::{plan, plan_on, plan_range, PlanOptions, RangePlan, Segment, SegmentKind};

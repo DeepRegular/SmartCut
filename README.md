@@ -65,6 +65,15 @@ recorded, what the broadcaster said it was about, and a chapter point wherever a
 commercial break was taken out. Ask for it and the finished disc is wrapped in a
 **`.iso`** a burner can take. See [Writing a disc](docs/technical/bdav.md).
 
+**A night that will not fit on one disc can be made to.** The gauge on the
+output settings screen draws what the list comes to against the disc, and
+where it will not fit the pictures are written back smaller until it does.
+**Nothing is decoded.** The quantiser is made coarser and the coefficients
+that cost more bits than they are worth are dropped, so the GOPs, the
+timestamps, the motion vectors, the sound, the subtitles and the programme
+information all survive untouched. MPEG-2 recordings; see
+[Fitting a disc](docs/technical/transrate.md).
+
 **You can place a cut by the subtitles.** The editor's preview will draw them
 over the picture (off by default): a broadcast's ARIB captions as characters, at
 the position and colour the broadcaster asked for — including the ones the
@@ -124,11 +133,11 @@ install.
 
 | Platform | File | Notes |
 |---|---|---|
-| **Linux** | `SmartCut_0.6.9_amd64.AppImage` | Make it executable and run it |
-| **Linux** | `SmartCut-0.6.9-linux-x86_64.tar.gz` | Unpack and run `./smartcut`. Use this if you would rather not deal with FUSE |
-| **Linux (Debian/Ubuntu)** | `smartcut_0.6.9_amd64.deb` | `sudo apt install ./smartcut_0.6.9_amd64.deb`. Only 4.0 MB, because it uses the FFmpeg already on your system |
-| **Windows** | `SmartCut_0.6.9_x64-setup.exe` | Installer |
-| **Windows** | `smartcut-portable-x64-0.6.9.zip` | Unzip and run `smartcut.exe` |
+| **Linux** | `SmartCut_0.7.0_amd64.AppImage` | Make it executable and run it |
+| **Linux** | `SmartCut-0.7.0-linux-x86_64.tar.gz` | Unpack and run `./smartcut`. Use this if you would rather not deal with FUSE |
+| **Linux (Debian/Ubuntu)** | `smartcut_0.7.0_amd64.deb` | `sudo apt install ./smartcut_0.7.0_amd64.deb`. Only 4.0 MB, because it uses the FFmpeg already on your system |
+| **Windows** | `SmartCut_0.7.0_x64-setup.exe` | Installer |
+| **Windows** | `smartcut-portable-x64-0.7.0.zip` | Unzip and run `smartcut.exe` |
 
 **Requirements.** The AppImage and the tar.gz need glibc 2.39 or newer, which
 means Ubuntu 24.04, Debian 13, Fedora 40 or later. The `.deb` needs FFmpeg 7.1,
@@ -388,6 +397,7 @@ ends onto it: neither of them decides anything about a cut.
   │  the broadcast       si  arib  caption  series  text    │
   │  finding the breaks  cm  logo                           │
   │  discs, both ways    disc  dvd  udf  bdav  udfw restamp │
+  │  fitting a disc      fit                                │
   │  subtitles           pgs  vobsub  subs                  │
   │  the editor's view   preview  playback_audio            │
   └────────────┬───────────────────────────┬────────────────┘
@@ -395,6 +405,11 @@ ends onto it: neither of them decides anything about a cut.
   ┌──────────────────────────┐   ┌──────────────────────────┐
   │  FFmpeg  libav*          │   │  rust/crates/vc1         │
   │  demux, decode, encode   │   │  intra-only VC-1 encoder │
+  │                          │   ├──────────────────────────┤
+  │                          │   │  rust/crates/mpeg2       │
+  │                          │   │  writing the pictures    │
+  │                          │   │  smaller without         │
+  │                          │   │  decoding them           │
   └──────────────────────────┘   └──────────────────────────┘
 ```
 

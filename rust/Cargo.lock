@@ -707,7 +707,7 @@ checksum = "0c790de23124f9ab44544d7ac05d60440adc586479ce501c1d6d7da3cd8c9cf5"
 
 [[package]]
 name = "smartcut-cli"
-version = "0.6.9"
+version = "0.7.0"
 dependencies = [
  "anyhow",
  "smartcut-core",
@@ -715,18 +715,23 @@ dependencies = [
 
 [[package]]
 name = "smartcut-core"
-version = "0.6.9"
+version = "0.7.0"
 dependencies = [
  "anyhow",
  "cpal",
  "encoding_rs",
  "ffmpeg-next",
+ "smartcut-mpeg2",
  "smartcut-vc1",
 ]
 
 [[package]]
+name = "smartcut-mpeg2"
+version = "0.7.0"
+
+[[package]]
 name = "smartcut-vc1"
-version = "0.6.9"
+version = "0.7.0"
 
 [[package]]
 name = "syn"

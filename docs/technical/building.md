@@ -82,6 +82,7 @@ bash tests/run_udf_tests.sh           # the image as a filesystem, beside real d
 bash tests/run_dvd_tests.sh           # a DVD-Video disc, as a folder and as an .iso    23
 bash tests/run_bd_audio_tests.sh      # the sound a disc carries, written out             39
 bash tests/run_vc1_tests.sh           # the VC-1 encoder, put through a decoder          4
+bash tests/run_transrate_tests.sh    # fitting a disc: the identity, the size, the cost  10
 ```
 
 **Every suite passes whole.** Anything that fails is a regression.

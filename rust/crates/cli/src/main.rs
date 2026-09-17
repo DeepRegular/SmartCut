@@ -127,6 +127,31 @@ fn pick<'a>(
         })
 }
 
+/// A disc named, or a size in bytes.
+///
+/// `bd25` and the rest are the discs; a plain number is bytes, which is what
+/// somebody writing onto something else -- a card, a share, half a disc --
+/// has. Sizes are the disc's own, which are not powers of two: a "25GB"
+/// Blu-ray holds 25,025,314,816 bytes, i.e. 23.3 of what a file manager calls
+/// a gigabyte.
+fn disc_size(v: &str) -> Result<u64> {
+    let key = v.trim().to_ascii_lowercase();
+    let key = key.trim_start_matches("bd").trim_start_matches('-');
+    if let Some(d) = smartcut_core::fit::DISCS
+        .iter()
+        .find(|d| (d.bytes / 1_000_000_000).to_string() == key)
+    {
+        return Ok(d.bytes);
+    }
+    let n: u64 = key
+        .parse()
+        .with_context(|| format!("--fit wants bd25, bd50, bd100, bd128 or a size in bytes, got {v:?}"))?;
+    if n < 1_000_000 {
+        bail!("--fit {v:?}: that is not a size anything can be written onto");
+    }
+    Ok(n)
+}
+
 fn list_disc(input: &str, disc: &smartcut_core::disc::Disc) {
     println!("disc  : {input}");
     println!("        {} -- {}", disc.shape.as_str(), disc.label);
@@ -221,6 +246,9 @@ fn usage() -> String {
      into any .ts that keeps the broadcast's own tables, that being the \
      only shape which can hold one. What it costs is size: a carousel is \
      between a hundredth and a fifth of what a multiplex spends\n\
+     --fit bd25|bd50|bd100|bd128|BYTES writes the pictures back smaller, by \n\
+     as much as it takes for the output to fit that much room -- MPEG-2 only, \n\
+     and see --video-share to name the share outright;\n\
      --bdav writes the cut onto a disc of recordings in FOLDER rather than \
      into a file; --disc-title, --programme, --channel, --about and --made \
      fill in what its index says, which is otherwise taken from what the \
@@ -281,6 +309,10 @@ fn main() -> Result<()> {
     // is between a hundredth and a fifth of what a multiplex spends. See
     // `smartcut_core::carousel`.
     let mut data_broadcast: Option<bool> = None;
+    // What the output has to fit, and what that comes to for the pictures.
+    // See `smartcut_core::fit` and `CutOptions::video_share`.
+    let mut fit: Option<u64> = None;
+    let mut video_share: Option<f64> = None;
     // Where a disc of recordings is being built, and what to call it and the
     // recording going onto it. See `smartcut_core::bdav`.
     let mut bdav: Option<String> = None;
@@ -483,6 +515,21 @@ fn main() -> Result<()> {
             }
             // What the option was called when there were only two answers.
             "--no-tables" => tables = Some(smartcut_core::si::Tables::Muxer),
+            // Onto a disc of a given size, or at a share named outright.
+            "--fit" => {
+                i += 1;
+                let v = args.get(i).context("--fit needs a size")?;
+                fit = Some(disc_size(v)?);
+            }
+            "--video-share" => {
+                i += 1;
+                let v = args.get(i).context("--video-share needs a share")?;
+                let share: f64 = v.parse().context("--video-share wants 0.35..1")?;
+                if !(smartcut_core::fit::FLOOR..=1.0).contains(&share) {
+                    bail!("--video-share wants {}..1, got {share}", smartcut_core::fit::FLOOR);
+                }
+                video_share = Some(share);
+            }
             "--data-broadcast" => data_broadcast = Some(true),
             "--no-data-broadcast" => data_broadcast = Some(false),
             "--proxy" => make_proxy = true,
@@ -811,11 +858,25 @@ fn main() -> Result<()> {
             .unwrap_or_default();
         println!("subtitle:{lang} subpicture   [id 0x{:02x}]", s.id);
     }
-    // The data broadcast, unless it has been turned down. Listed with the
-    // streams that are carried because that is what it is -- and where the
-    // output turns out to be a shape that cannot hold one, the engine says
-    // so at the cut rather than this promising otherwise here.
-    if data_broadcast != Some(false) {
+    // The data broadcast, unless it has been turned down or the cut is
+    // being written in a shape that cannot hold one -- a disc's stream, an
+    // MP4, a run that leaves the tables to the muxer. Asked here rather
+    // than assumed, because listing a carousel among the streams that
+    // travel and then not writing it is the one answer that misleads; where
+    // it cannot travel it is said to be left behind, with the rest.
+    //
+    // A run with nothing to write is only being asked what the recording
+    // holds, and the answer to that does not depend on a shape nobody has
+    // named. A disc's stream is Blu-ray's own framing whatever the folder
+    // is called, which is settled here rather than waiting for the name the
+    // disc gives the file.
+    let data_travels = data_broadcast != Some(false)
+        && match (&bdav, &output) {
+            (Some(_), _) => false,
+            (None, Some(out)) => smartcut_core::can_carry_data_broadcast(out, tables),
+            (None, None) => true,
+        };
+    if data_travels {
         for d in src.dropped.iter().filter(|d| d.what == "data") {
             println!(
                 "data   : carousel   [{}]",
@@ -828,7 +889,7 @@ fn main() -> Result<()> {
     for d in src
         .dropped
         .iter()
-        .filter(|d| !(data_broadcast != Some(false) && d.what == "data"))
+        .filter(|d| !(data_travels && d.what == "data"))
     {
         println!(
             "        not carried: {} on {}",
@@ -1208,6 +1269,68 @@ fn main() -> Result<()> {
             100.0 * enc / total
         );
     }
+    // What the pictures have to come to, where a size was named. Worked out
+    // from the ranges actually being kept rather than from the recording, and
+    // said out loud: a run that is about to rewrite every picture of a
+    // four-hour recording should say so before it starts.
+    let video_share = match fit {
+        Some(capacity) => {
+            // How much of the recording is really being kept. A range asked
+            // for past the end of it is planned as it was asked for -- the
+            // copy simply stops when the packets do -- so the recording's own
+            // length is what the arithmetic is done against.
+            let kept: f64 = plans
+                .iter()
+                .map(|p| {
+                    let (a, b) = (p.t_in.min(src.duration), p.t_out.min(src.duration));
+                    (b - a).max(0.0)
+                })
+                .sum();
+            let going = if bdav.is_some()
+                || output.as_deref().is_some_and(|o| o.to_ascii_lowercase().ends_with(".m2ts"))
+            {
+                smartcut_core::fit::Going::Disc
+            } else {
+                smartcut_core::fit::Going::File
+            };
+            let rates = smartcut_core::fit::rates(&src);
+            let mut estimate = smartcut_core::fit::estimate_at(rates, kept, going);
+            // The file's own rate stands in for everything a cut into a file
+            // carries that was never counted -- see `fit::estimate`.
+            if going == smartcut_core::fit::Going::File {
+                let whole = smartcut_core::fit::estimate(&src, &[], going);
+                let share = if src.duration > 0.0 { kept / src.duration } else { 1.0 };
+                estimate.bytes = estimate.bytes.max((whole.bytes as f64 * share) as u64);
+            }
+            let f = smartcut_core::fit::fit(&[estimate], capacity, smartcut_core::fit::MARGIN);
+            println!(
+                "fit   : {} MB onto {} MB usable of {} MB",
+                f.bytes / 1_000_000,
+                f.usable / 1_000_000,
+                f.capacity / 1_000_000
+            );
+            if f.fits {
+                println!("        it fits as it is");
+                video_share
+            } else if !f.reachable {
+                bail!(
+                    "this will not fit: the pictures would have to be written at {:.1}% of their \
+                     own size, and below {:.0}% they stop being the same pictures. A larger disc, \
+                     or less of the recording.",
+                    f.share * 100.0,
+                    smartcut_core::fit::FLOOR * 100.0
+                );
+            } else {
+                println!(
+                    "        the pictures will be written at {:.1}% of their own size",
+                    f.share * 100.0
+                );
+                Some(f.share)
+            }
+        }
+        None => video_share,
+    };
+
     // `--analyze` stops here, before the disc is touched. Reserving a slot on
     // one makes its directories and takes a number the next run counts past,
     // and asking what a cut would do is not asking for either.
@@ -1346,7 +1469,7 @@ fn main() -> Result<()> {
     // recording that carries none, or in a shape that cannot hold one, the
     // engine says so itself rather than this promising it here.
     let data = if data_broadcast != Some(false)
-        && to_ts
+        && smartcut_core::can_carry_data_broadcast(&out, tables)
         && src.dropped.iter().any(|d| d.what == "data")
     {
         ", the data broadcast"
@@ -1383,6 +1506,7 @@ fn main() -> Result<()> {
             tables,
             data_broadcast,
             vc1_quant,
+            video_share,
             ..Default::default()
         },
     )?;

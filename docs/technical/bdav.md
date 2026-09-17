@@ -17,6 +17,11 @@ BDAV/
   STREAM/00001.m2ts      the transport stream itself
 ```
 
+Where a night's recordings will not fit one disc, the pictures can be written
+back smaller until they do. That is [Fitting a disc](transrate.md) rather than
+this page, and nothing on this page changes for it: the pictures simply arrive
+smaller.
+
 What comes out is a folder, not an image. Burning it, or wrapping it in a UDF
 image, is what ImgBurn and `genisoimage` are for, and a disc that has to be
 built before it can be looked at is a disc nobody checks before they burn it.

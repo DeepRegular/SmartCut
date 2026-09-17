@@ -195,6 +195,24 @@ place in the file and applied the result to the whole thing**.
 In Rust, `nal_ref_idc` can be read while the packets are already being scanned, so the
 test is **evaluated exactly, per access point**. No extra pass, and no extra cost.
 
+## MPEG-2: the encoder that decodes nothing
+
+`rust/crates/mpeg2` is unlike anything else here. It is neither a decoder nor
+an encoder: it **reads a coded picture apart and writes it back with less in
+it**. No picture is ever reconstructed -- there is no inverse transform and no
+motion compensation.
+
+It is used in one place: fitting a disc. Where a night's recordings will not go
+onto one, the pictures are written back at a share of their own size, and the
+GOPs, the motion vectors and the timestamps stay the bits that arrived. See
+[Fitting a disc](transrate.md).
+
+How it is known to be right is the VC-1 encoder's idea pointing the other way.
+That one writes something and puts it through a decoder; this one writes a
+picture back **with nothing changed and compares the bytes**. A table with one
+row wrong, a length counted one bit out, a run misplaced: all of them come out
+as bytes that differ. Over eleven recordings and 709,534 pictures, none do.
+
 ## VC-1: the codec with no encoder
 
 Every codec this program cuts has an encoder in libavcodec, bar one. There is no

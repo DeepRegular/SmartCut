@@ -49,6 +49,7 @@ reasons why "just cut on GOP boundaries and concatenate" does not work.
 |---|---|
 | [Reading a disc](technical/disc.md) | Blu-ray (BDAV and BDMV) and DVD-Video, from a folder or an `.iso`: UDF, IFO tables, ARIB text, one row per clip, and the chooser dialog |
 | [Writing a disc](technical/bdav.md) | A night's cuts as a BDAV folder: the arrival times, the entry point map, where the programme's name comes from, and what is copied from a real disc rather than understood |
+| [Fitting a disc](technical/transrate.md) | Making a night that will not fit fit, by writing the pictures back smaller without decoding them: requantisation, dropping what is not worth its bits, the rate control, and the identity checked over 700,000 pictures |
 
 ### Implementation
 

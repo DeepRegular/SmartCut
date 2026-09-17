@@ -296,6 +296,19 @@ struct ClipInfo {
     /// in which case this cost a read and not a pass over the recording.
     cached: bool,
     seconds: f64,
+    /// Bits a second the pictures take, and bits a second the sound takes.
+    ///
+    /// What the disc gauge on the output settings screen is drawn from. They
+    /// travel with the row because neither of them changes when a range does:
+    /// the gauge is redrawn every time somebody moves a cut, and opening the
+    /// recording again to ask would be reading a file to find out something
+    /// already known.
+    video_rate: f64,
+    audio_rate: f64,
+    /// Whether the pictures of this recording can be written back smaller --
+    /// which is to say whether they are MPEG-2. See
+    /// `smartcut_core::cut::CutOptions::video_share`.
+    can_shrink: bool,
 }
 
 /// What the container itself says about a recording, had in tens of
@@ -1971,6 +1984,7 @@ fn index_clip_now(
 /// What the list is told about a recording it has now read. Shared by the two
 /// ways of reading one; see [`one_read`].
 fn clip_info_of(path: &str, src: &Source, cached: bool, seconds: f64) -> ClipInfo {
+    let rates = smartcut_core::fit::rates(src);
     ClipInfo {
         name: clip_name(path),
         path: src.path.clone(),
@@ -1987,6 +2001,9 @@ fn clip_info_of(path: &str, src: &Source, cached: bool, seconds: f64) -> ClipInf
         audio_sample_rate: src.audio.as_ref().map_or(0, |a| a.sample_rate),
         audio_bits: src.audio.as_ref().map_or(0, |a| a.bits),
         audio_tracks: audio_tracks_of(&src.audios),
+        video_rate: rates.video,
+        audio_rate: rates.audio,
+        can_shrink: rates.can_shrink,
         index_name: src.index_name.to_string(),
         points: src.points.len(),
         unusable_points: src.points.iter().filter(|p| p.open_gop() && !p.droppable).count(),
@@ -3280,6 +3297,87 @@ fn free_folder_now(dirs: &[String], name: &str) -> Result<String, String> {
     ))
 }
 
+/// What one recording of a list costs a disc, as the window knows it.
+///
+/// The rates came off the recording when it was indexed and travel with the
+/// row ([`ClipInfo::video_rate`]); the seconds are how much of it the cuts
+/// keep, which the window works out itself as the ranges move. So this is
+/// arithmetic on numbers the window already has, and it can be asked as often
+/// as somebody drags a cut.
+#[derive(serde::Deserialize)]
+struct ClipCost {
+    seconds: f64,
+    video_rate: f64,
+    audio_rate: f64,
+    can_shrink: bool,
+}
+
+/// What one of them is expected to come to, for the gauge to draw.
+#[derive(serde::Serialize)]
+struct ClipRoom {
+    bytes: u64,
+    video_bytes: u64,
+    can_shrink: bool,
+}
+
+/// And what the list comes to against the disc.
+#[derive(serde::Serialize)]
+struct DiscRoom {
+    clips: Vec<ClipRoom>,
+    bytes: u64,
+    video_bytes: u64,
+    capacity: u64,
+    usable: u64,
+    /// What share of their own size the pictures would have to be written at.
+    share: f64,
+    fits: bool,
+    reachable: bool,
+    /// The least a picture may be asked to come to, so the window can say why
+    /// a list that will not fit will not fit.
+    floor: f64,
+}
+
+/// What a night's cuts come to against a disc, and what has to come off.
+///
+/// See `smartcut_core::fit`. Nothing here opens a file.
+#[tauri::command]
+fn disc_room(clips: Vec<ClipCost>, capacity: u64, margin: f64) -> DiscRoom {
+    use smartcut_core::fit;
+    let estimates: Vec<fit::Estimate> = clips
+        .iter()
+        .map(|c| {
+            fit::estimate_at(
+                fit::Rates {
+                    video: c.video_rate,
+                    audio: c.audio_rate,
+                    can_shrink: c.can_shrink,
+                },
+                c.seconds,
+                fit::Going::Disc,
+            )
+        })
+        .collect();
+    let f = fit::fit(&estimates, capacity, margin);
+    DiscRoom {
+        clips: estimates
+            .iter()
+            .map(|e| ClipRoom {
+                bytes: e.bytes,
+                video_bytes: e.video_bytes,
+                can_shrink: e.can_shrink,
+            })
+            .collect(),
+        bytes: f.bytes,
+        video_bytes: f.video_bytes,
+        capacity: f.capacity,
+        usable: f.usable,
+        share: f.share,
+        fits: f.fits,
+        reachable: f.reachable,
+        floor: fit::FLOOR,
+    }
+}
+
 /// Write one clip out.
 ///
 /// `path` names the recording to cut; without it the one that is open in the
@@ -3334,6 +3432,10 @@ async fn export(
     // carried -- a project written before the box existed is one nobody
     // said no on.
     data_broadcast: Option<bool>,
+    // What share of their own size the pictures are written back at, where
+    // the run has to fit a disc. One number for the whole list, worked out
+    // once before the run starts; see `smartcut_core::fit`.
+    video_share: Option<f64>,
 ) -> Result<(), String> {
     // Cutting is minutes of I/O on a broadcast recording; keeping it off the
     // UI thread is what lets the progress bar move at all.
@@ -3427,6 +3529,7 @@ async fn export(
                 .filter(|pid| src.subpictures.iter().any(|s| s.id == *pid))
                 .collect(),
             data_broadcast,
+            video_share,
             ..Default::default()
         };
         smartcut_core::cut_with_progress(
@@ -3672,7 +3775,7 @@ async fn bdav_finish(
     dir: String,
     title: String,
     entries: Vec<BdavEntry>,
-) -> Result<(), String> {
+) -> Result<u64, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let at = local_path(&dir)?;
         let recordings: Vec<smartcut_core::bdav::Recording> = entries
@@ -3697,10 +3800,30 @@ async fn bdav_finish(
                 let _ = reporter.emit("bdav-progress", (clip.to_string(), done));
             }),
         )
-        .map_err(|e| e.to_string())
+        .map_err(|e| e.to_string())?;
+        // What the disc actually came to, now that everything on it is
+        // written. The screen said what it expected before the run; this is
+        // the answer, and the two are not always the same -- a recording whose
+        // pictures would not shrink as far as they were asked to is a disc
+        // larger than the one that was drawn. See `fit`.
+        Ok(folder_bytes(&at))
     })
     .await
     .map_err(|e| e.to_string())?
+}
+
+/// How much a folder holds, everything under it counted.
+fn folder_bytes(at: &std::path::Path) -> u64 {
+    let Ok(entries) = std::fs::read_dir(at) else {
+        return 0;
+    };
+    entries
+        .flatten()
+        .map(|e| match e.file_type() {
+            Ok(t) if t.is_dir() => folder_bytes(&e.path()),
+            _ => e.metadata().map(|m| m.len()).unwrap_or(0),
+        })
+        .sum()
 }
 
 /// Play the edited timeline back from `from`, as a stream of pictures.
@@ -5018,6 +5141,7 @@ pub fn run() {
             bdav_prepare,
             bdav_discard,
             bdav_finish,
+            disc_room,
             bdav_image,
             bdav_drop,
             audio_limits,

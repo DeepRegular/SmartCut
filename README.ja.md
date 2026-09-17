@@ -62,6 +62,12 @@ BD-RE に書くのと同じ **BDAV フォルダー**を書き出します。番�
 入ります。指定すれば、そのまま焼ける **`.iso`** に包みます。詳しくは
 [ディスクを書く](docs/technical/bdav.ja.md)にあります。
 
+**入りきらない一晩を 1 枚に収められます。** ディスクの使用量が図で出て、入らない
+ときは映像だけを書き直して収めます。**デコードしません。** 量子化を粗くし、
+値打ちよりビットのほうが高くつく係数を落とすだけなので、GOP もタイムスタンプも
+動きベクトルも、音声・字幕・番組情報もそのままです。MPEG-2 の録画が対象です。
+詳しくは[ディスクに収める](docs/technical/transrate.ja.md)にあります。
+
 **切る場所を字幕で確かめられます。** 編集画面のプレビューに字幕を出せます
 （既定は表示しない）。放送の ARIB 字幕は、放送局が指定した位置と色のまま文字で
 出します。ディスクの字幕（PGS・DVD のサブピクチャ）は、描かれた絵のまま重ねます。
@@ -117,11 +123,11 @@ deb 以外はすべて FFmpeg を同梱しているので、ほかに用意す�
 
 | プラットフォーム | ファイル | 備考 |
 |---|---|---|
-| **Linux** | `SmartCut_0.6.9_amd64.AppImage` | 実行権限を付けて起動します |
-| **Linux** | `SmartCut-0.6.9-linux-x86_64.tar.gz` | 展開して `./smartcut` を実行します。FUSE を使いたくない場合はこちらです |
-| **Linux (Debian/Ubuntu)** | `smartcut_0.6.9_amd64.deb` | `sudo apt install ./smartcut_0.6.9_amd64.deb`。システムに入っている FFmpeg を使うので 4.0 MB で済みます |
-| **Windows** | `SmartCut_0.6.9_x64-setup.exe` | インストーラ |
-| **Windows** | `smartcut-portable-x64-0.6.9.zip` | 展開して `smartcut.exe` を実行します |
+| **Linux** | `SmartCut_0.7.0_amd64.AppImage` | 実行権限を付けて起動します |
+| **Linux** | `SmartCut-0.7.0-linux-x86_64.tar.gz` | 展開して `./smartcut` を実行します。FUSE を使いたくない場合はこちらです |
+| **Linux (Debian/Ubuntu)** | `smartcut_0.7.0_amd64.deb` | `sudo apt install ./smartcut_0.7.0_amd64.deb`。システムに入っている FFmpeg を使うので 4.0 MB で済みます |
+| **Windows** | `SmartCut_0.7.0_x64-setup.exe` | インストーラ |
+| **Windows** | `smartcut-portable-x64-0.7.0.zip` | 展開して `smartcut.exe` を実行します |
 
 **動作条件。** AppImage と tar.gz には glibc 2.39 以降が必要です（Ubuntu 24.04、
 Debian 13、Fedora 40 以降）。deb は FFmpeg 7.1 を使うので、Debian 13 または
@@ -362,6 +368,7 @@ ARIB の文字ではなく XML です。これも持ち出します。時刻は�
   │  放送そのもの        si  arib  caption  series  text    │
   │  切れ目を探す        cm  logo                           │
   │  ディスク、両方向    disc  dvd  udf  bdav  udfw restamp │
+  │  ディスクに収める    fit                                │
   │  字幕                pgs  vobsub  subs                  │
   │  編集画面に見せる    preview  playback_audio            │
   └────────────┬───────────────────────────┬────────────────┘
@@ -370,6 +377,10 @@ ARIB の文字ではなく XML です。これも持ち出します。時刻は�
   │  FFmpeg  libav*          │   │  rust/crates/vc1         │
   │  分離・復号・符号化      │   │  イントラ専用 VC-1       │
   │                          │   │  エンコーダ              │
+  │                          │   ├──────────────────────────┤
+  │                          │   │  rust/crates/mpeg2       │
+  │                          │   │  デコードせずに映像を    │
+  │                          │   │  小さく書き直す          │
   └──────────────────────────┘   └──────────────────────────┘
 ```
 
@@ -420,7 +431,7 @@ ARIB の文字ではなく XML です。これも持ち出します。時刻は�
 | | |
 |---|---|
 | **ユーザーガイド**<br>使い方 | [GUI の使い方](docs/user-guide/gui.ja.md) ・ [CM 検出](docs/user-guide/cm-detection.ja.md) ・ [まとめて処理する](docs/user-guide/batch.ja.md) ・ [プロジェクト](docs/user-guide/projects.ja.md) ・ [コマンドラインで使う](docs/user-guide/cli.ja.md) |
-| **技術資料**<br>中で何をしているか | [アルゴリズム](docs/technical/algorithm.ja.md) ・ [検証](docs/technical/validation.ja.md) ・ [音声](docs/technical/audio.ja.md) ・ [放送 TS](docs/technical/broadcast-ts.ja.md) ・ [CM 検出の実装](docs/technical/cm-detection.ja.md) ・ [ディスクを読む](docs/technical/disc.ja.md) ・ [ディスクを書く](docs/technical/bdav.ja.md) ・ [Rust コア](docs/technical/rust-core.ja.md) ・ [設計ノート](docs/technical/design.ja.md) ・ [ビルド](docs/technical/building.ja.md) ・ [配布](docs/technical/distribution.ja.md) |
+| **技術資料**<br>中で何をしているか | [アルゴリズム](docs/technical/algorithm.ja.md) ・ [検証](docs/technical/validation.ja.md) ・ [音声](docs/technical/audio.ja.md) ・ [放送 TS](docs/technical/broadcast-ts.ja.md) ・ [CM 検出の実装](docs/technical/cm-detection.ja.md) ・ [ディスクを読む](docs/technical/disc.ja.md) ・ [ディスクを書く](docs/technical/bdav.ja.md) ・ [ディスクに収める](docs/technical/transrate.ja.md) ・ [Rust コア](docs/technical/rust-core.ja.md) ・ [設計ノート](docs/technical/design.ja.md) ・ [ビルド](docs/technical/building.ja.md) ・ [配布](docs/technical/distribution.ja.md) |
 
 ## ライセンス
 

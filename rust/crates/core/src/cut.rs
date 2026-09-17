@@ -280,6 +280,22 @@ pub struct CutOptions {
     /// for outright where it cannot go, the cut says so; left to the default
     /// it goes quietly, because a default cannot be disappointed.
     pub data_broadcast: Option<bool>,
+    /// What share of their own size the pictures are to be written back as,
+    /// where the cut has to fit somewhere it otherwise would not.
+    ///
+    /// `None`, and every copied picture is the recording's own bytes. A share
+    /// less than one puts each of them through
+    /// [`smartcut_mpeg2::Transrater`], which writes the same picture with
+    /// less in it: the same GOP, the same motion, the same timestamps, the
+    /// same coded structure, and the coefficients written less finely and
+    /// thinned of what is not worth its bits. It is not a re-encode and it is
+    /// far faster than one -- nothing here decodes a picture.
+    ///
+    /// **MPEG-2 only.** It is the format a broadcast and a recorder's own
+    /// disc are in, and it is the one whose macroblock layer can be rewritten
+    /// without decoding. A recording in anything else is copied as it is and
+    /// the cut says so.
+    pub video_share: Option<f64>,
 }
 
 /// How far past a segment's end the reader will go for a stream that has
@@ -468,6 +484,63 @@ struct Writer {
     /// I/O, so the caller needs something to show.
     progress: Option<Box<dyn Fn(f64) + Send + Sync>>,
     expected: i64,
+    /// Where the pictures are being written back smaller. See [`Shrink`].
+    shrink: Option<Shrink>,
+}
+
+/// Writing the pictures back smaller, so that a run fits where it has to.
+///
+/// One of these lives for the whole of a cut rather than for a segment: what
+/// the requantiser carries from picture to picture is the scale the material
+/// has settled at and what the pictures so far have spent, and both of those
+/// are about the recording rather than about a stretch of it. See
+/// [`smartcut_mpeg2::Transrater`].
+struct Shrink {
+    rater: smartcut_mpeg2::Transrater,
+    /// What share of its size the video is to come to.
+    share: f64,
+    /// The first picture that could not be rewritten, and how many followed
+    /// it. Such a picture is written through as it arrived, so the answer is
+    /// a cut that is a little larger than it was aiming for rather than a cut
+    /// that failed -- but it is worth saying once.
+    declined: Option<(String, u64)>,
+}
+
+impl Shrink {
+    /// One picture's bytes, smaller.
+    fn picture(&mut self, data: &[u8]) -> Option<Vec<u8>> {
+        match self.rater.picture(data, self.share) {
+            Ok(out) => Some(out),
+            Err(e) => {
+                match &mut self.declined {
+                    Some((_, n)) => *n += 1,
+                    None => self.declined = Some((e.to_string(), 1)),
+                }
+                None
+            }
+        }
+    }
+
+    /// What the run came to, once it is over.
+    fn say(&self) {
+        let tally = self.rater.written;
+        if tally.pictures == 0 {
+            return;
+        }
+        crate::note_once(format!(
+            "note: the pictures were written back at {:.1}% of their own size, which is {} of \
+             {} MB, to fit where this is going",
+            tally.share() * 100.0,
+            tally.written_bytes / 1_000_000,
+            tally.source_bytes / 1_000_000,
+        ));
+        if let Some((why, n)) = &self.declined {
+            crate::note_once(format!(
+                "note: {n} picture(s) were written through as they arrived rather than made \
+                 smaller, because of {why}. The cut is that much larger than it was asked to be."
+            ));
+        }
+    }
 }
 
 /// One sound track being written, and everything that is true of it alone.
@@ -1558,6 +1631,25 @@ pub fn tables_for(output: &str, asked: Option<crate::si::Tables>) -> crate::si::
     })
 }
 
+/// Whether a cut written here can hold the recording's data broadcast.
+///
+/// Three things have to be true together, and this is the one place that
+/// says so -- the run that writes the cut and the run that tells the user
+/// what is going into it both ask here, because a summary that promises a
+/// carousel the cut does not carry is worse than no summary.
+///
+/// It has to be a transport stream, since nothing else has a PID to put one
+/// on. Its tables have to be the recording's own, since the carousel is
+/// written by the pass that puts those back and by nothing else. And it must
+/// not be Blu-ray's own framing: a disc's stream carries pictures, sound and
+/// subtitles, and neither a clip index nor a player has anywhere to put the
+/// pages behind the d button. See [`crate::carousel`].
+pub fn can_carry_data_broadcast(output: &str, tables: Option<crate::si::Tables>) -> bool {
+    writing_ts(output)
+        && !writing_m2ts(output)
+        && tables_for(output, tables) != crate::si::Tables::Muxer
+}
+
 /// Read the layout off the input, when the input is a transport stream at all.
 ///
 /// The video's own PID is the starting point, not the lowest PID in the file:
@@ -2130,6 +2222,20 @@ fn copy_segment(
             }
             _ => packet,
         };
+        // The one place a copied picture is not the recording's own bytes:
+        // where the run has to fit a size, every picture goes through the
+        // requantiser on its way out. See [`Shrink`].
+        let packet = match writer.shrink.as_mut() {
+            Some(shrink) => match shrink.picture(packet.data().unwrap_or(&[])) {
+                Some(data) => {
+                    let mut out = ff::Packet::copy(&data);
+                    out.set_flags(packet.flags());
+                    out
+                }
+                None => packet,
+            },
+            None => packet,
+        };
         writer.push(Emitted {
             packet,
             display,
@@ -2561,7 +2667,14 @@ fn open_encoder(
             }
         }
     }
-    let bit_rate = opts.bit_rate.unwrap_or_else(|| default_bit_rate(src));
+    // A re-encoded seam is written at what the pictures around it are worth,
+    // and where the run is being made smaller those pictures are worth less.
+    // Otherwise the few frames this program writes at a seam would be the
+    // only fine ones on the disc, and paid for by the rest.
+    let bit_rate = opts.bit_rate.unwrap_or_else(|| {
+        let plain = default_bit_rate(src) as f64;
+        (plain * opts.video_share.unwrap_or(1.0).clamp(0.05, 1.0)) as usize
+    });
     enc.set_bit_rate(bit_rate);
     // And what the re-encoded pictures are to *say* about the rate, which is
     // not the same question as what to spend.
@@ -2668,6 +2781,29 @@ fn frame_rate_parts(fps: f64) -> (i64, i64) {
 /// material it was wrong by a factor of five or six: a 27 Mbit/s Blu-ray was
 /// re-encoded at 4.5, and 70 Mbit/s of UHD at 15.9. Where the count is there,
 /// it is the answer.
+/// Whether this run writes its pictures back smaller, and what with.
+///
+/// Only MPEG-2, and only where a share was asked for. A recording in
+/// anything else says so rather than quietly coming out the size it always
+/// was: the caller worked out that share because something has to fit, and a
+/// cut that ignores it leaves them to find out from the disc.
+fn shrink_for(src: &Source, opts: &CutOptions) -> Option<Shrink> {
+    let share = opts.video_share.filter(|s| *s > 0.0 && *s < 1.0)?;
+    if src.video.codec != "mpeg2video" {
+        crate::note_once(format!(
+            "note: this recording's pictures are {} and only MPEG-2 can be written back smaller \
+             without decoding it, so they are copied as they are. The cut will be its full size.",
+            src.video.codec
+        ));
+        return None;
+    }
+    Some(Shrink {
+        rater: smartcut_mpeg2::Transrater::default(),
+        share,
+        declined: None,
+    })
+}
+
 fn default_bit_rate(src: &Source) -> usize {
     let v = &src.video;
     if let Some(measured) = v.bit_rate.filter(|r| r.is_finite() && *r > 0.0) {
@@ -4222,12 +4358,13 @@ pub fn cut_with_progress(
     let wants_tables = to_ts && want != crate::si::Tables::Muxer;
     let ours = u16::try_from(video_pid).unwrap_or(0);
     // The data broadcast, which is carried by the table pass rather than by
-    // the muxer and so is only possible where that pass runs at all. What is
-    // asked for here is what the demuxer called data; which of those are
-    // really a carousel is settled against the recording's own map below,
-    // where the map has been read. See [`crate::carousel`].
+    // the muxer and so is only possible in the shapes that pass writes; see
+    // [`can_carry_data_broadcast`]. What is asked for here is what the
+    // demuxer called data; which of those are really a carousel is settled
+    // against the recording's own map below, where the map has been read.
+    // See [`crate::carousel`].
     let wants_data = opts.data_broadcast.unwrap_or(true);
-    let asked_for_data = wants_data && wants_tables && !writing_m2ts(output);
+    let asked_for_data = wants_data && can_carry_data_broadcast(output, opts.tables);
     let maybe_data: Vec<u16> = if asked_for_data {
         src.dropped
             .iter()
@@ -4959,6 +5096,7 @@ pub fn cut_with_progress(
             .flat_map(|p| &p.segments)
             .map(|s| s.frames as i64)
             .sum(),
+        shrink: shrink_for(src, opts),
     };
 
     let fps = num as f64 / den as f64;
@@ -5147,6 +5285,9 @@ pub fn cut_with_progress(
     }
     writer.flush()?;
     writer.octx.write_trailer()?;
+    if let Some(shrink) = &writer.shrink {
+        shrink.say();
+    }
 
     if writer.written + writer.skipped != pictures {
         bail!(
@@ -5610,5 +5751,24 @@ mod tests {
                 assert_eq!(tables_for(name, Some(want)), want);
             }
         }
+    }
+
+    #[test]
+    fn only_a_plain_transport_stream_holds_a_carousel() {
+        use crate::si::Tables;
+        // The shape it is written in: a `.ts`, keeping the broadcast's own
+        // tables, which is what a `.ts` does unasked.
+        assert!(can_carry_data_broadcast("cut.ts", None));
+        assert!(can_carry_data_broadcast("CUT.TS", Some(Tables::Partial)));
+        // A disc's stream, whether it is being written onto a disc or
+        // standing on its own. A clip index has nowhere to name one and a
+        // player has nowhere to show it, so a run that writes one says so
+        // rather than promising a carousel it then leaves out.
+        assert!(!can_carry_data_broadcast("BDAV/STREAM/00001.m2ts", None));
+        assert!(!can_carry_data_broadcast("cut.M2TS", Some(Tables::Broadcast)));
+        // Nothing else has a PID to put one on.
+        assert!(!can_carry_data_broadcast("cut.mp4", None));
+        // And nothing carries it where the pass that writes it does not run.
+        assert!(!can_carry_data_broadcast("cut.ts", Some(Tables::Muxer)));
     }
 }

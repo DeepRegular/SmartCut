@@ -2298,6 +2298,20 @@ const settings = {
   keyframes: false,
   // Where the subtitles a disc draws go. See `outset.subtitles`.
   subtitles: "pgs",
+  /// Which disc the list is going onto, in bytes and as a string -- which is
+  /// what the control holding it hands back. Only means anything in `bdav`
+  /// mode. The four sizes are in `index.html` beside the control, and in
+  /// `smartcut_core::fit::DISCS` where the arithmetic is done.
+  disc: "25025314816",
+  /// Whether a list that will not fit on that disc is made to fit, by writing
+  /// every picture back at a share of its own size.
+  ///
+  /// Off. A run that quietly rewrote every picture of a night's recordings
+  /// because they came to a hundred megabytes more than a disc holds would
+  /// be doing something nobody asked for to something that cannot be undone
+  /// -- and the alternative, which is a disc with one recording left off it,
+  /// is a thing somebody might well prefer. So it is asked for.
+  fit: false,
 };
 
 /// The settings as the program starts with them, kept because 新規作成 has to
@@ -2586,6 +2600,8 @@ function showSettings() {
 bindSetting("out-dir", "dir");
 bindSetting("out-subfolder", "subfolder");
 bindSetting("out-disc-title", "discTitle");
+bindSetting("out-disc", "disc");
+bindSetting("out-fit", "fit", "checked");
 bindSetting("out-image", "image");
 bindSetting("out-image-access", "imageAccess");
 bindSetting("out-image-only", "imageOnly", "checked");
@@ -3938,6 +3954,8 @@ function paintMode() {
   // nobody asked.
   el("row-subfolder").hidden = !subfolderWanted();
   el("row-disc-title").hidden = !disc;
+  el("row-disc").hidden = !disc;
+  el("row-gauge").hidden = !disc;
   el("row-image").hidden = !disc;
   // The question after it only where there is an image to ask it about.
   el("row-image-access").hidden = !disc || !settings.image;
@@ -4036,6 +4054,196 @@ function paintIndexFields() {
   el("out-made").classList.toggle("over", bad);
 }
 
+// --- the disc gauge -------------------------------------------------------
+//
+// What a night's cuts do to a disc. The arithmetic is the engine's -- see
+// `smartcut_core::fit` -- and everything it needs was read off each recording
+// when it was indexed and travels with the row, so asking costs nothing and
+// can be done every time a range moves.
+
+/// The last answer, and what it was an answer about.
+///
+/// Kept so that the run can use the same share the screen showed. A run works
+/// it out again from the list as it stands, because the list can be edited
+/// between reading the screen and pressing the button -- this is for drawing.
+let room = null;
+let roomOf = "";
+
+/// A disc's own gigabytes, which are not a file manager's.
+///
+/// `size` in `shared.js` counts in 1024s, which is right for a file and wrong
+/// here: a disc sold as 25GB holds 25,025,314,816 bytes, and a gauge that
+/// called it 23.3 GB beside a control saying 25GB would be two numbers for
+/// one thing.
+function discGb(bytes) {
+  return `${(bytes / 1e9).toFixed(1)} GB`;
+}
+
+/// What the list costs the disc, as the engine works it out.
+///
+/// One entry per ready clip, in list order, so that the bar's segments and
+/// the rows line up. A clip that has not been indexed yet has no rates to
+/// give and is left out -- it has no cuts either, so there is nothing of it
+/// to draw.
+function discCosts() {
+  return ready()
+    .filter((c) => c.info && c.info.video_rate > 0)
+    .map((c) => ({
+      clip: c,
+      seconds: keepsOf(c).reduce((n, k) => n + (k.b - k.a), 0),
+      video_rate: c.info.video_rate,
+      audio_rate: c.info.audio_rate,
+      can_shrink: !!c.info.can_shrink,
+    }));
+}
+
+/// Ask the engine, unless it has already been asked this exact question.
+async function askRoom() {
+  const costs = discCosts();
+  const capacity = Number(settings.disc) || 25025314816;
+  const key = JSON.stringify([capacity, costs.map((c) => [c.seconds, c.video_rate, c.audio_rate, c.can_shrink])]);
+  // The stored answer has to be about this list and not the one before it:
+  // the key says so, and the count is checked as well because everything
+  // drawn from it is drawn per clip.
+  if (key === roomOf && room && room.clips.length === costs.length) return { costs, room };
+  const answer = await invoke("disc_room", {
+    clips: costs.map(({ clip, ...rest }) => rest),
+    capacity,
+    margin: 0.01,
+  });
+  roomOf = key;
+  room = answer;
+  return { costs, room: answer };
+}
+
+/// What share the pictures are to be written at for this list to fit, or
+/// null where nothing is to be done to them.
+///
+/// Asked afresh rather than read off the gauge: the list can be edited
+/// between looking at the screen and pressing the button.
+async function fitShare() {
+  if (!bdavMode() || !settings.fit) return null;
+  const { room: r } = await askRoom();
+  if (!r || r.fits) return null;
+  // A list that cannot be reached is still written -- as small as this goes,
+  // which is the best answer available to somebody who has pressed the
+  // button. The gauge said so before they pressed it, and the output screen
+  // says so again when the disc turns out too large for the disc.
+  return Math.max(r.share, r.floor);
+}
+
+/// Draw it.
+async function renderGauge() {
+  const box = el("disc-gauge");
+  if (!box || el("row-gauge").hidden) return;
+  const { costs, room: r } = await askRoom();
+  // The screen may have moved on while that was in the air.
+  if (el("row-gauge").hidden) return;
+  if (!costs.length || !r) {
+    box.textContent = t("gauge.empty");
+    return;
+  }
+  // The bar is as long as the larger of the two, so that a list which
+  // overflows shows how far past the edge it goes.
+  const scale = Math.max(r.bytes, r.capacity, 1);
+  const seconds = costs.reduce((n, c) => n + c.seconds, 0);
+  const shrinking = settings.fit && !r.fits;
+
+  // A share of the bar, handed to the flex algorithm rather than written as a
+  // width. A thousandth of the bar is finer than a pixel at any width this
+  // window has.
+  const grow = (bytes) => ((Math.max(bytes, 0) / scale) * 1000).toFixed(4);
+  const span = (cls, style) => {
+    const e = document.createElement("span");
+    if (cls) e.className = cls;
+    // **Through the DOM, never through the markup.** This window's content
+    // policy is `style-src 'self'`, which drops a `style` attribute that
+    // arrives as text: the gauge drew as an empty outline with every share
+    // sitting correctly in the HTML and every one of them computing to zero.
+    // A property set here is not markup and is not dropped.
+    if (style) Object.assign(e.style, style);
+    return e;
+  };
+
+  // One segment per recording, and where a segment falls past the edge of the
+  // disc it is drawn as the part that will not fit.
+  const bar = (share) => {
+    const box = span("gauge-bar");
+    let at = 0;
+    costs.forEach((c, i) => {
+      const clipRoom = r.clips[i] || { bytes: 0, video_bytes: 0, can_shrink: false };
+      const bytes = clipRoom.can_shrink
+        ? clipRoom.bytes - clipRoom.video_bytes * (1 - share)
+        : clipRoom.bytes;
+      const over = at + bytes > r.capacity;
+      at += bytes;
+      const cls = ["gauge-seg", clipRoom.can_shrink ? "" : "fixed", over ? "over" : ""];
+      const seg = span(cls.filter(Boolean).join(" "), { flexGrow: grow(bytes) });
+      seg.title = `${clipLabel(c.clip)} — ${discGb(bytes)}`;
+      box.appendChild(seg);
+    });
+    // What is left of the disc, so that the segments keep their share of the
+    // whole bar rather than filling it between them.
+    box.appendChild(span("gauge-rest", { flexGrow: grow(scale - at) }));
+    // The disc's edge, and the margin kept back in front of it, laid over
+    // whatever they land on.
+    const mark = span("gauge-mark");
+    mark.appendChild(span("", { flexGrow: grow(r.usable) }));
+    mark.appendChild(span("gauge-edge soft"));
+    mark.appendChild(span("", { flexGrow: grow(r.capacity - r.usable) }));
+    mark.appendChild(span("gauge-edge"));
+    mark.appendChild(span("", { flexGrow: grow(scale - r.capacity) }));
+    box.appendChild(mark);
+    return box;
+  };
+  const line = (what, share, bytes) => {
+    const row = document.createElement("div");
+    row.className = "gauge-line";
+    const label = span("gauge-what");
+    label.textContent = what;
+    const size = span("gauge-size");
+    size.textContent = discGb(bytes);
+    row.append(label, bar(share), size);
+    return row;
+  };
+
+  const after = r.bytes - r.video_bytes * (1 - Math.max(r.share, r.floor));
+  // The first bar is labelled as the "before" of a pair only while there is
+  // an "after" beside it; on its own it is simply what the list comes to.
+  const shown = [line(t(shrinking ? "gauge.asIs" : "gauge.total"), 1, r.bytes)];
+  if (shrinking) shown.push(line(t("gauge.fitted"), Math.max(r.share, r.floor), after));
+
+  const words = {
+    used: discGb(r.bytes),
+    disc: discGb(r.capacity),
+    pct: ((r.bytes / r.capacity) * 100).toFixed(1),
+    n: costs.length,
+    dur: coarse(seconds),
+    over: discGb(Math.max(0, r.bytes - r.usable)),
+    share: (Math.max(r.share, r.floor) * 100).toFixed(1),
+    floor: (r.floor * 100).toFixed(0),
+  };
+  let note;
+  let tone;
+  if (r.fits) {
+    [note, tone] = [t("gauge.fits", words), "good"];
+  } else if (!settings.fit) {
+    [note, tone] = [t("gauge.over", words), "over"];
+  } else if (r.reachable) {
+    [note, tone] = [t("gauge.willFit", words), ""];
+  } else {
+    [note, tone] = [t("gauge.unreachable", words), "over"];
+  }
+  // And the one thing the bar cannot say: that some of what is on it will not
+  // move whatever is asked of it.
+  if (shrinking && costs.some((c) => !c.can_shrink)) note += t("gauge.notMpeg2");
+  const say = document.createElement("div");
+  say.className = `gauge-note ${tone}`;
+  say.textContent = note;
+  shown.push(say);
+  box.replaceChildren(...shown);
+}
+
 function renderOutset() {
   lockAudioDetail();
   lockUnwritable();
@@ -4065,6 +4273,9 @@ function renderOutset() {
   const lands = subfolderNow();
   el("out-subfolder-note").textContent =
     lands && lands !== asked ? t("outset.branched", { name: lands }) : "";
+  // Not waited for: it is arithmetic on numbers the window already has, and
+  // the rest of the screen has no reason to stand still for it.
+  renderGauge();
   const box = el("outset-format");
   if (!clip) {
     box.textContent = t("outset.noReady");
@@ -4797,6 +5008,13 @@ async function runExport() {
     }
   }
 
+  // What the pictures have to come to for this list to fit the disc, worked
+  // out once for the whole run: the recordings share a disc, so they share
+  // the answer. A run that asked per clip would give the long one a harder
+  // time than the short one for no reason but its length.
+  const share = await fitShare();
+  if (share !== null) note(t("out.shrinking", { share: (share * 100).toFixed(1) }));
+
   exporting = true;
   abort = false;
   began = Date.now();
@@ -4873,6 +5091,10 @@ async function runExport() {
         // A standing answer rather than one of this project's: the box is
         // in 環境設定. See `prefs.dataBroadcast`.
         dataBroadcast: prefs.get("dataBroadcast") !== false,
+        // And what the disc has room for. The same number for every clip of
+        // the run; null where the list fits as it is, which is every run
+        // that is not going onto a disc.
+        videoShare: share,
       });
       // The head is past everything now, so the stage catches up with it: the
       // frame left standing is the last one the encoder made, rather than
@@ -4970,7 +5192,7 @@ async function runExport() {
       el("out-state").textContent = t("out.bdavIndexing", { clip: wrote[0].slot.clip });
       renderOutScreen();
       try {
-        await invoke("bdav_finish", {
+        const wroteBytes = await invoke("bdav_finish", {
           dir: discDir(),
           title: discTitleFor(list),
           entries: wrote.map(({ clip, slot }) => ({
@@ -4999,6 +5221,22 @@ async function runExport() {
             n: wrote.length,
           })
         );
+        // And what it came to, against the disc it was meant for. The gauge
+        // said what was expected before the run started; this is what
+        // happened. They part company where the pictures would not shrink as
+        // far as they were asked to -- which is a thing this program can only
+        // find out by trying, and which is worth knowing before a disc is
+        // burned rather than after.
+        const capacity = Number(settings.disc) || 0;
+        if (wroteBytes > 0 && capacity > 0) {
+          note(
+            t(wroteBytes > capacity ? "out.discTooBig" : "out.discSize", {
+              used: `${(wroteBytes / 1e9).toFixed(2)} GB`,
+              disc: `${(capacity / 1e9).toFixed(1)} GB`,
+              over: `${((wroteBytes - capacity) / 1e9).toFixed(2)} GB`,
+            })
+          );
+        }
         // The image, if one was asked for. After the index and not instead
         // of it: the image is made of the folder, which has to be finished
         // before there is anything to wrap.
