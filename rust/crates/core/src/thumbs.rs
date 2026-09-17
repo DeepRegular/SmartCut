@@ -625,6 +625,12 @@ pub fn build_with(
         &src.video,
         src.start_time,
         crate::entrypool::width(opts.threads, &src.video),
+        // Behind the rest of the machine. Nobody is watching this pass
+        // picture by picture -- what waits on it is a film strip that fills
+        // in as it goes, and a list that will say 完了 whenever it says it --
+        // so it takes the cores that are going spare rather than the cores.
+        // See [`crate::nice`].
+        crate::entrypool::Standing::Behind,
         // The worker cannot ask how far the thinning has got -- that answer
         // depends on the pictures in front of this one, which may still be
         // being decoded elsewhere -- so it makes the image every time and

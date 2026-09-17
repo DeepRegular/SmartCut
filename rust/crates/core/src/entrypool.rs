@@ -81,6 +81,20 @@ pub fn width(cores: usize, video: &VideoInfo) -> usize {
     cores.min(room).max(1)
 }
 
+/// Where a pool's workers stand while the rest of the machine is busy.
+///
+/// The two passes that open a pool want opposite things of it. See
+/// [`crate::nice`].
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Standing {
+    /// In front, with everything else: somebody is watching this pool fill,
+    /// and a picture that arrives late is a picture that arrives wrong.
+    Front,
+    /// Behind everything else: this pool is reading a recording nobody is
+    /// looking at, and it is welcome to whatever the machine has spare.
+    Behind,
+}
+
 /// One entry picture's packets, and where it came in the file.
 type Job = (usize, Vec<ff::Packet>);
 
@@ -104,6 +118,9 @@ pub struct Pool<T> {
 impl<T: Send + 'static> Pool<T> {
     /// Open a pool of `workers` decoders over one stream.
     ///
+    /// `standing` is where those workers queue for the machine against
+    /// everything else running on it -- see [`Standing`].
+    ///
     /// `make` is handed each picture on the worker that decoded it, with the
     /// picture's own presentation time in rebased seconds -- so it is the
     /// place to put whatever the caller wants done to a picture rather than
@@ -113,6 +130,7 @@ impl<T: Send + 'static> Pool<T> {
         video: &VideoInfo,
         start_time: f64,
         workers: usize,
+        standing: Standing,
         make: impl Fn(f64, &ff::frame::Video) -> Result<T> + Send + Sync + 'static,
     ) -> Result<Self> {
         crate::init()?;
@@ -136,6 +154,12 @@ impl<T: Send + 'static> Pool<T> {
             let tx = out_tx.clone();
             let make = make.clone();
             hands.push(std::thread::spawn(move || {
+                // Before the decoder, because it is the decoding this is
+                // about -- and on the worker itself, because on Windows a
+                // thread is not born where the thread that made it stands.
+                if standing == Standing::Behind {
+                    crate::nice::behind();
+                }
                 let mut decoder = match crate::video_decoder_with(params, each) {
                     Ok(d) => d,
                     // Nothing can be decoded at all. The jobs are answered

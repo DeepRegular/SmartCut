@@ -320,6 +320,12 @@ fn entry_run(
                 &src.video,
                 src.start_time,
                 workers,
+                // In front, unlike the pass that builds the track. This pool
+                // is the strip under the pointer: it exists because a refresh
+                // that takes 400 ms is a strip standing still behind a
+                // playhead that has moved on, and standing aside for the rest
+                // of the machine is exactly how it would take 400 ms again.
+                crate::entrypool::Standing::Front,
                 move |t, frame| Ok((t, kind_of(frame), encode_jpeg(frame, sar, width)?)),
             )?);
         }

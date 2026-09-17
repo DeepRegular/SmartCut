@@ -27,6 +27,7 @@ pub mod input;
 pub mod latm;
 pub mod logo;
 pub mod netpath;
+pub mod nice;
 pub mod pgs;
 pub mod plan;
 pub mod playback_audio;

@@ -1349,6 +1349,56 @@ are only half there, it was not. What the pool gives is the same picture every t
 `SMARTCUT_PICTURE_CORES=1` puts one decoder back, which is how the two are compared on one
 machine.
 
+### A pass that reads a recording stands aside (`nice.rs`)
+
+**The pool gave the pass the machine, and the machine is not this program's.** Spreading the
+entry pictures over every core is the right answer to "why is adding a file slow", and it is
+the wrong answer to everything else running at the time: a file added in the background is the
+one thing here that nobody is sitting and watching, and it was the one thing taking all sixteen
+cores. Building a proxy is the same shape — a decoder and an encoder that each thread
+themselves.
+
+So the thread a pass runs on takes **nice 10** as the first thing it does, and every thread it
+goes on to start inherits that. Measured on the four-core VM against four threads of competing
+work, with a 2.6 GB broadcast recording read from a local disc:
+
+| | the other work | the pass |
+|---|---|---|
+| each with the machine to itself | 11.9 s | 30.3 s |
+| both, pass at its old priority | **16.3 s** | 30.3 s |
+| both, pass standing aside | **12.5 s** | **88.8 s** |
+
+That is the trade, and it is the one that was asked for: the other work goes from half again as
+long to within five per cent of what it costs alone, and the pass pays for it — but pays only
+while something else wants the cores. **On an idle machine there is no difference at all**: a
+thread with nothing competing for a core gets the core whatever its nice value is, and the
+picture pass measured 3.79 s against 3.83 s either way.
+
+Nice 5 was measured and is not worth having: the other work came to 15.6 s, which is most of
+the way back to 16.3, while the pass stayed at 30.7. The useful settings are 10 and nothing,
+and `SMARTCUT_NICE=0` is nothing.
+
+**It is taken once and never given back**, which is what decides where it may be asked for. An
+unprivileged program can raise its nice value and not lower it again — `RLIMIT_NICE` is 0
+unless somebody has raised it — so this is only ever called at the top of a thread that exists
+for one pass and ends with it. `off_thread_behind` in the GUI gives each pass a thread of its
+own for exactly that reason: the pooled thread `spawn_blocking` hands out would carry the nice
+value into whatever it was given next, and what it is given next may well be the export.
+
+**What stands aside**: reading a recording for the clip list (the walk and the entry pictures),
+the proxy and thumbnail track built when a file is opened, and commercial detection. **What
+does not**: the film strip's own pool — `Standing::Front`, because it exists to answer the
+pointer inside a frame or two and standing aside is how it would fail to — the stage, and the
+export, which is the thing somebody is actually waiting for.
+
+On Linux the nice value belongs to the thread rather than the process, and a thread inherits
+its maker's, so one call covers libavcodec's threads inside the pass as well. On Windows
+nothing is inherited: each thread this program makes asks for itself (`THREAD_PRIORITY_LOWEST`,
+without background mode, which would throttle the pass's I/O even on an idle machine), and the
+threads libavcodec makes stay where the process is. For the entry pictures that costs nothing,
+a pool worker decoding with one thread; the proxy's encode is the case that keeps its priority
+there.
+
 ### `Track::interval` is measured, not asked for
 
 **It used to report the floor, and the floor was an order of magnitude out.** What the pass is

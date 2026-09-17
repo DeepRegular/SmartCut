@@ -163,6 +163,11 @@ record its own length, so the first answer can be wrong.
 opens on a double-click like any other — see
 [Usable from the moment it opens](#usable-from-the-moment-it-opens).
 
+**And nothing here makes the rest of the machine wait either.** The preparation
+uses every core there is, but it asks for them from behind everything else: if
+another program wants a core it gets one first. On an idle machine the
+preparation is no slower for it.
+
 ### Working the list
 
 ![The input screen with four clips](../images/usage-list.png)

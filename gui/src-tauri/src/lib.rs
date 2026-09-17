@@ -721,6 +721,32 @@ async fn off_thread<T: Send + 'static>(
     tauri::async_runtime::spawn_blocking(f).await.map_err(|e| e.to_string())?
 }
 
+/// As [`off_thread`], for a pass that is to stand behind the rest of the
+/// machine: reading a recording, building a proxy, detecting commercials.
+///
+/// A thread of its own rather than the pooled one [`off_thread`] borrows.
+/// The priority a pass takes on cannot be given back -- see
+/// [`smartcut_core::nice`] -- so it has to be taken by a thread that exists
+/// for the pass and ends with it. A thread out of the pool would carry it
+/// into whatever it was handed next, and what it is handed next may well be
+/// the export. The pooled thread only waits here for the answer, which costs
+/// nothing: it is asleep either way.
+async fn off_thread_behind<T: Send + 'static>(
+    f: impl FnOnce() -> Result<T, String> + Send + 'static,
+) -> Result<T, String> {
+    off_thread(move || {
+        let hand = std::thread::spawn(move || {
+            smartcut_core::nice::behind();
+            f()
+        });
+        // A pass that panicked is reported as an error rather than carried
+        // back out as a panic. It is what the pooled thread would have done
+        // with it, said in the shape every other failure here is said in.
+        hand.join().map_err(|_| "pass ended badly".to_string())?
+    })
+    .await
+}
+
 #[tauri::command]
 async fn open_source(path: String, app: tauri::AppHandle) -> Result<SourceInfo, String> {
     off_thread(move || open_now(&path, &app)).await
@@ -1283,7 +1309,10 @@ async fn prepare(app: tauri::AppHandle) -> Result<PrepareInfo, String> {
         let src = guard.as_ref().ok_or("no file open")?.clone();
         (src, app.state::<Generation>().0.load(Ordering::SeqCst))
     };
-    tauri::async_runtime::spawn_blocking(move || {
+    // Behind the rest of the machine: the proxy and the thumbnail track
+    // between them are the longest thing that happens on opening a file, and
+    // the one nobody is watching a frame at a time. See [`off_thread_behind`].
+    off_thread_behind(move || {
         let thumb_opts = smartcut_core::ThumbOptions::default();
         let mut note = String::new();
         if proxy_wanted() {
@@ -1314,7 +1343,6 @@ async fn prepare(app: tauri::AppHandle) -> Result<PrepareInfo, String> {
         without_proxy(&app, &src, &thumb_opts, generation, note)
     })
     .await
-    .map_err(|e| e.to_string())?
 }
 
 /// The ordinary path: the recording answers for its own pictures, and what is
@@ -1731,7 +1759,7 @@ async fn index_clip(
     keeps: Vec<(f64, f64)>,
     app: tauri::AppHandle,
 ) -> Result<ClipInfo, String> {
-    off_thread(move || index_clip_now(&path, &keeps, &app)).await
+    off_thread_behind(move || index_clip_now(&path, &keeps, &app)).await
 }
 
 fn index_clip_now(
@@ -1911,7 +1939,7 @@ async fn clip_pictures(
     keeps: Vec<(f64, f64)>,
     app: tauri::AppHandle,
 ) -> Result<ClipPictures, String> {
-    off_thread(move || clip_pictures_now(&path, &keeps, &app)).await
+    off_thread_behind(move || clip_pictures_now(&path, &keeps, &app)).await
 }
 
 fn clip_pictures_now(
@@ -2808,8 +2836,9 @@ async fn cm_cached(path: String, app: tauri::AppHandle) -> Result<Option<CmResul
 /// The editor's own detection, against the recording that is open.
 #[tauri::command]
 async fn detect_cm(path: String, app: tauri::AppHandle) -> Result<CmResult, String> {
-    // Reads the whole audio track, so it belongs off the UI thread.
-    tauri::async_runtime::spawn_blocking(move || {
+    // Reads the whole audio track, so it belongs off the UI thread -- and
+    // runs for minutes, so it belongs behind the rest of the machine as well.
+    off_thread_behind(move || {
         // What the three reading passes need is the recording's streams, and
         // the container names those. So this does not wait for the walk: on a
         // recording nothing has read yet the container's own answer is worn as
@@ -2849,7 +2878,6 @@ async fn detect_cm(path: String, app: tauri::AppHandle) -> Result<CmResult, Stri
         Ok(res)
     })
     .await
-    .map_err(|e| e.to_string())?
 }
 
 /// A copy of the recording the editor has open, when that is `path`.
@@ -2890,7 +2918,7 @@ fn opened_clone(app: &tauri::AppHandle, path: &str) -> Option<Source> {
 /// than inside one.
 #[tauri::command]
 async fn detect_cm_at(path: String, app: tauri::AppHandle) -> Result<CmResult, String> {
-    off_thread(move || {
+    off_thread_behind(move || {
         let mine = app.state::<BatchStop>().cm.load(Ordering::SeqCst);
         let stopped = || app.state::<BatchStop>().cm.load(Ordering::SeqCst) != mine;
         if stopped() {
