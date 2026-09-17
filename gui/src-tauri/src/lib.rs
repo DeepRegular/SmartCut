@@ -557,15 +557,38 @@ impl From<smartcut_core::disc::Track> for DiscTrack {
 /// `smb://nas/rec/a.ts` and `\\nas\rec\a.ts` become the mount point they are
 /// under; an ordinary path passes straight through. Called for every way
 /// clips get added, so that a share path works wherever a path works.
+/// Off the window thread, like everything else that touches a path somebody
+/// chose.
+///
+/// What this does to each input is a `stat`, and for a folder a walk of it,
+/// and for a disc a read of its index -- and the paths are whatever was
+/// dropped on the window, which for this program is as often a share as a
+/// local disc. Done where a `#[tauri::command]` that is not `async` is done,
+/// which is the thread the window is drawn on, dropping a folder froze the
+/// window until the folder had been read, and dropping one on a share that
+/// had gone to sleep froze it until the share woke up.
 #[tauri::command]
-fn resolve_paths(paths: Vec<String>) -> Vec<Resolved> {
-    paths
-        .into_iter()
-        .map(|input| match files_at(&input) {
-            Ok(files) => Resolved { input, files, error: None },
-            Err(error) => Resolved { input, files: Vec::new(), error: Some(error) },
-        })
-        .collect()
+async fn resolve_paths(paths: Vec<String>) -> Vec<Resolved> {
+    let asked = paths.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        paths
+            .into_iter()
+            .map(|input| match files_at(&input) {
+                Ok(files) => Resolved { input, files, error: None },
+                Err(error) => Resolved { input, files: Vec::new(), error: Some(error) },
+            })
+            .collect()
+    })
+    .await
+    // A pass that ended badly answers for every input it was given rather
+    // than for none: a list that came back empty would look like a drop of
+    // nothing at all.
+    .unwrap_or_else(|e| {
+        asked
+            .into_iter()
+            .map(|input| Resolved { input, files: Vec::new(), error: Some(e.to_string()) })
+            .collect()
+    })
 }
 
 /// What one input names: itself, everything in it when it is a directory, or
@@ -3109,14 +3132,20 @@ async fn audio_limits(
 /// disc gets filled over a week -- so a folder already there is the point
 /// rather than the problem. See [`bdav_prepare`].
 #[tauri::command]
-fn free_folder(dirs: Vec<String>, name: String) -> Result<String, String> {
+async fn free_folder(dirs: Vec<String>, name: String) -> Result<String, String> {
+    // A `stat` per folder tried, against paths somebody chose. See
+    // [`resolve_paths`].
+    off_thread(move || free_folder_now(&dirs, &name)).await
+}
+
+fn free_folder_now(dirs: &[String], name: &str) -> Result<String, String> {
     // Shares resolved the way they are everywhere else. One that is not
     // connected is left out rather than refused: the run is about to fail on
     // it with a sentence of its own, and a folder nothing can look at is not
     // a folder that is in the way.
     let ats: Vec<std::path::PathBuf> = dirs.iter().filter_map(|d| local_path(d).ok()).collect();
     for n in 1..1000 {
-        let branched = if n == 1 { name.clone() } else { format!("{name}-{n}") };
+        let branched = if n == 1 { name.to_string() } else { format!("{name}-{n}") };
         if ats.iter().all(|at| !at.join(&branched).exists()) {
             return Ok(branched);
         }
@@ -3852,14 +3881,18 @@ fn stop_play(playing: State<Playing>) {
 /// that read these files expect. Numbered against the file just written, not
 /// the recording it came from.
 #[tauri::command]
-fn write_keyframes(path: String, frames: Vec<u32>, fps: f64) -> Result<usize, String> {
+async fn write_keyframes(path: String, frames: Vec<u32>, fps: f64) -> Result<usize, String> {
+    off_thread(move || write_keyframes_now(&path, &frames, fps)).await
+}
+
+fn write_keyframes_now(path: &str, frames: &[u32], fps: f64) -> Result<usize, String> {
     use std::fmt::Write as _;
     let _ = fps;
     let mut body = String::new();
-    for f in &frames {
+    for f in frames {
         let _ = write!(body, "{f}\r\n");
     }
-    std::fs::write(&path, body).map_err(|e| e.to_string())?;
+    std::fs::write(path, body).map_err(|e| e.to_string())?;
     Ok(frames.len())
 }
 
@@ -3874,8 +3907,12 @@ fn write_keyframes(path: String, frames: Vec<u32>, fps: f64) -> Result<usize, St
 /// is an aid, and failing to open the recording over a line nobody reads
 /// would be the worse trade.
 #[tauri::command]
-fn read_keyframes(path: String) -> Result<Option<Vec<u32>>, String> {
-    let body = match std::fs::read_to_string(&path) {
+async fn read_keyframes(path: String) -> Result<Option<Vec<u32>>, String> {
+    off_thread(move || read_keyframes_now(&path)).await
+}
+
+fn read_keyframes_now(path: &str) -> Result<Option<Vec<u32>>, String> {
+    let body = match std::fs::read_to_string(path) {
         Ok(b) => b,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         Err(e) => return Err(e.to_string()),
@@ -3892,9 +3929,12 @@ fn read_keyframes(path: String) -> Result<Option<Vec<u32>>, String> {
 /// there. Same division as [`write_keyframes`] -- whoever holds the state
 /// owns the shape of the file, and this side owns the disc.
 #[tauri::command]
-fn write_project(path: String, body: String) -> Result<(), String> {
-    std::fs::write(&path, body)
-        .map_err(|e| trf!("保存できません: {} ({})", "Cannot save: {} ({})", path, e))
+async fn write_project(path: String, body: String) -> Result<(), String> {
+    off_thread(move || {
+        std::fs::write(&path, body)
+            .map_err(|e| trf!("保存できません: {} ({})", "Cannot save: {} ({})", path, e))
+    })
+    .await
 }
 
 /// Read one back.
@@ -3903,9 +3943,12 @@ fn write_project(path: String, body: String) -> Result<(), String> {
 /// is looked for on the off-chance, and this one was named by the user out of
 /// a file picker and is expected to be there.
 #[tauri::command]
-fn read_project(path: String) -> Result<String, String> {
-    std::fs::read_to_string(&path)
-        .map_err(|e| trf!("開けません: {} ({})", "Cannot open: {} ({})", path, e))
+async fn read_project(path: String) -> Result<String, String> {
+    off_thread(move || {
+        std::fs::read_to_string(&path)
+            .map_err(|e| trf!("開けません: {} ({})", "Cannot open: {} ({})", path, e))
+    })
+    .await
 }
 
 /// Whether the list is holding work that is not on disc, as the frontend
@@ -4076,8 +4119,12 @@ fn queue_temp_path(app: tauri::AppHandle, stem: String, ext: String) -> Result<S
 /// the row would be deleting their work; a copy answers all three. What they
 /// picked is left exactly as it was.
 #[tauri::command]
-fn queue_copy(app: tauri::AppHandle, path: String) -> Result<String, String> {
-    let from = std::path::Path::new(&path);
+async fn queue_copy(app: tauri::AppHandle, path: String) -> Result<String, String> {
+    off_thread(move || queue_copy_now(&app, &path)).await
+}
+
+fn queue_copy_now(app: &tauri::AppHandle, path: &str) -> Result<String, String> {
+    let from = std::path::Path::new(path);
     let stem = from
         .file_stem()
         .map(|s| s.to_string_lossy().into_owned())
@@ -4086,7 +4133,7 @@ fn queue_copy(app: tauri::AppHandle, path: String) -> Result<String, String> {
         .extension()
         .map(|s| s.to_string_lossy().into_owned())
         .unwrap_or_else(|| "scproj".into());
-    let at = free_in(&queue_dir(&app)?, &stem, &ext)?;
+    let at = free_in(&queue_dir(app)?, &stem, &ext)?;
     std::fs::copy(from, &at)
         .map_err(|e| trf!("開けません: {} ({})", "Cannot open: {} ({})", path, e))?;
     Ok(at)
