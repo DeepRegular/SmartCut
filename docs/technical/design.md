@@ -2448,9 +2448,9 @@ addresses in the answer instead of 0.28 MB of text.
 **The address is what is in the picture**, a 64-bit hash of the JPEG, and that
 is the part that matters. A drag is the same reel shifted a cell at a time, so
 most of what a refresh asks for is what the refresh before it asked for — and a
-held picture is the same bytes every time. Same bytes, same address: the window
-answers the second ask out of its own cache without asking us at all, and
-nothing is stored twice. Addressing them by a running number instead, which is
+held picture is the same bytes every time. Same bytes, same address: nothing is
+stored twice, and the response says the address is immutable, so a window whose
+engine caches a custom scheme need not ask twice either. Addressing them by a running number instead, which is
 where this started, meant a refresh stored thirty fresh copies of pictures it
 already had, and a minute of dragging pushed the editor's own mark cards out of
 the 32 MB the store keeps — cards that are asked for once and then looked at

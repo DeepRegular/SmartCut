@@ -660,6 +660,12 @@ the bar** — the folder it was given a branch number for, a disc index or an im
 that would not write, a folder taken away once the image held it. It stays up
 after the run, and the next run puts it down as it starts.
 
+**Writing a `.ts` takes two passes.** After the video and the sound are written,
+the finished file goes through once more so the broadcast's own programme
+information can be put back. The state line says so while it does —
+`Finishing …: putting the broadcast's own tables back` — and the bar runs across
+both passes, so it never stands still. A clip written onto a disc is the same.
+
 While it writes, that same button reads `Stop export`. Pressing it **finishes
 writing the clip currently in progress**, then stops. It never leaves a
 half-written file behind.
