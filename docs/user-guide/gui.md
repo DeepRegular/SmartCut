@@ -275,6 +275,10 @@ grid and some of them stay empty. While you are moving the playhead the strip
 keeps to the quick way and **completes itself the moment you stop** — which is
 why it can look thin while you search and fill in when you let go.
 
+**The keyframe cards down the left side are the same.** Until the reading
+finishes they hold a picture found near the mark; once it finishes, each card
+settles on the frame at the mark's own time.
+
 Once the reading finishes, both settle down to exact. **Cuts made earlier stay
 exactly where you put them.** The only thing that changes is what they cost: a
 join that is not on a lossless point shows up in the plan as a few re-encoded
@@ -604,7 +608,7 @@ Writing a disc adds these fields:
 | **Remove the folder once the image is written** | Under the image, and only there when one is being made: the same thirty gigabytes twice over is not what most runs want to be left with. The folder is still written and the image still made of it — this happens afterwards, and only where the image was written. `BDAV` goes, and the folder above it only where that leaves it empty, so a disc written into a folder of your own leaves the rest of it alone |
 | **Disc** | The disc this is going to be burned onto (25GB / DL 50GB / XL 100GB / XL 128GB). The gauge below is drawn against it |
 | **Transcode** | Where the list does not fit the disc chosen above, the pictures are transcoded smaller until it does. **Where it fits, nothing is done to them.** The sound, the subtitles and the programme information are untouched; only the pictures give anything up. Turning it on adds a second row to the gauge -- "before" and "after" -- showing what the disc comes to afterwards and what share the pictures are written at. MPEG-2 recordings only; anything else takes its full room. What happens inside is in [Fitting a disc](../technical/transrate.md) |
-| **Disc used** | What the list comes to against the disc, a band per recording. The white line is the edge of the disc and the faint one before it is the hundredth held back; anything past the line is drawn in red. The figures are an estimate made before anything is written, and on whole recordings it lands within about one per cent |
+| **Disc used** | What the list comes to against the disc, a band per recording. The white line is the edge of the disc and the faint one before it is the hundredth held back; anything past the line is drawn in red. The figures are an estimate made before anything is written, and on whole recordings it lands within about one per cent. They are counted in GiB, the way the file manager beside the window counts, which is why a single-layer disc reads 23.3 GiB here and "25GB" on the control above -- that one is the name on the box |
 | **Disc folder** | Replaces "Output folder", and **cannot be left empty** — a disc is one place, and the recordings in a list can have come from four. SmartCut makes one more folder under it, named by "Subfolder", and writes `BDAV` in there |
 
 **The programme information comes with the recording.** This is the point of

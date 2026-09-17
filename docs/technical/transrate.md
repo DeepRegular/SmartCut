@@ -4,7 +4,7 @@
 
 **A night's recordings do not fit a Blu-ray.** Six hour-long programmes off a
 Japanese broadcast come to thirty gigabytes and a single-layer disc holds
-twenty-three of them, so something has to give: a recording left off, a second
+twenty-five of them, so something has to give: a recording left off, a second
 disc, or the pictures written down less finely than they arrived.
 
 This is the third of those. It is not a re-encode. Every picture keeps its own
