@@ -5231,8 +5231,16 @@ async function runExport() {
         // burned rather than after.
         const capacity = Number(settings.disc) || 0;
         if (wroteBytes > 0 && capacity > 0) {
+          // A disc that came out too large says so either way, but only a
+          // run that was asked to make the pictures smaller can say they
+          // would go no smaller. Where nothing was asked of them, what is
+          // worth saying is that asking is there to be done.
+          let said = "out.discSize";
+          if (wroteBytes > capacity) {
+            said = share !== null ? "out.discTooBig" : "out.discOver";
+          }
           note(
-            t(wroteBytes > capacity ? "out.discTooBig" : "out.discSize", {
+            t(said, {
               used: discGiB(wroteBytes, 2),
               disc: discGiB(capacity),
               over: discGiB(wroteBytes - capacity, 2),

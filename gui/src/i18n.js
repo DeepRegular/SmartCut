@@ -375,7 +375,11 @@ const CATALOG = {
     "outset.subfolderNone": "（作らずに上のフォルダーへ直接出力）",
     "outset.discTitle": "ディスクタイトル:",
     "out.discSize": "出力サイズは {used} です（{disc} のディスクに収まります）",
+    // 「これ以上小さくできませんでした」と言ってよいのは、実際に小さく
+    // しようとしたときだけである。トランスコードを頼まれていない走行が
+    // 同じことを言うと、頼めば入ったかもしれない、という事実が消える。
     "out.discTooBig": "出力サイズは {used} で、{disc} のディスクに {over} 収まりません。映像をこれ以上小さくできませんでした",
+    "out.discOver": "出力サイズは {used} で、{disc} のディスクに {over} 収まりません。「トランスコードする」を入れると、映像を書き直して収められることがあります",
     "out.shrinking": "ディスクに収めるため、映像を {share}% のサイズにトランスコードします",
     "outset.disc": "ディスク:",
     "disc.bd25": "BD-R / BD-RE 25GB（1層）",
@@ -1043,6 +1047,7 @@ const CATALOG = {
     "outset.discTitle": "Disc title:",
     "out.discSize": "The disc came to {used}, which fits a {disc} disc",
     "out.discTooBig": "The disc came to {used}, which is {over} more than a {disc} disc holds: the pictures would not transcode any smaller",
+    "out.discOver": "The disc came to {used}, which is {over} more than a {disc} disc holds. Turning Transcode on can write the pictures back smaller until they fit",
     "out.shrinking": "To fit the disc, the pictures are being transcoded to {share}% of their own size",
     "outset.disc": "Disc:",
     "disc.bd25": "BD-R / BD-RE 25GB (single layer)",
