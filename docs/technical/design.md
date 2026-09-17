@@ -2473,3 +2473,41 @@ woke up. Those seven answer off that thread now. What is left on it is what
 belongs there: window titles, flags, the preferences, this program's own
 configuration file, and `hover_thumb`, which answers a pointer out of pictures
 already in memory and would be slower for a thread hop rather than faster.
+
+### The cards had nothing to show until the walk landed
+
+**Report: the keyframe thumbnails are slow to appear when the cut editor
+opens.** They were not slow; there was nothing for them to show.
+
+The editor opens on the container's own answer — the length, the picture size,
+the sound — and starts the walk that finds the access points behind it. That is
+the whole point of the outline: the timeline, the scrubber and the cards can be
+up while a recording is still being read, and the guide says so. But a card
+wants the frame at its mark's own instant, and the pass that answers that reads
+the recording the window has open, which is opened by the walk. Until the walk
+landed the ask came back empty, the cards dropped what they had asked for, and
+they sat blank for the length of it — a second a gigabyte on a local disc and
+rather more over a share, which is where these recordings live.
+
+The film strip already had an answer for those seconds: `glimpses`, a container
+seek per cell, which lands *near* the instant rather than on it. The cards use
+it now. Measured on the four-core VM over a 3.75 GB recording with nine marks,
+from the press that opens the editor:
+
+| | cards filled |
+|---|---:|
+| before | 2.2 s (when the walk landed) |
+| with a guess to stand in | **1.5 s** |
+
+and over a share the gap is the whole length of the walk rather than three
+quarters of a second. The guess is kept as well as painted, because the walk
+landing renders the list again and a card that has something in it must not go
+back to blank on the way to having the right thing in it; `pointsArrived` then
+replaces each guess with the frame the card says it is showing.
+
+**What it must not do is ask for the exact frame anyway.** `shots_at` over a
+source with no access points has nothing to seek by and walks the file from the
+beginning: on that recording one card took **8.2 seconds** and ten took 432,
+against 0.50 s once the points are known. Nothing reaches that today — the pass
+refuses when nothing is open rather than decoding blind — but it is the reason
+the cards ask for a guess rather than for the real thing early.

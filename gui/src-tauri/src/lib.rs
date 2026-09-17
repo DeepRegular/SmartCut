@@ -854,7 +854,12 @@ async fn glimpse(path: String, time: f64, width: u32) -> Result<Shot, String> {
 /// The walk is reading the same recording while this runs, and over a share
 /// that is the difference between a strip that fills and a walk that stalls.
 #[tauri::command]
-async fn glimpses(path: String, times: Vec<f64>, width: u32) -> Result<Vec<Option<Shot>>, String> {
+async fn glimpses(
+    path: String,
+    times: Vec<f64>,
+    width: u32,
+    app: tauri::AppHandle,
+) -> Result<Vec<Option<Shot>>, String> {
     if times.is_empty() {
         return Ok(Vec::new());
     }
@@ -863,7 +868,11 @@ async fn glimpses(path: String, times: Vec<f64>, width: u32) -> Result<Vec<Optio
         Ok(shots
             .into_iter()
             .map(|o| {
-                o.map(|s| Shot { url: as_url(&s.jpeg), time: s.time, kind: s.kind.to_string() })
+                o.map(|s| Shot {
+                    url: shot_url(&app, &s.jpeg),
+                    time: s.time,
+                    kind: s.kind.to_string(),
+                })
             })
             .collect())
     })

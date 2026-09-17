@@ -78,6 +78,11 @@ let stripCache = null;
 /// Mark time -> a promise for that mark's picture. Promises rather than URLs
 /// so that a re-render during a decode joins the decode already running.
 const cardThumbs = new Map();
+/// Mark time -> the guess standing in for it until the walk lands, by the same
+/// key. Kept rather than only painted: the walk landing renders the list
+/// again, and a card that has something in it must not go back to blank on the
+/// way to having the right thing in it.
+const cardGuesses = new Map();
 
 const clamp = (v, lo, hi) => Math.min(hi, Math.max(lo, v));
 const frame = () => (src && src.fps > 0 ? 1 / src.fps : 1 / 30);
@@ -297,6 +302,34 @@ async function paintHeld(t, img) {
   }
 }
 
+/// A guess at each mark's picture, for while the walk is still running.
+///
+/// The same seek the strip makes then: the container's own, which lands near
+/// the instant rather than on it. One call for all of them, because the walk
+/// is reading the same recording and over a share an open apiece is the
+/// difference between cards that fill and a walk that stalls.
+///
+/// Not written into `cardThumbs`. That cache is the frame a card says it is
+/// showing, and this is not that frame -- it is what stands there until there
+/// is one.
+async function paintGuesses(times, imgs) {
+  const want = times.map((_, i) => i).filter((i) => !cardThumbs.has(cardKey(times[i])));
+  if (!want.length) return;
+  let got;
+  try {
+    got = await invoke("glimpses", { path: src.path, times: want.map((i) => times[i]), width: 200 });
+  } catch (e) {
+    jlog(`glimpses for the cards: ${e}`);
+    return;
+  }
+  want.forEach((i, k) => {
+    const shot = got[k];
+    if (!shot) return;
+    cardGuesses.set(cardKey(times[i]), shot.url);
+    if (!imgs[i].dataset.exact) imgs[i].src = shot.url;
+  });
+}
+
 /// The frame at each mark's own time, decoded.
 ///
 /// A card captions itself with the mark's time, so the picture beside it has
@@ -311,6 +344,18 @@ async function paintHeld(t, img) {
 /// instead of asking for the same pictures again.
 function paintCards(times, imgs) {
   if (!src) return;
+  // Until the walk lands there is nothing open on the far side to decode an
+  // exact frame from: the ask comes back empty, and the cards sat blank for
+  // the whole of it -- a second a gigabyte, and longer over a share. The
+  // guide tells you to go ahead and open a recording that is still being
+  // read, and the film strip fills itself from the container's own guess
+  // while it is; the cards were the one part of the window that did not.
+  // They do now, and `pointsArrived` renders again, at which point the frame
+  // the card says it is showing replaces the guess.
+  if (!walked()) {
+    paintGuesses(times, imgs);
+    return;
+  }
   const want = times.map((_, i) => i).filter((i) => !cardThumbs.has(cardKey(times[i])));
   if (want.length) {
     const batch = invoke("thumbs_at", {
@@ -339,6 +384,7 @@ function paintCards(times, imgs) {
   times.forEach((t, i) => {
     cardThumbs.get(cardKey(t))?.then((url) => {
       if (!url) return;
+      cardGuesses.delete(cardKey(t));
       imgs[i].src = url;
       imgs[i].dataset.exact = "1";
     });
@@ -397,6 +443,11 @@ function renderKeyframes() {
     }
     const img = document.createElement("img");
     img.alt = "";
+    // Whatever was already standing in for this mark, before anything is
+    // asked for: this list is rebuilt from nothing every time it is drawn,
+    // and the walk landing draws it again.
+    const guess = cardGuesses.get(cardKey(t));
+    if (guess) img.src = guess;
     imgs.push(img);
     paintHeld(t, img);
     const box = document.createElement("div");
@@ -2176,6 +2227,7 @@ async function prepare() {
   proxied = false;
   scenes = [];
   cardThumbs.clear();
+  cardGuesses.clear();
   el("prev-scene").disabled = true;
   el("next-scene").disabled = true;
   el("warm").textContent = tr("warm.start");
