@@ -2442,12 +2442,22 @@ that gets shipped.
 and each came back as a data URL inside the JSON: 0.21 MB of JPEG written out
 as 0.28 MB of text for the window to parse and decode, as often as four times a
 second while somebody drags. The editor's pictures are now kept where the
-window can fetch them — a `shot://` scheme of their own, 1.8 KB of addresses
-in the answer instead of 0.28 MB of text — and because an address is never
-reused, the window is told it may keep what it has fetched for ever, which is
-worth having: a strip asks for the same cells over and over. What holds them is
-bounded and evicts the oldest; the cap is a hundred times what is on screen at
-once, so a picture being looked at is never one that has been dropped.
+window can fetch them — a `shot://` scheme of their own, about two kilobytes of
+addresses in the answer instead of 0.28 MB of text.
+
+**The address is what is in the picture**, a 64-bit hash of the JPEG, and that
+is the part that matters. A drag is the same reel shifted a cell at a time, so
+most of what a refresh asks for is what the refresh before it asked for — and a
+held picture is the same bytes every time. Same bytes, same address: the window
+answers the second ask out of its own cache without asking us at all, and
+nothing is stored twice. Addressing them by a running number instead, which is
+where this started, meant a refresh stored thirty fresh copies of pictures it
+already had, and a minute of dragging pushed the editor's own mark cards out of
+the 32 MB the store keeps — cards that are asked for once and then looked at
+for the rest of the session. What goes when the room runs out is now what was
+least recently asked for, and with the addresses keyed to content the room
+stops being asked for at all: eighty drags across a recording left resident
+memory where it started.
 
 The strip, the stage and the scrub stand-in go this way. The clip list's own
 posters do not: a row holds its picture for as long as the row exists, and a

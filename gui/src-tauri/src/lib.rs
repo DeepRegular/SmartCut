@@ -1091,10 +1091,26 @@ struct Shots(std::sync::Mutex<ShotStore>);
 
 #[derive(Default)]
 struct ShotStore {
-    /// By the number it was given, which is also the order they arrived in.
-    held: std::collections::BTreeMap<u64, Vec<u8>>,
+    /// By what is in it, not by what number it was given. The strip asks for
+    /// the same cells over and over -- a drag is the same reel shifted a cell
+    /// at a time -- and a picture held once is the same bytes every time it
+    /// is asked for, so the same picture gets the same address. The window's
+    /// own cache then answers the second ask without asking us at all, and
+    /// nothing is stored twice.
+    held: std::collections::HashMap<u64, Kept>,
+    /// When each was last asked for, oldest first, so the room is made at the
+    /// right end. Marks in the editor are asked for once and kept on screen
+    /// for the length of a session; a reel that churned them out would empty
+    /// the cards while somebody dragged.
+    order: std::collections::BTreeMap<u64, u64>,
+    used: u64,
     bytes: usize,
-    next: u64,
+}
+
+/// One picture, and when it was last asked for.
+struct Kept {
+    jpeg: Vec<u8>,
+    used: u64,
 }
 
 /// What the pictures held for the windows may come to.
@@ -1105,37 +1121,64 @@ struct ShotStore {
 /// two caches and does not need to be the larger.
 const SHOT_ROOM: usize = 32 << 20;
 
+/// What a picture is called: what is in it, in sixty-four bits.
+///
+/// FNV-1a over the whole JPEG. Seven kilobytes to walk and nothing to choose
+/// between this and anything cleverer at that size, and the property wanted
+/// is only that two different pictures are not called the same thing.
+fn shot_name(jpeg: &[u8]) -> u64 {
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    for b in jpeg {
+        h ^= u64::from(*b);
+        h = h.wrapping_mul(0x1000_0000_01b3);
+    }
+    h
+}
+
 /// Keep `jpeg` and hand back the address the window fetches it by.
 ///
-/// The number is never reused, so what is behind an address never changes and
-/// the window is told it may keep it for ever.
+/// The address is what is in the picture, so what is behind one never changes
+/// and the window is told it may keep it for ever.
 fn shot_url(app: &tauri::AppHandle, jpeg: &[u8]) -> String {
+    let name = shot_name(jpeg);
     let state = app.state::<Shots>();
     let mut store = locked(&state.0);
-    let id = store.next;
-    store.next += 1;
-    store.bytes += jpeg.len();
-    store.held.insert(id, jpeg.to_vec());
-    while store.bytes > SHOT_ROOM {
-        let Some(oldest) = store.held.keys().next().copied() else {
-            break;
-        };
-        if let Some(gone) = store.held.remove(&oldest) {
-            store.bytes -= gone.len();
+    store.used += 1;
+    let now = store.used;
+    match store.held.get_mut(&name) {
+        // Already here. It moves to the young end rather than being written
+        // again: the bytes are the same bytes.
+        Some(held) => {
+            let was = held.used;
+            held.used = now;
+            store.order.remove(&was);
+            store.order.insert(now, name);
+        }
+        None => {
+            store.bytes += jpeg.len();
+            store.held.insert(name, Kept { jpeg: jpeg.to_vec(), used: now });
+            store.order.insert(now, name);
+            while store.bytes > SHOT_ROOM {
+                let Some((&oldest, &gone)) = store.order.iter().next() else {
+                    break;
+                };
+                store.order.remove(&oldest);
+                if let Some(held) = store.held.remove(&gone) {
+                    store.bytes -= held.jpeg.len();
+                }
+            }
         }
     }
     // What the frontend's own `convertFileSrc` does with a path: a scheme of
     // its own everywhere but Windows, where a custom scheme is served under
     // `http` on a host of its own.
     if cfg!(windows) {
-        format!("http://{SHOT_SCHEME}.localhost/{id}")
+        format!("http://{SHOT_SCHEME}.localhost/{name:016x}")
     } else {
-        format!("{SHOT_SCHEME}://localhost/{id}")
+        format!("{SHOT_SCHEME}://localhost/{name:016x}")
     }
 }
 
-/// The scheme those addresses are on. Named in the window's content policy
-/// too; see `tauri.conf.json`.
 const SHOT_SCHEME: &str = "shot";
 
 #[tauri::command]
@@ -4870,16 +4913,12 @@ pub fn run() {
     tauri::Builder::default()
         // Where the editor's pictures are fetched from. See [`shot_url`].
         .register_uri_scheme_protocol(SHOT_SCHEME, |ctx, request| {
-            let held = request
-                .uri()
-                .path()
-                .trim_start_matches('/')
-                .parse::<u64>()
+            let held = u64::from_str_radix(request.uri().path().trim_start_matches('/'), 16)
                 .ok()
-                .and_then(|id| {
+                .and_then(|name| {
                     let state = ctx.app_handle().state::<Shots>();
                     let store = locked(&state.0);
-                    store.held.get(&id).cloned()
+                    store.held.get(&name).map(|h| h.jpeg.clone())
                 });
             let (status, body) = match held {
                 Some(jpeg) => (200, jpeg),
