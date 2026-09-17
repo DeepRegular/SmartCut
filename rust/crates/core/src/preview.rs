@@ -295,6 +295,16 @@ fn entry_run(
         // 4K a packet nobody wants is a megabyte nobody wants.
         let (params, began, run) =
             entry_packets(src, from, margin, last + fd, |t| slots.open_to(t))?;
+        // Nothing found. A seek that landed past the whole run is what the
+        // second attempt is for, and opening a pool for it would fix its
+        // width at one worker for the attempt that does find something.
+        if run.is_empty() {
+            got = slots;
+            if !landed_late(began, first, window / 2.0) || attempt == 1 {
+                break;
+            }
+            continue;
+        }
         if pool.is_none() {
             let sar = src.video.sample_aspect_ratio;
             // No wider than this run has pictures to decode. A pool costs a
@@ -304,7 +314,7 @@ fn entry_run(
             // MPEG-2 that showed up as a refresh a third slower than before
             // there was a pool at all. Later runs of the same request are
             // about the same size, so the first one's width fits them.
-            let workers = crate::entrypool::width(0, &src.video).min(run.len().max(1));
+            let workers = crate::entrypool::width(0, &src.video).min(run.len());
             *pool = Some(crate::entrypool::Pool::new(
                 params,
                 &src.video,
