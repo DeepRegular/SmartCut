@@ -95,7 +95,7 @@ cargo のクレート名は `gui` なので、放っておくと Tauri はその
 `ldd` を辿って集めた 745 個のライブラリがそのまま `app/` にある。`./smartcut` は
 AppRun を呼ぶ 4 行のスクリプトで、`./smartcut-cli` は `LD_LIBRARY_PATH` を
 `app/usr/lib` に向けて CLI を呼ぶ。AppImage が動く環境ならどこでも動き、FUSE は
-要らない。gzip なので、squashfs+zstd の AppImage より 24 MB 大きい。
+不要である。gzip なので、squashfs+zstd の AppImage より 24 MB 大きい。
 
 **逆に deb は何も抱えていない。** 依存関係は両方のバイナリを `dpkg-shlibdeps` に
 かけて生成しているので、libav* が列挙される。
@@ -131,7 +131,7 @@ MPEG-2 TS と MP4 の MimeType）、32/128/256 の hicolor アイコン、`copyr
   出る。
 - `apt-get -s install ./smartcut_0.1.1_amd64.deb` が依存関係を解決する。
   `desktop-file-validate` は警告なし、`md5sums` の 8 項目もすべて一致する。
-- 唯一試していないのは実際の `dpkg -i` である。VM の sudo にパスワードが要るため。
+- 唯一試していないのは実際の `dpkg -i` である。VM の sudo にパスワードが必要なため。
 
 ## Windows
 
@@ -166,7 +166,7 @@ shared ビルドは MSVC 形式のインポートライブラリと DLL の両�
 まだ 7.1.1 があるので、そこから取っている。
 
 DLL は 8 個必要である。`avfilter` が `postproc` を開くので、exe のインポートテーブルに
-名前が現れなくても `postproc-58.dll` が要る。
+名前が現れなくても `postproc-58.dll` が必要である。
 
 ### 動かす側に必要なもの
 
@@ -234,7 +234,7 @@ exe に刻印するためで、インストーラ側は `NSIS`、ポータブル
   882 フレームが一部のカードで失敗するためである。
 
 - **`resampling::Context::run` の出力フレームは、入力と同じサンプル数しか持たない。**
-  レートを上げる場合（48 kHz → 96 kHz など）これでは足りず、swresample は溢れたぶんを
+  レートを上げる場合（48 kHz → 96 kHz など）これでは足りず、swresample は溢れた分を
   内部に貯める。クラッシュも破綻もしないが、貯まったものは二度と出てこないので、再生を
   続けるかぎり遅延とメモリが増え続ける。現在は出力フレームを
   `入力サンプル数 × 出力レート ÷ 入力レート` で確保している。

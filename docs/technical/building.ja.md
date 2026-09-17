@@ -70,20 +70,20 @@ bash tests/run_audio_codec_tests.sh   # 音声を別のコーデックで書き�
 bash tests/run_audio_smart_tests.sh   # コーデックごとのスマートレンダリング             20
 bash tests/run_audio_format_tests.sh  # 音声のサンプリングレートと量子化ビット数         23
 bash tests/run_audio_head_tests.sh    # 冒頭が前の番組になっている録画                   12
-bash tests/run_preview_tests.sh       # スクラブで指定した時刻の絵が出るか                7
+bash tests/run_preview_tests.sh       # スクラブで指定した時刻の映像が出るか              7
 bash tests/run_index_tests.sh         # 索引が走査と同じ答えを返すか                     27
 bash tests/run_proxy_tests.sh         # プロキシが録画の代役になれるか                   22
 bash tests/run_scene_tests.sh         # シーン検出と CM 境界の照合                        1
 bash tests/run_ts_layout_tests.sh     # TS の出自とシーケンスヘッダ                       5
 bash tests/run_broadcast_tests.sh     # 字幕・番組情報・データ放送・音声多重             17
-bash tests/run_cm_tests.sh            # CM 検出と人間の答えの照合                         5
+bash tests/run_cm_tests.sh            # CM 検出と目視の正解との照合                       5
 bash tests/run_disc_tests.sh          # BDAV と BDMV をフォルダーと .iso から読む       38
 bash tests/run_bdav_tests.sh          # ディスクを書く。索引・イメージ・その中身       72
 bash tests/run_udf_tests.sh           # イメージをファイルシステムとして実物と並べる  33
 bash tests/run_dvd_tests.sh           # DVD-Video をフォルダーと .iso から読む          23
 bash tests/run_bd_audio_tests.sh      # ディスクの音声が書き出せるか                    39
 bash tests/run_vc1_tests.sh           # VC-1 エンコーダをデコーダに通す                  4
-bash tests/run_transrate_tests.sh    # ディスクに収める。同一性・大きさ・代償       10
+bash tests/run_transrate_tests.sh    # 容量に合わせる。同一性・サイズ・代償         10
 ```
 
 **どのスイートも全件通る。** 落ちるものがあれば回帰である。
@@ -93,23 +93,23 @@ bash tests/run_transrate_tests.sh    # ディスクに収める。同一性・�
 合成フィクスチャ（H.264 / HEVC / オープン GOP / 29.97 fps / MPEG-2 TS）は
 `run_tests.sh` が `/tmp/smartcut-fixtures/` に生成するので、**まずこれを走らせる**。
 これを再利用するスイート（`run_rust_tests.sh`、`run_index_tests.sh`、
-`run_proxy_tests.sh`）は、フィクスチャが無いとそこで止まる。黙って検査の半分を飛ばす
+`run_proxy_tests.sh`）は、フィクスチャが無いとそこで止まる。無言で検査の半分を飛ばす
 のではなく、`run tests/run_tests.sh first to generate fixtures` と表示する。
 
 `run_disc_tests.sh` は `mpeg2.ts` から方言ごとにディスクを 1 枚ずつ丸ごと組み立てる。
 ストリームを 192 バイトパケットに詰め直し、`disc_index.py` が索引ファイルを書き、
-`genisoimage` でそれぞれを UDF イメージに包む（`genisoimage` が要る）。
+`genisoimage` でそれぞれを UDF イメージに包む（`genisoimage` が必要）。
 
 `run_bdav_tests.sh` は逆方向である。同じフィクスチャから録画 2 本のディスクを書き、
-SmartCut 自身の読み手で開く。そのうえで `bdav_index.py` が、索引の全数値を対象の
+SmartCut 自身の読み取り側で開く。そのうえで `bdav_index.py` が、索引の全数値を対象の
 ストリームと突き合わせる。エントリーポイントマップを 1 点ずつファイルまで追いかけ、
 到着時刻を測り、クリップ索引にあるストリームの内訳を確かめる。`~/media` に実際の
 放送録画があれば、番組名・チャンネル・放送日時がディスクを往復しても残ることも
-確かめる。最後がイメージである。UDF の版ごとに書いてこのプログラムで開き直し、
-7-Zip が入っていれば、別人の書いた読み手で展開して元のフォルダーと突き合わせる。
+確かめる。最後がイメージである。UDF の版ごとに書いて SmartCut で開き直し、
+7-Zip が入っていれば、別の実装の読み取り側で展開して元のフォルダーと突き合わせる。
 
 `run_udf_tests.sh` はイメージを逆側から見る。開くディスクとしてではなく、開く前に
-整っていなければならないファイルシステムとして見る。`udf_shape.py` が、読み手の通る
+整っていなければならないファイルシステムとして見る。`udf_shape.py` が、読み取り側の通る
 3 つの層を報告する。アンカーとその指す記述子、区画とその中のファイルエントリー、
 そして各ファイルの中身が実際に置かれている場所である。スイートはどのイメージでも
 成り立つ不変条件を確かめる。両端にアンカーがあること、どのファイルも区画の中に
@@ -120,11 +120,11 @@ SmartCut 自身の読み手で開く。そのうえで `bdav_index.py` が、索
 そのうえで、`$SMARTCUT_DISCS`（既定は `~/Documents/claude/TMPGEnc`）にある実物の
 イメージを書き手ごとに 1 枚ずつ、同じ報告で横に並べる。こちらの流儀がレコーダーや
 ライティングソフトとどこで違うかが、再生できないディスクを見る前に分かる。
-**だから上の件数は、走らせる機械にあるイメージで決まる。**ここでは書き手が 5 つ
+**だから上の件数は、実行するマシンにあるイメージで決まる。**ここでは書き手が 5 つ
 揃っていて 33 件、3 つだったときは 28 件だった。並んだ違いは失敗ではない。
 レコーダーは区画を overwritable で書き、アンカーを 3 つ置き、
 削除済みのファイル識別子をディレクトリに残す。どれも規格の内である。この比較は
-すぐに役に立った。メタデータ区画の控えを説明するエントリーが本体のすぐ隣に
+すぐに役に立った。メタデータ区画の複製を指すエントリーが本体のすぐ隣に
 書かれていて、クラスタ 1 つ読めなくなれば両方失う状態だったのを見つけたのがこれで
 ある。
 
@@ -155,7 +155,7 @@ SmartCut 自身の読み手で開く。そのうえで `bdav_index.py` が、索
 コーデックが持たないレートを指定されたときは、持っているうちで最も近いものに直し、
 そのことを表示しなければならない。量子化ビット数は、サンプルをそのまま書くコーデック
 でしか意味を持たない。だから LPCM では指定に従い（ここではファイルの大きさが決まる）、
-ほかのコーデックでは理由を示して断る。
+ほかのコーデックでは理由を示して受け付けない。
 
 `run_audio_tests.sh` と `run_downmix_tests.sh` は同じディレクトリに自前の
 フィクスチャを作る。インパルス列と、チャンネルごとに音の違う 5.1ch トラックである。
@@ -163,7 +163,7 @@ SmartCut 自身の読み手で開く。そのうえで `bdav_index.py` が、索
 どちらも使わない。
 
 各スイートは、出力をフィクスチャの隣、つまり `$TMPDIR` の下に書く。プロキシの
-スイートは実素材で数 GB 要る（放送 TS 30 分ぶんのプロキシ 1 つで 2.3 GB）ので、
+スイートは実素材で数 GB を要する（放送 TS 30 分分のプロキシ 1 つで 2.3 GB）ので、
 小さな `/tmp` の tmpfs では足りない。`No space left on device` で落ちる場合は、
 `TMPDIR` をディスク上のディレクトリに向ける。
 
@@ -181,10 +181,10 @@ TMPDIR=~/tmp bash tests/run_proxy_tests.sh
 既定では `~/media` を見る。`SMARTCUT_MEDIA` で変更できる。音声の比較には numpy が
 必要で、無い場合は SKIP になる。
 
-`run_vc1_tests.sh` も実素材を読むが、要るものが特殊なので別に挙げる。**VC-1** で
-書かれた録画、つまり 2010 年頃までにプレスされた Blu-ray が要る。`SMARTCUT_VC1` に
+`run_vc1_tests.sh` も実素材を読むが、必要なものが特殊なので別に挙げる。**VC-1** で
+書かれた録画、つまり 2010 年頃までにプレスされた Blu-ray が必要である。`SMARTCUT_VC1` に
 その `.m2ts`（あるいはその一部）を渡す。指定が無ければ、成功したふりをせずそこで
-終了する。エンコーダ側の example バイナリも要る。通常の `cargo build --release` では
+終了する。エンコーダ側の example バイナリも必要である。通常の `cargo build --release` では
 作られない。
 
 ```bash
@@ -210,7 +210,7 @@ SMARTCUT_AUDIO=reencode  bash tests/run_audio_tests.sh   # サンプル精度の
 SMARTCUT_BYTE_SEEK=0     bash tests/run_preview_tests.sh # タイムスタンプでシークする旧経路
 ```
 
-コンテナ索引での実行は 15 件のうち 11 件に答える。トランスポートストリームの 4 件は
+コンテナ索引での実行は 15 件のうち 11 件に対応できる。トランスポートストリームの 4 件は
 `the container has no seek table for this stream` と言って自分を飛ばす。走査という
 経路が存在する理由そのものである。
 
@@ -258,7 +258,7 @@ WebKitGTK のコンポジタは GPU の無いマシンでは何も描画せず�
 
 同じようなフリーズがもう 1 つあり、こちらはテキスト欄をクリックした瞬間に起きる。
 GTK の XIM 入力メソッドモジュールが入っていると、`<input>` がフォーカスを取った時点で
-WebKitGTK が描画をやめてしまう。プログラム自体は裏で動き続けていて、古い絵の裏で状態
+WebKitGTK が描画をやめてしまう。プログラム自体は裏で動き続けていて、古い表示のまま状態
 だけが変わっていく。ウィンドウを 1px リサイズすると一気に追いつく。（`xdotool` で
 操作したときにスクリーンショットが古いままになっていたのは、`xdotool` のせいではなく
 これが原因だった。）`GTK_IM_MODULE` が未設定のとき GTK が選ぶのが XIM なので、IME を
