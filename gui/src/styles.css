@@ -528,6 +528,34 @@ main { flex: 1; min-height: 0; display: flex; gap: 0; }
 }
 #segments .copy { color: var(--copy); }
 #segments .reencode { color: var(--encode); }
+/* And when the plan is longer than those three lines, the box has to say so.
+   The desktop's own scrollbar is an overlay: it appears while it is being
+   used and is invisible the rest of the time, so three whole lines of a
+   five-line plan look like the whole plan. Two cuts is already five -- a
+   copy, then re-encode and copy at each seam -- and two cuts is what taking
+   the breaks out of a recording costs, which is the thing this program is
+   for. So: a slim scrollbar of our own, there whenever there is something
+   below, and the last line half in shadow behind it.
+
+   Webkit's scrollbar pseudo-elements rather than `scrollbar-width`, because
+   the two engines this runs on take different ones and this is the one they
+   both take. */
+#segments::-webkit-scrollbar { width: 7px; }
+#segments::-webkit-scrollbar-track { background: var(--sunken); }
+#segments::-webkit-scrollbar-thumb { background: #5c5c5c; border-radius: 4px; }
+#segments::-webkit-scrollbar-thumb:hover { background: #757575; }
+/* The shadow. On the wrapper rather than the list, so it does not scroll
+   away with the lines it is drawn over, and `pointer-events: none` so the
+   wheel still reaches them. Only where there is something below: a plan of
+   three lines exactly is a plan shown whole, and shading its last line would
+   be the box saying there is more when there is not. `more` is put on by the
+   one that fills the list, which is the only place that knows. */
+.segbox { position: relative; }
+.segbox.more::after {
+  content: ""; position: absolute; left: 0; right: 7px; bottom: 0; height: 10px;
+  background: linear-gradient(to bottom, transparent, rgba(36, 36, 36, 0.9));
+  pointer-events: none;
+}
 
 /* The badge and the status read left to right from the plan above them; the
    two buttons that end this window sit in the far corner, paired and the same

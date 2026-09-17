@@ -398,6 +398,10 @@ copy 00:02:00.11 → 00:03:45.00 (3143 frames)
 frame of this output will be rebuilt.** Cut the second commercial block the same
 way and it becomes `3 ranges, 2 cuts`.
 
+**Only three lines of the breakdown are visible at once.** More cuts mean more
+lines, and the rest are read by scrolling. When there is more below, a slim bar
+appears down the right-hand edge and the bottom line sinks into shadow.
+
 **A join left by a cut becomes a keyframe of its own**, because that is exactly
 the place you will want to check afterwards. The scrubber keeps a red line
 there.

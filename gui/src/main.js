@@ -2319,6 +2319,14 @@ async function refreshPlan() {
           `${fmt(s.start)} → ${fmt(s.end)}  (${tr("out.ovlNote", { n: s.frames })})</li>`
       )
       .join("");
+    // Whether the box holds all of it. Three lines is what an ordinary cut
+    // costs and what the box was sized for, but two cuts costs five -- a
+    // copy, then a re-encode and a copy at each seam -- and two cuts is what
+    // taking the breaks out of a recording comes to. The desktop's own
+    // scrollbar is an overlay that is invisible until it is used, so without
+    // this the first three of five lines look like the whole plan.
+    const box = el("segments");
+    box.parentElement.classList.toggle("more", box.scrollHeight > box.clientHeight + 1);
   } catch (e) {
     if (run !== planRun) return;
     el("plan-text").textContent = tr("plan.failed", { e });

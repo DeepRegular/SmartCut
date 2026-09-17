@@ -142,7 +142,9 @@
           <div class="panel">
             <div class="bar"><span id="copied-bar"></span></div>
             <div class="plan-text" id="plan-text" data-i18n="plan.openFile">ファイルを開いてください</div>
-            <ul id="segments"></ul>
+            <!-- Wrapped, so the shadow that says "there is more below" can
+                 be drawn over the list without scrolling away with it. -->
+            <div class="segbox"><ul id="segments"></ul></div>
           </div>
           <!-- No 出力 button here. What gets written, where, and in what
                container is one answer for the whole list, and it is settled
