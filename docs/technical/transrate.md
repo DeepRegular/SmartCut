@@ -14,7 +14,7 @@ Nothing here decodes a picture, which is what makes it fast enough to be worth
 offering: a cut that rewrites every picture of a ten-minute recording takes
 thirty seconds where a cut that copies them takes six.
 
-The screen it is asked for on is the BDAV half of 出力設定, which draws what
+The screen it is asked for on is the BDAV half of Output settings, which draws what
 the list comes to against the disc and says what has to come off. The engine
 is [`smartcut_mpeg2`](../../rust/crates/mpeg2/); the arithmetic that turns a
 disc into a share is [`fit.rs`](../../rust/crates/core/src/fit.rs).

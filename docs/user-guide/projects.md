@@ -69,7 +69,7 @@ answer you gave about this work. So none of it is written down, and opening
 that project later asks those standing answers again. Which is what you want
 when you have since changed them.
 
-Use one control on the 出力設定 screen and the whole panel becomes this
+Use one control on the Output settings screen and the whole panel becomes this
 project's own answer: saved with it, and put back exactly as it was when it
 is opened. Merely walking onto that screen is not using it. The folder name
 and the disc title it fills in for you are worked out from the recordings,
