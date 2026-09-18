@@ -14,6 +14,8 @@
 //! time than the quiet one because it happens to be longer would undo that
 //! for no reason. See [`crate::cut::CutOptions::video_share`].
 
+use ffmpeg_next as ff;
+
 use crate::Source;
 
 /// A disc, and what it holds.
@@ -140,18 +142,38 @@ pub fn rates(src: &Source) -> Rates {
             .bit_rate
             .filter(|r| r.is_finite() && *r > 0.0)
             .unwrap_or_else(|| file_rate(src) * 0.9),
-        audio: src
-            .audios
-            .iter()
-            .map(|a| match a.bit_rate {
-                Some(r) if r > 0 => r as f64,
-                // Linear PCM states no rate because it does not need one: it
-                // is the samples themselves.
-                _ => f64::from(a.sample_rate) * f64::from(a.channels) * f64::from(a.bits.max(16)),
-            })
-            .sum(),
+        audio: src.audios.iter().map(audio_rate).sum(),
         can_shrink: src.video.codec == "mpeg2video",
     }
+}
+
+/// What a sound track costs, where the container did not say what it costs.
+///
+/// Two ways to arrive here and they want opposite answers. Linear PCM states
+/// no rate because it does not need one: it is the samples themselves, and
+/// what they weigh is arithmetic on the three numbers beside them. Everything
+/// else has had its rate taken away rather than never had one -- a recording
+/// whose opening belongs to the programme before it carries that programme's
+/// sound in its header, and what the container said about it is dropped
+/// rather than believed (see [`crate::scan_with`]).
+///
+/// Sizing a compressed track with the PCM arithmetic puts 1.5 Mbit/s against
+/// a track carried at a quarter of that. On the six broadcast recordings
+/// measured here four had their opening dropped that way, and the estimate
+/// came out 14% over on each of them: eight percent of a disc handed back for
+/// nothing. So what a codec is worth at this many channels stands in
+/// instead, which is what a re-encode of the track would spend.
+fn audio_rate(a: &crate::AudioInfo) -> f64 {
+    if let Some(stated) = a.bit_rate.filter(|r| *r > 0) {
+        return stated as f64;
+    }
+    let derived = ff::decoder::find_by_name(&a.codec)
+        .map(|c| crate::cut::derived_bit_rate(c.id(), a.channels))
+        .unwrap_or(0);
+    if derived > 0 {
+        return derived as f64;
+    }
+    f64::from(a.sample_rate) * f64::from(a.channels) * f64::from(a.bits.max(16))
 }
 
 /// What a cut of this recording is expected to come to.
@@ -305,6 +327,51 @@ pub fn fit(estimates: &[Estimate], capacity: u64, margin: f64) -> Fit {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn track(codec: &str, channels: u16, bit_rate: Option<usize>) -> crate::AudioInfo {
+        crate::AudioInfo {
+            stream_index: 1,
+            pid: 0x1100,
+            language: None,
+            codec: codec.into(),
+            sample_rate: 48_000,
+            channels,
+            bits: 16,
+            time_base: 1.0 / 90_000.0,
+            bit_rate,
+        }
+    }
+
+    #[test]
+    fn a_track_that_states_its_rate_is_taken_at_its_word() {
+        assert_eq!(audio_rate(&track("aac", 2, Some(178_000))), 178_000.0);
+    }
+
+    /// The case that cost a disc: a recording whose opening belongs to the
+    /// programme before it has its stated rate dropped, and the arithmetic
+    /// that sizes linear PCM then charged an AAC track 1.5 Mbit/s.
+    #[test]
+    fn a_compressed_track_with_no_rate_is_not_sized_as_pcm() {
+        let pcm_arithmetic = 48_000.0 * 2.0 * 16.0;
+        let r = audio_rate(&track("aac", 2, None));
+        assert!(r < pcm_arithmetic / 4.0, "{r} is PCM arithmetic, not AAC");
+        assert_eq!(r, 192_000.0);
+    }
+
+    #[test]
+    fn linear_pcm_is_still_its_own_samples() {
+        assert_eq!(
+            audio_rate(&track("pcm_bluray", 2, None)),
+            48_000.0 * 2.0 * 16.0
+        );
+    }
+
+    /// A rate of nought is a container saying it does not know, which is the
+    /// same as saying nothing.
+    #[test]
+    fn a_stated_nought_is_not_a_rate() {
+        assert_eq!(audio_rate(&track("aac", 1, Some(0))), 96_000.0);
+    }
 
     fn clip(bytes: u64, video: u64) -> Estimate {
         Estimate {

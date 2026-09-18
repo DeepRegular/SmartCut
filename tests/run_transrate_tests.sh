@@ -22,6 +22,8 @@ set -u
 cd "$(dirname "$0")/.."
 BIN=rust/target/release/smartcut
 DIAG=rust/target/release/examples/transdiag
+FIT=rust/target/release/examples/fitdiag
+FX="${TMPDIR:-/tmp}/smartcut-fixtures"
 MEDIA="${SMARTCUT_MEDIA:-$HOME/media}"
 WORK="${SMARTCUT_WORK:-${TMPDIR:-/tmp}}/smartcut-transrate"
 mkdir -p "$WORK"
@@ -29,6 +31,10 @@ mkdir -p "$WORK"
 [ -x "$BIN" ] || { echo "build first: (cd rust && cargo build --release)" >&2; exit 2; }
 [ -x "$DIAG" ] || {
   echo "build first: (cd rust && cargo build --release --example transdiag)" >&2
+  exit 2
+}
+[ -x "$FIT" ] || {
+  echo "build first: (cd rust && cargo build --release --example fitdiag)" >&2
   exit 2
 }
 
@@ -164,6 +170,105 @@ fits "地デジ 60%"            full_ntv.ts 0.60
 echo
 echo "縮められない録画"
 declines "VC-1 の Blu-ray"     bd-clip.ts
+
+## What the estimate is built on ------------------------------------------
+
+# A share is a disc divided by a rate, so the rate decides whether a disc
+# comes out a coaster. Where the recording was read off a disc there is no
+# counting it -- the entry point map never looked at a picture -- and it is
+# sampled instead. The sample has to agree with the count, and the estimate
+# built on either has to be the size of the file it describes.
+#
+# What this caught: a recording opened off a BDAV disc had no rate at all,
+# and what stood in for it -- the file's own rate less a tenth -- was 2% low
+# on six broadcast recordings. 2% of a disc is a quarter of a gigabyte over.
+rate_of() { echo "$1" | sed -n 's/.*pictures \([0-9.]*\) Mbit\/s.*/\1/p'; }
+out_by()  { echo "$1" | sed -n 's/.*out by \([-+][0-9.]*\)%.*/\1/p'; }
+# Is $1 within $2 of nought? Both in percent, and neither the shell nor the
+# sign is to be trusted with it.
+within() {
+  [ -n "$1" ] || return 1
+  awk -v v="$1" -v lim="$2" 'BEGIN { exit !((v < 0 ? -v : v) <= lim) }'
+}
+# Write one recording onto a disc of its own and give back the clip.
+onto_a_disc() {
+  local src=$1 keep=$2 disc=$3
+  rm -rf "$disc"
+  "$BIN" "$src" --keep "$keep" --bdav "$disc" --programme "レート見本" \
+    >"$disc.log" 2>&1
+  [ -f "$disc/BDAV/STREAM/00001.m2ts" ] && echo "$disc/BDAV/STREAM/00001.m2ts"
+}
+
+# The sample against the count, on the fixture, which needs no media.
+sample_agrees() {
+  local name="標本と全数"
+  if [ ! -f "$FX/mpeg2.ts" ]; then
+    printf "  SKIP  %-26s run tests/run_tests.sh first\n" "$name"; return
+  fi
+  local clip
+  clip=$(onto_a_disc "$FX/mpeg2.ts" 0-20 "$WORK/ratedisc")
+  if [ -z "$clip" ]; then
+    printf "  FAIL  %-26s ディスクが書けなかった\n" "$name"; fail=$((fail+1)); return
+  fi
+  local walked sampled wr sr off
+  walked=$("$FIT" --index scan "$clip" 2>/dev/null)
+  sampled=$("$FIT" --index disc "$clip" 2>/dev/null)
+  wr=$(rate_of "$walked"); sr=$(rate_of "$sampled")
+
+  # The map has to have been read at all: the disc index falling back on a
+  # guess would pass the comparison below while measuring nothing.
+  if echo "$sampled" | grep -q "read off the stream"; then
+    printf "  ok    %-26s ディスクの索引でも測る\n" "映像レートの出どころ"
+    pass=$((pass+1))
+  else
+    printf "  FAIL  %-26s %s\n" "映像レートの出どころ" "$(echo "$sampled" | grep Mbit)"
+    fail=$((fail+1))
+  fi
+
+  off=$(awk -v a="$wr" -v b="$sr" 'BEGIN { printf("%.2f", (a > 0) ? (b / a - 1) * 100 : 999) }')
+  if within "$off" 5; then
+    printf "  ok    %-26s 数えて %s、測って %s Mbit/s (%s%%)\n" "$name" "$wr" "$sr" "$off"
+    pass=$((pass+1))
+  else
+    printf "  FAIL  %-26s 数えて %s、測って %s Mbit/s (%s%%)\n" "$name" "$wr" "$sr" "$off"
+    fail=$((fail+1))
+  fi
+  rm -rf "$WORK/ratedisc" "$WORK/ratedisc.log"
+}
+
+# And the estimate against the file, which needs a real recording: the
+# fixture is twenty seconds long and a clip is padded out to a 196,608-byte
+# boundary, so a tenth of that one is padding and nothing about its size is
+# about its pictures.
+estimate_is_the_size() {
+  local name=$1 src="$MEDIA/$2"
+  if [ ! -f "$src" ]; then printf "  SKIP  %-26s no %s\n" "$name" "$2"; return; fi
+  local clip
+  clip=$(onto_a_disc "$src" 0-120 "$WORK/sizedisc")
+  if [ -z "$clip" ]; then
+    printf "  FAIL  %-26s ディスクが書けなかった\n" "$name"; fail=$((fail+1)); return
+  fi
+  local which o line=""
+  for which in scan disc; do
+    o=$(out_by "$("$FIT" --index "$which" "$clip" 2>/dev/null)")
+    if within "$o" 3; then
+      line="$line $which ${o}%"
+    else
+      printf "  FAIL  %-26s %s で %s%%\n" "$name" "$which" "${o:-?}"
+      fail=$((fail+1)); rm -rf "$WORK/sizedisc" "$WORK/sizedisc.log"; return
+    fi
+  done
+  printf "  ok    %-26s%s\n" "$name" "$line"
+  pass=$((pass+1))
+  rm -rf "$WORK/sizedisc" "$WORK/sizedisc.log"
+}
+
+echo
+echo "見積もりの元になるレート"
+sample_agrees
+estimate_is_the_size "AT-X"        atx.ts
+estimate_is_the_size "BS フジ"     bsfuji.ts
+estimate_is_the_size "地デジ"      full_ntv.ts
 
 echo
 echo "ok $pass / fail $fail"

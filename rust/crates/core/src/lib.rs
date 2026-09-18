@@ -132,8 +132,11 @@ pub struct VideoInfo {
     /// Blu-ray a sixth of what it came in at.
     ///
     /// `None` where the index came from somewhere that never read the
-    /// pictures -- a container's own seek table -- and then there is nothing
-    /// to do but derive one from the frame size after all.
+    /// pictures and could not be made to read a little of them -- a
+    /// container's own seek table -- and then there is nothing to do but
+    /// derive one from the frame size after all. A recording read off a
+    /// disc's entry-point map is not that case: see
+    /// [`index::sample_bit_rate`].
     pub bit_rate: Option<f64>,
     /// The sequence and entry-point headers a VC-1 stream declares itself
     /// with, when it is one.

@@ -191,6 +191,31 @@ framing a disc puts round them is added — 192 bytes of transport packet per
 the tables written every frame and the clock in a packet of its own, the clip
 index, and the 196,608 bytes a stream is padded out to.
 
+A recording read off a disc has no such measurement behind it. The entry-point
+map in `CLIPINF` says where every picture a player may start at is, and nothing
+about how big any of them is. So the rate is sampled: two dozen windows of two
+seconds each, tens of megabytes against the tens of gigabytes the walk reads.
+
+What the windows are read for is the *share* the pictures take of the bytes,
+not the rate itself. A broadcast recording's rate over two seconds has nothing
+to do with its rate over the hour — on the recording measured here the windows
+ran from 5 to 14 Mbit/s against an average of 11, and their mean landed five
+per cent out, which is no better than the guess it replaces. The share is the
+steady figure: 0.875 to 0.937 across the same windows, byte-weighted 0.920
+against a counted 0.9195. The rate it is applied to comes off the map itself —
+the bytes between its first entry point and its last, over the time between
+them — which is exact and costs nothing. On six broadcast recordings the
+sampled rate lands within 0.7% of the counted one on every clip, and 81.67%
+against 81.41% for the share of the disc they came to.
+
+The sound's rate is declared, except where it was taken away: a recording whose
+opening belongs to the programme before it has that programme's sound described
+in its header, and what the container said is dropped rather than believed.
+What a codec is worth at that many channels stands in. Sizing a compressed
+track with the arithmetic that sizes linear PCM instead — samples by channels
+by bits — charges an AAC track carried at 250 kbit/s a megabit and a half,
+which on four of those six recordings put the estimate 14% over.
+
 Against whole recordings written onto a disc, that lands within about one per
 cent:
 

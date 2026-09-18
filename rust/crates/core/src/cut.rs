@@ -3355,7 +3355,7 @@ fn carriage(source: ff::codec::Id, to_ts: bool, bits: u8, want: AudioCodec) -> f
 /// LPCM has no rate to choose. Its size is the samples' own -- channels
 /// times bits times the sample rate -- and the encoder ignores what it is
 /// handed, which is why the window greys the control out.
-fn derived_bit_rate(target: ff::codec::Id, channels: u16) -> usize {
+pub(crate) fn derived_bit_rate(target: ff::codec::Id, channels: u16) -> usize {
     use ff::codec::Id::*;
     match target {
         AC3 => match channels {

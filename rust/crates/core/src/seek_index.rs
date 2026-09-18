@@ -57,7 +57,15 @@ static SERIAL: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(
 /// made for, and a saved index is believed, so a 4K recording opened before
 /// this would go on re-encoding thirteen seconds at a cut's head however
 /// often it was opened again.
-pub const VERSION: u32 = 5;
+///
+/// 6: an index made off a disc's entry-point map carries what the pictures
+/// weigh, sampled at a few dozen places ([`index::sample_bit_rate`]), where
+/// one made before this carries nothing and `--fit` sizes the disc from the
+/// whole file's rate less a tenth instead. On six broadcast recordings that
+/// guess was 2% low, which is a quarter of a gigabyte over a single layer --
+/// and a saved index is believed, so the disc that would not fit went on not
+/// fitting however often it was opened again.
+pub const VERSION: u32 = 6;
 
 const MAGIC: &[u8; 4] = b"SCIX";
 

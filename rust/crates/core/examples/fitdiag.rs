@@ -8,7 +8,13 @@
 //! with nothing cut out of them, what it says should be the size of the file
 //! -- which is what this is for.
 //!
-//!     fitdiag <file>... [--disc 25|50|100|128] [--margin 0.01]
+//!     fitdiag <file>... [--disc 25|50|100|128] [--margin 0.01] [--index auto|disc|container|scan]
+//!
+//! `--index` says how the recordings are opened, because that is what
+//! decides whether the rate the estimate is built on was counted, sampled or
+//! guessed at. `auto` is the chain the output settings screen itself opens
+//! with -- the disc's own map where there is one, the container's table
+//! where there is not, the full walk where neither answers.
 use anyhow::Result;
 use smartcut_core as sc;
 
@@ -38,10 +44,19 @@ fn main() -> Result<()> {
         }
     }
 
+    let how = arg("--index").unwrap_or_else(|| "auto".into());
     let mut estimates = Vec::new();
     for path in &files {
-        let src = sc::scan(path)?;
+        let src = match how.as_str() {
+            "disc" => sc::scan_with(path, &sc::DiscIndex)?,
+            "container" => sc::scan_with(path, &sc::ContainerIndex)?,
+            "scan" => sc::scan_with(path, &sc::PacketScan)?,
+            _ => sc::scan_with(path, &sc::DiscIndex)
+                .or_else(|_| sc::scan_with(path, &sc::ContainerIndex))
+                .or_else(|_| sc::scan_with(path, &sc::PacketScan))?,
+        };
         let e = sc::fit::estimate(&src, &[], sc::fit::Going::Disc);
+        let r = sc::fit::rates(&src);
         let actual = std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
         println!(
             "{path}\n  {:.1}s  estimate {} MB  actual {} MB  out by {:+.2}%  pictures {} MB ({}%)",
@@ -55,6 +70,24 @@ fn main() -> Result<()> {
             },
             e.video_bytes / 1_000_000,
             e.video_bytes * 100 / e.bytes.max(1)
+        );
+        println!(
+            "  pictures {:.3} Mbit/s ({}), sound {:.3} Mbit/s ({})",
+            r.video / 1e6,
+            if src.video.bit_rate.is_some() {
+                "read off the stream"
+            } else {
+                "the file's own rate, less a tenth"
+            },
+            r.audio / 1e6,
+            src.audios
+                .iter()
+                .map(|a| match a.bit_rate {
+                    Some(b) => format!("{} {}ch states {} kbit/s", a.codec, a.channels, b / 1000),
+                    None => format!("{} {}ch states nothing", a.codec, a.channels),
+                })
+                .collect::<Vec<_>>()
+                .join("; "),
         );
         estimates.push(e);
     }
