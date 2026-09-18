@@ -2047,19 +2047,29 @@ async function paintSharp(t) {
   }
 }
 
-function startSearch(ev) {
+/// How often a scroll moves the playhead, in milliseconds. Fourteen times a
+/// second: fast enough to look like movement, slow enough that the held
+/// pictures behind it keep up.
+const SCROLL_TICK = 70;
+
+/// Run a scroll until `endScroll` stops it.
+///
+/// Two things start one. The strip's right drag, whose speed is where the
+/// pointer is, and a held page key whose speed is a preference. The loop is
+/// the same either way, so the speed is not a number but something asked at
+/// every tick: the pointer moves under the drag, and under the key both the
+/// preference and the modifiers held with it can change while the key is
+/// down.
+function startScroll(rateAt, extra) {
   if (!src) return;
-  const rect = el("strip").getBoundingClientRect();
-  search = { x: ev.clientX, rect };
+  search = { rateAt, ...extra };
   el("searching").hidden = false;
-  search.timer = setInterval(() => {
-    const half = search.rect.width / 2;
-    const dx = clamp((search.x - (search.rect.left + half)) / half, -1, 1);
-    // cubed, so the middle of the strip is a fine crawl and the far edges
-    // cross a half-hour recording in half a minute
-    const rate = Math.sign(dx) * Math.abs(dx) ** 3 * 60;
-    if (rate === 0) return;
-    playhead = outToSrc(clamp(playOut() + rate * 0.07, 0, Math.max(0, outDur - frame())));
+  const tick = () => {
+    const rate = search.rateAt();
+    if (!rate) return;
+    playhead = outToSrc(
+      clamp(playOut() + rate * (SCROLL_TICK / 1000), 0, Math.max(0, outDur - frame())),
+    );
     updateReadouts();
     draw();
     paintFast(playhead);
@@ -2068,10 +2078,49 @@ function startSearch(ev) {
       lastSharp = Date.now();
       paintSharp(playhead);
     }
-  }, 70);
+  };
+  search.timer = setInterval(tick, SCROLL_TICK);
+  // The first step now rather than a tick from now, or a page key tapped
+  // rather than held would move nothing at all.
+  tick();
 }
 
-function endSearch() {
+function startSearch(ev) {
+  const rect = el("strip").getBoundingClientRect();
+  const half = rect.width / 2;
+  // cubed, so the middle of the strip is a fine crawl and the far edges
+  // cross a half-hour recording in half a minute
+  const rate = () => {
+    const dx = clamp((search.x - (rect.left + half)) / half, -1, 1);
+    return Math.sign(dx) * Math.abs(dx) ** 3 * 60;
+  };
+  startScroll(rate, { x: ev.clientX });
+}
+
+/// The scroll a held PageUp or PageDown does, where that key's preference is
+/// a speed rather than an amount.
+///
+/// `dir` is which way, and the speed comes out of `pageStep` at every tick
+/// rather than once here. That is what lets Ctrl pressed halfway through a
+/// hold change how fast the recording is going past, and a number typed in
+/// the other window take effect under the held key: the keyboard repeats the
+/// key while it is down, and each repeat is a fresh answer from the same
+/// preferences.
+function startPageScroll(dir, ev) {
+  if (search && search.page) {
+    search.dir = dir;
+    search.press = ev;
+    return;
+  }
+  endScroll();
+  startScroll(() => pageStep(search.press).rate * search.dir, {
+    page: true,
+    dir,
+    press: ev,
+  });
+}
+
+function endScroll() {
   if (!search) return;
   clearInterval(search.timer);
   search = null;
@@ -2088,7 +2137,18 @@ window.addEventListener("mousemove", (ev) => {
   if (search) search.x = ev.clientX;
 });
 window.addEventListener("mouseup", (ev) => {
-  if (ev.button === 2) endSearch();
+  if (ev.button === 2) endScroll();
+});
+// A key that comes up stops the scroll it started. Either page key does:
+// which of the pair is released first is not worth telling apart, and a
+// window that loses the keyboard never hears the release at all.
+window.addEventListener("keyup", (ev) => {
+  if (ev.key === "PageUp" || ev.key === "PageDown") {
+    if (search && search.page) endScroll();
+  }
+});
+window.addEventListener("blur", () => {
+  if (search && search.page) endScroll();
 });
 
 // A wheel notch or a held arrow key can arrive faster than a decode:
@@ -3491,18 +3551,23 @@ function arrowDue(ev) {
   return true;
 }
 
-/// How far a page key moves, in seconds, for the modifier it was pressed
-/// with. Zero for a preference somebody has emptied, which is then a key
+/// What a page key does for the modifier it was pressed with: a jump of `by`
+/// seconds, or a scroll at `rate` seconds a second. Only ever one of the two,
+/// and neither for a preference somebody has emptied -- which is then a key
 /// that does nothing rather than a key that jumps to the start.
 ///
 /// Four answers, one per way the pair can be pressed, and each is a number
-/// and the unit it is counted in -- pictures, seconds, or a share of the
-/// timeline. The share is of the timeline as it now stands rather than of the
-/// recording: somebody crossing a programme in ten presses means the thing
-/// they are looking at, and the cuts have already taken the rest out of it.
+/// and the unit it is counted in. Pictures and seconds are amounts: the key
+/// moves that far, once per press. A share of the timeline is a speed: the
+/// recording goes past at that share a second for as long as the key is held,
+/// which is how somebody crosses a programme without first working out how
+/// long it is. Ten percent is ten seconds end to end whatever is open, and it
+/// stays ten seconds as the cuts take material out of it -- the share is of
+/// the timeline as it now stands rather than of the recording.
 ///
 /// Read at the keystroke rather than held in a variable, so a number changed
-/// in the other window is in force at the next press.
+/// in the other window is in force at the next press, and under a key that is
+/// already down at the next tick of the scroll.
 function pageStep(ev) {
   const held = ev.ctrlKey || ev.metaKey;
   const which = held
@@ -3513,11 +3578,11 @@ function pageStep(ev) {
       ? "pageStepShift"
       : "pageStep";
   const by = Number(prefs.get(which));
-  if (!isFinite(by) || by <= 0) return 0;
+  if (!isFinite(by) || by <= 0) return { by: 0, rate: 0 };
   const unit = prefs.get(`${which}Unit`);
-  if (unit === "frame") return by * frame();
-  if (unit === "pct") return (outDur * by) / 100;
-  return by;
+  if (unit === "frame") return { by: by * frame(), rate: 0 };
+  if (unit === "pct") return { by: 0, rate: (outDur * by) / 100 };
+  return { by, rate: 0 };
 }
 
 window.addEventListener("keydown", (ev) => {
@@ -3597,12 +3662,29 @@ window.addEventListener("keydown", (ev) => {
   // they are the one pair of keys a modifier changes the *amount* for rather
   // than the meaning of. Shift, Ctrl and the two together each carry their
   // own answer; see `pageStep`.
+  //
+  // An answer counted in pictures or seconds is a jump, one per press. An
+  // answer counted in a share of the timeline is a speed, and the key scrolls
+  // for as long as it is held -- the same scroll the strip's right drag runs,
+  // held pictures and all, at a speed somebody has set rather than one the
+  // pointer is deciding.
   if (ev.key === "PageUp" || ev.key === "PageDown") {
     ev.preventDefault();
-    const by = pageStep(ev);
+    const dir = ev.key === "PageDown" ? 1 : -1;
+    const { by, rate } = pageStep(ev);
+    if (rate > 0) {
+      if (playing) stopPlay();
+      startPageScroll(dir, ev);
+      return;
+    }
+    // A modifier taken off or added while the key is still down, where what
+    // it now says is an amount: the speed it was scrolling at is not this
+    // key's answer any more, so the scroll stops where it got to and the
+    // press is a jump like any other.
+    if (search && search.page) endScroll();
     if (by > 0) {
       if (playing) stopPlay();
-      scrubTo(playOut() + (ev.key === "PageDown" ? by : -by));
+      scrubTo(playOut() + dir * by);
     }
     return;
   }

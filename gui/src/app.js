@@ -7885,8 +7885,8 @@ el("pref-subs").addEventListener("change", (ev) => {
 // them, and a change here is in force at the next one.
 //
 // Each of the four is a number and the unit it is counted in, and the pair is
-// one answer: 15 is a quarter of a recording or half a second depending on
-// what stands beside it.
+// one answer: 15 is half a second, or the whole timeline going past in seven,
+// depending on what stands beside it.
 const PAGE_STEPS = [
   ["pref-page-step", "pageStep"],
   ["pref-page-step-shift", "pageStepShift"],
@@ -7894,14 +7894,15 @@ const PAGE_STEPS = [
   ["pref-page-step-shift-ctrl", "pageStepShiftCtrl"],
 ];
 
-/// Whether this unit is counted in whole things. Pictures are, and so is a
-/// percent: half a picture is not a step, and a tenth of a percent of an hour
-/// is three seconds spelled the long way round.
-const wholeStep = (unit) => unit === "frame" || unit === "pct";
+/// Whether this unit is counted in whole things. Pictures are: half a picture
+/// is not a step. A percent is not, being a speed rather than an amount --
+/// half a percent a second is a crawl, and somebody watching for a join
+/// wants it.
+const wholeStep = (unit) => unit === "frame";
 
-/// Fit the field to what it is now counting: whole numbers for pictures and
-/// percent, tenths for seconds, and nothing over 100 where the number is a
-/// share of something.
+/// Fit the field to what it is now counting: whole numbers for pictures,
+/// tenths for seconds and for a speed, and nothing over 100 where the number
+/// is a share of something.
 function paintStepUnit(id, unit) {
   const box = el(id);
   box.step = wholeStep(unit) ? "1" : "0.1";

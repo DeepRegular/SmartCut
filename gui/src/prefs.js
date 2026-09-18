@@ -111,38 +111,38 @@ const DEFAULTS = {
   /// Whether it draws the frame number and clock over the picture. Read by
   /// the editor at open; the button on its info bar is the same answer.
   counter: true,
-  /// How far PageUp and PageDown move the playhead, and in what: on their
-  /// own, held with Shift, held with Ctrl, and held with both.
+  /// What PageUp and PageDown do to the playhead: on their own, held with
+  /// Shift, held with Ctrl, and held with both.
   ///
   /// Four answers rather than one because they are different questions. A
   /// break is half a minute, a programme is an hour, and checking a join is
-  /// a second either side of it -- and which of those a key should do is not
-  /// something a program can know about somebody else's recordings. The
-  /// arrow keys stay what they are: one picture, and one second with Shift.
+  /// a few pictures either side of it -- and which of those a key should do
+  /// is not something a program can know about somebody else's recordings.
+  /// The arrow keys stay what they are: one picture, and one second with
+  /// Shift.
   ///
-  /// The unit is part of each answer. `"frame"` counts pictures, which is
-  /// what a join is looked at in; `"sec"` counts time; `"pct"` counts a share
-  /// of the timeline, which is how somebody crosses an hour in ten presses
-  /// without first working out how long an hour is. A share is of the
-  /// timeline as it now stands, so it shortens as the cuts are made.
+  /// The unit is part of each answer, and it decides whether the key jumps or
+  /// scrolls. `"frame"` counts pictures, which is what a join is looked at
+  /// in, and `"sec"` counts time: both are amounts, and the key moves that
+  /// far once per press. `"pct"` is a speed, a share of the timeline for
+  /// every second the key is held, which is how somebody crosses an hour
+  /// without first working out how long an hour is. The share is of the
+  /// timeline as it now stands, so a quarter is four seconds end to end
+  /// however much the cuts have taken out of it.
   ///
-  /// The three that were here before keep the numbers they had and are
-  /// counted in seconds, which is what they were counted in when a number was
-  /// all they were. Nobody who never opens this screen finds those keys
-  /// answering differently.
-  ///
-  /// Shift+Ctrl is the new one, and a tenth of the timeline is what it is
-  /// for: the other three are fixed amounts and this one is the length of the
-  /// recording divided up, so ten presses cross whatever is open whether that
-  /// is a half-hour programme or a film. It used to fall into Ctrl's answer,
-  /// there being nothing else for it to be.
-  pageStep: 10,
-  pageStepUnit: "sec",
-  pageStepShift: 1,
-  pageStepShiftUnit: "sec",
-  pageStepCtrl: 60,
-  pageStepCtrlUnit: "sec",
-  pageStepShiftCtrl: 10,
+  /// The numbers are the ones the tool this window is laid out after arrives
+  /// with: fifteen pictures and thirty, then a quarter of the timeline a
+  /// second and a half of it. Two amounts and two speeds, the amounts on the
+  /// keys with least held down. Somebody coming from that tool finds these
+  /// keys answering the way they are used to, and nobody else has an opinion
+  /// about what a page key should do until they open this screen.
+  pageStep: 15,
+  pageStepUnit: "frame",
+  pageStepShift: 30,
+  pageStepShiftUnit: "frame",
+  pageStepCtrl: 25,
+  pageStepCtrlUnit: "pct",
+  pageStepShiftCtrl: 50,
   pageStepShiftCtrlUnit: "pct",
   /// Which mark file wins when a recording has both beside it.
   ///

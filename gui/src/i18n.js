@@ -100,8 +100,10 @@ const CATALOG = {
     "prefs.step.sec": "秒移動",
     "prefs.step.pct": "% でスクロール",
     "prefs.pageStepNote":
-      "カット編集で PageUp / PageDown が動く量です。0 にすると、そのキーは効きません。" +
-      "% はカットしたあとの長さに対する割合です。カットするほど 1 回の移動は短くなります。" +
+      "カット編集で PageUp / PageDown を押したときの動きです。0 にすると、そのキーは効きません。" +
+      "フレームと秒は 1 回押すごとの移動量です。% は移動速度で、押しているあいだ 1 秒に進む割合です。" +
+      "25 なら、押しっぱなしで 4 秒かけて端から端まで進みます。" +
+      "割合はカットしたあとの長さに対するものなので、カットしても端から端までの時間は変わりません。" +
       "左右キーはこの設定の対象外です（1 フレーム、Shift で 1 秒）。",
     "prefs.sidecarPriority": "両方あるときに読むのは:",
     "prefs.sidecar.keyframe": "キーフレーム情報（.keyframe）",
@@ -842,11 +844,14 @@ const CATALOG = {
     "prefs.seconds": "seconds",
     "prefs.step.frame": "frames",
     "prefs.step.sec": "seconds",
-    "prefs.step.pct": "% of the timeline",
+    "prefs.step.pct": "% a second, scrolling",
     "prefs.pageStepNote":
-      "How far PageUp and PageDown move the playhead in the cut editor. A step of 0 is a key that " +
-      "does nothing. A percentage is of the timeline as it now stands, so it shortens with the cuts. " +
-      "The left and right keys are separate and unchanged: one picture, and one second with Shift.",
+      "What PageUp and PageDown do to the playhead in the cut editor. A step of 0 is a key that " +
+      "does nothing. Frames and seconds are amounts, one per press. A percentage is a speed: the key " +
+      "scrolls that share of the timeline every second it is held, so 25 crosses the whole of it in " +
+      "four seconds. The share is of the timeline as it now stands, so those four seconds stay four " +
+      "seconds as the cuts are made. The left and right keys are separate and unchanged: one " +
+      "picture, and one second with Shift.",
     "prefs.sidecarPriority": "When both are there, read:",
     "prefs.sidecar.keyframe": "the keyframe list (.keyframe)",
     "prefs.sidecar.trim": "the AviSynth Trim line (.trim.avs)",
