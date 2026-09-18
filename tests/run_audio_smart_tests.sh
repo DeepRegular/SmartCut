@@ -124,6 +124,21 @@ for codec in aac ac3 eac3 mp2; do
     bad "$codec: and what is kept is not" "peak $kept"
   fi
 
+  # --- the fade at a seam -------------------------------------------------
+  # Asked of the same tone, which is what makes the shape of the fade
+  # readable: level, down to nothing at the join, and back to level. See
+  # `audio_fade.py` for what is actually measured, and why the frame at the
+  # join is the one worth a test of its own.
+  "$BIN" "$src" --cut 8-12 --audio-fade 1.0 -o "$OUT/$codec-fade.ts" \
+    >"$OUT/$codec-fade.log" 2>&1 \
+    || bad "$codec fade ran" "$(tail -2 "$OUT/$codec-fade.log")"
+  res=$(python3 tests/audio_fade.py "$OUT/$codec-fade.ts" 1.0)
+  if [[ "$res" == OK* ]]; then
+    ok "$codec: the seam fades away and comes back" "${res#OK|}"
+  else
+    bad "$codec: the seam fades away and comes back" "${res#BAD|}"
+  fi
+
   # --- is the sound still where it was ------------------------------------
   # The impulses say so to the sample. A patch built from the wrong samples
   # -- which is what a lead-in of the wrong length produces -- moves the

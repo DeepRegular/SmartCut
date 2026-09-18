@@ -184,6 +184,31 @@
             <label class="opt" id="subs-pick" hidden><span data-i18n="subs.label">字幕</span>
               <select id="subs-track"></select>
             </label>
+            <!-- Writing the marks down beside the recording. One button,
+                 and which of the two shapes it writes is asked on the way:
+                 the `.keyframe` list of frame numbers, or the AviSynth `Trim`
+                 line of the ranges that survive.
+
+                 Asked here rather than left to the save dialog's own type
+                 list, which would be the obvious place -- the dialog is
+                 GTK's, and changing the type in it does not change the name
+                 it is about to write, so the choice would look made and have
+                 no effect. The shortcuts (Ctrl+S, Ctrl+Shift+S) write the two
+                 without either step. -->
+            <span class="save-wrap">
+              <button id="save-marks" class="mini wide" data-i18n="editor.saveMarks"
+                      data-i18n-title="editor.saveMarks.title">キーフレーム情報を保存…</button>
+              <div id="save-menu" class="menu up" hidden>
+                <button class="menu-item" id="save-as-keyframe">
+                  <span data-i18n="marks.kind.keyframe">キーフレーム情報</span>
+                  <span class="menu-key">Ctrl+S</span>
+                </button>
+                <button class="menu-item" id="save-as-trim">
+                  <span data-i18n="marks.kind.trim">AviSynth スクリプト</span>
+                  <span class="menu-key">Ctrl+Shift+S</span>
+                </button>
+              </div>
+            </span>
             <span class="dim" id="status"></span>
             <span class="spacer"></span>
             <button id="editor-ok" class="primary wide" data-i18n="editor.ok">OK</button>

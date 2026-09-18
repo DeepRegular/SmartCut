@@ -880,9 +880,13 @@ the selection left alone, since there is no reason to prefer any one of them.
 
 ### `.keyframe` sidecar files
 
-Keyframes can be written out alongside the output. The contents are **line numbers only,
-CRLF, no header** — the shape the tools that read this kind of file expect. The numbers are
-in the exported timeline, not the original recording:
+Keyframes can be written out alongside the output, and from the cut editor. The contents
+are **line numbers only, CRLF, no header** — the shape the tools that read this kind of file
+expect.
+
+**The numbers count pictures in the file the sidecar is lying next to.** One written with
+the output counts the exported timeline; one written from the editor, beside the recording,
+counts the recording. One rule, and where the file sits settles it:
 
 ```
 1532<CR><LF>
@@ -891,9 +895,13 @@ in the exported timeline, not the original recording:
 
 **A `.keyframe` of the same name beside the video is read back when the video is opened.**
 Opening what you exported and starting from an empty list means doing the last session's
-work again. The numbers are in the exported timeline, so reading them back treats them the
-same way: `0` lands on the first picture even when the recording's clock starts at
+work again. `0` lands on the first picture even when the recording's clock starts at
 00:00:00.94.
+
+**They are read once the walk has landed, and not before.** Only the walk knows where the
+first picture is. Read at the moment the container opens, the numbers turn into seconds
+against a base of zero, and every mark comes out the best part of a second early — which is
+exactly how far into its own clock a broadcast recording begins.
 
 Numbers past the end are dropped — a list written for a different cut of the same recording
 is the likely reason, and a mark with no material behind it can neither be shown nor
@@ -901,6 +909,28 @@ exported. Header lines, and lines like `fps 29.970`, are skipped: files that arr
 elsewhere carry them, and failing to open the recording over one unreadable line would be
 the worse trade. The selection is left alone, as with commercial detection. The number read
 shows in the status line.
+
+### AviSynth Trim sidecars
+
+There is a second file that can sit in the same place: one line of AviSynth `Trim` calls
+for the ranges that survive, named after the recording with `.trim.avs` on the end, so
+`recording.ts` becomes `recording.ts.trim.avs`. That keeps the extension where `.keyframe`
+drops it; both are the convention of whoever reads them, and neither is ours to reconcile.
+
+```
+Trim(0,314) ++ Trim(916,6742)
+```
+
+Both ends inclusive, which is what `Trim` means by them. No header and no comment: another
+program reads this, and a line with our name in it is one more thing for it to trip over. A
+negative second argument is AviSynth's other spelling of the same call, a length rather
+than an end, and is read as one.
+
+**The two do not say the same thing.** A `.keyframe` is a list of places and leaves the
+timeline whole; a Trim line is the edit itself, and reading it opens the recording already
+cut. When both are beside a recording, a preference says which is read; either on its own is
+read whatever that preference says. Reading both would put marks pointing at material the
+timeline had already closed over.
 
 ### Chapters off a disc
 
@@ -1056,7 +1086,7 @@ min") would, with the run kept whole, decode three whole minutes to keep 13 pict
 | Left click | Go to that frame |
 | **Right drag (held)** | **Smooth search back and forth.** Right of centre goes forward, left goes back, and further out is faster |
 | Middle click | Find and jump to the next scene change from there |
-| Wheel | Flow one step at a time |
+| Wheel | Flow one step at a time. Taken across the whole editor window rather than the strip alone, and given up only over a box that scrolls |
 
 TMSR6's "search over a flowing filmstrip" flows **only while the right button is held**. The
 speed is the cube of the distance from centre (up to 60×), so near the centre you can crawl

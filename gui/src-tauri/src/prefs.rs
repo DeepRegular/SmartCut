@@ -28,6 +28,10 @@ static PROXY: AtomicBool = AtomicBool::new(false);
 static PROXY_WIDTH: AtomicU32 = AtomicU32::new(0);
 static FFMPEG_LOG: AtomicU8 = AtomicU8::new(0);
 static CACHE_DIR: RwLock<Option<PathBuf>> = RwLock::new(None);
+/// How long the sound takes to leave and come back at a seam, in
+/// milliseconds. Whole milliseconds because that is finer than anybody sets
+/// a fade and it fits an atomic; the engine is told it in seconds.
+static AUDIO_FADE_MS: AtomicU32 = AtomicU32::new(0);
 
 /// How long a plan may spend tidying the start of a range, in seconds.
 ///
@@ -58,6 +62,12 @@ pub fn from_env() {
     }
     if let Ok(v) = std::env::var("SMARTCUT_CLEAN_JOINS") {
         CLEAN_JOINS.store(yes(&v), Ordering::Relaxed);
+    }
+    if let Some(secs) = std::env::var("SMARTCUT_AUDIO_FADE")
+        .ok()
+        .and_then(|v| v.trim().parse::<f64>().ok())
+    {
+        AUDIO_FADE_MS.store(fade_ms(secs), Ordering::Relaxed);
     }
     let level = match std::env::var("SMARTCUT_FFMPEG_LOG").as_deref() {
         Ok("2") | Ok("all") => 2,
@@ -91,6 +101,21 @@ pub fn ffmpeg_log() -> u8 {
     FFMPEG_LOG.load(Ordering::Relaxed)
 }
 
+/// Seconds, in the shape [`smartcut_core::CutOptions::audio_fade`] wants it:
+/// `0.0` for none rather than an `Option`, because none is a length.
+pub fn audio_fade() -> f64 {
+    AUDIO_FADE_MS.load(Ordering::Relaxed) as f64 / 1000.0
+}
+
+/// A length in seconds as the milliseconds this keeps, held to what the cut
+/// editor's field offers: nothing, and nothing longer than ten seconds.
+fn fade_ms(secs: f64) -> u32 {
+    if !secs.is_finite() || secs <= 0.0 {
+        return 0;
+    }
+    (secs.min(10.0) * 1000.0).round() as u32
+}
+
 /// Where the scratch files have been told to go, or `None` for the place the
 /// platform gives this program.
 ///
@@ -101,14 +126,22 @@ pub fn cache_dir() -> Option<PathBuf> {
     CACHE_DIR.read().ok().and_then(|held| held.clone())
 }
 
-/// Settle the five the frontend owns. The folder has already been checked by
+/// Settle the six the frontend owns. The folder has already been checked by
 /// the caller -- see `set_prefs` -- so what arrives here is a folder that
 /// exists and can be written to, or nothing at all.
-pub fn set(clean_joins: bool, proxy: bool, proxy_width: u32, ffmpeg_log: u8, dir: Option<PathBuf>) {
+pub fn set(
+    clean_joins: bool,
+    proxy: bool,
+    proxy_width: u32,
+    ffmpeg_log: u8,
+    dir: Option<PathBuf>,
+    audio_fade: f64,
+) {
     CLEAN_JOINS.store(clean_joins, Ordering::Relaxed);
     PROXY.store(proxy, Ordering::Relaxed);
     PROXY_WIDTH.store(proxy_width, Ordering::Relaxed);
     FFMPEG_LOG.store(ffmpeg_log, Ordering::Relaxed);
+    AUDIO_FADE_MS.store(fade_ms(audio_fade), Ordering::Relaxed);
     if let Ok(mut held) = CACHE_DIR.write() {
         *held = dir;
     }

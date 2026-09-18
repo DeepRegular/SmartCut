@@ -316,12 +316,14 @@ hole, and the frame counter counts the length that will actually be written.
 | **Click** the filmstrip | Go to that frame |
 | **Right-drag** the filmstrip | Search back and forth. Right of centre is forwards, left is back, and further out is faster |
 | **Middle-click** the filmstrip | Jump to the next scene change |
-| **Wheel** over the filmstrip | One frame per notch. Hold `Shift` to hop from lossless point to lossless point |
+| **Wheel** | One frame per notch. Hold `Shift` to hop from lossless point to lossless point. Anywhere in the window, not only over the filmstrip; over the marks down the left or over the plan it scrolls those instead |
 | **Drag** the scrubber | Move the playhead. Grab near the IN or OUT mark and you move that mark instead |
 | **Hover** the scrubber | Shows the frame at that moment in a small picture |
 | `Space` or **▶ Play** | Play from here, picture and sound. Press again to stop. The picture runs at the recording's own frame rate; where the machine cannot decode and draw that many, it shows fewer rather than falling behind the sound |
 | `←` `→` | Back and forward one frame. Hold to repeat |
 | `Shift+←` `Shift+→` | One second |
+| `PageUp` `PageDown` | Back and forward by however many seconds the [preferences](#cut-editor) say. `Ctrl` and `Shift` each carry their own amount |
+| `↑` `↓` | Previous / next **lossless point** |
 | `S` / `Shift+S` | Next / previous scene change |
 | `◀\|` `\|▶` | Previous / next **lossless point** |
 | `\|◀` `▶\|` | Start / end |
@@ -369,6 +371,33 @@ subtitles go into the output is answered by **Tracks** and by the output setting
 Marks can also arrive without your placing any: from a detection, from a
 `.keyframe` file next to the recording, and — for a recording opened off a
 **disc** — from the chapters the recorder itself set.
+
+### Writing the marks down, and reading them back
+
+**Save the keyframes…** sits at the foot of the window, left of OK. It writes
+what is on the timeline to a file beside the recording, and **asks which shape
+on the way**; the picker then opens with the recording's own path already in
+it.
+
+| Shape | What is in it | Name |
+|---|---|---|
+| **Keyframe list** | The marks alone, one frame number per line | `recording.keyframe` |
+| **AviSynth Trim** | The ranges that survive, as `Trim` calls | `recording.ts.trim.avs` |
+
+Typing `.keyframe` or `.avs` over the name in the picker overrides what was
+chosen on the way in.
+
+`Ctrl+S` and `Ctrl+Shift+S` write the same two files straight to those names
+with no picker. They ask before writing over a file that is already there;
+a preference turns that question off.
+
+Opening a recording in the cut editor picks up whichever of them is beside it.
+**A keyframe file arrives as marks and cuts nothing. A Trim file is the cut
+itself, so the recording opens with the material already taken out.** When both
+are there, a preference says which is read; either on its own is read whatever
+that preference says.
+
+The numbers in both count from the recording's first picture.
 
 ### Selecting with IN and OUT
 
@@ -468,7 +497,7 @@ saved in the project.
 ### Finishing with a recording
 
 - **OK** — take the cuts and marks back to the list and close.
-- **Cancel** — throw away what was done here and close.
+- **Cancel** (`Esc`) — throw away what was done here and close.
 
 Either way the list window has stayed where it was, ready for the next
 recording.
@@ -516,6 +545,9 @@ What is set on either tab stays there when you switch.
 A `.keyframe` file is **frame numbers and nothing else, with no header**, counted
 on the clock of the file that was written. If a `.keyframe` file sits next to a
 video under the same name, SmartCut loads it when that video is opened.
+
+This setting is about the export. The cut editor can write the same file beside
+the *recording*, and that one is counted on the recording's clock.
 
 ### The three audio modes
 
@@ -741,7 +773,7 @@ See [Projects](projects.md).
 it is the program's own set of answers, and it is still in force the next time
 you start it.
 
-The five groups are the list down the left. There is no OK: every change takes
+The six groups are the list down the left. There is no OK: every change takes
 effect as you make it.
 
 ### Windows
@@ -751,6 +783,14 @@ effect as you make it.
 | **Language** | English, Japanese, or follow the system (the default). A change takes effect in both windows at once |
 | **Frame number and clock over the picture** | The box at the foot of the cut editor's picture. The same answer as its **Counter** button |
 | **Show the subtitles from the start** | Opens a recording that carries subtitles with the first track already chosen. It can still be switched while cutting |
+
+### Cut editor
+
+| Setting | What it does |
+|---|---|
+| **PageUp / PageDown** | How many seconds those keys move. `Ctrl` and `Shift` each carry their own amount; a step of 0 is a key that does nothing |
+| **When both are there, read** | Which file is picked up when a recording has both a `.keyframe` and a `.trim.avs` beside it |
+| **Let the save shortcut write over a file without asking** | `Ctrl+S` and `Ctrl+Shift+S` then write over a file of the same name in silence |
 
 ### Output settings
 
@@ -786,6 +826,17 @@ session has not seen.
 |---|---|
 | **Tidy the start of each range** | Re-encodes up to the first two seconds of a range that begins on an open GOP. The join is steadier; that much less of the output is copied losslessly. The same thing as the CLI's `--clean-joins` |
 | **Build a proxy before cutting** | Re-encodes the whole recording and cuts against the lighter copy. Costs minutes and gigabytes per hour, and only pays where decoding one picture is itself slow. The width is a setting of its own |
+| **Fade the sound at each seam** | Takes the level down into a join and brings it back out over that many seconds; 0 is no fade, which is the default. The same thing as the CLI's `--audio-fade` |
+
+A fade turns the step in the sound into a pause. What it costs is the programme:
+that many seconds either side of every join are quieter than they were recorded.
+**It needs sound this program is writing.** Smart rendering and a whole re-encode
+both write it; a track set to be copied is copied, and the export says so. Sound
+carried through whole because re-encoding it would lose what makes it lossless —
+TrueHD, DTS-HD MA — is not faded either.
+
+The beginning and the end of the output are left alone. A fade is for a place
+where two pieces meet, and the start and end of a file are not such places.
 
 ### Scratch files
 
@@ -848,10 +899,15 @@ can quote it straight into a bug report.
 | `Space` | Play / stop |
 | `←` `→` | One frame (hold to repeat) |
 | `Shift+←` `Shift+→` | One second |
+| `PageUp` `PageDown` | By the seconds set in the preferences (`Ctrl` and `Shift` carry their own) |
+| `↑` `↓` | Previous / next lossless point |
 | `I` / `O` | Start / end the selection here |
 | `K` | Mark this frame as a keyframe |
 | `S` / `Shift+S` | Next / previous scene change |
 | `Ctrl+D` | Detect commercials |
+| `Ctrl+S` | Write the keyframe list beside the recording |
+| `Ctrl+Shift+S` | Write the Trim line beside the recording |
+| `Esc` | Throw away what was done here and close (the same as Cancel) |
 
 ---
 

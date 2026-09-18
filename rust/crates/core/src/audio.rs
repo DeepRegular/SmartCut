@@ -561,6 +561,7 @@ impl Reencoder {
         audio: &AudioInfo,
         start_time: f64,
         window: (i64, i64),
+        fades: Fades,
     ) -> Result<()> {
         if let (Some(pts), Some(last)) = (packet.pts(), self.last_pts) {
             if pts <= last {
@@ -596,6 +597,17 @@ impl Reencoder {
             let a = ((lo - first) as usize).min(have);
             let b = ((hi - first) as usize).min(have);
             take_samples(src, self.channels, &mut self.pending, (a, b));
+            // The fade rides on the samples as they are taken, before the
+            // resampler and before the encoder: what is asked for is a shape
+            // on the recording's sound, and this is the last place the sound
+            // is still the recording's.
+            if fades.any() && b > a {
+                let added = b - a;
+                for ch in self.pending.iter_mut().take(self.channels) {
+                    let held = ch.len();
+                    fade_run(&mut ch[held - added..], first + a as i64, window, fades);
+                }
+            }
         }
         Ok(())
     }
@@ -1015,6 +1027,7 @@ pub fn boundary_patches(
     windows: &[(i64, i64)],
     bit_rate: usize,
     framing: Option<Framing>,
+    fade: f64,
 ) -> Result<HashMap<i64, Patch>> {
     let mut out = HashMap::new();
     if windows.is_empty() {
@@ -1046,8 +1059,16 @@ pub fn boundary_patches(
             "note: {:?} is lossless sound and is carried through byte for byte -- no encoder \
              here writes it without losing what makes it lossless, so a re-encoded frame \
              would be worse than the one it replaced. The cut's boundaries land on whole \
-             frames of it.",
+             frames of it.{}",
             params.id(),
+            // A fade is a rewrite of the frames it runs over, so it cannot
+            // happen on a track nothing rewrites. Said here rather than left
+            // to be noticed in the output.
+            if fade > 0.0 {
+                " The fade asked for at the seams is not on it either."
+            } else {
+                ""
+            },
         );
         return Ok(out);
     }
@@ -1071,21 +1092,25 @@ pub fn boundary_patches(
     };
     drop(probe);
 
-    for &(w0, w1) in windows {
+    for (nth, &(w0, w1)) in windows.iter().enumerate() {
+        let fades = fades_for(fade, audio.sample_rate, nth, windows.len(), (w0, w1));
         for (edge, is_head) in [(w0, true), (w1, false)] {
+            let reach = if is_head { fades.head } else { fades.tail };
             let at = edge as f64 / rate;
             // A range edge that already sits on a frame boundary needs no
-            // patch at all -- but that is not known until the frames are in
-            // hand, so the decode happens first and the work is skipped after.
-            let frames = decode_around(&mut ictx, &params, src, audio, at)?;
-            let Some(f) = straddler(&frames, edge, is_head) else {
+            // patch at all, unless a fade reaches in from it -- and neither
+            // is known until the frames are in hand, so the decode happens
+            // first and the work is skipped after.
+            let frames = decode_around(&mut ictx, &params, src, audio, at, reach)?;
+            let Some(emit) = run_range(&frames, edge, is_head, reach) else {
                 continue;
             };
             patch_run(
                 &frames,
-                f,
+                emit,
                 is_head,
                 (w0, w1),
+                fades,
                 &params,
                 audio,
                 bit_rate,
@@ -1109,14 +1134,20 @@ fn decode_around(
     src: &Source,
     audio: &AudioInfo,
     at: f64,
+    reach: i64,
 ) -> Result<Vec<Decoded>> {
     const LEAD: f64 = 0.5;
     /// Frames to keep either side of the edge: the straddler, its guard, and
     /// the lead-in and lead-out the encoder needs around both.
     const KEEP: usize = 6;
 
-    let landing = (at - LEAD).max(0.0) + src.start_time;
-    let target = if at - LEAD <= 0.0 {
+    // A fade is rewritten frame by frame like the boundary itself, so every
+    // frame it reaches has to be decoded. Taken on both sides of the edge
+    // rather than only the side the fade is on: it costs a second or two of
+    // sound either way, and the alternative is two reaches to keep in step
+    // with each other for no gain anybody can hear.
+    let landing = (at - LEAD - reach as f64 / audio.sample_rate as f64).max(0.0) + src.start_time;
+    let target = if landing <= src.start_time {
         i64::MIN / 2
     } else {
         (landing * ff::ffi::AV_TIME_BASE as f64) as i64
@@ -1176,16 +1207,66 @@ fn decode_around(
                 past += 1;
             }
             // Only the frames around the edge are wanted; the rest was
-            // lead-in for the decoder.
-            if frames.len() > 2 * KEEP {
+            // lead-in for the decoder. What the edge wants is the straddler
+            // and the guards either side of it, and, where a fade runs in,
+            // every frame it touches as well.
+            let edge = (at * rate).round() as i64;
+            let size = frames[0].len() as i64;
+            let from = edge - reach - KEEP as i64 * size;
+            while frames.len() > 1 && frames[0].first + frames[0].len() as i64 <= from {
                 frames.remove(0);
             }
         }
-        if past > KEEP {
+        // Past the edge by the whole of the fade *and* the guard frames the
+        // encoder needs beyond it. Stopping at the end of the fade leaves the
+        // run with no frame to flush through, and the patch is dropped on the
+        // floor -- which is what a fade that faded out and never came back in
+        // turned out to be.
+        let edge = (at * rate).round() as i64;
+        let far = frames
+            .last()
+            .is_some_and(|f| f.first >= edge + reach + KEEP as i64 * f.len() as i64);
+        if past > KEEP && far {
             break;
         }
     }
     Ok(frames)
+}
+
+/// Which of the decoded frames are to be written again.
+///
+/// The frame the edge falls inside, the guard beside it on the kept side,
+/// and -- where a fade runs in from the edge -- every frame that fade
+/// touches. `None` when there is nothing to do: an edge already sitting on a
+/// frame boundary with no fade asked for has nothing to trim and nothing to
+/// shape, and the recording's own frames are exact.
+fn run_range(frames: &[Decoded], edge: i64, is_head: bool, reach: i64) -> Option<(usize, usize)> {
+    let at = if is_head { edge } else { edge - 1 };
+    let here = frames
+        .iter()
+        .position(|f| f.first <= at && at < f.first + f.len() as i64)?;
+    if reach <= 0 && straddler(frames, edge, is_head).is_none() {
+        return None;
+    }
+    if is_head {
+        let upto = edge + reach;
+        // One past the end of the fade, which is the guard when there is no
+        // fade at all. A frame that only overlaps the end of the ramp is
+        // rewritten whole; what it carries past the ramp is full level, and
+        // full level is what it already was.
+        let mut last = here + 1;
+        while last + 1 < frames.len() && frames[last].first < upto {
+            last += 1;
+        }
+        Some((here, last))
+    } else {
+        let from = edge - reach;
+        let mut first = here.checked_sub(1)?;
+        while first > 0 && frames[first].first + frames[first].len() as i64 > from {
+            first -= 1;
+        }
+        Some((first, here))
+    }
 }
 
 /// The frame the edge falls inside, when it falls inside one at all.
@@ -1207,26 +1288,26 @@ fn straddler(frames: &[Decoded], edge: i64, is_head: bool) -> Option<usize> {
     (!aligned).then_some(i)
 }
 
-/// Encode the straddling frame and its guard, and record what they replace.
+/// Encode the run of frames a boundary or a fade replaces, and record what
+/// each of them stands in for.
 #[allow(clippy::too_many_arguments)]
 fn patch_run(
     frames: &[Decoded],
-    straddle: usize,
+    emit: (usize, usize),
     is_head: bool,
     window: (i64, i64),
+    fades: Fades,
     params: &ff::codec::Parameters,
     audio: &AudioInfo,
     bit_rate: usize,
     framing: Option<&Framing>,
     out: &mut HashMap<i64, Patch>,
 ) -> Result<()> {
-    // The guard sits on the kept side; the lead-in and lead-out are one frame
-    // beyond each end of what is emitted.
-    let (emit_first, emit_last) = if is_head {
-        (straddle, straddle + 1)
-    } else {
-        (straddle.saturating_sub(1), straddle)
-    };
+    // What [`run_range`] settled: the frame the edge is in, the guard on the
+    // kept side, and whatever the fade reaches. The lead-in and lead-out are
+    // one frame beyond each end of it.
+    let (emit_first, emit_last) = emit;
+    let straddle = if is_head { emit_first } else { emit_last };
     let (Some(lead), Some(trail)) = (emit_first.checked_sub(1), emit_last.checked_add(1)) else {
         return Ok(());
     };
@@ -1242,7 +1323,9 @@ fn patch_run(
     // hear. TMPGEnc's smart renderer leans on this entirely -- measured
     // against its source, a 24-minute cut of a broadcast re-encodes not one
     // audio frame, because all three of its joins sit in digital silence.
-    if !outside_is_audible(&frames[straddle], window) {
+    // A fade is a change to the kept side and is asked for outright, so it
+    // is not subject to this: what it does is audible by definition.
+    if !fades.any() && !outside_is_audible(&frames[straddle], window) {
         return Ok(());
     }
 
@@ -1298,7 +1381,8 @@ fn patch_run(
     let mut feeding = ff::frame::Audio::empty();
 
     // The samples to feed, one buffer per channel and laid end to end: the
-    // lead-in, and then the run with the far side of the cut faded out.
+    // lead-in, and then the run with the far side of the cut silenced and
+    // whatever fade was asked for ridden over the kept side.
     //
     // Laid out rather than fed frame by frame because the lead-in makes the
     // two disagree -- what the encoder is handed as a frame is no longer
@@ -1306,21 +1390,22 @@ fn patch_run(
     // that has to be kept, since that is what decides where its packets
     // fall.
     let mut fed: Pcm = vec![Vec::with_capacity(lead_in + run.len() * size); channels];
-    let masked = |f: &Decoded, ch: usize| {
+    let shaped = |f: &Decoded, ch: usize| {
         let mut samples = f.pcm[ch].clone();
         mask(&mut samples, f.first, window);
+        fade_run(&mut samples, f.first, window, fades);
         samples
     };
     if lead_in > 0 {
         let before = &frames[lead - 1];
         for (ch, buf) in fed.iter_mut().enumerate().take(channels) {
-            let samples = masked(before, ch);
+            let samples = shaped(before, ch);
             buf.extend_from_slice(&samples[samples.len() - lead_in..]);
         }
     }
     for f in run {
         for (ch, buf) in fed.iter_mut().enumerate().take(channels) {
-            buf.extend_from_slice(&masked(f, ch));
+            buf.extend_from_slice(&shaped(f, ch));
         }
     }
 
@@ -1375,7 +1460,15 @@ fn patch_run(
         // At a head boundary the straddling frame comes first and the guard
         // second; at a tail boundary the guard comes first and the straddler
         // -- which the range always ends on -- second.
-        let after = (is_head && i == straddle + 1).then(|| frames[straddle].pts);
+        //
+        // A fade lifts the condition. What the guard holds then is not a
+        // better-sounding version of a frame that would be fine either way,
+        // it is the frame with the fade on it -- and the recording's own, put
+        // in its place, is the one frame at the seam that the fade did not
+        // reach. That is audible: it is a burst at full level exactly where
+        // the fade was asked to take the level away.
+        let after =
+            (is_head && i == straddle + 1 && fades.head == 0).then(|| frames[straddle].pts);
         out.entry(frames[i].pts).or_insert(Patch { bytes, after });
     }
     Ok(())
@@ -1505,6 +1598,87 @@ fn mask(samples: &mut [f32], first: i64, window: (i64, i64)) {
     }
 }
 
+/// How far a fade reaches into a kept range, at each end, in samples.
+///
+/// Zero at the two ends of the output. A fade is about a place where two
+/// pieces of the recording meet, and the beginning and the end of the file
+/// are not such places: fading a file up from nothing because its first
+/// range happens to start at a cut would be this program deciding how the
+/// recording opens.
+#[derive(Clone, Copy, Default, Debug, PartialEq, Eq)]
+pub struct Fades {
+    pub head: i64,
+    pub tail: i64,
+}
+
+impl Fades {
+    pub const NONE: Fades = Fades { head: 0, tail: 0 };
+
+    pub fn any(&self) -> bool {
+        self.head > 0 || self.tail > 0
+    }
+}
+
+/// What one range's fades come to, from what was asked for and where the
+/// range sits in the output.
+///
+/// Clamped to half the range, so that the two never cross: a two second fade
+/// at both ends of a three second range would leave nothing at full level,
+/// and what came out would be the shape of the fade rather than the sound.
+///
+/// Worked out in two places -- here for the frames a smart cut rewrites, and
+/// again for a track being re-encoded whole -- so it is one function, and
+/// both are handed the same range list in the same order.
+pub fn fades_for(secs: f64, rate: u32, nth: usize, of: usize, window: (i64, i64)) -> Fades {
+    if !secs.is_finite() || secs <= 0.0 || of == 0 {
+        return Fades::NONE;
+    }
+    let half = ((window.1 - window.0) / 2).max(0);
+    let n = ((secs * rate as f64).round() as i64).min(half);
+    Fades {
+        head: if nth > 0 { n } else { 0 },
+        tail: if nth + 1 < of { n } else { 0 },
+    }
+}
+
+/// The gain one sample carries, from where it sits in the range.
+///
+/// Raised cosine, the shape the de-click above uses and for the same reason:
+/// it leaves silence and arrives at full level with no corner at either end,
+/// which a straight line does not do.
+///
+/// The two ends are taken together and the quieter wins, so that a sample
+/// inside both fades has one answer whoever asks. Two runs meet on a range
+/// shorter than its two fades put together, and a sample that came out
+/// differently depending on which edge's run wrote it would be a step in the
+/// middle of the fade.
+fn fade_gain(at: i64, window: (i64, i64), fades: Fades) -> f32 {
+    let mut gain = 1.0f32;
+    if fades.head > 0 {
+        let k = at - window.0;
+        if k < fades.head {
+            gain = gain.min(if k < 0 { 0.0 } else { ramp(k as usize, fades.head as usize) });
+        }
+    }
+    if fades.tail > 0 {
+        let k = window.1 - 1 - at;
+        if k < fades.tail {
+            gain = gain.min(if k < 0 { 0.0 } else { ramp(k as usize, fades.tail as usize) });
+        }
+    }
+    gain
+}
+
+/// Ride the fade over samples that begin at `first` on the source's clock.
+fn fade_run(samples: &mut [f32], first: i64, window: (i64, i64), fades: Fades) {
+    if !fades.any() {
+        return;
+    }
+    for (i, s) in samples.iter_mut().enumerate() {
+        *s *= fade_gain(first + i as i64, window, fades);
+    }
+}
+
 fn ramp(k: usize, fade: usize) -> f32 {
     if fade == 0 {
         return 1.0;
@@ -1535,6 +1709,95 @@ mod tests {
         assert_eq!(straddler(&frames, 1024, true), None);
         assert_eq!(straddler(&frames, 1024, false), None);
         assert_eq!(straddler(&frames, 99999, true), None);
+    }
+
+    #[test]
+    fn a_fade_belongs_where_two_pieces_meet() {
+        let window = (0, 48_000 * 10);
+        // Three ranges: the first fades only out of its tail, the last only
+        // into its head, and the middle one at both ends.
+        assert_eq!(
+            fades_for(1.0, 48_000, 0, 3, window),
+            Fades { head: 0, tail: 48_000 }
+        );
+        assert_eq!(
+            fades_for(1.0, 48_000, 1, 3, window),
+            Fades { head: 48_000, tail: 48_000 }
+        );
+        assert_eq!(
+            fades_for(1.0, 48_000, 2, 3, window),
+            Fades { head: 48_000, tail: 0 }
+        );
+        // One range is the whole output and meets nothing.
+        assert_eq!(fades_for(1.0, 48_000, 0, 1, window), Fades::NONE);
+        // Nothing asked for is nothing done.
+        assert_eq!(fades_for(0.0, 48_000, 1, 3, window), Fades::NONE);
+        // Half the range is the most either end may take, so the two never
+        // cross: a two second fade on a three second range.
+        let short = (0, 48_000 * 3);
+        assert_eq!(
+            fades_for(2.0, 48_000, 1, 3, short),
+            Fades { head: 72_000, tail: 72_000 }
+        );
+    }
+
+    #[test]
+    fn the_fade_leaves_silence_and_arrives_at_full_level() {
+        let window = (1000, 5000);
+        let fades = Fades { head: 400, tail: 400 };
+        // The first sample of the range is silent and the last one is too.
+        assert!(fade_gain(1000, window, fades) < 0.01);
+        assert!(fade_gain(4999, window, fades) < 0.01);
+        // Half way up each ramp is half the level, and the middle is whole.
+        assert!((fade_gain(1200, window, fades) - 0.5).abs() < 0.02);
+        assert!((fade_gain(4799, window, fades) - 0.5).abs() < 0.02);
+        assert_eq!(fade_gain(3000, window, fades), 1.0);
+        // It only ever rises, and it rises from where the range begins.
+        let mut last = -1.0;
+        for at in 1000..1400 {
+            let g = fade_gain(at, window, fades);
+            assert!(g >= last, "the ramp fell back at {at}");
+            last = g;
+        }
+        // An end with no fade on it is left at full level.
+        let head_only = Fades { head: 400, tail: 0 };
+        assert_eq!(fade_gain(4999, window, head_only), 1.0);
+    }
+
+    #[test]
+    fn overlapping_fades_agree_on_one_answer() {
+        // A range shorter than its two fades put together: every sample is
+        // inside both, and the quieter of the two is what it carries -- so
+        // whichever edge's run writes the frame, it writes the same samples.
+        let window = (0, 1000);
+        let fades = Fades { head: 500, tail: 500 };
+        for at in 0..1000 {
+            let g = fade_gain(at, window, fades);
+            let mirrored = fade_gain(999 - at, window, fades);
+            assert!((g - mirrored).abs() < 1e-6, "not symmetrical at {at}");
+            assert!(g <= 1.0);
+        }
+        assert!(fade_gain(500, window, fades) < 1.0);
+    }
+
+    #[test]
+    fn a_run_covers_the_fade_and_the_guard_beside_it() {
+        let frames: Vec<Decoded> = (0..40).map(|i| decoded(i * 1024, 1024)).collect();
+        // No fade: the frame the edge is in, and one guard on the kept side.
+        assert_eq!(run_range(&frames, 5 * 1024 + 500, true, 0), Some((5, 6)));
+        assert_eq!(run_range(&frames, 5 * 1024 + 500, false, 0), Some((4, 5)));
+        // An edge already on a frame boundary has nothing to trim.
+        assert_eq!(run_range(&frames, 5 * 1024, true, 0), None);
+        // ...unless a fade runs in from it, which is a change to the kept
+        // side and has nothing to do with where the edge falls.
+        let (first, last) = run_range(&frames, 5 * 1024, true, 4096).expect("a run");
+        assert_eq!(first, 5);
+        assert!(last >= 9, "the fade reaches four frames, got {last}");
+        // And a frame is left past the run for the encoder to flush through.
+        assert!(last + 1 < frames.len());
+        let (first, last) = run_range(&frames, 20 * 1024, false, 4096).expect("a run");
+        assert_eq!(last, 19);
+        assert!(first <= 15, "the fade reaches four frames back, got {first}");
     }
 
     #[test]

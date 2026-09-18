@@ -90,6 +90,27 @@ const CATALOG = {
     "prefs.subs": "カット編集で、最初から字幕を表示する",
     "prefs.subsNote":
       "字幕のある録画でのみ有効です。編集中に切り替えられます。",
+    "prefs.groupEdit": "カット編集",
+    "prefs.pageStep": "PageUp / PageDown:",
+    "prefs.pageStepCtrl": "Ctrl を押しながら:",
+    "prefs.pageStepShift": "Shift を押しながら:",
+    "prefs.seconds": "秒",
+    "prefs.pageStepNote":
+      "カット編集で PageUp / PageDown が動く量です。0 にすると、そのキーは動きません。" +
+      "左右キーは別で、1 フレーム、Shift と一緒なら 1 秒です。",
+    "prefs.sidecarPriority": "両方あるときに読むのは:",
+    "prefs.sidecar.keyframe": "キーフレーム情報（.keyframe）",
+    "prefs.sidecar.trim": "AviSynth Trim（.trim.avs）",
+    "prefs.sidecarNote":
+      "録画の隣に置かれたファイルを、カット編集を開いたときに読み込みます。" +
+      "キーフレーム情報は位置の一覧なので、印が付くだけです。" +
+      "Trim は残す区間そのものなので、カットされた状態で開きます。" +
+      "片方しか無いときは、この設定に関わらずそれを読みます。",
+    "prefs.quietOverwrite": "ショートカットでの保存は、確認せずに上書きする",
+    "prefs.quietOverwriteNote":
+      "Ctrl+S（キーフレーム情報）と Ctrl+Shift+S（Trim）は、録画の隣の名前にそのまま保存します。" +
+      "同じ名前のファイルがあったときに確認するかどうかです。" +
+      "ボタンから保存するときは保存先を選ぶ画面が出るので、これには関係ありません。",
     "prefs.groupOut": "出力設定",
     "prefs.prefix": "ファイル名の接頭辞:",
     "prefs.prefixNote":
@@ -119,6 +140,13 @@ const CATALOG = {
     "prefs.cleanJoinsNote":
       "開いた GOP から始まる範囲で、先頭の最大 2 秒を再エンコードします。" +
       "継ぎ目の乱れは減りますが、その分、無劣化でコピーされる区間が短くなります。",
+    "prefs.audioFade": "継ぎ目の音のフェード:",
+    "prefs.audioFadeNote":
+      "継ぎ目の手前で音を下げ、継ぎ目の先で戻します。0 でフェードなし（既定）。" +
+      "音の段差が「間」になる代わりに、その秒数ぶんの本編が録画より小さい音になります。" +
+      "音を書き直すときにだけ効くので、スマートレンダリングか再エンコードが要ります。" +
+      "音声をコピーする設定のときは効きません。そのときは出力のメッセージでお知らせします。" +
+      "出力の先頭と末尾には掛かりません。フェードは 2 つの断片が出会う場所のためのものです。",
     "prefs.proxy": "プロキシを作ってから編集する",
     "prefs.proxyNote":
       "録画全体を再エンコードし、軽い映像で編集します。1 時間あたり数分の時間と数 GB の容量が必要です。" +
@@ -710,6 +738,20 @@ const CATALOG = {
     "keyframes.readFailed": "キーフレームを読めません: {e}",
     "keyframes.read": "キーフレーム {n} 個を {file} から読み込みました",
     "keyframes.chapters": "ディスクのチャプター {n} 個をキーフレームにしました",
+    "editor.saveMarks": "キーフレーム情報を保存…",
+    "editor.saveMarks.title":
+      "いまの編集を録画の隣に保存します。押すと形式を聞きます。" +
+      "キーフレーム情報（.keyframe）は印の位置だけ、AviSynth スクリプト（.trim.avs）は残る区間そのものです。" +
+      "Ctrl+S と Ctrl+Shift+S なら、どちらも画面を出さずに保存します。",
+    "marks.kind.keyframe": "キーフレーム情報",
+    "marks.kind.trim": "AviSynth スクリプト",
+    "marks.saved": "キーフレーム {n} 個を {file} に保存しました",
+    "marks.saveFailed": "保存できません: {e}",
+    "marks.overwriteTitle": "上書きの確認",
+    "marks.overwriteBody": "{file} はすでにあります。上書きしますか？",
+    "trim.saved": "残す区間 {n} 本を {file} に保存しました",
+    "trim.read": "{file} からカット {n} 箇所を読み込みました",
+    "trim.readFailed": "Trim を読めません: {e}",
   },
 
   en: {
@@ -776,6 +818,28 @@ const CATALOG = {
     "prefs.subs": "Show the subtitles in the cut editor from the start",
     "prefs.subsNote":
       "Only for recordings that carry any. It can still be turned off while cutting.",
+    "prefs.groupEdit": "Cut editor",
+    "prefs.pageStep": "PageUp / PageDown:",
+    "prefs.pageStepCtrl": "Held with Ctrl:",
+    "prefs.pageStepShift": "Held with Shift:",
+    "prefs.seconds": "seconds",
+    "prefs.pageStepNote":
+      "How far PageUp and PageDown move the playhead in the cut editor. A step of 0 is a key that " +
+      "does nothing. The left and right keys are separate and unchanged: one picture, and one second " +
+      "with Shift.",
+    "prefs.sidecarPriority": "When both are there, read:",
+    "prefs.sidecar.keyframe": "the keyframe list (.keyframe)",
+    "prefs.sidecar.trim": "the AviSynth Trim line (.trim.avs)",
+    "prefs.sidecarNote":
+      "A file left beside the recording is picked up when the cut editor opens it. A keyframe list is " +
+      "a list of places, so it arrives as marks and cuts nothing; a Trim line is the cut itself, so " +
+      "the recording opens with the material already taken out. Either on its own is read whatever " +
+      "this says.",
+    "prefs.quietOverwrite": "Let the save shortcut write over a file without asking",
+    "prefs.quietOverwriteNote":
+      "Ctrl+S (the keyframe list) and Ctrl+Shift+S (the Trim line) write straight to the name beside " +
+      "the recording. This is whether they stop to ask when something is already there. Saving from " +
+      "the buttons puts a picker up, which asks for itself.",
     "prefs.groupOut": "Output settings",
     "prefs.prefix": "Filename prefix:",
     "prefs.prefixNote":
@@ -804,6 +868,14 @@ const CATALOG = {
     "prefs.cleanJoinsNote":
       "Re-encodes up to the first two seconds of a range that begins on an open GOP. " +
       "The join is steadier; that much less of the output is copied losslessly.",
+    "prefs.audioFade": "Fade the sound at each seam:",
+    "prefs.audioFadeNote":
+      "Takes the level down into a join and brings it back out over that many seconds; 0 is no " +
+      "fade, which is the default. The step in the sound becomes a pause instead — and that much " +
+      "of the programme either side of every join is quieter than it was recorded. It needs sound " +
+      "this program is writing, so smart rendering or a re-encode; a track set to be copied is " +
+      "copied, and the export says so. The beginning and the end of the output are left alone: a " +
+      "fade is for a place where two pieces meet.",
     "prefs.proxy": "Build a proxy before cutting",
     "prefs.proxyNote":
       "Re-encodes the whole recording and cuts against the lighter copy. Costs minutes and " +
@@ -1375,6 +1447,20 @@ const CATALOG = {
     "keyframes.readFailed": "Cannot read the keyframes: {e}",
     "keyframes.read": "Read {n} keyframe{n?s} from {file}",
     "keyframes.chapters": "Read {n} chapter{n?s} off the disc as keyframes",
+    "editor.saveMarks": "Save the keyframes…",
+    "editor.saveMarks.title":
+      "Writes what is on the timeline beside the recording, and asks which shape on the way: a " +
+      "keyframe list (.keyframe) is the marks alone, an AviSynth script (.trim.avs) is the ranges " +
+      "that survive. Ctrl+S and Ctrl+Shift+S write the two with nothing to answer.",
+    "marks.kind.keyframe": "Keyframe list",
+    "marks.kind.trim": "AviSynth script",
+    "marks.saved": "Saved {n} keyframe{n?s} to {file}",
+    "marks.saveFailed": "Cannot save: {e}",
+    "marks.overwriteTitle": "Already there",
+    "marks.overwriteBody": "{file} is already there. Write over it?",
+    "trim.saved": "Saved {n} range{n?s} to {file}",
+    "trim.read": "Read {n} cut{n?s} from {file}",
+    "trim.readFailed": "Cannot read the Trim line: {e}",
   },
 };
 

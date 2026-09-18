@@ -25,6 +25,7 @@ const T = window.__TAURI__ || {};
 const invoke = T.core && T.core.invoke;
 const listen = T.event && T.event.listen;
 const emit = T.event && T.event.emit;
+const dialog = T.dialog;
 const jlog = (m) => invoke && invoke("log", { msg: String(m) });
 jlog("main.js start");
 
@@ -41,6 +42,10 @@ let src = null;
 /// recording on a BDAV disc is named by the disc's index, and the file it
 /// is in is called `00001.m2ts`.
 let shownName = null;
+/// Where a mark file for this recording would be, without an extension. What
+/// the list window worked out (`side` at `editor-open`): beside the disc for
+/// a recording on one, because inside an image there is nothing to be beside.
+let sideBase = null;
 let playhead = 0; // source time, always on material that still exists
 let selA = 0; // selection, in output time
 let selB = 0;
@@ -2028,10 +2033,32 @@ async function runScrub(o) {
   }
 }
 
-el("strip").addEventListener(
+/// Whether a wheel over this element belongs to something that scrolls.
+///
+/// The marks down the left and the plan's segment list are boxes with more in
+/// them than fits, and a notch over one of those is meant for it. Everywhere
+/// else the wheel moves the playhead -- which used to be true of the film
+/// strip alone, and is now true of the window, the way the reference tool
+/// has it. Somebody reaching for the wheel over the picture is reaching for
+/// the same thing they reach for over the strip.
+function scrolls(node) {
+  for (let n = node; n && n !== document.body; n = n.parentElement) {
+    if (n.scrollHeight - n.clientHeight > 1) {
+      const how = getComputedStyle(n).overflowY;
+      if (how === "auto" || how === "scroll") return true;
+    }
+  }
+  return false;
+}
+
+window.addEventListener(
   "wheel",
   (ev) => {
     if (!src) return;
+    // A panel over the timeline is the program not listening to the timeline;
+    // the same reason the keys stop at one. See the keydown handler.
+    if (!el("tracks-modal").hidden) return;
+    if (scrolls(ev.target)) return;
     ev.preventDefault();
     // A notch is a frame, so the GOP boundaries creep across the window
     // rather than jumping; Shift hops whole GOPs for covering ground.
@@ -2492,9 +2519,8 @@ function setOut(o) {
 /// How many marks it put down, so that the caller knows whether there was a
 /// list beside the recording at all: a disc's chapters are the answer when
 /// there was not, and would be noise on top of a list somebody has kept.
-async function loadSidecarKeyframes(base) {
-  if (!base) return 0;
-  const side = `${base}.keyframe`;
+async function loadSidecarKeyframes() {
+  const side = markPath("keyframe");
   let frames;
   try {
     frames = await invoke("read_keyframes", { path: side });
@@ -2514,6 +2540,244 @@ async function loadSidecarKeyframes(base) {
     file: side.split(/[/\\]/).pop(),
   });
   return times.length;
+}
+
+// --- mark files ---------------------------------------------------------
+//
+// What was found in a recording, written down beside it: the places worth
+// coming back to, or the cut itself. Two shapes, because two other programs
+// read them -- a `.keyframe` is a list of frame numbers and nothing else,
+// which is what the reference tool writes; an AviSynth `Trim` line is the
+// ranges that survive, which is what a script wants.
+//
+// Both count frames from the recording's first picture, and both are read
+// back the same way. A number in a mark file counts pictures in the file it
+// is lying next to: these lie next to the recording, and the list the export
+// writes lies next to the output and counts that.
+
+/// Where a mark file for this recording goes.
+///
+/// Two conventions, and they are not ours to reconcile. The keyframe list
+/// drops the recording's extension, the way the reference tool writes one:
+/// `録画.ts` becomes `録画.keyframe`. The Trim line keeps it --
+/// `録画.ts.trim.avs` -- because that is the name the AviSynth side of the
+/// world puts beside a recording and looks for again.
+function markPath(kind) {
+  const base = sideBase || (src ? src.path.replace(/\.[^./\\]*$/, "") : "");
+  if (kind === "keyframe") return `${base}.keyframe`;
+  const ext = src ? (src.path.match(/\.[^./\\]*$/) || [""])[0] : "";
+  return `${base}${ext}.trim.avs`;
+}
+
+/// Where the material begins, which is where frame 0 is.
+///
+/// The first picture that can be decoded rather than the container's zero: a
+/// broadcast recording frequently opens most of a second in, and the
+/// timeline starts at the picture and not at the clock.
+const headTime = () => (src && src.points.length ? src.points[0] : 0);
+
+/// The marks on screen, as frame numbers against the recording.
+const markNumbers = () =>
+  liveKeyframes()
+    .map((t) => Math.round((t - headTime()) * src.fps))
+    .filter((n) => n >= 0);
+
+/// What survives the cuts, as an AviSynth line.
+///
+/// `Trim(a,b) ++ Trim(a,b)`, both ends inclusive, which is what Trim means by
+/// them. One line and nothing else: whatever reads this next has to find the
+/// ranges in it, and a header with this program's name in it is one more
+/// thing for it to trip over.
+function trimBody() {
+  const head = headTime();
+  const no = (t) => Math.round((t - head) * src.fps);
+  const parts = [];
+  for (const k of keeps) {
+    const a = Math.max(0, no(k.a));
+    const b = no(k.b) - 1;
+    if (b >= a) parts.push(`Trim(${a},${b})`);
+  }
+  return `${parts.join(" ++ ")}\r\n`;
+}
+
+/// Which shape a name asks for. The extension, which is what somebody typing
+/// one by hand means by typing it.
+const kindOf = (path) => (/\.avs$/i.test(path) ? "trim" : "keyframe");
+
+/// Write the marks beside the recording.
+///
+/// `ask` puts a picker up with the name already in it, which is what the
+/// button's menu does once the shape has been chosen on it.
+///
+/// Without `ask` the file goes straight to that name in that shape, which is
+/// the shortcut and the point of having one. A picker does its own asking
+/// about a file that is already there, so only the shortcut has that question
+/// left to answer, and 環境設定 says whether it is even asked. See
+/// `quietOverwrite`.
+async function saveMarks(kind, ask) {
+  if (!src) return;
+  let to = markPath(kind);
+  if (ask) {
+    if (!dialog) return;
+    const picked = await dialog.save({
+      defaultPath: to,
+      // The one shape that was chosen, so that the type the dialog shows and
+      // the name it is about to write say the same thing. Offering both here
+      // put `AviSynth スクリプト` in the name and `キーフレーム情報` in the
+      // type list, which is the dialog disagreeing with itself.
+      filters: [
+        {
+          name: tr(kind === "keyframe" ? "marks.kind.keyframe" : "marks.kind.trim"),
+          extensions: kind === "keyframe" ? ["keyframe"] : ["avs"],
+        },
+      ],
+    });
+    if (!picked) return;
+    to = picked;
+    // The name has the last word about which shape it is: somebody who typed
+    // `.avs` over the name meant the Trim line, whichever entry opened the
+    // dialog. A name that says neither is written as it was asked for.
+    if (/\.(keyframe|avs)$/i.test(to)) kind = kindOf(to);
+  } else if (!prefs.get("quietOverwrite")) {
+    let there = null;
+    try {
+      there = await invoke("read_sidecar", { path: to });
+    } catch {
+      // Unreadable is not the same as not there, and the write below says so
+      // properly. Nothing to ask about here.
+    }
+    if (there !== null && dialog) {
+      const go = await dialog.ask(tr("marks.overwriteBody", { file: leaf(to) }), {
+        title: tr("marks.overwriteTitle"),
+        kind: "warning",
+      });
+      if (!go) return;
+    }
+  }
+  try {
+    let n;
+    if (kind === "keyframe") {
+      n = await invoke("write_keyframes", { path: to, frames: markNumbers(), fps: src.fps });
+    } else {
+      await invoke("write_sidecar", { path: to, body: trimBody() });
+      n = keeps.length;
+    }
+    el("status").textContent = tr(kind === "keyframe" ? "marks.saved" : "trim.saved", {
+      n,
+      file: leaf(to),
+    });
+  } catch (e) {
+    el("status").textContent = tr("marks.saveFailed", { e });
+  }
+}
+
+/// The name at the end of a path, for a line that has a window's width to say
+/// it in.
+const leaf = (path) => path.split(/[/\\]/).pop();
+
+/// The menu on the save button, which is where the shape is chosen.
+///
+/// Its own small menu rather than the save dialog's type list: the dialog is
+/// the platform's, and GTK's does not rewrite the name when the type beside
+/// it changes -- so a shape chosen there would look chosen and write the
+/// other one. Measured, not assumed: picking 「AviSynth スクリプト」 left
+/// `short.keyframe` standing in the name field.
+const saveMenu = () => el("save-menu");
+
+el("save-marks").addEventListener("click", (ev) => {
+  ev.stopPropagation();
+  saveMenu().hidden = !saveMenu().hidden;
+});
+el("save-as-keyframe").addEventListener("click", () => {
+  saveMenu().hidden = true;
+  saveMarks("keyframe", true);
+});
+el("save-as-trim").addEventListener("click", () => {
+  saveMenu().hidden = true;
+  saveMarks("trim", true);
+});
+// Anywhere else, and it is gone -- including the wheel, which moves the
+// playhead under a menu that would otherwise stay put over it.
+window.addEventListener("click", () => {
+  saveMenu().hidden = true;
+});
+window.addEventListener("wheel", () => {
+  saveMenu().hidden = true;
+}, true);
+
+/// The cuts a Trim line describes, as source ranges taken out.
+///
+/// A Trim line says what *survives*, so the cuts are everything else: the
+/// gaps between the ranges and the head and tail outside them. `Trim(a,b)`
+/// with a negative second number is AviSynth's other spelling -- a length
+/// rather than an end -- and is read as one.
+///
+/// `null` when the text held no ranges at all, which is not the same answer
+/// as a line that keeps the whole recording.
+function trimCuts(body) {
+  const head = headTime();
+  const at = (n) => head + n / src.fps;
+  const kept = [];
+  for (const m of body.matchAll(/\bTrim\s*\(\s*(\d+)\s*,\s*(-?\d+)\s*\)/gi)) {
+    const a = Number(m[1]);
+    const end = Number(m[2]);
+    const b = end < 0 ? a - end - 1 : end;
+    if (b >= a) kept.push({ a: at(a), b: at(b + 1) });
+  }
+  if (!kept.length) return null;
+  const out = [];
+  let pos = head;
+  for (const k of normalise(kept)) {
+    if (k.a > pos + frame() / 2) out.push({ a: pos, b: k.a });
+    pos = Math.max(pos, k.b);
+  }
+  if (pos < src.duration - frame() / 2) out.push({ a: pos, b: src.duration });
+  return out;
+}
+
+/// Pick up a Trim line saved beside the recording, if there is one.
+///
+/// Unlike the keyframe list this one *cuts*: the file is the edit, and
+/// opening the recording again should find it as it was left. Whether that
+/// happens when a keyframe list is sitting there too is 環境設定.
+async function loadSidecarTrim() {
+  const side = markPath("trim");
+  let body;
+  try {
+    body = await invoke("read_sidecar", { path: side });
+  } catch (e) {
+    el("status").textContent = tr("trim.readFailed", { e });
+    return false;
+  }
+  if (body === null || body === undefined) return false;
+  const out = trimCuts(body);
+  if (!out) return false;
+  // An empty list is a Trim line that keeps the whole recording. Nothing to
+  // do, and still an answer: the file was there and it has been read.
+  if (out.length) applyCuts(out);
+  el("status").textContent = tr("trim.read", { n: out.length, file: leaf(side) });
+  return true;
+}
+
+/// The mark files beside the recording, if there are any.
+///
+/// The two do not say the same thing -- a `.keyframe` is a list of places and
+/// leaves the timeline whole, a Trim line is the cut itself -- so when both
+/// are there only one is read, and which is 環境設定. Reading both would put
+/// marks on a timeline that had already closed over the material they point
+/// at. Either on its own is read whatever the preference says.
+///
+/// Answers whether anything was found: a disc's own chapters are what fills
+/// an empty timeline otherwise, and they would be noise on top of a list
+/// somebody has kept.
+async function loadMarkFiles() {
+  const order =
+    prefs.get("sidecarPriority") === "trim" ? ["trim", "keyframe"] : ["keyframe", "trim"];
+  for (const kind of order) {
+    const read = kind === "trim" ? await loadSidecarTrim() : (await loadSidecarKeyframes()) > 0;
+    if (read) return true;
+  }
+  return false;
 }
 
 /// The chapter points a recorder wrote on a BDAV disc, as marks.
@@ -2639,6 +2903,7 @@ async function openPath(picked, saved, side, name, chapters, dropPids) {
   jlog(`openPath ${picked}`);
   if (!picked) return;
   shownName = name || null;
+  sideBase = side || picked.replace(/\.[^./\\]*$/, "");
   el("title").textContent = tr("editor.analysing");
   // The band comes up out of the markup saying 「ファイルを開いてください」,
   // which stops being true here rather than when `src` lands.
@@ -2712,10 +2977,6 @@ async function openPath(picked, saved, side, name, chapters, dropPids) {
     selA = saved ? Math.min(saved.selA, outDur) : 0;
     selB = saved ? Math.min(saved.selB, outDur) : outDur;
     el("status").textContent = "";
-    if (!saved) {
-      const beside = await loadSidecarKeyframes(side || picked.replace(/\.[^./\\]*$/, ""));
-      if (!beside) applyDiscChapters(chapters);
-    }
     await showFrame(saved ? saved.playhead : 0);
     schedulePlan();
     // And now the walk, which has been running behind all of the above.
@@ -2724,6 +2985,15 @@ async function openPath(picked, saved, side, name, chapters, dropPids) {
     // the frame asked for rather than the nearest one a container seek could
     // find.
     await pointsArrived(exact, picked);
+    // The files beside the recording, now the walk has landed and not before.
+    // Their numbers count from the recording's first picture, and until the
+    // points are here this window does not know which picture that is --
+    // reading them early put every mark out by the second or so a broadcast
+    // recording opens with, and would have put a Trim line's cuts out by the
+    // same. See `headTime`.
+    if (!saved) {
+      if (!(await loadMarkFiles())) applyDiscChapters(chapters);
+    }
     prepare();
     // Asked again now that the open is over. Everything above schedules the
     // plan while this window is still `opening`, and a plan asked for then is
@@ -2995,15 +3265,43 @@ function arrowDue(ev) {
   return true;
 }
 
+/// How far a page key moves, in seconds, for the modifier it was pressed
+/// with. Zero for a preference somebody has emptied, which is then a key
+/// that does nothing rather than a key that jumps to the start.
+function pageStep(ev) {
+  const which =
+    ev.ctrlKey || ev.metaKey ? "pageStepCtrl" : ev.shiftKey ? "pageStepShift" : "pageStep";
+  const secs = Number(prefs.get(which));
+  return isFinite(secs) && secs > 0 ? secs : 0;
+}
+
 window.addEventListener("keydown", (ev) => {
   // A panel over the timeline is the program not listening to the timeline:
   // space would start playback behind it, and the arrow keys would step the
-  // playhead nobody can see.
+  // playhead nobody can see. The save menu is a panel like any other, and
+  // Escape there puts the menu away rather than the window.
+  if (!el("save-menu").hidden) {
+    if (ev.key === "Escape") {
+      ev.preventDefault();
+      el("save-menu").hidden = true;
+    }
+    return;
+  }
   if (!el("tracks-modal").hidden) {
     if (ev.key === "Escape") el("tracks-modal").hidden = true;
     return;
   }
-  if (!src || ev.target.tagName === "INPUT" || ev.target.tagName === "SELECT") return;
+  if (ev.target.tagName === "INPUT" || ev.target.tagName === "SELECT") return;
+  // Escape leaves the window, and leaves it the way キャンセル does: the cuts
+  // made in here are dropped. Asked for, and settled deliberately -- this is
+  // the one key in the window that can lose an evening's work. Nothing is
+  // lost that was not made in this window: the list keeps what it had before.
+  if (ev.key === "Escape") {
+    ev.preventDefault();
+    cancelEdit();
+    return;
+  }
+  if (!src) return;
   if (ev.key === " ") {
     ev.preventDefault();
     playing ? stopPlay() : startPlay();
@@ -3014,12 +3312,41 @@ window.addEventListener("keydown", (ev) => {
     el("detect-cm").click();
     return;
   }
+  // The mark files, straight to the name beside the recording and without a
+  // picker: that is the point of a shortcut. Whether it stops to ask before
+  // writing over one is 環境設定 -- see `saveMarks`.
+  if ((ev.ctrlKey || ev.metaKey) && (ev.key === "s" || ev.key === "S")) {
+    ev.preventDefault();
+    saveMarks(ev.shiftKey ? "trim" : "keyframe", false);
+    return;
+  }
+  // PageUp and PageDown move by whatever 環境設定 says they move by, and
+  // they are the one pair of keys a modifier changes the *amount* for rather
+  // than the meaning of. Read here rather than held in a variable so that a
+  // number changed in the other window is in force at the next keystroke.
+  if (ev.key === "PageUp" || ev.key === "PageDown") {
+    ev.preventDefault();
+    const by = pageStep(ev);
+    if (by > 0) {
+      if (playing) stopPlay();
+      scrubTo(playOut() + (ev.key === "PageDown" ? by : -by));
+    }
+    return;
+  }
   if (ev.ctrlKey || ev.metaKey || ev.altKey) return;
   if (playing && ev.key !== "i" && ev.key !== "o" && ev.key !== "k") stopPlay();
   const step = ev.shiftKey ? 1 : frame();
   if (ev.key === "ArrowRight" || ev.key === "ArrowLeft") {
     ev.preventDefault();
     if (arrowDue(ev)) scrubTo(playOut() + (ev.key === "ArrowRight" ? step : -step));
+    return;
+  }
+  // Up and down walk the access points -- the pictures a cut is free at.
+  // Held down they are the same flood the left and right keys are, so they
+  // go through the same gate.
+  if (ev.key === "ArrowUp" || ev.key === "ArrowDown") {
+    ev.preventDefault();
+    if (arrowDue(ev)) scrubTo(srcToOutSeam(nearestPoint(playhead, ev.key === "ArrowDown" ? 1 : -1)));
     return;
   }
   if (ev.key === "i") setIn(playOut());
@@ -3358,11 +3685,16 @@ el("editor-ok").addEventListener("click", () => {
   setTimeout(() => invoke("close_editor"), 220);
 });
 
-el("editor-cancel").addEventListener("click", () => {
+/// Leave without what was done in here. The list is told to drop it -- `sync`
+/// has been reporting every cut as it happened -- and the window goes. Both
+/// the button and Escape.
+function cancelEdit() {
   clearTimeout(syncTimer);
   if (emit) emit("editor-cancel", editId);
   setTimeout(() => invoke("close_editor"), 80);
-});
+}
+
+el("editor-cancel").addEventListener("click", cancelEdit);
 
 if (listen) {
   // The list's answer to `editor-ready`: which recording, and what was done

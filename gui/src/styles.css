@@ -111,6 +111,11 @@ button.brand:hover, button.brand.open { background: #3a3a3a; border-color: #5c5c
 /* The key that does the same thing, held to the right of the label it
    belongs to. Dim: it is a reminder for next time, not part of the name. */
 .menu-key { margin-left: auto; color: var(--dim); font-size: 11px; }
+/* The cut editor's save menu opens upwards and to the left of its button: the
+   button is on the last row of the window, so a menu under it would be off
+   the bottom of the screen, and the row's right-hand end is OK and キャンセル. */
+.save-wrap { position: relative; display: inline-flex; }
+.menu.up { top: auto; bottom: calc(100% + 4px); right: auto; left: 0; }
 /* A label over a group of items that are one answer between them. */
 .menu-head { padding: 5px 10px 2px; color: var(--dim); font-size: 11px; }
 /* The tick on whichever of them is the answer. Held in the menu's key column
@@ -366,7 +371,12 @@ main { flex: 1; min-height: 0; display: flex; gap: 0; }
 
 /* --- film strip ------------------------------------------------------- */
 .strip-wrap { background: var(--panel); border: 1px solid var(--line); padding: 4px; }
-.strip { overflow: hidden; min-height: 78px; cursor: ew-resize; position: relative; }
+/* No cursor of its own. It carried `ew-resize` to hint that the strip can be
+   searched by dragging across it -- but that is the *right* button, the left
+   one does nothing here, and the arrow it drew is the one a window edge draws.
+   A pointer that says "resize" over the middle of a picture is worse than a
+   pointer that says nothing. */
+.strip { overflow: hidden; min-height: 78px; position: relative; }
 /* The cells hang on a reel wider than the window shows, so following the
    playhead during playback is a transform and not a re-layout. */
 .reel { display: flex; gap: 0; will-change: transform; }
@@ -810,6 +820,9 @@ input[type="text"]::placeholder { color: var(--dim); }
 .drop-menu li.off { color: #5c5c5c; cursor: default; }
 .drop-menu[hidden] { display: none; }
 .row > span:first-child { color: var(--dim); min-width: 132px; }
+/* A number of seconds. Wide enough for 3600.0 and no wider: the field is one
+   answer, and a text box the width of the panel invites a sentence. */
+.pref-num { width: 76px; }
 .row .lbl { color: var(--dim); min-width: 48px; }
 .row .num { color: var(--dim); font-variant-numeric: tabular-nums; white-space: nowrap; }
 /* The folder note says nothing until a folder of that name is in the way, and

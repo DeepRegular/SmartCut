@@ -68,6 +68,13 @@ copy, so **the whole track is re-encoded**.
 | `--audio-bitrate RATE` | Bits per second when re-encoding, as `192k` or `192000`. Left out, it follows the recording. A figure the encoder will not accept is raised to what that codec is ordinarily carried at, with a note saying so |
 | `--aac auto\|mpeg2\|mpeg4` | Which flavour of AAC the frames SmartCut writes announce themselves as. `auto`, the default, follows the recording — MPEG-2 AAC for a broadcast |
 | `--audio-es` | Also write the sound out as a bare stream beside the output. AAC only |
+| `--audio-fade SECONDS` | Take the level down into each seam and bring it back out over that many seconds. 0 to 10; 0, no fade, is the default |
+
+> **What `--audio-fade` reaches.** Only sound this program writes: `smart` and
+> `reencode` fade, `copy` does not, and neither does sound carried through whole
+> because re-encoding it would lose what makes it lossless (TrueHD, DTS-HD MA).
+> Where it cannot be applied the cut says so. The beginning and the end of the
+> output are left alone: a fade is for a place where two pieces meet.
 
 ## Writing a broadcast `.ts`
 

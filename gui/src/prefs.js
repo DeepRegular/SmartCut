@@ -50,6 +50,20 @@ const DEFAULTS = {
   proxyWidth: 0,
   /// What libav is allowed to print: 0 nothing, 1 warnings, 2 everything.
   ffmpegLog: 0,
+  /// How long the sound takes to leave and to come back at a seam, in
+  /// seconds. 0 for none.
+  ///
+  /// A cut joins two instants that were never next to each other, and what
+  /// the sound does there is a step. A fade takes the level down into the
+  /// join and brings it back, so what is heard is a pause rather than a jump.
+  ///
+  /// None, because what it fades is the programme: a second either side of
+  /// every seam is a second of the recording quieter than it was recorded,
+  /// and a cut is meant to be the recording, shorter. Somebody who wants
+  /// the join smoothed asks for it and says how much.
+  ///
+  /// Also answers to `SMARTCUT_AUDIO_FADE`, like the four beside it.
+  audioFade: 0,
   /// Where the seek indexes, proxies and detections go, or "" for the place
   /// the platform gives this program. A folder chosen here takes effect at
   /// once and only for what is written from then on: what was already
@@ -97,6 +111,37 @@ const DEFAULTS = {
   /// Whether it draws the frame number and clock over the picture. Read by
   /// the editor at open; the button on its info bar is the same answer.
   counter: true,
+  /// How far PageUp and PageDown move the playhead, in seconds: on their
+  /// own, held with Ctrl, and held with Shift.
+  ///
+  /// Three numbers rather than one because the three are different questions.
+  /// A break is half a minute, a programme is an hour, and checking a join is
+  /// a second either side of it -- and which of those a key should do is not
+  /// something a program can know about somebody else's recordings. The
+  /// arrow keys stay what they are: one picture, and one second with Shift.
+  pageStep: 10,
+  pageStepCtrl: 60,
+  pageStepShift: 1,
+  /// Which mark file wins when a recording has both beside it.
+  ///
+  /// `"keyframe"` or `"trim"`. They do not say the same thing: a `.keyframe`
+  /// is a list of places and leaves the timeline whole, while a Trim line is
+  /// the cut itself and arrives with the material already taken out. Only
+  /// asked when both are there; either on its own is read whatever this says.
+  ///
+  /// The marks by default, which is what this program did before it could
+  /// read the other one: opening a recording to find it already cut is a
+  /// bigger thing to do unasked than opening it to find some marks.
+  sidecarPriority: "keyframe",
+  /// Whether the save shortcut writes over a file that is already there
+  /// without stopping to ask.
+  ///
+  /// Off. The shortcut's whole point is that it does not interrupt, and that
+  /// is exactly why the question is worth asking once: the file it writes is
+  /// named after the recording, so the one it would land on is always
+  /// somebody's earlier answer about the same recording. Whoever saves over
+  /// their own work every few minutes can turn this on and stop being asked.
+  quietOverwrite: false,
 };
 
 const KEY = (name) => `smartcut.${name}`;
@@ -167,7 +212,7 @@ export function all() {
   return out;
 }
 
-/// The five the engine side acts on, in the shape its `set_prefs` wants.
+/// The six the engine side acts on, in the shape its `set_prefs` wants.
 export function forBackend() {
   return {
     cleanJoins: !!get("cleanJoins"),
@@ -175,6 +220,7 @@ export function forBackend() {
     proxyWidth: Number(get("proxyWidth")) || 0,
     ffmpegLog: Number(get("ffmpegLog")) || 0,
     cacheDir: String(get("cacheDir") || ""),
+    audioFade: Number(get("audioFade")) || 0,
   };
 }
 

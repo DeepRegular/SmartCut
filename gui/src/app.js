@@ -7698,6 +7698,11 @@ function paintPrefs() {
   el("pref-lang").value = preference();
   el("pref-counter").checked = !!prefs.get("counter");
   el("pref-subs").checked = !!prefs.get("subsOn");
+  el("pref-page-step").value = String(prefs.get("pageStep"));
+  el("pref-page-step-ctrl").value = String(prefs.get("pageStepCtrl"));
+  el("pref-page-step-shift").value = String(prefs.get("pageStepShift"));
+  el("pref-sidecar").value = String(prefs.get("sidecarPriority"));
+  el("pref-quiet-overwrite").checked = !!prefs.get("quietOverwrite");
   el("pref-prefix").value = String(prefs.get("outPrefix") ?? "");
   el("pref-number").checked = !!prefs.get("outNumber");
   el("pref-digits").value = String(Number(prefs.get("outDigits")) || 2);
@@ -7707,6 +7712,7 @@ function paintPrefs() {
   el("pref-proxy").checked = !!prefs.get("proxy");
   el("pref-proxy-width").value = String(Number(prefs.get("proxyWidth")) || 0);
   el("pref-ffmpeg-log").value = String(Number(prefs.get("ffmpegLog")) || 0);
+  el("pref-audio-fade").value = String(Number(prefs.get("audioFade")) || 0);
   paintCacheDir();
   paintKeptOutput();
   paintProxyWidth();
@@ -7811,6 +7817,35 @@ el("pref-subs").addEventListener("change", (ev) => {
   tellEditorPrefs();
 });
 
+// How the cut editor answers to the keyboard, and what it does with the mark
+// files beside a recording. Nothing to tell that window: both windows are the
+// same origin, so it reads these out of the store at the keystroke that needs
+// them, and a change here is in force at the next one.
+//
+// A field emptied or typed full of something that is not a number keeps the
+// answer it had, and says so by putting it back: a step of NaN is a key that
+// silently stops working.
+for (const [id, name] of [
+  ["pref-page-step", "pageStep"],
+  ["pref-page-step-ctrl", "pageStepCtrl"],
+  ["pref-page-step-shift", "pageStepShift"],
+]) {
+  el(id).addEventListener("change", (ev) => {
+    const secs = Number(ev.target.value);
+    const kept = ev.target.value.trim() !== "" && isFinite(secs) && secs >= 0 ? secs : prefs.get(name);
+    prefs.set(name, kept);
+    ev.target.value = String(kept);
+  });
+}
+
+el("pref-sidecar").addEventListener("change", (ev) => {
+  prefs.set("sidecarPriority", ev.target.value);
+});
+
+el("pref-quiet-overwrite").addEventListener("change", (ev) => {
+  prefs.set("quietOverwrite", ev.target.checked);
+});
+
 // What a cut is called. Written into the settings in force as well as into
 // the store: this panel's answers take effect as they are given, and a default
 // that would only be seen at the next start is no answer at all to "what is
@@ -7892,6 +7927,18 @@ el("pref-proxy-width").addEventListener("change", async (ev) => {
   prefs.set("proxyWidth", Number(ev.target.value) || 0);
   await pushPrefs();
 });
+// Seconds, and the engine is told: it is the side that writes the sound.
+// A field emptied or filled with something that is not a length keeps the
+// answer it had and puts it back, the same as the step fields above.
+el("pref-audio-fade").addEventListener("change", async (ev) => {
+  const secs = Number(ev.target.value);
+  const kept =
+    ev.target.value.trim() !== "" && isFinite(secs) && secs >= 0 ? Math.min(secs, 10) : prefs.get("audioFade");
+  prefs.set("audioFade", kept);
+  ev.target.value = String(kept);
+  await pushPrefs();
+});
+
 el("pref-ffmpeg-log").addEventListener("change", async (ev) => {
   prefs.set("ffmpegLog", Number(ev.target.value) || 0);
   await pushPrefs();

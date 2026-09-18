@@ -200,6 +200,84 @@ never handed a timestamp behind the one before it. Silence at a seam is worth
 having in exchange for a decoder that stays in step; LPCM, which has no such
 state, is unaffected and measures to under a millisecond across the same cut.
 
+## Fading at the seams (`--audio-fade`)
+
+A cut joins two instants that were never next to each other, and what the sound
+does there is a step — a click at best, half a word at worst. **A fade takes the
+level down into the join and brings it back out of it.** What is heard is a
+pause rather than a jump.
+
+The default is 0, and nothing fades. The reason is what it costs: **what a fade
+fades is the programme.** Ask for a second and a second either side of every
+seam is quieter than it was recorded. A cut of a recording is meant to be the
+recording, shorter, so this is something to be asked for rather than something
+to be decided here.
+
+### Where it applies
+
+**Only where two ranges meet.** The first range's head and the last range's tail
+are the beginning and the end of the file, not a seam; fading there would be
+this program deciding how the recording opens and closes.
+
+The length is clamped to **half the range**. Two seconds at both ends of a three
+second range would leave no instant at full level, and what came out would be
+the shape of the fade rather than the sound. Where the two ends overlap, **the
+quieter wins** — and that is not only taste. Each end is written as its own run
+of frames, so a sample inside both fades has to come out the same whichever run
+wrote it.
+
+The shape is a **raised cosine**, the same curve the de-click at a frame
+boundary uses: unlike a straight line it leaves silence and arrives at full
+level with no corner at either end.
+
+### Which modes carry it
+
+**Only sound this program writes.** Under smart rendering every frame the fade
+runs over is rewritten; under a whole re-encode every frame is rewritten anyway.
+A copied track is copied — not one byte is rewritten — so nothing fades, and the
+same goes for sound carried through whole because re-encoding it would lose what
+makes it lossless (TrueHD, DTS-HD MA). **Where it cannot be applied the cut says
+so** rather than quietly doing nothing.
+
+### What changes under smart rendering
+
+Smart rendering rewrites the frame a boundary falls inside and the guard beside
+it. A fade **extends that run to whatever the fade reaches** — some 47 frames of
+AAC for one second, 32 of AC-3. The window of frames decoded around the edge
+grows with it, and it has to cover both the fade *and* the frames the encoder
+needs beyond it: **stopping at the end of the fade leaves the run with no frame
+to flush through, and the whole patch is dropped.** That happened during
+development, and what came out was a cut that faded out and never faded back in.
+
+### The guard's condition comes off under a fade
+
+Smart rendering puts a condition on the guard frame beside the straddler: use
+it only if the straddling frame was itself written, and otherwise write the
+recording's own bytes. A straddler that was not written leaves the guard with
+nothing to guard.
+
+**Under a fade that condition has to come off.** For a frame the fade runs
+over, the recording's own bytes are not an equally good answer — they are the
+one frame without the fade on it. Left in place, the condition stands **one
+untouched frame** exactly at the seam: full level, in the one place the fade
+was asked to take the level away.
+
+Found by measuring. AC-3 and MP2 left 32 ms of full level at the join; AAC did
+not. Read in 100 ms windows it looks like nothing worse than a shallow dip, and
+only at 10 ms does it resolve into a single frame. `tests/audio_fade.py` exists
+to watch that frame.
+
+### Measured
+
+One cut in real material (broadcast TS, AAC 48 kHz stereo) with
+`--audio-fade 1.0`, read as RMS per 100 ms: the level starts down a second
+before the seam, reaches −55 dB just before it, and comes back to its old height
+a second after. The middle of the ramp measures −6.25 dB against the unfaded
+cut, which is the raised cosine's own midpoint (−6.02 dB) to within 0.2 dB.
+
+With `--audio-fade 0`, the default, the output is **byte for byte what the
+binary from before this feature wrote**.
+
 ## Writing MPEG-2 AAC (`--aac`)
 
 A Japanese broadcast carries **MPEG-2 AAC**: the ADTS `ID` bit is 1, profile LC,

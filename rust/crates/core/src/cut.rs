@@ -296,6 +296,28 @@ pub struct CutOptions {
     /// without decoding. A recording in anything else is copied as it is and
     /// the cut says so.
     pub video_share: Option<f64>,
+    /// How long the sound takes to leave and to come back at a seam, in
+    /// seconds. `0.0` for none, which is the default.
+    ///
+    /// A cut joins two instants that were never next to each other, and what
+    /// the sound does at that instant is a step: a click at best, half a
+    /// word at worst. A fade takes the level down into the join and brings it
+    /// back out, so that what is heard is a pause rather than a jump.
+    ///
+    /// **It is not free, and not only in re-encoded frames.** What it fades
+    /// is the programme: a second either side of every seam is a second of
+    /// the recording quieter than it was recorded. That is why the default is
+    /// none -- a cut of a recording is meant to be the recording, shorter --
+    /// and why the number is the caller's to choose rather than something
+    /// picked here.
+    ///
+    /// Only where the sound is being written by this program: smart
+    /// rendering, where the frames the fade runs over are rewritten, and a
+    /// whole-track re-encode, where every frame is anyway. A track copied
+    /// through is copied through, and one carried whole because re-encoding
+    /// it would lose what makes it lossless stays carried whole. The cut says
+    /// so rather than fading nothing quietly.
+    pub audio_fade: f64,
 }
 
 /// How far past a segment's end the reader will go for a stream that has
@@ -351,6 +373,9 @@ struct AudioCtx {
     /// Sample range of this keep-range on the source timeline, used when the
     /// audio is re-encoded and boundaries can be exact.
     window: (i64, i64),
+    /// How far the fade reaches into this range at each end, in samples.
+    /// Zero at both ends unless one was asked for; see [`CutOptions::audio_fade`].
+    fades: crate::audio::Fades,
     /// Where the range starts, in seconds.
     range_in: f64,
     mode: AudioMode,
@@ -1212,7 +1237,7 @@ fn take_audio(
                 info, reencoder, ..
             } = &mut writer.audio[audio.track];
             if let Some(re) = reencoder.as_mut() {
-                re.take(&packet, info, src.start_time, audio.window)?;
+                re.take(&packet, info, src.start_time, audio.window, audio.fades)?;
                 re.drain(&mut out)?;
             }
             for (p, pts) in out {
@@ -4617,6 +4642,22 @@ pub fn cut_with_progress(
             set_pid(&mut ost, to_ts, pids.out(video_pid));
         }
     }
+    // A fade needs sound this program is writing. A track copied through is
+    // copied through -- that is what copying is -- and a fade asked for on
+    // one is a fade that silently does not happen unless it is said.
+    if opts.audio_fade > 0.0 {
+        for setup in &setups {
+            if setup.mode == AudioMode::Copy {
+                crate::note_once(format!(
+                    "note: the {} audio is copied through as it is, so the {:.2}s fade asked \
+                     for at the seams is not on it. Smart rendering or a whole re-encode is what \
+                     writes the sound, and only sound this program writes can be faded.",
+                    crate::track_name(src.on_a_ts, setup.info.pid, setup.info.stream_index),
+                    opts.audio_fade,
+                ));
+            }
+        }
+    }
     // Sound rides along beside the pictures: one output track for each the
     // recording carries, each copied packet for packet.
     let mut audio_pending: Vec<(usize, Option<crate::audio::Reencoder>)> = Vec::new();
@@ -4831,6 +4872,7 @@ pub fn cut_with_progress(
                     &windows,
                     setup.bit_rate,
                     setup.frame_as,
+                    opts.audio_fade,
                 )?
             }
             _ => Default::default(),
@@ -5136,6 +5178,10 @@ pub fn cut_with_progress(
             .enumerate()
             .map(|(track, t)| {
                 let drift = t.end.map_or(0.0, |end| end - target_start);
+                let window = (
+                    (plan.t_in * t.info.sample_rate as f64).round() as i64,
+                    (plan.t_out * t.info.sample_rate as f64).round() as i64,
+                );
                 if std::env::var("SMARTCUT_DEBUG").is_ok() {
                     eprintln!(
                         "  range t_in={:.4} target_start={:.4} track=0x{:04x} end={:?} \
@@ -5158,9 +5204,17 @@ pub fn cut_with_progress(
                     } else {
                         f64::NEG_INFINITY
                     },
-                    window: (
-                        (plan.t_in * t.info.sample_rate as f64).round() as i64,
-                        (plan.t_out * t.info.sample_rate as f64).round() as i64,
+                    window,
+                    // The same answer the frames rewritten at a seam were
+                    // shaped with, from the same function and the same range
+                    // list: a track re-encoded whole and one spliced have to
+                    // fade alike, or two tracks of one recording would.
+                    fades: crate::audio::fades_for(
+                        opts.audio_fade,
+                        t.info.sample_rate,
+                        nth,
+                        plans.len(),
+                        window,
                     ),
                     range_in: plan.t_in,
                     mode: t.mode,

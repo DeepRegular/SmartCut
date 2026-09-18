@@ -3530,6 +3530,11 @@ async fn export(
                 .collect(),
             data_broadcast,
             video_share,
+            // 環境設定, like the joins and the proxy: it is a standing answer
+            // about how this program cuts rather than something one project
+            // decides, and the output screen is already the longest screen
+            // in the program.
+            audio_fade: prefs::audio_fade(),
             ..Default::default()
         };
         smartcut_core::cut_with_progress(
@@ -4169,6 +4174,38 @@ fn read_keyframes_now(path: &str) -> Result<Option<Vec<u32>>, String> {
     ))
 }
 
+/// Write a mark list this side does not know the shape of.
+///
+/// The `.keyframe` above is written here because it is a list of numbers and
+/// nothing else. An AviSynth `Trim` line is a sentence in another program's
+/// language, and only the window holding the timeline can write it: what
+/// survives a cut is up there. So this takes the text whole, the way
+/// [`write_project`] does, and owns only the disc.
+#[tauri::command]
+async fn write_sidecar(path: String, body: String) -> Result<(), String> {
+    off_thread(move || {
+        std::fs::write(&path, body)
+            .map_err(|e| trf!("保存できません: {} ({})", "Cannot save: {} ({})", path, e))
+    })
+    .await
+}
+
+/// Read one back, or `None` when there is none.
+///
+/// Missing is the ordinary case rather than an error, the same as
+/// [`read_keyframes`]: these files are looked for beside a recording on the
+/// off-chance that somebody left one there. It is also how "is there already
+/// one?" gets asked, before writing over it.
+#[tauri::command]
+async fn read_sidecar(path: String) -> Result<Option<String>, String> {
+    off_thread(move || match std::fs::read_to_string(&path) {
+        Ok(body) => Ok(Some(body)),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(e) => Err(e.to_string()),
+    })
+    .await
+}
+
 /// Write a project file.
 ///
 /// The list window builds the text: a project is the rows, what has been cut
@@ -4783,6 +4820,8 @@ struct PrefsIn {
     ffmpeg_log: u8,
     /// Empty for the platform's own place.
     cache_dir: String,
+    /// Seconds. `0` for none, which is the default.
+    audio_fade: f64,
 }
 
 /// What is in force, for the panel to paint itself from.
@@ -4794,6 +4833,7 @@ struct PrefsOut {
     proxy_width: u32,
     ffmpeg_log: u8,
     cache_dir: String,
+    audio_fade: f64,
     /// Where they would go if nobody chose, so that 既定 is a place with a
     /// name on screen rather than an empty field.
     cache_home: String,
@@ -4820,7 +4860,14 @@ fn set_prefs(want: PrefsIn) -> Result<(), String> {
     // platform gives, which is where they were before anybody chose, and the
     // refusal is reported.
     let dir = asked.as_ref().ok().and_then(|d| d.clone());
-    prefs::set(want.clean_joins, want.proxy, want.proxy_width, want.ffmpeg_log, dir);
+    prefs::set(
+        want.clean_joins,
+        want.proxy,
+        want.proxy_width,
+        want.ffmpeg_log,
+        dir,
+        want.audio_fade,
+    );
     asked.map(|_| ())
 }
 
@@ -4846,6 +4893,7 @@ fn prefs_now(app: tauri::AppHandle) -> PrefsOut {
         proxy: prefs::proxy(),
         proxy_width: prefs::proxy_width().unwrap_or(0),
         ffmpeg_log: prefs::ffmpeg_log(),
+        audio_fade: prefs::audio_fade(),
         cache_dir: prefs::cache_dir().map(|d| d.display().to_string()).unwrap_or_default(),
         cache_home: app
             .path()
@@ -5132,6 +5180,8 @@ pub fn run() {
             make_plan,
             write_keyframes,
             read_keyframes,
+            write_sidecar,
+            read_sidecar,
             play,
             stop_play,
             subtitle_at,

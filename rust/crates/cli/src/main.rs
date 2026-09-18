@@ -233,7 +233,7 @@ fn usage() -> String {
     "usage: smartcut <input> [--keep START-END]... [--cut START-END]... \
      [--drop-stream INDEX]... [--drop-subpicture ID]... \
      [--subtitles pgs|beside|sup] [--tables partial|broadcast|muxer] [--no-open-gop] \
-     [--clean-joins] [--no-data-broadcast] \
+     [--clean-joins] [--no-data-broadcast] [--audio-fade SECONDS] \
      [--vc1-quant 3..31] [--title N] [-o OUTPUT | --bdav FOLDER]\n\
      <input> is a recording, or a disc -- a BDAV, BDMV or VIDEO_TS folder, \
      or an .iso of one -- whose recordings are listed when no --title \
@@ -242,6 +242,11 @@ fn usage() -> String {
      of each range to reach an entry point the copy can be spliced onto \
      without a picture coming out of the decoder in the wrong order; \
      what it costs is that those seconds stop being an exact copy\n\
+     --audio-fade takes the sound down into each seam and brings it \
+     back out over that many seconds, so that a join is heard as a pause \
+     rather than as a step; what it costs is the programme, which is that \
+     much quieter either side of every join, and it needs sound this \
+     program is writing -- a copied track is copied\n\
      --subtitles says where the subtitles a disc draws go: pgs, the \
      default, puts them inside the cut, which only a .ts or an .m2ts \
      can hold; beside writes them as the .idx and .sub pair next to it, \
@@ -306,6 +311,7 @@ fn main() -> Result<()> {
     let mut audio_channels: Option<u16> = None;
     let mut audio_bit_rate: Option<usize> = None;
     let mut vc1_quant: Option<u8> = None;
+    let mut audio_fade = 0.0f64;
     let mut audio_sample_rate: Option<u32> = None;
     let mut audio_bits: Option<u8> = None;
     // Everything the recording carries is written unless it is named here.
@@ -405,6 +411,17 @@ fn main() -> Result<()> {
                         .filter(|c| (1..=8).contains(c))
                         .with_context(|| format!("--audio-channels wants 1..8, got {v:?}"))?,
                 );
+            }
+            "--audio-fade" => {
+                i += 1;
+                let v = args
+                    .get(i)
+                    .context("--audio-fade needs a length in seconds")?;
+                audio_fade = v
+                    .parse::<f64>()
+                    .ok()
+                    .filter(|s| (0.0..=10.0).contains(s))
+                    .with_context(|| format!("--audio-fade wants 0..10 seconds, got {v:?}"))?;
             }
             "--vc1-quant" => {
                 i += 1;
@@ -1521,6 +1538,7 @@ fn main() -> Result<()> {
             data_broadcast,
             vc1_quant,
             video_share,
+            audio_fade,
             ..Default::default()
         },
     )?;
