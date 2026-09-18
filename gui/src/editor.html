@@ -129,6 +129,76 @@
             <button id="undo-cut" class="tool" data-i18n="t.undo" data-i18n-title="t.undo.title" disabled>↺ 取消</button>
             <button id="clear-all" class="tool" data-i18n="t.clearAll" data-i18n-title="t.clearAll.title">全消去</button>
           </div>
+
+          <!-- The commands that are not a control: the mark files, the disc's
+               own chapters, and clearing the marks alone. They are about the
+               marks rather than about the picture under the playhead, they
+               are reached once in a session and not in a minute, and a button
+               each across the foot of the window would make the row they sit
+               in longer than the cutting it is there for.
+
+               At the right-hand end of the row, which is where the reference
+               tool keeps its own, and where the eye is not while a cut is
+               being placed. The menu opens upwards -- this row stands at the
+               foot of the window -- and to the left, so it does not run off
+               the edge of the screen behind the button that opened it. -->
+          <!-- The button and its menu are the group itself, not a wrapper
+               inside one: the group is what the menu is placed against, and
+               the transport's own look is written for the buttons a group
+               holds directly -- a menu standing inside one came out drawn as
+               a row of transport buttons, box and border and all. -->
+          <div class="tgroup">
+            <button id="more" class="tool more" aria-haspopup="true" aria-expanded="false"
+                    data-i18n-title="editor.more.title">≡</button>
+            <div id="more-menu" class="menu up end" hidden>
+              <!-- Reading first, as the reference tool has it: the file is
+                   read once at the start of an evening and written at the end
+                   of each recording, and the one that is reached for less
+                   often is the one to put where the pointer already is.
+                   Read back in the same numbers they were written in, so a
+                   list written here and a list written by that tool land on
+                   the same pictures. -->
+              <button class="menu-item" id="load-keyframe">
+                <span data-i18n="marks.load.keyframe">キーフレーム情報を読み込む…</span>
+                <span class="menu-key">Ctrl+L</span>
+              </button>
+              <button class="menu-item" id="load-trim">
+                <span data-i18n="marks.load.trim">AviSynth Trim からカットを読み込む…</span>
+                <span class="menu-key">Ctrl+Shift+L</span>
+              </button>
+              <div class="menu-sep"></div>
+              <!-- Saving asks for the name, because the shape was chosen by
+                   picking the line rather than in the dialog's type list:
+                   GTK's does not rewrite the name when the type beside it
+                   changes, so a shape chosen there would look chosen and
+                   write the other one. The shortcuts write straight to the
+                   name beside the recording, with nothing to answer. -->
+              <button class="menu-item" id="save-as-keyframe">
+                <span data-i18n="marks.save.keyframe">キーフレーム情報を保存…</span>
+                <span class="menu-key">Ctrl+H</span>
+              </button>
+              <button class="menu-item" id="save-as-trim">
+                <span data-i18n="marks.save.trim">AviSynth Trim にカットを保存…</span>
+                <span class="menu-key">Ctrl+Shift+H</span>
+              </button>
+              <div class="menu-sep"></div>
+              <!-- The disc's own chapter points, which a recording off a
+                   Japanese recorder frequently has the commercial breaks
+                   written into. Put down when the recording is opened, and
+                   here for afterwards: they are the one source of marks
+                   that cannot be asked for again once they have been
+                   cleared. Greyed on anything that is not a disc. -->
+              <button class="menu-item" id="chapter-keys">
+                <span data-i18n="editor.chapterKeys">ディスクのチャプターをキーフレームにする</span>
+              </button>
+              <!-- The marks alone. 全消去 beside it takes the cuts as well,
+                   which is not what somebody who is redoing the marks on an
+                   edit they have kept is asking for. -->
+              <button class="menu-item" id="clear-keys">
+                <span data-i18n="editor.clearKeys">キーフレームをすべて消す</span>
+              </button>
+            </div>
+          </div>
         </div>
 
         <div class="statusbar">
@@ -184,31 +254,6 @@
             <label class="opt" id="subs-pick" hidden><span data-i18n="subs.label">字幕</span>
               <select id="subs-track"></select>
             </label>
-            <!-- Writing the marks down beside the recording. One button,
-                 and which of the two shapes it writes is asked on the way:
-                 the `.keyframe` list of frame numbers, or the AviSynth `Trim`
-                 line of the ranges that survive.
-
-                 Asked here rather than left to the save dialog's own type
-                 list, which would be the obvious place -- the dialog is
-                 GTK's, and changing the type in it does not change the name
-                 it is about to write, so the choice would look made and have
-                 no effect. The shortcuts (Ctrl+S, Ctrl+Shift+S) write the two
-                 without either step. -->
-            <span class="save-wrap">
-              <button id="save-marks" class="mini wide" data-i18n="editor.saveMarks"
-                      data-i18n-title="editor.saveMarks.title">キーフレーム情報を保存…</button>
-              <div id="save-menu" class="menu up" hidden>
-                <button class="menu-item" id="save-as-keyframe">
-                  <span data-i18n="marks.kind.keyframe">キーフレーム情報</span>
-                  <span class="menu-key">Ctrl+S</span>
-                </button>
-                <button class="menu-item" id="save-as-trim">
-                  <span data-i18n="marks.kind.trim">AviSynth スクリプト</span>
-                  <span class="menu-key">Ctrl+Shift+S</span>
-                </button>
-              </div>
-            </span>
             <span class="dim" id="status"></span>
             <span class="spacer"></span>
             <button id="editor-ok" class="primary wide" data-i18n="editor.ok">OK</button>

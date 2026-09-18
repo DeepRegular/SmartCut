@@ -111,11 +111,12 @@ button.brand:hover, button.brand.open { background: #3a3a3a; border-color: #5c5c
 /* The key that does the same thing, held to the right of the label it
    belongs to. Dim: it is a reminder for next time, not part of the name. */
 .menu-key { margin-left: auto; color: var(--dim); font-size: 11px; }
-/* The cut editor's save menu opens upwards and to the left of its button: the
-   button is on the last row of the window, so a menu under it would be off
-   the bottom of the screen, and the row's right-hand end is OK and キャンセル. */
-.save-wrap { position: relative; display: inline-flex; }
+/* Upwards, for a button at the foot of a window: a menu under that one would
+   be off the bottom of the screen. `end` hangs it from the button's right
+   edge, which is what a button near the right of the window needs -- the cut
+   editor's ≡ stands at the end of the transport row. */
 .menu.up { top: auto; bottom: calc(100% + 4px); right: auto; left: 0; }
+.menu.up.end { left: auto; right: 0; }
 /* A label over a group of items that are one answer between them. */
 .menu-head { padding: 5px 10px 2px; color: var(--dim); font-size: 11px; }
 /* The tick on whichever of them is the answer. Held in the menu's key column
@@ -318,7 +319,6 @@ main { flex: 1; min-height: 0; display: flex; gap: 0; }
 }
 #keyframes .kill:hover { color: #ff8a80; }
 .clips-empty { color: var(--dim); padding: 8px; font-size: 11px; }
-
 /* --- picture ---------------------------------------------------------- */
 /* No `width: 100%`. As a flex item in a column it already stretches to the
    full width, and the percentage is of that same width -- so on 出力画面,
@@ -472,16 +472,23 @@ main { flex: 1; min-height: 0; display: flex; gap: 0; }
   display: flex; align-items: center; justify-content: center;
   flex-wrap: wrap; row-gap: 4px; column-gap: 12px;
 }
+/* Positioned, because the last group is a button with a menu hanging off it
+   and the group is what the menu is placed against. */
 .tgroup {
   display: flex; align-items: center; justify-content: center;
-  flex-wrap: wrap; gap: 2px;
+  flex-wrap: wrap; gap: 2px; position: relative;
 }
-.transport button {
+/* The buttons a group holds, and only those. Not `.transport button`: the
+   menu at the end of the row is made of buttons too, and every line of it
+   came out wearing this -- a grey box 32px tall with a border round it, in a
+   column of them. A menu item is a line of a menu, and `.menu-item` below is
+   the whole of how it looks. */
+.tgroup > button {
   background: #333; color: var(--text); border: 1px solid #4a4a4a; border-radius: 2px;
   min-width: 36px; height: 32px; padding: 0 7px; cursor: pointer; white-space: nowrap;
   font-variant-numeric: tabular-nums; font-size: 12.5px;
 }
-.transport button:hover:not(:disabled) { background: #3d3d3d; }
+.tgroup > button:hover:not(:disabled) { background: #3d3d3d; }
 .transport .mark { color: var(--accent); font-weight: 700; min-width: 56px; }
 .transport .flag { color: var(--accent); font-size: 12px; }
 .transport .play { background: #2c5f7a; border-color: #3a7fa0; min-width: 68px; }
@@ -492,6 +499,11 @@ main { flex: 1; min-height: 0; display: flex; gap: 0; }
 }
 .transport .cut:hover:not(:disabled) { background: #ffb638; }
 .transport .tool { font-size: 11.5px; }
+/* The ≡ at the end of the row. Wider than the glyph needs so that it is a
+   button rather than a mark, and lit while its menu is up: the menu opens
+   over the timeline, and the button is what says where it came from. */
+.transport .more { font-size: 15px; line-height: 1; }
+.transport .more.open { background: #3d3d3d; border-color: #5c5c5c; }
 
 .statusbar {
   display: flex; align-items: center; gap: 16px;
@@ -820,6 +832,11 @@ input[type="text"]::placeholder { color: var(--dim); }
 .drop-menu li.off { color: #5c5c5c; cursor: default; }
 .drop-menu[hidden] { display: none; }
 .row > span:first-child { color: var(--dim); min-width: 132px; }
+/* Wider where a label says which keys it is about: `Shift+Ctrl を押しながら`
+   is longer than the column the other panels' labels sit in, and a row whose
+   field starts further right than the three above it reads as a row that
+   belongs to something else. */
+#pref-pane-edit .row > span:first-child { min-width: 176px; }
 /* A number of seconds. Wide enough for 3600.0 and no wider: the field is one
    answer, and a text box the width of the panel invites a sentence. */
 .pref-num { width: 76px; }

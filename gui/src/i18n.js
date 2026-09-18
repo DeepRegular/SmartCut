@@ -92,11 +92,16 @@ const CATALOG = {
       "字幕のある録画でのみ有効です。編集中に切り替えられます。",
     "prefs.groupEdit": "カット編集",
     "prefs.pageStep": "PageUp / PageDown:",
-    "prefs.pageStepCtrl": "Ctrl を押しながら:",
     "prefs.pageStepShift": "Shift を押しながら:",
+    "prefs.pageStepCtrl": "Ctrl を押しながら:",
+    "prefs.pageStepShiftCtrl": "Shift+Ctrl を押しながら:",
     "prefs.seconds": "秒",
+    "prefs.step.frame": "フレーム移動",
+    "prefs.step.sec": "秒移動",
+    "prefs.step.pct": "% でスクロール",
     "prefs.pageStepNote":
       "カット編集で PageUp / PageDown が動く量です。0 にすると、そのキーは動きません。" +
+      "% は録画全体に対する割合で、カットしたあとの長さから数えます。" +
       "左右キーは別で、1 フレーム、Shift と一緒なら 1 秒です。",
     "prefs.sidecarPriority": "両方あるときに読むのは:",
     "prefs.sidecar.keyframe": "キーフレーム情報（.keyframe）",
@@ -108,9 +113,9 @@ const CATALOG = {
       "片方しか無いときは、この設定に関わらずそれを読みます。",
     "prefs.quietOverwrite": "ショートカットでの保存は、確認せずに上書きする",
     "prefs.quietOverwriteNote":
-      "Ctrl+S（キーフレーム情報）と Ctrl+Shift+S（Trim）は、録画の隣の名前にそのまま保存します。" +
+      "Ctrl+H（キーフレーム情報）と Ctrl+Shift+H（Trim）は、録画の隣の名前にそのまま保存します。" +
       "同じ名前のファイルがあったときに確認するかどうかです。" +
-      "ボタンから保存するときは保存先を選ぶ画面が出るので、これには関係ありません。",
+      "メニューから保存するときは保存先を選ぶ画面が出るので、これには関係ありません。",
     "prefs.groupOut": "出力設定",
     "prefs.prefix": "ファイル名の接頭辞:",
     "prefs.prefixNote":
@@ -738,11 +743,17 @@ const CATALOG = {
     "keyframes.readFailed": "キーフレームを読めません: {e}",
     "keyframes.read": "キーフレーム {n} 個を {file} から読み込みました",
     "keyframes.chapters": "ディスクのチャプター {n} 個をキーフレームにしました",
-    "editor.saveMarks": "キーフレーム情報を保存…",
-    "editor.saveMarks.title":
-      "いまの編集を録画の隣に保存します。押すと形式を聞きます。" +
+    "editor.more.title":
+      "キーフレーム情報の保存と読み込み、ディスクのチャプター、キーフレームの全消去。" +
       "キーフレーム情報（.keyframe）は印の位置だけ、AviSynth スクリプト（.trim.avs）は残る区間そのものです。" +
-      "Ctrl+S と Ctrl+Shift+S なら、どちらも画面を出さずに保存します。",
+      "Ctrl+H と Ctrl+Shift+H なら、録画の隣の名前へ画面を出さずに保存します。",
+    "marks.save.keyframe": "キーフレーム情報を保存…",
+    "marks.save.trim": "AviSynth Trim にカットを保存…",
+    "marks.load.keyframe": "キーフレーム情報を読み込む…",
+    "marks.load.trim": "AviSynth Trim からカットを読み込む…",
+    "marks.readNone": "{file} には読めるものがありませんでした",
+    "editor.chapterKeys": "ディスクのチャプターをキーフレームにする",
+    "editor.clearKeys": "キーフレームをすべて消す",
     "marks.kind.keyframe": "キーフレーム情報",
     "marks.kind.trim": "AviSynth スクリプト",
     "marks.saved": "キーフレーム {n} 個を {file} に保存しました",
@@ -820,13 +831,17 @@ const CATALOG = {
       "Only for recordings that carry any. It can still be turned off while cutting.",
     "prefs.groupEdit": "Cut editor",
     "prefs.pageStep": "PageUp / PageDown:",
-    "prefs.pageStepCtrl": "Held with Ctrl:",
     "prefs.pageStepShift": "Held with Shift:",
+    "prefs.pageStepCtrl": "Held with Ctrl:",
+    "prefs.pageStepShiftCtrl": "Held with Shift and Ctrl:",
     "prefs.seconds": "seconds",
+    "prefs.step.frame": "frames",
+    "prefs.step.sec": "seconds",
+    "prefs.step.pct": "% of the timeline",
     "prefs.pageStepNote":
       "How far PageUp and PageDown move the playhead in the cut editor. A step of 0 is a key that " +
-      "does nothing. The left and right keys are separate and unchanged: one picture, and one second " +
-      "with Shift.",
+      "does nothing. A percentage is of the timeline as it now stands, so it shortens with the cuts. " +
+      "The left and right keys are separate and unchanged: one picture, and one second with Shift.",
     "prefs.sidecarPriority": "When both are there, read:",
     "prefs.sidecar.keyframe": "the keyframe list (.keyframe)",
     "prefs.sidecar.trim": "the AviSynth Trim line (.trim.avs)",
@@ -837,9 +852,9 @@ const CATALOG = {
       "this says.",
     "prefs.quietOverwrite": "Let the save shortcut write over a file without asking",
     "prefs.quietOverwriteNote":
-      "Ctrl+S (the keyframe list) and Ctrl+Shift+S (the Trim line) write straight to the name beside " +
+      "Ctrl+H (the keyframe list) and Ctrl+Shift+H (the Trim line) write straight to the name beside " +
       "the recording. This is whether they stop to ask when something is already there. Saving from " +
-      "the buttons puts a picker up, which asks for itself.",
+      "the menu puts a picker up, which asks for itself.",
     "prefs.groupOut": "Output settings",
     "prefs.prefix": "Filename prefix:",
     "prefs.prefixNote":
@@ -1447,11 +1462,17 @@ const CATALOG = {
     "keyframes.readFailed": "Cannot read the keyframes: {e}",
     "keyframes.read": "Read {n} keyframe{n?s} from {file}",
     "keyframes.chapters": "Read {n} chapter{n?s} off the disc as keyframes",
-    "editor.saveMarks": "Save the keyframes…",
-    "editor.saveMarks.title":
-      "Writes what is on the timeline beside the recording, and asks which shape on the way: a " +
-      "keyframe list (.keyframe) is the marks alone, an AviSynth script (.trim.avs) is the ranges " +
-      "that survive. Ctrl+S and Ctrl+Shift+S write the two with nothing to answer.",
+    "editor.more.title":
+      "The mark files, the disc's chapters, and clearing the marks. A keyframe list (.keyframe) " +
+      "is the marks alone, an AviSynth script (.trim.avs) is the ranges that survive. Ctrl+H and " +
+      "Ctrl+Shift+H write the two beside the recording with nothing to answer.",
+    "marks.save.keyframe": "Save the keyframe list…",
+    "marks.save.trim": "Save the cuts as an AviSynth Trim…",
+    "marks.load.keyframe": "Read a keyframe list…",
+    "marks.load.trim": "Read cuts from an AviSynth Trim…",
+    "marks.readNone": "Nothing to read in {file}",
+    "editor.chapterKeys": "Turn the disc's chapters into keyframes",
+    "editor.clearKeys": "Remove every keyframe",
     "marks.kind.keyframe": "Keyframe list",
     "marks.kind.trim": "AviSynth script",
     "marks.saved": "Saved {n} keyframe{n?s} to {file}",

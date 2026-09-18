@@ -7698,9 +7698,11 @@ function paintPrefs() {
   el("pref-lang").value = preference();
   el("pref-counter").checked = !!prefs.get("counter");
   el("pref-subs").checked = !!prefs.get("subsOn");
-  el("pref-page-step").value = String(prefs.get("pageStep"));
-  el("pref-page-step-ctrl").value = String(prefs.get("pageStepCtrl"));
-  el("pref-page-step-shift").value = String(prefs.get("pageStepShift"));
+  for (const [id, name] of PAGE_STEPS) {
+    el(id).value = String(prefs.get(name));
+    el(`${id}-unit`).value = String(prefs.get(`${name}Unit`));
+    paintStepUnit(id, prefs.get(`${name}Unit`));
+  }
   el("pref-sidecar").value = String(prefs.get("sidecarPriority"));
   el("pref-quiet-overwrite").checked = !!prefs.get("quietOverwrite");
   el("pref-prefix").value = String(prefs.get("outPrefix") ?? "");
@@ -7822,19 +7824,62 @@ el("pref-subs").addEventListener("change", (ev) => {
 // same origin, so it reads these out of the store at the keystroke that needs
 // them, and a change here is in force at the next one.
 //
+// Each of the four is a number and the unit it is counted in, and the pair is
+// one answer: 15 is a quarter of a recording or half a second depending on
+// what stands beside it.
+const PAGE_STEPS = [
+  ["pref-page-step", "pageStep"],
+  ["pref-page-step-shift", "pageStepShift"],
+  ["pref-page-step-ctrl", "pageStepCtrl"],
+  ["pref-page-step-shift-ctrl", "pageStepShiftCtrl"],
+];
+
+/// Whether this unit is counted in whole things. Pictures are, and so is a
+/// percent: half a picture is not a step, and a tenth of a percent of an hour
+/// is three seconds spelled the long way round.
+const wholeStep = (unit) => unit === "frame" || unit === "pct";
+
+/// Fit the field to what it is now counting: whole numbers for pictures and
+/// percent, tenths for seconds, and nothing over 100 where the number is a
+/// share of something.
+function paintStepUnit(id, unit) {
+  const box = el(id);
+  box.step = wholeStep(unit) ? "1" : "0.1";
+  if (unit === "pct") box.max = "100";
+  else box.removeAttribute("max");
+}
+
+/// What a typed number comes to for the unit beside it. Rounded where the
+/// unit is counted in whole things, and held at nothing below zero.
+const stepValue = (n, unit) => {
+  const at = wholeStep(unit) ? Math.round(n) : n;
+  return unit === "pct" ? Math.min(at, 100) : at;
+};
+
 // A field emptied or typed full of something that is not a number keeps the
 // answer it had, and says so by putting it back: a step of NaN is a key that
 // silently stops working.
-for (const [id, name] of [
-  ["pref-page-step", "pageStep"],
-  ["pref-page-step-ctrl", "pageStepCtrl"],
-  ["pref-page-step-shift", "pageStepShift"],
-]) {
+for (const [id, name] of PAGE_STEPS) {
   el(id).addEventListener("change", (ev) => {
-    const secs = Number(ev.target.value);
-    const kept = ev.target.value.trim() !== "" && isFinite(secs) && secs >= 0 ? secs : prefs.get(name);
+    const typed = Number(ev.target.value);
+    const kept =
+      ev.target.value.trim() !== "" && isFinite(typed) && typed >= 0
+        ? stepValue(typed, prefs.get(`${name}Unit`))
+        : prefs.get(name);
     prefs.set(name, kept);
     ev.target.value = String(kept);
+  });
+  // Changing the unit does not convert the number: 15 seconds is not 15
+  // percent of anything, and a program that answered a unit change by
+  // rewriting the number would be answering a question nobody asked. What it
+  // does do is put the number into the shape the new unit is counted in.
+  el(`${id}-unit`).addEventListener("change", (ev) => {
+    const unit = ev.target.value;
+    prefs.set(`${name}Unit`, unit);
+    paintStepUnit(id, unit);
+    const at = stepValue(Number(prefs.get(name)) || 0, unit);
+    prefs.set(name, at);
+    el(id).value = String(at);
   });
 }
 

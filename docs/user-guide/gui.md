@@ -322,7 +322,7 @@ hole, and the frame counter counts the length that will actually be written.
 | `Space` or **▶ Play** | Play from here, picture and sound. Press again to stop. The picture runs at the recording's own frame rate; where the machine cannot decode and draw that many, it shows fewer rather than falling behind the sound |
 | `←` `→` | Back and forward one frame. Hold to repeat |
 | `Shift+←` `Shift+→` | One second |
-| `PageUp` `PageDown` | Back and forward by however many seconds the [preferences](#cut-editor) say. `Ctrl` and `Shift` each carry their own amount |
+| `PageUp` `PageDown` | Back and forward by however far the [preferences](#cut-editor) say. `Shift`, `Ctrl` and `Shift+Ctrl` each carry their own amount |
 | `↑` `↓` | Previous / next **lossless point** |
 | `S` / `Shift+S` | Next / previous scene change |
 | `◀\|` `\|▶` | Previous / next **lossless point** |
@@ -372,22 +372,33 @@ Marks can also arrive without your placing any: from a detection, from a
 `.keyframe` file next to the recording, and — for a recording opened off a
 **disc** — from the chapters the recorder itself set.
 
-### Writing the marks down, and reading them back
+### Reading the marks in, and writing them down
 
-**Save the keyframes…** sits at the foot of the window, left of OK. It writes
-what is on the timeline to a file beside the recording, and **asks which shape
-on the way**; the picker then opens with the recording's own path already in
-it.
+**≡**, at the right-hand end of the transport row, holds everything to do with
+the marks.
+
+| Line | What it does |
+|---|---|
+| **Read a keyframe list…** | Reads a `.keyframe` from wherever it is (`Ctrl+L`) |
+| **Read cuts from an AviSynth Trim…** | Reads a `Trim` line (`Ctrl+Shift+L`). It arrives as cuts, not as marks |
+| **Save the keyframe list…** | Writes the marks beside the recording (`Ctrl+H`) |
+| **Save the cuts as an AviSynth Trim…** | Writes the surviving ranges as `Trim` calls (`Ctrl+Shift+H`) |
+| **Turn the disc's chapters into keyframes** | Puts them back after a clear. Greyed on anything but a disc |
+| **Remove every keyframe** | The marks alone. The cuts stay |
+
+There are two shapes to write, and the picker opens with the recording's own
+path already in it.
 
 | Shape | What is in it | Name |
 |---|---|---|
 | **Keyframe list** | The marks alone, one frame number per line | `recording.keyframe` |
 | **AviSynth Trim** | The ranges that survive, as `Trim` calls | `recording.ts.trim.avs` |
 
-Typing `.keyframe` or `.avs` over the name in the picker overrides what was
-chosen on the way in.
+Typing `.keyframe` or `.avs` over the name in the picker overrides the line
+that was picked, and a file being read is taken for what its own extension
+says it is.
 
-`Ctrl+S` and `Ctrl+Shift+S` write the same two files straight to those names
+`Ctrl+H` and `Ctrl+Shift+H` write the same two files straight to those names
 with no picker. They ask before writing over a file that is already there;
 a preference turns that question off.
 
@@ -788,9 +799,9 @@ effect as you make it.
 
 | Setting | What it does |
 |---|---|
-| **PageUp / PageDown** | How many seconds those keys move. `Ctrl` and `Shift` each carry their own amount; a step of 0 is a key that does nothing |
+| **PageUp / PageDown** | How far those keys move. Four answers — plain, `Shift`, `Ctrl`, `Shift+Ctrl` — each a number and a unit: **frames**, **seconds**, or **% of the timeline**, the percentage being of the timeline as it now stands. A step of 0 is a key that does nothing |
 | **When both are there, read** | Which file is picked up when a recording has both a `.keyframe` and a `.trim.avs` beside it |
-| **Let the save shortcut write over a file without asking** | `Ctrl+S` and `Ctrl+Shift+S` then write over a file of the same name in silence |
+| **Let the save shortcut write over a file without asking** | `Ctrl+H` and `Ctrl+Shift+H` then write over a file of the same name in silence |
 
 ### Output settings
 
@@ -899,14 +910,16 @@ can quote it straight into a bug report.
 | `Space` | Play / stop |
 | `←` `→` | One frame (hold to repeat) |
 | `Shift+←` `Shift+→` | One second |
-| `PageUp` `PageDown` | By the seconds set in the preferences (`Ctrl` and `Shift` carry their own) |
+| `PageUp` `PageDown` | By the amount set in the preferences (`Shift`, `Ctrl` and `Shift+Ctrl` carry their own) |
 | `↑` `↓` | Previous / next lossless point |
 | `I` / `O` | Start / end the selection here |
 | `K` | Mark this frame as a keyframe |
 | `S` / `Shift+S` | Next / previous scene change |
 | `Ctrl+D` | Detect commercials |
-| `Ctrl+S` | Write the keyframe list beside the recording |
-| `Ctrl+Shift+S` | Write the Trim line beside the recording |
+| `Ctrl+L` | Read a keyframe list from a file |
+| `Ctrl+Shift+L` | Read a Trim line from a file |
+| `Ctrl+H` | Write the keyframe list beside the recording |
+| `Ctrl+Shift+H` | Write the Trim line beside the recording |
 | `Esc` | Throw away what was done here and close (the same as Cancel) |
 
 ---
