@@ -124,15 +124,17 @@ const DEFAULTS = {
   /// The unit is part of each answer, and it decides whether the key jumps or
   /// scrolls. `"frame"` counts pictures, which is what a join is looked at
   /// in, and `"sec"` counts time: both are amounts, and the key moves that
-  /// far once per press. `"pct"` is a speed, a share of the timeline for
-  /// every second the key is held, which is how somebody crosses an hour
-  /// without first working out how long an hour is. The share is of the
-  /// timeline as it now stands, so a quarter is four seconds end to end
-  /// however much the cuts have taken out of it.
+  /// far once per press. `"pct"` is a speed: a share of the fastest scroll
+  /// the program does, which is sixty times the recording's own speed. A
+  /// quarter of it is fifteen times speed, and the number means that whatever
+  /// is open. A share of the *timeline* would not: a quarter of an hour's
+  /// recording a second is nine hundred times speed, and the same number
+  /// would mean something else again on the next recording.
   ///
   /// The numbers are the ones the tool this window is laid out after arrives
-  /// with: fifteen pictures and thirty, then a quarter of the timeline a
-  /// second and a half of it. Two amounts and two speeds, the amounts on the
+  /// with: fifteen pictures and thirty, then a quarter of the top scroll
+  /// speed and a half of it, which is fifteen times speed and thirty times.
+  /// Two amounts and two speeds, the amounts on the
   /// keys with least held down. Somebody coming from that tool finds these
   /// keys answering the way they are used to, and nobody else has an opinion
   /// about what a page key should do until they open this screen.

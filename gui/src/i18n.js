@@ -101,9 +101,9 @@ const CATALOG = {
     "prefs.step.pct": "% でスクロール",
     "prefs.pageStepNote":
       "カット編集で PageUp / PageDown を押したときの動きです。0 にすると、そのキーは効きません。" +
-      "フレームと秒は 1 回押すごとの移動量です。% は移動速度で、押しているあいだ 1 秒に進む割合です。" +
-      "25 なら、押しっぱなしで 4 秒かけて端から端まで進みます。" +
-      "割合はカットしたあとの長さに対するものなので、カットしても端から端までの時間は変わりません。" +
+      "フレームと秒は 1 回押すごとの移動量です。% は移動速度で、いちばん速いスクロール（60 倍速）" +
+      "に対する割合です。25 なら 15 倍速で、1 秒押しっぱなしにすると録画の 15 秒ぶん進みます。" +
+      "録画の長さには左右されません。" +
       "左右キーはこの設定の対象外です（1 フレーム、Shift で 1 秒）。",
     "prefs.sidecarPriority": "両方あるときに読むのは:",
     "prefs.sidecar.keyframe": "キーフレーム情報（.keyframe）",
@@ -847,11 +847,10 @@ const CATALOG = {
     "prefs.step.pct": "% a second, scrolling",
     "prefs.pageStepNote":
       "What PageUp and PageDown do to the playhead in the cut editor. A step of 0 is a key that " +
-      "does nothing. Frames and seconds are amounts, one per press. A percentage is a speed: the key " +
-      "scrolls that share of the timeline every second it is held, so 25 crosses the whole of it in " +
-      "four seconds. The share is of the timeline as it now stands, so those four seconds stay four " +
-      "seconds as the cuts are made. The left and right keys are separate and unchanged: one " +
-      "picture, and one second with Shift.",
+      "does nothing. Frames and seconds are amounts, one per press. A percentage is a speed: a share " +
+      "of the fastest scroll here, which is sixty times the recording's own speed. 25 is fifteen " +
+      "times, so a second of holding covers fifteen seconds of the recording, whatever is open. The " +
+      "left and right keys are separate and unchanged: one picture, and one second with Shift.",
     "prefs.sidecarPriority": "When both are there, read:",
     "prefs.sidecar.keyframe": "the keyframe list (.keyframe)",
     "prefs.sidecar.trim": "the AviSynth Trim line (.trim.avs)",

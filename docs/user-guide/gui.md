@@ -819,7 +819,7 @@ effect as you make it.
 
 | Setting | What it does |
 |---|---|
-| **PageUp / PageDown** | What those keys do. Four answers — plain, `Shift`, `Ctrl`, `Shift+Ctrl` — each a number and a unit: **frames**, **seconds**, or **% a second, scrolling**. The first two are amounts, one per press. A percentage is a speed: the key scrolls that share of the timeline every second it is held, so 25 crosses the whole of it in four seconds, and the share being of the timeline as it now stands those four seconds stay four seconds as the cuts are made. Out of the box: 15 frames, 30 with `Shift`, 25% with `Ctrl` and 50% with both. A step of 0 is a key that does nothing |
+| **PageUp / PageDown** | What those keys do. Four answers — plain, `Shift`, `Ctrl`, `Shift+Ctrl` — each a number and a unit: **frames**, **seconds**, or **% a second, scrolling**. The first two are amounts, one per press. A percentage is a speed: a share of the fastest scroll here, which is sixty times the recording's own speed. 25 is fifteen times, so a second of holding covers fifteen seconds of the recording, whatever is open. Out of the box: 15 frames, 30 with `Shift`, 25% with `Ctrl` and 50% with both. A step of 0 is a key that does nothing |
 | **When both are there, read** | Which file is picked up when a recording has both a `.keyframe` and a `.trim.avs` beside it |
 | **Let the save shortcut write over a file without asking** | `Ctrl+H` and `Ctrl+Shift+H` then write over a file of the same name in silence |
 

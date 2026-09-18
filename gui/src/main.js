@@ -2052,6 +2052,19 @@ async function paintSharp(t) {
 /// pictures behind it keep up.
 const SCROLL_TICK = 70;
 
+/// The fastest this program scrolls: sixty times the recording's own speed,
+/// which crosses a half-hour programme in half a minute. The strip's right
+/// drag reaches it at the far edge, and a page key whose unit is a percent
+/// asks for a share of it.
+///
+/// A share of *this* rather than a share of the timeline. A share of the
+/// timeline sounds like the same kind of answer and is not: a quarter of an
+/// hour's recording a second is nine hundred times speed, so every number
+/// somebody could type would be too fast to read, and the same number would
+/// mean something else on the next recording. A multiple of the recording's
+/// own speed is a speed somebody can picture and keep.
+const SCROLL_MAX_RATE = 60;
+
 /// Run a scroll until `endScroll` stops it.
 ///
 /// Two things start one. The strip's right drag, whose speed is where the
@@ -2092,7 +2105,7 @@ function startSearch(ev) {
   // cross a half-hour recording in half a minute
   const rate = () => {
     const dx = clamp((search.x - (rect.left + half)) / half, -1, 1);
-    return Math.sign(dx) * Math.abs(dx) ** 3 * 60;
+    return Math.sign(dx) * Math.abs(dx) ** 3 * SCROLL_MAX_RATE;
   };
   startScroll(rate, { x: ev.clientX });
 }
@@ -3558,12 +3571,11 @@ function arrowDue(ev) {
 ///
 /// Four answers, one per way the pair can be pressed, and each is a number
 /// and the unit it is counted in. Pictures and seconds are amounts: the key
-/// moves that far, once per press. A share of the timeline is a speed: the
-/// recording goes past at that share a second for as long as the key is held,
-/// which is how somebody crosses a programme without first working out how
-/// long it is. Ten percent is ten seconds end to end whatever is open, and it
-/// stays ten seconds as the cuts take material out of it -- the share is of
-/// the timeline as it now stands rather than of the recording.
+/// moves that far, once per press. A percent is a speed: a share of
+/// `SCROLL_MAX_RATE`, held for as long as the key is. A quarter of it is
+/// fifteen times the recording's own speed, so a second of holding covers
+/// fifteen seconds of the recording, whatever is open and however much of it
+/// the cuts have taken out.
 ///
 /// Read at the keystroke rather than held in a variable, so a number changed
 /// in the other window is in force at the next press, and under a key that is
@@ -3581,7 +3593,7 @@ function pageStep(ev) {
   if (!isFinite(by) || by <= 0) return { by: 0, rate: 0 };
   const unit = prefs.get(`${which}Unit`);
   if (unit === "frame") return { by: by * frame(), rate: 0 };
-  if (unit === "pct") return { by: 0, rate: (outDur * by) / 100 };
+  if (unit === "pct") return { by: 0, rate: (SCROLL_MAX_RATE * by) / 100 };
   return { by, rate: 0 };
 }
 
