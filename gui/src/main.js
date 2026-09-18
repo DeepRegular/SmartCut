@@ -110,6 +110,18 @@ function normalise(list) {
   return out;
 }
 
+/// Where the material begins, which is where frame 0 is.
+///
+/// The first picture that can be decoded rather than the container's zero: a
+/// broadcast recording frequently opens most of a second in, and the timeline
+/// starts at the picture and not at the clock.
+///
+/// The walk's list of access points is the exact answer and `head` is the
+/// same picture read off the front of the file, which is what there is to go
+/// on while the walk is still reading. Before either -- a file whose opening
+/// held no picture to find -- the clock's own zero, as before.
+const headTime = () => (src ? (src.points.length ? src.points[0] : (src.head ?? 0)) : 0);
+
 /// Recompute what survives the cuts, and where each surviving piece lands in
 /// the output.
 function rebuildTimeline() {
@@ -122,7 +134,7 @@ function rebuildTimeline() {
   // it can be decoded, and the planner clamps to it anyway. Starting the
   // timeline there is what makes the frame counter agree with the file that
   // actually gets written.
-  let pos = src.points.length ? src.points[0] : 0;
+  let pos = headTime();
   for (const c of cuts) {
     if (c.a > pos + 1e-6) keeps.push({ a: pos, b: Math.min(c.a, src.duration) });
     pos = Math.max(pos, c.b);
@@ -324,7 +336,7 @@ function applyCuts(next) {
 /// new beginning is a join like any other, and counts here.
 function joinTimes() {
   const list = keeps.slice(1).map((k) => k.a);
-  const head = src ? src.points[0] ?? 0 : 0;
+  const head = headTime();
   if (keeps.length && keeps[0].a > head + frame() / 2) list.push(keeps[0].a);
   return list.sort((a, b) => a - b);
 }
@@ -2572,7 +2584,7 @@ async function refreshPlan() {
 // last picture to put OUT at, so "cut to the end" would always leave that one
 // picture behind -- a stray frame at the end of the output. The two ends
 // therefore snap to the bounds of the timeline.
-const atFirstPicture = (o) => outToSrc(o) <= (src.points[0] ?? 0) + frame() / 2;
+const atFirstPicture = (o) => outToSrc(o) <= headTime() + frame() / 2;
 const atLastPicture = (o) => o >= outDur - frame() * 1.5;
 
 // Marking one end leaves the other where it was: IN..OUT is a range you build
@@ -2678,13 +2690,6 @@ function markPath(kind) {
   const ext = src ? (src.path.match(/\.[^./\\]*$/) || [""])[0] : "";
   return `${base}${ext}.trim.avs`;
 }
-
-/// Where the material begins, which is where frame 0 is.
-///
-/// The first picture that can be decoded rather than the container's zero: a
-/// broadcast recording frequently opens most of a second in, and the
-/// timeline starts at the picture and not at the clock.
-const headTime = () => (src && src.points.length ? src.points[0] : 0);
 
 /// The marks on screen, as frame numbers against the recording.
 const markNumbers = () =>
@@ -3005,7 +3010,7 @@ async function loadMarkFiles() {
 /// worse than no mark, which is what the disc reader says about them too.
 function applyDiscChapters(chapters) {
   if (!src || !chapters || !chapters.length) return 0;
-  const first = src.points.length ? src.points[0] : 0;
+  const first = headTime();
   const times = chapters
     .map((t) => t - src.start_time)
     .filter((t) => t >= first - 0.5 && t <= src.duration + 1e-6)
@@ -3189,6 +3194,20 @@ async function openPath(picked, saved, side, name, chapters, dropPids) {
     selA = saved ? Math.min(saved.selA, outDur) : 0;
     selB = saved ? Math.min(saved.selB, outDur) : outDur;
     el("status").textContent = "";
+    // The files beside the recording, before the walk rather than after it.
+    // Their numbers count pictures from the recording's first one, so what
+    // they need is the head -- and the outline now says where that is, read
+    // off the front of the file. So the marks are on the timeline and the
+    // list of them is on the left while the walk is still reading, which on a
+    // recording over a share is most of a minute of having them. See
+    // `headTime` and `smartcut_core::first_picture`.
+    //
+    // A recording whose opening held no picture to find is the case the head
+    // is unknown for. Its marks would land the second or so early that the
+    // clock's own zero puts them, so that one waits for the walk after all.
+    const early = !saved && src.points.length === 0 && src.head !== null;
+    let marks = false;
+    if (early) marks = await settle(() => loadMarkFiles());
     await showFrame(saved ? saved.playhead : 0);
     schedulePlan();
     // And now the walk, which has been running behind all of the above.
@@ -3197,17 +3216,12 @@ async function openPath(picked, saved, side, name, chapters, dropPids) {
     // the frame asked for rather than the nearest one a container seek could
     // find.
     await pointsArrived(exact, picked);
-    // The files beside the recording, now the walk has landed and not before.
-    // Their numbers count from the recording's first picture, and until the
-    // points are here this window does not know which picture that is --
-    // reading them early put every mark out by the second or so a broadcast
-    // recording opens with, and would have put a Trim line's cuts out by the
-    // same. See `headTime`.
-    if (!saved) {
-      await settle(async () => {
-        if (!(await loadMarkFiles())) applyDiscChapters(discChapters);
-      });
-    }
+    if (!saved && !early) marks = await settle(() => loadMarkFiles());
+    // The disc's own chapters, which fill a timeline no file beside the
+    // recording had anything to say about. Left until here either way: they
+    // arrive on the stream's own clock and are dropped rather than clamped
+    // where they fall outside the material, which is a question for the walk.
+    if (!saved && !marks) await settle(() => applyDiscChapters(discChapters));
     prepare();
     // Asked again now that the open is over. Everything above schedules the
     // plan while this window is still `opening`, and a plan asked for then is
@@ -3933,7 +3947,7 @@ function sync() {
 function applyCmBlocks(blocks) {
   if (!src || !blocks || !blocks.length) return;
   cmBlocks = blocks;
-  addKeyframes([src.points[0] ?? 0].concat(blocks.flatMap((b) => [b.start, b.end])));
+  addKeyframes([headTime()].concat(blocks.flatMap((b) => [b.start, b.end])));
   draw();
 }
 

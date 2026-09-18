@@ -267,7 +267,9 @@ first stage.
 While the band underneath reads `Reading the recording. What copies losslessly
 is known once it has been read`, you are in the first stage: `Snap to lossless`
 is greyed out, but the preview is there, the filmstrip has pictures in it, and
-**you can already make cuts.**
+**you can already make cuts.** The marks down the left came from the
+`.keyframe` file beside the recording; they do not wait for the reading
+either.
 
 **The pictures at this stage were found by approximate seeking.** There is no
 index yet to give exact positions, so the filmstrip's cells are cut on an even
@@ -407,6 +409,10 @@ Opening a recording in the cut editor picks up whichever of them is beside it.
 itself, so the recording opens with the material already taken out.** When both
 are there, a preference says which is read; either on its own is read whatever
 that preference says.
+
+**Neither waits for the analysis.** The marks are in the list the moment the
+window opens, and pressing one goes there. A long recording takes a while to
+analyse; the marks are usable before it does.
 
 The numbers in both count from the recording's first picture.
 

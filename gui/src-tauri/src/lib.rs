@@ -247,6 +247,13 @@ struct SourceInfo {
     /// How many of those cannot start a copy because their leading pictures
     /// are referenced.
     unusable_points: usize,
+    /// Where the material begins, for a window that has `points` empty: the
+    /// first picture a cut could start from, read off the front of the file
+    /// rather than found by the walk. `points[0]` says it once the walk has
+    /// landed and this says it before then, so the timeline, the frame
+    /// counter and a mark file's numbers are right from the moment the window
+    /// opens. See `smartcut_core::first_picture` and `headTime` in `main.js`.
+    head: Option<f64>,
     /// Where the container's clock begins. Everything else here is already
     /// rebased to it, and this is carried for the one thing that is not: a
     /// time that came from outside the file. A disc's chapter marks are
@@ -827,6 +834,7 @@ async fn open_outline(path: String) -> Result<SourceInfo, String> {
             index_name: String::new(),
             points: Vec::new(),
             unusable_points: 0,
+            head: o.head,
             start_time: o.start_time,
         })
     })
@@ -1056,6 +1064,9 @@ fn info_of(src: &Source) -> SourceInfo {
         index_name: src.index_name.to_string(),
         points: src.points.iter().map(|p| p.time).collect(),
         unusable_points: src.points.iter().filter(|p| p.open_gop() && !p.droppable).count(),
+        // The walk has been over it, so `points` is the answer and this is
+        // not asked for.
+        head: None,
         start_time: src.start_time,
     }
 }

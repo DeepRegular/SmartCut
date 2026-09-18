@@ -98,5 +98,39 @@ check opengop "$FIX/opengop.mp4"    2.000 5.500
 check ntv     "$MEDIA/full_ntv.ts"  3.400 900.250 1200.000 1799.900
 check atx     "$MEDIA/full_atx.ts"  600.500 1500.125
 
+# Where the material begins, before the walk has said so -----------------
+#
+# The editor draws the timeline from the container's own answer and fills the
+# access points in behind it, and everything it counts from the first picture
+# needs to know which picture that is. `Outline::head` reads it off the front
+# of the file; the walk's `points[0]` is the same picture, and this is the
+# check that says so. A head that is out by a fraction of a second is a mark
+# file that lands out by the same, and one that is out by a fraction of a
+# *microsecond* -- rebasing by the container's start time, in the last bit --
+# is a mark the timeline has already closed over and does not show at all.
+HEAD=rust/target/release/examples/headdiag
+head_is_the_first_point() {
+  local name=$1 src=$2
+  if [ ! -f "$src" ]; then printf "  SKIP  %-26s %s\n" "$name" "no $src"; return; fi
+  if [ ! -x "$HEAD" ]; then
+    printf "  SKIP  %-26s %s\n" "$name" "build --example headdiag first"; return
+  fi
+  local out
+  if out=$("$HEAD" "$src" 2>&1); then
+    ok "$name head" "$(echo "$out" | sed -n '2s/^  //p')"
+  else
+    bad "$name head" "$(echo "$out" | sed -n '2s/^  //p')"
+  fi
+}
+
+echo
+echo "the front of the file finds the same first picture as the walk"
+head_is_the_first_point mpeg2   "$FIX/mpeg2.ts"
+head_is_the_first_point opengop "$FIX/opengop.mp4"
+head_is_the_first_point hevc    "$FIX/hevc.mp4"
+head_is_the_first_point atx     "$MEDIA/atx.ts"
+head_is_the_first_point bdclip  "$MEDIA/bd-clip.ts"
+head_is_the_first_point sd43    "$MEDIA/sd43.ts"
+
 echo "=== $pass passed, $fail failed ==="
 [ "$fail" -eq 0 ]

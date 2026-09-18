@@ -656,6 +656,15 @@ It comes up in three stages now, and each one waits only for what it actually ne
 | 2 | The walk (a second a gigabyte) | The lossless points, snapping, a GOP-divided filmstrip, exact stage pictures, the plan, playback |
 | 3 | The picture pass (four seconds a gigabyte) | The filmstrip's pictures, the scenes, the hover |
 
+**The marks come up in stage one too.** A `.keyframe` file beside the recording is a list
+of frame numbers counted from the recording's first picture, so nothing can be placed from
+one until that picture is known. That is what used to make them wait for the walk, and a
+recording across a share showed no marks at all for half a minute. `outline()` now reads a
+little of the front of the file and finds that picture itself (`first_picture`). It is the
+same picture the walk calls `points[0]` — broadcast, disc and VC-1 material to hand all
+agree — and `tests/run_index_tests.sh` watches that they go on agreeing. A megabyte or two
+is read, so stage one costs what it cost.
+
 **Cuts are held as times.** A cut made before the walk finished stands at the instant it
 was made, and the points arriving never move it. What changes is only the answer to what
 it *costs*: a cut that missed an access point re-encodes the few frames at its join, and
@@ -898,10 +907,16 @@ Opening what you exported and starting from an empty list means doing the last s
 work again. `0` lands on the first picture even when the recording's clock starts at
 00:00:00.94.
 
-**They are read once the walk has landed, and not before.** Only the walk knows where the
-first picture is. Read at the moment the container opens, the numbers turn into seconds
-against a base of zero, and every mark comes out the best part of a second early — which is
-exactly how far into its own clock a broadcast recording begins.
+**They are read before the walk, against the head the container's own answer now carries.**
+The numbers count pictures from the recording's first one, so reading them needs to know
+where that picture is, and for a while only the walk knew: read at the moment the container
+opened, the numbers turned into seconds against a base of zero and every mark came out the
+best part of a second early — exactly how far into its own clock a broadcast recording
+begins. `outline()` reads a megabyte or two off the front of the file and finds that
+picture itself (`first_picture`), so the marks are on the timeline and in the list on the
+left while the walk is still reading — which over a share is most of a minute of having
+them. A recording whose opening holds no picture to find is the one case that waits for the
+walk, as everything used to.
 
 Numbers past the end are dropped — a list written for a different cut of the same recording
 is the likely reason, and a mark with no material behind it can neither be shown nor

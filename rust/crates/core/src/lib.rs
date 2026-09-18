@@ -939,6 +939,9 @@ fn assemble(
         byte_seekable,
         on_a_ts,
         mut joins,
+        // The walk is about to say where every picture a cut can start from
+        // is, which is this one and all the rest.
+        head: _,
     } = outline;
     let mut points = idx.points;
     if points.is_empty() {
@@ -1078,6 +1081,11 @@ pub struct Outline {
     pub on_a_ts: bool,
     /// See [`Source::joins`].
     pub joins: Vec<restamp::Seam>,
+    /// Where the material begins: the presentation time of the first picture
+    /// a cut could start from, which is the walk's `points[0]` arrived at
+    /// without the walk. `None` where the front of the file did not hold one.
+    /// Only [`outline`] fills it; see [`first_picture`].
+    pub head: Option<f64>,
 }
 
 impl Outline {
@@ -1127,8 +1135,14 @@ impl Outline {
 }
 
 /// The container's own answer about a recording. See [`Outline`].
+///
+/// The demuxer this opened is read a little further before it is let go, for
+/// the one thing the probe does not say and a reader can: where the first
+/// picture is. See [`first_picture`].
 pub fn outline(path: &str) -> Result<Outline> {
-    outline_of(path).map(|(o, _)| o)
+    let (mut o, mut ictx) = outline_of(path)?;
+    o.head = first_picture(&mut ictx, &o.video, o.start_time);
+    Ok(o)
 }
 
 /// As [`outline`], handing back the demuxer it opened along with it.
@@ -1547,8 +1561,73 @@ fn outline_of(path: &str) -> Result<(Outline, input::Demux)> {
         start_time,
         byte_seekable,
         on_a_ts,
+        // Filled by [`outline`], which is the one way in with a demuxer left
+        // over to read it with. See [`first_picture`].
+        head: None,
     };
     Ok((outline, ictx))
+}
+
+/// Where the material begins, read off the front of the file.
+///
+/// The walk's answer to this is `points[0]`, and this is the same picture;
+/// what it saves is the walk. Everything the editor counts from the first
+/// picture is out by the second or so a broadcast recording opens with until
+/// somebody knows where that picture is -- the frame counter, the length of
+/// the timeline, and the numbers in a mark file above all, which count
+/// pictures from it. The walk is tens of seconds over a share; this is a
+/// megabyte or two.
+///
+/// **The smallest presentation time among the key pictures at the front**,
+/// rather than the first key picture to arrive: the list the walk builds is
+/// sorted by presentation time, and on an open GOP the two are not always the
+/// same packet. A second past the first of them is further than any reorder
+/// goes.
+///
+/// Bounded at both ends, because the point of it is to be cheap: a stream
+/// whose first key picture is further in than the limit says nothing rather
+/// than reading on, and the window waits for the walk as it did before.
+fn first_picture(ictx: &mut input::Demux, video: &VideoInfo, start_time: f64) -> Option<f64> {
+    /// How far into the file to look for the first of them. Room for a
+    /// Blu-ray's pictures, which are a megabyte apiece, where a broadcast
+    /// recording opens on a sequence header inside the first one.
+    const LIMIT: isize = 32 << 20;
+    /// And how much further to read once one has been found, for the reorder.
+    const REORDER: f64 = 1.0;
+    /// What bounds it where the demuxer will not say which byte a packet came
+    /// from -- a pipe, a stream.
+    const PACKETS: u64 = 200_000;
+    let mut head: Option<f64> = None;
+    let mut seen: u64 = 0;
+    for (s, p) in ictx.packets() {
+        seen += 1;
+        if p.position() > LIMIT || seen > PACKETS {
+            break;
+        }
+        if s.index() != video.stream_index || !p.is_key() {
+            continue;
+        }
+        let Some(pts) = p
+            .pts()
+            .map(|t| t as f64 * video.time_base - start_time)
+            .filter(|t| t.is_finite())
+        else {
+            continue;
+        };
+        match head {
+            Some(t) if pts >= t + REORDER => break,
+            Some(t) => head = Some(t.min(pts)),
+            None => head = Some(pts),
+        }
+    }
+    // The same floor the walk's points are given, and for the same reason:
+    // rebasing by the container's start time puts the first picture a
+    // fraction of a microsecond below zero where the two disagree in the last
+    // bit. Left off, the head read as -3.3e-7 where the walk said 0, and a
+    // mark put down on it was a mark the timeline had already closed over --
+    // which is a keyframe list that reads five marks and shows four. See
+    // [`scan_with`].
+    head.map(|t| t.max(0.0))
 }
 
 #[cfg(test)]
