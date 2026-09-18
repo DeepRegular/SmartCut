@@ -510,6 +510,16 @@ main { flex: 1; min-height: 0; display: flex; gap: 0; }
   background: var(--sunken); border: 1px solid var(--line); padding: 4px 10px;
   font-variant-numeric: tabular-nums;
 }
+/* Three readouts on one line, and at the window's narrowest they want more
+   room than the line has. Left alone, every one of them folds in two -- the
+   frame number breaks across the slash -- and the bar grows a second line
+   anyway. So none of them may fold, and the detection note is the one that
+   gives way: the number and the selection are what the cut is being made
+   against, while the note is a summary that was already said in the row it
+   came from, and it keeps the whole of itself in its tooltip. */
+.statusbar > * { flex: none; white-space: nowrap; }
+.statusbar .spacer { flex: 1; }
+.statusbar #cm-note { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 .counter { font-size: 15px; }
 .dim { color: var(--dim); }
 /* Something the disc itself says that changes what the rows below are worth.
@@ -584,7 +594,30 @@ main { flex: 1; min-height: 0; display: flex; gap: 0; }
    two buttons that end this window sit in the far corner, paired and the same
    size, where a dialog's are looked for. */
 .export { display: flex; align-items: center; gap: 12px; }
-.export #status { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* The status is the one thing in this row that may give way. Flex takes a
+   shortfall out of every item at once, and the row runs short as soon as the
+   window is near its narrowest and the status has something to say: the badge
+   then breaks over four lines and カウンタ spells itself downwards. Those two
+   are labels the width of their own words -- a measurement and a switch, and
+   neither is readable folded -- while the status was written to be cut short
+   and ends in an ellipsis when it is. */
+.export > * { flex: none; }
+.export .spacer { flex: 1; }
+.export .badge, .export .mini { white-space: nowrap; }
+.export #status {
+  flex: 0 1000 auto; min-width: 0;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+/* Once the status has nothing left to give -- a long badge, the subtitle
+   picker out, and the window at its narrowest -- the shortfall has to land
+   somewhere, and something cut short says more than two buttons pushed off
+   the edge of the window. The weights are the order it is taken in: the
+   status, which was written to be cut; then the picker, which a list always
+   clips and whose answer is a track number either way; and the badge last,
+   because the count in it is what the panel above was read for. */
+.export .opt { flex: 0 10 auto; min-width: 0; }
+.export .opt select { min-width: 0; }
+.export .badge { flex: 0 1 auto; overflow: hidden; text-overflow: ellipsis; }
 .export .primary {
   background: var(--accent); color: #201400; border: 1px solid var(--accent);
   border-radius: 2px; padding: 7px 22px; font-weight: 600; cursor: pointer;

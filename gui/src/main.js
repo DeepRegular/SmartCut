@@ -3114,6 +3114,15 @@ function keptAudio() {
   return tracks.find((a) => !dropStreams.includes(a.index)) || null;
 }
 
+/// The note under the timeline. It is the one thing in that bar allowed to be
+/// cut short when the window is narrow, so it carries the whole of itself in
+/// its tooltip -- see `.statusbar #cm-note`.
+function showCmNote(text) {
+  const e = el("cm-note");
+  e.textContent = text;
+  e.title = text;
+}
+
 /// The recording's name in the title bar of the window's own header, and its
 /// shape on the line under it.
 ///
@@ -3261,7 +3270,7 @@ async function openPath(picked, saved, side, name, chapters, dropPids) {
     el("warm").textContent = "";
     rebuildTimeline();
     paintHistory();
-    el("cm-note").textContent = cmSummary;
+    showCmNote(cmSummary);
     renderKeyframes();
     // Opened whole: nothing is cut yet, so the selection is the recording.
     selA = saved ? Math.min(saved.selA, outDur) : 0;
@@ -3903,17 +3912,17 @@ el("tracks-modal").addEventListener("mousedown", (ev) => {
 el("detect-cm").addEventListener("click", async () => {
   if (!src) return;
   el("detect-cm").disabled = true;
-  el("cm-note").textContent = tr("editor.detecting");
+  showCmNote(tr("editor.detecting"));
   try {
     const res = await invoke("detect_cm", { path: src.path });
     cmSummary = cmNote(res);
-    el("cm-note").textContent = cmSummary;
+    showCmNote(cmSummary);
     applyCmBlocks(res.blocks);
     // Reported to the clip list too, so the row says what was found and a
     // later visit to this clip does not have to detect it again.
     sync();
   } catch (e) {
-    el("cm-note").textContent = tr("cm.failed", { e });
+    showCmNote(tr("cm.failed", { e }));
   } finally {
     el("detect-cm").disabled = false;
     el("detect-cm").textContent = tr("editor.detectCm");
@@ -3935,7 +3944,7 @@ if (listen) {
   listen("cm-progress", (ev) => {
     const [phase, done] = ev.payload;
     el("detect-cm").textContent = tr("editor.detectingPct", { pct: Math.round(done * 100) });
-    el("cm-note").textContent = phase;
+    showCmNote(phase);
   });
   listen("prepare-progress", (ev) => {
     const [phase, done] = ev.payload;
@@ -4098,7 +4107,7 @@ if (listen) {
       if (arriving) await settle(() => applyCmBlocks(cm.blocks));
       else applyCmBlocks(cm.blocks);
       cmSummary = cm.note || "";
-      el("cm-note").textContent = cmSummary;
+      showCmNote(cmSummary);
     }
     relayout();
     sync();
