@@ -298,8 +298,16 @@ button.brand:hover, button.brand.open { background: #3a3a3a; border-color: #5c5c
 .modes { display: flex; gap: 6px; margin: -1px 0; }
 
 main { flex: 1; min-height: 0; display: flex; gap: 0; }
+/* Scrolls down the page only as a last resort. Everything in this column is
+   meant to be on screen at once, and the window has a smallest size it may be
+   dragged to that says so -- see `min_inner_size` in `open_editor`. What the
+   rows cost is a font's answer though, not a number written here, so a screen
+   whose text comes out taller than the one this was measured on would
+   otherwise lose the plan and the two buttons under it off the bottom, with
+   nothing to say where they had gone. Sideways stays hidden: the film strip
+   hangs its reel out past the edge on purpose. */
 .editor {
-  flex: 1; min-width: 0; min-height: 0; overflow: hidden;
+  flex: 1; min-width: 0; min-height: 0; overflow: hidden auto;
   display: flex; flex-direction: column; gap: 5px; padding: 5px 8px;
 }
 
@@ -452,6 +460,19 @@ main { flex: 1; min-height: 0; display: flex; gap: 0; }
 .strip .mark figcaption::before { content: "⚑ "; color: #201400; }
 .strip-foot { display: flex; align-items: center; gap: 10px; margin-top: 3px; color: var(--dim); font-size: 11px; }
 .strip-foot b { color: #cfcfcf; }
+/* What the pass made is one long line and it does not fold, so at a narrow
+   window it took the whole row and left the sentence beside it a column one
+   character wide -- 460 pixels tall at the window's own minimum, which is
+   what pushed the plan and the two buttons under it off the bottom of the
+   screen. The sentence is prose and wraps; the note is the one that gives
+   way, down to nothing if it has to, and says the whole of itself in its
+   tooltip. The picker keeps its width: it is a control. */
+.strip-foot > .dim { flex: 1 1 0; min-width: 22em; }
+/* The sentence takes the whole of what is left over, so the spacer beside it
+   has nothing left to push with. */
+.strip-foot .spacer { flex: none; }
+.strip-foot #warm { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.strip-foot .opt { flex: none; }
 
 /* --- scrubber --------------------------------------------------------- */
 .track-wrap { background: var(--panel); border: 1px solid var(--line); padding: 3px 8px 1px; position: relative; }
@@ -566,6 +587,17 @@ main { flex: 1; min-height: 0; display: flex; gap: 0; }
 #segments {
   margin: 4px 0 0; padding: 0; list-style: none; color: var(--dim); font-size: 11px;
   line-height: 15px; height: 45px; overflow-y: auto; font-variant-numeric: tabular-nums;
+}
+/* A short window, which is the one the plan and the buttons under it used to
+   fall out of. The picture gives up what it can -- it is the one thing here
+   that is worth whatever room is left over, and the one thing that still
+   reads at half the size -- and the plan keeps two of its three lines, with
+   the shadow below saying there is more. Nothing else moves: these are rows
+   of controls, and a control that changes size with the window is one that
+   has to be looked for twice. */
+@media (max-height: 780px) {
+  .stage { min-height: 110px; }
+  #segments { height: 30px; }
 }
 #segments .copy { color: var(--copy); }
 #segments .reencode { color: var(--encode); }

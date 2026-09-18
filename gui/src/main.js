@@ -2424,6 +2424,14 @@ async function toScene(dir, from = playhead) {
   }
 }
 
+/// What the pass over the recording made, under the film strip. Cut short the
+/// same way and for the same reason -- see `.strip-foot #warm`.
+function showWarm(text) {
+  const e = el("warm");
+  e.textContent = text;
+  e.title = text;
+}
+
 /// Build the seek index -- and the proxy, where one was asked for -- once, in
 /// the background.
 ///
@@ -2443,7 +2451,7 @@ async function prepare() {
   cardGuesses.clear();
   el("prev-scene").disabled = true;
   el("next-scene").disabled = true;
-  el("warm").textContent = tr("warm.start");
+  showWarm(tr("warm.start"));
   try {
     const r = await invoke("prepare");
     const tk = r.track;
@@ -2484,7 +2492,7 @@ async function prepare() {
     }
     made.push(tr("warm.thumbs", { n: tk.thumbs, gap: tk.interval.toFixed(2) }));
     made.push(tr("warm.scenes", { n: tk.scenes.length }));
-    el("warm").textContent = made.join(" / ");
+    showWarm(made.join(" / "));
     draw();
     stripCache = null;
     askStrip();
@@ -2497,7 +2505,7 @@ async function prepare() {
     // Opening another file supersedes this one; that is not a failure worth
     // showing, because the second file's own pass is already running.
     if (String(e).includes("cancelled")) return;
-    el("warm").textContent = tr("warm.failed", { e });
+    showWarm(tr("warm.failed", { e }));
   }
 }
 
@@ -3267,7 +3275,7 @@ async function openPath(picked, saved, side, name, chapters, dropPids) {
     // What the line under the strip says is about a recording that has been
     // read through, so on the way into another one it is about the wrong
     // recording. `prepare` writes it again on the far side of the walk.
-    el("warm").textContent = "";
+    showWarm("");
     rebuildTimeline();
     paintHistory();
     showCmNote(cmSummary);
@@ -3948,7 +3956,7 @@ if (listen) {
   });
   listen("prepare-progress", (ev) => {
     const [phase, done] = ev.payload;
-    if (!warmed) el("warm").textContent = tr("warm.progress", { phase, pct: Math.round(done * 100) });
+    if (!warmed) showWarm(tr("warm.progress", { phase, pct: Math.round(done * 100) }));
   });
   // Pictures from a pass that is still running. Everything that reads held
   // pictures can use them from here on, for the stretch of the recording the

@@ -1672,7 +1672,13 @@ async fn open_editor(title: String, app: tauri::AppHandle) -> Result<(), String>
     let window = WebviewWindowBuilder::new(&app, EDITOR, WebviewUrl::App("editor.html".into()))
         .title(title)
         .inner_size(1240.0, 860.0)
-        .min_inner_size(900.0, 620.0)
+        // The smallest this window may be dragged to, and it has to be a size
+        // everything in it is still *on*: at 620 the plan panel and the two
+        // buttons under it were off the bottom of the screen, with nothing to
+        // say where they had gone. 720 is what the column comes to with the
+        // picture at the smallest it is worth showing -- see the short-window
+        // rules in `styles.css`.
+        .min_inner_size(900.0, 720.0)
         .center()
         // Out of sight until the size it was last left at is on it. A window
         // that is sized after it is up opens and then jumps. See [`geometry`].
