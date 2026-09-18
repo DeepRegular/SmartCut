@@ -194,14 +194,22 @@ button.brand:hover, button.brand.open { background: #3a3a3a; border-color: #5c5c
   font-weight: 600;
 }
 /* One group at a time, and the box the height of the tallest of them: a
-   panel that resized itself on every click would move the list of names out
-   from under the pointer that had just used it. */
-.pref-panes { flex: 1; min-width: 0; padding: 12px; }
+   panel that resizes itself on every click moves the list of names out from
+   under the pointer that has just used it.
+
+   Every pane is therefore laid out, one on top of another in a single grid
+   cell, and the ones that are not showing are turned off with `visibility`
+   rather than taken out of the layout: a pane that is not laid out cannot
+   hold the box open, which is what left the panel jumping between 346 and
+   533 pixels as the groups were walked through. Invisible is also out of
+   reach -- no pointer, no tab stop -- so only the group on top answers. */
+.pref-panes { flex: 1; min-width: 0; padding: 12px; display: grid; }
 .pref-pane {
   display: flex; flex-direction: column; gap: 8px;
   min-height: 240px; align-content: start;
+  grid-area: 1 / 1;
 }
-.pref-pane[hidden] { display: none; }
+.pref-pane[hidden] { display: flex; visibility: hidden; }
 /* A note belongs to the control above it, so it is pulled up against it and
    indented under the box it explains. */
 .prefs-body p.dim { margin: -4px 0 2px 22px; font-size: 11.5px; }
