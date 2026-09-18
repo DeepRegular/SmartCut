@@ -1083,8 +1083,9 @@ pub struct Outline {
     pub joins: Vec<restamp::Seam>,
     /// Where the material begins: the presentation time of the first picture
     /// a cut could start from, which is the walk's `points[0]` arrived at
-    /// without the walk. `None` where the front of the file did not hold one.
-    /// Only [`outline`] fills it; see [`first_picture`].
+    /// without the walk. `None` where the front of the file did not hold one,
+    /// and `None` for every way in but [`outline_with_head`], which is the
+    /// only one that pays the read. See [`first_picture`].
     pub head: Option<f64>,
 }
 
@@ -1135,11 +1136,20 @@ impl Outline {
 }
 
 /// The container's own answer about a recording. See [`Outline`].
-///
-/// The demuxer this opened is read a little further before it is let go, for
-/// the one thing the probe does not say and a reader can: where the first
-/// picture is. See [`first_picture`].
 pub fn outline(path: &str) -> Result<Outline> {
+    outline_of(path).map(|(o, _)| o)
+}
+
+/// The same, and with the first picture found as well.
+///
+/// The demuxer is read a little further before it is let go, for the one
+/// thing the probe does not say and a reader can. See [`first_picture`].
+///
+/// **Apart from [`outline`] because most callers want nothing of it.** The
+/// clip list sweeps `outline` over every file dropped on it, and a folder of
+/// broadcast recordings on a share is thousands of them; the head is the cut
+/// editor's question and nobody else's, so nobody else pays a read for it.
+pub fn outline_with_head(path: &str) -> Result<Outline> {
     let (mut o, mut ictx) = outline_of(path)?;
     o.head = first_picture(&mut ictx, &o.video, o.start_time);
     Ok(o)
@@ -1561,8 +1571,7 @@ fn outline_of(path: &str) -> Result<(Outline, input::Demux)> {
         start_time,
         byte_seekable,
         on_a_ts,
-        // Filled by [`outline`], which is the one way in with a demuxer left
-        // over to read it with. See [`first_picture`].
+        // Filled by [`outline_with_head`] alone. See [`first_picture`].
         head: None,
     };
     Ok((outline, ictx))

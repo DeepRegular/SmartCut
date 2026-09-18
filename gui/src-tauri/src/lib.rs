@@ -812,7 +812,9 @@ async fn open_source(path: String, app: tauri::AppHandle) -> Result<SourceInfo, 
 #[tauri::command]
 async fn open_outline(path: String) -> Result<SourceInfo, String> {
     off_thread(move || {
-        let o = smartcut_core::outline(&path).map_err(|e| e.to_string())?;
+        // The one caller that wants the head: see `Outline::head` and the
+        // marks the editor puts down before the walk lands.
+        let o = smartcut_core::outline_with_head(&path).map_err(|e| e.to_string())?;
         Ok(SourceInfo {
             path: o.path.clone(),
             codec: o.video.codec.clone(),
