@@ -98,6 +98,19 @@ struct Held(Mutex<Option<SeekIndex>>);
 #[derive(Default)]
 struct Playing(std::sync::atomic::AtomicBool);
 
+/// Whether the cut editor is on screen.
+///
+/// Playback belongs to that window, and [`Playing`] on its own cannot say so.
+/// The window is closed on the thread it is drawn on while [`play`] switches
+/// playback on from a worker, so a 再生 the machine is too busy to act on at
+/// once -- which is what 解析中 means -- can land *after* the close, set
+/// `Playing` back to true, and start an audio thread with nothing left alive
+/// to stop it: the recording then plays on to its end out of a window that is
+/// not there. Both halves of playback therefore ask this as well, and a
+/// `play` that arrives after its window has gone does not start at all.
+#[derive(Default)]
+struct EditorUp(std::sync::atomic::AtomicBool);
+
 /// The subtitle track the preview is drawing, once one has been asked for.
 ///
 /// Kept between frames because that is the whole point of it: the reader
@@ -1673,6 +1686,7 @@ async fn open_editor(title: String, app: tauri::AppHandle) -> Result<(), String>
         let _ = window.center();
     }
     let _ = window.show();
+    app.state::<EditorUp>().0.store(true, Ordering::SeqCst);
     geometry::watch(&window, EDITOR);
     // The list has to know the editor has gone, whichever way it went -- OK,
     // キャンセル, or the title bar's cross. Said from here rather than from the
@@ -1694,6 +1708,7 @@ async fn open_editor(title: String, app: tauri::AppHandle) -> Result<(), String>
             event,
             tauri::WindowEvent::CloseRequested { .. } | tauri::WindowEvent::Destroyed
         ) {
+            teller.state::<EditorUp>().0.store(false, Ordering::SeqCst);
             teller
                 .state::<Playing>()
                 .0
@@ -3858,6 +3873,10 @@ async fn play(
     fps: f64,
     frames: tauri::ipc::Channel<tauri::ipc::InvokeResponseBody>,
 ) -> Result<(), String> {
+    // The window this plays for may have gone already: see [`EditorUp`].
+    if !app.state::<EditorUp>().0.load(Ordering::SeqCst) {
+        return Ok(());
+    }
     // The pictures come from the proxy when there is one; the sound always
     // comes from the recording, which is where the audio actually is.
     let src = with_pictures(&app, |s, _| Ok(s.clone()))?;
@@ -3878,7 +3897,14 @@ async fn play(
         let audio_app = app.clone();
         std::thread::spawn(move || {
             let stop_app = audio_app.clone();
-            let stop = move || !stop_app.state::<Playing>().0.load(Ordering::SeqCst);
+            // Either answer stops it: playback told to stop, or the window it
+            // plays for gone. The second is what covers the moment between
+            // the two -- a close that lands while this is starting up leaves
+            // `Playing` true, and only the window can still say otherwise.
+            let stop = move || {
+                !stop_app.state::<Playing>().0.load(Ordering::SeqCst)
+                    || !stop_app.state::<EditorUp>().0.load(Ordering::SeqCst)
+            };
             if let Err(e) = smartcut_core::play_audio(&audio_src, &audio_ranges, from, stop) {
                 eprintln!("audio playback: {e}");
                 // Otherwise this fails in total silence: the release build has
@@ -3893,13 +3919,14 @@ async fn play(
 
     tauri::async_runtime::spawn_blocking(move || {
         let playing = app.state::<Playing>();
+        let up = app.state::<EditorUp>();
         let began = std::time::Instant::now();
         let mut elapsed_out = 0.0f64;
         let mut next_show = 0.0f64;
         let mut outcome: Result<(), String> = Ok(());
 
         for (a, b) in ranges {
-            if !playing.0.load(Ordering::SeqCst) {
+            if !playing.0.load(Ordering::SeqCst) || !up.0.load(Ordering::SeqCst) {
                 break;
             }
             let start = a.max(from);
@@ -3919,7 +3946,7 @@ async fn play(
                 b,
                 width,
                 |t| {
-                    if !playing.0.load(Ordering::SeqCst) {
+                    if !playing.0.load(Ordering::SeqCst) || !up.0.load(Ordering::SeqCst) {
                         return smartcut_core::Pace::Stop;
                     }
                     let out_t = (base + t - seg_from).max(0.0);
@@ -5134,6 +5161,7 @@ pub fn run() {
         .manage(OpenPath::default())
         .manage(Held::default())
         .manage(Playing::default())
+        .manage(EditorUp::default())
         .manage(Subs::default())
         .manage(BatchStop::default())
         .manage(Shots::default())
