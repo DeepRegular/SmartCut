@@ -260,8 +260,29 @@ const snapshot = () => ({
   playhead,
 });
 
+/// What a recording arrives with is not something that was done to it.
+///
+/// The marks beside the file, the chapters off the disc, the blocks a
+/// detection the list ran found -- all of them land on the timeline while the
+/// recording is being opened, and not one of them is an edit. Counted as one,
+/// 取消 sat lit on a window nobody had touched yet, and the first press of it
+/// threw away the marks the window had opened with. `remember` says nothing
+/// for as long as this is set.
+let settling = 0;
+
+/// Put a recording's own marks down without writing them into the history.
+async function settle(fn) {
+  settling += 1;
+  try {
+    return await fn();
+  } finally {
+    settling -= 1;
+  }
+}
+
 /// Put down where we are, on the way into an edit.
 function remember() {
+  if (settling) return;
   past.push(snapshot());
   if (past.length > 50) past.shift();
   undone = [];
@@ -3183,7 +3204,9 @@ async function openPath(picked, saved, side, name, chapters, dropPids) {
     // recording opens with, and would have put a Trim line's cuts out by the
     // same. See `headTime`.
     if (!saved) {
-      if (!(await loadMarkFiles())) applyDiscChapters(discChapters);
+      await settle(async () => {
+        if (!(await loadMarkFiles())) applyDiscChapters(discChapters);
+      });
     }
     prepare();
     // Asked again now that the open is over. Everything above schedules the
@@ -3944,7 +3967,10 @@ if (listen) {
     // Reloaded when the *row* changes, not merely the recording: two rows can
     // be the same file cut two different ways, and coming from one to the
     // other has to bring the other one's cuts with it.
-    if (editId !== id) {
+    // Whether this open is what put the recording up, which decides whether
+    // the blocks below are part of it arriving or something done to it.
+    const arriving = editId !== id;
+    if (arriving) {
       opening = id;
       editId = id;
       try {
@@ -3957,9 +3983,12 @@ if (listen) {
     // marks: it is the one that knows where the material begins. Applied
     // whether or not the recording was already up -- a detection run from the
     // list while this window sat open on the same clip has marks to put down
-    // just the same.
+    // just the same. That one is an edit and steps back like any other; marks
+    // a recording comes up with are not, and `settle` keeps them out of the
+    // history.
     if (cm && cm.blocks && cm.blocks.length) {
-      applyCmBlocks(cm.blocks);
+      if (arriving) await settle(() => applyCmBlocks(cm.blocks));
+      else applyCmBlocks(cm.blocks);
       cmSummary = cm.note || "";
       el("cm-note").textContent = cmSummary;
     }
