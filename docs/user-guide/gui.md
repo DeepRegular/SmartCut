@@ -753,6 +753,11 @@ For a clip whose cuts all landed on lossless points, you get an ordinary
 representative frame instead, with `Nothing re-encoded — the whole clip is
 copied losslessly` written underneath.
 
+Not when **Transcode** is ticked: the seams cost nothing and every
+frame is still written back smaller, so the line reads `The whole clip is
+transcoded to fit the disc` instead. Only for MPEG-2 recordings — anything
+else is copied at its own size, and says so.
+
 While the list is being written the picture follows along. When the run ends it
 **stays on the last frame encoded** rather than going back to the top.
 

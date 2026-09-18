@@ -4481,6 +4481,10 @@ function paintShotsNote() {
 /// Keyed on the clip *and its cuts*, so coming back after changing one looks
 /// at the new joins rather than the ones that were there before.
 let shownReencode = null;
+/// And what that showing was told about a disc run's share -- held beside the
+/// key rather than in it, because `stillHeld` builds the key from the clip
+/// alone and a run's share is not a fact about the clip.
+let shownShare = null;
 let shotsToken = 0;
 
 /// Set when a run ends, to keep the stage where the writing head left it.
@@ -4502,7 +4506,26 @@ function stillHeld() {
   return ready().includes(clip) && shownReencode === JSON.stringify([clip.id, rangesOf(clip)]);
 }
 
-async function showReencode(clip) {
+/// What share this clip's pictures are actually written at, or null where
+/// they are written as they are.
+///
+/// The run's share is one number for the whole list, and it does not reach
+/// every clip of it: the engine can write MPEG-2 back smaller without
+/// decoding it and can do that to nothing else, so a recording in anything
+/// else is copied at its own size and the disc has to take it. `can_shrink`
+/// is the engine's own answer to that question -- see `fit.rs`.
+function shrinkShare(clip, share) {
+  if (share === null || share === undefined || share >= 1) return null;
+  return clip && clip.info && clip.info.can_shrink ? share : null;
+}
+
+/// That share as a percentage, the way the gauge and the run's own notes
+/// write it.
+function sharePct(share) {
+  return (share * 100).toFixed(1);
+}
+
+async function showReencode(clip, share = null) {
   const token = ++shotsToken;
   if (!clip) {
     onShow = shownReencode = null;
@@ -4510,9 +4533,15 @@ async function showReencode(clip) {
     stageShot(null);
     return;
   }
+  // The share counts as part of what is on show: the same clip with the same
+  // cuts says something different once a run has been told to make the
+  // pictures fit a disc, and going by the key alone would leave the line the
+  // screen was showing before the button was pressed standing.
   const key = JSON.stringify([clip.id, rangesOf(clip)]);
-  if (shownReencode === key) return;
+  const smaller = shrinkShare(clip, share);
+  if (shownReencode === key && shownShare === smaller) return;
   shownReencode = key;
+  shownShare = smaller;
   el("out-shots-note").className = "grow dim";
   el("out-shots-note").textContent = t("out.looking");
   // Nothing to repaint until there is an answer: this runs on into an await,
@@ -4542,17 +4571,24 @@ async function showReencode(clip) {
     if (!r.segs.length) {
       // Cuts that all landed on access points, or no cuts at all. Worth
       // saying rather than leaving it blank: it is the best outcome this
-      // program has.
+      // program has -- unless the run is also making the pictures smaller to
+      // fit a disc, which rewrites every frame of it whatever the cuts did.
       onShow.note = {
-        className: "grow lossless",
-        text: t("out.losslessNote", { clip: clipLabel(clip) }),
+        className: smaller === null ? "grow lossless" : "grow dim",
+        text: smaller === null
+          ? t("out.losslessNote", { clip: clipLabel(clip) })
+          : t("out.shrinkNote", { clip: clipLabel(clip), share: sharePct(smaller) }),
       };
       paintShotsNote();
       // The clip's own poster rather than a black rectangle. It does not
       // contradict what this screen is for: the line under it says there is
       // nothing to re-encode, so the picture is standing for the clip about
       // to be written and not for a frame being made again.
-      stageShot(null, t("out.losslessStage"), posterOf(clip));
+      stageShot(
+        null,
+        smaller === null ? t("out.losslessStage") : t("out.shrinkStage"),
+        posterOf(clip)
+      );
       return;
     }
     onShow.note = {
@@ -4584,7 +4620,19 @@ async function showReencode(clip) {
 /// starts: the same plan the frames on the stage below came from. A plan that
 /// could not be read leaves the plain line standing -- it promises nothing,
 /// which is all that can be honestly said there.
-function sayWhatIsWritten(clip, out) {
+function sayWhatIsWritten(clip, out, share) {
+  const name = nameOf(out);
+  // A run that has to fit a disc writes every picture back smaller, and the
+  // plan below has nothing to say about that: it is about the seams, and the
+  // seams are the cheap part of a cut whose whole length is being rewritten.
+  // So this is asked first -- "losslessly" over the top of a transcode
+  // describes a run nobody is having.
+  const smaller = shrinkShare(clip, share);
+  if (smaller !== null) {
+    el("out-state").textContent =
+      t("out.writingShrink", { name, share: sharePct(smaller) });
+    return;
+  }
   // The plan this clip is being written to, and not one left over from the
   // ranges it had before somebody moved them.
   const held = clip.reencode;
@@ -4592,7 +4640,6 @@ function sayWhatIsWritten(clip, out) {
     held && held.sig === JSON.stringify(rangesOf(clip)) ? held.plan : null;
   const segs = (plan && plan.segments) || [];
   if (!segs.length) return;
-  const name = nameOf(out);
   const redone = segs.filter((g) => g.kind !== "copy").length;
   const text = !segs.some((g) => g.kind === "copy")
     ? t("out.writingAll", { name })
@@ -4724,7 +4771,20 @@ function renderOutScreen() {
   // Idle, the screen speaks for whichever clip is about to be written first;
   // running, `runExport` points it at the one under the head. Just finished,
   // it stays on the frame the head stopped at.
-  if (!exporting && !stillHeld()) showReencode(list[0] || null);
+  if (!exporting && !stillHeld()) {
+    const first = list[0] || null;
+    // With the share the run would be given, where there is one to have: a
+    // list that has to be made smaller to fit its disc is not going to be
+    // copied losslessly, and saying so the moment before the button is
+    // pressed is the same untruth as saying it while the run goes. The ask
+    // is the gauge's own and its answer is cached, so it is put only when
+    // the box that makes it matter is ticked.
+    if (bdavMode() && settings.fit) {
+      fitShare().then((share) => !exporting && showReencode(first, share));
+    } else {
+      showReencode(first);
+    }
+  }
   // The picture half of the note is cached against the clip and its cuts;
   // this puts the audio half back on it, which the settings can have changed
   // since.
@@ -5015,7 +5075,7 @@ async function runExport() {
   // the answer. A run that asked per clip would give the long one a harder
   // time than the short one for no reason but its length.
   const share = await fitShare();
-  if (share !== null) note(t("out.shrinking", { share: (share * 100).toFixed(1) }));
+  if (share !== null) note(t("out.shrinking", { share: sharePct(share) }));
 
   exporting = true;
   abort = false;
@@ -5060,10 +5120,10 @@ async function runExport() {
     renderOutScreen();
     // Before the cut starts, not during: the plan and the frames are reads of
     // the same recording the cut is about to stream off the disc.
-    await showReencode(clip);
+    await showReencode(clip, share);
     // And now that the plan is in, the line above can say what is actually
     // being written rather than the best case.
-    sayWhatIsWritten(clip, out);
+    sayWhatIsWritten(clip, out, share);
     // A second run over a clip already on show would otherwise start from
     // wherever the first one left the stage.
     if (onShow && onShow.r.segs.length) stageShot(0);

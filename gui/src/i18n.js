@@ -493,6 +493,11 @@ const CATALOG = {
     "out.cannotLook": "調べられません: {e}",
     "out.losslessNote": "{clip} — なし。全編を無劣化コピーします",
     "out.losslessStage": "再エンコードなし — 全編を無劣化コピー",
+    // The same "nothing to re-encode" as above, on a run that is writing
+    // the pictures back smaller to fit a disc: the seams cost nothing and
+    // every frame is still rewritten, so "losslessly" would be a lie.
+    "out.shrinkNote": "{clip} — 継ぎ目の再エンコードはなし。ディスクに収めるため全編を {share}% にトランスコードします",
+    "out.shrinkStage": "ディスクに収めるため全編をトランスコード",
     "out.allCutNote": "{clip} — すべてカットされています。書き出すものがありません",
     "out.allCutStage": "すべてカットされています",
     "out.allCut": "すべてカットされています",
@@ -513,6 +518,7 @@ const CATALOG = {
     "out.writingMost":
       "\"{name}\" を出力中: {n} 箇所を再エンコードし、ほかは無劣化でコピーしています…",
     "out.writingAll": "\"{name}\" を出力中: 映像を再エンコードしています…",
+    "out.writingShrink": "\"{name}\" を出力中: ディスクに収めるため映像を {share}% にトランスコードしています…",
     "out.writingTables": "\"{name}\" を仕上げ中: 放送の番組情報を書き戻しています…",
     "out.done": "完了{extra}",
     "out.doneKeyframes": " / キーフレーム {n} 個",
@@ -1212,6 +1218,8 @@ const CATALOG = {
     "out.cannotLook": "Cannot work it out: {e}",
     "out.losslessNote": "{clip} — none. The whole clip is copied losslessly",
     "out.losslessStage": "Nothing re-encoded — the whole clip is copied losslessly",
+    "out.shrinkNote": "{clip} — no seam to re-encode, but the whole clip is transcoded to {share}% to fit the disc",
+    "out.shrinkStage": "The whole clip is transcoded to fit the disc",
     "out.allCutNote": "{clip} — everything has been cut, so there is nothing to write",
     "out.allCutStage": "Everything has been cut",
     "out.allCut": "Everything has been cut",
@@ -1232,6 +1240,7 @@ const CATALOG = {
     "out.writingMost":
       "Writing \"{name}\": re-encoding {n} place{n?s}, copying the rest losslessly…",
     "out.writingAll": "Writing \"{name}\": re-encoding the video…",
+    "out.writingShrink": "Writing \"{name}\": transcoding the video to {share}% to fit the disc…",
     "out.writingTables": "Finishing \"{name}\": putting the broadcast's own tables back…",
     "out.done": "Done{extra}",
     "out.doneKeyframes": " / {n} keyframe{n?s}",
