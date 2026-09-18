@@ -100,22 +100,22 @@ const CATALOG = {
     "prefs.step.sec": "秒移動",
     "prefs.step.pct": "% でスクロール",
     "prefs.pageStepNote":
-      "カット編集で PageUp / PageDown が動く量です。0 にすると、そのキーは動きません。" +
-      "% は録画全体に対する割合で、カットしたあとの長さから数えます。" +
-      "左右キーは別で、1 フレーム、Shift と一緒なら 1 秒です。",
+      "カット編集で PageUp / PageDown が動く量です。0 にすると、そのキーは効きません。" +
+      "% はカットしたあとの長さに対する割合です。カットするほど 1 回の移動は短くなります。" +
+      "左右キーはこの設定の対象外です（1 フレーム、Shift で 1 秒）。",
     "prefs.sidecarPriority": "両方あるときに読むのは:",
     "prefs.sidecar.keyframe": "キーフレーム情報（.keyframe）",
     "prefs.sidecar.trim": "AviSynth Trim（.trim.avs）",
     "prefs.sidecarNote":
-      "録画の隣に置かれたファイルを、カット編集を開いたときに読み込みます。" +
+      "カット編集を開くとき、録画の隣にあるファイルを読み込みます。" +
       "キーフレーム情報は位置の一覧なので、印が付くだけです。" +
-      "Trim は残す区間そのものなので、カットされた状態で開きます。" +
-      "片方しか無いときは、この設定に関わらずそれを読みます。",
+      "Trim は残す区間そのものなので、カット済みの状態で開きます。" +
+      "片方しか無ければ、この設定に関わらずそれを読みます。",
     "prefs.quietOverwrite": "ショートカットでの保存は、確認せずに上書きする",
     "prefs.quietOverwriteNote":
-      "Ctrl+H（キーフレーム情報）と Ctrl+Shift+H（Trim）は、録画の隣の名前にそのまま保存します。" +
-      "同じ名前のファイルがあったときに確認するかどうかです。" +
-      "メニューから保存するときは保存先を選ぶ画面が出るので、これには関係ありません。",
+      "Ctrl+H（キーフレーム情報）と Ctrl+Shift+H（Trim）は、録画と同じ場所へ画面を出さずに保存します。" +
+      "同じ名前のファイルがあったときに確認するかどうかを、ここで決めます。" +
+      "メニューからの保存は保存先を選ぶ画面が出るので、この設定とは関係ありません。",
     "prefs.groupOut": "出力設定",
     "prefs.prefix": "ファイル名の接頭辞:",
     "prefs.prefixNote":
@@ -123,15 +123,13 @@ const CATALOG = {
       "プロジェクトを開いたときは、そのプロジェクトの設定が優先されます。",
     "prefs.number": "接頭辞のうしろに一覧の連番を付ける",
     "prefs.numberNote":
-      "一覧の並び順を、出力するファイル名に残します。番号は一覧の行番号です。" +
-      "例: cut_03_録画.ts",
+      "出力するファイル名に一覧の行番号を付けます。例: cut_03_録画.ts",
     "prefs.digits": "連番の桁数:",
     "prefs.dataBroadcast": "データ放送も残す（.ts のみ）",
     "prefs.dataBroadcastNote":
-      "リモコンの d ボタンで見られるデータ放送のページを、カットした出力にも残します。" +
-      "残せるのは、放送のテーブルをそのまま引き継ぐ .ts で出力するときだけです。" +
-      "ディスクの形式にも MP4 にも入れる場所がないので、そちらには残りません。" +
-      "データ放送は録画全体の 1〜20% ほどを占めるので、残さなければその分小さくなります。",
+      "リモコンの d ボタンで見られるページを、カットした出力にも残します。" +
+      "残せるのは .ts で出力するときだけです。ディスクにも MP4 にも入れる場所がありません。" +
+      "データ放送は録画の 1〜20% を占めるので、外せばその分だけ小さくなります。",
     "prefs.keepOutput": "出力設定を次回の起動に引き継ぐ",
     "prefs.keepOutputNote":
       "保存先・ファイル名・コンテナ・音声の扱いを保存し、次回の起動と新規作成時に復元します。" +
@@ -147,15 +145,14 @@ const CATALOG = {
       "継ぎ目の乱れは減りますが、その分、無劣化でコピーされる区間が短くなります。",
     "prefs.audioFade": "継ぎ目の音のフェード:",
     "prefs.audioFadeNote":
-      "継ぎ目の手前で音を下げ、継ぎ目の先で戻します。0 でフェードなし（既定）。" +
-      "音の段差が「間」になる代わりに、その秒数ぶんの本編が録画より小さい音になります。" +
-      "音を書き直すときにだけ効くので、スマートレンダリングか再エンコードが要ります。" +
-      "音声をコピーする設定のときは効きません。そのときは出力のメッセージでお知らせします。" +
-      "出力の先頭と末尾には掛かりません。フェードは 2 つの断片が出会う場所のためのものです。",
+      "カットの継ぎ目で、音をいったん下げてから戻します。秒数で指定し、0 でフェードなし（既定）。" +
+      "継ぎ目で音がいきなり変わるのを防げますが、そのぶん継ぎ目の前後では、本編の音も指定した秒数だけ小さくなります。" +
+      "掛かるのは音を書き直すときだけです。音声の設定がコピーのときは掛からず、出力画面にその旨が出ます。" +
+      "出力の先頭と末尾は継ぎ目ではないので、掛かりません。",
     "prefs.proxy": "プロキシを作ってから編集する",
     "prefs.proxyNote":
-      "録画全体を再エンコードし、軽い映像で編集します。1 時間あたり数分の時間と数 GB の容量が必要です。" +
-      "1 フレームの展開に時間がかかる素材で効果があります。",
+      "録画全体を再エンコードし、軽い映像で編集します。録画 1 時間につき、数分の処理時間と数 GB の容量が要ります。" +
+      "1 フレームの表示に時間がかかる素材で効果があります。",
     "prefs.proxyWidth": "プロキシの幅:",
     "prefs.proxyWidth.auto": "自動（1280）",
     "prefs.groupData": "作業データ",
@@ -164,10 +161,10 @@ const CATALOG = {
     "prefs.cacheDirPick": "参照…",
     "prefs.cacheDirReset": "既定",
     "prefs.cacheDirNote":
-      "シークインデックス・プロキシ・CM 検出の結果を保存する場所です。" +
+      "シーク用インデックス・プロキシ・CM 検出の結果を保存する場所です。" +
       "変更後に作成したものだけが新しい場所に保存され、これまでのものは元の場所に残ります。",
     "prefs.cacheDirFailed": "その場所には書き込めません: {e}",
-    "prefs.cacheKind.index": "シークインデックス",
+    "prefs.cacheKind.index": "シーク用インデックス",
     "prefs.cacheKind.proxy": "プロキシ",
     "prefs.cacheKind.cm": "CM 検出",
     "prefs.cacheFiles": "{n} 件",
@@ -247,7 +244,7 @@ const CATALOG = {
     "rowmenu.remove": "クリップ削除",
     "props.head": "クイックプロパティ",
     "props.none": "クリップが選択されていません",
-    "props.many": "{n} 個のクリップを選択中",
+    "props.many": "クリップ {n} 本を選択中",
     "props.queued": "{name}\n解析待ちです",
     "props.error": "{name}\n{error}",
     "props.body":
@@ -279,8 +276,8 @@ const CATALOG = {
     "dialog.video": "動画",
     "dialog.disc": "ディスクイメージ (BDMV / BDAV / DVD-Video)",
     "disc.title": "ディスクの読み込み",
-    "disc.what": "{label} — {kind}　{n} クリップ",
-    "disc.protected": "このディスクは AACS で暗号化されています。索引は読めるので一覧は出ますが、クリップは開けません。",
+    "disc.what": "{label} — {kind}　クリップ {n} 本",
+    "disc.protected": "このディスクは AACS で暗号化されています。管理情報は読めるので一覧は出ますが、クリップは開けません。",
     "disc.kind.bdav": "BDAV（録画ディスク）",
     "disc.kind.bdmv": "BDMV（市販ディスク）",
     "disc.kind.dvd": "DVD-Video",
@@ -289,7 +286,7 @@ const CATALOG = {
     "disc.showAll": "短いクリップも表示",
     "disc.ok": "読み込む",
     "disc.cancel": "キャンセル",
-    "disc.count": "{n} クリップを読み込みます",
+    "disc.count": "クリップ {n} 本を読み込みます",
     "disc.countNone": "クリップが選ばれていません",
     "disc.tracks": "トラック {n} 本",
     "disc.noTracks": "トラック情報なし",
@@ -405,15 +402,15 @@ const CATALOG = {
     "outset.tabBdav": "BDAV 出力",
     "outset.discHead": "ディスク設定",
     "outset.subfolder": "サブフォルダー:",
-    "outset.subfolderNone": "（作らずに上のフォルダーへ直接出力）",
+    "outset.subfolderNone": "（作らずに、ディスクの場所へ直接出力）",
     "outset.discTitle": "ディスクタイトル:",
     "out.discSize": "出力サイズは {used} です（{disc} のディスクに収まります）",
     // 「これ以上小さくできませんでした」と言ってよいのは、実際に小さく
     // しようとしたときだけである。トランスコードを指示されていない実行が
     // 同じことを表示すると、指示すれば入ったかもしれない、という事実が消える。
     "out.discTooBig": "出力サイズは {used} で、{disc} のディスクに {over} 収まりません。映像をこれ以上小さくできませんでした",
-    "out.discOver": "出力サイズは {used} で、{disc} のディスクに {over} 収まりません。「トランスコードする」を入れると、映像を書き直して収められることがあります",
-    "out.shrinking": "ディスクに収めるため、映像を {share}% のサイズにトランスコードします",
+    "out.discOver": "出力サイズは {used} で、{disc} のディスクに {over} 収まりません。「トランスコードする」を有効にすると、映像を書き直して収まることがあります",
+    "out.shrinking": "ディスクに収めるため、映像を元の {share}% のサイズに書き直します",
     "outset.disc": "ディスク:",
     "disc.bd25": "BD-R / BD-RE 25GB（1層）",
     "disc.bd50": "BD-R / BD-RE DL 50GB（2層）",
@@ -461,7 +458,7 @@ const CATALOG = {
     "out.needDiscFolder":
       "BDAV 出力にはディスクを作成する場所が必要です。出力先フォルダーを選んでください",
     "out.madeUnreadable":
-      "「{name}」の記録日時を日時として読み取れません。YYYY-MM-DD HH:MM:SS の形式で入力してください",
+      "「{name}」の記録日時が読み取れません。YYYY-MM-DD HH:MM:SS の形式で入力してください",
     // 出力一覧に並ぶ、カットのあとに続く 2 行。
     "out.stepIndex": "ディスクの管理情報",
     "out.stepImage": "ディスクイメージ（UDF {udf}）",
@@ -496,7 +493,7 @@ const CATALOG = {
     // The same "nothing to re-encode" as above, on a run that is writing
     // the pictures back smaller to fit a disc: the seams cost nothing and
     // every frame is still rewritten, so "losslessly" would be a lie.
-    "out.shrinkNote": "{clip} — 継ぎ目の再エンコードはなし。ディスクに収めるため全編を {share}% にトランスコードします",
+    "out.shrinkNote": "{clip} — 継ぎ目の再エンコードはなし。ディスクに収めるため、全編を元の {share}% のサイズに書き直します",
     "out.shrinkStage": "ディスクに収めるため全編をトランスコード",
     "out.allCutNote": "{clip} — すべてカットされています。書き出すものがありません",
     "out.allCutStage": "すべてカットされています",
@@ -518,7 +515,7 @@ const CATALOG = {
     "out.writingMost":
       "\"{name}\" を出力中: {n} 箇所を再エンコードし、ほかは無劣化でコピーしています…",
     "out.writingAll": "\"{name}\" を出力中: 映像を再エンコードしています…",
-    "out.writingShrink": "\"{name}\" を出力中: ディスクに収めるため映像を {share}% にトランスコードしています…",
+    "out.writingShrink": "\"{name}\" を出力中: ディスクに収めるため、映像を元の {share}% のサイズに書き直しています…",
     "out.writingTables": "\"{name}\" を仕上げ中: 放送の番組情報を書き戻しています…",
     "out.done": "完了{extra}",
     "out.doneKeyframes": " / キーフレーム {n} 個",
@@ -579,7 +576,7 @@ const CATALOG = {
     "batch.stopping": "中止しています…",
     "batch.replaceTitle": "バッチ出力の開始",
     "batch.replaceBody":
-      "バッチ出力はキューのプロジェクトを順番に開きます。いまの一覧は破棄されます。保存していない変更は失われますが、よろしいですか？",
+      "バッチ出力はキューのプロジェクトを順番に開きます。いまの一覧は破棄され、保存していない変更は失われます。続けますか？",
     "batch.clearTitle": "キューの全消去",
     "batch.clearBody": "キューのジョブ {n} 件をすべて消します。よろしいですか？",
     "batch.sleepIn": "{s} 秒後にスリープします",
@@ -601,7 +598,7 @@ const CATALOG = {
     "editor.keyframes": "キーフレーム",
     "editor.keyCount": "{n} 個",
     "editor.keyframes.empty":
-      "まだありません。「⚑ キーフレーム」で現在の位置を登録できます。CM を検出すると、本編と CM それぞれの先頭が自動で並びます。",
+      "まだありません。「⚑ キーフレーム」でいまの位置を登録できます。CM を検出すると、本編と CM の先頭が自動で並びます。",
     "editor.keyframes.kill": "このキーフレームを消す",
     "editor.searching": "サーチ中",
     "editor.searchKind": "サーチ",
@@ -631,14 +628,14 @@ const CATALOG = {
     "t.play.title": "ここから再生 (Space)",
     "t.goStart": "先頭へ",
     "t.prevKf": "前の無劣化点へ",
-    "t.stepBack": "1 フレーム戻る (←) ─ 押しっぱなしで連続",
+    "t.stepBack": "1 フレーム戻る (←)。押しっぱなしで連続",
     "t.gotoIn": "選択の開始位置へ移動",
     "t.setIn": "ここを選択の開始に (I)",
     "t.cut": "✂ カット",
     "t.cutRange": "いまの選択を出力から取り除く",
     "t.setOut": "ここを選択の終わりに (O)",
     "t.gotoOut": "選択の終わり位置へ移動",
-    "t.stepFwd": "1 フレーム進む (→) ─ 押しっぱなしで連続",
+    "t.stepFwd": "1 フレーム進む (→)。押しっぱなしで連続",
     "t.nextKf": "次の無劣化点へ",
     "t.goEnd": "末尾へ",
     "t.cutOutside": "外側をカット",
@@ -677,7 +674,7 @@ const CATALOG = {
     "tracks.caption": "字幕",
     "tracks.superimpose": "文字スーパー",
     "tracks.graphics": "字幕（ディスクの図形）",
-    "tracks.beside": "字幕 {lang}: 出力設定に従って、出力ファイルの中か別ファイルに出力   id 0x{pid}",
+    "tracks.beside": "字幕 {lang}: 出力先は出力設定で決めます（出力ファイルの中／別ファイル）   id 0x{pid}",
     "outset.subtitles": "ディスクの字幕:",
     "subtitles.beside": "別ファイルに出力 (.idx / .sub)",
     "subtitles.sup": "別ファイルに出力 (.sup／PGS のまま)",
@@ -702,11 +699,11 @@ const CATALOG = {
     "tracks.textst": "テキスト字幕（書体はディスク側にあります）",
     "tracks.settled": "{what} — 環境設定で決めます   PID 0x{pid}",
     "tracks.settledNote":
-      "データ放送を残すかどうかは、ここではなく環境設定で決めます。残せるのは .ts のときだけで、初期設定では残します。",
+      "データ放送を残すかどうかは環境設定で決めます。残せるのは .ts のときだけで、既定は残します。",
     "tracks.droppedNote":
-      "これらは選べません。文字スーパーはパケットに時刻を持たず、メニューとテキスト字幕はディスク側の仕組みだからです。",
+      "これらは選べません。文字スーパーはパケットに時刻を持たず、メニューとテキスト字幕はディスクでしか働かないからです。",
     "tracks.substreamNote":
-      "Blu-ray のロスレス音声には、それを再生できない機器のために AC-3 が同じ PID へ重ねて入っています。1 つの PID に 2 本を書き戻すことはできないので、本体のトラック（TrueHD）だけを出力し、内側の AC-3 は除きます。",
+      "Blu-ray のロスレス音声には、再生できない機器のための AC-3 が同じ PID に重ねて入っています。1 つの PID に 2 本は書き戻せないので、本体の TrueHD だけを出力し、内側の AC-3 は外します。",
     "tracks.tablesNote":
       "番組情報（EIT）・放送局名・放送時刻は、TS に書き出すときはそのまま引き継ぎます。トラックではないので、この一覧には並びません。",
     "tracks.none": "この録画には選べるトラックがありません。",
@@ -738,7 +735,7 @@ const CATALOG = {
     "warm.thumbs": "サムネイル {n} 枚 {gap}s 間隔",
     "warm.scenes": "シーン {n} 箇所",
     "plan.openFile": "ファイルを開いてください",
-    "plan.reading": "録画を読み込み中です。無劣化で残る範囲は読み終えてから分かります",
+    "plan.reading": "録画を読み込んでいます。どこを無劣化で残せるかは、読み終えてから分かります",
     "plan.allCut": "すべてカットされています",
     "plan.text":
       "出力 {total}（{ranges} 区間、カット {cuts} 箇所）— 無劣化コピー {copied}s ({pct})" +
@@ -752,9 +749,9 @@ const CATALOG = {
     "keyframes.read": "キーフレーム {n} 個を {file} から読み込みました",
     "keyframes.chapters": "ディスクのチャプター {n} 個をキーフレームにしました",
     "editor.more.title":
-      "キーフレーム情報の保存と読み込み、ディスクのチャプター、キーフレームの全消去。" +
+      "印の読み書き、ディスクのチャプター、キーフレームの全消去。" +
       "キーフレーム情報（.keyframe）は印の位置だけ、AviSynth スクリプト（.trim.avs）は残る区間そのものです。" +
-      "Ctrl+H と Ctrl+Shift+H なら、録画の隣の名前へ画面を出さずに保存します。",
+      "Ctrl+H と Ctrl+Shift+H なら、録画の隣へ画面を出さずに保存します。",
     "marks.save.keyframe": "キーフレーム情報を保存…",
     "marks.save.trim": "AviSynth Trim にカットを保存…",
     "marks.load.keyframe": "キーフレーム情報を読み込む…",
