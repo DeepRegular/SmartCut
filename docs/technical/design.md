@@ -628,7 +628,7 @@ Lossless points: 3607  1440x1080  29.97 fps  interlaced (TFF)  audio  [x logo] [
 │              │  ◤[                             ]◥  <- IN/OUT│
 │              │  ▏▏▏ ▏ ▏▏▏▏▏▏  <- scene changes              │
 │              ├─────────────────────────────────────────────┤
-│              │ ⚑Keyframe ⇤Scene Scene⇥ │ |◀ ◀| ◀ ⇤| [IN ✂Cut OUT] |⇥ ▶ |▶ ▶| │ Cut outside  Snap to lossless  ↺Undo  Clear all │
+│              │ ⚑Keyframe ⇤Scene Scene⇥ │ |◀ ◀| ◀ ⇤| [IN ✂Cut OUT] |⇥ ▶ |▶ ▶| │ Cut outside  Snap to lossless  ↺Undo ↻Redo  Clear all │
 │              │ 20 / 54111  00:00:00.66   selection 0 - 54111 : 00:30:05.50 │
 │              ├─────────────────────────────────────────────┤
 │              │ █████████████████ blue = copy / orange = re-encode │

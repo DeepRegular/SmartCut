@@ -51,7 +51,6 @@ let selA = 0; // selection, in output time
 let selB = 0;
 let dragging = null;
 let cuts = []; // source ranges taken out
-let cutHistory = [];
 let keeps = []; // [{a, b, at}] source ranges that survive, with output offset
 let gops = []; // output times where a GOP starts
 let seams = []; // output times of the joins in `joinTimes()`
@@ -227,9 +226,74 @@ function srcRangeToOut(a, b) {
 
 const playOut = () => srcToOutSeam(playhead);
 
+// --- the history --------------------------------------------------------
+//
+// 取消 and やり直し step through the *operations*, not through the cuts
+// alone. Somebody who cuts, looks at the join and decides the cut was wrong
+// wants back what they had when they made it -- and what they had includes
+// the selection they cut by, which is the thing they are about to adjust and
+// cut again. Taking the cut out and leaving the selection collapsed on the
+// join made them mark the range a second time to change it by a frame.
+//
+// So a step carries the whole of what an edit touches: the cuts, the marks,
+// which mark was picked out, the selection and the playhead. Putting one back
+// puts all of it back.
+
+/// Where the state was before each edit, oldest first.
+let past = [];
+/// The states 取消 stepped out of, newest last. Emptied by the next edit:
+/// stepping back and then cutting again is a new course, and what was ahead
+/// on the old one cannot be reached from here.
+let undone = [];
+
+/// Everything an edit can touch.
+///
+/// `cuts` is copied a range at a time rather than by `slice`: the ranges
+/// themselves are edited in place by `normalise`, so a shallow copy of the
+/// list would hand the past a range the present goes on to move.
+const snapshot = () => ({
+  cuts: cuts.map((c) => ({ a: c.a, b: c.b })),
+  keyframes: keyframes.slice(),
+  activeKey,
+  selA,
+  selB,
+  playhead,
+});
+
+/// Put down where we are, on the way into an edit.
+function remember() {
+  past.push(snapshot());
+  if (past.length > 50) past.shift();
+  undone = [];
+  paintHistory();
+}
+
+function paintHistory() {
+  el("undo-cut").disabled = past.length === 0;
+  el("redo-cut").disabled = undone.length === 0;
+}
+
+/// One step through the history, either way: 取消 goes back through `past`,
+/// やり直し forward through `undone`.
+///
+/// What is on screen goes on the other pile on the way out, and it is taken
+/// here rather than when the edit was made: the selection and the playhead go
+/// on moving between edits, and 取消 followed by やり直し has to land where
+/// it started, not where the cut left things.
+function stepHistory(from, to) {
+  if (!from.length) return;
+  if (playing) stopPlay();
+  to.push(snapshot());
+  const back = from.pop();
+  cuts = back.cuts.map((c) => ({ a: c.a, b: c.b }));
+  keyframes = back.keyframes.slice();
+  activeKey = back.activeKey;
+  afterCutsChanged(back);
+  showFrame(playhead);
+}
+
 function applyCuts(next) {
-  cutHistory.push(cuts);
-  if (cutHistory.length > 50) cutHistory.shift();
+  remember();
   cuts = normalise(next);
   afterCutsChanged();
 }
@@ -244,7 +308,10 @@ function joinTimes() {
   return list.sort((a, b) => a - b);
 }
 
-function afterCutsChanged() {
+/// `back` is the state being put back, when this is a step through the
+/// history rather than an edit. It says where to leave the playhead and the
+/// selection, and it has already said which mark is picked out.
+function afterCutsChanged(back = null) {
   // The list is told about every cut as it happens, not at OK; see `sync`.
   sync();
   const before = playOut();
@@ -255,17 +322,19 @@ function afterCutsChanged() {
   const joins = joinTimes();
   // The join this edit just opened is the place to look, so select its mark --
   // whether the join brought the mark with it or landed on one that was
-  // already there, as it does when you cut a detected break out. Compared
-  // against the joins from before the edit rather than against the marks, so
-  // that undoing a cut selects nothing and leaves the selection alone.
-  const fresh = joins.filter((t) => !had.some((o) => Math.abs(o - t) < frame() / 2));
-  if (fresh.length) activeKey = fresh[fresh.length - 1];
+  // already there, as it does when you cut a detected break out. A step
+  // through the history picks nothing out here: the state being put back
+  // carries the mark that was picked out when it was current.
+  if (!back) {
+    const fresh = joins.filter((t) => !had.some((o) => Math.abs(o - t) < frame() / 2));
+    if (fresh.length) activeKey = fresh[fresh.length - 1];
+  }
   const all = keyframes.concat(joins).sort((a, b) => a - b);
   keyframes = all.filter((t, i) => i === 0 || t - all[i - 1] > frame() / 2);
-  el("undo-cut").disabled = cutHistory.length === 0;
-  playhead = outToSrc(clamp(before, 0, outDur));
-  selA = clamp(selA, 0, outDur);
-  selB = clamp(selB, selA, outDur);
+  paintHistory();
+  playhead = outToSrc(clamp(back ? srcToOutSeam(back.playhead) : before, 0, outDur));
+  selA = clamp(back ? back.selA : selA, 0, outDur);
+  selB = clamp(back ? back.selB : selB, selA, outDur);
   stripCache = null;
   renderKeyframes();
   updateReadouts();
@@ -406,7 +475,12 @@ function paintCards(times, imgs) {
 function addKeyframes(times, focus = null) {
   const all = keyframes.concat(times.filter((t) => isFinite(t)));
   all.sort((a, b) => a - b);
-  keyframes = all.filter((t, i) => i === 0 || t - all[i - 1] > frame() / 2);
+  const next = all.filter((t, i) => i === 0 || t - all[i - 1] > frame() / 2);
+  // A mark is not a cut, but it is still something that was done, and 取消
+  // steps back through what was done. A press that puts nothing down -- the
+  // same frame marked twice -- is not something that was done.
+  if (next.length !== keyframes.length) remember();
+  keyframes = next;
   if (focus !== null && isFinite(focus)) activeKey = focus;
   renderKeyframes();
   draw();
@@ -474,6 +548,7 @@ function renderKeyframes() {
     kill.title = tr("editor.keyframes.kill");
     kill.addEventListener("click", (ev) => {
       ev.stopPropagation();
+      remember();
       keyframes = keyframes.filter((x) => x !== t);
       if (isActive(t)) activeKey = null;
       renderKeyframes();
@@ -2732,6 +2807,7 @@ async function loadMarksFrom(kind) {
 /// is asking for.
 function clearKeyframes() {
   if (!keyframes.length) return;
+  remember();
   keyframes = [];
   activeKey = null;
   renderKeyframes();
@@ -3042,7 +3118,8 @@ async function openPath(picked, saved, side, name, chapters, dropPids) {
     paintSourceInfo();
     paintSubsPicker();
     cuts = saved ? saved.cuts.map((c) => ({ a: c.a, b: c.b })) : [];
-    cutHistory = [];
+    past = [];
+    undone = [];
     keyframes = saved ? saved.keyframes.slice() : [];
     activeKey = saved ? saved.activeKey : null;
     cmBlocks = saved ? saved.cmBlocks || [] : [];
@@ -3084,7 +3161,7 @@ async function openPath(picked, saved, side, name, chapters, dropPids) {
     // recording. `prepare` writes it again on the far side of the walk.
     el("warm").textContent = "";
     rebuildTimeline();
-    el("undo-cut").disabled = true;
+    paintHistory();
     el("cm-note").textContent = cmSummary;
     renderKeyframes();
     // Opened whole: nothing is cut yet, so the selection is the recording.
@@ -3331,21 +3408,19 @@ el("cut-outside").addEventListener("click", () => {
   seekOut(0);
   jlog(`cut outside, kept ${JSON.stringify(keep)}`);
 });
-el("undo-cut").addEventListener("click", () => {
-  if (!cutHistory.length) return;
-  cuts = cutHistory.pop();
-  afterCutsChanged();
-});
+el("undo-cut").addEventListener("click", () => stepHistory(past, undone));
+el("redo-cut").addEventListener("click", () => stepHistory(undone, past));
 el("clear-all").addEventListener("click", () => {
   if (!src) return;
+  // The one button in the row that used to be a one-way door: it emptied the
+  // history along with everything else. It is a step like any other now.
+  remember();
   cuts = [];
-  cutHistory = [];
   keyframes = [];
   activeKey = null;
   rebuildTimeline();
   selA = 0;
   selB = outDur;
-  el("undo-cut").disabled = true;
   renderKeyframes();
   updateReadouts();
   draw();
@@ -3443,6 +3518,19 @@ window.addEventListener("keydown", (ev) => {
   if (ev.ctrlKey && (ev.key === "d" || ev.key === "D")) {
     ev.preventDefault();
     el("detect-cm").click();
+    return;
+  }
+  // Both spellings of やり直し: Ctrl+Y is the one Windows programs are worked
+  // by, Ctrl+Shift+Z the one editors are.
+  if ((ev.ctrlKey || ev.metaKey) && (ev.key === "z" || ev.key === "Z")) {
+    ev.preventDefault();
+    if (ev.shiftKey) stepHistory(undone, past);
+    else stepHistory(past, undone);
+    return;
+  }
+  if ((ev.ctrlKey || ev.metaKey) && (ev.key === "y" || ev.key === "Y")) {
+    ev.preventDefault();
+    stepHistory(undone, past);
     return;
   }
   // The mark files: H writes one, L reads one, and Shift picks the Trim line

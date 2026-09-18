@@ -456,8 +456,17 @@ there.
 |---|---|
 | **Cut outside** | Drop everything **outside** the selection. One press for lifting a single stretch out |
 | **Snap to lossless** | Move both ends of the selection to the nearest lossless point. **Press it and the re-encoding goes to zero** |
-| **↺ Undo** | Take the last cut back (fifty deep) |
-| **Clear all** | Remove every cut and every keyframe |
+| **↺ Undo** | Step back to before the last edit (fifty deep, `Ctrl+Z`) |
+| **↻ Redo** | Put the edit back (`Ctrl+Y`) |
+| **Clear all** | Remove every cut and every keyframe. Undo takes it back |
+
+**Undo brings the selection back with the cut.** Cut, look at the join, decide
+it was three frames out: one press of Undo and the range you cut by is still
+marked. Move the end and cut again. The playhead comes back too, to the frame
+you were looking at.
+
+Undo covers more than cutting. Marking a keyframe, deleting one, clearing them
+all, Clear all: every one of them is a step back.
 
 ### When re-encoding is needed
 
@@ -920,6 +929,8 @@ can quote it straight into a bug report.
 | `I` / `O` | Start / end the selection here |
 | `K` | Mark this frame as a keyframe |
 | `S` / `Shift+S` | Next / previous scene change |
+| `Ctrl+Z` | Undo |
+| `Ctrl+Y` / `Ctrl+Shift+Z` | Redo |
 | `Ctrl+D` | Detect commercials |
 | `Ctrl+L` | Read a keyframe list from a file |
 | `Ctrl+Shift+L` | Read a Trim line from a file |
