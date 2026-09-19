@@ -105,24 +105,24 @@ const CATALOG = {
       "に対する割合です。25 なら 15 倍速で、1 秒押しっぱなしにすると録画の 15 秒ぶん進みます。" +
       "録画の長さには左右されません。" +
       "左右キーはこの設定の対象外です（1 フレーム、Shift で 1 秒）。",
-    "prefs.sidecarPriority": "複数あるときに読むのは:",
+    "prefs.sidecarPriority": "複数あるときに読み込むのは:",
     "prefs.sidecar.keyframe": "キーフレーム情報（.keyframe）",
     "prefs.sidecar.trim": "AviSynth Trim（.trim.avs）",
     "prefs.sidecar.cm": "CM 検出結果（.cm.json）",
     "prefs.sidecarNote":
-      "カット編集を開くとき、録画と同じ名前で同じ場所にあるファイルを読みます。" +
+      "カット編集を開くとき、録画と同じ名前で同じ場所にあるファイルを読み込みます。" +
       "キーフレーム情報は位置の一覧なので、印が並ぶだけです。" +
       "Trim は残す区間そのものなので、カット済みの状態で開きます。" +
       "CM 検出結果は、検出した直後と同じ帯と印に戻ります。" +
-      "見つかったのが 1 つだけなら、この設定に関わらずそれを読みます。" +
-      "どれかを読んだときは、CM 検出の結果に印は置きません。帯だけ出ます。",
+      "見つかったのが 1 つだけなら、この設定に関わらずそれを読み込みます。" +
+      "どれかを読み込んだときは、CM 検出の結果に印は置きません。帯だけ出ます。",
     "prefs.cmKeyframes": "CM を検出したら、自動でキーフレームを置く",
     "prefs.cmKeyframesNote":
       "CM ブロックの先頭と終わりに印を置きます。" +
       "外すと印は置かず、タイムラインに帯が出るだけになります。" +
       "見てから決めたいときは、≡ の「CM 検出結果をキーフレームにする」で置けます。" +
-      "録画と同じ名前のファイルを読んだときは、入れてあっても印は置きません。" +
-      "CM 検出結果のファイルを読み込んだときは、外してあっても印を置きます。",
+      "録画と同じ名前のファイルを読み込んだときは、入れてあっても CM 検出の結果に印は置きません。" +
+      "CM 検出結果のファイルを読み込んだときは、外してあってもそのファイルの印を置きます。",
     "prefs.quietOverwrite": "ショートカットでの保存は、確認せずに上書きする",
     "prefs.quietOverwriteNote":
       "Ctrl+H（キーフレーム情報）と Ctrl+Shift+H（Trim）は、録画と同じ名前で、画面を出さずに保存します。" +
@@ -344,7 +344,7 @@ const CATALOG = {
     "phase.indexBuilt": "インデックス {s} 秒",
     "cm.previous": "{note}（前回の検出）",
     "cm.failed": "検出できません: {e}",
-    "cm.besideMarks": "{note}（録画と同じ名前のファイルを読んだので、印は置いていません）",
+    "cm.besideMarks": "{note}（録画と同じ名前のファイルを読み込んだので、印は置いていません）",
 
     // --- 出力設定画面 ----------------------------------------------------
     "outset.barNote": "ここでの設定は一覧のすべてのクリップに使われます",
@@ -767,7 +767,7 @@ const CATALOG = {
     "plan.segCopy": "コピー　　",
     "plan.segEncode": "再エンコード",
     "plan.failed": "計画できません: {e}",
-    "keyframes.readFailed": "キーフレームを読めません: {e}",
+    "keyframes.readFailed": "キーフレームを読み込めません: {e}",
     "keyframes.read": "キーフレーム {n} 個を {file} から読み込みました",
     "keyframes.chapters": "ディスクのチャプター {n} 個をキーフレームにしました",
     "editor.more.title":
@@ -781,7 +781,7 @@ const CATALOG = {
     "marks.load.keyframe": "キーフレーム情報を読み込む…",
     "marks.load.trim": "AviSynth Trim からカットを読み込む…",
     "marks.load.cm": "CM 検出結果を読み込む…",
-    "marks.readNone": "{file} には読めるものがありませんでした",
+    "marks.readNone": "{file} には読み込めるものがありませんでした",
     "editor.chapterKeys": "ディスクのチャプターをキーフレームにする",
     "editor.cmKeys": "CM 検出結果をキーフレームにする",
     "editor.clearKeys": "キーフレームをすべて消す",
@@ -796,10 +796,10 @@ const CATALOG = {
     "editor.dropBody": "この画面で行った編集を破棄して閉じます。よろしいですか？",
     "trim.saved": "残す区間 {n} 本を {file} に保存しました",
     "trim.read": "{file} からカット {n} 箇所を読み込みました",
-    "trim.readFailed": "Trim を読めません: {e}",
+    "trim.readFailed": "Trim を読み込めません: {e}",
     "cm.saved": "CM ブロック {n} 個を {file} に保存しました",
     "cm.read": "CM ブロック {n} 個を {file} から読み込みました",
-    "cm.readFailed": "CM 検出結果を読めません: {e}",
+    "cm.readFailed": "CM 検出結果を読み込めません: {e}",
     "cm.marked": "CM ブロック {n} 個をキーフレームにしました",
   },
 
