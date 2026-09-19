@@ -388,9 +388,9 @@ pub fn demux(url: &str) -> Result<Demux> {
     // [`states_frame_rate`].
     //
     // The third is for a recording that began before the broadcaster
-    // announced its captions; see [`captions_may_come_later`].
+    // finished announcing what it was sending; see [`announced_late`].
     let (genpts, all_maps) = (is_program_stream(&ictx), !states_frame_rate(&ictx));
-    let deeper = captions_may_come_later(&ictx);
+    let deeper = announced_late(url, &ictx);
     if genpts || all_maps || deeper {
         return open_with(url, genpts, all_maps, deeper);
     }
@@ -407,34 +407,56 @@ pub fn demux(url: &str) -> Result<Demux> {
 /// that took a quarter.
 const DEEP_PROBE: &str = "32000000";
 
-/// Whether this recording might be carrying captions libavformat has not
-/// listed.
+/// Whether this recording may be carrying streams libavformat has not listed.
 ///
-/// **A recorder starts before the programme does, and the captions are
-/// announced when the programme starts.** The program map at the head of the
-/// file names the video and the sound and nothing else; a few seconds in, it
-/// is replaced by one that also names the caption stream. libavformat probes
-/// the head of the file and stops after five megabytes -- about two and a
-/// half seconds of a broadcast -- so it never sees the second map, lists no
-/// subtitle stream, and the recording arrives here with its captions
-/// invisible: nothing to draw over the preview, nothing for the commercial
-/// detector's caption marks, and nothing named for the cut to carry.
+/// **A recorder starts before the programme does, and a broadcast announces
+/// what it is sending when the programme starts.** The program map at the
+/// head of the file describes whatever was on before -- often the video and
+/// one sound track and nothing else; a few seconds in, it is replaced by one
+/// that names the rest. libavformat probes the head of the file and stops
+/// after five megabytes, which on a Japanese broadcast is about two and a
+/// half seconds, so it never sees the second map and the recording arrives
+/// here with those streams invisible.
 ///
-/// Measured over 300 recordings, two from each of 32 channels: 279 carry
-/// captions and **7 of them are announced late**, between 8.4 and 8.8
-/// megabytes in -- just past where the probe stops. The other 20 carry none
-/// at all, which is what this asks a second question of, and the answer it
-/// costs a deeper probe to get.
+/// Two kinds of stream arrive that way, and both were measured.
 ///
-/// So the question is asked of transport streams that came back with no
-/// subtitles at all, which is the only case a deeper probe can change and
-/// the only one that pays for it. A recording whose captions are already
-/// listed -- nine in ten of them -- reads exactly what it read before.
-fn captions_may_come_later(ictx: &ff::format::context::Input) -> bool {
-    is_transport_stream(ictx)
-        && ictx
-            .streams()
-            .all(|s| s.parameters().medium() != ff::media::Type::Subtitle)
+/// **The captions.** Over 300 recordings, two from each of 32 channels: 279
+/// carry captions and 7 of them are announced between 8.4 and 8.8 megabytes
+/// in -- just past where the probe stops. Invisible captions mean nothing to
+/// draw over the preview, nothing for the commercial detector's caption
+/// marks, and nothing named for the cut to carry.
+///
+/// **The second sound track.** Over 400 recordings: 37 carry two, which is
+/// how a Japanese broadcast sends a programme in two languages -- the first
+/// track the original, the second the dub, on their own pids. **22 of those
+/// 37 name the second track only past the probe**, one of them 7.2 megabytes
+/// in. Those 22 arrived here as ordinary single-track recordings: the second
+/// language was not listed, not described, and not carried into the cut.
+///
+/// A narrower question was asked here before -- only of a recording that
+/// came back with no subtitles at all -- because that is what it cost
+/// nothing to ask. The sound cannot be asked the same way: three quarters of
+/// the recordings that turn out to have two tracks look exactly like the
+/// ones that have one until the deeper probe is spent. So it is spent on
+/// every broadcast recording, which is measured at a fifth of a second on a
+/// file being read cold off a network share and nothing at all on one
+/// already in the page cache.
+///
+/// Not on a disc, though. A clip on a Blu-ray is a transport stream too, and
+/// its map is written once by an authoring tool: everything it carries is in
+/// the first copy of it, so a deeper probe there reads more of an image for
+/// an answer that cannot change.
+fn announced_late(url: &str, ictx: &ff::format::context::Input) -> bool {
+    is_transport_stream(ictx) && !off_a_disc(url)
+}
+
+/// Whether a URL names a clip on a disc rather than a recording off the air.
+///
+/// Two shapes, because a disc is read two ways: the clip's own path, when the
+/// disc is a folder, and the wrapper this module writes around a range of an
+/// image, which is the only thing that produces one.
+fn off_a_disc(url: &str) -> bool {
+    url.starts_with("subfile,") || crate::disc::clip_on_a_disc(url).is_some()
 }
 
 /// Whether what is open is a transport stream: a broadcast recording, or a

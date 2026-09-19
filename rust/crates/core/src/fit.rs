@@ -339,6 +339,7 @@ mod tests {
             bits: 16,
             time_base: 1.0 / 90_000.0,
             bit_rate,
+            said: None,
         }
     }
 

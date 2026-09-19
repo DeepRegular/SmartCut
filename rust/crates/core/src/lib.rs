@@ -207,6 +207,13 @@ pub struct AudioInfo {
     pub bits: u8,
     pub time_base: f64,
     pub bit_rate: Option<usize>,
+    /// What the broadcast says this track is: the main sound or a second
+    /// one, in what language, under what name. See [`si::SoundTrack`].
+    ///
+    /// `None` for everything that is not a broadcast recording carrying more
+    /// than one track -- a disc, a cut this program made, a recording with a
+    /// single track, which is the ordinary case and needs no describing.
+    pub said: Option<si::SoundTrack>,
 }
 
 /// Which of the two text streams a broadcast sends this is.
@@ -1292,6 +1299,7 @@ fn outline_of(path: &str) -> Result<(Outline, input::Demux)> {
             bits: audio::pcm_bits(&p),
             time_base: f64::from(a.time_base()),
             bit_rate,
+            said: None,
         }
     };
     let audios: Vec<AudioInfo> = ictx
@@ -1365,24 +1373,86 @@ fn outline_of(path: &str) -> Result<(Outline, input::Demux)> {
             a.bit_rate = None;
         }
     }
-    // Which of them is the main sound. libav's own answer, since it weighs
-    // the disposition flags a container may carry; the first track when it
-    // has no opinion, which is what a broadcast recording amounts to.
-    let audio = ictx
-        .streams()
-        .best(ff::media::Type::Audio)
-        .map(|a| a.index())
-        .and_then(|i| audios.iter().find(|a| a.stream_index == i).cloned())
-        .or_else(|| audios.first().cloned());
-
     // What the recording's own map calls its streams. Only a transport
-    // stream has one, and only the text streams below are asked about it:
-    // everything else here the demuxer already named well enough.
+    // stream has one, and it is asked about the text streams below and about
+    // the sound above: everything else here the demuxer already named well
+    // enough.
+    //
+    // The sound's PIDs are handed over so that a map which does not name
+    // them all is a map to keep reading past. A broadcast announces a
+    // second sound track when the programme starts, and a recorder starts
+    // before that: the first copy of the map describes whatever was on
+    // before. See [`si::stream_tags`].
     let described = if on_a_ts {
-        si::stream_tags(&input, u16::try_from(video_id).unwrap_or(0))
+        let pids: Vec<u16> = audios
+            .iter()
+            .filter_map(|a| u16::try_from(a.pid).ok())
+            .collect();
+        si::stream_tags(&input, u16::try_from(video_id).unwrap_or(0), &pids)
     } else {
-        Vec::new()
+        None
     };
+    let streams: &[si::ElementaryStream] = described.as_ref().map_or(&[], |s| &s.streams);
+    // What the broadcast says about each of its sound tracks.
+    //
+    // **More than one sound track means one of two things and the sound
+    // cannot say which.** A programme sent in two languages carries the
+    // original and the dub; a programme sent with commentary for a viewer
+    // who cannot see the picture carries the programme and the commentary.
+    // Both arrive as two stereo AAC tracks at the same rate, described
+    // identically by the demuxer -- of 37 such recordings in a corpus of
+    // 400, 34 name Japanese on both tracks. What separates them is the name
+    // the broadcaster writes beside each one, 英語 against 音声解説, and
+    // that is in the programme description and nowhere else.
+    //
+    // Asked only where there is more than one track. On the other 363
+    // recordings there is a single track, it is the main sound whatever any
+    // table says, and the read this costs would buy nothing.
+    if audios.len() > 1 {
+        if let Some(service) = &described {
+            let tag_of = |a: &AudioInfo| {
+                u16::try_from(a.pid)
+                    .ok()
+                    .and_then(|pid| service.stream(pid))
+                    .and_then(si::ElementaryStream::component_tag)
+            };
+            let tags: Vec<u8> = audios.iter().filter_map(tag_of).collect();
+            let said = si::sound_tracks(&input, service.service_id, &tags);
+            for a in audios.iter_mut() {
+                let Some(tag) = tag_of(a) else { continue };
+                let Some(track) = said.iter().find(|s| s.component_tag == tag) else {
+                    continue;
+                };
+                // The map is allowed to have said it first: a language in
+                // the map is about the stream, where this one is about the
+                // programme being carried on it.
+                if a.language.is_none() {
+                    a.language.clone_from(&track.language);
+                }
+                a.said = Some(track.clone());
+            }
+        }
+    }
+    // Which of them is the main sound. The broadcast's own answer where it
+    // gave one -- it is the only party here that knows whether the second
+    // track is a language or a commentary, and a player that opens on the
+    // commentary has opened on the wrong one.
+    //
+    // Otherwise libav's, since it weighs the disposition flags a container
+    // may carry; and the first track where it has no opinion. libav's answer
+    // is the widest track, which on a disc is right and on a broadcast is a
+    // coin toss: on a two-track recording measured here it named the second.
+    let audio = audios
+        .iter()
+        .find(|a| a.said.as_ref().is_some_and(|s| s.main))
+        .cloned()
+        .or_else(|| {
+            ictx.streams()
+                .best(ff::media::Type::Audio)
+                .map(|a| a.index())
+                .and_then(|i| audios.iter().find(|a| a.stream_index == i).cloned())
+        })
+        .or_else(|| audios.first().cloned());
     // Which of the three text streams a stream is, where it is one at all.
     //
     // **libav names one of them and lumps the other two together.** The
@@ -1393,7 +1463,7 @@ fn outline_of(path: &str) -> Result<(Outline, input::Demux)> {
     // captions, 0x38..0x3F the crawl -- and whether the map also carries the
     // data component descriptor that says the text is ARIB's.
     let text_of = |pid: i32, id: ff::codec::Id| -> Option<(TextKind, TextFormat)> {
-        let told = described.iter().find(|e| i32::from(e.pid) == pid);
+        let told = streams.iter().find(|e| i32::from(e.pid) == pid);
         text_stream(
             told.and_then(si::ElementaryStream::component_tag),
             told.and_then(si::ElementaryStream::data_component_id),
@@ -1685,6 +1755,7 @@ mod tests {
             bits: 16,
             time_base: 1.0 / 90_000.0,
             bit_rate: None,
+            said: None,
         }
     }
 

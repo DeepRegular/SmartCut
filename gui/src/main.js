@@ -4451,7 +4451,13 @@ function renderTracks() {
     };
     const kind = tr(kinds[track.kind] || "tracks.caption");
     const bits = [kind, track.detail];
+    // The language code and, beside it, what the broadcaster calls the
+    // track. Both, because they answer different questions: a viewer reading
+    // 音声解説 knows not to keep that one, and a viewer reading `eng` knows
+    // the recording is in two languages. On a recording that named neither,
+    // neither is shown.
     if (track.language) bits.push(track.language);
+    if (track.said) bits.push(track.said);
     if (track.main) bits.push(tr("tracks.main"));
     bits.push(tr("tracks.pid", { pid: track.pid.toString(16).padStart(4, "0") }));
     label.textContent = bits.join(tr("sep"));

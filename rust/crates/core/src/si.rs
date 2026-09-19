@@ -720,11 +720,200 @@ fn names(service: &Service, wanted: &[u16]) -> usize {
 /// is in the first copy of it. A recording with no map -- a disc's clip
 /// aside, anything that is not a transport stream -- answers with nothing,
 /// and the caller falls back on what the demuxer alone could see.
-pub fn stream_tags(input: &crate::input::Input, video_pid: u16) -> Vec<ElementaryStream> {
-    const WINDOW: usize = 4 << 20;
-    read_service_within(input, video_pid, &[], WINDOW)
-        .map(|s| s.streams)
-        .unwrap_or_default()
+///
+/// **Unless the first copy of the map is not the whole of it.** `wanted` is
+/// the streams the caller already knows are in the file, and a map that does
+/// not name all of them is a map read before the broadcaster had finished
+/// announcing the programme -- so the window opens once, as it does in
+/// [`read_service`], and the better of the two answers is taken. A recording
+/// whose map names everything the first time, which is nine in ten of them,
+/// reads exactly what it read before.
+pub fn stream_tags(
+    input: &crate::input::Input,
+    video_pid: u16,
+    wanted: &[u16],
+) -> Option<Service> {
+    const NEAR: usize = 4 << 20;
+    const FAR: usize = 16 << 20;
+    let near = read_service_within(input, video_pid, wanted, NEAR).ok();
+    if near
+        .as_ref()
+        .is_some_and(|s| names(s, wanted) == wanted.len())
+    {
+        return near;
+    }
+    match read_service_within(input, video_pid, wanted, FAR) {
+        Ok(far) if near.as_ref().is_none_or(|n| names(&far, wanted) > names(n, wanted)) => Some(far),
+        _ => near,
+    }
+}
+
+/// What a broadcast says about one of the sound tracks it is sending.
+///
+/// A programme can arrive with more than one, and the two this corpus holds
+/// are the two a viewer knows: a second language, and the commentary a
+/// broadcaster sends for somebody who cannot see the picture. Nothing in the
+/// sound itself tells them apart -- both are two channels of AAC at the same
+/// rate, and a demuxer describes them identically -- so what separates them
+/// is what the broadcast says, which is this.
+#[derive(Debug, Clone)]
+pub struct SoundTrack {
+    /// How the map and the programme description both name the stream: 0x10
+    /// the main sound, 0x11 the second.
+    pub component_tag: u8,
+    /// Whether the broadcaster calls this the main sound. Said outright in
+    /// the descriptor rather than inferred from the tag, because it is the
+    /// broadcaster's own answer to exactly this question.
+    pub main: bool,
+    /// The language it is in, as ISO 639 writes one.
+    pub language: Option<String>,
+    /// What the broadcaster calls it, in its own words -- 日本語, 英語,
+    /// 音声解説. The one field here that says *which of the two kinds* of
+    /// second track this is, since the arrangement and the language do not:
+    /// a commentary track is stereo Japanese beside stereo Japanese.
+    pub name: Option<String>,
+    /// ARIB's own arrangement code: 0x01 one channel, 0x02 two programmes of
+    /// one channel each, 0x03 stereo, 0x09 five and a low one.
+    pub arrangement: u8,
+}
+
+/// How far in to look for the programme's description of its own sound.
+///
+/// Measured over the 37 recordings in a 400-recording corpus that carry more
+/// than one sound track: the first description naming every track the map
+/// names arrives between 3.6 and 15.3 megabytes in, 35 of the 37 of them
+/// past twelve. The table repeats every couple of seconds, so the distance
+/// is not the repeat rate -- it is that the recording opens on the end of
+/// the programme before, whose description names one track and so is not an
+/// answer to this at all.
+const SOUND_WINDOW: usize = 16 << 20;
+
+/// What the recording's own programme description says about its sound.
+///
+/// `wanted` is the component tags the map named, and is what makes this
+/// answer about *this* programme. A recorder starts before the programme
+/// does, so the description at the head of the file is the previous
+/// programme's -- and a programme with one sound track describes one. So the
+/// first description that names every tag the map carries is taken, and one
+/// that names fewer is passed over rather than half believed.
+///
+/// Empty where the recording carries no such description: a cut this program
+/// has already made, a clip off a disc, anything that is not a broadcast.
+/// The caller then has the map's tags and nothing else, which still says
+/// which track is the main one.
+pub fn sound_tracks(
+    input: &crate::input::Input,
+    service_id: u16,
+    wanted: &[u8],
+) -> Vec<SoundTrack> {
+    if wanted.is_empty() {
+        return Vec::new();
+    }
+    let Ok(mut f) = input.open() else {
+        return Vec::new();
+    };
+    let mut buf = vec![0u8; SOUND_WINDOW];
+    let Ok(n) = read_fully(&mut f, &mut buf) else {
+        return Vec::new();
+    };
+    buf.truncate(n);
+    let Some((base, stride)) = framing(&buf) else {
+        return Vec::new();
+    };
+
+    let mut eit = SectionReader::default();
+    let mut found: Vec<SoundTrack> = Vec::new();
+    let mut at = base;
+    while at + PACKET <= buf.len() {
+        let p = &buf[at..at + PACKET];
+        at += stride;
+        if p[0] != 0x47 {
+            match find_sync(&buf[at..], stride) {
+                Some(off) => at += off,
+                None => break,
+            }
+            continue;
+        }
+        if pid_of(p) != PID_EIT {
+            continue;
+        }
+        eit.feed(p, |sec| {
+            // Both halves are read. Present and following describe two
+            // programmes and only one of them is this file's -- but which
+            // one that is depends on how early the recorder started, and
+            // `wanted` settles it either way.
+            //
+            // Thirty bytes is the shortest section with an event in it:
+            // fourteen of header, twelve of event, four of CRC. See
+            // [`programme`], where being four short brought the program
+            // down.
+            if !found.is_empty() || sec[0] != TABLE_EIT_PF_ACTUAL || sec.len() < 30 {
+                return;
+            }
+            if service_id != 0 && ((sec[3] as u16) << 8) | sec[4] as u16 != service_id {
+                return;
+            }
+            let Some(event) = sec.get(14..sec.len() - 4) else {
+                return;
+            };
+            let len = (((event[10] & 0x0F) as usize) << 8) | event[11] as usize;
+            let Some(loop_bytes) = event.get(12..12 + len) else {
+                return;
+            };
+            // Which network the table came off, which is what says how its
+            // text is written; see [`crate::text`].
+            let written = crate::text::Written::of_network(((sec[10] as u16) << 8) | sec[11] as u16);
+            let said = audio_components(loop_bytes, written);
+            if wanted.iter().all(|tag| said.iter().any(|s| s.component_tag == *tag)) {
+                found = said;
+            }
+        });
+        if !found.is_empty() {
+            break;
+        }
+    }
+    found
+}
+
+/// Every audio component descriptor in one event's descriptor loop.
+///
+/// ARIB STD-B10 part 2, 6.2.26. The body runs: four bits reserved and four
+/// of stream content, then a byte each of component type, component tag,
+/// stream type and simulcast group tag; then a byte of flags -- the top bit
+/// saying a single track carries two languages, the next whether this is the
+/// main sound; then the language, then a second language where that first
+/// flag said so, and then the broadcaster's own name for the track.
+fn audio_components(loop_bytes: &[u8], written: crate::text::Written) -> Vec<SoundTrack> {
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i + 2 <= loop_bytes.len() {
+        let tag = loop_bytes[i];
+        let len = loop_bytes[i + 1] as usize;
+        let Some(body) = loop_bytes.get(i + 2..i + 2 + len) else {
+            break;
+        };
+        i += 2 + len;
+        if tag != 0xC4 || body.len() < 9 {
+            continue;
+        }
+        let two_languages = body[5] & 0x80 != 0;
+        let text_at = if two_languages { 12 } else { 9 };
+        let text = body
+            .get(text_at..)
+            .map(|b| crate::arib::one_line(&crate::text::decode(b, written)))
+            .filter(|t| !t.is_empty());
+        out.push(SoundTrack {
+            component_tag: body[2],
+            main: body[5] & 0x40 != 0,
+            language: std::str::from_utf8(&body[6..9])
+                .ok()
+                .map(str::to_string)
+                .filter(|l| l.chars().all(|c| c.is_ascii_lowercase())),
+            name: text,
+            arrangement: body[1],
+        });
+    }
+    out
 }
 
 pub fn read_service(
@@ -2951,6 +3140,205 @@ mod tests {
         // caller with nothing to look for pays for no extra reading.
         let plain = read_service(&input, 0x200, &[]).expect("a map");
         assert_eq!(plain.streams.len(), 1);
+
+        let _ = std::fs::remove_file(&at);
+    }
+
+    /// A program map naming sound on `pids`, each with the component tag
+    /// beside it that ARIB names a stream by: 0x10 the main sound, 0x11 the
+    /// second.
+    fn pmt_with_sound(service: u16, version: u8, video: u16, pids: &[u16]) -> Vec<u8> {
+        let mut sec = vec![
+            TABLE_PMT,
+            0xB0,
+            0x00,
+            (service >> 8) as u8,
+            service as u8,
+            0xC1 | (version << 1),
+            0x00,
+            0x00,
+            0xE0 | ((video >> 8) as u8 & 0x1F),
+            video as u8,
+            0xF0,
+            0x00,
+        ];
+        sec.extend_from_slice(&[0x02, 0xE0 | ((video >> 8) as u8 & 0x1F), video as u8, 0xF0, 0x00]);
+        for (n, &pid) in pids.iter().enumerate() {
+            sec.extend_from_slice(&[
+                0x0F,
+                0xE0 | ((pid >> 8) as u8 & 0x1F),
+                pid as u8,
+                0xF0,
+                0x03,
+                0x52,
+                0x01,
+                0x10 + n as u8,
+            ]);
+        }
+        finish_section(&mut sec);
+        sec
+    }
+
+    /// One audio component descriptor: stereo, in `language`, named by four
+    /// bytes of ARIB text.
+    fn audio_component(tag: u8, main: bool, language: &[u8; 3], name: &[u8]) -> Vec<u8> {
+        let mut d = vec![
+            0xC4,
+            0x00,
+            0xF2,
+            0x03,
+            tag,
+            0x0F,
+            0xFF,
+            if main { 0x6F } else { 0x2F },
+        ];
+        d.extend_from_slice(language);
+        d.extend_from_slice(name);
+        d[1] = (d.len() - 2) as u8;
+        d
+    }
+
+    /// A present-and-following section describing one event whose sound is
+    /// `components`.
+    fn eit_pf(service: u16, section: u8, components: &[Vec<u8>]) -> Vec<u8> {
+        let loop_bytes: Vec<u8> = components.concat();
+        let mut sec = vec![
+            TABLE_EIT_PF_ACTUAL,
+            0xB0,
+            0x00,
+            (service >> 8) as u8,
+            service as u8,
+            0xC1,
+            section,
+            0x01,
+            0x00,
+            0x00,
+            0x7F,
+            0xE0,
+            0x00,
+            0x00,
+        ];
+        // The event: two bytes of id, five of start time, three of duration,
+        // then the running status and the length of what follows.
+        sec.extend_from_slice(&[0x00, 0x01, 0xE5, 0x09, 0x19, 0x00, 0x00, 0x00, 0x30, 0x00]);
+        sec.extend_from_slice(&[
+            0x80 | ((loop_bytes.len() >> 8) as u8 & 0x0F),
+            loop_bytes.len() as u8,
+        ]);
+        sec.extend_from_slice(&loop_bytes);
+        finish_section(&mut sec);
+        sec
+    }
+
+    /// 日本語 and 英語, as ARIB writes them: two bytes a character, in the
+    /// kanji set a broadcast's tables open in.
+    const JAPANESE: [u8; 6] = [0x46, 0x7C, 0x4B, 0x5C, 0x38, 0x6C];
+    const ENGLISH: [u8; 4] = [0x31, 0x51, 0x38, 0x6C];
+
+    #[test]
+    fn reads_what_a_broadcast_says_about_its_sound() {
+        let said = audio_components(
+            &[
+                audio_component(0x10, true, b"jpn", &JAPANESE),
+                audio_component(0x11, false, b"eng", &ENGLISH),
+            ]
+            .concat(),
+            crate::text::Written::Arib,
+        );
+        assert_eq!(said.len(), 2);
+        assert_eq!(said[0].component_tag, 0x10);
+        assert!(said[0].main, "the first track is the main sound");
+        assert_eq!(said[0].language.as_deref(), Some("jpn"));
+        assert_eq!(said[0].name.as_deref(), Some("日本語"));
+        assert_eq!(said[0].arrangement, 0x03);
+        assert_eq!(said[1].component_tag, 0x11);
+        assert!(!said[1].main, "the second track is not");
+        assert_eq!(said[1].language.as_deref(), Some("eng"));
+        assert_eq!(said[1].name.as_deref(), Some("英語"));
+    }
+
+    /// A track that carries two languages at once puts a second language
+    /// code where the name would otherwise start, and a reader that missed
+    /// it would print three bytes of ISO 639 as the track's name.
+    #[test]
+    fn a_track_carrying_two_languages_is_named_past_the_second_of_them() {
+        let mut d = audio_component(0x10, true, b"jpn", &JAPANESE);
+        d.insert(11, b'g');
+        d.insert(11, b'n');
+        d.insert(11, b'e');
+        d[1] = (d.len() - 2) as u8;
+        d[7] |= 0x80;
+        let said = audio_components(&d, crate::text::Written::Arib);
+        assert_eq!(said.len(), 1);
+        assert_eq!(said[0].language.as_deref(), Some("jpn"));
+        assert_eq!(said[0].name.as_deref(), Some("日本語"));
+    }
+
+    /// A recording that begins during the programme before this one: its
+    /// first map names one sound track, and the description on the air at
+    /// that moment describes one. Neither is this recording's answer.
+    #[test]
+    fn finds_the_second_sound_track_and_what_the_broadcast_calls_it() {
+        let (service, video) = (1u16, 0x200u16);
+        let (main, second) = (0x110u16, 0x111u16);
+        let mut out = Vec::new();
+        let mut cc = 0u8;
+        packetize(PID_PAT, &pat(service, 0x100), &mut cc, &mut out);
+        let (mut before, mut early) = (0u8, 0u8);
+        for _ in 0..4 {
+            packetize(0x100, &pmt_with_sound(service, 5, video, &[main]), &mut before, &mut out);
+            packetize(
+                PID_EIT,
+                &eit_pf(service, 0, &[audio_component(0x10, true, b"jpn", &JAPANESE)]),
+                &mut early,
+                &mut out,
+            );
+        }
+        let (mut after, mut late) = (0u8, 0u8);
+        for _ in 0..4 {
+            packetize(
+                0x100,
+                &pmt_with_sound(service, 6, video, &[main, second]),
+                &mut after,
+                &mut out,
+            );
+            packetize(
+                PID_EIT,
+                &eit_pf(
+                    service,
+                    0,
+                    &[
+                        audio_component(0x10, true, b"jpn", &JAPANESE),
+                        audio_component(0x11, false, b"eng", &ENGLISH),
+                    ],
+                ),
+                &mut late,
+                &mut out,
+            );
+        }
+        let at = std::env::temp_dir().join("smartcut-two-languages.ts");
+        std::fs::write(&at, &out).expect("write the sample");
+        let input = crate::input::Input::plain(&at.to_string_lossy());
+
+        // The map: asked for both tracks, the reading goes past the one that
+        // names a single track.
+        let map = stream_tags(&input, video, &[main, second]).expect("a map");
+        assert_eq!(
+            map.stream(second).and_then(ElementaryStream::component_tag),
+            Some(0x11),
+            "the later map names the second track"
+        );
+
+        // The description: the first one on the air names one track and is
+        // passed over, because it is the programme before this one's.
+        let said = sound_tracks(&input, service, &[0x10, 0x11]);
+        assert_eq!(said.len(), 2, "the description naming both tracks is taken");
+        assert_eq!(said[1].name.as_deref(), Some("英語"));
+
+        // And a caller with nothing to look for reads the first map, as it
+        // did before any of this.
+        let plain = stream_tags(&input, video, &[]).expect("a map");
+        assert!(plain.stream(second).is_none());
 
         let _ = std::fs::remove_file(&at);
     }

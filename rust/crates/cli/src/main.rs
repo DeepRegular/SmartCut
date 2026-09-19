@@ -813,11 +813,19 @@ fn main() -> Result<()> {
         } else {
             ""
         };
-        let lang = a
-            .language
-            .as_deref()
-            .map(|l| format!("  {l}"))
-            .unwrap_or_default();
+        // The broadcaster's own name for the track where it gave one, and
+        // the language code otherwise. Both are printed when they are not
+        // the same thing: a recording in two languages says `eng 英語` on
+        // its second track and one carrying commentary for a viewer who
+        // cannot see the picture says `jpn 音声解説`, and the language alone
+        // would have called those two the same.
+        let said = a.said.as_ref().and_then(|s| s.name.as_deref());
+        let lang = match (a.language.as_deref(), said) {
+            (Some(code), Some(name)) => format!("  {code} {name}"),
+            (Some(code), None) => format!("  {code}"),
+            (None, Some(name)) => format!("  {name}"),
+            (None, None) => String::new(),
+        };
         // The PID only where there is one. A recording out of an MP4 has a
         // track number in that field and calling it a PID would name it
         // something it is not; the stream index names it either way, and is

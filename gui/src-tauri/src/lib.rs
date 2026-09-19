@@ -2558,6 +2558,16 @@ struct StreamInfo {
     /// the output puts it back on.
     pid: i32,
     language: Option<String>,
+    /// What the broadcaster calls the track in its own words -- 日本語, 英語,
+    /// 音声解説 -- where it named it at all.
+    ///
+    /// The language alone does not separate the two reasons a recording has
+    /// a second sound track: a programme in two languages and a programme
+    /// with commentary for a viewer who cannot see the picture both arrive
+    /// as two tracks, and most of the commentary ones say Japanese on both.
+    /// This is the field that tells the reader which one is in front of
+    /// them. See [`smartcut_core::si::SoundTrack`].
+    said: Option<String>,
     /// Filled in for sound: the codec, the rate and the channel count.
     detail: String,
     /// Whether this is the track everything that reads one track reads.
@@ -2593,6 +2603,7 @@ async fn tracks(path: String) -> Result<Vec<StreamInfo>, String> {
                 kind: "audio".into(),
                 pid: a.pid,
                 language: a.language.clone(),
+                said: a.said.as_ref().and_then(|s| s.name.clone()),
                 detail: format!("{} {}Hz {}ch", a.codec, a.sample_rate, a.channels),
                 main: main == Some(a.stream_index),
                 optional: true,
@@ -2608,6 +2619,7 @@ async fn tracks(path: String) -> Result<Vec<StreamInfo>, String> {
                 .into(),
                 pid: c.pid,
                 language: c.language.clone(),
+                said: None,
                 detail: match c.format {
                     smartcut_core::TextFormat::Arib => "ARIB STD-B24",
                     smartcut_core::TextFormat::Ttml => "ARIB-TTML",
@@ -2625,6 +2637,7 @@ async fn tracks(path: String) -> Result<Vec<StreamInfo>, String> {
                 kind: "graphics".into(),
                 pid: g.pid,
                 language: g.language.clone(),
+                said: None,
                 detail: "PGS".into(),
                 main: false,
                 optional: true,
@@ -2640,6 +2653,7 @@ async fn tracks(path: String) -> Result<Vec<StreamInfo>, String> {
                 kind: "subpicture".into(),
                 pid: s.id,
                 language: s.language.clone(),
+                said: None,
                 detail: "subpicture".into(),
                 main: false,
                 optional: false,
@@ -2652,6 +2666,7 @@ async fn tracks(path: String) -> Result<Vec<StreamInfo>, String> {
                 kind: "dropped".into(),
                 pid: d.pid,
                 language: None,
+                said: None,
                 detail: d.what.to_string(),
                 main: false,
                 optional: false,

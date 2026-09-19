@@ -682,6 +682,68 @@ picked up, by `best(Type::Audio)`, so the second language was never even read.
 stays, as the *main* one: commercial detection, preview playback and the `.aac` sidecar
 each read a single track, and which one that is remains a real question.
 
+### The second track is not there when the file opens
+
+A broadcast announces what it is sending when the programme starts, and a recorder
+starts before that. The head of the file is the end of whatever was on before, with
+one sound track in it — so the second track is missing from the map, from the stream,
+or from both, and libavformat stops probing after five megabytes, which on a Japanese
+broadcast is about two and a half seconds.
+
+Measured over 400 broadcast recordings: **37 carry two sound tracks, and 22 of those
+name the second only past where the probe stops** — one of them 7.2 megabytes in.
+Those 22 arrived as ordinary single-track recordings. The track was not listed, not
+described, and not carried into the cut.
+
+The deeper probe that was being spent on recordings with no captions — see
+[`input.rs`](../../rust/crates/core/src/input.rs) and *The captions the head of the file
+does not mention* in
+[broadcast-ts.md](broadcast-ts.md#the-captions-the-head-of-the-file-does-not-mention) —
+is now spent on every broadcast recording. The sound cannot be asked the cheap question the captions were
+asked — "did none arrive?" — because three quarters of the recordings that turn out to
+have two tracks look exactly like the ones that have one until the deeper probe is
+spent. Measured at a fifth of a second on a file read cold off a network share, and
+nothing at all on one already in the page cache. Not on a disc: a clip's map is written
+once by an authoring tool, and everything it carries is in the first copy of it.
+
+The recording's own map is read further for the same reason. `si::stream_tags` is
+handed the PIDs the demuxer found, and a map that does not name them all is a map read
+before the broadcaster had finished announcing the programme — so the window opens from
+four megabytes to sixteen, once, exactly as `read_service` already did for the captions.
+
+### Which is the main track, and what each one is
+
+Two tracks arrive for one of two reasons, and **the sound cannot say which**. A
+programme sent in two languages carries the original and the dub; a programme sent with
+commentary for a viewer who cannot see the picture carries the programme and the
+commentary. Both are two stereo AAC tracks at the same rate, described identically by
+the demuxer — of the 37 recordings above, 34 name Japanese on both tracks.
+
+What separates them is the broadcaster's own name for each track, and that is in the
+programme description: the audio component descriptor of ARIB STD-B10, tag 0xC4, in the
+event information table. It carries the component tag the map names the stream by, a
+flag saying whether this is the main sound, the language, and the text a listing would
+print — 日本語, 英語, 日本語（解説）.
+
+`si::sound_tracks` reads it, and takes **the first description that names every
+component tag the map carries**. That rule is what makes the answer this programme's:
+the description on the air when the file opens is the previous programme's, and a
+programme with one sound track describes one. It is passed over rather than half
+believed.
+
+Asked only where there is more than one track — on the other 363 recordings there is
+one track, it is the main sound whatever any table says, and the read would buy
+nothing. Measured over the 37: the first description naming every track arrives between
+3.6 and 15.3 megabytes in, so the window is sixteen.
+
+The main track is then the broadcast's own answer rather than `best(Type::Audio)`,
+which weighs the disposition flags a container carries and on a broadcast is picking
+the wider of two identical tracks. On a two-track recording measured here it named the
+second — so a preview opened on the commentary, and the commercial detector listened to
+it.
+
+### Cutting each track on its own
+
 On the way out, **each track is cut on its own**. That is the whole point, and the
 reason the writer's state was split from one set into one set per track. Two tracks
 have their frames at different instants, so:
