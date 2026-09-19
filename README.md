@@ -105,8 +105,8 @@ machine to sleep or shut it down when the queue is empty. See
 
 Two commercial blocks are removed from a 3 minute 45 second recording:
 
-- **133.91 seconds copied bit-for-bit, 0.57 seconds re-encoded**
-- **17 frames out of 6743 were touched at all**
+- **134.41 seconds copied bit-for-bit, 0.47 seconds re-encoded**
+- **14 frames out of 6743 were touched at all**
 
 The clip is a practice recording built by
 [`tests/make_demo_media.sh`](tests/make_demo_media.sh) out of ffmpeg's own test
