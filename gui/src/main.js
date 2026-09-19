@@ -585,7 +585,12 @@ function renderKeyframes() {
   if (!live.length) {
     const p = document.createElement("div");
     p.className = "clips-empty";
-    p.textContent = tr("editor.keyframes.empty");
+    // What fills this column, said as it stands: a detection puts its marks
+    // down unless 環境設定 says it should not, and then the menu is where
+    // they come from.
+    p.textContent = tr(
+      prefs.get("cmKeyframes") === false ? "editor.keyframes.emptyManual" : "editor.keyframes.empty"
+    );
     list.append(p);
     return;
   }
@@ -4388,7 +4393,9 @@ el("detect-cm").addEventListener("click", async () => {
     cmSummary = cmNote(res);
     cmFinding = { logo_found: !!res.logo_found, resets: res.resets || 0 };
     showCmNote(cmSummary);
-    applyCmBlocks(res.blocks);
+    // Whether a detection puts its marks down is 環境設定; off, the band and
+    // the sentence are the whole of what it says until the menu is asked.
+    applyCmBlocks(res.blocks, prefs.get("cmKeyframes") !== false);
     // Marks a detection put down are the detection's answer and not
     // something anybody did in here; leaving is not losing them. See
     // `arrivedAs`.
@@ -4647,11 +4654,17 @@ if (listen) {
       // of them was an edit. The finding is still shown, as the band under
       // the timeline and the sentence beside it, and the menu puts its marks
       // down for anyone who wants them after all.
-      const marks = !(arriving && markFileKind);
+      //
+      // 環境設定 is the other half of the same question, asked of every
+      // detection rather than of this case. It cannot overrule the rule
+      // above: a preference about detections is not an answer about somebody
+      // else's list.
+      const fileWon = arriving && !!markFileKind;
+      const marks = prefs.get("cmKeyframes") !== false && !fileWon;
       if (arriving) {
         await settle(() => applyCmBlocks(cm.blocks, marks));
       } else {
-        applyCmBlocks(cm.blocks);
+        applyCmBlocks(cm.blocks, marks);
         settleMark();
       }
       cmFinding =
@@ -4659,7 +4672,10 @@ if (listen) {
           ? { logo_found: !!cm.logo_found, resets: cm.resets }
           : null;
       cmSummary = cm.note || "";
-      showCmNote(marks ? cmSummary : tr("cm.besideMarks", { note: cmSummary }));
+      // Only the file is worth saying out loud. Marks held back by 環境設定
+      // are held back by an answer somebody has already given, and the band
+      // arriving without them is that answer being kept.
+      showCmNote(fileWon ? tr("cm.besideMarks", { note: cmSummary }) : cmSummary);
     }
     relayout();
     sync();

@@ -170,6 +170,20 @@ const DEFAULTS = {
   /// read the others: opening a recording to find it already cut is a bigger
   /// thing to do unasked than opening it to find some marks.
   sidecarPriority: "keyframe",
+  /// Whether a detection puts its marks down by itself.
+  ///
+  /// On. A detection that found the breaks and then said nothing about where
+  /// they are would be a pass over the recording spent for a sentence, and
+  /// putting the marks down is what it has always done. Off is for whoever
+  /// wants to look at the band first and decide: the finding is still drawn
+  /// under the timeline, and the menu's 「CM 検出結果をキーフレームにする」
+  /// puts its marks down when it is asked to.
+  ///
+  /// About a detection arriving -- one run in here, or one the list hands
+  /// over. A finding read out of a file is a mark file being read, and marks
+  /// whatever this says. So is the rule this cannot override: marks are never
+  /// put on top of a list the recording came up with beside it.
+  cmKeyframes: true,
   /// Whether the save shortcut writes over a file that is already there
   /// without stopping to ask.
   ///

@@ -992,6 +992,13 @@ an edit, so there is no undo to reach for either. The finding is still shown, as
 under the timeline and the sentence beside it, and a menu line puts its marks down for
 anyone who wants them.
 
+**Whether a detection marks at all is a preference**, on out of the box, asked of every
+detection rather than of that one case: a pass over the recording that said only a sentence
+would be minutes spent for nothing, and placing the marks is what detection has always
+done. It cannot overrule the rule above — a preference about detections is not an answer
+about somebody else's list — and it is not asked of a finding read out of a file, which is
+a mark file being read.
+
 ### Chapters off a disc
 
 A recording opened from a disc has a third source of marks: the chapter points the

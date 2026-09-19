@@ -7772,6 +7772,7 @@ function paintPrefs() {
     paintStepUnit(id, prefs.get(`${name}Unit`));
   }
   el("pref-sidecar").value = String(prefs.get("sidecarPriority"));
+  el("pref-cm-keyframes").checked = prefs.get("cmKeyframes") !== false;
   el("pref-quiet-overwrite").checked = !!prefs.get("quietOverwrite");
   el("pref-prefix").value = String(prefs.get("outPrefix") ?? "");
   el("pref-number").checked = !!prefs.get("outNumber");
@@ -7954,6 +7955,10 @@ for (const [id, name] of PAGE_STEPS) {
 
 el("pref-sidecar").addEventListener("change", (ev) => {
   prefs.set("sidecarPriority", ev.target.value);
+});
+
+el("pref-cm-keyframes").addEventListener("change", (ev) => {
+  prefs.set("cmKeyframes", ev.target.checked);
 });
 
 el("pref-quiet-overwrite").addEventListener("change", (ev) => {

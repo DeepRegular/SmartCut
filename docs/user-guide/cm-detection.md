@@ -31,6 +31,10 @@ which writes `recording.cm.json`. **Read a saved detection…** in the same menu
 reads one back, and a file left beside the recording is picked up when it is
 opened.
 
+To look at the band first and decide every time, turn off the preference **Turn
+a detection into keyframes** (it is on out of the box). ≡ → **Turn the detection
+into keyframes** still places the marks when you ask.
+
 **Where a `.keyframe` sits beside the recording, the detection is not mixed into
 the marks.** The `.keyframe` is your answer about where the breaks are and the
 detection is the program's, and marks from both in one column cannot be told

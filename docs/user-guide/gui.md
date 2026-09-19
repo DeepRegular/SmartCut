@@ -450,6 +450,9 @@ apart afterwards. The detection is still shown, as the band under the timeline
 and the line beside it, and **≡** → **Turn the detection into keyframes** puts
 its marks down if you want them.
 
+A detection can be left at the band every time, too: the preference **Turn a
+detection into keyframes**, on out of the box.
+
 **Neither waits for the analysis.** The marks are in the list the moment the
 window opens, and pressing one goes there. A long recording takes a while to
 analyse; the marks are usable before it does.
@@ -862,6 +865,7 @@ effect as you make it.
 |---|---|
 | **PageUp / PageDown** | What those keys do. Four answers — plain, `Shift`, `Ctrl`, `Shift+Ctrl` — each a number and a unit: **frames**, **seconds**, or **% a second, scrolling**. The first two are amounts, one per press. A percentage is a speed: a share of the fastest scroll here, which is sixty times the recording's own speed. 25 is fifteen times, so a second of holding covers fifteen seconds of the recording, whatever is open. Out of the box: 15 frames, 30 with `Shift`, 25% with `Ctrl` and 50% with both. A step of 0 is a key that does nothing |
 | **When more than one is there, read** | Which file is picked up when a recording has more than one of a `.keyframe`, a `.trim.avs` and a `.cm.json` beside it |
+| **Turn a detection into keyframes** | On out of the box. Off, a detection leaves the band and the sentence and nothing else, and ≡ → **Turn the detection into keyframes** places the marks. Where a mark file beside the recording was read, a detection is not marked whatever this says |
 | **Let the save shortcut write over a file without asking** | `Ctrl+H` and `Ctrl+Shift+H` then write over a file of the same name in silence |
 
 ### Output settings

@@ -116,6 +116,13 @@ const CATALOG = {
       "CM 検出結果は検出したときのままで、帯と印が付きます。" +
       "1 つしか無ければ、この設定に関わらずそれを読みます。" +
       "読んだファイルがあったときは、CM 検出結果を印に混ぜません。",
+    "prefs.cmKeyframes": "CM を検出したら、結果をキーフレームにする",
+    "prefs.cmKeyframesNote":
+      "見つかった CM ブロックの先頭と終わりに印を付けます。" +
+      "外すと、タイムラインの帯と下の 1 行だけになります。" +
+      "あとから印にしたくなったら、≡ の「CM 検出結果をキーフレームにする」を押してください。" +
+      "録画の隣のファイルを読んだときは、この設定に関わらず印を混ぜません。" +
+      "ファイルから読み込んだ検出結果は、この設定に関わらず印が付きます。",
     "prefs.quietOverwrite": "ショートカットでの保存は、確認せずに上書きする",
     "prefs.quietOverwriteNote":
       "Ctrl+H（キーフレーム情報）と Ctrl+Shift+H（Trim）は、録画と同じ場所へ画面を出さずに保存します。" +
@@ -605,6 +612,8 @@ const CATALOG = {
     "editor.keyCount": "{n} 個",
     "editor.keyframes.empty":
       "まだありません。「⚑ キーフレーム」でいまの位置を登録できます。CM を検出すると、本編と CM の先頭が自動で並びます。",
+    "editor.keyframes.emptyManual":
+      "まだありません。「⚑ キーフレーム」でいまの位置を登録できます。CM を検出したあと、≡ の「CM 検出結果をキーフレームにする」でも並びます。",
     "editor.keyframes.kill": "このキーフレームを消す",
     "editor.searching": "サーチ中",
     "editor.searchKind": "サーチ",
@@ -883,6 +892,13 @@ const CATALOG = {
       "the recording opens with the material already taken out; a saved detection arrives as the " +
       "detection it was, band and marks and all. Any of them on its own is read whatever this says. " +
       "Where one of them was read, a detection the list is holding is not mixed into the marks.",
+    "prefs.cmKeyframes": "Turn a detection into keyframes",
+    "prefs.cmKeyframesNote":
+      "A detection marks the start and the end of every block it found. Off, it leaves the band " +
+      "under the timeline and the sentence beside it, and ≡ → 「Turn the detection into keyframes」 " +
+      "puts the marks down when you ask for them. Where a mark file beside the recording was read a " +
+      "detection is not marked whatever this says, and a detection read from a file is marked " +
+      "whatever this says.",
     "prefs.quietOverwrite": "Let the save shortcut write over a file without asking",
     "prefs.quietOverwriteNote":
       "Ctrl+H (the keyframe list) and Ctrl+Shift+H (the Trim line) write straight to the name beside " +
@@ -1352,6 +1368,8 @@ const CATALOG = {
     "editor.keyCount": "{n}",
     "editor.keyframes.empty":
       "None yet. “⚑ Keyframe” marks wherever you are. Detecting commercials lines up the start of each break and of each part of the programme.",
+    "editor.keyframes.emptyManual":
+      "None yet. “⚑ Keyframe” marks wherever you are. After a detection, ≡ → “Turn the detection into keyframes” lines up the start of each break and of each part of the programme.",
     "editor.keyframes.kill": "Remove this keyframe",
     "editor.searching": "Searching",
     "editor.searchKind": "Search",
