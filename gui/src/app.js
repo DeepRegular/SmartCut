@@ -4939,7 +4939,7 @@ function paintOutProgress(overall, since = began) {
 
 if (listen) {
   listen("export-progress", (ev) => {
-    const [path, tables, done] = ev.payload;
+    const [path, tables, done, within] = ev.payload;
     if (!writing || writing.path !== path) return;
     const clip = writing;
     const was = Math.round(clip.out.progress * 100);
@@ -4947,7 +4947,14 @@ if (listen) {
     clip.out.note = `${Math.round(done * 100)}%`;
     // Outside the guard below: this is what moves the stage on to the next
     // stretch of the cut, and a stretch can begin between two whole percent.
-    followWrite(done);
+    //
+    // `within` rather than `done`, and only while the pictures are being
+    // written. The two are the same number only for a cut with no second
+    // pass: `done` is the whole job, so on a `.ts` the stage reached seven
+    // tenths of the way through the cut while it was being written and then
+    // walked the rest of it during the pass that puts the tables and the
+    // data broadcast in, where there is nothing left to encode.
+    if (!tables) followWrite(within);
     // The second pass over the file, which a `.ts` always has: the tables the
     // muxer cannot write, put back over the ones it did. It is a read and a
     // write of the whole finished file, so a window still saying 出力中

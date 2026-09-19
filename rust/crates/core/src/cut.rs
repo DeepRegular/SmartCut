@@ -4183,6 +4183,17 @@ pub fn cut(src: &Source, plans: &[RangePlan], output: &str, opts: &CutOptions) -
 /// [`crate::si::graft`]. Until this said so, the second pass reported nothing
 /// at all: the bar reached the end of the first one and the window then sat
 /// still for as long again.
+///
+/// A report carries two figures, because a caller has two things to show and
+/// they are not the same number. **A bar is about the job** and runs once
+/// from nought to one across both passes. **Anything that follows the
+/// writing head is about the pass**, and the second pass has no writing head
+/// to follow: it is copying a finished file and putting tables and the data
+/// broadcast into it, with nothing left to encode. Given the job's figure,
+/// the output screen's stage reached seven tenths of the way through the cut
+/// while the pictures were being written and then walked the rest of it
+/// during the pass that writes the data broadcast -- pictures moving under a
+/// line that says the tables are going in.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Pass {
     /// Copying and re-encoding into the output.
@@ -4201,13 +4212,17 @@ pub enum Pass {
 /// end of the first pass was not an estimate, it was wrong.
 const WRITING_SHARE: f64 = 0.7;
 
+/// How a cut says where it has got to: which pass it is in, how far through
+/// the whole job that is, and how far through the pass itself.
+pub type Report = Box<dyn Fn(Pass, f64, f64) + Send + Sync>;
+
 /// As [`cut`], reporting how far along it is.
 pub fn cut_with_progress(
     src: &Source,
     plans: &[RangePlan],
     output: &str,
     opts: &CutOptions,
-    progress: Option<Box<dyn Fn(Pass, f64) + Send + Sync>>,
+    progress: Option<Report>,
 ) -> Result<()> {
     crate::init()?;
 
@@ -5074,7 +5089,13 @@ pub fn cut_with_progress(
         p.map(move |p| {
             Box::new(move |f: f64| {
                 let done = base + f * span;
-                told.lock().unwrap().at(Some(&|d: f64| p(pass, d)), done);
+                // The throttle is on the job's figure, since that is what a
+                // bar is drawn from; the pass's own is worked back out of it
+                // so that both describe the same moment. See [`Pass`].
+                told.lock().unwrap().at(
+                    Some(&|d: f64| p(pass, d, ((d - base) / span).clamp(0.0, 1.0))),
+                    done,
+                );
             }) as Box<dyn Fn(f64) + Send + Sync>
         })
     };
@@ -5606,7 +5627,11 @@ pub fn cut_with_progress(
     // Whichever pass was the last one, ending on the end of it. A cut whose
     // tables were not going back in never left the first.
     if let Some(report) = &progress {
-        report(if share < 1.0 { Pass::Tables } else { Pass::Writing }, 1.0);
+        report(
+            if share < 1.0 { Pass::Tables } else { Pass::Writing },
+            1.0,
+            1.0,
+        );
     }
     Ok(())
 }

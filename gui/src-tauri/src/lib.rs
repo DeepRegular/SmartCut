@@ -3616,9 +3616,15 @@ async fn export(
             // read and a write of the whole finished file, and a window that
             // says 出力中 through it is a window saying the wrong thing for
             // a third of the run. See [`smartcut_core::cut::Pass`].
-            Some(Box::new(move |pass, f| {
+            //
+            // Two figures, and the screen uses them for two different things:
+            // `done` runs once across both passes and is what the bar is
+            // drawn from, `within` is how far through its own pass this is
+            // and is what the stage follows. Only the first pass has
+            // pictures being written; see `followWrite`.
+            Some(Box::new(move |pass, done, within| {
                 let tables = pass == smartcut_core::cut::Pass::Tables;
-                let _ = reporter.emit("export-progress", (whose.clone(), tables, f));
+                let _ = reporter.emit("export-progress", (whose.clone(), tables, done, within));
             })),
         )
         .map_err(|e| e.to_string())?;
