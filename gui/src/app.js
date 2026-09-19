@@ -374,9 +374,17 @@ function tellEditor() {
     // Blocks a batch detection found that the timeline has not been shown
     // yet. Only the editor can turn them into marks -- it is the one that
     // knows where the material begins.
+    // The whole finding and not only its blocks: how the detection read the
+    // recording is what lets that window say what was found in the language
+    // that is up, and write it beside the recording if it is asked to.
     cm:
       editing.cmPending && editing.cm
-        ? { blocks: editing.cm.blocks, note: editing.cmPhase }
+        ? {
+            blocks: editing.cm.blocks,
+            logo_found: editing.cm.logo_found,
+            resets: editing.cm.resets,
+            note: editing.cmPhase,
+          }
         : null,
   });
 }

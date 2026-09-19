@@ -950,11 +950,46 @@ program reads this, and a line with our name in it is one more thing for it to t
 negative second argument is AviSynth's other spelling of the same call, a length rather
 than an end, and is read as one.
 
-**The two do not say the same thing.** A `.keyframe` is a list of places and leaves the
+### Saved detections
+
+A third file can sit in the same place, and this one is ours alone: what a detection made
+of the recording, as `recording.cm.json`. Neither of the other two can hold it. A
+`.keyframe` is a list of places and a Trim line is a cut, while a finding is a set of
+ranges that have not been cut, carrying how it was arrived at — the caption resets, the
+logo, or the silence alone — because that is what the sentence under the timeline is
+written from.
+
+```json
+{ "smartcut_cm": 1, "blocks": [ … ], "note": "…", "logo_found": true, "resets": 0 }
+```
+
+The times are the recording's own seconds, exactly as the detection gave them, and not
+pictures counted from the first one the way the other two write their numbers. Those two
+are read by other programs and have to speak that way; this one is read back here, where a
+second of the recording's clock is what every block already speaks in. The sentence is
+saved with it and used where the file does not say how the recording was read, which is a
+finding restored from a project written before that was carried.
+
+A detection is already written to SmartCut's own cache, keyed by the recording, and comes
+back on its own the next time the row is added; the file is for the cases a cache cannot
+serve — another machine, or handing the finding to somebody else.
+
+**The three do not say the same thing.** A `.keyframe` is a list of places and leaves the
 timeline whole; a Trim line is the edit itself, and reading it opens the recording already
-cut. When both are beside a recording, a preference says which is read; either on its own is
-read whatever that preference says. Reading both would put marks pointing at material the
-timeline had already closed over.
+cut; a saved detection arrives as the detection it was, band and marks together. When more
+than one is beside a recording, a preference says which is read; any of them on its own is
+read whatever that preference says. Reading two would put marks pointing at material the
+timeline had already closed over, and would mix two answers about one recording into one
+column.
+
+**Where one of them was read, the detection the list is holding does not put its marks
+down.** The list hands the editor whatever it has detected, from this session or from the
+cache, and the editor is the one that can turn it into marks — it knows where the material
+begins. But a file beside the recording is somebody's own answer, and a detection is the
+program's, and marks from both in one column cannot be told apart afterwards. Neither was
+an edit, so there is no undo to reach for either. The finding is still shown, as the band
+under the timeline and the sentence beside it, and a menu line puts its marks down for
+anyone who wants them.
 
 ### Chapters off a disc
 

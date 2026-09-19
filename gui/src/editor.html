@@ -164,6 +164,13 @@
                 <span data-i18n="marks.load.trim">AviSynth Trim からカットを読み込む…</span>
                 <span class="menu-key">Ctrl+Shift+L</span>
               </button>
+              <!-- The detection's own finding, which is neither of the other
+                   two: a set of ranges that have not been cut, with how they
+                   were arrived at attached. Minutes of reading the recording,
+                   so it is worth being able to keep one and open it again. -->
+              <button class="menu-item" id="load-cm">
+                <span data-i18n="marks.load.cm">CM 検出結果を読み込む…</span>
+              </button>
               <div class="menu-sep"></div>
               <!-- Saving asks for the name, because the shape was chosen by
                    picking the line rather than in the dialog's type list:
@@ -179,6 +186,9 @@
                 <span data-i18n="marks.save.trim">AviSynth Trim にカットを保存…</span>
                 <span class="menu-key">Ctrl+Shift+H</span>
               </button>
+              <button class="menu-item" id="save-as-cm">
+                <span data-i18n="marks.save.cm">CM 検出結果を保存…</span>
+              </button>
               <div class="menu-sep"></div>
               <!-- The disc's own chapter points, which a recording off a
                    Japanese recorder frequently has the commercial breaks
@@ -188,6 +198,13 @@
                    cleared. Greyed on anything that is not a disc. -->
               <button class="menu-item" id="chapter-keys">
                 <span data-i18n="editor.chapterKeys">ディスクのチャプターをキーフレームにする</span>
+              </button>
+              <!-- The marks of a detection that is already on screen. Put
+                   down when it lands, except onto a timeline that came up
+                   with somebody's own list beside the recording -- there it
+                   waits here. -->
+              <button class="menu-item" id="cm-keys">
+                <span data-i18n="editor.cmKeys">CM 検出結果をキーフレームにする</span>
               </button>
               <!-- The marks alone. 全消去 beside it takes the cuts as well,
                    which is not what somebody who is redoing the marks on an

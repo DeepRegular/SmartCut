@@ -57,6 +57,15 @@ let seams = []; // output times of the joins in `joinTimes()`
 let outDur = 0;
 let keyframes = []; // source times
 let activeKey = null; // source time of the selected mark, null for none
+/// Which mark file this recording came up with beside it, if any.
+///
+/// What it decides is whether a detection the list hands over puts its marks
+/// down: a list somebody has kept is an answer about this recording, and a
+/// detection is another one, and the two in the same column are neither. A
+/// saved detection is the exception -- it *is* a detection, already on the
+/// timeline -- so the one the list is holding is the same news arriving
+/// twice. See the `editor-open` handler.
+let markFileKind = null;
 /// The chapter points the disc this recording came off carries, on the
 /// stream's own clock. Put down when the recording is opened; kept because
 /// they are the one source of marks that cannot be asked for again -- the
@@ -67,6 +76,14 @@ let cmBlocks = [];
 /// list with the rest of the state -- the row there says what was found, and
 /// a detection run in here has to reach it.
 let cmSummary = "";
+/// How the last detection read the recording -- the captions, the logo, or
+/// the silence alone. Kept beside the blocks because the sentence above is
+/// written in the language that was up when it was made, and a finding saved
+/// beside the recording has to be able to say it again in the other one.
+///
+/// Null where the blocks arrived without it, which is a project file written
+/// by a version that did not carry it. The sentence is then all there is.
+let cmFinding = null;
 let scenes = [];
 let warmed = false;
 /// Whether there are held pictures to read -- which happens well before
@@ -3052,9 +3069,13 @@ async function readKeyframeFile(path) {
 /// `録画.ts` becomes `録画.keyframe`. The Trim line keeps it --
 /// `録画.ts.trim.avs` -- because that is the name the AviSynth side of the
 /// world puts beside a recording and looks for again.
+///
+/// The detection's finding is ours alone, so it follows the keyframe list
+/// rather than inventing a third convention: `録画.cm.json`.
 function markPath(kind) {
   const base = sideBase || (src ? src.path.replace(/\.[^./\\]*$/, "") : "");
   if (kind === "keyframe") return `${base}.keyframe`;
+  if (kind === "cm") return `${base}.cm.json`;
   const ext = src ? (src.path.match(/\.[^./\\]*$/) || [""])[0] : "";
   return `${base}${ext}.trim.avs`;
 }
@@ -3083,9 +3104,86 @@ function trimBody() {
   return `${parts.join(" ++ ")}\r\n`;
 }
 
+/// The detection's finding, beside the recording, if one was left there.
+async function loadSidecarCm() {
+  return (await readCmFile(markPath("cm"))) || 0;
+}
+
+/// A saved finding, wherever it is, onto the timeline.
+///
+/// How many blocks it put down; `null` where the file could not be read or
+/// held nothing this program wrote. Read exactly as a detection that has just
+/// run is read -- it *is* one -- so the band under the timeline, the marks
+/// and the sentence all land the way they would have minutes ago.
+async function readCmFile(path) {
+  let body;
+  try {
+    body = await invoke("read_sidecar", { path });
+  } catch (e) {
+    el("status").textContent = tr("cm.readFailed", { e });
+    return null;
+  }
+  if (body === null || body === undefined) return 0;
+  let said;
+  try {
+    said = JSON.parse(body);
+  } catch (e) {
+    el("status").textContent = tr("cm.readFailed", { e });
+    return null;
+  }
+  const blocks = (said && said.blocks) || [];
+  const good = blocks
+    .filter((b) => isFinite(b.start) && isFinite(b.end) && b.end > b.start)
+    .map((b) => ({
+      start: b.start,
+      end: b.end,
+      junctions: b.junctions || 0,
+      score: b.score || 0,
+    }));
+  if (!good.length) return 0;
+  applyCmBlocks(good);
+  // The sentence again in the language that is up, where the file says how
+  // the recording was read; the one it was saved with otherwise.
+  cmFinding =
+    typeof said.resets === "number" ? { logo_found: !!said.logo_found, resets: said.resets } : null;
+  cmSummary = cmFinding ? cmNote({ ...cmFinding, blocks: good }) : said.note || "";
+  showCmNote(cmSummary);
+  el("status").textContent = tr("cm.read", { n: good.length, file: leaf(path) });
+  sync();
+  return good.length;
+}
+
+/// The finding as the file it is written to.
+///
+/// Its own shape, because neither of the other two can hold it: a `.keyframe`
+/// is a list of places and a Trim line is a cut, while a finding is a set of
+/// ranges that have not been cut and carries how it was arrived at. Nobody
+/// else reads it, so it is JSON and says in its first field what wrote it.
+///
+/// The times are the recording's own seconds, as the detection gave them --
+/// not pictures counted from the first one, which is how the other two write
+/// their numbers because other programs read those. This one is read back
+/// here, where a second of the recording's clock is what every block already
+/// speaks in.
+function cmBody() {
+  const said = { smartcut_cm: 1, blocks: cmBlocks, note: cmSummary };
+  if (cmFinding) {
+    said.logo_found = cmFinding.logo_found;
+    said.resets = cmFinding.resets;
+  }
+  return `${JSON.stringify(said, null, 1)}\n`;
+}
+
 /// Which shape a name asks for. The extension, which is what somebody typing
 /// one by hand means by typing it.
-const kindOf = (path) => (/\.avs$/i.test(path) ? "trim" : "keyframe");
+const kindOf = (path) =>
+  /\.avs$/i.test(path) ? "trim" : /\.json$/i.test(path) ? "cm" : "keyframe";
+
+/// What the picker calls a shape, and the extension it writes it with.
+const markFilter = (kind) => ({
+  name: tr(`marks.kind.${kind}`),
+  extensions: kind === "keyframe" ? ["keyframe"] : kind === "cm" ? ["json"] : ["avs"],
+});
 
 /// Write the marks beside the recording.
 ///
@@ -3108,19 +3206,15 @@ async function saveMarks(kind, ask) {
       // the name it is about to write say the same thing. Offering both here
       // put `AviSynth スクリプト` in the name and `キーフレーム情報` in the
       // type list, which is the dialog disagreeing with itself.
-      filters: [
-        {
-          name: tr(kind === "keyframe" ? "marks.kind.keyframe" : "marks.kind.trim"),
-          extensions: kind === "keyframe" ? ["keyframe"] : ["avs"],
-        },
-      ],
+      filters: [markFilter(kind)],
     });
     if (!picked) return;
     to = picked;
     // The name has the last word about which shape it is: somebody who typed
     // `.avs` over the name meant the Trim line, whichever entry opened the
-    // dialog. A name that says neither is written as it was asked for.
-    if (/\.(keyframe|avs)$/i.test(to)) kind = kindOf(to);
+    // dialog. A name that says none of the three is written as it was asked
+    // for.
+    if (/\.(keyframe|avs|json)$/i.test(to)) kind = kindOf(to);
   } else if (!prefs.get("quietOverwrite")) {
     let there = null;
     try {
@@ -3141,14 +3235,17 @@ async function saveMarks(kind, ask) {
     let n;
     if (kind === "keyframe") {
       n = await invoke("write_keyframes", { path: to, frames: markNumbers(), fps: src.fps });
+    } else if (kind === "cm") {
+      await invoke("write_sidecar", { path: to, body: cmBody() });
+      n = cmBlocks.length;
     } else {
       await invoke("write_sidecar", { path: to, body: trimBody() });
       n = keeps.length;
     }
-    el("status").textContent = tr(kind === "keyframe" ? "marks.saved" : "trim.saved", {
-      n,
-      file: leaf(to),
-    });
+    el("status").textContent = tr(
+      kind === "keyframe" ? "marks.saved" : kind === "cm" ? "cm.saved" : "trim.saved",
+      { n, file: leaf(to) }
+    );
   } catch (e) {
     el("status").textContent = tr("marks.saveFailed", { e });
   }
@@ -3169,29 +3266,43 @@ const leaf = (path) => path.split(/[/\\]/).pop();
 /// What arrives is read as the file beside the recording is read, so a list
 /// written here and a list written by the reference tool land on the same
 /// pictures. A keyframe list adds its marks to the ones already up; a Trim
-/// line *cuts*, and lands in the undo history like any other cut.
+/// line *cuts*, and lands in the undo history like any other cut; a saved
+/// finding arrives as the detection it was, band and marks and sentence.
 async function loadMarksFrom(kind) {
   if (!src || !dialog) return;
   const picked = await dialog.open({
     multiple: false,
     defaultPath: markPath(kind),
-    filters: [
-      {
-        name: tr(kind === "keyframe" ? "marks.kind.keyframe" : "marks.kind.trim"),
-        extensions: kind === "keyframe" ? ["keyframe"] : ["avs"],
-      },
-    ],
+    filters: [markFilter(kind)],
   });
   if (!picked) return;
   const from = Array.isArray(picked) ? picked[0] : picked;
-  if (/\.(keyframe|avs)$/i.test(from)) kind = kindOf(from);
-  const got = kind === "keyframe" ? await readKeyframeFile(from) : await readTrimFile(from);
+  if (/\.(keyframe|avs|json)$/i.test(from)) kind = kindOf(from);
+  const got =
+    kind === "keyframe"
+      ? await readKeyframeFile(from)
+      : kind === "cm"
+        ? await readCmFile(from)
+        : await readTrimFile(from);
   // Nothing in it, as against unreadable: the reader has said its piece about
   // the second, and a picker that answers a deliberate choice with silence
   // looks like a program that did not hear the click.
   if (got === 0 || got === false) {
     el("status").textContent = tr("marks.readNone", { file: leaf(from) });
   }
+}
+
+/// The marks of a finding that is already up, put down on purpose.
+///
+/// The way in for the case the `editor-open` handler holds the marks back
+/// for: the band is there, the sentence is there, and the list beside the
+/// recording is somebody's own -- so whether the detection's marks join it is
+/// a decision, and this is where it is made. An edit like any other, because
+/// this one somebody did.
+function markCmBlocks() {
+  if (!src || !cmBlocks.length) return;
+  addKeyframes([headTime()].concat(cmBlocks.flatMap((b) => [b.start, b.end])));
+  el("status").textContent = tr("cm.marked", { n: cmBlocks.length });
 }
 
 /// The marks off the timeline, and nothing else.
@@ -3234,10 +3345,13 @@ const moreMenu = () => el("more-menu");
 /// and go is a menu that has to be read from the top every time.
 function showMore(on) {
   if (on) {
-    for (const id of ["load-keyframe", "load-trim", "save-as-keyframe", "save-as-trim"]) {
-      el(id).disabled = !src;
-    }
+    const files = ["load-keyframe", "load-trim", "load-cm", "save-as-keyframe", "save-as-trim"];
+    for (const id of files) el(id).disabled = !src;
+    // Nothing to write where nothing has been detected, and the line says so
+    // rather than writing a file with an empty list in it.
+    el("save-as-cm").disabled = !src || !cmBlocks.length;
     el("chapter-keys").disabled = !src || !discChapters.length;
+    el("cm-keys").disabled = !src || !cmBlocks.length;
     el("clear-keys").disabled = !src || !keyframes.length;
   }
   moreMenu().hidden = !on;
@@ -3265,9 +3379,21 @@ el("save-as-trim").addEventListener("click", () => {
   showMore(false);
   saveMarks("trim", true);
 });
+el("load-cm").addEventListener("click", () => {
+  showMore(false);
+  loadMarksFrom("cm");
+});
+el("save-as-cm").addEventListener("click", () => {
+  showMore(false);
+  saveMarks("cm", true);
+});
 el("chapter-keys").addEventListener("click", () => {
   showMore(false);
   applyDiscChapters(discChapters);
+});
+el("cm-keys").addEventListener("click", () => {
+  showMore(false);
+  markCmBlocks();
 });
 el("clear-keys").addEventListener("click", () => {
   showMore(false);
@@ -3341,21 +3467,33 @@ async function readTrimFile(path) {
 
 /// The mark files beside the recording, if there are any.
 ///
-/// The two do not say the same thing -- a `.keyframe` is a list of places and
-/// leaves the timeline whole, a Trim line is the cut itself -- so when both
-/// are there only one is read, and which is 環境設定. Reading both would put
-/// marks on a timeline that had already closed over the material they point
-/// at. Either on its own is read whatever the preference says.
+/// The three do not say the same thing -- a `.keyframe` is a list of places
+/// and leaves the timeline whole, a Trim line is the cut itself, a finding is
+/// what a detection made of the recording -- so when more than one is there
+/// only one is read, and which is 環境設定. Reading two would put marks on a
+/// timeline that had already closed over the material they point at, and
+/// would mix two people's answers about the same recording into one list.
+/// Any of them on its own is read whatever the preference says.
 ///
 /// Answers whether anything was found: a disc's own chapters are what fills
 /// an empty timeline otherwise, and they would be noise on top of a list
-/// somebody has kept.
+/// somebody has kept. The detection the list hands over is held off for the
+/// same reason -- see the `editor-open` handler.
 async function loadMarkFiles() {
-  const order =
-    prefs.get("sidecarPriority") === "trim" ? ["trim", "keyframe"] : ["keyframe", "trim"];
+  const kinds = ["keyframe", "trim", "cm"];
+  const first = prefs.get("sidecarPriority");
+  const order = kinds.includes(first) ? [first, ...kinds.filter((k) => k !== first)] : kinds;
   for (const kind of order) {
-    const read = kind === "trim" ? await loadSidecarTrim() : (await loadSidecarKeyframes()) > 0;
-    if (read) return true;
+    const read =
+      kind === "trim"
+        ? await loadSidecarTrim()
+        : kind === "cm"
+          ? (await loadSidecarCm()) > 0
+          : (await loadSidecarKeyframes()) > 0;
+    if (read) {
+      markFileKind = kind;
+      return true;
+    }
   }
   return false;
 }
@@ -3532,6 +3670,11 @@ async function openPath(picked, saved, side, name, chapters, dropPids) {
     activeKey = saved ? saved.activeKey : null;
     cmBlocks = saved ? saved.cmBlocks || [] : [];
     cmSummary = saved ? saved.cmNote || "" : "";
+    cmFinding = saved ? saved.cmFinding || null : null;
+    // A row that has been in here before brings back what it opened with the
+    // first time: the file beside the recording is read on a first visit
+    // only, and a detection can arrive at any visit after it.
+    markFileKind = saved ? saved.markFileKind || null : null;
     dropStreams = saved ? (saved.dropStreams || []).slice() : [];
     trackList = null;
     // A first visit to a recording that came off a disc starts from the
@@ -4243,6 +4386,7 @@ el("detect-cm").addEventListener("click", async () => {
   try {
     const res = await invoke("detect_cm", { path: src.path });
     cmSummary = cmNote(res);
+    cmFinding = { logo_found: !!res.logo_found, resets: res.resets || 0 };
     showCmNote(cmSummary);
     applyCmBlocks(res.blocks);
     // Marks a detection put down are the detection's answer and not
@@ -4348,6 +4492,15 @@ function captureEdit() {
     activeKey,
     cmBlocks,
     cmNote: cmSummary,
+    // How that detection read the recording, so that a finding saved beside
+    // the recording on a later visit can still say it. Not part of the edit
+    // in any other sense; see `cmFinding`.
+    cmFinding,
+    // That this recording came up with a mark file of its own, which is not
+    // something the timeline shows and is still true on the next visit. A
+    // detection the list has not handed over yet arrives at whichever visit
+    // it is run before; see `markFileKind`.
+    markFileKind,
     // Streams the track menu switched off, by source stream index. Part of
     // the edit because it is about this clip and nothing else: the same
     // recording can be in the list twice, one copy with the dub and one
@@ -4389,10 +4542,16 @@ function sync() {
 /// Not snapped to an access point: the mark should say where the cut
 /// actually is, to the frame. Moving it onto the nearest lossless point is a
 /// separate decision, and there is a button for it.
-function applyCmBlocks(blocks) {
+///
+/// `marks` is put down for the one case where a finding arrives on a
+/// timeline that already has somebody's own list on it: the band and the
+/// sentence are still worth having -- they are what was found, and they read
+/// as a detection rather than as marks -- but the list is not the place to
+/// put a second opinion into. See the `editor-open` handler.
+function applyCmBlocks(blocks, marks = true) {
   if (!src || !blocks || !blocks.length) return;
   cmBlocks = blocks;
-  addKeyframes([headTime()].concat(blocks.flatMap((b) => [b.start, b.end])));
+  if (marks) addKeyframes([headTime()].concat(blocks.flatMap((b) => [b.start, b.end])));
   draw();
 }
 
@@ -4475,15 +4634,31 @@ if (listen) {
     // just the same. That one is an edit and steps back like any other; marks
     // a recording comes up with are not, and `settle` keeps them out of the
     // history.
-    if (cm && cm.blocks && cm.blocks.length) {
+    // A finding read out of the file beside the recording is this same
+    // finding, already down -- band, marks and sentence. Saying it again
+    // would either double the marks or announce that they were held back
+    // while they are on screen.
+    if (cm && cm.blocks && cm.blocks.length && !(arriving && markFileKind === "cm")) {
+      // Not onto a list the recording came up with. A `.keyframe` beside a
+      // recording is somebody's own answer about where its breaks are, and a
+      // detection is the program's; marks from both in one column cannot be
+      // told apart afterwards, and there is no undo to reach for -- neither
+      // of them was an edit. The finding is still shown, as the band under
+      // the timeline and the sentence beside it, and the menu puts its marks
+      // down for anyone who wants them after all.
+      const marks = !(arriving && markFileKind);
       if (arriving) {
-        await settle(() => applyCmBlocks(cm.blocks));
+        await settle(() => applyCmBlocks(cm.blocks, marks));
       } else {
         applyCmBlocks(cm.blocks);
         settleMark();
       }
+      cmFinding =
+        typeof cm.resets === "number"
+          ? { logo_found: !!cm.logo_found, resets: cm.resets }
+          : null;
       cmSummary = cm.note || "";
-      showCmNote(cmSummary);
+      showCmNote(marks ? cmSummary : tr("cm.besideMarks", { note: cmSummary }));
     }
     relayout();
     sync();

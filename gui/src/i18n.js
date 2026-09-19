@@ -105,14 +105,17 @@ const CATALOG = {
       "に対する割合です。25 なら 15 倍速で、1 秒押しっぱなしにすると録画の 15 秒ぶん進みます。" +
       "録画の長さには左右されません。" +
       "左右キーはこの設定の対象外です（1 フレーム、Shift で 1 秒）。",
-    "prefs.sidecarPriority": "両方あるときに読むのは:",
+    "prefs.sidecarPriority": "いくつもあるときに読むのは:",
     "prefs.sidecar.keyframe": "キーフレーム情報（.keyframe）",
     "prefs.sidecar.trim": "AviSynth Trim（.trim.avs）",
+    "prefs.sidecar.cm": "CM 検出結果（.cm.json）",
     "prefs.sidecarNote":
       "カット編集を開くとき、録画の隣にあるファイルを読み込みます。" +
       "キーフレーム情報は位置の一覧なので、印が付くだけです。" +
       "Trim は残す区間そのものなので、カット済みの状態で開きます。" +
-      "片方しか無ければ、この設定に関わらずそれを読みます。",
+      "CM 検出結果は検出したときのままで、帯と印が付きます。" +
+      "1 つしか無ければ、この設定に関わらずそれを読みます。" +
+      "読んだファイルがあったときは、CM 検出結果を印に混ぜません。",
     "prefs.quietOverwrite": "ショートカットでの保存は、確認せずに上書きする",
     "prefs.quietOverwriteNote":
       "Ctrl+H（キーフレーム情報）と Ctrl+Shift+H（Trim）は、録画と同じ場所へ画面を出さずに保存します。" +
@@ -334,6 +337,7 @@ const CATALOG = {
     "phase.indexBuilt": "インデックス {s} 秒",
     "cm.previous": "{note}（前回の検出）",
     "cm.failed": "検出できません: {e}",
+    "cm.besideMarks": "{note} — 録画の隣のファイルを読んだので、印にはしていません",
 
     // --- 出力設定画面 ----------------------------------------------------
     "outset.barNote": "ここでの設定は一覧のすべてのクリップに使われます",
@@ -759,17 +763,22 @@ const CATALOG = {
     "keyframes.chapters": "ディスクのチャプター {n} 個をキーフレームにしました",
     "editor.more.title":
       "印の読み書き、ディスクのチャプター、キーフレームの全消去。" +
-      "キーフレーム情報（.keyframe）は印の位置だけ、AviSynth スクリプト（.trim.avs）は残る区間そのものです。" +
+      "キーフレーム情報（.keyframe）は印の位置だけ、AviSynth スクリプト（.trim.avs）は残る区間そのもの、" +
+      "CM 検出結果（.cm.json）は検出したときのままです。" +
       "Ctrl+H と Ctrl+Shift+H なら、録画の隣へ画面を出さずに保存します。",
     "marks.save.keyframe": "キーフレーム情報を保存…",
     "marks.save.trim": "AviSynth Trim にカットを保存…",
+    "marks.save.cm": "CM 検出結果を保存…",
     "marks.load.keyframe": "キーフレーム情報を読み込む…",
     "marks.load.trim": "AviSynth Trim からカットを読み込む…",
+    "marks.load.cm": "CM 検出結果を読み込む…",
     "marks.readNone": "{file} には読めるものがありませんでした",
     "editor.chapterKeys": "ディスクのチャプターをキーフレームにする",
+    "editor.cmKeys": "CM 検出結果をキーフレームにする",
     "editor.clearKeys": "キーフレームをすべて消す",
     "marks.kind.keyframe": "キーフレーム情報",
     "marks.kind.trim": "AviSynth スクリプト",
+    "marks.kind.cm": "CM 検出結果",
     "marks.saved": "キーフレーム {n} 個を {file} に保存しました",
     "marks.saveFailed": "保存できません: {e}",
     "marks.overwriteTitle": "上書きの確認",
@@ -779,6 +788,10 @@ const CATALOG = {
     "trim.saved": "残す区間 {n} 本を {file} に保存しました",
     "trim.read": "{file} からカット {n} 箇所を読み込みました",
     "trim.readFailed": "Trim を読めません: {e}",
+    "cm.saved": "CM 検出結果 {n} ブロックを {file} に保存しました",
+    "cm.read": "{file} から CM 検出結果 {n} ブロックを読み込みました",
+    "cm.readFailed": "CM 検出結果を読めません: {e}",
+    "cm.marked": "CM 検出結果 {n} ブロックをキーフレームにしました",
   },
 
   en: {
@@ -860,14 +873,16 @@ const CATALOG = {
       "of the fastest scroll here, which is sixty times the recording's own speed. 25 is fifteen " +
       "times, so a second of holding covers fifteen seconds of the recording, whatever is open. The " +
       "left and right keys are separate and unchanged: one picture, and one second with Shift.",
-    "prefs.sidecarPriority": "When both are there, read:",
+    "prefs.sidecarPriority": "When more than one is there, read:",
     "prefs.sidecar.keyframe": "the keyframe list (.keyframe)",
     "prefs.sidecar.trim": "the AviSynth Trim line (.trim.avs)",
+    "prefs.sidecar.cm": "a saved detection (.cm.json)",
     "prefs.sidecarNote":
       "A file left beside the recording is picked up when the cut editor opens it. A keyframe list is " +
       "a list of places, so it arrives as marks and cuts nothing; a Trim line is the cut itself, so " +
-      "the recording opens with the material already taken out. Either on its own is read whatever " +
-      "this says.",
+      "the recording opens with the material already taken out; a saved detection arrives as the " +
+      "detection it was, band and marks and all. Any of them on its own is read whatever this says. " +
+      "Where one of them was read, a detection the list is holding is not mixed into the marks.",
     "prefs.quietOverwrite": "Let the save shortcut write over a file without asking",
     "prefs.quietOverwriteNote":
       "Ctrl+H (the keyframe list) and Ctrl+Shift+H (the Trim line) write straight to the name beside " +
@@ -1083,6 +1098,7 @@ const CATALOG = {
     "phase.indexBuilt": "Indexed in {s}s",
     "cm.previous": "{note} (from an earlier run)",
     "cm.failed": "Cannot detect: {e}",
+    "cm.besideMarks": "{note} — not marked: a mark file beside the recording was read",
 
     // --- output settings screen ------------------------------------------
     "outset.barNote": "These settings are used for every clip in the list",
@@ -1494,17 +1510,22 @@ const CATALOG = {
     "keyframes.chapters": "Read {n} chapter{n?s} off the disc as keyframes",
     "editor.more.title":
       "The mark files, the disc's chapters, and clearing the marks. A keyframe list (.keyframe) " +
-      "is the marks alone, an AviSynth script (.trim.avs) is the ranges that survive. Ctrl+H and " +
-      "Ctrl+Shift+H write the two beside the recording with nothing to answer.",
+      "is the marks alone, an AviSynth script (.trim.avs) is the ranges that survive, a saved " +
+      "detection (.cm.json) is what a detection made of the recording. Ctrl+H and Ctrl+Shift+H " +
+      "write the first two beside the recording with nothing to answer.",
     "marks.save.keyframe": "Save the keyframe list…",
     "marks.save.trim": "Save the cuts as an AviSynth Trim…",
+    "marks.save.cm": "Save the detection…",
     "marks.load.keyframe": "Read a keyframe list…",
     "marks.load.trim": "Read cuts from an AviSynth Trim…",
+    "marks.load.cm": "Read a saved detection…",
     "marks.readNone": "Nothing to read in {file}",
     "editor.chapterKeys": "Turn the disc's chapters into keyframes",
+    "editor.cmKeys": "Turn the detection into keyframes",
     "editor.clearKeys": "Remove every keyframe",
     "marks.kind.keyframe": "Keyframe list",
     "marks.kind.trim": "AviSynth script",
+    "marks.kind.cm": "Saved detection",
     "marks.saved": "Saved {n} keyframe{n?s} to {file}",
     "marks.saveFailed": "Cannot save: {e}",
     "marks.overwriteTitle": "Already there",
@@ -1514,6 +1535,10 @@ const CATALOG = {
     "trim.saved": "Saved {n} range{n?s} to {file}",
     "trim.read": "Read {n} cut{n?s} from {file}",
     "trim.readFailed": "Cannot read the Trim line: {e}",
+    "cm.saved": "Saved {n} block{n?s} to {file}",
+    "cm.read": "Read {n} block{n?s} from {file}",
+    "cm.readFailed": "Cannot read the detection: {e}",
+    "cm.marked": "Turned {n} block{n?s} into keyframes",
   },
 };
 

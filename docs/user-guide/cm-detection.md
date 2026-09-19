@@ -19,6 +19,25 @@ You decide what to remove. There used to be a "keep everything except the
 commercials" button; it was taken out again, because nobody pressed it. You end
 up wanting to check the boundaries with your own eyes anyway.
 
+## A detection can be kept
+
+A detection reads the recording for minutes. So it is written down, and you
+never wait for the same one twice: **open the same recording again and the
+earlier detection comes back**, with "from an earlier run" on the row.
+
+That copy lives in SmartCut's own cache. To carry one to another machine, or to
+hand it to somebody else, use **≡** → **Save the detection…** in the cut editor,
+which writes `recording.cm.json`. **Read a saved detection…** in the same menu
+reads one back, and a file left beside the recording is picked up when it is
+opened.
+
+**Where a `.keyframe` sits beside the recording, the detection is not mixed into
+the marks.** The `.keyframe` is your answer about where the breaks are and the
+detection is the program's, and marks from both in one column cannot be told
+apart afterwards. The detection is still shown, as the band under the timeline
+and the line beside it, and **≡** → **Turn the detection into keyframes** puts
+its marks down if you want them. Which file is read first is a preference.
+
 ## How well does it work?
 
 Five real recordings, measured against a ground truth built by eye:

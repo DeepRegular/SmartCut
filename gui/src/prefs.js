@@ -157,16 +157,18 @@ const DEFAULTS = {
   pageStepCtrlUnit: "pct",
   pageStepShiftCtrl: 50,
   pageStepShiftCtrlUnit: "pct",
-  /// Which mark file wins when a recording has both beside it.
+  /// Which mark file wins when a recording has more than one beside it.
   ///
-  /// `"keyframe"` or `"trim"`. They do not say the same thing: a `.keyframe`
-  /// is a list of places and leaves the timeline whole, while a Trim line is
-  /// the cut itself and arrives with the material already taken out. Only
-  /// asked when both are there; either on its own is read whatever this says.
+  /// `"keyframe"`, `"trim"` or `"cm"`. They do not say the same thing: a
+  /// `.keyframe` is a list of places and leaves the timeline whole, a Trim
+  /// line is the cut itself and arrives with the material already taken out,
+  /// and a saved detection is what a detection made of the recording, band
+  /// and marks together. Only asked when more than one is there; any of them
+  /// on its own is read whatever this says.
   ///
   /// The marks by default, which is what this program did before it could
-  /// read the other one: opening a recording to find it already cut is a
-  /// bigger thing to do unasked than opening it to find some marks.
+  /// read the others: opening a recording to find it already cut is a bigger
+  /// thing to do unasked than opening it to find some marks.
   sidecarPriority: "keyframe",
   /// Whether the save shortcut writes over a file that is already there
   /// without stopping to ask.

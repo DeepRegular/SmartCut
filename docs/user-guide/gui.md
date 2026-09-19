@@ -394,8 +394,8 @@ subtitles go into the output is answered by **Tracks** and by the output setting
   the output.
 
 Marks can also arrive without your placing any: from a detection, from a
-`.keyframe` file next to the recording, and — for a recording opened off a
-**disc** — from the chapters the recorder itself set.
+`.keyframe` or a saved detection next to the recording, and — for a recording
+opened off a **disc** — from the chapters the recorder itself set.
 
 ### Reading the marks in, and writing them down
 
@@ -406,32 +406,49 @@ the marks.
 |---|---|
 | **Read a keyframe list…** | Reads a `.keyframe` from wherever it is (`Ctrl+L`) |
 | **Read cuts from an AviSynth Trim…** | Reads a `Trim` line (`Ctrl+Shift+L`). It arrives as cuts, not as marks |
+| **Read a saved detection…** | Reads a detection saved earlier. The band and the marks come back as they were |
 | **Save the keyframe list…** | Writes the marks beside the recording (`Ctrl+H`) |
 | **Save the cuts as an AviSynth Trim…** | Writes the surviving ranges as `Trim` calls (`Ctrl+Shift+H`) |
+| **Save the detection…** | Writes the detection now on screen. Greyed where nothing has been detected |
 | **Turn the disc's chapters into keyframes** | Puts them back after a clear. Greyed on anything but a disc |
+| **Turn the detection into keyframes** | Marks the detection now on screen. Greyed where nothing has been detected |
 | **Remove every keyframe** | The marks alone. The cuts stay |
 
-There are two shapes to write, and the picker opens with the recording's own
+There are three shapes to write, and the picker opens with the recording's own
 path already in it.
 
 | Shape | What is in it | Name |
 |---|---|---|
 | **Keyframe list** | The marks alone, one frame number per line | `recording.keyframe` |
 | **AviSynth Trim** | The ranges that survive, as `Trim` calls | `recording.ts.trim.avs` |
+| **Saved detection** | The blocks found, and how they were found. JSON | `recording.cm.json` |
 
-Typing `.keyframe` or `.avs` over the name in the picker overrides the line
-that was picked, and a file being read is taken for what its own extension
+Typing `.keyframe`, `.avs` or `.json` over the name in the picker overrides the
+line that was picked, and a file being read is taken for what its own extension
 says it is.
 
-`Ctrl+H` and `Ctrl+Shift+H` write the same two files straight to those names
-with no picker. They ask before writing over a file that is already there;
-a preference turns that question off.
+`Ctrl+H` and `Ctrl+Shift+H` write the first two straight to those names with no
+picker. They ask before writing over a file that is already there; a preference
+turns that question off. The detection has no shortcut.
+
+**A detection reads the recording for minutes.** Saving one means opening the
+same answer again without that wait. A detection is also kept in SmartCut's own
+cache and comes back on its own the next time the recording is opened, so the
+file is for carrying one to another machine, or handing it to somebody else.
 
 Opening a recording in the cut editor picks up whichever of them is beside it.
 **A keyframe file arrives as marks and cuts nothing. A Trim file is the cut
-itself, so the recording opens with the material already taken out.** When both
-are there, a preference says which is read; either on its own is read whatever
+itself, so the recording opens with the material already taken out. A saved
+detection arrives as the band and the marks together.** When more than one is
+there, a preference says which is read; any of them on its own is read whatever
 that preference says.
+
+**Where one of them was read, a detection is not mixed into the marks.** A
+`.keyframe` beside a recording is your answer about where its breaks are and a
+detection is the program's, and marks from both in one column cannot be told
+apart afterwards. The detection is still shown, as the band under the timeline
+and the line beside it, and **≡** → **Turn the detection into keyframes** puts
+its marks down if you want them.
 
 **Neither waits for the analysis.** The marks are in the list the moment the
 window opens, and pressing one goes there. A long recording takes a while to
@@ -843,7 +860,7 @@ effect as you make it.
 | Setting | What it does |
 |---|---|
 | **PageUp / PageDown** | What those keys do. Four answers — plain, `Shift`, `Ctrl`, `Shift+Ctrl` — each a number and a unit: **frames**, **seconds**, or **% a second, scrolling**. The first two are amounts, one per press. A percentage is a speed: a share of the fastest scroll here, which is sixty times the recording's own speed. 25 is fifteen times, so a second of holding covers fifteen seconds of the recording, whatever is open. Out of the box: 15 frames, 30 with `Shift`, 25% with `Ctrl` and 50% with both. A step of 0 is a key that does nothing |
-| **When both are there, read** | Which file is picked up when a recording has both a `.keyframe` and a `.trim.avs` beside it |
+| **When more than one is there, read** | Which file is picked up when a recording has more than one of a `.keyframe`, a `.trim.avs` and a `.cm.json` beside it |
 | **Let the save shortcut write over a file without asking** | `Ctrl+H` and `Ctrl+Shift+H` then write over a file of the same name in silence |
 
 ### Output settings
