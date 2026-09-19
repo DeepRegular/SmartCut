@@ -326,7 +326,8 @@ hole, and the frame counter counts the length that will actually be written.
 | `←` `→` | Back and forward one frame. Hold to repeat |
 | `Shift+←` `Shift+→` | One second |
 | `PageUp` `PageDown` | Back and forward by however far the [preferences](#cut-editor) say. A key whose unit is **%** carries a speed rather than an amount, and scrolls for as long as it is held. `Shift`, `Ctrl` and `Shift+Ctrl` each carry their own answer |
-| `↑` `↓` | Previous / next **lossless point** |
+| `↑` `↓` | Previous / next **scene change** |
+| `Shift+↑` `Shift+↓` | Previous / next **lossless point** |
 | `S` / `Shift+S` | Next / previous scene change |
 | `◀\|` `\|▶` | Previous / next **lossless point** |
 | `\|◀` `▶\|` | Start / end |
@@ -954,7 +955,8 @@ can quote it straight into a bug report.
 | `←` `→` | One frame (hold to repeat) |
 | `Shift+←` `Shift+→` | One second |
 | `PageUp` `PageDown` | By the amount set in the preferences, or a scroll while held where that amount is a speed (`Shift`, `Ctrl` and `Shift+Ctrl` carry their own) |
-| `↑` `↓` | Previous / next lossless point |
+| `↑` `↓` | Previous / next scene change |
+| `Shift+↑` `Shift+↓` | Previous / next lossless point |
 | `I` / `O` | Start / end the selection here |
 | `K` | Mark this frame as a keyframe |
 | `S` / `Shift+S` | Next / previous scene change |

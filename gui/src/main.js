@@ -4007,12 +4007,22 @@ window.addEventListener("keydown", (ev) => {
     if (arrowDue(ev)) scrubTo(playOut() + (ev.key === "ArrowRight" ? step : -step));
     return;
   }
-  // Up and down walk the access points -- the pictures a cut is free at.
-  // Held down they are the same flood the left and right keys are, so they
-  // go through the same gate.
+  // Up and down walk the scene changes, which is what they do in the
+  // reference tool and therefore what the hand that has been cutting with
+  // that tool for years expects of them. With Shift they walk the access
+  // points -- the pictures a cut is free at, which is what this pair used to
+  // do on its own and is still the question when what is being placed is the
+  // cut itself. ◀| and |▶ are the same answer with the pointer, and so is
+  // Shift with the wheel.
+  //
+  // Held down they are the same flood the left and right keys are, so they go
+  // through the same gate.
   if (ev.key === "ArrowUp" || ev.key === "ArrowDown") {
     ev.preventDefault();
-    if (arrowDue(ev)) scrubTo(srcToOutSeam(nearestPoint(playhead, ev.key === "ArrowDown" ? 1 : -1)));
+    if (!arrowDue(ev)) return;
+    const dir = ev.key === "ArrowDown" ? 1 : -1;
+    if (ev.shiftKey) scrubTo(srcToOutSeam(nearestPoint(playhead, dir)));
+    else toScene(dir);
     return;
   }
   if (key === "i") setIn(playOut());

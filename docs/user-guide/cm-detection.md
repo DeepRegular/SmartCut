@@ -90,7 +90,7 @@ worth a look before you cut.
 | What you see | What to do |
 |---|---|
 | **The block is a little short or long** | Move IN or OUT to the keyframe you want, then cut. The marks are a starting point, not a verdict |
-| **A break was missed** | `S` and `Shift+S` step through the scene changes. That is the fastest way to find a boundary by hand |
+| **A break was missed** | `↑` and `↓` (and `S` / `Shift+S`) step through the scene changes. That is the fastest way to find a boundary by hand |
 | **The block swallows part of the programme** | Delete the offending mark with the `×` on its card and cut around it by hand. This is the expensive mistake, and the detector is tuned to avoid it, but material with an unusual rhythm can still trip it |
 | **Nothing is found** | The recording may genuinely have no commercials. Otherwise it carries neither subtitle marks nor a logo |
 
