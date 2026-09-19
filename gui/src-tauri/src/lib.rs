@@ -5395,6 +5395,7 @@ mod tests {
             proxy_width: 960,
             ffmpeg_log: 0,
             cache_dir: dir.to_string(),
+            audio_fade: 0.0,
         };
         // A folder that is not there yet is made rather than refused: what
         // the picker hands back is a place, not a place already in use.
@@ -5405,7 +5406,7 @@ mod tests {
 
         // A file where a folder was named. `create_dir_all` fails on it, and
         // the scratch files go back to the platform's own place -- while the
-        // three settings sent with it are settled all the same.
+        // settings sent with it are settled all the same.
         let file = root.join("not-a-folder");
         std::fs::write(&file, b"").unwrap();
         assert!(set_prefs(want(&file.display().to_string())).is_err());
