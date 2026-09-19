@@ -90,7 +90,7 @@ button.brand:hover, button.brand.open { background: #3a3a3a; border-color: #5c5c
 .menu-item {
   display: flex; align-items: baseline; gap: 24px; width: 100%; text-align: left;
   /* The label and the key it is paired with stay on one line, and the menu
-     is as wide as the widest of them -- a wrapped 名前を付けて保存… reads as
+     is as wide as the widest of them -- a wrapped 名前を付けて保存 reads as
      two items. */
   white-space: nowrap;
   background: none; border: 0; border-radius: 2px; padding: 6px 10px;

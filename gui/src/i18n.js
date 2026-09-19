@@ -44,11 +44,11 @@ const CATALOG = {
     "tab.batch": "バッチ出力",
     "ui.menu.title": "メニュー",
     "menu.new": "新規作成",
-    "menu.open": "プロジェクトを開く…",
+    "menu.open": "プロジェクトを開く",
     "menu.save": "プロジェクトを保存",
-    "menu.saveAs": "名前を付けて保存…",
-    "menu.batch": "バッチ出力ツール…",
-    "menu.prefs": "環境設定…",
+    "menu.saveAs": "名前を付けて保存",
+    "menu.batch": "バッチ出力ツール",
+    "menu.prefs": "環境設定",
     "menu.about": "SmartCut について",
     "menu.quit": "終了",
 
@@ -171,7 +171,7 @@ const CATALOG = {
     "prefs.groupData": "作業データ",
     "prefs.cacheDir": "置き場:",
     "prefs.cacheDirDefault": "既定の場所",
-    "prefs.cacheDirPick": "参照…",
+    "prefs.cacheDirPick": "参照",
     "prefs.cacheDirReset": "既定",
     "prefs.cacheDirNote":
       "シーク用インデックス・プロキシ・CM 検出の結果を保存する場所です。" +

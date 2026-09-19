@@ -37,7 +37,7 @@ at a time: it needs a moment where you can say "this one is finished". That
 moment is the **OK** button.
 
 The batch tool has no tab, because it is about a queue of lists rather than
-about this one; it is opened from the `バッチ出力ツール…` item on the menu. Its
+about this one; it is opened from the `バッチ出力ツール` item on the menu. Its
 own process, because a queue lined up at midnight has to go on being written
 after the window it was lined up in is closed.
 
