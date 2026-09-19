@@ -356,6 +356,18 @@ const PLANAR_F32: ff::format::Sample = ff::format::Sample::F32(ff::format::sampl
 /// operation: swresample returns a frame's samples one for one and holds
 /// nothing back between frames, so the sample window the caller trims
 /// against still means what it meant on the source's own clock.
+///
+/// **The shape converted from is the frame's, and it is asked again of every
+/// frame.** A broadcast recording hands over more than one: a tuner told to
+/// start early opens on the end of the programme before, and a bulletin read
+/// in mono ahead of a documentary in stereo is an ordinary evening's
+/// television -- see [`settled_shape`]. Where the output's layout is neither
+/// of those, both of them have to be converted, and swresample will not take
+/// a frame that is not the shape its context was built for: it answers
+/// "Input changed", which arrived here as a cut that failed outright at the
+/// instant the programme began. A fresh context at the change costs one
+/// allocation. The same fact the playback side answers in
+/// [`crate::playback_audio`].
 fn conform<'a>(
     resampler: &mut Option<ff::software::resampling::Context>,
     out: &'a mut ff::frame::Audio,
@@ -370,6 +382,17 @@ fn conform<'a>(
         || (frame.channel_layout().is_empty() && frame.channels() as i32 == layout.channels());
     if same && frame.format() == format {
         return Ok(frame);
+    }
+    let arriving = ff::software::resampling::context::Definition {
+        format: frame.format(),
+        channel_layout: frame.channel_layout(),
+        rate: frame.rate(),
+    };
+    if resampler
+        .as_ref()
+        .is_some_and(|ctx| *ctx.input() != arriving)
+    {
+        *resampler = None;
     }
     let ctx = match resampler {
         Some(ctx) => ctx,

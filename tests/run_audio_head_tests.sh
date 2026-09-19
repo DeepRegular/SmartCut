@@ -148,6 +148,32 @@ else
   bad "reencode: the cutter failed"
 fi
 
+# A range that spans the change itself, written to a layout that is neither
+# shape. The ranges above are wholly inside the programme, so every frame
+# they re-encode is stereo and one conversion covers all of them; here the
+# mono opening and the programme's stereo both have to be converted, because
+# 5.1 was asked for and is neither. A conversion built for the first shape
+# and kept for the second is refused by swresample -- "Input changed" -- and
+# the cut ended there, at the instant the programme began.
+if "$BIN" "$FX/mono_head.ts" --keep 1.0-20.0 --audio-mode reencode \
+     --audio-channels 6 -o "$OUT/across.ts" >/dev/null 2>&1; then
+  same "a range across the change, written as 5.1" "6" "$(declared "$OUT/across.ts")"
+  # And the sound covers the range rather than stopping where the shape
+  # changed: 19 seconds of it, to within a frame either way.
+  frames=$(ffprobe -v error -select_streams a:0 -count_packets \
+    -show_entries stream=nb_read_packets -of default=nw=1:nk=1 "$OUT/across.ts" \
+    2>/dev/null | head -1)
+  want=$(( 19 * 48000 / 1024 ))
+  if [ -n "$frames" ] && [ "$frames" -ge $(( want - 2 )) ] && [ "$frames" -le $(( want + 2 )) ]; then
+    ok "and the sound runs the whole way across it" "$frames frames"
+  else
+    bad "and the sound runs the whole way across it" "want about $want, got ${frames:-none}"
+  fi
+else
+  bad "a range across the change, written as 5.1" "the cutter failed"
+  bad "and the sound runs the whole way across it"
+fi
+
 # What a written track is carried at. An average over the file, so never
 # exact; `near` allows a tenth either way, which is far inside the difference
 # being looked for -- 208 kbit/s against 386.
