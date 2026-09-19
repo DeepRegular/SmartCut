@@ -534,7 +534,7 @@ there.
 |---|---|
 | **Cut outside** | Drop everything **outside** the selection. One press for lifting a single stretch out |
 | **Snap to lossless** | Move both ends of the selection to the nearest lossless point. **Press it and the re-encoding goes to zero** |
-| **↺ Undo** | Step back to before the last edit (fifty deep, `Ctrl+Z`) |
+| **↺ Undo** | Step back to before the last edit (a hundred deep, `Ctrl+Z`) |
 | **↻ Redo** | Put the edit back (`Ctrl+Y`) |
 | **Clear all** | Remove every cut and every keyframe. Undo takes it back |
 

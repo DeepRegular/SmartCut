@@ -331,11 +331,20 @@ const settleMark = () => {
 };
 const touched = () => !!src && editSignature() !== arrivedAs;
 
+/// How far back 取消 reaches.
+///
+/// A step is the cuts, the marks and where the window was looking -- numbers,
+/// not pictures -- so a hundred of them cost less than a single still. Taking
+/// the blocks out of an hour's recording is dozens of edits before the first
+/// of them has been looked at again, and a history that runs out in the middle
+/// of that is one that cannot put anybody back where they started.
+const HISTORY_DEPTH = 100;
+
 /// Put down where we are, on the way into an edit.
 function remember() {
   if (settling) return;
   past.push(snapshot());
-  if (past.length > 50) past.shift();
+  if (past.length > HISTORY_DEPTH) past.shift();
   undone = [];
   paintHistory();
 }
