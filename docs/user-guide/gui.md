@@ -233,10 +233,18 @@ finishes, so `Ctrl+A` then `Ctrl+D` straight after the drop is enough.
 
 Progress appears on the row: `Detecting commercials 84% — Looking for the logo`.
 Rows whose turn has not come say `Commercial detection queued`, and rows still
-waiting to be read say `Commercial detection after the read`. Either way the row
-carries a `Detection booked` badge beside its state, which becomes `CM 5` or
-`No CM` once the pass has been made — so which rows are still owed one is
-something the list is scanned for rather than read for.
+waiting to be read say `Commercial detection after the read`.
+
+**A row that has not been detected yet carries a second badge beside its
+state.** Dashed `Detection booked` while it waits, solid `Detecting` while the
+pass runs, and then `CM 5` or `No CM`. The three tell apart by shape, so which
+rows are still owed one is something the list is scanned for rather than read
+for.
+
+The bar under a row can only serve one of the passes on it. The pictures pass
+and the detection land on a row together, the moment its read finishes, and the
+bar goes to the pictures — which is why the badge is the one that speaks for
+the detection.
 
 **Detection only places marks. The cutting is up to you.** Open the cut editor
 and the start of each commercial block, and each return to the programme, is

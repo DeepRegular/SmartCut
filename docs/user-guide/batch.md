@@ -53,7 +53,9 @@ soon as its own read finishes.
 
 Progress appears on the row: `Detecting commercials 84% — Looking for the logo`.
 Rows still queued say `Commercial detection queued`, and rows waiting to be read
-say `Commercial detection after the read`. Both carry a `Detection booked` badge.
+say `Commercial detection after the read`. Until the pass has been made the row
+carries a second badge beside its state: dashed `Detection booked` while it
+waits, solid `Detecting` while it runs.
 
 **Detection only places marks; it does not cut.** You decide what to remove,
 later, in the editor. See [Commercial detection](cm-detection.md).

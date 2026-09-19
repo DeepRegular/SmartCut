@@ -1521,11 +1521,21 @@ function paintRow(clip) {
   // was saying it about a pass that was about to start. A booked detection
   // on a list still being read is a different thing: it can sit there for a
   // quarter of an hour behind eighteen other recordings, and what somebody
-  // scanning the list wants to know is which rows are spoken for. Both waits
-  // wear the one badge; which wait it is, the line under the name says.
+  // scanning the list wants to know is which rows are spoken for.
   //
-  // Nothing is shown while a detection is actually running: the bar below is
-  // saying that, with the phase and the percentage the badge has no room for.
+  // **A row goes on wearing it while its detection runs.** The badge answers
+  // "does this row still owe me an answer", and a pass that is halfway
+  // through has not given one. It was hidden there at first, on the grounds
+  // that the bar underneath was saying it -- but the bar serves one pass and
+  // there are three lanes. The pictures pass lands on a row the moment its
+  // walk finishes, which is the same moment the detection lane can take it,
+  // so the two are on the same row constantly and the bar goes to the
+  // pictures. The badge would vanish exactly when the row got busy, which is
+  // the one time a list is worth scanning.
+  //
+  // Three looks, then, and the eye can sort them without reading: dashed is
+  // owed, solid is being worked on, filled is an answer. The percentage and
+  // the phase stay in the line under the name, where there is room for them.
   const cmBadge = li.querySelector(".cmbadge");
   const blocks =
     clip.edit && clip.edit.cmBlocks
@@ -1534,11 +1544,12 @@ function paintRow(clip) {
         ? clip.cm.blocks.length
         : null;
   const detected = clip.cmState === "done" && blocks !== null;
-  const booked = clip.cmState === "queued";
-  cmBadge.hidden = !detected && !booked;
-  if (booked) {
-    setText(cmBadge, t("badge.cmQueued"));
-    cmBadge.className = "cmbadge queued";
+  const owed = clip.cmState === "queued" || clip.cmState === "running";
+  cmBadge.hidden = !detected && !owed;
+  if (owed) {
+    const run = clip.cmState === "running";
+    setText(cmBadge, t(run ? "badge.cmRunning" : "badge.cmQueued"));
+    cmBadge.className = `cmbadge ${run ? "detecting" : "queued"}`;
   } else if (detected) {
     setText(cmBadge, blocks ? t("badge.cm", { n: blocks }) : t("badge.cmNone"));
     cmBadge.className = `cmbadge ${blocks ? "found" : "empty"}`;

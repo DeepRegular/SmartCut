@@ -875,6 +875,13 @@ input[type="text"]::placeholder { color: var(--dim); }
 .cmbadge.queued {
   background: #16304a; color: #9fcbea; border-color: #2f5f85; border-style: dashed;
 }
+/* Being made right now. The same blue with the dashes closed up: still not an
+   answer, but no longer only a promise. The bar under the row cannot be
+   relied on to say it -- the pictures pass is as often as not on the same
+   row, and the bar goes to that one. */
+.cmbadge.detecting {
+  background: #16304a; color: #cfe6f7; border-color: #4e8cc0;
+}
 .clip .badge.queued { background: #3a3a3a; color: var(--dim); border-color: #4a4a4a; }
 .clip .badge.indexing { background: #4a3a10; color: #f0c060; border-color: #6a5420; }
 .clip .badge.error { background: #4a1e1e; color: #ff9a90; border-color: #7a3030; }
