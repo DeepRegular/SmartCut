@@ -438,6 +438,15 @@ pub enum Pace {
 /// For playing a stretch back rather than scrubbing it. `pace` sees each
 /// picture's time and decides what to do with it -- that is where waiting and
 /// dropping belong, because only the caller knows what the clock says.
+///
+/// **The stretch is `[from, until)`, which is what a cut of it covers.** The
+/// picture at `until` is the first one the cut took away, and the editor
+/// counts it that way too -- see `srcToOut` in the window. Played, it was a
+/// picture of the material that had just gone, standing at a join; and
+/// because it fell due at exactly the moment the next range's first picture
+/// did, the window's pacing kept it and dropped that one. So a join played
+/// back showed a frame of what was cut and never showed the frame that was
+/// actually joined to.
 pub fn play_from(
     src: &Source,
     from: f64,
@@ -453,7 +462,7 @@ pub fn play_from(
     for (attempt, margin) in [0.0, src.seek_margin].into_iter().enumerate() {
         let mut began_late = true;
         let first = walk(src, entry, margin, false, |t, frame| {
-            if t > until + fd / 2.0 {
+            if t >= until - 1e-6 {
                 stopped = true;
                 return false;
             }
