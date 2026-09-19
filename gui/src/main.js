@@ -2602,8 +2602,12 @@ function startPlay() {
   const frames = new T.core.Channel();
   frames.onmessage = (buf) => showPlayFrame(run, buf);
   playAt = -Infinity;
+  // The edit goes over with the stretches to play: ループ asks for one window
+  // of the timeline, and the engine has to plan the whole edit to know where
+  // that window's joins really fall. See `to_play` on the Rust side.
+  //
   // not awaited: it resolves when playback ends, and `play-ended` says so
-  invoke("play", { ranges, from, width, fps, run, frames }).catch((e) => {
+  invoke("play", { ranges, keeps: outputRanges(), from, width, fps, run, frames }).catch((e) => {
     el("status").textContent = tr("editor.playFailed", { e });
     setPlaying(false);
   });

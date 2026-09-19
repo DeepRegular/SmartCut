@@ -3907,6 +3907,56 @@ fn folder_bytes(at: &std::path::Path) -> u64 {
         .sum()
 }
 
+/// The stretches asked for, with anything the cut will not cover taken out.
+///
+/// `keeps` is the edit itself and `asked` the stretches to play, which are
+/// the same list except when ループ is on and one window of the timeline is
+/// wanted. The edit is planned and the windows clipped to what came back.
+///
+/// **A range's bounds are the window's own numbers, and the plan can move
+/// one.** A bound that does not sit on a picture, and sits less than a
+/// picture before an entry point, leaves no room for the head the cut would
+/// have re-encoded -- so the output begins at the entry point instead.
+///
+/// A cut point put there by hand is a picture time and is never moved. A
+/// Trim line read off a sidecar is another matter: it counts frames, and
+/// the window turns a frame number into a time on an even grid, `head + n /
+/// fps`. **Not every broadcast is evenly spaced.** Measured over two minutes
+/// of two recordings: one steps 33.37 ms from first picture to last and the
+/// grid lands on every one of them, to a thousandth of a millisecond. The
+/// other carries 47 pictures with a field repeated -- 50 ms where the rest
+/// are 33.37 -- and one of those is enough to put everything after it half a
+/// frame off the grid: 3509 of its 3557 pictures, with 237 of the grid's
+/// points landing inside the window that moves a bound.
+///
+/// Planned through `build_plan`, which is the door the editor's own panel
+/// and the export both come through: three answers about one edit that
+/// could disagree would be three answers too many.
+fn to_play(src: &Source, keeps: &[(f64, f64)], asked: &[(f64, f64)]) -> Vec<(f64, f64)> {
+    if keeps.is_empty() {
+        return asked.to_vec();
+    }
+    let covered: Vec<(f64, f64)> = build_plan(src, keeps)
+        .iter()
+        .map(|p| (p.t_in, p.t_out))
+        .collect();
+    clipped(&covered, asked)
+}
+
+/// What is left of `asked` once everything outside `covered` is taken out.
+fn clipped(covered: &[(f64, f64)], asked: &[(f64, f64)]) -> Vec<(f64, f64)> {
+    let mut out = Vec::new();
+    for (a, b) in asked {
+        for (t_in, t_out) in covered {
+            let (lo, hi) = (a.max(*t_in), b.min(*t_out));
+            if hi > lo + 1e-9 {
+                out.push((lo, hi));
+            }
+        }
+    }
+    out
+}
+
 /// Play the edited timeline back from `from`, as a stream of pictures.
 ///
 /// Paced against a wall clock on the *edited* timeline, so a cut costs no
@@ -3916,6 +3966,7 @@ fn folder_bytes(at: &std::path::Path) -> u64 {
 async fn play(
     app: tauri::AppHandle,
     ranges: Vec<(f64, f64)>,
+    keeps: Vec<(f64, f64)>,
     from: f64,
     width: u32,
     fps: f64,
@@ -3935,6 +3986,9 @@ async fn play(
         guard.as_ref().ok_or("no file open")?.clone()
     };
     app.state::<Playing>().0.store(run, Ordering::SeqCst);
+    // Both halves play the same stretches, so this is settled before either
+    // of them starts. See [`to_play`].
+    let ranges = to_play(&audio_from, &keeps, &ranges);
 
     // Audio runs on its own thread and its own clock (see `play_audio`'s
     // doc comment): it just keeps a ring buffer fed, and the sound card
@@ -5397,6 +5451,28 @@ mod tests {
         let none: Vec<usize> = Vec::new();
         assert_eq!(resolve_pids(streams.into_iter(), Vec::new(), &[0x1200]), none);
         assert_eq!(resolve_pids(streams.into_iter(), vec![3], &[]), vec![3]);
+    }
+
+    /// What playback is given is the edit as the cut will write it, not as
+    /// the window drew it. A bound the plan moved is material the output
+    /// will not have, and a window of the timeline asked for by ループ has to
+    /// be clipped to the same answer.
+    #[test]
+    fn playback_is_given_the_stretches_the_cut_covers() {
+        // The plan moved the first range's start a frame later and left the
+        // second alone.
+        let covered = [(1.5, 3.0), (5.0, 6.0)];
+        assert_eq!(
+            clipped(&covered, &[(1.48, 3.0), (5.0, 6.0)]),
+            vec![(1.5, 3.0), (5.0, 6.0)]
+        );
+        // A loop asking for one window across a join keeps its own ends and
+        // takes the join where the plan put it.
+        assert_eq!(clipped(&covered, &[(2.9, 5.1)]), vec![(2.9, 3.0), (5.0, 5.1)]);
+        // A window wholly inside what was cut away plays nothing.
+        assert!(clipped(&covered, &[(3.2, 4.8)]).is_empty());
+        // And one that touches a bound by a rounding is not a stretch.
+        assert!(clipped(&covered, &[(3.0, 5.0)]).is_empty());
     }
 
     /// 環境設定 sends a folder for the scratch files, and a folder that cannot
