@@ -3975,7 +3975,11 @@ window.addEventListener("keydown", (ev) => {
     if (!el("mute").disabled) el("mute").click();
     return;
   }
-  if (playing && ev.key !== "i" && ev.key !== "o" && ev.key !== "k") stopPlay();
+  // A letter, whichever case it arrives in: Shift held and Caps on are the
+  // same key to the hand that pressed it, and a mark that lands only in one
+  // of the two is a key that stops working halfway through an evening.
+  const key = ev.key.length === 1 ? ev.key.toLowerCase() : ev.key;
+  if (playing && key !== "i" && key !== "o" && key !== "k") stopPlay();
   const step = ev.shiftKey ? 1 : frame();
   if (ev.key === "ArrowRight" || ev.key === "ArrowLeft") {
     ev.preventDefault();
@@ -3990,10 +3994,10 @@ window.addEventListener("keydown", (ev) => {
     if (arrowDue(ev)) scrubTo(srcToOutSeam(nearestPoint(playhead, ev.key === "ArrowDown" ? 1 : -1)));
     return;
   }
-  if (ev.key === "i") setIn(playOut());
-  if (ev.key === "o") setOut(playOut());
-  if (ev.key === "k" || ev.key === "K") addKeyframes([playhead], playhead);
-  if (ev.key === "s" || ev.key === "S") toScene(ev.shiftKey ? -1 : 1);
+  if (key === "i") setIn(playOut());
+  if (key === "o") setOut(playOut());
+  if (key === "k") addKeyframes([playhead], playhead);
+  if (key === "s") toScene(ev.shiftKey ? -1 : 1);
 });
 
 // --- commercial breaks --------------------------------------------------
