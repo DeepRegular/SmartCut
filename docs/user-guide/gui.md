@@ -408,6 +408,8 @@ opened off a **disc** — from the chapters the recorder itself set.
 
 ### Reading the marks in, and writing them down
 
+![The ≡ menu, open](../images/usage-marks.png)
+
 **≡**, at the right-hand end of the transport row, holds everything to do with
 the marks.
 
