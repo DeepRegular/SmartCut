@@ -3202,6 +3202,13 @@ const markFilter = (kind) => ({
 /// `quietOverwrite`.
 async function saveMarks(kind, ask) {
   if (!src) return;
+  // The menu greys this line out; the shortcut is the way in that cannot,
+  // and an empty file written under the recording's name would be read back
+  // as a detection that found nothing.
+  if (kind === "cm" && !cmBlocks.length) {
+    el("status").textContent = tr("cm.nothing");
+    return;
+  }
   let to = markPath(kind);
   if (ask) {
     if (!dialog) return;
@@ -4109,8 +4116,11 @@ window.addEventListener("keydown", (ev) => {
     stepHistory(undone, past);
     return;
   }
-  // The mark files: H writes one, L reads one, and Shift picks the Trim line
-  // out of the pair either way.
+  // The mark files: H writes one, L reads one, and the modifier picks which
+  // of the three shapes -- nothing for the keyframe list, Shift for the Trim
+  // line, Alt for the detection. Reading the detection is the exception and
+  // is Ctrl+Alt+O: Ctrl+Alt+L locks the screen on a Linux desktop (xflock4 on
+  // the machine this was tried on) and never reaches the window at all.
   //
   // H rather than S because that is the key the reference tool writes a
   // keyframe list with, and this window is laid out after that tool. It also
@@ -4124,7 +4134,12 @@ window.addEventListener("keydown", (ev) => {
   // recording, and that one is read on the way in without being asked for.
   if ((ev.ctrlKey || ev.metaKey) && (ev.key === "h" || ev.key === "H")) {
     ev.preventDefault();
-    saveMarks(ev.shiftKey ? "trim" : "keyframe", false);
+    saveMarks(ev.altKey ? "cm" : ev.shiftKey ? "trim" : "keyframe", false);
+    return;
+  }
+  if ((ev.ctrlKey || ev.metaKey) && ev.altKey && (ev.key === "o" || ev.key === "O")) {
+    ev.preventDefault();
+    loadMarksFrom("cm");
     return;
   }
   if ((ev.ctrlKey || ev.metaKey) && (ev.key === "l" || ev.key === "L")) {

@@ -125,7 +125,8 @@ const CATALOG = {
       "CM 検出結果のファイルを読み込んだときは、外してあってもそのファイルの印を置きます。",
     "prefs.quietOverwrite": "ショートカットでの保存は、確認せずに上書きする",
     "prefs.quietOverwriteNote":
-      "Ctrl+H（キーフレーム情報）と Ctrl+Shift+H（Trim）は、録画と同じ名前で、画面を出さずに保存します。" +
+      "Ctrl+H（キーフレーム情報）、Ctrl+Shift+H（Trim）、Ctrl+Alt+H（CM 検出結果）は、" +
+      "録画と同じ名前で、画面を出さずに保存します。" +
       "すでに同じ名前のファイルがあるとき、確認するかどうかをここで決めます。" +
       "メニューからの保存は保存先を選ぶ画面が出るので、この設定とは関係ありません。",
     "prefs.groupOut": "出力設定",
@@ -774,13 +775,13 @@ const CATALOG = {
       "印の読み書き、ディスクのチャプター、キーフレームの全消去。" +
       "キーフレーム情報（.keyframe）は印の位置だけ、AviSynth スクリプト（.trim.avs）は残る区間そのもの、" +
       "CM 検出結果（.cm.json）は検出した直後の帯と印です。" +
-      "Ctrl+H と Ctrl+Shift+H なら、録画と同じ名前で、画面を出さずに保存します。",
-    "marks.save.keyframe": "キーフレーム情報を保存…",
-    "marks.save.trim": "AviSynth Trim にカットを保存…",
-    "marks.save.cm": "CM 検出結果を保存…",
-    "marks.load.keyframe": "キーフレーム情報を読み込む…",
-    "marks.load.trim": "AviSynth Trim からカットを読み込む…",
-    "marks.load.cm": "CM 検出結果を読み込む…",
+      "Ctrl+H・Ctrl+Shift+H・Ctrl+Alt+H なら、録画と同じ名前で、画面を出さずに保存します。",
+    "marks.save.keyframe": "キーフレーム情報を保存",
+    "marks.save.trim": "AviSynth Trim にカットを保存",
+    "marks.save.cm": "CM 検出結果を保存",
+    "marks.load.keyframe": "キーフレーム情報を読み込む",
+    "marks.load.trim": "AviSynth Trim からカットを読み込む",
+    "marks.load.cm": "CM 検出結果を読み込む",
     "marks.readNone": "{file} には読み込めるものがありませんでした",
     "editor.chapterKeys": "ディスクのチャプターをキーフレームにする",
     "editor.cmKeys": "CM 検出結果をキーフレームにする",
@@ -801,6 +802,7 @@ const CATALOG = {
     "cm.read": "CM ブロック {n} 個を {file} から読み込みました",
     "cm.readFailed": "CM 検出結果を読み込めません: {e}",
     "cm.marked": "CM ブロック {n} 個をキーフレームにしました",
+    "cm.nothing": "まだ CM を検出していません",
   },
 
   en: {
@@ -901,9 +903,9 @@ const CATALOG = {
       "whatever this says.",
     "prefs.quietOverwrite": "Let the save shortcut write over a file without asking",
     "prefs.quietOverwriteNote":
-      "Ctrl+H (the keyframe list) and Ctrl+Shift+H (the Trim line) write straight to the name beside " +
-      "the recording. This is whether they stop to ask when something is already there. Saving from " +
-      "the menu puts a picker up, which asks for itself.",
+      "Ctrl+H (the keyframe list), Ctrl+Shift+H (the Trim line) and Ctrl+Alt+H (the detection) write " +
+      "straight to the name beside the recording. This is whether they stop to ask when something is " +
+      "already there. Saving from the menu puts a picker up, which asks for itself.",
     "prefs.groupOut": "Output settings",
     "prefs.prefix": "Filename prefix:",
     "prefs.prefixNote":
@@ -1529,8 +1531,8 @@ const CATALOG = {
     "editor.more.title":
       "The mark files, the disc's chapters, and clearing the marks. A keyframe list (.keyframe) " +
       "is the marks alone, an AviSynth script (.trim.avs) is the ranges that survive, a saved " +
-      "detection (.cm.json) is what a detection made of the recording. Ctrl+H and Ctrl+Shift+H " +
-      "write the first two beside the recording with nothing to answer.",
+      "detection (.cm.json) is what a detection made of the recording. Ctrl+H, Ctrl+Shift+H and " +
+      "Ctrl+Alt+H write all three beside the recording with nothing to answer.",
     "marks.save.keyframe": "Save the keyframe list…",
     "marks.save.trim": "Save the cuts as an AviSynth Trim…",
     "marks.save.cm": "Save the detection…",
@@ -1558,6 +1560,7 @@ const CATALOG = {
     "cm.read": "Read {n} block{n?s} from {file}",
     "cm.readFailed": "Cannot read the detection: {e}",
     "cm.marked": "Turned {n} block{n?s} into keyframes",
+    "cm.nothing": "Nothing has been detected yet",
   },
 };
 

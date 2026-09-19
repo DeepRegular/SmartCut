@@ -406,10 +406,10 @@ the marks.
 |---|---|
 | **Read a keyframe list…** | Reads a `.keyframe` from wherever it is (`Ctrl+L`) |
 | **Read cuts from an AviSynth Trim…** | Reads a `Trim` line (`Ctrl+Shift+L`). It arrives as cuts, not as marks |
-| **Read a saved detection…** | Reads a detection saved earlier. The band and the marks come back as they were |
+| **Read a saved detection…** | Reads a detection saved earlier (`Ctrl+Alt+O`). The band and the marks come back as they were |
 | **Save the keyframe list…** | Writes the marks beside the recording (`Ctrl+H`) |
 | **Save the cuts as an AviSynth Trim…** | Writes the surviving ranges as `Trim` calls (`Ctrl+Shift+H`) |
-| **Save the detection…** | Writes the detection now on screen. Greyed where nothing has been detected |
+| **Save the detection…** | Writes the detection now on screen (`Ctrl+Alt+H`). Greyed where nothing has been detected |
 | **Turn the disc's chapters into keyframes** | Puts them back after a clear. Greyed on anything but a disc |
 | **Turn the detection into keyframes** | Marks the detection now on screen. Greyed where nothing has been detected |
 | **Remove every keyframe** | The marks alone. The cuts stay |
@@ -427,9 +427,9 @@ Typing `.keyframe`, `.avs` or `.json` over the name in the picker overrides the
 line that was picked, and a file being read is taken for what its own extension
 says it is.
 
-`Ctrl+H` and `Ctrl+Shift+H` write the first two straight to those names with no
-picker. They ask before writing over a file that is already there; a preference
-turns that question off. The detection has no shortcut.
+`Ctrl+H`, `Ctrl+Shift+H` and `Ctrl+Alt+H` write all three straight to those names
+with no picker. They ask before writing over a file that is already there; a
+preference turns that question off.
 
 **A detection reads the recording for minutes.** Saving one means opening the
 same answer again without that wait. A detection is also kept in SmartCut's own
@@ -866,7 +866,7 @@ effect as you make it.
 | **PageUp / PageDown** | What those keys do. Four answers — plain, `Shift`, `Ctrl`, `Shift+Ctrl` — each a number and a unit: **frames**, **seconds**, or **% a second, scrolling**. The first two are amounts, one per press. A percentage is a speed: a share of the fastest scroll here, which is sixty times the recording's own speed. 25 is fifteen times, so a second of holding covers fifteen seconds of the recording, whatever is open. Out of the box: 15 frames, 30 with `Shift`, 25% with `Ctrl` and 50% with both. A step of 0 is a key that does nothing |
 | **When more than one is there, read** | Which file is picked up when a recording has more than one of a `.keyframe`, a `.trim.avs` and a `.cm.json` beside it |
 | **Turn a detection into keyframes** | On out of the box. Off, a detection leaves the band and the sentence and nothing else, and ≡ → **Turn the detection into keyframes** places the marks. Where a mark file beside the recording was read, a detection is not marked whatever this says |
-| **Let the save shortcut write over a file without asking** | `Ctrl+H` and `Ctrl+Shift+H` then write over a file of the same name in silence |
+| **Let the save shortcut write over a file without asking** | `Ctrl+H`, `Ctrl+Shift+H` and `Ctrl+Alt+H` then write over a file of the same name in silence |
 
 ### Output settings
 
@@ -987,8 +987,10 @@ can quote it straight into a bug report.
 | `Ctrl+D` | Detect commercials |
 | `Ctrl+L` | Read a keyframe list from a file |
 | `Ctrl+Shift+L` | Read a Trim line from a file |
+| `Ctrl+Alt+O` | Read a saved detection from a file |
 | `Ctrl+H` | Write the keyframe list beside the recording |
 | `Ctrl+Shift+H` | Write the Trim line beside the recording |
+| `Ctrl+Alt+H` | Write the detection beside the recording |
 | `Esc` | Throw away what was done here and close (the same as Cancel). Both ask first where anything was done |
 
 ---
