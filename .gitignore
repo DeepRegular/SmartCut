@@ -21,6 +21,7 @@ tests/demo_broadcast.ts
 # Local development environment (machine-specific; not part of the project)
 DEVENV.md
 sync.sh
+CLAUDE.md
 
 # Claude Code's own working directory (agent worktrees, not project files)
 .claude/
