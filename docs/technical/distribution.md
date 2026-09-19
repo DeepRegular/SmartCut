@@ -92,8 +92,8 @@ only). The bundle *files* Tauri writes are named after `productName` instead —
 
 | Artifact | Size | FFmpeg | Requires |
 |---|---|---|---|
-| `SmartCut-0.7.2-linux-x86_64.tar.gz` | 209.9 MB | Bundled | glibc 2.39 or newer. No FUSE needed |
-| `smartcut_0.7.2_amd64.deb` | 4.0 MB | Uses the system's | FFmpeg 7.1 (Debian 13 / Ubuntu 25.04 and later) |
+| `SmartCut-0.7.2-linux-x86_64.tar.gz` | 210.1 MB | Bundled | glibc 2.39 or newer. No FUSE needed |
+| `smartcut_0.7.2_amd64.deb` | 4.2 MB | Uses the system's | FFmpeg 7.1 (Debian 13 / Ubuntu 25.04 and later) |
 
 **The tar.gz contains the same AppDir as the AppImage, extracted.** The 745 libraries
 linuxdeploy gathered by following `ldd` sit in `app/` as they are, `./smartcut` is a

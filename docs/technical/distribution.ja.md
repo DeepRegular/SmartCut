@@ -88,8 +88,8 @@ cargo のクレート名は `gui` なので、放っておくと Tauri はその
 
 | 成果物 | サイズ | FFmpeg | 必要条件 |
 |---|---|---|---|
-| `SmartCut-0.7.2-linux-x86_64.tar.gz` | 209.9 MB | 同梱 | glibc 2.39 以上。FUSE 不要 |
-| `smartcut_0.7.2_amd64.deb` | 4.0 MB | システムのものを使用 | FFmpeg 7.1（Debian 13 / Ubuntu 25.04 以降） |
+| `SmartCut-0.7.2-linux-x86_64.tar.gz` | 210.1 MB | 同梱 | glibc 2.39 以上。FUSE 不要 |
+| `smartcut_0.7.2_amd64.deb` | 4.2 MB | システムのものを使用 | FFmpeg 7.1（Debian 13 / Ubuntu 25.04 以降） |
 
 **tar.gz の中身は、AppImage と同じ AppDir を展開したものである。** linuxdeploy が
 `ldd` を辿って集めた 745 個のライブラリがそのまま `app/` にある。`./smartcut` は
