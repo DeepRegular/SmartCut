@@ -191,7 +191,7 @@ VM 上の wine 10.0 で確認している。
     --target x86_64-pc-windows-msvc -p smartcut-cli
   ```
 
-  GUI と同じ DLL を exe の隣に置く。現状、FFmpeg の DLL が解決できることを確認する
+  GUI と同じ DLL を exe と同じ場所に置く。現状、FFmpeg の DLL が解決できることを確認する
   経路は事実上これだけである（次の項目を参照）。
 
 - **GUI が wine で起動しなくなった**（2026-08-27 時点）。`tao` の
