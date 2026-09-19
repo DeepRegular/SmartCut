@@ -337,10 +337,15 @@ The playback row sits under the cutting one: rewind, play, fast forward and
 **Loop**, with the **volume** to the right of them.
 
 With **Loop** down, playback that reaches the end of the selection goes back to
-where it started and plays again. Put the playhead on a seam, press `Space`, and
-that seam alone plays over and over. It returns to **where playback started**, so
-to hear the run-up as well, start it before the IN mark. On a recording with
-nothing marked the selection is the whole of it.
+where it started and plays again. What repeats is the **selection**: it starts at
+the playhead where that stands inside it, and at the IN mark where it does not.
+On a recording with nothing marked the selection is the whole of it.
+
+Straight after a cut the selection stands collapsed on the seam it just made.
+Press `Space` there and what repeats is **half a second around the join** — the
+run-up as well as what follows, which is what a join has to be heard as. For a
+longer listen, put IN and OUT either side of the seam and that stretch is what
+repeats.
 
 The **volume** is the preview's alone — what gets written is untouched. ♪ silences
 it and brings it back (so does `M`), and the wheel over the slider moves it. Both

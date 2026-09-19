@@ -2415,11 +2415,11 @@ let loopAt = null;
 /// A round is at least this long, in seconds.
 ///
 /// A round shorter than the seek that starts it is not a loop, it is a
-/// stutter -- and two pictures is a selection somebody lands on by putting
-/// OUT down before moving. Short ones are stretched to this rather than
-/// refused: a 再生 that quietly did nothing would be the worse answer of the
-/// two, and half a second either side of what was marked is still the join
-/// that was marked.
+/// stutter -- and a selection two pictures long is what ✂ leaves standing on
+/// the join it has just made. Short ones are stretched rather than refused:
+/// a 再生 that quietly did nothing would be the worse answer of the two, and
+/// half a second either side of what was marked is still the join that was
+/// marked.
 const MIN_LOOP = 0.5;
 
 /// The stretch ループ plays, in output time, or null when there is nothing
@@ -2433,8 +2433,19 @@ const MIN_LOOP = 0.5;
 function loopRange() {
   const a = selA;
   const at = playOut();
-  const from = at > a + 1e-9 && at < selEnd() - frame() ? at : a;
-  const b = Math.min(outDur, Math.max(selEnd(), from + MIN_LOOP));
+  let from = at > a + 1e-9 && at < selEnd() - frame() ? at : a;
+  let b = Math.min(outDur, selEnd());
+  // Grown *around* what is marked rather than forwards out of it. What is
+  // marked this short is a seam, and half of what there is to listen to at a
+  // seam is the run-up: a round that began on the join itself would play
+  // only the side of it that was kept. Backwards as far as there is room,
+  // and whatever is left over goes on the far end.
+  if (b - from < MIN_LOOP) {
+    const want = MIN_LOOP - (b - from);
+    const back = Math.min(want / 2, from);
+    from -= back;
+    b = Math.min(outDur, b + (want - back));
+  }
   return b - from > 0.1 ? { from, b } : null;
 }
 
@@ -2589,7 +2600,11 @@ el("loop").addEventListener("click", () => {
   // playing. Waiting for the end would mean waiting for the end of the
   // recording, which is the thing the answer has just changed.
   if (playing) {
-    stopPlay();
+    // Without a picture of where it stopped: the 再生 on the next line is
+    // about to fill the stage, and a still asked for here arrives after it
+    // has -- which `showFrame` reads as a hand on the playhead and stops the
+    // playback it was filling for. Same reason as ◀◀ and ▶▶.
+    stopPlay(false);
     startPlay();
   }
 });
