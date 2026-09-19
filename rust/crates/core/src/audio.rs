@@ -895,6 +895,13 @@ struct Decoded {
     /// How many bytes that packet was. What a constant-rate codec spends on
     /// a frame is what its rate *is* -- see [`own_bit_rate`].
     bytes: usize,
+    /// The shape the frame itself arrived in: its channel count and its
+    /// rate, read off the frame before anything conformed it to the track's.
+    ///
+    /// Kept because a broadcast recording's frames do not all agree. The
+    /// end of the programme before this one is in the file too, and it can
+    /// be mono where the programme is stereo -- see [`foreign_reach`].
+    shape: (u16, u32),
     pcm: Pcm,
 }
 
@@ -1115,16 +1122,63 @@ pub fn boundary_patches(
     };
     drop(probe);
 
+    // How far a range may open on the programme before it and still be put
+    // back into the track's own shape: ten seconds, which is more than a
+    // tuner's overrun and far less than a range that is the other programme
+    // rather than this one. See [`foreign_reach`].
+    const FOREIGN_CAP: f64 = 10.0;
+
     for (nth, &(w0, w1)) in windows.iter().enumerate() {
         let fades = fades_for(fade, audio.sample_rate, nth, windows.len(), (w0, w1));
         for (edge, is_head) in [(w0, true), (w1, false)] {
-            let reach = if is_head { fades.head } else { fades.tail };
+            let fade_reach = if is_head { fades.head } else { fades.tail };
             let at = edge as f64 / rate;
             // A range edge that already sits on a frame boundary needs no
             // patch at all, unless a fade reaches in from it -- and neither
             // is known until the frames are in hand, so the decode happens
             // first and the work is skipped after.
-            let frames = decode_around(&mut ictx, &params, src, audio, at, reach)?;
+            let mut frames = decode_around(&mut ictx, &params, src, audio, at, fade_reach)?;
+            // Whether this edge opens on a frame that is not the track's
+            // shape, which is what says whether the run of them is worth
+            // looking for. Asked of the frame the edge is in rather than
+            // measured outright, because the measurement means decoding
+            // seconds rather than frames and nearly every edge of nearly
+            // every recording is the programme's own sound.
+            let mut reach = fade_reach;
+            let shape = (audio.channels, audio.sample_rate);
+            let opens_on = frames
+                .iter()
+                .find(|f| f.first + f.len() as i64 > edge)
+                .map(|f| f.shape);
+            if is_head && opens_on.is_some_and(|it| it != shape) {
+                let cap = (FOREIGN_CAP * audio.sample_rate as f64) as i64;
+                frames = decode_around(&mut ictx, &params, src, audio, at, cap)?;
+                let said = opens_on.map_or(0, |it| it.0);
+                match foreign_reach(&frames, edge, shape, cap) {
+                    Some(n) if n > 0 => {
+                        reach = reach.max(n);
+                        crate::note_once(format!(
+                            "note: this range opens {:.2}s before the programme's own sound \
+                             does -- what is there is the end of the programme before it, in \
+                             {said} channel(s) where this track is {}. Those frames are \
+                             written again in the track's shape instead of copied, so the \
+                             track is one shape from its first frame; the rest of the range \
+                             is the recording's own bytes.",
+                            n as f64 / audio.sample_rate as f64,
+                            audio.channels,
+                        ));
+                    }
+                    Some(_) => {}
+                    None => crate::note_once(format!(
+                        "note: the sound this range opens on is not the shape the rest of \
+                         the track is, and there is more of it than a recording that began \
+                         a moment early accounts for -- over {:.0} seconds, or at another \
+                         rate. It is carried through as it is, so the track changes shape \
+                         where the programme does.",
+                        FOREIGN_CAP,
+                    )),
+                }
+            }
             let Some(emit) = run_range(&frames, edge, is_head, reach) else {
                 continue;
             };
@@ -1134,6 +1188,7 @@ pub fn boundary_patches(
                 is_head,
                 (w0, w1),
                 fades,
+                reach > fade_reach,
                 &params,
                 audio,
                 bit_rate,
@@ -1216,6 +1271,9 @@ fn decode_around(
             } else {
                 ff::channel_layout::ChannelLayout::default(channels as i32)
             };
+            // Read before `conform` is asked for the track's shape, which
+            // is the whole of what makes a disagreeing frame findable.
+            let shape = (frame.channels(), frame.rate());
             let floats = conform(&mut resampler, &mut floated, &frame, want, PLANAR_F32)?;
             let n = floats.samples();
             let mut pcm: Pcm = vec![Vec::with_capacity(n); channels];
@@ -1224,6 +1282,7 @@ fn decode_around(
                 pts,
                 first,
                 bytes,
+                shape,
                 pcm,
             });
             if t > at {
@@ -1292,6 +1351,45 @@ fn run_range(frames: &[Decoded], edge: i64, is_head: bool, reach: i64) -> Option
     }
 }
 
+/// How far into a range the programme before it reaches, in samples from the
+/// range's start.
+///
+/// A tuner told to start early records the end of whatever was on before, and
+/// the sound of that can be a different shape: mono ahead of a stereo
+/// programme is an ordinary evening's television. The track is described by
+/// what the recording mostly is -- see [`settled_shape`] -- and a range that
+/// begins before its programme did carries a few frames that are not that
+/// shape at all. Copied through, they are what has the whole track called
+/// mono again by everything that reads the file's opening rather than its
+/// frames.
+///
+/// The frames themselves say which they are, so the run is measured rather
+/// than assumed: from the range's start to the first frame that is the
+/// track's own shape.
+///
+/// `Some(0)` where the range opens on the programme, which is nearly every
+/// range of nearly every recording. `None` where the run cannot be covered:
+/// past `cap`, which is a range that is not this programme at all rather
+/// than one that opens a moment early, or at a change of *rate*, where the
+/// samples the decoder hands back are on a grid these frames cannot be put
+/// back onto. Both are left as they are.
+fn foreign_reach(frames: &[Decoded], edge: i64, shape: (u16, u32), cap: i64) -> Option<i64> {
+    let mut reach = 0;
+    for f in frames.iter().filter(|f| f.first + f.len() as i64 > edge) {
+        if f.shape == shape {
+            break;
+        }
+        if f.shape.1 != shape.1 {
+            return None;
+        }
+        reach = f.first + f.len() as i64 - edge;
+        if reach > cap {
+            return None;
+        }
+    }
+    Some(reach)
+}
+
 /// The frame the edge falls inside, when it falls inside one at all.
 ///
 /// A head edge is claimed by the frame containing it; a tail edge by the
@@ -1320,6 +1418,12 @@ fn patch_run(
     is_head: bool,
     window: (i64, i64),
     fades: Fades,
+    // Whether this run is here because the frames are not the track's own
+    // shape. Such a run is rewritten whether or not anything in it can be
+    // heard, and every frame of it stands on its own: what it replaces is
+    // not a frame that would have been fine either way. See
+    // [`foreign_reach`].
+    foreign: bool,
     params: &ff::codec::Parameters,
     audio: &AudioInfo,
     bit_rate: usize,
@@ -1348,7 +1452,7 @@ fn patch_run(
     // audio frame, because all three of its joins sit in digital silence.
     // A fade is a change to the kept side and is asked for outright, so it
     // is not subject to this: what it does is audible by definition.
-    if !fades.any() && !outside_is_audible(&frames[straddle], window) {
+    if !fades.any() && !foreign && !outside_is_audible(&frames[straddle], window) {
         return Ok(());
     }
 
@@ -1490,8 +1594,8 @@ fn patch_run(
         // in its place, is the one frame at the seam that the fade did not
         // reach. That is audible: it is a burst at full level exactly where
         // the fade was asked to take the level away.
-        let after =
-            (is_head && i == straddle + 1 && fades.head == 0).then(|| frames[straddle].pts);
+        let after = (is_head && i == straddle + 1 && fades.head == 0 && !foreign)
+            .then(|| frames[straddle].pts);
         out.entry(frames[i].pts).or_insert(Patch { bytes, after });
     }
     Ok(())
@@ -1715,12 +1819,46 @@ mod tests {
     use super::*;
 
     fn decoded(first: i64, n: usize) -> Decoded {
+        shaped(first, n, (1, 48_000))
+    }
+
+    /// The same, for a frame that says what shape it arrived in.
+    fn shaped(first: i64, n: usize, shape: (u16, u32)) -> Decoded {
         Decoded {
             pts: first,
             first,
             bytes: 0,
+            shape,
             pcm: vec![vec![1.0; n]],
         }
+    }
+
+    #[test]
+    fn measures_how_far_the_programme_before_reaches() {
+        const SIZE: usize = 1024;
+        let stereo = (2u16, 48_000u32);
+        // Two frames of the programme before this one, and then the
+        // programme: the run ends where the track's own shape begins.
+        let mut frames: Vec<Decoded> = (0..2)
+            .map(|i| shaped(i * SIZE as i64, SIZE, (1, 48_000)))
+            .collect();
+        frames.extend((2..6).map(|i| shaped(i * SIZE as i64, SIZE, stereo)));
+        assert_eq!(foreign_reach(&frames, 0, stereo, 48_000), Some(2048));
+        // Measured from the range's start and not from the file's: a range
+        // that opens inside the second of those frames has one to cover.
+        assert_eq!(foreign_reach(&frames, 1500, stereo, 48_000), Some(548));
+        // A range that opens on the programme has nothing to cover, which
+        // is nearly every range of nearly every recording.
+        assert_eq!(foreign_reach(&frames, 2048, stereo, 48_000), Some(0));
+        // More of it than a recording that began a moment early accounts
+        // for: this is not the programme, and nothing is rewritten.
+        assert_eq!(foreign_reach(&frames, 0, stereo, 1024), None);
+        // And a change of rate, where the samples cannot be put back onto
+        // the track's own grid.
+        let other: Vec<Decoded> = (0..4)
+            .map(|i| shaped(i * SIZE as i64, SIZE, (2, 32_000)))
+            .collect();
+        assert_eq!(foreign_reach(&other, 0, stereo, 48_000), None);
     }
 
     #[test]
@@ -1885,6 +2023,7 @@ mod tests {
             pts: 0,
             first: 0,
             bytes,
+            shape: (6, 48_000),
             pcm: vec![vec![0.0; 1536]],
         };
         // 1792 bytes of a 1536 sample frame at 48 kHz is 448 kbit/s, which

@@ -262,6 +262,15 @@ channel arrangement and the rate and pads to an even length; so does this,
 where there is nothing to say. A cut off a disc does know the language, since
 it is in the index it came from, and there the field goes in.
 
+**The channel arrangement is the clip's and not its opening's.** A cut that begins a
+moment before its programme did opens on the sound of the programme before it, and the
+probe that describes a track reads those first frames: a stereo programme was going onto
+a disc whose index said mono. Smart rendering now writes that opening in the track's own
+shape, so the clip does not disagree with itself; and the index is measured rather than
+taken from the opening either way, four places through the stream, because a copy
+rewrites nothing — [the opening is not the
+recording](audio.md#the-opening-is-not-the-recording).
+
 **Which network the recording came off** sits in the same block as the
 transport stream and the service. It was written as 4 — satellite — until a
 recorder's own discs were read: the authoring tool's two are both of a

@@ -911,7 +911,36 @@ fn read_clip(
         coding: declared(video_pid, video_coding(&src.video.codec)),
         attributes: video_attributes(&src.video),
     });
-    for a in &src.audios {
+    // What the sound is, rather than what it is where the clip opens.
+    //
+    // A cut that begins a moment before its programme did carries the end of
+    // the programme before it into its first frames -- mono ahead of a
+    // stereo programme, which is an ordinary evening -- and a probe reads the
+    // shape off those. [`crate::scan`] corrects that for a recording off the
+    // air and deliberately leaves a disc's clips alone, a recorder's clip
+    // being one programme from its first frame; a clip this program has just
+    // written is read back through that same path and is not. So the same
+    // question is asked again here, of the stream this index is about.
+    //
+    // It is the attribute a player configures its decoder from, and the one
+    // every tool that reads the disc reports: mono written over a stereo
+    // track is a stereo programme that says it is mono everywhere but in its
+    // own frames. See [`crate::audio::settled_shape`].
+    let audios: Vec<crate::AudioInfo> = src
+        .audios
+        .iter()
+        .cloned()
+        .map(|mut a| {
+            if let Some((channels, sample_rate)) =
+                crate::audio::settled_shape(&src.input.url, &a, src.start_time, src.duration)
+            {
+                a.channels = channels;
+                a.sample_rate = sample_rate;
+            }
+            a
+        })
+        .collect();
+    for a in &audios {
         let pid = a.pid as u16;
         // The map is the authority where it names a sound coding at all.
         // Where it says "private data" it is not naming one: a recording that

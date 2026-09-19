@@ -490,7 +490,7 @@ pub fn track_name(on_a_ts: bool, pid: i32, stream_index: usize) -> String {
 /// a note about what is in the recording is as true the third time as the
 /// first and no more use to anybody. Keyed on the line itself, so two tracks
 /// with the same thing to say about them still say it twice.
-fn note_once(line: String) {
+pub(crate) fn note_once(line: String) {
     use std::collections::HashSet;
     use std::sync::{Mutex, OnceLock};
     static SAID: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();

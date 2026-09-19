@@ -69,7 +69,7 @@ bash tests/run_downmix_tests.sh       # 5.1ch をステレオに畳んだとき�
 bash tests/run_audio_codec_tests.sh   # 音声を別のコーデックで書き出せるか               39
 bash tests/run_audio_smart_tests.sh   # コーデックごとのスマートレンダリング             20
 bash tests/run_audio_format_tests.sh  # 音声のサンプリングレートと量子化ビット数         23
-bash tests/run_audio_head_tests.sh    # 冒頭が前の番組になっている録画                   12
+bash tests/run_audio_head_tests.sh    # 冒頭が前の番組になっている録画                   22
 bash tests/run_preview_tests.sh       # スクラブで指定した時刻の映像が出るか              7
 bash tests/run_index_tests.sh         # 索引が走査と同じ答えを返すか                     27
 bash tests/run_proxy_tests.sh         # プロキシが録画の代役になれるか                   22

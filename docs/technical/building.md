@@ -68,7 +68,7 @@ bash tests/run_downmix_tests.sh       # where 5.1 goes when it is folded to ster
 bash tests/run_audio_codec_tests.sh   # writing the sound as another codec entirely     39
 bash tests/run_audio_smart_tests.sh   # smart rendering, codec by codec                 20
 bash tests/run_audio_format_tests.sh  # the rate and the width the samples are written  23
-bash tests/run_audio_head_tests.sh    # a recording whose opening is another programme  12
+bash tests/run_audio_head_tests.sh    # a recording whose opening is another programme  22
 bash tests/run_preview_tests.sh       # does a scrub show the time you asked for         7
 bash tests/run_index_tests.sh         # does the index answer as the walk did           27
 bash tests/run_proxy_tests.sh         # can the proxy stand in for the recording        22

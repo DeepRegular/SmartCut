@@ -224,6 +224,77 @@ else
   bad "and at 5.1's own rate, not the opening's"
 fi
 
+# A range that opens before its programme did. The frames it opens on are
+# the programme before this one and are not this track's shape, so smart
+# rendering rewrites them along with the boundary: the output is one shape
+# from its first frame, which is what every tool that reads a file's opening
+# rather than its frames goes on.
+echo
+echo "a range that opens on the programme before it"
+if "$BIN" "$FX/mono_head.ts" --keep 2.0-40.0 -o "$OUT/head.ts" >/dev/null 2>&1; then
+  same "stereo from the first frame, not from the programme" "2" "$(declared "$OUT/head.ts")"
+  ffmpeg -hide_banner -loglevel error -y -i "$OUT/head.ts" -map 0:a:0 -c copy \
+    -f adts "$OUT/head.aac" 2>/dev/null
+  if python3 tests/aac_frames.py "$OUT/head.aac" --channels 2 > "$OUT/head.txt" 2>&1; then
+    ok "and every frame of it says two channels"
+  else
+    bad "and every frame of it says two channels" "$(grep BAD "$OUT/head.txt" | head -1)"
+  fi
+  # And what those frames carry is the other programme's sound, not a hole
+  # where it was: the tone it was carrying, split across the two channels
+  # this track has. Both of them, at 3 dB under the mono it came from, which
+  # is what the conversion does and what keeps the two together at the
+  # level they were.
+  head_rms=$(ffmpeg -hide_banner -i "$OUT/head.ts" -map 0:a:0 -t 1.8 -af astats \
+    -f null - 2>&1 | sed -n 's/.*RMS level dB: //p' | head -2 | tr '\n' ' ')
+  if [ -n "$head_rms" ] && awk -v v="$head_rms" 'BEGIN{
+       split(v, a, " ");
+       exit !(a[1] > -30 && a[2] > -30 && (a[1] - a[2]) < 0.1 && (a[2] - a[1]) < 0.1)
+     }'; then
+    ok "and carries the sound that was there" "$head_rms dB"
+  else
+    bad "and carries the sound that was there" "got [$head_rms]"
+  fi
+else
+  bad "stereo from the first frame, not from the programme" "the cutter failed"
+  bad "and every frame of it says two channels"
+  bad "and carries the sound that was there"
+fi
+
+# And the disc, where what a stream is is written in a field of its own
+# rather than in the frames. Both answers are checked: the clip written by
+# smart rendering opens on the programme's shape, and the clip of a copy --
+# which cannot rewrite anything -- opens on the other programme's and is
+# still described as the programme's, because the index is written from
+# what the clip mostly is.
+#
+# The folders go first: a disc is added to rather than replaced, so a second
+# run beside a first writes 00002 and leaves 00001 where it was.
+echo
+echo "and the disc written from such a cut"
+rm -rf "$OUT/disc" "$OUT/disc-copy"
+if "$BIN" "$FX/mono_head.ts" --keep 2.0-40.0 --bdav "$OUT/disc" >/dev/null 2>&1; then
+  same "the clip index says the programme's shape" "1100:3/1" \
+       "$(python3 tests/bdav_index.py "$OUT/disc" | sed -n 's/^00001\.sound=//p')"
+  same "and the clip itself opens on that shape" "2" \
+       "$(ffprobe -v error -select_streams a:0 -show_entries stream=channels \
+          -of default=nw=1:nk=1 "$OUT/disc/BDAV/STREAM/00001.m2ts" 2>/dev/null | head -1)"
+else
+  bad "the clip index says the programme's shape" "the cutter failed"
+  bad "and the clip itself opens on that shape"
+fi
+if "$BIN" "$FX/mono_head.ts" --keep 2.0-40.0 --audio-mode copy \
+     --bdav "$OUT/disc-copy" >/dev/null 2>&1; then
+  same "copied, the clip opens on the other programme" "1" \
+       "$(ffprobe -v error -select_streams a:0 -show_entries stream=channels \
+          -of default=nw=1:nk=1 "$OUT/disc-copy/BDAV/STREAM/00001.m2ts" 2>/dev/null | head -1)"
+  same "and its index still says the programme's shape" "1100:3/1" \
+       "$(python3 tests/bdav_index.py "$OUT/disc-copy" | sed -n 's/^00001\.sound=//p')"
+else
+  bad "copied, the clip opens on the other programme" "the cutter failed"
+  bad "and its index still says the programme's shape"
+fi
+
 echo
 echo "and a recording that really is mono"
 same "described as the mono it is" "48000 1" "$(described "$FX/all_mono.ts")"
@@ -238,6 +309,15 @@ if "$BIN" "$FX/all_mono.ts" --keep 10.123-20.456 -o "$OUT/mono.ts" >/dev/null 2>
   fi
 else
   bad "the cutter failed on the all-mono recording"
+fi
+# The same guard on the disc: nothing in this clip disagrees with its
+# opening, so its index has to say mono too.
+rm -rf "$OUT/disc-mono"
+if "$BIN" "$FX/all_mono.ts" --keep 2.0-40.0 --bdav "$OUT/disc-mono" >/dev/null 2>&1; then
+  same "and the clip index of it says mono" "1100:1/1" \
+       "$(python3 tests/bdav_index.py "$OUT/disc-mono" | sed -n 's/^00001\.sound=//p')"
+else
+  bad "and the clip index of it says mono" "the cutter failed"
 fi
 
 echo

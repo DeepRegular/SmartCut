@@ -386,6 +386,43 @@ off the air. A disc's clip is a transport stream too, and is one programme from 
 first frame: nothing in it can disagree with its own opening, and inside an image every
 one of those seeks is a walk of the volume as well.
 
+**The frames a range opens on can be the other programme's, and copying them through
+carries the fault into the output.** A cut asked to begin a second before its programme
+did keeps those frames — keeping them is what it was asked for — so the output opened on
+mono ahead of a stereo track, and everything that describes a file from its first frames
+was back where it started: libavformat called the cut mono, and a BDAV clip index
+written from it said mono too.
+
+Smart rendering already rewrites the frames a boundary falls inside, and the run it
+rewrites at the head of a range is now extended over every frame that is not the track's
+own shape. `foreign_reach` measures that run off the frames themselves — each decoded
+frame is asked what shape it arrived in, before anything conforms it — and takes it from
+the range's start to the first frame that is the track's own. The encoder that was going
+to write the boundary writes those frames as well, in the track's shape, by the same
+swresample pass that conforms every other frame it is handed. What it costs is that
+those frames stop being an exact copy: sixty milliseconds of the previous programme on
+the recording measured here, two seconds in the fixture. What it buys is a track that is
+one shape from its first frame to its last.
+
+Two limits, and past either the frames are carried as they are and a note says so. More
+than ten seconds of it is a range that is the other programme rather than one that opens
+a moment early. And a change of *rate* is not a change this can absorb: the decoder
+hands back samples on the rate they were written at, and frames on another grid cannot
+stand in for the recording's.
+
+**A copy rewrites nothing, so the clip index is measured too.** `--audio-mode copy`
+carries every frame byte for byte, the other programme's included, and there the index
+beside the stream is the only place the track's own shape can be stated. `bdav::read_clip`
+asks `settled_shape` of the stream it is indexing rather than taking the probe's answer
+for it: the check above is deliberately not asked of a disc's clips, a recorder's clip
+being one programme from its first frame, and a clip this program had just written was
+taken in by that exception through the shape of its path. What reached `CLIPINF` was the
+opening's answer all over again — and that is the number a player configures its decoder
+from, and the number every tool that reads the disc reports. Measured on a 55 minute
+recording that opens on three and a half seconds of mono: the disc's index said one
+channel, and says three — stereo — now, whether the cut rewrote the opening or copied
+it.
+
 Three things follow from taking a majority rather than a first answer:
 
 - **A recording that really is mono stays mono.** Every place looked at agrees with the
@@ -407,7 +444,16 @@ while all but the boundary frames are still the recording's own bytes, and a who
 re-encode comes out stereo. Beside it the same shape with 5.1 behind a stereo opening,
 where the re-encode is checked for its rate as well as its channels; and a guard, a
 recording that is mono throughout, which has to come out mono. Against the binary from
-before the fix, seven of the twelve fail.
+before the fix, seven of the twelve checks it had then fail.
+
+Beside them a range that starts inside the mono opening, which is the case the frames
+themselves have to answer: the output is stereo from its first frame, every ADTS header
+in it says two channels, and what those frames carry is the tone the other programme was
+carrying rather than a hole where it was — both channels, 3 dB under the mono it came
+from, which is what the conversion does. Then the same range onto a disc, both ways — smart, where
+the clip opens on the programme's shape, and copied, where it opens on the other
+programme's and the index says the programme's anyway — and the all-mono guard onto a
+disc as well, where the index has to say mono.
 
 **The preview player had the same fact to reckon with, and did not.** The sound the
 window plays goes through one swresample context, built from the first frame it decodes

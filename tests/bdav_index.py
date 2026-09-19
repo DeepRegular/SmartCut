@@ -123,13 +123,20 @@ def clpi(path):
     # The streams, which is what a chooser reads and what a player maps.
     at = u32(raw, 12) + 4
     streams = {}
+    sound = {}
     p = at + 10
     for _ in range(raw[at + 8]):
         pid = u16(raw, p)
         length = raw[p + 2]
         streams[pid] = raw[p + 3]
+        # What a sound stream is described by: the channel arrangement in the
+        # top nibble of the byte after the coding, and the sample rate in the
+        # bottom one. 1 is mono, 3 stereo, 6 multichannel; 1 is 48 kHz.
+        if raw[p + 3] in (0x03, 0x04, 0x0F, 0x11, 0x80, 0x81, 0x82, 0x83, 0x84, 0x85, 0x86):
+            sound[pid] = (raw[p + 4] >> 4, raw[p + 4] & 0xF)
         p += 3 + length
     out["streams"] = streams
+    out["sound"] = sound
     out["ep"], out["coarse"] = ep_map(raw)
     out["application_type"] = raw[info + 7]
     return out
@@ -295,6 +302,11 @@ def main():
         print(f"{stem}.pcr_agrees={clip['pcr'] == pcr}")
         print(f"{stem}.streams_agree={clip['streams'] == streams}")
         print(f"{stem}.stream_types=" + ",".join(f"{p:04x}:{t:02x}" for p, t in sorted(streams.items())))
+        # How the index describes each sound track. It is what a player
+        # configures its decoder from, so a stereo track described as mono is
+        # a stereo track nothing plays as one -- see `settled_shape`.
+        print(f"{stem}.sound=" + ",".join(
+            f"{p:04x}:{ch}/{rate}" for p, (ch, rate) in sorted(clip["sound"].items())))
         print(f"{stem}.entry_points={len(clip['ep'])}")
         print(f"{stem}.entry_points_wrong={wrong}")
         print(f"{stem}.arrival_seconds={seconds:.3f}")
