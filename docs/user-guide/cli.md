@@ -47,7 +47,7 @@ smartcut input.ts --cut 8.0-20.0 --bdav ~/disc  # onto a disc instead of a file
 
 | Option | Meaning |
 |---|---|
-| `-o OUTPUT` | Output path. **The extension picks the container** |
+| `-o OUTPUT` (or `--output`) | Output path. **The extension picks the container** |
 | `--drop-stream INDEX` | Leave one of the recording's streams out of the output. Repeatable. The same thing the cut editor's **Tracks** menu does |
 | `--title N` | Which recording on a disc (a folder or an `.iso`) to open. Part of the programme's name works in place of the number. **Left out, it lists what is on the disc and stops** |
 
