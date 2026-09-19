@@ -643,6 +643,57 @@ function renderKeyframes() {
   paintCards(live, imgs);
 }
 
+/// Walk the marks, in the direction given.
+///
+/// The column down the left is the list of the places this evening is about:
+/// what a detection found, what a cut left behind, what the hand flagged. The
+/// left and right keys step a frame at a time, which is the step you want
+/// while looking *at* a seam; with Ctrl they jump between the marks, which is
+/// the step you want while looking for the next one.
+///
+/// The mark landed on is picked out in the list as well as gone to, so the
+/// card for it is the one highlighted and scrolled to.
+///
+/// Marks whose material a cut has taken away are not stops: `liveKeyframes`
+/// has dropped them already, and two marks a cut has closed up onto one
+/// instant are one stop rather than two.
+function toKeyframe(dir) {
+  if (!src) return;
+  const stops = liveKeyframes()
+    .map((t) => ({ t, o: srcToOut(t) }))
+    .filter((k) => k.o !== null);
+  const here = playOut();
+  const next =
+    dir > 0
+      ? stops.find((k) => k.o > here + frame() / 2)
+      : [...stops].reverse().find((k) => k.o < here - frame() / 2);
+  if (!next) return;
+  activeKey = next.t;
+  renderKeyframes();
+  scrubTo(next.o);
+}
+
+/// Insert puts a mark on this frame, or takes away the one already on it.
+///
+/// One key for both because the hand that has just put a mark down in the
+/// wrong place reaches for the key it pressed. ⚑ on its own cannot do the
+/// second half: `addKeyframes` drops a mark on a frame that already carries
+/// one, so a key that only ever added would look broken there.
+function toggleKeyframe() {
+  if (!src) return;
+  const on = keyframes.find((t) => Math.abs(t - playhead) < frame() / 2);
+  if (on === undefined) {
+    addKeyframes([playhead], playhead);
+    return;
+  }
+  remember();
+  keyframes = keyframes.filter((t) => t !== on);
+  if (isActive(on)) activeKey = null;
+  renderKeyframes();
+  draw();
+  scheduleStrip();
+}
+
 // --- access points and scenes -------------------------------------------
 
 /// Nearest access point, i.e. the nearest place a cut is free.
@@ -3966,18 +4017,46 @@ el("snap").addEventListener("click", () => {
   scheduleStrip();
 });
 
-el("cut-range").addEventListener("click", () => {
+/// Take the selection out of the output.
+///
+/// `inner` is the same cut moved one picture in at each end: the two frames
+/// the marks are on stay, and everything between them goes. IN 2392 and OUT
+/// 5990 then take out 2393..5989. That is the shape the hand wants where the
+/// marks were put down *on* the last frame of the programme and the first
+/// frame of its return -- both worth keeping -- and it saves stepping a frame
+/// in from each mark by hand before cutting.
+///
+/// The ordinary cut snaps its ends outwards to the ends of the timeline;
+/// IN..OUT is inclusive of OUT, and there is no position past the last
+/// picture to put OUT at (see `atFirstPicture`). The inner cut snaps nothing:
+/// its whole promise is that the two marked pictures survive it.
+///
+/// OUT arrives already snapped, though. `setOut` puts it on `outDur` for
+/// anything within a picture and a half of the end, so that the ordinary cut
+/// can reach the last picture -- and `outDur` is past the last picture, not
+/// on it. Read as an end to cut up to, it would take the very frame the mark
+/// is sitting on. The start of the last picture is what the mark meant.
+function cutSelection(inner) {
   if (!src || selB <= selA) return;
-  const at = selA;
-  const a = atFirstPicture(selA) ? 0 : selA;
-  const b = atLastPicture(selB) ? outDur : selEnd();
+  const a = inner ? selA + frame() : atFirstPicture(selA) ? 0 : selA;
+  const b = inner
+    ? Math.min(selB, Math.max(0, outDur - frame()))
+    : atLastPicture(selB)
+      ? outDur
+      : selEnd();
+  // A selection with nothing inside it -- two frames, or one. Taking the
+  // inside out of that is taking nothing out.
+  if (b - a < frame() / 2) return;
   applyCuts(cuts.concat(outRangeToSrc(a, b)));
   // The material that was selected is gone and the timeline has closed over
   // it. Collapse the selection onto the join.
-  selA = clamp(at, 0, outDur);
+  const at = clamp(inner ? a : selA, 0, outDur);
+  selA = at;
   selB = clamp(at + frame(), 0, outDur);
   seekOut(at);
-});
+}
+
+el("cut-range").addEventListener("click", () => cutSelection(false));
 el("cut-outside").addEventListener("click", () => {
   if (!src || selB <= selA) return;
   const keep = outRangeToSrc(selA, selB);
@@ -4018,6 +4097,14 @@ el("clear-all").addEventListener("click", () => {
 /// dropped, so a tap is still exactly one frame.
 let arrowLast = 0;
 let arrowSince = 0;
+
+/// The keys that leave playback running.
+///
+/// Everything else in the window is about where the playhead is, and moving
+/// that under a running playback is neither. These are about the recording
+/// instead -- a mark, an end of the selection -- and they are pressed
+/// *because* something is playing.
+const QUIET = ["i", "o", "[", "]", "k", "Insert"];
 
 function arrowDue(ev) {
   const now = Date.now();
@@ -4116,6 +4203,26 @@ window.addEventListener("keydown", (ev) => {
     stepHistory(undone, past);
     return;
   }
+  // Ctrl with the left and right keys walks the marks; see `toKeyframe`.
+  // Held down it is the same flood the plain pair is, so it goes through the
+  // same gate. And it moves the playhead, so it puts playback down first --
+  // the keys below reach the one line that does that, and the ones that
+  // return before it have to say so themselves.
+  if ((ev.ctrlKey || ev.metaKey) && (ev.key === "ArrowLeft" || ev.key === "ArrowRight")) {
+    ev.preventDefault();
+    if (playing) stopPlay();
+    if (arrowDue(ev)) toKeyframe(ev.key === "ArrowRight" ? 1 : -1);
+    return;
+  }
+  // Del takes the selection out, Ctrl+Del takes the inside of it out and
+  // leaves the two marked frames standing; see `cutSelection`. Del on its own
+  // is further down, with the keys nothing is held for.
+  if ((ev.ctrlKey || ev.metaKey) && !ev.shiftKey && ev.key === "Delete") {
+    ev.preventDefault();
+    if (playing) stopPlay();
+    cutSelection(true);
+    return;
+  }
   // The mark files: H writes one, L reads one, and the modifier picks which
   // of the three shapes -- nothing for the keyframe list, Shift for the Trim
   // line, Alt for the detection. Reading the detection is the exception and
@@ -4186,11 +4293,17 @@ window.addEventListener("keydown", (ev) => {
     if (!el("mute").disabled) el("mute").click();
     return;
   }
+  // Shift with Del or Insert is a chord other programs already answer --
+  // paste, and 完全削除 in a file manager -- and this window answers neither.
+  // A hand that reaches for one of those out of habit should get a key that
+  // does nothing, not a cut nobody asked for. Ahead of everything below, so
+  // it does not so much as stop playback.
+  if (ev.shiftKey && (ev.key === "Delete" || ev.key === "Insert")) return;
   // A letter, whichever case it arrives in: Shift held and Caps on are the
   // same key to the hand that pressed it, and a mark that lands only in one
   // of the two is a key that stops working halfway through an evening.
   const key = ev.key.length === 1 ? ev.key.toLowerCase() : ev.key;
-  if (playing && key !== "i" && key !== "o" && key !== "k") stopPlay();
+  if (playing && !QUIET.includes(key)) stopPlay();
   const step = ev.shiftKey ? 1 : frame();
   if (ev.key === "ArrowRight" || ev.key === "ArrowLeft") {
     ev.preventDefault();
@@ -4215,8 +4328,28 @@ window.addEventListener("keydown", (ev) => {
     else toScene(dir);
     return;
   }
-  if (key === "i") setIn(playOut());
-  if (key === "o") setOut(playOut());
+  // The ends of the timeline, which is what those keys mean everywhere else
+  // and what |◀ and ▶| are with the pointer.
+  if (ev.key === "Home" || ev.key === "End") {
+    ev.preventDefault();
+    seekOut(ev.key === "Home" ? 0 : outDur);
+    return;
+  }
+  if (ev.key === "Delete") {
+    ev.preventDefault();
+    cutSelection(false);
+    return;
+  }
+  if (ev.key === "Insert") {
+    ev.preventDefault();
+    toggleKeyframe();
+    return;
+  }
+  // Two spellings of each end of the selection: I and O are the reference
+  // tool's, [ and ] are the pair the brackets are drawn as on the buttons and
+  // the keys the hand finds without looking.
+  if (key === "i" || key === "[") setIn(playOut());
+  if (key === "o" || key === "]") setOut(playOut());
   if (key === "k") addKeyframes([playhead], playhead);
   if (key === "s") toScene(ev.shiftKey ? -1 : 1);
 });

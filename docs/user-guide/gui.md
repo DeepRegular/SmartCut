@@ -336,9 +336,10 @@ hole, and the frame counter counts the length that will actually be written.
 | `PageUp` `PageDown` | Back and forward by however far the [preferences](#cut-editor) say. A key whose unit is **%** carries a speed rather than an amount, and scrolls for as long as it is held. `Shift`, `Ctrl` and `Shift+Ctrl` each carry their own answer |
 | `↑` `↓` | Previous / next **scene change** |
 | `Shift+↑` `Shift+↓` | Previous / next **lossless point** |
+| `Ctrl+←` `Ctrl+→` | Previous / next **keyframe** — the marks down the left. The one landed on is picked out in that column too |
 | `S` / `Shift+S` | Next / previous scene change |
 | `◀\|` `\|▶` | Previous / next **lossless point** |
-| `\|◀` `▶\|` | Start / end |
+| `\|◀` `▶\|`, `Home` `End` | Start / end |
 
 ### Listening to a seam over and over
 
@@ -473,7 +474,11 @@ The numbers in both count from the recording's first picture.
 
 Click the keyframe at the head of the commercial block and press `I`. Then click
 the keyframe where the programme comes back, press `←` to step one frame off it,
-and press `O`. That puts the block exactly inside the selection.
+and press `O`. That puts the block exactly inside the selection. `[` and `]` are
+the same two keys under the hand that is already on the bracket keys.
+
+Stepping that one frame off is what `Ctrl+Del` below saves you: mark the two
+frames you want to *keep* and it takes out what lies between them.
 
 - **IN to OUT includes the OUT frame.** Select five frames and five frames go.
 - **Setting one end leaves the other alone**, because you place IN and OUT one
@@ -486,8 +491,8 @@ and press `O`. That puts the block exactly inside the selection.
 
 ![After the cut](../images/usage-cut.png)
 
-`✂ Cut` takes the selection out of the output. The screen is rebuilt
-immediately, and the lines below tell you what will be written:
+`✂ Cut` — or `Del` — takes the selection out of the output. The screen is
+rebuilt immediately, and the lines below tell you what will be written:
 
 ```
 Output 00:02:44.94 (2 ranges, 1 cuts) — copied losslessly 164.94s (100%) / re-encoded 0.00s
@@ -502,6 +507,12 @@ way and it becomes `3 ranges, 2 cuts`.
 **Only three lines of the breakdown are visible at once.** More cuts mean more
 lines, and the rest are read by scrolling. When there is more below, a slim bar
 appears down the right-hand edge and the bottom line sinks into shadow.
+
+`Ctrl+Del` is the same cut moved one picture in at each end: **the two frames
+the marks are on stay, and everything between them goes.** With IN on 2392 and
+OUT on 5990 it takes out 2393 to 5989. Mark the last frame of the programme and
+the first frame of its return -- both worth keeping -- and the block between
+them leaves in one press, with no stepping a frame in from either mark first.
 
 **A join left by a cut becomes a keyframe of its own**, because that is exactly
 the place you will want to check afterwards. The scrubber keeps a red line
@@ -987,8 +998,13 @@ can quote it straight into a bug report.
 | `PageUp` `PageDown` | By the amount set in the preferences, or a scroll while held where that amount is a speed (`Shift`, `Ctrl` and `Shift+Ctrl` carry their own) |
 | `↑` `↓` | Previous / next scene change |
 | `Shift+↑` `Shift+↓` | Previous / next lossless point |
-| `I` / `O` | Start / end the selection here |
+| `Ctrl+←` `Ctrl+→` | Previous / next keyframe |
+| `Home` / `End` | To the first / last frame |
+| `I` or `[` / `O` or `]` | Start / end the selection here |
 | `K` | Mark this frame as a keyframe |
+| `Insert` | Put a keyframe on this frame, or take away the one on it |
+| `Del` | Cut the selection |
+| `Ctrl+Del` | Cut the inside of the selection, keeping the two marked frames |
 | `S` / `Shift+S` | Next / previous scene change |
 | `Ctrl+Z` | Undo |
 | `Ctrl+Y` / `Ctrl+Shift+Z` | Redo |
