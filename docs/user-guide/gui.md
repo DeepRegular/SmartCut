@@ -563,7 +563,8 @@ saved in the project.
 ### Finishing with a recording
 
 - **OK** — take the cuts and marks back to the list and close.
-- **Cancel** (`Esc`) — throw away what was done here and close.
+- **Cancel** (`Esc`) — throw away what was done here and close. It asks first
+  where anything was done.
 
 Either way the list window has stayed where it was, ready for the next
 recording.
@@ -984,7 +985,7 @@ can quote it straight into a bug report.
 | `Ctrl+Shift+L` | Read a Trim line from a file |
 | `Ctrl+H` | Write the keyframe list beside the recording |
 | `Ctrl+Shift+H` | Write the Trim line beside the recording |
-| `Esc` | Throw away what was done here and close (the same as Cancel). It asks first where anything was done |
+| `Esc` | Throw away what was done here and close (the same as Cancel). Both ask first where anything was done |
 
 ---
 

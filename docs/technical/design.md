@@ -524,9 +524,10 @@ loses nothing — it is the same as OK. Undoing, on the other hand, has to be sa
 loud: only Cancel emits `editor-cancel`, and the list puts back the snapshot it took
 before opening.
 
-**Escape is Cancel, and it asks first where there is anything to lose.** The button says
-what it does and was aimed at; Escape is a reflex, and the hand that reached for it was as
-likely putting a menu away. What the question is asked about is not the undo history: the
+**Both ways out of that ask first, where there is anything to lose.** Cancel is aimed at,
+but it sits beside OK; Escape is a reflex, and the hand that reached for it was as likely
+putting a menu away. Either way what is dropped is an evening's cutting and there is no
+taking it back. What the question is asked about is not the undo history: the
 timeline is compared against the string it arrived as — the cuts, the marks, and the
 tracks switched off — so undoing every cut back to the start closes on the first press,
 and so does a window opened only to look. Marks that came with the recording move that

@@ -4571,19 +4571,20 @@ function cancelEdit() {
   setTimeout(() => invoke("close_editor"), 80);
 }
 
-el("editor-cancel").addEventListener("click", cancelEdit);
+el("editor-cancel").addEventListener("click", askCancelEdit);
 
 /// Whether the question below is already up, so that a second Escape does
 /// not stack a second dialog behind the first.
 let asking = false;
 
-/// Escape, which is the one key in the window that can lose an evening.
+/// Leaving without what was done in here -- キャンセル and Escape both.
 ///
-/// The button beside it says what it does and was aimed at; Escape is a
-/// reflex, and the hand that reached for it was as likely putting a menu
-/// away. So it asks -- but only where there is something to lose, because a
-/// window somebody opened to look at a recording and is now leaving should
-/// close on the first press.
+/// It asks, but only where there is something to lose: a window somebody
+/// opened to look at a recording and is now leaving should close on the
+/// first press. What is at stake is an evening's cutting, and neither way
+/// out of it can be taken back -- the button is aimed at but sits beside OK,
+/// and Escape is a reflex, as likely the hand that meant to put a menu
+/// away.
 async function askCancelEdit() {
   if (!touched() || !dialog) {
     cancelEdit();
