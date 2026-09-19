@@ -2339,10 +2339,11 @@ function reelTick() {
 
 /// Which run of playback this is, counting from the window's own side.
 ///
-/// A stop and the next start can land inside one turn of this loop -- ◀◀ and
-/// ▶▶ are exactly that -- and the engine cannot tell the two apart by a flag
-/// alone: see `Playing` on the other side. Each 再生 is named here, the name
-/// goes with the request, and the end of a run comes back carrying it.
+/// A stop and the next start can land inside one turn of this loop -- ループ
+/// turned over while something is playing is exactly that -- and the engine
+/// cannot tell the two apart by a flag alone: see `Playing` on the other
+/// side. Each 再生 is named here, the name goes with the request, and the end
+/// of a run comes back carrying it.
 let playRun = 0;
 
 /// The picture on the stage while playback runs, as a URL that has to be
@@ -2364,11 +2365,11 @@ function dropPlayUrl() {
 /// JPEG. See the `play` command for why the two travel as one message.
 ///
 /// `run` is the playback it came from. A run that has been left behind -- a
-/// ◀◀ stopped it and asked for another from ten seconds back -- has pictures
+/// ループ stopped it and asked for another over the selection -- has pictures
 /// already on their way, and they arrive after the new run has begun. Since
 /// they are further along they would set `playAt` past everything the new
 /// run is about to send, and every picture of it would then be dropped as
-/// too old: the skip looked like playback simply stopping where it was.
+/// too old: the round looked like playback simply stopping where it was.
 function showPlayFrame(run, buf) {
   if (run !== playRun || !playing || !buf || buf.byteLength <= 8) return;
   const t = new DataView(buf).getFloat64(0, true);
@@ -2517,7 +2518,7 @@ function stopPlay(repaint = true) {
 /// of it.
 ///
 /// For the moves that are about to be followed by playback, which is to say
-/// ◀◀, ▶▶ and a loop coming round again. A still asked for at one of those
+/// a loop coming round again. A still asked for at one of those
 /// lands *after* the new playback has started, and `showFrame` reads a
 /// picture arriving from anywhere else as the playhead having been moved by
 /// hand -- so the still that was only there to fill a third of a second
@@ -2603,7 +2604,7 @@ el("loop").addEventListener("click", () => {
     // Without a picture of where it stopped: the 再生 on the next line is
     // about to fill the stage, and a still asked for here arrives after it
     // has -- which `showFrame` reads as a hand on the playhead and stops the
-    // playback it was filling for. Same reason as ◀◀ and ▶▶.
+    // playback it was filling for. Same reason as a loop coming round.
     stopPlay(false);
     startPlay();
   }
@@ -4220,9 +4221,9 @@ el("detect-cm").addEventListener("click", async () => {
 
 if (listen) {
   listen("play-ended", (ev) => {
-    // The end of a run that has already been left behind -- a ◀◀ stopped it
-    // and asked for another from ten seconds back -- is not the end of what
-    // is playing now.
+    // The end of a run that has already been left behind -- ループ stopped it
+    // and asked for another over the selection -- is not the end of what is
+    // playing now.
     if (ev.payload !== playRun || !playing) return;
     setPlaying(false);
     // Round again from where this one started. Only ever reached by playback

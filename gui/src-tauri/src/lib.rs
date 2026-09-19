@@ -97,13 +97,14 @@ struct Held(Mutex<Option<SeekIndex>>);
 /// Which run of playback is the one in force, or 0 for none.
 ///
 /// A number rather than a flag, because a stop and the next start are not
-/// always far apart: ◀◀ and ▶▶ stop playback and ask for it again at the new
-/// place inside one turn of the window's own loop. Told apart by a flag, the
-/// run that was asked to stop can still be between two pictures when the new
-/// one sets the flag back to true -- and it then reads that as permission to
-/// carry on, so two playbacks run at once and the one being stopped is the
-/// one further along, whose pictures win. The skip appeared to do nothing at
-/// all.
+/// always far apart: ループ pressed while something is playing stops that
+/// playback and asks for another -- over the selection this time -- inside
+/// one turn of the window's own loop, and a hand on 停止 and 再生 does the
+/// same a little slower. Told apart by a flag, the run that was asked to
+/// stop can still be between two pictures when the new one sets the flag
+/// back to true -- and it then reads that as permission to carry on, so two
+/// playbacks run at once and the one being stopped is the one further along,
+/// whose pictures win. The round that was asked for never appeared to start.
 ///
 /// The window names each run; a run carries on only while the name in here
 /// is still its own. See `startPlay` on the other side.
