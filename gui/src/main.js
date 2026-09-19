@@ -364,7 +364,18 @@ function stepHistory(from, to) {
   showFrame(playhead);
 }
 
+/// Every cut in the window comes through here, and every cut puts playback
+/// down on the way.
+///
+/// A cut moves the playhead: the material under it may be the material that
+/// has just gone, and the ends of the edit each ask for a still of where
+/// they left things. Playback carrying on through that is two things driving
+/// the stage at once, and the still loses -- which reads as a ✂ that did not
+/// take. 取消 has always stopped for the same reason; the cut buttons did not
+/// because nothing but the keyboard used to reach them while something was
+/// playing.
 function applyCuts(next) {
+  if (playing) stopPlay();
   remember();
   cuts = normalise(next);
   afterCutsChanged();
@@ -4070,6 +4081,10 @@ el("undo-cut").addEventListener("click", () => stepHistory(past, undone));
 el("redo-cut").addEventListener("click", () => stepHistory(undone, past));
 el("clear-all").addEventListener("click", () => {
   if (!src) return;
+  // Not through `applyCuts`, so it stops playback itself: it puts the whole
+  // recording back, which is a bigger move under a running playback than any
+  // single cut.
+  if (playing) stopPlay();
   // The one button in the row that used to be a one-way door: it emptied the
   // history along with everything else. It is a step like any other now.
   remember();
