@@ -227,8 +227,16 @@ selected. With several selected, it just says how many.
 detection over everything selected. **Dropping in a night's recordings and
 pressing `Ctrl+D` once** is exactly what this was built for.
 
+**It can be pressed while the list is still being read.** A recording that is
+not ready yet keeps the detection and starts it as soon as its own read
+finishes, so `Ctrl+A` then `Ctrl+D` straight after the drop is enough.
+
 Progress appears on the row: `Detecting commercials 84% — Looking for the logo`.
-Rows whose turn has not come say `Commercial detection queued`.
+Rows whose turn has not come say `Commercial detection queued`, and rows still
+waiting to be read say `Commercial detection after the read`. Either way the row
+carries a `Detection booked` badge beside its state, which becomes `CM 5` or
+`No CM` once the pass has been made — so which rows are still owed one is
+something the list is scanned for rather than read for.
 
 **Detection only places marks. The cutting is up to you.** Open the cut editor
 and the start of each commercial block, and each return to the programme, is

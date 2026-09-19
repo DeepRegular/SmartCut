@@ -869,6 +869,12 @@ input[type="text"]::placeholder { color: var(--dim); }
 /* Detected, and there was nothing to cut. Still a pass that has been made,
    so it is still a badge -- just not one offering anything. */
 .cmbadge.empty { background: #33383a; color: var(--dim); border-color: #4a4f52; }
+/* Asked for, not made yet. Outlined rather than filled: a detection that has
+   been booked is a promise about this row and not an answer about it, and the
+   two must not be told apart by reading them. */
+.cmbadge.queued {
+  background: #16304a; color: #9fcbea; border-color: #2f5f85; border-style: dashed;
+}
 .clip .badge.queued { background: #3a3a3a; color: var(--dim); border-color: #4a4a4a; }
 .clip .badge.indexing { background: #4a3a10; color: #f0c060; border-color: #6a5420; }
 .clip .badge.error { background: #4a1e1e; color: #ff9a90; border-color: #7a3030; }

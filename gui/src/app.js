@@ -945,13 +945,22 @@ function paintQueueNote() {
 /// recording the walk has just pulled through the page cache.
 ///
 /// The clip in the editor is passed over by both index lanes: the editor is
-/// making those passes itself. Nothing is passed over by the detection lane
-/// -- it reads a different part of the file, and detecting the commercials of
-/// the clip you are cutting while you cut it is the point of Ctrl+D.
+/// making those passes itself. The clip being cut is not passed over by the
+/// detection lane -- it reads a different part of the file, and detecting the
+/// commercials of the clip you are cutting while you cut it is the point of
+/// Ctrl+D.
+///
+/// What the detection lane does pass over is a row the walk has not been
+/// over. A detection reads the seek index, so it cannot start before there
+/// is one -- but the walk is on its way down the list and will reach every
+/// row, so the queued detection waits there rather than being refused. That
+/// is what makes 全選択 → Ctrl+D on a list still being read mean "detect
+/// them all, each as its own reading finishes". See `detectSelected`, and
+/// the `pumpLane("cm")` at the end of a walk.
 function nextFor(lane) {
   if (lane === "walk") return clips.find((c) => c.state === "queued" && c !== editing);
   if (lane === "pics") return clips.find((c) => c.pics === "queued" && c !== editing);
-  return clips.find((c) => c.cmState === "queued");
+  return clips.find((c) => c.cmState === "queued" && c.state === "ready");
 }
 
 function pump() {
@@ -1026,6 +1035,10 @@ async function runIndex(clip) {
       clip.pics = "queued";
       pumpLane("pics");
     }
+    // A detection asked for while this row was still unread. The lane looked
+    // past it every time it came round, and this is the moment it can have
+    // it -- so it is started again here, exactly as the pictures lane is.
+    if (clip.cmState === "queued") pumpLane("cm");
   } catch (e) {
     if (String(e).includes("cancelled")) {
       // Put back, not failed: 中止 means "not now", and the pass left
@@ -1035,6 +1048,13 @@ async function runIndex(clip) {
     } else {
       clip.state = "error";
       clip.error = String(e);
+      // A detection reserved on a recording that cannot be read is not work
+      // waiting to happen: the walk it was waiting for is never coming, and
+      // a row left saying 解析後に CM 検出 would wait for it for good.
+      if (clip.cmState === "queued") {
+        clip.cmState = "none";
+        clip.cmPhase = "";
+      }
     }
   }
   paintRow(clip);
@@ -1453,8 +1473,12 @@ function paintRow(clip) {
     bits.push(
       t("row.cmRunning", { pct: Math.round(clip.cmProgress * 100), phase: clip.cmPhase })
     );
-  } else if (clip.cmState === "queued") bits.push(t("row.cmQueued"));
-  else if (clip.cmPhase) bits.push(t("row.cmNote", { note: clip.cmPhase }));
+  } else if (clip.cmState === "queued") {
+    // Two different waits, and the difference is the whole of what somebody
+    // wants to know from a list that is still being read: the lane is busy
+    // with another row, or this row is not ready to be detected yet.
+    bits.push(t(clip.state === "ready" ? "row.cmQueued" : "row.cmReserved"));
+  } else if (clip.cmPhase) bits.push(t("row.cmNote", { note: clip.cmPhase }));
   const cutCount = clip.edit ? clip.edit.cuts.length : 0;
   if (cutCount && i) {
     const kept = keepsOf(clip).reduce((n, k) => n + (k.b - k.a), 0);
@@ -1489,9 +1513,19 @@ function paintRow(clip) {
   //
   // The count is the editor's where the clip has been through it, because
   // that is what the timeline actually holds; otherwise it is the finding's
-  // own. Nothing is shown while a detection is queued or running: the bar
-  // below is saying that, and saying it twice would make the badge mean
-  // "asked for" rather than "done".
+  // own.
+  //
+  // A detection that has been asked for and not yet made is a badge too.
+  // Nothing was shown for one while the only way to ask was to ask a row the
+  // walk had finished -- the bar underneath was already saying it, and it
+  // was saying it about a pass that was about to start. A booked detection
+  // on a list still being read is a different thing: it can sit there for a
+  // quarter of an hour behind eighteen other recordings, and what somebody
+  // scanning the list wants to know is which rows are spoken for. Both waits
+  // wear the one badge; which wait it is, the line under the name says.
+  //
+  // Nothing is shown while a detection is actually running: the bar below is
+  // saying that, with the phase and the percentage the badge has no room for.
   const cmBadge = li.querySelector(".cmbadge");
   const blocks =
     clip.edit && clip.edit.cmBlocks
@@ -1500,8 +1534,12 @@ function paintRow(clip) {
         ? clip.cm.blocks.length
         : null;
   const detected = clip.cmState === "done" && blocks !== null;
-  cmBadge.hidden = !detected;
-  if (detected) {
+  const booked = clip.cmState === "queued";
+  cmBadge.hidden = !detected && !booked;
+  if (booked) {
+    setText(cmBadge, t("badge.cmQueued"));
+    cmBadge.className = "cmbadge queued";
+  } else if (detected) {
     setText(cmBadge, blocks ? t("badge.cm", { n: blocks }) : t("badge.cmNone"));
     cmBadge.className = `cmbadge ${blocks ? "found" : "empty"}`;
   }
@@ -1556,7 +1594,10 @@ function clipActions() {
     // list's own answer and does not wait on a pass over the recording.
     rename: picked.length === 1,
     duplicate: picked.length > 0,
-    detect: picked.some((c) => c.state === "ready"),
+    // Anything the detection lane could take now or later, which is
+    // everything but a recording that could not be read; see
+    // `detectSelected`.
+    detect: picked.some((c) => c.state !== "error" && c.cmState !== "running"),
     move: picked.length > 0,
     remove: picked.length > 0,
   };
@@ -2156,15 +2197,23 @@ el("droptarget").addEventListener("scroll", () => {
   paintDrag();
 });
 
-/// Queue a commercial detection on every selected clip that has been read.
+/// Queue a commercial detection on every selected clip that can take one.
 ///
 /// Queued rather than run: the passes are minutes each on a broadcast
 /// recording, and the detection lane takes them one at a time. Selecting
 /// eighteen clips and pressing Ctrl+D is a night's work asked for in one
 /// keystroke, which is the point of it -- and the indexing of the ones still
 /// unread carries on beside it.
+///
+/// Including the ones still being read. A detection cannot start on a row
+/// the walk has not finished, so it is queued there and taken when the walk
+/// hands the row over; the lane works down the list either way. This used to
+/// take only the rows that were ready at the moment the key was pressed,
+/// which on a list just dropped in is one or two of them -- and the other
+/// sixteen were dropped without a word, so the thing 全選択 → Ctrl+D is for
+/// only worked if you waited for the whole list to be read first.
 function detectSelected() {
-  const want = selected().filter((c) => c.state === "ready" && c.cmState !== "running");
+  const want = selected().filter((c) => c.state !== "error" && c.cmState !== "running");
   if (!want.length) return;
   want.forEach((c) => {
     c.cmState = "queued";

@@ -47,8 +47,13 @@ for every selected recording. **Eighteen recordings, one keystroke** — that is
 what the feature is for. Press it in the evening, look at the results in the
 morning.
 
+**There is no need to wait for the reading.** Press it straight after the drop
+and a recording that has not been read yet keeps the detection, starting it as
+soon as its own read finishes.
+
 Progress appears on the row: `Detecting commercials 84% — Looking for the logo`.
-Rows still queued say `Commercial detection queued`.
+Rows still queued say `Commercial detection queued`, and rows waiting to be read
+say `Commercial detection after the read`. Both carry a `Detection booked` badge.
 
 **Detection only places marks; it does not cut.** You decide what to remove,
 later, in the editor. See [Commercial detection](cm-detection.md).
