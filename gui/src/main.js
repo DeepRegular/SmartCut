@@ -2103,6 +2103,11 @@ function startScroll(rateAt, extra) {
 }
 
 function startSearch(ev) {
+  // A drag begun over a running 早送り takes the scroll over, so that button
+  // is no longer running anything and must stop saying it is. `endScroll`
+  // is what puts it down; without a picture, because the drag is about to
+  // ask for one of its own.
+  if (seekRate) endScroll(false);
   const rect = el("strip").getBoundingClientRect();
   const half = rect.width / 2;
   // cubed, so the middle of the strip is a fine crawl and the far edges
