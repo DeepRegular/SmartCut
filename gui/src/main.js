@@ -289,8 +289,30 @@ async function settle(fn) {
     return await fn();
   } finally {
     settling -= 1;
+    settleMark();
   }
 }
+
+/// The timeline as one string: the cuts, the marks, and the tracks switched
+/// off. Everything somebody can do to a recording in here and nothing they
+/// can only look at -- where the playhead is and what is selected are not
+/// work, and leaving with them somewhere else is not losing anything.
+function editSignature() {
+  return JSON.stringify([cuts.map((c) => [c.a, c.b]), keyframes, dropStreams]);
+}
+
+/// The same string for the timeline as it arrived.
+///
+/// What it is for is Escape, which throws away the session: the question it
+/// asks is whether there is anything to throw away, and the answer is not the
+/// undo history. Marks a recording came up with are not an edit -- `settling`
+/// says so -- and neither is a detection, and undoing every cut back to the
+/// start leaves a window that has nothing in it to lose.
+let arrivedAs = "";
+const settleMark = () => {
+  arrivedAs = editSignature();
+};
+const touched = () => !!src && editSignature() !== arrivedAs;
 
 /// Put down where we are, on the way into an edit.
 function remember() {
@@ -3582,6 +3604,11 @@ async function openPath(picked, saved, side, name, chapters, dropPids) {
     // arrive on the stream's own clock and are dropped rather than clamped
     // where they fall outside the material, which is a question for the walk.
     if (!saved && !marks) await settle(() => applyDiscChapters(discChapters));
+    // Whatever the recording came up with -- what was saved for this row, the
+    // file beside it, the disc's chapters -- is what leaving compares against.
+    // Said again here because a row that arrives with its own edit settles
+    // nothing on the way in. See `arrivedAs`.
+    settleMark();
     prepare();
     // Asked again now that the open is over. Everything above schedules the
     // plan while this window is still `opening`, and a plan asked for then is
@@ -3902,12 +3929,12 @@ window.addEventListener("keydown", (ev) => {
   }
   if (ev.target.tagName === "INPUT" || ev.target.tagName === "SELECT") return;
   // Escape leaves the window, and leaves it the way キャンセル does: the cuts
-  // made in here are dropped. Asked for, and settled deliberately -- this is
-  // the one key in the window that can lose an evening's work. Nothing is
-  // lost that was not made in this window: the list keeps what it had before.
+  // made in here are dropped. It asks first where there is anything to drop;
+  // see `askCancelEdit`. Nothing is lost that was not made in this window:
+  // the list keeps what it had before.
   if (ev.key === "Escape") {
     ev.preventDefault();
-    cancelEdit();
+    askCancelEdit();
     return;
   }
   if (!src) return;
@@ -4218,6 +4245,10 @@ el("detect-cm").addEventListener("click", async () => {
     cmSummary = cmNote(res);
     showCmNote(cmSummary);
     applyCmBlocks(res.blocks);
+    // Marks a detection put down are the detection's answer and not
+    // something anybody did in here; leaving is not losing them. See
+    // `arrivedAs`.
+    settleMark();
     // Reported to the clip list too, so the row says what was found and a
     // later visit to this clip does not have to detect it again.
     sync();
@@ -4383,6 +4414,36 @@ function cancelEdit() {
 
 el("editor-cancel").addEventListener("click", cancelEdit);
 
+/// Whether the question below is already up, so that a second Escape does
+/// not stack a second dialog behind the first.
+let asking = false;
+
+/// Escape, which is the one key in the window that can lose an evening.
+///
+/// The button beside it says what it does and was aimed at; Escape is a
+/// reflex, and the hand that reached for it was as likely putting a menu
+/// away. So it asks -- but only where there is something to lose, because a
+/// window somebody opened to look at a recording and is now leaving should
+/// close on the first press.
+async function askCancelEdit() {
+  if (!touched() || !dialog) {
+    cancelEdit();
+    return;
+  }
+  if (asking) return;
+  asking = true;
+  try {
+    const go = await dialog.ask(tr("editor.dropBody"), {
+      title: tr("editor.dropTitle"),
+      kind: "warning",
+    });
+    if (!go) return;
+  } finally {
+    asking = false;
+  }
+  cancelEdit();
+}
+
 if (listen) {
   // The list's answer to `editor-ready`: which recording, and what was done
   // to it the last time it was in here.
@@ -4415,8 +4476,12 @@ if (listen) {
     // a recording comes up with are not, and `settle` keeps them out of the
     // history.
     if (cm && cm.blocks && cm.blocks.length) {
-      if (arriving) await settle(() => applyCmBlocks(cm.blocks));
-      else applyCmBlocks(cm.blocks);
+      if (arriving) {
+        await settle(() => applyCmBlocks(cm.blocks));
+      } else {
+        applyCmBlocks(cm.blocks);
+        settleMark();
+      }
       cmSummary = cm.note || "";
       showCmNote(cmSummary);
     }

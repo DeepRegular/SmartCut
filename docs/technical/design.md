@@ -524,6 +524,15 @@ loses nothing — it is the same as OK. Undoing, on the other hand, has to be sa
 loud: only Cancel emits `editor-cancel`, and the list puts back the snapshot it took
 before opening.
 
+**Escape is Cancel, and it asks first where there is anything to lose.** The button says
+what it does and was aimed at; Escape is a reflex, and the hand that reached for it was as
+likely putting a menu away. What the question is asked about is not the undo history: the
+timeline is compared against the string it arrived as — the cuts, the marks, and the
+tracks switched off — so undoing every cut back to the start closes on the first press,
+and so does a window opened only to look. Marks that came with the recording move that
+string rather than counting against it, which is the same `settling` the history is kept
+clear with, and a detection landing while the window is open moves it too.
+
 **A commercial detection is not undone by Cancel.** It is minutes of reading the
 recording, started from the list as readily as from the editor, and the marks it leaves
 are *its answer* rather than something anybody did to the clip in this session. So the

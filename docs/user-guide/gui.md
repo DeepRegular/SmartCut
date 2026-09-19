@@ -967,7 +967,7 @@ can quote it straight into a bug report.
 | `Ctrl+Shift+L` | Read a Trim line from a file |
 | `Ctrl+H` | Write the keyframe list beside the recording |
 | `Ctrl+Shift+H` | Write the Trim line beside the recording |
-| `Esc` | Throw away what was done here and close (the same as Cancel) |
+| `Esc` | Throw away what was done here and close (the same as Cancel). It asks first where anything was done |
 
 ---
 
