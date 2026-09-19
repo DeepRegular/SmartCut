@@ -66,15 +66,16 @@ bash tests/run_audio_content_tests.sh # is real material's audio in the right pl
 bash tests/run_aac_tests.sh           # what the output's AAC frames are made of         8
 bash tests/run_downmix_tests.sh       # where 5.1 goes when it is folded to stereo       9
 bash tests/run_audio_codec_tests.sh   # writing the sound as another codec entirely     39
-bash tests/run_audio_smart_tests.sh   # smart rendering, codec by codec                 20
+bash tests/run_audio_smart_tests.sh   # smart rendering, codec by codec                 24
 bash tests/run_audio_format_tests.sh  # the rate and the width the samples are written  23
 bash tests/run_audio_head_tests.sh    # a recording whose opening is another programme  22
 bash tests/run_preview_tests.sh       # does a scrub show the time you asked for         7
-bash tests/run_index_tests.sh         # does the index answer as the walk did           27
+bash tests/run_index_tests.sh         # does the index answer as the walk did           33
 bash tests/run_proxy_tests.sh         # can the proxy stand in for the recording        22
 bash tests/run_scene_tests.sh         # scene detection vs commercial boundaries         1
 bash tests/run_ts_layout_tests.sh     # TS provenance and sequence headers               5
 bash tests/run_broadcast_tests.sh     # captions, tables, data broadcast, dual audio    17
+bash tests/run_bilingual_tests.sh     # a second sound track announced late              6
 bash tests/run_cm_tests.sh            # commercial detection vs a human's answer         5
 bash tests/run_disc_tests.sh          # a BDAV and a BDMV disc, as folders and as .isos 38
 bash tests/run_bdav_tests.sh          # writing a disc: the index, the image, and both   72
@@ -82,7 +83,7 @@ bash tests/run_udf_tests.sh           # the image as a filesystem, beside real d
 bash tests/run_dvd_tests.sh           # a DVD-Video disc, as a folder and as an .iso    23
 bash tests/run_bd_audio_tests.sh      # the sound a disc carries, written out             39
 bash tests/run_vc1_tests.sh           # the VC-1 encoder, put through a decoder          4
-bash tests/run_transrate_tests.sh    # fitting a disc: the identity, the size, the cost  10
+bash tests/run_transrate_tests.sh    # fitting a disc: the identity, the size, the cost  15
 ```
 
 **Every suite passes whole.** Anything that fails is a regression.

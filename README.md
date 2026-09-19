@@ -448,7 +448,7 @@ verification, and both have to report the same lossless ratio on the same input.
 An engine change the oracle disagrees with does not get to be called correct.
 That is the whole reason the Python is still there.
 
-`tests/` holds the 20 end-to-end suites and 352 checks both sides are run
+`tests/` holds the 25 end-to-end suites and 485 checks both sides are run
 through. See [Rust core](docs/technical/rust-core.md) for what lives in each
 module, and [Design notes](docs/technical/design.md) for why the split is shaped
 this way.

@@ -2204,7 +2204,13 @@ struct Present {
 /// what goes is the copy control, and it goes from both places or from
 /// neither.
 fn present_event(snapshot: &Snapshot, components: &Components) -> Option<Present> {
-    let section = snapshot.eit.iter().find(|s| s.len() > 26 && s[6] == 0)?;
+    // Thirty bytes is the shortest section with an event in it: fourteen of
+    // header, twelve of event, four of CRC. Twenty-seven was four short, and
+    // a section between the two reads the length of its descriptor loop off
+    // the far side of the event -- which is past the end of the section, and
+    // is what brought the program down where [`programme`] reads the same
+    // table.
+    let section = snapshot.eit.iter().find(|s| s.len() >= 30 && s[6] == 0)?;
     let body = &section[..section.len() - 4];
     let event = body.get(14..)?;
     let len = (((event[10] & 0x0F) as usize) << 8) | event[11] as usize;

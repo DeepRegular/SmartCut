@@ -159,8 +159,11 @@ The Python version had no option but to hand a raw elementary stream to ffmpeg, 
 puts the first frame 13 ms early (`irregular=[(0, 0.046667)]`).
 
 The Rust version **assigns PTS and DTS directly, in integer ticks**, from each
-picture's display index. The output time base is `1/fps_numerator`, so one frame is
-exactly `fps_denominator` ticks and no rounding happens at all:
+picture's display index. The output time base counts *fields*: one tick per
+1/(2 × the frame rate's numerator) of a second — 1/60000 for 29.97 — so a field is
+exactly the denominator in ticks and an ordinary frame twice that. Nothing is rounded
+anywhere on the timeline, and a three-field picture is expressible, which is what
+[2:3 pulldown](validation.md#23-pulldown-support-a-field-based-timeline) needs:
 
 ```
 h264 keyframe-exact   lossless 180/180   first=0.00000 step=0.033333 jitter=0

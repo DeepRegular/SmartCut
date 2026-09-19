@@ -573,6 +573,12 @@ the second language on a bilingual broadcast. A track nobody asked about is
 still a track that was in the recording, and dropping it silently would mean the
 program deciding what the recording is for.
 
+- **A second sound track is named as the broadcaster named it.** A recording in two
+  languages and one carrying commentary for a viewer who cannot see the picture both
+  arrive as two stereo tracks at the same rate, and most of the commentary ones say
+  Japanese on both — the language code alone does not tell them apart. So the row
+  carries the broadcaster's own word for the track beside the code, `eng 英語` or
+  `jpn 音声解説`, wherever the broadcast gave one.
 - **Captions can only be kept when writing a `.ts`.**
 - **The crawl is a track of its own, not part of the captions.** It belongs to
   the hour rather than to the programme — an earthquake warning is not a line of

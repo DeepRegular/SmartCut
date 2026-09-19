@@ -4255,9 +4255,6 @@ pub fn cut_with_progress(
     let mut muxer_opts = ff::Dictionary::new();
     let timescale = (2 * num).to_string();
     let to_ts = writing_ts(output);
-    if !to_ts {
-        muxer_opts.set("video_track_timescale", &timescale);
-    }
     // Writing another transport stream means keeping the one the recording
     // already had. Its PIDs, its service number, the language on its audio --
     // the tools downstream of a broadcast recording are built around finding
@@ -4573,6 +4570,15 @@ pub fn cut_with_progress(
         let name = octx.format().name().to_string();
         name.contains("mp4") || name.contains("mov")
     };
+    // The timescale worked out above, which is the MP4 family's own option
+    // and nobody else's: Matroska counts in milliseconds and has nothing to
+    // set. Asked of the muxer rather than of the file name, and asked here
+    // rather than with the rest, because an option the muxer does not
+    // recognise is one that comes back out of `write_header_with` below --
+    // where a `.mkv` was leaving this one behind on every cut.
+    if mp4ish {
+        muxer_opts.set("video_track_timescale", &timescale);
+    }
     // TrueHD in an MP4 is a box libavformat will write but will not vouch
     // for: it is outside the standard, and asked for one without being told
     // that is wanted the muxer stops the cut outright -- "truehd in MP4

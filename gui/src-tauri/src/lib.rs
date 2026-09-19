@@ -3963,6 +3963,9 @@ fn clipped(covered: &[(f64, f64)], asked: &[(f64, f64)]) -> Vec<(f64, f64)> {
 /// time; pictures whose moment has already gone are dropped rather than
 /// shown late, which keeps playback in time instead of letting it run slow.
 #[tauri::command]
+// The arguments are the command's interface, as they are on `export`: what
+// the window sends is what the engine plays.
+#[allow(clippy::too_many_arguments)]
 async fn play(
     app: tauri::AppHandle,
     ranges: Vec<(f64, f64)>,

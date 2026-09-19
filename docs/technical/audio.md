@@ -466,6 +466,16 @@ them failed. `playback_audio::resample` now asks each arriving frame what shape 
 and builds a fresh context where it differs from the last, which costs one allocation at
 the change and carries the whole recording.
 
+**And so did the writing side.** The frames a seam is rebuilt from go through a context
+of the same kind, built for the first frame of the run. A range wholly inside the
+programme hands it one shape and nothing is ever noticed; a range that spans the change
+of programme, written to a layout that is neither of the two — 5.1 asked for outright —
+has both of them to convert, and swresample refused the second the same way. The cut
+ended outright at the instant the programme began. `audio::conform` asks each frame what
+shape it arrived in and builds a fresh context where that differs from the last, and the
+suite gained the range that spans the change: it comes out as 5.1, and the sound runs the
+whole way across it rather than stopping where the shape did.
+
 ## Downmixing (`--audio-channels`)
 
 Some recordings carry 5.1, and a good many of the places they end up do not want it: a
