@@ -108,6 +108,17 @@ const DEFAULTS = {
   /// Whether the cut editor draws the subtitles over the picture from the
   /// moment a recording opens, rather than waiting to be asked each time.
   subsOn: false,
+  /// How loud the preview plays, 0 to 100, and whether it is silenced.
+  ///
+  /// Nothing to do with what gets written: the output carries the
+  /// recording's own sound whatever these say. They are here rather than in
+  /// the project because a checking level belongs to the room the cutting is
+  /// being done in, not to the recordings being cut.
+  ///
+  /// Full, which is the recording as it is. The slider is not a place to
+  /// quietly disagree with what was broadcast.
+  volume: 100,
+  muted: false,
   /// Whether it draws the frame number and clock over the picture. Read by
   /// the editor at open; the button on its info bar is the same answer.
   counter: true,

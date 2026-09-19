@@ -322,6 +322,7 @@ hole, and the frame counter counts the length that will actually be written.
 | **Drag** the scrubber | Move the playhead. Grab near the IN or OUT mark and you move that mark instead |
 | **Hover** the scrubber | Shows the frame at that moment in a small picture |
 | `Space` or **▶ Play** | Play from here, picture and sound. Press again to stop. The picture runs at the recording's own frame rate; where the machine cannot decode and draw that many, it shows fewer rather than falling behind the sound |
+| **◀◀** **▶▶** | Rewind and fast forward. Each press doubles the speed, 2 to 16, and once more stops it; the button says which speed it is running at. No sound |
 | `←` `→` | Back and forward one frame. Hold to repeat |
 | `Shift+←` `Shift+→` | One second |
 | `PageUp` `PageDown` | Back and forward by however far the [preferences](#cut-editor) say. A key whose unit is **%** carries a speed rather than an amount, and scrolls for as long as it is held. `Shift`, `Ctrl` and `Shift+Ctrl` each carry their own answer |
@@ -329,6 +330,22 @@ hole, and the frame counter counts the length that will actually be written.
 | `S` / `Shift+S` | Next / previous scene change |
 | `◀\|` `\|▶` | Previous / next **lossless point** |
 | `\|◀` `▶\|` | Start / end |
+
+### Listening to a seam over and over
+
+The playback row sits under the cutting one: rewind, play, fast forward and
+**Loop**, with the **volume** to the right of them.
+
+With **Loop** down, playback that reaches the end of the selection goes back to
+where it started and plays again. Put the playhead on a seam, press `Space`, and
+that seam alone plays over and over. It returns to **where playback started**, so
+to hear the run-up as well, start it before the IN mark. On a recording with
+nothing marked the selection is the whole of it.
+
+The **volume** is the preview's alone — what gets written is untouched. ♪ silences
+it and brings it back (so does `M`), and the wheel over the slider moves it. Both
+are remembered, so the next clip opens at the level you were working at. On a
+recording with no sound, neither is available.
 
 ### Showing the subtitles
 
@@ -928,6 +945,7 @@ can quote it straight into a bug report.
 | | |
 |---|---|
 | `Space` | Play / stop |
+| `M` | Silence the sound, or bring it back (playback carries on) |
 | `←` `→` | One frame (hold to repeat) |
 | `Shift+←` `Shift+→` | One second |
 | `PageUp` `PageDown` | By the amount set in the preferences, or a scroll while held where that amount is a speed (`Shift`, `Ctrl` and `Shift+Ctrl` carry their own) |

@@ -107,9 +107,6 @@
           </div>
 
           <div class="tgroup">
-            <!-- The play button's label swaps to ■ 停止 while it is playing,
-                 so `setPlaying` writes it. -->
-            <button id="play" class="play" data-i18n-title="t.play.title">▶ 再生</button>
             <button id="go-start" data-i18n-title="t.goStart">|◀</button>
             <button id="prev-kf" data-i18n-title="t.prevKf">◀|</button>
             <button id="step-back" data-i18n-title="t.stepBack">◀</button>
@@ -199,6 +196,54 @@
                 <span data-i18n="editor.clearKeys">キーフレームをすべて消す</span>
               </button>
             </div>
+          </div>
+        </div>
+
+        <!-- The playback controls, on a row of their own under the cutting
+             ones: the ways of moving while the picture runs, then the sound.
+
+             Separate from the row above because they are a separate question.
+             That row is where a cut is placed -- every button in it moves the
+             playhead a measured distance or marks it -- and this one is about
+             watching what the cut came to. 再生 stood in the middle group and
+             was the one button in it that was not part of the symmetry around
+             ✂: with it moved here, that group is five buttons either side of
+             the cut, which is what it was drawn as.
+
+             The stepping buttons the reference tool repeats on this row are
+             not repeated here. They are two along in the row above, doing
+             exactly what they would do here, and a window with two of the
+             same button is a window that has to say why. -->
+        <div class="player">
+          <div class="tgroup">
+            <button id="rewind" class="seek" data-i18n-title="t.rewind">◀◀</button>
+            <!-- The play button's label swaps to ■ 停止 while it is playing,
+                 so `setPlaying` writes it. -->
+            <button id="play" class="play" data-i18n-title="t.play.title">▶ 再生</button>
+            <button id="fast-fwd" class="seek" data-i18n-title="t.fastFwd">▶▶</button>
+            <!-- A mode rather than an action: it stays down while it holds,
+                 and what it changes is what 再生 does next. -->
+            <button id="loop" class="tool" type="button" aria-pressed="false"
+                    data-i18n="t.loop" data-i18n-title="t.loop.title">⟲ ループ</button>
+          </div>
+
+          <!-- The level the preview is listened to at, which is nothing to do
+               with the level that gets written: the output carries the
+               recording's own sound whatever this says.
+
+               ♪ with a line through it rather than a loudspeaker: the glyphs
+               for one are emoji, and an emoji in a row of ◀ ▶ ⚑ ✂ is a
+               picture in a row of marks. -->
+          <div class="vol tgroup">
+            <button id="mute" type="button" aria-pressed="false"
+                    data-i18n-title="t.mute">♪</button>
+            <!-- How much of it is filled says the level, which is the one
+                 thing a slider is for. The share is written onto the element
+                 as `--at` by `showVolume`; the stylesheet draws the bar out
+                 of it. -->
+            <input id="volume" class="vslider" type="range" min="0" max="100" step="1"
+                   value="100" data-i18n-title="t.volume" data-i18n-aria="t.volume.aria" />
+            <span id="vol-num" class="dim vnum">100%</span>
           </div>
         </div>
 

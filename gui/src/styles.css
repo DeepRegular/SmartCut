@@ -520,19 +520,98 @@ main { flex: 1; min-height: 0; display: flex; gap: 0; }
 .tgroup > button:hover:not(:disabled) { background: #3d3d3d; }
 .transport .mark { color: var(--accent); font-weight: 700; min-width: 56px; }
 .transport .flag { color: var(--accent); font-size: 12px; }
-.transport .play { background: #2c5f7a; border-color: #3a7fa0; min-width: 68px; }
-.transport .play.on { background: #7a3a2c; border-color: #a04a3a; }
+/* Written against the group rather than against the row it used to be in:
+   the button moved to the playback row, and `.tgroup > button` above is what
+   it would otherwise be drawn as. Same shape of selector, so the one further
+   down the file is the one that wins. */
+.tgroup > .play { background: #2c5f7a; border-color: #3a7fa0; }
+.tgroup > .play.on { background: #7a3a2c; border-color: #a04a3a; }
 .transport .cut {
   background: var(--accent); color: #201400; border-color: var(--accent);
   font-weight: 700; min-width: 96px; margin: 0 3px;
 }
 .transport .cut:hover:not(:disabled) { background: #ffb638; }
-.transport .tool { font-size: 11.5px; }
+.transport .tool, .player .tool { font-size: 11.5px; }
 /* The ≡ at the end of the row. Wider than the glyph needs so that it is a
    button rather than a mark, and lit while its menu is up: the menu opens
    over the timeline, and the button is what says where it came from. */
 .transport .more { font-size: 15px; line-height: 1; }
 .transport .more.open { background: #3d3d3d; border-color: #5c5c5c; }
+
+/* --- playback --------------------------------------------------------- */
+/* One cluster, centred under the picture the way the row above it is: the
+   ways of moving while it plays, then the sound, a gap apart and no more.
+   It breaks between the two when the window is too narrow for one line, the
+   way the cutting row breaks between its clusters.
+
+   Two other arrangements were tried and put back. The sound pinned to the
+   right edge, which is where the reference tool keeps its own: across a
+   window this wide that is a reach of half a screen for the thing you turn
+   down while something is playing. And 再生 held in the middle of the window
+   with the rest either side of it: the button lands where the hand expects
+   it, and the row around it then reads as lopsided, which is what the eye
+   sees first. The row is looked at as a whole, so it is placed as a whole. */
+.player {
+  display: flex; align-items: center; justify-content: center;
+  flex-wrap: wrap; row-gap: 4px; column-gap: 18px;
+}
+.player .play { min-width: 68px; }
+/* Wide enough for the speed they carry while they run -- "◀◀ 16×" -- so that
+   the row does not shuffle sideways as one is stepped up. */
+.player .seek { min-width: 70px; }
+/* A mode rather than an action: lit for as long as it holds. The play
+   button's own blue, that being what this window lights a running thing
+   with. */
+.player .tool.on, .player .seek.on { background: #2c5f7a; border-color: #3a7fa0; }
+/* A group by its look -- the ♪ is a transport button like the rest -- but
+   not a cluster of them: the slider beside it is one control with the
+   button, and the three must not be split across a line. */
+.player > .vol { flex-wrap: nowrap; gap: 6px; min-width: 0; }
+.vol > button { min-width: 30px; font-size: 14px; }
+/* Muted, which is a thing you can see at a glance and is drawn as one: the
+   note struck through, and greyed the way everything out of use here is.
+   The slider fades with it -- a struck-through glyph is a small thing to
+   read across a row this wide -- but stays live: moving it is one of the two
+   ways back. */
+.vol > button.muted { color: var(--dim); text-decoration: line-through; }
+.vol > button.muted ~ * { opacity: 0.5; }
+/* Drawn rather than left to the webview, which draws a range control in the
+   system's own light colours -- a white bar across a dark row.
+   `-webkit-` alone: both the engines this ships to answer to it.
+
+   The bar is filled to where the level stands, so that how loud it is can be
+   read without reading the number: `--at` is written onto the element by
+   `showVolume` and the gradient stops there. In the blue this window already
+   fills a bar with -- the copied stretch of the plan is the same colour --
+   and not the accent, which on this window is the marks and the cut. */
+.vslider {
+  -webkit-appearance: none; appearance: none;
+  width: 104px; min-width: 40px; height: 16px; padding: 0;
+  background: none; border: 0; cursor: pointer;
+}
+.vslider::-webkit-slider-runnable-track {
+  height: 4px; border-radius: 2px;
+  background: linear-gradient(
+    to right,
+    var(--sel) 0 var(--at, 100%),
+    #4a4a4a var(--at, 100%) 100%
+  );
+}
+/* Round, and the grey of a button rather than the accent: it is the handle
+   you take hold of, not the reading. The bar behind it is the reading, and
+   two things in the same colour is neither of them saying anything. */
+.vslider::-webkit-slider-thumb {
+  -webkit-appearance: none; appearance: none;
+  width: 14px; height: 14px; border-radius: 50%;
+  background: #3d3d3d; border: 1px solid #5c5c5c;
+  /* half the thumb less half the track, so it rides centred on the bar */
+  margin-top: -5px;
+}
+.vslider:hover::-webkit-slider-thumb { background: #4a4a4a; }
+.vslider:disabled { cursor: default; opacity: 0.45; }
+/* Room for 100%, so that the controls beside it do not shift as it is
+   dragged past a digit. */
+.vnum { font-size: 11px; min-width: 4ch; text-align: right; font-variant-numeric: tabular-nums; }
 
 .statusbar {
   display: flex; align-items: center; gap: 16px;

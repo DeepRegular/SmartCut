@@ -94,9 +94,31 @@ struct OpenPath(Mutex<Option<String>>);
 #[derive(Default)]
 struct Held(Mutex<Option<SeekIndex>>);
 
-/// Set while playback is running; cleared to ask it to stop.
+/// Which run of playback is the one in force, or 0 for none.
+///
+/// A number rather than a flag, because a stop and the next start are not
+/// always far apart: ◀◀ and ▶▶ stop playback and ask for it again at the new
+/// place inside one turn of the window's own loop. Told apart by a flag, the
+/// run that was asked to stop can still be between two pictures when the new
+/// one sets the flag back to true -- and it then reads that as permission to
+/// carry on, so two playbacks run at once and the one being stopped is the
+/// one further along, whose pictures win. The skip appeared to do nothing at
+/// all.
+///
+/// The window names each run; a run carries on only while the name in here
+/// is still its own. See `startPlay` on the other side.
 #[derive(Default)]
-struct Playing(std::sync::atomic::AtomicBool);
+struct Playing(std::sync::atomic::AtomicU64);
+
+/// How loud the preview plays, held here rather than in the window.
+///
+/// The level has to outlive one playback: it is set once and then holds for
+/// every 再生 after it, and the thread that plays is started fresh each
+/// time. It also has to be reachable *during* one -- the slider is moved
+/// while the sound is running -- and [`smartcut_core::Volume`] is the shared
+/// number both sides of that hold. See [`set_volume`].
+#[derive(Default)]
+struct Vol(smartcut_core::Volume);
 
 /// Whether the cut editor is on screen.
 ///
@@ -1675,10 +1697,11 @@ async fn open_editor(title: String, app: tauri::AppHandle) -> Result<(), String>
         // The smallest this window may be dragged to, and it has to be a size
         // everything in it is still *on*: at 620 the plan panel and the two
         // buttons under it were off the bottom of the screen, with nothing to
-        // say where they had gone. 720 is what the column comes to with the
+        // say where they had gone. 760 is what the column comes to with the
         // picture at the smallest it is worth showing -- see the short-window
-        // rules in `styles.css`.
-        .min_inner_size(900.0, 720.0)
+        // rules in `styles.css`. It was 720 before the playback row, which
+        // is a row of buttons taller.
+        .min_inner_size(900.0, 760.0)
         .center()
         // Out of sight until the size it was last left at is on it. A window
         // that is sized after it is up opens and then jumps. See [`geometry`].
@@ -1715,10 +1738,7 @@ async fn open_editor(title: String, app: tauri::AppHandle) -> Result<(), String>
             tauri::WindowEvent::CloseRequested { .. } | tauri::WindowEvent::Destroyed
         ) {
             teller.state::<EditorUp>().0.store(false, Ordering::SeqCst);
-            teller
-                .state::<Playing>()
-                .0
-                .store(false, Ordering::SeqCst);
+            teller.state::<Playing>().0.store(0, Ordering::SeqCst);
         }
         if matches!(event, tauri::WindowEvent::Destroyed) {
             let _ = teller.emit("editor-closed", ());
@@ -3877,6 +3897,7 @@ async fn play(
     from: f64,
     width: u32,
     fps: f64,
+    run: u64,
     frames: tauri::ipc::Channel<tauri::ipc::InvokeResponseBody>,
 ) -> Result<(), String> {
     // The window this plays for may have gone already: see [`EditorUp`].
@@ -3891,27 +3912,31 @@ async fn play(
         let guard = locked(&state.0);
         guard.as_ref().ok_or("no file open")?.clone()
     };
-    app.state::<Playing>().0.store(true, Ordering::SeqCst);
+    app.state::<Playing>().0.store(run, Ordering::SeqCst);
 
     // Audio runs on its own thread and its own clock (see `play_audio`'s
     // doc comment): it just keeps a ring buffer fed, and the sound card
     // paces itself. `Playing` is the one thing the two sides share, so
     // stopping either one stops both.
     let audio_handle = audio_from.audio.is_some().then(|| {
+        let level = app.state::<Vol>().0.clone();
         let audio_src = audio_from.clone();
         let audio_ranges = ranges.clone();
         let audio_app = app.clone();
         std::thread::spawn(move || {
             let stop_app = audio_app.clone();
-            // Either answer stops it: playback told to stop, or the window it
-            // plays for gone. The second is what covers the moment between
-            // the two -- a close that lands while this is starting up leaves
-            // `Playing` true, and only the window can still say otherwise.
+            // Either answer stops it: this run is no longer the one in force
+            // -- stopped, or another started -- or the window it plays for
+            // has gone. The second is what covers the moment between the two
+            // -- a close that lands while this is starting up leaves
+            // `Playing` set, and only the window can still say otherwise.
             let stop = move || {
-                !stop_app.state::<Playing>().0.load(Ordering::SeqCst)
+                stop_app.state::<Playing>().0.load(Ordering::SeqCst) != run
                     || !stop_app.state::<EditorUp>().0.load(Ordering::SeqCst)
             };
-            if let Err(e) = smartcut_core::play_audio(&audio_src, &audio_ranges, from, stop) {
+            if let Err(e) =
+                smartcut_core::play_audio(&audio_src, &audio_ranges, from, &level, stop)
+            {
                 eprintln!("audio playback: {e}");
                 // Otherwise this fails in total silence: the release build has
                 // no console (`windows_subsystem = "windows"`), so eprintln
@@ -3932,7 +3957,7 @@ async fn play(
         let mut outcome: Result<(), String> = Ok(());
 
         for (a, b) in ranges {
-            if !playing.0.load(Ordering::SeqCst) || !up.0.load(Ordering::SeqCst) {
+            if playing.0.load(Ordering::SeqCst) != run || !up.0.load(Ordering::SeqCst) {
                 break;
             }
             let start = a.max(from);
@@ -3952,7 +3977,7 @@ async fn play(
                 b,
                 width,
                 |t| {
-                    if !playing.0.load(Ordering::SeqCst) || !up.0.load(Ordering::SeqCst) {
+                    if playing.0.load(Ordering::SeqCst) != run || !up.0.load(Ordering::SeqCst) {
                         return smartcut_core::Pace::Stop;
                     }
                     let out_t = (base + t - seg_from).max(0.0);
@@ -4021,11 +4046,18 @@ async fn play(
             elapsed_out += b - start;
         }
 
-        playing.0.store(false, Ordering::SeqCst);
+        // Only if this run is still the one in force: a newer one has its own
+        // name in there, and clearing it would stop the playback that has
+        // just begun.
+        let _ = playing
+            .0
+            .compare_exchange(run, 0, Ordering::SeqCst, Ordering::SeqCst);
         if let Some(h) = audio_handle {
             let _ = h.join();
         }
-        let _ = app.emit("play-ended", ());
+        // Named, so that the window can tell the end of the run it is showing
+        // from the end of one it has already moved on from.
+        let _ = app.emit("play-ended", run);
         outcome
     })
     .await
@@ -4170,7 +4202,19 @@ async fn subtitle_at(
 
 #[tauri::command]
 fn stop_play(playing: State<Playing>) {
-    playing.0.store(false, std::sync::atomic::Ordering::SeqCst);
+    playing.0.store(0, std::sync::atomic::Ordering::SeqCst);
+}
+
+/// How loud to play, as a multiplier on the samples: 0 for silence, 1 for
+/// the recording as it is. Takes effect at once when playback is running,
+/// and stands for the next one when it is not.
+///
+/// What a slider's position means in loudness is settled in the window that
+/// draws the slider -- see `gain` there -- so this takes the answer rather
+/// than a percentage.
+#[tauri::command]
+fn set_volume(level: f64, volume: State<Vol>) {
+    volume.0.set(level as f32);
 }
 
 /// Write the keyframe list beside the output.
@@ -5167,6 +5211,7 @@ pub fn run() {
         .manage(OpenPath::default())
         .manage(Held::default())
         .manage(Playing::default())
+        .manage(Vol::default())
         .manage(EditorUp::default())
         .manage(Subs::default())
         .manage(BatchStop::default())
@@ -5231,6 +5276,7 @@ pub fn run() {
             read_sidecar,
             play,
             stop_play,
+            set_volume,
             subtitle_at,
             export,
             programme,

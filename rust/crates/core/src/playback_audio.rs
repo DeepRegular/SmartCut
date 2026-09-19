@@ -9,6 +9,7 @@
 //! programme through.
 
 use std::collections::VecDeque;
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -22,6 +23,52 @@ use crate::Source;
 /// sharing the same CPU cannot starve the card between pictures.
 fn capacity(sample_rate: u32, channels: u16) -> usize {
     sample_rate as usize * channels as usize
+}
+
+/// How loud the card is fed, as a plain multiplier on the samples.
+///
+/// Shared rather than given once, because it is changed while playback is
+/// running: the thread below is inside a decode loop for as long as the
+/// sound lasts, and the hand on the slider is in another window entirely.
+/// Both ends hold the same one, and the output callback reads it afresh on
+/// every buffer.
+///
+/// The bits of an `f32` in an `AtomicU32`, there being no atomic float. It
+/// is read on the audio callback, where a lock is the one thing that must
+/// not happen: a callback that waits is a callback that misses its deadline,
+/// and a missed deadline is heard.
+///
+/// A multiplier and not a percentage: what a slider's position should mean
+/// in loudness is a question about the person looking at it, and it is
+/// answered where the slider is. See `gain` in the editor window.
+#[derive(Clone)]
+pub struct Volume(Arc<AtomicU32>);
+
+impl Volume {
+    pub fn new(gain: f32) -> Self {
+        let v = Self(Arc::new(AtomicU32::new(0)));
+        v.set(gain);
+        v
+    }
+
+    /// Set it. Anything that is not a number -- which is what an empty box
+    /// on the way through JSON arrives as -- leaves it where it was.
+    pub fn set(&self, gain: f32) {
+        if gain.is_nan() {
+            return;
+        }
+        self.0.store(gain.clamp(0.0, 1.0).to_bits(), Ordering::Relaxed);
+    }
+
+    pub fn get(&self) -> f32 {
+        f32::from_bits(self.0.load(Ordering::Relaxed))
+    }
+}
+
+impl Default for Volume {
+    fn default() -> Self {
+        Self::new(1.0)
+    }
 }
 
 /// Block until there is room, or `stop` says to give up. Never blocks forever
@@ -154,20 +201,37 @@ fn resample<'a>(
 const FALLBACKS: [&str; 3] = ["pipewire", "pulse", "sysdefault"];
 
 /// Hand the ring buffer to the sound card, padding with silence whenever the
-/// decode has not kept up.
+/// decode has not kept up, and at whatever [`Volume`] says.
+///
+/// The level is walked from the one the last buffer ended at to the one
+/// standing now, across the buffer, rather than applied whole. A gain that
+/// steps is a step in the waveform, and a step in a waveform is a click --
+/// which is exactly what ミュート would otherwise be, in the middle of the
+/// loudest moment of a programme. Twenty milliseconds is far too short to
+/// hear as a fade and quite long enough to not hear as a click.
 fn build_stream(
     device: &cpal::Device,
     config: &cpal::StreamConfig,
     ring: &Arc<Mutex<VecDeque<f32>>>,
+    volume: &Volume,
 ) -> Result<cpal::Stream, cpal::BuildStreamError> {
     let feed = ring.clone();
+    let level = volume.clone();
+    let channels = config.channels.max(1) as usize;
+    let mut was = level.get();
     device.build_output_stream(
         config,
         move |data: &mut [f32], _: &cpal::OutputCallbackInfo| {
+            let want = level.get();
+            let frames = (data.len() / channels).max(1);
             let mut q = feed.lock().unwrap();
-            for out in data.iter_mut() {
-                *out = q.pop_front().unwrap_or(0.0);
+            for (i, out) in data.iter_mut().enumerate() {
+                // Per frame, not per sample: the two channels of one instant
+                // are one instant, and they are scaled by the one number.
+                let at = (i / channels) as f32 / frames as f32;
+                *out = q.pop_front().unwrap_or(0.0) * (was + (want - was) * at);
             }
+            was = want;
         },
         |e| eprintln!("audio output error: {e}"),
         None,
@@ -231,10 +295,11 @@ fn open_on(
     device: &cpal::Device,
     want: (u32, u16),
     ring: &Arc<Mutex<VecDeque<f32>>>,
+    volume: &Volume,
     why: &mut Option<cpal::BuildStreamError>,
 ) -> Option<Output> {
     for config in candidates(device, want) {
-        match build_stream(device, &config, ring) {
+        match build_stream(device, &config, ring, volume) {
             Ok(stream) => {
                 return Some(Output {
                     stream,
@@ -259,12 +324,12 @@ fn open_on(
 /// unplugged" while it is sitting there playing everything else on the
 /// desktop. Asking the sound server for its own PCM by name gets us the same
 /// device every other application on that desktop is already using.
-fn open_output(want: (u32, u16), ring: &Arc<Mutex<VecDeque<f32>>>) -> Result<Output> {
+fn open_output(want: (u32, u16), ring: &Arc<Mutex<VecDeque<f32>>>, volume: &Volume) -> Result<Output> {
     let host = cpal::default_host();
     let mut why = None;
 
     if let Some(device) = host.default_output_device() {
-        if let Some(out) = open_on(&device, want, ring, &mut why) {
+        if let Some(out) = open_on(&device, want, ring, volume, &mut why) {
             return Ok(out);
         }
     }
@@ -287,7 +352,7 @@ fn open_output(want: (u32, u16), ring: &Arc<Mutex<VecDeque<f32>>>) -> Result<Out
             .unwrap_or(usize::MAX)
     });
     for device in named {
-        if let Some(out) = open_on(&device, want, ring, &mut why) {
+        if let Some(out) = open_on(&device, want, ring, volume, &mut why) {
             let name = device.name().unwrap_or_default();
             eprintln!("audio output: default would not open, playing through {name}");
             return Ok(out);
@@ -310,7 +375,7 @@ fn open_output(want: (u32, u16), ring: &Arc<Mutex<VecDeque<f32>>>) -> Result<Out
 
 /// Play the audio under `ranges` (the edited timeline's source ranges, same
 /// as the video gets), starting at `from`, until `stop()` answers true or the
-/// ranges run out.
+/// ranges run out, at whatever `volume` says at each moment.
 ///
 /// Runs entirely on the calling thread. The `cpal::Stream` it opens is not
 /// guaranteed `Send` on every backend, so nothing here may cross a thread
@@ -320,6 +385,7 @@ pub fn play_audio(
     src: &Source,
     ranges: &[(f64, f64)],
     from: f64,
+    volume: &Volume,
     stop: impl Fn() -> bool,
 ) -> Result<()> {
     let Some(audio) = src.audio.clone() else {
@@ -340,7 +406,7 @@ pub fn play_audio(
     // the added latency. `candidates` heads its ladder with that.
     let want = (audio.sample_rate, audio.channels);
     let ring = Arc::new(Mutex::new(VecDeque::<f32>::new()));
-    let out = open_output(want, &ring)?;
+    let out = open_output(want, &ring, volume)?;
     let (rate, channels) = (out.sample_rate, out.channels);
     if (rate, channels) != want {
         eprintln!(

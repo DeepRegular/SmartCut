@@ -2075,6 +2075,10 @@ const SCROLL_MAX_RATE = 60;
 /// down.
 function startScroll(rateAt, extra) {
   if (!src) return;
+  // One at a time. A drag begun over a running 早送り would otherwise leave
+  // that one's timer going with nothing holding its handle, and two of them
+  // move the playhead twice per tick.
+  if (search) clearInterval(search.timer);
   search = { rateAt, ...extra };
   el("searching").hidden = false;
   const tick = () => {
@@ -2133,12 +2137,22 @@ function startPageScroll(dir, ev) {
   });
 }
 
-function endScroll() {
+/// Stop whatever is scrolling: the strip's right drag, a held page key, or
+/// the 早送り / 巻き戻し buttons. `repaint` is false where a picture of where
+/// it stopped is about to be overtaken anyway -- 再生 starting from here.
+function endScroll(repaint = true) {
+  // The buttons have to stop showing a speed whichever of the several ends
+  // it was, this one included: a drag started over a running 早送り takes
+  // the scroll over, and the mouse going up ends it here.
+  if (seekRate) {
+    seekRate = 0;
+    paintSeek();
+  }
   if (!search) return;
   clearInterval(search.timer);
   search = null;
   el("searching").hidden = true;
-  showFrame(playhead);
+  if (repaint) showFrame(playhead);
 }
 
 el("strip").addEventListener("mousedown", (ev) => {
@@ -2187,6 +2201,9 @@ const scrubSettled = () =>
   scrubBusy ? new Promise((r) => scrubIdle.push(r)) : Promise.resolve();
 
 function scrubTo(o) {
+  // A hand on anything that moves the playhead puts a running 早送り down:
+  // two things moving it at once is neither of them.
+  if (seekRate) endScroll();
   o = clamp(o, 0, outDur);
   playhead = outToSrc(o);
   updateReadouts();
@@ -2240,6 +2257,17 @@ function scrolls(node) {
 window.addEventListener(
   "wheel",
   (ev) => {
+    // The wheel over the volume is the volume. A pointer standing on a
+    // control is asking about that control, and everywhere else in this
+    // window the wheel moves the playhead -- which, with the pointer down
+    // here, is nowhere the eye is.
+    if (ev.target.closest?.(".vol")) {
+      ev.preventDefault();
+      if (!el("volume").disabled) {
+        takeVolume(Number(el("volume").value) - Math.sign(ev.deltaY) * 5);
+      }
+      return;
+    }
     if (!src) return;
     // A panel over the timeline is the program not listening to the timeline;
     // the same reason the keys stop at one. See the keydown handler.
@@ -2304,6 +2332,14 @@ function reelTick() {
   reelRaf = requestAnimationFrame(reelTick);
 }
 
+/// Which run of playback this is, counting from the window's own side.
+///
+/// A stop and the next start can land inside one turn of this loop -- ◀◀ and
+/// ▶▶ are exactly that -- and the engine cannot tell the two apart by a flag
+/// alone: see `Playing` on the other side. Each 再生 is named here, the name
+/// goes with the request, and the end of a run comes back carrying it.
+let playRun = 0;
+
 /// The picture on the stage while playback runs, as a URL that has to be
 /// handed back. A blob URL holds its bytes until it is revoked, and thirty a
 /// second is a leak with a shape.
@@ -2321,8 +2357,15 @@ function dropPlayUrl() {
 
 /// One picture off the playback channel: eight bytes of instant, then the
 /// JPEG. See the `play` command for why the two travel as one message.
-function showPlayFrame(buf) {
-  if (!playing || !buf || buf.byteLength <= 8) return;
+///
+/// `run` is the playback it came from. A run that has been left behind -- a
+/// ◀◀ stopped it and asked for another from ten seconds back -- has pictures
+/// already on their way, and they arrive after the new run has begun. Since
+/// they are further along they would set `playAt` past everything the new
+/// run is about to send, and every picture of it would then be dropped as
+/// too old: the skip looked like playback simply stopping where it was.
+function showPlayFrame(run, buf) {
+  if (run !== playRun || !playing || !buf || buf.byteLength <= 8) return;
   const t = new DataView(buf).getFloat64(0, true);
   // The large payloads are fetched by this window rather than handed to it,
   // and two fetches can finish in the other order. A picture older than the
@@ -2357,8 +2400,55 @@ function setPlaying(on) {
   }
 }
 
+/// Whether 再生 repeats. A mode, not an action: what it changes is what the
+/// next 再生 plays and what happens when that playback runs out.
+let looping = false;
+/// Where a looping playback goes back to, in output time, or null when
+/// nothing is looping.
+let loopAt = null;
+
+/// A round is at least this long, in seconds.
+///
+/// A round shorter than the seek that starts it is not a loop, it is a
+/// stutter -- and two pictures is a selection somebody lands on by putting
+/// OUT down before moving. Short ones are stretched to this rather than
+/// refused: a 再生 that quietly did nothing would be the worse answer of the
+/// two, and half a second either side of what was marked is still the join
+/// that was marked.
+const MIN_LOOP = 0.5;
+
+/// The stretch ループ plays, in output time, or null when there is nothing
+/// to play at all.
+///
+/// The selection, which with nothing marked is the whole timeline -- the
+/// same thing ✂ would take, listened to instead of removed. Entered at the
+/// playhead when it already stands inside it, so that standing on a join and
+/// pressing 再生 plays that join over and over rather than starting again
+/// from the top of the recording.
+function loopRange() {
+  const a = selA;
+  const at = playOut();
+  const from = at > a + 1e-9 && at < selEnd() - frame() ? at : a;
+  const b = Math.min(outDur, Math.max(selEnd(), from + MIN_LOOP));
+  return b - from > 0.1 ? { from, b } : null;
+}
+
 function startPlay() {
   if (!src || playing || outDur <= 0) return;
+  // 再生 out of a 早送り: the search stops where it got to, and this starts
+  // from there. No picture of that instant is asked for -- the first one
+  // playback sends is along in a third of a second and is the same picture.
+  if (seekRate) endScroll(false);
+  // With ループ on it is the selection that plays, and the engine is given
+  // that stretch alone: playback ends when the ranges run out, and this is
+  // what makes it run out at OUT instead of at the end of the recording.
+  const round = looping ? loopRange() : null;
+  if (looping && !round) return;
+  loopAt = round ? round.from : null;
+  const ranges = round
+    ? outRangeToSrc(round.from, round.b).map((r) => [r.a, r.b])
+    : outputRanges();
+  const from = round ? outToSrc(round.from) : playhead;
   setPlaying(true);
   // Redraw before the first picture arrives: the reel standing there was
   // drawn without a margin, and there is nowhere for it to slide.
@@ -2385,24 +2475,178 @@ function startPlay() {
   // JSON, which means base64, which at this width is 4 MB/s of text a second
   // for the window to parse; a channel carries the bytes. See `play` on the
   // Rust side.
+  const run = ++playRun;
   const frames = new T.core.Channel();
-  frames.onmessage = showPlayFrame;
+  frames.onmessage = (buf) => showPlayFrame(run, buf);
   playAt = -Infinity;
   // not awaited: it resolves when playback ends, and `play-ended` says so
-  invoke("play", { ranges: outputRanges(), from: playhead, width, fps, frames }).catch((e) => {
+  invoke("play", { ranges, from, width, fps, run, frames }).catch((e) => {
     el("status").textContent = tr("editor.playFailed", { e });
     setPlaying(false);
   });
 }
 
-function stopPlay() {
+/// Stop, and put a picture of where it stopped on the stage.
+///
+/// `repaint` is false for the stops that are about to be followed by another
+/// 再生 -- see [`movePlayhead`], which is the other half of that.
+function stopPlay(repaint = true) {
   if (!playing) return;
   invoke("stop_play");
   setPlaying(false);
-  showFrame(playhead);
+  if (repaint) showFrame(playhead);
+}
+
+/// Put the playhead at `o` -- an output time -- without asking for a picture
+/// of it.
+///
+/// For the moves that are about to be followed by playback, which is to say
+/// ◀◀, ▶▶ and a loop coming round again. A still asked for at one of those
+/// lands *after* the new playback has started, and `showFrame` reads a
+/// picture arriving from anywhere else as the playhead having been moved by
+/// hand -- so the still that was only there to fill a third of a second
+/// stops the playback it was filling for. Playback's own pictures fill the
+/// stage instead, and the counter and the scrubber are moved here so that
+/// they do not sit on the old place while the first one is decoded.
+function movePlayhead(o) {
+  playhead = outToSrc(clamp(o, 0, outDur));
+  updateReadouts();
+  draw();
 }
 
 el("play").addEventListener("click", () => (playing ? stopPlay() : startPlay()));
+
+// --- 早送りと巻き戻し -----------------------------------------------------
+//
+// The search this window already runs -- the strip's right drag and a page
+// key whose unit is a percent are the same loop -- at a speed the button
+// says rather than one the pointer is deciding. See `startScroll`.
+//
+// Not playback at a multiple of the rate. Backwards there is no such thing:
+// a decoder plays one way, and going the other means decoding each GOP from
+// its start to show its pictures in reverse, which at any useful speed is
+// more decoding than the machine has. Forwards it would mean asking for
+// pictures at four times the rate and showing one in four. What the eye
+// wants out of 早送り is the recording going past, and that is what a search
+// already is. Silent, for the same reason: there is nothing to hear at four
+// times speed, and the sound card plays at its own rate whatever the picture
+// is doing.
+
+/// The ladder the two buttons climb, in multiples of the recording's own
+/// speed. Four rungs, the top one a third of what the drag reaches at the
+/// edge of the strip -- past that the pictures go by faster than they can be
+/// read, and covering ground is what the drag and the page keys are for.
+const SEEK_SPEEDS = [2, 4, 8, 16];
+
+/// The speed one of these two buttons is running at, signed, or 0 for none.
+let seekRate = 0;
+
+/// Put the speed on the button that is running, and take it off the other.
+function paintSeek() {
+  for (const [id, dir, glyph] of [
+    ["rewind", -1, "◀◀"],
+    ["fast-fwd", 1, "▶▶"],
+  ]) {
+    const on = seekRate !== 0 && Math.sign(seekRate) === dir;
+    el(id).classList.toggle("on", on);
+    el(id).textContent = on ? `${glyph} ${Math.abs(seekRate)}×` : glyph;
+  }
+}
+
+/// Start one, or step the one already running.
+///
+/// The same button again doubles the speed; the other one starts over the
+/// other way. Past the top rung it stops, so the button that started it is
+/// also the way out of it: this row has no 停止 of its own, and a button
+/// that cycles for ever is one that cannot be put down.
+function fastPlay(dir) {
+  if (playing) stopPlay(false);
+  const rung = Math.sign(seekRate) === dir ? SEEK_SPEEDS.indexOf(Math.abs(seekRate)) + 1 : 0;
+  if (rung >= SEEK_SPEEDS.length) {
+    endScroll();
+    return;
+  }
+  seekRate = dir * SEEK_SPEEDS[rung];
+  paintSeek();
+  // Read at every tick rather than handed over once, so that stepping the
+  // speed does not have to stop the scroll and start another.
+  startScroll(() => seekRate, { seek: true });
+}
+
+el("rewind").addEventListener("click", () => fastPlay(-1));
+el("fast-fwd").addEventListener("click", () => fastPlay(1));
+
+el("loop").addEventListener("click", () => {
+  looping = !looping;
+  el("loop").classList.toggle("on", looping);
+  el("loop").setAttribute("aria-pressed", looping ? "true" : "false");
+  // Turned over while something is playing, it takes effect on what is
+  // playing. Waiting for the end would mean waiting for the end of the
+  // recording, which is the thing the answer has just changed.
+  if (playing) {
+    stopPlay();
+    startPlay();
+  }
+});
+
+// --- volume -------------------------------------------------------------
+//
+// How loud the preview is, which is nothing to do with what gets written:
+// the output carries the recording's own sound whatever this says. It is a
+// checking level -- a join is listened to at whatever is comfortable in the
+// room the cutting is being done in, and a broadcast's own level is
+// frequently not that.
+//
+// Kept with the rest of 環境設定, like the counter beside it and for the same
+// reason: this window is built afresh for every clip, and somebody who works
+// at a third of the way up should not have to say so at each one.
+
+/// What the slider's position comes to as a multiplier on the samples.
+///
+/// The square of it rather than the position itself. Loudness is not linear
+/// in amplitude -- half the amplitude is nothing like half as loud -- so a
+/// slider handed straight through spends its top half doing almost nothing
+/// and then drops away all at once near the bottom. Squaring puts the useful
+/// part of the range under the middle of the travel, which is where the hand
+/// is.
+const gain = (at) => (at / 100) ** 2;
+
+/// Whether the sound is silenced. The ♪ button is the state; a flag of its
+/// own would be one more thing to keep in step, the same reason the counter
+/// is read back off the picture.
+const muted = () => el("mute").classList.contains("muted");
+
+/// Settle the level, tell the engine, and leave the two controls showing it.
+/// `remember` is false for the window doing as it was already told, and true
+/// for the person telling it.
+function showVolume(at, silent, remember = true) {
+  at = clamp(Math.round(Number(at)), 0, 100);
+  el("volume").value = String(at);
+  // How far along the bar is filled. The stylesheet draws it; this is the
+  // one number it needs, and a slider cannot say it for itself.
+  el("volume").style.setProperty("--at", `${at}%`);
+  el("vol-num").textContent = `${at}%`;
+  el("mute").classList.toggle("muted", silent);
+  el("mute").setAttribute("aria-pressed", silent ? "true" : "false");
+  // Not awaited and nothing to report: the level is a convenience, and an
+  // engine that did not take it plays at the one it already had.
+  if (invoke) invoke("set_volume", { level: silent ? 0 : gain(at) }).catch(() => {});
+  if (!remember) return;
+  prefs.set("volume", at);
+  prefs.set("muted", silent);
+}
+
+/// Move the level, as a hand does. It comes off ミュート on the way past --
+/// somebody turning it up is asking to hear something -- except at the
+/// bottom of the travel, where the two answers say the same thing and there
+/// is nothing to come off for.
+const takeVolume = (at) => showVolume(at, muted() && Math.round(Number(at)) <= 0);
+
+el("volume").addEventListener("input", () => takeVolume(el("volume").value));
+
+el("mute").addEventListener("click", () => showVolume(el("volume").value, !muted()));
+
+showVolume(prefs.get("volume"), !!prefs.get("muted"), false);
 
 // --- scene search -------------------------------------------------------
 
@@ -3159,7 +3403,7 @@ function showCmNote(text) {
 /// the points, and `prepare` turns them on.
 function paintReadiness() {
   const yet = walked();
-  for (const id of ["play", "snap"]) el(id).disabled = !yet;
+  for (const id of ["play", "loop", "rewind", "fast-fwd", "snap"]) el(id).disabled = !yet;
 }
 
 function paintSourceInfo() {
@@ -3170,6 +3414,11 @@ function paintSourceInfo() {
     src.pulldown ? tr("media.pulldown") : null,
   ].filter(Boolean);
   const sound = keptAudio();
+  // What the *recording* carries, not what the output is to keep: the
+  // preview plays the recording's own sound whichever tracks are ticked for
+  // writing, so a bilingual programme with its dub left out still has a
+  // level worth setting.
+  for (const id of ["mute", "volume"]) el(id).disabled = !src.has_audio;
   el("title").textContent = shownName || src.path.split(/[/\\]/).pop();
   el("info").textContent = tr("editor.info", {
     // A dash rather than zero while the walk is still counting them: "無劣化
@@ -3718,6 +3967,14 @@ window.addEventListener("keydown", (ev) => {
     return;
   }
   if (ev.ctrlKey || ev.metaKey || ev.altKey) return;
+  // ミュート, and one of the few keys that does not stop playback: it is
+  // about the sound rather than about where the playhead is, and it is
+  // pressed *because* something is playing.
+  if (ev.key === "m" || ev.key === "M") {
+    ev.preventDefault();
+    if (!el("mute").disabled) el("mute").click();
+    return;
+  }
   if (playing && ev.key !== "i" && ev.key !== "o" && ev.key !== "k") stopPlay();
   const step = ev.shiftKey ? 1 : frame();
   if (ev.key === "ArrowRight" || ev.key === "ArrowLeft") {
@@ -3938,9 +4195,20 @@ el("detect-cm").addEventListener("click", async () => {
 });
 
 if (listen) {
-  listen("play-ended", () => {
-    if (!playing) return;
+  listen("play-ended", (ev) => {
+    // The end of a run that has already been left behind -- a ◀◀ stopped it
+    // and asked for another from ten seconds back -- is not the end of what
+    // is playing now.
+    if (ev.payload !== playRun || !playing) return;
     setPlaying(false);
+    // Round again from where this one started. Only ever reached by playback
+    // running out of ranges: a 停止 has already put `playing` down, so the
+    // one that arrives after it falls out above.
+    if (looping && loopAt !== null) {
+      movePlayhead(loopAt);
+      startPlay();
+      return;
+    }
     showFrame(playhead);
   });
   // The video half of playback has no way to notice the audio half failed --
