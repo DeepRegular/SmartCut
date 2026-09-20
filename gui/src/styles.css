@@ -817,12 +817,31 @@ input[type="text"]::placeholder { color: var(--dim); }
 .cliplist-wrap.over { outline: 2px solid var(--sel); outline-offset: -2px; background: #10222a; }
 
 #cliplist { list-style: none; margin: 0; padding: 0; }
+/* Two rows: the name across the whole of the first, everything that was read
+   out of the recording and everything being done to it on the second.
+
+   The name had the middle column to itself and ended in an ellipsis around
+   two thirds of the way along a row -- the rest was the column the badges and
+   the progress bar are in, held open whether or not either was there. What is
+   cut off a broadcast recording's name is the end of it, which is where the
+   episode number is, so a list of a night's recordings was a column of names
+   that all read the same. The reference tool gives the name the width of the
+   row and puts everything else under it; so does this now. */
 .clip {
   display: grid; grid-template-columns: 30px 96px 1fr 190px 22px;
-  gap: 8px; align-items: center;
+  grid-template-areas:
+    "n poster nm   nm   kill"
+    "n poster meta stat kill";
+  gap: 2px 8px; align-items: center;
   padding: 6px 8px; border-bottom: 1px solid #000;
   background: #2b3a44; cursor: pointer;
 }
+.clip .n { grid-area: n; }
+.clip .poster { grid-area: poster; }
+.clip .nm { grid-area: nm; }
+.clip .meta { grid-area: meta; }
+.clip .stat { grid-area: stat; }
+.clip .kill { grid-area: kill; }
 .clip:hover { background: #33454f; }
 .clip.on { background: #175a70; }
 .clip.bad { background: #4a2b2b; }
@@ -842,12 +861,16 @@ input[type="text"]::placeholder { color: var(--dim); }
 }
 .clip .poster.blank { background: repeating-linear-gradient(45deg, #1a1a1a 0 6px, #141414 6px 12px); }
 .clip .meta { min-width: 0; }
-.clip .nm { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.clip .nm { min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 /* The field a row's name is typed in: over the name itself, same line and same
    width, so that renaming is editing what is there rather than answering a
    dialog about it. The `.nm` line under it is hidden rather than replaced --
    it is what a repaint writes to. */
 .clip .rename {
+  /* Over the name, which means the same cell of the grid: a field placed
+     anywhere else would open a row of its own and the whole list would jump
+     as somebody started typing. */
+  grid-area: nm;
   width: 100%; box-sizing: border-box;
   font: inherit; color: var(--text); background: #141414;
   border: 1px solid var(--sel); border-radius: 2px; padding: 0 3px;

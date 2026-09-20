@@ -1283,8 +1283,8 @@ function renderList() {
     li.innerHTML = `
       <span class="n"></span>
       <img class="poster" alt="" />
+      <div class="nm"></div>
       <div class="meta">
-        <div class="nm"></div>
         <div class="sub dim"></div>
         <div class="cm dim"></div>
       </div>
@@ -1344,6 +1344,21 @@ function paintList() {
 /// anything is being read.
 function setText(node, text) {
   if (node.textContent !== text) node.textContent = text;
+}
+
+/// The name of a row, with the whole of it a hover away.
+///
+/// The name has the width of the row and still ends in an ellipsis now and
+/// then, and what is cut off is the end -- which on a broadcast recording is
+/// where the episode number is. The title is the rest of it.
+///
+/// The name only. The two lines under it are cut off as often, but what is
+/// missing from them is the tail of a list of facts rather than the one thing
+/// telling two rows apart, and a tooltip on every line of every row is one
+/// that follows the pointer down the list saying nothing anybody asked for.
+function setName(node, text) {
+  setText(node, text);
+  if (node.title !== text) node.title = text;
 }
 
 /// The picture standing for a clip: the one out of the thumbnail track,
@@ -1462,7 +1477,7 @@ function paintRow(clip) {
   const poster = posterOf(clip);
   if (poster && img.src !== poster) img.src = poster;
   img.classList.toggle("blank", !poster);
-  setText(li.querySelector(".nm"), clipLabel(clip));
+  setName(li.querySelector(".nm"), clipLabel(clip));
 
   // Everything on this line is something the container itself knows, so it
   // is filled in from the cheap first look and corrected by the walk. See
