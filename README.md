@@ -82,6 +82,10 @@ carries a line onto the next one — and a disc's, PGS and a DVD's subpictures, 
 the pictures they are. Whether a seam lands in the middle
 of a line is not something the picture alone will tell you.
 
+**And by the sound.** A level meter stands beside the preview: what is being
+heard while something plays, and the frame under the playhead while nothing
+does, so the silence at a junction can be walked up to a frame at a time.
+
 **Commercial breaks are found for you.** SmartCut uses three independent
 clues: the marks the broadcaster puts in its own subtitle stream at every
 switch, runs of silence, and whether the station logo is on screen. It places

@@ -1227,6 +1227,38 @@ redrawn when the playhead nears the drawn edge, and since the same pictures land
 places, the swap is invisible. Measured at 160 px/s, tracked for 1.8 s with no jumps and no
 stalls (GOP · 6 s, 2–7 px every 16 ms).
 
+### The level meter reads from two places
+
+The meter beside the picture has two sources, and which one answers depends on whether
+anything is playing.
+
+**While it plays, the two ends of the playback path answer together.** Neither can answer
+alone. The decode end knows the recording's own channels but runs up to a second ahead of the
+card — that second is the ring buffer — so a meter fed from there shows a level before it is
+heard. The output end knows what has been played, but by then the channels are the card's:
+WASAPI mixes every application at one format, so a 5.1 broadcast on a stereo output arrives
+there as two channels, and the meter would drop from six bars to two the moment playback
+started.
+
+So each decoded frame is measured as the recording holds it, and the answer is left in the
+ring beside the samples it produced. The output callback, having handed those samples over,
+says how many frames' worth went, and the peaks behind them are what the meter takes
+(`Levels::eat`). The bars are the recording's channels; the levels are the moment coming out
+of the speakers. Measured before the volume is applied, too: what the meter says is what the
+recording holds, and turning the monitoring down does not make a programme quieter.
+
+Atomics rather than a lock, for the same reason the volume is one: a callback that waits is a
+callback that misses its deadline, and a missed deadline is audible. `fetch_max` is used on
+the bits of the `f32` directly, which works because every one of them is a magnitude — of two
+non-negative floats, the larger bit pattern is the larger number.
+
+**While nothing plays, the frame under the playhead is read** (`peaks_at`, behind
+`audio_peak_at`). That half is the point of the meter: a commercial junction is a second of
+near silence, and stepping a frame at a time towards it with a meter stuck at zero says
+nothing. It is also the expensive half — a seek and a short decode — so it waits for the
+playhead to settle, the same 140 ms the plan panel waits, and a reading for a frame the
+window has already left is dropped rather than drawn.
+
 ## Subtitles over the preview
 
 **Off by default.** The cut editor is a place to look at the picture, and a subtitle

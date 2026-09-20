@@ -87,6 +87,7 @@ const CATALOG = {
     "prefs.close": "閉じる",
     "prefs.groupView": "表示",
     "prefs.counter": "カット編集で、フレーム番号と時刻を画面に重ねる",
+    "prefs.meter": "カット編集で、音声レベルメーターを表示する",
     "prefs.subs": "カット編集で、最初から字幕を表示する",
     "prefs.subsNote":
       "字幕のある録画でのみ有効です。編集中に切り替えられます。",
@@ -610,6 +611,8 @@ const CATALOG = {
     "editor.analysing": "解析中…",
     "editor.counterShow": "カウンタ",
     "editor.counterShow.title": "フレーム番号と時刻をプレビュー映像の上に表示する",
+    "editor.meterShow": "メーター",
+    "editor.meterShow.title": "音声レベルメーターをプレビューの横に表示する",
     "editor.detectCm": "CM を検出",
     "editor.detectCm.title": "CM らしい区間を探してキーフレームを立てる (Ctrl+D)",
     "editor.detecting": "検出中…（映像も読み込みます）",
@@ -871,6 +874,7 @@ const CATALOG = {
     "prefs.close": "Close",
     "prefs.groupView": "Windows",
     "prefs.counter": "Draw the frame number and clock over the picture in the cut editor",
+    "prefs.meter": "Show the audio level meter in the cut editor",
     "prefs.subs": "Show the subtitles in the cut editor from the start",
     "prefs.subsNote":
       "Only for recordings that carry any. It can still be turned off while cutting.",
@@ -1372,6 +1376,8 @@ const CATALOG = {
     "editor.analysing": "Reading…",
     "editor.counterShow": "Counter",
     "editor.counterShow.title": "Draw the frame number and time over the picture",
+    "editor.meterShow": "Meter",
+    "editor.meterShow.title": "Show the audio level meter beside the picture",
     "editor.detectCm": "Detect commercials",
     "editor.detectCm.title": "Look for commercials and mark them with keyframes (Ctrl+D)",
     "editor.detecting": "Detecting… (the video is read too)",

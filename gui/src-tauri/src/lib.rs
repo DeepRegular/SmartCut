@@ -121,6 +121,14 @@ struct Playing(std::sync::atomic::AtomicU64);
 #[derive(Default)]
 struct Vol(smartcut_core::Volume);
 
+/// How loud each channel has been since the meter last drew.
+///
+/// Written by the audio output callback and emptied by the window that reads
+/// it, which is why it lives out here rather than in either of them. See
+/// [`smartcut_core::Levels`] and [`audio_levels`].
+#[derive(Default)]
+struct Meter(smartcut_core::Levels);
+
 /// Whether the cut editor is on screen.
 ///
 /// Playback belongs to that window, and [`Playing`] on its own cannot say so.
@@ -4069,8 +4077,12 @@ async fn play(
     // doc comment): it just keeps a ring buffer fed, and the sound card
     // paces itself. `Playing` is the one thing the two sides share, so
     // stopping either one stops both.
+    // Nothing has been heard of this run yet, and what the meter holds is
+    // the end of the last one.
+    app.state::<Meter>().0.clear();
     let audio_handle = audio_from.audio.is_some().then(|| {
         let level = app.state::<Vol>().0.clone();
+        let meter = app.state::<Meter>().0.clone();
         let audio_src = audio_from.clone();
         let audio_ranges = ranges.clone();
         let audio_app = app.clone();
@@ -4086,7 +4098,7 @@ async fn play(
                     || !stop_app.state::<EditorUp>().0.load(Ordering::SeqCst)
             };
             if let Err(e) =
-                smartcut_core::play_audio(&audio_src, &audio_ranges, from, &level, stop)
+                smartcut_core::play_audio(&audio_src, &audio_ranges, from, &level, &meter, stop)
             {
                 eprintln!("audio playback: {e}");
                 // Otherwise this fails in total silence: the release build has
@@ -4366,6 +4378,46 @@ fn stop_play(playing: State<Playing>) {
 #[tauri::command]
 fn set_volume(level: f64, volume: State<Vol>) {
     volume.0.set(level as f32);
+}
+
+/// What the sound has reached since this was last asked, per channel.
+///
+/// Emptied by the asking: a meter draws the peak of the moment it is
+/// drawing, not a total since playback began. The window asks about twenty
+/// times a second while something is playing and stops asking when it stops.
+///
+/// Cheap on purpose -- a few atomic reads, no lock and no decoding -- because
+/// it is on a timer. Silence comes back as an empty list, which is what a
+/// window that is not playing anything gets.
+#[tauri::command]
+fn audio_levels(meter: State<Meter>) -> Vec<f32> {
+    meter.0.take()
+}
+
+/// What the sound reaches around `time`, for a meter with nothing playing.
+///
+/// The other half of the same readout. Stepping a frame at a time past the
+/// end of a programme is exactly when somebody wants to see the level, and
+/// [`audio_levels`] has nothing to say there: no sound is being played, so
+/// none is being metered.
+///
+/// One frame's worth of sound, so the bars answer for the picture on the
+/// stage rather than for a stretch around it. Read from the recording -- a
+/// proxy carries no sound to read.
+#[tauri::command]
+async fn audio_peak_at(time: f64, window: f64, app: tauri::AppHandle) -> Result<Vec<f32>, String> {
+    off_thread(move || {
+        // Cloned, and the lock let go before the read: this runs while the
+        // window is otherwise idle, and a detection can be holding the
+        // recording for minutes. See [`opened_clone`].
+        let src = {
+            let state = app.state::<Opened>();
+            let guard = locked(&state.0);
+            guard.as_ref().ok_or("no file open")?.clone()
+        };
+        smartcut_core::peaks_at(&src, time, window).map_err(|e| e.to_string())
+    })
+    .await
 }
 
 /// Write the keyframe list beside the output.
@@ -5363,6 +5415,7 @@ pub fn run() {
         .manage(Held::default())
         .manage(Playing::default())
         .manage(Vol::default())
+        .manage(Meter::default())
         .manage(EditorUp::default())
         .manage(Subs::default())
         .manage(BatchStop::default())
@@ -5453,6 +5506,8 @@ pub fn run() {
             clip_gone,
             open_editor,
             editor_up,
+            audio_levels,
+            audio_peak_at,
             retitle_editor,
             retitle_main,
             close_editor,

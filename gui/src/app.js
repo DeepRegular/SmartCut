@@ -7903,6 +7903,7 @@ el("prefs").querySelector(".pref-tabs").addEventListener("keydown", (ev) => {
 function paintPrefs() {
   el("pref-lang").value = preference();
   el("pref-counter").checked = !!prefs.get("counter");
+  el("pref-meter").checked = prefs.get("meter") !== false;
   el("pref-subs").checked = !!prefs.get("subsOn");
   for (const [id, name] of PAGE_STEPS) {
     el(id).value = String(prefs.get(name));
@@ -8014,11 +8015,21 @@ el("pref-lang").addEventListener("change", async (ev) => {
 /// for one that is already up -- and the editor decides for itself what it
 /// can act on without being reopened.
 function tellEditorPrefs() {
-  if (emit) emit("prefs-changed", { counter: !!prefs.get("counter"), subsOn: !!prefs.get("subsOn") });
+  if (emit) {
+    emit("prefs-changed", {
+      counter: !!prefs.get("counter"),
+      meter: prefs.get("meter") !== false,
+      subsOn: !!prefs.get("subsOn"),
+    });
+  }
 }
 
 el("pref-counter").addEventListener("change", (ev) => {
   prefs.set("counter", ev.target.checked);
+  tellEditorPrefs();
+});
+el("pref-meter").addEventListener("change", (ev) => {
+  prefs.set("meter", ev.target.checked);
   tellEditorPrefs();
 });
 el("pref-subs").addEventListener("change", (ev) => {

@@ -122,6 +122,13 @@ const DEFAULTS = {
   /// Whether it draws the frame number and clock over the picture. Read by
   /// the editor at open; the button on its info bar is the same answer.
   counter: true,
+  /// Whether the cut editor shows the audio level meter beside the picture.
+  ///
+  /// On. What it answers -- how loud this moment is, and whether the next one
+  /// is the silence at a junction -- is half of what a cut is placed by, and
+  /// a meter nobody asked for costs 64 pixels of a window that is otherwise
+  /// all picture.
+  meter: true,
   /// What PageUp and PageDown do to the playhead: on their own, held with
   /// Shift, held with Ctrl, and held with both.
   ///

@@ -71,14 +71,134 @@ impl Default for Volume {
     }
 }
 
+/// As many channels as the meter has room for. Everything broadcast is one,
+/// two or six; a recording with more of them is metered on the first eight
+/// and the rest are not drawn. See [`Levels`].
+pub const METERED: usize = 8;
+
+/// How loud each channel has been since the meter last looked.
+///
+/// The editor draws a level meter beside the picture, and what it draws has
+/// to be *what is being played*: the loudest the recording reached over the
+/// stretch of it the sound card has just been handed. Neither end of the
+/// playback path can say that on its own.
+///
+/// * The **decode** end knows the recording's own channels, but it runs up to
+///   a second ahead of the card -- that second is the ring buffer -- so a
+///   meter fed from there would show a level before it was heard.
+/// * The **output** end knows what has actually been played, but by then the
+///   channels are the card's: WASAPI mixes every application at one format,
+///   so a 5.1 broadcast on a stereo output arrives here as two channels and
+///   a meter fed from there would drop from six bars to two the moment
+///   playback started.
+///
+/// So the two are put together. The decode end measures each frame as the
+/// recording holds it and leaves the answer beside the samples it produced
+/// ([`Bite`]); the output end, having handed those samples over, says how
+/// many frames' worth went and the peaks behind them are what the meter
+/// takes. The bars are the recording's channels, and they are the levels of
+/// the moment coming out of the speakers.
+///
+/// Read destructively: asking empties it. A meter is not a running total but
+/// the peak over the moment it is drawing, and the window asks about twenty
+/// times a second.
+///
+/// Atomics rather than a lock, for the reason [`Volume`] gives: the output
+/// callback must never wait. `fetch_max` works on the bits of an `f32`
+/// directly here because every one of these is a magnitude -- for two
+/// non-negative floats, the one with the larger IEEE bit pattern is the
+/// larger number.
+#[derive(Clone, Default)]
+pub struct Levels(Arc<Meter>);
+
+#[derive(Default)]
+struct Meter {
+    /// How many of the peaks below are being written, which is how many bars
+    /// the meter draws. The recording's own channel count; see above.
+    channels: AtomicU32,
+    peak: [AtomicU32; METERED],
+}
+
+/// One decoded frame, as the meter sees it: how loud each of the recording's
+/// channels was in it, and how many frames of output it turned into.
+///
+/// The count is in output frames because that is what the card consumes, and
+/// what the card has consumed is the only measure of what has been heard.
+#[derive(Clone, Copy)]
+struct Bite {
+    frames: usize,
+    channels: usize,
+    peaks: [f32; METERED],
+}
+
+impl Levels {
+    /// Take what the card has just played: `frames` output frames' worth of
+    /// the peaks waiting in `bites`.
+    ///
+    /// A frame's peak counts in full as soon as any of it has been heard --
+    /// it is a peak, not an average, and a decoded frame is tens of
+    /// milliseconds, which is shorter than the meter's own step.
+    ///
+    /// Measured *before* the volume is applied, because the levels are
+    /// applied to the samples on their way out of the ring and these were
+    /// measured on the way in: the meter says what the recording holds, and
+    /// turning the monitoring down does not make a programme quieter.
+    fn eat(&self, bites: &mut VecDeque<Bite>, mut frames: usize) {
+        while frames > 0 {
+            let Some(front) = bites.front_mut() else { break };
+            let took = front.frames.min(frames);
+            let channels = front.channels.clamp(1, METERED);
+            self.0.channels.store(channels as u32, Ordering::Relaxed);
+            for ch in 0..channels {
+                self.0.peak[ch].fetch_max(front.peaks[ch].to_bits(), Ordering::Relaxed);
+            }
+            front.frames -= took;
+            frames -= took;
+            if front.frames == 0 {
+                bites.pop_front();
+            }
+        }
+    }
+
+    /// What each channel reached since this was last asked, and back to
+    /// nothing for the next moment.
+    pub fn take(&self) -> Vec<f32> {
+        let channels = (self.0.channels.load(Ordering::Relaxed) as usize).min(METERED);
+        (0..channels)
+            .map(|ch| f32::from_bits(self.0.peak[ch].swap(0, Ordering::Relaxed)))
+            .collect()
+    }
+
+    /// Nothing is playing, so nothing is being heard. Said at both ends of a
+    /// run: a meter left holding the last buffer of the last playback is a
+    /// meter reporting a sound that stopped.
+    pub fn clear(&self) {
+        self.0.channels.store(0, Ordering::Relaxed);
+        for p in &self.0.peak {
+            p.store(0, Ordering::Relaxed);
+        }
+    }
+}
+
+/// What is waiting for the card: the samples themselves, and the peaks that
+/// go with them. One lock covers both, because the output callback takes
+/// them together and a callback that takes two locks is a callback with two
+/// ways to be late.
+#[derive(Default)]
+struct Feed {
+    samples: VecDeque<f32>,
+    bites: VecDeque<Bite>,
+}
+
 /// Block until there is room, or `stop` says to give up. Never blocks forever
 /// on a chunk bigger than `cap`: one decoded frame is at most a few thousand
 /// samples, far under a second's worth.
 fn push(
-    ring: &Mutex<VecDeque<f32>>,
+    ring: &Mutex<Feed>,
     cap: usize,
     stop: &impl Fn() -> bool,
     samples: Vec<f32>,
+    bite: Bite,
 ) -> bool {
     loop {
         if stop() {
@@ -86,8 +206,9 @@ fn push(
         }
         {
             let mut q = ring.lock().unwrap();
-            if q.len() + samples.len() <= cap || q.is_empty() {
-                q.extend(samples);
+            if q.samples.len() + samples.len() <= cap || q.samples.is_empty() {
+                q.samples.extend(samples);
+                q.bites.push_back(bite);
                 return true;
             }
         }
@@ -121,6 +242,93 @@ fn frame_window(n: usize, rate: u32, t: f64, start: f64, end: f64) -> Option<(us
 fn packed_f32(frame: &ff::frame::Audio, channels: usize) -> &[f32] {
     let n = frame.samples() * channels;
     unsafe { std::slice::from_raw_parts((*frame.as_ptr()).data[0] as *const f32, n) }
+}
+
+/// The loudest each of a decoded frame's own channels gets, as a fraction of
+/// full scale, and how many channels that was.
+///
+/// Measured on the frame as the recording holds it -- before the resampling
+/// that puts it into whatever shape the card takes -- because that is what
+/// the meter is about: a 5.1 broadcast has six bars whether or not the
+/// machine can play six channels.
+///
+/// `ffmpeg-next`'s own `plane()` cannot be used for the same reason
+/// [`packed_f32`] exists: it hands back a slice of `samples()` elements
+/// whatever the packing, which for an interleaved frame is short by the
+/// channel count. The lengths are worked out here instead.
+fn frame_peaks(frame: &ff::frame::Audio, out: &mut [f32; METERED]) -> usize {
+    use ff::format::sample::Sample;
+    // What the samples are laid out in, and what is metered: the first eight
+    // of them. The two are not the same number on a recording with more
+    // channels than the meter has bars, and an interleaved frame has to be
+    // strided by the layout's count or every bar reads the wrong channel.
+    let laid = (frame.channels() as usize).max(1);
+    let channels = laid.min(METERED);
+    out.fill(0.0);
+    // A frame can claim more planes than an `AVFrame` has pointers to hold:
+    // eight is all there are, and a corrupt header in an off-air recording is
+    // enough to ask for a ninth. See `cm::frame_peak`, which learned it the
+    // hard way.
+    let planar = frame.is_planar();
+    let planes = if planar { frame.planes().min(channels) } else { 1 };
+    for p in 0..planes {
+        let n = if planar {
+            frame.samples()
+        } else {
+            frame.samples() * laid
+        };
+        // The channel a sample belongs to: the plane itself where the frame
+        // is planar, and its place in the interleaving where it is not.
+        let of = |i: usize| if planar { p } else { i % laid };
+        unsafe {
+            let data = (*frame.as_ptr()).data[p];
+            if data.is_null() {
+                continue;
+            }
+            match frame.format() {
+                Sample::F32(_) => {
+                    scan(std::slice::from_raw_parts(data as *const f32, n), of, out, |v| v.abs())
+                }
+                Sample::F64(_) => {
+                    scan(std::slice::from_raw_parts(data as *const f64, n), of, out, |v| {
+                        v.abs() as f32
+                    })
+                }
+                Sample::I16(_) => {
+                    scan(std::slice::from_raw_parts(data as *const i16, n), of, out, |v| {
+                        v.unsigned_abs() as f32 / 32768.0
+                    })
+                }
+                Sample::I32(_) => {
+                    scan(std::slice::from_raw_parts(data as *const i32, n), of, out, |v| {
+                        v.unsigned_abs() as f32 / 2147483648.0
+                    })
+                }
+                // A format nothing here decodes to. Metered as full scale
+                // rather than as silence: a meter that reads zero says the
+                // recording is silent, which is a worse lie than one that
+                // reads loud.
+                _ => out[..channels].fill(1.0),
+            }
+        }
+    }
+    channels
+}
+
+/// One plane's samples, into the peaks they belong to.
+fn scan<T: Copy>(
+    data: &[T],
+    of: impl Fn(usize) -> usize,
+    out: &mut [f32; METERED],
+    mag: impl Fn(T) -> f32,
+) {
+    for (i, &v) in data.iter().enumerate() {
+        let ch = of(i);
+        let m = mag(v);
+        if ch < METERED && m > out[ch] {
+            out[ch] = m;
+        }
+    }
 }
 
 /// What the ring buffer holds, and what the output stream is asked for.
@@ -212,11 +420,13 @@ const FALLBACKS: [&str; 3] = ["pipewire", "pulse", "sysdefault"];
 fn build_stream(
     device: &cpal::Device,
     config: &cpal::StreamConfig,
-    ring: &Arc<Mutex<VecDeque<f32>>>,
+    ring: &Arc<Mutex<Feed>>,
     volume: &Volume,
+    levels: &Levels,
 ) -> Result<cpal::Stream, cpal::BuildStreamError> {
     let feed = ring.clone();
     let level = volume.clone();
+    let meter = levels.clone();
     let channels = config.channels.max(1) as usize;
     let mut was = level.get();
     device.build_output_stream(
@@ -225,12 +435,20 @@ fn build_stream(
             let want = level.get();
             let frames = (data.len() / channels).max(1);
             let mut q = feed.lock().unwrap();
+            // What was actually there to play. A buffer the decode did not
+            // keep up with is padded with silence below, and silence nobody
+            // recorded is not something to meter.
+            let had = q.samples.len().min(data.len()) / channels;
             for (i, out) in data.iter_mut().enumerate() {
                 // Per frame, not per sample: the two channels of one instant
                 // are one instant, and they are scaled by the one number.
                 let at = (i / channels) as f32 / frames as f32;
-                *out = q.pop_front().unwrap_or(0.0) * (was + (want - was) * at);
+                *out = q.samples.pop_front().unwrap_or(0.0) * (was + (want - was) * at);
             }
+            // Under the same lock, and before it is let go: the peaks behind
+            // the samples just played are what the meter is about.
+            meter.eat(&mut q.bites, had);
+            drop(q);
             was = want;
         },
         |e| eprintln!("audio output error: {e}"),
@@ -294,12 +512,13 @@ fn candidates(device: &cpal::Device, want: (u32, u16)) -> Vec<cpal::StreamConfig
 fn open_on(
     device: &cpal::Device,
     want: (u32, u16),
-    ring: &Arc<Mutex<VecDeque<f32>>>,
+    ring: &Arc<Mutex<Feed>>,
     volume: &Volume,
+    levels: &Levels,
     why: &mut Option<cpal::BuildStreamError>,
 ) -> Option<Output> {
     for config in candidates(device, want) {
-        match build_stream(device, &config, ring, volume) {
+        match build_stream(device, &config, ring, volume, levels) {
             Ok(stream) => {
                 return Some(Output {
                     stream,
@@ -324,12 +543,17 @@ fn open_on(
 /// unplugged" while it is sitting there playing everything else on the
 /// desktop. Asking the sound server for its own PCM by name gets us the same
 /// device every other application on that desktop is already using.
-fn open_output(want: (u32, u16), ring: &Arc<Mutex<VecDeque<f32>>>, volume: &Volume) -> Result<Output> {
+fn open_output(
+    want: (u32, u16),
+    ring: &Arc<Mutex<Feed>>,
+    volume: &Volume,
+    levels: &Levels,
+) -> Result<Output> {
     let host = cpal::default_host();
     let mut why = None;
 
     if let Some(device) = host.default_output_device() {
-        if let Some(out) = open_on(&device, want, ring, volume, &mut why) {
+        if let Some(out) = open_on(&device, want, ring, volume, levels, &mut why) {
             return Ok(out);
         }
     }
@@ -352,7 +576,7 @@ fn open_output(want: (u32, u16), ring: &Arc<Mutex<VecDeque<f32>>>, volume: &Volu
             .unwrap_or(usize::MAX)
     });
     for device in named {
-        if let Some(out) = open_on(&device, want, ring, volume, &mut why) {
+        if let Some(out) = open_on(&device, want, ring, volume, levels, &mut why) {
             let name = device.name().unwrap_or_default();
             eprintln!("audio output: default would not open, playing through {name}");
             return Ok(out);
@@ -386,6 +610,7 @@ pub fn play_audio(
     ranges: &[(f64, f64)],
     from: f64,
     volume: &Volume,
+    levels: &Levels,
     stop: impl Fn() -> bool,
 ) -> Result<()> {
     let Some(audio) = src.audio.clone() else {
@@ -405,8 +630,8 @@ pub fn play_audio(
     // entirely; ~20ms is short enough nobody previewing a cut would notice
     // the added latency. `candidates` heads its ladder with that.
     let want = (audio.sample_rate, audio.channels);
-    let ring = Arc::new(Mutex::new(VecDeque::<f32>::new()));
-    let out = open_output(want, &ring, volume)?;
+    let ring = Arc::new(Mutex::new(Feed::default()));
+    let out = open_output(want, &ring, volume, levels)?;
     let (rate, channels) = (out.sample_rate, out.channels);
     if (rate, channels) != want {
         eprintln!(
@@ -469,11 +694,16 @@ pub fn play_audio(
                     past_end = true;
                     break;
                 }
+                // Measured before the resampling, so the meter answers for
+                // the recording's channels rather than the card's.
+                let mut peaks = [0f32; METERED];
+                let heard = frame_peaks(&frame, &mut peaks);
                 let data = resample(&mut resampler, &mut resampled, &frame, rate, layout)?;
                 let n = data.len() / channels as usize;
                 if let Some((lo, hi)) = frame_window(n, rate, t, start, b) {
                     let samples = data[lo * channels as usize..hi * channels as usize].to_vec();
-                    if !push(&ring, cap, &stop, samples) {
+                    let bite = Bite { frames: hi - lo, channels: heard, peaks };
+                    if !push(&ring, cap, &stop, samples, bite) {
                         break 'ranges;
                     }
                 }
@@ -487,10 +717,92 @@ pub fn play_audio(
     // Let the tail play out rather than cutting it off the instant decoding
     // catches up with the ranges.
     while !stop() {
-        if ring.lock().unwrap().is_empty() {
+        if ring.lock().unwrap().samples.is_empty() {
             break;
         }
         std::thread::sleep(Duration::from_millis(20));
     }
+    // Nothing is coming out of the card any more, whichever way this ended.
+    // The meter is left holding whatever the last buffer reached otherwise,
+    // which reads as a sound that is still playing.
+    levels.clear();
     Ok(())
+}
+
+/// How loud each channel is at `time`, over a window `window` seconds long.
+///
+/// What the meter shows while nothing is playing. The level under the
+/// playhead is as much a part of judging where to cut as the picture is --
+/// the quiet between a programme and a break is what a commercial boundary
+/// sounds like -- and stepping a frame at a time with a meter stuck at zero
+/// says nothing at all.
+///
+/// The recording's own channels rather than the sound card's, because
+/// nothing here goes near a card: a 5.1 broadcast has six bars whatever the
+/// machine would play it through.
+///
+/// One seek and a short decode. The caller is expected to hold off until the
+/// playhead has settled -- this is a read of the file, and at a frame a
+/// keystroke it would be one read per keystroke.
+pub fn peaks_at(src: &Source, time: f64, window: f64) -> Result<Vec<f32>> {
+    let Some(audio) = src.audio.as_ref() else {
+        return Ok(Vec::new());
+    };
+    crate::init()?;
+    let channels = (audio.channels as usize).clamp(1, METERED);
+    let mut peaks = vec![0f32; channels];
+
+    let mut ictx = crate::input::demux(&src.input.url)?;
+    let idx = audio.stream_index;
+    let params = ictx
+        .stream(idx)
+        .ok_or_else(|| anyhow!("stream {idx} vanished"))?
+        .parameters();
+    let mut decoder = ff::codec::context::Context::from_parameters(params)?
+        .decoder()
+        .audio()?;
+
+    // Early, as `play_audio` seeks: landing past the moment asked about would
+    // meter the wrong instant, and landing early only costs a few frames of
+    // decoding that are then passed over.
+    let landing = (time - src.seek_margin).max(0.0);
+    let target = ((landing + src.start_time) * ff::ffi::AV_TIME_BASE as f64) as i64;
+    let _ = ictx.seek(target, ..target);
+    decoder.flush();
+
+    let layout = ff::channel_layout::ChannelLayout::default(channels as i32);
+    let mut resampler: Option<ff::software::resampling::Context> = None;
+    let mut resampled = ff::frame::Audio::empty();
+    let mut frame = ff::frame::Audio::empty();
+    let end = time + window.max(0.0);
+
+    'packets: for (stream, packet) in ictx.packets() {
+        if stream.index() != idx {
+            continue;
+        }
+        if decoder.send_packet(&packet).is_err() {
+            continue;
+        }
+        while decoder.receive_frame(&mut frame).is_ok() {
+            let Some(pts) = frame.pts() else { continue };
+            let t = pts as f64 * audio.time_base - src.start_time;
+            let dur = frame.samples() as f64 / audio.sample_rate.max(1) as f64;
+            if t >= end {
+                break 'packets;
+            }
+            // Wholly before the window: seeking lands early on purpose.
+            if t + dur <= time {
+                continue;
+            }
+            let data = resample(&mut resampler, &mut resampled, &frame, audio.sample_rate, layout)?;
+            for (i, &s) in data.iter().enumerate() {
+                let ch = i % channels;
+                let m = s.abs();
+                if m > peaks[ch] {
+                    peaks[ch] = m;
+                }
+            }
+        }
+    }
+    Ok(peaks)
 }

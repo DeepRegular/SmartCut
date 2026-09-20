@@ -344,6 +344,24 @@ main { flex: 1; min-height: 0; display: flex; gap: 0; }
 }
 #keyframes .kill:hover { color: #ff8a80; }
 .clips-empty { color: var(--dim); padding: 8px; font-size: 11px; }
+/* --- 音声レベル -------------------------------------------------------- */
+/* The meter and the picture beside it. The row takes the height the stage
+   used to take, and the stage takes what is left of the width: the meter is
+   64px whatever the window is, because a meter that grows with the window is
+   a meter that says nothing more for the room.
+
+   The meter first, so that it stands between the marks and the picture: the
+   scale goes down its outer edge and the bars against the picture, which is
+   the half of it that is read at a glance. */
+.stage-row { flex: 1 1 0; min-height: 160px; display: flex; gap: 6px; }
+.stage-row .stage { min-width: 0; }
+.meter {
+  width: 64px; flex: none; background: #0d0d0d; border: 1px solid var(--line);
+}
+/* `display` on the element beats the attribute, as with `.screen`. */
+.meter[hidden] { display: none; }
+#meter-face { display: block; width: 100%; height: 100%; }
+
 /* --- picture ---------------------------------------------------------- */
 /* No `width: 100%`. As a flex item in a column it already stretches to the
    full width, and the percentage is of that same width -- so on 出力画面,

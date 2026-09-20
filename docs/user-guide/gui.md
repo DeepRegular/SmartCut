@@ -315,6 +315,7 @@ frames, and `Snap to lossless` can take those to zero once it lights up.
 | Info bar | Lossless points, resolution, fps, scan type, audio, codec. **Tracks** and **Detect commercials** on the right |
 | Left column | The **keyframes** — your marks, each with a thumbnail. Click one to jump there |
 | The large picture | The preview. At its foot, in the middle: frame number, timecode, what kind of frame it is, and the current selection. **Counter**, on the bottom line, turns them off |
+| Beside it, on the left | The **audio level meter**: what is being heard while something plays, and the sound under the playhead while nothing does. **Meter**, on the bottom line, turns it off |
 | The band under it | The **filmstrip**: the frames around you, laid out as pictures. The `View` menu on the right sets how much time one cell covers |
 | The scrubber | **Green is the output itself.** `▼` are keyframes, a red vertical line is a join left by a cut, and the fine ticks below are scene changes |
 | The button row | **Cut** in the middle, `[ IN` to its left and `OUT ]` to its right, and outwards from there: go to, one frame, lossless point, start and end |
@@ -374,6 +375,29 @@ The **volume** is the preview's alone — what gets written is untouched. ♪ si
 it and brings it back (so does `M`), and the wheel over the slider moves it. Both
 are remembered, so the next clip opens at the level you were working at. On a
 recording with no sound, neither is available.
+
+### Watching the level
+
+The meter stands the height of the picture, on its left. While something is
+playing it shows what is actually being heard; while nothing is, it shows the
+frame under the playhead. The scale is dBFS, 0 at the top being the point
+where it would clip: green to -18, amber to -6, red above that, and the thin
+line above each bar is the last peak.
+
+**A commercial junction is a second of near silence.** Stepping a frame at a
+time with an eye on the meter is how to find the frame that silence begins at,
+which is frequently clearer than anything in the picture.
+
+**There is a bar per channel the recording carries** — one for mono, two for
+stereo, six for 5.1, eight for 7.1. Eight is the most it draws; a recording
+with more than that is metered on its first eight. The bars share the width of
+the column, so they thin out as the count rises. The count does not change on a machine that can only play
+two of them: what the meter reports is the sound in the recording, not the
+downmix the hardware made of it.
+
+On a recording with no sound the scale stands empty. **Meter**, on the bottom
+line, puts the whole column away, and **Preferences → Windows** holds the
+same answer.
 
 ### Showing the subtitles
 
@@ -900,6 +924,7 @@ effect as you make it.
 |---|---|
 | **Language** | English, Japanese, or follow the system (the default). A change takes effect in both windows at once |
 | **Frame number and clock over the picture** | The box at the foot of the cut editor's picture. The same answer as its **Counter** button |
+| **Audio level meter** | The meter beside the cut editor's picture. The same answer as its **Meter** button |
 | **Show the subtitles from the start** | Opens a recording that carries subtitles with the first track already chosen. It can still be switched while cutting |
 
 ### Cut editor

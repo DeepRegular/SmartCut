@@ -1016,6 +1016,10 @@ async function showFrame(t) {
     draw();
     el("preview").src = shot.url;
     shownTime = shot.time;
+    // The two readouts that are about the frame rather than about the edit,
+    // and the two that cost a read of the recording. Both wait for the
+    // playhead to settle; see `scheduleMeterAt`.
+    scheduleMeterAt();
     const onPoint = exact && atPoint(shot.time);
     el("ovl-kind").textContent = tr(
       onPoint
@@ -1447,6 +1451,263 @@ if (counterButton) {
   // the stage is what the button is about, and two of them would be one too
   // many things to keep in step.
   counterButton.addEventListener("click", () => showCounter(el("overlay").hidden));
+}
+
+// --- 音声レベル ----------------------------------------------------------
+//
+// The meter beside the picture, and the two places it gets its numbers from.
+//
+// While something is playing it is the sound card's own: `audio_levels` hands
+// back the loudest sample each channel was fed since it was last asked, which
+// is the sound coming out of the machine rather than the sound being decoded
+// a second ahead of it.
+//
+// While nothing is playing it is the frame under the playhead: `audio_peak_at`
+// reads that moment out of the recording. That half is what the meter is for
+// -- the quiet between a programme and a commercial break is how a junction
+// sounds, and stepping a frame at a time past one with a meter stuck at zero
+// says nothing at all -- and it is also the expensive half, a seek and a
+// short decode, so it waits for the playhead to settle.
+
+/// The bottom of the scale. Broadcast material sits between -30 and -6 dBFS
+/// and a junction drops to the floor; below this there is nothing to see.
+const METER_FLOOR = -60;
+/// How fast a bar falls when the sound does, in dB a second. Slow enough to
+/// read at a glance, fast enough that a junction looks like one.
+const METER_FALL = 90;
+/// How long a peak mark stays where it was put, and how fast it comes down
+/// afterwards.
+const METER_HOLD = 1.2;
+const METER_HOLD_FALL = 24;
+/// How wide one bar may grow. A mono recording has the whole column to
+/// itself and does not want it.
+const BAR_MAX = 16;
+/// How often the meter asks while something is playing.
+const METER_TICK = 50;
+/// How long after the playhead settles before the frame under it is read.
+/// The same shape the plan panel's wait has, and for the same reason: a held
+/// arrow key must not become one read of the recording per frame.
+const METER_WAIT = 140;
+
+const dbOf = (v) => (v > 0 ? Math.max(METER_FLOOR, 20 * Math.log10(v)) : METER_FLOOR);
+
+let meterOn = prefs.get("meter") !== false;
+/// The bars and the peak marks, in dB, one per channel.
+let meterBars = [];
+let meterHeld = [];
+let meterHeldAt = [];
+/// The poll while playing, and the wait while not.
+let meterTimer = null;
+let meterAsk = null;
+let meterToken = 0;
+let meterLast = 0;
+
+function meterFace() {
+  return el("meter-face");
+}
+
+/// Draw the meter as it stands. Everything is on the one canvas: the bars,
+/// the peak marks and the scale beside them.
+function paintMeter() {
+  const face = meterFace();
+  if (!face || !meterOn) return;
+  const box = face.parentElement.getBoundingClientRect();
+  const dpr = window.devicePixelRatio || 1;
+  const w = Math.max(1, Math.round(box.width * dpr));
+  const h = Math.max(1, Math.round(box.height * dpr));
+  if (face.width !== w || face.height !== h) {
+    face.width = w;
+    face.height = h;
+  }
+  const g = face.getContext("2d");
+  g.clearRect(0, 0, w, h);
+  const pad = Math.round(4 * dpr);
+  const scaleW = Math.round(22 * dpr);
+  const top = pad;
+  const bottom = h - pad;
+  const span = Math.max(1, bottom - top);
+  const at = (db) => bottom - (span * (db - METER_FLOOR)) / -METER_FLOOR;
+
+  // The scale down the outer edge and the bars against the picture: the
+  // column stands to the left of the stage, and what is read at a glance is
+  // how high the bars are, not what the numbers say. Drawn whether or not
+  // anything is playing -- a meter with no numbers on it is a moving
+  // picture, not a measurement.
+  g.fillStyle = "#6b7378";
+  g.font = `${Math.round(8.5 * dpr)}px system-ui, sans-serif`;
+  g.textAlign = "right";
+  g.textBaseline = "middle";
+  const ticks = pad + scaleW;
+  for (const db of [0, -6, -12, -18, -24, -30, -40, -50, -60]) {
+    const y = at(db);
+    g.fillRect(
+      ticks - Math.round(3 * dpr),
+      Math.round(y),
+      Math.round(3 * dpr),
+      Math.max(1, Math.round(dpr))
+    );
+    g.fillText(db === 0 ? "0" : String(db), ticks - Math.round(5 * dpr), y);
+  }
+
+  // A bar per channel the recording carries: one for mono, six for 5.1,
+  // eight for 7.1, and two for a column with nothing in it yet. They share
+  // the width of the column, so the gap closes up as the count rises -- at
+  // eight bars a 3px gap leaves less bar than gap, and the last of them off
+  // the end of the column. A bar is also not allowed to grow past `BAR_MAX`:
+  // one channel across the whole column reads as a block of colour rather
+  // than as a level, so a narrow group is centred instead.
+  const bars = Math.max(1, meterBars.length || 2);
+  const room = w - scaleW - pad * 2;
+  const gap = Math.round((bars > 6 ? 1 : bars > 4 ? 2 : 3) * dpr);
+  const bw = clamp(
+    Math.floor((room - gap * (bars - 1)) / bars),
+    2,
+    Math.round(BAR_MAX * dpr)
+  );
+  const from = ticks + Math.round(Math.max(0, room - (bw * bars + gap * (bars - 1))) / 2);
+  for (let i = 0; i < bars; i++) {
+    const x = from + i * (bw + gap);
+    g.fillStyle = "#1b1b1b";
+    g.fillRect(x, top, bw, span);
+    const db = meterBars[i];
+    if (db !== undefined && db > METER_FLOOR) {
+      // Three bands, and the bar is drawn in whichever of them it reaches
+      // into: green up to -18, amber to -6, red above it. The colours are
+      // the ones a broadcast meter uses, so a level that looks safe here is
+      // one that was safe on the desk the programme came off.
+      for (const [from, to, colour] of [
+        [METER_FLOOR, -18, "#3fbf6f"],
+        [-18, -6, "#e0c04a"],
+        [-6, 0, "#e05a4a"],
+      ]) {
+        const lo = Math.min(db, to);
+        if (lo <= from) continue;
+        g.fillStyle = colour;
+        g.fillRect(x, Math.round(at(lo)), bw, Math.round(at(from) - at(lo)));
+      }
+    }
+    const held = meterHeld[i];
+    if (held !== undefined && held > METER_FLOOR) {
+      g.fillStyle = held > -6 ? "#ff8f7f" : "#cfd8dc";
+      g.fillRect(x, Math.round(at(held)) - 1, bw, Math.max(1, Math.round(1.5 * dpr)));
+    }
+  }
+}
+
+/// Take a reading: the bars follow it down at their own pace, and the peak
+/// marks stay where they were put for a moment. `fall` is false for a
+/// reading that is a single instant rather than a moment of playback -- the
+/// frame under a playhead that is not moving does not decay towards silence.
+function meterTake(values, fall) {
+  const now = performance.now();
+  const dt = Math.min(0.25, Math.max(0, (now - meterLast) / 1000));
+  meterLast = now;
+  const n = values.length;
+  if (meterBars.length !== n) {
+    meterBars = new Array(n).fill(METER_FLOOR);
+    meterHeld = new Array(n).fill(METER_FLOOR);
+    meterHeldAt = new Array(n).fill(0);
+  }
+  for (let i = 0; i < n; i++) {
+    const db = dbOf(values[i]);
+    meterBars[i] = fall ? Math.max(db, meterBars[i] - METER_FALL * dt) : db;
+    if (db >= meterHeld[i] || !fall) {
+      meterHeld[i] = db;
+      meterHeldAt[i] = now;
+    } else if (now - meterHeldAt[i] > METER_HOLD * 1000) {
+      meterHeld[i] = Math.max(meterBars[i], meterHeld[i] - METER_HOLD_FALL * dt);
+    }
+  }
+  paintMeter();
+}
+
+/// Nothing to show: no recording, no sound, or the meter switched off.
+function meterSilent() {
+  meterBars = [];
+  meterHeld = [];
+  meterHeldAt = [];
+  paintMeter();
+}
+
+/// Ask for the level under the playhead, once it has stopped moving.
+///
+/// One frame's worth of sound, so what the bars say is about the picture on
+/// the stage. Dropped where the window has moved on since -- the answer to a
+/// frame nobody is looking at any more would land after the answer to the
+/// frame they are.
+function scheduleMeterAt() {
+  clearTimeout(meterAsk);
+  if (!meterOn || !src || playing) return;
+  if (!src.has_audio) {
+    meterSilent();
+    return;
+  }
+  meterAsk = setTimeout(async () => {
+    const token = ++meterToken;
+    try {
+      const peaks = await invoke("audio_peak_at", { time: playhead, window: frame() });
+      if (token !== meterToken || playing) return;
+      meterTake(peaks || [], false);
+    } catch (e) {
+      // A recording being read by something else, a track that will not
+      // decode: the meter simply has nothing to say. Not worth a line on a
+      // status bar that is about the cut.
+      jlog(`audio_peak_at: ${e}`);
+    }
+  }, METER_WAIT);
+}
+
+/// Follow the sound while it plays.
+function meterRun(on) {
+  clearInterval(meterTimer);
+  meterTimer = null;
+  if (!on || !meterOn) return;
+  meterLast = performance.now();
+  meterTimer = setInterval(async () => {
+    if (!playing) return;
+    try {
+      const levels = await invoke("audio_levels");
+      if (!playing) return;
+      meterTake(levels || [], true);
+    } catch (e) {
+      jlog(`audio_levels: ${e}`);
+    }
+  }, METER_TICK);
+}
+
+/// The look of it: the column, the button, and an empty scale drawn on the
+/// canvas. Kept apart from `showMeter` because this much can be settled as
+/// the page loads and the rest cannot -- what a meter being switched on
+/// should do next depends on whether anything is playing, and the playback
+/// state is declared further down this file.
+function meterLook(on) {
+  meterOn = on;
+  el("meter").hidden = !on;
+  const button = el("meter-show");
+  if (button) {
+    button.classList.toggle("on", on);
+    button.setAttribute("aria-pressed", on ? "true" : "false");
+  }
+  paintMeter();
+}
+
+function showMeter(on, remember = true) {
+  meterLook(on);
+  if (on) {
+    if (playing) meterRun(true);
+    else scheduleMeterAt();
+  } else {
+    meterRun(false);
+    clearTimeout(meterAsk);
+  }
+  if (!remember) return;
+  prefs.set("meter", on);
+}
+
+const meterButton = el("meter-show");
+if (meterButton) {
+  meterLook(meterOn);
+  meterButton.addEventListener("click", () => showMeter(el("meter").hidden));
 }
 
 // --- film strip ---------------------------------------------------------
@@ -2632,6 +2893,14 @@ function setPlaying(on) {
   playing = on;
   el("play").textContent = tr(on ? "t.stop" : "t.play");
   el("play").classList.toggle("on", on);
+  // The meter follows the sound card while a run lasts, and goes back to
+  // reading the frame under the playhead when it ends -- which is where the
+  // window stopped, and what somebody who stopped there is looking at.
+  meterRun(on);
+  if (!on) {
+    meterSilent();
+    scheduleMeterAt();
+  }
   if (!on) {
     playAnchor = null;
     if (reelRaf) cancelAnimationFrame(reelRaf);
@@ -3916,6 +4185,9 @@ async function openPath(picked, saved, side, name, chapters, dropPids) {
     stripShots = [];
     forgetGlances();
     shownTime = -1;
+    // Another recording: what the meter is holding is about the one
+    // before it.
+    meterSilent();
     hideHover();
     // What the line under the strip says is about a recording that has been
     // read through, so on the way into another one it is about the wrong
@@ -4806,6 +5078,9 @@ window.addEventListener("resize", relayout);
 function relayout() {
   draw();
   drawSubs();
+  // The meter is a canvas sized to its box, so a window that changed shape
+  // is a meter drawn at the wrong size until it is drawn again.
+  paintMeter();
   // the reel is placed in pixels, so a narrower window is a wrong offset --
   // and a narrower window holds fewer cells, so it wants a fresh reel too
   holdReel();
@@ -5027,6 +5302,7 @@ if (listen) {
   hear("prefs-changed", (ev) => {
     const said = ev.payload || {};
     if (typeof said.counter === "boolean") showCounter(said.counter, false);
+    if (typeof said.meter === "boolean") showMeter(said.meter, false);
   });
   // A row renamed in the list while this window is up. The name is the list's
   // to give -- it is the row that was renamed and not the recording -- so it
