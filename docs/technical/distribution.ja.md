@@ -10,41 +10,41 @@ cd gui/src-tauri && NO_STRIP=1 cargo tauri build --bundles appimage
 # -> target/release/bundle/appimage/SmartCut_0.7.4_amd64.AppImage
 ```
 
-成果物は **185.9 MB で、共有ライブラリ 745 個をすべて抱えている**。WebKitGTK 4.1 も、
+成果物は 185.9 MB で、共有ライブラリ 745 個をすべて同梱している。WebKitGTK 4.1 も、
 `libavcodec` / `libavformat` / `libavutil` / `libavfilter` / `libswscale` /
-`libswresample` も入っているので、**動かす側に ffmpeg は不要**である。SmartCut は
-システムの FFmpeg 7.1 に動的リンクしているので、これを同梱できるかどうかで配布の
-成否が決まった。拾うのは linuxdeploy で、`ldd` を辿る。
+`libswresample` も入っているので、**動かす側に ffmpeg を入れる必要はない**。
+SmartCut はシステムの FFmpeg 7.1 に動的リンクしているので、配布できるかどうかは
+これを同梱できるかで決まった。ライブラリは linuxdeploy が `ldd` を辿って集める。
 
 | 条件 | 値 |
 |---|---|
-| 必要な glibc | **2.39 以上**（Ubuntu 24.04 / Debian 13 / Fedora 40 以降） |
+| 必要な glibc | 2.39 以上（Ubuntu 24.04 / Debian 13 / Fedora 40 以降） |
 | FUSE | 必要（または `--appimage-extract-and-run`） |
 | ALSA | `libasound.so.2`（同梱しない。後述） |
 | ビルド環境 | Debian 13、glibc 2.41 |
 
-同梱できないのは glibc だけで（AppImage に内在する制約）、それが下限を決めている。
+AppImage の仕組み上 glibc だけは同梱できないので、glibc のバージョンが下限になる。
 
 ### なぜ `NO_STRIP=1` を付けるのか
 
-付けないと、以前は linuxdeploy が同梱するライブラリごとに `Strip call failed` で落ちて
-いた（`failed to run linuxdeploy`）。**2026-08-28 の時点で再現しなくなっており**、
-素のビルドでも通る。
+付けないと、以前は linuxdeploy が同梱するライブラリごとに `Strip call failed` で
+落ちていた（`failed to run linuxdeploy`）。2026-08-28 の時点では再現しなくなって
+おり、素のビルドでも通る。
 
-**そして成果物のサイズはどちらでも同じである。** v0.1.1 を両方の条件でビルドしたところ、
-どちらも 184,515,064 バイトだった（md5 が違うのは squashfs のタイムスタンプによるもので、
-strip が削れるバイトは無い）。Debian の共有ライブラリはもとから strip 済みである。
-払う代償が無いので `NO_STRIP=1` は残してある。
+成果物のサイズはどちらでも同じである。v0.1.1 を両方の条件でビルドしたところ、
+どちらも 184,515,064 バイトだった（md5 が違うのは squashfs のタイムスタンプによる
+もので、strip が削れるバイトは無い）。Debian の共有ライブラリはもとから strip 済み
+である。**付けておいて損は無い**ので、`NO_STRIP=1` は残してある。
 
 ### ALSA は同梱しない
 
 音声再生（cpal）を入れたことで、バイナリが `libasound.so.2` と `libjack.so.0` を
-dlopen ではなく **DT_NEEDED で直接**必要とするようになった。どちらも linuxdeploy が
+dlopen ではなく DT_NEEDED で直接参照するようになった。どちらも linuxdeploy が
 参照する AppImage の除外リストに載っているので、`ldd` を辿る同梱の対象から外れ、
 **動作中のシステム側のものが使われる**。
 
 libasound2 はデスクトップ Linux ならまず入っているし、ALSA を抱え込むと環境を
-またいだときにかえって壊れやすい。だから除外のままにしてある。何が同梱されているかは
+またいだときにかえって壊れやすいので、除外のままにしてある。何が同梱されているかは
 展開して確認できる。
 
 ```bash
@@ -63,9 +63,9 @@ AppImage 自体で動作を確認している。素材を開く、走査する�
 「GTK を初期化できない」まで到達して落ちる。ライブラリが足りなければもっと手前で
 止まるので、そこまで進めば依存関係は満たされている。
 
-音声再生を入れたあとのビルドでは、AppImage 自体で `mpeg2.ts` を開き（無劣化点 41 個、
-720x480、29.97 fps、音声あり）、サムネイル 41 枚を走査し、`Space` で再生した。再生は
-4 秒で 117 フレーム進み、ALSA 関係のエラーも panic も出なかった。
+音声再生を入れたあとのビルドでは、AppImage 自体で `mpeg2.ts` を開き（無劣化点
+41 個、720x480、29.97 fps、音声あり）、サムネイル 41 枚を走査し、`Space` で
+再生した。再生は 4 秒で 117 フレーム進み、ALSA 関係のエラーも panic も出なかった。
 
 ## tar.gz と deb
 
@@ -75,29 +75,30 @@ AppImage 自体で動作を確認している。素材を開く、走査する�
 # -> gui/src-tauri/target/release/bundle/linux/smartcut_0.7.4_amd64.deb
 ```
 
-同じビルドの詰め方が 2 通りある。どちらも **GUI を `smartcut`、コマンドライン版を
-`smartcut-cli`** としてインストールする。プログラム名は SmartCut、打つのは
-`smartcut` である。
+同じビルドを 2 通りに詰めたものである。どちらも GUI を `smartcut`、コマンド
+ライン版を `smartcut-cli` という名前でインストールする。プログラム名は SmartCut
+で、コマンドとして打つのは `smartcut` である。
 
 cargo のクレート名は `gui` なので、放っておくと Tauri はそのまま `/usr/bin/gui` に
 インストールしてしまう。1 つのアプリが占有してよい名前ではない。`tauri.conf.json` の
 `mainBinaryName` で `smartcut` に固定してある（0.2.0 以降。それ以前は Windows 用
-だけに設定されていた）。一方 Tauri が書き出すバンドル*ファイル*の名前は `productName`
-に従うので、`SmartCut_0.7.4_amd64.deb` になる。deb のパッケージ名 `smartcut` と
-食い違うのはこのためである。`build-linux.sh` は両方を `tauri.conf.json` から読む。
+だけに設定されていた）。一方 Tauri が書き出すバンドル*ファイル*の名前は
+`productName` に従うので、`SmartCut_0.7.4_amd64.deb` になる。deb のパッケージ名
+`smartcut` と食い違うのはこのためである。`build-linux.sh` は両方を
+`tauri.conf.json` から読む。
 
 | 成果物 | サイズ | FFmpeg | 必要条件 |
 |---|---|---|---|
 | `SmartCut-0.7.4-linux-x86_64.tar.gz` | 210.1 MB | 同梱 | glibc 2.39 以上。FUSE 不要 |
 | `smartcut_0.7.4_amd64.deb` | 4.2 MB | システムのものを使用 | FFmpeg 7.1（Debian 13 / Ubuntu 25.04 以降） |
 
-**tar.gz の中身は、AppImage と同じ AppDir を展開したものである。** linuxdeploy が
+tar.gz の中身は、AppImage と同じ AppDir を展開したものである。linuxdeploy が
 `ldd` を辿って集めた 745 個のライブラリがそのまま `app/` にある。`./smartcut` は
 AppRun を呼ぶ 4 行のスクリプトで、`./smartcut-cli` は `LD_LIBRARY_PATH` を
 `app/usr/lib` に向けて CLI を呼ぶ。AppImage が動く環境ならどこでも動き、FUSE は
 不要である。gzip なので、squashfs+zstd の AppImage より 24 MB 大きい。
 
-**逆に deb は何も抱えていない。** 依存関係は両方のバイナリを `dpkg-shlibdeps` に
+deb のほうは何も同梱していない。依存関係は両方のバイナリを `dpkg-shlibdeps` に
 かけて生成しているので、libav* が列挙される。
 
 ```
@@ -109,16 +110,16 @@ Depends: libasound2t64 (>= 1.0.29), libavcodec61 (>= 7:7.1.5), libavdevice61 (>=
  libwebkit2gtk-4.1-0 (>= 2.41.90)
 ```
 
-Tauri 自身の deb は `libwebkit2gtk-4.1-0, libgtk-3-0` の 2 つで終わっており、
-**FFmpeg が依存関係に一切現れない**。それだけでも作り直す理由になる。ほかに
-追加しているのは、`.desktop` ファイル（`Exec=smartcut %f`、`StartupWMClass=smartcut`、
-MPEG-2 TS と MP4 の MimeType）、32/128/256 の hicolor アイコン、`copyright`、
-`changelog.Debian.gz` である。
+Tauri が生成する deb の依存関係は `libwebkit2gtk-4.1-0, libgtk-3-0` の 2 つだけで、
+**FFmpeg がまったく現れない**。それだけでも自前で作り直す理由になる。ほかに
+追加しているのは、`.desktop` ファイル（`Exec=smartcut %f`、
+`StartupWMClass=smartcut`、MPEG-2 TS と MP4 の MimeType）、32/128/256 の hicolor
+アイコン、`copyright`、`changelog.Debian.gz` である。
 
-**バンドルごとにバイナリの取得元が違う。** Tauri は詰める直前にバンドル種別を
-バイナリへ刻印する（`UNKNOWN` → `DEB` / `APPIMAGE`）ので、
-`target/release/smartcut` には最後にビルドしたバンドルの刻印しか残らない。deb 用の
-バイナリは Tauri の deb から、tar.gz 用は AppDir から取っている。
+Tauri は詰める直前にバンドル種別をバイナリへ刻印する（`UNKNOWN` → `DEB` /
+`APPIMAGE`）ので、`target/release/smartcut` には最後にビルドしたバンドルの刻印しか
+残らない。そのためバイナリはバンドルごとに別の場所から取っている。deb 用は Tauri の
+deb から、tar.gz 用は AppDir からである。
 
 ### 確認したこと（Debian 13 の開発 VM）
 
@@ -131,7 +132,7 @@ MPEG-2 TS と MP4 の MimeType）、32/128/256 の hicolor アイコン、`copyr
   出る。
 - `apt-get -s install ./smartcut_0.1.1_amd64.deb` が依存関係を解決する。
   `desktop-file-validate` は警告なし、`md5sums` の 8 項目もすべて一致する。
-- 唯一試していないのは実際の `dpkg -i` である。VM の sudo にパスワードが必要なため。
+- VM の sudo にパスワードが必要なので、実際の `dpkg -i` だけは試していない。
 
 ## Windows
 
@@ -148,32 +149,33 @@ Linux の開発 VM から `x86_64-pc-windows-msvc` へクロスビルドして�
 | NSIS インストーラ | 53.8 MB | インストール後 172.3 MB（exe 14.0 MB ＋ FFmpeg の DLL 8 個） |
 | ポータブル zip | 67.3 MB | 同じ一式。展開して `smartcut.exe` を実行する |
 
-**移植のために書き直したコードは 1 か所、音声出力だけである。** ほかはすべて libav を
-通るので、`Command::new` も POSIX パスも出てこない。要ったのは*リンク先の FFmpeg* と、
-`tauri.windows.conf.json` とビルドスクリプトの追加だけだった。ただしサウンドカードは
-libav の向こう側にあり、そこでは現地の作法に従うことになった（「詰まった点」を参照）。
+移植のために書き直したコードは、**音声出力の 1 か所だけ**である。ほかはすべて libav
+を通るので、`Command::new` も POSIX パスも出てこない。必要だったのはリンク先の
+FFmpeg と、`tauri.windows.conf.json` とビルドスクリプトの追加だけだった。ただし
+サウンドカードだけは libav の外にあり、そこは Windows の流儀に合わせることになった
+（「詰まった点」を参照）。
 
 ### FFmpeg をどこから持ってくるか
 
 `ffmpeg-sys-next` は `FFMPEG_DIR` 以下の `include/` と `lib/*.lib` を見る。gyan の
-shared ビルドは MSVC 形式のインポートライブラリと DLL の両方を含んでいるので、展開して
-そこを指せばよい。
+shared ビルドは MSVC 形式のインポートライブラリと DLL の両方を含んでいるので、
+展開してそこを指せばよい。
 
-**7.1 系である必要がある。** VM のシステム FFmpeg は 7.1.5 で、`ffmpeg-sys-next
-7.1.3` はバージョンでバインディングを選ぶので、系列が違うと API が食い違う。ところが
-上流は 8.1 が出た時点で 7.1 の Windows ビルドの配布をやめており、BtbN にも gyan の
-サイトにも 8.1 と 9.0 しか無い。gyan の GitHub リリース（`GyanD/codexffmpeg`）には
-まだ 7.1.1 があるので、そこから取っている。
+**7.1 系でなければならない。** VM のシステム FFmpeg は 7.1.5 で、`ffmpeg-sys-next
+7.1.3` はバージョンに応じてバインディングを選ぶので、系列が違うと API が食い違う。
+ところが上流は 8.1 が出た時点で 7.1 の Windows ビルドの配布をやめており、BtbN にも
+gyan のサイトにも 8.1 と 9.0 しか無い。gyan の GitHub リリース
+（`GyanD/codexffmpeg`）にはまだ 7.1.1 があるので、そこから取っている。
 
-DLL は 8 個必要である。`avfilter` が `postproc` を開くので、exe のインポートテーブルに
-名前が現れなくても `postproc-58.dll` が必要である。
+DLL は 8 個必要である。`avfilter` が `postproc` を開くので、exe のインポート
+テーブルに名前が現れなくても `postproc-58.dll` が必要である。
 
 ### 動かす側に必要なもの
 
 | 項目 | 状況 |
 |---|---|
-| FFmpeg | **不要**（DLL を exe と一緒に配布している） |
-| VC++ 再頒布可能パッケージ | **不要。** exe が引く C ランタイムは UCRT（`api-ms-win-crt-*`）だけで、Windows 10 以降に標準で入っている |
+| FFmpeg | 不要（DLL を exe と一緒に配布している） |
+| VC++ 再頒布可能パッケージ | 不要。exe が引く C ランタイムは UCRT（`api-ms-win-crt-*`）だけで、Windows 10 以降に標準で入っている |
 | WebView2 ランタイム | 必要。Windows 11 には標準、Windows 10 でも Edge 経由でほぼ入っている。無い場合、NSIS インストーラは既定でブートストラッパを取得する（ポータブル zip は利用者任せ） |
 | アーキテクチャ | x64 のみ |
 
@@ -184,69 +186,72 @@ VM 上の wine 10.0 で確認している。
 - **CLI の出力は Linux 版と 1 バイトも違わない。** 同じ `mpeg2.ts` に対する
   `--cut 5-10` が md5 まで一致する。索引（アクセスポイント 41 個、オープン GOP
   39 個）も同一で、境界の部分 GOP に対する再エンコード 0.3% も同じである。なお
-  **ポータブル zip の `smartcut.exe` は GUI** なので、CLI は別途ビルドする。
+  ポータブル zip の `smartcut.exe` は GUI なので、CLI は別途ビルドする。
 
   ```bashcd rust && FFMPEG_DIR=~/win-deps/ffmpeg-7.1.1-full_build-shared \
     XWIN_ACCEPT_LICENSE=1 cargo xwin build --release \
     --target x86_64-pc-windows-msvc -p smartcut-cli
   ```
 
-  GUI と同じ DLL を exe と同じ場所に置く。現状、FFmpeg の DLL が解決できることを確認する
-  経路は事実上これだけである（次の項目を参照）。
+  GUI と同じ DLL を exe と同じ場所に置く。現状、FFmpeg の DLL が解決できることを
+  確認する方法は事実上これだけである（次の項目を参照）。
 
-- **GUI が wine で起動しなくなった**（2026-08-27 時点）。`tao` の
+- GUI は wine で起動しなくなった（2026-08-27 時点）。`tao` の
   `event_loop.rs:709` で `assertion failed: subclass_result.as_bool()` に当たる。
-  `SetWindowSubclass` が失敗している。これは WebView2 の初期化より前である。だから、
+  `SetWindowSubclass` が失敗している。これは WebView2 の初期化より前なので、
   以前ここに書いていた「1180x800 のウィンドウが出て『WebView2 ランタイムが見つかり
   ません』で止まる」という状態には、もう到達しない。
 
-  **これはビルドの退行ではない。** 公開済みの v0.1.0 の exe（Releases のポータブル
-  zip）も、同じ wine の同じ行で panic する。原因は wine 側、comctl32 のサブクラス化に
-  ある。そのため「GUI を WebView2 まで到達させて DLL の解決を確認する」という筋は
-  当面使えない。`DISPLAY` 無しで AppImage を起動し、GTK の初期化まで到達させるのと
-  同じ筋である。代役は CLI で、同じ DLL 一式を読み込み、Linux と md5 まで一致する。
+  これはビルドの退行ではない。公開済みの v0.1.0 の exe（Releases のポータブル
+  zip）も、同じ wine の同じ行で panic する。原因は wine 側、comctl32 の
+  サブクラス化にある。そのため「GUI を WebView2 まで到達させて DLL の解決を
+  確認する」という方法は当面使えない。`DISPLAY` 無しで AppImage を起動し、GTK の
+  初期化まで到達させるのと同じ発想の方法である。代わりに CLI で確認する。CLI は
+  同じ DLL 一式を読み込み、Linux 版と md5 まで一致する。
 
-wine で確認できるのはここまでである。**実機の Windows で最初に出た不具合は、
-プレビューの音が出ないことだった**（後述）。wine の WASAPI はどんな形式も受け付けるので、
-上の検証では捕まらない。
+wine で確認できるのはここまでである。実機の Windows で最初に見つかった不具合は、
+プレビューの音が出ないことだった（後述）。wine の WASAPI はどんな形式も
+受け付けるので、上の検証では捕まらない。
 
-インストーラのペイロードと単体の exe はちょうど 3 バイト違う。Tauri がバンドル種別を
-exe に刻印するためで、インストーラ側は `NSIS`、ポータブル zip 側は `UNKNOWN` である。
+Tauri がバンドル種別を exe に刻印するので、インストーラのペイロードと単体の exe は
+ちょうど 3 バイト違う。インストーラ側は `NSIS`、ポータブル zip 側は `UNKNOWN`
+である。
 
 ### 詰まった点
 
-- **Windows でだけプレビューの音が出なかった。** 素材のサンプリングレートと
-  チャンネル数を、そのままサウンドカードに要求していた。Linux ではそれで動く。cpal の
-  既定出力は ALSA の `default` であり、その実体は `plug` の連鎖で、`plug` はカードが
-  できない変換を引き受けるからである。**WASAPI の共有モードは引き受けない。** 共有
-  モードは全アプリケーションを 1 つの形式に混ぜるので、`IAudioClient` はその形式でしか
-  初期化できない。違う形式に対して `IsFormatSupported` が返すのは、`S_FALSE` と
-  「いちばん近い形式」である。cpal はこれを非対応として扱い（`is_format_supported` が
-  `S_FALSE` を `Ok(false)` に潰す）、開かないまま `StreamConfigNotSupported` で終わる。
+- Windows でだけプレビューの音が出なかった。素材のサンプリングレートと
+  チャンネル数を、そのままサウンドカードに要求していたためである。Linux でこれが
+  動くのは、cpal の既定出力である ALSA の `default` が実体としては `plug` の連鎖で、
+  カードにできない変換を `plug` が肩代わりするからである。**WASAPI の共有モードは
+  そうした変換をしない。** 共有モードは全アプリケーションを 1 つの形式に混ぜるので、
+  `IAudioClient` はその形式でしか初期化できない。違う形式を渡すと、
+  `IsFormatSupported` は `S_FALSE` と「いちばん近い形式」を返す。cpal はこれを
+  非対応として扱い（`is_format_supported` が `S_FALSE` を `Ok(false)` に潰す）、
+  開かないまま `StreamConfigNotSupported` で終わる。
 
-  ミキシング形式はサウンド設定で決まるので、**出力を 44.1 kHz にしている PC では
-  48 kHz の放送が完全に無音**になっていた。5.1ch の放送をステレオ出力へ送った場合も
-  同様である。デバイスにミキシング形式を尋ねてそれに合わせ、swresample によるレート
-  変換とチャンネルレイアウト変換を追加して修正した（`playback_audio::candidates`）。
-  **素材自身の形式は最初の候補として残してある**ので、Linux では従来どおり無変換で
-  再生される。固定期間を外した候補も末尾に追加した。ALSA の
-  `snd_pcm_hw_params_set_buffer_size` は割り切れないサイズを拒否するので、44.1 kHz の
-  882 フレームが一部のカードで失敗するためである。
+  ミキシング形式はサウンド設定で決まるので、出力を 44.1 kHz にしている PC では
+  48 kHz の放送が完全に無音になっていた。5.1ch の放送をステレオ出力へ送った場合も
+  同様である。デバイスにミキシング形式を問い合わせてそれに合わせ、swresample による
+  レート変換とチャンネルレイアウト変換を追加して修正した
+  （`playback_audio::candidates`）。素材自身の形式は最初の候補として残してあるので、
+  Linux では従来どおり無変換で再生される。ALSA の
+  `snd_pcm_hw_params_set_buffer_size` は割り切れないサイズを拒否し、44.1 kHz の
+  882 フレームが一部のカードで失敗するので、固定期間を外した候補も末尾に追加した。
 
-- **`resampling::Context::run` の出力フレームは、入力と同じサンプル数しか持たない。**
-  レートを上げる場合（48 kHz → 96 kHz など）これでは足りず、swresample は溢れた分を
-  内部に貯める。クラッシュも破綻もしないが、貯まったものは二度と出てこないので、再生を
-  続けるかぎり遅延とメモリが増え続ける。現在は出力フレームを
+- `resampling::Context::run` の出力フレームは、サンプル数が入力と同じにしか
+  ならない。レートを上げる場合（48 kHz → 96 kHz など）これでは足りず、swresample は
+  溢れた分を内部に貯める。クラッシュも破綻もしないが、貯まったものは二度と
+  出てこないので、再生を続けるかぎり遅延とメモリが増え続ける。現在は出力フレームを
   `入力サンプル数 × 出力レート ÷ 入力レート` で確保している。
 
-- **CRT の静的リンク（`+crt-static`）は動かなかった。** `cargo xwin build` を直接
+- CRT の静的リンク（`+crt-static`）は動かなかった。`cargo xwin build` を直接
   呼べば動く。ところが `cargo tauri build --runner cargo-xwin` を経由すると、
   cargo-xwin がフラグを取り違え、静的と動的の CRT ライブラリが混ざったリンク行を
   生成する（`libucrt.lib` が落ちて `strlen` が未定義になる）。環境変数でも
   `.cargo/config.toml` でも解決しない。動的リンクでも VC++ 再頒布可能パッケージへの
   依存は生じないので、これ以上追っていない。
 
-- **既定では `gui.exe` になる。** cargo のバイナリ名がクレート名 `gui` を取るから
-  である。`mainBinaryName` で `smartcut.exe` にしている。0.2.0 で
-  `tauri.windows.conf.json` から `tauri.conf.json` へ移し、そこで Linux のバイナリ名も
-  兼ねるようにした。
+- cargo のバイナリ名はクレート名 `gui` になるので、既定では `gui.exe` になる。
+  `mainBinaryName` で `smartcut.exe` にしている。0.2.0 で
+  `tauri.windows.conf.json` から `tauri.conf.json` へ移し、そこで Linux の
+  バイナリ名も兼ねるようにした。

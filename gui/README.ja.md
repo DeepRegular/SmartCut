@@ -2,8 +2,8 @@
 
 [English](README.md) ・ 日本語
 
-SmartCut の GUI です。Tauri v2 + バニラ JS で書いています。ウィンドウは 2 つ、
-入力設定・出力設定・出力の 3 画面を持つ一覧ウィンドウと、そこから開くカット編集
+SmartCut の GUI で、Tauri v2 とバニラ JS で書いています。ウィンドウは 2 つあり、
+入力設定・出力設定・出力の 3 画面からなる一覧ウィンドウと、そこから開くカット編集
 ウィンドウです。
 
 操作方法は [`docs/user-guide/gui.ja.md`](../docs/user-guide/gui.ja.md)、実装の
