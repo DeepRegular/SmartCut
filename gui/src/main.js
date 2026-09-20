@@ -4729,8 +4729,14 @@ el("detect-cm").addEventListener("click", async () => {
   }
 });
 
+/// Every listener this window has asked for, as the promises that put them
+/// in place. Waited for before this window says it is ready; see
+/// `announceReady`.
+const wiring = [];
+const hear = (name, fn) => wiring.push(listen(name, fn));
+
 if (listen) {
-  listen("play-ended", (ev) => {
+  hear("play-ended", (ev) => {
     // The end of a run that has already been left behind -- ループ stopped it
     // and asked for another over the selection -- is not the end of what is
     // playing now.
@@ -4749,15 +4755,15 @@ if (listen) {
   // The video half of playback has no way to notice the audio half failed --
   // they run on separate threads and separate clocks -- so without this the
   // picture just plays silently with nothing on screen to say why.
-  listen("audio-error", (ev) => {
+  hear("audio-error", (ev) => {
     el("status").textContent = tr("editor.audioFailed", { e: ev.payload });
   });
-  listen("cm-progress", (ev) => {
+  hear("cm-progress", (ev) => {
     const [phase, done] = ev.payload;
     el("detect-cm").textContent = tr("editor.detectingPct", { pct: Math.round(done * 100) });
     showCmNote(phase);
   });
-  listen("prepare-progress", (ev) => {
+  hear("prepare-progress", (ev) => {
     const [phase, done] = ev.payload;
     if (!warmed) showWarm(tr("warm.progress", { phase, pct: Math.round(done * 100) }));
   });
@@ -4765,7 +4771,7 @@ if (listen) {
   // pictures can use them from here on, for the stretch of the recording the
   // pass has read -- which is what stops the strip decoding the recording
   // itself while the index, or a proxy, is being built.
-  listen("prepare-held", (ev) => {
+  hear("prepare-held", (ev) => {
     const [gap] = ev.payload;
     interval = gap;
     // Only the first batch is worth redrawing for. A strip drawn before there
@@ -4845,6 +4851,8 @@ function captureEdit() {
 /// be in the list twice, cut two different ways, and what comes back out of
 /// here has to land on the row it came from.
 let editId = null;
+/// Whether the list has named a recording yet. See `announceReady`.
+let answered = false;
 /// The row being loaded, if one is. See the `editor-open` handler.
 let opening = null;
 
@@ -4932,8 +4940,10 @@ async function askCancelEdit() {
 if (listen) {
   // The list's answer to `editor-ready`: which recording, and what was done
   // to it the last time it was in here.
-  listen("editor-open", async (ev) => {
+  hear("editor-open", async (ev) => {
     const { id, path, name, side, saved, cm, chapters, dropPids } = ev.payload;
+    // The list has spoken, so this window stops asking; see `announceReady`.
+    answered = true;
     // The list sends this twice for a window it had to build; the second is
     // the one that usually lands, but both can. Opening the same row twice
     // over would throw away whatever the first open had got to.
@@ -4949,6 +4959,12 @@ if (listen) {
       editId = id;
       try {
         await openPath(path, saved, side, name, chapters, dropPids);
+      } catch (e) {
+        // `openPath` has put the reason on the status line already. The row
+        // is let go of here so that being sent it again is another attempt
+        // rather than a window that thinks it is already on that recording.
+        editId = null;
+        return;
       } finally {
         opening = null;
       }
@@ -5003,12 +5019,12 @@ if (listen) {
   // that arrives from there. It carries the language it settled on rather
   // than the preference, because "follow the machine" is answered once, in
   // that window, and both windows have to land on the same answer.
-  listen("lang-changed", (ev) => setLang(ev.payload, false));
+  hear("lang-changed", (ev) => setLang(ev.payload, false));
   // 環境設定 is in the other window, and this one has its own copy of
   // everything the store holds. The counter is the half that can be applied
   // where it stands; which subtitle track to start with is answered when a
   // recording is opened, so a window already up keeps the one it has.
-  listen("prefs-changed", (ev) => {
+  hear("prefs-changed", (ev) => {
     const said = ev.payload || {};
     if (typeof said.counter === "boolean") showCounter(said.counter, false);
   });
@@ -5016,7 +5032,7 @@ if (listen) {
   // to give -- it is the row that was renamed and not the recording -- so it
   // arrives here rather than being worked out again, and only for the row this
   // window is actually on.
-  listen("clip-renamed", (ev) => {
+  hear("clip-renamed", (ev) => {
     const said = ev.payload || {};
     if (said.id !== editId) return;
     shownName = said.name || null;
@@ -5057,8 +5073,40 @@ el("play").textContent = tr("t.play");
 renderKeyframes();
 draw();
 jlog("editor wired");
+/// Ask the list for a recording, and go on asking until one arrives.
+///
+/// The handshake is one message each way: this window says `editor-ready`,
+/// the list answers `editor-open` naming the clip. Both go through the event
+/// registry in the backend, and a listener is in that registry only once the
+/// call that asked for it has been there and back -- so saying `editor-ready`
+/// from the last line of this file could say it while the answer still had
+/// nowhere to land. The answer was then dropped, and what was on screen was a
+/// cut editor that never loaded a recording and had nothing to do but close.
+/// Rare, and rare in a way that made it look like a window that needed a few
+/// tries: closing and opening again is a fresh page, and the next one usually
+/// won the race.
+///
+/// So the listeners are waited for, which settles that race -- and then it is
+/// said again every half second until the list answers, which covers a
+/// message lost anywhere else between the two windows.
+///
+/// It stops on the first answer rather than on the recording being up: a
+/// second `editor-ready` after the list has spoken would be answered with the
+/// same clip again, and marks a detection handed over would go down twice.
+async function announceReady() {
+  if (!emit) return;
+  // A registration that failed is no reason to stay silent. Whatever is left
+  // of this window still works, and the list is the only thing that can put a
+  // recording in it.
+  await Promise.all(wiring).catch((e) => jlog(`wiring: ${e}`));
+  for (let i = 0; i < 8 && !answered; i++) {
+    emit("editor-ready", null);
+    await new Promise((go) => setTimeout(go, 500));
+  }
+}
+
 // The window is up and has nothing in it; the list is what fills it.
-if (emit) emit("editor-ready", null);
+announceReady();
 // A second opinion on what the machine is set to, for a window opened before
 // the list window had a chance to pass its own on.
 confirmWithOs(invoke);

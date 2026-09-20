@@ -545,6 +545,20 @@ offered again.
 That the window has gone at all is reported from Rust, by `on_window_event` as
 `editor-closed`. The page that is being destroyed is in no position to say so itself.
 
+**Both halves of the handshake are races, and both of them had to be answered.** A
+listener is in the backend's registry only once the call that asked for it has been
+there and back, so `editor-ready` said from the last line of the page could be said
+while the answer still had nowhere to land. The answer was then dropped, and what was
+on screen was a cut editor that never loaded a recording and had nothing to do but
+close. So the registrations are waited for, and the question is asked again every half
+second until the list names a clip. The other way round, `editor-closed` can arrive
+after the next window has been asked for: close the editor and double-click another row
+straight away, and the news of the first window going comes to the list down a different
+road from the double-click. Acting on it there let go of the row that had just been
+opened, and the new window then asked for a clip nobody was left to name. So a close is
+passed over while a window is being built, and otherwise checked against `editor_up`,
+which answers whether one is on screen at this moment.
+
 ### Projects: saved or not, worked out rather than remembered
 
 What a project file holds is in [projects](../user-guide/projects.md). What is worth

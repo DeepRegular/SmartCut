@@ -1806,6 +1806,20 @@ async fn open_editor(title: String, app: tauri::AppHandle) -> Result<(), String>
     Ok(())
 }
 
+/// Whether a cut editor is on screen at this moment.
+///
+/// Asked by the list when it hears that one has closed, because that message
+/// can be about a window that has already been replaced: close the editor and
+/// open another row straight away, and the news of the first window going can
+/// land after the second one is up. The list acting on it then would let go of
+/// the row it had just opened, and the new window would sit there empty
+/// waiting for a clip nobody was going to name. See the `editor-closed`
+/// handler in `app.js`.
+#[tauri::command]
+fn editor_up(up: State<EditorUp>) -> bool {
+    up.0.load(Ordering::SeqCst)
+}
+
 /// Retitle the editor window without touching it otherwise.
 ///
 /// [`open_editor`] would do this too, but it also raises and focuses the
@@ -5438,6 +5452,7 @@ pub fn run() {
             clip_glance,
             clip_gone,
             open_editor,
+            editor_up,
             retitle_editor,
             retitle_main,
             close_editor,

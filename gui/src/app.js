@@ -286,6 +286,11 @@ let editing = null;
 /// What that clip's edit looked like before the editor was opened on it, so
 /// that キャンセル has something to put back.
 let before = null;
+/// Whether an editor window is being built right now.
+///
+/// Every `editor-closed` that lands while it is is about the window before
+/// this one: the window being built cannot have closed yet. See the handler.
+let opening = false;
 
 async function edit(clip) {
   jlog(`edit ${clipName(clip)} (${clip.state})`);
@@ -345,6 +350,7 @@ async function edit(clip) {
   // `nextFor`. Beginning work the editor is already doing duplicates it with
   // nothing part-finished to save.
   try {
+    opening = true;
     await invoke("open_editor", { title: t("editor.windowTitle", { clip: clipLabel(clip) }) });
     // Lost if the window is still starting up, which is what `editor-ready`
     // is for; sent anyway for the case where it is already open on another
@@ -354,6 +360,8 @@ async function edit(clip) {
     note(t("list.cannotOpenEditor", { e }));
     editing = null;
     before = null;
+  } finally {
+    opening = false;
   }
   paintList();
   pump();
@@ -463,7 +471,27 @@ if (listen) {
   // itself: it was passed over while the editor had it, and if it was never
   // read the lane can have it now -- cheaply, since the editor will have
   // written its seek index.
-  listen("editor-closed", () => {
+  //
+  // **Not every one of these is about the window that is up.** Close the
+  // editor and open another row straight away, and the news of the first
+  // window going can be read after the second one has been asked for -- the
+  // message and the double-click come to this window down different roads.
+  // Acting on it then let go of the row that had just been opened, and the
+  // new window sat there empty: it asks for its clip by name and the answer
+  // to that is the row this holds, so a row let go of is a cut editor that
+  // never loads anything and can only be closed. Reported as a window that
+  // now and then came up blank and came up properly on the third try, which
+  // is exactly what a race between two messages looks like from the outside.
+  //
+  // So the window is asked whether one is actually up, and a close that
+  // arrives while another is being built is passed over on the spot -- the
+  // window being built cannot be the one that has closed.
+  listen("editor-closed", async () => {
+    // An unanswerable question is taken as "no window", because the cost of
+    // the two mistakes is not the same: a close passed over for good leaves
+    // the list thinking it is still editing, with the row wearing 編集中 and
+    // the lanes walking past it until the program is restarted.
+    if (opening || (await invoke("editor_up").catch(() => false))) return;
     editing = null;
     before = null;
     paintList();
