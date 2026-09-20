@@ -1,0 +1,38 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title data-i18n="zoom.title">拡大表示</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <!-- 拡大表示, in a window of its own. It shows the part of the cut editor's
+       picture the pointer is over, at the recording's own pixels: whether a
+       frame is interlaced is a question about those pixels, and the stage's
+       copy of them has been scaled to the width of the stage.
+
+       It owns nothing. The editor says which picture and which part of it;
+       this window decides how far to magnify and draws. -->
+  <body class="zoom">
+    <div class="zoom-stage">
+      <canvas id="face"></canvas>
+      <div class="zoom-empty" id="empty" data-i18n="zoom.waiting">
+        カット編集の画面にマウスを乗せてください
+      </div>
+    </div>
+    <div class="zoom-foot">
+      <label class="opt"><span data-i18n="zoom.scale">倍率</span>
+        <select id="scale">
+          <option value="2">2x</option>
+          <option value="3">3x</option>
+          <option value="4" selected>4x</option>
+          <option value="6">6x</option>
+          <option value="8">8x</option>
+        </select>
+      </label>
+      <span class="spacer"></span>
+      <span class="dim" id="at">—</span>
+    </div>
+    <script src="zoom.js" type="module"></script>
+  </body>
+</html>

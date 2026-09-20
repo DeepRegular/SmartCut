@@ -399,6 +399,24 @@ On a recording with no sound the scale stands empty. **Meter**, on the bottom
 line, puts the whole column away, and **Preferences → Windows** holds the
 same answer.
 
+### Looking closely
+
+`Z`, or **Magnifier** in the ≡ menu, opens a window of its own. Move the
+pointer over the cut editor's picture and that part of it is magnified there,
+from 2x to 8x — the menu is at the foot of that window.
+
+**What it shows is the recording's own pixels.** The preview has been scaled to
+the width of the stage, and scaling is what takes the comb out of interlaced
+material: the fine teeth along a moving edge are single lines, and they do not
+survive being resized. The magnifier reads the frame again at the size the
+recording holds it, so what is on the screen is what is in the file. The corner
+of that window says which frame, how far it is magnified, and which pixel is in
+the middle of the view.
+
+The picture holds still while something is playing — reading a frame at full
+size thirty times a second would be the playback it is there to watch — and
+catches up when playback stops. The window closes with the cut editor.
+
 ### Showing the subtitles
 
 ![The preview with the subtitles drawn over it](../images/usage-subs.png)
@@ -464,6 +482,7 @@ the marks.
 | **Turn the disc's chapters into keyframes** | Puts them back after a clear. Greyed on anything but a disc |
 | **Turn the detection into keyframes** | Marks the detection now on screen. Greyed where nothing has been detected |
 | **Remove every keyframe** | The marks alone. The cuts stay |
+| **Magnifier** | Opens the magnifier window, or closes it (`Z`) |
 
 There are three shapes to write, and the picker opens with the recording's own
 path already in it.
@@ -1058,6 +1077,7 @@ can quote it straight into a bug report.
 | `Ctrl+Z` | Undo |
 | `Ctrl+Y` / `Ctrl+Shift+Z` | Redo |
 | `Ctrl+D` | Detect commercials |
+| `Z` | Open the magnifier, or close it |
 | `Ctrl+L` | Read a keyframe list from a file |
 | `Ctrl+Shift+L` | Read a Trim line from a file |
 | `Ctrl+Alt+O` | Read a saved detection from a file |

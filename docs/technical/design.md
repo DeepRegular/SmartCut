@@ -1259,6 +1259,34 @@ nothing. It is also the expensive half — a seek and a short decode — so it w
 playhead to settle, the same 140 ms the plan panel waits, and a reading for a frame the
 window has already left is dropped rather than drawn.
 
+## 拡大表示, a window that decodes its own pictures
+
+Whether a frame is interlaced is a question about **single lines**: the comb along a moving
+edge is one line out of step with the next. The stage cannot answer it. Its picture is scaled
+to the width of the stage, and `encode_jpeg` notes as much — downscaling far enough takes the
+comb out, which is why the preview needs no deinterlacer of its own.
+
+So the magnifier asks for the picture again, and `zoom_shot` is the one place in the program
+that asks for one at the recording's own size. `shot_at` caps the width it is given at the
+picture's *display* width, and the height that comes with that cap is the coded height: a
+1440x1080 broadcast frame at 16:9 comes back 1920x1080. Stretched across, which is how it is
+meant to be looked at, and untouched down the lines, which is where the answer is.
+
+**From the recording, never from the proxy.** A proxy is re-encoded and smaller; its pictures
+cannot answer this question at all. `zoom_shot` clones the opened `Source` and lets the lock
+go, like every other pass that reads for minutes, so a detection under way does not hold the
+magnifier up.
+
+The window itself holds nothing. The editor says which picture (a url into the same `shot:`
+store the stage draws from, so nothing is decoded twice or copied between windows) and where
+the pointer is over it, as fractions of the picture rather than pixels of a stage whose size
+it does not know. The window decides how far to magnify and draws, with smoothing off: a
+magnifier that interpolates invents the very detail it was opened to check.
+
+Pictures are not sent while playback runs. One full-size decode per frame at thirty frames a
+second would be the playback it is there to watch; the window holds the last still it was
+given and catches up when playback stops.
+
 ## Subtitles over the preview
 
 **Off by default.** The cut editor is a place to look at the picture, and a subtitle

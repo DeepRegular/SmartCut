@@ -1020,6 +1020,7 @@ async function showFrame(t) {
     // and the two that cost a read of the recording. Both wait for the
     // playhead to settle; see `scheduleMeterAt`.
     scheduleMeterAt();
+    scheduleZoom();
     const onPoint = exact && atPoint(shot.time);
     el("ovl-kind").textContent = tr(
       onPoint
@@ -2900,6 +2901,11 @@ function setPlaying(on) {
   if (!on) {
     meterSilent();
     scheduleMeterAt();
+    // And the magnifier, which holds still through a run: what it shows is
+    // decoded at the recording's own size, one picture at a time, and a
+    // window doing that thirty times a second would be the playback it is
+    // watching. It catches up here.
+    scheduleZoom();
   }
   if (!on) {
     playAnchor = null;
@@ -3877,6 +3883,124 @@ el("clear-keys").addEventListener("click", () => {
   showMore(false);
   clearKeyframes();
 });
+
+// --- 拡大表示 ------------------------------------------------------------
+//
+// A window of its own (`zoom.html`), opened from the menu or with Z, showing
+// the part of this window's picture the pointer is over -- at the size the
+// recording holds it rather than the size the stage does. Whether a frame is
+// interlaced is a question about single lines, and the stage's picture has
+// been scaled to the stage.
+//
+// This window owns the two answers that window draws with: which picture,
+// and which part of it. Neither is sent more often than it has to be. The
+// picture is one decode at the recording's full size, so it waits for the
+// playhead to settle and is not sent at all while something is playing --
+// there the window holds the last still it was given, and catches up when
+// playback stops.
+
+/// Whether the window is up, as far as this one knows: it says so when its
+/// page is ready, and the backend says when it has gone.
+let zoomOn = false;
+/// The instant whose picture that window is holding, so a playhead that came
+/// back to the same frame does not decode it again.
+let zoomShown = null;
+let zoomToken = 0;
+let zoomAsk = null;
+/// Where the pointer last was over the picture, in fractions of it. Kept so
+/// a window opened while the pointer is elsewhere has somewhere to look, and
+/// so a new picture arrives already pointed at the same place.
+let zoomPoint = { x: 0.5, y: 0.5 };
+
+/// Where a pointer event landed on the picture, as fractions of the
+/// picture's own width and height -- not of the stage, which is black at two
+/// of its edges. `null` for a press on that black.
+function pictureFraction(ev) {
+  const img = el("preview");
+  const r = img.getBoundingClientRect();
+  const nw = img.naturalWidth;
+  const nh = img.naturalHeight;
+  if (!r.width || !r.height || !nw || !nh) return null;
+  const scale = Math.min(r.width / nw, r.height / nh);
+  const pw = nw * scale;
+  const ph = nh * scale;
+  const x = (ev.clientX - (r.left + (r.width - pw) / 2)) / pw;
+  const y = (ev.clientY - (r.top + (r.height - ph) / 2)) / ph;
+  if (x < 0 || x > 1 || y < 0 || y > 1) return null;
+  return { x, y };
+}
+
+/// Say which picture, once the playhead has settled on one.
+///
+/// `again` forces the send for a window that has just opened: it has nothing
+/// on it, and the picture it needs is the one this window is already
+/// showing.
+function scheduleZoom(again = false) {
+  clearTimeout(zoomAsk);
+  if (!zoomOn || !src || playing) return;
+  if (again) zoomShown = null;
+  zoomAsk = setTimeout(async () => {
+    const want = playhead;
+    if (zoomShown !== null && Math.abs(zoomShown - want) < frame() / 2) return;
+    const token = ++zoomToken;
+    try {
+      const shot = await invoke("zoom_shot", { time: want });
+      if (token !== zoomToken || !zoomOn) return;
+      zoomShown = shot.time;
+      if (emit) emit("zoom-frame", { url: shot.url, time: shot.time });
+    } catch (e) {
+      jlog(`zoom_shot: ${e}`);
+    }
+  }, METER_WAIT);
+}
+
+/// Say where the pointer is. Sent as it moves -- it is two numbers, and the
+/// window draws from a picture it already holds -- but no more than once a
+/// frame of the screen's own.
+let zoomPointRaf = 0;
+function sendZoomPoint() {
+  if (!zoomOn || !emit || zoomPointRaf) return;
+  zoomPointRaf = requestAnimationFrame(() => {
+    zoomPointRaf = 0;
+    if (zoomOn && emit) emit("zoom-point", zoomPoint);
+  });
+}
+
+el("preview").addEventListener("mousemove", (ev) => {
+  const at = pictureFraction(ev);
+  if (!at) return;
+  zoomPoint = at;
+  sendZoomPoint();
+});
+
+/// Open it, or close the one that is up. The menu item and Z are the same
+/// press: a window that toggles has one way of being asked for.
+function toggleZoom() {
+  if (zoomOn) {
+    invoke("close_zoom");
+    // Said here as well as at `zoom-closed`, so a second press cannot ask
+    // for a second window while the first is still going away.
+    zoomOn = false;
+    paintZoomItem();
+    return;
+  }
+  invoke("open_zoom", { title: tr("zoom.windowTitle") }).catch((e) =>
+    (el("status").textContent = tr("zoom.cannotOpen", { e }))
+  );
+}
+
+/// The tick beside the menu item, which is the only place the state shows.
+function paintZoomItem() {
+  const item = el("zoom-toggle");
+  if (!item) return;
+  item.setAttribute("aria-pressed", zoomOn ? "true" : "false");
+  item.classList.toggle("on", zoomOn);
+}
+
+el("zoom-toggle").addEventListener("click", () => {
+  showMore(false);
+  toggleZoom();
+});
 // Anywhere else, and it is gone -- including the wheel, which moves the
 // playhead under a menu that would otherwise stay put over it.
 window.addEventListener("click", () => showMore(false));
@@ -4185,9 +4309,10 @@ async function openPath(picked, saved, side, name, chapters, dropPids) {
     stripShots = [];
     forgetGlances();
     shownTime = -1;
-    // Another recording: what the meter is holding is about the one
-    // before it.
+    // Another recording: what the meter and the magnifier are holding is
+    // about the one before it.
     meterSilent();
+    zoomShown = null;
     hideHover();
     // What the line under the strip says is about a recording that has been
     // read through, so on the way into another one it is about the wrong
@@ -4528,7 +4653,7 @@ let arrowSince = 0;
 /// that under a running playback is neither. These are about the recording
 /// instead -- a mark, an end of the selection -- and they are pressed
 /// *because* something is playing.
-const QUIET = ["i", "o", "[", "]", "k", "Insert"];
+const QUIET = ["i", "o", "[", "]", "k", "z", "Insert"];
 
 function arrowDue(ev) {
   const now = Date.now();
@@ -4779,6 +4904,13 @@ window.addEventListener("keydown", (ev) => {
   if (ev.key === "Insert") {
     ev.preventDefault();
     toggleKeyframe();
+    return;
+  }
+  // 拡大表示, which is a window rather than a move: it opens and closes on
+  // the one key, the way the menu item works.
+  if (key === "z") {
+    ev.preventDefault();
+    toggleZoom();
     return;
   }
   // Two spellings of each end of the selection: I and O are the reference
@@ -5294,6 +5426,22 @@ if (listen) {
   // that arrives from there. It carries the language it settled on rather
   // than the preference, because "follow the machine" is answered once, in
   // that window, and both windows have to land on the same answer.
+  // 拡大表示 saying its page is up: it has nothing on it, so it is told the
+  // picture this window is showing and where the pointer last was over it.
+  hear("zoom-ready", () => {
+    zoomOn = true;
+    paintZoomItem();
+    sendZoomPoint();
+    scheduleZoom(true);
+  });
+  // And that it has gone, whichever way it went -- the menu, the key, or its
+  // own title bar. Reported from the backend, because the page going away is
+  // the thing being reported.
+  hear("zoom-closed", () => {
+    zoomOn = false;
+    zoomShown = null;
+    paintZoomItem();
+  });
   hear("lang-changed", (ev) => setLang(ev.payload, false));
   // 環境設定 is in the other window, and this one has its own copy of
   // everything the store holds. The counter is the half that can be applied

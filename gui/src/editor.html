@@ -234,6 +234,16 @@
               <button class="menu-item" id="clear-keys">
                 <span data-i18n="editor.clearKeys">キーフレームをすべて消す</span>
               </button>
+              <div class="menu-sep"></div>
+              <!-- 拡大表示, in a window of its own. Here rather than as a
+                   button on the transport: it is opened once and left open,
+                   and the rows below the picture are for the cutting. The
+                   tick says whether the window is up, which is the one thing
+                   a menu item that toggles has to say. -->
+              <button class="menu-item" id="zoom-toggle" aria-pressed="false">
+                <span data-i18n="zoom.open">拡大表示</span>
+                <span class="menu-key"><span class="tick">✓</span>Z</span>
+              </button>
             </div>
           </div>
         </div>

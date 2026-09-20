@@ -129,6 +129,13 @@ const DEFAULTS = {
   /// a meter nobody asked for costs 64 pixels of a window that is otherwise
   /// all picture.
   meter: true,
+  /// How far 拡大表示 magnifies, in screen pixels per source pixel.
+  ///
+  /// Not on the 環境設定 screen: it is the one question that window exists to
+  /// answer, it is answered in the window itself, and what it should be
+  /// changes with what is being looked at. Kept so that a window opened
+  /// tomorrow opens where it was left.
+  zoomScale: 4,
   /// What PageUp and PageDown do to the playhead: on their own, held with
   /// Shift, held with Ctrl, and held with both.
   ///

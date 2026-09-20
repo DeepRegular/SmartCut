@@ -613,6 +613,15 @@ const CATALOG = {
     "editor.counterShow.title": "フレーム番号と時刻をプレビュー映像の上に表示する",
     "editor.meterShow": "メーター",
     "editor.meterShow.title": "音声レベルメーターをプレビューの横に表示する",
+
+    // --- 拡大表示 ---------------------------------------------------------
+    "zoom.title": "拡大表示",
+    "zoom.windowTitle": "拡大表示",
+    "zoom.open": "拡大表示",
+    "zoom.scale": "倍率",
+    "zoom.waiting": "カット編集のプレビューにマウスを乗せると、その部分を拡大表示します",
+    "zoom.at": "{time}　{scale} 倍　({x}, {y})",
+    "zoom.cannotOpen": "拡大表示を開けません: {e}",
     "editor.detectCm": "CM を検出",
     "editor.detectCm.title": "CM らしい区間を探してキーフレームを立てる (Ctrl+D)",
     "editor.detecting": "検出中…（映像も読み込みます）",
@@ -1378,6 +1387,15 @@ const CATALOG = {
     "editor.counterShow.title": "Draw the frame number and time over the picture",
     "editor.meterShow": "Meter",
     "editor.meterShow.title": "Show the audio level meter beside the picture",
+
+    // --- the magnifier ----------------------------------------------------
+    "zoom.title": "Magnifier",
+    "zoom.windowTitle": "Magnifier",
+    "zoom.open": "Magnifier",
+    "zoom.scale": "Zoom",
+    "zoom.waiting": "Move the pointer over the cut editor's picture to magnify it",
+    "zoom.at": "{time}   {scale}x   ({x}, {y})",
+    "zoom.cannotOpen": "Cannot open the magnifier: {e}",
     "editor.detectCm": "Detect commercials",
     "editor.detectCm.title": "Look for commercials and mark them with keyframes (Ctrl+D)",
     "editor.detecting": "Detecting… (the video is read too)",

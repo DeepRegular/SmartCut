@@ -1789,6 +1789,12 @@ async fn open_editor(title: String, app: tauri::AppHandle) -> Result<(), String>
         }
         if matches!(event, tauri::WindowEvent::Destroyed) {
             let _ = teller.emit("editor-closed", ());
+            // 拡大表示 magnifies the picture this window was showing, so it
+            // has nothing left to show. Closed from here rather than left to
+            // the page, which is going away as this is read.
+            if let Some(zoom) = teller.get_webview_window(ZOOM) {
+                let _ = zoom.close();
+            }
             // And the list comes back up, which is where whoever closed this
             // window is going next. Without it the editor simply vanished:
             // anything else that had been raised over these two windows in
@@ -1812,6 +1818,93 @@ async fn open_editor(title: String, app: tauri::AppHandle) -> Result<(), String>
         }
     });
     Ok(())
+}
+
+/// Open 拡大表示, in a window of its own.
+///
+/// A window rather than a panel in the editor. What it is for is looking at
+/// the picture *closely* -- whether a frame is interlaced, whether a logo
+/// edge is where it looked -- and the answer to that is a bigger view than a
+/// corner of a screen already carrying a timeline, a strip and a plan. A
+/// window can be dragged onto a second monitor, made as large as the question
+/// needs and left open across recordings.
+///
+/// Smaller than the editor by a long way, and it opens near the middle where
+/// nothing has been remembered. `async` for the reason [`open_editor`] is:
+/// building a webview on the main thread is what WebView2 will not do.
+#[tauri::command]
+async fn open_zoom(title: String, app: tauri::AppHandle) -> Result<(), String> {
+    if let Some(w) = app.get_webview_window(ZOOM) {
+        // Already up: this is the menu being pressed twice, not a second one.
+        let _ = w.set_title(&title);
+        let _ = w.unminimize();
+        let _ = w.set_focus();
+        return Ok(());
+    }
+    let window = WebviewWindowBuilder::new(&app, ZOOM, WebviewUrl::App("zoom.html".into()))
+        .title(title)
+        .inner_size(560.0, 480.0)
+        // Enough for the picture and the row under it. Anything narrower is
+        // a window whose own controls are off the side of it.
+        .min_inner_size(360.0, 320.0)
+        .center()
+        .visible(false)
+        .build()
+        .map_err(|e| e.to_string())?;
+    if !geometry::restore(&window, ZOOM) && !window.is_maximized().unwrap_or(false) {
+        let _ = window.center();
+    }
+    let _ = window.show();
+    geometry::watch(&window, ZOOM);
+    // The editor's menu carries a tick, and the keyboard toggles it. Both
+    // answer to this, whichever way the window went: the menu item, the key,
+    // or the cross on its own title bar.
+    let teller = app.clone();
+    window.on_window_event(move |event| {
+        if matches!(event, tauri::WindowEvent::Destroyed) {
+            let _ = teller.emit("zoom-closed", ());
+        }
+    });
+    Ok(())
+}
+
+#[tauri::command]
+fn close_zoom(app: tauri::AppHandle) {
+    if let Some(w) = app.get_webview_window(ZOOM) {
+        let _ = w.close();
+    }
+}
+
+/// The picture at `time`, at the size the recording itself holds it.
+///
+/// What 拡大表示 magnifies. The stage's picture will not do: it is scaled to
+/// the width of the stage, and scaling far enough takes the comb out of
+/// interlaced material -- which is the first thing somebody opens a
+/// magnifier to look for. This is the one place in the program that asks for
+/// a picture at its own size.
+///
+/// Every line of the recording, and no line resampled:
+/// [`smartcut_core::shot_at`] caps the width it is given at the picture's own
+/// display width, and the height that comes with that width is the coded
+/// height. So 1440x1080 at 16:9 comes back 1920x1080 -- stretched across,
+/// which is how it is meant to be looked at, and untouched down the lines,
+/// which is where the comb is.
+///
+/// **From the recording, never from a proxy.** A proxy is re-encoded and
+/// smaller, so its pictures cannot answer the question this window is open
+/// for. Cloned, so a detection holding the recording does not hold this up.
+#[tauri::command]
+async fn zoom_shot(time: f64, app: tauri::AppHandle) -> Result<Shot, String> {
+    off_thread(move || {
+        let src = {
+            let state = app.state::<Opened>();
+            let guard = locked(&state.0);
+            guard.as_ref().ok_or("no file open")?.clone()
+        };
+        let s = smartcut_core::shot_at(&src, time, u32::MAX).map_err(|e| e.to_string())?;
+        Ok(Shot { url: shot_url(&app, &s.jpeg), time: s.time, kind: s.kind.to_string() })
+    })
+    .await
 }
 
 /// Whether a cut editor is on screen at this moment.
@@ -1886,6 +1979,11 @@ const EDITOR: &str = "editor";
 /// The clip list, which Tauri labels for us: a window declared in the
 /// configuration without a label of its own is `main`.
 const MAIN: &str = "main";
+
+/// 拡大表示, the small window that magnifies part of the picture the editor
+/// is showing. One at a time, like the editor: it is about the one recording
+/// that window has open.
+const ZOOM: &str = "zoom";
 
 /// The last path component, which is what the list shows.
 fn clip_name(path: &str) -> String {
@@ -5506,6 +5604,9 @@ pub fn run() {
             clip_gone,
             open_editor,
             editor_up,
+            open_zoom,
+            close_zoom,
+            zoom_shot,
             audio_levels,
             audio_peak_at,
             retitle_editor,
