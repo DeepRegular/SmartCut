@@ -412,6 +412,9 @@ subtitles go into the output is answered by **Tracks** and by the output setting
 - A **keyframe** is a *mark*, not an edit. `⚑ Keyframe` (or `K`) puts one on
   the frame you are on. Marks are listed down the left with a thumbnail each;
   click one to jump there, or click its `×` to remove it.
+- In that column, `Ctrl`-click gathers marks one at a time and `Shift`-click
+  gathers a run of them. `Del` then removes the lot in one go, and `Ctrl+Z`
+  puts them all back.
 - A **cut** is the edit. Set IN and OUT, press `✂ Cut`, and that range leaves
   the output.
 
@@ -1024,7 +1027,7 @@ can quote it straight into a bug report.
 | `I` or `[` / `O` or `]` | Start / end the selection here |
 | `K` | Mark this frame as a keyframe |
 | `Insert` | Put a keyframe on this frame, or take away the one on it |
-| `Del` | Cut the selection |
+| `Del` | Cut the selection — or, with the keyboard in the column of marks, remove the marks chosen there |
 | `Ctrl+Del` | Cut the inside of the selection, keeping the two marked frames |
 | `S` / `Shift+S` | Next / previous scene change |
 | `Ctrl+Z` | Undo |

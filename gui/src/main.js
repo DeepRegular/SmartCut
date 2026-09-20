@@ -57,6 +57,20 @@ let seams = []; // output times of the joins in `joinTimes()`
 let outDur = 0;
 let keyframes = []; // source times
 let activeKey = null; // source time of the selected mark, null for none
+/// The marks a Del in the left column would take away, as source times.
+///
+/// The one picked out is where the window is looking and travels with the
+/// edit -- the history carries it, and a cut picks out the join it just made.
+/// This is a hand choosing cards to be rid of, and nothing else in the window
+/// means anything by it: it is never saved and never sent to the list.
+/// `activeKey` is the anchor Shift measures a run from, so the two are kept
+/// apart rather than folded into one list with a current item.
+///
+/// Thinned to what is still on the list every time the list is drawn, so a
+/// cut that takes a chosen mark away leaves the rest of the run chosen. A
+/// step through the history and a recording being opened empty it outright:
+/// neither is the list the hand was choosing from.
+let pickedKeys = [];
 /// Which mark file this recording came up with beside it, if any.
 ///
 /// What it decides is whether a detection the list hands over puts its marks
@@ -369,6 +383,8 @@ function stepHistory(from, to) {
   cuts = back.cuts.map((c) => ({ a: c.a, b: c.b }));
   keyframes = back.keyframes.slice();
   activeKey = back.activeKey;
+  // The list this step puts back is not the list the hand was choosing from.
+  pickedKeys = [];
   afterCutsChanged(back);
   showFrame(playhead);
 }
@@ -440,6 +456,10 @@ function afterCutsChanged(back = null) {
 /// The selected mark is remembered by time, not by its place in the list:
 /// cutting inserts joins and renumbers everything below them.
 const isActive = (t) => activeKey !== null && Math.abs(t - activeKey) < frame() / 2;
+
+/// Is this mark one of the ones chosen for a Del? Compared the way
+/// [`isActive`] compares, and for the same reason.
+const isPicked = (t) => pickedKeys.some((k) => Math.abs(k - t) < frame() / 2);
 
 /// Is this output time a join a cut left behind? Cutting the head of the
 /// recording leaves no *internal* join, but its new first picture is one all
@@ -594,12 +614,61 @@ function liveKeyframes() {
   });
 }
 
-function renderKeyframes() {
+/// Is the column of marks where the keyboard is?
+///
+/// What Del means depends on it: over that column it is about the cards
+/// chosen there, and everywhere else in the window it is the cut. The
+/// question is asked of the column rather than of each card because the ✕ on
+/// a card is a button and takes the keyboard when it is clicked, and a hand
+/// that has just pressed ✕ is still working in the list.
+const keysHaveKeyboard = () => {
+  const here = document.activeElement;
+  return !!here && el("keyframes").contains(here);
+};
+
+/// The marks a Del in that column would take away: the ones chosen, or the
+/// one card picked out where nothing has been chosen -- a cut picks its join
+/// out, and Ctrl with the arrows walks the cards without choosing any.
+function chosenKeys() {
+  if (pickedKeys.length) return pickedKeys.slice();
+  const one = liveKeyframes().find((t) => isActive(t));
+  return one === undefined ? [] : [one];
+}
+
+/// Take marks away, however many of them there are.
+///
+/// One step in the history for the whole handful: a Del over a run of chosen
+/// cards is one thing somebody did, and 取消 puts all of them back at once.
+/// The ✕ on a card comes through here as well, as a handful of one.
+function dropKeyframes(times, scroll = true) {
+  const doomed = new Set(times);
+  const next = keyframes.filter((t) => !doomed.has(t));
+  // Nothing was on the list: not something that was done, and not a step.
+  if (next.length === keyframes.length) return;
+  remember();
+  keyframes = next;
+  if (times.some((t) => isActive(t))) activeKey = null;
+  pickedKeys = pickedKeys.filter((t) => !doomed.has(t));
+  renderKeyframes(scroll);
+  draw();
+  scheduleStrip();
+}
+
+/// `scroll` is whether the card picked out is worth scrolling to. It is,
+/// wherever the list is drawn because the playhead moved or a cut landed --
+/// and it is not when the hand is in the list itself, where scrolling under
+/// the pointer moves the next card somebody meant to click.
+function renderKeyframes(scroll = true) {
   // Runs whenever the marks change, and on a bare selection change too --
   // which `sync` coalesces away.
   sync();
   const list = el("keyframes");
   const live = liveKeyframes();
+  // A cut can take a chosen card away with it, and what is left of the run
+  // is still chosen.
+  if (pickedKeys.length) {
+    pickedKeys = pickedKeys.filter((t) => live.some((x) => Math.abs(x - t) < frame() / 2));
+  }
   el("key-count").textContent = live.length ? tr("editor.keyCount", { n: live.length }) : "";
   list.innerHTML = "";
   if (!live.length) {
@@ -617,11 +686,14 @@ function renderKeyframes() {
   const imgs = [];
   live.forEach((t, i) => {
     const li = document.createElement("li");
+    const marks = [];
     if (isActive(t)) {
-      li.className = "active";
+      marks.push("active");
       // The list scrolls, and a mark a cut just made is often below the fold.
-      requestAnimationFrame(() => li.scrollIntoView({ block: "nearest" }));
+      if (scroll) requestAnimationFrame(() => li.scrollIntoView({ block: "nearest" }));
     }
+    if (isPicked(t)) marks.push("picked");
+    li.className = marks.join(" ");
     const img = document.createElement("img");
     img.alt = "";
     // Whatever was already standing in for this mark, before anything is
@@ -645,17 +717,44 @@ function renderKeyframes() {
     kill.title = tr("editor.keyframes.kill");
     kill.addEventListener("click", (ev) => {
       ev.stopPropagation();
-      remember();
-      keyframes = keyframes.filter((x) => x !== t);
-      if (isActive(t)) activeKey = null;
-      renderKeyframes();
-      draw();
-      scheduleStrip();
+      dropKeyframes([t], false);
     });
     li.append(img, box, kill);
-    li.addEventListener("click", () => {
+    // A click picks the card out and goes to it, which is what this column is
+    // for. With Ctrl or Shift it does neither: those two are somebody
+    // gathering cards to be rid of -- the file manager's chord, and the same
+    // one the clip list answers -- and going to each card on the way would
+    // decode a picture per click for a run nobody is looking at.
+    li.addEventListener("click", (ev) => {
+      // The column takes the keyboard, so that the Del pressed next is about
+      // the cards in it. Said here rather than left to the webview: a click
+      // on a card lands on the picture or the caption inside it, and which
+      // ancestor of those a webview hands the keyboard to is its own
+      // business.
+      list.focus({ preventScroll: true });
+      if (ev.shiftKey) {
+        // A run, measured from the card already picked out -- or from this
+        // one where nothing is, so Shift on a fresh list chooses the card it
+        // was pressed on.
+        const anchor = live.findIndex((x) => isActive(x));
+        const from = anchor < 0 ? i : anchor;
+        pickedKeys = live.slice(Math.min(from, i), Math.max(from, i) + 1);
+        renderKeyframes(false);
+        return;
+      }
+      if (ev.ctrlKey || ev.metaKey) {
+        pickedKeys = isPicked(t)
+          ? pickedKeys.filter((k) => Math.abs(k - t) >= frame() / 2)
+          : pickedKeys.concat([t]);
+        // The anchor follows the last card touched, so a Shift after a Ctrl
+        // measures its run from there.
+        activeKey = t;
+        renderKeyframes(false);
+        return;
+      }
+      pickedKeys = [t];
       activeKey = t;
-      renderKeyframes();
+      renderKeyframes(false);
       showFrame(t);
     });
     list.append(li);
@@ -706,12 +805,7 @@ function toggleKeyframe() {
     addKeyframes([playhead], playhead);
     return;
   }
-  remember();
-  keyframes = keyframes.filter((t) => t !== on);
-  if (isActive(on)) activeKey = null;
-  renderKeyframes();
-  draw();
-  scheduleStrip();
+  dropKeyframes([on]);
 }
 
 // --- access points and scenes -------------------------------------------
@@ -3429,6 +3523,7 @@ function clearKeyframes() {
   remember();
   keyframes = [];
   activeKey = null;
+  pickedKeys = [];
   renderKeyframes();
   draw();
   scheduleStrip();
@@ -3782,6 +3877,7 @@ async function openPath(picked, saved, side, name, chapters, dropPids) {
     undone = [];
     keyframes = saved ? saved.keyframes.slice() : [];
     activeKey = saved ? saved.activeKey : null;
+    pickedKeys = [];
     cmBlocks = saved ? saved.cmBlocks || [] : [];
     cmSummary = saved ? saved.cmNote || "" : "";
     cmFinding = saved ? saved.cmFinding || null : null;
@@ -4131,6 +4227,7 @@ el("clear-all").addEventListener("click", () => {
   cuts = [];
   keyframes = [];
   activeKey = null;
+  pickedKeys = [];
   rebuildTimeline();
   selA = 0;
   selB = outDur;
@@ -4268,6 +4365,18 @@ window.addEventListener("keydown", (ev) => {
     if (playing) stopPlay();
     if (arrowDue(ev)) toKeyframe(ev.key === "ArrowRight" ? 1 : -1);
     return;
+  }
+  // Del over the column of marks is about the marks: it takes away the cards
+  // chosen there, the way Insert takes away the mark under the playhead.
+  // Ahead of the cut below, and ahead of the line that puts playback down --
+  // taking a mark off a list is not a move, and the reason somebody is
+  // pressing it while a seam plays is to be rid of the card for that seam.
+  if (ev.key === "Delete" && !ev.ctrlKey && !ev.metaKey && !ev.altKey && !ev.shiftKey) {
+    if (keysHaveKeyboard()) {
+      ev.preventDefault();
+      dropKeyframes(chosenKeys(), false);
+      return;
+    }
   }
   // Del takes the selection out, Ctrl+Del takes the inside of it out and
   // leaves the two marked frames standing; see `cutSelection`. Del on its own

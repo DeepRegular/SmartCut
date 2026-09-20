@@ -324,7 +324,16 @@ main { flex: 1; min-height: 0; display: flex; gap: 0; }
   font-variant-numeric: tabular-nums;
 }
 #keyframes li:hover { background: #262626; }
+/* Cards gathered with Ctrl or Shift, for a Del to take away together. Dimmer
+   than the one card the window is looking at, and written above it so that a
+   card which is both reads as the one being looked at. */
+#keyframes li.picked { background: #14343e; }
 #keyframes li.active { background: #1d4d5c; }
+/* The column has the keyboard, which is what makes Del take marks away
+   instead of cutting the selection. `:focus` rather than `:focus-visible`:
+   the way into this column is a click on a card, and that is exactly when
+   the difference is worth showing. */
+#keyframes:focus { outline: 1px solid var(--sel); outline-offset: -1px; }
 #keyframes img { width: 84px; height: auto; display: block; border: 1px solid #fff; background: #000; }
 #keyframes .no { color: var(--dim); }
 #keyframes li.active .no { color: #cfefff; }
