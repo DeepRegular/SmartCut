@@ -2086,11 +2086,9 @@ function renderStrip(shots, unit, win) {
     cap.textContent = fmt(s.at);
     fig.append(img, cap);
     fig.addEventListener("click", () => seekOut(s.at));
-    fig.addEventListener("auxclick", (ev) => {
-      if (ev.button !== 1) return;
-      ev.preventDefault();
-      toScene(1, s.time - frame());
-    });
+    // Where this cell sits in the recording, for the middle click below. On
+    // the element because that click is answered by the strip as a whole.
+    fig.dataset.src = String(s.time);
     reel.append(fig);
   });
   reel.style.width = `${x.toFixed(2)}px`;
@@ -2279,6 +2277,35 @@ el("strip").addEventListener("mousedown", (ev) => {
   if (ev.button !== 2) return;
   ev.preventDefault();
   startSearch(ev);
+});
+
+/// 中クリック -- the next scene change, or the one before.
+///
+/// Which of the two is decided by the half of the strip the click landed in,
+/// the same way the right drag decides which way it searches: right of the
+/// middle goes forwards, left of it goes back. The playhead is held at the
+/// middle of the reel, so the half a click lands in is the side of *now* it
+/// is on, and the direction is the one the hand already meant by going there.
+/// The reference tool answers the middle button this way and the habit comes
+/// with the hand.
+///
+/// Searched from the cell that was clicked rather than from the playhead, so
+/// that a click far down the reel finds the break near what is under the
+/// pointer instead of the one after the picture on the stage. A frame either
+/// side of it, because `scene_search` looks strictly past where it starts and
+/// a cell standing on a scene change is the cell somebody means.
+///
+/// Answered by the strip rather than by each cell: the gaps between cells,
+/// the blanks on a reel still being filled, and the empty ground past the end
+/// of the recording are all part of the strip somebody clicked in.
+el("strip").addEventListener("auxclick", (ev) => {
+  if (ev.button !== 1 || !src) return;
+  ev.preventDefault();
+  const box = el("strip").getBoundingClientRect();
+  const dir = ev.clientX >= box.left + box.width / 2 ? 1 : -1;
+  const cell = ev.target.closest ? ev.target.closest("figure[data-src]") : null;
+  const from = cell ? Number(cell.dataset.src) : playhead;
+  toScene(dir, from - dir * frame());
 });
 window.addEventListener("mousemove", (ev) => {
   if (search) search.x = ev.clientX;

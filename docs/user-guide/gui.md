@@ -338,7 +338,7 @@ hole, and the frame counter counts the length that will actually be written.
 |---|---|
 | **Click** the filmstrip | Go to that frame |
 | **Right-drag** the filmstrip | Search back and forth. Right of centre is forwards, left is back, and further out is faster |
-| **Middle-click** the filmstrip | Jump to the next scene change |
+| **Middle-click** the filmstrip | Jump to a scene change: the next one from the right half of the strip, the one before from the left half |
 | **Wheel** | One frame per notch. Hold `Shift` to hop from lossless point to lossless point. Anywhere in the window, not only over the filmstrip; over the marks down the left or over the plan it scrolls those instead |
 | **Drag** the scrubber | Move the playhead. Grab near the IN or OUT mark and you move that mark instead |
 | **Hover** the scrubber | Shows the frame at that moment in a small picture |

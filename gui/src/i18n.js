@@ -631,7 +631,7 @@ const CATALOG = {
     "editor.frameKindNear": "{kind} フレーム — 近くのフレーム（解析中）",
     "editor.previewFailed": "プレビュー失敗: {e}",
     "editor.stripHint":
-      "クリックで移動／<b>右ドラッグ</b>で前後にサーチ（右へ＝送り・左へ＝戻し）／中クリックで次のシーン／ホイールで 1 フレーム送り（Shift で GOP 単位）／Space で再生",
+      "クリックで移動／<b>右ドラッグ</b>で前後にサーチ（右へ＝送り・左へ＝戻し）／<b>中クリック</b>で場面の変わり目へ（右半分で次・左半分で前）／ホイールで 1 フレーム送り（Shift で GOP 単位）／Space で再生",
     "editor.stripShow": "表示",
     "strip.gop3": "GOP・3 秒",
     "strip.gop6": "GOP・6 秒",
@@ -1393,7 +1393,7 @@ const CATALOG = {
     "editor.frameKindNear": "{kind} frame — nearest picture, still reading",
     "editor.previewFailed": "Preview failed: {e}",
     "editor.stripHint":
-      "Click to move  /  <b>right-drag</b> to search back and forth (right = forwards, left = back)  /  middle-click for the next scene  /  wheel steps a frame (Shift for a GOP)  /  Space plays",
+      "Click to move  /  <b>right-drag</b> to search back and forth (right = forwards, left = back)  /  <b>middle-click</b> for a scene change (right half forwards, left half back)  /  wheel steps a frame (Shift for a GOP)  /  Space plays",
     "editor.stripShow": "View",
     "strip.gop3": "GOP · 3 s",
     "strip.gop6": "GOP · 6 s",
