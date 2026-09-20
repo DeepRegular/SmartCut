@@ -511,3 +511,18 @@ this.
 The survey paid for itself on the way: one recording's silence walk **panicked** on a
 frame claiming a ninth audio plane, which an `AVFrame` has no pointer for. That is
 fixed, and is not part of what was dropped.
+
+
+## Showing the silences themselves (`blank.rs` and `cm.rs`)
+
+The cut editor has two detections beside this one: **Detect blank** and
+**Detect silence**. The sound pass is this one -- `find_silences` is what both
+call -- and the difference is what is done with the answer: nothing is ranked,
+nothing is fitted to a 15-second grid, and the stretches are reported as they
+were found.
+
+The flat pictures are `blank.rs`, which decodes every picture rather than the
+entry ones. Broadcast black runs two to four pictures, and a sample every half
+second misses it. Moving the threshold from 0.05 to 0.16 does not change how
+many stretches are found; it changes only how much of a fade is called black.
+So both ends of a stretch are reported and neither is named the junction.

@@ -260,6 +260,20 @@ To stop, press **Stop analysis**; pressing it again picks up where it left off.
 Running a whole evening's worth at once is covered in
 [Working through a batch](batch.md).
 
+### Detecting blank pictures and silence
+
+**Detect blank/silence** on the right reads every selected recording for two
+things: where the picture is flat black or flat white, and where the sound is
+under a level. It is a separate pass from the commercial detection and either
+can be run without the other.
+
+It decodes every picture, so it takes longer than detecting commercials.
+Progress appears on the row — `Blank/silence 33% — Reading the pictures` — and
+what it found stays there: `Blank/silence: 1 blank, 4 silent`.
+
+The answers are kept, so opening the cut editor afterwards shows the bands and
+the marks without asking for anything.
+
 ---
 
 ## 2. Cut
@@ -448,6 +462,29 @@ commercial break, are not things the picture alone will tell you.
 
 None of this changes what is written. This chooses what is **on screen**; which
 subtitles go into the output is answered by **Tracks** and by the output settings.
+
+### Finding blank pictures and silence
+
+**Detect blank** and **Detect silence** at the top read the recording that is
+open. If the list has already been over it, what was found is on the timeline
+when the window opens; the buttons read it again.
+
+Each stretch is drawn as a band under the timeline — blue-grey for black and
+white, green for silence — in its own row under the scene changes, which are
+the fine orange ticks.
+
+**Both ends of a stretch are marked.** Where the material before it stops being
+worth keeping and where what follows begins are two different pictures, and a
+fade puts them a second apart, so the start and the end are both keyframes.
+`Alt+↑` and `Alt+↓` walk those ends in order.
+
+A black stretch is often only two to four pictures long, which is why every
+picture is decoded to find them. Half an hour of broadcast takes twenty seconds
+to a minute — on a recording held over a share it is the reading that decides.
+The silence pass reads the sound alone.
+
+How long a stretch has to last, and what counts as silence, are in Preferences:
+two pictures for black and white, 0.4 s and -50 dB for the sound.
 
 ### Marks and cuts are two different things
 
@@ -953,6 +990,9 @@ effect as you make it.
 | **PageUp / PageDown** | What those keys do. Four answers — plain, `Shift`, `Ctrl`, `Shift+Ctrl` — each a number and a unit: **frames**, **seconds**, or **% a second, scrolling**. The first two are amounts, one per press. A percentage is a speed: a share of the fastest scroll here, which is sixty times the recording's own speed. 25 is fifteen times, so a second of holding covers fifteen seconds of the recording, whatever is open. Out of the box: 15 frames, 30 with `Shift`, 25% with `Ctrl` and 50% with both. A step of 0 is a key that does nothing |
 | **When more than one is there, read** | Which file is picked up when a recording has more than one of a `.keyframe`, a `.trim.avs` and a `.cm.json` beside it |
 | **Turn a detection into keyframes** | On out of the box. Off, a detection leaves the band and the sentence and nothing else, and ≡ → **Turn the detection into keyframes** places the marks. Where a mark file beside the recording was read, a detection is not marked whatever this says |
+| **Counts as blank after** | Shorter stretches are left out. The unit is pictures or seconds; two pictures out of the box, broadcast black usually running two to four |
+| **Counts as silence after** | The same for the sound. 0.4 s out of the box: a junction's silence runs about a second and a pause in dialogue runs 0.1 to 0.4, so that is the line between them |
+| **Silence is quieter than** | -50 dB out of the box, measured on the loudest sample of each audio frame. Lower finds only what is truly silent |
 | **Let the save shortcut write over a file without asking** | `Ctrl+H`, `Ctrl+Shift+H` and `Ctrl+Alt+H` then write over a file of the same name in silence |
 
 ### Output settings
@@ -1066,6 +1106,7 @@ can quote it straight into a bug report.
 | `PageUp` `PageDown` | By the amount set in the preferences, or a scroll while held where that amount is a speed (`Shift`, `Ctrl` and `Shift+Ctrl` carry their own) |
 | `↑` `↓` | Previous / next scene change |
 | `Shift+↑` `Shift+↓` | Previous / next lossless point |
+| `Alt+↑` `Alt+↓` | Previous / next end of a detected stretch (blank or silent) |
 | `Ctrl+←` `Ctrl+→` | Previous / next keyframe |
 | `Home` / `End` | To the first / last frame |
 | `I` or `[` / `O` or `]` | Start / end the selection here |

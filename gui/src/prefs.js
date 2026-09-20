@@ -198,6 +198,31 @@ const DEFAULTS = {
   /// whatever this says. So is the rule this cannot override: marks are never
   /// put on top of a list the recording came up with beside it.
   cmKeyframes: true,
+  /// How long the picture has to stay flat before the detection calls it a
+  /// stretch, and the unit that number is counted in.
+  ///
+  /// Two pictures, because that is what the material holds: measured on half
+  /// an hour off BS, five of the seven flat stretches ran four pictures or
+  /// fewer and two of them ran exactly two. The same minimum said in seconds
+  /// would be 0.07, which is not a number anybody would think to type -- which
+  /// is why the unit is an answer here and not a fixed one.
+  blankRun: 2,
+  blankRunUnit: "frame",
+  /// The same for the sound, where the answer is not alike. A junction's
+  /// silence runs about a second and a pause in dialogue runs 0.1 to 0.4, so
+  /// the minimum is the whole of what tells one from the other -- and 0.4 s is
+  /// where commercial detection has always drawn that line.
+  quietRun: 0.4,
+  quietRunUnit: "sec",
+  /// Everything below this counts as silence, in dB of full scale.
+  ///
+  /// The loudest sample in an audio frame rather than the average of them,
+  /// which is what makes -50 the right number rather than a strict one: a
+  /// junction's silence is not digital black, it is room tone and the noise
+  /// floor of whatever the broadcaster mixed. Measured on half an hour off
+  /// BS, -50 dB and four tenths of a second found 43 stretches, nearly all of
+  /// them junctions.
+  quietLevel: -50,
   /// Whether the save shortcut writes over a file that is already there
   /// without stopping to ask.
   ///

@@ -179,6 +179,7 @@ struct BatchStop {
     walk: AtomicU64,
     pics: AtomicU64,
     cm: AtomicU64,
+    flat: AtomicU64,
 }
 
 /// One of the recording's sound tracks, as the window needs to know it.
@@ -2003,10 +2004,12 @@ fn stop_batch(lane: Option<String>, stop: State<BatchStop>) {
         Some("walk") => stop.walk.fetch_add(1, Ordering::SeqCst),
         Some("pics") => stop.pics.fetch_add(1, Ordering::SeqCst),
         Some("cm") => stop.cm.fetch_add(1, Ordering::SeqCst),
+        Some("flat") => stop.flat.fetch_add(1, Ordering::SeqCst),
         _ => {
             stop.walk.fetch_add(1, Ordering::SeqCst);
             stop.pics.fetch_add(1, Ordering::SeqCst);
-            stop.cm.fetch_add(1, Ordering::SeqCst)
+            stop.cm.fetch_add(1, Ordering::SeqCst);
+            stop.flat.fetch_add(1, Ordering::SeqCst)
         }
     };
 }
@@ -3108,13 +3111,26 @@ fn cm_dir(app: &tauri::AppHandle) -> Result<std::path::PathBuf, String> {
 /// remembered with an answer this version would not give.
 const CM_VERSION: u32 = 2;
 
-/// Where this recording's detection belongs.
+/// Where this recording's commercial detection belongs.
+fn cm_path(app: &tauri::AppHandle, src_path: &str) -> Result<std::path::PathBuf, String> {
+    detection_path(app, src_path, "cm", "cmj", CM_VERSION)
+}
+
+/// Where a detection of `kind` kept on disc belongs.
 ///
 /// Keyed the way [`seek_index::cache_path`] and [`proxy::cache_path`] key
 /// theirs, and for the same reason: the path alone would go on answering for
 /// a recording that has since been replaced, so the size and the modification
-/// time are in the key and a changed file simply misses.
-fn cm_path(app: &tauri::AppHandle, src_path: &str) -> Result<std::path::PathBuf, String> {
+/// time are in the key and a changed file simply misses. `version` is in the
+/// key as well, so a detection that has changed its mind about what it finds
+/// does not read yesterday's answer.
+fn detection_path(
+    app: &tauri::AppHandle,
+    src_path: &str,
+    kind: &str,
+    ext: &str,
+    version: u32,
+) -> Result<std::path::PathBuf, String> {
     // Asked of the file the recording is in, which for one on a disc is the
     // disc: a path into an image is not a path the operating system knows.
     // The key is still the recording's own name, so two on one disc do not
@@ -3139,7 +3155,8 @@ fn cm_path(app: &tauri::AppHandle, src_path: &str) -> Result<std::path::PathBuf,
     eat(src_path.as_bytes());
     eat(&meta.len().to_le_bytes());
     eat(&mtime.to_le_bytes());
-    eat(&CM_VERSION.to_le_bytes());
+    eat(&version.to_le_bytes());
+    eat(kind.as_bytes());
 
     let stem: String = std::path::Path::new(src_path)
         .file_stem()
@@ -3149,7 +3166,7 @@ fn cm_path(app: &tauri::AppHandle, src_path: &str) -> Result<std::path::PathBuf,
         .filter(|c| c.is_alphanumeric() || *c == '-' || *c == '_')
         .take(40)
         .collect();
-    Ok(cm_dir(app)?.join(format!("{stem}-{h:016x}.cmj")))
+    Ok(cache_kind(app, kind)?.join(format!("{stem}-{h:016x}.{ext}")))
 }
 
 /// Write a detection down, so the next session's list already knows.
@@ -3175,7 +3192,7 @@ fn remember_cm(app: &tauri::AppHandle, src_path: &str, res: &CmResult) {
     // unbounded directory behind rather than about the space. A thousand
     // recordings is more than anyone's list has held.
     if let Ok(dir) = cm_dir(app) {
-        let _ = cm_prune(&dir, 1000);
+        let _ = prune_detections(&dir, "cmj", 1000);
     }
 }
 
@@ -3205,11 +3222,11 @@ fn cached_cm(app: &tauri::AppHandle, src_path: &str) -> Option<CmResult> {
 ///
 /// Same shape as [`seek_index::prune`] without its byte budget, which would
 /// be measuring nothing: these are text files a page long.
-fn cm_prune(dir: &std::path::Path, keep: usize) -> std::io::Result<()> {
+fn prune_detections(dir: &std::path::Path, ext: &str, keep: usize) -> std::io::Result<()> {
     let mut found: Vec<(std::time::SystemTime, std::path::PathBuf)> = Vec::new();
     for entry in std::fs::read_dir(dir)? {
         let path = entry?.path();
-        if path.extension().and_then(|e| e.to_str()) != Some("cmj") {
+        if path.extension().and_then(|e| e.to_str()) != Some(ext) {
             continue;
         }
         let when = path
@@ -3353,6 +3370,400 @@ async fn detect_cm_at(path: String, app: tauri::AppHandle) -> Result<CmResult, S
         }
         remember_cm(&app, &path, &res);
         Ok(res)
+    })
+    .await
+}
+
+/// One stretch the editor draws in its own lane: flat black, flat white, or
+/// quiet.
+///
+/// The three arrive from two different passes and are the same shape on
+/// purpose. What the editor does with them is the same thing -- a band under
+/// the timeline and a mark at each end -- and a detection that came back in
+/// its own shape would only have to be turned into this one.
+#[derive(Serialize, Deserialize, Clone)]
+struct FlatRun {
+    /// `"black"`, `"white"` or `"quiet"`.
+    kind: String,
+    start: f64,
+    end: f64,
+    /// How many pictures it holds, for the two that are about pictures. Zero
+    /// for a silence, which is measured in audio frames and would be
+    /// answering a question nobody asked.
+    pictures: usize,
+}
+
+/// Where the picture goes flat, against the recording the editor has open.
+///
+/// Read afresh every time it is asked for, unlike [`flat_cached`]: the button
+/// is how somebody says "look again", and the window has already shown
+/// whatever was saved when it opened. What it finds is written down, so the
+/// list and the next session get it for nothing.
+///
+/// `min_seconds` and `min_pictures` are the one thing 環境設定 has a say in.
+/// Both are applied, and the screen sets whichever of them the person chose a
+/// unit for.
+#[tauri::command]
+async fn detect_blank(
+    path: String,
+    min_seconds: f64,
+    min_pictures: usize,
+    app: tauri::AppHandle,
+) -> Result<Vec<FlatRun>, String> {
+    off_thread_behind(move || {
+        let src = flat_source(&app, &path)?;
+        let reporter = app.clone();
+        let say = move |done: f64| {
+            let _ = reporter.emit("flat-progress", ("blank", done));
+        };
+        blank_now(&app, &src, &path, min_seconds, min_pictures, say)
+    })
+    .await
+}
+
+/// Where the sound goes quiet, against the recording the editor has open.
+///
+/// The same silences commercial detection is built on -- there is one pass and
+/// this is it -- reported as they come rather than ranked and grouped. Which is
+/// the whole difference between the two answers: that one says where a break
+/// is, this one says where it is quiet.
+///
+/// Cheap next to the pictures in processor time, and not in reading time: both
+/// passes read the recording once, and over a share that is what either of them
+/// costs. Measured on half an hour of broadcast off a NAS, 67 seconds for the
+/// sound against 76 for the pictures.
+#[tauri::command]
+async fn detect_silence(
+    path: String,
+    threshold_db: f64,
+    min_seconds: f64,
+    app: tauri::AppHandle,
+) -> Result<Vec<FlatRun>, String> {
+    off_thread_behind(move || {
+        let src = flat_source(&app, &path)?;
+        let reporter = app.clone();
+        let say = move |done: f64| {
+            let _ = reporter.emit("flat-progress", ("quiet", done));
+        };
+        quiet_now(&app, &src, &path, min_seconds, threshold_db, say)
+    })
+    .await
+}
+
+/// Bumped when this pass stops meaning what it used to, as [`CM_VERSION`] is.
+/// 1: as first written.
+const FLAT_VERSION: u32 = 1;
+
+/// A detection kept on disc: what it was found with, and what it found.
+///
+/// The two halves are written apart, because they are two passes and the
+/// editor runs one at a time. So each file carries the answers its own pass
+/// was given and says nothing about the other's: `min_pictures` belongs to the
+/// pictures, the level belongs to the sound, and each leaves the other at
+/// zero.
+#[derive(Serialize, Deserialize)]
+struct FlatSaved {
+    min_seconds: f64,
+    min_pictures: usize,
+    threshold_db: f64,
+    runs: Vec<FlatRun>,
+}
+
+/// What both windows are told about a recording's flat stretches. Absent means
+/// nothing has been detected, which is not the same as nothing being there.
+#[derive(Serialize, Default)]
+struct FlatFound {
+    blank: Option<Vec<FlatRun>>,
+    quiet: Option<Vec<FlatRun>>,
+}
+
+/// Where one half of this recording's flat detection belongs.
+fn flat_path(
+    app: &tauri::AppHandle,
+    src_path: &str,
+    quiet: bool,
+) -> Result<std::path::PathBuf, String> {
+    let ext = if quiet { "qtj" } else { "blkj" };
+    detection_path(app, src_path, "flat", ext, FLAT_VERSION)
+}
+
+/// Write a half down, so the next window to ask does not read the recording
+/// again. A failure is not worth stopping for, as with a detection.
+fn remember_flat(app: &tauri::AppHandle, src_path: &str, quiet: bool, saved: &FlatSaved) {
+    let Ok(file) = flat_path(app, src_path, quiet) else {
+        return;
+    };
+    let Ok(json) = serde_json::to_vec(saved) else {
+        return;
+    };
+    if let Err(e) = std::fs::write(&file, json) {
+        eprintln!("flat: cannot write {}: {e}", file.display());
+        return;
+    }
+    if let Some(dir) = file.parent() {
+        let _ = prune_detections(dir, if quiet { "qtj" } else { "blkj" }, 1000);
+    }
+}
+
+/// The half an earlier pass wrote for this recording, if the file is still the
+/// one it was written for. Unreadable is deleted, as elsewhere.
+fn saved_flat(app: &tauri::AppHandle, src_path: &str, quiet: bool) -> Option<FlatSaved> {
+    let file = flat_path(app, src_path, quiet).ok()?;
+    let raw = std::fs::read(&file).ok()?;
+    match serde_json::from_slice::<FlatSaved>(&raw) {
+        Ok(saved) => {
+            seek_index::touch(&file);
+            Some(saved)
+        }
+        Err(e) => {
+            eprintln!("flat: discarding {}: {e}", file.display());
+            let _ = std::fs::remove_file(&file);
+            None
+        }
+    }
+}
+
+/// Whether a saved half answers what is being asked of it now.
+///
+/// A longer minimum than it was found with is answerable by leaving the short
+/// runs out. A shorter one is not: the runs under the old minimum were never
+/// written down. A level is not a minimum at all -- sound below -50 dB is not
+/// a part of sound below -45 dB, it is a different question -- so the quiet
+/// half answers only for the level it was read at.
+fn flat_answers(saved: &FlatSaved, min_seconds: f64, min_pictures: usize, db: Option<f64>) -> bool {
+    if saved.min_seconds > min_seconds + 1e-9 || saved.min_pictures > min_pictures {
+        return false;
+    }
+    match db {
+        Some(db) => (saved.threshold_db - db).abs() < 1e-9,
+        None => true,
+    }
+}
+
+/// The runs of a saved half that clear the minimums being asked for now.
+///
+/// A silence has no pictures to count -- it is measured in audio frames, and
+/// [`FlatRun::pictures`] is zero on one -- so the count is applied only where
+/// there is one.
+fn flat_keep(runs: &[FlatRun], min_seconds: f64, min_pictures: usize) -> Vec<FlatRun> {
+    runs.iter()
+        .filter(|r| {
+            r.end - r.start + 1e-9 >= min_seconds && (r.pictures == 0 || r.pictures >= min_pictures)
+        })
+        .cloned()
+        .collect()
+}
+
+/// The recording the passes are to read: the one the editor has open where
+/// that is this one, and the container's own answer otherwise.
+///
+/// Neither pass looks at the access points, so there is nothing a walk would
+/// add -- and the copy is taken so the lock is let go before a pass that runs
+/// for a minute. Both as [`detect_cm`] does it, and for its reasons.
+fn flat_source(app: &tauri::AppHandle, path: &str) -> Result<Source, String> {
+    match opened_clone(app, path) {
+        Some(src) => Ok(src),
+        None => Ok(smartcut_core::outline(path)
+            .map_err(|e| e.to_string())?
+            .into_source()),
+    }
+}
+
+/// Run the pictures pass and write down what it found.
+fn blank_now(
+    app: &tauri::AppHandle,
+    src: &Source,
+    path: &str,
+    min_seconds: f64,
+    min_pictures: usize,
+    say: impl FnMut(f64) + Send + 'static,
+) -> Result<Vec<FlatRun>, String> {
+    let opts = smartcut_core::BlankOptions {
+        min_seconds,
+        min_pictures,
+        ..Default::default()
+    };
+    let runs: Vec<FlatRun> = smartcut_core::find_blank_runs_with(src, &opts, Some(Box::new(say)))
+        .map_err(|e| e.to_string())?
+        .into_iter()
+        .map(|r| FlatRun {
+            kind: r.shade.as_str().to_string(),
+            start: r.start,
+            end: r.end,
+            pictures: r.pictures,
+        })
+        .collect();
+    remember_flat(
+        app,
+        path,
+        false,
+        &FlatSaved {
+            min_seconds,
+            min_pictures,
+            threshold_db: 0.0,
+            runs: runs.clone(),
+        },
+    );
+    Ok(runs)
+}
+
+/// Run the sound pass and write down what it found.
+fn quiet_now(
+    app: &tauri::AppHandle,
+    src: &Source,
+    path: &str,
+    min_seconds: f64,
+    threshold_db: f64,
+    say: impl FnMut(f64) + Send + 'static,
+) -> Result<Vec<FlatRun>, String> {
+    let opts = smartcut_core::DetectOptions {
+        threshold_db,
+        min_silence: min_seconds,
+        ..Default::default()
+    };
+    let runs: Vec<FlatRun> = smartcut_core::find_silences_with(src, &opts, Some(Box::new(say)))
+        .map_err(|e| e.to_string())?
+        .into_iter()
+        .map(|s| FlatRun {
+            kind: "quiet".to_string(),
+            start: s.start,
+            end: s.end,
+            pictures: 0,
+        })
+        .collect();
+    remember_flat(
+        app,
+        path,
+        true,
+        &FlatSaved {
+            min_seconds,
+            min_pictures: 0,
+            threshold_db,
+            runs: runs.clone(),
+        },
+    );
+    Ok(runs)
+}
+
+/// What has already been detected about this recording, for a window that has
+/// just opened one and for a row the list has just been handed.
+///
+/// Costs a `stat` and a read of a page or two, and answers with nothing in the
+/// ordinary case where no detection has been made. Asked with the minimums in
+/// force, because a saved half found with a shorter one answers for a longer
+/// one and not the other way about; see [`flat_answers`].
+#[tauri::command]
+async fn flat_cached(
+    path: String,
+    min_seconds: f64,
+    min_pictures: usize,
+    threshold_db: f64,
+    quiet_seconds: f64,
+    app: tauri::AppHandle,
+) -> Result<FlatFound, String> {
+    off_thread(move || {
+        let mut out = FlatFound::default();
+        if let Some(saved) = saved_flat(&app, &path, false) {
+            if flat_answers(&saved, min_seconds, min_pictures, None) {
+                out.blank = Some(flat_keep(&saved.runs, min_seconds, min_pictures));
+            }
+        }
+        if let Some(saved) = saved_flat(&app, &path, true) {
+            if flat_answers(&saved, quiet_seconds, 0, Some(threshold_db)) {
+                out.quiet = Some(flat_keep(&saved.runs, quiet_seconds, 0));
+            }
+        }
+        Ok(out)
+    })
+    .await
+}
+
+/// Both passes over a recording nothing is looking at: the clip list's own
+/// lane.
+///
+/// A lane of its own rather than a part of commercial detection, which reads
+/// the same recording and could have carried this. It is not folded in because
+/// the cost is not alike: that detection reads the sound and the entry
+/// pictures, and this reads every picture there is -- a minute and a quarter
+/// on half an hour of broadcast against a quarter of that. Somebody who wants
+/// the commercials found should not pay for the black frames as well.
+///
+/// A half the cache already answers is not read again, which is what makes
+/// asking the list for a recording the editor has already been over cost
+/// nothing.
+#[tauri::command]
+async fn detect_flat_at(
+    path: String,
+    min_seconds: f64,
+    min_pictures: usize,
+    threshold_db: f64,
+    quiet_seconds: f64,
+    app: tauri::AppHandle,
+) -> Result<FlatFound, String> {
+    off_thread_behind(move || {
+        let mine = app.state::<BatchStop>().flat.load(Ordering::SeqCst);
+        let stopped = || app.state::<BatchStop>().flat.load(Ordering::SeqCst) != mine;
+        if stopped() {
+            return Err("cancelled".into());
+        }
+        let src = flat_source(&app, &path)?;
+        let mut out = FlatFound::default();
+
+        // Half the bar each. The two passes are within a fifth of each other
+        // on the recording they were measured on -- 76 seconds for the
+        // pictures, 67 for the sound -- because both of them read the whole
+        // file and the file is on a share. On a local disc the pictures are
+        // the longer half; neither is close enough to the other to be worth
+        // weighting.
+        let told = |phase: &'static str, from: f64| {
+            let reporter = app.clone();
+            let owned = path.clone();
+            move |done: f64| {
+                let _ = reporter.emit(
+                    "clip-flat-progress",
+                    (owned.clone(), phase.to_string(), from + done * 0.5),
+                );
+            }
+        };
+
+        match saved_flat(&app, &path, false) {
+            Some(saved) if flat_answers(&saved, min_seconds, min_pictures, None) => {
+                out.blank = Some(flat_keep(&saved.runs, min_seconds, min_pictures));
+            }
+            _ => {
+                let say = told(tr!("映像を調べています", "Reading the pictures"), 0.0);
+                out.blank = Some(blank_now(
+                    &app,
+                    &src,
+                    &path,
+                    min_seconds,
+                    min_pictures,
+                    say,
+                )?);
+            }
+        }
+        if stopped() {
+            return Err("cancelled".into());
+        }
+        match saved_flat(&app, &path, true) {
+            Some(saved) if flat_answers(&saved, quiet_seconds, 0, Some(threshold_db)) => {
+                out.quiet = Some(flat_keep(&saved.runs, quiet_seconds, 0));
+            }
+            _ => {
+                let say = told(tr!("音声を調べています", "Reading the audio"), 0.5);
+                // A recording with no sound is not a failure of this pass: the
+                // pictures have been read and are worth having.
+                match quiet_now(&app, &src, &path, quiet_seconds, threshold_db, say) {
+                    Ok(runs) => out.quiet = Some(runs),
+                    Err(e) if src.audio.is_none() => eprintln!("flat: {path}: {e}"),
+                    Err(e) => return Err(e),
+                }
+            }
+        }
+        if stopped() {
+            return Err("cancelled".into());
+        }
+        Ok(out)
     })
     .await
 }
@@ -5566,6 +5977,10 @@ pub fn run() {
             glimpses,
             glimpse_sweep,
             detect_cm,
+            detect_blank,
+            detect_silence,
+            detect_flat_at,
+            flat_cached,
             thumbs_at,
             preview,
             prepare,

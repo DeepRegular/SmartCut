@@ -20,8 +20,14 @@
       <span class="spacer"></span>
       <button id="tracks" class="mini wide" data-i18n="tracks.button"
               data-i18n-title="tracks.button.title">トラック</button>
-      <!-- Its label counts a detection up while one is running, so it is
-           `main.js` that writes it and not `applyStatic`. -->
+      <!-- The three detections. Their labels count a pass up while one is
+           running, so it is `main.js` that writes them and not `applyStatic`.
+           The two flat ones are separate buttons because they are separate
+           passes: the pictures are a minute on half an hour of broadcast and
+           the sound is not, so somebody after the silences alone should not
+           have to wait for the pictures. -->
+      <button id="detect-blank" class="mini wide" data-i18n-title="editor.detectBlank.title">黒白を検出</button>
+      <button id="detect-silence" class="mini wide" data-i18n-title="editor.detectSilence.title">無音を検出</button>
       <button id="detect-cm" class="mini wide" data-i18n-title="editor.detectCm.title">CM を検出</button>
     </div>
 

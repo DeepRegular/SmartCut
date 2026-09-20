@@ -15,6 +15,7 @@ pub mod arib;
 pub mod audio;
 pub mod bdav;
 pub mod bitstream;
+pub mod blank;
 pub mod carousel;
 pub mod caption;
 pub mod cm;
@@ -49,6 +50,10 @@ pub mod vobsub;
 pub use aac::Framing;
 pub use adts::{AacVersion, AdtsFormat};
 pub use latm::LatmFormat;
+pub use blank::{
+    find_runs as find_blank_runs, find_runs_with as find_blank_runs_with, BlankOptions,
+    Run as BlankRun, Shade,
+};
 pub use cm::{
     blocks as cm_blocks, blocks_from_logo as cm_blocks_from_logo,
     blocks_from_resets as cm_blocks_from_resets, candidates as cm_candidates, find_silences,

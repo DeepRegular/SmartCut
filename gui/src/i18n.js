@@ -100,6 +100,10 @@ const CATALOG = {
     "prefs.step.frame": "フレーム移動",
     "prefs.step.sec": "秒移動",
     "prefs.step.pct": "% でスクロール",
+    // The same two words as the steps above, and not the same answer: those
+    // are a distance to move, these are how long a stretch has to last.
+    "prefs.len.frame": "フレーム",
+    "prefs.len.sec": "秒",
     "prefs.pageStepNote":
       "カット編集で PageUp / PageDown を押したときの動きです。0 にすると、そのキーは効きません。" +
       "フレームと秒は 1 回押すごとの移動量です。% は移動速度で、いちばん速いスクロール（60 倍速）" +
@@ -118,6 +122,18 @@ const CATALOG = {
       "見つかったのが 1 つだけなら、この設定に関わらずそれを読み込みます。" +
       "どれかを読み込んだときは、CM 検出の結果に印は置きません。帯だけ出ます。",
     "prefs.cmKeyframes": "CM を検出したら、自動でキーフレームを置く",
+    "prefs.blankRun": "黒・白の区間とみなす長さ:",
+    "prefs.blankRunNote":
+      "これ以上続いた区間だけを扱います。放送では 2〜4 フレームの黒が多いので、" +
+      "既定は 2 フレームです。秒で指定することもできます。",
+    "prefs.quietRun": "無音の区間とみなす長さ:",
+    "prefs.quietRunNote":
+      "CM の切れ目の無音は 1 秒前後、会話の間は 0.1〜0.4 秒です。" +
+      "既定の 0.4 秒はその境目にあたります。",
+    "prefs.quietLevel": "無音とみなす音量:",
+    "prefs.quietLevelNote":
+      "音声フレームの最大値で判定します。0 dB が最大で、既定は -50 dB です。" +
+      "小さくすると本当に何も鳴っていないところだけを拾います。",
     "prefs.cmKeyframesNote":
       "CM ブロックの先頭と終わりに印を置きます。" +
       "外すと印は置かず、タイムラインに帯が出るだけになります。" +
@@ -233,6 +249,7 @@ const CATALOG = {
     "side.duplicate": "⧉　クリップを複製",
     "side.rename": "名前を変更",
     "side.detect": "CM を検出",
+    "side.detectFlat": "黒白・無音を検出",
     "side.stopBatch": "解析を中止",
     "side.resumeBatch": "解析を再開",
     "side.other": "その他",
@@ -253,6 +270,7 @@ const CATALOG = {
     "rowmenu.rename": "名前を変更",
     "rowmenu.duplicate": "クリップを複製",
     "rowmenu.detect": "CM を検出",
+    "rowmenu.detectFlat": "黒白・無音を検出",
     "rowmenu.moveUp": "上に移動",
     "rowmenu.moveDown": "下に移動",
     "rowmenu.remove": "クリップ削除",
@@ -321,6 +339,7 @@ const CATALOG = {
     "queue.indexing": "シーク用インデックスを作成中: {clip}",
     "queue.picturing": "サムネイルを作成中: {clip}",
     "queue.detecting": "CM を検出中: {clip}",
+    "queue.flat": "黒白・無音を検出中: {clip}",
     "row.sub":
       "{len} ({frames} フレーム)　00:00:00.00-{end}　{w}x{h}　{fps} fps　{codec}{audio}",
     "row.noAudio": "　音声なし",
@@ -328,6 +347,10 @@ const CATALOG = {
     "row.cmQueued": "CM 検出 待機中",
     "row.cmReserved": "解析後に CM 検出",
     "row.cmNote": "CM: {note}",
+    "row.flatRunning": "黒白・無音 検出中 {pct}% — {phase}",
+    "row.flatQueued": "黒白・無音の検出 待機中",
+    "row.flatReserved": "解析後に黒白・無音を検出",
+    "row.flatNote": "黒白・無音: {note}",
     "row.cuts": "カット {n} 箇所 — 出力 {kept}",
     "row.keyframes": "キーフレーム {n}",
     "badge.smart": "Smart",
@@ -341,14 +364,22 @@ const CATALOG = {
     "badge.cmRunning": "CM 検出中",
     "ptext.running": "{phase} {pct}%",
     "ptext.cm": "CM 検出",
+    "ptext.flat": "黒白・無音",
     "phase.queued": "待機中",
     "phase.reading": "読み込み中",
     "phase.pictures": "サムネイル",
     "phase.noPictures": "サムネイルを作成できませんでした（切り出しには影響しません）",
     "phase.detecting": "検出中",
+    "phase.flat": "検出中",
     "phase.stopped": "中止しました",
     "phase.indexReused": "前回のインデックスを再利用",
     "phase.indexBuilt": "インデックス {s} 秒",
+    "flat.rowNote": "黒白 {blank} 箇所 / 無音 {quiet} 箇所",
+    "flat.detecting": "検出中…",
+    "flat.found": "{n} 箇所見つかりました。両端にキーフレームを置いています",
+    "flat.none": "該当する区間はありませんでした",
+    "flat.cached": "検出済みの {n} 箇所を表示しています",
+    "flat.failed": "検出できません: {e}",
     "cm.previous": "{note}（前回の検出）",
     "cm.failed": "検出できません: {e}",
     "cm.besideMarks": "{note}（録画と同じ名前のファイルを読み込んだので、印は置いていません）",
@@ -624,6 +655,10 @@ const CATALOG = {
     "zoom.cannotOpen": "拡大表示を開けません: {e}",
     "editor.detectCm": "CM を検出",
     "editor.detectCm.title": "CM らしい区間を探してキーフレームを立てる (Ctrl+D)",
+    "editor.detectBlank": "黒白を検出",
+    "editor.detectBlank.title": "映像が真っ黒・真っ白な区間を探して、その両端にキーフレームを置きます",
+    "editor.detectSilence": "無音を検出",
+    "editor.detectSilence.title": "音声が無音の区間を探して、その両端にキーフレームを置きます",
     "editor.detecting": "検出中…（映像も読み込みます）",
     "editor.detectingPct": "検出中 {pct}%",
     "editor.keyframes": "キーフレーム",
@@ -896,6 +931,8 @@ const CATALOG = {
     "prefs.step.frame": "frames",
     "prefs.step.sec": "seconds",
     "prefs.step.pct": "% a second, scrolling",
+    "prefs.len.frame": "pictures",
+    "prefs.len.sec": "seconds",
     "prefs.pageStepNote":
       "What PageUp and PageDown do to the playhead in the cut editor. A step of 0 is a key that " +
       "does nothing. Frames and seconds are amounts, one per press. A percentage is a speed: a share " +
@@ -913,6 +950,18 @@ const CATALOG = {
       "detection it was, band and marks and all. Any of them on its own is read whatever this says. " +
       "Where one of them was read, a detection the list is holding is not mixed into the marks.",
     "prefs.cmKeyframes": "Turn a detection into keyframes",
+    "prefs.blankRun": "Counts as blank after:",
+    "prefs.blankRunNote":
+      "Shorter stretches are left out. Broadcast black runs two to four pictures, " +
+      "so the default is two pictures; seconds are the other way of saying it.",
+    "prefs.quietRun": "Counts as silence after:",
+    "prefs.quietRunNote":
+      "A junction's silence runs about a second; a pause in dialogue runs 0.1 to 0.4. " +
+      "The default of 0.4 s is the line between them.",
+    "prefs.quietLevel": "Silence is quieter than:",
+    "prefs.quietLevelNote":
+      "Measured on the loudest sample of each audio frame, 0 dB being full scale. " +
+      "Lower than the default of -50 dB finds only what is truly silent.",
     "prefs.cmKeyframesNote":
       "A detection marks the start and the end of every block it found. Off, it leaves the band " +
       "under the timeline and the sentence beside it, and ≡ → 「Turn the detection into keyframes」 " +
@@ -1030,6 +1079,7 @@ const CATALOG = {
     "side.duplicate": "⧉　Duplicate clip",
     "side.rename": "Rename clip",
     "side.detect": "Detect commercials",
+    "side.detectFlat": "Detect blank/silence",
     "side.stopBatch": "Stop analysis",
     "side.resumeBatch": "Resume analysis",
     "side.other": "Other",
@@ -1044,6 +1094,7 @@ const CATALOG = {
     "rowmenu.rename": "Rename",
     "rowmenu.duplicate": "Duplicate clip",
     "rowmenu.detect": "Detect commercials",
+    "rowmenu.detectFlat": "Detect blank/silence",
     "rowmenu.moveUp": "Move up",
     "rowmenu.moveDown": "Move down",
     "rowmenu.remove": "Remove clip",
@@ -1109,6 +1160,7 @@ const CATALOG = {
     "queue.indexing": "Building seek index: {clip}",
     "queue.picturing": "Building thumbnails: {clip}",
     "queue.detecting": "Detecting commercials: {clip}",
+    "queue.flat": "Detecting blank and silent stretches: {clip}",
     "row.sub":
       "{len} ({frames} frames)   00:00:00.00-{end}   {w}x{h}   {fps} fps   {codec}{audio}",
     "row.noAudio": "   no audio",
@@ -1116,6 +1168,10 @@ const CATALOG = {
     "row.cmQueued": "Commercial detection queued",
     "row.cmReserved": "Commercial detection after the read",
     "row.cmNote": "Commercials: {note}",
+    "row.flatRunning": "Blank/silence {pct}% — {phase}",
+    "row.flatQueued": "Blank/silence detection queued",
+    "row.flatReserved": "Blank/silence detection after the read",
+    "row.flatNote": "Blank/silence: {note}",
     "row.cuts": "{n} cut{n?s} — {kept} out",
     "row.keyframes": "{n} keyframe{n?s}",
     "badge.smart": "Smart",
@@ -1129,14 +1185,22 @@ const CATALOG = {
     "badge.cmRunning": "Detecting",
     "ptext.running": "{phase} {pct}%",
     "ptext.cm": "Detecting",
+    "ptext.flat": "Blank/silence",
     "phase.queued": "Queued",
     "phase.reading": "Reading",
     "phase.pictures": "Thumbnails",
     "phase.noPictures": "No thumbnails (cutting is unaffected)",
     "phase.detecting": "Detecting",
+    "phase.flat": "Detecting",
     "phase.stopped": "Stopped",
     "phase.indexReused": "Index from an earlier run",
     "phase.indexBuilt": "Indexed in {s}s",
+    "flat.rowNote": "{blank} blank, {quiet} silent",
+    "flat.detecting": "Detecting…",
+    "flat.found": "Found {n} stretch{n?es}; both ends of each are marked",
+    "flat.none": "Nothing that long",
+    "flat.cached": "Showing {n} stretch{n?es} already detected",
+    "flat.failed": "Cannot detect: {e}",
     "cm.previous": "{note} (from an earlier run)",
     "cm.failed": "Cannot detect: {e}",
     "cm.besideMarks": "{note} — not marked: a mark file beside the recording was read",
@@ -1398,6 +1462,12 @@ const CATALOG = {
     "zoom.cannotOpen": "Cannot open the magnifier: {e}",
     "editor.detectCm": "Detect commercials",
     "editor.detectCm.title": "Look for commercials and mark them with keyframes (Ctrl+D)",
+    "editor.detectBlank": "Detect blank",
+    "editor.detectBlank.title":
+      "Find where the picture is flat black or white and mark both ends of each stretch",
+    "editor.detectSilence": "Detect silence",
+    "editor.detectSilence.title":
+      "Find where the sound is under the level and mark both ends of each stretch",
     "editor.detecting": "Detecting… (the video is read too)",
     "editor.detectingPct": "Detecting {pct}%",
     "editor.keyframes": "Keyframes",

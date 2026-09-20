@@ -86,6 +86,15 @@ let markFileKind = null;
 /// disc is not read a second time from in here. Empty for a plain file.
 let discChapters = [];
 let cmBlocks = [];
+/// Where the picture goes flat and where the sound goes quiet: one entry per
+/// stretch, in source time, `kind` being "black", "white" or "quiet".
+///
+/// Detected rather than read off the recording, and not part of the edit: the
+/// clip list's lane writes these down, this window asks for them when it
+/// opens and runs them again on the two buttons. What *is* part of the edit
+/// is the marks they put at each end, which are marks like any other from the
+/// moment they land.
+let flatRuns = [];
 /// The sentence under the last detection, kept so it can travel back to the
 /// list with the rest of the state -- the row there says what was found, and
 /// a detection run in here has to reach it.
@@ -823,12 +832,124 @@ function nearestPoint(t, dir = 0) {
 const atPoint = (t) => src && src.points.some((p) => Math.abs(p - t) < frame() / 2);
 const nearScene = (t, w) => scenes.some((s) => Math.abs(s - t) <= w);
 
+// --- flat pictures and quiet sound --------------------------------------
+//
+// Two detections, one shape. Where the picture is flat black or flat white,
+// and where the sound is under a level: neither says a commercial is there --
+// a programme fades to black too -- so nothing is ranked or grouped, and what
+// comes back is put on screen for somebody to look at.
+
+/// What the two are to judge by, out of 環境設定.
+///
+/// Each length is a number and the unit it was typed in, as the page keys'
+/// steps are. Pictures are what the picture pass counts -- a stretch of two
+/// is two pictures whatever their spacing turned out to be -- so a length in
+/// pictures goes as a picture count and leaves the seconds at zero. The sound
+/// has no pictures to count, so a length typed in them is converted.
+function flatAsk() {
+  const pics = prefs.get("blankRunUnit") === "frame";
+  const run = Math.max(0, Number(prefs.get("blankRun")) || 0);
+  const quiet = Math.max(0, Number(prefs.get("quietRun")) || 0);
+  return {
+    minSeconds: pics ? 0 : run,
+    minPictures: pics ? Math.max(1, Math.round(run)) : 1,
+    quietSeconds: prefs.get("quietRunUnit") === "frame" ? quiet * frame() : quiet,
+    thresholdDb: Number(prefs.get("quietLevel")) || -50,
+  };
+}
+
+/// Put a detection's stretches up, and a mark at each end of each.
+///
+/// **Both ends.** They answer different questions -- where what came before
+/// stops being worth keeping, and where what comes after starts -- and a mark
+/// in the middle answers neither. On a fade they are not even equally exact:
+/// the end a fade approaches moves with the threshold, while the instant the
+/// picture returns is the same picture whatever the threshold is.
+///
+/// `kinds` is what this detection speaks for, so that running one pass again
+/// replaces its own stretches and leaves the other's alone.
+function applyFlatRuns(kinds, runs, marks = true) {
+  flatRuns = flatRuns.filter((r) => !kinds.includes(r.kind)).concat(runs);
+  flatRuns.sort((a, b) => a.start - b.start);
+  if (marks && runs.length) addKeyframes(runs.flatMap((r) => [r.start, r.end]));
+  draw();
+}
+
+/// Every end of every stretch that is still in the recording, in order.
+const flatEdges = () =>
+  flatRuns
+    .flatMap((r) => [r.start, r.end])
+    .filter((t) => srcToOut(t) !== null)
+    .sort((a, b) => a - b);
+
+/// The next end a detection found, or the one before. Alt with the arrows.
+///
+/// Half a frame of slack at the near end, so that a playhead standing on one
+/// end of a two-picture stretch moves to the other rather than to itself.
+function toFlatEdge(dir, from = playhead) {
+  const edges = flatEdges();
+  const next =
+    dir > 0
+      ? edges.find((t) => t > from + frame() / 2)
+      : edges.reverse().find((t) => t < from - frame() / 2);
+  if (next === undefined) return;
+  showFrame(next);
+}
+
+/// What has already been detected about this recording, from the clip list's
+/// lane or from an earlier visit to this window.
+///
+/// Costs a file read, so it is asked for on the way in whether or not
+/// anything is there. `marks` is off on a revisit: the marks came back with
+/// the row's own edit, and putting them down again would undo a Del.
+async function loadFlatCached(marks) {
+  if (!src) return;
+  const ask = flatAsk();
+  let got;
+  try {
+    got = await invoke("flat_cached", {
+      path: src.path,
+      minSeconds: ask.minSeconds,
+      minPictures: ask.minPictures,
+      thresholdDb: ask.thresholdDb,
+      quietSeconds: ask.quietSeconds,
+    });
+  } catch (e) {
+    jlog(`flat_cached: ${e}`);
+    return;
+  }
+  if (!got) return;
+  if (got.blank) applyFlatRuns(["black", "white"], got.blank, marks);
+  if (got.quiet) applyFlatRuns(["quiet"], got.quiet, marks);
+  const found = (got.blank || []).length + (got.quiet || []).length;
+  if (found) el("status").textContent = tr("flat.cached", { n: found });
+}
+
 // --- scrubber -----------------------------------------------------------
 
 const TOP = 14;
 const HGT = 32;
 const MID = TOP + HGT / 2;
-const TRACK_H = 84;
+/// Tall enough for the two rows under the scene changes: the picture's flat
+/// stretches, and the sound's quiet ones.
+const TRACK_H = 98;
+/// Where those two rows sit, and where the scene changes sit above them.
+const SCENE_Y = 62;
+const BLANK_Y = 69;
+const QUIET_Y = 76;
+
+/// Which row each kind of stretch is drawn in, and in what colour.
+///
+/// Told apart by colour rather than by shape: they are the same thing on the
+/// timeline -- a stretch with two ends -- and the eye reads three colours in
+/// two rows faster than it reads three shapes in one. None of the three is
+/// the orange of the scene changes above them, the cyan of the selection or
+/// the red of a seam.
+const FLAT_LANES = {
+  black: { colour: "#8fa3c4", y: BLANK_Y },
+  white: { colour: "#e8e8e8", y: BLANK_Y },
+  quiet: { colour: "#6fbf9b", y: QUIET_Y },
+};
 
 function layout() {
   const ratio = window.devicePixelRatio || 1;
@@ -867,7 +988,21 @@ function draw() {
     const x = Math.round(timeToX(o, w));
     if (x === lastX) continue;
     lastX = x;
-    ctx.fillRect(x, 62, 1, 5);
+    ctx.fillRect(x, SCENE_Y, 1, 5);
+  }
+
+  // What the two detections found, a row each. Bands rather than ticks,
+  // because a stretch has a length and it is the length that says whether it
+  // is a fade or a single dark picture. The marks at their ends are the
+  // marks row above; these are what those marks are about.
+  for (const r of flatRuns) {
+    const lane = FLAT_LANES[r.kind];
+    if (!lane) continue;
+    ctx.fillStyle = lane.colour;
+    for (const [a, e] of srcRangeToOut(r.start, r.end)) {
+      const x = timeToX(a, w);
+      ctx.fillRect(x, lane.y, Math.max(1, timeToX(e, w) - x), 5);
+    }
   }
 
   // the whole trough is what will be written; nothing else is left
@@ -926,9 +1061,9 @@ function draw() {
 
   ctx.fillStyle = "#8a8a8a";
   ctx.font = "10px system-ui";
-  ctx.fillText(fmt(0), 2, 81);
+  ctx.fillText(fmt(0), 2, 95);
   const end = fmt(outDur);
-  ctx.fillText(end, w - ctx.measureText(end).width - 2, 81);
+  ctx.fillText(end, w - ctx.measureText(end).width - 2, 95);
 }
 
 // --- picture ------------------------------------------------------------
@@ -4272,6 +4407,10 @@ async function openPath(picked, saved, side, name, chapters, dropPids) {
     activeKey = saved ? saved.activeKey : null;
     pickedKeys = [];
     cmBlocks = saved ? saved.cmBlocks || [] : [];
+    // Another recording, or the same one again: whatever is on the timeline
+    // now was detected against the one before it. What has been detected
+    // against this one is read below, once the head is known.
+    flatRuns = [];
     cmSummary = saved ? saved.cmNote || "" : "";
     cmFinding = saved ? saved.cmFinding || null : null;
     // A row that has been in here before brings back what it opened with the
@@ -4358,6 +4497,10 @@ async function openPath(picked, saved, side, name, chapters, dropPids) {
     // file beside it, the disc's chapters -- is what leaving compares against.
     // Said again here because a row that arrives with its own edit settles
     // nothing on the way in. See `arrivedAs`.
+    // What the clip list's lane has already found, if it has been over this
+    // recording. Marks only on a first visit: a row coming back brings its
+    // own marks with it, and putting these down again would undo a Del.
+    await settle(() => loadFlatCached(!saved));
     settleMark();
     prepare();
     // Asked again now that the open is over. Everything above schedules the
@@ -4845,6 +4988,16 @@ window.addEventListener("keydown", (ev) => {
     }
     return;
   }
+  // Alt with the arrows walks what the two detections found: every end of
+  // every flat or quiet stretch, in order. Ahead of the gate below, which is
+  // what keeps every other Alt chord out of this window's way.
+  if (ev.altKey && !ev.ctrlKey && !ev.metaKey && (ev.key === "ArrowUp" || ev.key === "ArrowDown")) {
+    ev.preventDefault();
+    if (!arrowDue(ev)) return;
+    if (playing) stopPlay();
+    toFlatEdge(ev.key === "ArrowDown" ? 1 : -1);
+    return;
+  }
   if (ev.ctrlKey || ev.metaKey || ev.altKey) return;
   // ミュート, and one of the few keys that does not stop playback: it is
   // about the sound rather than about where the playhead is, and it is
@@ -4876,7 +5029,7 @@ window.addEventListener("keydown", (ev) => {
   // that tool for years expects of them. With Shift they walk the access
   // points -- the pictures a cut is free at, which is what this pair used to
   // do on its own and is still the question when what is being placed is the
-  // cut itself. ◀| and |▶ are the same answer with the pointer, and so is
+  // cut itself. With Alt they walk what the two detections found, above. ◀| and |▶ are the same answer with the pointer, and so is
   // Shift with the wheel.
   //
   // Held down they are the same flood the left and right keys are, so they go
@@ -5133,6 +5286,55 @@ el("detect-cm").addEventListener("click", async () => {
   }
 });
 
+/// One of the two detections, on the button that asks for it.
+///
+/// The pass is read again rather than taken from the cache: the button is how
+/// somebody says "look again", and whatever was saved was already put up when
+/// the window opened. Marks it puts down are the detection's answer and not
+/// something anybody did in here, so they are settled rather than left
+/// standing as an unsaved change -- as a commercial detection's are.
+async function runFlat(id, label, kinds, call) {
+  if (!src) return;
+  const btn = el(id);
+  btn.disabled = true;
+  el("status").textContent = tr("flat.detecting");
+  try {
+    const runs = await call();
+    applyFlatRuns(kinds, runs);
+    settleMark();
+    el("status").textContent = runs.length
+      ? tr("flat.found", { n: runs.length })
+      : tr("flat.none");
+  } catch (e) {
+    el("status").textContent = tr("flat.failed", { e });
+  } finally {
+    btn.disabled = false;
+    btn.textContent = tr(label);
+  }
+}
+
+el("detect-blank").addEventListener("click", () => {
+  const ask = flatAsk();
+  runFlat("detect-blank", "editor.detectBlank", ["black", "white"], () =>
+    invoke("detect_blank", {
+      path: src.path,
+      minSeconds: ask.minSeconds,
+      minPictures: ask.minPictures,
+    })
+  );
+});
+
+el("detect-silence").addEventListener("click", () => {
+  const ask = flatAsk();
+  runFlat("detect-silence", "editor.detectSilence", ["quiet"], () =>
+    invoke("detect_silence", {
+      path: src.path,
+      thresholdDb: ask.thresholdDb,
+      minSeconds: ask.quietSeconds,
+    })
+  );
+});
+
 /// Every listener this window has asked for, as the promises that put them
 /// in place. Waited for before this window says it is ready; see
 /// `announceReady`.
@@ -5161,6 +5363,13 @@ if (listen) {
   // picture just plays silently with nothing on screen to say why.
   hear("audio-error", (ev) => {
     el("status").textContent = tr("editor.audioFailed", { e: ev.payload });
+  });
+  // Which of the two is running is in the payload: they are separate passes
+  // on separate buttons, and either can be the one somebody pressed.
+  hear("flat-progress", (ev) => {
+    const [what, done] = ev.payload;
+    const id = what === "quiet" ? "detect-silence" : "detect-blank";
+    el(id).textContent = tr("editor.detectingPct", { pct: Math.round(done * 100) });
   });
   hear("cm-progress", (ev) => {
     const [phase, done] = ev.payload;
@@ -5473,6 +5682,8 @@ if (listen) {
 /// re-wording it here would mean holding what it was made of.
 onLangChange(() => {
   el("detect-cm").textContent = tr("editor.detectCm");
+  el("detect-blank").textContent = tr("editor.detectBlank");
+  el("detect-silence").textContent = tr("editor.detectSilence");
   // The label carries a count when something is left out, so `applyStatic`
   // has just written the plain word over it.
   paintTrackButton();
@@ -5493,6 +5704,8 @@ applyStatic();
 // The two labels that say what would happen rather than what the button is,
 // and are therefore written from here rather than by `applyStatic`.
 el("detect-cm").textContent = tr("editor.detectCm");
+el("detect-blank").textContent = tr("editor.detectBlank");
+el("detect-silence").textContent = tr("editor.detectSilence");
 el("play").textContent = tr("t.play");
 renderKeyframes();
 draw();
