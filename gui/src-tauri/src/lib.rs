@@ -1781,6 +1781,26 @@ async fn open_editor(title: String, app: tauri::AppHandle) -> Result<(), String>
         }
         if matches!(event, tauri::WindowEvent::Destroyed) {
             let _ = teller.emit("editor-closed", ());
+            // And the list comes back up, which is where whoever closed this
+            // window is going next. Without it the editor simply vanished:
+            // anything else that had been raised over these two windows in
+            // the meantime was what the screen fell back to, and the list --
+            // the window the OK button just handed the cuts to -- was left
+            // wherever it had been buried. Raised for every way out, because
+            // OK, キャンセル and the cross all mean the same thing here.
+            //
+            // A moment afterwards rather than here, and off this thread. The
+            // window manager has its own answer to a window being destroyed
+            // -- it hands the screen to whatever was in front of it before --
+            // and that answer lands after this event does. Asking first means
+            // asking to be overruled.
+            if let Some(list) = teller.get_webview_window(MAIN) {
+                std::thread::spawn(move || {
+                    std::thread::sleep(std::time::Duration::from_millis(150));
+                    let _ = list.unminimize();
+                    let _ = list.set_focus();
+                });
+            }
         }
     });
     Ok(())
