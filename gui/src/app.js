@@ -297,6 +297,27 @@ async function edit(clip) {
     note(t("list.cannotRead", { clip: clipLabel(clip) }));
     return;
   }
+  // And a recording that was there when the row was made and is not there
+  // now. A name renamed in the file manager is the ordinary way into this,
+  // and the list has no way of hearing about it: the row goes on holding the
+  // name it was added with. Answered here rather than by opening the window
+  // and letting the read fail, because a cut editor with nothing in it is a
+  // window somebody has to work out how to get rid of.
+  //
+  // The row is marked with it. This is the same thing the walk says when it
+  // cannot read a recording, it is about the file rather than about this
+  // press, and a row that stays looking ready is a row somebody opens again.
+  // A question that cannot be answered is not a missing file: the editor
+  // opens and says for itself what it found.
+  if (await invoke("clip_gone", { path: clip.path }).catch(() => false)) {
+    clip.state = "error";
+    clip.error = t("list.gone", { path: clip.path });
+    clip.phase = "";
+    paintRow(clip);
+    paintButtons();
+    note(t("list.goneNote", { clip: clipLabel(clip) }));
+    return;
+  }
   editing = clip;
   before = clip.edit ? JSON.parse(JSON.stringify(clip.edit)) : null;
   // A lane in flight on this very clip is left alone. It used to be stopped
@@ -1446,22 +1467,29 @@ function paintRow(clip) {
   // Everything on this line is something the container itself knows, so it
   // is filled in from the cheap first look and corrected by the walk. See
   // [`factsOf`].
+  //
+  // Except on a row that has failed, where the line says why instead. The
+  // facts are about a file that cannot be read any more -- a recording that
+  // has been renamed keeps every one of them, read when it was still there
+  // -- and a red row that goes on reciting its frame rate does not say what
+  // is the matter with it.
   const i = factsOf(clip);
+  const wrong = clip.state === "error" && clip.error;
   setText(
     li.querySelector(".sub"),
-    i
-      ? t("row.sub", {
-          len: coarse(i.duration),
-          frames: i.frames,
-          end: fmt(i.duration),
-          w: i.width,
-          h: i.height,
-          fps: i.fps.toFixed(2),
-          codec: i.codec,
-          audio: i.has_audio ? "" : t("row.noAudio"),
-        })
-      : clip.state === "error"
-        ? clip.error
+    wrong
+      ? clip.error
+      : i
+        ? t("row.sub", {
+            len: coarse(i.duration),
+            frames: i.frames,
+            end: fmt(i.duration),
+            w: i.width,
+            h: i.height,
+            fps: i.fps.toFixed(2),
+            codec: i.codec,
+            audio: i.has_audio ? "" : t("row.noAudio"),
+          })
         : clip.path
   );
 

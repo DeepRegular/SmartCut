@@ -216,6 +216,11 @@ programme name too, unless the output screen has been given one.
 same file on two rows, each written out over a different range. The output
 filenames get `_1` and `_2` appended.
 
+**A recording renamed or moved after it was added** leaves its row pointing at
+a name nothing answers to. Asking for the cut editor is where that is found
+out: the row turns red and says the file is no longer there. Put the name back,
+or take the row out and add the file again.
+
 **Quick properties**, along the bottom, describes whichever single clip is
 selected. With several selected, it just says how many.
 

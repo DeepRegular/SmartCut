@@ -1662,6 +1662,44 @@ fn index_info(app: &tauri::AppHandle, src: &Source, cached: bool) -> Option<Inde
     })
 }
 
+/// Whether the recording a row names has gone from the disc.
+///
+/// A row holds the path it was added with, and nothing tells the list when
+/// that name stops meaning anything: renaming the file in Explorer leaves the
+/// row pointing at a name nothing answers to. The editor opened on it all the
+/// same -- the window came up, the open behind it failed, and what was left
+/// was an empty cut editor with a line of error text in it and nothing to
+/// close it with but the cross. Asked before the window is built, so the
+/// answer is a sentence in the list instead.
+///
+/// True only where *nothing* of the name is there, because a recording is
+/// named three ways here and two of them are not paths the operating system
+/// knows:
+///
+/// | named | what is on the disc |
+/// |---|---|
+/// | `/films/a.ts` | the file itself |
+/// | `/films/disc.iso/BDMV/STREAM/00001.m2ts` | the image, one of its ancestors |
+/// | `/films/BDAV/STREAM/00001.m2ts@0-2879` | the clip, before the `@` |
+///
+/// See [`smartcut_core::input::Input::parse`], which reads the same three
+/// shapes properly. This does not: it opens nothing, and a name it cannot
+/// account for is left alone. A recording that is there and unreadable is not
+/// this question -- the open says that, and says why.
+#[tauri::command]
+fn clip_gone(path: String) -> bool {
+    let named = std::path::Path::new(&path);
+    if named.exists() {
+        return false;
+    }
+    if let Some((clip, _)) = path.rsplit_once('@') {
+        if std::path::Path::new(clip).exists() {
+            return false;
+        }
+    }
+    !named.ancestors().skip(1).any(|a| a.is_file())
+}
+
 /// Open the cut editor, in its own window.
 ///
 /// A window rather than a fourth tab. Cutting is the one thing here that is
@@ -5378,6 +5416,7 @@ pub fn run() {
             clip_thumbs,
             clip_poster,
             clip_glance,
+            clip_gone,
             open_editor,
             retitle_editor,
             retitle_main,
