@@ -22,6 +22,15 @@
 #     the run outright with `no pictures decoded`; what belongs there is the
 #     picture that was already up.
 #
+# And a recording can vary the other way, which is what the recordings people
+# actually have do: a 23.976 programme with a second or two of 59.94 in it for
+# the credits. There the pictures of the fast stretch are 16.7 ms apart and a
+# field of the output timeline was 20 ms, so two of them landed on the same
+# place and the second was dropped -- and the timeline itself was built on the
+# average of the two rates, which is a rate nothing in the recording was ever
+# coded at. Measured on one: 11 pictures dropped from a three-range cut and
+# 227 gaps wrong, the worst by 45 ms.
+#
 # The fixtures are made here, and the ranges are aimed at the holds rather
 # than put at round numbers: a seam has to land on a held picture for any of
 # the above to show at all.
@@ -93,6 +102,21 @@ awk -v h="$LONGEST" 'BEGIN{ exit !(h > 0.5) }' || {
   echo "the fixture did not come out variable enough to test with" >&2; exit 2;
 }
 
+# A 23.976 recording with bursts of 59.94 in it, which is what a downloaded
+# programme looks like: coded at 120 and thinned to every fifth picture, or
+# every second picture for the last three tenths of every twenty seconds. The
+# timestamps are left where they fall, so the container ends up declaring 24
+# and averaging over it -- which is the only thing SmartCut can see before it
+# writes a frame, and what it now acts on.
+if [ ! -f "$FX/dense.mp4" ]; then
+  ffmpeg -hide_banner -loglevel error -y \
+    -f lavfi -i "testsrc2=size=320x240:rate=120:duration=40" \
+    -f lavfi -i "sine=frequency=440:sample_rate=48000:duration=40" \
+    -shortest -filter:v "select=if(lt(mod(t\,20)\,19.7)\,not(mod(n\,5))\,not(mod(n\,2)))" \
+    -fps_mode passthrough -c:v libx264 -preset veryfast -g 48 -keyint_min 48 \
+    -sc_threshold 0 -b:v 600k -c:a aac -b:a 96k "$FX/dense.mp4"
+fi
+
 duration() { ffprobe -v error -show_entries format=duration -of csv=p=0 "$1"; }
 
 # run <name> <fixture> <in> <out>
@@ -126,6 +150,21 @@ echo "running tests ..."
 run "vfr mid-file"   vfr.webm 20 50
 run "vfr from zero"  vfr.webm  0 20
 run "cfr control"    cfr.webm 20 50
+
+# The other way round: pictures closer together than the declared rate. The
+# count is what matters here -- two pictures with nowhere to go used to become
+# one -- and so is the spacing, which a timeline built on the average got
+# wrong for every picture in the recording, not only the fast ones.
+dense=$OUT/dense.mp4
+if err=$("$CUT" "$FX/dense.mp4" --keep 5-35 -o "$dense" 2>&1); then
+  said=$(python3 tests/vfr_gaps.py "$FX/dense.mp4" "$dense" 5 35)
+  case "$said" in
+    ok\ *) ok "faster than declared" "${said#ok }" ;;
+    *) bad "faster than declared" "${said#bad }" ;;
+  esac
+else
+  bad "faster than declared" "$(printf '%s' "$err" | tail -1)"
+fi
 
 # A range that *ends* inside a hold: its last picture stays up past the end
 # of the range, so the range lasts as long as it was asked for only if that
