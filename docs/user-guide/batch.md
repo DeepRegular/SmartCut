@@ -160,7 +160,7 @@ them are the two things a queue is made of: `ジョブ追加`, which takes proje
 saved earlier, several at a time — **what it takes is a copy, and the queue
 runs the copy**, leaving the file you picked exactly as it was; and `ジョブ削除`, which takes out the rows you
 have picked, with the `▾` on the end of it holding the two ways of doing that
-in bulk — `出力済のジョブを削除` and `すべて削除`.
+in bulk — `出力済みのジョブを削除` and `すべて削除`.
 
 **Rows are picked the way they are picked on the input screen**: a click for
 that row, Ctrl for one more or one fewer, Shift for everything between here and
@@ -249,7 +249,7 @@ only while a single row is picked.
 **The queue survives the program.** It is written to a file as it is changed,
 so a queue lined up at midnight is still there in the morning — and a job that
 has been written stays in the list with what it wrote, and is not written
-again. `出力済のジョブを削除` clears out that half of it in one go, leaving
+again. `出力済みのジョブを削除` clears out that half of it in one go, leaving
 exactly the jobs still to do.
 
 Each job runs exactly as it would by hand: the project is opened, the list is

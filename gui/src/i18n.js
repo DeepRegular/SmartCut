@@ -62,7 +62,7 @@ const CATALOG = {
     "project.nothingToSave": "一覧が空です。保存するものがありません",
     "project.cannotOpen": "プロジェクトを開けません: {name}（{e}）",
     "project.wrongFormat":
-      "{name} は SmartCut のプロジェクトではないか、新しい版で作られています",
+      "{name} は SmartCut のプロジェクトではないか、より新しいバージョンで作られています",
     "project.replaceTitle": "プロジェクトを開く",
     "project.replaceBody":
       "現在の一覧と編集内容は置き換えられます。保存していない作業は失われます。続けますか？",
@@ -177,11 +177,11 @@ const CATALOG = {
     "prefs.audioFadeNote":
       "カットの継ぎ目で、音をいったん下げてから戻します。秒数で指定し、0 でフェードなし（既定）。" +
       "継ぎ目で音がいきなり変わるのを防げますが、そのぶん継ぎ目の前後では、本編の音も指定した秒数だけ小さくなります。" +
-      "掛かるのは音を書き直すときだけです。音声の設定がコピーのときは掛からず、出力画面にその旨が出ます。" +
+      "掛かるのは音を書き直すときだけです。音声の設定がコピーのときは掛からず、その旨が出力画面に表示されます。" +
       "出力の先頭と末尾は継ぎ目ではないので、掛かりません。",
     "prefs.proxy": "プロキシを作ってから編集する",
     "prefs.proxyNote":
-      "録画全体を再エンコードし、軽い映像で編集します。録画 1 時間につき、数分の処理時間と数 GB の容量が要ります。" +
+      "録画全体を再エンコードし、軽い映像で編集します。録画 1 時間につき、数分の処理時間と数 GB の容量が必要です。" +
       "1 フレームの表示に時間がかかる素材で効果があります。",
     "prefs.proxyWidth": "プロキシの幅:",
     "prefs.proxyWidth.auto": "自動（1280）",
@@ -306,7 +306,7 @@ const CATALOG = {
     "list.kill": "この行を一覧から外す",
     "list.cannotRead": "{clip} は読み込めませんでした",
     "list.gone": "ファイルが見つかりません: {path}",
-    "list.goneNote": "{clip} のファイルが見つかりません。名前の変更か移動が行われたようです",
+    "list.goneNote": "{clip} のファイルが見つかりません。名前が変わったか、移動したようです",
     "list.cannotOpenEditor": "編集画面を開けません: {e}",
     "list.andMore": " ほか {n} 件",
     "list.unsupported": "対応していない形式のため無視しました: {names}",
@@ -338,7 +338,7 @@ const CATALOG = {
     "disc.gone": "カットした出力には残せません",
     "disc.needed": "映像は外せません",
     "disc.apply": "同じ構成のクリップすべてに適用",
-    "disc.applied": "{n} クリップに同じ選択を適用しました",
+    "disc.applied": "クリップ {n} 本に同じ選択を適用しました",
     "disc.hidden": "短いクリップ {n} 本は表示していません",
     "dialog.project": "SmartCut プロジェクト",
     "queue.indexing": "シーク用インデックスを作成中: {clip}",
@@ -483,8 +483,8 @@ const CATALOG = {
     // 「これ以上小さくできませんでした」と言ってよいのは、実際に小さく
     // しようとしたときだけである。トランスコードを指示されていない実行が
     // 同じことを表示すると、指示すれば入ったかもしれない、という事実が消える。
-    "out.discTooBig": "出力サイズは {used} で、{disc} のディスクに {over} 収まりません。映像をこれ以上小さくできませんでした",
-    "out.discOver": "出力サイズは {used} で、{disc} のディスクに {over} 収まりません。「トランスコードする」を有効にすると、映像を書き直して収まることがあります",
+    "out.discTooBig": "出力サイズは {used} で、{disc} のディスクの容量を {over} 超えています。映像をこれ以上小さくできませんでした",
+    "out.discOver": "出力サイズは {used} で、{disc} のディスクの容量を {over} 超えています。「トランスコードする」を有効にすると、映像を書き直して収まることがあります",
     "out.shrinking": "ディスクに収めるため、映像を元の {share}% のサイズに書き直します",
     "outset.disc": "ディスク:",
     "disc.bd25": "BD-R / BD-RE 25GB（1層）",
@@ -586,7 +586,7 @@ const CATALOG = {
     "out.sameName": "入力と同じ名前になります",
     "out.branched": "「{asked}」フォルダーが既にあるので「{name}」に書き出します",
     "out.writing": "\"{name}\" を出力中…",
-    "out.writingCopy": "\"{name}\" を出力中: 映像を無劣化出力しています…",
+    "out.writingCopy": "\"{name}\" を出力中: 映像を無劣化でコピーしています…",
     "out.writingMost":
       "\"{name}\" を出力中: {n} 箇所を再エンコードし、ほかは無劣化でコピーしています…",
     "out.writingAll": "\"{name}\" を出力中: 映像を再エンコードしています…",
@@ -615,9 +615,9 @@ const CATALOG = {
     "jobmenu.openProject": "プロジェクトを開く",
     "jobmenu.openFolder": "出力先フォルダーを開く",
     "batch.moreTitle": "まとめて削除",
-    "batch.clearDone": "出力済のジョブを削除",
+    "batch.clearDone": "出力済みのジョブを削除",
     "batch.clearAll": "すべて削除",
-    "batch.clearedDone": "出力済のジョブを {n} 件削除しました",
+    "batch.clearedDone": "出力済みのジョブを {n} 件削除しました",
     "batch.windowTitle": "バッチ出力 — SmartCut",
     "batch.opened": "バッチ出力ツールを起動しました",
     "batch.alreadyUp": "バッチ出力ツールはすでに起動しています",
@@ -676,7 +676,7 @@ const CATALOG = {
     "zoom.at": "{time}　{scale} 倍　({x}, {y})",
     "zoom.cannotOpen": "拡大表示を開けません: {e}",
     "editor.detectCm": "CM を検出",
-    "editor.detectCm.title": "CM らしい区間を探してキーフレームを立てる (Ctrl+D)",
+    "editor.detectCm.title": "CM らしい区間を探して、その先頭と終わりにキーフレームを置きます (Ctrl+D)",
     "editor.detectBlank": "黒白を検出",
     "editor.detectBlank.title":
       "映像が真っ黒・真っ白な区間を探して、その両端にキーフレームを置きます (Ctrl+B)" +
@@ -800,7 +800,7 @@ const CATALOG = {
     "tracks.textst": "テキスト字幕（書体はディスク側にあります）",
     "tracks.settled": "{what} — 環境設定で決めます   PID 0x{pid}",
     "tracks.settledNote":
-      "データ放送を残すかどうかは環境設定で決めます。残せるのは .ts のときだけで、既定は残します。",
+      "データ放送を残すかどうかは環境設定で決めます。残せるのは .ts のときだけで、既定では残します。",
     "tracks.droppedNote":
       "これらは選べません。文字スーパーはパケットに時刻を持たず、メニューとテキスト字幕はディスクでしか働かないからです。",
     "tracks.substreamNote":
@@ -873,7 +873,7 @@ const CATALOG = {
     "marks.overwriteBody": "{file} はすでにあります。上書きしますか？",
     "editor.dropTitle": "編集の破棄",
     "editor.dropBody": "この画面で行った編集を破棄して閉じます。よろしいですか？",
-    "trim.saved": "残す区間 {n} 本を {file} に保存しました",
+    "trim.saved": "残す区間 {n} 個を {file} に保存しました",
     "trim.read": "{file} からカット {n} 箇所を読み込みました",
     "trim.readFailed": "Trim を読み込めません: {e}",
     "cm.saved": "CM ブロック {n} 個を {file} に保存しました",

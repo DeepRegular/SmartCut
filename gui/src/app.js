@@ -7717,7 +7717,7 @@ window.addEventListener("keydown", (ev) => {
   if (ev.key === "Escape") showBatchMenu(false);
 });
 
-/// 出力済のジョブを削除: the rows that have nothing left to do.
+/// 出力済みのジョブを削除: the rows that have nothing left to do.
 ///
 /// No question asked, unlike すべて削除. What this takes out is the part of
 /// the queue that has already happened, and the rows it leaves are exactly
