@@ -258,6 +258,49 @@ the end of the range, bounded by the end of the file. And the last picture
 before a window is kept, and put in at the window's own start where nothing
 of the recording's own arrives within a frame of it.
 
+### The other way round, which is the way recordings actually vary
+
+Everything above is about a picture that stays up too long. The recordings
+people have vary the other way as well: a 23.976 programme with a second or
+two of 59.94 in it, which is how a great deal of what is downloaded is
+authored. Two things then go wrong, and both are the timeline itself rather
+than anything counted on it.
+
+**A field was 20 ms and the fast pictures are 16.7 ms apart.** The output
+timeline counts in whole fields, so two of them landed on the same place, the
+second had nowhere to go, and it was dropped -- with a note blaming a damaged
+recording, which it was not. Measured on a three-range cut of a
+twenty-four-minute programme: **11 pictures gone**.
+
+**And the timeline was built on the average of the two rates.** 23.976 with a
+burst of 59.94 averages 24.02, or 24.93 over a minute that contains one --
+and a grid at that rate is a grid nothing in the recording was ever coded to,
+so *every* picture in the cut is quantised to somewhere it never was. On the
+same three ranges, 227 gaps came out wrong, the worst by 45 ms.
+
+[`Grid`] answers both at once. Where the recording is variable the timeline is
+built on the rate the container says the material was authored at --
+`r_frame_rate`, the commonest duration in the sample table -- and each field
+of it is divided into 32. Both numbers are then round: the base rate is what
+the pictures come at nearly all the time, and a thirty-second of a field is
+two thirds of a millisecond, which is finer than the containers involved
+state their times in. The same three ranges now come out **6294 pictures of
+6294, no gap wrong by more than 0.6 ms**.
+
+**The container can see half of this for itself**, which matters because the
+decision is made before a frame is written and an MP4's index gives access
+points and nothing else. A recording whose pictures average out faster than
+the rate it declares has some of them closer together than that rate allows;
+there is no other way to arrive at the average. The margin is a hundredth of
+a percent, because a twenty-five-minute programme with ten fast pictures in
+it averages two parts in ten thousand above its declared rate, and ten
+pictures with nowhere to go are ten pictures dropped. Calling a constant-rate
+recording variable by mistake costs nothing: the timeline it then gets is the
+same rate divided more finely, which puts every picture in exactly the same
+place. The one answer that would be wrong -- taking an interlaced recording's
+field rate for its frame rate -- cannot arrive, because there the declared
+rate is twice the average rather than below it.
+
 **Neither touches constant-rate material**, and both are written so that they
 cannot. The span is a maximum over the two answers, and they agree whenever
 the pictures are a frame apart; the carried picture is only reached when the
@@ -268,6 +311,7 @@ as before, and `tests/run_vfr_tests.sh` has a constant-rate control in it for
 the same reason.
 
 [`held_to_the_end`]: ../../rust/crates/core/src/cut.rs
+[`Grid`]: ../../rust/crates/core/src/cut.rs
 
 ## VP9 and AV1: the codecs that turned out to need nothing
 

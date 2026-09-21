@@ -45,6 +45,9 @@ go.
 | **AV1 + Opus** 720p30, one 28 s range mid-GOP to mid-GOP | **840/840**, decoded clean by dav1d and by libaom |
 | **Variable rate**, gaps 33 ms to 2.4 s, one 30 s range | **505/505 where the recording had them** (46 were a frame early before 0.8.0), and 30.0 s long (28.1 before) |
 | **Variable rate**, gaps 16 ms to 117 ms, one 30 s range | **628/628 where the recording had them** (598 were out by up to three frames before 0.8.0) |
+| **23.976 with a burst of 59.94** (a downloaded 24 min programme, H.264), three ranges | **6294/6294, no gap wrong by more than 0.6 ms** — 11 pictures were dropped outright before 0.8.0, and 227 gaps were wrong, the worst by 45 ms |
+| The same, HEVC 10-bit 1440x1080, one 50 s range | **1259/1259**, worst gap 0.6 ms (was 8 dropped and a median displacement of 12 ms) |
+| **AV1 10-bit + Opus**, a downloaded 23 min programme, 33 s GOPs, two ranges | **6712/6713**, every gap within 1 ms, decoded clean by dav1d |
 
 **A VC-1 cut has to be checked differently.** `verify_real.py` lines the two files up
 by frame number, and a frame number is exactly what a piece of a Blu-ray does not
