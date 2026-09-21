@@ -89,14 +89,34 @@ cargo のクレート名は `gui` なので、放っておくと Tauri はその
 
 | 成果物 | サイズ | FFmpeg | 必要条件 |
 |---|---|---|---|
-| `SmartCut-0.7.5-linux-x86_64.tar.gz` | 210.3 MB | 同梱 | glibc 2.39 以上。FUSE 不要 |
+| `SmartCut-0.7.5-linux-x86_64.tar.gz` | 202.0 MB | 同梱 | glibc 2.39 以上。FUSE 不要 |
 | `smartcut_0.7.5_amd64.deb` | 4.4 MB | システムのものを使用 | FFmpeg 7.1（Debian 13 / Ubuntu 25.04 以降） |
 
 tar.gz の中身は、AppImage と同じ AppDir を展開したものである。linuxdeploy が
 `ldd` を辿って集めた 745 個のライブラリがそのまま `app/` にある。`./smartcut` は
 AppRun を呼ぶ 4 行のスクリプトで、`./smartcut-cli` は `LD_LIBRARY_PATH` を
 `app/usr/lib` に向けて CLI を呼ぶ。AppImage が動く環境ならどこでも動き、FUSE は
-不要である。gzip なので、squashfs+zstd の AppImage より 24 MB 大きい。
+不要である。gzip なので、squashfs+zstd の AppImage より 16 MB 大きい。
+
+### 同じライブラリが 3 つ入っていた
+
+linuxdeploy は `ldd` が挙げた名前をそのまま複製する。`libfoo.so` と
+`libfoo.so.0` は -dev パッケージが持つ `libfoo.so.0.1.2` へのシンボリックリンク
+なので、実体をたどって 3 つとも実ファイルとして入っていた。librsvg なら 6.2 MB が
+3 回である。合計 19.5 MB、527 MB のうちの 3.7% になる。
+
+ローダーが開くのは SONAME の 1 つだけで、残り 2 つは名前でしかない。そこで
+`build-linux.sh` は tar に詰める前にシンボリックリンクへ戻す。**gzip 自身では
+気付けない。**遡れるのは 32 KB 前までで、複製どうしは数 MB 離れているためである
+（AppImage 側に同じ問題が無いのは、squashfs が同一ブロックを共有するからである）。
+
+対象は `usr/lib` の 64 KB 超に限っている。`usr/share/doc` の copyright も重複して
+いるが、あるパッケージのライセンスを別のパッケージのものへのリンクに置き換える
+のは避けた。
+
+圧縮そのものは `gzip -9` にした。既定の 6 との差は 0.9 MB で、かかる時間は 1 分
+である。zstd や xz にすればさらに 40〜55 MB 小さくなるが（実測で `zstd -19` が
+163 MB、`xz -9` が 146 MB）、展開に必要なものが増えるので gzip のままにしてある。
 
 deb のほうは何も同梱していない。依存関係は両方のバイナリを `dpkg-shlibdeps` に
 かけて生成しているので、libav* が列挙される。

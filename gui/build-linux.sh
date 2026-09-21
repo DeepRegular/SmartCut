@@ -90,7 +90,35 @@ app/ の中身は AppImage 版と同じ一式で、ここでは FUSE を要ら�
 GPL-3.0-or-later。ソースと本体は $HOMEPAGE
 EOF
 
-tar -C "$STAGE" --owner=0 --group=0 -czf "$STAGE/$NAME.tar.gz" "$NAME"
+# The same library, three times, under three names. linuxdeploy follows what
+# `ldd` says and copies each name it is given, and a library's -dev package
+# carries `libfoo.so` and `libfoo.so.0` as symlinks to `libfoo.so.0.1.2` --
+# dereferenced on the way in, so librsvg arrives as 6.2 MB three times over.
+# The loader opens exactly one of them, by SONAME; the other two are names.
+#
+# Put the names back as symlinks. It is 19.5 MB of the 527 and gzip cannot
+# see the repeat for itself: its window is 32 KB and the copies are megabytes
+# apart. The AppImage never had this -- squashfs notices a duplicate block --
+# which is half of why it was the smaller of the two.
+#
+# Only under `usr/lib` and only above 64 KB, so that this is about libraries:
+# the copyright files under `usr/share/doc` are duplicates too, and a package's
+# licence is the last file to replace with a pointer to another package's.
+find "$TREE/app/usr/lib" -type f -size +64k -print0 | xargs -0 md5sum | sort | awk '
+  { h = $1; sub(/^[^ ]*  /, ""); f = $0
+    if (!(h in keep)) { keep[h] = f; next }
+    # The longest name is the real file, which is how the system has it.
+    if (length(f) > length(keep[h])) { dups[h] = dups[h] "\n" keep[h]; keep[h] = f }
+    else { dups[h] = dups[h] "\n" f } }
+  END { for (h in dups) { n = split(dups[h], a, "\n")
+          for (i = 1; i <= n; i++) if (a[i] != "") print keep[h] "\t" a[i] } }' |
+while IFS=$'\t' read -r real dup; do
+  ln -sf "$(basename "$real")" "$dup"
+done
+
+# -9 rather than the default 6: a minute of processor for another 0.9 MB,
+# paid once here and saved by everyone who downloads it.
+tar -C "$STAGE" --owner=0 --group=0 -I 'gzip -9' -cf "$STAGE/$NAME.tar.gz" "$NAME"
 
 # -------------------------------------------------------------------- deb
 ROOT=$STAGE/deb
