@@ -441,8 +441,22 @@ fn covers(times: &[f64], duration: Option<f64>) -> Result<()> {
              what the probe read, not a table the container kept"
         );
     }
-    // A table of one has no spacing to be measured by, and nothing to be
-    // measured: whether it covers the recording is the end's question alone.
+    // **A table of one entry is not a table.** It has no spacing to be
+    // measured by, so the widest gap above is nought and passes, and the
+    // end's question below is asked against a floor of ten seconds -- so
+    // every recording shorter than that, and every short one whose probe
+    // stopped after the first picture, was taken at its word. Measured on an
+    // eight-second WebM whose pictures carry eight entry points: the table
+    // offered one, at nought, and the cut re-encoded the whole range rather
+    // than copying five seconds of it. Nothing is lost by declining, because
+    // what a decline asks for is the walk, and a recording with genuinely
+    // one entry point is one GOP long and walked in no time at all.
+    if times.len() < 2 {
+        bail!(
+            "the container's seek table has one entry and cannot be shown to cover the \
+             recording -- it is what the probe read, not a table the container kept"
+        );
+    }
     if let Some(duration) = duration {
         let spacing = crate::thumbs::median_gap(&gaps).unwrap_or(0.0);
         if duration - last > (spacing * 3.0).max(10.0) {
@@ -1065,6 +1079,18 @@ mod tests {
     #[test]
     fn a_short_recording_is_not_measured_against_a_long_one() {
         assert!(covers(&every(0.0, 4.0, 0.5), Some(4.2)).is_ok());
-        assert!(covers(&[0.0], Some(4.2)).is_ok());
+    }
+
+    /// One entry and nothing else is the probe's table however short the
+    /// recording is. It used to be taken, because a single entry leaves no
+    /// gap to measure and the end's floor is ten seconds -- so every
+    /// recording shorter than that passed on the strength of its first
+    /// picture. An eight-second WebM measured here has eight entry points
+    /// and offered one.
+    #[test]
+    fn one_entry_is_not_a_table_however_short_the_recording() {
+        let e = covers(&[0.0], Some(4.2)).unwrap_err().to_string();
+        assert!(e.contains("one entry"), "{e}");
+        assert!(covers(&[0.0], None).is_err());
     }
 }
