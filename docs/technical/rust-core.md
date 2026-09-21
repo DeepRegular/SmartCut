@@ -216,6 +216,59 @@ picture back **with nothing changed and compares the bytes**. A table with one
 row wrong, a length counted one bit out, a run misplaced: all of them come out
 as bytes that differ. Over eleven recordings and 709,534 pictures, none do.
 
+## A picture is on screen until the next one
+
+Two facts about a picture, and for most of this program's life they were the
+same number. **When it arrives** is its timestamp. **How long it stays** is
+whatever the stream says it is worth -- two fields, or three where MPEG-2
+asks for a repeat. Where pictures come at a constant rate the next one is
+always one frame away, so the second fact is the first one restated and
+nothing had to tell them apart.
+
+A variable-rate recording holds a picture for as long as nothing changed. A
+screen capture holds one for minutes; a phone drops to half rate in the dark;
+anything that has been through `mpdecimate` holds one wherever the repeats
+came out. There the two facts are different numbers, and three things follow
+from having counted only the second.
+
+**Every seam lost the difference.** Each segment reported the span it
+occupied as its last picture's position plus that picture's coded length, and
+the next segment began there. Where the last picture was held, the difference
+went missing and everything after the seam moved early by the sum of it.
+Measured on a WebM whose pictures sit between 33 ms and 2.4 s apart, 46 of a
+range's 505 pictures were a whole frame out; on one whose gaps run from 16 ms
+to 117 ms, 598 of 628, by up to three frames. The copied stretches were exact
+throughout -- the copy path places each picture by its own timestamp, and
+that was never the problem.
+
+**A range ended early.** The same arithmetic decides how long the last
+segment is, so a thirty-second range whose last picture arrived two seconds
+before the end came out twenty-eight seconds long, with the audio running on
+past the end of the video.
+
+**A range inside a hold had no picture at all.** `reencode_segment` takes the
+pictures whose timestamps fall inside its window, and a window inside one
+picture's hold contains none -- so the run stopped with `no pictures
+decoded`, which on a screen capture is an ordinary thing to ask for.
+
+Both are answered by asking the recording rather than the picture header.
+[`held_to_the_end`] takes a segment's span up to where its display coverage
+ends, which is a real instant: the entry point the next segment starts on, or
+the end of the range, bounded by the end of the file. And the last picture
+before a window is kept, and put in at the window's own start where nothing
+of the recording's own arrives within a frame of it.
+
+**Neither touches constant-rate material**, and both are written so that they
+cannot. The span is a maximum over the two answers, and they agree whenever
+the pictures are a frame apart; the carried picture is only reached when the
+gap to the first picture of the range is a whole frame or more, which at a
+constant rate cannot happen. The thirteen cases in `tests/run_rust_tests.sh`
+report the same counts, the same first timestamps and the same jitter of zero
+as before, and `tests/run_vfr_tests.sh` has a constant-rate control in it for
+the same reason.
+
+[`held_to_the_end`]: ../../rust/crates/core/src/cut.rs
+
 ## VP9 and AV1: the codecs that turned out to need nothing
 
 These two were written down for a long time as having no elementary-stream

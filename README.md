@@ -252,6 +252,13 @@ format and folder as the input.
 material stays interlaced, and 2:3 pulldown is handled properly rather than
 flattened.
 
+**Variable frame rate** is handled as what it is: a picture is on screen
+until the next one replaces it, not for however long its own header says it
+is worth. A screen capture that holds a frame for a minute keeps that minute,
+a range that ends inside a hold still lasts as long as it was asked for, and
+a range that falls entirely inside one is the picture that was up, shown for
+the whole of it. None of it changes what a constant-rate recording does.
+
 **4K HDR10** cuts too. The few pictures rewritten at a boundary carry the
 recording's own HDR settings, so the picture does not visibly shift partway
 through — including the backward-compatible way a 4K broadcast signals HLG,

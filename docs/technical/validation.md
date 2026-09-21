@@ -43,6 +43,8 @@ go.
 | **VP9 + Opus** 1080p23.98 from YouTube, two ranges, all four ends mid-GOP | **432/432, 54.9% byte-identical**, which is the share the plan promised to the tenth |
 | **VP9 + Opus** 352x240 29.97, one 30 s range mid-GOP to mid-GOP | **900/900, 82.9% byte-identical**, decoded clean by libvpx and by libavcodec's own VP9 |
 | **AV1 + Opus** 720p30, one 28 s range mid-GOP to mid-GOP | **840/840**, decoded clean by dav1d and by libaom |
+| **Variable rate**, gaps 33 ms to 2.4 s, one 30 s range | **505/505 where the recording had them** (46 were a frame early before 0.8.0), and 30.0 s long (28.1 before) |
+| **Variable rate**, gaps 16 ms to 117 ms, one 30 s range | **628/628 where the recording had them** (598 were out by up to three frames before 0.8.0) |
 
 **A VC-1 cut has to be checked differently.** `verify_real.py` lines the two files up
 by frame number, and a frame number is exactly what a piece of a Blu-ray does not
