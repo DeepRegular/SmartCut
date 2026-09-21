@@ -5785,11 +5785,23 @@ struct CacheReport {
     index: CacheUse,
     proxy: CacheUse,
     cm: CacheUse,
+    /// The two flat detections together, which is how they are kept: one
+    /// folder holding a `.blkj` and a `.qtj` per recording. Told apart
+    /// nowhere the panel can see, and there is nothing to tell apart --
+    /// whichever of them is there was written by a pass over this recording
+    /// and would be made again the same way.
+    flat: CacheUse,
 }
 
+/// Every kind of work kept in the cache, which is what the panel lists and
+/// what すべて削除 empties. Named once, so that a pass which starts writing
+/// somewhere new is one edit away from being counted and cleared with the
+/// rest rather than growing on the disc unmentioned.
+const CACHE_KINDS: [&str; 4] = ["index", "proxy", "cm", "flat"];
+
 /// What one folder holds. A folder that is not there holds nothing, which is
-/// the answer rather than an error: none of the three is made until the
-/// first thing goes into it.
+/// the answer rather than an error: none of them is made until the first
+/// thing goes into it.
 fn folder_use(dir: &std::path::Path) -> CacheUse {
     let mut held = CacheUse::default();
     let Ok(entries) = std::fs::read_dir(dir) else { return held };
@@ -5806,11 +5818,11 @@ fn folder_use(dir: &std::path::Path) -> CacheUse {
 
 /// What is on disk, for the panel to show before it asks about deleting it.
 ///
-/// By kind, because the three do not cost the same to lose: an index is a
-/// pass over the recording, a proxy is a whole re-encode of it, and a
-/// detection is both. Counted when asked rather than kept running -- the
-/// panel asks once per opening, and three `read_dir`s is nothing beside what
-/// made the files.
+/// By kind, because they do not cost the same to lose: an index is a pass
+/// over the recording, a proxy is a whole re-encode of it, a commercial
+/// detection is both, and the flat detections are a full decode. Counted
+/// when asked rather than kept running -- the panel asks once per opening,
+/// and four `read_dir`s is nothing beside what made the files.
 #[tauri::command]
 async fn cache_usage(app: tauri::AppHandle) -> Result<CacheReport, String> {
     off_thread(move || {
@@ -5820,6 +5832,7 @@ async fn cache_usage(app: tauri::AppHandle) -> Result<CacheReport, String> {
             index: folder_use(&root.join("index")),
             proxy: folder_use(&root.join("proxy")),
             cm: folder_use(&root.join("cm")),
+            flat: folder_use(&root.join("flat")),
         })
     })
     .await
@@ -5827,7 +5840,7 @@ async fn cache_usage(app: tauri::AppHandle) -> Result<CacheReport, String> {
 
 /// Delete them.
 ///
-/// The files inside the three folders, and not the folders: what is being
+/// The files inside the cache folders, and not the folders: what is being
 /// thrown away is what a pass would build again, and a folder somebody chose
 /// in 環境設定 is not that. Nothing here can lose any of the user's work --
 /// the cuts are in the clip list and in the project file -- so a file that
@@ -5837,7 +5850,7 @@ async fn cache_usage(app: tauri::AppHandle) -> Result<CacheReport, String> {
 async fn clear_cache(app: tauri::AppHandle) -> Result<(), String> {
     off_thread(move || {
         let root = cache_root(&app)?;
-        for kind in ["index", "proxy", "cm"] {
+        for kind in CACHE_KINDS {
             let Ok(entries) = std::fs::read_dir(root.join(kind)) else { continue };
             for entry in entries.flatten() {
                 if entry.metadata().map(|m| m.is_file()).unwrap_or(false) {

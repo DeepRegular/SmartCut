@@ -191,12 +191,13 @@ const CATALOG = {
     "prefs.cacheDirPick": "参照",
     "prefs.cacheDirReset": "既定",
     "prefs.cacheDirNote":
-      "シーク用インデックス・プロキシ・CM 検出の結果を保存する場所です。" +
+      "シーク用インデックス・プロキシ・検出結果を保存する場所です。" +
       "変更後に作成したものだけが新しい場所に保存され、これまでのものは元の場所に残ります。",
     "prefs.cacheDirFailed": "その場所には書き込めません: {e}",
     "prefs.cacheKind.index": "シーク用インデックス",
     "prefs.cacheKind.proxy": "プロキシ",
     "prefs.cacheKind.cm": "CM 検出",
+    "prefs.cacheKind.flat": "黒白・無音の検出",
     "prefs.cacheFiles": "{n} 件",
     "prefs.cacheTotal": "合計 {size}",
     "prefs.cacheEmpty": "作業データはありません",
@@ -1046,12 +1047,13 @@ const CATALOG = {
     "prefs.cacheDirPick": "Browse…",
     "prefs.cacheDirReset": "Default",
     "prefs.cacheDirNote":
-      "Where the seek indexes, proxies and commercial detections go. Only what is written " +
+      "Where the seek indexes, proxies and detections go. Only what is written " +
       "after the change goes to the new folder; what is already cached stays where it is.",
     "prefs.cacheDirFailed": "Nothing can be written there: {e}",
     "prefs.cacheKind.index": "Seek indexes",
     "prefs.cacheKind.proxy": "Proxies",
     "prefs.cacheKind.cm": "Commercial detections",
+    "prefs.cacheKind.flat": "Blank and silence detections",
     "prefs.cacheFiles": "{n} file{n?s}",
     "prefs.cacheTotal": "{size} in all",
     "prefs.cacheEmpty": "Nothing here yet",

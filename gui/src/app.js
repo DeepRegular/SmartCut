@@ -8686,7 +8686,7 @@ async function paintCacheUse() {
     el("pref-cache-clear").disabled = true;
     return;
   }
-  for (const kind of ["index", "proxy", "cm"]) {
+  for (const kind of ["index", "proxy", "cm", "flat"]) {
     const held = use[kind] || { files: 0, bytes: 0 };
     cacheTotal += held.bytes || 0;
     const li = document.createElement("li");

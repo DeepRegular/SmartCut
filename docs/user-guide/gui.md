@@ -1068,10 +1068,10 @@ where two pieces meet, and the start and end of a file are not such places.
 
 ![The scratch files tab](../images/usage-prefs-data.png)
 
-Where the seek indexes, proxies and commercial detections go. The default is
-the cache directory the platform gives this program; **Browse…** changes it. A
-folder that cannot be written to is refused on the spot and the old one stays
-in force.
+Where the seek indexes, proxies and detections — commercials, blank and
+silence — go. The default is the cache directory the platform gives this
+program; **Browse…** changes it. A folder that cannot be written to is refused
+on the spot and the old one stays in force.
 
 Only what is written after the change goes to the new folder. What is already
 cached stays where it is.
