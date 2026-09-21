@@ -10,7 +10,7 @@ cd gui/src-tauri && NO_STRIP=1 cargo tauri build --bundles appimage
 # -> target/release/bundle/appimage/SmartCut_0.7.5_amd64.AppImage
 ```
 
-成果物は 185.9 MB で、共有ライブラリ 745 個をすべて同梱している。WebKitGTK 4.1 も、
+成果物は 186.0 MB で、共有ライブラリ 745 個をすべて同梱している。WebKitGTK 4.1 も、
 `libavcodec` / `libavformat` / `libavutil` / `libavfilter` / `libswscale` /
 `libswresample` も入っているので、**動かす側に ffmpeg を入れる必要はない**。
 SmartCut はシステムの FFmpeg 7.1 に動的リンクしているので、配布できるかどうかは
@@ -89,8 +89,8 @@ cargo のクレート名は `gui` なので、放っておくと Tauri はその
 
 | 成果物 | サイズ | FFmpeg | 必要条件 |
 |---|---|---|---|
-| `SmartCut-0.7.5-linux-x86_64.tar.gz` | 210.1 MB | 同梱 | glibc 2.39 以上。FUSE 不要 |
-| `smartcut_0.7.5_amd64.deb` | 4.2 MB | システムのものを使用 | FFmpeg 7.1（Debian 13 / Ubuntu 25.04 以降） |
+| `SmartCut-0.7.5-linux-x86_64.tar.gz` | 210.3 MB | 同梱 | glibc 2.39 以上。FUSE 不要 |
+| `smartcut_0.7.5_amd64.deb` | 4.4 MB | システムのものを使用 | FFmpeg 7.1（Debian 13 / Ubuntu 25.04 以降） |
 
 tar.gz の中身は、AppImage と同じ AppDir を展開したものである。linuxdeploy が
 `ldd` を辿って集めた 745 個のライブラリがそのまま `app/` にある。`./smartcut` は
@@ -146,8 +146,8 @@ Linux の開発 VM から `x86_64-pc-windows-msvc` へクロスビルドして�
 
 | 成果物 | サイズ | 内容 |
 |---|---|---|
-| NSIS インストーラ | 53.8 MB | インストール後 172.3 MB（exe 14.0 MB ＋ FFmpeg の DLL 8 個） |
-| ポータブル zip | 67.3 MB | 同じ一式。展開して `smartcut.exe` を実行する |
+| NSIS インストーラ | 53.9 MB | インストール後 172.8 MB（exe 14.5 MB ＋ FFmpeg の DLL 8 個） |
+| ポータブル zip | 67.4 MB | 同じ一式。展開して `smartcut.exe` を実行する |
 
 移植のために書き直したコードは、**音声出力の 1 か所だけ**である。ほかはすべて libav
 を通るので、`Command::new` も POSIX パスも出てこない。必要だったのはリンク先の
