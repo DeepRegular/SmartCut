@@ -2790,3 +2790,45 @@ is left over is material whose pictures do not come at one rate — the delay is
 a whole number of pictures and this measures it in seconds — where four entry
 points of 1467 end up more than half a frame from their picture, against all
 1467 of them before.
+
+#### A cell could not be shorter than one GOP
+
+The strip draws one picture per cell and cuts the cells on the recording's own
+access points, which is right twice over on the material it was written for:
+those are the only places a cut is free, and the pictures at them are the ones
+already held, so a cell costs nothing to fill. Where a GOP was longer than the
+cell the menu asked for, the cell simply grew to hold it, and the window
+covered rather more than it said.
+
+On broadcast material that reads as the menu being approximate. On a recording
+off the web it stops being an approximation:
+
+| Material | Access points | `GOP・6 秒` covered | now |
+|---|---|---:|---:|
+| broadcast recording | every 0.50 s | 7.5 s | 7.5 s |
+| Blu-ray, fast cutting | 0.067–0.80 s | 9.0 s | 9.0 s |
+| a recording off the web | every 3.96 s | 59 s | **6.2 s** |
+| one from a streaming service | every 33.37 s | 500 s | **6.4 s** |
+
+The strip scrolled at the rate those windows imply — sixty times slower than
+the same menu on a broadcast recording, which is what the report is about.
+
+A GOP longer than **a third of the window** — three cells, which is already the
+whole of what the menu asked for — is divided by time instead: into as many
+equal cells as fit, laid from the boundary, so that the access point is still a
+cell of its own and the cells between it and the next are the length the menu
+named. Short GOPs are untouched at every setting, which is why the first two
+rows of that table do not move: what changed is only the material the old rule
+could not describe.
+
+What those cells cost is a decode. Filling a reel of them is one pass over the
+stretch it covers — 15 cells 0.4 s apart took 0.4–0.6 s on the four-second
+material and 1.0–1.8 s on the thirty-three-second one — which is far too dear
+to pay per pointer notch, for the reason `moving` gives. So while the hand is
+on the playhead those cells are not decoded: they show whatever has already
+been decoded for them (`reelShots` — the marks a GOP is divided on are its own,
+so a reel redrawn further along asks for most of the same instants again), and
+failing that the picture from the access point they stand after, which is the
+stand-in the stage itself puts up during a search. The `▲` under a cell's time
+says which cells really are access points; it appears only on a reel that holds
+both kinds, every cell of an ordinary reel being one.

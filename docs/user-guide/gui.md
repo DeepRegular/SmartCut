@@ -385,6 +385,16 @@ frames, and `Snap to lossless` can take those to zero once it lights up.
 > SmartCut calls those places — the ones where the stream can simply be cut —
 > lossless points.
 
+> **Material whose key frames are far apart.** A broadcast recording puts one
+> every half second. A recording off the web, or one from a streaming service,
+> can put several seconds between them — thirty-three, on one measured here.
+> The filmstrip cuts a stretch that long into cells of the length `View` asked
+> for rather than drawing it as a single cell, so the band covers the time the
+> menu says whatever the material is. A `▲` beside a cell's time marks the
+> cells that are lossless points; the rest are decoded as you go, so while you
+> drag they carry the picture from the lossless point behind them and fill in
+> properly the moment you let go.
+
 **Every number on this screen is on the output's clock.** What you cut does not
 go grey — it disappears. The scrubber shrinks, the filmstrip closes over the
 hole, and the frame counter counts the length that will actually be written.

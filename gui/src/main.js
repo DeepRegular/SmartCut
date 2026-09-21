@@ -2144,18 +2144,32 @@ function markHere(o) {
   reelWin.here = i;
 }
 
-/// The cells a GOP-divided reel is made of: `slots` of them, each beginning
-/// on a GOP boundary and covering about `span / vis` of the recording,
-/// centred on the GOP the playhead stands in. `at` is the picture to show and
-/// the time to caption; `a` and `b` are the stretch the cell speaks for,
-/// which is what the playhead is placed against.
+/// The last GOP boundary at or before output time `t`, as an index into
+/// `gops`, or -1 before the first. `back` asks for the last one strictly
+/// before it, which is what stepping backwards off a boundary wants: the GOP
+/// that ends there, not the one that begins there.
+function gopUnder(t, back) {
+  let lo = 0;
+  let hi = gops.length;
+  while (lo < hi) {
+    const m = (lo + hi) >> 1;
+    if (back ? gops[m] < t - 1e-9 : gops[m] <= t + 1e-9) lo = m + 1;
+    else hi = m;
+  }
+  return lo - 1;
+}
+
+/// The cells a GOP-divided reel is made of: `slots` of them, covering about
+/// `span / vis` of the recording each and centred on the one the playhead
+/// stands in. `at` is the picture to show and the time to caption; `a` and
+/// `b` are the stretch the cell speaks for, which is what the playhead is
+/// placed against; `cut` says the cell begins on an access point, which is to
+/// say on a place a cut is free.
 ///
 /// A cell is as long as the menu asked for, rounded to the nearest boundary
 /// either side. That is what "GOP・3 分" means once the widths are fixed:
 /// three minutes across the window, near enough, with every cell still
-/// standing on a place a cut is free. At the short end a cell cannot hold
-/// less than one GOP, so the window covers rather more than it says and every
-/// boundary is drawn -- the honest answer, and the one that reads.
+/// standing on a place a cut is free.
 ///
 /// **Chosen by time, not by counting boundaries.** Giving each cell a fixed
 /// number of GOPs is the same thing only where the GOPs are evenly spaced,
@@ -2168,6 +2182,20 @@ function markHere(o) {
 /// ruler: the playhead crawled across a cell and then jumped four of them,
 /// and clicking a place on it landed nowhere near where it looked.
 ///
+/// **A cell covers at most a third of the window.** Where the GOPs are short
+/// a cell cannot hold less than one of them, and the window then covers
+/// rather more than the menu says -- 7.5 s at "6 秒" on broadcast material,
+/// which reads as the menu being approximate. Where they are long that stops
+/// being an approximation and becomes a different strip: a recording off the
+/// web puts its entry points four seconds apart and one from a streaming
+/// service thirty-three, so "6 秒" drew a window of a minute and one of eight
+/// minutes, and the strip scrolled that many times slower than the same menu
+/// on a broadcast recording. Past a third of the window -- three cells, which
+/// is already the whole of what was asked for -- the GOP is divided by time
+/// instead: into as many equal cells as fit, so that the boundary is still a
+/// cell of its own and the cells between it and the next are the length the
+/// menu named. What those cells cost is a decode; see `refreshStrip`.
+///
 /// Slots that fall outside the recording are kept, as blanks. They are what
 /// lets the reel slide far enough to hold the playhead at the middle when it
 /// is near either end; without them the reel would run out and the marker
@@ -2179,80 +2207,100 @@ function gopCells(o, span, slots, vis) {
   // of time rather than for runs of GOPs. See `refreshStrip`, which sends
   // every unwalked recording the same way.
   if (!n) return evenCells(o, span, slots, vis);
-  // the GOP the playhead is standing in
-  let i0 = 0;
-  while (i0 + 1 < n && gops[i0 + 1] <= o + 1e-9) i0++;
-  // What one cell is meant to cover.
+  // What one cell is meant to cover, and the longest a GOP may be before it
+  // is divided rather than drawn whole.
   const d = Math.max(span / Math.max(vis, 1), 1e-3);
+  const whole = (d * vis) / 3;
 
-  // The boundary each cell begins on: the playhead's, then the one nearest
-  // `d` further on, and so outwards in both directions. Nearest rather than
-  // the first one past it, which would round every cell up and hand a
-  // recording with 0.5 s GOPs a window half as wide again as the menu says.
-  // `-1` where the recording has run out, which the loops below leave blank.
-  const half = slots >> 1;
-  const marks = new Array(slots).fill(-1);
-  marks[half] = i0;
-  for (let k = half + 1, j = i0; k < slots; k++) {
-    const want = gops[j] + d;
+  /// How a long GOP is divided: where it runs to, the width of its cells and
+  /// how many there are -- or null where it is short enough to be drawn
+  /// whole. The last GOP runs to the end of the recording, which is as much a
+  /// stretch with no boundary in it as any other.
+  const split = (j) => {
+    if (j < 0) return null;
+    const to = j + 1 < n ? gops[j + 1] : outDur;
+    const len = to - gops[j];
+    if (!(len > whole)) return null;
+    const k = Math.max(2, Math.round(len / d));
+    return { k, w: len / k, from: gops[j], to };
+  };
+  /// Where the cell holding `t` begins: its GOP's own boundary, or the mark
+  /// inside it where a long GOP has been divided.
+  const opens = (t) => {
+    const j = gopUnder(t);
+    if (j < 0) return t;
+    const s = split(j);
+    if (!s) return gops[j];
+    const i = Math.min(s.k - 1, Math.floor((t - s.from) / s.w + 1e-9));
+    return s.from + i * s.w;
+  };
+  /// Where the cell after the one beginning at `t` begins.
+  const opensAfter = (t) => {
+    const j = gopUnder(t);
+    const s = split(j);
+    // Only from inside the stretch: at its far end the next cell is the next
+    // GOP's business, and past the recording there is nothing to divide.
+    if (s && t < s.to - 1e-9) {
+      const i = Math.round((t - s.from) / s.w);
+      return i + 1 >= s.k ? s.to : s.from + (i + 1) * s.w;
+    }
+    // The boundary nearest `d` further on. Nearest rather than the first one
+    // past it, which would round every cell up and hand a recording with
+    // 0.5 s GOPs a window half as wide again as the menu says.
+    const want = t + d;
     let m = j + 1;
     while (m < n && gops[m] < want - 1e-9) m++;
-    if (m >= n) break;
+    if (m >= n) return want;
     // The boundary before it is nearer as often as not -- but never the
     // cell's own, which would give it no width at all, and never one that
     // would leave the cell less than half the width it was asked for. Where
     // the boundaries are dense and then stop, nearest on its own picks the
     // last of the dense run and draws a sliver beside a full-width cell,
     // which is the unevenness this is here to stop.
-    if (m - 1 > j && gops[m - 1] - gops[j] >= d / 2 && want - gops[m - 1] < gops[m] - want) {
-      m--;
+    if (m - 1 > j && gops[m - 1] - t >= d / 2 && want - gops[m - 1] < gops[m] - want) {
+      return gops[m - 1];
     }
-    marks[k] = m;
-    j = m;
-  }
-  for (let k = half - 1, j = i0; k >= 0; k--) {
-    const want = gops[j] - d;
-    let m = j - 1;
+    return gops[m];
+  };
+  /// Where the cell before the one beginning at `t` begins.
+  const opensBefore = (t) => {
+    const j = gopUnder(t, true);
+    if (j < 0) return t - d;
+    const s = split(j);
+    if (s && t > s.from + 1e-9) {
+      const i = Math.min(s.k, Math.round((t - s.from) / s.w));
+      return s.from + Math.max(0, i - 1) * s.w;
+    }
+    const want = t - d;
+    let m = j;
     while (m >= 0 && gops[m] > want + 1e-9) m--;
-    if (m < 0) break;
-    if (m + 1 < j && gops[j] - gops[m + 1] >= d / 2 && gops[m + 1] - want < want - gops[m]) {
-      m++;
+    if (m < 0) return want;
+    if (m + 1 <= j && t - gops[m + 1] >= d / 2 && gops[m + 1] - want < want - gops[m]) {
+      return gops[m + 1];
     }
-    marks[k] = m;
-    j = m;
-  }
+    return gops[m];
+  };
+
+  const half = slots >> 1;
+  const starts = new Array(slots);
+  starts[half] = opens(o);
+  for (let k = half + 1; k < slots; k++) starts[k] = opensAfter(starts[k - 1]);
+  for (let k = half - 1; k >= 0; k--) starts[k] = opensBefore(starts[k + 1]);
 
   const cells = [];
   for (let k = 0; k < slots; k++) {
-    const j = marks[k];
-    if (j < 0) {
-      cells.push({ live: false });
-      continue;
-    }
-    const a = gops[j];
+    const a = starts[k];
     // A cell runs to where the next one begins, so that the reel tiles the
-    // recording without a gap or an overlap. The outermost one has no next
-    // cell to end at and takes the width it was asked for -- not the rest of
-    // the recording, which would make the reel's last cell stand for half an
-    // hour and drag the playhead across it at a crawl.
-    const next = marks[k + 1];
-    const b = Math.min(next >= 0 ? gops[next] : a + d, outDur);
-    cells.push({ at: a, a, b: Math.max(b, a + 1e-3), live: true });
-  }
-  // A blank has no time of its own, so it takes over where the cell beside it
-  // leaves off. The reel stays continuous in time that way, and the playhead
-  // can be found on it whichever slot it happens to fall in.
-  for (let k = 1; k < cells.length; k++) {
-    if (!cells[k].live && cells[k - 1].b !== undefined) {
-      cells[k].a = cells[k - 1].b;
-      cells[k].b = cells[k].a + d;
-    }
-  }
-  for (let k = cells.length - 2; k >= 0; k--) {
-    if (!cells[k].live && cells[k].a === undefined) {
-      cells[k].b = cells[k + 1].a;
-      cells[k].a = cells[k].b - d;
-    }
+    // recording without a gap or an overlap.
+    const b = k + 1 < slots ? starts[k + 1] : opensAfter(a);
+    const j = gopUnder(a);
+    cells.push({
+      at: a,
+      a,
+      b: Math.max(b, a + 1e-3),
+      cut: j >= 0 && Math.abs(gops[j] - a) < 1e-6,
+      live: a >= -1e-9 && a < outDur - 1e-9,
+    });
   }
   return cells;
 }
@@ -2297,6 +2345,20 @@ const asked = new Set();
 /// Per span because it is the *cell's* width against the recording's own
 /// spacing that decides it, and the menu is what sets the cell width.
 const ways = new Map();
+/// Pictures the reel has already been given, by the instant they were asked
+/// for in the recording's own seconds.
+///
+/// **For the cells a long GOP is divided into**, which are the only ones that
+/// cost anything: a cell standing on an access point is answered out of the
+/// held pictures for nothing, and one standing inside a GOP is a decode. The
+/// marks a GOP is divided on are its own -- the grid is laid from the
+/// boundary, not from the playhead -- so a reel redrawn a little further
+/// along asks for most of the same instants again, and a drag across a
+/// recording would otherwise decode the same pictures over and over. Held
+/// here, the second ask is free, and the cells fill in behind a hand that is
+/// still moving instead of staying blank until it stops.
+const reelShots = new Map();
+
 /// How many pictures to keep. They are 200px JPEGs, so a few hundred is a
 /// megabyte or two, and the walk is over long before that fills.
 const GLANCE_KEEP = 400;
@@ -2324,6 +2386,7 @@ function forgetGlances() {
   glances.clear();
   asked.clear();
   ways.clear();
+  reelShots.clear();
 }
 
 /// Draw the reel, and fill it with what can be found without the walk.
@@ -2547,34 +2610,88 @@ async function refreshStrip(at) {
     await fillByGlance(shots, cells, unit, win, view.span);
     return;
   }
-  const times = live.map((c) => outToSrc(c.at));
-  // Cells that begin on a GOP are already in memory; a cell that begins on a
-  // join is not, and asking the held pictures for it would hand back the
-  // last picture the cut took. Those few are decoded.
-  const wanted = live.map((c) => isJoin(c.at));
+  // **A cell that does not begin on an access point is a decode**, and a
+  // reel of them is one pass over the stretch it covers: 0.4 s to 1.8 s on
+  // the long-GOP material measured for `gopCells`, against nothing at all for
+  // a cell whose picture is already held. A reel costing that much cannot be
+  // asked for per pointer notch -- the one it was read for is gone by the
+  // time it arrives, and the strip ends up chasing a position the playhead
+  // left long ago, which is the treatment [`moving`] describes.
+  //
+  // So while the hand is on the playhead those cells are not decoded: they
+  // show what has been decoded for them already ([`reelShots`]) or a
+  // stand-in, and the reel goes on sliding at the rate the menu says, which
+  // is the whole point of dividing it this way. Every way of moving the
+  // playhead ends by asking for the strip again (`showFrame` ->
+  // `scheduleStrip`), and that ask decodes them.
+  //
+  // Nothing changes for material whose GOPs are short enough to be drawn
+  // whole: every cell of that reel begins on an access point, so every cell
+  // is answered out of the held pictures whatever the hand is doing.
+  const key = (t) => Math.round(t * 1000);
+  const when = live.map((c) => outToSrc(c.at));
+  const held = when.map((t) => reelShots.get(key(t)) ?? null);
+  // What to ask for, and whether the answer has to be the picture at that
+  // very instant. A cell on an access point is answered out of the held
+  // pictures; one inside a GOP is a decode and has to say `exact`, the
+  // nearest held picture being a different picture from a different place. A
+  // cut's join is the same case.
+  //
+  // `lean` is the stand-in a moving hand gets: the picture from the entry
+  // point the cell stands after, which is the only one the material has
+  // anywhere near that instant and costs nothing to fetch. The caption stays
+  // the cell's own time and the mark stays on the cells that really are entry
+  // points, so what it says is "this is what was on screen at the last free
+  // point", which is what the stage itself shows during a search
+  // (`paintFast`). It is replaced by the real picture the moment the hand
+  // comes off.
+  const ask = [];
+  live.forEach((c, i) => {
+    if (held[i]) return;
+    if (c.cut || !moving()) {
+      ask.push({ i, time: when[i], exact: isJoin(c.at) || !c.cut });
+      return;
+    }
+    const j = gopUnder(c.a);
+    const t = j < 0 ? null : outToSrc(gops[j]);
+    if (t !== null) ask.push({ i, time: t, exact: false, lean: true });
+  });
+  const plain = ask.filter((a) => !a.exact);
+  const exact = ask.filter((a) => a.exact);
   const token = ++stripToken;
-  let got;
   try {
     const [kept, decoded] = await Promise.all([
-      invoke("thumbs_at", { times: times.filter((_, i) => !wanted[i]), width: 200 }),
-      wanted.some(Boolean)
-        ? invoke("thumbs_at", { times: times.filter((_, i) => wanted[i]), width: 200, exact: true })
+      plain.length
+        ? invoke("thumbs_at", { times: plain.map((a) => a.time), width: 200 })
+        : Promise.resolve([]),
+      exact.length
+        ? invoke("thumbs_at", { times: exact.map((a) => a.time), width: 200, exact: true })
         : Promise.resolve([]),
     ]);
-    let h = 0;
-    let d = 0;
-    got = wanted.map((w) => (w ? decoded[d++] : kept[h++]));
+    if (token !== stripToken) return;
+    plain.forEach((a, k) => {
+      if (kept[k]) held[a.i] = kept[k].url;
+    });
+    // Whatever was decoded for a cell inside a GOP is worth keeping; the ones
+    // that came out of the held pictures are already held, and a stand-in is
+    // not this cell's picture at all. Emptied wholesale rather than by age,
+    // for the reason `fillByGlance`'s `room` gives.
+    exact.forEach((a, k) => {
+      if (!decoded[k]) return;
+      held[a.i] = decoded[k].url;
+      if (reelShots.size > GLANCE_KEEP) reelShots.clear();
+      reelShots.set(key(a.time), decoded[k].url);
+    });
   } catch (e) {
     jlog(`thumbs_at: ${e}`);
     return;
   }
-  if (token !== stripToken) return;
 
   let k = 0;
   const shots = cells.map((c) => {
-    if (!c.live) return { url: null, time: null, at: c.a, a: c.a, b: c.b, px };
-    const g = got[k++];
-    return { url: g ? g.url : null, time: outToSrc(c.at), at: c.at, a: c.a, b: c.b, px };
+    if (!c.live) return { url: null, time: null, at: c.a, a: c.a, b: c.b, px, cut: !!c.cut };
+    const i = k++;
+    return { url: held[i], time: when[i], at: c.at, a: c.a, b: c.b, px, cut: !!c.cut };
   });
   // what one cell covers, which is what the marks below are drawn against
   const mid = live[live.length >> 1];
@@ -2659,6 +2776,15 @@ function renderStrip(shots, unit, win) {
   // was tried and is worse: crossing a scene change makes a single cell jump
   // to a different shot while its neighbours hold still, which reads as a
   // glitch. The strip is a ruler; the marker says where you are.
+  // Where a long GOP has been divided, some cells stand on a place a cut is
+  // free and some do not, and which is which is worth saying: it is the
+  // difference between a cut that copies and one that re-encodes. Said only
+  // on a reel that holds both -- on every other reel every cell is an access
+  // point, and a mark on all of them says nothing.
+  const mixed =
+    shots.some((s) => s.time !== null && s.cut) &&
+    shots.some((s) => s.time !== null && !s.cut);
+
   shots.forEach((s, i) => {
     const fig = document.createElement("figure");
     fig.style.width = `${s.px.toFixed(2)}px`;
@@ -2671,9 +2797,10 @@ function renderStrip(shots, unit, win) {
     }
     const classes = [];
     if (s.at >= selA && s.at < selB) classes.push("inside");
-    // Worth flagging only in frame mode: every cell of a GOP-divided strip
-    // is an access point, so marking them all says nothing.
-    if (unit < 0.1 && atPoint(s.time)) classes.push("kf");
+    // Worth flagging only in frame mode, or on a reel whose cells are not
+    // all access points: every cell of a GOP-divided strip is one, so marking
+    // them all says nothing.
+    if (mixed ? s.cut : unit < 0.1 && atPoint(s.time)) classes.push("kf");
     if (nearScene(s.time, unit / 2)) classes.push("scene");
     if (keyframes.some((t) => Math.abs(t - s.time) < unit / 2)) classes.push("mark");
     // a join the cuts closed up sits between this cell and the one before it
