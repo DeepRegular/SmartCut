@@ -22,11 +22,16 @@ const HAIR = 1e-6;
 /// HH:MM:SS.cc, the way the reference tool writes an instant.
 export function fmt(t) {
   if (!isFinite(t)) return "--:--:--.--";
-  const sign = t < 0 ? "-" : "";
   // One count of hundredths, and every field read back out of it. Field by
   // field, each with its own floor, a number sitting a hair under a whole
   // second loses the second as well as the hundredths. See [`HAIR`].
   const cc = Math.floor(Math.abs(t) * 100 + HAIR);
+  // The sign comes off the count rather than off the number, so that an
+  // instant which prints as zero prints without one. A picture's own time is
+  // worked out as its timestamp less the recording's start, and the first
+  // picture of a recording lands a hair either side of nothing: 拡大表示 was
+  // reading -00:00:00.00 under a frame the counter beside it called 0.
+  const sign = t < 0 && cc > 0 ? "-" : "";
   const p = (v) => String(v).padStart(2, "0");
   return `${sign}${p(Math.floor(cc / 360000))}:${p(Math.floor(cc / 6000) % 60)}:${p(
     Math.floor(cc / 100) % 60
