@@ -348,7 +348,7 @@ frames, and `Snap to lossless` can take those to zero once it lights up.
 | Info bar | Lossless points, resolution, fps, scan type, audio, codec. **Tracks** and **Detect commercials** on the right |
 | Left column | The **keyframes** — your marks, each with a thumbnail. Click one to jump there |
 | The large picture | The preview. At its foot, in the middle: frame number, timecode, what kind of frame it is, and the current selection. **Counter**, on the bottom line, turns them off |
-| Beside it, on the left | The **audio level meter**: what is being heard while something plays, and the sound under the playhead while nothing does. **Meter**, on the bottom line, turns it off |
+| Beside it, on the left | The **audio level meter**: what is being heard while something plays, and the sound under the playhead while nothing does. **Preferences → Windows** turns it off |
 | The band under it | The **filmstrip**: the frames around you, laid out as pictures. The `View` menu on the right sets how much time one cell covers |
 | The scrubber | **Green is the output itself.** `▼` are keyframes, a red vertical line is a join left by a cut, and the fine ticks below are scene changes |
 | The button row | **Cut** in the middle, `[ IN` to its left and `OUT ]` to its right, and outwards from there: go to, one frame, lossless point, start and end |
@@ -428,9 +428,9 @@ the column, so they thin out as the count rises. The count does not change on a 
 two of them: what the meter reports is the sound in the recording, not the
 downmix the hardware made of it.
 
-On a recording with no sound the scale stands empty. **Meter**, on the bottom
-line, puts the whole column away, and **Preferences → Windows** holds the
-same answer.
+On a recording with no sound the scale stands empty. **Preferences →
+Windows** puts the whole column away, and an editor already open follows at
+once.
 
 ### Looking closely
 
@@ -1003,7 +1003,7 @@ effect as you make it.
 |---|---|
 | **Language** | English, Japanese, or follow the system (the default). A change takes effect in both windows at once |
 | **Frame number and clock over the picture** | The box at the foot of the cut editor's picture. The same answer as its **Counter** button |
-| **Audio level meter** | The meter beside the cut editor's picture. The same answer as its **Meter** button |
+| **Audio level meter** | The meter to the left of the cut editor's picture. This is the only place it is switched on and off |
 | **Show the subtitles from the start** | Opens a recording that carries subtitles with the first track already chosen. It can still be switched while cutting |
 
 ### Cut editor

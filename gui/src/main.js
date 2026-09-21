@@ -1821,23 +1821,22 @@ function meterRun(on) {
   }, METER_TICK);
 }
 
-/// The look of it: the column, the button, and an empty scale drawn on the
-/// canvas. Kept apart from `showMeter` because this much can be settled as
-/// the page loads and the rest cannot -- what a meter being switched on
-/// should do next depends on whether anything is playing, and the playback
-/// state is declared further down this file.
+/// The look of it: the column and an empty scale drawn on the canvas. Kept
+/// apart from `showMeter` because this much can be settled as the page
+/// loads and the rest cannot -- what a meter being switched on should do
+/// next depends on whether anything is playing, and the playback state is
+/// declared further down this file.
 function meterLook(on) {
   meterOn = on;
   el("meter").hidden = !on;
-  const button = el("meter-show");
-  if (button) {
-    button.classList.toggle("on", on);
-    button.setAttribute("aria-pressed", on ? "true" : "false");
-  }
   paintMeter();
 }
 
-function showMeter(on, remember = true) {
+/// Switched from 環境設定, which is the only place it is answered: on or off
+/// is a thing that holds for every recording, not a thing to press while
+/// looking at one. The store has been written by the time this arrives, so
+/// there is nothing to remember here.
+function showMeter(on) {
   meterLook(on);
   if (on) {
     if (playing) meterRun(true);
@@ -1846,15 +1845,9 @@ function showMeter(on, remember = true) {
     meterRun(false);
     clearTimeout(meterAsk);
   }
-  if (!remember) return;
-  prefs.set("meter", on);
 }
 
-const meterButton = el("meter-show");
-if (meterButton) {
-  meterLook(meterOn);
-  meterButton.addEventListener("click", () => showMeter(el("meter").hidden));
-}
+meterLook(meterOn);
 
 // --- film strip ---------------------------------------------------------
 //
@@ -5690,13 +5683,14 @@ if (listen) {
   });
   hear("lang-changed", (ev) => setLang(ev.payload, false));
   // 環境設定 is in the other window, and this one has its own copy of
-  // everything the store holds. The counter is the half that can be applied
-  // where it stands; which subtitle track to start with is answered when a
-  // recording is opened, so a window already up keeps the one it has.
+  // everything the store holds. The counter and the meter are the half that
+  // can be applied where they stand; which subtitle track to start with is
+  // answered when a recording is opened, so a window already up keeps the
+  // one it has.
   hear("prefs-changed", (ev) => {
     const said = ev.payload || {};
     if (typeof said.counter === "boolean") showCounter(said.counter, false);
-    if (typeof said.meter === "boolean") showMeter(said.meter, false);
+    if (typeof said.meter === "boolean") showMeter(said.meter);
   });
   // A row renamed in the list while this window is up. The name is the list's
   // to give -- it is the row that was renamed and not the recording -- so it

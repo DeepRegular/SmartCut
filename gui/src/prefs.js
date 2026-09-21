@@ -128,6 +128,11 @@ const DEFAULTS = {
   /// is the silence at a junction -- is half of what a cut is placed by, and
   /// a meter nobody asked for costs 64 pixels of a window that is otherwise
   /// all picture.
+  ///
+  /// Answered here and nowhere else. It held a button on the editor's info
+  /// bar as well, which was one answer too many: unlike the counter over the
+  /// picture, the meter is not something to turn on for the frame in front
+  /// of you -- it is on or off for every recording.
   meter: true,
   /// How far 拡大表示 magnifies, in screen pixels per source pixel.
   ///

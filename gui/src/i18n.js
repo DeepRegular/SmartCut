@@ -665,8 +665,6 @@ const CATALOG = {
     "editor.analysing": "解析中…",
     "editor.counterShow": "カウンタ",
     "editor.counterShow.title": "フレーム番号と時刻をプレビュー映像の上に表示する",
-    "editor.meterShow": "メーター",
-    "editor.meterShow.title": "音声レベルメーターをプレビューの横に表示する",
 
     // --- 拡大表示 ---------------------------------------------------------
     "zoom.title": "拡大表示",
@@ -1500,8 +1498,6 @@ const CATALOG = {
     "editor.analysing": "Reading…",
     "editor.counterShow": "Counter",
     "editor.counterShow.title": "Draw the frame number and time over the picture",
-    "editor.meterShow": "Meter",
-    "editor.meterShow.title": "Show the audio level meter beside the picture",
 
     // --- the magnifier ----------------------------------------------------
     "zoom.title": "Magnifier",
