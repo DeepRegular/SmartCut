@@ -334,8 +334,9 @@ first stage.
 ![The cut editor before the recording has been read](../images/usage-stages.png)
 
 While the band underneath reads `Reading the recording. What copies losslessly
-is known once it has been read`, you are in the first stage: `Snap to lossless`
-is greyed out, but the preview is there and **you can already make cuts.** The
+is known once it has been read`, you are in the first stage: the two **Scene**
+buttons are still greyed, but the preview is there and **you can already make
+cuts.** The
 filmstrip fills in from one end as the reading goes on. The marks down the left
 came from the `.keyframe` file beside the recording; they do not wait for the
 reading either.
@@ -521,10 +522,11 @@ ones. A fade to black and a silence are rarely in the same place, which is why
 one pair of keys does not walk both.
 
 Whether a detection marks anything is a preference, one for each of the two.
-Off, it leaves the band and nothing else. So does a recording that came up with
-a mark file of its own — a `.keyframe` beside it is somebody's own answer about
-where the breaks are, and a detection's marks are not mixed into it. Ask for the
-pass from this menu and they go down.
+Off, it leaves the band and nothing else. A recording that came up with a mark
+file of its own gets the band and nothing else as well: a `.keyframe` beside a
+recording is somebody's own answer about where its breaks are, and a detection's
+marks are not mixed into it. Ask for the pass from this menu and the marks go
+down.
 
 The marks it does put down are told apart in the keyframe column: under the
 time on the card, a small `Black`, `White` or `Quiet`. A mark carries one only
@@ -1044,6 +1046,8 @@ effect as you make it.
 | **Show the subtitles from the start** | Opens a recording that carries subtitles with the first track already chosen. It can still be switched while cutting |
 
 ### Cut editor
+
+![Preferences, the cut editor group](../images/usage-prefs-edit.png)
 
 | Setting | What it does |
 |---|---|
