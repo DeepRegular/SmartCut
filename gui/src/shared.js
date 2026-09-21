@@ -27,6 +27,14 @@ export function blankKey(base) {
   return base;
 }
 
+/// The same for a key that names one of the two flat detections.
+///
+/// The pictures pass answers to whichever shades it was told to look for and
+/// is named for them; the sound pass has the one name and takes the key it
+/// was given. `which` is "blank" or "quiet", which is how the list holds the
+/// two apart everywhere else.
+export const flatKey = (which, base) => (which === "blank" ? blankKey(base) : base);
+
 /// A hair over, so that a sum lands on the mark it should be on.
 ///
 /// These are floored on purpose -- a timecode names the hundredth an instant

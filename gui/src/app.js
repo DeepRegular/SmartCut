@@ -20,7 +20,7 @@
 // lanes here and a window of its own, and the passes hold themselves to part
 // of the machine while that window is up.
 
-import { fmt, clock, coarse, chLabel, cmNote, esc, size, blankKey, noBrowserMenu, noNativeDrag }
+import { fmt, clock, coarse, chLabel, cmNote, esc, size, blankKey, flatKey, noBrowserMenu, noNativeDrag }
   from "./shared.js";
 import { t, applyStatic, preference, currentLang, setLang, onLangChange, tellBackend, confirmWithOs }
   from "./i18n.js";
@@ -1794,12 +1794,15 @@ function paintRow(clip) {
     const state = clip[`${which}State`];
     if (state === "running") {
       bits.push(
-        t(`row.${which}Running`, { pct: Math.round(clip[`${which}Progress`] * 100) })
+        t(flatKey(which, `row.${which}Running`), {
+          pct: Math.round(clip[`${which}Progress`] * 100),
+        })
       );
     } else if (state === "queued") {
-      bits.push(t(clip.state === "ready" ? `row.${which}Queued` : `row.${which}Reserved`));
+      const waiting = clip.state === "ready" ? "Queued" : "Reserved";
+      bits.push(t(flatKey(which, `row.${which}${waiting}`)));
     } else if (clip[`${which}Phase`]) {
-      bits.push(t(`row.${which}Note`, { note: clip[`${which}Phase`] }));
+      bits.push(t(flatKey(which, `row.${which}Note`), { note: clip[`${which}Phase`] }));
     }
   }
   const cutCount = clip.edit ? clip.edit.cuts.length : 0;
@@ -1932,10 +1935,15 @@ function paintDetectBadge(span, state, found, which) {
   span.hidden = !owed && !answered;
   if (owed) {
     const run = state === "running";
-    setText(span, t(run ? `badge.${which}Running` : `badge.${which}Queued`));
+    setText(span, t(flatKey(which, `badge.${which}${run ? "Running" : "Queued"}`)));
     span.className = `${which}badge dbadge ${run ? "detecting" : "queued"}`;
   } else if (answered) {
-    setText(span, found ? t(`badge.${which}`, { n: found }) : t(`badge.${which}None`));
+    setText(
+      span,
+      found
+        ? t(flatKey(which, `badge.${which}`), { n: found })
+        : t(flatKey(which, `badge.${which}None`))
+    );
     span.className = `${which}badge dbadge ${found ? "found" : "empty"}`;
   }
 }
@@ -2064,7 +2072,7 @@ function paintProps() {
     // never been asked for either of them says nothing about them, as it
     // says nothing about commercials.
     flat:
-      (c.blankPhase ? t("props.blank", { note: c.blankPhase }) : "") +
+      (c.blankPhase ? t(blankKey("props.blank"), { note: c.blankPhase }) : "") +
       (c.quietPhase ? t("props.quiet", { note: c.quietPhase }) : ""),
   });
 }
@@ -8563,6 +8571,23 @@ el("pref-blank-shades").addEventListener("change", (ev) => {
   // the pass, and the pass has just been told to look for something else.
   paintBlankLabels();
   tellEditorPrefs();
+  // ...and what the rows are already showing, which is an answer to the
+  // question that has just been withdrawn. Forgotten and asked again of the
+  // cache with the shades now in force: a pass that looked for both answers
+  // either of them on its own, and one that looked for black alone has
+  // nothing to say about white. A row whose pass is booked or running is
+  // left where it is; that one is about to write its own answer.
+  for (const c of clips) {
+    if (c.blankState !== "done") continue;
+    c.blankState = "none";
+    c.blankFound = null;
+    c.blankPhase = "";
+    c.blankSource = null;
+    paintRow(c);
+    restoreFlat(c);
+  }
+  paintButtons();
+  paintProps();
 });
 
 el("pref-blank-keyframes").addEventListener("change", (ev) => {

@@ -288,8 +288,14 @@ commercial detection, and separate from each other.
 
 **The first button is named after what the pass has been told to look for.**
 Black out of the box, so *Detect black*; *Detect white* or *Detect blank* where
-Preferences says white alone or both. The row's own menu and the cut editor's
-`≡` menu follow it.
+Preferences says white alone or both. The row's own menu, the cut editor's
+`≡` menu and what a row says it found all follow it, so nothing ever reports
+"none" about a shade it never looked for.
+
+**Changing that answer clears what the rows are showing.** `Black: 3 stretches`
+is an answer to the question that has just been withdrawn, so it is forgotten
+where it cannot stand: a pass that looked for both shades still answers for
+either of them on its own and stays. The silence answers are untouched.
 
 **They run apart.** The blank pass decodes every picture, so half an hour of
 broadcast takes twenty seconds to a minute; the silence pass reads the sound
@@ -300,8 +306,8 @@ A recording still being read can be booked too: `Ctrl+A` then `Ctrl+B` sets
 every selected row going as its own read finishes, and a booked row wears a
 dashed badge until its turn comes.
 
-Progress appears on the row — `Blank detection 33%`, `Silence detection 60%` —
-and what each found stays there on its own line: `Blank: 1 stretch`,
+Progress appears on the row — `Black detection 33%`, `Silence detection 60%` —
+and what each found stays there on its own line: `Black: 1 stretch`,
 `Silence: 4 stretches`. A recording with no sound answers the silence pass with
 `Silence: Cannot detect: no audio` rather than with nothing found.
 
@@ -1065,7 +1071,7 @@ effect as you make it.
 | **When more than one is there, read** | Which file is picked up when a recording has more than one of a `.keyframe`, a `.trim.avs` and a `.cm.json` beside it |
 | **Turn a detection into keyframes** | On out of the box. Off, a detection leaves the band and the sentence and nothing else, and ≡ → **Turn the detection into keyframes** places the marks. Where a mark file beside the recording was read, a detection is not marked whatever this says |
 | **Counts as blank after** | Shorter stretches are left out. The unit is pictures or seconds; 3 s out of the box, which reports the long gaps and not the two-to-four-picture black a broadcast junction is laid on. For those, say 2 and pick pictures |
-| **The blank pass looks for** | Black and white, black alone, or white alone. **Black out of the box**, that being where a junction is laid; the button in the list and the line in the editor's menu are named after this answer — *Detect black*, *Detect white*. White belongs as often to the programme — a title sequence cuts on a flash — so on some material it is dozens of stretches nobody asked about. A shade that was not looked for was not written down either, so asking for both afterwards reads the recording again |
+| **The blank pass looks for** | Black and white, black alone, or white alone. **Black out of the box**, that being where a junction is laid; the button in the list, the line in the editor's menu and what a row says it found are all named after this answer — *Detect black*, *Black: 1 stretch*. White belongs as often to the programme — a title sequence cuts on a flash — so on some material it is dozens of stretches nobody asked about. A shade that was not looked for was not written down either, so changing this clears what the rows are showing, and detecting again reads the recording |
 | **Turn a blank detection into keyframes** | On out of the box. Off, the band under the timeline is all that is left. Where a mark file beside the recording was read, what the window opens holding is not marked whatever this says. Either way, `≡` → **Turn the blank stretches into keyframes** puts the marks down afterwards |
 | **Counts as silence after** | The same for the sound, and the same 3 s. A pause in dialogue runs 0.1 to 0.4 s and a junction's silence about a second, so anything much shorter comes back as dozens of stretches |
 | **Silence is quieter than** | -50 dB out of the box, measured on the loudest sample of each audio frame. Lower finds only what is truly silent |
