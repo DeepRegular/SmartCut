@@ -273,6 +273,9 @@ struct SourceInfo {
     duration: f64,
     interlaced: bool,
     pulldown: bool,
+    /// Whether the pictures come at a rate a frame number could be counted
+    /// off. See [`smartcut_core::VideoInfo::variable_rate`].
+    variable: bool,
     has_audio: bool,
     /// Channels in the recording's audio, so the output settings can say
     /// whether there is anything to downmix. 0 when there is no audio.
@@ -327,6 +330,9 @@ struct ClipInfo {
     frames: u64,
     interlaced: bool,
     pulldown: bool,
+    /// Whether the pictures come at a rate a frame number could be counted
+    /// off. See [`smartcut_core::VideoInfo::variable_rate`].
+    variable: bool,
     has_audio: bool,
     audio_channels: u16,
     audio_sample_rate: u32,
@@ -871,10 +877,13 @@ async fn open_outline(path: String) -> Result<SourceInfo, String> {
             fps: o.video.frame_rate,
             duration: o.duration,
             interlaced: o.video.interlaced(),
-            // Only the walk sees pulldown -- it is a flag on the pictures and
-            // not in the container -- so this says nothing rather than saying
-            // the recording is free of it.
+            // Only the walk sees either of these -- one is a flag on the
+            // pictures and not in the container, the other is what the
+            // pictures do rather than what the container says they do -- so
+            // these say nothing rather than saying the recording is free of
+            // them.
             pulldown: false,
+            variable: false,
             has_audio: o.audio.is_some(),
             audio_channels: o.audio.as_ref().map_or(0, |a| a.channels),
             audio_sample_rate: o.audio.as_ref().map_or(0, |a| a.sample_rate),
@@ -1105,6 +1114,7 @@ fn info_of(src: &Source) -> SourceInfo {
         duration: src.duration,
         interlaced: src.video.interlaced(),
         pulldown: src.video.pulldown,
+        variable: src.video.variable_rate,
         has_audio: src.audio.is_some(),
         audio_channels: src.audio.as_ref().map_or(0, |a| a.channels),
         audio_sample_rate: src.audio.as_ref().map_or(0, |a| a.sample_rate),
@@ -2264,6 +2274,7 @@ fn clip_info_of(path: &str, src: &Source, cached: bool, seconds: f64) -> ClipInf
         frames: (src.duration * src.video.frame_rate).round().max(0.0) as u64,
         interlaced: src.video.interlaced(),
         pulldown: src.video.pulldown,
+        variable: src.video.variable_rate,
         has_audio: src.audio.is_some(),
         audio_channels: src.audio.as_ref().map_or(0, |a| a.channels),
         audio_sample_rate: src.audio.as_ref().map_or(0, |a| a.sample_rate),

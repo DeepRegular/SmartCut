@@ -1633,19 +1633,27 @@ const seekOut = (o) => showFrame(outToSrc(clamp(o, 0, outDur)));
 
 function updateReadouts() {
   const o = playOut();
-  el("ovl-frame").textContent = String(frameNo(o));
+  // **A frame number is a coordinate only where the frames are evenly
+  // spaced.** It is counted as the time divided by the rate, and on a
+  // recording whose pictures do not keep to that rate the answer is neither
+  // the picture on screen nor a number that can be typed back in: measured
+  // on a screen-capture-shaped WebM of 2525 pictures, the counter offered
+  // 3597 of them. So where the recording is variable the readouts are the
+  // time alone, which is exact either way. See `variable_rate` in the engine.
+  const counted = !src || !src.variable;
+  el("ovl-frame").textContent = counted ? String(frameNo(o)) : "";
   el("ovl-time").textContent = fmt(o);
-  el("counter").textContent = tr("editor.counter", {
-    at: frameNo(o),
-    all: outFrames(),
-    t: fmt(o),
-  });
+  el("counter").textContent = counted
+    ? tr("editor.counter", { at: frameNo(o), all: outFrames(), t: fmt(o) })
+    : fmt(o);
   // OUT is part of the selection, so its own picture counts towards the length
-  const sel = tr("editor.selection", {
-    a: frameNo(selA),
-    b: frameNo(selB),
-    len: fmt(selEnd() - selA),
-  });
+  const sel = counted
+    ? tr("editor.selection", {
+        a: frameNo(selA),
+        b: frameNo(selB),
+        len: fmt(selEnd() - selA),
+      })
+    : tr("editor.selectionTime", { a: fmt(selA), b: fmt(selB), len: fmt(selEnd() - selA) });
   el("selection").textContent = sel;
   el("ovl-sel").textContent = sel;
 }
@@ -3648,18 +3656,30 @@ async function refreshPlan() {
       pct: pctText(pct, redone),
       reencoded: p.reencoded.toFixed(2),
     });
-    // "Completely lossless" has to mean not one re-encoded picture, not a
-    // percentage that rounds to a hundred: a cut off an access point always
-    // re-encodes a frame or two, and 2 frames out of 40000 rounds to 100.0%.
-    el("smart-badge").textContent =
-      redone === 0 ? tr("plan.lossless") : tr("plan.reencoded", { n: redone });
+    // The picture count a segment carries is the planner's arithmetic on the
+    // container's rate, and on a variable-rate recording that is a guess --
+    // it cannot be anything else, since only a read of the pictures could
+    // say. So there it is left out rather than printed wrongly, and what is
+    // re-encoded is said in seconds; the times are exact either way.
+    const counted = !src || !src.variable;
     el("segments").innerHTML = p.segments
       .map(
         (s) =>
           `<li class="${s.kind}">${tr(s.kind === "copy" ? "plan.segCopy" : "plan.segEncode")} ` +
-          `${fmt(s.start)} → ${fmt(s.end)}  (${tr("out.ovlNote", { n: s.frames })})</li>`
+          `${fmt(s.start)} → ${fmt(s.end)}` +
+          (counted ? `  (${tr("out.ovlNote", { n: s.frames })})` : "") +
+          `</li>`
       )
       .join("");
+    // "Completely lossless" has to mean not one re-encoded picture, not a
+    // percentage that rounds to a hundred: a cut off an access point always
+    // re-encodes a frame or two, and 2 frames out of 40000 rounds to 100.0%.
+    el("smart-badge").textContent =
+      redone === 0
+        ? tr("plan.lossless")
+        : counted
+          ? tr("plan.reencoded", { n: redone })
+          : tr("plan.reencodedTime", { t: p.reencoded.toFixed(2) });
     // Whether the box holds all of it. Three lines is what an ordinary cut
     // costs and what the box was sized for, but two cuts costs five -- a
     // copy, then a re-encode and a copy at each seam -- and two cuts is what
@@ -4496,6 +4516,7 @@ function paintSourceInfo() {
   const flags = [
     tr(src.interlaced ? "media.interlaced" : "media.progressive"),
     src.pulldown ? tr("media.pulldown") : null,
+    src.variable ? tr("media.variable") : null,
   ].filter(Boolean);
   const sound = keptAudio();
   // What the *recording* carries, not what the output is to keep: the

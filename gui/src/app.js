@@ -2082,6 +2082,7 @@ function paintProps() {
     // the container -- so before it has run this says nothing rather than
     // saying the recording is free of it.
     walked && i.pulldown ? t("media.pulldown") : null,
+    walked && i.variable ? t("media.variable") : null,
   ]
     .filter(Boolean)
     .join(", ");
