@@ -464,7 +464,7 @@ four-core machine has one to spare however wide the pass beside it is. The share
 keeping for the machine where that is not true and for the promise the other lanes
 already keep — not for a number this one could show.
 
-**The editor's own button is a different question and gets a different answer: half the
+**The editor's own menu line is a different question and gets a different answer: half the
 machine** (`asked_for_threads`). There the person is watching a percentage count up, so
 the background quarter would be the 72 seconds above against 36; half is 46, and the
 half left over is more than the one core the picture under the pointer wants.

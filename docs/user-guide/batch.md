@@ -26,7 +26,7 @@ The rows fill in immediately. Behind them, SmartCut is doing several jobs at onc
 | **Loading** | builds the seek index, used for seeking and cutting | about 1 second per GB |
 | **Thumbnails** | makes the filmstrip pictures and finds scene changes | one or two seconds per GB, longer on 4K |
 | **Commercial detection** | looks for the commercial breaks (started by `Ctrl+D`) | 10–60 seconds for a 30-minute recording |
-| **Blank detection** | looks for the flat black and white stretches (started by `Ctrl+B`) | 20–60 seconds for a 30-minute recording |
+| **Blank detection** | looks for the flat black stretches, and the white ones where Preferences says so (started by `Ctrl+B`) | 20–60 seconds for a 30-minute recording |
 | **Silence detection** | looks for the silent stretches (started by `Ctrl+Q`) | a few seconds for a 30-minute recording |
 
 The last three are only ever started by asking for them, and they are separate

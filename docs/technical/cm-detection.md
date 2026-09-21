@@ -514,11 +514,16 @@ fixed, and is not part of what was dropped.
 
 ## Showing the silences themselves (`blank.rs` and `cm.rs`)
 
-The cut editor has two detections beside this one: **Detect blank** and
-**Detect silence**. The sound pass is this one -- `find_silences` is what both
-call -- and the difference is what is done with the answer: nothing is ranked,
-nothing is fitted to a 15-second grid, and the stretches are reported as they
-were found.
+The cut editor's `≡` menu has two detections beside this one: **Detect black**
+and **Detect silence**. The sound pass is this one -- `find_silences` is what
+both call -- and the difference is what is done with the answer: nothing is
+ranked, nothing is fitted to a 15-second grid, and the stretches are reported
+as they were found.
+
+Which shades the pictures pass looks for is a preference, black alone out of
+the box, and the line is named after that answer: *Detect black*, *Detect
+white*, *Detect blank*. A shade that was not looked for was not written down
+either, so asking for white afterwards reads the recording again.
 
 The flat pictures are `blank.rs`, which decodes every picture rather than the
 entry ones. Broadcast black runs two to four pictures, and a sample every half

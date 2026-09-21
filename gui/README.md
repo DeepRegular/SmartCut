@@ -2,9 +2,10 @@
 
 English ・ [日本語](README.ja.md)
 
-The SmartCut GUI, written with Tauri v2 and vanilla JS. It has two windows: a
-list window with three screens (the clips, the output settings and the export),
-and a cut editor that opens in a window of its own.
+The SmartCut GUI, written with Tauri v2 and vanilla JS: a list window with three
+screens (the clips, the output settings and the export), a cut editor that opens
+in a window of its own, and the magnifier the editor opens. The batch tool is
+the list window again, in a process of its own.
 
 For how to use the GUI, see
 [`docs/user-guide/gui.md`](../docs/user-guide/gui.md); for how it is built, see
