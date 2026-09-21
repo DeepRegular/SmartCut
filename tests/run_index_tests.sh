@@ -98,6 +98,39 @@ check opengop "$FIX/opengop.mp4"    2.000 5.500
 check ntv     "$MEDIA/full_ntv.ts"  3.400 900.250 1200.000 1799.900
 check atx     "$MEDIA/full_atx.ts"  600.500 1500.125
 
+# An index that skipped the walk still has to be about the pictures -------
+#
+# A source that answers without reading the recording is believed whole, and
+# the times it hands over are read as the instants the pictures are *shown*
+# at. A container's seek table does not count that way: MP4 keeps its entries
+# in the sample table, whose timestamps are decode times, so on anything
+# carrying B pictures every entry point came back the reorder delay early --
+# two frames on the 23.976 fps material measured here. Nothing downstream
+# notices. The film strip simply stops standing on held pictures and decodes a
+# GOP per cell instead, which on a recording off the web is seconds a refresh.
+DIAG=rust/target/release/examples/indexdiag
+stands_on_the_pictures() {
+  local name=$1 src=$2
+  if [ ! -f "$src" ]; then printf "  SKIP  %-26s %s\n" "$name" "no $src"; return; fi
+  if [ ! -x "$DIAG" ]; then
+    printf "  SKIP  %-26s %s\n" "$name" "build --example indexdiag first"; return
+  fi
+  local out
+  if out=$("$DIAG" "$src" --walk 2>&1); then
+    ok "$name clock" "$(echo "$out" | grep -E "stands on|declined" | sed 's/  */ /g' | tail -1)"
+  else
+    bad "$name clock" "$(echo "$out" | grep "stands off" | sed 's/  */ /g' | head -1)"
+  fi
+}
+
+echo
+echo "an index that skipped the walk names the same pictures"
+stands_on_the_pictures h264    "$FIX/h264.mp4"
+stands_on_the_pictures opengop "$FIX/opengop.mp4"
+stands_on_the_pictures hevc    "$FIX/hevc.mp4"
+stands_on_the_pictures ntsc    "$FIX/ntsc.mp4"
+stands_on_the_pictures mpeg2   "$FIX/mpeg2.ts"
+
 # Where the material begins, before the walk has said so -----------------
 #
 # The editor draws the timeline from the container's own answer and fills the

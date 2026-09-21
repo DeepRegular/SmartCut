@@ -434,7 +434,7 @@ impl IndexSource for ContainerIndex {
         let IndexInput {
             video,
             start_time,
-            ictx,
+            mut ictx,
             ..
         } = input;
         // How long the recording is, by the container's own reckoning. Only
@@ -446,37 +446,54 @@ impl IndexSource for ContainerIndex {
                 .then(|| d as f64 / ff::ffi::AV_TIME_BASE as f64)
                 .filter(|d| *d > 0.0)
         };
-        let stream = ictx
-            .stream(video.stream_index)
-            .ok_or_else(|| anyhow!("stream {} vanished", video.stream_index))?;
-        let mut points = Vec::new();
-        unsafe {
-            let st = stream.as_ptr() as *mut ff::ffi::AVStream;
-            let n = ff::ffi::avformat_index_get_entries_count(st);
-            for i in 0..n {
-                let e = ff::ffi::avformat_index_get_entry(st, i);
-                if e.is_null() || (*e).flags() & ff::ffi::AVINDEX_KEYFRAME == 0 {
-                    continue;
+        // The entries as the table holds them: a timestamp on the stream's
+        // own clock and the byte its picture lies at. Kept in that form as
+        // well as in seconds because [`table_shift`] asks the stream about
+        // them, and what it has to ask with is the number the table gave.
+        let mut entries: Vec<(i64, i64)> = Vec::new();
+        {
+            let stream = ictx
+                .stream(video.stream_index)
+                .ok_or_else(|| anyhow!("stream {} vanished", video.stream_index))?;
+            unsafe {
+                let st = stream.as_ptr() as *mut ff::ffi::AVStream;
+                let n = ff::ffi::avformat_index_get_entries_count(st);
+                for i in 0..n {
+                    let e = ff::ffi::avformat_index_get_entry(st, i);
+                    if e.is_null() || (*e).flags() & ff::ffi::AVINDEX_KEYFRAME == 0 {
+                        continue;
+                    }
+                    entries.push(((*e).timestamp, (*e).pos));
                 }
-                let t = (*e).timestamp as f64 * video.time_base - start_time;
-                points.push(AccessPoint {
+            }
+        }
+        if entries.is_empty() {
+            return Err(anyhow!("the container has no seek table for this stream"));
+        }
+        entries.sort_by_key(|&(ts, _)| ts);
+        let mut points: Vec<AccessPoint> = entries
+            .iter()
+            .map(|&(ts, pos)| {
+                let t = ts as f64 * video.time_base - start_time;
+                AccessPoint {
                     time: t,
                     lead_start: t,
                     lead_indices: Vec::new(),
                     droppable: true,
-                    pos: (*e).pos,
-                });
-            }
-        }
-        if points.is_empty() {
-            return Err(anyhow!("the container has no seek table for this stream"));
-        }
-        points.sort_by(|a, b| {
-            a.time
-                .partial_cmp(&b.time)
-                .unwrap_or(std::cmp::Ordering::Equal)
-        });
+                    pos,
+                }
+            })
+            .collect();
         covers(&points.iter().map(|p| p.time).collect::<Vec<_>>(), duration)?;
+        // The table counts on its own clock, and it is not always the one a
+        // point is read on. See [`table_shift`], which measures the distance
+        // between them at the table's own entries.
+        let stamps: Vec<i64> = entries.iter().map(|&(ts, _)| ts).collect();
+        let (head, rest) = table_shift(&mut ictx, video, &stamps)?;
+        for (i, slot) in points.iter_mut().enumerate() {
+            slot.time += if i == 0 { head } else { rest };
+            slot.lead_start = slot.time;
+        }
         Ok(Index {
             points,
             leading_known: false,
@@ -486,6 +503,156 @@ impl IndexSource for ContainerIndex {
             end: None,
         })
     }
+}
+
+/// How many of a seek table's entries are read back to measure the distance
+/// between its clock and the pictures'.
+const SHIFT_SAMPLES: usize = 8;
+
+/// How far a seek table's clock stands from the clock a point is read on,
+/// measured at the table's own entries. Comes back as the shift the first
+/// entry wants and the shift the rest want.
+///
+/// **A table is indexed in decode order and a point is read as the instant
+/// its picture is shown.** MP4 keeps its entries in the sample table, whose
+/// timestamps are decode times, and libavformat hands one over as it stands;
+/// Matroska counts its cues in presentation time and wants nothing done to
+/// them. Nothing in the shape of the answer says which kind it is, so it is
+/// asked: seek to an entry, and read what the picture it lands on says its
+/// own time is.
+///
+/// Where the stream reorders nothing the two clocks are the same and this
+/// comes back nought. Where it carries B pictures they stand the reorder
+/// delay apart -- two frames, 0.083 s, on the 23.976 fps H.264 MP4 measured
+/// here -- and every entry point came out that much early. What that costs is
+/// not a frame's worth of anything: an instant two frames before an entry
+/// point is not an entry point, so the film strip's cells stopped standing on
+/// held pictures and were decoded out of the recording from the GOP before,
+/// one GOP of decoding apiece. On material whose GOPs run four seconds and
+/// longer -- which is what a file off the web is -- that is what a refresh
+/// cost, and the strip stood still while the playhead went on.
+///
+/// **The first entry is measured on its own**, because the first picture is
+/// not like the others: nothing is decoded before it, so it waits only as
+/// long as the codec's own delay where the rest wait for their leading
+/// pictures too. On the open-GOP fixture the head stands two frames from its
+/// entry and every other picture five, and a single shift put one or the
+/// other five frames out.
+///
+/// Measured rather than worked out from the reorder depth the container
+/// declares, and measured at several places rather than at one: the question
+/// is what *this* table's timestamps mean, and a table that gives no one
+/// answer to it -- a delay that changes part way through, entries that land
+/// on pictures they do not name -- is one nothing here can mend. It is
+/// declined, and the caller walks the packets as it does for any other table
+/// that cannot be shown to be describing the recording.
+///
+/// What is left over is material whose pictures do not come at one rate. What
+/// a picture waits is a whole number of pictures and what this measures is
+/// seconds, so where the durations vary the two part company by a fraction of
+/// a frame here and there. On a variable-rate recording of 1467 entry points
+/// measured here, four of them end up more than half a frame from their
+/// picture -- against all 1467 of them before. Those four cost the film strip
+/// a decode apiece, and a cut near one is put back onto its picture by
+/// [`refine_leading`] like any other.
+pub fn table_shift(
+    ictx: &mut ff::format::context::Input,
+    video: &VideoInfo,
+    stamps: &[i64],
+) -> Result<(f64, f64)> {
+    let half = video.frame_duration() / 2.0;
+    let at = |ts: i64| ts as f64 * video.time_base;
+    // Which entry stands nearest an instant, which is how a picture is
+    // matched back to the entry that names it.
+    let nearest = |t: f64| {
+        let i = stamps.partition_point(|&ts| at(ts) < t);
+        [i.wrapping_sub(1), i]
+            .iter()
+            .filter_map(|&j| stamps.get(j).map(|&ts| (j, at(ts))))
+            .min_by(|a, b| (a.1 - t).abs().total_cmp(&(b.1 - t).abs()))
+    };
+    let take = SHIFT_SAMPLES.min(stamps.len());
+    let mut head: Option<f64> = None;
+    let mut body: Vec<f64> = Vec::new();
+    for k in 0..take {
+        let stamp = stamps[k * stamps.len() / take];
+        unsafe {
+            let sought = ff::ffi::av_seek_frame(
+                ictx.as_mut_ptr(),
+                video.stream_index as i32,
+                stamp,
+                ff::ffi::AVSEEK_FLAG_BACKWARD,
+            );
+            if sought < 0 {
+                continue;
+            }
+        }
+        // Whichever key picture the seek landed on, which is not always the
+        // one asked for: libavformat's search through the table stops at the
+        // first entry it finds below the one wanted, so a seek to an entry
+        // can land an entry or two early. It does not matter which -- what is
+        // being measured is the distance between the clocks, and any entry
+        // and its own picture measure it. Which entry it was is read back
+        // below, because the first one is measured apart from the rest.
+        //
+        // A ceiling on the read, for a stream that hands back no key picture
+        // at all after the seek: the landing is one, so this is reached only
+        // where something is wrong.
+        let mut landed = None;
+        for (s, p) in ictx.packets().take(4096) {
+            if s.index() != video.stream_index || !p.is_key() {
+                continue;
+            }
+            landed = p.pts().map(|t| (at(t), p.dts().map_or(at(t), &at)));
+            break;
+        }
+        let Some((shown, decoded)) = landed else {
+            bail!("the container's seek table lands where the stream has no key picture");
+        };
+        // Which entry names this picture, and on which clock. A table counted
+        // in decode order has an entry standing on the picture's decode time
+        // and the shift is what the picture waits; one counted in
+        // presentation order has an entry standing on the picture's own time
+        // and there is nothing to shift. An entry near neither is not
+        // describing this stream's pictures at all -- measured here on an
+        // MPEG-2 stream in an MP4, three of whose five entries stand two
+        // frames from any picture in the file -- and a shift taken off it
+        // would be the distance to the entry before.
+        let found = nearest(decoded)
+            .filter(|(_, e)| (e - decoded).abs() <= half)
+            .map(|(i, e)| (i, shown - e))
+            .or_else(|| {
+                nearest(shown)
+                    .filter(|(_, e)| (e - shown).abs() <= half)
+                    .map(|(i, _)| (i, 0.0))
+            });
+        let Some((i, shift)) = found else {
+            bail!(
+                "the container's seek table has no entry on the picture at {shown:.3}s -- it is \
+                 not a table of this stream's entry points"
+            );
+        };
+        if i == 0 {
+            head = Some(shift);
+        } else {
+            body.push(shift);
+        }
+    }
+    if body.is_empty() {
+        bail!("the container's seek table was read back at no entry but its first");
+    }
+    let lo = body.iter().copied().fold(f64::INFINITY, f64::min);
+    let hi = body.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+    // Half a frame, which is the width of the question being asked: the two
+    // clocks are a whole number of pictures apart or they are not one answer.
+    if hi - lo > half {
+        bail!(
+            "the container's seek table stands between {lo:.3}s and {hi:.3}s from the pictures \
+             it names -- it is not counting on one clock"
+        );
+    }
+    let rest = crate::thumbs::median_gap(&body).unwrap_or(0.0);
+    Ok((head.unwrap_or(rest), rest))
 }
 
 /// Does a seek table cover the recording, or only the part a probe read?

@@ -65,7 +65,14 @@ static SERIAL: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(
 /// guess was 2% low, which is a quarter of a gigabyte over a single layer --
 /// and a saved index is believed, so the disc that would not fit went on not
 /// fitting however often it was opened again.
-pub const VERSION: u32 = 7;
+/// 8: an index made off a container's seek table holds the instants its
+/// pictures are *shown* at, where one made before this holds the instants
+/// they are decoded at ([`index::table_shift`]). On an MP4 carrying B
+/// pictures those are the reorder delay apart -- two frames on the 23.976 fps
+/// H.264 recording measured here -- so every entry point in a saved index is
+/// two frames early, and nothing in the file says so: the film strip went on
+/// decoding a GOP per cell however often the recording was opened again.
+pub const VERSION: u32 = 8;
 
 const MAGIC: &[u8; 4] = b"SCIX";
 

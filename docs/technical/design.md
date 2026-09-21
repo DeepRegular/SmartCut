@@ -2731,3 +2731,62 @@ beginning: on that recording one card took **8.2 seconds** and ten took 432,
 against 0.50 s once the points are known. Nothing reaches that today — the pass
 refuses when nothing is open rather than decoding blind — but it is the reason
 the cards ask for a guess rather than for the real thing early.
+
+### The film strip on material whose key pictures are far apart
+
+**Report: the film strip scrolls more slowly than on an ordinary recording
+when the GOPs are long, and on H.264 of that kind it does not move at all.**
+Two faults meeting in the same place, and neither of them the strip's.
+
+#### The container's seek table counts in decode order
+
+An MP4 or a Matroska file carries a table of its own key pictures, and reading
+it is what lets such a recording open without the walk over the packets. MP4
+keeps that table in the sample table, whose timestamps are *decode* times, and
+libavformat hands an entry over as it stands — so on anything carrying B
+pictures every access point came out the reorder delay early. Two frames,
+0.083 s, on the 23.976 fps recording measured here.
+
+Nothing downstream can tell. An instant two frames before an access point is
+not an access point, and it is not a held picture either, so `thumbs_at` fell
+through to a decode — and a decode of an instant inside a GOP begins at the
+access point before it. On material whose GOPs run four seconds, that was what
+every other cell of every refresh cost:
+
+| | cells a refresh has to decode |
+|---|---:|
+| before | 511 / 1198 (42%) |
+| after | **0 / 1198** |
+
+(`examples/scixdiag.rs`, `GOP・6 秒`, 40 refreshes over a 24-minute recording.)
+
+It had never shown on the material this program was built for: a transport
+stream carries no table at all and is walked, and the HEVC recording sitting
+beside the H.264 one here happens to have a table that stops 14 s short of the
+end, which `covers` declines. So the broken path was the one that only web
+material takes.
+
+The proxy pass had met it already and worked around it where it stood: forcing
+a key frame at each of the source's access points, it matches the *pictures*
+rather than the times, having found the same two frames on 29.97 material and
+five on the open-GOP fixture ([Two conditions for the substitution to be
+invisible](#two-conditions-for-the-substitution-to-be-invisible)). What is
+mended here is the index itself, so nothing downstream has to know.
+
+The table is read back now before it is believed: seek to an entry, read what
+the picture it lands on says its own time is, and shift the whole table by the
+difference. At eight entries rather than one, because what is wanted is what
+*this* table's timestamps mean — a table that gives no single answer to that is
+one nothing here can mend, and is declined so that the caller walks the packets
+instead. See `index.rs::table_shift`, and `indexdiag --walk`, which holds every
+source up against the walk picture by picture and is what `run_index_tests.sh`
+now asks.
+
+The first entry is measured apart from the rest. The first picture waits only
+the codec's own delay where every other one waits for its leading pictures too:
+on the open-GOP fixture the head stands two frames from its entry and all the
+rest stand five, and a single shift put one or the other five frames out. What
+is left over is material whose pictures do not come at one rate — the delay is
+a whole number of pictures and this measures it in seconds — where four entry
+points of 1467 end up more than half a frame from their picture, against all
+1467 of them before.
