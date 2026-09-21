@@ -44,7 +44,7 @@ encoders are the side that was chosen.
 - The **patent licences** for H.264 and HEVC (MPEG LA, Access Advance) need separate
   consideration for commercial distribution.
 
-## Four screens, three windows
+## Four screens, four windows
 
 The screens are split along the order the work goes in. TMPGEnc MPEG Smart Renderer 6,
 the reference, has the same shape — including **the cut editor being a window of its
@@ -235,19 +235,19 @@ inside another, so that however it ends the queue stops saying it is running —
 a queue that says it is running with nothing running is a queue whose バッチ開始
 is switched off for good.
 
-### Three windows, three sizes and three places
+### A window keeps its own size and its own place
 
-None of the three holds the same kind of thing, so none of them wants the same
+None of them holds the same kind of thing, so none of them wants the same
 size. The list is rows and wants height; the editor is a picture over a timeline
-and wants width; the tool is a queue somebody leaves in a corner while it runs —
-and where each one is put is the same kind of answer. Having done it once,
-nobody should have to do it again.
+and wants width; the tool is a queue somebody leaves in a corner while it runs;
+the magnifier is parked wherever there is room — and where each one is put is
+the same kind of answer. Having done it once, nobody should have to do it again.
 
 The size is kept per **role** rather than per window label. The tool's window is
 the list window's own `main` label, so labels would make the two of them one
-entry — which is the one thing this is for. The roles are `main`, `batch` and
-`editor`, and they live in `windows.json` in the config directory beside the
-queue. `geometry.rs` is the whole of it.
+entry — which is the one thing this is for. The roles are `main`, `batch`,
+`editor` and `zoom`, and they live in `windows.json` in the config directory
+beside the queue. `geometry.rs` is the whole of it.
 
 A place is only used again if the screens there are now agree to it. A config
 directory travels, a laptop is undocked, a second monitor is unplugged, and any

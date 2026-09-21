@@ -19,7 +19,7 @@ list to a finished export.
 
 ---
 
-## First: four screens, three windows
+## First: four screens, four windows
 
 The screens are laid out in the order you use them.
 
@@ -41,7 +41,12 @@ about this one; it is opened from the `バッチ出力ツール` item on the men
 own process, because a queue lined up at midnight has to go on being written
 after the window it was lined up in is closed.
 
-Each of the three windows keeps its own size and its own place. Widening the
+The fourth window is the **magnifier** — a tool rather than a screen. It shows
+part of the cut editor's picture at the recording's own pixels, holds no
+settings and no edit of its own, and closes with the editor
+([Looking closely](#looking-closely)).
+
+Each window keeps its own size and its own place. Widening the
 list window does not touch the editor's; each one comes back at the size and in
 the spot you last closed it at, and one left maximized comes back maximized.
 
@@ -204,6 +209,11 @@ commercials have been cut never goes on showing one of them.
 so move whatever you want written first to the top. Where that order itself means
 something, **Number** in the output settings carries it into the filenames.
 
+**The name has the width of the row**, on a line of its own above everything
+else read out of the recording. Where it still does not fit, the end of it is
+cut off — which on a broadcast recording is where the episode number is — so
+the whole of it is a hover away.
+
 **A clip can be renamed:** `F2`, the **Rename clip** button, or the right-click
 menu. The name on the row becomes a field where it stands. `Enter` keeps it,
 `Esc` drops it, and emptying it goes back to the name the row arrived with.
@@ -320,10 +330,10 @@ first stage.
 
 While the band underneath reads `Reading the recording. What copies losslessly
 is known once it has been read`, you are in the first stage: `Snap to lossless`
-is greyed out, but the preview is there, the filmstrip has pictures in it, and
-**you can already make cuts.** The marks down the left came from the
-`.keyframe` file beside the recording; they do not wait for the reading
-either.
+is greyed out, but the preview is there and **you can already make cuts.** The
+filmstrip fills in from one end as the reading goes on. The marks down the left
+came from the `.keyframe` file beside the recording; they do not wait for the
+reading either.
 
 **The pictures at this stage were found by approximate seeking.** There is no
 index yet to give exact positions, so the filmstrip's cells are cut on an even
@@ -345,12 +355,12 @@ frames, and `Snap to lossless` can take those to zero once it lights up.
 | Where | What |
 |---|---|
 | Top line | The filename |
-| Info bar | Lossless points, resolution, fps, scan type, audio, codec. **Tracks** and **Detect commercials** on the right |
+| Info bar | Lossless points, resolution, fps, scan type, audio, codec. **Tracks**, **Detect blank**, **Detect silence** and **Detect commercials** on the right |
 | Left column | The **keyframes** — your marks, each with a thumbnail. Click one to jump there |
 | The large picture | The preview. At its foot, in the middle: frame number, timecode, what kind of frame it is, and the current selection. **Counter**, on the bottom line, turns them off |
 | Beside it, on the left | The **audio level meter**: what is being heard while something plays, and the sound under the playhead while nothing does. **Preferences → Windows** turns it off |
 | The band under it | The **filmstrip**: the frames around you, laid out as pictures. The `View` menu on the right sets how much time one cell covers |
-| The scrubber | **Green is the output itself.** `▼` are keyframes, a red vertical line is a join left by a cut, and the fine ticks below are scene changes |
+| The scrubber | **Green is the output itself.** `▼` are keyframes, a red vertical line is a join left by a cut, the fine ticks below are scene changes, and the two rows under those are the blank and the silent stretches |
 | The button row | **Cut** in the middle, `[ IN` to its left and `OUT ]` to its right, and outwards from there: go to, one frame, lossless point, start and end |
 | The band and lines below | **The export plan**: what will be copied and what will be rebuilt |
 | The bottom line | On the left, what the cut costs, and beside it **Counter** and **Subtitles** — what the preview carries. **OK** and **Cancel** on the right |
@@ -433,6 +443,8 @@ Windows** puts the whole column away, and an editor already open follows at
 once.
 
 ### Looking closely
+
+![The magnifier](../images/usage-zoom.png)
 
 `Z`, or **Magnifier** in the ≡ menu, opens a window of its own. Move the
 pointer over the cut editor's picture and that part of it is magnified there,

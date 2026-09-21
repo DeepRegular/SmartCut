@@ -93,6 +93,12 @@ clues: the marks the broadcaster puts in its own subtitle stream at every
 switch, runs of silence, and whether the station logo is on screen. It places
 the marks; **you** decide what to cut.
 
+**Blank and silent stretches are found too.** A pass apart from that one:
+nothing is ranked and nothing is grouped, the stretches go on the timeline as
+they were found, and a keyframe goes at each end of each. A junction is
+usually a few black frames and about a second of silence, so these are what to
+look at wherever the detection above missed one.
+
 **It handles a whole evening at once.** Drop in twenty recordings, press
 `Ctrl+A` then `Ctrl+D`, and come back later. Reading, detection and editing all
 run at the same time, so a batch never stops you from working.
@@ -139,11 +145,11 @@ install.
 
 | Platform | File | Notes |
 |---|---|---|
-| **Linux** | `SmartCut_0.7.4_amd64.AppImage` | Make it executable and run it |
-| **Linux** | `SmartCut-0.7.4-linux-x86_64.tar.gz` | Unpack and run `./smartcut`. Use this if you would rather not deal with FUSE |
-| **Linux (Debian/Ubuntu)** | `smartcut_0.7.4_amd64.deb` | `sudo apt install ./smartcut_0.7.4_amd64.deb`. Only 4.2 MB, because it uses the FFmpeg already on your system |
-| **Windows** | `SmartCut_0.7.4_x64-setup.exe` | Installer |
-| **Windows** | `smartcut-portable-x64-0.7.4.zip` | Unzip and run `smartcut.exe` |
+| **Linux** | `SmartCut_0.7.5_amd64.AppImage` | Make it executable and run it |
+| **Linux** | `SmartCut-0.7.5-linux-x86_64.tar.gz` | Unpack and run `./smartcut`. Use this if you would rather not deal with FUSE |
+| **Linux (Debian/Ubuntu)** | `smartcut_0.7.5_amd64.deb` | `sudo apt install ./smartcut_0.7.5_amd64.deb`. Only 4.2 MB, because it uses the FFmpeg already on your system |
+| **Windows** | `SmartCut_0.7.5_x64-setup.exe` | Installer |
+| **Windows** | `smartcut-portable-x64-0.7.5.zip` | Unzip and run `smartcut.exe` |
 
 **Requirements.** The AppImage and the tar.gz need glibc 2.39 or newer, which
 means Ubuntu 24.04, Debian 13, Fedora 40 or later. The `.deb` needs FFmpeg 7.1,

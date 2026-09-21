@@ -293,5 +293,5 @@ The whole list — recordings, cuts, track choices, output settings — saves wi
 
 ---
 
-Why the three jobs run in parallel, and how that was tuned, is in the
+Why the background jobs run in parallel, and how that was tuned, is in the
 [design notes](../technical/design.md#the-background-lanes-and-an-editor-that-stays-open).

@@ -19,7 +19,7 @@ bit-exact.
 | H.264 29.97 fps | 300/342 (87.7%) |
 | H.264 open GOP (referenced leading pictures) | 0/342 — rejected as a start point, which is the correct behaviour |
 | **MPEG-2 TS open GOP** | **328/342 (95.9%)** |
-| MPEG-2 TS multiple intervals | 296/299 (99.0%) |
+| MPEG-2 TS multiple intervals | 296/300 (98.7%) |
 | MPEG-2 TS through to the end | 447/449 (99.6%) |
 | Matroska output | 180/222 (81.1%) |
 
