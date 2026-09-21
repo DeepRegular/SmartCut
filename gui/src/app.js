@@ -318,6 +318,16 @@ let before = null;
 let opening = false;
 
 async function edit(clip) {
+  // A row that has left the list. Nothing here asks for one on purpose, but a
+  // press can arrive after the row it was aimed at has gone -- the listeners
+  // of a deleted row go with the row only when nothing is still holding the
+  // event that reached it. Opening the editor on one would be a window about
+  // a recording the list no longer has: it cannot be got back to from the
+  // list, and what it says it is cancelling is an edit nothing is keeping.
+  if (!clips.includes(clip)) {
+    jlog(`edit ${clipName(clip)}: gone from the list`);
+    return;
+  }
   jlog(`edit ${clipName(clip)} (${clip.state})`);
   // A clip that could not be read has nothing to open. Anything else can be
   // opened whenever it is asked for -- the editor makes its own way through a
@@ -348,6 +358,10 @@ async function edit(clip) {
     note(t("list.goneNote", { clip: clipLabel(clip) }));
     return;
   }
+  // Asked again, because that question was answered on the other side of the
+  // wire and the list went on taking presses while it was over there: the row
+  // can have been deleted in the time the answer took.
+  if (!clips.includes(clip)) return;
   editing = clip;
   before = clip.edit ? JSON.parse(JSON.stringify(clip.edit)) : null;
   // A lane in flight on this very clip is left alone. It used to be stopped
@@ -1569,10 +1583,22 @@ function renderList() {
       <button class="kill" title="${esc(t("list.kill"))}">×</button>`;
     li.querySelector(".poster").draggable = false;
     li.addEventListener("mousedown", (ev) => {
-      if (ev.target.classList.contains("kill")) return;
+      if (ev.target.closest(".kill")) return;
       pressRow(clip, ev);
     });
-    li.addEventListener("dblclick", () => edit(clip));
+    // Anywhere but the cross. Deleting a run of rows is done by pressing the
+    // cross where it is and leaving the pointer there, and the list closes up
+    // under it: the next row comes up to meet the pointer and the next press
+    // lands on *its* cross. Two of those presses inside the double-click time
+    // are a `dblclick` as well as two `click`s, and it is dealt to the row the
+    // second press landed on -- the row that press has just deleted, which is
+    // out of the list and out of the page by then but still carries this
+    // listener. The editor came up on a recording nothing was listed against,
+    // and closing it with キャンセル looked like the cancel had deleted the row.
+    li.addEventListener("dblclick", (ev) => {
+      if (ev.target.closest(".kill")) return;
+      edit(clip);
+    });
     li.addEventListener("contextmenu", (ev) => {
       ev.preventDefault();
       // The menu is about the selection, and a row nobody had chosen becomes
@@ -2174,10 +2200,32 @@ function selectAll() {
 
 async function remove(doomed) {
   const gone = new Set(doomed.map((c) => c.id));
-  // A clip being read right now has a pass behind it that has to be told to
-  // stop, or it would go on reading a file nothing is listed against. Only
-  // the lanes that are on one of these clips: the others are working on clips
-  // that are staying, and the three lanes are stopped apart for that reason.
+  // Out of the list before anything is asked of the other side.
+  //
+  // The rows used to go after the passes had been told to stop, and every one
+  // of those is a trip over the wire and back. They are answered as fast as
+  // anything here is -- a counter is raised, and the pass reads it when it
+  // next comes up for air -- but "as fast as anything here is" is not the same
+  // as "before the next press", and while the list is reading a folder of
+  // recordings it is not close. So a row being read stayed where it was for
+  // as long as the round trip took, with the cross still under the pointer,
+  // and a second press in that time was a press on the row that was already
+  // going: it deleted nothing of its own, and the two presses together were a
+  // `dblclick` on a row that then went. The editor came up on a recording the
+  // list no longer had, and closing it with キャンセル looked like the cancel
+  // had deleted the row. Nothing about the list's own bookkeeping needs the
+  // passes to have heard first, so it does not wait for them: a press takes a
+  // row out while the finger is still on the button, and every press after it
+  // is about a row that is still there.
+  clips = clips.filter((c) => !gone.has(c.id));
+  anchor = -1;
+  renderList();
+  // And now the passes. A clip being read right now has one behind it that
+  // has to be told to stop, or it would go on reading a file nothing is
+  // listed against. Only the lanes that are on one of these clips: the others
+  // are working on clips that are staying, and the lanes are stopped apart
+  // for that reason. Before `pump`, which is what starts the next pass --
+  // a stop raised after that would put the new one down with the old.
   if (doomed.some((c) => c.state === "indexing")) {
     await invoke("stop_batch", { lane: "walk" });
   }
@@ -2193,9 +2241,6 @@ async function remove(doomed) {
   if (doomed.some((c) => c.quietState === "running")) {
     await invoke("stop_batch", { lane: "quiet" });
   }
-  clips = clips.filter((c) => !gone.has(c.id));
-  anchor = -1;
-  renderList();
   // The editor is open on a recording that is no longer in the list, so the
   // window it is in has nothing left to be about.
   if (editing && gone.has(editing.id)) {

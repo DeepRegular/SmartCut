@@ -382,6 +382,11 @@ main { flex: 1; min-height: 0; display: flex; gap: 0; }
 }
 .clips-head { padding: 5px 8px; border-bottom: 1px solid var(--line); line-height: 1.4; }
 #keyframes { list-style: none; margin: 0; padding: 0; overflow-y: auto; flex: 1; }
+/* And the keyframe list, whose rows end in one too. */
+#keyframes::-webkit-scrollbar { width: 9px; }
+#keyframes::-webkit-scrollbar-track { background: var(--sunken); }
+#keyframes::-webkit-scrollbar-thumb { background: #5c5c5c; border-radius: 4px; }
+#keyframes::-webkit-scrollbar-thumb:hover { background: #757575; }
 #keyframes li {
   display: grid; grid-template-columns: 84px 1fr auto; gap: 6px; align-items: center;
   padding: 5px 6px; border-bottom: 1px solid #2c2c2c; cursor: pointer;
@@ -944,6 +949,24 @@ input[type="text"]::placeholder { color: var(--dim); }
 }
 /* Dropping files anywhere in the list, not only on the placeholder. */
 .cliplist-wrap.over { outline: 2px solid var(--sel); outline-offset: -2px; background: #10222a; }
+/* A scrollbar of our own, for the reason the panel of explanations has one
+   (see `.pref-pane`) and for a worse one on top of it: the desktop's overlay
+   is not only drawn over the right-hand edge of every row, it *takes the
+   presses there*. The strip it answers to is some twenty-five pixels wide --
+   far wider than the four it draws -- and the × that takes a row out of the
+   list sits inside it. So while the bar was showing, which is exactly while
+   somebody is working down a list taking rows out, a press on a × went to
+   the scrollbar instead: the row stayed where it was and the press looked
+   like it had not been made. Given a width here it is a bar the layout knows
+   about -- the rows end where it begins, and the × is the row's again.
+
+   Webkit's pseudo-elements rather than `scrollbar-width`, as the other two
+   do it: the two engines this runs on take different ones, and this is the
+   one they both take. */
+.cliplist-wrap::-webkit-scrollbar { width: 9px; }
+.cliplist-wrap::-webkit-scrollbar-track { background: var(--sunken); }
+.cliplist-wrap::-webkit-scrollbar-thumb { background: #5c5c5c; border-radius: 4px; }
+.cliplist-wrap::-webkit-scrollbar-thumb:hover { background: #757575; }
 
 #cliplist { list-style: none; margin: 0; padding: 0; }
 /* Two rows: the name across the whole of the first, everything that was read
@@ -1335,6 +1358,12 @@ input[type="text"]::placeholder { color: var(--dim); }
   list-style: none; margin: 0; padding: 0; flex: 1; min-height: 0; overflow-y: auto;
   font-size: 12px; font-variant-numeric: tabular-nums;
 }
+/* The queue's rows end in a × as well -- see `.cliplist-wrap` for what the
+   desktop's overlay does to one. */
+#batch-list::-webkit-scrollbar { width: 9px; }
+#batch-list::-webkit-scrollbar-track { background: var(--sunken); }
+#batch-list::-webkit-scrollbar-thumb { background: #5c5c5c; border-radius: 4px; }
+#batch-list::-webkit-scrollbar-thumb:hover { background: #757575; }
 #batch-list li {
   display: grid; grid-template-columns: 30px 96px 1fr 22px;
   gap: 8px; align-items: stretch;
