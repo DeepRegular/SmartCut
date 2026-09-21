@@ -512,7 +512,6 @@ The survey paid for itself on the way: one recording's silence walk **panicked**
 frame claiming a ninth audio plane, which an `AVFrame` has no pointer for. That is
 fixed, and is not part of what was dropped.
 
-
 ## Showing the silences themselves (`blank.rs` and `cm.rs`)
 
 The cut editor has two detections beside this one: **Detect blank** and
@@ -526,3 +525,10 @@ entry ones. Broadcast black runs two to four pictures, and a sample every half
 second misses it. Moving the threshold from 0.05 to 0.16 does not change how
 many stretches are found; it changes only how much of a fade is called black.
 So both ends of a stretch are reported and neither is named the junction.
+
+The white level, 0.92, is not a fraction of the largest sample the depth can
+hold either. Broadcast white is 235 at 8 bits and 940 at 10 -- the same value
+shifted up -- while the largest sample goes 255 to 1023. 940 out of 1023 is
+0.919, under the 0.922 that 235 out of 255 clears, so taken against the largest
+sample a 10-bit recording's flash to white is never found. A recorder's 4K is
+10-bit HEVC, which is where this was missing them.

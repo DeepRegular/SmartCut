@@ -71,8 +71,8 @@ impl Run {
 }
 
 pub struct BlankOptions {
-    /// Luma at or below which a pixel counts as black, as a fraction of full
-    /// scale.
+    /// Luma at or below which a pixel counts as black, as a fraction of the
+    /// scale [`Luma::scale`] works out for the recording's depth.
     ///
     /// Not "16", which is what black is written as and what nothing in a
     /// recording actually holds: noise, dither and the tail of a fade all sit
@@ -89,7 +89,8 @@ pub struct BlankOptions {
     pub black_level: f64,
     /// ...and the luma at or above which it counts as white. Higher than the
     /// black level is low, because a white frame is a deliberate flash rather
-    /// than the end of a fade and is written close to full scale.
+    /// than the end of a fade and is written close to the top of the scale:
+    /// 235 out of 255, which is 0.92 of it and is where this sits.
     pub white_level: f64,
     /// How much of the picture has to be that dark, or that bright, 0..1. A
     /// channel bug or a scrap of burnt-in text is a percent or two of the
@@ -185,9 +186,27 @@ impl Luma {
         })
     }
 
-    /// Full scale for this depth, which is what a level is a fraction of.
-    fn full(&self) -> f64 {
-        ((1u32 << self.depth) - 1) as f64
+    /// What a level is a fraction of, at this depth.
+    ///
+    /// **Not the largest sample the depth can hold.** The same picture at two
+    /// depths is the same code values shifted up -- white is 235 at 8 bits
+    /// and 940 at 10, which is 235 times four -- while the largest sample
+    /// goes 255 to 1023, which is not 255 times four. Taking the fraction of
+    /// that would make every level a shade stricter the deeper the recording
+    /// is written, and at the one value it matters that is the difference
+    /// between finding a flash to white and missing it: 940 out of 1023 is
+    /// 0.919, which is under the 0.92 that 235 out of 255 clears.
+    ///
+    /// So a level is a fraction of 255, shifted the way the samples are. A
+    /// recording written full range clears it as it always did -- 1023 is
+    /// over 0.92 of 1020 -- and a 10-bit flash to white reads as the 8-bit
+    /// one it is.
+    fn scale(&self) -> f64 {
+        if self.depth >= 8 {
+            (255u32 << (self.depth - 8)) as f64
+        } else {
+            ((1u32 << self.depth) - 1) as f64
+        }
     }
 
     /// One sample out of the plane's bytes.
@@ -219,9 +238,9 @@ fn look_at(frame: &ff::frame::Video, luma: &Luma, opts: &BlankOptions) -> Option
     if iw == 0 || ih == 0 {
         return None;
     }
-    let full = luma.full();
-    let dark = (opts.black_level.clamp(0.0, 1.0) * full) as u32;
-    let bright = (opts.white_level.clamp(0.0, 1.0) * full) as u32;
+    let scale = luma.scale();
+    let dark = (opts.black_level.clamp(0.0, 1.0) * scale) as u32;
+    let bright = (opts.white_level.clamp(0.0, 1.0) * scale) as u32;
     let stride = frame.stride(0);
     let data = frame.data(0);
     let cols = GRID_X.min(iw);
@@ -490,16 +509,34 @@ mod tests {
         assert_eq!(both.len(), 1);
     }
 
-    /// A level is a fraction of full scale, so the same picture reads the
-    /// same whether its luma is 8-bit or 10-bit.
+    /// A level is a fraction of the same scale the samples are shifted on,
+    /// so the same picture reads the same whether its luma is 8-bit or
+    /// 10-bit.
     #[test]
     fn depth_is_read_from_the_format() {
         let eight = Luma::of(ff::format::Pixel::YUV420P).unwrap();
-        assert_eq!((eight.depth, eight.full()), (8, 255.0));
+        assert_eq!((eight.depth, eight.scale()), (8, 255.0));
         let ten = Luma::of(ff::format::Pixel::YUV420P10LE).unwrap();
-        assert_eq!((ten.depth, ten.full()), (10, 1023.0));
+        assert_eq!((ten.depth, ten.scale()), (10, 1020.0));
         assert!(!ten.big_endian);
         assert_eq!(ten.at(&[0x40, 0x00], 0), 64);
         assert_eq!(eight.at(&[16], 0), 16);
+    }
+
+    /// Broadcast white is 235 at 8 bits and 940 at 10, and the default level
+    /// has to call both of them white. Taken against the largest sample the
+    /// depth holds it called the 10-bit one grey, and a flash to white in a
+    /// 4K recording off a recorder was never reported.
+    #[test]
+    fn white_reads_the_same_at_either_depth() {
+        let level = BlankOptions::default().white_level;
+        let eight = Luma::of(ff::format::Pixel::YUV420P).unwrap();
+        let ten = Luma::of(ff::format::Pixel::YUV420P10LE).unwrap();
+        assert!(235 >= (level * eight.scale()) as u32);
+        assert!(940 >= (level * ten.scale()) as u32);
+        // ...and black, which is 16 and 64, stays under the other end.
+        let dark = BlankOptions::default().black_level;
+        assert!(16 <= (dark * eight.scale()) as u32);
+        assert!(64 <= (dark * ten.scale()) as u32);
     }
 }
