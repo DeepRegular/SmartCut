@@ -570,6 +570,7 @@ mod tests {
             sample_aspect_ratio: 4.0 / 3.0,
             framing: NalFraming::AnnexB,
             pulldown: false,
+            variable_rate: false,
             field_order: 2,
             bit_rate: None,
             vc1: None,

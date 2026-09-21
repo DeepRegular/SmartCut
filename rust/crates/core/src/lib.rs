@@ -123,6 +123,24 @@ pub struct VideoInfo {
     /// varying numbers of fields. Such a stream is not constant frame rate at
     /// the picture level, whatever its container claims.
     pub pulldown: bool,
+    /// Whether the pictures come at a rate the frame arithmetic can predict.
+    ///
+    /// **A container states one rate for every stream, whether or not the
+    /// stream has one.** A screen capture holds a picture for as long as
+    /// nothing changed, and anything that has been through `mpdecimate`
+    /// holds one wherever the repeats came out; both still declare a rate,
+    /// and it is the fastest the recording ever managed rather than what it
+    /// does. Nothing about a cut depends on this -- each picture is placed by
+    /// its own timestamp and each segment lasts until the next one starts,
+    /// which is right either way -- but a frame *number* is not a coordinate
+    /// anybody can act on where it is true, so what is counted in frames says
+    /// so instead. See [`index::varies`], and the [pulldown] field above,
+    /// which is the same fact about a stream that only varies by a field.
+    ///
+    /// False where the index never read the pictures and could not tell.
+    ///
+    /// [pulldown]: VideoInfo::pulldown
+    pub variable_rate: bool,
     /// AVFieldOrder from the source. Broadcast material is interlaced, and an
     /// encoder told nothing about that quietly produces progressive pictures
     /// -- which comb against the copied ones at every splice.
@@ -1014,6 +1032,7 @@ fn assemble(
     let seek_margin = (3.0 * mean_gop).clamp(1.0, 30.0);
 
     video.pulldown = idx.pulldown.unwrap_or(false);
+    video.variable_rate = idx.variable.unwrap_or(false);
     video.bit_rate = idx.bit_rate;
 
     // A container that says it is shorter than the pictures it holds is a
@@ -1610,8 +1629,9 @@ fn outline_of(path: &str) -> Result<(Outline, input::Demux)> {
         sample_aspect_ratio,
         framing,
         field_order,
-        pulldown: false, // the index source reports this, when it can
-        bit_rate: None,  // and this, when it read the pictures to find out
+        pulldown: false,      // the index source reports this, when it can
+        variable_rate: false, // and this
+        bit_rate: None,       // and this, when it read the pictures to find out
         // Read once, here, rather than hunted for in every packet: a
         // transport stream restates these in front of each entry point, so
         // libavformat has them before a packet has been asked for.

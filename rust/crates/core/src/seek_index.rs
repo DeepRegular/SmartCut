@@ -65,7 +65,7 @@ static SERIAL: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(
 /// guess was 2% low, which is a quarter of a gigabyte over a single layer --
 /// and a saved index is believed, so the disc that would not fit went on not
 /// fitting however often it was opened again.
-pub const VERSION: u32 = 6;
+pub const VERSION: u32 = 7;
 
 const MAGIC: &[u8; 4] = b"SCIX";
 
@@ -74,6 +74,8 @@ const FLAG_PULLDOWN_KNOWN: u32 = 1 << 1;
 const FLAG_PULLDOWN: u32 = 1 << 2;
 const FLAG_HAS_TRACK: u32 = 1 << 3;
 const FLAG_END_KNOWN: u32 = 1 << 4;
+const FLAG_VARIABLE_KNOWN: u32 = 1 << 5;
+const FLAG_VARIABLE: u32 = 1 << 6;
 
 /// The fewest bytes one access point can take: its time, the time its lead
 /// pictures begin at, its position, whether it is droppable, and the count of
@@ -95,6 +97,10 @@ pub struct SeekIndex {
     /// Whether the stream uses 2:3 pulldown, when the pass that made this
     /// could tell.
     pub pulldown: Option<bool>,
+    /// Whether its pictures come at a rate the frame arithmetic can predict,
+    /// when the pass that made this could tell. See
+    /// [`crate::VideoInfo::variable_rate`].
+    pub variable: Option<bool>,
     /// What the pictures weigh, when the pass that made this counted them.
     /// See [`crate::VideoInfo::bit_rate`].
     ///
@@ -131,6 +137,7 @@ impl index::IndexSource for SeekIndex {
             points: self.points.clone(),
             leading_known: self.leading_known,
             pulldown: self.pulldown,
+            variable: self.variable,
             bit_rate: self.bit_rate,
             end: self.end,
         })
@@ -144,6 +151,7 @@ impl SeekIndex {
             points: src.points.clone(),
             leading_known: src.leading_known,
             pulldown: Some(src.video.pulldown),
+            variable: Some(src.video.variable_rate),
             bit_rate: src.video.bit_rate,
             // The duration a `Source` carries is the pass's own answer where
             // the container had none worth having, so it is the answer to
@@ -173,6 +181,12 @@ impl SeekIndex {
         }
         if self.end.is_some() {
             flags |= FLAG_END_KNOWN;
+        }
+        if let Some(v) = self.variable {
+            flags |= FLAG_VARIABLE_KNOWN;
+            if v {
+                flags |= FLAG_VARIABLE;
+            }
         }
         w.u32(flags);
         w.f64(self.end.unwrap_or(0.0));
@@ -311,6 +325,7 @@ impl SeekIndex {
             points,
             leading_known: flags & FLAG_LEADING_KNOWN != 0,
             pulldown: (flags & FLAG_PULLDOWN_KNOWN != 0).then_some(flags & FLAG_PULLDOWN != 0),
+            variable: (flags & FLAG_VARIABLE_KNOWN != 0).then_some(flags & FLAG_VARIABLE != 0),
             end,
             track,
             // Whatever is left after the track, if a version that wrote one

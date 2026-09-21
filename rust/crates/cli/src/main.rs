@@ -772,8 +772,19 @@ fn main() -> Result<()> {
     let v = &src.video;
     println!("input : {}", src.path);
     println!(
-        "        {} {}x{} {:.3}fps  has_b_frames={}  dur={:.3}s  start={:.3}s",
-        v.codec, v.width, v.height, v.frame_rate, v.has_b_frames, src.duration, src.start_time
+        "        {} {}x{} {:.3}fps{}  has_b_frames={}  dur={:.3}s  start={:.3}s",
+        v.codec,
+        v.width,
+        v.height,
+        v.frame_rate,
+        // The rate is the container's, and where the pictures do not keep to
+        // it that is worth saying beside it rather than leaving the reader
+        // to wonder why the frame counts below do not add up. See
+        // [`smartcut_core::VideoInfo::variable_rate`].
+        if v.variable_rate { " (declared; the pictures vary)" } else { "" },
+        v.has_b_frames,
+        src.duration,
+        src.start_time
     );
     // Where the recorder set its chapters, in the recording's own seconds --
     // which is what the editor draws them at, and what `--cut` would take.

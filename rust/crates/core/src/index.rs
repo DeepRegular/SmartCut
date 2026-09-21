@@ -23,6 +23,9 @@ pub struct Index {
     pub leading_known: bool,
     /// Whether the stream uses 2:3 pulldown, when the source could tell.
     pub pulldown: Option<bool>,
+    /// Whether the pictures come at a rate the frame arithmetic can
+    /// predict, when the source could tell. See [`varies`].
+    pub variable: Option<bool>,
     /// Bits per second the pictures take, when the source read them --
     /// all of them, in the walk's case, or enough of them to divide one
     /// into the other, in the disc index's. See [`crate::VideoInfo::bit_rate`],
@@ -219,13 +222,72 @@ pub fn walk(
         .filter(|span| *span > 0.0)
         .map(|span| video_bytes as f64 * 8.0 / span)
         .filter(|r| r.is_finite() && *r > 0.0);
+    // In the order they are shown, which for this question is the only
+    // order there is: what is being asked is how long each picture is on
+    // screen, and a picture is on screen until the next one shown replaces
+    // it.
+    let mut shown: Vec<f64> = packets.iter().map(|p| p.pts).collect();
+    shown.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
     Ok(Index {
         points: points_from(&packets, &codec),
         leading_known: true,
         pulldown: Some(pulldown),
+        variable: Some(varies(&shown, video.frame_duration())),
         bit_rate,
         end,
     })
+}
+
+/// How few gaps have to be the wrong size before a stream counts as one
+/// whose pictures do not come at a predictable rate, as a share of them all.
+///
+/// A recording is not disqualified by its faults. Dropouts leave gaps that
+/// look exactly like holds -- 28 of them in a 668 MB broadcast recording
+/// measured here -- and so does a packet libavcodec would not parse. What
+/// tells a variable-rate recording apart from a damaged constant-rate one is
+/// that the first does it constantly.
+const ODD_GAPS: usize = 1;
+
+/// Too few pictures to be asked. A handful of gaps says nothing either way,
+/// and a recording this short is walked again in no time if it matters.
+const ENOUGH: usize = 32;
+
+/// Do the pictures come at a rate the frame arithmetic can predict?
+///
+/// **Not the same question as whether the container declares one.** Every
+/// Matroska this was measured on declares a rate; what the pictures do is
+/// another matter, and a WebM that has been through `mpdecimate` -- which is
+/// what a screen capture and a good deal of what is downloaded amount to --
+/// holds a picture for as long as nothing changed, which here was up to 2.4
+/// seconds against a declared 29.97.
+///
+/// A gap is wrong when it is far enough from one frame that no rounding
+/// explains it. **2:3 pulldown is deliberately left out of this**: its long
+/// gap is exactly one and a half frames, the timeline already counts in
+/// fields so that it can hold one, and a recording of film is not a
+/// variable-rate recording in the sense this asks about. The bar is set
+/// above it.
+///
+/// The short side is asked as well, for the stream whose declared rate is
+/// slower than its own fastest stretch. Nothing measured here has been one,
+/// but a container that gets to state one number for a stream that does not
+/// have one can state any of them.
+fn varies(shown: &[f64], fd: f64) -> bool {
+    if fd <= 0.0 || shown.len() < ENOUGH {
+        return false;
+    }
+    let (mut odd, mut counted) = (0usize, 0usize);
+    for w in shown.windows(2) {
+        let gap = w[1] - w[0];
+        if gap <= 0.0 {
+            continue;
+        }
+        counted += 1;
+        if gap > fd * 1.75 || gap < fd * 0.5 {
+            odd += 1;
+        }
+    }
+    counted >= ENOUGH && odd * 100 > counted * ODD_GAPS
 }
 
 /// Take the entry points from the index a Blu-ray keeps beside the stream.
@@ -317,6 +379,7 @@ impl IndexSource for DiscIndex {
             points,
             leading_known: false,
             pulldown: None,
+            variable: None,
             bit_rate,
             end,
         })
@@ -398,6 +461,7 @@ impl IndexSource for ContainerIndex {
             points,
             leading_known: false,
             pulldown: None,
+            variable: None,
             bit_rate: None,
             end: None,
         })
