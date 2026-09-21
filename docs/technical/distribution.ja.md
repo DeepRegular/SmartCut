@@ -10,7 +10,7 @@ cd gui/src-tauri && NO_STRIP=1 cargo tauri build --bundles appimage
 # -> target/release/bundle/appimage/SmartCut_0.7.5_amd64.AppImage
 ```
 
-成果物は 186.0 MB で、共有ライブラリ 745 個をすべて同梱している。WebKitGTK 4.1 も、
+成果物は 186.0 MB で、共有ライブラリ 717 個をすべて同梱している。WebKitGTK 4.1 も、
 `libavcodec` / `libavformat` / `libavutil` / `libavfilter` / `libswscale` /
 `libswresample` も入っているので、**動かす側に ffmpeg を入れる必要はない**。
 SmartCut はシステムの FFmpeg 7.1 に動的リンクしているので、配布できるかどうかは
@@ -93,7 +93,7 @@ cargo のクレート名は `gui` なので、放っておくと Tauri はその
 | `smartcut_0.7.5_amd64.deb` | 4.4 MB | システムのものを使用 | FFmpeg 7.1（Debian 13 / Ubuntu 25.04 以降） |
 
 tar.gz の中身は、AppImage と同じ AppDir を展開したものである。linuxdeploy が
-`ldd` を辿って集めた 745 個のライブラリがそのまま `app/` にある。`./smartcut` は
+`ldd` を辿って集めた 717 個のライブラリがそのまま `app/` にある。`./smartcut` は
 AppRun を呼ぶ 4 行のスクリプトで、`./smartcut-cli` は `LD_LIBRARY_PATH` を
 `app/usr/lib` に向けて CLI を呼ぶ。AppImage が動く環境ならどこでも動き、FUSE は
 不要である。gzip なので、squashfs+zstd の AppImage より 16 MB 大きい。
@@ -103,7 +103,7 @@ AppRun を呼ぶ 4 行のスクリプトで、`./smartcut-cli` は `LD_LIBRARY_P
 linuxdeploy は `ldd` が挙げた名前をそのまま複製する。`libfoo.so` と
 `libfoo.so.0` は -dev パッケージが持つ `libfoo.so.0.1.2` へのシンボリックリンク
 なので、実体をたどって 3 つとも実ファイルとして入っていた。librsvg なら 6.2 MB が
-3 回である。合計 19.5 MB、527 MB のうちの 3.7% になる。
+3 回である。合計 19.4 MB、529 MB のうちの 3.7% になる。
 
 ローダーが開くのは SONAME の 1 つだけで、残り 2 つは名前でしかない。そこで
 `build-linux.sh` は tar に詰める前にシンボリックリンクへ戻す。**gzip 自身では

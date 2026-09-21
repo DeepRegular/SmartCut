@@ -147,7 +147,7 @@ install.
 |---|---|---|
 | **Linux** | `SmartCut_0.7.5_amd64.AppImage` | Make it executable and run it |
 | **Linux** | `SmartCut-0.7.5-linux-x86_64.tar.gz` | Unpack and run `./smartcut`. Use this if you would rather not deal with FUSE |
-| **Linux (Debian/Ubuntu)** | `smartcut_0.7.5_amd64.deb` | `sudo apt install ./smartcut_0.7.5_amd64.deb`. Only 4.2 MB, because it uses the FFmpeg already on your system |
+| **Linux (Debian/Ubuntu)** | `smartcut_0.7.5_amd64.deb` | `sudo apt install ./smartcut_0.7.5_amd64.deb`. Only 4.4 MB, because it uses the FFmpeg already on your system |
 | **Windows** | `SmartCut_0.7.5_x64-setup.exe` | Installer |
 | **Windows** | `smartcut-portable-x64-0.7.5.zip` | Unzip and run `smartcut.exe` |
 

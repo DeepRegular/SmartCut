@@ -10,7 +10,7 @@ cd gui/src-tauri && NO_STRIP=1 cargo tauri build --bundles appimage
 # -> target/release/bundle/appimage/SmartCut_0.7.5_amd64.AppImage
 ```
 
-The artifact is **186.0 MB and carries all 745 shared libraries**. WebKitGTK 4.1 is in
+The artifact is **186.0 MB and carries all 717 shared libraries**. WebKitGTK 4.1 is in
 there, and so are `libavcodec`, `libavformat`, `libavutil`, `libavfilter`, `libswscale`
 and `libswresample` — so **the machine running it does not need ffmpeg installed**.
 SmartCut links dynamically against the system FFmpeg 7.1, so whether that could be
@@ -95,7 +95,7 @@ only). The bundle *files* Tauri writes are named after `productName` instead —
 | `SmartCut-0.7.5-linux-x86_64.tar.gz` | 202.0 MB | Bundled | glibc 2.39 or newer. No FUSE needed |
 | `smartcut_0.7.5_amd64.deb` | 4.4 MB | Uses the system's | FFmpeg 7.1 (Debian 13 / Ubuntu 25.04 and later) |
 
-**The tar.gz contains the same AppDir as the AppImage, extracted.** The 745 libraries
+**The tar.gz contains the same AppDir as the AppImage, extracted.** The 717 libraries
 linuxdeploy gathered by following `ldd` sit in `app/` as they are, `./smartcut` is a
 four-line script that calls AppRun, and `./smartcut-cli` points `LD_LIBRARY_PATH` at
 `app/usr/lib` and calls the CLI. It runs anywhere the AppImage runs, and removes the need
@@ -106,7 +106,7 @@ to care about FUSE. Being gzip, it is 16 MB larger than the squashfs+zstd AppIma
 linuxdeploy copies every name `ldd` gives it, and `libfoo.so` and `libfoo.so.0` are
 symlinks a -dev package keeps to `libfoo.so.0.1.2` — followed on the way in, so all
 three arrived as real files. librsvg is 6.2 MB three times. Across seven libraries that
-is 19.5 MB, 3.7% of the 527.
+is 19.4 MB, 3.7% of the 529.
 
 The loader opens one of them, by SONAME; the other two are names. So `build-linux.sh`
 puts them back as symlinks before the tar is made. **gzip cannot see this for itself:**

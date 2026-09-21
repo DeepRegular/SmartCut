@@ -139,7 +139,7 @@ deb 以外はすべて FFmpeg を同梱しているので、ほかに用意す�
 |---|---|---|
 | **Linux** | `SmartCut_0.7.5_amd64.AppImage` | 実行権限を付けて起動します |
 | **Linux** | `SmartCut-0.7.5-linux-x86_64.tar.gz` | 展開して `./smartcut` を実行します。FUSE を使いたくない場合はこちらです |
-| **Linux (Debian/Ubuntu)** | `smartcut_0.7.5_amd64.deb` | `sudo apt install ./smartcut_0.7.5_amd64.deb`。システムに入っている FFmpeg を使うので 4.2 MB で済みます |
+| **Linux (Debian/Ubuntu)** | `smartcut_0.7.5_amd64.deb` | `sudo apt install ./smartcut_0.7.5_amd64.deb`。システムに入っている FFmpeg を使うので 4.4 MB で済みます |
 | **Windows** | `SmartCut_0.7.5_x64-setup.exe` | インストーラ |
 | **Windows** | `smartcut-portable-x64-0.7.5.zip` | 展開して `smartcut.exe` を実行します |
 
