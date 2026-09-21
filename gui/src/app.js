@@ -3901,12 +3901,6 @@ function filenameSafe(name) {
   return out.replace(/^[\s.\u3000]+|[\s.\u3000]+$/g, "");
 }
 
-/// Whether this run writes into a folder of its own.
-///
-/// Always for a disc, which is a dozen files with names it chose itself and
-/// belongs nowhere near anything else. For files, only where there is more
-/// than one of them: a single cut goes where it was told to go, and burying
-/// it one level down is one more folder to open for no reason.
 /// Whether anything in the list is a DVD title.
 ///
 /// Which is either kind of disc: a DVD draws its subtitles and so does a
@@ -3963,6 +3957,12 @@ function paintSubtitleChoices(from) {
   }
 }
 
+/// Whether this run writes into a folder of its own.
+///
+/// Always for a disc, which is a dozen files with names it chose itself and
+/// belongs nowhere near anything else. For files, only where there is more
+/// than one of them: a single cut goes where it was told to go, and burying
+/// it one level down is one more folder to open for no reason.
 function subfolderWanted() {
   return bdavMode() || ready().length > 1;
 }
@@ -3972,13 +3972,15 @@ function subfolderWanted() {
 /// The disc's own name where there is a disc, and the project's where there
 /// is a project. An evening's work saved as `2026-09-08.scproj` names the
 /// folder after itself; an unsaved list has only today to go on, which is
-/// still better than the cuts landing loose in the folder above.
+/// still better than the cuts landing loose in the folder above. Today by
+/// the clock in the room -- see `today`, and the hour this kind of work is
+/// done at.
 function autoSubfolder(list) {
   const name = bdavMode()
     ? discTitleFor(list)
     : projectPath
       ? stemOf(projectPath)
-      : new Date().toISOString().slice(0, 10);
+      : today();
   return filenameSafe(name);
 }
 
@@ -4153,6 +4155,19 @@ async function guessDiscTitle(list) {
   return discGuess.title;
 }
 
+/// Today, by the clock in the room: `2026-09-11`.
+///
+/// Put together out of the local parts rather than cut off the front of an
+/// `toISOString`, whose date is the one in London. Editing a recording is
+/// evening work that runs past midnight, and in Tokyo the two dates differ
+/// for the whole of the morning: a folder named for yesterday is one
+/// nobody goes looking in.
+function today() {
+  const now = new Date();
+  const two = (n) => String(n).padStart(2, "0");
+  return `${now.getFullYear()}-${two(now.getMonth() + 1)}-${two(now.getDate())}`;
+}
+
 /// Now, as a disc is willing to be called: `2026-09-11 00:15`.
 ///
 /// Local time, because the moment meant is the one on the clock in the room.
@@ -4161,10 +4176,28 @@ async function guessDiscTitle(list) {
 function stamp() {
   const now = new Date();
   const two = (n) => String(n).padStart(2, "0");
-  return (
-    `${now.getFullYear()}-${two(now.getMonth() + 1)}-${two(now.getDate())} ` +
-    `${two(now.getHours())}:${two(now.getMinutes())}`
-  );
+  return `${today()} ${two(now.getHours())}:${two(now.getMinutes())}`;
+}
+
+/// Now, as ISO 8601 writes a moment that knows where it was:
+/// `2026-09-21T08:56:45+09:00`.
+///
+/// For what goes in a file rather than on the screen. The clock in the
+/// room, with the room's distance from UTC beside it, so that the stamp
+/// names one moment for anything that reads it and still carries the date
+/// somebody would say it was saved on. `toISOString` names the same moment
+/// in London: a project saved at one in the morning in Tokyo would be dated
+/// the day before, which is the same trick `today` was written to stop.
+function stampISO() {
+  const now = new Date();
+  const two = (n) => String(n).padStart(2, "0");
+  // `getTimezoneOffset` counts the other way round -- minutes to add to get
+  // to UTC -- and the offset written here is minutes ahead of it.
+  const ahead = -now.getTimezoneOffset();
+  const mins = Math.abs(ahead);
+  const clock = `${two(now.getHours())}:${two(now.getMinutes())}:${two(now.getSeconds())}`;
+  const off = `${ahead < 0 ? "-" : "+"}${two(Math.floor(mins / 60))}:${two(mins % 60)}`;
+  return `${today()}T${clock}${off}`;
 }
 
 /// What to call the disc, when nobody has said.
@@ -5032,14 +5065,21 @@ function renderOutScreen() {
   askFreeFolder().then((moved) => moved && renderOutScreen());
   // Where the files actually land, folder of their own included: this line
   // is read while the run is watched, and a path that is one level off the
-  // one being written to is worse than no line at all.
+  // one being written to is worse than no line at all. With no folder
+  // chosen there is no one path to write -- the cuts go beside the
+  // recordings they were made from, which can be three folders -- so the
+  // folder of their own is named beside the phrase rather than left out of
+  // it, which was this line saying the cuts land somewhere they do not.
+  const sub = subfolderNow();
   el("out-dir-shown").value = bdavMode()
     ? outDir()
       ? t("outset.discPath", { dir: discDir() })
       : t("outset.discHere")
     : outDir()
       ? beneath(outDir())
-      : t("outset.sameAsInput");
+      : sub
+        ? t("outset.sameAsInputSub", { name: sub })
+        : t("outset.sameAsInput");
   const list = ready();
   el("out-idle").hidden = list.length > 0;
   // Idle, the screen speaks for whichever clip is about to be written first;
@@ -5769,13 +5809,25 @@ function settleOutput() {
 /// window would write it now, and one that worked its output out again in
 /// another process, hours later and from that process's preferences, would
 /// not be the run that was asked for.
-function captureProject(settled = outputSettled) {
+///
+/// `forRun` says which of those two this is, for the one setting that is not
+/// an answer until somebody makes it one. The folder of its own is filled in
+/// from the project's name -- see `filledIn` -- and a name still holding
+/// that fill is written down as "nobody has said", so that the file opened
+/// tomorrow under another name is written into a folder of *that* name
+/// rather than going on naming the project it was copied from. The queue
+/// copy writes the name itself: its job is to run the way this window would
+/// run it now, and the copy is a file in the queue's own folder whose name
+/// nothing should be called after.
+function captureProject(settled = outputSettled, forRun = false) {
+  const kept = { ...settings };
+  if (!forRun && kept.subfolder === filledIn) kept.subfolder = null;
   return {
     smartcut: PROJECT_VERSION,
-    saved: new Date().toISOString(),
+    saved: stampISO(),
     // Left out altogether rather than written empty: a reader has to be able
     // to tell "nobody has said" from "somebody said none of it".
-    settings: settled ? { ...settings } : undefined,
+    settings: settled ? kept : undefined,
     clips: clips.map((c) => ({
       path: c.path,
       // What somebody renamed the row to. The one name in the list that
@@ -5952,14 +6004,14 @@ function touch() {
 /// project the window is about -- which is not true of the copy the queue is
 /// given; see `projectForQueue`. That copy is also the one caller that asks
 /// for the output settings whether or not they have been settled.
-async function putProject(path, settled = outputSettled) {
+async function putProject(path, settled = outputSettled, forRun = false) {
   try {
     // Indented, and with the paths first in every row: a project is a plain
     // file about files, and someone who opens one in an editor to see which
     // recordings it names should be able to read it.
     await invoke("write_project", {
       path,
-      body: JSON.stringify(captureProject(settled), null, 2),
+      body: JSON.stringify(captureProject(settled, forRun), null, 2),
     });
   } catch (e) {
     note(`${e}`);
@@ -5971,6 +6023,15 @@ async function putProject(path, settled = outputSettled) {
 async function writeProject(path) {
   if (!(await putProject(path))) return false;
   projectPath = path;
+  // The folder of its own is named after the project, and the project has
+  // just been given a name -- its first, or another one under 名前を付けて
+  // 保存. Settled here rather than at whatever redraw comes next, so that
+  // the field agrees with the title bar from this moment on; and before the
+  // shape is put down, because a name that moved afterwards would raise a
+  // `*` over a change nobody made and no save could clear. See
+  // `settleSubfolder`.
+  renderOutset();
+  renderOutScreen();
   savedShape = shapeOf();
   retitleMain();
   note(t("project.saved", { name: nameOf(path) }));
@@ -6128,7 +6189,15 @@ async function loadProject(path) {
     // was open a moment ago has nothing to say about this one.
     restoreOutput();
   }
-  filledIn = null;
+  // Whether the folder name that came in is this program's own fill or
+  // somebody's answer, which is what decides whether it goes on following
+  // the project. The file does not say in so many words -- and a build
+  // before this one wrote the fill down as though it were an answer -- so a
+  // name that is the project's own, or the disc's, is taken to be one of
+  // those: `foo.scproj` saved again as `bar.scproj` writes into `bar`, and a
+  // name somebody typed is left exactly as they typed it. See `filledIn`.
+  const ours = filenameSafe((bdavMode() ? settings.discTitle : stemOf(path)) || "");
+  filledIn = ours && settings.subfolder === ours ? ours : null;
   showSettings();
   const taken = [];
   let refused = 0;
@@ -6529,9 +6598,19 @@ async function lookAtJobs() {
     const look = {
       dir: settings.dir || "",
       beside,
-      // "" is a folder somebody emptied on purpose and null is one nobody has
-      // settled; neither is a folder. See `settings.subfolder`.
-      sub: settings.subfolder || "",
+      // "" is a folder somebody emptied on purpose, which is no folder at
+      // all. One nobody has settled is one the run will name itself -- after
+      // the disc, or after the project file -- so the card names it the same
+      // way, rather than showing a job that writes loose into the folder
+      // above and then making a folder anyway. See `settings.subfolder` and
+      // `autoSubfolder`.
+      sub:
+        settings.subfolder ??
+        (settings.mode === "bdav"
+          ? filenameSafe(settings.discTitle || "")
+          : held.length > 1
+            ? filenameSafe(stemOf(job.path))
+            : ""),
       disc: settings.mode === "bdav",
       image: settings.image || "",
       clips: held.length,
@@ -7023,7 +7102,7 @@ async function projectForQueue() {
       return "";
     }
   }
-  if (!(await putProject(path, true))) return "";
+  if (!(await putProject(path, true, true))) return "";
   // Kept, so that a list registered twice is written to the one file and
   // refused as the duplicate it is, rather than piling up copies of itself.
   tempProject = path;
