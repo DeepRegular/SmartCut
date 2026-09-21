@@ -144,16 +144,29 @@ button.brand:hover, button.brand.open { background: #3a3a3a; border-color: #5c5c
   background: rgba(0, 0, 0, .55);
 }
 .modal[hidden] { display: none; }
+/* Never taller than the window it is laid over. The panel is centred, so a
+   box that outgrew the window lost as much off the top as off the bottom --
+   the title on one end and 閉じる on the other, with nothing left to shut it
+   with. That is what 環境設定 did the day its longest group gained three
+   rows: on a 760-pixel window neither end of the panel was on the screen. */
 .modal-box {
   min-width: 420px; max-width: min(560px, 92vw);
+  max-height: 92vh; display: flex; flex-direction: column;
   background: var(--panel); border: 1px solid #000;
   box-shadow: 0 10px 30px rgba(0, 0, 0, .7);
 }
+/* The head and the foot keep their height and the middle gives, because the
+   two things that must stay reachable are the name of the panel and the
+   button that closes it. */
+.modal-head, .modal-foot { flex: none; }
 .modal-head {
   padding: 7px 12px; background: #2a2a2a; border-bottom: 1px solid #000;
   font-weight: 600;
 }
-.modal-body { padding: 12px; display: flex; flex-direction: column; gap: 8px; }
+.modal-body {
+  padding: 12px; display: flex; flex-direction: column; gap: 8px;
+  min-height: 0; overflow: auto;
+}
 .modal-body .row { display: flex; align-items: center; gap: 10px; }
 .modal-body select { min-width: 220px; }
 .modal-body p { margin: 0; line-height: 1.6; }
@@ -173,7 +186,10 @@ button.brand:hover, button.brand.open { background: #3a3a3a; border-color: #5c5c
    panel that grew by forty pixels on the way to the folder row would take
    the list of names out from under the pointer that had just used it. */
 #prefs .modal-box { width: min(820px, 94vw); }
-.prefs-body { flex-direction: row; gap: 0; padding: 0; }
+/* The names down the left stay where they are and the group on the right is
+   what scrolls, so a short window does not put the list of groups out of
+   reach of the pointer that is walking it. */
+.prefs-body { flex-direction: row; gap: 0; padding: 0; overflow: hidden; }
 .pref-tabs {
   display: flex; flex-direction: column; gap: 2px;
   padding: 10px 8px; min-width: 170px;
@@ -203,7 +219,7 @@ button.brand:hover, button.brand.open { background: #3a3a3a; border-color: #5c5c
    hold the box open, which is what left the panel jumping between 346 and
    533 pixels as the groups were walked through. Invisible is also out of
    reach -- no pointer, no tab stop -- so only the group on top answers. */
-.pref-panes { flex: 1; min-width: 0; padding: 12px; display: grid; }
+.pref-panes { flex: 1; min-width: 0; padding: 12px; display: grid; overflow: auto; }
 .pref-pane {
   display: flex; flex-direction: column; gap: 8px;
   min-height: 240px; align-content: start;
