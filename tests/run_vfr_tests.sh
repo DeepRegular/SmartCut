@@ -117,6 +117,35 @@ if [ ! -f "$FX/dense.mp4" ]; then
     -sc_threshold 0 -b:v 600k -c:a aac -b:a 96k "$FX/dense.mp4"
 fi
 
+# The same shape in a container that will not say so, and rarer. Matroska
+# carries one frame rate and libavformat reports it as both the declared rate
+# and the average, so nothing about this file's own numbers gives it away --
+# only a count of its gaps does. A tenth of a second of the fast stretch
+# every thirty seconds puts those gaps at 0.9% of the whole, which is what a
+# real recording of this shape measured (10 in 1446) and is under the share
+# it takes to call a recording that merely *holds* a picture variable. The
+# two sides of that question are asked differently for exactly this reason;
+# a bar high enough for the one would drop pictures here.
+#
+# Built in two steps because both halves matter: the pictures are coded at
+# 120 and thinned, and the WebM is written with the timestamps passed through
+# and a millisecond time base -- without the second, ffmpeg's own encoder
+# rounds the fast pictures onto a 41.7 ms grid and two of them collide, which
+# is the very thing being tested for.
+if [ ! -f "$FX/sparse.webm" ]; then
+  ffmpeg -hide_banner -loglevel error -y \
+    -f lavfi -i "testsrc2=size=320x240:rate=120:duration=60" \
+    -f lavfi -i "sine=frequency=440:sample_rate=48000:duration=60" \
+    -shortest -filter:v "select=if(lt(mod(t\,30)\,29.9)\,not(mod(n\,5))\,not(mod(n\,2)))" \
+    -fps_mode passthrough -c:v libx264 -preset veryfast -g 48 -keyint_min 48 \
+    -sc_threshold 0 -b:v 500k -c:a aac -b:a 96k "$FX/sparse.mp4" \
+    && ffmpeg -hide_banner -loglevel error -y -i "$FX/sparse.mp4" \
+      -fps_mode passthrough -enc_time_base 1/1000 \
+      -c:v libvpx-vp9 -b:v 500k -g 48 -keyint_min 48 \
+      -deadline good -cpu-used 6 -row-mt 1 -c:a libopus -b:a 64k "$FX/sparse.webm" \
+    || rm -f "$FX/sparse.webm"
+fi
+
 duration() { ffprobe -v error -show_entries format=duration -of csv=p=0 "$1"; }
 
 # run <name> <fixture> <in> <out>
@@ -155,16 +184,23 @@ run "cfr control"    cfr.webm 20 50
 # count is what matters here -- two pictures with nowhere to go used to become
 # one -- and so is the spacing, which a timeline built on the average got
 # wrong for every picture in the recording, not only the fast ones.
-dense=$OUT/dense.mp4
-if err=$("$CUT" "$FX/dense.mp4" --keep 5-35 -o "$dense" 2>&1); then
-  said=$(python3 tests/vfr_gaps.py "$FX/dense.mp4" "$dense" 5 35)
-  case "$said" in
-    ok\ *) ok "faster than declared" "${said#ok }" ;;
-    *) bad "faster than declared" "${said#bad }" ;;
-  esac
-else
-  bad "faster than declared" "$(printf '%s' "$err" | tail -1)"
-fi
+faster() {
+  local name=$1 src=$FX/$2 a=$3 b=$4 made=$OUT/${1// /_}.${2##*.}
+  [ -f "$src" ] || { printf "  SKIP  %-26s %s\n" "$name" "the fixture could not be made"; return; }
+  local err said
+  if err=$("$CUT" "$src" --keep "$a-$b" -o "$made" 2>&1); then
+    said=$(python3 tests/vfr_gaps.py "$src" "$made" "$a" "$b")
+    case "$said" in
+      ok\ *) ok "$name" "${said#ok }" ;;
+      *) bad "$name" "${said#bad }" ;;
+    esac
+  else
+    bad "$name" "$(printf '%s' "$err" | tail -1)"
+  fi
+}
+
+faster "faster than declared" dense.mp4  5 35
+faster "rarer, and in a WebM" sparse.webm 5 55
 
 # A range that *ends* inside a hold: its last picture stays up past the end
 # of the range, so the range lasts as long as it was asked for only if that
