@@ -260,7 +260,7 @@ pub struct Track {
     /// a DVD names its streams by their substream id and nothing else.
     ///
     /// Kept because for two of them the index is the *only* thing that
-    /// knows: see [`correct_from_index`].
+    /// knows: see [`unreadable`].
     pub coding: u8,
     /// The language the disc declared, when it declared one.
     pub language: Option<String>,

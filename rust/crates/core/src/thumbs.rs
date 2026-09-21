@@ -510,7 +510,7 @@ impl<'a> Collector<'a> {
 
     /// The finished track. `duration` is the recording's real length, which
     /// the one-pass read only learns when the read is over -- see
-    /// [`index::Index::end`] -- and which is what the scene marks are spaced
+    /// [`crate::index::Index::end`] -- and which is what the scene marks are spaced
     /// against.
     pub fn finish(self, duration: f64) -> Track {
         let interval = self.interval();

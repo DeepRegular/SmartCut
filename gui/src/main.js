@@ -1799,7 +1799,7 @@ function paintMeter() {
   // eight for 7.1, and two for a column with nothing in it yet. They share
   // the width of the column, so the gap closes up as the count rises -- at
   // eight bars a 3px gap leaves less bar than gap, and the last of them off
-  // the end of the column. A bar is also not allowed to grow past `BAR_MAX`:
+  // the end of the column. A bar is also not allowed to grow past `barMax`:
   // one channel across the whole column reads as a block of colour rather
   // than as a level, so a narrow group is centred instead.
   const bars = Math.max(1, meterBars.length || 2);
@@ -5477,6 +5477,23 @@ el("detect-cm").addEventListener("click", async () => {
   }
 });
 
+/// What a finished pass has to say for itself, wherever it was started.
+///
+/// Which of the two answered is in the sentence. Both write on the one status
+/// line, and "3 箇所見つかりました" over a window that has been asked twice says
+/// nothing about which question it is the answer to. Named as the pass was
+/// asked for rather than after what is on the timeline: a window told to look
+/// for black alone says it found black, not "black and white".
+///
+/// Whether the ends were marked is part of what happened, and 環境設定 can
+/// have said not to: a sentence promising marks over a timeline that has none
+/// would send somebody looking for them.
+function flatSaid(which, n) {
+  const what = tr(which === "blank" ? blankKey("flat.what.blank") : `flat.what.${which}`);
+  if (!n) return tr("flat.none", { what });
+  return tr(flatMarks(which) ? "flat.found" : "flat.foundUnmarked", { n, what });
+}
+
 /// One of the two detections, on the menu line that asks for it.
 ///
 /// The pass is read again rather than taken from the cache: the line is how
@@ -5497,19 +5514,7 @@ async function runFlat(id, label, which, kinds, call) {
     const runs = await call();
     applyFlatRuns(kinds, runs, flatMarks(which));
     settleMark();
-    // Which of the two answered is in the sentence. Both write here, and
-    // "3 箇所見つかりました" over a window that has just been asked twice says
-    // nothing about which question it is the answer to.
-    // Named as the pass was asked for: a window told to look for black alone
-    // says it found black, not that it found "black and white".
-    const what = tr(which === "blank" ? blankKey("flat.what.blank") : `flat.what.${which}`);
-    // Whether the ends were marked is part of what happened, and 環境設定 can
-    // have said not to: a sentence promising marks over a timeline that has
-    // none would send somebody looking for them.
-    const found = flatMarks(which) ? "flat.found" : "flat.foundUnmarked";
-    el("status").textContent = runs.length
-      ? tr(found, { n: runs.length, what })
-      : tr("flat.none", { what });
+    el("status").textContent = flatSaid(which, runs.length);
   } catch (e) {
     el("status").textContent = tr("flat.failed", { e });
   } finally {
@@ -5806,12 +5811,12 @@ if (listen) {
     // the one that usually lands, but both can. Opening the same row twice
     // over would throw away whatever the first open had got to.
     if (opening === id) return;
-    // Reloaded when the *row* changes, not merely the recording: two rows can
-    // be the same file cut two different ways, and coming from one to the
-    // other has to bring the other one's cuts with it.
     // Whether this open is what put the recording up, which decides whether
     // the blocks below are part of it arriving or something done to it.
     const arriving = editId !== id;
+    // Reloaded when the *row* changes, not merely the recording: two rows can
+    // be the same file cut two different ways, and coming from one to the
+    // other has to bring the other one's cuts with it.
     if (arriving) {
       opening = id;
       editId = id;
@@ -5834,6 +5839,7 @@ if (listen) {
     // just the same. That one is an edit and steps back like any other; marks
     // a recording comes up with are not, and `settle` keeps them out of the
     // history.
+    //
     // A finding read out of the file beside the recording is this same
     // finding, already down -- band, marks and sentence. Saying it again
     // would either double the marks or announce that they were held back
@@ -5873,10 +5879,6 @@ if (listen) {
     sync();
   });
 
-  // The list window is where 環境設定 lives, so a language change is news
-  // that arrives from there. It carries the language it settled on rather
-  // than the preference, because "follow the machine" is answered once, in
-  // that window, and both windows have to land on the same answer.
   // 拡大表示 saying its page is up: it has nothing on it, so it is told the
   // picture this window is showing and where the pointer last was over it.
   hear("zoom-ready", () => {
@@ -5893,6 +5895,25 @@ if (listen) {
     zoomShown = null;
     paintZoomItem();
   });
+  // One of the two flat detections, run from the list on the row this window
+  // is open on -- which it can be, the lanes no longer standing aside for the
+  // editor. The cache is read on the way in and not again, so a pass that
+  // lands after that has to be handed over, as a commercial detection is.
+  // Somebody asked for it while looking at this timeline, so it marks what it
+  // found the way the line in the ≡ menu would have, and steps back with
+  // everything else.
+  hear("flat-found", (ev) => {
+    const said = ev.payload || {};
+    if (said.id !== editId || !Array.isArray(said.runs)) return;
+    const which = said.which === "quiet" ? "quiet" : "blank";
+    applyFlatRuns(flatKinds(which), said.runs, flatMarks(which));
+    settleMark();
+    el("status").textContent = flatSaid(which, said.runs.length);
+  });
+  // The list window is where 環境設定 lives, so a language change is news
+  // that arrives from there. It carries the language it settled on rather
+  // than the preference, because "follow the machine" is answered once, in
+  // that window, and both windows have to land on the same answer.
   hear("lang-changed", (ev) => setLang(ev.payload, false));
   // 環境設定 is in the other window, and this one has its own copy of
   // everything the store holds. The counter and the meter are the half that

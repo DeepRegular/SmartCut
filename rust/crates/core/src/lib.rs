@@ -388,7 +388,7 @@ impl DroppedStream {
             "superimpose" => "superimposed text",
             "substream" => "a compatibility stream folded into the track written",
             // The two a disc carries that no cut can take with it. See
-            // [`disc::correct_from_index`].
+            // [`disc::unreadable`].
             "menu" => "a menu",
             "text subtitles" => "text subtitles, whose typeface is on the disc",
             _ => "data broadcast",

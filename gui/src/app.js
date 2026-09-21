@@ -1242,21 +1242,6 @@ async function runPictures(clip) {
   if (clip.selected) paintProps();
 }
 
-/// Put back what an earlier session detected in this recording, if it did.
-///
-/// A detection is minutes of reading the file and it is the same answer every
-/// time, so the backend writes it down; this is the list picking it up again.
-/// What comes back is the whole finding and not merely a mark that one was
-/// made -- the blocks go to the editor on the next visit exactly as a fresh
-/// detection's would, because they *are* that detection.
-///
-/// Nothing is said when there is nothing to say: the usual answer for a
-/// recording added for the first time is `null`, and a row that has never
-/// been detected should look like one.
-///
-/// `pending` is for rows that came out of a project file, which knows
-/// something the cache cannot: whether those blocks have already been shown
-/// to the timeline. The cache can only say that a detection was once run.
 /// What has already been found about this recording's pictures and its sound,
 /// out of the cache both windows write.
 ///
@@ -1320,6 +1305,21 @@ async function restoreFlat(clip) {
   if (clip.selected) paintProps();
 }
 
+/// Put back what an earlier session detected in this recording, if it did.
+///
+/// A detection is minutes of reading the file and it is the same answer every
+/// time, so the backend writes it down; this is the list picking it up again.
+/// What comes back is the whole finding and not merely a mark that one was
+/// made -- the blocks go to the editor on the next visit exactly as a fresh
+/// detection's would, because they *are* that detection.
+///
+/// Nothing is said when there is nothing to say: the usual answer for a
+/// recording added for the first time is `null`, and a row that has never
+/// been detected should look like one.
+///
+/// `pending` is for rows that came out of a project file, which knows
+/// something the cache cannot: whether those blocks have already been shown
+/// to the timeline. The cache can only say that a detection was once run.
 async function restoreCm(clip, pending = null) {
   if (!invoke) return;
   let res;
@@ -1466,6 +1466,12 @@ async function runFlatLane(clip, which, call) {
     clip[`${which}State`] = "done";
     clip[`${which}Source`] = null;
     clip[`${which}Phase`] = t(`${which}.rowNote`, { n: runs.length });
+    // And onto the timeline now if that window is open on this row, which it
+    // can be: the lanes do not stand aside for the editor, so a detection can
+    // finish while its clip is being cut. That window reads the cache on the
+    // way in and does not look again, so what lands afterwards is handed over
+    // -- as `runCm` hands a commercial detection over.
+    if (clip === editing && emit) emit("flat-found", { id: clip.id, which, runs });
   } catch (e) {
     if (String(e).includes("cancelled")) {
       clip[`${which}State`] = "queued";
@@ -2600,21 +2606,6 @@ el("droptarget").addEventListener("scroll", () => {
   paintDrag();
 });
 
-/// Queue a commercial detection on every selected clip that can take one.
-///
-/// Queued rather than run: the passes are minutes each on a broadcast
-/// recording, and the detection lane takes them one at a time. Selecting
-/// eighteen clips and pressing Ctrl+D is a night's work asked for in one
-/// keystroke, which is the point of it -- and the indexing of the ones still
-/// unread carries on beside it.
-///
-/// Including the ones still being read. A detection cannot start on a row
-/// the walk has not finished, so it is queued there and taken when the walk
-/// hands the row over; the lane works down the list either way. This used to
-/// take only the rows that were ready at the moment the key was pressed,
-/// which on a list just dropped in is one or two of them -- and the other
-/// sixteen were dropped without a word, so the thing 全選択 → Ctrl+D is for
-/// only worked if you waited for the whole list to be read first.
 /// Reserve one of the two flat detections on every selected row, as
 /// `detectSelected` does for the commercials. A row the walk has not reached
 /// waits there rather than being refused: see `nextFor`.
@@ -2634,6 +2625,21 @@ function detectFlatSelected(which) {
   pump();
 }
 
+/// Queue a commercial detection on every selected clip that can take one.
+///
+/// Queued rather than run: the passes are minutes each on a broadcast
+/// recording, and the detection lane takes them one at a time. Selecting
+/// eighteen clips and pressing Ctrl+D is a night's work asked for in one
+/// keystroke, which is the point of it -- and the indexing of the ones still
+/// unread carries on beside it.
+///
+/// Including the ones still being read. A detection cannot start on a row
+/// the walk has not finished, so it is queued there and taken when the walk
+/// hands the row over; the lane works down the list either way. This used to
+/// take only the rows that were ready at the moment the key was pressed,
+/// which on a list just dropped in is one or two of them -- and the other
+/// sixteen were dropped without a word, so the thing 全選択 → Ctrl+D is for
+/// only worked if you waited for the whole list to be read first.
 function detectSelected() {
   const want = selected().filter((c) => c.state !== "error" && c.cmState !== "running");
   if (!want.length) return;
@@ -8858,16 +8864,6 @@ window.addEventListener("keydown", (ev) => {
   if (ev.key === "Escape" && !about.hidden) showAbout(false);
 });
 
-/// Say everything this window has already said, in the language now in
-/// force.
-///
-/// `applyStatic` has done the markup by the time this runs; what is left is
-/// everything built out of `t` at the moment it was shown. Most of it is
-/// simply redrawn. The sentences that were *stored* rather than drawn --
-/// what a commercial detection found, how a clip's index was come by -- are
-/// worked out again from what they were worked out from, which is why the
-/// row remembers where its note came from. A note the editor wrote is left
-/// alone: this window does not hold what it was made of.
 /// The name of the pictures pass, wherever this window offers it: the button
 /// under クリップ編集 and the line in a row's own menu.
 ///
@@ -8881,6 +8877,16 @@ function paintBlankLabels() {
   setText(el("row-detect-blank").querySelector("span"), t(blankKey("rowmenu.detectBlank")));
 }
 
+/// Say everything this window has already said, in the language now in
+/// force.
+///
+/// `applyStatic` has done the markup by the time this runs; what is left is
+/// everything built out of `t` at the moment it was shown. Most of it is
+/// simply redrawn. The sentences that were *stored* rather than drawn --
+/// what a commercial detection found, how a clip's index was come by -- are
+/// worked out again from what they were worked out from, which is why the
+/// row remembers where its note came from. A note the editor wrote is left
+/// alone: this window does not hold what it was made of.
 function relocalise() {
   for (const c of clips) {
     // Not while the picture pass is on this row or has just failed on it:

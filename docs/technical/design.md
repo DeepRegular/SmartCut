@@ -578,6 +578,12 @@ from the list and then opening the editor to look and backing out lost the marks
 lost them for good, since the finding had already been handed over and would not be
 offered again.
 
+**The two flat detections are handed over the same way.** The list's lanes do not stand
+aside for the editor, so either of them can finish while its clip is being cut — and that
+window reads the cache once, on the way in, and does not look again. What lands after
+that arrives as `flat-found` and goes up where the `≡` menu's own line would have put it:
+the band, the marks Preferences asks for, and the sentence naming which pass answered.
+
 That the window has gone at all is reported from Rust, by `on_window_event` as
 `editor-closed`. The page that is being destroyed is in no position to say so itself.
 
