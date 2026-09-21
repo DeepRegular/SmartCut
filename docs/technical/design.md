@@ -1408,7 +1408,14 @@ These are settings on the output settings screen rather than a question asked on
 file: the folder (empty meaning the input's own), the subfolder, the prefix (`cut_`), and
 the container,
 which is a list naming a container and its extension together — **Same as the input** /
-`MPEG-2 TS (.ts)` / `M2TS (.m2ts)` / `MP4 (.mp4)` / `Matroska (.mkv)` / `QuickTime (.mov)`.
+`MPEG-2 TS (.ts)` / `M2TS (.m2ts)` / `MP4 (.mp4)` / `Matroska (.mkv)` / `WebM (.webm)` /
+`QuickTime (.mov)`. **WebM is the one entry that can be greyed out**, because it is the one
+container that refuses what it is handed: VP8, VP9 or AV1 pictures and Opus or Vorbis sound
+are the whole of what it holds, and the four codecs this window offers to write are none of
+them. So it is offered only where every recording in the list is already in those, and no
+audio codec has been chosen — `webmWritable` in the window asks exactly those three
+questions, and `lockContainer` puts the setting back to **Same as the input** where a
+recording is added that the answer changes.
 **A container per entry** rather than one "video" line, because choosing one is what swaps
 the extension; without that, the container would become "an extension you have to remember".
 

@@ -216,6 +216,53 @@ picture back **with nothing changed and compares the bytes**. A table with one
 row wrong, a length counted one bit out, a run misplaced: all of them come out
 as bytes that differ. Over eleven recordings and 709,534 pictures, none do.
 
+## VP9 and AV1: the codecs that turned out to need nothing
+
+These two were written down for a long time as having no elementary-stream
+concatenation form, and were left out on that ground. The claim was wrong, and
+what it cost was two codecs.
+
+Neither carries a parameter set the way H.264 and HEVC do, and that is the whole
+of why they splice. A **VP9** key frame writes its own frame size, bit depth and
+colour config into the uncompressed header, and refreshes all eight reference
+slots, so a key frame is a decoder reset that describes itself. An **AV1** key
+frame has a sequence header OBU in front of it -- SVT-AV1, libaom and rav1e all
+write one, ten headers for ten key frames in the fixture counted here -- and the
+format allows the sequence header to change at exactly that point. So a partial
+GOP written afresh, and the recording's own pictures after it, need nothing
+patched between them. The generic path splices both, and did before anything was
+written for them: what a measurement of a 554-second VP9 recording found was 900
+pictures out of a wanted 900, decoded clean by libvpx and by libavcodec's own
+VP9, with 82.9% of the packets the recording's own bytes -- the share the plan
+said it would copy, to a tenth.
+
+Three things did have to be said outright.
+
+| | |
+|---|---|
+| **Which AV1 encoder** | `avcodec_find_encoder(AV_CODEC_ID_AV1)` answers libaom-av1, whose default `cpu-used` is 0: 348 seconds for two seconds of 1080p24. That is not a seam being written, it is an export that looks hung. `cut::encoders_for` names SVT-AV1, then rav1e, then libaom, and each is opened in turn -- an encoder being present is not the same as its being able to write this recording, and SVT refuses 4:2:2 when it is opened rather than when it is looked up. At preset 8 it writes the same two seconds in 3.97 s, 0.002 dB from libaom's |
+| **The level is not one number** | A decoder puts an AV1 stream's `seq_level_idx` in `AVCodecContext.level` -- 0 for level 2.0, counting up -- and SVT-AV1 wants 20 for the same level. Handed the recording's own figure it said `Level must be in the range of [2.0-7.3]` at every seam. For AV1 and VP9 the level is left for the encoder to work out; a level describes what a decoder must keep up with, and the pictures written here are the size and rate of the ones they sit among |
+| **The speeds** | Their defaults are set for encoding a film, and this writes a second of one. libvpx spends 6.52 s on two seconds of 1080p24 at `cpu-used 0` and 2.54 s at 2, for a thousandth of a decibel. The figures chosen put a seam at roughly what libx264 costs for the same seconds |
+
+### And every encoder was on one core
+
+Found while measuring the above. `avcodec_alloc_context3` leaves `thread_count`
+at 1, not 0, and an encoder reads it literally -- so seams were written on one
+core while the decode feeding them ran on four, which is the one thing
+`video_decoder_with` was written to avoid at the other end. It never showed
+on the codecs this started with: a seam of H.264 is a second of work either way,
+and the measured difference there is nil. libvpx is 2.7x, and a 1080p VP9 cut of
+two ranges went from 32.6 s to 13.1 s.
+
+### The container
+
+A `.webm` is Matroska with a short list of what may go in it: VP8, VP9 or AV1
+pictures, Opus or Vorbis sound, and nothing else. SmartCut writes neither Opus
+nor Vorbis, so a `.webm` comes out only where its sound is the recording's own,
+carried through -- which is the ordinary case, since that is how the recording
+arrived. The window offers the container only where all three of those hold; see
+[the design notes](design.md).
+
 ## VC-1: the codec with no encoder
 
 Every codec this program cuts has an encoder in libavcodec, bar one. There is no

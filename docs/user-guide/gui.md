@@ -75,6 +75,7 @@ These are the files it can read:
 
 ```
 .ts  .m2ts  .mts  .m2t  .mp4  .mkv  .mov  .m4v      (video files)
+.webm                                               (VP9 and AV1)
 .vob .mpg   .mpeg .m2p                              (what is inside a DVD)
 ```
 
@@ -1221,7 +1222,7 @@ can quote it straight into a bug report.
 
 | What you see | What to do |
 |---|---|
-| **Dropping a file does nothing** | Check the extension is one of `.ts` `.m2ts` `.mts` `.m2t` `.mp4` `.mkv` `.mov` `.m4v` `.vob` `.mpg` `.mpeg` `.m2p`. Dropping a folder brings in the supported files inside it |
+| **Dropping a file does nothing** | Check the extension is one of `.ts` `.m2ts` `.mts` `.m2t` `.mp4` `.mkv` `.webm` `.mov` `.m4v` `.vob` `.mpg` `.mpeg` `.m2p`. Dropping a folder brings in the supported files inside it |
 | **"`Not connected to \\nas\rec`"** | Open that share in your file manager first. SmartCut does not mount anything itself |
 | **Captions are missing from the output** | Captions can only be kept when writing a `.ts`. Check the container in the output settings |
 | **The editor's picture is coarse or slow to appear** | It is still being read. Once the reading finishes the preview is frame-accurate, and once the thumbnails are built the filmstrip fills completely ([Usable from the moment it opens](#usable-from-the-moment-it-opens)). The index is built once only |

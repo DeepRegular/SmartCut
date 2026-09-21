@@ -40,7 +40,9 @@ go.
 | A pressed Blu-ray in **VC-1** (1920x1080i animation), 10 s mid-GOP to mid-GOP | **308/308, 90% of the video byte-identical**, the partial GOPs written afresh at 48 dB |
 | A pressed Blu-ray in **VC-1** (1920x1080p film, heavy grain), the same 10 s | **246/246, 90% byte-identical**, written afresh at 45 dB with the grain intact |
 | H.264 720p from YouTube (29.24 fps) | 878 frames, A/V 2.6 ms |
-| VP9 + Opus (webm→mp4) | Passes if the plan is copy-only |
+| **VP9 + Opus** 1080p23.98 from YouTube, two ranges, all four ends mid-GOP | **432/432, 54.9% byte-identical**, which is the share the plan promised to the tenth |
+| **VP9 + Opus** 352x240 29.97, one 30 s range mid-GOP to mid-GOP | **900/900, 82.9% byte-identical**, decoded clean by libvpx and by libavcodec's own VP9 |
+| **AV1 + Opus** 720p30, one 28 s range mid-GOP to mid-GOP | **840/840**, decoded clean by dav1d and by libaom |
 
 **A VC-1 cut has to be checked differently.** `verify_real.py` lines the two files up
 by frame number, and a frame number is exactly what a piece of a Blu-ray does not
@@ -235,8 +237,37 @@ These only surfaced on real material:
 - **The Python reference implementation still snaps to the ideal grid** and therefore
   still has the phase problem (`mpeg2 ts multi` in `tests/run_tests.sh` is an xfail).
   It still serves as a test oracle, but the Rust implementation is ahead of it.
-- **Supported codecs are H.264 / HEVC / MPEG-2 / MPEG-4 Part 2 / VC-1.** VP9 and AV1
-  have no elementary-stream concatenation form and would need a different design.
+- **Supported codecs are H.264 / HEVC / MPEG-2 / MPEG-4 Part 2 / VC-1 / VP9 / AV1.**
+  The last two were written down here for a long time as having no elementary-stream
+  concatenation form. They have one. Neither carries a parameter set: a VP9 key frame
+  writes its own frame size and colour config into the uncompressed header, and all
+  three AV1 encoders measured here (SVT-AV1, libaom, rav1e) emit a sequence header OBU
+  ahead of every key frame — 10 headers for 10 key frames in the fixture counted. A
+  sequence header may change at a key frame, which is exactly where a splice lands, so
+  a partial GOP written afresh needs nothing patched between it and the copy that
+  follows. `tests/run_vp9_av1_tests.sh` measures three things per codec: the frame
+  count, a clean decode by the decoder players actually use rather than the one that
+  wrote the seam, and the share of the output that is still the recording's own bytes.
+- **Which AV1 encoder writes a seam is chosen by name, not by libavcodec.**
+  `avcodec_find_encoder(AV_CODEC_ID_AV1)` answers libaom-av1, whose default `cpu-used`
+  is 0: measured at 348 s for two seconds of 1080p24, which is not a seam being written
+  but an export that looks hung. SVT-AV1 at preset 8 writes the same two seconds in
+  3.97 s and lands within 0.002 dB of it. So `cut::encoders_for` names SVT-AV1, then
+  rav1e, then libaom, and each is tried in turn — an encoder being present is not the
+  same as its being able to write this recording, and SVT refuses 4:2:2 when it is
+  opened rather than when it is looked up.
+- **An AV1 level does not mean the same number at both ends.** A decoder puts the
+  stream's `seq_level_idx` in `AVCodecContext.level` — 0 for level 2.0, counting up —
+  and SVT-AV1 wants 20 for the same level, so the recording's own figure handed
+  straight over produced `Level must be in the range of [2.0-7.3]` at every seam. For
+  AV1 and VP9 the level is left for the encoder to work out; the codecs whose two ends
+  agree are still told the recording's.
+- **Every encoder ran on one core until 0.8.0.** `avcodec_alloc_context3` leaves
+  `thread_count` at 1, not 0, and an encoder reads it literally, so seams were written
+  on one core while the decode feeding them ran on four. It never showed on the codecs
+  this started with — a seam of H.264 is a second of work either way, and the measured
+  difference there is nil — but libvpx spent 6.56 s on two seconds of 1080p24 held to
+  one core and 2.45 s given the machine.
 - **Dolby Vision survives a copy but not a re-encode.** The RPU on every picture is
   copied with it, so a range whose ends fall on the recording's own entry points comes
   through with all of them; the pictures rewritten at a seam have none, because

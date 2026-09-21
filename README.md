@@ -233,8 +233,8 @@ seconds. Every option is listed in
 
 ## What it can read and write
 
-**Files it can open:** `.ts` `.m2ts` `.mts` `.m2t` `.mp4` `.mkv` `.mov` `.m4v`
-`.vob` `.mpg` `.mpeg` `.m2p`, plus discs — Blu-ray (BDAV or BDMV) and
+**Files it can open:** `.ts` `.m2ts` `.mts` `.m2t` `.mp4` `.mkv` `.webm` `.mov`
+`.m4v` `.vob` `.mpg` `.mpeg` `.m2p`, plus discs — Blu-ray (BDAV or BDMV) and
 DVD-Video, as a folder or as an unencrypted `.iso`, read where they lie.
 
 A DVD stores one continuous stream in pieces of about a gigabyte, because the
@@ -243,13 +243,14 @@ you asked for out of them, without unpacking or copying anything first. The cut
 comes out as a transport stream: putting it back into a DVD's own shape would
 mean writing several kinds of table SmartCut does not write.
 
-**Files it can write:** MPEG-TS, M2TS, MP4, Matroska, QuickTime — or a **BDAV
-disc**, a folder of recordings with an index a player reads as a list of
+**Files it can write:** MPEG-TS, M2TS, MP4, Matroska, WebM, QuickTime — or a
+**BDAV disc**, a folder of recordings with an index a player reads as a list of
 programmes, optionally wrapped in a `.iso`. By default the output uses the same
 format and folder as the input.
 
-**Video:** H.264, HEVC, MPEG-2, MPEG-4 Part 2, VC-1. Interlaced material stays
-interlaced, and 2:3 pulldown is handled properly rather than flattened.
+**Video:** H.264, HEVC, MPEG-2, MPEG-4 Part 2, VC-1, VP9, AV1. Interlaced
+material stays interlaced, and 2:3 pulldown is handled properly rather than
+flattened.
 
 **4K HDR10** cuts too. The few pictures rewritten at a boundary carry the
 recording's own HDR settings, so the picture does not visibly shift partway
@@ -259,8 +260,20 @@ where two parts of the stream say different things on purpose.
 pictures rewritten at a boundary cannot carry it, and a cut that has to rewrite
 any says so.
 
-VP9 and AV1 are not supported. They have no form that can be joined end to end,
-so supporting them would need a different design.
+**VP9 and AV1** are cut the same way as the rest, which took less than it
+looked like it would. Neither carries a parameter set the way H.264 does: a VP9
+key frame states its own size and colour in the clear, and every AV1 encoder
+measured here writes a sequence header in front of every key frame. So the
+recording's own pictures follow a rewritten opening without anything having to
+be patched between them. Measured on a 1080p VP9 recording with Opus sound, a
+range that begins and ends mid-GOP comes out with 83% of its pictures the
+recording's own bytes.
+
+The one thing that had to be said outright is **which** AV1 encoder writes the
+seam. Left to libavcodec it is libaom at its slowest setting, which spends 348
+seconds on two seconds of 1080p; SmartCut asks for SVT-AV1 instead, which
+spends four, and falls back to rav1e and then to libaom on a build that has no
+SVT. The difference in what comes out is two thousandths of a decibel.
 
 **VC-1 is a special case.** Most Blu-rays pressed before about 2010 were written
 in it, and there is no VC-1 encoder anywhere — not in FFmpeg, not on a graphics
