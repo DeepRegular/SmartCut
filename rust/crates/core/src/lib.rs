@@ -113,6 +113,24 @@ pub struct VideoInfo {
     pub width: u32,
     pub height: u32,
     pub frame_rate: f64,
+    /// The rate the container says its pictures are *meant* to come at --
+    /// libavformat's `r_frame_rate`, which for an MP4 is the commonest
+    /// duration in the sample table.
+    ///
+    /// Not the same number as [`frame_rate`], which is the average over the
+    /// whole recording. On anything constant they agree; on an interlaced
+    /// Blu-ray this is the *field* rate and so is twice the other; and on a
+    /// variable-rate recording it is the rate the material was authored at
+    /// while the average is whatever the pictures happened to come to. **The
+    /// last of those is the one worth having**: it is the only round number
+    /// in sight, and a timeline built on the average of a variable recording
+    /// is built on a number nothing in the recording ever meant. See
+    /// [`crate::cut`], which builds one.
+    ///
+    /// 0 where the container would not say.
+    ///
+    /// [`frame_rate`]: VideoInfo::frame_rate
+    pub base_rate: f64,
     /// Reorder depth: how far DTS trails PTS.
     pub has_b_frames: i32,
     pub time_base: f64,
@@ -1032,7 +1050,7 @@ fn assemble(
     let seek_margin = (3.0 * mean_gop).clamp(1.0, 30.0);
 
     video.pulldown = idx.pulldown.unwrap_or(false);
-    video.variable_rate = idx.variable.unwrap_or(false);
+    video.variable_rate |= idx.variable.unwrap_or(false);
     video.bit_rate = idx.bit_rate;
 
     // A container that says it is shorter than the pictures it holds is a
@@ -1284,6 +1302,10 @@ fn outline_of(path: &str) -> Result<(Outline, input::Demux)> {
     };
     let framing = bitstream::framing_from_extradata(&codec, &extradata);
     let frame_rate = f64::from(stream.avg_frame_rate());
+    // And what the container says its pictures are *meant* to come at, which
+    // is a different question and on a variable-rate recording a different
+    // number. See [`VideoInfo::base_rate`].
+    let base_rate = f64::from(stream.rate());
 
     // Read before the sound is described rather than with the rest of the
     // file's own numbers below, because describing the sound needs them: see
@@ -1624,13 +1646,36 @@ fn outline_of(path: &str) -> Result<(Outline, input::Demux)> {
         width,
         height,
         frame_rate,
+        base_rate,
         has_b_frames,
         time_base,
         sample_aspect_ratio,
         framing,
         field_order,
-        pulldown: false,      // the index source reports this, when it can
-        variable_rate: false, // and this
+        pulldown: false, // the index source reports this, when it can
+        // **The container can see one half of this for itself.** A recording
+        // whose pictures average out faster than the rate it declares has
+        // some of them closer together than that rate allows -- there is no
+        // other way to arrive at the average -- and that is the half which
+        // has to be known before a frame of the output is written, because it
+        // decides how finely the output timeline is divided. The other half,
+        // a recording that holds a picture longer than it says, only the walk
+        // sees, and it says so when it has.
+        //
+        // **The margin is a hundredth of a percent, and it has to be.** A
+        // recording of twenty-five minutes with ten fast pictures in it
+        // averages 23.980 against a declared 23.976, which is two parts in
+        // ten thousand; anything looser lets those ten pictures through, and
+        // ten pictures with nowhere to go are ten pictures dropped. What a
+        // margin that tight costs is a constant-rate recording whose two
+        // figures disagree in the last place being called variable -- and
+        // that costs nothing at all, because the timeline it then gets is
+        // the same rate divided more finely, which lands every picture in
+        // exactly the same place. The one answer that would be wrong is
+        // taking an interlaced recording's field rate for its frame rate,
+        // and that cannot arrive here: there the declared rate is twice the
+        // average, not below it.
+        variable_rate: base_rate > 0.0 && frame_rate > base_rate * 1.0001,
         bit_rate: None,       // and this, when it read the pictures to find out
         // Read once, here, rather than hunted for in every packet: a
         // transport stream restates these in front of each entry point, so

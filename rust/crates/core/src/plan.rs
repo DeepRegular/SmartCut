@@ -571,6 +571,7 @@ mod tests {
             framing: NalFraming::AnnexB,
             pulldown: false,
             variable_rate: false,
+            base_rate: 0.0,
             field_order: 2,
             bit_rate: None,
             vc1: None,

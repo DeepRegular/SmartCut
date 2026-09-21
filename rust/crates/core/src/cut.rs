@@ -478,6 +478,8 @@ fn held_to_the_end(span: Span, anchor: Option<f64>, seg: &Segment, src: &Source,
 struct SegmentCtx<'a> {
     /// First display index this segment contributes.
     display_base: i64,
+    /// What the output timeline is counted in. See [`Grid`].
+    grid: Grid,
     reframe: Option<&'a Reframe>,
     /// Set where the recording's NALs carry lengths and the container being
     /// written wants start codes. See [`Unframe`].
@@ -504,11 +506,14 @@ struct Writer {
     /// Whether a track's `pid` is really a PID, for the messages that name
     /// one. See [`crate::Source::on_a_ts`].
     on_a_ts: bool,
-    /// Ticks per *field*. The output timeline is measured in fields, not
+    /// Ticks per *unit*. The output timeline is measured in fields, not
     /// frames, because 2:3 pulldown shows some pictures for three fields and
     /// others for two -- a frame grid cannot express that, a field grid can,
     /// and for constant-rate material every picture is simply two fields.
     field_ticks: i64,
+    /// Units per field, which is one unless the recording needs the
+    /// timeline divided more finely than that. See [`Grid`].
+    sub: i64,
     our_tb: ff::Rational,
     out_tb: ff::Rational,
     depth: i64,
@@ -922,7 +927,7 @@ impl Writer {
     fn held_halves(&self) -> i64 {
         self.pending
             .iter()
-            .map(|e| if e.fields < 2 { 1 } else { 2 })
+            .map(|e| if e.fields < 2 * self.sub { 1 } else { 2 })
             .sum()
     }
 
@@ -945,7 +950,7 @@ impl Writer {
         // belongs to, the muxer refuses `pts < dts` outright, and the whole
         // cut stopped over it. A picture is never decoded after it is shown,
         // so that is the ceiling.
-        let mut dts = (next_in_display - self.depth * 3).min(e.display);
+        let mut dts = (next_in_display - self.depth * 3 * self.sub).min(e.display);
         // And never behind the picture before it. The value above is the
         // smallest display position still waiting, which climbs while the
         // pictures arrive in one of the orders a coder produces and does not
@@ -985,7 +990,7 @@ impl Writer {
                 )
             })?;
         self.written += 1;
-        if e.fields < 2 {
+        if e.fields < 2 * self.sub {
             self.halves += 1;
         }
         if let Some(report) = &self.progress {
@@ -2086,7 +2091,7 @@ fn copy_segment(
     let (mut ictx, ist_index) = open_input(&src.input.url)?;
     let in_tb = f64::from(ictx.stream(ist_index).unwrap().time_base());
     let fd = src.video.frame_duration();
-    let field = fd / 2.0;
+    let field = ctx.grid.unit();
     // The stretch this segment copies, as bytes. A copy that begins just
     // after a seam is looking for an entry point that the stretch before it
     // can reach over: the last entry point of that stretch is written earlier
@@ -2253,7 +2258,7 @@ fn copy_segment(
             ),
             first_field.take(),
         ) {
-            (true, Some(first)) => (first + 1, 1),
+            (true, Some(first)) => (first + ctx.grid.sub, ctx.grid.sub),
             (true, None) => {
                 let at = display_base + ((t - a) / field).round() as i64;
                 first_field = Some(at);
@@ -2261,7 +2266,11 @@ fn copy_segment(
             }
             (false, _) => (
                 display_base + ((t - a) / field).round() as i64,
-                crate::bitstream::display_fields(data, &src.video.codec, src.video.vc1.as_ref()),
+                ctx.grid.fields(crate::bitstream::display_fields(
+                    data,
+                    &src.video.codec,
+                    src.video.vc1.as_ref(),
+                )),
             ),
         };
         span.fields = span.fields.max(display - display_base + fields);
@@ -2929,6 +2938,77 @@ fn open_encoder_as(
         .map_err(|e| anyhow!("cannot open encoder: {e}"))
 }
 
+/// How finely the output timeline is divided where a recording needs it.
+///
+/// **32 sub-fields, which at 24 fps is two thirds of a millisecond.** The
+/// recordings this was measured on state their times in milliseconds, so
+/// nothing they can say lands more than a third of one away from a place the
+/// timeline has. It is only ever spent on a variable-rate recording; see
+/// [`Grid`].
+const FINE: i64 = 32;
+
+/// The units the output timeline is counted in.
+///
+/// **A field of the rate the recording is built on**, which for everything
+/// constant is the recording's own rate and one unit per field.
+///
+/// A variable-rate recording has no such rate to take. Its average is not a
+/// rate anything in it was ever coded at -- a 23.976 recording with a second
+/// of 59.94 in it averages 24.93 -- and a timeline built on that puts every
+/// picture in the recording on a grid nothing was authored to. Measured on a
+/// 50-second range of one: **1093 pictures of 1251 more than 5 ms from where
+/// the recording had them, a median of 12.4 ms**, which is a third of a
+/// frame. Worse, a field of it is 20 ms and the pictures of the fast stretch
+/// are 16.7 ms apart, so two of them land on the same place and the second
+/// has nowhere to go: **8 were dropped outright**, and the note about it
+/// blamed a damaged recording.
+///
+/// So there the timeline is built on the rate the container says the
+/// material was authored at -- `r_frame_rate`, the commonest duration in the
+/// sample table -- and each field of it is divided into [`FINE`]. Both
+/// numbers are then round: the base rate is what the pictures actually come
+/// at nearly all of the time, and a fine division holds whatever the rest of
+/// them do.
+#[derive(Debug, Clone, Copy)]
+struct Grid {
+    /// Numerator and denominator of the rate the fields are counted at.
+    num: i64,
+    den: i64,
+    /// Units per field.
+    sub: i64,
+}
+
+impl Grid {
+    fn of(src: &Source) -> Grid {
+        let v = &src.video;
+        if v.variable_rate && v.base_rate > 0.0 {
+            let (num, den) = frame_rate_parts(v.base_rate);
+            return Grid { num, den, sub: FINE };
+        }
+        let (num, den) = frame_rate_parts(v.frame_rate);
+        Grid { num, den, sub: 1 }
+    }
+
+    /// Ticks per second in the output's own time base.
+    fn timescale(self) -> i64 {
+        2 * self.num * self.sub
+    }
+
+    fn time_base(self) -> ff::Rational {
+        ff::Rational::new(1, self.timescale() as i32)
+    }
+
+    /// How long one unit lasts, in seconds.
+    fn unit(self) -> f64 {
+        self.den as f64 / self.timescale() as f64
+    }
+
+    /// What a picture shown for `fields` fields occupies.
+    fn fields(self, fields: i64) -> i64 {
+        fields * self.sub
+    }
+}
+
 /// Recover the exact rational frame rate, so 29.97 comes back as 30000/1001
 /// rather than something that rounds.
 fn frame_rate_parts(fps: f64) -> (i64, i64) {
@@ -3089,7 +3169,7 @@ fn reencode_segment(
     let in_tb = f64::from(stream.time_base());
     let params = stream.parameters();
     let fd = src.video.frame_duration();
-    let field = fd / 2.0;
+    let field = ctx.grid.unit();
     // A range bound often lands exactly on a picture's timestamp. Compare
     // with a hair of slack so float representation alone cannot decide
     // whether that picture is in or out.
@@ -4437,14 +4517,17 @@ pub fn cut_with_progress(
             std::slice::from_raw_parts((*p).extradata, (*p).extradata_size as usize).to_vec()
         }
     };
-    let (num, den) = frame_rate_parts(src.video.frame_rate);
+    let grid = Grid::of(src);
+    let den = grid.den;
 
-    // Output timebase: one tick per 1/(2*num) second, so a *field* is exactly
-    // `den` ticks and a normal frame is `2*den`. 30000/1001 lands on 1/60000
-    // with 1001 ticks per field -- integer arithmetic throughout, no rounding
-    // anywhere on the timeline, and 3-field pictures are representable.
+    // Output timebase: one tick per 1/(2*num*sub) second, so a *unit* is
+    // exactly `den` ticks, a field is `sub` of them and a normal frame twice
+    // that. 30000/1001 lands on 1/60000 with 1001 ticks per field -- integer
+    // arithmetic throughout, no rounding anywhere on the timeline, and
+    // 3-field pictures are representable. See [`Grid`] for the recording
+    // that needs the units smaller than a field.
     let mut muxer_opts = ff::Dictionary::new();
-    let timescale = (2 * num).to_string();
+    let timescale = grid.timescale().to_string();
     let to_ts = writing_ts(output);
     // Writing another transport stream means keeping the one the recording
     // already had. Its PIDs, its service number, the language on its audio --
@@ -4833,7 +4916,7 @@ pub fn cut_with_progress(
     {
         let mut ost = octx.add_stream(ff::encoder::find(ff::codec::Id::None))?;
         ost.set_parameters(params);
-        ost.set_time_base(ff::Rational::new(1, 2 * num as i32));
+        ost.set_time_base(grid.time_base());
         unsafe {
             // A stream that says Dolby Vision and hands a player no RPU to
             // drive it is worse off than one that never said so. Where the
@@ -5331,7 +5414,8 @@ pub fn cut_with_progress(
         octx,
         on_a_ts: src.on_a_ts,
         field_ticks: den,
-        our_tb: ff::Rational::new(1, 2 * num as i32),
+        sub: grid.sub,
+        our_tb: grid.time_base(),
         out_tb,
         // DTS trails PTS by the stream's reorder depth. Being generous costs
         // nothing: the muxer writes an edit list for the negative lead-in,
@@ -5359,7 +5443,6 @@ pub fn cut_with_progress(
         shrink: shrink_for(src, opts),
     };
 
-    let fps = num as f64 / den as f64;
     let mut display_base: i64 = 0;
     let mut pictures: i64 = 0;
     // Where each kept range began in the output, which is what the tables
@@ -5383,7 +5466,7 @@ pub fn cut_with_progress(
         }
         // Anchor this range's audio to the output time its video starts at.
         // display_base counts fields, so two per frame.
-        let target_start = display_base as f64 / (2.0 * fps);
+        let target_start = display_base as f64 * grid.unit();
         range_starts.push(target_start);
         // How far each track actually laid down runs ahead of or behind where
         // this range's video starts. Zero for the first range, which is
@@ -5498,6 +5581,7 @@ pub fn cut_with_progress(
             let first_segment = n == 0;
             let ctx = SegmentCtx {
                 display_base,
+                grid,
                 reframe: reframe.as_ref(),
                 unframe: unframe.as_ref(),
                 audio: &audio_ctx,
@@ -5523,7 +5607,7 @@ pub fn cut_with_progress(
         // after the cut. Left undone, a subtitle stands into the next range
         // -- or, at the end of the file, to the end of the file.
         if !writer.graphics.is_empty() {
-            let ends_at = display_base as f64 / (2.0 * fps);
+            let ends_at = display_base as f64 * grid.unit();
             for track in 0..writer.graphics.len() {
                 for held in writer.graphics[track].plane.clear(ends_at) {
                     writer.push_graphics(track, &held, 0.0, true)?;
@@ -5532,7 +5616,7 @@ pub fn cut_with_progress(
         }
         // And a DVD's subtitles are taken down at the same instant, by a
         // unit that says stop and nothing else.
-        let ends_at = display_base as f64 / (2.0 * fps);
+        let ends_at = display_base as f64 * grid.unit();
         if let Some(subs) = writer.subpictures.as_mut() {
             subs.end_range(ends_at);
         }
