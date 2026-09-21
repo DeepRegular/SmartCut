@@ -424,12 +424,54 @@ struct GraphicsCtx {
 /// their pictures at an arbitrary phase, and pulldown material shows some of
 /// them for three fields. Anchoring each segment on its own first picture
 /// keeps the joins exact under both.
+///
+/// **What the pictures cannot say is how long the last one stays up.** A
+/// picture is on screen until the next picture replaces it, and the next
+/// picture belongs to the segment after this one -- or, at the end of a
+/// range, to the material the cut leaves out. A stream that codes a constant
+/// rate never has to say so, because there the two answers are the same
+/// number; a variable-rate one holds a picture for as long as nothing
+/// changed, and there the coded length is a floor and nothing more. So the
+/// span is also asked where the segment's display coverage ends, and takes
+/// whichever answer is longer. See [`held_to_the_end`].
 #[derive(Debug, Default, Clone, Copy)]
 struct Span {
     /// Fields this segment occupies on the output timeline.
     fields: i64,
     /// Pictures emitted.
     pictures: i64,
+}
+
+/// Hold the segment's last picture until its coverage ends.
+///
+/// **Measured on a variable-rate recording**: a thirty-second range of a
+/// WebM whose pictures sit between 33 ms and 2.4 s apart came out 28.1 s
+/// long, and 46 of its 505 pictures were a whole frame early -- every one of
+/// them after the seam where the held picture was cut short. On a
+/// recording whose gaps run from 16 ms to 117 ms it was 598 of 628. Each
+/// seam loses the difference between what the last picture says it is worth
+/// and how long it was really up, and everything after that seam moves by
+/// the sum of them.
+///
+/// `seg.end` is a real instant rather than a figure off the planner's grid:
+/// it is the entry point the next segment starts on, or the end of the
+/// range. The file's own end bounds it, because a range may be asked for
+/// past where the recording stops and a last picture held to an hour is not
+/// a hold, it is an hour of nothing.
+///
+/// Never shortens a span. A copy that stopped early has its own reasons and
+/// they are not this function's to overrule.
+fn held_to_the_end(span: Span, anchor: Option<f64>, seg: &Segment, src: &Source, field: f64) -> Span {
+    let Some(a) = anchor else { return span };
+    let until = if src.duration > 0.0 {
+        seg.end.min(src.duration)
+    } else {
+        seg.end
+    };
+    Span {
+        fields: span.fields.max(((until - a) / field).round() as i64),
+        ..span
+    }
 }
 
 /// Where a segment sits in the output and how its packets must be shaped.
@@ -2290,7 +2332,7 @@ fn copy_segment(
         }
         bail!("could not find the entry point at {:.3}s", seg.start);
     }
-    Ok(span)
+    Ok(held_to_the_end(span, anchor, seg, src, field))
 }
 
 /// How the pictures of a re-encoded segment are produced.
@@ -3100,6 +3142,58 @@ fn reencode_segment(
     // reason this stops at them.
     let mut drained = false;
 
+    // **What is on screen when a range opens need not have arrived in it.**
+    //
+    // A picture stays up until the next one replaces it. Where pictures come
+    // at a constant rate the next one is always a frame away, so a range
+    // begins within a frame of a picture of its own and the one before it is
+    // of no interest. A variable-rate recording holds a picture for as long
+    // as nothing changed -- seconds, on a screen capture -- and a range
+    // opening inside such a hold has no picture of its own at all: measured
+    // on a WebM whose pictures sit up to 2.4 s apart, a range inside one of
+    // the holds stopped the whole run with `no pictures decoded`, and a
+    // range that merely began inside one opened on whatever came next.
+    //
+    // So the last picture before the range is kept, and put in at the
+    // range's own start where nothing arrives within a frame of it. That
+    // test is what keeps this from touching constant-rate material, where
+    // the gap to the previous picture is a frame by construction and the
+    // range is answered by the picture it already had.
+    let mut still_on_screen: Option<ff::frame::Video> = None;
+
+    macro_rules! place {
+        ($f:expr, $t:expr) => {{
+            let t = $t;
+            let a = *anchor.get_or_insert(t);
+            let display = display_base + ((t - a) / field).round() as i64;
+            let fields = 2 + unsafe { (*$f.as_ptr()).repeat_pict.max(0) as i64 };
+            placed.insert(fed, (display, fields));
+            span.fields = span.fields.max(display - display_base + fields);
+            span.pictures += 1;
+            $f.set_pts(Some(fed));
+            fed += 1;
+            $f.set_kind(ff::picture::Type::None);
+            mark_interlacing(&mut $f, &src.video);
+            match &mut encoder {
+                Pictures::Libav(enc) => {
+                    enc.send_frame(&$f)?;
+                    drain_encoder(enc, reframe, &placed, writer)?;
+                }
+                // Nothing is held back: a picture that references
+                // nothing is finished the moment it is written, so it
+                // goes straight out with the timing worked out above.
+                Pictures::Vc1(enc) => {
+                    let packet = encode_vc1(enc, &$f, fields)?;
+                    writer.push(Emitted {
+                        packet,
+                        display,
+                        fields,
+                    })?;
+                }
+            }
+        }};
+    }
+
     macro_rules! feed {
         () => {
             while decoder.receive_frame(&mut frame).is_ok() {
@@ -3110,35 +3204,22 @@ fn reencode_segment(
                     continue;
                 }
                 if t < seg.start - tol {
+                    if anchor.is_none() {
+                        still_on_screen = Some(frame.clone());
+                    }
                     continue;
                 }
-                let a = *anchor.get_or_insert(t);
-                let display = display_base + ((t - a) / field).round() as i64;
-                let fields = 2 + unsafe { (*frame.as_ptr()).repeat_pict.max(0) as i64 };
-                placed.insert(fed, (display, fields));
-                span.fields = span.fields.max(display - display_base + fields);
-                span.pictures += 1;
-                frame.set_pts(Some(fed));
-                fed += 1;
-                frame.set_kind(ff::picture::Type::None);
-                mark_interlacing(&mut frame, &src.video);
-                match &mut encoder {
-                    Pictures::Libav(enc) => {
-                        enc.send_frame(&frame)?;
-                        drain_encoder(enc, reframe, &placed, writer)?;
-                    }
-                    // Nothing is held back: a picture that references
-                    // nothing is finished the moment it is written, so it
-                    // goes straight out with the timing worked out above.
-                    Pictures::Vc1(enc) => {
-                        let packet = encode_vc1(enc, &frame, fields)?;
-                        writer.push(Emitted {
-                            packet,
-                            display,
-                            fields,
-                        })?;
+                // Nothing arrived within a frame of the range's start, so
+                // what belongs there is the picture that was already up --
+                // shown from the range's own start rather than from its own,
+                // which is before the range.
+                if anchor.is_none() && t - seg.start >= fd {
+                    if let Some(mut held) = still_on_screen.take() {
+                        place!(held, seg.start);
                     }
                 }
+                still_on_screen = None;
+                place!(frame, t);
             }
         };
     }
@@ -3234,6 +3315,14 @@ fn reencode_segment(
         feed!();
     }
     let _ = past_end; // only the loop above acts on it
+    // Nothing arrived in the window at all: the whole of it lies inside one
+    // picture's hold, and that picture is the whole of what it has to show.
+    if anchor.is_none() {
+        if let Some(mut held) = still_on_screen.take() {
+            place!(held, seg.start);
+        }
+    }
+    let _ = fed; // the count only matters while pictures are still going in
     if let Pictures::Libav(enc) = &mut encoder {
         enc.send_eof()?;
         drain_encoder(enc, reframe, &placed, writer)?;
@@ -3262,7 +3351,7 @@ fn reencode_segment(
             seg.start, seg.end, span.pictures,
         );
     }
-    Ok(span)
+    Ok(held_to_the_end(span, anchor, seg, src, field))
 }
 
 /// Where the streams go on the way out.
