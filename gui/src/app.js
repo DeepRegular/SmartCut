@@ -46,7 +46,19 @@ const VIDEO_EXT = [
   // older recorder is. Read like any other file; written out as a transport
   // stream, for the reason `PS_LIKE` gives.
   "vob", "mpg", "mpeg", "m2p",
+  // Matroska under another name, and the one shape VP9 and AV1 arrive in.
+  // Written back as itself, which is what `WEBM_VIDEO` is for.
+  "webm",
 ];
+
+/// What a `.webm` is allowed to hold, which is a short list on purpose.
+///
+/// The format is a subset of Matroska and a muxer refuses anything else
+/// outright. Sound is the tighter of the two: Opus and Vorbis are the whole
+/// of it, and SmartCut writes neither -- so a `.webm` comes out only where
+/// its sound is the recording's own, carried through.
+const WEBM_VIDEO = ["vp8", "vp9", "av1"];
+const WEBM_AUDIO = ["opus", "vorbis"];
 const extOf = (p) => (p.match(/\.([A-Za-z0-9]+)$/)?.[1] || "").toLowerCase();
 const nameOf = (p) => p.split(/[/\\]/).pop();
 const dirOf = (p) => p.slice(0, Math.max(p.lastIndexOf("/"), p.lastIndexOf("\\")) + 1);
@@ -3781,6 +3793,52 @@ function under(want, ceiling) {
 /// the one thing a shortened list cannot say, and a codec that is absent
 /// because of the recording in the list looks like a codec this program does
 /// not have.
+/// Whether the list could be written as a `.webm`, which most lists cannot.
+///
+/// Three questions, and all three have to answer yes. The pictures have to
+/// be one of the three the format carries. The sound has to be one of the
+/// two it carries. And no audio codec may be chosen, because the four this
+/// window offers to write are none of them -- asking for AC-3 in a `.webm`
+/// is asking for a file that cannot exist, and the control that asks for it
+/// is the one a person is more likely to have meant.
+///
+/// True for an empty list: nothing has been added that the answer would be
+/// about, and a control greyed before there is a recording to grey it for
+/// says only that the program has not been used yet.
+function webmWritable() {
+  const list = ready();
+  if (!list.length) return true;
+  if (settings.audioCodec) return false;
+  // The first look answers this, so the control settles the moment a file is
+  // dropped rather than when the walk over it finishes.
+  return list.every((c) => {
+    const i = factsOf(c);
+    return (
+      i &&
+      WEBM_VIDEO.includes(String(i.codec || "").toLowerCase()) &&
+      keptAudio(c).every((a) => WEBM_AUDIO.includes(String(a.codec || "").toLowerCase()))
+    );
+  });
+}
+
+/// Grey the containers this list cannot be written into.
+///
+/// Only WebM so far. The others hold everything that reaches them -- a
+/// transport stream is the shape a broadcast already was, and MP4, Matroska
+/// and QuickTime each take every codec this program writes -- so there has
+/// never been anything here to refuse.
+function lockContainer() {
+  const ok = webmWritable();
+  const opt = [...el("out-container").options].find((o) => o.value === "webm");
+  if (!opt) return;
+  opt.disabled = !ok;
+  if (ok || settings.container !== "webm") return;
+  // Held and no longer writable: back to 入力と同じ, which is the absence of
+  // a choice and so is always somewhere to fall back to.
+  settings.container = "";
+  el("out-container").value = "";
+}
+
 function lockUnwritable() {
   const can = writableSound();
   const cap = soundCeiling();
@@ -4812,6 +4870,7 @@ async function renderGauge() {
 function renderOutset() {
   lockAudioDetail();
   lockUnwritable();
+  lockContainer();
   fillBitrates();
   paintMode();
   paintNumbering();
