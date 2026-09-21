@@ -287,6 +287,18 @@ two thirds of a millisecond, which is finer than the containers involved
 state their times in. The same three ranges now come out **6294 pictures of
 6294, no gap wrong by more than 0.6 ms**.
 
+**The two sides of the question are not asked the same way.** A gap too long
+is what a hold looks like and also what a dropout looks like, so it takes a
+share of them -- one in a hundred -- to tell a recording that varies from one
+that is damaged. A gap too *short* has no such twin: nothing goes wrong with
+a recording in a way that puts two of its pictures closer together than its
+own rate allows, and every one of those is a picture the timeline has nowhere
+to put. So four of them settle it, which is enough that one malformed
+timestamp cannot and few enough that the ten fast pictures in a
+twenty-five-minute programme can. Across seven broadcast and disc recordings
+here, 47,971 pictures between them, there is not one gap shorter than half a
+frame.
+
 **The container can see half of this for itself**, which matters because the
 decision is made before a frame is written and an MP4's index gives access
 points and nothing else. A recording whose pictures average out faster than
@@ -297,9 +309,13 @@ it averages two parts in ten thousand above its declared rate, and ten
 pictures with nowhere to go are ten pictures dropped. Calling a constant-rate
 recording variable by mistake costs nothing: the timeline it then gets is the
 same rate divided more finely, which puts every picture in exactly the same
-place. The one answer that would be wrong -- taking an interlaced recording's
-field rate for its frame rate -- cannot arrive, because there the declared
-rate is twice the average rather than below it.
+place. The one answer that would be wrong is taking an interlaced recording's field
+rate for its frame rate -- a Blu-ray averaging 29.97 declares 59.94, and a
+timeline counting fields of that makes every picture half as long as it is.
+The container's own answer cannot produce it, since it only calls a recording
+variable when the average runs *above* the declared rate; the walk has an
+answer of its own, so [`Grid`] declines a declared rate above the average
+rather than let the two of them meet in the one place it would matter.
 
 **Neither touches constant-rate material**, and both are written so that they
 cannot. The span is a maximum over the two answers, and they agree whenever

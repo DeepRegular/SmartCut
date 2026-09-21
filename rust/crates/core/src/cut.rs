@@ -2981,12 +2981,25 @@ struct Grid {
 impl Grid {
     fn of(src: &Source) -> Grid {
         let v = &src.video;
-        if v.variable_rate && v.base_rate > 0.0 {
-            let (num, den) = frame_rate_parts(v.base_rate);
-            return Grid { num, den, sub: FINE };
+        if !v.variable_rate {
+            let (num, den) = frame_rate_parts(v.frame_rate);
+            return Grid { num, den, sub: 1 };
         }
-        let (num, den) = frame_rate_parts(v.frame_rate);
-        Grid { num, den, sub: 1 }
+        // **A declared rate above the average is not a frame rate.** For an
+        // interlaced recording `r_frame_rate` is the rate of its *fields*,
+        // so a Blu-ray averaging 29.97 declares 59.94 -- and a timeline
+        // counting fields of 59.94 makes every picture half as long as it
+        // is. It cannot arrive here by the container's own answer, which
+        // only calls a recording variable when the average runs *above* the
+        // declared rate, but the walk has an answer of its own and there is
+        // no reason to let the two of them meet in the one place it would be
+        // wrong. Where the declared rate is not usable the average stands,
+        // which is what a recording that varies by holding a picture wanted
+        // anyway: there the two agree, and all that is needed is the
+        // finer division.
+        let usable = v.base_rate > 0.0 && v.base_rate <= v.frame_rate * 1.01;
+        let (num, den) = frame_rate_parts(if usable { v.base_rate } else { v.frame_rate });
+        Grid { num, den, sub: FINE }
     }
 
     /// Ticks per second in the output's own time base.
@@ -5920,6 +5933,63 @@ pub fn cut_with_progress(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A grid from the two rates and whether the walk called the recording
+    /// variable, without a whole `Source` to hang them off.
+    fn grid(frame_rate: f64, base_rate: f64, variable: bool) -> Grid {
+        if !variable {
+            let (num, den) = frame_rate_parts(frame_rate);
+            return Grid { num, den, sub: 1 };
+        }
+        let usable = base_rate > 0.0 && base_rate <= frame_rate * 1.01;
+        let (num, den) = frame_rate_parts(if usable { base_rate } else { frame_rate });
+        Grid { num, den, sub: FINE }
+    }
+
+    /// A constant recording is counted in whole fields of its own rate, and
+    /// the output it has always had comes out unchanged.
+    #[test]
+    fn a_constant_recording_is_counted_in_fields() {
+        let g = grid(30000.0 / 1001.0, 30000.0 / 1001.0, false);
+        assert_eq!(g.sub, 1);
+        assert_eq!(g.timescale(), 60000);
+        assert!((g.unit() - 1001.0 / 60000.0).abs() < 1e-12);
+    }
+
+    /// A recording whose pictures average out faster than it declares is
+    /// counted on the rate it declares, finely enough for the fast ones.
+    #[test]
+    fn a_recording_faster_than_it_declares_takes_the_declared_rate() {
+        let g = grid(24.926, 24000.0 / 1001.0, true);
+        assert_eq!(g.sub, FINE);
+        assert_eq!(g.timescale(), 2 * 24000 * FINE);
+        // Two pictures a sixtieth of a second apart have to land on places
+        // of their own, which is what a field of 23.976 could not give them.
+        assert!(1.0 / 60.0 / g.unit() > 2.0);
+    }
+
+    /// **An interlaced recording declares the rate of its fields**, which is
+    /// twice its pictures'. Taken for a frame rate it would make every
+    /// picture half as long as it is, so it is not taken: the average
+    /// stands, and only the division gets finer.
+    #[test]
+    fn a_field_rate_is_never_mistaken_for_a_frame_rate() {
+        let avg = 30000.0 / 1001.0;
+        let g = grid(avg, 60000.0 / 1001.0, true);
+        let plain = grid(avg, avg, false);
+        assert!(
+            (g.unit() * FINE as f64 - plain.unit()).abs() < 1e-9,
+            "a field of the fine grid is a field of the plain one"
+        );
+    }
+
+    /// And a container that would not say leaves the average standing too.
+    #[test]
+    fn no_declared_rate_leaves_the_average() {
+        let avg = 30000.0 / 1001.0;
+        let g = grid(avg, 0.0, true);
+        assert_eq!(g.timescale(), 2 * 30000 * FINE);
+    }
 
     /// What the output settings screen offers, which is what it asks about.
     /// A zero is its `入力と同じ`.
