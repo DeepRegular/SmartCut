@@ -7,10 +7,10 @@
 ```bash
 cargo install tauri-cli --version ^2 --locked   # 初回のみ
 cd gui/src-tauri && NO_STRIP=1 cargo tauri build --bundles appimage
-# -> target/release/bundle/appimage/SmartCut_0.7.5_amd64.AppImage
+# -> target/release/bundle/appimage/SmartCut_0.8.0_amd64.AppImage
 ```
 
-成果物は 186.0 MB で、共有ライブラリ 717 個をすべて同梱している。WebKitGTK 4.1 も、
+成果物は 186.0 MB で、共有ライブラリ 716 個をすべて同梱している。WebKitGTK 4.1 も、
 `libavcodec` / `libavformat` / `libavutil` / `libavfilter` / `libswscale` /
 `libswresample` も入っているので、**動かす側に ffmpeg を入れる必要はない**。
 SmartCut はシステムの FFmpeg 7.1 に動的リンクしているので、配布できるかどうかは
@@ -48,7 +48,7 @@ libasound2 はデスクトップ Linux ならまず入っているし、ALSA を
 展開して確認できる。
 
 ```bash
-./SmartCut_0.7.5_amd64.AppImage --appimage-extract >/dev/null
+./SmartCut_0.8.0_amd64.AppImage --appimage-extract >/dev/null
 ldd squashfs-root/usr/bin/smartcut | grep -E 'asound|jack|pulse'
 # libasound.so.2 / libjack.so.0 -> /lib/x86_64-linux-gnu/...   (システム側)
 # libpulse.so.0                 -> squashfs-root/usr/bin/../lib/...  (同梱)
@@ -71,8 +71,8 @@ AppImage 自体で動作を確認している。素材を開く、走査する�
 
 ```bash
 ./gui/build-linux.sh
-# -> gui/src-tauri/target/release/bundle/linux/SmartCut-0.7.5-linux-x86_64.tar.gz
-# -> gui/src-tauri/target/release/bundle/linux/smartcut_0.7.5_amd64.deb
+# -> gui/src-tauri/target/release/bundle/linux/SmartCut-0.8.0-linux-x86_64.tar.gz
+# -> gui/src-tauri/target/release/bundle/linux/smartcut_0.8.0_amd64.deb
 ```
 
 同じビルドを 2 通りに詰めたものである。どちらも GUI を `smartcut`、コマンド
@@ -83,17 +83,17 @@ cargo のクレート名は `gui` なので、放っておくと Tauri はその
 インストールしてしまう。1 つのアプリが占有してよい名前ではない。`tauri.conf.json` の
 `mainBinaryName` で `smartcut` に固定してある（0.2.0 以降。それ以前は Windows 用
 だけに設定されていた）。一方 Tauri が書き出すバンドル*ファイル*の名前は
-`productName` に従うので、`SmartCut_0.7.5_amd64.deb` になる。deb のパッケージ名
+`productName` に従うので、`SmartCut_0.8.0_amd64.deb` になる。deb のパッケージ名
 `smartcut` と食い違うのはこのためである。`build-linux.sh` は両方を
 `tauri.conf.json` から読む。
 
 | 成果物 | サイズ | FFmpeg | 必要条件 |
 |---|---|---|---|
-| `SmartCut-0.7.5-linux-x86_64.tar.gz` | 202.0 MB | 同梱 | glibc 2.39 以上。FUSE 不要 |
-| `smartcut_0.7.5_amd64.deb` | 4.4 MB | システムのものを使用 | FFmpeg 7.1（Debian 13 / Ubuntu 25.04 以降） |
+| `SmartCut-0.8.0-linux-x86_64.tar.gz` | 202.0 MB | 同梱 | glibc 2.39 以上。FUSE 不要 |
+| `smartcut_0.8.0_amd64.deb` | 4.5 MB | システムのものを使用 | FFmpeg 7.1（Debian 13 / Ubuntu 25.04 以降） |
 
 tar.gz の中身は、AppImage と同じ AppDir を展開したものである。linuxdeploy が
-`ldd` を辿って集めた 717 個のライブラリがそのまま `app/` にある。`./smartcut` は
+`ldd` を辿って集めた 716 個のライブラリがそのまま `app/` にある。`./smartcut` は
 AppRun を呼ぶ 4 行のスクリプトで、`./smartcut-cli` は `LD_LIBRARY_PATH` を
 `app/usr/lib` に向けて CLI を呼ぶ。AppImage が動く環境ならどこでも動き、FUSE は
 不要である。gzip なので、squashfs+zstd の AppImage より 16 MB 大きい。
@@ -103,7 +103,7 @@ AppRun を呼ぶ 4 行のスクリプトで、`./smartcut-cli` は `LD_LIBRARY_P
 linuxdeploy は `ldd` が挙げた名前をそのまま複製する。`libfoo.so` と
 `libfoo.so.0` は -dev パッケージが持つ `libfoo.so.0.1.2` へのシンボリックリンク
 なので、実体をたどって 3 つとも実ファイルとして入っていた。librsvg なら 6.2 MB が
-3 回である。合計 19.4 MB、529 MB のうちの 3.7% になる。
+3 回である。合計 19.4 MB、524 MB のうちの 3.7% になる。
 
 ローダーが開くのは SONAME の 1 つだけで、残り 2 つは名前でしかない。そこで
 `build-linux.sh` は tar に詰める前にシンボリックリンクへ戻す。**gzip 自身では
@@ -160,7 +160,7 @@ Linux の開発 VM から `x86_64-pc-windows-msvc` へクロスビルドして�
 
 ```bash
 ./gui/build-windows.sh
-# -> gui/src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis/SmartCut_0.7.5_x64-setup.exe
+# -> gui/src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis/SmartCut_0.8.0_x64-setup.exe
 # -> gui/src-tauri/target/x86_64-pc-windows-msvc/release/bundle/portable/smartcut-portable-x64.zip
 ```
 
