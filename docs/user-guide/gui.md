@@ -501,10 +501,12 @@ subtitles go into the output is answered by **Tracks** and by the output setting
 
 ### Finding blank pictures and silence
 
-**Detect blank** (`Ctrl+B`) and **Detect silence** (`Ctrl+Q`), in the `≡` menu
-at the bottom right, read the recording that is open. If the list has already been over it, what was
-found is on the timeline when the window opens; the buttons read it again. They
-are two passes: running one leaves what the other found where it is.
+**Detect black** (`Ctrl+B`) and **Detect silence** (`Ctrl+Q`), in the `≡` menu
+at the bottom right, read the recording that is open. The first is named after
+**The blank pass looks for** in Preferences, as the list's button is. If the
+list has already been over it, what was found is on the timeline when the
+window opens; the lines read it again. They are two passes: running one leaves
+what the other found where it is.
 
 Each stretch is drawn as a band under the timeline — blue-grey for black and
 white, green for silence — in its own row under the scene changes, which are
@@ -519,7 +521,10 @@ ones. A fade to black and a silence are rarely in the same place, which is why
 one pair of keys does not walk both.
 
 Whether a detection marks anything is a preference, one for each of the two.
-Off, it leaves the band and nothing else.
+Off, it leaves the band and nothing else. So does a recording that came up with
+a mark file of its own — a `.keyframe` beside it is somebody's own answer about
+where the breaks are, and a detection's marks are not mixed into it. Ask for the
+pass from this menu and they go down.
 
 The marks it does put down are told apart in the keyframe column: under the
 time on the card, a small `Black`, `White` or `Quiet`. A mark carries one only
@@ -1047,7 +1052,7 @@ effect as you make it.
 | **Turn a detection into keyframes** | On out of the box. Off, a detection leaves the band and the sentence and nothing else, and ≡ → **Turn the detection into keyframes** places the marks. Where a mark file beside the recording was read, a detection is not marked whatever this says |
 | **Counts as blank after** | Shorter stretches are left out. The unit is pictures or seconds; 3 s out of the box, which reports the long gaps and not the two-to-four-picture black a broadcast junction is laid on. For those, say 2 and pick pictures |
 | **The blank pass looks for** | Black and white, black alone, or white alone. **Black out of the box**, that being where a junction is laid; the button in the list and the line in the editor's menu are named after this answer — *Detect black*, *Detect white*. White belongs as often to the programme — a title sequence cuts on a flash — so on some material it is dozens of stretches nobody asked about. A shade that was not looked for was not written down either, so asking for both afterwards reads the recording again |
-| **Turn a blank detection into keyframes** | On out of the box. Off, the band under the timeline is all that is left |
+| **Turn a blank detection into keyframes** | On out of the box. Off, the band under the timeline is all that is left. Where a mark file beside the recording was read, what the window opens holding is not marked whatever this says; the two lines in the `≡` menu mark it |
 | **Counts as silence after** | The same for the sound, and the same 3 s. A pause in dialogue runs 0.1 to 0.4 s and a junction's silence about a second, so anything much shorter comes back as dozens of stretches |
 | **Silence is quieter than** | -50 dB out of the box, measured on the loudest sample of each audio frame. Lower finds only what is truly silent |
 | **Turn a silence detection into keyframes** | As for the blank pass, and on out of the box |

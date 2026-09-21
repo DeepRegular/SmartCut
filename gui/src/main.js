@@ -679,6 +679,12 @@ function renderKeyframes(scroll = true) {
     pickedKeys = pickedKeys.filter((t) => live.some((x) => Math.abs(x - t) < frame() / 2));
   }
   el("key-count").textContent = live.length ? tr("editor.keyCount", { n: live.length }) : "";
+  // The cards are thrown away and made again below, and one of them can be
+  // where the keyboard is: the ✕ on a card is a button, and pressing it is
+  // what brings us here. A webview hands the keyboard back to the page when
+  // the element holding it goes, so the next Del would have been the cut
+  // rather than another mark off the list. The column takes it back.
+  const had = keysHaveKeyboard();
   list.innerHTML = "";
   if (!live.length) {
     const p = document.createElement("div");
@@ -690,6 +696,7 @@ function renderKeyframes(scroll = true) {
       prefs.get("cmKeyframes") === false ? "editor.keyframes.emptyManual" : "editor.keyframes.empty"
     );
     list.append(p);
+    if (had && !keysHaveKeyboard()) list.focus({ preventScroll: true });
     return;
   }
   const imgs = [];
@@ -786,6 +793,7 @@ function renderKeyframes(scroll = true) {
     });
     list.append(li);
   });
+  if (had && !keysHaveKeyboard()) list.focus({ preventScroll: true });
   paintCards(live, imgs);
 }
 
@@ -981,10 +989,24 @@ async function loadFlatCached(marks) {
     return;
   }
   if (!got) return;
-  if (got.blank) applyFlatRuns(["black", "white"], got.blank, marks && flatMarks("blank"));
-  if (got.quiet) applyFlatRuns(["quiet"], got.quiet, marks && flatMarks("quiet"));
+  // Not onto a list the recording came up with, for the reason the commercial
+  // detection gives in the `editor-open` handler: a `.keyframe` beside a
+  // recording is somebody's own answer about where its breaks are, and marks
+  // from two hands in one column cannot be told apart afterwards -- with no
+  // undo to reach for, neither of them having been an edit. The stretches are
+  // still drawn under the timeline, and the two lines in the ≡ menu put the
+  // marks down for anyone who wants them after all.
+  const fileWon = !!markFileKind;
+  const put = marks && !fileWon;
+  if (got.blank) applyFlatRuns(["black", "white"], got.blank, put && flatMarks("blank"));
+  if (got.quiet) applyFlatRuns(["quiet"], got.quiet, put && flatMarks("quiet"));
   const found = (got.blank || []).length + (got.quiet || []).length;
-  if (found) el("status").textContent = tr("flat.cached", { n: found });
+  if (!found) return;
+  // Only the file is worth saying out loud, and only where it held something
+  // back: marks turned off in 環境設定 are an answer somebody has already
+  // given, and the band arriving without them is that answer being kept.
+  const held = marks && fileWon && (flatMarks("blank") || flatMarks("quiet"));
+  el("status").textContent = tr(held ? "flat.cachedBeside" : "flat.cached", { n: found });
 }
 
 // --- scrubber -----------------------------------------------------------
@@ -4035,10 +4057,13 @@ function showMore(on) {
     el("chapter-keys").disabled = !src || !discChapters.length;
     el("cm-keys").disabled = !src || !cmBlocks.length;
     el("clear-keys").disabled = !src || !keyframes.length;
-    // Greyed with nothing open, and left alone while a pass runs: `runFlat`
-    // owns the line for as long as it is reading.
+    // Greyed with nothing open, and while the pass this line asks for is
+    // already running: `runFlat` writes the percentage into it and hands it
+    // back when it is done. Asked of `flatBusy` rather than of the button,
+    // because a line greyed while the window was still opening would have
+    // stayed that way for the rest of the session.
     for (const id of ["detect-blank", "detect-silence"]) {
-      if (!src) el(id).disabled = true;
+      el(id).disabled = !src || flatBusy.has(id);
     }
   }
   moreMenu().hidden = !on;
@@ -5385,11 +5410,12 @@ el("detect-cm").addEventListener("click", async () => {
 /// something anybody did in here, so they are settled rather than left
 /// standing as an unsaved change -- as a commercial detection's are.
 async function runFlat(id, label, which, kinds, call) {
-  if (!src) return;
+  if (!src || flatBusy.has(id)) return;
   const btn = el(id);
   // The line is in the ≡ menu, and a pass that runs for a minute must not
   // hold it open over the timeline it is about.
   showMore(false);
+  flatBusy.add(id);
   btn.disabled = true;
   el("status").textContent = tr("flat.detecting");
   try {
@@ -5412,10 +5438,18 @@ async function runFlat(id, label, which, kinds, call) {
   } catch (e) {
     el("status").textContent = tr("flat.failed", { e });
   } finally {
+    flatBusy.delete(id);
     btn.disabled = false;
     detectLabel(id).textContent = tr(typeof label === "function" ? label() : label);
   }
 }
+
+/// Which of the two lines is counting a pass up right now, by the id of the
+/// line. One each, because the two are separate passes and either can be the
+/// one somebody asked for; see `showMore`, which is where the answer is
+/// needed -- a menu opened while a pass runs must offer that pass's line
+/// greyed and the other one ready.
+const flatBusy = new Set();
 
 /// Where one of the two detections writes its word: the span inside the menu
 /// line, so that the shortcut beside it is left standing while a pass counts

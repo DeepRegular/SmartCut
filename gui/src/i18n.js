@@ -158,7 +158,9 @@ const CATALOG = {
     "prefs.flatKeyframesNote":
       "区間の始まりと終わりの両方に印を置きます。" +
       "外すと印は置かず、タイムラインの下に帯が出るだけになります。" +
-      "キーフレーム一覧では、黒白から置いた印と無音から置いた印が分かるようになっています。",
+      "キーフレーム一覧では、黒白から置いた印と無音から置いた印が分かるようになっています。" +
+      "録画と同じ名前のファイルを読み込んだときは、カット編集を開いた時点の検出結果に印は置きません。" +
+      "≡ のメニューから検出し直せば置きます。",
     "prefs.quietOverwrite": "ショートカットでの保存は、確認せずに上書きする",
     "prefs.quietOverwriteNote":
       "Ctrl+H（キーフレーム情報）、Ctrl+Shift+H（Trim）、Ctrl+Alt+H（CM 検出結果）は、" +
@@ -431,6 +433,9 @@ const CATALOG = {
     "flat.foundUnmarked": "{what}を {n} 箇所見つかりました。キーフレームは置いていません",
     "flat.none": "{what}は見つかりませんでした",
     "flat.cached": "検出済みの {n} 箇所を表示しています",
+    "flat.cachedBeside":
+      "検出済みの {n} 箇所を表示しています" +
+      "（録画と同じ名前のファイルを読み込んだので、印は置いていません）",
     "flat.failed": "検出できません: {e}",
     "cm.previous": "{note}（前回の検出）",
     "cm.failed": "検出できません: {e}",
@@ -1050,7 +1055,9 @@ const CATALOG = {
     "prefs.quietKeyframes": "Turn a silence detection into keyframes",
     "prefs.flatKeyframesNote":
       "Both ends of every stretch are marked. Off, the band under the timeline is all that is left, " +
-      "and the marks go down by hand. The keyframe list says which detection a mark came from.",
+      "and the marks go down by hand. The keyframe list says which detection a mark came from. " +
+      "Where a mark file beside the recording was read, what the window opens holding is not marked " +
+      "whatever this says; the two lines in the ≡ menu mark it.",
     "prefs.quietOverwrite": "Let the save shortcut write over a file without asking",
     "prefs.quietOverwriteNote":
       "Ctrl+H (the keyframe list), Ctrl+Shift+H (the Trim line) and Ctrl+Alt+H (the detection) write " +
@@ -1315,6 +1322,9 @@ const CATALOG = {
     "flat.foundUnmarked": "Found {n} {what} stretch{n?es}; nothing is marked",
     "flat.none": "No {what} stretch that long",
     "flat.cached": "Showing {n} stretch{n?es} already detected",
+    "flat.cachedBeside":
+      "Showing {n} stretch{n?es} already detected — not marked: a mark file beside the " +
+      "recording was read",
     "flat.failed": "Cannot detect: {e}",
     "cm.previous": "{note} (from an earlier run)",
     "cm.failed": "Cannot detect: {e}",
