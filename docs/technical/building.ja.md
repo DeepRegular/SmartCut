@@ -84,7 +84,7 @@ bash tests/run_udf_tests.sh           # イメージをファイルシステム�
 bash tests/run_dvd_tests.sh           # DVD-Video をフォルダーと .iso から読む          23
 bash tests/run_bd_audio_tests.sh      # ディスクの音声が書き出せるか                    39
 bash tests/run_vc1_tests.sh           # VC-1 エンコーダをデコーダに通す                  4
-bash tests/run_vp9_av1_tests.sh       # VP9 と AV1。継がれているか、録画のバイトのままか  5
+bash tests/run_vp9_av1_tests.sh       # VP9 と AV1 を継いで、録画のバイトのままか        5
 bash tests/run_transrate_tests.sh    # 容量に合わせる。同一性・サイズ・代償         15
 ```
 
