@@ -249,6 +249,21 @@
               <button class="menu-item" id="cm-keys">
                 <span data-i18n="editor.cmKeys">CM 検出結果をキーフレームにする</span>
               </button>
+              <!-- And the two flat detections' ends, for the same case: the
+                   band is under the timeline and the marks are not, because
+                   the recording came up with somebody's own list or because
+                   環境設定 says a detection is to be looked at before it is
+                   marked. Two lines rather than one: the pictures and the
+                   sound are asked for apart, and somebody who wants the
+                   fades marked has not thereby asked for every silence.
+                   Their labels name the stretches that are actually on the
+                   timeline, so `showMore` writes them. -->
+              <button class="menu-item" id="blank-keys">
+                <span class="menu-label">黒白の区間をキーフレームにする</span>
+              </button>
+              <button class="menu-item" id="quiet-keys">
+                <span class="menu-label">無音の区間をキーフレームにする</span>
+              </button>
               <!-- The marks alone. 全消去 beside it takes the cuts as well,
                    which is not what somebody who is redoing the marks on an
                    edit they have kept is asking for. -->

@@ -89,11 +89,18 @@ let cmBlocks = [];
 /// Where the picture goes flat and where the sound goes quiet: one entry per
 /// stretch, in source time, `kind` being "black", "white" or "quiet".
 ///
-/// Detected rather than read off the recording, and not part of the edit: the
-/// clip list's lane writes these down, this window asks for them when it
-/// opens and runs them again on the two buttons. What *is* part of the edit
-/// is the marks they put at each end, which are marks like any other from the
-/// moment they land.
+/// Detected rather than read off the recording: the clip list's lane writes
+/// these down, this window asks for them when it opens and runs them again on
+/// the two menu lines. What *is* work is the marks they put at each end,
+/// which are marks like any other from the moment they land.
+///
+/// Carried in the edit all the same, so that a project written today draws
+/// its bands again next month. The cache both windows read is a cache -- it
+/// is pruned, it is thrown away when a pass stops meaning what it did, and it
+/// is on the machine the detection was made on rather than in the file
+/// somebody saved. A detection is minutes of reading the recording, and a
+/// project that holds the cuts but not what they were made against is a
+/// project that has to be detected again to be read.
 let flatRuns = [];
 /// The sentence under the last detection, kept so it can travel back to the
 /// list with the rest of the state -- the row there says what was found, and
@@ -988,7 +995,6 @@ async function loadFlatCached(marks) {
     jlog(`flat_cached: ${e}`);
     return;
   }
-  if (!got) return;
   // Not onto a list the recording came up with, for the reason the commercial
   // detection gives in the `editor-open` handler: a `.keyframe` beside a
   // recording is somebody's own answer about where its breaks are, and marks
@@ -998,9 +1004,21 @@ async function loadFlatCached(marks) {
   // marks down for anyone who wants them after all.
   const fileWon = !!markFileKind;
   const put = marks && !fileWon;
-  if (got.blank) applyFlatRuns(["black", "white"], got.blank, put && flatMarks("blank"));
-  if (got.quiet) applyFlatRuns(["quiet"], got.quiet, put && flatMarks("quiet"));
-  const found = (got.blank || []).length + (got.quiet || []).length;
+  // Not over what the row arrived with. A row that has been in here before
+  // brings its own stretches back -- they are in the edit, and the project
+  // file holds them -- and those are the answer this timeline was cut
+  // against. The cache may have been written by a later pass asked a
+  // different question, and half a band from each would be neither.
+  const have = new Set(flatRuns.map((r) => r.kind));
+  const blank = have.has("black") || have.has("white") ? null : got && got.blank;
+  const quiet = have.has("quiet") ? null : got && got.quiet;
+  if (blank) applyFlatRuns(["black", "white"], blank, put && flatMarks("blank"));
+  if (quiet) applyFlatRuns(["quiet"], quiet, put && flatMarks("quiet"));
+  // Everything the band now holds, whichever of the two it came from: the
+  // sentence is about what is on screen, and a row that brought its own
+  // stretches back has them on screen just as much as one the cache
+  // answered for.
+  const found = flatRuns.length;
   if (!found) return;
   // Only the file is worth saying out loud, and only where it held something
   // back: marks turned off in 環境設定 are an answer somebody has already
@@ -4008,6 +4026,46 @@ function markCmBlocks() {
   el("status").textContent = tr("cm.marked", { n: cmBlocks.length });
 }
 
+/// The ends of one flat detection's stretches, put down on purpose.
+///
+/// The same decision `markCmBlocks` is, arrived at two ways rather than one.
+/// A finding can be on the timeline without its marks because the recording
+/// came up with somebody's own list -- which is the commercial detection's
+/// case as well -- and because 環境設定 can say that this detection is to be
+/// drawn and not marked. Somebody who has looked at the band and wants its
+/// ends after all says so here, and it is an edit like any other.
+///
+/// Both ends of each stretch, as a pass that marks its own puts them down:
+/// where what came before stops being worth keeping, and where what comes
+/// after starts.
+function markFlatRuns(which) {
+  const runs = flatRuns.filter((r) => flatKinds(which).includes(r.kind));
+  if (!src || !runs.length) return;
+  addKeyframes(runs.flatMap((r) => [r.start, r.end]));
+  el("status").textContent = tr("flat.marked", { n: runs.length, what: flatWhat(which) });
+}
+
+/// Which stretches each of the two detections speaks for.
+const flatKinds = (which) => (which === "quiet" ? ["quiet"] : ["black", "white"]);
+
+/// What to call them, for a line that is about to mark them.
+///
+/// Named for what is on the timeline rather than for what 環境設定 would look
+/// for if it were asked now: the band can have come from a pass that was
+/// asked a different question, and a line reading 黒の区間 over a band that
+/// holds white stretches too would be about to mark something it has not
+/// named. The preference answers only for an empty timeline, where the line
+/// is greyed and the name is the one the pass would be asked for next.
+function flatWhat(which) {
+  if (which === "quiet") return tr("flat.what.quiet");
+  const black = flatRuns.some((r) => r.kind === "black");
+  const white = flatRuns.some((r) => r.kind === "white");
+  if (black && white) return tr("flat.what.blank");
+  if (black) return tr("flat.what.blankBlack");
+  if (white) return tr("flat.what.blankWhite");
+  return tr(blankKey("flat.what.blank"));
+}
+
 /// The marks off the timeline, and nothing else.
 ///
 /// 全消去 is the other answer and has its own button: it takes the cuts with
@@ -4056,6 +4114,15 @@ function showMore(on) {
     el("save-as-cm").disabled = !src || !cmBlocks.length;
     el("chapter-keys").disabled = !src || !discChapters.length;
     el("cm-keys").disabled = !src || !cmBlocks.length;
+    // Nothing detected, nothing to mark -- one answer each, because either
+    // pass can have run without the other. Written as well as greyed: what
+    // these two lines are about is whatever is on the timeline, and that
+    // changes under them every time a pass lands.
+    for (const which of ["blank", "quiet"]) {
+      const runs = flatRuns.filter((r) => flatKinds(which).includes(r.kind));
+      el(`${which}-keys`).disabled = !src || !runs.length;
+      detectLabel(`${which}-keys`).textContent = tr("editor.flatKeys", { what: flatWhat(which) });
+    }
     el("clear-keys").disabled = !src || !keyframes.length;
     // Greyed with nothing open, and while the pass this line asks for is
     // already running: `runFlat` writes the percentage into it and hands it
@@ -4107,6 +4174,12 @@ el("cm-keys").addEventListener("click", () => {
   showMore(false);
   markCmBlocks();
 });
+for (const which of ["blank", "quiet"]) {
+  el(`${which}-keys`).addEventListener("click", () => {
+    showMore(false);
+    markFlatRuns(which);
+  });
+}
 el("clear-keys").addEventListener("click", () => {
   showMore(false);
   clearKeyframes();
@@ -4500,10 +4573,12 @@ async function openPath(picked, saved, side, name, chapters, dropPids) {
     activeKey = saved ? saved.activeKey : null;
     pickedKeys = [];
     cmBlocks = saved ? saved.cmBlocks || [] : [];
-    // Another recording, or the same one again: whatever is on the timeline
-    // now was detected against the one before it. What has been detected
-    // against this one is read below, once the head is known.
-    flatRuns = [];
+    // What the two flat detections found against this recording, where this
+    // row has been in here before or came out of a project file. Emptied
+    // otherwise: whatever is on the timeline now was detected against the
+    // recording before this one. Either way the cache is read below, which is
+    // where a first visit gets what the list's lanes have already found.
+    flatRuns = saved && Array.isArray(saved.flatRuns) ? saved.flatRuns : [];
     cmSummary = saved ? saved.cmNote || "" : "";
     cmFinding = saved ? saved.cmFinding || null : null;
     // A row that has been in here before brings back what it opened with the
@@ -5605,6 +5680,11 @@ function captureEdit() {
     // the recording on a later visit can still say it. Not part of the edit
     // in any other sense; see `cmFinding`.
     cmFinding,
+    // The two flat detections' stretches, which the project file carries for
+    // the reason `flatRuns` gives. Not work in the sense the cuts and the
+    // marks are -- nobody chose them, and leaving without them is not losing
+    // an edit -- so `editSignature` says nothing about them.
+    flatRuns,
     // That this recording came up with a mark file of its own, which is not
     // something the timeline shows and is still true on the next visit. A
     // detection the list has not handed over yet arrives at whichever visit

@@ -436,6 +436,7 @@ const CATALOG = {
     "flat.cachedBeside":
       "検出済みの {n} 箇所を表示しています" +
       "（録画と同じ名前のファイルを読み込んだので、印は置いていません）",
+    "flat.marked": "{what} {n} 箇所の両端をキーフレームにしました",
     "flat.failed": "検出できません: {e}",
     "cm.previous": "{note}（前回の検出）",
     "cm.failed": "検出できません: {e}",
@@ -909,6 +910,8 @@ const CATALOG = {
     "marks.readNone": "{file} には読み込めるものがありませんでした",
     "editor.chapterKeys": "ディスクのチャプターをキーフレームにする",
     "editor.cmKeys": "CM 検出結果をキーフレームにする",
+    // ≡ メニューの 2 行。{what} には「黒白の区間」「無音の区間」が入ります。
+    "editor.flatKeys": "{what}をキーフレームにする",
     "editor.clearKeys": "キーフレームをすべて消す",
     "marks.kind.keyframe": "キーフレーム情報",
     "marks.kind.trim": "AviSynth スクリプト",
@@ -1325,6 +1328,7 @@ const CATALOG = {
     "flat.cachedBeside":
       "Showing {n} stretch{n?es} already detected — not marked: a mark file beside the " +
       "recording was read",
+    "flat.marked": "Turned the ends of {n} {what} stretch{n?es} into keyframes",
     "flat.failed": "Cannot detect: {e}",
     "cm.previous": "{note} (from an earlier run)",
     "cm.failed": "Cannot detect: {e}",
@@ -1781,6 +1785,7 @@ const CATALOG = {
     "marks.readNone": "Nothing to read in {file}",
     "editor.chapterKeys": "Turn the disc's chapters into keyframes",
     "editor.cmKeys": "Turn the detection into keyframes",
+    "editor.flatKeys": "Turn the {what} stretches into keyframes",
     "editor.clearKeys": "Remove every keyframe",
     "marks.kind.keyframe": "Keyframe list",
     "marks.kind.trim": "AviSynth script",

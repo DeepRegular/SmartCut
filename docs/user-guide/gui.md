@@ -525,8 +525,15 @@ Whether a detection marks anything is a preference, one for each of the two.
 Off, it leaves the band and nothing else. A recording that came up with a mark
 file of its own gets the band and nothing else as well: a `.keyframe` beside a
 recording is somebody's own answer about where its breaks are, and a detection's
-marks are not mixed into it. Ask for the pass from this menu and the marks go
-down.
+marks are not mixed into it.
+
+To mark a band you have looked at, pick **Turn the blank stretches into
+keyframes** or **Turn the silent stretches into keyframes** from the same menu.
+Both ends of every stretch on screen go down as marks, with no second pass over
+the recording, and `Ctrl+Z` takes them back off.
+
+What either pass found is saved with the [project](projects.md). Open one
+again and the bands are back without the recording being read a second time.
 
 The marks it does put down are told apart in the keyframe column: under the
 time on the card, a small `Black`, `White` or `Quiet`. A mark carries one only
@@ -580,6 +587,8 @@ the marks.
 | **Save the detection…** | Writes the detection now on screen (`Ctrl+Alt+H`). Greyed where nothing has been detected |
 | **Turn the disc's chapters into keyframes** | Puts them back after a clear. Greyed on anything but a disc |
 | **Turn the detection into keyframes** | Marks the detection now on screen. Greyed where nothing has been detected |
+| **Turn the blank stretches into keyframes** | Marks both ends of every blank stretch now on screen. Named after the shades actually there — *black* or *white* where only one of them is |
+| **Turn the silent stretches into keyframes** | Marks both ends of every silent stretch now on screen. Greyed where nothing has been detected |
 | **Remove every keyframe** | The marks alone. The cuts stay |
 | **Magnifier** | Opens the magnifier window, or closes it (`Z`) |
 
@@ -1022,7 +1031,8 @@ that writes queued projects out one after another (see
 [Working through a batch](batch.md#an-overnight-queue-of-projects)), and
 **Preferences…**, **About SmartCut** and **Quit** are here too.
 
-A `.scproj` file is only a few hundred bytes, and it opens on another machine.
+A `.scproj` file is a few hundred bytes to a few kilobytes, and it opens on another
+machine.
 See [Projects](projects.md).
 
 ## Preferences
@@ -1056,10 +1066,10 @@ effect as you make it.
 | **Turn a detection into keyframes** | On out of the box. Off, a detection leaves the band and the sentence and nothing else, and ≡ → **Turn the detection into keyframes** places the marks. Where a mark file beside the recording was read, a detection is not marked whatever this says |
 | **Counts as blank after** | Shorter stretches are left out. The unit is pictures or seconds; 3 s out of the box, which reports the long gaps and not the two-to-four-picture black a broadcast junction is laid on. For those, say 2 and pick pictures |
 | **The blank pass looks for** | Black and white, black alone, or white alone. **Black out of the box**, that being where a junction is laid; the button in the list and the line in the editor's menu are named after this answer — *Detect black*, *Detect white*. White belongs as often to the programme — a title sequence cuts on a flash — so on some material it is dozens of stretches nobody asked about. A shade that was not looked for was not written down either, so asking for both afterwards reads the recording again |
-| **Turn a blank detection into keyframes** | On out of the box. Off, the band under the timeline is all that is left. Where a mark file beside the recording was read, what the window opens holding is not marked whatever this says; the two lines in the `≡` menu mark it |
+| **Turn a blank detection into keyframes** | On out of the box. Off, the band under the timeline is all that is left. Where a mark file beside the recording was read, what the window opens holding is not marked whatever this says. Either way, `≡` → **Turn the blank stretches into keyframes** puts the marks down afterwards |
 | **Counts as silence after** | The same for the sound, and the same 3 s. A pause in dialogue runs 0.1 to 0.4 s and a junction's silence about a second, so anything much shorter comes back as dozens of stretches |
 | **Silence is quieter than** | -50 dB out of the box, measured on the loudest sample of each audio frame. Lower finds only what is truly silent |
-| **Turn a silence detection into keyframes** | As for the blank pass, and on out of the box |
+| **Turn a silence detection into keyframes** | As for the blank pass, and on out of the box. Its line in the `≡` menu is **Turn the silent stretches into keyframes** |
 | **Let the save shortcut write over a file without asking** | `Ctrl+H`, `Ctrl+Shift+H` and `Ctrl+Alt+H` then write over a file of the same name in silence |
 
 ### Output settings

@@ -45,6 +45,9 @@ A project saves **the things you decided**:
 - where each recording is (and the order you put them in)
 - any clip you renamed
 - the cuts and the keyframes (marks) you made in each one
+- for a recording you have had open in the cut editor, what the detections
+  found there: the commercial blocks, and the black, white and silent
+  stretches. The bands under the timeline come back with the project
 - which tracks you chose to write
 - the programme names and chapters read from a disc, and what a disc written
   from the list will say about each recording — the name, the channel, when it
@@ -53,12 +56,18 @@ A project saves **the things you decided**:
 
 It does not save **anything it can work out again**. Length, resolution and
 frame rate come straight from the file next time it is opened. The seek index
-and the commercial-detection results live in the program's own cache folder, and
-are read back from there.
+and the thumbnails live in the program's own cache folder, and are read back
+from there.
 
-That keeps the file tiny: **a few hundred bytes even for a list of twenty**.
-It is only text, so it opens on another machine, and it opens after you have
-cleared the cache. Whatever is missing simply gets read again.
+A detection is kept in that cache too, but only on the machine it was made on.
+For a recording you have had open in the cut editor, the stretches it found are
+in the project as well — so the bands are there again after you clear the cache,
+and on another machine.
+
+That keeps the file small: **a few hundred bytes for a list of twenty with cuts
+and marks alone, a few kilobytes with the detections in it**. It is only text,
+so it opens on another machine, and it opens after you have cleared the cache.
+Whatever is missing simply gets read again.
 
 ### The output settings go in once you have settled them
 

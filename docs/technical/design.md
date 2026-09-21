@@ -618,8 +618,8 @@ which people stop reading the question.
 The comparison runs from the two places everything funnels through — `paintList`, which
 every add, removal, reorder and duplication ends in, and the `editor-state` handler,
 which repaints one row rather than the list — plus the output settings as they are typed.
-That is a `JSON.stringify` of a few hundred bytes at each of three call sites, against
-remembering to raise a flag at twelve.
+That is a `JSON.stringify` of a few hundred bytes at each of three call sites — a few
+kilobytes where the rows carry detections — against remembering to raise a flag at twelve.
 
 Closing is the one part a page cannot do for itself. Rust keeps the answer in a `DIRTY`
 flag — told, never asked, the same way the language is — and the list window's
