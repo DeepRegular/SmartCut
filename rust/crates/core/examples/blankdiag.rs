@@ -6,7 +6,12 @@
 //! 603.27-603.94 in the first fifteen minutes. The times printed here are
 //! the recording's own clock, as the filter's are.
 //!
-//!     blankdiag <file> [min-pictures]
+//! **The core count is an argument** because it is a decision the program
+//! makes rather than a constant: the clip list's lane and the editor's own
+//! button hand this pass different numbers, and what those numbers cost is
+//! what this is for. Zero, the default, is every core on the machine.
+//!
+//!     blankdiag <file> [min-pictures] [threads]
 use anyhow::Result;
 use smartcut_core as sc;
 
@@ -14,6 +19,7 @@ fn main() -> Result<()> {
     let mut args = std::env::args().skip(1);
     let path = args.next().expect("usage: blankdiag <file> [min-pictures]");
     let min: usize = args.next().map(|s| s.parse()).transpose()?.unwrap_or(2);
+    let threads: usize = args.next().map(|s| s.parse()).transpose()?.unwrap_or(0);
 
     // The container's own answer: this pass reads pictures and never asks
     // where a cut would be free, so there is nothing for a walk to add.
@@ -25,6 +31,7 @@ fn main() -> Result<()> {
 
     let opts = sc::BlankOptions {
         min_pictures: min,
+        threads,
         ..Default::default()
     };
     let began = std::time::Instant::now();
@@ -42,9 +49,10 @@ fn main() -> Result<()> {
         );
     }
     println!(
-        "{} runs in {took:.1} s ({:.0}x real time)",
+        "{} runs in {took:.1} s ({:.0}x real time, {} threads)",
         runs.len(),
-        src.duration / took.max(1e-9)
+        src.duration / took.max(1e-9),
+        if threads == 0 { "all".to_string() } else { threads.to_string() }
     );
 
     // The other half of what the editor offers, and the cheap half: the

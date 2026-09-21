@@ -867,7 +867,9 @@ function flatAsk() {
 /// picture returns is the same picture whatever the threshold is.
 ///
 /// `kinds` is what this detection speaks for, so that running one pass again
-/// replaces its own stretches and leaves the other's alone.
+/// replaces its own stretches and leaves the other's alone. The two are asked
+/// for apart -- a button and a key each -- and neither answer is ever thrown
+/// away by the other being read.
 function applyFlatRuns(kinds, runs, marks = true) {
   flatRuns = flatRuns.filter((r) => !kinds.includes(r.kind)).concat(runs);
   flatRuns.sort((a, b) => a.start - b.start);
@@ -875,19 +877,27 @@ function applyFlatRuns(kinds, runs, marks = true) {
   draw();
 }
 
-/// Every end of every stretch that is still in the recording, in order.
-const flatEdges = () =>
+/// Every end of every stretch of these kinds that is still in the recording,
+/// in order.
+const flatEdges = (kinds) =>
   flatRuns
+    .filter((r) => kinds.includes(r.kind))
     .flatMap((r) => [r.start, r.end])
     .filter((t) => srcToOut(t) !== null)
     .sort((a, b) => a - b);
 
-/// The next end a detection found, or the one before. Alt with the arrows.
+/// The next end one of the detections found, or the one before: Alt with the
+/// arrows for the pictures, Alt+Shift for the sound.
+///
+/// One detection at a time, never both at once. They are two questions -- a
+/// fade to black and a silence are not the same event and frequently are not
+/// in the same place -- and a walk that stopped at every end of both would
+/// stop twice as often as either answer has places worth looking at.
 ///
 /// Half a frame of slack at the near end, so that a playhead standing on one
 /// end of a two-picture stretch moves to the other rather than to itself.
-function toFlatEdge(dir, from = playhead) {
-  const edges = flatEdges();
+function toFlatEdge(dir, kinds, from = playhead) {
+  const edges = flatEdges(kinds);
   const next =
     dir > 0
       ? edges.find((t) => t > from + frame() / 2)
@@ -4882,6 +4892,20 @@ window.addEventListener("keydown", (ev) => {
     el("detect-cm").click();
     return;
   }
+  // The other two detections, a key each beside the commercials' Ctrl+D: B for
+  // the black and white pictures, Q for the quiet. The clip list answers the
+  // same two keys on the rows it has chosen, so the act is the key wherever
+  // the hand happens to be.
+  if ((ev.ctrlKey || ev.metaKey) && (ev.key === "b" || ev.key === "B")) {
+    ev.preventDefault();
+    el("detect-blank").click();
+    return;
+  }
+  if ((ev.ctrlKey || ev.metaKey) && (ev.key === "q" || ev.key === "Q")) {
+    ev.preventDefault();
+    el("detect-silence").click();
+    return;
+  }
   // Both spellings of やり直し: Ctrl+Y is the one Windows programs are worked
   // by, Ctrl+Shift+Z the one editors are.
   if ((ev.ctrlKey || ev.metaKey) && (ev.key === "z" || ev.key === "Z")) {
@@ -4988,14 +5012,22 @@ window.addEventListener("keydown", (ev) => {
     }
     return;
   }
-  // Alt with the arrows walks what the two detections found: every end of
-  // every flat or quiet stretch, in order. Ahead of the gate below, which is
-  // what keeps every other Alt chord out of this window's way.
+  // Alt with the arrows walks what a detection found, one end at a time: the
+  // flat pictures on their own, and the quiet sound with Shift held. Two
+  // answers and two walks, because a fade to black and a silence are rarely in
+  // the same place and a walk through both would stop at twice as many
+  // pictures as either question has.
+  //
+  // Not Ctrl+Alt with the arrows for the second of them: that chord is the
+  // workspace switcher on an Xfce desktop and never reaches the window.
+  //
+  // Ahead of the gate below, which is what keeps every other Alt chord out of
+  // this window's way.
   if (ev.altKey && !ev.ctrlKey && !ev.metaKey && (ev.key === "ArrowUp" || ev.key === "ArrowDown")) {
     ev.preventDefault();
     if (!arrowDue(ev)) return;
     if (playing) stopPlay();
-    toFlatEdge(ev.key === "ArrowDown" ? 1 : -1);
+    toFlatEdge(ev.key === "ArrowDown" ? 1 : -1, ev.shiftKey ? ["quiet"] : ["black", "white"]);
     return;
   }
   if (ev.ctrlKey || ev.metaKey || ev.altKey) return;
@@ -5029,8 +5061,9 @@ window.addEventListener("keydown", (ev) => {
   // that tool for years expects of them. With Shift they walk the access
   // points -- the pictures a cut is free at, which is what this pair used to
   // do on its own and is still the question when what is being placed is the
-  // cut itself. With Alt they walk what the two detections found, above. ◀| and |▶ are the same answer with the pointer, and so is
-  // Shift with the wheel.
+  // cut itself. With Alt they walk the flat pictures a detection found, and
+  // with Alt+Shift the quiet sound; see above. ◀| and |▶ are the same answer
+  // with the pointer, and so is Shift with the wheel.
   //
   // Held down they are the same flood the left and right keys are, so they go
   // through the same gate.
@@ -5293,7 +5326,7 @@ el("detect-cm").addEventListener("click", async () => {
 /// the window opened. Marks it puts down are the detection's answer and not
 /// something anybody did in here, so they are settled rather than left
 /// standing as an unsaved change -- as a commercial detection's are.
-async function runFlat(id, label, kinds, call) {
+async function runFlat(id, label, which, kinds, call) {
   if (!src) return;
   const btn = el(id);
   btn.disabled = true;
@@ -5302,9 +5335,13 @@ async function runFlat(id, label, kinds, call) {
     const runs = await call();
     applyFlatRuns(kinds, runs);
     settleMark();
+    // Which of the two answered is in the sentence. Both write here, and
+    // "3 箇所見つかりました" over a window that has just been asked twice says
+    // nothing about which question it is the answer to.
+    const what = tr(`flat.what.${which}`);
     el("status").textContent = runs.length
-      ? tr("flat.found", { n: runs.length })
-      : tr("flat.none");
+      ? tr("flat.found", { n: runs.length, what })
+      : tr("flat.none", { what });
   } catch (e) {
     el("status").textContent = tr("flat.failed", { e });
   } finally {
@@ -5315,7 +5352,7 @@ async function runFlat(id, label, kinds, call) {
 
 el("detect-blank").addEventListener("click", () => {
   const ask = flatAsk();
-  runFlat("detect-blank", "editor.detectBlank", ["black", "white"], () =>
+  runFlat("detect-blank", "editor.detectBlank", "blank", ["black", "white"], () =>
     invoke("detect_blank", {
       path: src.path,
       minSeconds: ask.minSeconds,
@@ -5326,7 +5363,7 @@ el("detect-blank").addEventListener("click", () => {
 
 el("detect-silence").addEventListener("click", () => {
   const ask = flatAsk();
-  runFlat("detect-silence", "editor.detectSilence", ["quiet"], () =>
+  runFlat("detect-silence", "editor.detectSilence", "quiet", ["quiet"], () =>
     invoke("detect_silence", {
       path: src.path,
       thresholdDb: ask.thresholdDb,

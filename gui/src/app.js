@@ -200,17 +200,30 @@ function makeClip(found) {
     /// Applied on the next visit to the editor, which is the only place that
     /// knows where the material begins and can turn them into marks.
     cmPending: false,
-    /// The flat-picture and quiet-sound detection, which is its own lane: how
-    /// many stretches it found, and how far it has got.
+    /// The flat-picture detection and the quiet-sound one: how many stretches
+    /// each found, and how far each has got. Two of everything because they
+    /// are two lanes -- the pictures are read in a minute and the sound in
+    /// seconds, and a row can be waiting for one while the other is done.
     ///
-    /// Not carried across to the editor the way `cmPending` is. That window
-    /// reads the same cache this lane writes, and it reads it on the way in --
-    /// so what the list found is on the timeline before anybody asks, without
-    /// the two windows having to agree about whose answer is newer.
-    flatState: "none", // none | queued | running | done | error
-    flatPhase: "",
-    flatProgress: 0,
-    flatFound: null,
+    /// Neither is carried across to the editor the way `cmPending` is. That
+    /// window reads the same cache these lanes write, and it reads it on the
+    /// way in -- so what the list found is on the timeline before anybody
+    /// asks, without the two windows having to agree about whose answer is
+    /// newer.
+    blankState: "none", // none | queued | running | done | error
+    blankPhase: "",
+    blankProgress: 0,
+    blankFound: null,
+    /// "cache" where the count came out of an earlier session or the cut
+    /// editor rather than from a pass this window made, which is the one
+    /// thing the sentence says that the count does not -- and is why the
+    /// sentence can be written again in another language. See `relocalise`.
+    blankSource: null,
+    quietState: "none",
+    quietPhase: "",
+    quietProgress: 0,
+    quietFound: null,
+    quietSource: null,
     edit: null,
     /// The row's picture, out of the thumbnail track and taken against
     /// whatever the cuts leave. Null until the picture pass has been over the
@@ -503,10 +516,15 @@ if (listen) {
     // the list thinking it is still editing, with the row wearing 編集中 and
     // the lanes walking past it until the program is restarted.
     if (opening || (await invoke("editor_up").catch(() => false))) return;
+    // What that window found while it had the row. Its commercial detection
+    // comes back inside the edit (`editor-state`); the two flat ones are in
+    // the cache, and this is where the row goes and reads them.
+    const was = editing;
     editing = null;
     before = null;
     paintList();
     pump();
+    if (was) restoreFlat(was);
   });
 }
 
@@ -567,7 +585,10 @@ async function addPaths(inputs) {
   // the recordings are on, and the answer is wanted before anyone looks at
   // the row rather than this instant.
   (async () => {
-    for (const clip of taken) await restoreCm(clip);
+    for (const clip of taken) {
+      await restoreCm(clip);
+      await restoreFlat(clip);
+    }
   })();
   fillFirstLook();
   // A path that could not be reached at all is the more useful thing to say,
@@ -951,8 +972,8 @@ if (listen) {
 // on the Rust side hands the passes part of it while that window is up.
 
 /// Which lanes have a pass in flight, so none is started twice.
-const lanes = { walk: false, pics: false, cm: false, flat: false };
-const running = () => lanes.walk || lanes.pics || lanes.cm || lanes.flat;
+const lanes = { walk: false, pics: false, cm: false, blank: false, quiet: false };
+const running = () => lanes.walk || lanes.pics || lanes.cm || lanes.blank || lanes.quiet;
 
 /// Raised by 解析を中止 and while an export is running. Not the same as an
 /// empty queue: the work is still queued, it is just not being taken.
@@ -985,11 +1006,13 @@ function paintQueueNote() {
   const ix = clips.find((c) => c.state === "indexing");
   const pic = clips.find((c) => c.pics === "running");
   const cm = clips.find((c) => c.cmState === "running");
-  const flat = clips.find((c) => c.flatState === "running");
+  const blank = clips.find((c) => c.blankState === "running");
+  const quiet = clips.find((c) => c.quietState === "running");
   if (ix) bits.push(t("queue.indexing", { clip: clipLabel(ix) }));
   if (pic) bits.push(t("queue.picturing", { clip: clipLabel(pic) }));
   if (cm) bits.push(t("queue.detecting", { clip: clipLabel(cm) }));
-  if (flat) bits.push(t("queue.flat", { clip: clipLabel(flat) }));
+  if (blank) bits.push(t("queue.blank", { clip: clipLabel(blank) }));
+  if (quiet) bits.push(t("queue.quiet", { clip: clipLabel(quiet) }));
   el("queue-note").textContent = bits.length ? bits.join(t("sep")) : sticky;
   el("out-note").textContent = sticky;
   el("row-out-note").hidden = !sticky;
@@ -1023,21 +1046,23 @@ function nextFor(lane) {
   if (lane === "walk") return clips.find((c) => c.state === "queued" && c !== editing);
   if (lane === "pics") return clips.find((c) => c.pics === "queued" && c !== editing);
   if (lane === "cm") return clips.find((c) => c.cmState === "queued" && c.state === "ready");
-  // The flat detection waits for the walk as the commercial one does, and for
-  // the same reason: both are reserved on a list that is still being read, and
-  // a row the walk has not reached yet is a row this would be reading at the
-  // same time as the walk.
-  return clips.find((c) => c.flatState === "queued" && c.state === "ready");
+  // The two flat detections wait for the walk as the commercial one does, and
+  // for the same reason: all of them are reserved on a list that is still
+  // being read, and a row the walk has not reached yet is a row they would be
+  // reading at the same time as the walk.
+  if (lane === "blank") return clips.find((c) => c.blankState === "queued" && c.state === "ready");
+  return clips.find((c) => c.quietState === "queued" && c.state === "ready");
 }
 
 function pump() {
   pumpLane("walk");
   pumpLane("pics");
   pumpLane("cm");
-  pumpLane("flat");
+  pumpLane("blank");
+  pumpLane("quiet");
 }
 
-const RUN = { walk: runIndex, pics: runPictures, cm: runCm, flat: runFlat };
+const RUN = { walk: runIndex, pics: runPictures, cm: runCm, blank: runBlank, quiet: runQuiet };
 
 async function pumpLane(lane) {
   if (lanes[lane] || paused) return;
@@ -1107,7 +1132,8 @@ async function runIndex(clip) {
     // past it every time it came round, and this is the moment it can have
     // it -- so it is started again here, exactly as the pictures lane is.
     if (clip.cmState === "queued") pumpLane("cm");
-    if (clip.flatState === "queued") pumpLane("flat");
+    if (clip.blankState === "queued") pumpLane("blank");
+    if (clip.quietState === "queued") pumpLane("quiet");
   } catch (e) {
     if (String(e).includes("cancelled")) {
       // Put back, not failed: 中止 means "not now", and the pass left
@@ -1124,9 +1150,13 @@ async function runIndex(clip) {
         clip.cmState = "none";
         clip.cmPhase = "";
       }
-      if (clip.flatState === "queued") {
-        clip.flatState = "none";
-        clip.flatPhase = "";
+      if (clip.blankState === "queued") {
+        clip.blankState = "none";
+        clip.blankPhase = "";
+      }
+      if (clip.quietState === "queued") {
+        clip.quietState = "none";
+        clip.quietPhase = "";
       }
     }
   }
@@ -1226,6 +1256,67 @@ async function runPictures(clip) {
 /// `pending` is for rows that came out of a project file, which knows
 /// something the cache cannot: whether those blocks have already been shown
 /// to the timeline. The cache can only say that a detection was once run.
+/// What has already been found about this recording's pictures and its sound,
+/// out of the cache both windows write.
+///
+/// The badge answers "does this row still owe me an answer", so it has to
+/// know about answers this window did not make: one from a session last night,
+/// and one from the cut editor, which runs the same two passes on its own
+/// buttons and writes the same files. So this is asked on the way in, as
+/// `restoreCm` is, and again when the editor hands a row back.
+///
+/// Costs a stat and a page or two, and says nothing in the ordinary case
+/// where nothing has been detected. A half that was found with a longer
+/// minimum than the one in force now does not answer and is not counted --
+/// the row would be claiming an answer to a question nobody asked. See
+/// `flat_answers` on the Rust side.
+async function restoreFlat(clip) {
+  if (!invoke) return;
+  const ask = flatAsk();
+  // Before the walk there is no frame rate to convert with, and 30 is what
+  // the rest of this window falls back to. It only matters where somebody has
+  // typed the silence minimum in pictures, which is not the default.
+  const fps = clip.info && clip.info.fps > 0 ? clip.info.fps : 30;
+  let got;
+  try {
+    got = await invoke("flat_cached", {
+      path: clip.path,
+      minSeconds: ask.minSeconds,
+      minPictures: ask.minPictures,
+      thresholdDb: ask.thresholdDb,
+      quietSeconds: ask.quietInPictures ? ask.quietRun / fps : ask.quietRun,
+    });
+  } catch {
+    // Unreachable recordings are the index pass's news to break.
+    return;
+  }
+  if (!got) return;
+  let said = false;
+  for (const [which, runs] of [
+    ["blank", got.blank],
+    ["quiet", got.quiet],
+  ]) {
+    // A pass asked for or running in this window is the newer answer, and a
+    // booked one must not be un-booked by what the cache used to hold.
+    if (!runs || clip[`${which}State`] === "queued" || clip[`${which}State`] === "running") {
+      continue;
+    }
+    clip[`${which}Found`] = runs.length;
+    clip[`${which}State`] = "done";
+    clip[`${which}Source`] = "cache";
+    // Said as a detection that has already happened rather than as one that
+    // just did, as a restored commercial detection is.
+    clip[`${which}Phase`] = t("flat.previous", {
+      note: t(`${which}.rowNote`, { n: runs.length }),
+    });
+    said = true;
+  }
+  if (!said) return;
+  paintRow(clip);
+  paintButtons();
+  if (clip.selected) paintProps();
+}
+
 async function restoreCm(clip, pending = null) {
   if (!invoke) return;
   let res;
@@ -1309,41 +1400,67 @@ function flatAsk() {
   };
 }
 
-/// Read one clip for its flat pictures and its quiet sound.
+/// Read one clip for its flat pictures.
 ///
 /// Every picture is decoded, which is the dearest pass this list makes -- a
 /// minute and a quarter on half an hour of broadcast, where the walk is
 /// seconds. So it is never started by the list on its own: a row gets here
 /// because somebody asked for it, and what it finds is written to the cache
 /// the editor reads on the way in.
-async function runFlat(clip) {
-  clip.flatState = "running";
-  clip.flatProgress = 0;
-  clip.flatPhase = t("phase.flat");
-  paintRow(clip);
-  paintQueueNote();
+async function runBlank(clip) {
   const ask = flatAsk();
-  const fps = clip.info && clip.info.fps > 0 ? clip.info.fps : 30;
-  try {
-    const res = await invoke("detect_flat_at", {
+  await runFlatLane(clip, "blank", () =>
+    invoke("detect_blank_at", {
       path: clip.path,
       minSeconds: ask.minSeconds,
       minPictures: ask.minPictures,
+    })
+  );
+}
+
+/// ...and for its quiet sound, which is the other lane.
+///
+/// Its own lane because it is its own answer and its own cost: the sound of
+/// half an hour is read in seconds off a local disc, and a list asked for the
+/// silences alone should not be behind a pass that decodes every picture.
+/// Over a share the two come out level -- both read the whole file -- which is
+/// why they are allowed to run at once rather than made to take turns.
+async function runQuiet(clip) {
+  const ask = flatAsk();
+  const fps = clip.info && clip.info.fps > 0 ? clip.info.fps : 30;
+  await runFlatLane(clip, "quiet", () =>
+    invoke("detect_quiet_at", {
+      path: clip.path,
       thresholdDb: ask.thresholdDb,
-      quietSeconds: ask.quietInPictures ? ask.quietRun / fps : ask.quietRun,
-    });
-    const blank = (res.blank || []).length;
-    const quiet = (res.quiet || []).length;
-    clip.flatFound = { blank, quiet };
-    clip.flatState = "done";
-    clip.flatPhase = t("flat.rowNote", { blank, quiet });
+      minSeconds: ask.quietInPictures ? ask.quietRun / fps : ask.quietRun,
+    })
+  );
+}
+
+/// One of the two, on the row's own set of fields.
+///
+/// The same shape twice, so what a row says about the pictures and what it
+/// says about the sound are written by the one piece of code: `blankState` and
+/// `quietState` differ in nothing but which pass they are waiting for.
+async function runFlatLane(clip, which, call) {
+  clip[`${which}State`] = "running";
+  clip[`${which}Progress`] = 0;
+  clip[`${which}Phase`] = t("phase.detecting");
+  paintRow(clip);
+  paintQueueNote();
+  try {
+    const runs = await call();
+    clip[`${which}Found`] = runs.length;
+    clip[`${which}State`] = "done";
+    clip[`${which}Source`] = null;
+    clip[`${which}Phase`] = t(`${which}.rowNote`, { n: runs.length });
   } catch (e) {
     if (String(e).includes("cancelled")) {
-      clip.flatState = "queued";
-      clip.flatPhase = t("phase.stopped");
+      clip[`${which}State`] = "queued";
+      clip[`${which}Phase`] = t("phase.stopped");
     } else {
-      clip.flatState = "error";
-      clip.flatPhase = t("flat.failed", { e });
+      clip[`${which}State`] = "error";
+      clip[`${which}Phase`] = t("flat.failed", { e });
     }
   }
   paintRow(clip);
@@ -1365,12 +1482,20 @@ if (listen) {
     clip.progress = done;
     paintRow(clip);
   });
-  listen("clip-flat-progress", (ev) => {
-    const [path, phase, done] = ev.payload;
-    const clip = clips.find((c) => c.path === path && c.flatState === "running");
+  // One event each, the lane being all the row needs to be told: which pass
+  // this is, is which listener heard it.
+  listen("clip-blank-progress", (ev) => {
+    const [path, done] = ev.payload;
+    const clip = clips.find((c) => c.path === path && c.blankState === "running");
     if (!clip) return;
-    clip.flatPhase = phase;
-    clip.flatProgress = done;
+    clip.blankProgress = done;
+    paintRow(clip);
+  });
+  listen("clip-quiet-progress", (ev) => {
+    const [path, done] = ev.payload;
+    const clip = clips.find((c) => c.path === path && c.quietState === "running");
+    if (!clip) return;
+    clip.quietProgress = done;
     paintRow(clip);
   });
   listen("clip-cm-progress", (ev) => {
@@ -1415,7 +1540,9 @@ function renderList() {
       </div>
       <div class="stat">
         <div class="badges">
-          <span class="cmbadge" hidden></span>
+          <span class="cmbadge dbadge" hidden></span>
+          <span class="blankbadge dbadge" hidden></span>
+          <span class="quietbadge dbadge" hidden></span>
           <span class="badge"></span>
         </div>
         <div class="pbar"><span></span></div>
@@ -1647,13 +1774,22 @@ function paintRow(clip) {
     // with another row, or this row is not ready to be detected yet.
     bits.push(t(clip.state === "ready" ? "row.cmQueued" : "row.cmReserved"));
   } else if (clip.cmPhase) bits.push(t("row.cmNote", { note: clip.cmPhase }));
-  if (clip.flatState === "running") {
-    bits.push(
-      t("row.flatRunning", { pct: Math.round(clip.flatProgress * 100), phase: clip.flatPhase })
-    );
-  } else if (clip.flatState === "queued") {
-    bits.push(t(clip.state === "ready" ? "row.flatQueued" : "row.flatReserved"));
-  } else if (clip.flatPhase) bits.push(t("row.flatNote", { note: clip.flatPhase }));
+  // The two flat detections, a line each. Said apart because they are asked
+  // for apart: a row can be part way through the pictures with the sound
+  // already answered, and one line for both would have to pick which of the
+  // two to be about.
+  for (const which of ["blank", "quiet"]) {
+    const state = clip[`${which}State`];
+    if (state === "running") {
+      bits.push(
+        t(`row.${which}Running`, { pct: Math.round(clip[`${which}Progress`] * 100) })
+      );
+    } else if (state === "queued") {
+      bits.push(t(clip.state === "ready" ? `row.${which}Queued` : `row.${which}Reserved`));
+    } else if (clip[`${which}Phase`]) {
+      bits.push(t(`row.${which}Note`, { note: clip[`${which}Phase`] }));
+    }
+  }
   const cutCount = clip.edit ? clip.edit.cuts.length : 0;
   if (cutCount && i) {
     const kept = keepsOf(clip).reduce((n, k) => n + (k.b - k.a), 0);
@@ -1680,15 +1816,17 @@ function paintRow(clip) {
   );
   badge.className = `badge ${state}`;
 
-  // And whether the commercials have been looked for, which the line under
-  // the name says already but only to someone reading it. A list of twenty
-  // recordings is scanned, not read, and the one thing being looked for in
-  // that scan is which of them still owe a detection -- so it goes where the
-  // eye is already going, beside the state badge.
+  // And what each detection has to say, which the line under the name says
+  // already but only to someone reading it. A list of twenty recordings is
+  // scanned, not read, and the one thing being looked for in that scan is
+  // which of them still owe an answer -- so it goes where the eye is already
+  // going, beside the state badge.
   //
-  // The count is the editor's where the clip has been through it, because
-  // that is what the timeline actually holds; otherwise it is the finding's
-  // own.
+  // The commercials' count is the editor's where the clip has been through
+  // it, because that is what the timeline actually holds; otherwise it is the
+  // finding's own. The two flat detections have no such second copy: what
+  // they found is in the cache both windows read, and a row comes back from
+  // the editor by asking that cache again (`restoreFlat`).
   //
   // A detection that has been asked for and not yet made is a badge too.
   // Nothing was shown for one while the only way to ask was to ask a row the
@@ -1711,41 +1849,47 @@ function paintRow(clip) {
   // Three looks, then, and the eye can sort them without reading: dashed is
   // owed, solid is being worked on, filled is an answer. The percentage and
   // the phase stay in the line under the name, where there is room for them.
-  const cmBadge = li.querySelector(".cmbadge");
+  //
+  // One badge per detection, and the three are the same badge: the question
+  // is the same question three times over, and an answer that had to be told
+  // from the others by its colour would be an answer somebody has to read.
   const blocks =
     clip.edit && clip.edit.cmBlocks
       ? clip.edit.cmBlocks.length
       : clip.cm
         ? clip.cm.blocks.length
         : null;
-  const detected = clip.cmState === "done" && blocks !== null;
-  const owed = clip.cmState === "queued" || clip.cmState === "running";
-  cmBadge.hidden = !detected && !owed;
-  if (owed) {
-    const run = clip.cmState === "running";
-    setText(cmBadge, t(run ? "badge.cmRunning" : "badge.cmQueued"));
-    cmBadge.className = `cmbadge ${run ? "detecting" : "queued"}`;
-  } else if (detected) {
-    setText(cmBadge, blocks ? t("badge.cm", { n: blocks }) : t("badge.cmNone"));
-    cmBadge.className = `cmbadge ${blocks ? "found" : "empty"}`;
-  }
+  paintDetectBadge(li.querySelector(".cmbadge"), clip.cmState, blocks, "cm");
+  paintDetectBadge(li.querySelector(".blankbadge"), clip.blankState, clip.blankFound, "blank");
+  paintDetectBadge(li.querySelector(".quietbadge"), clip.quietState, clip.quietFound, "quiet");
 
   // The bar serves whichever of the three passes is on this row. The two in
   // the index lane share `progress` because only one of them can be running
   // -- they are the same lane -- and `phase` says which it is.
+  //
+  // More than one of them can be running on the one row -- the sound and the
+  // pictures are separate lanes -- and there is one bar. It shows the pass
+  // that is furthest from done, which is the one the row is still waiting for.
   const mine = clip.state === "indexing" || clip.pics === "running";
-  const flat = clip.flatState === "running";
-  const running = mine || clip.cmState === "running" || flat;
-  const pct = mine ? clip.progress : flat ? clip.flatProgress : clip.cmProgress;
+  const others = [
+    ["blank", clip.blankState === "running", clip.blankProgress],
+    ["quiet", clip.quietState === "running", clip.quietProgress],
+    ["cm", clip.cmState === "running", clip.cmProgress],
+  ].filter(([, on]) => on);
+  others.sort((a, b) => a[2] - b[2]);
+  const running = mine || others.length > 0;
+  const pct = mine ? clip.progress : others.length ? others[0][2] : 0;
   li.querySelector(".pbar").hidden = !running;
   li.querySelector(".pbar span").style.width = `${Math.round(pct * 100)}%`;
+  // Whose percentage the bar is showing, in the words of the lane it belongs
+  // to. The row's own phase where the bar is the walk's or the pictures', and
+  // the lane's name otherwise.
+  const whose =
+    mine && clip.phase ? clip.phase : others.length ? t(`ptext.${others[0][0]}`) : clip.phase;
   setText(
     li.querySelector(".ptext"),
     running
-      ? t("ptext.running", {
-          phase: clip.phase && mine ? clip.phase : t(flat ? "ptext.flat" : "ptext.cm"),
-          pct: Math.round(pct * 100),
-        })
+      ? t("ptext.running", { phase: whose, pct: Math.round(pct * 100) })
       : clip.state === "queued"
         ? t("phase.queued")
         : clip.phase
@@ -1763,6 +1907,25 @@ function paintTotals() {
   el("clip-total").textContent =
     t("input.total", { n: clips.length, t: coarse(total) }) +
     (pending ? t("input.totalPending", { n: pending }) : "");
+}
+
+/// One detection's badge on one row: booked, being made, or an answer.
+///
+/// `found` is how many it found, or null where this detection has never been
+/// made against this recording -- which is not the same as zero, and is the
+/// difference between no badge at all and a badge reading 黒白なし.
+function paintDetectBadge(span, state, found, which) {
+  const owed = state === "queued" || state === "running";
+  const answered = state === "done" && found !== null && found !== undefined;
+  span.hidden = !owed && !answered;
+  if (owed) {
+    const run = state === "running";
+    setText(span, t(run ? `badge.${which}Running` : `badge.${which}Queued`));
+    span.className = `${which}badge dbadge ${run ? "detecting" : "queued"}`;
+  } else if (answered) {
+    setText(span, found ? t(`badge.${which}`, { n: found }) : t(`badge.${which}None`));
+    span.className = `${which}badge dbadge ${found ? "found" : "empty"}`;
+  }
 }
 
 /// What the clip commands could do to what is chosen right now.
@@ -1785,7 +1948,8 @@ function clipActions() {
     // everything but a recording that could not be read; see
     // `detectSelected`.
     detect: picked.some((c) => c.state !== "error" && c.cmState !== "running"),
-    detectFlat: picked.some((c) => c.state !== "error" && c.flatState !== "running"),
+    detectBlank: picked.some((c) => c.state !== "error" && c.blankState !== "running"),
+    detectQuiet: picked.some((c) => c.state !== "error" && c.quietState !== "running"),
     move: picked.length > 0,
     remove: picked.length > 0,
   };
@@ -1798,13 +1962,15 @@ function paintButtons() {
   el("rename-clip").disabled = !can.rename;
   el("duplicate-clip").disabled = !can.duplicate;
   el("detect-selected").disabled = !can.detect;
-  el("detect-flat-selected").disabled = !can.detectFlat;
+  el("detect-blank-selected").disabled = !can.detectBlank;
+  el("detect-quiet-selected").disabled = !can.detectQuiet;
   const queued = clips.some(
     (c) =>
       c.state === "queued" ||
       c.pics === "queued" ||
       c.cmState === "queued" ||
-      c.flatState === "queued"
+      c.blankState === "queued" ||
+      c.quietState === "queued"
   );
   el("stop-batch").disabled = !busy && !(paused && queued);
   el("stop-batch").textContent = t(paused && queued && !busy ? "side.resumeBatch" : "side.stopBatch");
@@ -1882,6 +2048,12 @@ function paintProps() {
     scenes: c.scenes === null ? pending : c.scenes,
     index: walked ? i.index_name : pending,
     cm: c.cmPhase ? t("props.cm", { note: c.cmPhase }) : "",
+    // A line each, and only where there is something to say: a row that has
+    // never been asked for either of them says nothing about them, as it
+    // says nothing about commercials.
+    flat:
+      (c.blankPhase ? t("props.blank", { note: c.blankPhase }) : "") +
+      (c.quietPhase ? t("props.quiet", { note: c.quietPhase }) : ""),
   });
 }
 
@@ -1989,8 +2161,11 @@ async function remove(doomed) {
   if (doomed.some((c) => c.cmState === "running")) {
     await invoke("stop_batch", { lane: "cm" });
   }
-  if (doomed.some((c) => c.flatState === "running")) {
-    await invoke("stop_batch", { lane: "flat" });
+  if (doomed.some((c) => c.blankState === "running")) {
+    await invoke("stop_batch", { lane: "blank" });
+  }
+  if (doomed.some((c) => c.quietState === "running")) {
+    await invoke("stop_batch", { lane: "quiet" });
   }
   clips = clips.filter((c) => !gone.has(c.id));
   anchor = -1;
@@ -2011,7 +2186,8 @@ el("remove-all").addEventListener("click", () => remove(clips.slice()));
 el("edit-clip").addEventListener("click", () => selected()[0] && edit(selected()[0]));
 el("duplicate-clip").addEventListener("click", () => duplicate(selected()));
 el("detect-selected").addEventListener("click", () => detectSelected());
-el("detect-flat-selected").addEventListener("click", () => detectFlatSelected());
+el("detect-blank-selected").addEventListener("click", () => detectFlatSelected("blank"));
+el("detect-quiet-selected").addEventListener("click", () => detectFlatSelected("quiet"));
 el("stop-batch").addEventListener("click", async () => {
   if (paused) {
     paused = false;
@@ -2177,7 +2353,8 @@ function openRowMenu(x, y) {
   el("row-rename").disabled = !can.rename;
   el("row-duplicate").disabled = !can.duplicate;
   el("row-detect").disabled = !can.detect;
-  el("row-detect-flat").disabled = !can.detectFlat;
+  el("row-detect-blank").disabled = !can.detectBlank;
+  el("row-detect-quiet").disabled = !can.detectQuiet;
   el("row-up").disabled = !can.move;
   el("row-down").disabled = !can.move;
   el("row-remove").disabled = !can.remove;
@@ -2215,9 +2392,13 @@ el("row-detect").addEventListener("click", () => {
   closeRowMenu();
   detectSelected();
 });
-el("row-detect-flat").addEventListener("click", () => {
+el("row-detect-blank").addEventListener("click", () => {
   closeRowMenu();
-  detectFlatSelected();
+  detectFlatSelected("blank");
+});
+el("row-detect-quiet").addEventListener("click", () => {
+  closeRowMenu();
+  detectFlatSelected("quiet");
 });
 el("row-up").addEventListener("click", () => {
   closeRowMenu();
@@ -2414,15 +2595,19 @@ el("droptarget").addEventListener("scroll", () => {
 /// which on a list just dropped in is one or two of them -- and the other
 /// sixteen were dropped without a word, so the thing 全選択 → Ctrl+D is for
 /// only worked if you waited for the whole list to be read first.
-/// Reserve the flat detection on every selected row, as `detectSelected` does
-/// for the commercials. A row the walk has not reached waits there rather than
-/// being refused: see `nextFor`.
-function detectFlatSelected() {
-  const want = selected().filter((c) => c.state !== "error" && c.flatState !== "running");
+/// Reserve one of the two flat detections on every selected row, as
+/// `detectSelected` does for the commercials. A row the walk has not reached
+/// waits there rather than being refused: see `nextFor`.
+///
+/// One lane at a time, `which` being "blank" or "quiet". Asking for both is
+/// two presses, which is the point of their being two buttons: the pictures
+/// take a minute a recording and the sound does not.
+function detectFlatSelected(which) {
+  const want = selected().filter((c) => c.state !== "error" && c[`${which}State`] !== "running");
   if (!want.length) return;
   want.forEach((c) => {
-    c.flatState = "queued";
-    c.flatPhase = "";
+    c[`${which}State`] = "queued";
+    c[`${which}Phase`] = "";
   });
   paused = false;
   paintList();
@@ -6254,7 +6439,10 @@ async function loadProject(path) {
       : t("project.opened", { name: nameOf(path), n: taken.length })
   );
   (async () => {
-    for (const [clip, pending] of taken) await restoreCm(clip, pending);
+    for (const [clip, pending] of taken) {
+      await restoreCm(clip, pending);
+      await restoreFlat(clip);
+    }
   })();
   fillFirstLook();
   pump();
@@ -8629,6 +8817,15 @@ function relocalise() {
       const note = cmNote(c.cm);
       c.cmPhase = c.cmSource === "cache" ? t("cm.previous", { note }) : note;
     }
+    // The two flat detections say the same sentence in either language: a
+    // count, and whether it was made in this session. Both are held as
+    // numbers and a flag rather than as the sentence, for this.
+    for (const which of ["blank", "quiet"]) {
+      if (c[`${which}State`] !== "done" || c[`${which}Found`] === null) continue;
+      const note = t(`${which}.rowNote`, { n: c[`${which}Found`] });
+      c[`${which}Phase`] =
+        c[`${which}Source`] === "cache" ? t("flat.previous", { note }) : note;
+    }
   }
   renderList();
   renderOutset();
@@ -8720,6 +8917,19 @@ window.addEventListener("keydown", (ev) => {
   if ((ev.ctrlKey || ev.metaKey) && key === "d") {
     ev.preventDefault();
     detectSelected();
+    return;
+  }
+  // The other two detections, on the keys the cut editor answers them with:
+  // one act, one key, whichever window is in front. B for the black and white
+  // pictures, Q for the quiet.
+  if ((ev.ctrlKey || ev.metaKey) && key === "b") {
+    ev.preventDefault();
+    detectFlatSelected("blank");
+    return;
+  }
+  if ((ev.ctrlKey || ev.metaKey) && key === "q") {
+    ev.preventDefault();
+    detectFlatSelected("quiet");
     return;
   }
   if (ev.ctrlKey || ev.metaKey || ev.altKey) return;

@@ -926,28 +926,32 @@ input[type="text"]::placeholder { color: var(--dim); }
 }
 .clip.on .sub, .clip.on .cm { color: #cfe9f2; }
 .clip .stat { display: flex; flex-direction: column; gap: 3px; align-items: stretch; }
-/* The row's state, and beside it whether its commercials have been found.
-   Two answers about one clip, in the corner where the first was already
-   being looked for. */
-.clip .badges { display: flex; gap: 4px; justify-content: flex-end; align-items: center; }
-.cmbadge {
+/* The row's state, and beside it what each detection has to say about the
+   clip. Four answers about one clip, in the corner where the first was
+   already being looked for -- wrapped rather than squeezed, because a row
+   with all three detections booked is wider than the column. */
+.clip .badges {
+  display: flex; gap: 4px; justify-content: flex-end; align-items: center;
+  flex-wrap: wrap;
+}
+.dbadge {
   padding: 2px 8px; border-radius: 2px; font-size: 11px; font-weight: 600;
   background: #143d1e; color: #7fe0a0; border: 1px solid #256b39;
 }
 /* Detected, and there was nothing to cut. Still a pass that has been made,
    so it is still a badge -- just not one offering anything. */
-.cmbadge.empty { background: #33383a; color: var(--dim); border-color: #4a4f52; }
+.dbadge.empty { background: #33383a; color: var(--dim); border-color: #4a4f52; }
 /* Asked for, not made yet. Outlined rather than filled: a detection that has
    been booked is a promise about this row and not an answer about it, and the
    two must not be told apart by reading them. */
-.cmbadge.queued {
+.dbadge.queued {
   background: #16304a; color: #9fcbea; border-color: #2f5f85; border-style: dashed;
 }
 /* Being made right now. The same blue with the dashes closed up: still not an
    answer, but no longer only a promise. The bar under the row cannot be
    relied on to say it -- the pictures pass is as often as not on the same
    row, and the bar goes to that one. */
-.cmbadge.detecting {
+.dbadge.detecting {
   background: #16304a; color: #cfe6f7; border-color: #4e8cc0;
 }
 .clip .badge.queued { background: #3a3a3a; color: var(--dim); border-color: #4a4a4a; }

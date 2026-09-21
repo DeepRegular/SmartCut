@@ -11,12 +11,11 @@
 //! [`Thumbs`] or [`Proxy`]. The list is the one screen the window can be on
 //! while work carries on for a recording nobody is looking at.
 //!
-//! Those two halves run **at the same time**: an index pass, a commercial
-//! detection and an open cut editor, all three at once. Sharing nothing is
-//! what makes that safe; what makes it bearable is that the two background
-//! passes hold themselves to part of the machine while the editor is up
-//! (see [`background_threads`]), because the picture under the pointer is
-//! the one somebody is waiting for.
+//! Those two halves run **at the same time**: an index pass, a detection and
+//! an open cut editor, all at once. Sharing nothing is what makes that safe;
+//! what makes it bearable is that the background passes hold themselves to
+//! part of the machine while the editor is up (see [`background_threads`]),
+//! because the picture under the pointer is the one somebody is waiting for.
 
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Mutex;
@@ -179,7 +178,11 @@ struct BatchStop {
     walk: AtomicU64,
     pics: AtomicU64,
     cm: AtomicU64,
-    flat: AtomicU64,
+    /// The two flat detections, counted apart because they are asked for
+    /// apart: a list told to find the silences and nothing else must not be
+    /// stopped by a row being taken out from under the pictures pass.
+    blank: AtomicU64,
+    quiet: AtomicU64,
 }
 
 /// One of the recording's sound tracks, as the window needs to know it.
@@ -2004,12 +2007,14 @@ fn stop_batch(lane: Option<String>, stop: State<BatchStop>) {
         Some("walk") => stop.walk.fetch_add(1, Ordering::SeqCst),
         Some("pics") => stop.pics.fetch_add(1, Ordering::SeqCst),
         Some("cm") => stop.cm.fetch_add(1, Ordering::SeqCst),
-        Some("flat") => stop.flat.fetch_add(1, Ordering::SeqCst),
+        Some("blank") => stop.blank.fetch_add(1, Ordering::SeqCst),
+        Some("quiet") => stop.quiet.fetch_add(1, Ordering::SeqCst),
         _ => {
             stop.walk.fetch_add(1, Ordering::SeqCst);
             stop.pics.fetch_add(1, Ordering::SeqCst);
             stop.cm.fetch_add(1, Ordering::SeqCst);
-            stop.flat.fetch_add(1, Ordering::SeqCst)
+            stop.blank.fetch_add(1, Ordering::SeqCst);
+            stop.quiet.fetch_add(1, Ordering::SeqCst)
         }
     };
 }
@@ -2017,33 +2022,60 @@ fn stop_batch(lane: Option<String>, stop: State<BatchStop>) {
 /// How many cores one of the clip list's background passes may decode with.
 ///
 /// Every core while nobody is cutting anything: the list working through a
-/// night's recordings on its own should have the machine, and the two lanes
+/// night's recordings on its own should have the machine, and the wide lanes
 /// splitting it between them is the whole of the sharing needed.
 ///
-/// Half of it, split again between the lanes, while the cut editor is open.
-/// A pass over a recording is a decoder on every core, and the film strip
-/// asking for the picture under the pointer is one more decode that has to
-/// come back inside a frame or two. This is the trade that lets all three
-/// run at once: the pass takes a few seconds longer, the pointer keeps its
-/// picture. Zero is what libavcodec reads as "as many as this machine has".
+/// A quarter of it while the cut editor is open -- half the machine, split
+/// again between the wide lanes. A pass over a recording is a decoder on
+/// every core, and the film strip asking for the picture under the pointer is
+/// one more decode that has to come back inside a frame or two. This is the
+/// trade that lets them all run at once: the pass takes longer, the pointer
+/// keeps its picture. Zero is what libavcodec reads as "as many as this
+/// machine has".
+///
+/// What the trade costs was measured on a four-core machine, a 24-minute
+/// 1440x1080 MPEG-2 recording off BS through the flat-picture pass: 36
+/// seconds on every core, 46 on two, 72 on one. So the quarter share is twice
+/// the wall time -- which is the right way round for a pass nobody is
+/// watching, and the wrong way round for one somebody pressed a button for.
+/// See [`asked_for_threads`].
 fn background_threads(app: &tauri::AppHandle) -> usize {
     if app.get_webview_window(EDITOR).is_none() {
         return 0;
     }
-    let cores = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4);
-    (cores / (2 * LANES)).max(1)
+    (cores() / (2 * WIDE_LANES)).max(1)
 }
 
-/// How many background passes the clip list runs at once: a walk over the
-/// packets, a pass over the key pictures, and a commercial detection. See
-/// [`BatchStop`].
+/// ...and how many the cut editor's own detection may have, which is a
+/// different question with a different answer.
 ///
-/// The divisor is 2 rather than 3 because only one of the three decodes at
-/// width: the walk touches no decoder at all -- it reads packet headers --
-/// and libavcodec threads none of what a detection reads. So the cores are
-/// split between the picture pass and the film strip, which is what this
-/// number is really about.
-const LANES: usize = 2;
+/// Half the machine. The editor is open by definition here -- the button is
+/// in it -- so the share [`background_threads`] would give is a quarter, and
+/// on the machine measured above that is 72 seconds against 36 for a pass
+/// somebody is sitting and watching the percentage of. Half is the middle of
+/// that curve: 46 seconds, and the other half of the machine is exactly what
+/// the film strip and the stage want while the wait goes on.
+///
+/// Not every core, for the same reason the background share is not every
+/// core: the pictures this pass takes are taken from under the pointer.
+fn asked_for_threads() -> usize {
+    (cores() / 2).max(1)
+}
+
+fn cores() -> usize {
+    std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4)
+}
+
+/// How many of the clip list's lanes decode at width, which is what the cores
+/// have to be divided by. See [`BatchStop`], which has one count per lane and
+/// five of them.
+///
+/// Two, not five: the walk touches no decoder at all -- it reads packet
+/// headers -- and neither the commercial detection nor the silences are
+/// threaded by libavcodec, which threads neither captions nor audio nor a
+/// logo. What is left is the thumbnail pass and the flat-picture pass, and
+/// those are what contend for cores with the film strip.
+const WIDE_LANES: usize = 2;
 
 /// How far into a clip its poster is taken from.
 const POSTER_AT: f64 = 0.1;
@@ -3403,6 +3435,10 @@ struct FlatRun {
 /// `min_seconds` and `min_pictures` are the one thing 環境設定 has a say in.
 /// Both are applied, and the screen sets whichever of them the person chose a
 /// unit for.
+///
+/// Half the machine, not all of it: the film strip this window is about wants
+/// cores too, and the second half of them is worth about a third of this
+/// pass's wall time. See [`asked_for_threads`].
 #[tauri::command]
 async fn detect_blank(
     path: String,
@@ -3416,7 +3452,15 @@ async fn detect_blank(
         let say = move |done: f64| {
             let _ = reporter.emit("flat-progress", ("blank", done));
         };
-        blank_now(&app, &src, &path, min_seconds, min_pictures, say)
+        blank_now(
+            &app,
+            &src,
+            &path,
+            min_seconds,
+            min_pictures,
+            asked_for_threads(),
+            say,
+        )
     })
     .await
 }
@@ -3576,11 +3620,13 @@ fn blank_now(
     path: &str,
     min_seconds: f64,
     min_pictures: usize,
+    threads: usize,
     say: impl FnMut(f64) + Send + 'static,
 ) -> Result<Vec<FlatRun>, String> {
     let opts = smartcut_core::BlankOptions {
         min_seconds,
         min_pictures,
+        threads,
         ..Default::default()
     };
     let runs: Vec<FlatRun> = smartcut_core::find_blank_runs_with(src, &opts, Some(Box::new(say)))
@@ -3678,8 +3724,8 @@ async fn flat_cached(
     .await
 }
 
-/// Both passes over a recording nothing is looking at: the clip list's own
-/// lane.
+/// The pictures pass over a recording nothing is looking at: one of the clip
+/// list's two flat lanes.
 ///
 /// A lane of its own rather than a part of commercial detection, which reads
 /// the same recording and could have carried this. It is not folded in because
@@ -3688,82 +3734,101 @@ async fn flat_cached(
 /// on half an hour of broadcast against a quarter of that. Somebody who wants
 /// the commercials found should not pay for the black frames as well.
 ///
-/// A half the cache already answers is not read again, which is what makes
+/// And a lane apart from the sound's, for the same reason one step further in:
+/// the two answer different questions, and this is the dear half. A list asked
+/// for the silences alone has them in seconds and never decodes a picture.
+///
+/// A pass the cache already answers is not read again, which is what makes
 /// asking the list for a recording the editor has already been over cost
 /// nothing.
+///
+/// The one lane here that decodes at width, so it takes the background share
+/// like the thumbnail pass and unlike the two detections that thread nothing:
+/// every core while the editor is closed, a quarter of them while it is open.
+/// See [`background_threads`].
 #[tauri::command]
-async fn detect_flat_at(
+async fn detect_blank_at(
     path: String,
     min_seconds: f64,
     min_pictures: usize,
-    threshold_db: f64,
-    quiet_seconds: f64,
     app: tauri::AppHandle,
-) -> Result<FlatFound, String> {
+) -> Result<Vec<FlatRun>, String> {
     off_thread_behind(move || {
-        let mine = app.state::<BatchStop>().flat.load(Ordering::SeqCst);
-        let stopped = || app.state::<BatchStop>().flat.load(Ordering::SeqCst) != mine;
+        let mine = app.state::<BatchStop>().blank.load(Ordering::SeqCst);
+        let stopped = || app.state::<BatchStop>().blank.load(Ordering::SeqCst) != mine;
         if stopped() {
             return Err("cancelled".into());
+        }
+        if let Some(saved) = saved_flat(&app, &path, false) {
+            if flat_answers(&saved, min_seconds, min_pictures, None) {
+                return Ok(flat_keep(&saved.runs, min_seconds, min_pictures));
+            }
         }
         let src = flat_source(&app, &path)?;
-        let mut out = FlatFound::default();
-
-        // Half the bar each. The two passes are within a fifth of each other
-        // on the recording they were measured on -- 76 seconds for the
-        // pictures, 67 for the sound -- because both of them read the whole
-        // file and the file is on a share. On a local disc the pictures are
-        // the longer half; neither is close enough to the other to be worth
-        // weighting.
-        let told = |phase: &'static str, from: f64| {
-            let reporter = app.clone();
-            let owned = path.clone();
-            move |done: f64| {
-                let _ = reporter.emit(
-                    "clip-flat-progress",
-                    (owned.clone(), phase.to_string(), from + done * 0.5),
-                );
-            }
+        let reporter = app.clone();
+        let owned = path.clone();
+        let say = move |done: f64| {
+            let _ = reporter.emit("clip-blank-progress", (owned.clone(), done));
         };
+        let runs = blank_now(
+            &app,
+            &src,
+            &path,
+            min_seconds,
+            min_pictures,
+            background_threads(&app),
+            say,
+        )?;
+        if stopped() {
+            return Err("cancelled".into());
+        }
+        Ok(runs)
+    })
+    .await
+}
 
-        match saved_flat(&app, &path, false) {
-            Some(saved) if flat_answers(&saved, min_seconds, min_pictures, None) => {
-                out.blank = Some(flat_keep(&saved.runs, min_seconds, min_pictures));
-            }
-            _ => {
-                let say = told(tr!("映像を調べています", "Reading the pictures"), 0.0);
-                out.blank = Some(blank_now(
-                    &app,
-                    &src,
-                    &path,
-                    min_seconds,
-                    min_pictures,
-                    say,
-                )?);
-            }
-        }
+/// The sound pass over a recording nothing is looking at: the other flat lane.
+///
+/// Cheap where the pictures are dear -- the sound of half an hour of broadcast
+/// is read in seconds off a local disc -- and not cheap over a share, where
+/// both passes read the whole file and it is the network being measured: 67
+/// seconds for the sound against 76 for the pictures on a NAS.
+///
+/// A recording with no sound is answered with the reason rather than with an
+/// empty list. Nothing found and nothing to look at read the same on a row,
+/// and they are not the same thing.
+#[tauri::command]
+async fn detect_quiet_at(
+    path: String,
+    threshold_db: f64,
+    min_seconds: f64,
+    app: tauri::AppHandle,
+) -> Result<Vec<FlatRun>, String> {
+    off_thread_behind(move || {
+        let mine = app.state::<BatchStop>().quiet.load(Ordering::SeqCst);
+        let stopped = || app.state::<BatchStop>().quiet.load(Ordering::SeqCst) != mine;
         if stopped() {
             return Err("cancelled".into());
         }
-        match saved_flat(&app, &path, true) {
-            Some(saved) if flat_answers(&saved, quiet_seconds, 0, Some(threshold_db)) => {
-                out.quiet = Some(flat_keep(&saved.runs, quiet_seconds, 0));
-            }
-            _ => {
-                let say = told(tr!("音声を調べています", "Reading the audio"), 0.5);
-                // A recording with no sound is not a failure of this pass: the
-                // pictures have been read and are worth having.
-                match quiet_now(&app, &src, &path, quiet_seconds, threshold_db, say) {
-                    Ok(runs) => out.quiet = Some(runs),
-                    Err(e) if src.audio.is_none() => eprintln!("flat: {path}: {e}"),
-                    Err(e) => return Err(e),
-                }
+        if let Some(saved) = saved_flat(&app, &path, true) {
+            if flat_answers(&saved, min_seconds, 0, Some(threshold_db)) {
+                return Ok(flat_keep(&saved.runs, min_seconds, 0));
             }
         }
+        let src = flat_source(&app, &path)?;
+        if src.audio.is_none() {
+            return Err(tr!("音声がありません", "no audio").to_string());
+        }
+        let reporter = app.clone();
+        let owned = path.clone();
+        let say = move |done: f64| {
+            let _ = reporter.emit("clip-quiet-progress", (owned.clone(), done));
+        };
+        let runs = quiet_now(&app, &src, &path, min_seconds, threshold_db, say)?;
         if stopped() {
             return Err("cancelled".into());
         }
-        Ok(out)
+        Ok(runs)
     })
     .await
 }
@@ -5979,7 +6044,8 @@ pub fn run() {
             detect_cm,
             detect_blank,
             detect_silence,
-            detect_flat_at,
+            detect_blank_at,
+            detect_quiet_at,
             flat_cached,
             thumbs_at,
             preview,

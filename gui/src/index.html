@@ -184,11 +184,14 @@
                itself -- see `startRename`. -->
           <button id="rename-clip" class="side-btn" data-i18n="side.rename" disabled>名前を変更</button>
           <button id="detect-selected" class="side-btn" data-i18n="side.detect" disabled>CM を検出</button>
-          <!-- The other detection: where the picture is flat black or white,
-               and where the sound is under a level. Its own button because it
-               is its own lane and its own cost -- every picture is decoded,
-               which the commercial detection does not do. -->
-          <button id="detect-flat-selected" class="side-btn" data-i18n="side.detectFlat" disabled>黒白・無音を検出</button>
+          <!-- The other two detections: where the picture is flat black or
+               white, and where the sound is under a level. A button each
+               because they are a lane each, and because they do not cost
+               alike -- the pictures are every picture in the recording
+               decoded, which neither the commercial detection nor the sound
+               does. -->
+          <button id="detect-blank-selected" class="side-btn" data-i18n="side.detectBlank" disabled>黒白を検出</button>
+          <button id="detect-quiet-selected" class="side-btn" data-i18n="side.detectQuiet" disabled>無音を検出</button>
           <!-- Its label is the one thing on this side that says what would
                happen rather than what the button is, so `paintButtons` writes
                it and no `data-i18n` may: a re-translation on a language change
@@ -1116,8 +1119,13 @@
         <span data-i18n="rowmenu.detect">CM を検出</span>
         <span class="menu-key">Ctrl+D</span>
       </button>
-      <button class="menu-item" id="row-detect-flat" data-i18n="rowmenu.detectFlat">
-        黒白・無音を検出
+      <button class="menu-item" id="row-detect-blank">
+        <span data-i18n="rowmenu.detectBlank">黒白を検出</span>
+        <span class="menu-key">Ctrl+B</span>
+      </button>
+      <button class="menu-item" id="row-detect-quiet">
+        <span data-i18n="rowmenu.detectQuiet">無音を検出</span>
+        <span class="menu-key">Ctrl+Q</span>
       </button>
       <div class="menu-sep"></div>
       <button class="menu-item" id="row-up" data-i18n="rowmenu.moveUp">上に移動</button>

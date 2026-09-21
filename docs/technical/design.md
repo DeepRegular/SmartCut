@@ -395,12 +395,24 @@ a filename it goes through the same substitution `filename` in `disc.rs` does to
 programme name off a disc: the characters a filesystem will not take become their full
 width forms, because `第1話？` still reads and `第1話` is a different name.
 
-### Three lanes, and an editor that stays open
+### The background lanes, and an editor that stays open
 
-There are three background lanes: **one walks the packets and builds the index, one
-decodes the key pictures into thumbnails and scenes, and one detects commercials.** The
-user-level description is in [working through a batch](../user-guide/batch.md); what follows is
-why they are shaped that way.
+There are five background lanes: **one walks the packets and builds the index, one
+decodes the key pictures into thumbnails and scenes, one detects commercials, one finds
+the flat black and white pictures and one finds the silences.** The first two run on
+their own as a list fills; the other three are only ever started by somebody asking for
+them. The user-level description is in [working through a batch](../user-guide/batch.md);
+what follows is why they are shaped that way.
+
+**The two flat detections are lanes apart rather than one lane doing both.** They answer
+different questions and they do not cost alike: the silences are the sound alone, which
+is seconds on half an hour of broadcast, and the flat pictures are every picture in the
+recording decoded, which is a minute. Behind one lane, a list asked for the silences of
+twenty recordings would wait behind twenty full decodes for an answer it could have had
+while the kettle boiled. They do read the same file at the same time when both are
+asked for, which on a share is where the cost is -- and that is the trade taken, because
+over a share either pass alone is already the network being measured (67 seconds for the
+sound against 76 for the pictures on the NAS this was measured on).
 
 They are split because **their costs are different in kind.** The walk is disk-bound:
 one core reading at a gigabyte a second and touching no decoder at all. The thumbnails
@@ -424,15 +436,38 @@ the disk again. Sweeping all the walks first and all the thumbnails afterwards w
 and lost that: by the time a clip's pictures came up, three other recordings had washed
 the cache through, and **the thumbnail passes ran 18% slower.**
 
-There is room for a third lane because it is not a decoder. A second decoder on the
-same cores would not be worth having; the walk reads packet headers, and a detection
-threads nothing. What contends for cores is the thumbnail pass and the filmstrip, and
-that is what `LANES` is really limiting.
+There is room for the commercial lane because it is not a decoder. A second decoder on
+the same cores would not be worth having; the walk reads packet headers, and a detection
+threads nothing -- neither captions, nor audio, nor a logo. What contends for cores is
+the thumbnail pass and the filmstrip, and that is what `WIDE_LANES` is really limiting.
+The flat-picture lane is the second wide decoder, which is why that number is two and
+not one, and it is the other half of why that lane is never started unless it was asked
+for by name.
 
 **No lane stops for the cut editor.** Sharing nothing is what makes that possible;
 what makes it bearable is that the background passes take **only part of the machine** —
-while that window is up the two lanes divide half of it between them
+while that window is up the wide lanes divide half of it between them
 (`background_threads`, on the Rust side).
+
+**What the share costs, and what it was not able to buy.** The flat-picture pass was
+measured on a four-core machine against a 24-minute 1440x1080 MPEG-2 recording off BS:
+**36 seconds on every core, 46 on two, 72 on one.** So the background share — a quarter
+of the machine, which is one core there — is twice the wall time, and that is the right
+way round for a pass nobody is watching. What could **not** be measured on that machine
+is the other side of the trade. Stepping the playhead twenty pictures at a time and
+timing the decode behind it, the median came out at 39 ms and 57 ms on two *idle* runs,
+against 49 ms with an unlimited pass running beside it and 49 ms with a one-core pass:
+**the run-to-run noise is larger than the effect.** The mechanism says why. The stage and
+the filmstrip ask for **one** core (`video_decoder_with(params, 1)` in `preview.rs`,
+because frame threading holds the first picture back until its pipeline fills), and a
+four-core machine has one to spare however wide the pass beside it is. The share is worth
+keeping for the machine where that is not true and for the promise the other lanes
+already keep — not for a number this one could show.
+
+**The editor's own button is a different question and gets a different answer: half the
+machine** (`asked_for_threads`). There the person is watching a percentage count up, so
+the background quarter would be the 72 seconds above against 36; half is 46, and the
+half left over is more than the one core the picture under the pointer wants.
 
 **A clip the list has not read yet can be opened in the editor too.** The editor makes
 that pass itself, showing the recording as far as it has got (`prepare`). While the
@@ -447,10 +482,11 @@ touching neither `Opened` nor `Thumbs` nor `Proxy`.
 **`BatchStop` is a count per lane, not a flag.** A pass takes the number as it starts and
 gives up when it sees a larger one. A flag would have to be lowered before the next pass
 could start, and there is no moment to lower it in, because the other lanes are still
-watching it. There are three counts, one per lane, so that stopping one pass stops
-nothing else: the walk and the thumbnails run **at the same time on different
-recordings**, and a stop meant for one of them must not throw away the other's minutes
-of work.
+watching it. There is one count per lane, so that stopping one pass stops nothing else:
+the walk and the thumbnails run **at the same time on different recordings**, and a stop
+meant for one of them must not throw away the other's minutes of work. The two flat
+detections are counted apart for the same reason one step further in -- a row taken out
+from under the pictures pass must not stop a silence pass on another recording.
 
 ### Two reads, even on a share
 

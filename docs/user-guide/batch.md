@@ -19,13 +19,18 @@ your way down the list and leave the exporting until last.
 
 ![The list while recordings are loading](../images/usage-loading.png)
 
-The rows fill in immediately. Behind them, SmartCut is doing three jobs at once.
+The rows fill in immediately. Behind them, SmartCut is doing several jobs at once.
 
 | Background job | What it does | How long it takes |
 |---|---|---|
 | **Loading** | builds the seek index, used for seeking and cutting | about 1 second per GB |
 | **Thumbnails** | makes the filmstrip pictures and finds scene changes | one or two seconds per GB, longer on 4K |
 | **Commercial detection** | looks for the commercial breaks (started by `Ctrl+D`) | 10–60 seconds for a 30-minute recording |
+| **Blank detection** | looks for the flat black and white stretches (started by `Ctrl+B`) | 20–60 seconds for a 30-minute recording |
+| **Silence detection** | looks for the silent stretches (started by `Ctrl+Q`) | a few seconds for a 30-minute recording |
+
+The last three are only ever started by asking for them, and they are separate
+jobs: asking for the silences does not mean waiting for the pictures.
 
 Two jobs of the same kind run one after another; jobs of different kinds run at
 the same time. Progress appears at the bottom right of each row. Rows whose turn
@@ -53,9 +58,11 @@ soon as its own read finishes.
 
 Progress appears on the row: `Detecting commercials 84% — Looking for the logo`.
 Rows still queued say `Commercial detection queued`, and rows waiting to be read
-say `Commercial detection after the read`. Until the pass has been made the row
-carries a second badge beside its state: dashed `Detection booked` while it
-waits, solid `Detecting` while it runs.
+say `Commercial detection after the read`. Beside the row's state there is a
+badge per detection: dashed `CM booked` while it waits, solid `Detecting CM`
+while it runs, and `CM 5` once it has an answer. The blank and silence
+detections wear the same three looks — `Blank booked`, `Detecting silence`,
+`Blank 6`.
 
 **Detection only places marks; it does not cut.** You decide what to remove,
 later, in the editor. See [Commercial detection](cm-detection.md).
@@ -287,4 +294,4 @@ The whole list — recordings, cuts, track choices, output settings — saves wi
 ---
 
 Why the three jobs run in parallel, and how that was tuned, is in the
-[design notes](../technical/design.md#three-lanes-and-an-editor-that-stays-open).
+[design notes](../technical/design.md#the-background-lanes-and-an-editor-that-stays-open).

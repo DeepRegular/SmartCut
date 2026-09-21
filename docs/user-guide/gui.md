@@ -183,6 +183,7 @@ applies to this material, and `CM 2` means two commercial blocks were found.
 | `F2` | Rename the clip |
 | `Ctrl+A` | Select all |
 | `Ctrl+D` | Detect commercials in the selection |
+| `Ctrl+B` / `Ctrl+Q` | Detect blank / silent stretches in the selection |
 | `Delete` | Remove it from the list (**the file itself is not touched**) |
 | `↑` `↓` | Move the selection. Hold `Shift` to extend it |
 | **Drag a row** | Reorder. `Esc` cancels |
@@ -240,11 +241,19 @@ Progress appears on the row: `Detecting commercials 84% — Looking for the logo
 Rows whose turn has not come say `Commercial detection queued`, and rows still
 waiting to be read say `Commercial detection after the read`.
 
-**A row that has not been detected yet carries a second badge beside its
-state.** Dashed `Detection booked` while it waits, solid `Detecting` while the
-pass runs, and then `CM 5` or `No CM`. The three tell apart by shape, so which
-rows are still owed one is something the list is scanned for rather than read
-for.
+**What a detection has to say is a badge beside the row's state.** Dashed
+`CM booked` while it waits, solid `Detecting CM` while the pass runs, and then
+`CM 5` or `No CM`. The three tell apart by shape, so which rows are still owed
+one is something the list is scanned for rather than read for.
+
+There is one badge per detection: `Blank booked`, `Detecting blank`, `Blank 6`
+and `No blank` for the pictures, and the same four for the sound. A recording
+that has never been through one of them carries no badge for it at all —
+`No blank` means the pass was made and found nothing, and no badge means it was
+never made.
+
+What was found is remembered, so a row put back in the list, or one detected
+from inside the cut editor, wears its badges without being asked again.
 
 The bar under a row can only serve one of the passes on it. The pictures pass
 and the detection land on a row together, the moment its read finishes, and the
@@ -262,14 +271,24 @@ Running a whole evening's worth at once is covered in
 
 ### Detecting blank pictures and silence
 
-**Detect blank/silence** on the right reads every selected recording for two
-things: where the picture is flat black or flat white, and where the sound is
-under a level. It is a separate pass from the commercial detection and either
-can be run without the other.
+**Detect blank** (`Ctrl+B`) and **Detect silence** (`Ctrl+Q`) on the right read
+every selected recording: the first for where the picture is flat black or flat
+white, the second for where the sound is under a level. Both are separate
+passes from the commercial detection, and separate from each other.
 
-It decodes every picture, so it takes longer than detecting commercials.
-Progress appears on the row — `Blank/silence 33% — Reading the pictures` — and
-what it found stays there: `Blank/silence: 1 blank, 4 silent`.
+**They run apart.** The blank pass decodes every picture, so half an hour of
+broadcast takes twenty seconds to a minute; the silence pass reads the sound
+alone and is done in seconds. Asking for one of them never means waiting for
+the other.
+
+A recording still being read can be booked too: `Ctrl+A` then `Ctrl+B` sets
+every selected row going as its own read finishes, and a booked row wears a
+dashed badge until its turn comes.
+
+Progress appears on the row — `Blank detection 33%`, `Silence detection 60%` —
+and what each found stays there on its own line: `Blank: 1 stretch`,
+`Silence: 4 stretches`. A recording with no sound answers the silence pass with
+`Silence: Cannot detect: no audio` rather than with nothing found.
 
 The answers are kept, so opening the cut editor afterwards shows the bands and
 the marks without asking for anything.
@@ -465,9 +484,10 @@ subtitles go into the output is answered by **Tracks** and by the output setting
 
 ### Finding blank pictures and silence
 
-**Detect blank** and **Detect silence** at the top read the recording that is
-open. If the list has already been over it, what was found is on the timeline
-when the window opens; the buttons read it again.
+**Detect blank** (`Ctrl+B`) and **Detect silence** (`Ctrl+Q`) at the top read
+the recording that is open. If the list has already been over it, what was
+found is on the timeline when the window opens; the buttons read it again. They
+are two passes: running one leaves what the other found where it is.
 
 Each stretch is drawn as a band under the timeline — blue-grey for black and
 white, green for silence — in its own row under the scene changes, which are
@@ -476,7 +496,10 @@ the fine orange ticks.
 **Both ends of a stretch are marked.** Where the material before it stops being
 worth keeping and where what follows begins are two different pictures, and a
 fade puts them a second apart, so the start and the end are both keyframes.
-`Alt+↑` and `Alt+↓` walk those ends in order.
+Each detection has its own pair of keys for walking those ends: `Alt+↑` and
+`Alt+↓` for the blank stretches, `Alt+Shift+↑` and `Alt+Shift+↓` for the silent
+ones. A fade to black and a silence are rarely in the same place, which is why
+one pair of keys does not walk both.
 
 A black stretch is often only two to four pictures long, which is why every
 picture is decoded to find them. Half an hour of broadcast takes twenty seconds
@@ -1087,6 +1110,8 @@ can quote it straight into a bug report.
 |---|---|
 | `Ctrl+A` | Select all |
 | `Ctrl+D` | Detect commercials in the selection |
+| `Ctrl+B` | Detect blank stretches in the selection |
+| `Ctrl+Q` | Detect silent stretches in the selection |
 | `Ctrl+N` | New project |
 | `Ctrl+S` / `Ctrl+Shift+S` | Save project / save as |
 | `Ctrl+O` | Open project |
@@ -1106,7 +1131,8 @@ can quote it straight into a bug report.
 | `PageUp` `PageDown` | By the amount set in the preferences, or a scroll while held where that amount is a speed (`Shift`, `Ctrl` and `Shift+Ctrl` carry their own) |
 | `↑` `↓` | Previous / next scene change |
 | `Shift+↑` `Shift+↓` | Previous / next lossless point |
-| `Alt+↑` `Alt+↓` | Previous / next end of a detected stretch (blank or silent) |
+| `Alt+↑` `Alt+↓` | Previous / next end of a blank stretch |
+| `Alt+Shift+↑` `Alt+Shift+↓` | Previous / next end of a silent stretch |
 | `Ctrl+←` `Ctrl+→` | Previous / next keyframe |
 | `Home` / `End` | To the first / last frame |
 | `I` or `[` / `O` or `]` | Start / end the selection here |
@@ -1118,6 +1144,8 @@ can quote it straight into a bug report.
 | `Ctrl+Z` | Undo |
 | `Ctrl+Y` / `Ctrl+Shift+Z` | Redo |
 | `Ctrl+D` | Detect commercials |
+| `Ctrl+B` | Detect blank stretches |
+| `Ctrl+Q` | Detect silent stretches |
 | `Z` | Open the magnifier, or close it |
 | `Ctrl+L` | Read a keyframe list from a file |
 | `Ctrl+Shift+L` | Read a Trim line from a file |
