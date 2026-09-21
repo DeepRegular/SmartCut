@@ -20,14 +20,13 @@
       <span class="spacer"></span>
       <button id="tracks" class="mini wide" data-i18n="tracks.button"
               data-i18n-title="tracks.button.title">トラック</button>
-      <!-- The three detections. Their labels count a pass up while one is
-           running, so it is `main.js` that writes them and not `applyStatic`.
-           The two flat ones are separate buttons because they are separate
-           passes: the pictures are a minute on half an hour of broadcast and
-           the sound is not, so somebody after the silences alone should not
-           have to wait for the pictures. -->
-      <button id="detect-blank" class="mini wide" data-i18n-title="editor.detectBlank.title">黒白を検出</button>
-      <button id="detect-silence" class="mini wide" data-i18n-title="editor.detectSilence.title">無音を検出</button>
+      <!-- Commercial detection, which is the one of the three that is asked
+           for on nearly every recording. Its label counts the pass up while
+           it runs, so it is `main.js` that writes it and not `applyStatic`.
+           The black/white and the silence passes are in the ≡ menu: they are
+           asked for on some material and not on most, and a row of three
+           detections across the top read as three things to do before
+           cutting. -->
       <button id="detect-cm" class="mini wide" data-i18n-title="editor.detectCm.title">CM を検出</button>
     </div>
 
@@ -175,6 +174,22 @@
             <button id="more" class="tool more" aria-haspopup="true" aria-expanded="false"
                     data-i18n-title="editor.more.title">≡</button>
             <div id="more-menu" class="menu up end" hidden>
+              <!-- The two detections that are not on the bar above. They are
+                   separate lines because they are separate passes: the
+                   pictures are a minute on half an hour of broadcast and the
+                   sound is seconds, so somebody after the silences alone
+                   should not wait for the pictures. Their labels count a pass
+                   up while it runs, which is why the word is in a span of its
+                   own and `main.js` writes that rather than the line. -->
+              <button class="menu-item" id="detect-blank" data-i18n-title="editor.detectBlank.title">
+                <span class="menu-label">黒白を検出</span>
+                <span class="menu-key">Ctrl+B</span>
+              </button>
+              <button class="menu-item" id="detect-silence" data-i18n-title="editor.detectSilence.title">
+                <span class="menu-label">無音を検出</span>
+                <span class="menu-key">Ctrl+Q</span>
+              </button>
+              <div class="menu-sep"></div>
               <!-- Reading first, as the reference tool has it: the file is
                    read once at the start of an evening and written at the end
                    of each recording, and the one that is reached for less

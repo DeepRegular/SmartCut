@@ -20,7 +20,8 @@
 // lanes here and a window of its own, and the passes hold themselves to part
 // of the machine while that window is up.
 
-import { fmt, clock, coarse, chLabel, cmNote, esc, size, noBrowserMenu, noNativeDrag } from "./shared.js";
+import { fmt, clock, coarse, chLabel, cmNote, esc, size, blankKey, noBrowserMenu, noNativeDrag }
+  from "./shared.js";
 import { t, applyStatic, preference, currentLang, setLang, onLangChange, tellBackend, confirmWithOs }
   from "./i18n.js";
 import * as prefs from "./prefs.js";
@@ -1283,6 +1284,8 @@ async function restoreFlat(clip) {
       path: clip.path,
       minSeconds: ask.minSeconds,
       minPictures: ask.minPictures,
+      black: ask.black,
+      white: ask.white,
       thresholdDb: ask.thresholdDb,
       quietSeconds: ask.quietInPictures ? ask.quietRun / fps : ask.quietRun,
     });
@@ -1388,9 +1391,16 @@ function flatAsk() {
   const pics = prefs.get("blankRunUnit") === "frame";
   const run = Math.max(0, Number(prefs.get("blankRun")) || 0);
   const quiet = Math.max(0, Number(prefs.get("quietRun")) || 0);
+  const shades = prefs.get("blankShades") || "both";
   return {
     minSeconds: pics ? 0 : run,
     minPictures: pics ? Math.max(1, Math.round(run)) : 1,
+    // Which shades that pass is to look for. The pass is told, rather than
+    // its answer filtered: what goes in the cache is then the question that
+    // was asked, and a detection made for black alone does not stand in for
+    // one that was asked about white.
+    black: shades !== "white",
+    white: shades !== "black",
     // In seconds whatever it was typed in: the sound has no pictures to
     // count. A list holds recordings of different frame rates, so the
     // conversion is per clip and is made below.
@@ -1414,6 +1424,8 @@ async function runBlank(clip) {
       path: clip.path,
       minSeconds: ask.minSeconds,
       minPictures: ask.minPictures,
+      black: ask.black,
+      white: ask.white,
     })
   );
 }
@@ -8315,6 +8327,9 @@ function paintPrefs() {
   el("pref-quiet-level").value = String(prefs.get("quietLevel"));
   el("pref-sidecar").value = String(prefs.get("sidecarPriority"));
   el("pref-cm-keyframes").checked = prefs.get("cmKeyframes") !== false;
+  el("pref-blank-shades").value = String(prefs.get("blankShades") || "both");
+  el("pref-blank-keyframes").checked = prefs.get("blankKeyframes") !== false;
+  el("pref-quiet-keyframes").checked = prefs.get("quietKeyframes") !== false;
   el("pref-quiet-overwrite").checked = !!prefs.get("quietOverwrite");
   el("pref-prefix").value = String(prefs.get("outPrefix") ?? "");
   el("pref-number").checked = !!prefs.get("outNumber");
@@ -8423,6 +8438,9 @@ function tellEditorPrefs() {
       counter: !!prefs.get("counter"),
       meter: prefs.get("meter") !== false,
       subsOn: !!prefs.get("subsOn"),
+      // Not for the editor to store -- both windows read the one store -- but
+      // to tell it that the line in its menu is now naming the wrong pass.
+      blankShades: String(prefs.get("blankShades") || "both"),
     });
   }
 }
@@ -8532,6 +8550,27 @@ el("pref-quiet-level").addEventListener("change", (ev) => {
 
 el("pref-cm-keyframes").addEventListener("change", (ev) => {
   prefs.set("cmKeyframes", ev.target.checked);
+});
+
+// Which shades the pictures pass looks for, and whether each of the two
+// detections puts its marks down. The shades are a question for the pass
+// itself -- a detection saved for black alone is a black detection -- so a
+// row that has already been read is read again when this changes; that falls
+// out of the cache being asked with the shades in it.
+el("pref-blank-shades").addEventListener("change", (ev) => {
+  prefs.set("blankShades", ev.target.value);
+  // What this window offers, and what the editor's menu offers: both name
+  // the pass, and the pass has just been told to look for something else.
+  paintBlankLabels();
+  tellEditorPrefs();
+});
+
+el("pref-blank-keyframes").addEventListener("change", (ev) => {
+  prefs.set("blankKeyframes", ev.target.checked);
+});
+
+el("pref-quiet-keyframes").addEventListener("change", (ev) => {
+  prefs.set("quietKeyframes", ev.target.checked);
 });
 
 el("pref-quiet-overwrite").addEventListener("change", (ev) => {
@@ -8804,6 +8843,19 @@ window.addEventListener("keydown", (ev) => {
 /// worked out again from what they were worked out from, which is why the
 /// row remembers where its note came from. A note the editor wrote is left
 /// alone: this window does not hold what it was made of.
+/// The name of the pictures pass, wherever this window offers it: the button
+/// under クリップ編集 and the line in a row's own menu.
+///
+/// Written over the markup's `data-i18n` rather than instead of it. That
+/// attribute is what `applyStatic` redraws in a new language, and this is
+/// what follows 環境設定 -- so this runs after it, here and at every point
+/// either of the two answers can have changed.
+function paintBlankLabels() {
+  const label = t(blankKey("side.detectBlank"));
+  setText(el("detect-blank-selected"), label);
+  setText(el("row-detect-blank").querySelector("span"), t(blankKey("rowmenu.detectBlank")));
+}
+
 function relocalise() {
   for (const c of clips) {
     // Not while the picture pass is on this row or has just failed on it:
@@ -8832,6 +8884,7 @@ function relocalise() {
   renderOutScreen();
   renderBatch();
   paintQueueNote();
+  paintBlankLabels();
   paintAbout();
   // The editor's window title is this window's doing -- it names the clip,
   // which only the list knows how to name -- so it is this window that has to
@@ -8965,6 +9018,9 @@ jlog("app wired");
 noBrowserMenu();
 noNativeDrag();
 applyStatic();
+// After `applyStatic`, which has just written the "both" wording into the
+// markup: the two names that follow 環境設定 are written over it.
+paintBlankLabels();
 el("pref-lang").value = preference();
 // What 環境設定 says a cut is named, and then the output settings as the last
 // session left them where that is what was asked for -- the carried answer is

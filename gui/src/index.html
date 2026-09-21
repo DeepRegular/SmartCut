@@ -859,6 +859,20 @@
                 </select>
               </div>
               <p class="dim" data-i18n="prefs.blankRunNote"></p>
+              <!-- Which of the two shades that pass looks for. Told to the
+                   pass rather than filtered out of its answer, so what is
+                   saved is the question that was asked. -->
+              <div class="row">
+                <span data-i18n="prefs.blankShades">黒白検出で探すもの:</span>
+                <select id="pref-blank-shades">
+                  <option value="both" data-i18n="prefs.shades.both"></option>
+                  <option value="black" data-i18n="prefs.shades.black"></option>
+                  <option value="white" data-i18n="prefs.shades.white"></option>
+                </select>
+              </div>
+              <p class="dim" data-i18n="prefs.blankShadesNote"></p>
+              <label class="opt"><input id="pref-blank-keyframes" type="checkbox" />
+                <span data-i18n="prefs.blankKeyframes">黒白を検出したら、自動でキーフレームを置く</span></label>
               <div class="row">
                 <span data-i18n="prefs.quietRun">無音の区間とみなす長さ:</span>
                 <input id="pref-quiet-run" class="pref-num" type="number" min="0" step="0.1" />
@@ -874,6 +888,9 @@
                 <span class="dim">dB</span>
               </div>
               <p class="dim" data-i18n="prefs.quietLevelNote"></p>
+              <label class="opt"><input id="pref-quiet-keyframes" type="checkbox" />
+                <span data-i18n="prefs.quietKeyframes">無音を検出したら、自動でキーフレームを置く</span></label>
+              <p class="dim" data-i18n="prefs.flatKeyframesNote"></p>
               <label class="opt"><input id="pref-quiet-overwrite" type="checkbox" />
                 <span data-i18n="prefs.quietOverwrite">ショートカットでの保存は、確認せずに上書きする</span></label>
               <p class="dim" data-i18n="prefs.quietOverwriteNote"></p>

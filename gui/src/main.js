@@ -29,7 +29,7 @@ const dialog = T.dialog;
 const jlog = (m) => invoke && invoke("log", { msg: String(m) });
 jlog("main.js start");
 
-import { fmt, chLabel, cmNote, noBrowserMenu, noNativeDrag } from "./shared.js";
+import { fmt, chLabel, cmNote, blankKey, noBrowserMenu, noNativeDrag } from "./shared.js";
 import { t as tr, applyStatic, setLang, onLangChange, confirmWithOs } from "./i18n.js";
 import * as prefs from "./prefs.js";
 
@@ -720,6 +720,24 @@ function renderKeyframes(scroll = true) {
     at.className = "at";
     at.textContent = fmt(srcToOut(t));
     box.append(no, at);
+    // Where the mark came from, where one of the detections is what put it
+    // there. A card carries no such thing in it -- a mark is an instant and
+    // nothing else, which is what lets 取消 and a cut move them about -- so
+    // this is read off the stretches that are on screen: a mark standing on
+    // the end of one is that end.
+    const from = flatKindsAt(t);
+    if (from.length) {
+      const tags = document.createElement("div");
+      tags.className = "from";
+      for (const kind of from) {
+        const tag = document.createElement("span");
+        tag.className = kind;
+        tag.textContent = tr(`editor.keyframes.from.${kind}`);
+        tag.title = tr(`editor.keyframes.fromTitle.${kind}`);
+        tags.append(tag);
+      }
+      box.append(tags);
+    }
     const kill = document.createElement("button");
     kill.className = "kill";
     kill.textContent = "✕";
@@ -850,13 +868,26 @@ function flatAsk() {
   const pics = prefs.get("blankRunUnit") === "frame";
   const run = Math.max(0, Number(prefs.get("blankRun")) || 0);
   const quiet = Math.max(0, Number(prefs.get("quietRun")) || 0);
+  const shades = prefs.get("blankShades") || "both";
   return {
     minSeconds: pics ? 0 : run,
     minPictures: pics ? Math.max(1, Math.round(run)) : 1,
+    // Which shades the pictures pass is to look for. Sent to the pass rather
+    // than filtered out of its answer, so that what is written down is the
+    // question that was asked -- a detection made for black alone does not
+    // stand in for one that was asked about white.
+    black: shades !== "white",
+    white: shades !== "black",
     quietSeconds: prefs.get("quietRunUnit") === "frame" ? quiet * frame() : quiet,
     thresholdDb: Number(prefs.get("quietLevel")) || -50,
   };
 }
+
+/// Whether a detection is to put its marks down, out of 環境設定. One answer
+/// each, as the commercial detection has its own: somebody who wants every
+/// fade to black marked may want the silences left as a band to read.
+const flatMarks = (which) =>
+  prefs.get(which === "quiet" ? "quietKeyframes" : "blankKeyframes") !== false;
 
 /// Put a detection's stretches up, and a mark at each end of each.
 ///
@@ -874,7 +905,26 @@ function applyFlatRuns(kinds, runs, marks = true) {
   flatRuns = flatRuns.filter((r) => !kinds.includes(r.kind)).concat(runs);
   flatRuns.sort((a, b) => a.start - b.start);
   if (marks && runs.length) addKeyframes(runs.flatMap((r) => [r.start, r.end]));
+  // The cards say which detection each mark stands on, so a detection that
+  // put nothing down still changes what the list reads. Not scrolled to: no
+  // card was chosen, and nothing moved.
+  else renderKeyframes(false);
   draw();
+}
+
+/// Which detections have an end standing on this instant, in the order the
+/// lanes are drawn in.
+///
+/// Both, where both do: a junction is frequently a fade to black *and* a
+/// silence, and the two passes finding the same instant is the strongest
+/// thing either of them says about it. Compared to half a frame, as
+/// everything that asks "is the mark on this picture" is.
+function flatKindsAt(t) {
+  const half = frame() / 2;
+  const on = (r) => Math.abs(r.start - t) < half || Math.abs(r.end - t) < half;
+  return ["black", "white", "quiet"].filter((kind) =>
+    flatRuns.some((r) => r.kind === kind && on(r))
+  );
 }
 
 /// Every end of every stretch of these kinds that is still in the recording,
@@ -921,6 +971,8 @@ async function loadFlatCached(marks) {
       path: src.path,
       minSeconds: ask.minSeconds,
       minPictures: ask.minPictures,
+      black: ask.black,
+      white: ask.white,
       thresholdDb: ask.thresholdDb,
       quietSeconds: ask.quietSeconds,
     });
@@ -929,8 +981,8 @@ async function loadFlatCached(marks) {
     return;
   }
   if (!got) return;
-  if (got.blank) applyFlatRuns(["black", "white"], got.blank, marks);
-  if (got.quiet) applyFlatRuns(["quiet"], got.quiet, marks);
+  if (got.blank) applyFlatRuns(["black", "white"], got.blank, marks && flatMarks("blank"));
+  if (got.quiet) applyFlatRuns(["quiet"], got.quiet, marks && flatMarks("quiet"));
   const found = (got.blank || []).length + (got.quiet || []).length;
   if (found) el("status").textContent = tr("flat.cached", { n: found });
 }
@@ -1625,9 +1677,17 @@ const METER_FALL = 90;
 /// afterwards.
 const METER_HOLD = 1.2;
 const METER_HOLD_FALL = 24;
-/// How wide one bar may grow. A mono recording has the whole column to
-/// itself and does not want it.
-const BAR_MAX = 16;
+/// How wide one bar may grow, for a recording that carries this many.
+///
+/// A mono recording has the whole column to itself and does not want it, and
+/// neither does a stereo one -- which is nearly everything on broadcast. The
+/// pair had 15px each and read as two blocks of colour standing beside the
+/// picture rather than as a level; they are held to 8 now, centred in the
+/// room the column has.
+///
+/// Above two this never binds -- six channels sharing the same room are down
+/// to 4px each on their own -- and it is left where it was.
+const barMax = (bars) => (bars <= 2 ? 8 : 16);
 /// How often the meter asks while something is playing.
 const METER_TICK = 50;
 /// How long after the playhead settles before the frame under it is read.
@@ -1708,7 +1768,7 @@ function paintMeter() {
   const bw = clamp(
     Math.floor((room - gap * (bars - 1)) / bars),
     2,
-    Math.round(BAR_MAX * dpr)
+    Math.round(barMax(bars) * dpr)
   );
   const from = ticks + Math.round(Math.max(0, room - (bw * bars + gap * (bars - 1))) / 2);
   for (let i = 0; i < bars; i++) {
@@ -3975,6 +4035,11 @@ function showMore(on) {
     el("chapter-keys").disabled = !src || !discChapters.length;
     el("cm-keys").disabled = !src || !cmBlocks.length;
     el("clear-keys").disabled = !src || !keyframes.length;
+    // Greyed with nothing open, and left alone while a pass runs: `runFlat`
+    // owns the line for as long as it is reading.
+    for (const id of ["detect-blank", "detect-silence"]) {
+      if (!src) el(id).disabled = true;
+    }
   }
   moreMenu().hidden = !on;
   el("more").setAttribute("aria-expanded", String(!!on));
@@ -5312,9 +5377,9 @@ el("detect-cm").addEventListener("click", async () => {
   }
 });
 
-/// One of the two detections, on the button that asks for it.
+/// One of the two detections, on the menu line that asks for it.
 ///
-/// The pass is read again rather than taken from the cache: the button is how
+/// The pass is read again rather than taken from the cache: the line is how
 /// somebody says "look again", and whatever was saved was already put up when
 /// the window opened. Marks it puts down are the detection's answer and not
 /// something anybody did in here, so they are settled rather than left
@@ -5322,34 +5387,58 @@ el("detect-cm").addEventListener("click", async () => {
 async function runFlat(id, label, which, kinds, call) {
   if (!src) return;
   const btn = el(id);
+  // The line is in the ≡ menu, and a pass that runs for a minute must not
+  // hold it open over the timeline it is about.
+  showMore(false);
   btn.disabled = true;
   el("status").textContent = tr("flat.detecting");
   try {
     const runs = await call();
-    applyFlatRuns(kinds, runs);
+    applyFlatRuns(kinds, runs, flatMarks(which));
     settleMark();
     // Which of the two answered is in the sentence. Both write here, and
     // "3 箇所見つかりました" over a window that has just been asked twice says
     // nothing about which question it is the answer to.
-    const what = tr(`flat.what.${which}`);
+    // Named as the pass was asked for: a window told to look for black alone
+    // says it found black, not that it found "black and white".
+    const what = tr(which === "blank" ? blankKey("flat.what.blank") : `flat.what.${which}`);
+    // Whether the ends were marked is part of what happened, and 環境設定 can
+    // have said not to: a sentence promising marks over a timeline that has
+    // none would send somebody looking for them.
+    const found = flatMarks(which) ? "flat.found" : "flat.foundUnmarked";
     el("status").textContent = runs.length
-      ? tr("flat.found", { n: runs.length, what })
+      ? tr(found, { n: runs.length, what })
       : tr("flat.none", { what });
   } catch (e) {
     el("status").textContent = tr("flat.failed", { e });
   } finally {
     btn.disabled = false;
-    btn.textContent = tr(label);
+    detectLabel(id).textContent = tr(typeof label === "function" ? label() : label);
   }
+}
+
+/// Where one of the two detections writes its word: the span inside the menu
+/// line, so that the shortcut beside it is left standing while a pass counts
+/// itself up.
+const detectLabel = (id) => el(id).querySelector(".menu-label") || el(id);
+
+/// ...and what it says when no pass is running. The pictures line names what
+/// the pass has been told to look for, so that a line reading 黒白を検出 is
+/// never standing over a pass that will only look for black.
+function paintDetectLabels() {
+  detectLabel("detect-blank").textContent = tr(blankKey("editor.detectBlank"));
+  detectLabel("detect-silence").textContent = tr("editor.detectSilence");
 }
 
 el("detect-blank").addEventListener("click", () => {
   const ask = flatAsk();
-  runFlat("detect-blank", "editor.detectBlank", "blank", ["black", "white"], () =>
+  runFlat("detect-blank", () => blankKey("editor.detectBlank"), "blank", ["black", "white"], () =>
     invoke("detect_blank", {
       path: src.path,
       minSeconds: ask.minSeconds,
       minPictures: ask.minPictures,
+      black: ask.black,
+      white: ask.white,
     })
   );
 });
@@ -5399,7 +5488,16 @@ if (listen) {
   hear("flat-progress", (ev) => {
     const [what, done] = ev.payload;
     const id = what === "quiet" ? "detect-silence" : "detect-blank";
-    el(id).textContent = tr("editor.detectingPct", { pct: Math.round(done * 100) });
+    const pct = Math.round(done * 100);
+    detectLabel(id).textContent = tr("editor.detectingPct", { pct });
+    // And on the status line, because the line that counts itself up is
+    // inside a menu that is shut for as long as the pass runs. Which of the
+    // two is in the sentence: either can be the one somebody asked for, and
+    // both can be running.
+    el("status").textContent = tr("flat.detectingPct", {
+      what: tr(what === "quiet" ? "flat.what.quiet" : blankKey("flat.what.blank")),
+      pct,
+    });
   });
   hear("cm-progress", (ev) => {
     const [phase, done] = ev.payload;
@@ -5691,6 +5789,10 @@ if (listen) {
     const said = ev.payload || {};
     if (typeof said.counter === "boolean") showCounter(said.counter, false);
     if (typeof said.meter === "boolean") showMeter(said.meter);
+    // The store is shared -- this window reads the shades for itself at the
+    // press that needs them -- so what arrives here is only the news that the
+    // line in the menu is naming the wrong pass.
+    if (typeof said.blankShades === "string") paintDetectLabels();
   });
   // A row renamed in the list while this window is up. The name is the list's
   // to give -- it is the row that was renamed and not the recording -- so it
@@ -5713,8 +5815,7 @@ if (listen) {
 /// re-wording it here would mean holding what it was made of.
 onLangChange(() => {
   el("detect-cm").textContent = tr("editor.detectCm");
-  el("detect-blank").textContent = tr("editor.detectBlank");
-  el("detect-silence").textContent = tr("editor.detectSilence");
+  paintDetectLabels();
   // The label carries a count when something is left out, so `applyStatic`
   // has just written the plain word over it.
   paintTrackButton();
@@ -5735,8 +5836,7 @@ applyStatic();
 // The two labels that say what would happen rather than what the button is,
 // and are therefore written from here rather than by `applyStatic`.
 el("detect-cm").textContent = tr("editor.detectCm");
-el("detect-blank").textContent = tr("editor.detectBlank");
-el("detect-silence").textContent = tr("editor.detectSilence");
+paintDetectLabels();
 el("play").textContent = tr("t.play");
 renderKeyframes();
 draw();

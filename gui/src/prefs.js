@@ -206,18 +206,51 @@ const DEFAULTS = {
   /// How long the picture has to stay flat before the detection calls it a
   /// stretch, and the unit that number is counted in.
   ///
-  /// Two pictures, because that is what the material holds: measured on half
-  /// an hour off BS, five of the seven flat stretches ran four pictures or
-  /// fewer and two of them ran exactly two. The same minimum said in seconds
-  /// would be 0.07, which is not a number anybody would think to type -- which
-  /// is why the unit is an answer here and not a fixed one.
-  blankRun: 2,
-  blankRunUnit: "frame",
-  /// The same for the sound, where the answer is not alike. A junction's
-  /// silence runs about a second and a pause in dialogue runs 0.1 to 0.4, so
-  /// the minimum is the whole of what tells one from the other -- and 0.4 s is
-  /// where commercial detection has always drawn that line.
-  quietRun: 0.4,
+  /// Three seconds, as the sound's minimum is. **Broadcast black is shorter
+  /// than this:** measured on half an hour off BS, five of the seven flat
+  /// stretches ran four pictures or fewer, so a three-second minimum passes
+  /// over the fades a junction is laid on and reports only the long gaps --
+  /// the black between one recording and the next, a break in the feed, the
+  /// run-out at the end. Whoever wants the junctions themselves types 2 and
+  /// picks フレーム, which is why the unit is an answer here and not a fixed
+  /// one.
+  blankRun: 3,
+  blankRunUnit: "sec",
+  /// Which of the two flat shades the pictures pass is to look for:
+  /// `"black"`, `"white"` or `"both"`.
+  ///
+  /// Black. That is where a junction is laid: a programme fades to black
+  /// before the commercials, and the station fades out of them. White is a
+  /// place a cut belongs too, but it belongs as often to what was being
+  /// watched -- a title sequence cuts on a flash, and so does a camera in a
+  /// news item -- so on some material it is dozens of stretches nobody asked
+  /// about. It is asked for rather than arriving.
+  ///
+  /// Not a filter over the answer. The pass is told what to look for, so a
+  /// detection saved for black alone is a black detection, and asking for
+  /// both afterwards reads the recording again rather than pretending the
+  /// white was there all along.
+  blankShades: "black",
+  /// Whether each of the two flat detections puts its marks down by itself,
+  /// as `cmKeyframes` says for the commercial one.
+  ///
+  /// On, both. What a detection found is drawn under the timeline either way;
+  /// off is for whoever wants to look at the band first and put the marks
+  /// down by hand. One answer each rather than one for the pair: they are two
+  /// passes on two buttons, and somebody who wants every fade to black marked
+  /// may want the silences left as a band to read.
+  blankKeyframes: true,
+  quietKeyframes: true,
+  /// The same for the sound, where the answer is not alike.
+  ///
+  /// Three seconds. Commercial detection draws its line at 0.4 s, which is
+  /// where a pause in dialogue stops and a junction's silence begins -- but
+  /// that detection goes on to rank what it found, and this one hands over
+  /// every stretch it saw. At 0.4 s half an hour of broadcast comes back with
+  /// dozens of them, nearly all of them somebody drawing breath, and a list
+  /// that long is not a list anybody reads. Three seconds is the length of a
+  /// gap that was left on purpose.
+  quietRun: 3,
   quietRunUnit: "sec",
   /// Everything below this counts as silence, in dB of full scale.
   ///

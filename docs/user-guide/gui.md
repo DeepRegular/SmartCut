@@ -281,10 +281,15 @@ Running a whole evening's worth at once is covered in
 
 ### Detecting blank pictures and silence
 
-**Detect blank** (`Ctrl+B`) and **Detect silence** (`Ctrl+Q`) on the right read
-every selected recording: the first for where the picture is flat black or flat
-white, the second for where the sound is under a level. Both are separate
-passes from the commercial detection, and separate from each other.
+**Detect black** (`Ctrl+B`) and **Detect silence** (`Ctrl+Q`) on the right read
+every selected recording: the first for where the picture is flat, the second
+for where the sound is under a level. Both are separate passes from the
+commercial detection, and separate from each other.
+
+**The first button is named after what the pass has been told to look for.**
+Black out of the box, so *Detect black*; *Detect white* or *Detect blank* where
+Preferences says white alone or both. The row's own menu and the cut editor's
+`≡` menu follow it.
 
 **They run apart.** The blank pass decodes every picture, so half an hour of
 broadcast takes twenty seconds to a minute; the silence pass reads the sound
@@ -355,8 +360,8 @@ frames, and `Snap to lossless` can take those to zero once it lights up.
 | Where | What |
 |---|---|
 | Top line | The filename |
-| Info bar | Lossless points, resolution, fps, scan type, audio, codec. **Tracks**, **Detect blank**, **Detect silence** and **Detect commercials** on the right |
-| Left column | The **keyframes** — your marks, each with a thumbnail. Click one to jump there |
+| Info bar | Lossless points, resolution, fps, scan type, audio, codec. **Tracks** and **Detect commercials** on the right; the blank and silence passes are in the `≡` menu at the bottom right |
+| Left column | The **keyframes** — your marks, each with a thumbnail. Click one to jump there. A mark a detection put down carries `Black`, `White` or `Quiet` under its time |
 | The large picture | The preview. At its foot, in the middle: frame number, timecode, what kind of frame it is, and the current selection. **Counter**, on the bottom line, turns them off |
 | Beside it, on the left | The **audio level meter**: what is being heard while something plays, and the sound under the playhead while nothing does. **Preferences → Windows** turns it off |
 | The band under it | The **filmstrip**: the frames around you, laid out as pictures. The `View` menu on the right sets how much time one cell covers |
@@ -496,8 +501,8 @@ subtitles go into the output is answered by **Tracks** and by the output setting
 
 ### Finding blank pictures and silence
 
-**Detect blank** (`Ctrl+B`) and **Detect silence** (`Ctrl+Q`) at the top read
-the recording that is open. If the list has already been over it, what was
+**Detect blank** (`Ctrl+B`) and **Detect silence** (`Ctrl+Q`), in the `≡` menu
+at the bottom right, read the recording that is open. If the list has already been over it, what was
 found is on the timeline when the window opens; the buttons read it again. They
 are two passes: running one leaves what the other found where it is.
 
@@ -513,13 +518,28 @@ Each detection has its own pair of keys for walking those ends: `Alt+↑` and
 ones. A fade to black and a silence are rarely in the same place, which is why
 one pair of keys does not walk both.
 
-A black stretch is often only two to four pictures long, which is why every
-picture is decoded to find them. Half an hour of broadcast takes twenty seconds
+Whether a detection marks anything is a preference, one for each of the two.
+Off, it leaves the band and nothing else.
+
+The marks it does put down are told apart in the keyframe column: under the
+time on the card, a small `Black`, `White` or `Quiet`. A mark carries one only
+where it stands on the end of a stretch, and two where it stands on the end of
+both — a junction is frequently a fade to black and a silence at once.
+
+A black stretch at a junction is often only two to four pictures long, which is
+why every picture is decoded to find them. **Out of the box neither pass
+reports anything that short:** both minimums are three seconds, which is the
+length of a gap that was left on purpose rather than a fade the programme cut
+on. For the junctions themselves, say 2 and pick pictures.
+
+**The pictures pass looks for black alone out of the box.** White is asked for
+in Preferences, and whatever is asked for is what the button in the list and
+the line in this window's menu are named after. Half an hour of broadcast takes twenty seconds
 to a minute — on a recording held over a share it is the reading that decides.
 The silence pass reads the sound alone.
 
 How long a stretch has to last, and what counts as silence, are in Preferences:
-two pictures for black and white, 0.4 s and -50 dB for the sound.
+three seconds for either pass out of the box, and -50 dB for the sound.
 
 ### Marks and cuts are two different things
 
@@ -1025,9 +1045,12 @@ effect as you make it.
 | **PageUp / PageDown** | What those keys do. Four answers — plain, `Shift`, `Ctrl`, `Shift+Ctrl` — each a number and a unit: **frames**, **seconds**, or **% a second, scrolling**. The first two are amounts, one per press. A percentage is a speed: a share of the fastest scroll here, which is sixty times the recording's own speed. 25 is fifteen times, so a second of holding covers fifteen seconds of the recording, whatever is open. Out of the box: 15 frames, 30 with `Shift`, 25% with `Ctrl` and 50% with both. A step of 0 is a key that does nothing |
 | **When more than one is there, read** | Which file is picked up when a recording has more than one of a `.keyframe`, a `.trim.avs` and a `.cm.json` beside it |
 | **Turn a detection into keyframes** | On out of the box. Off, a detection leaves the band and the sentence and nothing else, and ≡ → **Turn the detection into keyframes** places the marks. Where a mark file beside the recording was read, a detection is not marked whatever this says |
-| **Counts as blank after** | Shorter stretches are left out. The unit is pictures or seconds; two pictures out of the box, broadcast black usually running two to four |
-| **Counts as silence after** | The same for the sound. 0.4 s out of the box: a junction's silence runs about a second and a pause in dialogue runs 0.1 to 0.4, so that is the line between them |
+| **Counts as blank after** | Shorter stretches are left out. The unit is pictures or seconds; 3 s out of the box, which reports the long gaps and not the two-to-four-picture black a broadcast junction is laid on. For those, say 2 and pick pictures |
+| **The blank pass looks for** | Black and white, black alone, or white alone. **Black out of the box**, that being where a junction is laid; the button in the list and the line in the editor's menu are named after this answer — *Detect black*, *Detect white*. White belongs as often to the programme — a title sequence cuts on a flash — so on some material it is dozens of stretches nobody asked about. A shade that was not looked for was not written down either, so asking for both afterwards reads the recording again |
+| **Turn a blank detection into keyframes** | On out of the box. Off, the band under the timeline is all that is left |
+| **Counts as silence after** | The same for the sound, and the same 3 s. A pause in dialogue runs 0.1 to 0.4 s and a junction's silence about a second, so anything much shorter comes back as dozens of stretches |
 | **Silence is quieter than** | -50 dB out of the box, measured on the loudest sample of each audio frame. Lower finds only what is truly silent |
+| **Turn a silence detection into keyframes** | As for the blank pass, and on out of the box |
 | **Let the save shortcut write over a file without asking** | `Ctrl+H`, `Ctrl+Shift+H` and `Ctrl+Alt+H` then write over a file of the same name in silence |
 
 ### Output settings

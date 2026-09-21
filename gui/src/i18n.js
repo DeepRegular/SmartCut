@@ -124,12 +124,26 @@ const CATALOG = {
     "prefs.cmKeyframes": "CM を検出したら、自動でキーフレームを置く",
     "prefs.blankRun": "黒・白の区間とみなす長さ:",
     "prefs.blankRunNote":
-      "これ以上続いた区間だけを扱います。放送では 2〜4 フレームの黒が多いので、" +
-      "既定は 2 フレームです。秒で指定することもできます。",
+      "これ以上続いた区間だけを扱います。既定は 3 秒です。" +
+      "放送の CM の切れ目に入る黒は 2〜4 フレームなので、" +
+      "既定のままでは拾いません。録画と録画のあいだのような長い黒だけが出ます。" +
+      "切れ目の黒を拾いたいときは、単位をフレームにして 2 くらいにしてください。",
+    "prefs.blankShades": "黒白検出で探すもの:",
+    "prefs.blankShadesNote":
+      "既定は「黒だけ」です。CM の切れ目に入るのは黒だからです。" +
+      "白はタイトルの頭やニュースのフラッシュなど、番組の中身であることも多く、" +
+      "数十箇所になることがあるので、必要なときに選んでください。" +
+      "探さなかったほうは記録にも残らないので、あとから変えると録画を読み直します。",
+    "prefs.shades.both": "黒と白",
+    "prefs.shades.black": "黒だけ",
+    "prefs.shades.white": "白だけ",
+    "prefs.blankKeyframes": "黒白を検出したら、自動でキーフレームを置く",
     "prefs.quietRun": "無音の区間とみなす長さ:",
     "prefs.quietRunNote":
-      "CM の切れ目の無音は 1 秒前後、会話の間は 0.1〜0.4 秒です。" +
-      "既定の 0.4 秒はその境目にあたります。",
+      "これ以上続いた区間だけを扱います。既定は 3 秒です。" +
+      "会話の間は 0.1〜0.4 秒、CM の切れ目は 1 秒前後なので、" +
+      "短くすると息継ぎまで拾って数十箇所になります。" +
+      "意図して空けた無音だけを見たいときは、このくらいが目安です。",
     "prefs.quietLevel": "無音とみなす音量:",
     "prefs.quietLevelNote":
       "音声フレームの最大値で判定します。0 dB が最大で、既定は -50 dB です。" +
@@ -140,6 +154,11 @@ const CATALOG = {
       "見てから決めたいときは、≡ の「CM 検出結果をキーフレームにする」で置けます。" +
       "録画と同じ名前のファイルを読み込んだときは、入れてあっても CM 検出の結果に印は置きません。" +
       "CM 検出結果のファイルを読み込んだときは、外してあってもそのファイルの印を置きます。",
+    "prefs.quietKeyframes": "無音を検出したら、自動でキーフレームを置く",
+    "prefs.flatKeyframesNote":
+      "区間の始まりと終わりの両方に印を置きます。" +
+      "外すと印は置かず、タイムラインの下に帯が出るだけになります。" +
+      "キーフレーム一覧では、黒白から置いた印と無音から置いた印が分かるようになっています。",
     "prefs.quietOverwrite": "ショートカットでの保存は、確認せずに上書きする",
     "prefs.quietOverwriteNote":
       "Ctrl+H（キーフレーム情報）、Ctrl+Shift+H（Trim）、Ctrl+Alt+H（CM 検出結果）は、" +
@@ -250,7 +269,11 @@ const CATALOG = {
     "side.duplicate": "⧉　クリップを複製",
     "side.rename": "名前を変更",
     "side.detect": "CM を検出",
+    // 探す色を黒だけ・白だけにしてあるときの名前。ボタンや行の右クリック、
+    // 編集画面のメニューは、その設定で実際に走る検出を名乗る。
     "side.detectBlank": "黒白を検出",
+    "side.detectBlankBlack": "黒を検出",
+    "side.detectBlankWhite": "白を検出",
     "side.detectQuiet": "無音を検出",
     "side.stopBatch": "解析を中止",
     "side.resumeBatch": "解析を再開",
@@ -273,6 +296,8 @@ const CATALOG = {
     "rowmenu.duplicate": "クリップを複製",
     "rowmenu.detect": "CM を検出",
     "rowmenu.detectBlank": "黒白を検出",
+    "rowmenu.detectBlankBlack": "黒を検出",
+    "rowmenu.detectBlankWhite": "白を検出",
     "rowmenu.detectQuiet": "無音を検出",
     "rowmenu.moveUp": "上に移動",
     "rowmenu.moveDown": "下に移動",
@@ -398,8 +423,12 @@ const CATALOG = {
     "flat.detecting": "検出中…",
     // 何を探したのかを言わないと、2 つのうちどちらの答えか分かりません。
     "flat.what.blank": "黒白の区間",
+    "flat.what.blankBlack": "黒の区間",
+    "flat.what.blankWhite": "白の区間",
     "flat.what.quiet": "無音の区間",
+    "flat.detectingPct": "{what}を検出中 {pct}%",
     "flat.found": "{what}を {n} 箇所見つかりました。両端にキーフレームを置いています",
+    "flat.foundUnmarked": "{what}を {n} 箇所見つかりました。キーフレームは置いていません",
     "flat.none": "{what}は見つかりませんでした",
     "flat.cached": "検出済みの {n} 箇所を表示しています",
     "flat.failed": "検出できません: {e}",
@@ -678,12 +707,16 @@ const CATALOG = {
     "editor.detectCm": "CM を検出",
     "editor.detectCm.title": "CM らしい区間を探して、その先頭と終わりにキーフレームを置きます (Ctrl+D)",
     "editor.detectBlank": "黒白を検出",
+    "editor.detectBlankBlack": "黒を検出",
+    "editor.detectBlankWhite": "白を検出",
     "editor.detectBlank.title":
-      "映像が真っ黒・真っ白な区間を探して、その両端にキーフレームを置きます (Ctrl+B)" +
+      "映像が黒い区間・白い区間を探します（どちらを探すかは環境設定）(Ctrl+B)" +
+      "／既定では両端にキーフレームを置きます（環境設定で変えられます）" +
       "／Alt+↑ Alt+↓ でその端をたどれます",
     "editor.detectSilence": "無音を検出",
     "editor.detectSilence.title":
-      "音声が無音の区間を探して、その両端にキーフレームを置きます (Ctrl+Q)" +
+      "音声が無音の区間を探します (Ctrl+Q)" +
+      "／既定では両端にキーフレームを置きます（環境設定で変えられます）" +
       "／Alt+Shift+↑ Alt+Shift+↓ でその端をたどれます",
     "editor.detecting": "検出中…（映像も読み込みます）",
     "editor.detectingPct": "検出中 {pct}%",
@@ -694,6 +727,14 @@ const CATALOG = {
     "editor.keyframes.emptyManual":
       "まだありません。「⚑ キーフレーム」でいまの位置を登録できます。CM を検出したあと、≡ の「CM 検出結果をキーフレームにする」を押すと並びます。",
     "editor.keyframes.kill": "このキーフレームを消す",
+    // 印そのものに出どころは書かれていません。いま出ている帯と突き合わせて、
+    // その位置が黒・白・無音のどれかの端であれば、そのしるしを付けています。
+    "editor.keyframes.from.black": "黒",
+    "editor.keyframes.from.white": "白",
+    "editor.keyframes.from.quiet": "無音",
+    "editor.keyframes.fromTitle.black": "黒の区間の端",
+    "editor.keyframes.fromTitle.white": "白の区間の端",
+    "editor.keyframes.fromTitle.quiet": "無音の区間の端",
     "editor.searching": "サーチ中",
     "editor.searchKind": "サーチ",
     "editor.selection": "選択 {a} - {b} : {len}",
@@ -978,12 +1019,24 @@ const CATALOG = {
     "prefs.cmKeyframes": "Turn a detection into keyframes",
     "prefs.blankRun": "Counts as blank after:",
     "prefs.blankRunNote":
-      "Shorter stretches are left out. Broadcast black runs two to four pictures, " +
-      "so the default is two pictures; seconds are the other way of saying it.",
+      "Shorter stretches are left out. The default of 3 s reports only long gaps -- the black " +
+      "between one recording and the next, a break in the feed -- because broadcast black at a " +
+      "junction runs two to four pictures. For those, say 2 and pick pictures.",
+    "prefs.blankShades": "The blank pass looks for:",
+    "prefs.blankShadesNote":
+      "Black out of the box, that being where a junction is laid. White belongs as often to what " +
+      "was being watched -- a title sequence cuts on a flash, and so does a camera in a news item " +
+      "-- so on some material it is dozens of stretches nobody asked about. A shade that is not " +
+      "looked for is not written down either, so changing this reads the recording again.",
+    "prefs.shades.both": "Black and white",
+    "prefs.shades.black": "Black only",
+    "prefs.shades.white": "White only",
+    "prefs.blankKeyframes": "Turn a blank detection into keyframes",
     "prefs.quietRun": "Counts as silence after:",
     "prefs.quietRunNote":
-      "A junction's silence runs about a second; a pause in dialogue runs 0.1 to 0.4. " +
-      "The default of 0.4 s is the line between them.",
+      "Shorter stretches are left out. A pause in dialogue runs 0.1 to 0.4 s and a junction's " +
+      "silence about a second, so anything much under the default of 3 s comes back as dozens of " +
+      "stretches, most of them somebody drawing breath.",
     "prefs.quietLevel": "Silence is quieter than:",
     "prefs.quietLevelNote":
       "Measured on the loudest sample of each audio frame, 0 dB being full scale. " +
@@ -994,6 +1047,10 @@ const CATALOG = {
       "puts the marks down when you ask for them. Where a mark file beside the recording was read a " +
       "detection is not marked whatever this says, and a detection read from a file is marked " +
       "whatever this says.",
+    "prefs.quietKeyframes": "Turn a silence detection into keyframes",
+    "prefs.flatKeyframesNote":
+      "Both ends of every stretch are marked. Off, the band under the timeline is all that is left, " +
+      "and the marks go down by hand. The keyframe list says which detection a mark came from.",
     "prefs.quietOverwrite": "Let the save shortcut write over a file without asking",
     "prefs.quietOverwriteNote":
       "Ctrl+H (the keyframe list), Ctrl+Shift+H (the Trim line) and Ctrl+Alt+H (the detection) write " +
@@ -1107,6 +1164,8 @@ const CATALOG = {
     "side.rename": "Rename clip",
     "side.detect": "Detect commercials",
     "side.detectBlank": "Detect blank",
+    "side.detectBlankBlack": "Detect black",
+    "side.detectBlankWhite": "Detect white",
     "side.detectQuiet": "Detect silence",
     "side.stopBatch": "Stop analysis",
     "side.resumeBatch": "Resume analysis",
@@ -1123,6 +1182,8 @@ const CATALOG = {
     "rowmenu.duplicate": "Duplicate clip",
     "rowmenu.detect": "Detect commercials",
     "rowmenu.detectBlank": "Detect blank",
+    "rowmenu.detectBlankBlack": "Detect black",
+    "rowmenu.detectBlankWhite": "Detect white",
     "rowmenu.detectQuiet": "Detect silence",
     "rowmenu.moveUp": "Move up",
     "rowmenu.moveDown": "Move down",
@@ -1246,8 +1307,12 @@ const CATALOG = {
     // Which of the two answered has to be in the sentence; "found 3" alone
     // does not say what was looked for.
     "flat.what.blank": "blank",
+    "flat.what.blankBlack": "black",
+    "flat.what.blankWhite": "white",
     "flat.what.quiet": "silent",
+    "flat.detectingPct": "Detecting {what} stretches {pct}%",
     "flat.found": "Found {n} {what} stretch{n?es}; both ends of each are marked",
+    "flat.foundUnmarked": "Found {n} {what} stretch{n?es}; nothing is marked",
     "flat.none": "No {what} stretch that long",
     "flat.cached": "Showing {n} stretch{n?es} already detected",
     "flat.failed": "Cannot detect: {e}",
@@ -1512,13 +1577,16 @@ const CATALOG = {
     "editor.detectCm": "Detect commercials",
     "editor.detectCm.title": "Look for commercials and mark them with keyframes (Ctrl+D)",
     "editor.detectBlank": "Detect blank",
+    "editor.detectBlankBlack": "Detect black",
+    "editor.detectBlankWhite": "Detect white",
     "editor.detectBlank.title":
-      "Find where the picture is flat black or white and mark both ends of each stretch " +
-      "(Ctrl+B); Alt with the up and down keys walks those ends",
+      "Find where the picture is flat black or white, whichever Preferences asks for (Ctrl+B); " +
+      "both ends of each stretch are " +
+      "marked unless Preferences says otherwise, and Alt with the up and down keys walks them",
     "editor.detectSilence": "Detect silence",
     "editor.detectSilence.title":
-      "Find where the sound is under the level and mark both ends of each stretch " +
-      "(Ctrl+Q); Alt+Shift with the up and down keys walks those ends",
+      "Find where the sound is under the level (Ctrl+Q); both ends of each stretch are marked " +
+      "unless Preferences says otherwise, and Alt+Shift with the up and down keys walks them",
     "editor.detecting": "Detecting… (the video is read too)",
     "editor.detectingPct": "Detecting {pct}%",
     "editor.keyframes": "Keyframes",
@@ -1528,6 +1596,12 @@ const CATALOG = {
     "editor.keyframes.emptyManual":
       "None yet. “⚑ Keyframe” marks wherever you are. After a detection, ≡ → “Turn the detection into keyframes” lines up the start of each break and of each part of the programme.",
     "editor.keyframes.kill": "Remove this keyframe",
+    "editor.keyframes.from.black": "Black",
+    "editor.keyframes.from.white": "White",
+    "editor.keyframes.from.quiet": "Quiet",
+    "editor.keyframes.fromTitle.black": "The end of a black stretch",
+    "editor.keyframes.fromTitle.white": "The end of a white stretch",
+    "editor.keyframes.fromTitle.quiet": "The end of a quiet stretch",
     "editor.searching": "Searching",
     "editor.searchKind": "Search",
     "editor.selection": "Selection {a} - {b} : {len}",

@@ -110,6 +110,19 @@ pub struct BlankOptions {
     /// thing. Both are applied, so a run has to satisfy whichever of them
     /// has been set.
     pub min_pictures: usize,
+    /// Whether a stretch of black is wanted, and whether a stretch of white
+    /// is.
+    ///
+    /// Both, out of the box. They are told apart here because they are not
+    /// equally useful to everybody: black is where a junction is laid on
+    /// broadcast, while a flash to white belongs to whatever was being
+    /// watched -- a title sequence cuts on one, and so does a camera flash in
+    /// a news item, which on some material is dozens of stretches nobody
+    /// asked about. Turning one off is not a filter over the answer: the
+    /// pictures are never called that shade in the first place, so what is
+    /// written down is the question that was asked.
+    pub black: bool,
+    pub white: bool,
     /// How many cores the decode may have. Zero, the default, is all of them.
     pub threads: usize,
 }
@@ -123,6 +136,8 @@ impl Default for BlankOptions {
             inset: 0.02,
             min_seconds: 0.0,
             min_pictures: 2,
+            black: true,
+            white: true,
             threads: 0,
         }
     }
@@ -261,9 +276,9 @@ fn look_at(frame: &ff::frame::Video, luma: &Luma, opts: &BlankOptions) -> Option
             let x = x0 + i * iw / cols;
             let v = luma.at(row, x);
             seen += 1;
-            if v <= dark {
+            if opts.black && v <= dark {
                 black += 1;
-            } else if v >= bright {
+            } else if opts.white && v >= bright {
                 white += 1;
             }
         }
@@ -272,9 +287,9 @@ fn look_at(frame: &ff::frame::Video, luma: &Luma, opts: &BlankOptions) -> Option
         return None;
     }
     let need = opts.coverage.clamp(0.0, 1.0) * seen as f64;
-    if (black as f64) >= need {
+    if opts.black && (black as f64) >= need {
         Some(Shade::Black)
-    } else if (white as f64) >= need {
+    } else if opts.white && (white as f64) >= need {
         Some(Shade::White)
     } else {
         None
@@ -521,6 +536,38 @@ mod tests {
         assert!(!ten.big_endian);
         assert_eq!(ten.at(&[0x40, 0x00], 0), 64);
         assert_eq!(eight.at(&[16], 0), 16);
+    }
+
+    /// A picture of one flat shade, for [`look_at`] to judge.
+    fn flat(value: u8) -> ff::frame::Video {
+        let mut frame = ff::frame::Video::new(ff::format::Pixel::YUV420P, 64, 64);
+        frame.data_mut(0).fill(value);
+        frame
+    }
+
+    /// A shade that has been turned off is not looked for, rather than found
+    /// and dropped afterwards: what goes on disc is the question that was
+    /// asked, so a detection for black alone never says the word white.
+    #[test]
+    fn a_shade_turned_off_is_not_reported() {
+        let luma = Luma::of(ff::format::Pixel::YUV420P).unwrap();
+        let both = BlankOptions::default();
+        assert_eq!(look_at(&flat(16), &luma, &both), Some(Shade::Black));
+        assert_eq!(look_at(&flat(235), &luma, &both), Some(Shade::White));
+
+        let dark_only = BlankOptions {
+            white: false,
+            ..Default::default()
+        };
+        assert_eq!(look_at(&flat(16), &luma, &dark_only), Some(Shade::Black));
+        assert_eq!(look_at(&flat(235), &luma, &dark_only), None);
+
+        let pale_only = BlankOptions {
+            black: false,
+            ..Default::default()
+        };
+        assert_eq!(look_at(&flat(16), &luma, &pale_only), None);
+        assert_eq!(look_at(&flat(235), &luma, &pale_only), Some(Shade::White));
     }
 
     /// Broadcast white is 235 at 8 bits and 940 at 10, and the default level

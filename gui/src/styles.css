@@ -185,7 +185,13 @@ button.brand:hover, button.brand.open { background: #3a3a3a; border-color: #5c5c
    showing: the box is allowed to settle its own size within `.wide`, and a
    panel that grew by forty pixels on the way to the folder row would take
    the list of names out from under the pointer that had just used it. */
-#prefs .modal-box { width: min(820px, 94vw); }
+/* One height too, which is this rather than whatever the longest group has
+   grown to. The panel used to be as tall as its tallest pane and stopped
+   only at 92vh, so every row added to 検出 made the whole panel taller --
+   on a short screen it reached the top and the bottom of the window and had
+   nowhere left to go. Fixed here, and the group inside it scrolls when it
+   does not fit; see `.pref-pane`. */
+#prefs .modal-box { width: min(820px, 94vw); height: min(560px, 92vh); }
 /* The names down the left stay where they are and the group on the right is
    what scrolls, so a short window does not put the list of groups out of
    reach of the pointer that is walking it. */
@@ -219,13 +225,36 @@ button.brand:hover, button.brand.open { background: #3a3a3a; border-color: #5c5c
    hold the box open, which is what left the panel jumping between 346 and
    533 pixels as the groups were walked through. Invisible is also out of
    reach -- no pointer, no tab stop -- so only the group on top answers. */
-.pref-panes { flex: 1; min-width: 0; padding: 12px; display: grid; overflow: auto; }
+/* The one grid row is the height of the box, not of the tallest pane: the
+   panes are stacked in it, and a row that sized itself to its contents would
+   put the whole panel back to growing with whichever group is longest. */
+.pref-panes {
+  flex: 1; min-width: 0; padding: 12px;
+  display: grid; grid-template-rows: minmax(0, 1fr); overflow: hidden;
+}
+/* Each group scrolls on its own, so a long one is reachable to the end and a
+   short one does not inherit a scrollbar from it. */
 .pref-pane {
   display: flex; flex-direction: column; gap: 8px;
-  min-height: 240px; align-content: start;
-  grid-area: 1 / 1;
+  min-height: 0; align-content: start;
+  grid-area: 1 / 1; overflow-y: auto; overscroll-behavior: contain;
 }
 .pref-pane[hidden] { display: flex; visibility: hidden; }
+/* A scrollbar of our own, for the same reason the plan has one: the
+   desktop's is an overlay drawn *over* the last few characters of every line
+   it passes, which in a panel of explanations means words disappearing under
+   a bar that is not even there most of the time. Given a width here it is a
+   scrollbar the layout knows about, and the text ends before it starts. The
+   gutter is so the longest line does not touch it.
+
+   Webkit's pseudo-elements rather than `scrollbar-width`, as `#segments`
+   does it: the two engines this runs on take different ones, and this is the
+   one they both take. */
+.pref-pane { padding-right: 6px; }
+.pref-pane::-webkit-scrollbar { width: 9px; }
+.pref-pane::-webkit-scrollbar-track { background: var(--sunken); }
+.pref-pane::-webkit-scrollbar-thumb { background: #5c5c5c; border-radius: 4px; }
+.pref-pane::-webkit-scrollbar-thumb:hover { background: #757575; }
 /* A note belongs to the control above it, so it is pulled up against it and
    indented under the box it explains. */
 .prefs-body p.dim { margin: -4px 0 2px 22px; font-size: 11.5px; }
@@ -296,11 +325,30 @@ button.brand:hover, button.brand.open { background: #3a3a3a; border-color: #5c5c
 .about-facts dt { color: var(--dim); }
 .about-facts dd { margin: 0; overflow-wrap: anywhere; }
 
+/* One line, whatever is in it.
+
+   The bar is a row of readouts with a spacer between them, and the right-hand
+   one is a sentence with a recording's name in it: 「サムネイルを作成中:
+   <名前>」. A broadcast recording's name is long, and the sentence wrapped --
+   which does not make the bar taller so much as push the second line over the
+   list under it and move every row down by a line, on and off, as the note
+   changes. So nothing in here wraps: what does not fit is cut with an
+   ellipsis, and the bar is the height of one line for good. */
 .infobar {
-  display: flex; align-items: center; gap: 12px;
+  display: flex; align-items: center; gap: 12px; flex-wrap: nowrap;
   background: #202020; border-bottom: 1px solid #000;
   padding: 4px 10px; color: var(--dim); font-variant-numeric: tabular-nums;
 }
+.infobar > span {
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0;
+}
+/* Both readouts may give way, and the long one gives way first: flexbox
+   takes what it needs in proportion to what each is asking for, and the
+   count on the left asks for a fifth of what the sentence does. The buttons
+   keep their width -- a control that shrinks is a control somebody misses --
+   which is what makes this safe in the cut editor's bar as well, where the
+   readout is long and everything to its right is a button. */
+.infobar > button { flex: none; }
 .spacer { flex: 1; }
 /* Empty until the window has something to say, and taking none of the bar's
    gap until then. The same reason `#out-subfolder-note` does it. */
@@ -354,6 +402,20 @@ main { flex: 1; min-height: 0; display: flex; gap: 0; }
 #keyframes .no { color: var(--dim); }
 #keyframes li.active .no { color: #cfefff; }
 #keyframes .at { font-size: 12px; }
+/* Which detection a mark is standing on, under the time on its card. Both
+   where both are: a junction is frequently a fade to black and a silence at
+   once, and the two passes agreeing is the strongest thing either says.
+
+   The band's own colour, on the outline rather than the fill: a card is a
+   picture with a caption, and a filled tag beside it reads as a button. */
+#keyframes .from { display: flex; gap: 3px; margin-top: 2px; }
+#keyframes .from span {
+  font-size: 9.5px; line-height: 1.5; padding: 0 3px; border-radius: 2px;
+  border: 1px solid currentColor; opacity: 0.85;
+}
+#keyframes .from .black { color: #8fa3c4; }
+#keyframes .from .white { color: #e8e8e8; }
+#keyframes .from .quiet { color: #6fbf9b; }
 #keyframes .kill {
   background: none; border: 0; color: var(--dim); cursor: pointer;
   font-size: 13px; padding: 0 4px; align-self: start;
@@ -371,6 +433,12 @@ main { flex: 1; min-height: 0; display: flex; gap: 0; }
    the half of it that is read at a glance. */
 .stage-row { flex: 1 1 0; min-height: 160px; display: flex; gap: 6px; }
 .stage-row .stage { min-width: 0; }
+/* The column is 64px whatever the recording is; what is narrow is the bars
+   inside it, which `barMax` holds to 8 for the one or two channels broadcast
+   carries and centres in the room. The column is not the thing to take in:
+   the scale down its outer edge is the same width whatever is beside it, and
+   what came off it would come off the six bars of a 5.1 recording, which are
+   down to 4px as it is. */
 .meter {
   width: 64px; flex: none; background: #0d0d0d; border: 1px solid var(--line);
 }
@@ -889,7 +957,7 @@ input[type="text"]::placeholder { color: var(--dim); }
    that all read the same. The reference tool gives the name the width of the
    row and puts everything else under it; so does this now. */
 .clip {
-  display: grid; grid-template-columns: 30px 96px 1fr 190px 22px;
+  display: grid; grid-template-columns: 30px 96px 1fr minmax(190px, auto) 22px;
   grid-template-areas:
     "n poster nm   nm   kill"
     "n poster meta stat kill";
@@ -944,15 +1012,22 @@ input[type="text"]::placeholder { color: var(--dim); }
 .clip .stat { display: flex; flex-direction: column; gap: 3px; align-items: stretch; }
 /* The row's state, and beside it what each detection has to say about the
    clip. Four answers about one clip, in the corner where the first was
-   already being looked for -- wrapped rather than squeezed, because a row
-   with all three detections booked is wider than the column. */
+   already being looked for.
+
+   One line, never two. They were allowed to wrap, and a row with all three
+   detections on it then stood a line taller than its neighbours -- a list of
+   twenty recordings where some rows are 68px and some are 86px reads as a
+   list that is jumping about. The column they are in grows to hold them
+   instead (see `.clip`'s columns), and it is the name's line below them that
+   gives up the width, which is ellipsised anyway. */
 .clip .badges {
   display: flex; gap: 4px; justify-content: flex-end; align-items: center;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
 }
 .dbadge {
   padding: 2px 8px; border-radius: 2px; font-size: 11px; font-weight: 600;
   background: #143d1e; color: #7fe0a0; border: 1px solid #256b39;
+  white-space: nowrap;
 }
 /* Detected, and there was nothing to cut. Still a pass that has been made,
    so it is still a badge -- just not one offering anything. */

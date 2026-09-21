@@ -7,6 +7,25 @@
 // answer.
 
 import { t } from "./i18n.js";
+import * as prefs from "./prefs.js";
+
+/// The name of the pictures pass, which follows what it has been told to
+/// look for.
+///
+/// Both windows print it -- a button in the list, a line in the editor's
+/// menu, the sentence a detection ends with -- and all three have to say the
+/// same thing as the answer in 環境設定: a button reading 黒白を検出 over a
+/// pass that has been told to look for black alone is offering something it
+/// will not do.
+///
+/// Takes the key of the "both" wording and hands back the key in force, so
+/// that a caller is a `t(blankKey("side.detectBlank"))` and nothing more.
+export function blankKey(base) {
+  const shades = prefs.get("blankShades") || "both";
+  if (shades === "black") return `${base}Black`;
+  if (shades === "white") return `${base}White`;
+  return base;
+}
 
 /// A hair over, so that a sum lands on the mark it should be on.
 ///

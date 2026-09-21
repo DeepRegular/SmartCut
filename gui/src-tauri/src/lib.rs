@@ -3432,9 +3432,11 @@ struct FlatRun {
 /// whatever was saved when it opened. What it finds is written down, so the
 /// list and the next session get it for nothing.
 ///
-/// `min_seconds` and `min_pictures` are the one thing 環境設定 has a say in.
-/// Both are applied, and the screen sets whichever of them the person chose a
-/// unit for.
+/// 環境設定 has a say in three things here. `min_seconds` and `min_pictures`
+/// are both applied, and the screen sets whichever of them the person chose a
+/// unit for; `black` and `white` are which shades the pass is to look for,
+/// and are what it is told rather than what its answer is filtered by -- so
+/// what goes on disc is the question that was asked.
 ///
 /// Half the machine, not all of it: the film strip this window is about wants
 /// cores too, and the second half of them is worth about a third of this
@@ -3444,6 +3446,8 @@ async fn detect_blank(
     path: String,
     min_seconds: f64,
     min_pictures: usize,
+    black: bool,
+    white: bool,
     app: tauri::AppHandle,
 ) -> Result<Vec<FlatRun>, String> {
     off_thread_behind(move || {
@@ -3458,6 +3462,8 @@ async fn detect_blank(
             &path,
             min_seconds,
             min_pictures,
+            black,
+            white,
             asked_for_threads(),
             say,
         )
@@ -3509,8 +3515,21 @@ const FLAT_VERSION: u32 = 1;
 struct FlatSaved {
     min_seconds: f64,
     min_pictures: usize,
+    /// Which shades the pictures pass was told to look for.
+    ///
+    /// Both where the file does not say, which is what every file written
+    /// before the shades could be chosen holds: that pass looked for both.
+    /// The sound's half carries them too and means nothing by them.
+    #[serde(default = "looked_for")]
+    black: bool,
+    #[serde(default = "looked_for")]
+    white: bool,
     threshold_db: f64,
     runs: Vec<FlatRun>,
+}
+
+fn looked_for() -> bool {
+    true
 }
 
 /// What both windows are told about a recording's flat stretches. Absent means
@@ -3574,9 +3593,24 @@ fn saved_flat(app: &tauri::AppHandle, src_path: &str, quiet: bool) -> Option<Fla
 /// written down. A level is not a minimum at all -- sound below -50 dB is not
 /// a part of sound below -45 dB, it is a different question -- so the quiet
 /// half answers only for the level it was read at.
-fn flat_answers(saved: &FlatSaved, min_seconds: f64, min_pictures: usize, db: Option<f64>) -> bool {
+fn flat_answers(
+    saved: &FlatSaved,
+    min_seconds: f64,
+    min_pictures: usize,
+    db: Option<f64>,
+    shades: Option<(bool, bool)>,
+) -> bool {
     if saved.min_seconds > min_seconds + 1e-9 || saved.min_pictures > min_pictures {
         return false;
+    }
+    // A shade is like a minimum and not like a level: a pass that looked for
+    // both answers for either of them alone, by leaving the other's stretches
+    // out. A pass that looked for one cannot answer for the other -- those
+    // pictures were never called anything -- so that is read again.
+    if let Some((black, white)) = shades {
+        if (black && !saved.black) || (white && !saved.white) {
+            return false;
+        }
     }
     match db {
         Some(db) => (saved.threshold_db - db).abs() < 1e-9,
@@ -3589,10 +3623,22 @@ fn flat_answers(saved: &FlatSaved, min_seconds: f64, min_pictures: usize, db: Op
 /// A silence has no pictures to count -- it is measured in audio frames, and
 /// [`FlatRun::pictures`] is zero on one -- so the count is applied only where
 /// there is one.
-fn flat_keep(runs: &[FlatRun], min_seconds: f64, min_pictures: usize) -> Vec<FlatRun> {
+fn flat_keep(
+    runs: &[FlatRun],
+    min_seconds: f64,
+    min_pictures: usize,
+    shades: Option<(bool, bool)>,
+) -> Vec<FlatRun> {
+    let wanted = |kind: &str| match (shades, kind) {
+        (Some((black, _)), "black") => black,
+        (Some((_, white)), "white") => white,
+        _ => true,
+    };
     runs.iter()
         .filter(|r| {
-            r.end - r.start + 1e-9 >= min_seconds && (r.pictures == 0 || r.pictures >= min_pictures)
+            wanted(&r.kind)
+                && r.end - r.start + 1e-9 >= min_seconds
+                && (r.pictures == 0 || r.pictures >= min_pictures)
         })
         .cloned()
         .collect()
@@ -3614,18 +3660,23 @@ fn flat_source(app: &tauri::AppHandle, path: &str) -> Result<Source, String> {
 }
 
 /// Run the pictures pass and write down what it found.
+#[allow(clippy::too_many_arguments)]
 fn blank_now(
     app: &tauri::AppHandle,
     src: &Source,
     path: &str,
     min_seconds: f64,
     min_pictures: usize,
+    black: bool,
+    white: bool,
     threads: usize,
     say: impl FnMut(f64) + Send + 'static,
 ) -> Result<Vec<FlatRun>, String> {
     let opts = smartcut_core::BlankOptions {
         min_seconds,
         min_pictures,
+        black,
+        white,
         threads,
         ..Default::default()
     };
@@ -3646,6 +3697,8 @@ fn blank_now(
         &FlatSaved {
             min_seconds,
             min_pictures,
+            black,
+            white,
             threshold_db: 0.0,
             runs: runs.clone(),
         },
@@ -3684,6 +3737,8 @@ fn quiet_now(
         &FlatSaved {
             min_seconds,
             min_pictures: 0,
+            black: true,
+            white: true,
             threshold_db,
             runs: runs.clone(),
         },
@@ -3699,24 +3754,28 @@ fn quiet_now(
 /// force, because a saved half found with a shorter one answers for a longer
 /// one and not the other way about; see [`flat_answers`].
 #[tauri::command]
+#[allow(clippy::too_many_arguments)]
 async fn flat_cached(
     path: String,
     min_seconds: f64,
     min_pictures: usize,
+    black: bool,
+    white: bool,
     threshold_db: f64,
     quiet_seconds: f64,
     app: tauri::AppHandle,
 ) -> Result<FlatFound, String> {
     off_thread(move || {
         let mut out = FlatFound::default();
+        let shades = Some((black, white));
         if let Some(saved) = saved_flat(&app, &path, false) {
-            if flat_answers(&saved, min_seconds, min_pictures, None) {
-                out.blank = Some(flat_keep(&saved.runs, min_seconds, min_pictures));
+            if flat_answers(&saved, min_seconds, min_pictures, None, shades) {
+                out.blank = Some(flat_keep(&saved.runs, min_seconds, min_pictures, shades));
             }
         }
         if let Some(saved) = saved_flat(&app, &path, true) {
-            if flat_answers(&saved, quiet_seconds, 0, Some(threshold_db)) {
-                out.quiet = Some(flat_keep(&saved.runs, quiet_seconds, 0));
+            if flat_answers(&saved, quiet_seconds, 0, Some(threshold_db), None) {
+                out.quiet = Some(flat_keep(&saved.runs, quiet_seconds, 0, None));
             }
         }
         Ok(out)
@@ -3751,6 +3810,8 @@ async fn detect_blank_at(
     path: String,
     min_seconds: f64,
     min_pictures: usize,
+    black: bool,
+    white: bool,
     app: tauri::AppHandle,
 ) -> Result<Vec<FlatRun>, String> {
     off_thread_behind(move || {
@@ -3760,8 +3821,13 @@ async fn detect_blank_at(
             return Err("cancelled".into());
         }
         if let Some(saved) = saved_flat(&app, &path, false) {
-            if flat_answers(&saved, min_seconds, min_pictures, None) {
-                return Ok(flat_keep(&saved.runs, min_seconds, min_pictures));
+            if flat_answers(&saved, min_seconds, min_pictures, None, Some((black, white))) {
+                return Ok(flat_keep(
+                    &saved.runs,
+                    min_seconds,
+                    min_pictures,
+                    Some((black, white)),
+                ));
             }
         }
         let src = flat_source(&app, &path)?;
@@ -3776,6 +3842,8 @@ async fn detect_blank_at(
             &path,
             min_seconds,
             min_pictures,
+            black,
+            white,
             background_threads(&app),
             say,
         )?;
@@ -3811,8 +3879,8 @@ async fn detect_quiet_at(
             return Err("cancelled".into());
         }
         if let Some(saved) = saved_flat(&app, &path, true) {
-            if flat_answers(&saved, min_seconds, 0, Some(threshold_db)) {
-                return Ok(flat_keep(&saved.runs, min_seconds, 0));
+            if flat_answers(&saved, min_seconds, 0, Some(threshold_db), None) {
+                return Ok(flat_keep(&saved.runs, min_seconds, 0, None));
             }
         }
         let src = flat_source(&app, &path)?;
