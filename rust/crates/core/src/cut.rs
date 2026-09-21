@@ -2612,7 +2612,35 @@ fn signalling_of(src: &Source, opts: &CutOptions) -> Signalling {
     out
 }
 
+/// Which encoders may write a codec's partial GOPs, best first.
+///
+/// Empty for everything libavcodec has one sensible answer for, where
+/// [`ff::encoder::find`] is asked instead. Two codecs are named outright.
+///
+/// **AV1.** What `find` returns is libaom-av1, whose default `cpu-used` is 0:
+/// measured here at 348 seconds for two seconds of 1080p24, which is not a
+/// seam being written but an export that looks hung. SVT-AV1 writes the same
+/// two seconds in 3.97 and lands within 0.002 dB of it, so which encoder is
+/// used is settled here rather than by whichever a build happens to register
+/// first. A build with none of the three still reaches `find`.
+///
+/// **VP9.** There is only one either way. It is named so that the speed set
+/// below does not depend on what `find` answered.
+fn encoders_for(id: ff::codec::Id) -> &'static [&'static str] {
+    match id {
+        ff::codec::Id::AV1 => &["libsvtav1", "librav1e", "libaom-av1"],
+        ff::codec::Id::VP9 => &["libvpx-vp9"],
+        _ => &[],
+    }
+}
+
 /// Build an encoder whose output splices onto the copied pictures.
+///
+/// Each candidate from [`encoders_for`] is tried in turn, because an encoder
+/// being present is not the same as its being able to write *this* recording:
+/// SVT-AV1 has no 4:2:2 and refuses one when it is opened, not when it is
+/// looked up. The last complaint is kept so that a build where none of them
+/// will open says why rather than naming the codec.
 fn open_encoder(
     src: &Source,
     params: &ff::codec::Parameters,
@@ -2620,7 +2648,30 @@ fn open_encoder(
     signalling: &Signalling,
 ) -> Result<ff::encoder::video::Encoder> {
     let id = params.id();
+    let mut refused: Option<anyhow::Error> = None;
+    for name in encoders_for(id) {
+        let Some(codec) = ff::encoder::find_by_name(name) else {
+            continue;
+        };
+        match open_encoder_as(codec, src, params, opts, signalling) {
+            Ok(enc) => return Ok(enc),
+            Err(e) => refused = Some(anyhow!("{name}: {e}")),
+        }
+    }
+    if let Some(e) = refused {
+        return Err(e);
+    }
     let codec = ff::encoder::find(id).ok_or_else(|| anyhow!("no encoder for {id:?}"))?;
+    open_encoder_as(codec, src, params, opts, signalling)
+}
+
+fn open_encoder_as(
+    codec: ff::codec::codec::Codec,
+    src: &Source,
+    params: &ff::codec::Parameters,
+    opts: &CutOptions,
+    signalling: &Signalling,
+) -> Result<ff::encoder::video::Encoder> {
     let mut enc = ff::codec::context::Context::new_with_codec(codec)
         .encoder()
         .video()?;
@@ -2662,7 +2713,21 @@ fn open_encoder(
         (*e).colorspace = (*p).color_space;
         (*e).color_range = (*p).color_range;
         (*e).profile = (*p).profile;
-        (*e).level = (*p).level;
+        // **A level is not one number across codecs, and two of these count
+        // it differently at each end.** What a decoder puts in `level` for
+        // AV1 is the stream's own `seq_level_idx`, 0 for 2.0 and counting
+        // up; what SVT-AV1 wants there is 20 for the same level, and handed
+        // an 8 it says `Level must be in the range of [2.0-7.3]` at every
+        // seam. VP9 numbers its own the third way again. Nothing is lost by
+        // leaving it: a level describes what a decoder must be able to keep
+        // up with, the pictures written here are the size and rate of the
+        // ones they sit among, and an encoder left to work it out writes a
+        // level those pictures actually need. The codecs whose two ends
+        // agree are still told, because there the recording's own answer is
+        // better than a fresh one.
+        if !matches!(params.id(), ff::codec::Id::AV1 | ff::codec::Id::VP9) {
+            (*e).level = (*p).level;
+        }
         (*e).max_b_frames = v.has_b_frames.max(0);
         if v.interlaced() {
             // Encode fields, not frames. Without this the partial GOPs come
@@ -2675,6 +2740,17 @@ fn open_encoder(
         // depend on anything outside itself.
         (*e).flags |= ff::ffi::AV_CODEC_FLAG_CLOSED_GOP as i32;
         (*e).gop_size = 600;
+        // **Every core, the same as the decoder feeding it.** What
+        // `avcodec_alloc_context3` leaves here is 1, not 0, and an encoder
+        // reads it literally: the seams were written on one core while the
+        // decode in front of them ran on four. It never showed on the codecs
+        // this program started with, because a seam of H.264 is a second of
+        // work either way -- but libvpx spent 6.56 s on two seconds of
+        // 1080p24 held to one core and 2.45 s given the machine. Zero is how
+        // libav is told to take what there is. See
+        // [`crate::video_decoder_with`], which says the same thing at the
+        // other end.
+        (*e).thread_count = 0;
         // What the recording says about its own mastering, handed over the
         // way an encoder expects to be told: libx265 reads these and writes
         // the SEI back, so the pictures spliced in describe themselves the
@@ -2747,6 +2823,32 @@ fn open_encoder(
     // is live; a partial GOP is short enough that losing it costs nothing.
     if matches!(v.codec.as_str(), "mpeg2video" | "mpeg4") {
         eopts.set("sc_threshold", "1000000000");
+    }
+    // What the three open encoders are worth being asked to spend.
+    //
+    // **Their defaults are set for encoding a film, and this is writing a
+    // second of one.** Measured on two seconds of 1080p24, against the
+    // pictures being replaced: libaom-av1 spends 348 s at its default and
+    // 13.3 s at `cpu-used 8`, for 0.0015 dB; SVT-AV1 spends 9.5 s at preset
+    // 6 and 3.97 s at preset 8, for 0.0014 dB; libvpx-vp9 spends 6.52 s at
+    // `cpu-used 0` and 2.54 s at 2, for 0.001 dB. Nothing in a seam is worth
+    // the difference, and what a person notices is an export that sits
+    // still. The figures chosen put a seam at roughly what libx264 costs for
+    // the same seconds, which is the speed the rest of this program is
+    // already judged at.
+    match codec.name() {
+        "libvpx-vp9" => {
+            eopts.set("deadline", "good");
+            eopts.set("cpu-used", "2");
+            eopts.set("row-mt", "1");
+        }
+        "libsvtav1" => eopts.set("preset", "8"),
+        "librav1e" => eopts.set("speed", "8"),
+        "libaom-av1" => {
+            eopts.set("cpu-used", "8");
+            eopts.set("row-mt", "1");
+        }
+        _ => {}
     }
     if codec.name() == "libx265" {
         let mut x265: Vec<String> = Vec::new();

@@ -548,6 +548,15 @@ pub fn set_ffmpeg_log(level: u8) {
         1 => ff::util::log::Level::Warning,
         _ => ff::util::log::Level::Verbose,
     });
+    // SVT-AV1 writes its banner and its settings to the terminal itself
+    // rather than through libav, the way x265 does -- so quietening libav
+    // does not quieten it, and a cut of an AV1 recording printed a dozen
+    // lines about an encoder nobody asked for at every seam. The one thing
+    // it reads is this, and it reads it when an encoder is opened, so a
+    // window that changes the setting while it is running is obeyed by the
+    // next seam. `1` is its errors only, which is what is left when the
+    // commentary is taken away. See [`crate::cut::encoders_for`].
+    std::env::set_var("SVT_LOG", if level >= 2 { "3" } else { "1" });
 }
 
 /// This crate's own version, which is the version of the cutting engine --
