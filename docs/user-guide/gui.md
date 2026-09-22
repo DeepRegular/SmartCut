@@ -372,7 +372,7 @@ frames, and `Snap to lossless` can take those to zero once it lights up.
 | Left column | The **keyframes** — your marks, each with a thumbnail. Click one to jump there. A mark a detection put down carries `Black`, `White` or `Quiet` under its time |
 | The large picture | The preview. At its foot, in the middle: frame number, timecode, what kind of frame it is, and the current selection. **Counter**, on the bottom line, turns them off |
 | Beside it, on the left | The **audio level meter**: what is being heard while something plays, and the sound under the playhead while nothing does. **Preferences → Windows** turns it off |
-| The band under it | The **filmstrip**: the frames around you, laid out as pictures. The `View` menu on the right sets how much time one cell covers |
+| The band under it | The **filmstrip**: the frames around you, laid out as pictures. The `Window` menu on the right sets how much of the recording the band shows; a cell is as wide as the stretch it covers |
 | The scrubber | **Green is the output itself.** `▼` are keyframes, a red vertical line is a join left by a cut, the fine ticks below are scene changes, and the two rows under those are the blank and the silent stretches |
 | The button row | **Cut** in the middle, `[ IN` to its left and `OUT ]` to its right, and outwards from there: go to, one frame, lossless point, start and end |
 | The band and lines below | **The export plan**: what will be copied and what will be rebuilt |
@@ -388,9 +388,10 @@ frames, and `Snap to lossless` can take those to zero once it lights up.
 > **Material whose key frames are far apart.** A broadcast recording puts one
 > every half second. A recording off the web, or one from a streaming service,
 > can put several seconds between them — thirty-three, on one measured here.
-> The filmstrip cuts a stretch that long into cells of the length `View` asked
-> for rather than drawing it as a single cell, so the band covers the time the
-> menu says whatever the material is. A `▲` beside a cell's time marks the
+> The filmstrip cuts a stretch that long into cells rather than drawing it as
+> a single one, so the band covers the time `Window` says whatever the
+> material is. A long cell carries its picture at its left edge and shows the
+> cell's own ground to the right of it. A `▲` beside a cell's time marks the
 > cells that are lossless points; the rest are decoded as you go, so while you
 > drag they carry the picture from the lossless point behind them and fill in
 > properly the moment you let go.
