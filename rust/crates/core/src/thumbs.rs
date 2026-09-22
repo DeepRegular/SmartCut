@@ -609,6 +609,9 @@ pub fn build_with(
     crate::init()?;
     let mut ictx = crate::input::demux(&src.input.url)?;
     let idx = src.video.stream_index;
+    // The pass reads the pictures and nothing else, and a stream left on
+    // costs the pictures on some recordings. See [`crate::input::keep_only`].
+    crate::input::keep_only(&mut ictx, &[idx]);
     let params = ictx
         .stream(idx)
         .ok_or_else(|| anyhow!("video stream vanished"))?
@@ -802,6 +805,8 @@ pub fn cut_near(src: &Source, at: f64, window: f64, floor: f64) -> Result<f64> {
         let target = ((landing + src.start_time) * ff::ffi::AV_TIME_BASE as f64) as i64;
         let _ = ictx.seek(target, ..target);
     }
+    // After the seek, for the reason [`crate::input::keep_only`] gives.
+    crate::input::keep_only(&mut ictx, &[idx]);
     let params = ictx
         .stream(idx)
         .ok_or_else(|| anyhow!("video stream vanished"))?
@@ -890,6 +895,8 @@ pub fn refine(src: &Source, at: f64) -> Result<f64> {
         let target = ((landing + src.start_time) * ff::ffi::AV_TIME_BASE as f64) as i64;
         let _ = ictx.seek(target, ..target);
     }
+    // After the seek, for the reason [`crate::input::keep_only`] gives.
+    crate::input::keep_only(&mut ictx, &[idx]);
     let params = ictx
         .stream(idx)
         .ok_or_else(|| anyhow!("video stream vanished"))?

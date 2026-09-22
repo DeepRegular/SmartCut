@@ -370,6 +370,8 @@ fn entry_packets(
     let mut ictx = crate::input::demux(&src.input.url)?;
     place(&mut ictx, src, from, margin)?;
     let idx = src.video.stream_index;
+    // After the seek, for the reason [`crate::input::keep_only`] gives.
+    crate::input::keep_only(&mut ictx, &[idx]);
     let params = ictx
         .stream(idx)
         .ok_or_else(|| anyhow!("stream {idx} vanished"))?
@@ -695,7 +697,7 @@ impl Glancer {
     fn open(spec: &str) -> Result<Self> {
         crate::init()?;
         let input = crate::input::Input::parse(spec)?;
-        let ictx =
+        let mut ictx =
             crate::input::demux(&input.url).map_err(|e| anyhow!("cannot open {spec}: {e}"))?;
         let stream = ictx
             .streams()
@@ -735,6 +737,10 @@ impl Glancer {
         // until its pipeline fills -- and the first picture after a seek is
         // the whole of what this wants. See [`crate::video_decoder_with`].
         let decoder = crate::video_decoder_with(params, 1)?;
+        // Only the pictures, which is all this reads -- and this one seeks
+        // again and again, so the stream the seek is aimed by has to be one
+        // that stays. That is the pictures. See [`crate::input::keep_only`].
+        crate::input::keep_only(&mut ictx, &[idx]);
         Ok(Glancer {
             spec: spec.to_string(),
             ictx,
@@ -1113,6 +1119,10 @@ fn walk(
     let idx = src.video.stream_index;
     let in_tb = src.video.time_base;
     place(&mut ictx, src, from, margin)?;
+    // Nothing but the pictures is read here, and on some recordings a stream
+    // left switched on costs the pictures themselves. See
+    // [`crate::input::keep_only`], and note that it goes after the seek.
+    crate::input::keep_only(&mut ictx, &[idx]);
 
     let params = ictx
         .stream(idx)

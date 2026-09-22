@@ -145,6 +145,9 @@ pub fn find_silences_with(
         .as_ref()
         .ok_or_else(|| anyhow!("{} has no audio", src.path))?;
     let mut ictx = crate::input::demux(&src.input.url)?;
+    // Only the sound is read, so the pictures go by unassembled -- which is
+    // most of the recording. See [`crate::input::keep_only`].
+    crate::input::keep_only(&mut ictx, &[audio.stream_index]);
     let params = ictx
         .stream(audio.stream_index)
         .ok_or_else(|| anyhow!("audio stream vanished"))?

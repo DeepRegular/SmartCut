@@ -397,6 +397,56 @@ pub fn demux(url: &str) -> Result<Demux> {
     Ok(ictx)
 }
 
+/// Leave the demuxer only the streams the caller is going to read.
+///
+/// Everything else in the container is marked to be thrown away before it
+/// is assembled, which is what `ffmpeg -map` does to the streams it was not
+/// asked for. The obvious gain is the work saved on a stream nobody reads.
+///
+/// **The gain that matters is the streams that are read.** libavformat's
+/// Matroska demuxer wants a WebVTT block to be `identifier\nsettings\ntext`,
+/// and answers a block that is not with "invalid data" -- on which the
+/// demuxer gives up on the cluster that block sits in and resumes at the
+/// next thing that looks like a top-level element. That is usually the real
+/// next cluster, which begins on a key picture, and sometimes a false match
+/// inside coded picture data. Everything in between is dropped, from every
+/// stream it was delivering, and the packets that do arrive are whole and
+/// correctly timed, so nothing downstream can tell.
+///
+/// Recordings off a video site are written this way. Measured on one of
+/// them: 10798 of 18782 pictures arrive, the rest lost in 125 runs of one to
+/// four seconds, 76 of which end on a key picture; the sound loses the same
+/// share. Playback stopped part way through, the film strip drew stretches it
+/// had no picture for, the frame rate read as varying when it does not, and
+/// a cut wrote three frames in five. libavformat says nothing at all about it
+/// on that recording; on another it reports reading a block as 795 MB and an
+/// element overrunning the one containing it. `ffmpeg` reading every stream
+/// of these files loses them too, and `ffmpeg -map 0:v` does not. A subtitle
+/// track thrown away here is never parsed, so the blocks it cannot read are
+/// never read. See `examples/demuxdiag.rs`, which measures it, and
+/// `tests/run_demux_tests.sh`, which makes such a file and holds a cut of it
+/// to the plain one's pictures.
+///
+/// So this is not a tidiness rule: **a reader that does not say what it
+/// reads is a reader that can be handed less than the recording holds.**
+///
+/// **Seek before calling this, not after.** A recording is seeked by one of
+/// its streams and libavformat will not seek one that has been thrown away.
+/// See [`crate::cut`]'s look back over the subtitles, where that was learnt.
+pub fn keep_only(ictx: &mut Demux, keep: &[usize]) {
+    for stream in ictx.streams() {
+        if keep.contains(&stream.index()) {
+            continue;
+        }
+        // Through the pointer because the binding offers no setter for it on
+        // a borrowed stream. The field is a plain enum and nothing is being
+        // read out of the context while this runs.
+        unsafe {
+            (*(stream.as_ptr() as *mut ff::ffi::AVStream)).discard = ff::Discard::All.into();
+        }
+    }
+}
+
 /// How far into a recording to look for a stream the first program map did
 /// not mention. libavformat's own limit is five megabytes.
 ///

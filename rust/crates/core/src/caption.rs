@@ -254,6 +254,10 @@ pub fn resets_with(
     if streams.is_empty() {
         return Err(NoResets.into());
     }
+    // The subtitles and nothing else: this pass reads the whole recording,
+    // and the pictures are the bulk of it. See [`crate::input::keep_only`].
+    let keep: Vec<usize> = streams.iter().map(|(i, _)| *i).collect();
+    crate::input::keep_only(&mut ictx, &keep);
 
     let mut out: Vec<f64> = Vec::new();
     let mut scratch: Vec<u8> = Vec::new();

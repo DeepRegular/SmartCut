@@ -105,5 +105,7 @@ pub fn framing(
 pub fn of_source(src: &crate::Source) -> Option<Framing> {
     let audio = src.audio.as_ref()?;
     let mut ictx = crate::input::demux(&src.input.url).ok()?;
+    // Only this track. See [`crate::input::keep_only`].
+    crate::input::keep_only(&mut ictx, &[audio.stream_index]);
     framing(&mut ictx, audio.stream_index)
 }

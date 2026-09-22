@@ -383,6 +383,8 @@ pub fn find_runs_with(
     crate::init()?;
     let mut ictx = crate::input::demux(&src.input.url)?;
     let idx = src.video.stream_index;
+    // Only the pictures are read. See [`crate::input::keep_only`].
+    crate::input::keep_only(&mut ictx, &[idx]);
     let params = ictx
         .stream(idx)
         .ok_or_else(|| anyhow!("video stream vanished"))?

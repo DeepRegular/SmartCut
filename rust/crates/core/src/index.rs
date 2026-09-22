@@ -122,6 +122,11 @@ pub fn walk(
     let codec = video.codec.clone();
     let framing = video.framing;
     let vc1 = video.vc1.as_ref();
+    // Only the pictures are counted here, and on some recordings a stream
+    // left switched on costs the pictures. Nothing seeks in this pass, so
+    // there is no seek for this to get in front of; see
+    // [`crate::input::keep_only`].
+    crate::input::keep_only(&mut ictx, &[stream_index]);
 
     // How far there is to read. Asked of the byte stream rather than of
     // the file, because what is open is not always a file: a DVD title is

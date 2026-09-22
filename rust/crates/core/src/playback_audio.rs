@@ -648,6 +648,10 @@ pub fn play_audio(
     let mut ictx = crate::input::demux(&src.input.url)?;
     let idx = audio.stream_index;
     let in_tb = audio.time_base;
+    // Only this track is read, so the pictures go by unassembled -- which is
+    // most of a recording, and the seeks below still land without them. See
+    // [`crate::input::keep_only`].
+    crate::input::keep_only(&mut ictx, &[idx]);
     let params = ictx
         .stream(idx)
         .ok_or_else(|| anyhow!("stream {idx} vanished"))?
@@ -754,6 +758,8 @@ pub fn peaks_at(src: &Source, time: f64, window: f64) -> Result<Vec<f32>> {
 
     let mut ictx = crate::input::demux(&src.input.url)?;
     let idx = audio.stream_index;
+    // Only this track. See [`crate::input::keep_only`].
+    crate::input::keep_only(&mut ictx, &[idx]);
     let params = ictx
         .stream(idx)
         .ok_or_else(|| anyhow!("stream {idx} vanished"))?

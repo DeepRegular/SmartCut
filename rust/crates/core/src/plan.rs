@@ -520,6 +520,9 @@ pub fn clean_start(src: &crate::Source, from: f64, until: f64) -> Option<f64> {
     }
     let mut ictx = crate::input::demux(&src.input.url).ok()?;
     let idx = src.video.stream_index;
+    // Only the pictures are read, and the seeks below are aimed by them.
+    // See [`crate::input::keep_only`].
+    crate::input::keep_only(&mut ictx, &[idx]);
     let tb = src.video.time_base;
     for want in wanted {
         crate::index::seek_to_entry(&mut ictx, src, want)?;

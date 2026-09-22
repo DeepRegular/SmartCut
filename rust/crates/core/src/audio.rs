@@ -962,6 +962,11 @@ pub fn settled_shape(
         return None;
     }
     let mut ictx = crate::input::demux(url).ok()?;
+    // Only this track: the reads below are bounded at a few thousand
+    // packets, and on a recording whose pictures are still being handed over
+    // that budget goes on packets this cannot use. See
+    // [`crate::input::keep_only`].
+    crate::input::keep_only(&mut ictx, &[audio.stream_index]);
     let params = ictx.stream(audio.stream_index)?.parameters();
     // Sound that is carried through byte for byte is described by the
     // container and by nothing this could decode. Asking its decoder would be
@@ -1064,6 +1069,8 @@ pub fn boundary_patches(
         return Ok(out);
     }
     let mut ictx = crate::input::demux(&src.input.url)?;
+    // Only this track. See [`crate::input::keep_only`].
+    crate::input::keep_only(&mut ictx, &[audio.stream_index]);
     let stream = ictx
         .stream(audio.stream_index)
         .ok_or_else(|| anyhow!("audio stream {} vanished", audio.stream_index))?;

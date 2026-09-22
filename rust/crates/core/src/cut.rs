@@ -1612,6 +1612,30 @@ fn open_input(path: &str) -> Result<(crate::input::Demux, usize)> {
     Ok((ictx, index))
 }
 
+/// The streams a segment's read takes anything from: the pictures, the sound,
+/// the captions, the graphics and a DVD's subpictures. See
+/// [`crate::input::keep_only`] for what is gained by switching the rest off.
+///
+/// **What it keeps rather than what it drops.** A DVD's subpictures are
+/// matched on what the stream *is*, and those streams may not exist until
+/// the demuxer has read a long way in -- so they are named here by codec,
+/// and one that only turns up later is never switched off at all, having not
+/// been there to switch off. They are kept whether this cut carries them or
+/// not: there are a handful of them and only on a DVD, and a stream left on
+/// costs nothing where nothing asks for it.
+fn segment_streams(ictx: &crate::input::Demux, ctx: &SegmentCtx, ist: usize) -> Vec<usize> {
+    let mut keep = vec![ist];
+    keep.extend(ctx.audio.iter().map(|a| a.in_index));
+    keep.extend(ctx.captions.iter().map(|c| c.in_index));
+    keep.extend(ctx.graphics.iter().map(|g| g.in_index));
+    keep.extend(
+        ictx.streams()
+            .filter(|s| s.parameters().id() == ff::codec::Id::DVD_SUBTITLE)
+            .map(|s| s.index()),
+    );
+    keep
+}
+
 /// Seek so that the next read is safely *before* `time` (rebased seconds).
 ///
 /// The margin matters: MPEG-TS seeking is byte-position based and only
@@ -2157,6 +2181,9 @@ fn copy_segment(
     let (floor, wall) = stretch_bytes(src, seg, fd / 2.0);
     let mut read_at: Option<u64> = None;
     seek_into(&mut ictx, src, seg.start, floor)?;
+    // After the seek, for the reason [`crate::input::keep_only`] gives.
+    let keep = segment_streams(&ictx, ctx, ist_index);
+    crate::input::keep_only(&mut ictx, &keep);
     // Anchored on the first picture actually emitted, not on the planner's
     // idealised time for it.
     let mut anchor: Option<f64> = None;
@@ -2587,6 +2614,10 @@ fn signalling_of(src: &Source, opts: &CutOptions) -> Signalling {
     let Some(params) = ictx.stream(ist).map(|s| s.parameters()) else {
         return out;
     };
+    // Only the pictures are looked at, and the reads below are bounded at
+    // sixty-four packets: a stream left on spends that budget on packets
+    // this cannot use. See [`crate::input::keep_only`].
+    crate::input::keep_only(&mut ictx, &[ist]);
     out.has_dovi = declares_dovi(&params);
     // Nothing to look for outside HDR, and a picture not decoded is a picture
     // not paid for. `bt2020-10` is Blu-ray's wide-gamut SDR and carries none
@@ -3252,6 +3283,9 @@ fn reencode_segment(
     let (floor, wall) = stretch_bytes(src, seg, tol);
     let mut read_at: Option<u64> = None;
     seek_into(&mut ictx, src, seg.seek_from, floor)?;
+    // After the seek, for the reason [`crate::input::keep_only`] gives.
+    let keep = segment_streams(&ictx, ctx, ist_index);
+    crate::input::keep_only(&mut ictx, &keep);
 
     let mut frame = ff::frame::Video::empty();
     let mut audio_done = vec![false; ctx.audio.len()];
