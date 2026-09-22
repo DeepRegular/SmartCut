@@ -506,6 +506,10 @@ struct Writer {
     /// Whether a track's `pid` is really a PID, for the messages that name
     /// one. See [`crate::Source::on_a_ts`].
     on_a_ts: bool,
+    /// Whether the cut is being written as a transport stream, which is the
+    /// one output that will not take two frames of sound at the same
+    /// instant. See [`Writer::push_audio`].
+    into_ts: bool,
     /// Ticks per *unit*. The output timeline is measured in fields, not
     /// frames, because 2:3 pulldown shows some pictures for three fields and
     /// others for two -- a frame grid cannot express that, a field grid can,
@@ -665,6 +669,13 @@ struct AudioTrack {
     /// [`Writer::push_audio`].
     last_out: Option<i64>,
     dropped: usize,
+    /// What one frame of this track is worth in time, where the recording's
+    /// own packets do not say and it had to be measured. Nought where they
+    /// do say, which is the ordinary case. See [`assumed_frame`].
+    frame_secs: f64,
+    /// Frames left out for having no length at all -- neither their own nor
+    /// a measured one. See [`Writer::push_audio`].
+    no_length: usize,
 }
 
 /// One caption track being written.
@@ -1039,10 +1050,34 @@ impl Writer {
             return Ok(());
         };
         let (index, tb) = (t.out_index, t.out_tb);
+        // A frame with no length is a frame there is nowhere to put: the
+        // output lays its sound end to end, and a length of nought would
+        // leave the next frame where this one is. Every track whose packets
+        // carry their own durations is past this in the ordinary way, and
+        // the ones that do not have a length measured for them before the
+        // cut starts -- see [`assumed_frame`]. What reaches here is a track
+        // that has neither, and it is counted rather than passed over: a
+        // cut that wrote no sound at all used to say nothing about it.
         if out_dur <= 0.0 {
+            self.audio[track].no_length += 1;
             return Ok(());
         }
         packet.set_stream(index);
+        // Where this frame goes. The instant the recording gives it, except
+        // on a track whose frames had to have their length measured: there
+        // the timestamps are the container's own and are kept at the
+        // container's resolution, which is coarser than the frames are.
+        // Matroska counts in milliseconds and a TrueHD frame is 1/1200 of a
+        // second, so one frame in six carries the timestamp of the frame
+        // before it and would be written where that one already is. Such a
+        // track is laid from where it has reached instead -- end to end,
+        // which is how its sound is played back anyway -- and the
+        // recording's own instant is still what carries it forward at the
+        // start of a kept range, where it is the later of the two.
+        let out_start = match self.audio[track].end {
+            Some(end) if self.audio[track].frame_secs > 0.0 => out_start.max(end),
+            _ => out_start,
+        };
         let pts = (out_start.max(0.0) / tb).round() as i64;
         // A frame that does not come after the last one written is a frame
         // the muxer refuses, and refusing it stopped the whole cut. It
@@ -1051,7 +1086,18 @@ impl Writer {
         // instant or an earlier one. The frame is left out instead. The sound
         // in that stretch is lost either way -- it is the damage -- and how
         // much was left out is said when the cut finishes.
-        if self.audio[track].last_out.is_some_and(|last| pts <= last) {
+        //
+        // Two frames at the *same* instant are a different matter, and only
+        // a transport stream minds them. They are what a container keeping
+        // time more coarsely than its frames are long hands over: Matroska
+        // counts in milliseconds, a TrueHD frame is 1/1200 of a second, and
+        // a sixth of them round onto the instant before. Written back into
+        // a Matroska file they go where they came from and nothing is lost;
+        // left out, a sixth of the sound would be.
+        let clashes = self.audio[track]
+            .last_out
+            .is_some_and(|last| if self.into_ts { pts <= last } else { pts < last });
+        if clashes {
             self.audio[track].dropped += 1;
             return Ok(());
         }
@@ -1264,7 +1310,17 @@ fn take_audio(
         return Ok(false);
     };
     let t = pts as f64 * audio.in_tb - src.start_time;
-    let dur = packet.duration() as f64 * audio.in_tb;
+    // The packet's own length, or -- where it has none -- the one measured
+    // off the spacing of this track's timestamps before the cut started.
+    // Matroska stores a TrueHD track's access units without durations, each
+    // being 1/1200 of a second and the container leaving that to be worked
+    // out from the timestamps; every frame of such a track was being left
+    // out of the cut, which wrote a file declaring sound it did not contain.
+    // See [`assumed_frame`].
+    let dur = match packet.duration() {
+        own if own > 0 => own as f64 * audio.in_tb,
+        _ => writer.audio[audio.track].frame_secs,
+    };
     let past_end = t >= seg.end;
 
     if audio.mode == AudioMode::Reencode {
@@ -3562,6 +3618,10 @@ struct AudioSetup {
     /// tool encodes unframed, exactly as the packets they sit among are.
     frame_as: Option<crate::aac::Framing>,
     bit_rate: usize,
+    /// What one of the recording's own frames of this track is worth in
+    /// time, where its packets do not carry a duration. See
+    /// [`assumed_frame`].
+    frame_secs: Option<f64>,
 }
 
 /// What a track is written as, given where it is going.
@@ -3835,6 +3895,57 @@ pub fn writable_sound(
     }
 }
 
+/// How long one frame of a sound track lasts, where its own packets do not
+/// say.
+///
+/// Most containers write a duration on every audio packet and there is
+/// nothing to work out. Matroska does not always: a TrueHD track's access
+/// units are 1/1200 of a second each, and it stores them with no length at
+/// all, leaving a reader to take that from the spacing of the timestamps.
+/// Which is what this does -- and it matters because a frame with no length
+/// is a frame the writer has nowhere to put, so a track of them was written
+/// as no sound at all while the cut said it was carrying one through byte
+/// for byte.
+///
+/// **Across the whole run rather than gap by gap.** The timestamps are the
+/// container's and are kept at the container's resolution: Matroska counts
+/// in milliseconds, so the gaps between frames of 1/1200 of a second come
+/// out as a ragged mixture of one millisecond and none at all. Every way of
+/// picking one gap -- the middle one, the commonest -- answers 1 ms, which
+/// is a fifth long. The first timestamp and the last, over the number of
+/// frames between them, answer 0.8333 ms, and the longer the run the finer
+/// the answer.
+///
+/// `None` where the packets carry their own durations, which wants nothing
+/// assumed, where one arrives without a timestamp, where the run is too
+/// short to measure over, and where the timestamps do not climb: a run read
+/// across a discontinuity says nothing about the spacing of anything.
+///
+/// Reading stops at the first packet with a duration on it, so the ordinary
+/// case costs one packet.
+fn assumed_frame(probe: &mut ff::format::context::Input, info: &crate::AudioInfo) -> Option<f64> {
+    const ENOUGH: usize = 256;
+    let mut times: Vec<i64> = Vec::new();
+    for (stream, packet) in probe.packets().take(8192) {
+        if stream.index() != info.stream_index {
+            continue;
+        }
+        if packet.duration() > 0 {
+            return None;
+        }
+        times.push(packet.pts()?);
+        if times.len() >= ENOUGH {
+            break;
+        }
+    }
+    if times.len() < 32 || times.windows(2).any(|pair| pair[1] < pair[0]) {
+        return None;
+    }
+    let span = (times[times.len() - 1] - times[0]) as f64 * info.time_base;
+    let each = span / (times.len() - 1) as f64;
+    (each > 0.0).then_some(each)
+}
+
 /// Decide what will be done to one sound track.
 ///
 /// Every question here used to be asked once, of the one track there was.
@@ -3876,6 +3987,11 @@ fn plan_audio(
     // before the codec is settled, which is exactly where it means
     // something: an LPCM track is 16 bit or it is 24, and that is the choice.
     let bits = opts.audio_bits.unwrap_or(source_bits);
+    // Asked before the framing below, and off the same probe: it answers on
+    // the first packet of a track whose packets carry their own durations,
+    // which is every ordinary one, and so reads nothing the framing was
+    // going to read.
+    let frame_secs = assumed_frame(&mut probe, info);
     let source_adts = crate::aac::framing(&mut probe, info.stream_index);
     drop(probe);
     // What the track is written as. Settled before the mode, because it can
@@ -4216,6 +4332,7 @@ fn plan_audio(
         downmix,
         frame_as,
         bit_rate,
+        frame_secs,
     })
 }
 
@@ -5223,6 +5340,8 @@ pub fn cut_with_progress(
             joins_at_sync: matches!(setup.target, ff::codec::Id::TRUEHD | ff::codec::Id::MLP),
             last_out: None,
             dropped: 0,
+            frame_secs: setup.frame_secs.unwrap_or(0.0),
+            no_length: 0,
         })
         .collect();
     let caption_tracks: Vec<CaptionTrack> = captions
@@ -5424,8 +5543,9 @@ pub fn cut_with_progress(
     });
 
     let mut writer = Writer {
-        octx,
         on_a_ts: src.on_a_ts,
+        into_ts: octx.format().name().contains("mpegts"),
+        octx,
         field_ticks: den,
         sub: grid.sub,
         our_tb: grid.time_base(),
@@ -5664,6 +5784,32 @@ pub fn cut_with_progress(
             writer.written
         );
     }
+    // A track the output declares and holds not one frame of. Everything
+    // else that can lose a track ends in an error the caller can read -- a
+    // codec the container has no box for stops the header, an encoder that
+    // will not open stops the setup -- and this was the one way of losing
+    // one that said nothing: the file plays, the map lists the sound, and
+    // there is no sound. It is worth the whole cut, because a cut with a
+    // silent track in it is a cut that has to be made again anyway.
+    for t in &writer.audio {
+        if t.written > 0 {
+            continue;
+        }
+        let name = crate::track_name(writer.on_a_ts, t.info.pid, t.info.stream_index);
+        let why = if t.no_length > 0 {
+            format!(
+                ": {} frame(s) of it carry no length of their own, and the spacing of this \
+                 track's timestamps could not be measured either",
+                t.no_length
+            )
+        } else {
+            ", and the kept ranges hold none of it".to_string()
+        };
+        bail!(
+            "the sound on {name} is declared in the cut and not one frame of it was written{why}. \
+             Leaving the track out of the cut is how to write the rest of it"
+        );
+    }
     if writer.skipped > 0 {
         // Two things hand pictures over in an order the output timeline cannot
         // take, and which one it was is known here: a recording read as
@@ -5718,6 +5864,23 @@ pub fn cut_with_progress(
             "note: {} frame(s) of the sound on {} do not follow the frame before them -- {why} \
              -- and were left out. {cost}",
             t.dropped,
+            crate::track_name(writer.on_a_ts, t.info.pid, t.info.stream_index),
+        );
+    }
+
+    // And what a recording whose packets say nothing about their own length
+    // cost, where the spacing of the timestamps did not answer for all of
+    // them either. A track that lost every frame this way never reaches
+    // here; it is the whole cut, above.
+    for t in &writer.audio {
+        if t.no_length == 0 {
+            continue;
+        }
+        eprintln!(
+            "note: {} frame(s) of the sound on {} carry no length and none could be worked out \
+             for them, and were left out. The output lays its sound end to end, so a frame of \
+             no length would be written where the next one belongs.",
+            t.no_length,
             crate::track_name(writer.on_a_ts, t.info.pid, t.info.stream_index),
         );
     }

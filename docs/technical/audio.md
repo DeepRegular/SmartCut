@@ -200,6 +200,39 @@ never handed a timestamp behind the one before it. Silence at a seam is worth
 having in exchange for a decoder that stays in step; LPCM, which has no such
 state, is unaffected and measures to under a millisecond across the same cut.
 
+### A frame with no length of its own
+
+The same track in a `.mkv` was written as no sound at all, and said nothing
+about it. A TrueHD access unit is 1/1200 of a second; Matroska keeps time in
+milliseconds and stores the units with no duration at all, leaving that to be
+worked out from the timestamps. A frame with no length is a frame the writer
+has nowhere to put -- the output lays its sound end to end -- so every one of
+them was left out, under a cut that declared the track and said it was
+carrying it through byte for byte.
+
+So the length is measured before the cut starts, in `assumed_frame`, and
+**over the whole run rather than gap by gap**: the gaps themselves come out as
+a ragged mixture of one millisecond and none, and every way of picking one of
+them answers 1 ms, which is a fifth long. The first timestamp and the last,
+over the frames between, answer 0.8333 ms.
+
+The timestamps are still the container's, and still too coarse to place the
+frames by: a sixth of them carry the instant of the frame before. So a track
+measured this way is laid from where it has reached rather than from the
+instant on the packet, and two frames at the same instant are only refused
+where the output is a transport stream, which is the one that will not take
+them. Measured on a three-second `.mkv` cut to two: 70,072 bytes of TrueHD
+out of 105,064, into a `.ts`, a `.mp4` and a `.mkv` alike -- and nought before
+this.
+
+**Nothing may finish having written a declared track and no frames of it.**
+Every other way of losing one ends in an error: a codec the container has no
+box for stops the header, an encoder that will not open stops the setup. That
+one said nothing, and the file played with the sound listed and silent, so it
+is now the end of the cut. A track that holds nothing because the kept ranges
+hold none of it says so and names the way out, which is to leave the track
+out.
+
 ## Fading at the seams (`--audio-fade`)
 
 A cut joins two instants that were never next to each other, and what the sound
