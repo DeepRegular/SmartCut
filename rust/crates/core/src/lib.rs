@@ -22,6 +22,7 @@ pub mod carry;
 pub mod caption;
 pub mod cm;
 pub mod conform;
+pub mod crossview;
 pub mod cut;
 pub mod disc;
 pub mod dvd;
@@ -72,7 +73,7 @@ pub use index::{ContainerIndex, DiscIndex, IndexSource, PacketScan};
 pub use plan::{
     plan, plan_on, plan_range, reencode_range, PlanOptions, RangePlan, Segment, SegmentKind,
 };
-pub use playback_audio::{peaks_at, play_audio, Levels, Volume};
+pub use playback_audio::{peaks_at, play_audio, play_audio_across, Heard, Levels, Volume};
 pub use preview::{
     frame_at, glance, glance_at, glance_run, glance_sweep, play_from, shot_at, shots_at, Pace, Shot,
 };

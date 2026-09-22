@@ -1,11 +1,12 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "Capability for the list window, the cut editor and 拡大表示",
+  "description": "Capability for the list window, the cut editor, 拡大表示 and 継ぎ目の編集",
   "windows": [
     "main",
     "editor",
-    "zoom"
+    "zoom",
+    "cross"
   ],
   "permissions": [
     "core:default",

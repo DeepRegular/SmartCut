@@ -613,9 +613,54 @@ pub fn play_audio(
     levels: &Levels,
     stop: impl Fn() -> bool,
 ) -> Result<()> {
-    let Some(audio) = src.audio.clone() else {
+    play_audio_across(
+        &[Heard {
+            src,
+            ranges: ranges.to_vec(),
+            from,
+        }],
+        volume,
+        levels,
+        stop,
+    )
+}
+
+/// One recording's share of a run of playback.
+///
+/// `ranges` are that recording's own source ranges and `from` the instant
+/// within them to begin at, which is what the picture side is already given.
+pub struct Heard<'a> {
+    pub src: &'a Source,
+    pub ranges: Vec<(f64, f64)>,
+    pub from: f64,
+}
+
+/// Play several recordings' sound, one after another, through one output.
+///
+/// What a seam preview needs: the clip before the join, then the clip after
+/// it, heard as the joined file will be heard. **Nothing is mixed.** A
+/// transition shows two pictures at once but the sound of a join is the one
+/// clip and then the other, which is what the cutter writes -- see
+/// `crate::cut` -- so this plays them in turn.
+///
+/// One device for the lot, opened once against the first recording that has
+/// any sound. A device opened and closed per clip clicks at the join and
+/// costs a fraction of a second's silence there, which on a two second
+/// preview is the part being listened to. A second recording at another rate
+/// or another channel count is resampled into the open device's format, the
+/// way a recording that does not match the card already is.
+pub fn play_audio_across(
+    parts: &[Heard],
+    volume: &Volume,
+    levels: &Levels,
+    stop: impl Fn() -> bool,
+) -> Result<()> {
+    // The format is the first one with sound in it. A silent clip contributes
+    // nothing to play and nothing to open a device for.
+    let Some(first) = parts.iter().find(|p| p.src.audio.is_some()) else {
         return Ok(());
     };
+    let audio = first.src.audio.clone().expect("just found");
     crate::init()?;
 
     // `BufferSize::Default` would leave the period to cpal, which asks the
@@ -645,6 +690,46 @@ pub fn play_audio(
         .play()
         .map_err(|e| anyhow!("cannot start audio output: {e}"))?;
 
+    for part in parts {
+        if stop() {
+            break;
+        }
+        feed_from(part, rate, channels, layout, cap, &ring, &stop)?;
+    }
+
+    // Let the tail play out rather than cutting it off the instant decoding
+    // catches up with the ranges.
+    while !stop() {
+        if ring.lock().unwrap().samples.is_empty() {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    // Nothing is coming out of the card any more, whichever way this ended.
+    // The meter is left holding whatever the last buffer reached otherwise,
+    // which reads as a sound that is still playing.
+    levels.clear();
+    Ok(())
+}
+
+/// Decode one recording's ranges into an output that is already open.
+///
+/// The body [`play_audio`] used to be. It is a function of its own so that
+/// [`play_audio_across`] can run it twice over one device.
+fn feed_from(
+    part: &Heard,
+    rate: u32,
+    channels: u16,
+    layout: ff::channel_layout::ChannelLayout,
+    cap: usize,
+    ring: &Arc<Mutex<Feed>>,
+    stop: &impl Fn() -> bool,
+) -> Result<()> {
+    let Heard { src, ranges, from } = part;
+    let from = *from;
+    let Some(audio) = src.audio.clone() else {
+        return Ok(());
+    };
     let mut ictx = crate::input::demux(&src.input.url)?;
     let idx = audio.stream_index;
     let in_tb = audio.time_base;
@@ -662,7 +747,7 @@ pub fn play_audio(
     let mut resampler: Option<ff::software::resampling::Context> = None;
     let mut resampled = ff::frame::Audio::empty();
 
-    'ranges: for &(a, b) in ranges {
+    'ranges: for &(a, b) in ranges.iter() {
         if stop() {
             break;
         }
@@ -707,7 +792,7 @@ pub fn play_audio(
                 if let Some((lo, hi)) = frame_window(n, rate, t, start, b) {
                     let samples = data[lo * channels as usize..hi * channels as usize].to_vec();
                     let bite = Bite { frames: hi - lo, channels: heard, peaks };
-                    if !push(&ring, cap, &stop, samples, bite) {
+                    if !push(ring, cap, &stop, samples, bite) {
                         break 'ranges;
                     }
                 }
@@ -717,19 +802,6 @@ pub fn play_audio(
             }
         }
     }
-
-    // Let the tail play out rather than cutting it off the instant decoding
-    // catches up with the ranges.
-    while !stop() {
-        if ring.lock().unwrap().samples.is_empty() {
-            break;
-        }
-        std::thread::sleep(Duration::from_millis(20));
-    }
-    // Nothing is coming out of the card any more, whichever way this ended.
-    // The meter is left holding whatever the last buffer reached otherwise,
-    // which reads as a sound that is still playing.
-    levels.clear();
     Ok(())
 }
 

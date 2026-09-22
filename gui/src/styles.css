@@ -52,9 +52,14 @@ body {
    own `display: none`. */
 .screen { flex: 1; min-height: 0; display: flex; flex-direction: column; }
 .screen[hidden] { display: none; }
+/* A label that never breaks across lines. Squeezed -- by a long readout
+   beside it, or by a window dragged narrow -- a tab whose text may wrap
+   comes out as 「ファイル出 / 力」 and takes the whole bar down with it, two
+   lines tall. What gives way in a full bar is the readouts, which are built
+   to be cut with an ellipsis; see `.infobar > span`. */
 .tab {
   background: #3a3a3a; color: var(--text); border: 1px solid #4a4a4a;
-  border-radius: 2px; padding: 5px 16px; cursor: pointer;
+  border-radius: 2px; padding: 5px 16px; cursor: pointer; white-space: nowrap;
 }
 .tab.active { background: var(--accent); color: #201400; border-color: var(--accent); font-weight: 600; }
 /* The editor window's own label. It says which window this is; there is
@@ -358,8 +363,12 @@ button.brand:hover, button.brand.open { background: #3a3a3a; border-color: #5c5c
    themselves are -- and drawn at that size too. A size down read as a lesser
    control rather than as a level in, and the two rows of tabs sitting one
    under the other look wrong unless they match. The bar grows to hold them;
-   it has never been anything but as tall as what is on it. */
-.modes { display: flex; gap: 6px; margin: -1px 0; }
+   it has never been anything but as tall as what is on it.
+
+   And they keep their width, the way the buttons in this bar do: `.infobar >
+   button` does not reach a `<nav>`, and without this the two tabs are the
+   first thing a crowded bar takes the space back from. */
+.modes { display: flex; gap: 6px; margin: -1px 0; flex: none; }
 
 main { flex: 1; min-height: 0; display: flex; gap: 0; }
 /* Scrolls down the page only as a last resort. Everything in this column is
@@ -470,6 +479,97 @@ body.zoom { padding: 0; }
   flex: none; display: flex; align-items: center; gap: 10px;
   padding: 4px 8px; border-top: 1px solid var(--line); background: var(--panel);
   font-variant-numeric: tabular-nums;
+}
+
+/* --- 継ぎ目の編集 -------------------------------------------------------- */
+/* Its own window: the settings down the left, the picture and the way about
+   it on the right. Laid out like the reference tool's, and for its reason --
+   the column is a list of short controls and the picture wants everything
+   that is left. */
+body.crosswin { padding: 0; }
+.cross-main { flex: 1; min-height: 0; display: flex; gap: 0; }
+/* A fixed width, not a share. What is in here is a column of short rows, and
+   a column that grew with the window would leave a field a screen wide with
+   「1」 in it while the picture it is describing got no bigger. */
+.cross-side {
+  flex: none; width: 264px; min-width: 0; overflow: hidden auto;
+  display: flex; flex-direction: column; gap: 5px;
+  padding: 5px; background: var(--bg); border-right: 1px solid var(--line);
+}
+.cross-side .panel { padding: 5px 7px; }
+.cross-side .row { margin: 4px 0; gap: 5px; }
+/* The label above its control rather than beside it: at this width a label
+   cell wide enough for 実トランジション時間 would leave no room for the control,
+   and a narrower one would cut the label. */
+.cross-side .row > span:first-child { min-width: 0; color: var(--dim); }
+.cross-side .row.tall-label { margin: 6px 0 0; }
+.cross-side .row input.narrow { flex: none; width: 5em; }
+.cross-side .mini.wide { width: 100%; }
+.cross-side .vslider, .cross-side input[type="range"] { flex: 1; min-width: 0; }
+
+/* The two clips the join sits between, one over the other with the arrow
+   between them: a join is a thing between two clips, and a row of two names
+   does not read as one. */
+.pair { display: flex; flex-direction: column; gap: 3px; padding: 2px 0; }
+.pair-row { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.pair-arrow { color: var(--dim); font-size: 11px; flex: none; }
+.pair-pic {
+  flex: none; width: 62px; height: 35px; object-fit: cover;
+  background: #000; border: 1px solid var(--line);
+}
+.pair-name {
+  min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  font-size: 11px;
+}
+
+/* And the pair is the control: the join in hand is the face of the picker,
+   with the caret at the right, and the list it drops is the same pair drawn
+   once per join. The face is a box rather than bare, because a thing that
+   can be clicked has to look like one -- the pictures alone read as a
+   readout. See `pairPicker` in `cross.js`. */
+.pairpick {
+  position: relative; display: flex; align-items: center; gap: 4px;
+  padding: 3px 4px; cursor: pointer;
+  background: var(--sunken); border: 1px solid var(--line); border-radius: 2px;
+}
+.pairpick .pair { flex: 1; min-width: 0; padding: 0; }
+.pairpick:hover, .pairpick:focus { border-color: var(--sel); outline: none; }
+.pairpick-caret { flex: none; padding: 0 2px; font-size: 9px; color: var(--dim); }
+/* The rows of the list are pairs too, so they are as tall as the face and
+   cannot be the one-line rows the rest of `.drop-menu` is written for. They
+   keep the face's width, as every list here does, so the names in them are
+   cut where the names on the face are. */
+.drop-menu.pairs li { padding: 3px 4px; }
+
+/* What the effect does, drawn. Full width of the column and 16:9, so it
+   reads as a picture of a frame rather than as a swatch. */
+.pattern {
+  display: block; width: 100%; height: auto; aspect-ratio: 16 / 9;
+  background: #000; border: 1px solid var(--line);
+}
+
+.readouts { display: flex; flex-direction: column; gap: 3px; }
+.readout {
+  display: flex; align-items: baseline; gap: 6px; font-size: 11px;
+  color: var(--dim);
+}
+.readout .num { margin-left: auto; color: var(--text); font-variant-numeric: tabular-nums; }
+
+.cross-view {
+  flex: 1; min-width: 0; min-height: 0;
+  display: flex; flex-direction: column; gap: 5px; padding: 5px 8px;
+}
+/* The scrubber runs the previewed stretch rather than a recording, and it is
+   drawn whole on a canvas: what is on it is three bands and a playhead, and
+   three elements being restyled under a drag is a window that stops
+   repainting. */
+.xscrub-wrap { flex: none; height: 26px; }
+#xscrub { display: block; width: 100%; height: 26px; cursor: pointer; }
+/* The sentence above the buttons. One line, cut with an ellipsis: what it
+   says is worth reading and is never worth pushing OK off the window for. */
+.xnote {
+  min-height: 1.2em; overflow: hidden; text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 /* --- picture ---------------------------------------------------------- */
@@ -933,11 +1033,22 @@ select {
   background-repeat: no-repeat;
 }
 select option { background: #141414; color: #e6e6e6; }
-input[type="text"] {
+input[type="text"], input[type="number"] {
   background: #141414; color: var(--text); border: 1px solid var(--line);
   border-radius: 2px; padding: 4px 8px;
 }
 input[type="text"]::placeholder { color: var(--dim); }
+/* A number's field is a field. Left as it comes it is the one white box in a
+   dark window, with the platform's own spin buttons in it -- and those are
+   drawn in the system's colours whatever is done to the box around them, so
+   they are taken off rather than left as two white arrows on a black field.
+   Nothing is lost: ↑↓ in the field still steps the number by its `step`, the
+   way the buttons did, and every one of these fields has a slider beside it
+   for finding a value by eye. */
+input[type="number"]::-webkit-inner-spin-button,
+input[type="number"]::-webkit-outer-spin-button {
+  -webkit-appearance: none; appearance: none; margin: 0;
+}
 
 
 /* ======================================================================
@@ -1168,18 +1279,33 @@ input[type="text"]::placeholder { color: var(--dim); }
    bottom is stretched between them, which is a full-width sliver and not a
    list. */
 .drop-menu {
-  position: absolute; bottom: calc(100% + 3px); left: 0; right: 0; z-index: 30;
+  /* Fixed rather than absolute, and placed by hand on the way up: a panel
+     whose group scrolls -- 環境設定, the seam window's column -- cuts off
+     anything positioned inside it, and half a list of languages hanging
+     below the fold is the platform's popup all over again. Fixed escapes
+     that; where it lands is `opensUpward`'s to work out, from the control's
+     own place on the screen. */
+  position: fixed; z-index: 30;
   margin: 0; padding: 2px; list-style: none;
   /* Tall enough for the bitrate ladder, short enough that it cannot reach
-     past the top of the window and be the same problem upside down. */
-  max-height: min(52vh, 460px); overflow-y: auto;
+     past the top of the window and be the same problem upside down.
+     Sideways it does not scroll at all: a row longer than the control is cut
+     with an ellipsis, the way the control itself cuts it. `overflow-y` alone
+     would not do it -- a box told to scroll one way scrolls both -- and a
+     recording's name under a scrollbar was being read from the front and cut
+     at the front, which is the one direction that tells you nothing. */
+  max-height: min(52vh, 460px); overflow: hidden auto;
   background: var(--sunken); border: 1px solid var(--line); border-radius: 2px;
   box-shadow: 0 -8px 20px rgba(0, 0, 0, .6);
 }
 /* Opened the other way, for a control near the top of the window: the list
-   hangs below it, and the shadow falls the other way with it. */
-.drop-menu.down { top: calc(100% + 3px); bottom: auto; box-shadow: 0 8px 20px rgba(0, 0, 0, .6); }
-.drop-menu li { padding: 4px 8px; cursor: pointer; white-space: nowrap; }
+   hangs below it, and the shadow falls the other way with it. Which way it
+   opens is settled in script; what the class carries is the shadow. */
+.drop-menu.down { box-shadow: 0 8px 20px rgba(0, 0, 0, .6); }
+.drop-menu li {
+  padding: 4px 8px; cursor: pointer; white-space: nowrap;
+  overflow: hidden; text-overflow: ellipsis;
+}
 /* `on` is the answer the control is holding; `at` is the cursor, which the
    mouse and the arrow keys move together. `at` is written second so that it
    wins when they are the same row. */
@@ -1221,6 +1347,27 @@ input[type="text"]::placeholder { color: var(--dim); }
 #row-prefix .seq.off { opacity: 0.45; }
 #row-prefix .seq .lbl { min-width: 0; }
 #row-prefix select { flex: none; width: 4.2em; }
+/* The wrapper a drawn list is positioned against stands in for the control
+   in the row's layout -- and in a row, `.drop` is told to take what is left.
+   Here the control is four characters wide and what is left is the whole
+   line. See `.row .drop`. */
+#row-digits .drop { flex: none; }
+/* The row carries no label of its own -- the box says what it does, the way
+   the .keyframe box further down does -- but it is still a control in a panel
+   of controls, and a box standing at the panel's edge while every field above
+   it starts at the column does not read as one of them. Indented by the label
+   column and the row's gap, so the box lines up with the クリップ選択 picker
+   above it. Both numbers are the rules above: see `.row > span:first-child`
+   and `.row`. */
+#row-join { padding-left: calc(132px + 8px); }
+/* 基準クリップ and its picker, beside the box that turns joining on. They were
+   a span of inline parts, so the picker dropped under its own label as soon
+   as the name in it was longer than the room left in the row -- which a
+   broadcast recording's name always is, and which left 結合 two lines tall.
+   A flex line of its own instead: the label keeps its width and the picker
+   gives way, the way every other picker in these rows does. */
+#row-master { display: flex; align-items: center; gap: 5px; min-width: 0; }
+#row-master .lbl { flex: none; min-width: 0; }
 /* A row whose control is taller than one line. The label sits at the top of
    it rather than halfway down the box. */
 .row.tall { align-items: flex-start; }

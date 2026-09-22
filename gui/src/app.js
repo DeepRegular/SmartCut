@@ -20,7 +20,7 @@
 // lanes here and a window of its own, and the passes hold themselves to part
 // of the machine while that window is up.
 
-import { fmt, clock, coarse, chLabel, cmNote, esc, size, blankKey, flatKey, noBrowserMenu, noNativeDrag }
+import { fmt, clock, coarse, chLabel, cmNote, esc, size, blankKey, flatKey, noBrowserMenu, noNativeDrag, wireDrops }
   from "./shared.js";
 import { t, applyStatic, preference, currentLang, setLang, onLangChange, tellBackend, confirmWithOs }
   from "./i18n.js";
@@ -563,6 +563,40 @@ if (listen) {
     paintList();
     pump();
     if (was) restoreFlat(was);
+  });
+
+  // 継ぎ目の編集's own three. It asks for the joins when its page is up, hands
+  // the settings back on OK, and says nothing at all on キャンセル -- which is
+  // what makes it a cancel: nothing in the list is touched until `cross-done`
+  // arrives.
+  listen("cross-ready", () => tellCross());
+
+  listen("cross-done", (ev) => {
+    const said = (ev.payload && ev.payload.joins) || [];
+    let changed = false;
+    for (const answer of said) {
+      const clip = byId(answer.id);
+      if (!clip) continue;
+      const was = JSON.stringify(clip.after || null);
+      // Written back as the window left it, including `null` for a join it
+      // cleared: a crossing nobody has said anything about is absent rather
+      // than present and switched off, which is what `NO_CROSSING` is the
+      // shape of and what `makeClip` starts every row at.
+      clip.after = answer.after ? { ...NO_CROSSING, ...answer.after } : null;
+      if (JSON.stringify(clip.after || null) !== was) changed = true;
+    }
+    if (!changed) return;
+    renderCrossing();
+    renderOutScreen();
+    touch();
+  });
+
+  listen("cross-closed", () => {
+    if (crossOpening) return;
+    // The plan and the line beside the button both describe what the
+    // transitions cost, and either may have been changed in there.
+    renderCrossing();
+    renderOutScreen();
   });
 }
 
@@ -3203,180 +3237,12 @@ bindSetting("out-join", "joinAll", "checked");
 
 // --- drop-downs that open upward -----------------------------------------
 //
-// The file settings are the bottom panel of the window, so a native popup
-// there has nowhere to go but off the screen -- the bitrate list, sixteen
-// rungs of it, ran past the edge with most of itself out of reach. Where a
-// native popup opens is the platform's to decide and not ours, so the popup
-// is ours instead.
-//
-// The `<select>` stays exactly where it was and goes on holding the answer:
-// everything that reads a setting off a control, puts one back on opening a
-// project, or translates the options still works, because the control is
-// still there. What is replaced is only what a click on it draws -- and what
-// that draws has to answer a keyboard too, because the control it stands in
-// for did.
-
-/// The menu that is up: `{ hide, onKey }`. Only ever one.
-let openDrop = null;
-
-function closeDrop() {
-  if (openDrop) openDrop.hide();
-  openDrop = null;
-}
-
-/// How much of the window a popup leaves between itself and the edge, and
-/// the least it is worth drawing in: below that it scrolls, and a list that
-/// scrolls is still a list.
-const MENU_MARGIN = 8;
-const MENU_LEAST = 120;
-
-/// Draw `select`'s options where there is room for them, which the platform's
-/// own popup does not do here.
-function opensUpward(select) {
-  const menu = document.createElement("ul");
-  menu.className = "drop-menu";
-  menu.hidden = true;
-  select.parentElement.appendChild(menu);
-  let items = [];
-  /// Where the cursor is, which the mouse and the arrow keys both move.
-  let at = -1;
-
-  const paint = () => {
-    items.forEach((li, i) => li.classList.toggle("at", i === at));
-    if (items[at]) items[at].scrollIntoView({ block: "nearest" });
-  };
-
-  const open = () => {
-    // Built on the way up rather than once: the options carry `data-i18n`, so
-    // their text is whatever the language is now, not whatever it was when
-    // the window was built.
-    menu.innerHTML = "";
-    items = [...select.options].map((opt) => {
-      const li = document.createElement("li");
-      li.textContent = opt.textContent;
-      li.dataset.value = opt.value;
-      // The answer the control is holding, marked whether or not the cursor
-      // is on it -- which is what makes a list of sixteen rungs readable.
-      if (opt.value === select.value) li.className = "on";
-      // One that cannot be written stays on the list and cannot be reached:
-      // the cursor steps over it and a click on it does nothing. See
-      // `lockUnwritable` for why it is shown at all.
-      if (opt.disabled) li.classList.add("off");
-      menu.appendChild(li);
-      return li;
-    });
-    at = select.selectedIndex;
-    menu.hidden = false;
-    // Which side of the control there is room on. Every one of these lists
-    // used to sit at the bottom of the window, where the room is above --
-    // hence the name of this function. The disc's own settings are at the
-    // top of the panel above, and a list opening upward from there is cut
-    // off by the head of the panel it is in.
-    const box = select.getBoundingClientRect();
-    const above = box.top - MENU_MARGIN;
-    const below = window.innerHeight - box.bottom - MENU_MARGIN;
-    const down = below > above;
-    menu.classList.toggle("down", down);
-    // And no taller than that room, so a long list scrolls inside itself
-    // rather than running off the screen.
-    menu.style.maxHeight = `${Math.max(MENU_LEAST, down ? below : above)}px`;
-    openDrop = { hide: () => (menu.hidden = true), onKey };
-    paint();
-  };
-
-  /// Whether the cursor may not stand on this row.
-  const off = (i) => !items[i] || items[i].classList.contains("off");
-
-  /// The next row `dir` away that it may, if there is one.
-  const step = (dir) => {
-    for (let i = at + dir; i >= 0 && i < items.length; i += dir) {
-      if (!off(i)) {
-        at = i;
-        return;
-      }
-    }
-  };
-
-  const commit = (i) => {
-    if (items[i] && !off(i)) {
-      select.value = items[i].dataset.value;
-      // What a click on a real option would have raised, which is what every
-      // setting on this screen is bound to.
-      select.dispatchEvent(new Event("input", { bubbles: true }));
-    }
-    closeDrop();
-  };
-
-  const onKey = (ev) => {
-    switch (ev.key) {
-      case "ArrowDown":
-      case "ArrowUp":
-        step(ev.key === "ArrowUp" ? -1 : 1);
-        paint();
-        break;
-      case "Home":
-      case "End":
-        at = ev.key === "Home" ? -1 : items.length;
-        step(ev.key === "Home" ? 1 : -1);
-        paint();
-        break;
-      case "Enter":
-      case " ":
-        commit(at);
-        break;
-      case "Escape":
-        closeDrop();
-        break;
-      default:
-        // Tab included: it is leaving, and leaving should still work.
-        closeDrop();
-        return;
-    }
-    // Swallowed, so the `<select>` underneath does not answer the same key a
-    // second time -- and so a menu being driven does not also reach the
-    // window's own shortcuts.
-    ev.preventDefault();
-    ev.stopPropagation();
-  };
-
-  select.addEventListener("mousedown", (ev) => {
-    // The one thing that has to happen: without it the platform's own popup
-    // opens underneath this one. It costs the click its focus, which is why
-    // the focus is given back by hand -- a control that cannot be reached by
-    // the keyboard after being clicked is worse than a popup in the wrong
-    // place.
-    ev.preventDefault();
-    if (select.disabled) return;
-    select.focus();
-    const wasOpen = openDrop && !menu.hidden;
-    closeDrop();
-    if (!wasOpen) open();
-  });
-
-  menu.addEventListener("mousemove", (ev) => {
-    const li = ev.target.closest("li");
-    if (li && items.indexOf(li) !== at && !li.classList.contains("off")) {
-      at = items.indexOf(li);
-      paint();
-    }
-  });
-
-  menu.addEventListener("click", (ev) => {
-    const li = ev.target.closest("li");
-    // A row that cannot be chosen swallows the click and leaves the menu up,
-    // which is what the platform's own popup does with a disabled option:
-    // nothing happened, and a menu that shut would say something had.
-    if (li && !li.classList.contains("off")) commit(items.indexOf(li));
-  });
-}
-
-document.querySelectorAll(".drop > select").forEach(opensUpward);
-// Anywhere else, and it is not a choice being made.
-window.addEventListener("mousedown", (ev) => {
-  if (!ev.target.closest(".drop")) closeDrop();
-});
-window.addEventListener("keydown", (ev) => openDrop && openDrop.onKey(ev), true);
-window.addEventListener("wheel", closeDrop, true);
+// Drawn here rather than by the platform, for both of this window's reasons:
+// where a native popup opens is the platform's to decide -- the bitrate
+// ladder at the foot of the file settings ran off the edge -- and what it is
+// drawn in is the system's own light colours. The machinery is shared with
+// the seam window, which has lists of its own. See `wireDrops`.
+wireDrops();
 
 /// Whether the audio is being rebuilt rather than carried through.
 ///
@@ -4958,74 +4824,41 @@ function masterClip(list = ready()) {
   return list.find((c) => c.id === settings.master) || list[0] || null;
 }
 
-/// The crossing one row carries, filled in on the first look.
+/// What the crossings come to, beside the button that opens them.
 ///
-/// Rows start with none at all -- see `makeClip` -- because a list is mostly
-/// rows nobody has said anything about, and a default object on each of them
-/// would be twenty objects saying "nothing happens here".
-function crossingOf(clip) {
-  if (!clip) return { ...NO_CROSSING };
-  if (!clip.after) clip.after = { ...NO_CROSSING };
-  return clip.after;
-}
-
-/// Which row the crossing controls are describing.
-function crossClip() {
-  const list = ready();
-  const picked = byId(Number(el("out-cross-clip").value));
-  return (picked && list.includes(picked) && picked) || list[0] || null;
-}
-
-/// Put the crossing panel on screen: the rows that can carry one, and what
-/// the chosen row says.
+/// The button alone would say nothing about what is already set: a list of
+/// twelve episodes with a dissolve on every join looks exactly like one with
+/// none. So the line says how many joins carry a transition and what that
+/// costs the output, which is the one thing about a transition that cannot
+/// be seen by looking at it.
 function renderCrossing() {
-  const panel = el("join-panel");
-  panel.hidden = !joining();
-  if (panel.hidden) return;
+  const row = el("row-cross");
+  row.hidden = !joining();
+  if (row.hidden) return;
   const list = ready();
-  // Every row but the last. A transition belongs to the clip that gives
-  // way, and the last one gives way to nothing -- so it has no crossing to
-  // describe, and offering one would be offering a setting that does
-  // nothing.
+  // Every row but the last. A transition belongs to the clip that gives way,
+  // and the last one gives way to nothing.
   const joins = list.slice(0, -1);
-  const select = el("out-cross-clip");
-  const was = select.value;
-  select.innerHTML = joins
-    .map((c, i) => `<option value="${c.id}">${t("outset.crossAfter", { n: i + 1, name: esc(clipLabel(c)) })}</option>`)
-    .join("");
-  if (joins.some((c) => String(c.id) === was)) select.value = was;
-  const clip = byId(Number(select.value)) || joins[0];
-  const on = !!clip;
-  for (const id of ["out-cross-kind", "out-cross-slider", "out-cross-secs",
-                    "out-cross-curve", "out-cross-mode", "out-cross-image",
-                    "browse-cross-image", "cross-all", "cross-none"]) {
-    el(id).disabled = !on;
+  el("open-cross").disabled = joins.length === 0;
+  if (joins.length === 0) {
+    el("cross-note").textContent = t("outset.crossNoJoins");
+    return;
   }
-  const cross = crossingOf(clip);
-  el("out-cross-kind").value = cross.kind;
-  if (el("out-cross-kind").selectedIndex < 0) el("out-cross-kind").selectedIndex = 0;
-  el("out-cross-slider").value = cross.seconds;
-  el("out-cross-secs").value = cross.seconds;
-  el("out-cross-curve").value = cross.curve;
-  el("out-cross-mode").value = cross.mode;
-  el("out-cross-image").value = cross.image || "";
-  // The rows under the kind are about a crossing that happens. Greyed rather
-  // than taken away: they are the same rows whatever the kind is, and a
-  // panel that changed height as the list was walked would move the list.
-  const happens = on && cross.kind !== "none";
-  for (const id of ["out-cross-slider", "out-cross-secs", "out-cross-curve",
-                    "out-cross-mode", "out-cross-image", "browse-cross-image"]) {
-    el(id).disabled = !happens;
+  const set = joins.filter((c) => c.after && c.after.kind !== "none");
+  if (set.length === 0) {
+    el("cross-note").textContent = t("outset.crossNoneSet", { of: joins.length });
+    return;
   }
-  // What it does to the length of the file, which is the one thing about a
-  // transition that is not visible on screen. See `crate::transition`.
-  el("cross-note").textContent = !on
-    ? t("outset.crossNoJoins")
-    : cross.kind === "none"
-      ? ""
-      : OVERLAPPING.includes(cross.kind)
-        ? t("outset.crossShortens", { secs: fmtSecs(cross.seconds) })
-        : t("outset.crossKeeps");
+  // What the output loses, which only the overlapping kinds take: both clips
+  // are on screen at once for those seconds, so the file comes out that much
+  // shorter. See `crate::transition`.
+  const lost = set
+    .filter((c) => OVERLAPPING.includes(c.after.kind))
+    .reduce((n, c) => n + Math.min(30, Math.max(0, Number(c.after.seconds) || 0)), 0);
+  el("cross-note").textContent =
+    lost > 0
+      ? t("outset.crossSetShort", { n: set.length, of: joins.length, secs: fmtSecs(lost) })
+      : t("outset.crossSet", { n: set.length, of: joins.length });
 }
 
 /// The kinds that put both clips on screen at once, which are the ones that
@@ -5036,67 +4869,92 @@ const OVERLAPPING = ["dissolve", "wipe-left", "wipe-right", "wipe-top", "wipe-bo
 
 const fmtSecs = (n) => (Math.round(Number(n) * 10) / 10).toFixed(1);
 
-/// Write one field of the chosen row's crossing.
-function setCrossing(field, value) {
-  const clip = crossClip();
-  if (!clip) return;
-  crossingOf(clip)[field] = value;
-  renderCrossing();
-  renderOutScreen();
-  touch();
+// --- 継ぎ目の編集, in its own window --------------------------------------
+//
+// The same handshake the cut editor has: the window is built in Rust
+// (`open_cross`), it says `cross-ready` when its page is up, this window
+// answers with `cross-open` naming every join, and OK comes back as
+// `cross-done`. キャンセル sends nothing, which is what makes it a cancel --
+// the list's own clips are never touched until the answer arrives.
+
+/// Which join the window is to open on. Set by whatever asked for it.
+let crossPick = 0;
+/// Whether a seam window is being built right now, so that a `cross-closed`
+/// landing meanwhile can be told to be about the window before this one.
+let crossOpening = false;
+
+/// Every join in the list, in the shape the seam window reads.
+///
+/// The bounds are what is *kept* at the seam: the last surviving range of
+/// one clip and the first of the next. A recording is an hour long and what
+/// is being joined may be four minutes of it, so the cuts are what say where
+/// the join really falls. See `keepsOf`.
+function joinsForWindow() {
+  const list = ready();
+  const out = [];
+  for (let i = 0; i + 1 < list.length; i++) {
+    const before = list[i];
+    const after = list[i + 1];
+    const bk = keepsOf(before);
+    const ak = keepsOf(after);
+    if (!bk.length || !ak.length) continue;
+    const last = bk[bk.length - 1];
+    const first = ak[0];
+    out.push({
+      id: before.id,
+      beforePath: before.path,
+      afterPath: after.path,
+      beforeName: clipLabel(before),
+      afterName: clipLabel(after),
+      // The picture the row shows, which is the cut-aware one where the
+      // pass has produced it and the container's own guess before that.
+      beforePic: posterOf(before) || "",
+      afterPic: posterOf(after) || "",
+      beforeIn: last.a,
+      beforeOut: last.b,
+      afterIn: first.a,
+      afterOut: first.b,
+      after: before.after ? { ...before.after } : null,
+    });
+  }
+  return out;
 }
 
-/// Both events, and the reason is the drop-downs.
-///
-/// A `<select>` on this screen is a real control with a menu of our own
-/// drawn over it -- the native popup opens off the bottom of the window --
-/// and what that menu raises when a row is picked is `input`, which is what
-/// every other setting here is bound to. A checkbox and a slider raise
-/// `change`. Listening for both costs a second listener and saves the next
-/// control added here from being wired to the wrong one.
-function bindCrossing(id, field, read = (input) => input.value) {
-  const input = el(id);
-  const fire = () => setCrossing(field, read(input));
-  input.addEventListener("input", fire);
-  input.addEventListener("change", fire);
+function tellCross() {
+  if (!emit) return;
+  const joins = joinsForWindow();
+  if (!joins.length) return;
+  emit("cross-open", { joins, pick: Math.min(crossPick, joins.length - 1) });
+}
+
+async function openCrossWindow(pick = 0) {
+  const joins = joinsForWindow();
+  if (!joins.length) {
+    note(t("outset.crossNoJoins"));
+    return;
+  }
+  crossPick = Math.min(Math.max(0, pick), joins.length - 1);
+  try {
+    crossOpening = true;
+    await invoke("open_cross", {
+      title: t("xw.windowTitle", {
+        before: joins[crossPick].beforeName,
+        after: joins[crossPick].afterName,
+      }),
+    });
+    // Lost if the window is still starting up, which is what `cross-ready` is
+    // for; sent anyway for the case where it is already open and there will
+    // be no `cross-ready` at all.
+    tellCross();
+  } catch (e) {
+    note(t("xw.cannotOpen", { e }));
+  } finally {
+    crossOpening = false;
+  }
 }
 
 function wireCrossing() {
-  el("out-cross-clip").addEventListener("input", renderCrossing);
-  bindCrossing("out-cross-kind", "kind");
-  bindCrossing("out-cross-curve", "curve");
-  bindCrossing("out-cross-mode", "mode");
-  bindCrossing("out-cross-image", "image");
-  // The slider and the field are two ways of saying the same number, so each
-  // of them writes it and the other is put back by the redraw.
-  const secs = (input) => Math.min(30, Math.max(0.1, Number(input.value) || 1));
-  el("out-cross-slider").addEventListener("input", (e) =>
-    setCrossing("seconds", secs(e.target)));
-  el("out-cross-secs").addEventListener("input", (e) =>
-    setCrossing("seconds", secs(e.target)));
-  el("browse-cross-image").addEventListener("click", async () => {
-    const picked = await dialog.open({
-      multiple: false,
-      filters: [{ name: t("outset.crossImageKind"), extensions: ["png", "jpg", "jpeg", "bmp", "webp"] }],
-    });
-    if (typeof picked === "string") setCrossing("image", picked);
-  });
-  // The reference tool's own two: one answer put on every join, and every
-  // join cleared. A list of twelve episodes wants the same crossing twelve
-  // times, and typing it twelve times is what these are for.
-  el("cross-all").addEventListener("click", () => {
-    const from = crossingOf(crossClip());
-    for (const c of ready().slice(0, -1)) c.after = { ...from };
-    renderCrossing();
-    renderOutScreen();
-    touch();
-  });
-  el("cross-none").addEventListener("click", () => {
-    for (const c of ready()) c.after = null;
-    renderCrossing();
-    renderOutScreen();
-    touch();
-  });
+  el("open-cross").addEventListener("click", () => openCrossWindow(0));
   el("out-master").addEventListener("input", () => {
     const picked = Number(el("out-master").value);
     settings.master = Number.isFinite(picked) ? picked : null;
@@ -5589,6 +5447,73 @@ function followWrite(done) {
   if (at >= 0 && at !== onShow.at) stageShot(at);
 }
 
+/// Where each row of a join falls in the one file, as a pair of fractions.
+///
+/// By how long each row's kept ranges are, which is near enough what the
+/// engine counts its pictures over. Near enough rather than exact: a crossing
+/// is written out of the two rows it joins and belongs to neither of them, so
+/// a list with dissolves in it moves a fraction of a second under the head.
+/// Nothing that can be seen on a bar.
+function joinParts(list) {
+  const lens = list.map((c) => keepsOf(c).reduce((n, k) => n + (k.b - k.a), 0));
+  const whole = lens.reduce((n, l) => n + l, 0) || 1;
+  let at = 0;
+  return list.map((clip, i) => {
+    const start = at;
+    at += lens[i] / whole;
+    // The last row ends at the end of the file whatever the arithmetic came
+    // to, so that a finished run leaves no row a hundredth short.
+    return { clip, start, end: i === list.length - 1 ? 1 : at };
+  });
+}
+
+/// Follow the head through a join: fill the rows it has passed, fill the one
+/// it is in as far as it has got, and put that row on the stage.
+///
+/// `head` is how far through the writing the engine is, over the whole list.
+/// Returns whether anything a row shows has changed, which is what decides
+/// whether the screen is drawn again: the job's own percentage is too coarse
+/// to decide it for a join, because a row is a twelfth of the job and moves
+/// twelve times as fast as it does.
+function followJoin(head) {
+  let moved = false;
+  for (const part of writingJoin.parts) {
+    const span = Math.max(part.end - part.start, 1e-9);
+    const at = clamp((head - part.start) / span, 0, 1);
+    const was = part.clip.out;
+    // The same three states a row goes through in any other run, so the list
+    // reads the way it does when each row is a file of its own.
+    const state = at >= 1 ? "done" : at > 0 ? "running" : "waiting";
+    if (state !== was.state || Math.round(at * 100) !== Math.round(was.progress * 100)) {
+      moved = true;
+    }
+    part.clip.out = {
+      state,
+      progress: at,
+      note: at > 0 ? `${Math.round(at * 100)}%` : t("out.waiting"),
+    };
+  }
+  // The row the head is in, which is the first one it has not finished.
+  const parts = writingJoin.parts;
+  const part = parts.find((p) => head < p.end) || parts[parts.length - 1];
+  writingJoin.at = part;
+  // The stage holds one recording's frames, and a join walks through every
+  // recording in the list: a stage left on the first of them would be showing
+  // a frame that was written minutes ago. Asked for once per row and not
+  // awaited -- it is a plan and some decodes, and the reports keep coming
+  // while they are made. Once per row rather than on every report even while
+  // it is outstanding: a row the frames cannot be got out of would otherwise
+  // be asked for twice a second for as long as it took to write.
+  if (writingJoin.asked !== part.clip) {
+    writingJoin.asked = part.clip;
+    showReencode(part.clip, writingJoin.share);
+  }
+  if (!onShow || onShow.clip !== part.clip) return moved;
+  const span = Math.max(part.end - part.start, 1e-9);
+  followWrite(clamp((head - part.start) / span, 0, 1));
+  return moved;
+}
+
 // --- output -------------------------------------------------------------
 
 let exporting = false;
@@ -5596,6 +5521,18 @@ let abort = false;
 /// The row being written, so a progress event can be told apart from a stale
 /// one belonging to the row before it.
 let writing = null;
+/// The rows of a join, with the stretch of the one file each of them holds.
+/// Null for every other run.
+///
+/// A list written a file apiece has one row under the head at a time, and the
+/// engine's report is about that row: the report *is* the row's progress. A
+/// join is one report over the whole list, because it is one file. Put onto
+/// the first row alone it left the other eleven sitting at nought until the
+/// run ended, and the run's own bar -- worked out as one row of twelve --
+/// stopped at a twelfth and then jumped to full. So a join's report is read
+/// as a position in the list here, and the rows are filled from where it
+/// falls. See `joinParts`.
+let writingJoin = null;
 /// Whether the row being written is in its second pass -- the one that puts
 /// the broadcast's own tables back. Held so the sentence is written once, on
 /// the report that crosses over, rather than on every one after it.
@@ -5774,11 +5711,14 @@ if (listen) {
     const [path, tables, done, within] = ev.payload;
     if (!writing || writing.path !== path) return;
     const clip = writing;
-    const was = Math.round(clip.out.progress * 100);
-    clip.out.progress = done;
-    clip.out.note = `${Math.round(done * 100)}%`;
-    // Outside the guard below: this is what moves the stage on to the next
-    // stretch of the cut, and a stretch can begin between two whole percent.
+    // Whether anything anybody can see has moved since the last report. What
+    // it saves is the whole row list rebuilt from markup plus a layout read
+    // to keep the moving row in view; the reports come in twice a second
+    // either way.
+    let moved;
+    // Outside the guard below, both of them: this is what moves the stage on
+    // to the next stretch of the cut, and a stretch can begin between two
+    // whole percent.
     //
     // `within` rather than `done`, and only while the pictures are being
     // written. The two are the same number only for a cut with no second
@@ -5786,7 +5726,22 @@ if (listen) {
     // tenths of the way through the cut while it was being written and then
     // walked the rest of it during the pass that puts the tables and the
     // data broadcast in, where there is nothing left to encode.
-    if (!tables) followWrite(within);
+    if (writingJoin) {
+      const was = Math.round(writingJoin.done * 100);
+      writingJoin.done = done;
+      // The head's place in the list. The second pass is over the finished
+      // file rather than over any one row, so the rows stand full through it
+      // -- which leaves the job's own figure as the only thing still moving,
+      // so it is asked as well as the rows.
+      moved = followJoin(tables ? 1 : within);
+      if (Math.round(done * 100) !== was) moved = true;
+    } else {
+      const was = Math.round(clip.out.progress * 100);
+      clip.out.progress = done;
+      clip.out.note = `${Math.round(done * 100)}%`;
+      if (!tables) followWrite(within);
+      moved = Math.round(done * 100) !== was;
+    }
     // The second pass over the file, which a `.ts` always has: the tables the
     // muxer cannot write, put back over the ones it did. It is a read and a
     // write of the whole finished file, so a window still saying 出力中
@@ -5796,16 +5751,16 @@ if (listen) {
       if (tables) {
         el("out-state").textContent = t("out.writingTables", { name: writingName });
       }
-    } else if (Math.round(done * 100) === was) {
-      // Nothing anybody can see has changed, and what this skips is the
-      // whole row list rebuilt from markup plus a layout read to keep the
-      // moving row in view. The reports come in twice a second either way.
+    } else if (!moved) {
       return;
     }
     renderOutScreen();
     const all = ready();
     const finished = all.filter((c) => c.out.state === "done").length;
-    const overall = all.length ? (finished + done) / all.length : 0;
+    // A join's report already covers the whole list, because the list is one
+    // file; every other run reports a row at a time, so the rows already
+    // written are counted in beside it.
+    const overall = writingJoin ? done : all.length ? (finished + done) / all.length : 0;
     paintOutProgress(overall);
   });
 }
@@ -5924,9 +5879,14 @@ async function writeJoined(list) {
   // The run is drawn on the first row, because the bar the engine reports
   // against is tagged with the first recording -- see `export_joined`.
   writing = list[0];
+  // And every row of it is in the file the reports are about, at a known
+  // place: see `writingJoin`. The share goes in beside them because the stage
+  // is moved from row to row as the head passes, and what a recording's
+  // pictures are written at is part of what the stage says about it.
+  writingJoin = { parts: joinParts(list), at: null, asked: list[0], done: 0, share };
   writingTables = false;
   writingName = nameOf(out);
-  for (const c of list) c.out = { state: "running", progress: 0, note: "0%" };
+  for (const c of list) c.out = { state: "waiting", progress: 0, note: t("out.waiting") };
   el("out-state").textContent = t("out.writing", { name: writingName });
   renderOutScreen();
   await showReencode(list[0], share);
@@ -5981,6 +5941,7 @@ async function writeJoined(list) {
     return false;
   } finally {
     writing = null;
+    writingJoin = null;
     renderOutScreen();
     paintOutProgress(1);
   }
@@ -7544,7 +7505,10 @@ function followJob(job) {
   // the disc passes begin, because those read the written streams back rather
   // than anybody's recording, and a card still naming one would be naming a
   // file nothing is reading.
-  if (writing) job.now = clipLabel(writing);
+  // The row under the head rather than the row the reports are tagged with:
+  // a join's reports all carry the first recording, and the head is in the
+  // ninth of twelve. See `writingJoin`.
+  if (writing) job.now = clipLabel(writingJoin && writingJoin.at ? writingJoin.at.clip : writing);
   else if (discSteps.some((s) => s.state === "running")) job.now = "";
   return job.note !== was[0] || job.shot !== was[1] || job.now !== was[2];
 }

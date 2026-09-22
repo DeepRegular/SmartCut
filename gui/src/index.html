@@ -253,7 +253,7 @@
           </div>
           <div class="row">
             <span data-i18n="outset.clipPick">クリップ選択:</span>
-            <select id="outset-clip"></select>
+            <span class="drop"><select id="outset-clip"></select></span>
           </div>
           <!-- What a disc's index will say about this recording. On screen
                only where a disc is what is being written: in a file the
@@ -385,94 +385,40 @@
             <span data-i18n="outset.gauge">ディスクの使用量:</span>
             <div class="gauge" id="disc-gauge"></div>
           </div>
-          <!-- What happens where one clip gives way to the next. On screen
-               only while the list is being written as one file: with a file
-               per row there is no join for anything to happen at.
-               
-               Here rather than in the file settings panel because this is
-               the panel file output leaves empty -- the fields above it
-               describe a disc -- and because these six rows belong together
-               as one question about one clip, which is what a panel is for. -->
-          <div id="join-panel" hidden>
-            <div class="panel-head" data-i18n="outset.crossHead">継ぎ目の効果</div>
-            <!-- Which join is being described. A transition belongs to the
-                 clip that gives way, so the list is every row but the last:
-                 the last one gives way to nothing. -->
-            <div class="row">
-              <span data-i18n="outset.crossClip">対象クリップ:</span>
-              <span class="drop"><select id="out-cross-clip"></select></span>
-            </div>
-            <div class="row">
-              <span data-i18n="outset.crossKind">効果:</span>
-              <span class="drop">
-                <select id="out-cross-kind">
-                  <option value="none" selected data-i18n="cross.none">なし</option>
-                  <option value="fade-black" data-i18n="cross.fadeBlack">フェード（黒）</option>
-                  <option value="fade-white" data-i18n="cross.fadeWhite">フェード（白）</option>
-                  <option value="dissolve" data-i18n="cross.dissolve">ディゾルブ</option>
-                  <option value="wipe-left" data-i18n="cross.wipeLeft">ワイプ（左から）</option>
-                  <option value="wipe-right" data-i18n="cross.wipeRight">ワイプ（右から）</option>
-                  <option value="wipe-top" data-i18n="cross.wipeTop">ワイプ（上から）</option>
-                  <option value="wipe-bottom" data-i18n="cross.wipeBottom">ワイプ（下から）</option>
-                  <option value="slide-left" data-i18n="cross.slideLeft">スライド（左から）</option>
-                  <option value="slide-right" data-i18n="cross.slideRight">スライド（右から）</option>
-                  <option value="slide-top" data-i18n="cross.slideTop">スライド（上から）</option>
-                  <option value="slide-bottom" data-i18n="cross.slideBottom">スライド（下から）</option>
-                </select>
-              </span>
-            </div>
-            <!-- A slider and a field over the same number, because the two
-                 answer different questions: the slider is for finding a
-                 length by eye and the field is for stating one. The ceiling
-                 is thirty seconds, which is the reference tool's and is well
-                 past anything a join between two programmes wants. -->
-            <div class="row" id="row-cross-secs">
-              <span data-i18n="outset.crossSecs">適用時間:</span>
-              <input id="out-cross-slider" type="range" min="0.1" max="30" step="0.1" value="1" />
-              <input id="out-cross-secs" type="number" min="0.1" max="30" step="0.1" value="1" />
-              <span class="lbl" data-i18n="outset.seconds">秒</span>
-            </div>
-            <div class="row" id="row-cross-ease">
-              <span data-i18n="outset.crossEase">イージング:</span>
-              <span class="drop">
-                <select id="out-cross-curve">
-                  <option value="none" selected data-i18n="ease.none">無し</option>
-                  <option value="back" data-i18n="ease.back">Back</option>
-                  <option value="bounce" data-i18n="ease.bounce">Bounce</option>
-                  <option value="circle" data-i18n="ease.circle">Circle</option>
-                  <option value="elastic" data-i18n="ease.elastic">Elastic</option>
-                  <option value="exponential" data-i18n="ease.exponential">Exponential</option>
-                  <option value="power" data-i18n="ease.power">Power</option>
-                  <option value="sine" data-i18n="ease.sine">Sine</option>
-                  <option value="quadratic" data-i18n="ease.quadratic">Quadratic</option>
-                  <option value="cubic" data-i18n="ease.cubic">Cubic</option>
-                  <option value="quartic" data-i18n="ease.quartic">Quartic</option>
-                  <option value="quintic" data-i18n="ease.quintic">Quintic</option>
-                </select>
-              </span>
-              <span class="drop">
-                <select id="out-cross-mode">
-                  <option value="in" selected data-i18n="ease.in">イン</option>
-                  <option value="out" data-i18n="ease.out">アウト</option>
-                  <option value="in-out" data-i18n="ease.inOut">イン-アウト</option>
-                  <option value="out-in" data-i18n="ease.outIn">アウト-イン</option>
-                </select>
-              </span>
-            </div>
-            <!-- A still over the crossing. Only here, and the panel says why:
-                 the frames a transition covers are being written afresh
-                 anyway, so an image over them costs the composite and
-                 nothing else. -->
-            <div class="row" id="row-cross-image">
-              <span data-i18n="outset.crossImage">重ねる画像:</span>
-              <input id="out-cross-image" type="text" data-i18n-ph="outset.crossImageNone" />
-              <button id="browse-cross-image" class="mini" data-i18n="outset.browse">参照</button>
-            </div>
-            <div class="row" id="row-cross-all">
-              <span></span>
-              <button id="cross-all" class="mini" data-i18n="outset.crossAll">すべての継ぎ目に適用</button>
-              <button id="cross-none" class="mini" data-i18n="outset.crossNone">すべて解除</button>
-            </div>
+          <!-- What the list comes out as: a file per row, or one file. That
+               is a question about the shape of the run and not about what
+               the files are called, so it belongs to the format panel and
+               not to the naming rows it used to sit under -- and it is the
+               row the panel under it hangs on: a list written as one file is
+               a list with joins in it, and 継ぎ目の効果 has nothing to describe
+               until this is ticked. The master beside it, because the two are
+               one question: a file made of several recordings has to be one
+               shape, and that is the row it takes it from. -->
+          <div class="row" id="row-join">
+            <label class="opt"><input id="out-join" type="checkbox" />
+              <span data-i18n="outset.joinAll">クリップを結合して出力</span></label>
+            <span class="seq" id="row-master">
+              <span class="lbl" data-i18n="outset.master">基準クリップ:</span>
+              <span class="drop"><select id="out-master"></select></span>
+            </span>
+          </div>
+          <!-- What happens where one clip gives way to the next, which is
+               settled in a window of its own: see `cross.html`. It used to be
+               six rows here, and six rows cannot answer the question a
+               transition raises -- what `ディゾルブ 1.4 秒 Sine イン-アウト`
+               does to these two particular recordings. That window shows it,
+               composited and playing, which is a thing a settings screen has
+               no room for.
+
+               The button is on screen only while the list is being written as
+               one file: with a file per row there is no join for anything to
+               happen at. The line beside it is what the settings come to --
+               how many joins carry one, and what that costs the output's
+               length -- because a button alone would say nothing about what
+               is already set. -->
+          <div class="row" id="row-cross" hidden>
+            <span data-i18n="outset.crossRow">継ぎ目の効果:</span>
+            <button id="open-cross" class="mini" data-i18n="xw.open">継ぎ目の設定…</button>
             <span class="dim" id="cross-note"></span>
           </div>
           <pre id="outset-format" class="format" data-i18n="outset.noClips"></pre>
@@ -516,27 +462,13 @@
               <span data-i18n="outset.number">連番</span></label>
             <span class="seq" id="row-digits">
               <span class="lbl" data-i18n="outset.digits">桁数:</span>
-              <select id="out-digits">
-                <option value="2">2</option>
-                <option value="3">3</option>
-                <option value="4">4</option>
-              </select>
-            </span>
-          </div>
-          <!-- What the list comes out as: a file per row, or one file. Under
-               the naming rows because that is what it changes about them --
-               a joined run is one name, so the prefix and the numbering
-               describe the one file rather than twenty. The master beside
-               it, because the two are one question: a file made of several
-               recordings has to be one shape, and that is the row it takes
-               it from. -->
-          <div class="row" id="row-join">
-            <span data-i18n="outset.join">結合:</span>
-            <label class="opt"><input id="out-join" type="checkbox" />
-              <span data-i18n="outset.joinAll">リストを1つのファイルにまとめる</span></label>
-            <span class="seq" id="row-master">
-              <span class="lbl" data-i18n="outset.master">基準クリップ:</span>
-              <span class="drop"><select id="out-master"></select></span>
+              <span class="drop">
+                <select id="out-digits">
+                  <option value="2">2</option>
+                  <option value="3">3</option>
+                  <option value="4">4</option>
+                </select>
+              </span>
             </span>
           </div>
           <div class="row" id="row-container">
@@ -874,11 +806,13 @@
                      aria-labelledby="pref-tab-view">
               <div class="row">
                 <span data-i18n="prefs.language">表示言語:</span>
-                <select id="pref-lang">
-                  <option value="auto" data-i18n="prefs.lang.auto"></option>
-                  <option value="ja" data-i18n="prefs.lang.ja"></option>
-                  <option value="en" data-i18n="prefs.lang.en"></option>
-                </select>
+                <span class="drop">
+                  <select id="pref-lang">
+                    <option value="auto" data-i18n="prefs.lang.auto"></option>
+                    <option value="ja" data-i18n="prefs.lang.ja"></option>
+                    <option value="en" data-i18n="prefs.lang.en"></option>
+                  </select>
+                </span>
               </div>
               <p class="dim" data-i18n="prefs.langNote"></p>
               <label class="opt"><input id="pref-counter" type="checkbox" />
@@ -906,47 +840,57 @@
               <div class="row">
                 <span data-i18n="prefs.pageStep">PageUp / PageDown:</span>
                 <input id="pref-page-step" class="pref-num" type="number" min="0" step="0.1" />
-                <select id="pref-page-step-unit">
-                  <option value="frame" data-i18n="prefs.step.frame"></option>
-                  <option value="sec" data-i18n="prefs.step.sec"></option>
-                  <option value="pct" data-i18n="prefs.step.pct"></option>
-                </select>
+                <span class="drop">
+                  <select id="pref-page-step-unit">
+                    <option value="frame" data-i18n="prefs.step.frame"></option>
+                    <option value="sec" data-i18n="prefs.step.sec"></option>
+                    <option value="pct" data-i18n="prefs.step.pct"></option>
+                  </select>
+                </span>
               </div>
               <div class="row">
                 <span data-i18n="prefs.pageStepShift">Shift を押しながら:</span>
                 <input id="pref-page-step-shift" class="pref-num" type="number" min="0" step="0.1" />
-                <select id="pref-page-step-shift-unit">
-                  <option value="frame" data-i18n="prefs.step.frame"></option>
-                  <option value="sec" data-i18n="prefs.step.sec"></option>
-                  <option value="pct" data-i18n="prefs.step.pct"></option>
-                </select>
+                <span class="drop">
+                  <select id="pref-page-step-shift-unit">
+                    <option value="frame" data-i18n="prefs.step.frame"></option>
+                    <option value="sec" data-i18n="prefs.step.sec"></option>
+                    <option value="pct" data-i18n="prefs.step.pct"></option>
+                  </select>
+                </span>
               </div>
               <div class="row">
                 <span data-i18n="prefs.pageStepCtrl">Ctrl を押しながら:</span>
                 <input id="pref-page-step-ctrl" class="pref-num" type="number" min="0" step="0.1" />
-                <select id="pref-page-step-ctrl-unit">
-                  <option value="frame" data-i18n="prefs.step.frame"></option>
-                  <option value="sec" data-i18n="prefs.step.sec"></option>
-                  <option value="pct" data-i18n="prefs.step.pct"></option>
-                </select>
+                <span class="drop">
+                  <select id="pref-page-step-ctrl-unit">
+                    <option value="frame" data-i18n="prefs.step.frame"></option>
+                    <option value="sec" data-i18n="prefs.step.sec"></option>
+                    <option value="pct" data-i18n="prefs.step.pct"></option>
+                  </select>
+                </span>
               </div>
               <div class="row">
                 <span data-i18n="prefs.pageStepShiftCtrl">Shift+Ctrl を押しながら:</span>
                 <input id="pref-page-step-shift-ctrl" class="pref-num" type="number" min="0" step="0.1" />
-                <select id="pref-page-step-shift-ctrl-unit">
-                  <option value="frame" data-i18n="prefs.step.frame"></option>
-                  <option value="sec" data-i18n="prefs.step.sec"></option>
-                  <option value="pct" data-i18n="prefs.step.pct"></option>
-                </select>
+                <span class="drop">
+                  <select id="pref-page-step-shift-ctrl-unit">
+                    <option value="frame" data-i18n="prefs.step.frame"></option>
+                    <option value="sec" data-i18n="prefs.step.sec"></option>
+                    <option value="pct" data-i18n="prefs.step.pct"></option>
+                  </select>
+                </span>
               </div>
               <p class="dim" data-i18n="prefs.pageStepNote"></p>
               <div class="row">
                 <span data-i18n="prefs.sidecarPriority">複数あるときに読み込むのは:</span>
-                <select id="pref-sidecar">
-                  <option value="keyframe" data-i18n="prefs.sidecar.keyframe"></option>
-                  <option value="trim" data-i18n="prefs.sidecar.trim"></option>
-                  <option value="cm" data-i18n="prefs.sidecar.cm"></option>
-                </select>
+                <span class="drop">
+                  <select id="pref-sidecar">
+                    <option value="keyframe" data-i18n="prefs.sidecar.keyframe"></option>
+                    <option value="trim" data-i18n="prefs.sidecar.trim"></option>
+                    <option value="cm" data-i18n="prefs.sidecar.cm"></option>
+                  </select>
+                </span>
               </div>
               <p class="dim" data-i18n="prefs.sidecarNote"></p>
               <label class="opt"><input id="pref-cm-keyframes" type="checkbox" />
@@ -960,10 +904,12 @@
               <div class="row">
                 <span data-i18n="prefs.blankRun">黒・白の区間とみなす長さ:</span>
                 <input id="pref-blank-run" class="pref-num" type="number" min="0" step="1" />
-                <select id="pref-blank-run-unit">
-                  <option value="frame" data-i18n="prefs.len.frame"></option>
-                  <option value="sec" data-i18n="prefs.len.sec"></option>
-                </select>
+                <span class="drop">
+                  <select id="pref-blank-run-unit">
+                    <option value="frame" data-i18n="prefs.len.frame"></option>
+                    <option value="sec" data-i18n="prefs.len.sec"></option>
+                  </select>
+                </span>
               </div>
               <p class="dim" data-i18n="prefs.blankRunNote"></p>
               <!-- Which of the two shades that pass looks for. Told to the
@@ -971,11 +917,13 @@
                    saved is the question that was asked. -->
               <div class="row">
                 <span data-i18n="prefs.blankShades">黒白検出で探すもの:</span>
-                <select id="pref-blank-shades">
-                  <option value="both" data-i18n="prefs.shades.both"></option>
-                  <option value="black" data-i18n="prefs.shades.black"></option>
-                  <option value="white" data-i18n="prefs.shades.white"></option>
-                </select>
+                <span class="drop">
+                  <select id="pref-blank-shades">
+                    <option value="both" data-i18n="prefs.shades.both"></option>
+                    <option value="black" data-i18n="prefs.shades.black"></option>
+                    <option value="white" data-i18n="prefs.shades.white"></option>
+                  </select>
+                </span>
               </div>
               <p class="dim" data-i18n="prefs.blankShadesNote"></p>
               <label class="opt"><input id="pref-blank-keyframes" type="checkbox" />
@@ -983,10 +931,12 @@
               <div class="row">
                 <span data-i18n="prefs.quietRun">無音の区間とみなす長さ:</span>
                 <input id="pref-quiet-run" class="pref-num" type="number" min="0" step="0.1" />
-                <select id="pref-quiet-run-unit">
-                  <option value="frame" data-i18n="prefs.len.frame"></option>
-                  <option value="sec" data-i18n="prefs.len.sec"></option>
-                </select>
+                <span class="drop">
+                  <select id="pref-quiet-run-unit">
+                    <option value="frame" data-i18n="prefs.len.frame"></option>
+                    <option value="sec" data-i18n="prefs.len.sec"></option>
+                  </select>
+                </span>
               </div>
               <p class="dim" data-i18n="prefs.quietRunNote"></p>
               <div class="row">
@@ -1020,11 +970,13 @@
               <p class="dim" data-i18n="prefs.numberNote"></p>
               <div class="row" id="row-pref-digits">
                 <span data-i18n="prefs.digits">連番の桁数:</span>
-                <select id="pref-digits">
-                  <option value="2">2</option>
-                  <option value="3">3</option>
-                  <option value="4">4</option>
-                </select>
+                <span class="drop">
+                  <select id="pref-digits">
+                    <option value="2">2</option>
+                    <option value="3">3</option>
+                    <option value="4">4</option>
+                  </select>
+                </span>
               </div>
               <!-- What a cut carries, rather than what it is called, and
                    here for a reason the two above do not have: the box this
@@ -1063,13 +1015,15 @@
               <p class="dim" data-i18n="prefs.audioFadeNote"></p>
               <div class="row" id="row-pref-proxy-width">
                 <span data-i18n="prefs.proxyWidth">プロキシの幅:</span>
-                <select id="pref-proxy-width">
-                  <option value="0" data-i18n="prefs.proxyWidth.auto"></option>
-                  <option value="960">960</option>
-                  <option value="1280">1280</option>
-                  <option value="1600">1600</option>
-                  <option value="1920">1920</option>
-                </select>
+                <span class="drop">
+                  <select id="pref-proxy-width">
+                    <option value="0" data-i18n="prefs.proxyWidth.auto"></option>
+                    <option value="960">960</option>
+                    <option value="1280">1280</option>
+                    <option value="1600">1600</option>
+                    <option value="1920">1920</option>
+                  </select>
+                </span>
               </div>
             </section>
 
@@ -1097,11 +1051,13 @@
                      aria-labelledby="pref-tab-log" hidden>
               <div class="row">
                 <span data-i18n="prefs.ffmpegLog">FFmpeg のログ:</span>
-                <select id="pref-ffmpeg-log">
-                  <option value="0" data-i18n="prefs.ffmpegLog.off"></option>
-                  <option value="1" data-i18n="prefs.ffmpegLog.warn"></option>
-                  <option value="2" data-i18n="prefs.ffmpegLog.all"></option>
-                </select>
+                <span class="drop">
+                  <select id="pref-ffmpeg-log">
+                    <option value="0" data-i18n="prefs.ffmpegLog.off"></option>
+                    <option value="1" data-i18n="prefs.ffmpegLog.warn"></option>
+                    <option value="2" data-i18n="prefs.ffmpegLog.all"></option>
+                  </select>
+                </span>
               </div>
               <p class="dim" data-i18n="prefs.ffmpegLogNote"></p>
             </section>

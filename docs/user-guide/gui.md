@@ -793,9 +793,12 @@ recording.
 
 **These settings apply to every clip in the list.**
 
-The top half is there to be read: pick a clip and it shows **what that recording
-will become under the current settings** — video, audio, how many ranges, how
-long the output is, and the path it will be written to.
+The top half is the **Output format**: pick a clip and it shows **what that
+recording will become under the current settings** — video, audio, how many
+ranges, how long the output is, and the path it will be written to. **Write the
+list as one file** is up there as well, because whether the list comes out as
+one file is the shape of the output rather than anything about what the files
+are called.
 
 **Two things can come out of a run**, chosen by the two tabs just under this
 screen's own tab:
@@ -811,12 +814,13 @@ What is set on either tab stays there when you switch.
 
 | Field | |
 |---|---|
+| **Write the list as one file** | In the **Output format** panel above. Off, the run writes one file per row, which is what it has always done. On, the whole list becomes a single output, in the order the rows are in, named after the first row. See [Joining the list into one file](#joining-the-list-into-one-file) |
+| **Master clip** | Beside the box, and only while it is ticked. Which row the joined file takes its shape from: its frame size, its rate, its codec, its sound tracks |
+| **Between the clips** | In the **Output format** panel above, and only while the list is being joined. `Transition…` opens a window of its own. See [Transitions between the clips](#transitions-between-the-clips) |
 | **Output folder** | Empty means alongside the input. Use `Browse`, or type a path (an SMB path is fine) |
 | **Subfolder** | A folder of that name under the output folder, which is where the run writes. Offered where there is more than one file. The name is filled in the first time you look: the disc's name, or the project's, or else today's date. Emptied, the run writes straight into the folder above. **A folder of that name already there gets a branch number** — `night`, then `night-2`, `night-3` — so a second run never lands on the first one's files. The field keeps the name you gave; `already there → night-2` beside it says where the run will actually write |
 | **Filename prefix** | `cut_` by default, in front of the name. What it starts as is a [preference](#output-settings) |
 | **Number** | Puts the row's number in the list behind the prefix, in 2 to 4 digits. **On by default**, so `cut_01_recording.ts`; turned off, `cut_recording.ts`. For a list whose order means something and a folder that sorts by name |
-| **Join** | `Write the list as one file`. Off, the run writes one file per row, which is what it has always done. On, the whole list becomes a single output, in the order the rows are in, named after the first row. See [Joining the list into one file](#joining-the-list-into-one-file) |
-| **Master clip** | Beside the box, and only while it is ticked. Which row the joined file takes its shape from: its frame size, its rate, its codec, its sound tracks |
 | **Container** | The file format. `Same as the input`, or a specific one. A container that cannot hold the recordings in the list is greyed out (see [Why some choices are greyed out](#why-some-choices-are-greyed-out)) |
 | **Audio** | `Smart rendering (default)` / `Copy through` / `Re-encode everything` |
 | **Audio codec** | `Same as the input`, or AAC, AC-3, DTS, linear PCM |
@@ -911,23 +915,49 @@ has lost nineteen names. The box is not on screen in BDAV mode.
 
 ### Transitions between the clips
 
-With the list being joined, the **Between the clips** panel appears at the top
-of the output settings screen.
+With the list being joined, a **Between the clips** row appears in the output
+format panel. `Transition…` opens the **Between the clips** window; the line
+beside the button says how many joins already carry an effect, so you know
+before you press it.
 
-![The transition settings](../images/usage-cross.png)
+![The seam window](../images/usage-cross.png)
+
+**It is a window because an effect cannot be judged from its settings.** What
+`Dissolve, 1.4s, Sine in-out` does to your two particular recordings is not
+something the words can tell you. This window composites the seconds either
+side of the join exactly as the output will composite them, and plays them
+with their sound. Like the cut editor, it is left with OK or キャンセル.
 
 | Field | |
 |---|---|
-| **After clip** | Which join is being described. A transition belongs to the clip that gives way, so the list is every row but the last |
+| **Which join** | Which join is being described. A transition belongs to the clip that gives way, so the list is every row but the last. The two thumbnails above it are the clips either side |
 | **Effect** | `None`, a fade through black or white, a dissolve, or a wipe or slide from any of the four sides |
 | **Duration** | Up to thirty seconds, by the slider or typed |
 | **Easing** | How fast it runs at each point of itself: twelve curves, each in In, Out, In-out or Out-in. `None` is a straight line |
 | **Image over it** | A still drawn over the crossing — a title, a card. It comes up as the crossing starts and goes down as it ends |
-| **Apply to every join** | Puts the settings above on every join in the list. Twelve episodes want the same crossing twelve times |
+| **What it does** (the small picture) | How the two clips are put together halfway through. Which way a wipe travels, and whether a slide moves the picture behind it, are things the name only half says |
+| **Apply to every join** | Puts the settings on screen on every join in the list. Twelve episodes want the same crossing twelve times |
 | **Clear them all** | Takes every transition off |
+| **Previewed length** | How much of the output the preview covers: three seconds either side of the effect, and the effect itself |
+| **Transition length** | How long the effect really runs. Where there is less material either side of the join than it asked for, it is held to what there is |
+
+#### The preview
+
+Three seconds either side of the join, **composited the way the output will
+composite them**. Drag the scrubber and the picture follows; `▶ Play` runs it
+in real time with its sound. The bar under it is in three parts: the clip
+before on the left, the clip after on the right, and the coloured stretch
+between them is what the effect covers. With `None` chosen that stretch is a
+single line, because a cut takes no time.
+
+What you hear is what the output will carry: the two clips are not mixed
+(see below).
+
+`⟲ Loop` starts again from the top when it reaches the end. A crossing is a
+second or two, and it gets watched over and over.
 
 **The length of the file depends on which kind you pick**, and the line under
-the panel says which you are getting:
+the buttons says which you are getting:
 
 - A **fade** takes half its time from the clip before and half from the clip
   after, so the file is as long as it would have been without one.
@@ -941,10 +971,17 @@ of encoding per join and nothing anywhere else, which is why it is offered at
 the joins and nowhere else.
 
 The sound is not mixed across a crossing. The clip before plays through it and
-the clip after starts where it ends, which keeps both of them in step with
-their own pictures. If the change is abrupt, the seam fade in
-[preferences](#output-settings) takes the sound down into the join and brings
-it back out.
+hands over to the clip after part way through, which keeps both of them in step
+with their own pictures.
+
+Where it hands over depends on the kind. Through a **dissolve, wipe or slide**
+the clip before is heard for the whole stretch the two share, and the clip
+after takes over as the effect ends. Through a **fade** it changes at the
+colour — the middle of the effect. Either way, whatever is on screen has
+brought its own sound with it.
+
+If the change is abrupt, the seam fade in [preferences](#output-settings) takes
+the sound down into the join and brings it back out.
 
 ### Why some choices are greyed out
 

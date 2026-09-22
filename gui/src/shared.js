@@ -172,3 +172,201 @@ export function noBrowserMenu() {
 export function noNativeDrag() {
   window.addEventListener("dragstart", (ev) => ev.preventDefault());
 }
+
+/// How much of the window a dropped list leaves between itself and the edge,
+/// and the least it is worth drawing in: below that it scrolls, and a list
+/// that scrolls is still a list. Exported because the seam window places a
+/// list of its own -- see `pairPicker` -- and two lists placed by different
+/// numbers is two lists.
+export const MENU_MARGIN = 8;
+export const MENU_LEAST = 120;
+
+/// Draw this window's `<select>` popups instead of letting the platform do it.
+///
+/// A native popup is the platform's to place, and both windows have lists it
+/// places badly: the file settings are the bottom panel, so the bitrate
+/// ladder ran off the edge with most of itself out of reach, and every list
+/// in the program was drawn in the system's own light colours in the middle
+/// of a dark window.
+///
+/// The `<select>` stays exactly where it is and goes on holding the answer:
+/// everything that reads a setting off a control, puts one back on opening a
+/// project, or translates the options still works, because the control is
+/// still there. What is replaced is only what a click on it draws -- and
+/// what that draws has to answer a keyboard too, because the control it
+/// stands in for did.
+///
+/// Called once per window, after the markup is up. Every `.drop > select` in
+/// the page is taken over.
+export function wireDrops() {
+  /// The menu that is up: `{ hide, onKey }`. Only ever one.
+  let openDrop = null;
+
+  function closeDrop() {
+    if (openDrop) openDrop.hide();
+    openDrop = null;
+  }
+
+  /// Draw `select`'s options where there is room for them, which the platform's
+  /// own popup does not do here.
+  function opensUpward(select) {
+    const menu = document.createElement("ul");
+    menu.className = "drop-menu";
+    menu.hidden = true;
+    select.parentElement.appendChild(menu);
+    let items = [];
+    /// Where the cursor is, which the mouse and the arrow keys both move.
+    let at = -1;
+
+    const paint = () => {
+      items.forEach((li, i) => li.classList.toggle("at", i === at));
+      if (items[at]) items[at].scrollIntoView({ block: "nearest" });
+    };
+
+    const open = () => {
+      // Built on the way up rather than once: the options carry `data-i18n`, so
+      // their text is whatever the language is now, not whatever it was when
+      // the window was built.
+      menu.innerHTML = "";
+      items = [...select.options].map((opt) => {
+        const li = document.createElement("li");
+        li.textContent = opt.textContent;
+        li.dataset.value = opt.value;
+        // The answer the control is holding, marked whether or not the cursor
+        // is on it -- which is what makes a list of sixteen rungs readable.
+        if (opt.value === select.value) li.className = "on";
+        // One that cannot be written stays on the list and cannot be reached:
+        // the cursor steps over it and a click on it does nothing. See
+        // `lockUnwritable` for why it is shown at all.
+        if (opt.disabled) li.classList.add("off");
+        menu.appendChild(li);
+        return li;
+      });
+      at = select.selectedIndex;
+      menu.hidden = false;
+      // Which side of the control there is room on. Every one of these lists
+      // used to sit at the bottom of the window, where the room is above --
+      // hence the name of this function. The disc's own settings are at the
+      // top of the panel above, and a list opening upward from there is cut
+      // off by the head of the panel it is in.
+      const box = select.getBoundingClientRect();
+      const above = box.top - MENU_MARGIN;
+      const below = window.innerHeight - box.bottom - MENU_MARGIN;
+      const down = below > above;
+      menu.classList.toggle("down", down);
+      // And no taller than that room, so a long list scrolls inside itself
+      // rather than running off the screen.
+      menu.style.maxHeight = `${Math.max(MENU_LEAST, down ? below : above)}px`;
+      // Where it lands. The list is a fixed layer -- see `.drop-menu` -- so it
+      // is put over the control by hand rather than by being inside it, which
+      // is what keeps it out of the hands of a panel that scrolls.
+      menu.style.left = `${box.left}px`;
+      menu.style.width = `${box.width}px`;
+      menu.style.top = down ? `${box.bottom + 3}px` : "auto";
+      menu.style.bottom = down ? "auto" : `${window.innerHeight - box.top + 3}px`;
+      openDrop = { hide: () => (menu.hidden = true), onKey };
+      paint();
+    };
+
+    /// Whether the cursor may not stand on this row.
+    const off = (i) => !items[i] || items[i].classList.contains("off");
+
+    /// The next row `dir` away that it may, if there is one.
+    const step = (dir) => {
+      for (let i = at + dir; i >= 0 && i < items.length; i += dir) {
+        if (!off(i)) {
+          at = i;
+          return;
+        }
+      }
+    };
+
+    const commit = (i) => {
+      if (items[i] && !off(i)) {
+        select.value = items[i].dataset.value;
+        // What a click on a real option would have raised, and in the order a
+        // real one raises them. Both, because both are subscribed to across
+        // these screens -- a list drawn by us has to be indistinguishable from
+        // the control it stands in for, and a setting that answered only to
+        // `change` was a setting this list could not move.
+        select.dispatchEvent(new Event("input", { bubbles: true }));
+        select.dispatchEvent(new Event("change", { bubbles: true }));
+      }
+      closeDrop();
+    };
+
+    const onKey = (ev) => {
+      switch (ev.key) {
+        case "ArrowDown":
+        case "ArrowUp":
+          step(ev.key === "ArrowUp" ? -1 : 1);
+          paint();
+          break;
+        case "Home":
+        case "End":
+          at = ev.key === "Home" ? -1 : items.length;
+          step(ev.key === "Home" ? 1 : -1);
+          paint();
+          break;
+        case "Enter":
+        case " ":
+          commit(at);
+          break;
+        case "Escape":
+          closeDrop();
+          break;
+        default:
+          // Tab included: it is leaving, and leaving should still work.
+          closeDrop();
+          return;
+      }
+      // Swallowed, so the `<select>` underneath does not answer the same key a
+      // second time -- and so a menu being driven does not also reach the
+      // window's own shortcuts.
+      ev.preventDefault();
+      ev.stopPropagation();
+    };
+
+    select.addEventListener("mousedown", (ev) => {
+      // The one thing that has to happen: without it the platform's own popup
+      // opens underneath this one. It costs the click its focus, which is why
+      // the focus is given back by hand -- a control that cannot be reached by
+      // the keyboard after being clicked is worse than a popup in the wrong
+      // place.
+      ev.preventDefault();
+      if (select.disabled) return;
+      select.focus();
+      const wasOpen = openDrop && !menu.hidden;
+      closeDrop();
+      if (!wasOpen) open();
+    });
+
+    menu.addEventListener("mousemove", (ev) => {
+      const li = ev.target.closest("li");
+      if (li && items.indexOf(li) !== at && !li.classList.contains("off")) {
+        at = items.indexOf(li);
+        paint();
+      }
+    });
+
+    menu.addEventListener("click", (ev) => {
+      const li = ev.target.closest("li");
+      // A row that cannot be chosen swallows the click and leaves the menu up,
+      // which is what the platform's own popup does with a disabled option:
+      // nothing happened, and a menu that shut would say something had.
+      if (li && !li.classList.contains("off")) commit(items.indexOf(li));
+    });
+  }
+
+  document.querySelectorAll(".drop > select").forEach(opensUpward);
+  // Anywhere else, and it is not a choice being made.
+  window.addEventListener("mousedown", (ev) => {
+    if (!ev.target.closest(".drop")) closeDrop();
+  });
+  window.addEventListener("keydown", (ev) => openDrop && openDrop.onKey(ev), true);
+  window.addEventListener("wheel", closeDrop, true);
+  // And whatever else moves what is under it: a scrollbar dragged, a key that
+  // scrolls a panel. The list is a fixed layer now, so a panel that scrolled
+  // out from under it would leave it standing over nothing.
+  window.addEventListener("scroll", closeDrop, true);
+}

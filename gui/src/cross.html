@@ -1,0 +1,234 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title data-i18n="xw.title">継ぎ目の編集</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <!-- 継ぎ目の編集, in a window of its own.
+
+       A transition is done *to* one join rather than settled once for the
+       list, which is the same shape as the cut editor and gets the same
+       treatment: a window opened on one join and left again with OK. What it
+       is for is the thing the settings screen had no room for -- the seconds
+       either side of that join, composited and playing. Six rows reading
+       「ディゾルブ 1.4 秒 Sine イン-アウト」 cannot be judged; a second and a
+       half of the two recordings crossing can.
+
+       The settings are down the left and the picture takes the rest, the way
+       the reference tool has it. The column is a fixed width: what is in it
+       is a list of short rows, and a column that grew with the window would
+       leave a field a screen wide with three characters in it. -->
+  <body class="crosswin">
+    <header class="tabs">
+      <span class="tab active still" data-i18n="xw.title">継ぎ目の編集</span>
+      <span class="title" id="title" data-i18n="xw.loading">読み込み中…</span>
+    </header>
+
+    <main class="cross-main">
+      <aside class="cross-side">
+        <!-- Which join. Two thumbnails, one over the other with the arrow
+             between them, because a join is a thing between two clips and a
+             row of names does not read as one.
+
+             The pair is the picker as well: a click on it drops every join in
+             the list, each drawn as its own pair. It used to be a picture of
+             the join in hand with a `<select>` of names under it, which said
+             the same two names twice and left the list itself -- the thing
+             being chosen from -- with no pictures at all. Moving between
+             joins without leaving the window is most of what this panel is
+             for: a list of twelve episodes is eleven joins, and they are
+             usually all set the same way. See `pairPicker` in `cross.js`. -->
+        <div class="panel">
+          <div class="panel-head" data-i18n="xw.whichHead">対象のクリップ</div>
+          <div class="pairpick" id="which-join" tabindex="0" role="combobox"
+               aria-haspopup="listbox" aria-expanded="false">
+            <div class="pair">
+              <div class="pair-row">
+                <img id="pic-before" class="pair-pic" alt="" />
+                <span class="pair-name" id="name-before">—</span>
+              </div>
+              <div class="pair-row">
+                <span class="pair-arrow">┗▶</span>
+                <img id="pic-after" class="pair-pic" alt="" />
+                <span class="pair-name" id="name-after">—</span>
+              </div>
+            </div>
+            <span class="pairpick-caret" aria-hidden="true">▼</span>
+            <ul class="drop-menu pairs" id="join-menu" role="listbox" hidden></ul>
+          </div>
+        </div>
+
+        <div class="panel">
+          <div class="panel-head" data-i18n="xw.setHead">継ぎ目の設定</div>
+          <div class="row tall-label">
+            <span data-i18n="outset.crossKind">効果:</span>
+          </div>
+          <div class="row">
+            <span class="drop">
+              <select id="x-kind">
+                <option value="none" selected data-i18n="cross.none">なし</option>
+                <option value="fade-black" data-i18n="cross.fadeBlack">フェード（黒）</option>
+                <option value="fade-white" data-i18n="cross.fadeWhite">フェード（白）</option>
+                <option value="dissolve" data-i18n="cross.dissolve">ディゾルブ</option>
+                <option value="wipe-left" data-i18n="cross.wipeLeft">ワイプ（左から）</option>
+                <option value="wipe-right" data-i18n="cross.wipeRight">ワイプ（右から）</option>
+                <option value="wipe-top" data-i18n="cross.wipeTop">ワイプ（上から）</option>
+                <option value="wipe-bottom" data-i18n="cross.wipeBottom">ワイプ（下から）</option>
+                <option value="slide-left" data-i18n="cross.slideLeft">スライド（左から）</option>
+                <option value="slide-right" data-i18n="cross.slideRight">スライド（右から）</option>
+                <option value="slide-top" data-i18n="cross.slideTop">スライド（上から）</option>
+                <option value="slide-bottom" data-i18n="cross.slideBottom">スライド（下から）</option>
+              </select>
+            </span>
+          </div>
+          <div class="row tall-label">
+            <span data-i18n="outset.crossSecs">適用時間:</span>
+          </div>
+          <!-- A slider and a field over the same number, because the two
+               answer different questions: the slider is for finding a length
+               by eye and the field is for stating one. -->
+          <div class="row">
+            <input id="x-slider" class="vslider" type="range" min="0.1" max="30" step="0.1" value="1" />
+            <input id="x-secs" class="narrow" type="number" min="0.1" max="30" step="0.1" value="1" />
+            <span class="lbl" data-i18n="outset.seconds">秒</span>
+          </div>
+          <div class="row tall-label">
+            <span data-i18n="outset.crossEase">イージング:</span>
+          </div>
+          <div class="row">
+            <span class="drop">
+              <select id="x-curve">
+                <option value="none" selected data-i18n="ease.none">無し</option>
+                <option value="back" data-i18n="ease.back">Back</option>
+                <option value="bounce" data-i18n="ease.bounce">Bounce</option>
+                <option value="circle" data-i18n="ease.circle">Circle</option>
+                <option value="elastic" data-i18n="ease.elastic">Elastic</option>
+                <option value="exponential" data-i18n="ease.exponential">Exponential</option>
+                <option value="power" data-i18n="ease.power">Power</option>
+                <option value="sine" data-i18n="ease.sine">Sine</option>
+                <option value="quadratic" data-i18n="ease.quadratic">Quadratic</option>
+                <option value="cubic" data-i18n="ease.cubic">Cubic</option>
+                <option value="quartic" data-i18n="ease.quartic">Quartic</option>
+                <option value="quintic" data-i18n="ease.quintic">Quintic</option>
+              </select>
+            </span>
+            <span class="drop">
+              <select id="x-mode">
+                <option value="in" selected data-i18n="ease.in">イン</option>
+                <option value="out" data-i18n="ease.out">アウト</option>
+                <option value="in-out" data-i18n="ease.inOut">イン-アウト</option>
+                <option value="out-in" data-i18n="ease.outIn">アウト-イン</option>
+              </select>
+            </span>
+          </div>
+          <!-- A still over the crossing. Only offered here, and the window
+               says why: the frames a transition covers are being written
+               afresh anyway, so an image over them costs the composite and
+               nothing else. -->
+          <div class="row tall-label">
+            <span data-i18n="outset.crossImage">重ねる画像:</span>
+          </div>
+          <div class="row">
+            <input id="x-image" type="text" data-i18n-ph="outset.crossImageNone" />
+            <button id="x-browse" class="mini" data-i18n="outset.browse">参照</button>
+          </div>
+        </div>
+
+        <!-- What the effect does, drawn rather than named: which way a wipe
+             travels and what a slide does to the picture behind it are things
+             a name only half says. Halfway through, because that is where the
+             two clips are both visible whatever the effect is. -->
+        <div class="panel">
+          <div class="panel-head" data-i18n="xw.patternHead">プレビュー</div>
+          <canvas id="pattern" class="pattern" width="240" height="135"></canvas>
+        </div>
+
+        <div class="panel">
+          <div class="panel-head" data-i18n="xw.allHead">一括適用／削除</div>
+          <div class="row">
+            <button id="x-all" class="mini wide" data-i18n="outset.crossAll">すべての継ぎ目に適用</button>
+          </div>
+          <div class="row">
+            <button id="x-clear" class="mini wide" data-i18n="outset.crossNone">すべて解除</button>
+          </div>
+        </div>
+
+        <!-- What the settings above come to, in seconds. The first is what
+             the two clips are worth together once the crossing has taken what
+             it takes; the second is what the crossing itself runs for, which
+             is not always what was asked for -- see `Seam::takes`. -->
+        <div class="panel readouts">
+          <div class="readout">
+            <span data-i18n="xw.clipTime">実クリップ時間:</span>
+            <span class="num" id="out-clip-time">--:--:--.--</span>
+          </div>
+          <div class="readout">
+            <span data-i18n="xw.crossTime">実トランジション時間:</span>
+            <span class="num" id="out-cross-time">--:--:--.--</span>
+          </div>
+        </div>
+      </aside>
+
+      <div class="cross-view">
+        <div class="stage">
+          <img id="preview" alt="" />
+          <div class="overlay" id="overlay">
+            <div class="ovl-main">
+              <span id="ovl-frame">—</span>
+              <span id="ovl-time">--:--:--.--</span>
+            </div>
+            <div class="ovl-sub">
+              <span id="ovl-where" data-i18n="xw.beforeClip">前のクリップ</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- The scrubber, over the previewed stretch rather than over a
+             recording. The crossing is marked on it: what is being looked at
+             is where the marked part falls between the two clips, and a bare
+             bar would say nothing about that. -->
+        <div class="xscrub-wrap">
+          <canvas id="xscrub" height="26"></canvas>
+        </div>
+
+        <div class="player">
+          <div class="tgroup">
+            <button id="go-start" data-i18n-title="t.goStart">|◀</button>
+            <button id="step-back" data-i18n-title="t.stepBack">◀</button>
+            <button id="play" class="play" data-i18n-title="t.play.title">▶ 再生</button>
+            <button id="step-fwd" data-i18n-title="t.stepFwd">▶</button>
+            <button id="go-end" data-i18n-title="t.goEnd">▶|</button>
+            <!-- A mode rather than an action: it stays down while it holds,
+                 and what it changes is what 再生 does when it reaches the end.
+                 A crossing is a second or two and is watched over and over. -->
+            <button id="loop" class="tool" type="button" aria-pressed="false"
+                    data-i18n="t.loop" data-i18n-title="t.loop.title">⟲ ループ</button>
+          </div>
+          <div class="vol tgroup">
+            <button id="mute" type="button" aria-pressed="false" data-i18n-title="t.mute">♪</button>
+            <input id="volume" class="vslider" type="range" min="0" max="100" step="1"
+                   value="100" data-i18n-title="t.volume" data-i18n-aria="t.volume.aria" />
+            <span id="vol-num" class="dim vnum">100%</span>
+          </div>
+        </div>
+
+        <footer class="output">
+          <!-- What the setting costs the output, on a line of its own above
+               the two buttons rather than beside them. It is a sentence --
+               「クリップ 2 本が重なって映るので、出力は 1.0 秒短くなります」 -- and a
+               sentence standing in the same row as OK pushed both buttons
+               out of the corner and off the edge of the window. -->
+          <div class="xnote dim" id="note"></div>
+          <div class="export">
+            <span class="spacer"></span>
+            <button id="cross-ok" class="primary wide" data-i18n="editor.ok">OK</button>
+            <button id="cross-cancel" class="secondary" data-i18n="editor.cancel">キャンセル</button>
+          </div>
+        </footer>
+      </div>
+    </main>
+    <script src="cross.js" type="module"></script>
+  </body>
+</html>

@@ -364,6 +364,94 @@ pub fn over(frame: &mut ff::frame::Video, laid: &Laid, opacity: f64) -> Result<(
     Ok(())
 }
 
+/// Read a still image and bring it to the shape the frames are in.
+///
+/// Read through libavcodec, like everything else here: a PNG, a JPEG, a BMP
+/// or anything else it has a decoder for. What is wanted from it is two
+/// things at once -- the colours in the frames' own format, and how much of
+/// the image is there at each pixel -- so it is scaled twice, once into the
+/// output's YUV and once into RGBA for the alpha channel. Twice over a
+/// still, once per run.
+///
+/// An image with no alpha of its own is solid, which is what libswscale
+/// fills the channel with.
+///
+/// Here rather than beside the cutter that writes the transition, because
+/// the window that *sets* one reads the same image to show it: an overlay
+/// that looked one way in the preview and another in the output would be
+/// worse than no preview at all. See [`crate::crossview`].
+pub fn read_laid(path: &str, width: u32, height: u32, want: ff::format::Pixel) -> Result<Laid> {
+    let mut ictx = ff::format::input(&path)
+        .map_err(|e| anyhow::anyhow!("the image over the transition, {path}: {e}"))?;
+    let stream = ictx
+        .streams()
+        .best(ff::media::Type::Video)
+        .ok_or_else(|| anyhow::anyhow!("{path} has no picture in it to lay over the transition"))?;
+    let index = stream.index();
+    let mut decoder = ff::codec::context::Context::from_parameters(stream.parameters())?
+        .decoder()
+        .video()?;
+    let mut frame = ff::frame::Video::empty();
+    let mut got = None;
+    for (s, packet) in ictx.packets() {
+        if s.index() != index {
+            continue;
+        }
+        decoder.send_packet(&packet)?;
+        if decoder.receive_frame(&mut frame).is_ok() {
+            got = Some(());
+            break;
+        }
+    }
+    if got.is_none() {
+        decoder.send_eof()?;
+        if decoder.receive_frame(&mut frame).is_err() {
+            bail!("{path} could not be decoded into a picture");
+        }
+    }
+
+    let (w, h) = (width, height);
+    // Stretched to the frame rather than placed in a corner. Where to put a
+    // smaller image is a question with no answer that suits everybody, and
+    // an image with an alpha channel answers it itself: what is transparent
+    // is where the programme shows through.
+    let mut colour = ff::frame::Video::new(want, w, h);
+    ff::software::scaling::Context::get(
+        frame.format(),
+        frame.width(),
+        frame.height(),
+        want,
+        w,
+        h,
+        ff::software::scaling::Flags::BICUBIC,
+    )?
+    .run(&frame, &mut colour)?;
+
+    let mut rgba = ff::frame::Video::new(ff::format::Pixel::RGBA, w, h);
+    ff::software::scaling::Context::get(
+        frame.format(),
+        frame.width(),
+        frame.height(),
+        ff::format::Pixel::RGBA,
+        w,
+        h,
+        ff::software::scaling::Flags::BICUBIC,
+    )?
+    .run(&frame, &mut rgba)?;
+    let stride = rgba.stride(0);
+    let data = rgba.data(0);
+    let mut alpha = vec![0u8; (w as usize) * (h as usize)];
+    for y in 0..h as usize {
+        for x in 0..w as usize {
+            alpha[y * w as usize + x] = data[y * stride + x * 4 + 3];
+        }
+    }
+    Ok(Laid {
+        picture: colour,
+        alpha,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

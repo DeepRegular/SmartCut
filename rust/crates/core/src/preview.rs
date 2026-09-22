@@ -506,6 +506,23 @@ pub fn frame_at(src: &Source, time: f64, width: u32) -> Result<Vec<u8>> {
 
 /// As [`frame_at`], but also reporting what kind of picture it is.
 pub fn shot_at(src: &Source, time: f64, width: u32) -> Result<Shot> {
+    let (at, picture) = picture_at(src, time)?;
+    let kind = kind_of(&picture);
+    Ok(Shot {
+        jpeg: encode_jpeg(&picture, src.video.sample_aspect_ratio, width)?,
+        time: at,
+        kind,
+    })
+}
+
+/// The decoded picture shown at `time`, and the instant it really stands at.
+///
+/// What [`shot_at`] is before it encodes. Handed over undecided, because a
+/// caller that is going to composite it with another picture -- see
+/// [`crate::crossview`] -- has to do that while it is still samples: a JPEG
+/// of one side and a JPEG of the other cannot be blended into a picture
+/// neither of them is.
+pub fn picture_at(src: &Source, time: f64) -> Result<(f64, ff::frame::Video)> {
     crate::init()?;
     let fd = src.video.frame_duration();
     let from = entry_before(&src.points, time);
@@ -537,13 +554,16 @@ pub fn shot_at(src: &Source, time: f64, width: u32) -> Result<Shot> {
         }
     }
 
-    let (at, picture) = picture.ok_or_else(|| anyhow!("no picture at {time:.3}s"))?;
-    let kind = kind_of(&picture);
-    Ok(Shot {
-        jpeg: encode_jpeg(&picture, src.video.sample_aspect_ratio, width)?,
-        time: at,
-        kind,
-    })
+    picture.ok_or_else(|| anyhow!("no picture at {time:.3}s"))
+}
+
+/// One decoded picture as a JPEG, at most `width` across.
+///
+/// [`encode_jpeg`] under a name the rest of the program may say. `sar` is
+/// the recording's pixel aspect ratio; a picture already brought to square
+/// pixels passes 1.0.
+pub fn jpeg_of(picture: &ff::frame::Video, sar: f64, width: u32) -> Result<Vec<u8>> {
+    encode_jpeg(picture, sar, width)
 }
 
 /// One picture out of a recording nothing has been read of yet.

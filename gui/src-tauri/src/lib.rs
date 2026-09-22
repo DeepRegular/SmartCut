@@ -141,6 +141,30 @@ struct Meter(smartcut_core::Levels);
 #[derive(Default)]
 struct EditorUp(std::sync::atomic::AtomicBool);
 
+/// Whether the seam window is on screen, and the two clips it is looking at.
+///
+/// The same pair of reasons [`EditorUp`] exists, for the same window-shaped
+/// hole: playback started from a worker can land after the window that asked
+/// for it has gone, and a run with nothing left to stop it plays the rest of
+/// the recording out of a window that is not there.
+///
+/// The clips are held beside the flag rather than in [`Opened`] because they
+/// are not what is open: the seam window is reached from the clip list, which
+/// may have a recording open in the cut editor at the same time, and a seam
+/// is two recordings where [`Opened`] is one.
+#[derive(Default)]
+struct CrossUp(std::sync::atomic::AtomicBool);
+
+#[derive(Default)]
+struct Crossed(Mutex<Option<CrossPair>>);
+
+struct CrossPair {
+    before_path: String,
+    after_path: String,
+    before: Source,
+    after: Source,
+}
+
 /// The subtitle track the preview is drawing, once one has been asked for.
 ///
 /// Kept between frames because that is the whole point of it: the reader
@@ -1889,6 +1913,408 @@ fn close_zoom(app: tauri::AppHandle) {
     }
 }
 
+/// Open 継ぎ目の編集, in a window of its own.
+///
+/// A window rather than a panel on the output settings screen, and for the
+/// reason the cut editor is one: a transition is *done to* one join, not
+/// settled once for the list, and what it needs is the thing a settings
+/// screen has no room for -- the seconds either side of that join, on screen
+/// and playing. Six rows saying `ディゾルブ 1.4 秒 Sine イン-アウト` cannot be
+/// judged; a second and a half of the two recordings crossing can.
+///
+/// Left again with OK or キャンセル, as the editor is. What the settings become
+/// afterwards is the list window's business.
+///
+/// `async` for the reason [`open_editor`] is: building a webview on the main
+/// thread is the one thing WebView2 will not do.
+#[tauri::command]
+async fn open_cross(title: String, app: tauri::AppHandle) -> Result<(), String> {
+    if let Some(w) = app.get_webview_window(CROSS) {
+        let _ = w.set_title(&title);
+        let _ = w.unminimize();
+        let _ = w.set_focus();
+        return Ok(());
+    }
+    let window = WebviewWindowBuilder::new(&app, CROSS, WebviewUrl::App("cross.html".into()))
+        .title(title)
+        .inner_size(1060.0, 800.0)
+        // The settings column is a fixed width and the picture wants the
+        // rest; below this the picture is smaller than the column beside it,
+        // which is the wrong way round for a window that exists to show one.
+        .min_inner_size(880.0, 640.0)
+        .center()
+        .visible(false)
+        .build()
+        .map_err(|e| e.to_string())?;
+    if !geometry::restore(&window, CROSS) && !window.is_maximized().unwrap_or(false) {
+        let _ = window.center();
+    }
+    let _ = window.show();
+    app.state::<CrossUp>().0.store(true, Ordering::SeqCst);
+    geometry::watch(&window, CROSS);
+    // Whichever way it went -- OK, キャンセル, or the cross on the title bar --
+    // the list has to know, and **playback has to be told**: the two threads
+    // it runs watch `Playing` and have no handle on the window, so a run left
+    // going plays its sound out of a window that is not there. The editor's
+    // own close does this and for the same reason; see [`open_editor`].
+    let teller = app.clone();
+    window.on_window_event(move |event| {
+        if matches!(
+            event,
+            tauri::WindowEvent::CloseRequested { .. } | tauri::WindowEvent::Destroyed
+        ) {
+            teller.state::<CrossUp>().0.store(false, Ordering::SeqCst);
+            teller.state::<Playing>().0.store(0, Ordering::SeqCst);
+        }
+        if matches!(event, tauri::WindowEvent::Destroyed) {
+            // The two recordings go with it. They are an open file each and
+            // an index each, and nothing else in the program reads them.
+            *locked(&teller.state::<Crossed>().0) = None;
+            let _ = teller.emit("cross-closed", ());
+            if let Some(list) = teller.get_webview_window(MAIN) {
+                std::thread::spawn(move || {
+                    std::thread::sleep(std::time::Duration::from_millis(150));
+                    let _ = list.unminimize();
+                    let _ = list.set_focus();
+                });
+            }
+        }
+    });
+    Ok(())
+}
+
+/// Put the seam window's own title bar right, without raising it.
+///
+/// The title names the two clips the join sits between, and the window moves
+/// between joins without being reopened -- the picker at the top of its
+/// settings column is what does that. [`open_cross`] would retitle it too,
+/// but it also raises and focuses the window, which is right for the button
+/// that opens it and wrong for a picker being used inside it.
+#[tauri::command]
+fn retitle_cross(title: String, app: tauri::AppHandle) {
+    if let Some(w) = app.get_webview_window(CROSS) {
+        let _ = w.set_title(&title);
+    }
+}
+
+#[tauri::command]
+fn close_cross(app: tauri::AppHandle) {
+    if let Some(w) = app.get_webview_window(CROSS) {
+        let _ = w.close();
+    }
+}
+
+/// What the seam window learned about the two recordings it is to show.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct CrossInfo {
+    /// The rate the preview is walked at, which is the clip before the join's
+    /// own: the joined file is written at the master's rate, and the clip
+    /// before is the master unless somebody says otherwise.
+    fps: f64,
+    before_duration: f64,
+    after_duration: f64,
+    before_audio: bool,
+    after_audio: bool,
+}
+
+/// Open the two recordings at one join.
+///
+/// Both of them, because a crossing is both of them: the picture at each
+/// instant of it comes out of one and the other. A pass apiece, and on
+/// anything but a transport stream not even that -- see [`scan_cached`],
+/// which picks up an index that is already beside the recording or already
+/// in this session's cache. The clip list has usually walked both of these
+/// already, so this is normally two reads of a small file.
+///
+/// Asked again for the same pair, it answers without reopening: the window
+/// asks on every change of the join being looked at, and a list of twelve
+/// episodes is eleven joins over twelve recordings.
+#[tauri::command]
+async fn cross_load(
+    before: String,
+    after: String,
+    app: tauri::AppHandle,
+) -> Result<CrossInfo, String> {
+    off_thread(move || {
+        {
+            let state = app.state::<Crossed>();
+            let held = locked(&state.0);
+            if let Some(pair) = held.as_ref() {
+                if pair.before_path == before && pair.after_path == after {
+                    return Ok(info_of_pair(pair));
+                }
+            }
+        }
+        let (before_src, _) = scan_cached(&app, &before)?;
+        let (after_src, _) = scan_cached(&app, &after)?;
+        let pair = CrossPair {
+            before_path: before,
+            after_path: after,
+            before: before_src,
+            after: after_src,
+        };
+        let info = info_of_pair(&pair);
+        *locked(&app.state::<Crossed>().0) = Some(pair);
+        Ok(info)
+    })
+    .await
+}
+
+fn info_of_pair(pair: &CrossPair) -> CrossInfo {
+    CrossInfo {
+        fps: pair.before.video.frame_rate,
+        before_duration: pair.before.duration,
+        after_duration: pair.after.duration,
+        before_audio: pair.before.audio.is_some(),
+        after_audio: pair.after.audio.is_some(),
+    }
+}
+
+/// One join, as the window states it.
+///
+/// The four times are the two clips' own and they bound what is being
+/// joined: where the clip before the join stops and where the clip after it
+/// starts, after each one's own cuts. See [`smartcut_core::crossview::Seam`].
+#[derive(Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct SeamSpec {
+    before_in: f64,
+    before_out: f64,
+    after_in: f64,
+    after_out: f64,
+    crossing: Crossing,
+}
+
+/// The previewed stretch, as the window needs to draw a scrubber over it.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SeamSpan {
+    /// How long the whole preview runs.
+    seconds: f64,
+    /// Where the crossing begins on the preview's own clock, and where it
+    /// ends. Equal where the join is a plain cut.
+    at: f64,
+    ends: f64,
+    /// What the crossing really takes off each clip, which is not always what
+    /// it asked for: see [`smartcut_core::crossview::Seam::takes`].
+    takes_before: f64,
+    takes_after: f64,
+}
+
+/// Work the seam out against the two open recordings, and do something with
+/// it. Everything below goes through here so that none of them can disagree
+/// about which pair is open or what the seam over it is.
+fn with_seam<T>(
+    app: &tauri::AppHandle,
+    spec: &SeamSpec,
+    what: impl FnOnce(&smartcut_core::crossview::Seam) -> Result<T, String>,
+) -> Result<T, String> {
+    let state = app.state::<Crossed>();
+    let held = locked(&state.0);
+    let pair = held.as_ref().ok_or("no join open")?;
+    what(&seam_over(&pair.before, &pair.after, spec))
+}
+
+/// The seam itself, over two recordings that are already open.
+///
+/// A function and not a closure because both halves of playback want one and
+/// they are on different threads.
+fn seam_over<'a>(
+    before: &'a Source,
+    after: &'a Source,
+    spec: &SeamSpec,
+) -> smartcut_core::crossview::Seam<'a> {
+    smartcut_core::crossview::Seam {
+        before,
+        before_in: spec.before_in,
+        before_out: spec.before_out,
+        after,
+        after_in: spec.after_in,
+        after_out: spec.after_out,
+        transition: spec.crossing.clone().into_transition(),
+    }
+}
+
+/// How long the preview runs and where the crossing sits in it.
+#[tauri::command]
+fn cross_span(seam: SeamSpec, app: tauri::AppHandle) -> Result<SeamSpan, String> {
+    with_seam(&app, &seam, |seam| {
+        let window = seam.window(smartcut_core::crossview::LEAD);
+        let (takes_before, takes_after) = seam.takes();
+        Ok(SeamSpan {
+            seconds: window.seconds,
+            at: window.at,
+            ends: window.ends,
+            takes_before,
+            takes_after,
+        })
+    })
+}
+
+/// One instant of the seam, composited.
+///
+/// What the window shows while nothing is playing: a pointer dragged over the
+/// scrubber, a frame stepped. Each call seeks both recordings, which is what
+/// makes it answer a pointer rather than a clock.
+#[tauri::command]
+async fn cross_shot(
+    seam: SeamSpec,
+    time: f64,
+    width: u32,
+    app: tauri::AppHandle,
+) -> Result<Shot, String> {
+    off_thread(move || {
+        let jpeg = with_seam(&app, &seam, |s| {
+            let window = s.window(smartcut_core::crossview::LEAD);
+            smartcut_core::crossview::shot(s, &window, time, width).map_err(|e| e.to_string())
+        })?;
+        Ok(Shot { url: shot_url(&app, &jpeg), time, kind: String::new() })
+    })
+    .await
+}
+
+/// Play the seam back from `from`, as a stream of pictures, with its sound.
+///
+/// The picture half walks an even grid at the master's rate -- a crossing is
+/// defined at instants of the *output*, and the two recordings have grids of
+/// their own that need not agree -- and is paced against a wall clock, with
+/// anything already late dropped rather than shown late. Exactly what
+/// [`play`] does for one recording, and the pictures travel the same road:
+/// down a channel as the JPEG's own bytes, the instant in front of them.
+///
+/// **The sound is the two clips in turn, not mixed.** A dissolve has both
+/// pictures on screen at once; the sound of a join is the one clip and then
+/// the other, which is what the cutter writes. See
+/// [`smartcut_core::play_audio_across`], which keeps one device open across
+/// the pair so the join does not click.
+#[tauri::command]
+#[allow(clippy::too_many_arguments)]
+async fn cross_play(
+    app: tauri::AppHandle,
+    seam: SeamSpec,
+    from: f64,
+    width: u32,
+    fps: f64,
+    run: u64,
+    frames: tauri::ipc::Channel<tauri::ipc::InvokeResponseBody>,
+) -> Result<(), String> {
+    // The window this plays for may have gone already: see [`CrossUp`].
+    if !app.state::<CrossUp>().0.load(Ordering::SeqCst) {
+        return Ok(());
+    }
+    let (before, after) = {
+        let state = app.state::<Crossed>();
+        let held = locked(&state.0);
+        let pair = held.as_ref().ok_or("no join open")?;
+        (pair.before.clone(), pair.after.clone())
+    };
+    app.state::<Playing>().0.store(run, Ordering::SeqCst);
+    // Nothing has been heard of this run yet, and what the meter holds is the
+    // end of the last one.
+    app.state::<Meter>().0.clear();
+
+    // Worked out once, here, because both halves play the same stretch: the
+    // picture walks the window and the sound plays the two clips under it.
+    let sound = seam_over(&before, &after, &seam)
+        .window(smartcut_core::crossview::LEAD)
+        .sound();
+    let silent = before.audio.is_none() && after.audio.is_none();
+
+    // Audio runs on its own thread and its own clock: it keeps a ring buffer
+    // fed and the sound card paces itself. `Playing` is the one thing the two
+    // sides share, so stopping either one stops both. See [`play`].
+    let audio_handle = (!silent).then(|| {
+        let level = app.state::<Vol>().0.clone();
+        let meter = app.state::<Meter>().0.clone();
+        let (a_src, b_src) = (before.clone(), after.clone());
+        let audio_app = app.clone();
+        std::thread::spawn(move || {
+            let stop_app = audio_app.clone();
+            // Either answer stops it: this run is no longer the one in force,
+            // or the window it plays for has gone.
+            let stop = move || {
+                stop_app.state::<Playing>().0.load(Ordering::SeqCst) != run
+                    || !stop_app.state::<CrossUp>().0.load(Ordering::SeqCst)
+            };
+            let parts = vec![
+                smartcut_core::Heard {
+                    src: &a_src,
+                    ranges: vec![sound.before],
+                    // Past the end of its own stretch where the playhead is
+                    // already beyond the handover, which is how a part that
+                    // has nothing left to play is skipped.
+                    from: sound.before.0 + from,
+                },
+                smartcut_core::Heard {
+                    src: &b_src,
+                    ranges: vec![sound.after],
+                    from: sound.after.0 + (from - sound.at).max(0.0),
+                },
+            ];
+            if let Err(e) = smartcut_core::play_audio_across(&parts, &level, &meter, stop) {
+                eprintln!("audio playback: {e}");
+                // Otherwise this fails in total silence: a release build has
+                // no console, and the picture half plays on regardless.
+                let _ = audio_app.emit("audio-error", e.to_string());
+            }
+        })
+    });
+
+    tauri::async_runtime::spawn_blocking(move || {
+        let playing = app.state::<Playing>();
+        let up = app.state::<CrossUp>();
+        let began = std::time::Instant::now();
+        let gap = 1.0 / fps.max(1.0);
+        let s = seam_over(&before, &after, &seam);
+        let window = s.window(smartcut_core::crossview::LEAD);
+        let outcome = smartcut_core::crossview::play(
+            &s,
+            &window,
+            from,
+            width,
+            fps,
+            |t| {
+                if playing.0.load(Ordering::SeqCst) != run || !up.0.load(Ordering::SeqCst) {
+                    return smartcut_core::Pace::Stop;
+                }
+                let out_t = (t - from).max(0.0);
+                let due = std::time::Duration::from_secs_f64(out_t);
+                let now = began.elapsed();
+                if due > now {
+                    std::thread::sleep(due - now);
+                } else if out_t + 2.0 * gap < now.as_secs_f64() {
+                    // Already more than two pictures late. Showing it would
+                    // put the picture further behind the sound rather than
+                    // catch it up: the sound plays at the card's own speed and
+                    // waits for nothing. A skip costs the composite and no
+                    // more. See [`play`], which says the same at length.
+                    return smartcut_core::Pace::Skip;
+                }
+                smartcut_core::Pace::Show
+            },
+            |t, jpeg| {
+                let mut body = Vec::with_capacity(8 + jpeg.len());
+                body.extend_from_slice(&t.to_le_bytes());
+                body.extend_from_slice(&jpeg);
+                let _ = frames.send(tauri::ipc::InvokeResponseBody::Raw(body));
+            },
+        )
+        .map_err(|e| e.to_string());
+
+        let _ = playing
+            .0
+            .compare_exchange(run, 0, Ordering::SeqCst, Ordering::SeqCst);
+        if let Some(h) = audio_handle {
+            let _ = h.join();
+        }
+        let _ = app.emit("cross-play-ended", run);
+        outcome
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
 /// The picture at `time`, at the size the recording itself holds it.
 ///
 /// What 拡大表示 magnifies. The stage's picture will not do: it is scaled to
@@ -1998,6 +2424,10 @@ const MAIN: &str = "main";
 /// is showing. One at a time, like the editor: it is about the one recording
 /// that window has open.
 const ZOOM: &str = "zoom";
+
+/// 継ぎ目の編集, where a transition is set and looked at. One at a time: it is
+/// opened on one join out of the list and left again with OK.
+const CROSS: &str = "cross";
 
 /// The last path component, which is what the list shows.
 fn clip_name(path: &str) -> String {
@@ -4440,7 +4870,10 @@ struct JoinClip {
 }
 
 /// A transition as the window states one.
-#[derive(Deserialize)]
+///
+/// `Clone` because the seam window asks about the same one repeatedly -- a
+/// picture a frame, a span per change -- where the export consumes it once.
+#[derive(Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
 struct Crossing {
     /// The name the engine parses -- `dissolve`, `wipe-left`. Anything it
@@ -6320,6 +6753,8 @@ pub fn run() {
         .manage(Vol::default())
         .manage(Meter::default())
         .manage(EditorUp::default())
+        .manage(CrossUp::default())
+        .manage(Crossed::default())
         .manage(Subs::default())
         .manage(BatchStop::default())
         .manage(Shots::default())
@@ -6415,6 +6850,13 @@ pub fn run() {
             clip_glance,
             clip_gone,
             open_editor,
+            open_cross,
+            close_cross,
+            retitle_cross,
+            cross_load,
+            cross_span,
+            cross_shot,
+            cross_play,
             editor_up,
             open_zoom,
             close_zoom,

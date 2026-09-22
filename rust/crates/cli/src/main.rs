@@ -256,8 +256,10 @@ fn usage() -> String {
      kind has both clips on screen at once and the output comes out that \
      much shorter. Every frame it covers is written afresh -- a transition \
      is pictures that are in neither recording -- and the sound is not \
-     mixed: the clip before plays through the crossing and the one after \
-     starts where it ends. --transition-image lays a still over the \
+     mixed: the clip before plays through the crossing and hands over to \
+     the one after part way through it -- at the end of an overlapping \
+     crossing, and at the colour, which is the middle, of a fade. \
+     --transition-image lays a still over the \
      crossing -- a title, a card -- coming up and going down with it; the \
      frames it covers are being written afresh anyway, which is why it is \
      offered there and nowhere else\n\
