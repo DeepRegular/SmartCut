@@ -886,6 +886,31 @@ fn read_clip(
     // The same pass the editor makes when a recording is opened, for the
     // same answer: where a player may begin.
     let src = crate::scan_reporting(&path, &crate::index::PacketScan, on)?;
+    // What a clip index can describe. A disc names each stream by a coding
+    // type and has five for pictures; a stream in none of them would be
+    // written as MPEG-2 by the fallback below, which is an index describing
+    // a recording the disc does not hold. The cut that wrote this stream
+    // refuses the same codecs a step earlier -- a disc's recordings are
+    // transport streams and a transport stream cannot declare them either --
+    // so this is the net under that, for a stream put on the disc by
+    // something else.
+    if !crate::carry::disc_holds_video(&src.video.codec) {
+        bail!(
+            "{}: a disc of recordings has no coding type for {} pictures, and an index \
+             claiming one it does not have is a disc that stops part way through",
+            stream.display(),
+            src.video.codec
+        );
+    }
+    for a in &src.audios {
+        if !crate::carry::disc_holds_audio(&a.codec) {
+            bail!(
+                "{}: a disc of recordings has no coding type for {} sound",
+                stream.display(),
+                a.codec
+            );
+        }
+    }
     let video_pid = video_pid(&path, src.video.stream_index)?;
     // The map has to describe the sound and the captions as well as the
     // pictures: what it says about each is what this writes into the disc's
@@ -1044,6 +1069,13 @@ fn video_pid(path: &str, index: usize) -> Result<u16> {
 }
 
 /// The coding type of a picture stream, when its own map did not say.
+///
+/// MPEG-2 answers for anything else because it is what a disc of recordings
+/// was built around -- and what reaches here is one of the five
+/// [`crate::carry::disc_holds_video`] allows, which is checked before a
+/// recording is written rather than here. Written for a stream in none of
+/// them, the index would say MPEG-2 over pictures that are not, and a disc
+/// whose index and stream disagree is one a player believes until it stops.
 pub(crate) fn video_coding(codec: &str) -> u8 {
     match codec {
         "mpeg1video" => 0x01,

@@ -813,7 +813,7 @@ What is set on either tab stays there when you switch.
 | **Subfolder** | A folder of that name under the output folder, which is where the run writes. Offered where there is more than one file. The name is filled in the first time you look: the disc's name, or the project's, or else today's date. Emptied, the run writes straight into the folder above. **A folder of that name already there gets a branch number** — `night`, then `night-2`, `night-3` — so a second run never lands on the first one's files. The field keeps the name you gave; `already there → night-2` beside it says where the run will actually write |
 | **Filename prefix** | `cut_` by default, in front of the name. What it starts as is a [preference](#output-settings) |
 | **Number** | Puts the row's number in the list behind the prefix, in 2 to 4 digits. **On by default**, so `cut_01_recording.ts`; turned off, `cut_recording.ts`. For a list whose order means something and a folder that sorts by name |
-| **Container** | The file format. `Same as the input`, or a specific one |
+| **Container** | The file format. `Same as the input`, or a specific one. A container that cannot hold the recordings in the list is greyed out (see [Why some choices are greyed out](#why-some-choices-are-greyed-out)) |
 | **Audio** | `Smart rendering (default)` / `Copy through` / `Re-encode everything` |
 | **Audio codec** | `Same as the input`, or AAC, AC-3, DTS, linear PCM |
 | **Audio channels** | `Same as the input`, or 1ch, 2ch, 5.1ch |
@@ -873,6 +873,13 @@ quietly got shorter cannot tell you what is missing.
 The decision does not come from a table in the window. It comes from the engine
 that does the writing — so **what you can choose is what this build can actually
 produce.** An export never fails at the last moment.
+
+**The container list works the same way.** A container is greyed out when it
+cannot hold the recordings in the list: a `.ts` or a `.m2ts` cannot carry VP8,
+VP9 or AV1 pictures, and a `.mov` cannot carry those or lossless sound. `Same as
+the input` is never greyed — each recording goes back into the kind of container
+it came out of. A `.mkv` holds everything SmartCut writes, so it is the one to
+reach for when the container you wanted is grey.
 
 **Values larger than the material are greyed out too.** Channels, sample rate
 and bit depth can all be written larger than the recording once you are

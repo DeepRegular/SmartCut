@@ -47,18 +47,10 @@ const VIDEO_EXT = [
   // stream, for the reason `PS_LIKE` gives.
   "vob", "mpg", "mpeg", "m2p",
   // Matroska under another name, and the one shape VP9 and AV1 arrive in.
-  // Written back as itself, which is what `WEBM_VIDEO` is for.
+  // Written back as itself; which lists may be, and which may go into each
+  // of the other containers, is the engine's answer. See `lockContainer`.
   "webm",
 ];
-
-/// What a `.webm` is allowed to hold, which is a short list on purpose.
-///
-/// The format is a subset of Matroska and a muxer refuses anything else
-/// outright. Sound is the tighter of the two: Opus and Vorbis are the whole
-/// of it, and SmartCut writes neither -- so a `.webm` comes out only where
-/// its sound is the recording's own, carried through.
-const WEBM_VIDEO = ["vp8", "vp9", "av1"];
-const WEBM_AUDIO = ["opus", "vorbis"];
 const extOf = (p) => (p.match(/\.([A-Za-z0-9]+)$/)?.[1] || "").toLowerCase();
 const nameOf = (p) => p.split(/[/\\]/).pop();
 const dirOf = (p) => p.slice(0, Math.max(p.lastIndexOf("/"), p.lastIndexOf("\\")) + 1);
@@ -3787,6 +3779,80 @@ function under(want, ceiling) {
   return ceiling && want > ceiling ? null : want;
 }
 
+/// Which containers the engine has said this list can be written into, kept
+/// by the question it answers.
+///
+/// The engine is asked rather than a table kept here, exactly as the audio
+/// controls ask it: what a container holds belongs to the muxers this build
+/// was linked against, and a copy of that kept on the screen would drift
+/// from them. See `carry` in the engine.
+///
+/// Null while there is no answer yet, and null for a list nothing has been
+/// read out of. Everything is offered then: a control greyed before there is
+/// a recording to grey it for says the program cannot write something when
+/// all it means is that it has not been asked.
+const containerCan = new Map();
+const containerAsked = new Set();
+
+function writableContainers() {
+  const list = ready();
+  const facts = list.map(factsOf);
+  if (!list.length || facts.some((i) => !i || !i.codec)) return null;
+  const once = (names) => [...new Set(names.filter(Boolean))];
+  const lower = (s) => String(s || "").toLowerCase();
+  const ask = {
+    // Read off the control rather than written out again, so a container
+    // added to the window is a container asked about.
+    want: [...el("out-container").options].map((o) => o.value).filter(Boolean),
+    video: once(facts.map((i) => lower(i.codec))),
+    audio: once(list.flatMap((c) => keptAudio(c).map((a) => lower(a.codec)))),
+    // What the sound will be written as, which is what the cut is sent.
+    asked: audioCodecOut() || "",
+  };
+  const key = JSON.stringify(ask);
+  if (containerCan.has(key)) return containerCan.get(key);
+  if (invoke && !containerAsked.has(key)) {
+    containerAsked.add(key);
+    invoke("containers_holding", ask)
+      .then((can) => {
+        containerCan.set(key, can);
+        containerAsked.delete(key);
+        renderOutset();
+      })
+      .catch((e) => {
+        containerAsked.delete(key);
+        jlog(`containers_holding: ${e}`);
+      });
+  }
+  return null;
+}
+
+/// Grey the containers this list cannot be written into.
+///
+/// There used to be one answer here and it was WebM, on the grounds that
+/// every other container takes whatever reaches it. That stopped being true
+/// when VP8, VP9 and AV1 were taken as input: a transport stream has no
+/// stream type for any of the three, declares them as private data of no
+/// stated kind, and writes the file without complaint -- and every player
+/// reads it back as no pictures at all. QuickTime turns the three away
+/// outright, and lossless sound with them. So each container is asked about
+/// now, and about the sound as well as the pictures.
+///
+/// 入力と同じ is never greyed. It is the absence of a choice rather than a
+/// container: each recording goes back into the kind it came out of, which
+/// held those codecs already.
+function lockContainer() {
+  const can = writableContainers();
+  for (const opt of el("out-container").options) {
+    opt.disabled = !!can && !!opt.value && !can.includes(opt.value);
+  }
+  if (!can || !settings.container || can.includes(settings.container)) return;
+  // Held and no longer writable: back to 入力と同じ, which is always
+  // somewhere to fall back to.
+  settings.container = "";
+  el("out-container").value = "";
+}
+
 /// Grey out every answer that cannot be written or would be more than the
 /// recording has, and take a control off one it is already holding.
 ///
@@ -3794,52 +3860,6 @@ function under(want, ceiling) {
 /// the one thing a shortened list cannot say, and a codec that is absent
 /// because of the recording in the list looks like a codec this program does
 /// not have.
-/// Whether the list could be written as a `.webm`, which most lists cannot.
-///
-/// Three questions, and all three have to answer yes. The pictures have to
-/// be one of the three the format carries. The sound has to be one of the
-/// two it carries. And no audio codec may be chosen, because the four this
-/// window offers to write are none of them -- asking for AC-3 in a `.webm`
-/// is asking for a file that cannot exist, and the control that asks for it
-/// is the one a person is more likely to have meant.
-///
-/// True for an empty list: nothing has been added that the answer would be
-/// about, and a control greyed before there is a recording to grey it for
-/// says only that the program has not been used yet.
-function webmWritable() {
-  const list = ready();
-  if (!list.length) return true;
-  if (settings.audioCodec) return false;
-  // The first look answers this, so the control settles the moment a file is
-  // dropped rather than when the walk over it finishes.
-  return list.every((c) => {
-    const i = factsOf(c);
-    return (
-      i &&
-      WEBM_VIDEO.includes(String(i.codec || "").toLowerCase()) &&
-      keptAudio(c).every((a) => WEBM_AUDIO.includes(String(a.codec || "").toLowerCase()))
-    );
-  });
-}
-
-/// Grey the containers this list cannot be written into.
-///
-/// Only WebM so far. The others hold everything that reaches them -- a
-/// transport stream is the shape a broadcast already was, and MP4, Matroska
-/// and QuickTime each take every codec this program writes -- so there has
-/// never been anything here to refuse.
-function lockContainer() {
-  const ok = webmWritable();
-  const opt = [...el("out-container").options].find((o) => o.value === "webm");
-  if (!opt) return;
-  opt.disabled = !ok;
-  if (ok || settings.container !== "webm") return;
-  // Held and no longer writable: back to 入力と同じ, which is the absence of
-  // a choice and so is always somewhere to fall back to.
-  settings.container = "";
-  el("out-container").value = "";
-}
-
 function lockUnwritable() {
   const can = writableSound();
   const cap = soundCeiling();

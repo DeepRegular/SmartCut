@@ -17,6 +17,7 @@ pub mod bdav;
 pub mod bitstream;
 pub mod blank;
 pub mod carousel;
+pub mod carry;
 pub mod caption;
 pub mod cm;
 pub mod cut;

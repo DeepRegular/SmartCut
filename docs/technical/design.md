@@ -1409,13 +1409,18 @@ file: the folder (empty meaning the input's own), the subfolder, the prefix (`cu
 the container,
 which is a list naming a container and its extension together — **Same as the input** /
 `MPEG-2 TS (.ts)` / `M2TS (.m2ts)` / `MP4 (.mp4)` / `Matroska (.mkv)` / `WebM (.webm)` /
-`QuickTime (.mov)`. **WebM is the one entry that can be greyed out**, because it is the one
-container that refuses what it is handed: VP8, VP9 or AV1 pictures and Opus or Vorbis sound
-are the whole of what it holds, and the four codecs this window offers to write are none of
-them. So it is offered only where every recording in the list is already in those, and no
-audio codec has been chosen — `webmWritable` in the window asks exactly those three
-questions, and `lockContainer` puts the setting back to **Same as the input** where a
-recording is added that the answer changes.
+`QuickTime (.mov)`. **An entry is greyed out where the list cannot go into it.** That used
+to mean WebM alone, on the grounds that every other container takes whatever reaches it,
+and it stopped being true when VP8, VP9 and AV1 could arrive: a transport stream has no
+stream type for any of the three, declares them as private data of no stated kind, and
+writes the file without a word — and every player reads the pictures back as `bin_data`,
+carried and unplayable. QuickTime turns the three away outright, and lossless sound with
+them. So the window asks the engine, which keeps the table in `carry`: `containers_holding`
+is handed the codecs in the list and the codec the sound is to be written in, and answers
+with the containers that hold all of them. `lockContainer` greys out the rest and puts the
+setting back to **Same as the input** where a recording is added that the answer changes.
+**Same as the input** is never greyed: it is the absence of a choice rather than a
+container, and each recording goes back into the kind it came out of.
 **A container per entry** rather than one "video" line, because choosing one is what swaps
 the extension; without that, the container would become "an extension you have to remember".
 

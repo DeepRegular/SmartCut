@@ -4801,6 +4801,44 @@ pub fn cut_with_progress(
         })
         .collect::<Result<Vec<_>>>()?;
 
+    // Whether the container this is going into can hold what is going into
+    // it. Answered before the output is created rather than at the end of
+    // the cut, and answered here rather than left to the muxer, because one
+    // of them does not answer: a transport stream handed a codec it has no
+    // stream type for declares it as private data and writes it anyway, so
+    // the cut finishes and the file plays as nothing at all. See
+    // [`crate::carry`].
+    {
+        let family = crate::carry::family(output);
+        let ext = std::path::Path::new(output)
+            .extension()
+            .and_then(|e| e.to_str())
+            .unwrap_or("file")
+            .to_ascii_lowercase();
+        let refuse = |codec: &str, what: &str| -> anyhow::Error {
+            let how = if family == "ts" {
+                "would be written as private data of no stated kind, which is a stream every \
+                 player carries and none can read"
+            } else {
+                "has no box for it"
+            };
+            anyhow!(
+                "a .{ext} cannot carry {codec} {what}: it {how}. A .mkv holds everything this \
+                 program writes, and the output settings screen greys out the ones that cannot \
+                 hold a given recording"
+            )
+        };
+        if !crate::carry::holds(family, &src.video.codec) {
+            return Err(refuse(&src.video.codec, "pictures"));
+        }
+        for setup in &setups {
+            let codec = crate::carry::name_of(setup.target);
+            if !crate::carry::holds(family, &codec) {
+                return Err(refuse(&codec, "sound"));
+            }
+        }
+    }
+
     // What the recording says about itself. Read here rather than after the
     // cut because the muxer's own idea of the transport stream has to agree
     // with it: an event information section names its service by transport

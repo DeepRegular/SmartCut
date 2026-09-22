@@ -4056,6 +4056,48 @@ async fn audio_limits(
     .await
 }
 
+/// Which of the containers the output settings screen offers can hold this
+/// list of recordings.
+///
+/// The engine answers rather than the window, for the same reason it answers
+/// what the encoders will write: what a container holds is a property of the
+/// muxers this build was linked against, and a copy of the table kept on the
+/// screen would drift from them. See [`smartcut_core::carry`].
+///
+/// `want` is the screen's own list of containers, so one added to the window
+/// is one asked about. `video` and `audio` are the codecs in the list, each
+/// named once. `asked` is the codec the screen wants the sound written in,
+/// where it wants one at all: then the recordings' own sound is not what
+/// will be in the file, and asking about it would grey a container out over
+/// a codec the cut is not going to write.
+///
+/// Answered on this thread. It is a few string comparisons and the screen is
+/// waiting on it to draw.
+#[tauri::command]
+fn containers_holding(
+    want: Vec<String>,
+    video: Vec<String>,
+    audio: Vec<String>,
+    asked: Option<String>,
+) -> Vec<String> {
+    use smartcut_core::carry::{family, holds};
+    want.into_iter()
+        .filter(|name| {
+            let into = family(&format!("x.{name}"));
+            // Linear PCM is the one answer that depends on where it is
+            // going: a transport stream declares Blu-ray's own and
+            // everything else takes the plain samples. See `carriage` in
+            // `smartcut_core::cut`.
+            let sound: Vec<String> = match asked.as_deref().unwrap_or("") {
+                "" | "source" => audio.clone(),
+                "lpcm" => vec![if into == "ts" { "pcm_bluray" } else { "pcm_s16be" }.to_string()],
+                named => vec![named.to_string()],
+            };
+            video.iter().chain(sound.iter()).all(|c| holds(into, c))
+        })
+        .collect()
+}
+
 /// A name for the folder a run makes that none of `dirs` already has.
 ///
 /// A run writing into a folder of its own makes that folder as the first cut
@@ -6163,6 +6205,7 @@ pub fn run() {
             bdav_image,
             bdav_drop,
             audio_limits,
+            containers_holding,
             index_clip,
             clip_outline,
             clip_pictures,

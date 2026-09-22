@@ -373,8 +373,23 @@ A `.webm` is Matroska with a short list of what may go in it: VP8, VP9 or AV1
 pictures, Opus or Vorbis sound, and nothing else. SmartCut writes neither Opus
 nor Vorbis, so a `.webm` comes out only where its sound is the recording's own,
 carried through -- which is the ordinary case, since that is how the recording
-arrived. The window offers the container only where all three of those hold; see
-[the design notes](design.md).
+arrived.
+
+Taking these three as input turned the question round. For as long as WebM was
+the only container that refused anything, there was one entry to grey out and
+every other container held whatever reached it. A transport stream has no stream
+type for VP8, VP9 or AV1: libavformat declares such a stream as private data of
+no stated kind and writes the file without a word, and every player reads the
+pictures back as `bin_data` -- carried, declared, unplayable. VP8 came out worse
+again, declared as MPEG-4 video, which is a description that is not true.
+QuickTime refuses the three outright, and TrueHD, FLAC and Opus with them.
+
+So `carry` holds the table and every caller asks it. The transport stream is
+answered from the list of what it *has* stream types for; the others from what
+they are known to refuse, which is all a container that says no out loud needs.
+A cut into a container that cannot hold what is going into it stops before the
+output file is made, and the window greys the entry out with the same answer;
+see [the design notes](design.md).
 
 ## VC-1: the codec with no encoder
 
