@@ -40,6 +40,7 @@
 | [検証](technical/validation.ja.md) | フレームハッシュ照合の結果、実際の放送録画での検証、既知の制限 |
 | [音声](technical/audio.ja.md) | 音声へのスマートレンダリングの適用、境界の誤差、MPEG-2 AAC のフレーミング、ダウンミックス、出力コーデックの選択、音声多重放送 |
 | [放送 TS](technical/broadcast-ts.ja.md) | PID 配置、録画に含まれるテーブル、字幕と番組情報、部分 TS、ADTS、L-SMASH と DGIndex |
+| [結合・基準クリップ・トランジション](technical/joining.ja.md) | 複数の録画を 1 ファイルに書く仕組み。基準クリップが供給するもの、仕様の合わないクリップの扱い、トランジションだけがスマートレンダリングできない理由 |
 | [CM 検出の実装](technical/cm-detection.ja.md) | 検出器のスコアリング、ロゴ検出、字幕リセット、精度の測り方 |
 
 ### ディスク

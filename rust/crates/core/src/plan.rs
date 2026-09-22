@@ -40,6 +40,31 @@ impl SegmentKind {
     }
 }
 
+/// What a transition does to one stretch of pictures.
+///
+/// Hung off the segment rather than off the range, because a transition is
+/// a stretch *within* a range and the range is what the sound is cut
+/// against: a range split in two to make room for a fade would put a seam in
+/// the sound where the picture has none. See [`crate::transition`].
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Retouch {
+    /// Taken down to a colour across this segment, or brought up out of one.
+    Tint {
+        shade: crate::transition::Shade,
+        /// True where the pictures go into the colour, false where they
+        /// come out of it.
+        going_in: bool,
+        easing: crate::transition::Easing,
+    },
+    /// Shown together with the reel that follows, whose own pictures from
+    /// `theirs` onwards are read alongside these.
+    Cross {
+        kind: crate::transition::Crossing,
+        easing: crate::transition::Easing,
+        theirs: f64,
+    },
+}
+
 #[derive(Debug, Clone)]
 pub struct Segment {
     pub kind: SegmentKind,
@@ -62,6 +87,11 @@ pub struct Segment {
     /// straight to the first wanted frame can land in a GOP that cannot be
     /// decoded on its own.
     pub seek_from: f64,
+    /// Set where this stretch is a transition. Always a re-encode: a
+    /// transition asks for pictures that are in neither recording, so there
+    /// is nothing here a copy could carry. `None` for every segment of an
+    /// ordinary cut.
+    pub retouch: Option<Retouch>,
 }
 
 impl Segment {
@@ -108,6 +138,7 @@ fn safe_seek(points: &[AccessPoint], target: f64, back: usize) -> f64 {
     }
 }
 
+#[derive(Debug, Clone)]
 pub struct PlanOptions {
     /// Allow open-GOP access points to start a copy when their leading
     /// pictures are droppable.
@@ -129,6 +160,40 @@ impl Default for PlanOptions {
             min_copy: None,
             clean_join: None,
         }
+    }
+}
+
+/// A range with nothing copied in it: one segment, written afresh from end
+/// to end.
+///
+/// **What a plan is for does not arise here.** Everything above divides a
+/// range into the stretch that can be copied and the partial GOPs at its
+/// ends, because the copy is the point and the re-encoding is the price. A
+/// clip being written into another recording's shape has no copy available
+/// at any point of it -- every picture has to be decoded and made again --
+/// so there is nothing to divide and no entry point to reach for. See
+/// [`crate::conform`].
+///
+/// The seek still goes back two entry points, for the same reason it does
+/// anywhere: the first picture wanted may not be one that can be decoded on
+/// its own.
+pub fn reencode_range(points: &[AccessPoint], t_in: f64, t_out: f64) -> RangePlan {
+    let t_in = t_in.max(points.first().map_or(0.0, |p| p.time));
+    RangePlan {
+        t_in,
+        t_out,
+        segments: vec![Segment {
+            kind: SegmentKind::Reencode,
+            start: t_in,
+            end: t_out,
+            // Counted by the caller where it is counted at all: how many
+            // pictures this comes to is a question about the rate of the
+            // file it is going into, not about the recording being read.
+            frames: 0,
+            copy_until: None,
+            seek_from: safe_seek(points, t_in, 2),
+            retouch: None,
+        }],
     }
 }
 
@@ -195,7 +260,8 @@ pub fn plan_range(
             frames: 0,
             copy_until: None,
             seek_from: safe_seek(points, t_in, 2),
-        }])
+                        retouch: None,
+                    }])
     };
 
     if t_out <= t_in {
@@ -258,7 +324,8 @@ pub fn plan_range(
             frames: 0,
             copy_until: None,
             seek_from: safe_seek(points, t_in, 2),
-        });
+                          retouch: None,
+                      });
     }
     segments.push(Segment {
         kind: SegmentKind::Copy,
@@ -267,7 +334,8 @@ pub fn plan_range(
         frames: 0,
         copy_until,
         seek_from: k_first.time,
-    });
+                      retouch: None,
+                  });
     // Half a frame, for the same reason the head asks for a whole one: the
     // pictures the tail would have to supply sit `fd` apart, so a window
     // thinner than that holds one only if the phase is right, and one
@@ -281,7 +349,8 @@ pub fn plan_range(
             frames: 0,
             copy_until: None,
             seek_from: safe_seek(points, copy_end, 2),
-        });
+                          retouch: None,
+                      });
     }
     // Report the bounds the output actually covers, so audio lines up with
     // the video that was really produced.
@@ -572,6 +641,7 @@ mod tests {
             time_base: 1.0 / 90000.0,
             sample_aspect_ratio: 4.0 / 3.0,
             framing: NalFraming::AnnexB,
+            shape: Default::default(),
             pulldown: false,
             variable_rate: false,
             base_rate: 0.0,

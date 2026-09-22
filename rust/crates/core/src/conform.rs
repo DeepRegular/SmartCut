@@ -1,0 +1,498 @@
+//! What two recordings must have in common to go into one file, and what is
+//! done about each thing they have not.
+//!
+//! Cutting ranges out of one recording never raises the question: every
+//! picture in the output came off the same encoder, so every picture the
+//! copy carries is describable by the one stream header the output
+//! declares. Joining separate recordings raises it at once. A stream is
+//! declared before the first packet is written and cannot be taken back, so
+//! the file has exactly one answer for the size of a picture, the rate they
+//! come at, and the codec they are written in -- and a clip that answers
+//! differently cannot be copied into it.
+//!
+//! **One clip is the master, and the file is its shape.** Every clip that
+//! matches it is smart-rendered as it would be on its own: copied, bar the
+//! partial GOPs at the ends of each range. Every clip that does not is
+//! decoded and written afresh at the master's shape. That is the whole of
+//! the arrangement, and it is the one the reference tool reaches by the same
+//! reasoning.
+//!
+//! What counts as matching is decided here, and only here, so that the
+//! answer a list is drawn from and the answer the cut acts on cannot differ.
+
+use crate::{AudioInfo, PictureShape, Source, VideoInfo};
+use ffmpeg_next as ff;
+
+/// How close two frame rates may be and still be the same rate.
+///
+/// Relative, because the absolute gap between two rates that differ by a
+/// thousandth is 0.03 at 30 and 0.06 at 60. 29.97 and 30 differ by a part in
+/// a thousand and are emphatically not the same rate -- one of them is
+/// 30000/1001 and the other is 30, and a timeline built on either shows the
+/// other drifting a frame every 33 seconds -- so the tolerance has to be
+/// well under that. What it is really for is the last figure of a rate that
+/// arrived as a decimal.
+const RATE_TOLERANCE: f64 = 1e-4;
+
+/// The same, for a pixel aspect ratio, which is not a rate and is often
+/// written as a decimal: 1440x1080 broadcast is 4/3 and arrives as
+/// 1.3333333333333333.
+const ASPECT_TOLERANCE: f64 = 1e-3;
+
+/// One thing a clip does not have in common with the master.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Mismatch {
+    pub what: What,
+    /// What the master says and what this clip says, as a reader wants them
+    /// said rather than as the fields hold them.
+    pub master: String,
+    pub theirs: String,
+}
+
+impl Mismatch {
+    /// One line, for a caller with nowhere to put a table.
+    pub fn describe(&self) -> String {
+        format!("{}: {} vs {}", self.what.describe(), self.master, self.theirs)
+    }
+}
+
+/// Which property differs.
+///
+/// Split by what it costs rather than by where it is read: everything under
+/// [`What::is_video`] means the pictures are written afresh, and a
+/// [`What::Sound`] means one track is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum What {
+    Codec,
+    Size,
+    /// How the samples are laid out -- 4:2:0 against 4:2:2, eight bits
+    /// against ten. A decoder hands these over as they were coded and an
+    /// encoder must be opened for one of them.
+    Pixels,
+    Rate,
+    /// Interlaced against progressive, or one field order against the other.
+    Scan,
+    Aspect,
+    /// Primaries, transfer or matrix. Pictures that disagree about what
+    /// their numbers mean look like pictures from two different cameras,
+    /// because that is what they are.
+    Colour,
+    /// One of the sound tracks, by position: the master's nth track against
+    /// this clip's nth.
+    Sound(usize, Sound),
+    /// The clip has fewer sound tracks than the master, or more.
+    SoundTracks,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Sound {
+    Codec,
+    Rate,
+    Channels,
+}
+
+impl What {
+    /// Whether this is a reason to write the pictures afresh.
+    pub fn is_video(self) -> bool {
+        !matches!(self, What::Sound(..) | What::SoundTracks)
+    }
+
+    pub fn describe(self) -> &'static str {
+        match self {
+            What::Codec => "codec",
+            What::Size => "frame size",
+            What::Pixels => "pixel format",
+            What::Rate => "frame rate",
+            What::Scan => "scan",
+            What::Aspect => "pixel aspect",
+            What::Colour => "colour",
+            What::Sound(_, Sound::Codec) => "audio codec",
+            What::Sound(_, Sound::Rate) => "sample rate",
+            What::Sound(_, Sound::Channels) => "channels",
+            What::SoundTracks => "audio tracks",
+        }
+    }
+}
+
+/// What has to be done to a clip for it to be written beside the master.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Fit {
+    /// The pictures are decoded and written afresh at the master's size,
+    /// rate, scan and codec. Where this is false the clip is smart-rendered
+    /// exactly as it would be cut on its own.
+    pub video: bool,
+    /// One per sound track the master declares: whether this clip's own
+    /// track has to be written afresh to match it. A track the clip does not
+    /// have at all is `false` -- there is nothing to re-encode, and the
+    /// output carries a gap there.
+    pub audio: Vec<bool>,
+}
+
+impl Fit {
+    /// Everything carried as it is, which is what a clip cut on its own
+    /// gets and what the master itself always gets.
+    pub fn as_is(tracks: usize) -> Fit {
+        Fit {
+            video: false,
+            audio: vec![false; tracks],
+        }
+    }
+
+    /// Whether anything at all is written afresh.
+    pub fn anything(&self) -> bool {
+        self.video || self.audio.iter().any(|&a| a)
+    }
+}
+
+/// Everything this clip does not have in common with the master, video
+/// first.
+///
+/// The master compared with itself yields nothing, which is the property the
+/// callers lean on: a list where every clip matches is a list that joins by
+/// copying.
+pub fn compare(master: &Source, clip: &Source) -> Vec<Mismatch> {
+    of_parts(&master.video, &master.audios, &clip.video, &clip.audios)
+}
+
+/// What [`compare`] found, turned into what the cut will do about it.
+pub fn fit(master: &Source, clip: &Source) -> Fit {
+    let found = compare(master, clip);
+    fit_of(&found, master.audios.len(), clip.audios.len())
+}
+
+fn of_parts(
+    mv: &VideoInfo,
+    ma: &[AudioInfo],
+    cv: &VideoInfo,
+    ca: &[AudioInfo],
+) -> Vec<Mismatch> {
+    let mut out = video_mismatches(mv, cv);
+    out.extend(sound_mismatches(ma, ca));
+    out
+}
+
+fn fit_of(found: &[Mismatch], master_tracks: usize, clip_tracks: usize) -> Fit {
+    let mut fit = Fit {
+        video: found.iter().any(|m| m.what.is_video()),
+        audio: vec![false; master_tracks],
+    };
+    for m in found {
+        if let What::Sound(nth, _) = m.what {
+            if let Some(slot) = fit.audio.get_mut(nth) {
+                *slot = true;
+            }
+        }
+    }
+    // A track this clip does not carry is not one that can be written
+    // afresh: there is nothing to decode. `SoundTracks` says so on its own.
+    for slot in fit.audio.iter_mut().skip(clip_tracks) {
+        *slot = false;
+    }
+    fit
+}
+
+fn video_mismatches(master: &VideoInfo, clip: &VideoInfo) -> Vec<Mismatch> {
+    let mut out = Vec::new();
+    let mut say = |what: What, m: String, t: String| {
+        if m != t {
+            out.push(Mismatch {
+                what,
+                master: m,
+                theirs: t,
+            });
+        }
+    };
+    say(What::Codec, master.codec.clone(), clip.codec.clone());
+    say(
+        What::Size,
+        format!("{}x{}", master.width, master.height),
+        format!("{}x{}", clip.width, clip.height),
+    );
+    if !near(master.frame_rate, clip.frame_rate, RATE_TOLERANCE) {
+        say(
+            What::Rate,
+            rate(master.frame_rate),
+            rate(clip.frame_rate),
+        );
+    }
+    say(What::Scan, scan(master), scan(clip));
+    say(
+        What::Pixels,
+        pixels(master.shape.pix_fmt),
+        pixels(clip.shape.pix_fmt),
+    );
+    say(What::Colour, colour(&master.shape), colour(&clip.shape));
+    if !near(
+        master.sample_aspect_ratio,
+        clip.sample_aspect_ratio,
+        ASPECT_TOLERANCE,
+    ) {
+        say(
+            What::Aspect,
+            aspect(master.sample_aspect_ratio),
+            aspect(clip.sample_aspect_ratio),
+        );
+    }
+    out
+}
+
+fn sound_mismatches(master: &[AudioInfo], clip: &[AudioInfo]) -> Vec<Mismatch> {
+    let mut out = Vec::new();
+    if master.len() != clip.len() {
+        out.push(Mismatch {
+            what: What::SoundTracks,
+            master: master.len().to_string(),
+            theirs: clip.len().to_string(),
+        });
+    }
+    for (nth, m) in master.iter().enumerate() {
+        let Some(t) = clip.get(nth) else { break };
+        let mut say = |which: Sound, a: String, b: String| {
+            if a != b {
+                out.push(Mismatch {
+                    what: What::Sound(nth, which),
+                    master: a,
+                    theirs: b,
+                });
+            }
+        };
+        say(Sound::Codec, m.codec.clone(), t.codec.clone());
+        say(
+            Sound::Rate,
+            format!("{} Hz", m.sample_rate),
+            format!("{} Hz", t.sample_rate),
+        );
+        say(
+            Sound::Channels,
+            m.channels.to_string(),
+            t.channels.to_string(),
+        );
+    }
+    out
+}
+
+fn near(a: f64, b: f64, tolerance: f64) -> bool {
+    let scale = a.abs().max(b.abs());
+    if scale <= 0.0 {
+        return true;
+    }
+    (a - b).abs() <= tolerance * scale
+}
+
+/// A frame rate as a reader states one: 29.97 rather than 29.970029970029973.
+fn rate(fps: f64) -> String {
+    let rounded = (fps * 100.0).round() / 100.0;
+    if (rounded - rounded.round()).abs() < 1e-9 {
+        format!("{:.0}", rounded)
+    } else {
+        format!("{rounded:.2}")
+    }
+}
+
+fn aspect(sar: f64) -> String {
+    if sar <= 0.0 {
+        return "square".into();
+    }
+    let r = ff::Rational::from(sar).reduce();
+    format!("{}:{}", r.numerator(), r.denominator())
+}
+
+/// The pixel format's own name -- `yuv420p`, `yuv420p10le` -- as libavutil
+/// spells it.
+///
+/// Its own name and not a description of it, because a description would be
+/// a table of them kept here and the only reader is a person deciding
+/// whether to re-encode a clip. A format libavutil has no name for is
+/// unnamed rather than absent: two clips whose formats are both unnamed are
+/// still two clips, and comparing the numbers is what decides the question.
+fn pixels(pix_fmt: i32) -> String {
+    let name = unsafe {
+        let p = ff::ffi::av_get_pix_fmt_name(std::mem::transmute::<i32, ff::ffi::AVPixelFormat>(
+            pix_fmt,
+        ));
+        if p.is_null() {
+            None
+        } else {
+            std::ffi::CStr::from_ptr(p).to_str().ok().map(str::to_owned)
+        }
+    };
+    name.unwrap_or_else(|| format!("format {pix_fmt}"))
+}
+
+/// The three colour fields as one phrase.
+///
+/// One phrase and not three mismatches: primaries, transfer and matrix are
+/// read together, mean nothing apart, and a clip that differs in one of them
+/// almost always differs in all three. What the reader has to decide is the
+/// same either way.
+fn colour(shape: &PictureShape) -> String {
+    let name = |f: unsafe extern "C" fn(i32) -> *const std::os::raw::c_char, v: i32| -> String {
+        let p = unsafe { f(v) };
+        if p.is_null() {
+            return v.to_string();
+        }
+        unsafe { std::ffi::CStr::from_ptr(p) }
+            .to_str()
+            .map(str::to_owned)
+            .unwrap_or_else(|_| v.to_string())
+    };
+    format!(
+        "{}/{}/{}",
+        name(colour_primaries_name, shape.primaries),
+        name(colour_transfer_name, shape.transfer),
+        name(colour_space_name, shape.matrix),
+    )
+}
+
+// libavutil takes these as its own enums; the fields hold the plain
+// integers the container stated. Wrapped rather than transmuted at each
+// call site, which is three casts written once instead of nine.
+unsafe extern "C" fn colour_primaries_name(v: i32) -> *const std::os::raw::c_char {
+    ff::ffi::av_color_primaries_name(std::mem::transmute::<i32, ff::ffi::AVColorPrimaries>(v))
+}
+
+unsafe extern "C" fn colour_transfer_name(v: i32) -> *const std::os::raw::c_char {
+    ff::ffi::av_color_transfer_name(std::mem::transmute::<
+        i32,
+        ff::ffi::AVColorTransferCharacteristic,
+    >(v))
+}
+
+unsafe extern "C" fn colour_space_name(v: i32) -> *const std::os::raw::c_char {
+    ff::ffi::av_color_space_name(std::mem::transmute::<i32, ff::ffi::AVColorSpace>(v))
+}
+
+/// Interlaced or not, and which field leads.
+///
+/// The field order is only asked where the scan is interlaced. A
+/// progressive stream may carry any of several numbers there depending on
+/// what wrote it, and none of them means anything: two progressive streams
+/// that disagree about a field order they do not have are not two shapes of
+/// picture.
+fn scan(v: &VideoInfo) -> String {
+    if !v.interlaced() {
+        return "progressive".into();
+    }
+    if v.top_field_first() {
+        "interlaced, top field first".into()
+    } else {
+        "interlaced, bottom field first".into()
+    }
+}
+
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn video() -> VideoInfo {
+        VideoInfo {
+            stream_index: 0,
+            codec: "h264".into(),
+            width: 1920,
+            height: 1080,
+            frame_rate: 30000.0 / 1001.0,
+            base_rate: 30000.0 / 1001.0,
+            has_b_frames: 2,
+            time_base: 1.0 / 90_000.0,
+            sample_aspect_ratio: 1.0,
+            framing: crate::bitstream::NalFraming::AnnexB,
+            shape: PictureShape {
+                pix_fmt: ff::ffi::AVPixelFormat::AV_PIX_FMT_YUV420P as i32,
+                primaries: ff::ffi::AVColorPrimaries::AVCOL_PRI_BT709 as i32,
+                transfer: ff::ffi::AVColorTransferCharacteristic::AVCOL_TRC_BT709 as i32,
+                matrix: ff::ffi::AVColorSpace::AVCOL_SPC_BT709 as i32,
+            },
+            pulldown: false,
+            variable_rate: false,
+            field_order: 0,
+            bit_rate: Some(17_000_000.0),
+            vc1: None,
+            field_shape: None,
+        }
+    }
+
+    fn sound() -> AudioInfo {
+        AudioInfo {
+            stream_index: 1,
+            pid: 0x111,
+            language: None,
+            codec: "aac".into(),
+            sample_rate: 48_000,
+            channels: 2,
+            bits: 16,
+            time_base: 1.0 / 90_000.0,
+            bit_rate: Some(192_000),
+            said: None,
+        }
+    }
+
+    /// A clip compared with itself has nothing to answer for, which is what
+    /// lets a list of recordings off one recorder join by copying.
+    #[test]
+    fn the_same_shape_matches() {
+        assert!(video_mismatches(&video(), &video()).is_empty());
+        assert!(sound_mismatches(&[sound()], &[sound()]).is_empty());
+    }
+
+    /// 29.97 and 30 are not the same rate, and the tolerance that lets a
+    /// decimal through must not let this through.
+    #[test]
+    fn drop_frame_is_not_thirty() {
+        let mut theirs = video();
+        theirs.frame_rate = 30.0;
+        theirs.base_rate = 30.0;
+        let found = video_mismatches(&video(), &theirs);
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].what, What::Rate);
+        assert_eq!((found[0].master.as_str(), found[0].theirs.as_str()), ("29.97", "30"));
+    }
+
+    /// Two progressive streams that disagree about a field order neither of
+    /// them has are the same shape of picture.
+    #[test]
+    fn a_field_order_without_fields_says_nothing() {
+        let mut theirs = video();
+        theirs.field_order = 1;
+        assert!(video_mismatches(&video(), &theirs).is_empty());
+    }
+
+    /// A track the clip does not have is not a track that can be written
+    /// afresh -- but the difference is still reported, because the output
+    /// declares a track that carries a gap there.
+    #[test]
+    fn a_missing_track_is_said_and_not_re_encoded() {
+        let found = of_parts(&video(), &[sound(), sound()], &video(), &[sound()]);
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].what, What::SoundTracks);
+        assert_eq!(fit_of(&found, 2, 1).audio, vec![false, false]);
+    }
+
+    /// A clip whose sound is in another codec has that one track written
+    /// afresh, and its pictures left alone.
+    #[test]
+    fn one_track_in_another_codec_costs_one_track() {
+        let mut theirs = sound();
+        theirs.codec = "ac3".into();
+        let found = of_parts(&video(), &[sound()], &video(), &[theirs]);
+        let f = fit_of(&found, 1, 1);
+        assert!(!f.video);
+        assert_eq!(f.audio, vec![true]);
+    }
+
+    /// Ten bits and eight are two shapes of picture, whatever else the two
+    /// recordings have in common -- and the difference is named the way
+    /// libavutil names it, since that is what a person would look up.
+    #[test]
+    fn bit_depth_is_a_shape() {
+        let mut theirs = video();
+        theirs.shape.pix_fmt = ff::ffi::AVPixelFormat::AV_PIX_FMT_YUV420P10LE as i32;
+        let found = video_mismatches(&video(), &theirs);
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].what, What::Pixels);
+        assert_eq!(
+            (found[0].master.as_str(), found[0].theirs.as_str()),
+            ("yuv420p", "yuv420p10le")
+        );
+    }
+}

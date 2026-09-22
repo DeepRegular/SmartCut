@@ -103,11 +103,22 @@ let nextId = 1;
 /// which of its tracks were switched off in the chooser. None of those is
 /// derivable from `…/Anime.iso/BDMV/STREAM/00014.m2ts`.
 ///
+/// What a clip says about the crossing that follows it, before anybody has
+/// said anything.
+///
+/// Held as the engine's own names rather than as numbers -- `dissolve`,
+/// `wipe-left`, `sine`, `in-out` -- so that a project file written by one
+/// version and read by another either knows a name or does not. A name this
+/// build has never heard of is no transition at all, which is the right
+/// answer for a file from a later version and costs nothing for one from an
+/// earlier.
+const NO_CROSSING = { kind: "none", seconds: 1, curve: "none", mode: "in", image: "" };
+
 /// A path for a file, one of those for a recording on a disc, and a saved row
 /// out of a project, which is the same shape written down.
 function makeClip(found) {
   const { path, name, renamed, stem, home, chapters, dropPids, made, description,
-          channel, channelNumber, programme } =
+          channel, channelNumber, programme, after } =
     typeof found === "string" ? { path: found } : found;
   return {
     // A row's own identity, which its path is not: the same recording can be
@@ -167,6 +178,14 @@ function makeClip(found) {
     /// arrived with is not the one wanted. Null until somebody types one,
     /// which is the difference between "no answer yet" and "called nothing".
     programme: programme === undefined ? null : programme,
+    /// What happens where this clip gives way to the next one, when the list
+    /// is being written as a single file.
+    ///
+    /// **On the clip that gives way**, which is where the reference tool
+    /// puts it and the only place it reads in the order the file is written.
+    /// Null is what every row starts as and what the list is full of:
+    /// nothing between the clips, which is what a join has always been.
+    after: after ? { ...NO_CROSSING, ...after } : null,
     /// What the recording itself says about its programme: the name, the
     /// channel and when it went out. Null until asked, `{}` where the
     /// recording says nothing -- which is not the same question.
@@ -2847,6 +2866,20 @@ const settings = {
   /// -- and the alternative, which is a disc with one recording left off it,
   /// is a thing somebody might well prefer. So it is asked for.
   fit: false,
+  /// Whether the list is written as one file rather than one per row.
+  ///
+  /// Off, and deliberately: the list has always been a list of *outputs*,
+  /// and a program that quietly made one file out of twenty recordings
+  /// because somebody added them in one sitting would be answering a
+  /// question nobody asked. What it costs to turn on is one box.
+  joinAll: false,
+  /// Which clip the joined file takes its shape from, by row id.
+  ///
+  /// Null is the first row, which is the answer nobody has to think about
+  /// and the one a list of recordings off one recorder wants. A row id
+  /// rather than a position, because the list can be reordered under it and
+  /// the answer is about a recording. See `smartcut_core::conform`.
+  master: null,
 };
 
 /// The settings as the program starts with them, kept because 新規作成 has to
@@ -2880,7 +2913,7 @@ function applyNameDefaults() {
 /// screen has settled it. Restoring a stale answer to either would be
 /// answering for a list this session has not seen.
 const KEPT_SETTINGS = Object.keys(SETTING_DEFAULTS)
-  .filter((key) => !["discTitle", "subfolder"].includes(key));
+  .filter((key) => !["discTitle", "subfolder", "master"].includes(key));
 
 /// The settings as they are now, put away for the next start.
 ///
@@ -3084,6 +3117,20 @@ function outputPath(clip) {
   return `${dir}${name}${n ? `_${n}` : ""}.${ext}`;
 }
 
+/// Where a run that writes the whole list as one file puts it.
+///
+/// The first row's own name, numbering and all -- which is what the list is
+/// called on screen and what somebody would go looking for. Not a name of
+/// its own: a joined file is the list, and the list already has a name at
+/// the top of it. The subfolder still does its work, so twelve episodes
+/// joined into one land in the folder the twelve would have.
+function joinedPath() {
+  const list = ready();
+  if (!list.length) return "";
+  const { dir, name, ext } = outputBase(list[0]);
+  return `${dir}${name}.${ext}`;
+}
+
 /// Which control stands for which setting. Kept because the flow is
 /// otherwise one-way -- the screen is where the settings are made, and the
 /// only thing that ever makes them from the other side is a project opening.
@@ -3152,6 +3199,7 @@ bindSetting("out-audio-rate", "audioRate");
 bindSetting("out-audio-bits", "audioBits");
 bindSetting("out-subtitles", "subtitles");
 bindSetting("out-keyframes", "keyframes", "checked");
+bindSetting("out-join", "joinAll", "checked");
 
 // --- drop-downs that open upward -----------------------------------------
 //
@@ -4555,6 +4603,8 @@ function discTitleFor(list) {
   return stamp();
 }
 
+wireCrossing();
+
 el("browse-dir").addEventListener("click", async (ev) => {
   ev.preventDefault();
   const picked = await dialog.open({ directory: true, multiple: false });
@@ -4888,6 +4938,194 @@ async function renderGauge() {
   box.replaceChildren(...shown);
 }
 
+/// Whether the list is being written as one file.
+///
+/// A disc is never that: what a disc holds is recordings, each with its own
+/// entry in the index, and a disc of one recording made of twenty is a disc
+/// that has lost nineteen names. So the box only means anything in file
+/// mode, and this is where the two are asked together.
+function joining() {
+  return settings.joinAll && !bdavMode();
+}
+
+/// The row the joined file takes its shape from.
+///
+/// The one the setting names, while it is still in the list; the first row
+/// otherwise. A list reordered or shortened under a chosen master is the
+/// ordinary case -- rows are dragged about -- and a master that has gone is
+/// not an error to stop a run over.
+function masterClip(list = ready()) {
+  return list.find((c) => c.id === settings.master) || list[0] || null;
+}
+
+/// The crossing one row carries, filled in on the first look.
+///
+/// Rows start with none at all -- see `makeClip` -- because a list is mostly
+/// rows nobody has said anything about, and a default object on each of them
+/// would be twenty objects saying "nothing happens here".
+function crossingOf(clip) {
+  if (!clip) return { ...NO_CROSSING };
+  if (!clip.after) clip.after = { ...NO_CROSSING };
+  return clip.after;
+}
+
+/// Which row the crossing controls are describing.
+function crossClip() {
+  const list = ready();
+  const picked = byId(Number(el("out-cross-clip").value));
+  return (picked && list.includes(picked) && picked) || list[0] || null;
+}
+
+/// Put the crossing panel on screen: the rows that can carry one, and what
+/// the chosen row says.
+function renderCrossing() {
+  const panel = el("join-panel");
+  panel.hidden = !joining();
+  if (panel.hidden) return;
+  const list = ready();
+  // Every row but the last. A transition belongs to the clip that gives
+  // way, and the last one gives way to nothing -- so it has no crossing to
+  // describe, and offering one would be offering a setting that does
+  // nothing.
+  const joins = list.slice(0, -1);
+  const select = el("out-cross-clip");
+  const was = select.value;
+  select.innerHTML = joins
+    .map((c, i) => `<option value="${c.id}">${t("outset.crossAfter", { n: i + 1, name: esc(clipLabel(c)) })}</option>`)
+    .join("");
+  if (joins.some((c) => String(c.id) === was)) select.value = was;
+  const clip = byId(Number(select.value)) || joins[0];
+  const on = !!clip;
+  for (const id of ["out-cross-kind", "out-cross-slider", "out-cross-secs",
+                    "out-cross-curve", "out-cross-mode", "out-cross-image",
+                    "browse-cross-image", "cross-all", "cross-none"]) {
+    el(id).disabled = !on;
+  }
+  const cross = crossingOf(clip);
+  el("out-cross-kind").value = cross.kind;
+  if (el("out-cross-kind").selectedIndex < 0) el("out-cross-kind").selectedIndex = 0;
+  el("out-cross-slider").value = cross.seconds;
+  el("out-cross-secs").value = cross.seconds;
+  el("out-cross-curve").value = cross.curve;
+  el("out-cross-mode").value = cross.mode;
+  el("out-cross-image").value = cross.image || "";
+  // The rows under the kind are about a crossing that happens. Greyed rather
+  // than taken away: they are the same rows whatever the kind is, and a
+  // panel that changed height as the list was walked would move the list.
+  const happens = on && cross.kind !== "none";
+  for (const id of ["out-cross-slider", "out-cross-secs", "out-cross-curve",
+                    "out-cross-mode", "out-cross-image", "browse-cross-image"]) {
+    el(id).disabled = !happens;
+  }
+  // What it does to the length of the file, which is the one thing about a
+  // transition that is not visible on screen. See `crate::transition`.
+  el("cross-note").textContent = !on
+    ? t("outset.crossNoJoins")
+    : cross.kind === "none"
+      ? ""
+      : OVERLAPPING.includes(cross.kind)
+        ? t("outset.crossShortens", { secs: fmtSecs(cross.seconds) })
+        : t("outset.crossKeeps");
+}
+
+/// The kinds that put both clips on screen at once, which are the ones that
+/// take their own seconds off the output. The same split the engine makes;
+/// see `Crossing::overlaps`.
+const OVERLAPPING = ["dissolve", "wipe-left", "wipe-right", "wipe-top", "wipe-bottom",
+                     "slide-left", "slide-right", "slide-top", "slide-bottom"];
+
+const fmtSecs = (n) => (Math.round(Number(n) * 10) / 10).toFixed(1);
+
+/// Write one field of the chosen row's crossing.
+function setCrossing(field, value) {
+  const clip = crossClip();
+  if (!clip) return;
+  crossingOf(clip)[field] = value;
+  renderCrossing();
+  renderOutScreen();
+  touch();
+}
+
+/// Both events, and the reason is the drop-downs.
+///
+/// A `<select>` on this screen is a real control with a menu of our own
+/// drawn over it -- the native popup opens off the bottom of the window --
+/// and what that menu raises when a row is picked is `input`, which is what
+/// every other setting here is bound to. A checkbox and a slider raise
+/// `change`. Listening for both costs a second listener and saves the next
+/// control added here from being wired to the wrong one.
+function bindCrossing(id, field, read = (input) => input.value) {
+  const input = el(id);
+  const fire = () => setCrossing(field, read(input));
+  input.addEventListener("input", fire);
+  input.addEventListener("change", fire);
+}
+
+function wireCrossing() {
+  el("out-cross-clip").addEventListener("input", renderCrossing);
+  bindCrossing("out-cross-kind", "kind");
+  bindCrossing("out-cross-curve", "curve");
+  bindCrossing("out-cross-mode", "mode");
+  bindCrossing("out-cross-image", "image");
+  // The slider and the field are two ways of saying the same number, so each
+  // of them writes it and the other is put back by the redraw.
+  const secs = (input) => Math.min(30, Math.max(0.1, Number(input.value) || 1));
+  el("out-cross-slider").addEventListener("input", (e) =>
+    setCrossing("seconds", secs(e.target)));
+  el("out-cross-secs").addEventListener("input", (e) =>
+    setCrossing("seconds", secs(e.target)));
+  el("browse-cross-image").addEventListener("click", async () => {
+    const picked = await dialog.open({
+      multiple: false,
+      filters: [{ name: t("outset.crossImageKind"), extensions: ["png", "jpg", "jpeg", "bmp", "webp"] }],
+    });
+    if (typeof picked === "string") setCrossing("image", picked);
+  });
+  // The reference tool's own two: one answer put on every join, and every
+  // join cleared. A list of twelve episodes wants the same crossing twelve
+  // times, and typing it twelve times is what these are for.
+  el("cross-all").addEventListener("click", () => {
+    const from = crossingOf(crossClip());
+    for (const c of ready().slice(0, -1)) c.after = { ...from };
+    renderCrossing();
+    renderOutScreen();
+    touch();
+  });
+  el("cross-none").addEventListener("click", () => {
+    for (const c of ready()) c.after = null;
+    renderCrossing();
+    renderOutScreen();
+    touch();
+  });
+  el("out-master").addEventListener("input", () => {
+    const picked = Number(el("out-master").value);
+    settings.master = Number.isFinite(picked) ? picked : null;
+    settleOutput();
+    renderOutset();
+    renderOutScreen();
+    touch();
+  });
+}
+
+/// The master picker, and whether the join controls are live at all.
+function renderJoin() {
+  const list = ready();
+  el("row-join").hidden = bdavMode();
+  el("out-join").checked = settings.joinAll;
+  // Nothing to join with one row, and nothing to be master of. The box is
+  // left live all the same -- a list is built up a row at a time, and a box
+  // that could only be ticked once the second row was in would be a box
+  // nobody found.
+  const pick = el("out-master");
+  const chosen = masterClip(list);
+  pick.innerHTML = list
+    .map((c, i) => `<option value="${c.id}">${i + 1}: ${esc(clipLabel(c))}</option>`)
+    .join("");
+  if (chosen) pick.value = String(chosen.id);
+  el("row-master").hidden = !joining() || list.length < 2;
+  renderCrossing();
+}
+
 function renderOutset() {
   lockAudioDetail();
   lockUnwritable();
@@ -4895,6 +5133,7 @@ function renderOutset() {
   fillBitrates();
   paintMode();
   paintNumbering();
+  renderJoin();
   const list = ready();
   const select = el("outset-clip");
   const was = select.value;
@@ -4970,13 +5209,24 @@ function renderOutset() {
     // four fields above are it, and a panel saying the same thing again in
     // grey is a second place to have to keep in agreement with the first.
     marks: chaptersFor(clip).length,
+    // Where this recording lands. A joined run has one output for the
+    // whole list, so every clip's panel names the same file -- which is the
+    // honest answer, and the one somebody would go looking for.
     out: bdavMode()
       ? outDir()
         ? t("outset.discPath", { dir: discDir() }) + imageLine()
         : t("outset.discHere")
-      : outputPath(clip),
+      : joining() && ready().length > 1
+        ? t("outset.joinedInto", { path: joinedPath(), n: ready().length })
+        : outputPath(clip),
+    // A joined run writes no sidecar: the marks of twenty recordings on one
+    // clock is a list this window has no answer for, and one that named
+    // only the first recording's would be worse than none.
     side:
-      settings.keyframes && clip.edit && clip.edit.keyframes.length
+      settings.keyframes
+      && !(joining() && ready().length > 1)
+      && clip.edit
+      && clip.edit.keyframes.length
         ? t("outset.sidecar", {
             path: `${outputPath(clip).replace(/\.[^./\\]*$/, "")}.keyframe`,
           })
@@ -5646,6 +5896,96 @@ el("run-export").addEventListener("click", () => {
   paintExportButton();
 });
 
+/// Write the whole list as one file.
+///
+/// Returns whether it landed. Every row carries the run's state, because
+/// every row is in the file: a list of twelve that failed is twelve rows
+/// that were not written, and one of them showing an error while the other
+/// eleven said nothing would be eleven rows lying about what happened.
+async function writeJoined(list) {
+  const out = joinedPath();
+  const clash = list.find((c) => c.path === out);
+  if (clash) {
+    for (const c of list) c.out = { state: "error", progress: 0, note: t("out.sameName") };
+    renderOutScreen();
+    return false;
+  }
+  const empty = list.find((c) => !rangesOf(c).length);
+  if (empty) {
+    for (const c of list) {
+      c.out = c === empty
+        ? { state: "error", progress: 0, note: t("out.allCut") }
+        : { state: "skipped", progress: 0, note: t("out.skipped") };
+    }
+    renderOutScreen();
+    return false;
+  }
+  const share = await fitShare();
+  // The run is drawn on the first row, because the bar the engine reports
+  // against is tagged with the first recording -- see `export_joined`.
+  writing = list[0];
+  writingTables = false;
+  writingName = nameOf(out);
+  for (const c of list) c.out = { state: "running", progress: 0, note: "0%" };
+  el("out-state").textContent = t("out.writing", { name: writingName });
+  renderOutScreen();
+  await showReencode(list[0], share);
+  sayWhatIsWritten(list[0], out, share);
+  // And over the top of it, where there are crossings: what that line says
+  // is what the *first clip's* ranges cost, and a transition is seconds of
+  // encoding that belong to no clip's ranges at all. Said here rather than
+  // folded into the line above, which is the one every other run shows.
+  const crossings = list.slice(0, -1).filter((c) => c.after && c.after.kind !== "none");
+  if (crossings.length) {
+    const secs = crossings.reduce((n, c) => n + Number(c.after.seconds || 0), 0);
+    el("out-state").textContent = t("out.writingCrossings", {
+      name: writingName,
+      n: crossings.length,
+      secs: fmtSecs(secs),
+    });
+  }
+  if (onShow && onShow.r.segs.length) stageShot(0);
+  const master = masterClip(list);
+  try {
+    await invoke("export_joined", {
+      clips: list.map((c) => ({
+        path: c.path,
+        ranges: rangesOf(c),
+        dropStreams: c.edit ? c.edit.dropStreams || [] : [],
+        dropPids: c.edit ? [] : c.dropPids,
+        // The last row has nothing to give way to, so whatever it carries is
+        // not sent: the engine would read it as a fade to black at the end
+        // of the file, which is a thing to ask for rather than to inherit
+        // from 一括適用.
+        after: c === list[list.length - 1] ? null : c.after,
+      })),
+      master: Math.max(0, list.indexOf(master)),
+      output: out,
+      audioCopy: settings.audio === "copy",
+      audioReencode: settings.audio === "reencode",
+      audioCodec: audioCodecOut(),
+      audioChannels: audioChannelsOut(),
+      audioBitrate: audioBitrateOut(),
+      audioSampleRate: audioRateOut(),
+      audioBits: audioBitsOut(),
+      subtitles: settings.subtitles,
+      dataBroadcast: prefs.get("dataBroadcast") !== false,
+      videoShare: share,
+    });
+    followWrite(1);
+    for (const c of list) c.out = { state: "done", progress: 1, note: t("out.done", { extra: "" }) };
+    note(t("out.joined", { n: list.length, name: nameOf(out) }));
+    return true;
+  } catch (e) {
+    for (const c of list) c.out = { state: "error", progress: 0, note: String(e) };
+    return false;
+  } finally {
+    writing = null;
+    renderOutScreen();
+    paintOutProgress(1);
+  }
+}
+
 async function runExport() {
   if (exporting) return;
   // Nothing to collect from the editor first: it reports every change as it
@@ -5745,6 +6085,13 @@ async function runExport() {
   renderOutScreen();
 
   let done = 0;
+  // **One file, written once.** Everything below this is the same run seen
+  // from the other side: the disc pass is skipped -- a disc holds
+  // recordings, and joining is the one thing it cannot do -- and the
+  // summary, the bar and the folder are the run's either way.
+  if (joining() && list.length > 1) {
+    done = (await writeJoined(list)) ? list.length : 0;
+  } else
   for (const [i, clip] of list.entries()) {
     if (abort) {
       clip.out = { state: "skipped", progress: 0, note: t("out.skipped") };
@@ -6158,6 +6505,11 @@ function settleOutput() {
 function captureProject(settled = outputSettled, forRun = false) {
   const kept = { ...settings };
   if (!forRun && kept.subfolder === filledIn) kept.subfolder = null;
+  // Written down as a position rather than as the row id it is held as: an
+  // id is this session's counting and means nothing in the next one. Null
+  // where nobody has chosen, which is the first row either way.
+  const at = clips.findIndex((c) => c.id === settings.master);
+  kept.master = at < 0 ? null : at;
   return {
     smartcut: PROJECT_VERSION,
     saved: stampISO(),
@@ -6198,6 +6550,10 @@ function captureProject(settled = outputSettled, forRun = false) {
       // cuts, the marks, and where the playhead was left. Null for a row
       // nobody has opened yet, which is not the same as a row cut to nothing.
       edit: c.edit,
+      // What happens where this row gives way to the next, when the list is
+      // being written as one file. Left out where nobody has said, which is
+      // every row of every list that is not being joined.
+      after: c.after && c.after.kind !== "none" ? c.after : undefined,
       // Blocks a detection found that the timeline has not been shown yet.
       // The blocks are not written -- they are beside the recording -- but
       // whether they are still owed to the editor is this list's own
@@ -6256,6 +6612,7 @@ function shapeOf() {
       dropPids: c.dropPids,
       programme: c.programme,
       edit: c.edit,
+      after: c.after,
     })),
   });
 }
@@ -6494,6 +6851,9 @@ async function loadProject(path) {
   // `outputSettled`.
   const said = doc.settings && typeof doc.settings === "object" ? doc.settings : null;
   outputSettled = !!said;
+  // Which row the file says the joined output takes its shape from. See
+  // `captureProject`, which writes it down as a position.
+  let masterAt = null;
   // **Whatever the file does not answer for is the standing answer, never the
   // last project's.** Put back before the file is read rather than only where
   // there is nothing to read: a project holds an output settled by a version
@@ -6518,6 +6878,10 @@ async function loadProject(path) {
     for (const key of Object.keys(settings)) {
       if (key in said) settings[key] = said[key];
     }
+    // Held as a position in the file and as a row id here; the rows do not
+    // exist yet, so the position is kept and turned into an id below.
+    masterAt = Number.isInteger(said.master) ? said.master : null;
+    settings.master = null;
   } else {
     // Nothing to put back, so what this list is written with is the standing
     // answer -- the three above, and whatever is being carried from the last
@@ -6571,6 +6935,10 @@ async function loadProject(path) {
     clips.push(clip);
     taken.push([clip, !!saved.cmPending]);
   }
+  // The rows exist now, so the position the file gave can become the row it
+  // names. A list shorter than the file said -- a recording that has moved
+  // away -- falls through to the first row, which is what no answer means.
+  settings.master = masterAt !== null && clips[masterAt] ? clips[masterAt].id : null;
   projectPath = path;
   tempProject = "";
   // A window opened on a job that has since been pointed at another project

@@ -556,6 +556,54 @@ impl Reencoder {
         })
     }
 
+    /// Point this at another recording's track, keeping everything it has
+    /// written so far.
+    ///
+    /// **What crosses a join is the encoder; what changes is the decoder in
+    /// front of it.** Several recordings can be written into one file, and
+    /// where one of them does not carry the sound the file is declared as,
+    /// its track is decoded and written afresh. The output track is still
+    /// one track: the samples are laid end to end, `fed` counts them from
+    /// the file's own beginning, and a second encoder started at the join
+    /// would number its frames from nought and write the rest of the file
+    /// on top of what is already there.
+    ///
+    /// What is dropped is everything that describes the recording being
+    /// read: the decoder, the rate its samples arrive at, the resampler
+    /// built between that rate and the output's, and the last timestamp
+    /// seen -- which belongs to another file's clock, and against which the
+    /// next recording's opening frames would look like frames already
+    /// taken.
+    ///
+    /// What is kept is everything that describes the output -- the encoder,
+    /// the count, and the samples already decoded and not yet framed.
+    pub fn retune(&mut self, params: ff::codec::Parameters, audio: &AudioInfo) -> Result<()> {
+        self.decoder = ff::codec::context::Context::from_parameters(params)?
+            .decoder()
+            .audio()?;
+        self.last_pts = None;
+        // Built per frame from the shape the decoder hands over, so it
+        // would rebuild itself -- but only when the shape changes, and the
+        // shape can be the same one while the recording behind it is not.
+        self.resampler = None;
+        if self.sample_rate != audio.sample_rate {
+            self.sample_rate = audio.sample_rate;
+            self.resample = (self.out_rate != audio.sample_rate)
+                .then(|| {
+                    ff::software::resampling::Context::get(
+                        PLANAR_F32,
+                        self.layout,
+                        audio.sample_rate,
+                        PLANAR_F32,
+                        self.layout,
+                        self.out_rate,
+                    )
+                })
+                .transpose()?;
+        }
+        Ok(())
+    }
+
     /// What the output stream has to say about itself once this encoder is
     /// the one producing the packets.
     ///
@@ -1056,6 +1104,13 @@ fn frame_shape(
 /// [`crate::cut`]. A header that disagreed with the frame behind it was the
 /// whole of the fault [`settled_shape`] describes -- stereo samples under a
 /// header announcing one channel, twice per seam.
+///
+/// `nth_base` is where this recording's ranges sit in the whole job, and
+/// `of_all` how many there are in it. They are not always `0` and
+/// `windows.len()`: several recordings can be written into one file, and a
+/// fade belongs at a seam -- which the last range of the first recording has
+/// and the last range of the file has not. See [`crate::cut::Reel`].
+#[allow(clippy::too_many_arguments)]
 pub fn boundary_patches(
     src: &Source,
     audio: &AudioInfo,
@@ -1063,6 +1118,8 @@ pub fn boundary_patches(
     bit_rate: usize,
     framing: Option<Framing>,
     fade: f64,
+    nth_base: usize,
+    of_all: usize,
 ) -> Result<HashMap<i64, Patch>> {
     let mut out = HashMap::new();
     if windows.is_empty() {
@@ -1136,7 +1193,7 @@ pub fn boundary_patches(
     const FOREIGN_CAP: f64 = 10.0;
 
     for (nth, &(w0, w1)) in windows.iter().enumerate() {
-        let fades = fades_for(fade, audio.sample_rate, nth, windows.len(), (w0, w1));
+        let fades = fades_for(fade, audio.sample_rate, nth_base + nth, of_all, (w0, w1));
         for (edge, is_head) in [(w0, true), (w1, false)] {
             let fade_reach = if is_head { fades.head } else { fades.tail };
             let at = edge as f64 / rate;

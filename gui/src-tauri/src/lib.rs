@@ -4421,6 +4421,201 @@ async fn export(
     .map_err(|e| e.to_string())?
 }
 
+/// One clip of a list being written into a single file.
+///
+/// What the window sends per clip, which is everything about it that is not
+/// an answer for the whole run: where it is, what is kept of it, which of
+/// its own streams it wants written, and what happens where it gives way to
+/// the clip after it.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct JoinClip {
+    path: String,
+    ranges: Vec<(f64, f64)>,
+    drop_streams: Option<Vec<usize>>,
+    drop_pids: Option<Vec<i32>>,
+    /// The transition that follows this clip, as the screen holds it. See
+    /// [`smartcut_core::transition`].
+    after: Option<Crossing>,
+}
+
+/// A transition as the window states one.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct Crossing {
+    /// The name the engine parses -- `dissolve`, `wipe-left`. Anything it
+    /// does not know is no transition at all, which is what a project file
+    /// written by a later version comes to here.
+    kind: String,
+    seconds: f64,
+    curve: String,
+    mode: String,
+    /// A still laid over the crossing.
+    image: Option<String>,
+}
+
+impl Crossing {
+    fn into_transition(self) -> smartcut_core::transition::Transition {
+        smartcut_core::transition::Transition {
+            kind: smartcut_core::transition::Crossing::parse(&self.kind).unwrap_or_default(),
+            seconds: self.seconds,
+            easing: smartcut_core::transition::Easing::parse(&self.curve, &self.mode),
+            overlay: self.image.filter(|p| !p.is_empty()),
+        }
+    }
+}
+
+/// Write a list of clips out as one file.
+///
+/// The counterpart of [`export`] for a run the output screen is writing as a
+/// single output rather than one per row. Everything that describes the
+/// output is settled once -- the sound, the subtitles, the tables -- and
+/// what is per clip is what the list holds about it.
+///
+/// **The reporting is the one thing that could not be shared.** `export`
+/// tags its fraction with the recording it belongs to, because the output
+/// screen is running through a list and an untagged fraction would move
+/// whichever row was on screen. Here there is one job and one bar, so the
+/// tag is the first clip's -- the row the run is drawn on.
+#[tauri::command]
+#[allow(clippy::too_many_arguments)]
+async fn export_joined(
+    app: tauri::AppHandle,
+    clips: Vec<JoinClip>,
+    master: usize,
+    output: String,
+    audio_reencode: Option<bool>,
+    audio_copy: Option<bool>,
+    audio_codec: Option<String>,
+    audio_channels: Option<u16>,
+    audio_bitrate: Option<usize>,
+    audio_sample_rate: Option<u32>,
+    audio_bits: Option<u8>,
+    audio_es: Option<bool>,
+    subtitles: Option<String>,
+    data_broadcast: Option<bool>,
+    video_share: Option<f64>,
+) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        if clips.is_empty() {
+            return Err("nothing to write: the list is empty".to_string());
+        }
+        let output = local_path(&output)?.to_string_lossy().into_owned();
+        if let Some(dir) = std::path::Path::new(&output)
+            .parent()
+            .filter(|d| !d.as_os_str().is_empty())
+        {
+            std::fs::create_dir_all(dir)
+                .map_err(|e| format!("making {}: {e}", dir.display()))?;
+        }
+        // Every recording opened and planned before the first byte, because
+        // the shape of the output depends on all of them: which sound tracks
+        // are written afresh is an answer over the whole list. See
+        // `smartcut_core::conform`.
+        let mut sources = Vec::with_capacity(clips.len());
+        for clip in &clips {
+            let mut src = scan_cached(&app, &clip.path)?.0;
+            if !src.leading_known {
+                index::refine_leading(
+                    &src.input.url.clone(),
+                    &src.video.clone(),
+                    src.start_time,
+                    &mut src.points,
+                    &clip.ranges,
+                )
+                .map_err(|e| e.to_string())?;
+            }
+            sources.push(src);
+        }
+        let plans: Vec<Vec<smartcut_core::RangePlan>> = sources
+            .iter()
+            .zip(&clips)
+            .map(|(src, clip)| build_plan(src, &clip.ranges))
+            .collect();
+        // Which of them the file takes its shape from, and whose streams it
+        // is declared with. Read off the list before the clips are consumed
+        // below: the tracks the output declares are the master's, and a
+        // stream index means nothing outside the file it came from.
+        let master = master.min(clips.len() - 1);
+        let by_index = clips[master].drop_streams.clone();
+        let by_pid = clips[master].drop_pids.clone();
+        let afters: Vec<smartcut_core::transition::Transition> = clips
+            .into_iter()
+            .map(|c| c.after.map(Crossing::into_transition).unwrap_or_default())
+            .collect();
+        let reels: Vec<smartcut_core::cut::Reel> = sources
+            .iter()
+            .zip(&plans)
+            .zip(afters)
+            .map(|((src, plans), after)| smartcut_core::cut::Reel { src, plans, after })
+            .collect();
+        let whose = reels[0].src.path.clone();
+        let reporter = app.clone();
+        let opts = smartcut_core::CutOptions {
+            audio_mode: if audio_reencode.unwrap_or(false) {
+                smartcut_core::AudioMode::Reencode
+            } else if audio_copy.unwrap_or(false) {
+                smartcut_core::AudioMode::Copy
+            } else {
+                smartcut_core::AudioMode::Smart
+            },
+            audio_codec: audio_codec
+                .as_deref()
+                .and_then(smartcut_core::AudioCodec::parse)
+                .unwrap_or_default(),
+            audio_channels: audio_channels.filter(|&c| c > 0),
+            audio_bit_rate: audio_bitrate.filter(|&b| b > 0),
+            audio_sample_rate: audio_sample_rate.filter(|&r| r > 0),
+            audio_bits: audio_bits.filter(|&b| b > 0),
+            subtitles: match subtitles.as_deref() {
+                Some("beside") => smartcut_core::cut::Subtitles::Beside,
+                Some("sup") => smartcut_core::cut::Subtitles::Sup,
+                _ => smartcut_core::cut::Subtitles::Pgs,
+            },
+            // The master's own, since the master is the reel the output is
+            // declared from and the only one whose stream indices mean
+            // anything to it.
+            drop_streams: streams_to_drop(reels[master].src, by_index, by_pid),
+            data_broadcast,
+            video_share,
+            audio_fade: prefs::audio_fade(),
+            // The planner's own settings, because a transition is planned
+            // inside the engine and what is left of the range it takes from
+            // has to be planned again the way this window plans one. See
+            // `build_plan`.
+            plan: PlanOptions {
+                clean_join: prefs::clean_join(),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        smartcut_core::cut::join_with_progress(
+            &reels,
+            master,
+            &output,
+            &opts,
+            Some(Box::new(move |pass, done, within| {
+                let tables = pass == smartcut_core::cut::Pass::Tables;
+                let _ = reporter.emit("export-progress", (whose.clone(), tables, done, within));
+            })),
+        )
+        .map_err(|e| e.to_string())?;
+
+        if audio_es.unwrap_or(false) {
+            let beside = std::path::Path::new(&output).with_extension("aac");
+            smartcut_core::write_audio_es(
+                &output,
+                &beside.to_string_lossy(),
+                smartcut_core::AacVersion::Auto,
+            )
+            .map_err(|e| e.to_string())?;
+        }
+        Ok(())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
 /// Where one recording is to be written on a disc being built.
 #[derive(Serialize)]
 struct BdavSlot {
@@ -6196,6 +6391,7 @@ pub fn run() {
             set_volume,
             subtitle_at,
             export,
+            export_joined,
             programme,
             series_title,
             bdav_prepare,

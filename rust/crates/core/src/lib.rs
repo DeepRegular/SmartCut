@@ -16,10 +16,12 @@ pub mod audio;
 pub mod bdav;
 pub mod bitstream;
 pub mod blank;
+pub mod blend;
 pub mod carousel;
 pub mod carry;
 pub mod caption;
 pub mod cm;
+pub mod conform;
 pub mod cut;
 pub mod disc;
 pub mod dvd;
@@ -43,6 +45,7 @@ pub mod si;
 pub mod subs;
 pub mod text;
 pub mod thumbs;
+pub mod transition;
 pub mod ttml;
 pub mod udf;
 pub mod udfw;
@@ -66,7 +69,9 @@ pub use cut::{
     AudioCodec, AudioMode, CutOptions, SoundAsIs, SoundChoices,
 };
 pub use index::{ContainerIndex, DiscIndex, IndexSource, PacketScan};
-pub use plan::{plan, plan_on, plan_range, PlanOptions, RangePlan, Segment, SegmentKind};
+pub use plan::{
+    plan, plan_on, plan_range, reencode_range, PlanOptions, RangePlan, Segment, SegmentKind,
+};
 pub use playback_audio::{peaks_at, play_audio, Levels, Volume};
 pub use preview::{
     frame_at, glance, glance_at, glance_run, glance_sweep, play_from, shot_at, shots_at, Pace, Shot,
@@ -138,6 +143,11 @@ pub struct VideoInfo {
     /// Pixel aspect ratio. Broadcast 1440x1080 is not square-pixel.
     pub sample_aspect_ratio: f64,
     pub framing: bitstream::NalFraming,
+    /// What a decoder hands the pictures over as, and what the numbers in
+    /// them mean. Only [`crate::conform`] reads it, and only to answer one
+    /// question: whether two recordings are the same shape of picture. See
+    /// [`PictureShape`].
+    pub shape: PictureShape,
     /// Whether the stream carries 2:3 pulldown, i.e. pictures are shown for
     /// varying numbers of fields. Such a stream is not constant frame rate at
     /// the picture level, whatever its container claims.
@@ -199,6 +209,27 @@ pub struct VideoInfo {
     /// and only a recorder writing its own discs was found to code the two
     /// fields separately. See [`bitstream::is_field_picture`].
     pub field_shape: Option<bitstream::FieldShape>,
+}
+
+/// How the samples of a picture are laid out, and what their numbers mean.
+///
+/// Four fields libavformat states about every video stream and this program
+/// had no reason to keep until clips began to be written into one file
+/// beside each other. A copy carries the pictures as they were coded, and
+/// the output declares one shape for the lot -- so two clips that disagree
+/// about any of these cannot both be copied into it, whatever else they
+/// have in common. See [`crate::conform`].
+///
+/// Held as the plain integers the container states, not as names: what is
+/// asked of them is whether two are the same, and a name would be one more
+/// table to keep in step with libavutil.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct PictureShape {
+    /// `AVPixelFormat` -- 4:2:0 against 4:2:2, eight bits against ten.
+    pub pix_fmt: i32,
+    pub primaries: i32,
+    pub transfer: i32,
+    pub matrix: i32,
 }
 
 /// Field orders that mean "interlaced" (AV_FIELD_TT/BB/TB/BT).
@@ -1280,7 +1311,7 @@ fn outline_of(path: &str) -> Result<(Outline, input::Demux)> {
     let time_base = f64::from(stream.time_base());
     let params = stream.parameters();
     let codec = format!("{:?}", params.id()).to_lowercase();
-    let (width, height, has_b_frames, field_order, sample_aspect_ratio, extradata) = unsafe {
+    let (width, height, has_b_frames, field_order, sample_aspect_ratio, shape, extradata) = unsafe {
         let p = params.as_ptr();
         let extra = if (*p).extradata.is_null() || (*p).extradata_size <= 0 {
             Vec::new()
@@ -1297,6 +1328,17 @@ fn outline_of(path: &str) -> Result<(Outline, input::Demux)> {
                 sar.num as f64 / sar.den as f64
             } else {
                 1.0
+            },
+            // codecpar carries the pixel format as a plain int, and the
+            // three colour fields beside it as their own enums. Read here
+            // with the rest of what the container states, rather than by
+            // opening a decoder: nothing below needs a picture to have been
+            // decoded to know what shape the pictures are.
+            PictureShape {
+                pix_fmt: (*p).format,
+                primaries: (*p).color_primaries as i32,
+                transfer: (*p).color_trc as i32,
+                matrix: (*p).color_space as i32,
             },
             extra,
         )
@@ -1653,6 +1695,7 @@ fn outline_of(path: &str) -> Result<(Outline, input::Demux)> {
         sample_aspect_ratio,
         framing,
         field_order,
+        shape,
         pulldown: false, // the index source reports this, when it can
         // **The container can see one half of this for itself.** A recording
         // whose pictures average out faster than the rate it declares has

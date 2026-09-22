@@ -385,6 +385,96 @@
             <span data-i18n="outset.gauge">ディスクの使用量:</span>
             <div class="gauge" id="disc-gauge"></div>
           </div>
+          <!-- What happens where one clip gives way to the next. On screen
+               only while the list is being written as one file: with a file
+               per row there is no join for anything to happen at.
+               
+               Here rather than in the file settings panel because this is
+               the panel file output leaves empty -- the fields above it
+               describe a disc -- and because these six rows belong together
+               as one question about one clip, which is what a panel is for. -->
+          <div id="join-panel" hidden>
+            <div class="panel-head" data-i18n="outset.crossHead">継ぎ目の効果</div>
+            <!-- Which join is being described. A transition belongs to the
+                 clip that gives way, so the list is every row but the last:
+                 the last one gives way to nothing. -->
+            <div class="row">
+              <span data-i18n="outset.crossClip">対象クリップ:</span>
+              <span class="drop"><select id="out-cross-clip"></select></span>
+            </div>
+            <div class="row">
+              <span data-i18n="outset.crossKind">効果:</span>
+              <span class="drop">
+                <select id="out-cross-kind">
+                  <option value="none" selected data-i18n="cross.none">なし</option>
+                  <option value="fade-black" data-i18n="cross.fadeBlack">フェード（黒）</option>
+                  <option value="fade-white" data-i18n="cross.fadeWhite">フェード（白）</option>
+                  <option value="dissolve" data-i18n="cross.dissolve">ディゾルブ</option>
+                  <option value="wipe-left" data-i18n="cross.wipeLeft">ワイプ（左から）</option>
+                  <option value="wipe-right" data-i18n="cross.wipeRight">ワイプ（右から）</option>
+                  <option value="wipe-top" data-i18n="cross.wipeTop">ワイプ（上から）</option>
+                  <option value="wipe-bottom" data-i18n="cross.wipeBottom">ワイプ（下から）</option>
+                  <option value="slide-left" data-i18n="cross.slideLeft">スライド（左から）</option>
+                  <option value="slide-right" data-i18n="cross.slideRight">スライド（右から）</option>
+                  <option value="slide-top" data-i18n="cross.slideTop">スライド（上から）</option>
+                  <option value="slide-bottom" data-i18n="cross.slideBottom">スライド（下から）</option>
+                </select>
+              </span>
+            </div>
+            <!-- A slider and a field over the same number, because the two
+                 answer different questions: the slider is for finding a
+                 length by eye and the field is for stating one. The ceiling
+                 is thirty seconds, which is the reference tool's and is well
+                 past anything a join between two programmes wants. -->
+            <div class="row" id="row-cross-secs">
+              <span data-i18n="outset.crossSecs">適用時間:</span>
+              <input id="out-cross-slider" type="range" min="0.1" max="30" step="0.1" value="1" />
+              <input id="out-cross-secs" type="number" min="0.1" max="30" step="0.1" value="1" />
+              <span class="lbl" data-i18n="outset.seconds">秒</span>
+            </div>
+            <div class="row" id="row-cross-ease">
+              <span data-i18n="outset.crossEase">イージング:</span>
+              <span class="drop">
+                <select id="out-cross-curve">
+                  <option value="none" selected data-i18n="ease.none">無し</option>
+                  <option value="back" data-i18n="ease.back">Back</option>
+                  <option value="bounce" data-i18n="ease.bounce">Bounce</option>
+                  <option value="circle" data-i18n="ease.circle">Circle</option>
+                  <option value="elastic" data-i18n="ease.elastic">Elastic</option>
+                  <option value="exponential" data-i18n="ease.exponential">Exponential</option>
+                  <option value="power" data-i18n="ease.power">Power</option>
+                  <option value="sine" data-i18n="ease.sine">Sine</option>
+                  <option value="quadratic" data-i18n="ease.quadratic">Quadratic</option>
+                  <option value="cubic" data-i18n="ease.cubic">Cubic</option>
+                  <option value="quartic" data-i18n="ease.quartic">Quartic</option>
+                  <option value="quintic" data-i18n="ease.quintic">Quintic</option>
+                </select>
+              </span>
+              <span class="drop">
+                <select id="out-cross-mode">
+                  <option value="in" selected data-i18n="ease.in">イン</option>
+                  <option value="out" data-i18n="ease.out">アウト</option>
+                  <option value="in-out" data-i18n="ease.inOut">イン-アウト</option>
+                  <option value="out-in" data-i18n="ease.outIn">アウト-イン</option>
+                </select>
+              </span>
+            </div>
+            <!-- A still over the crossing. Only here, and the panel says why:
+                 the frames a transition covers are being written afresh
+                 anyway, so an image over them costs the composite and
+                 nothing else. -->
+            <div class="row" id="row-cross-image">
+              <span data-i18n="outset.crossImage">重ねる画像:</span>
+              <input id="out-cross-image" type="text" data-i18n-ph="outset.crossImageNone" />
+              <button id="browse-cross-image" class="mini" data-i18n="outset.browse">参照</button>
+            </div>
+            <div class="row" id="row-cross-all">
+              <span></span>
+              <button id="cross-all" class="mini" data-i18n="outset.crossAll">すべての継ぎ目に適用</button>
+              <button id="cross-none" class="mini" data-i18n="outset.crossNone">すべて解除</button>
+            </div>
+            <span class="dim" id="cross-note"></span>
+          </div>
           <pre id="outset-format" class="format" data-i18n="outset.noClips"></pre>
         </div>
 
@@ -431,6 +521,22 @@
                 <option value="3">3</option>
                 <option value="4">4</option>
               </select>
+            </span>
+          </div>
+          <!-- What the list comes out as: a file per row, or one file. Under
+               the naming rows because that is what it changes about them --
+               a joined run is one name, so the prefix and the numbering
+               describe the one file rather than twenty. The master beside
+               it, because the two are one question: a file made of several
+               recordings has to be one shape, and that is the row it takes
+               it from. -->
+          <div class="row" id="row-join">
+            <span data-i18n="outset.join">結合:</span>
+            <label class="opt"><input id="out-join" type="checkbox" />
+              <span data-i18n="outset.joinAll">リストを1つのファイルにまとめる</span></label>
+            <span class="seq" id="row-master">
+              <span class="lbl" data-i18n="outset.master">基準クリップ:</span>
+              <span class="drop"><select id="out-master"></select></span>
             </span>
           </div>
           <div class="row" id="row-container">

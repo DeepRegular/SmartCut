@@ -49,6 +49,8 @@ A project saves **the things you decided**:
   found there: the commercial blocks, and the black, white and silent
   stretches. The bands under the timeline come back with the project
 - which tracks you chose to write
+- whether the list is written as one file, which clip is the master, and
+  what happens at each join between two clips
 - the programme names and chapters read from a disc, and what a disc written
   from the list will say about each recording — the name, the channel, when it
   was recorded and what it was about, including anything typed over

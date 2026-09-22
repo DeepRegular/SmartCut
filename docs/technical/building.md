@@ -86,6 +86,7 @@ bash tests/run_vc1_tests.sh           # the VC-1 encoder, put through a decoder 
 bash tests/run_vp9_av1_tests.sh       # VP9 and AV1: joined, and still the source's bytes 5
 bash tests/run_vfr_tests.sh           # variable rate, both ways round                   8
 bash tests/run_transrate_tests.sh    # fitting a disc: the identity, the size, the cost  15
+bash tests/run_join_tests.sh          # several recordings into one file, and the crossings 16
 ```
 
 **Every suite passes whole.** Anything that fails is a regression.

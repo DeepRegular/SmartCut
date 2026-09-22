@@ -1391,6 +1391,36 @@ framing and PID numbering, which is not what [the tables put back after
 muxing](broadcast-ts.md) describe. Choosing M2TS explicitly still gets one,
 and says that the tables are being left to the muxer. See [Reading a disc](disc.md).
 
+**A joined run takes the first row's name.** A file made of the whole list is the
+list, and the list already has a name at the top of it: the first row's, prefix and
+number and all. A name of its own would be a second thing to think of for a run whose
+whole point is that there is one output rather than twenty -- and the subfolder still
+does its work, so twelve episodes joined into one land in the folder the twelve would
+have landed in.
+
+**The join is a box on the output settings screen, not a screen of its own.** What it
+changes is what the list comes out *as*, which is the question that screen answers, and
+it changes the meaning of the three rows above it rather than adding a stage: with it
+ticked the prefix and the numbering describe one file instead of twenty. Its master
+picker sits on the same row, because a file made of several recordings and the shape it
+takes are one question asked twice.
+
+**The transitions go in the panel file output leaves empty.** The left panel of that
+screen is the disc's: the programme name, the channel, the broadcast time, the chapter
+count. Written as files there is nothing in it but the format summary, and a joined run
+has six rows about one join to put somewhere -- which clip, which effect, how long,
+which easing, what image, and the pair of buttons that put one answer on every join. Six
+rows in the file settings panel would push the container and the sound off the bottom of
+the window; six rows in the panel that is otherwise empty cost nothing.
+
+**A transition belongs to the clip that gives way**, which is [the reference tool's own
+arrangement](joining.md#transitions) and the only one that reads in the order the file is
+written. So the picker lists every row but the last, and the last row's own setting --
+which the reference tool reads as a fade to black at the end -- is not inherited from
+"apply to every join": the window sends nothing for the last row, because a fade at the
+end of the file is a thing to ask for rather than to be given by a button that was about
+the joins.
+
 **Two rows that would be written to the same file are numbered.** The list already
 numbered the copies of one recording; two recordings of the same programme in different
 folders share a name too, and every recording read off a disc is called `00001`. What is

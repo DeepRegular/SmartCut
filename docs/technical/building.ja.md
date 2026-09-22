@@ -87,6 +87,7 @@ bash tests/run_vc1_tests.sh           # VC-1 エンコーダをデコーダに�
 bash tests/run_vp9_av1_tests.sh       # VP9 と AV1 を継いで、録画のバイトのままか        5
 bash tests/run_vfr_tests.sh           # 保持されたフレームが保持されたままか、速い差し込みが残るか  8
 bash tests/run_transrate_tests.sh    # 容量に合わせる。同一性・サイズ・代償         15
+bash tests/run_join_tests.sh          # 複数の録画を 1 ファイルに。継ぎ目の効果も      16
 ```
 
 **どのスイートも全件通るのが正常である。** 落ちるものがあれば回帰である。

@@ -1,5 +1,5 @@
 use anyhow::{bail, Context, Result};
-use smartcut_core::{cut, index, plan_on, CutOptions, PlanOptions};
+use smartcut_core::{index, plan_on, CutOptions, PlanOptions};
 
 /// HH:MM:SS.mmm.
 ///
@@ -234,10 +234,33 @@ fn usage() -> String {
      [--drop-stream INDEX]... [--drop-subpicture ID]... \
      [--subtitles pgs|beside|sup] [--tables partial|broadcast|muxer] [--no-open-gop] \
      [--clean-joins] [--no-data-broadcast] [--audio-fade SECONDS] \
-     [--vc1-quant 3..31] [--title N] [-o OUTPUT | --bdav FOLDER]\n\
+     [--vc1-quant 3..31] [--title N] [--join RECORDING]... [--master N] \
+     [--transition KIND] [--transition-seconds S] [--transition-easing C[:M]] \
+     [--transition-image FILE] \
+     [-o OUTPUT | --bdav FOLDER]\n\
      <input> is a recording, or a disc -- a BDAV, BDMV or VIDEO_TS folder, \
      or an .iso of one -- whose recordings are listed when no --title \
      is given\n\
+     --join names another recording to write into the same output after \
+     this one, and may be given more than once; the ranges asked for by \
+     --keep and --cut belong to the first recording, and a joined one is \
+     written whole. --master says which of them the output takes its \
+     shape from -- its frame size, rate and codec, its sound tracks and \
+     its tables -- counting the first as 1; a recording that is not that \
+     shape is written afresh to fit it\n\
+     --transition says what happens at each join between two clips: \
+     none, fade-black, fade-white, dissolve, wipe-left|right|top|bottom \
+     or slide-left|right|top|bottom, over --transition-seconds and shaped \
+     by --transition-easing CURVE[:in|out|in-out|out-in]. A fade takes half \
+     its time from each side and the output keeps its length; every other \
+     kind has both clips on screen at once and the output comes out that \
+     much shorter. Every frame it covers is written afresh -- a transition \
+     is pictures that are in neither recording -- and the sound is not \
+     mixed: the clip before plays through the crossing and the one after \
+     starts where it ends. --transition-image lays a still over the \
+     crossing -- a title, a card -- coming up and going down with it; the \
+     frames it covers are being written afresh anyway, which is why it is \
+     offered there and nowhere else\n\
      --clean-joins spends up to two seconds of re-encoding at the start \
      of each range to reach an entry point the copy can be spliced onto \
      without a picture coming out of the decoder in the wrong order; \
@@ -285,6 +308,19 @@ fn main() -> Result<()> {
     let mut input = None;
     let mut keeps: Vec<(f64, f64)> = Vec::new();
     let mut cuts: Vec<(f64, f64)> = Vec::new();
+    // Recordings written into the same output after the first, in the order
+    // they are named. See `smartcut_core::cut::Reel`.
+    let mut joined: Vec<String> = Vec::new();
+    // Which of them the file takes its shape from, counted from nought here
+    // and from one on the command line.
+    let mut master = 0usize;
+    // What happens at every join between two of them. One setting for the
+    // whole list rather than one per join: a command line naming a
+    // transition per clip would be a project file with a worse syntax.
+    let mut crossing = smartcut_core::transition::Crossing::None;
+    let mut crossing_secs = 1.0f64;
+    let mut easing = smartcut_core::transition::Easing::default();
+    let mut crossing_image: Option<String> = None;
     let mut allow_open_gop = true;
     let mut clean_join = false;
     let mut output: Option<String> = None;
@@ -367,6 +403,51 @@ fn main() -> Result<()> {
             "--cut" => {
                 i += 1;
                 cuts.push(parse_range(args.get(i).context("--cut needs a range")?)?);
+            }
+            "--join" => {
+                i += 1;
+                joined.push(args.get(i).context("--join needs a recording")?.clone());
+            }
+            "--master" => {
+                i += 1;
+                let v = args.get(i).context("--master needs a number")?;
+                master = v
+                    .parse::<usize>()
+                    .ok()
+                    .filter(|&n| n >= 1)
+                    .with_context(|| format!("--master counts from 1, got {v:?}"))?
+                    - 1;
+            }
+            "--transition" => {
+                i += 1;
+                let v = args.get(i).context("--transition needs a name")?;
+                crossing = smartcut_core::transition::Crossing::parse(v)
+                    .with_context(|| format!("--transition does not know {v:?}"))?;
+            }
+            "--transition-seconds" => {
+                i += 1;
+                let v = args.get(i).context("--transition-seconds needs a number")?;
+                crossing_secs = v
+                    .parse::<f64>()
+                    .ok()
+                    .filter(|s| *s > 0.0 && *s <= smartcut_core::transition::LONGEST)
+                    .with_context(|| {
+                        format!(
+                            "--transition-seconds wants 0 to {}, got {v:?}",
+                            smartcut_core::transition::LONGEST
+                        )
+                    })?;
+            }
+            "--transition-image" => {
+                i += 1;
+                crossing_image =
+                    Some(args.get(i).context("--transition-image needs a file")?.clone());
+            }
+            "--transition-easing" => {
+                i += 1;
+                let v = args.get(i).context("--transition-easing needs a curve")?;
+                let (curve, mode) = v.split_once(':').unwrap_or((v.as_str(), "in"));
+                easing = smartcut_core::transition::Easing::parse(curve, mode);
             }
             "--no-open-gop" => allow_open_gop = false,
             "--clean-joins" => clean_join = true,
@@ -1538,9 +1619,86 @@ fn main() -> Result<()> {
             (false, _) => "",
         },
     );
-    cut(
-        &src,
-        &plans,
+    // The recordings written after this one, each taken whole. What --keep
+    // and --cut name is a range of the first; a command line that gave every
+    // file its own ranges would be a project file with a worse syntax, and
+    // the window is where a list with cuts in it belongs.
+    let mut joined_src: Vec<smartcut_core::Source> = Vec::new();
+    for path in &joined {
+        let at = smartcut_core::netpath::resolve(path)?
+            .to_string_lossy()
+            .into_owned();
+        let mut also = match smartcut_core::scan_with(&at, index_source.as_ref()) {
+            Ok(s) => s,
+            Err(_) => smartcut_core::scan_with(&at, &index::ContainerIndex)
+                .or_else(|_| smartcut_core::scan_with(&at, &index::PacketScan))?,
+        };
+        let whole = vec![(0.0, also.duration)];
+        if !also.leading_known {
+            index::refine_leading(
+                &also.input.url.clone(),
+                &also.video.clone(),
+                also.start_time,
+                &mut also.points,
+                &whole,
+            )?;
+        }
+        println!(
+            "join  : {}  {} {}x{} {:.3}fps  dur={:.3}s",
+            also.path,
+            also.video.codec,
+            also.video.width,
+            also.video.height,
+            also.video.frame_rate,
+            also.duration,
+        );
+        joined_src.push(also);
+    }
+    let joined_plans: Vec<Vec<smartcut_core::RangePlan>> = joined_src
+        .iter()
+        .map(|s| plan_on(s, &[(0.0, s.duration)], &opts))
+        .collect();
+    // On every reel but the last: a transition belongs to the clip that
+    // gives way, and the last one gives way to nothing. The window is where
+    // a fade at the end of the file is asked for.
+    let between = smartcut_core::transition::Transition {
+        kind: crossing,
+        seconds: crossing_secs,
+        easing,
+        overlay: crossing_image,
+    };
+    let mut reels = vec![smartcut_core::cut::Reel {
+        src: &src,
+        plans: &plans,
+        after: between.clone(),
+    }];
+    for (s, p) in joined_src.iter().zip(&joined_plans) {
+        reels.push(smartcut_core::cut::Reel {
+            src: s,
+            plans: p,
+            after: between.clone(),
+        });
+    }
+    if let Some(last) = reels.last_mut() {
+        last.after = Default::default();
+    }
+    if between.happens() && reels.len() > 1 {
+        println!(
+            "        {} between the clips, {:.2}s",
+            between.kind.as_str(),
+            between.seconds,
+        );
+    }
+    if reels.len() > 1 {
+        println!(
+            "        {} recording(s) into one file, shaped like {}",
+            reels.len(),
+            reels[master.min(reels.len() - 1)].src.path,
+        );
+    }
+    smartcut_core::cut::join(
+        &reels,
+        master,
         &out,
         &CutOptions {
             audio_mode,
@@ -1558,6 +1716,7 @@ fn main() -> Result<()> {
             vc1_quant,
             video_share,
             audio_fade,
+            plan: opts.clone(),
             ..Default::default()
         },
     )?;

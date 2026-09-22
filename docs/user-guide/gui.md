@@ -815,6 +815,8 @@ What is set on either tab stays there when you switch.
 | **Subfolder** | A folder of that name under the output folder, which is where the run writes. Offered where there is more than one file. The name is filled in the first time you look: the disc's name, or the project's, or else today's date. Emptied, the run writes straight into the folder above. **A folder of that name already there gets a branch number** — `night`, then `night-2`, `night-3` — so a second run never lands on the first one's files. The field keeps the name you gave; `already there → night-2` beside it says where the run will actually write |
 | **Filename prefix** | `cut_` by default, in front of the name. What it starts as is a [preference](#output-settings) |
 | **Number** | Puts the row's number in the list behind the prefix, in 2 to 4 digits. **On by default**, so `cut_01_recording.ts`; turned off, `cut_recording.ts`. For a list whose order means something and a folder that sorts by name |
+| **Join** | `Write the list as one file`. Off, the run writes one file per row, which is what it has always done. On, the whole list becomes a single output, in the order the rows are in, named after the first row. See [Joining the list into one file](#joining-the-list-into-one-file) |
+| **Master clip** | Beside the box, and only while it is ticked. Which row the joined file takes its shape from: its frame size, its rate, its codec, its sound tracks |
 | **Container** | The file format. `Same as the input`, or a specific one. A container that cannot hold the recordings in the list is greyed out (see [Why some choices are greyed out](#why-some-choices-are-greyed-out)) |
 | **Audio** | `Smart rendering (default)` / `Copy through` / `Re-encode everything` |
 | **Audio codec** | `Same as the input`, or AAC, AC-3, DTS, linear PCM |
@@ -863,6 +865,86 @@ is going on to be edited further, there is no second generation of loss.
 **Audio that came off a disc.** Blu-ray LPCM is smart rendered, the same as AAC.
 DTS-HD and TrueHD are lossless, so no mode rebuilds a frame of either: they are
 copied whichever mode is set, boundaries and all, and SmartCut says so.
+
+### Joining the list into one file
+
+Tick **Write the list as one file** and the run stops being one output per row.
+The whole list is written into a single file, in the order the rows are in and
+under the first row's name — two halves of a film, twelve episodes, the same
+broadcast recorded twice off two tuners.
+
+Everything that can be copied is still copied. Joining twenty recordings costs
+what cutting twenty of them costs, and each of them is still cut where you cut
+it: a list with commercials taken out of every row comes out as one file with
+all of them gone.
+
+**The master clip is what the file is shaped like.** A file has one answer for
+how big its pictures are, how often they come and what they are coded as, and a
+list of recordings has as many answers as it has rows. So one row supplies them
+all, and the picker beside the box is where you say which. The first row is the
+answer if you say nothing.
+
+A row that matches the master is smart-rendered exactly as it would be on its
+own. **A row that does not is decoded and written afresh to fit** — another
+size is scaled, another frame rate is converted by holding or passing over
+pictures, another sound is re-encoded. Only that row. The output screen says
+which rows and why before it writes anything:
+
+```
+note: holiday.mp4 is not the shape of episode01.ts, so its pictures and its
+sound are written afresh to fit it -- frame size: 1440x1080 vs 1920x1080;
+frame rate: 29.97 vs 25; channels: 2 vs 6.
+```
+
+Three things a joined run does differently, all for the same reason — the file
+has one of each of them:
+
+| | |
+|---|---|
+| **Sound tracks** | The master's. A row with fewer carries silence on the ones it has not got; a row with more has the spare ones left out |
+| **The subtitles a disc draws** | The master's only. A display set puts something on screen and a later one takes it off, and two recordings cannot share one screen |
+| **Programme information** | The master's. The tables a Japanese broadcast carries describe the master's programme, which is the one the file is named after |
+
+A BDAV disc is never joined: what a disc holds is recordings, each with its own
+entry in the index, and a disc of one recording made of twenty is a disc that
+has lost nineteen names. The box is not on screen in BDAV mode.
+
+### Transitions between the clips
+
+With the list being joined, the **Between the clips** panel appears at the top
+of the output settings screen.
+
+![The transition settings](../images/usage-cross.png)
+
+| Field | |
+|---|---|
+| **After clip** | Which join is being described. A transition belongs to the clip that gives way, so the list is every row but the last |
+| **Effect** | `None`, a fade through black or white, a dissolve, or a wipe or slide from any of the four sides |
+| **Duration** | Up to thirty seconds, by the slider or typed |
+| **Easing** | How fast it runs at each point of itself: twelve curves, each in In, Out, In-out or Out-in. `None` is a straight line |
+| **Image over it** | A still drawn over the crossing — a title, a card. It comes up as the crossing starts and goes down as it ends |
+| **Apply to every join** | Puts the settings above on every join in the list. Twelve episodes want the same crossing twelve times |
+| **Clear them all** | Takes every transition off |
+
+**The length of the file depends on which kind you pick**, and the line under
+the panel says which you are getting:
+
+- A **fade** takes half its time from the clip before and half from the clip
+  after, so the file is as long as it would have been without one.
+- A **dissolve, wipe or slide** has both clips on screen at once for the whole
+  of it, so the file comes out that many seconds shorter at each join.
+
+**A transition is the one thing here that is not smart rendering.** It asks for
+pictures that are in neither recording — a frame half of one and half of the
+other — so every frame it covers is written afresh. Two seconds is two seconds
+of encoding per join and nothing anywhere else, which is why it is offered at
+the joins and nowhere else.
+
+The sound is not mixed across a crossing. The clip before plays through it and
+the clip after starts where it ends, which keeps both of them in step with
+their own pictures. If the change is abrupt, the seam fade in
+[preferences](#output-settings) takes the sound down into the join and brings
+it back out.
 
 ### Why some choices are greyed out
 

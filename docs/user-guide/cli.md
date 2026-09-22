@@ -51,6 +51,49 @@ smartcut input.ts --cut 8.0-20.0 --bdav ~/disc  # onto a disc instead of a file
 | `--drop-stream INDEX` | Leave one of the recording's streams out of the output. Repeatable. The same thing the cut editor's **Tracks** menu does |
 | `--title N` | Which recording on a disc (a folder or an `.iso`) to open. Part of the programme's name works in place of the number. **Left out, it lists what is on the disc and stops** |
 
+## Joining several recordings
+
+| Option | Meaning |
+|---|---|
+| `--join RECORDING` | Another recording, written into the same output after this one. **Repeatable**, and they go in the order they are named |
+| `--master N` | Which of them the output takes its shape from — frame size, rate, codec, sound tracks, tables. Counting the first as 1. **Left out, it is the first** |
+
+`--keep` and `--cut` belong to the first recording; a joined one is written
+whole. A command line giving every file its own ranges would be a project file
+with a worse syntax, and the window is where a list with cuts in it belongs.
+
+```bash
+smartcut part1.ts --join part2.ts --join part3.ts -o whole.ts
+```
+
+A recording that is not the master's shape is decoded and written afresh to
+fit it — scaled, rate-converted, re-encoded — and the run says which and why
+before it writes a byte. Everything that matches is smart-rendered as usual.
+
+## Transitions at the joins
+
+| Option | Meaning |
+|---|---|
+| `--transition KIND` | `none`, `fade-black`, `fade-white`, `dissolve`, `wipe-left\|right\|top\|bottom`, `slide-left\|right\|top\|bottom`. Applied at **every** join between two clips |
+| `--transition-seconds S` | How long it runs. Up to 30 |
+| `--transition-easing C[:M]` | The curve and the end it is applied at: `none`, `back`, `bounce`, `circle`, `elastic`, `exponential`, `power`, `sine`, `quadratic`, `cubic`, `quartic`, `quintic`, each with `:in`, `:out`, `:in-out` or `:out-in`. Default `none:in`, which is a straight line |
+| `--transition-image FILE` | A still laid over each crossing, coming up and going down with it |
+
+```bash
+smartcut a.ts --join b.ts --transition dissolve --transition-seconds 2 \
+  --transition-easing sine:in-out -o joined.ts
+```
+
+**A fade keeps the output's length** — it takes half its time from each side.
+**Everything else takes its own seconds off** the output, because both clips
+are on screen at once for the whole of it.
+
+Every frame a transition covers is written afresh: it is pictures that are in
+neither recording. Two seconds is two seconds of encoding per join and nothing
+anywhere else. The sound is not mixed — the clip before plays through the
+crossing and the clip after starts where it ends — so `--audio-fade` is what
+softens the change if it needs softening.
+
 ## Audio
 
 By default the sound is treated like the video: only **the few frames a join

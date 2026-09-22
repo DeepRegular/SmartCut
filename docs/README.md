@@ -41,6 +41,7 @@ reasons why "just cut on GOP boundaries and concatenate" does not work.
 | [Validation](technical/validation.md) | Frame-hash verification results, testing against real broadcast recordings, and the known limits |
 | [Audio](technical/audio.md) | Smart rendering applied to audio, boundary error, MPEG-2 AAC framing, downmixing, choosing the output codec, and multi-track broadcasts |
 | [Broadcast TS](technical/broadcast-ts.md) | PID layout, the recording's own tables, captions and programme information, partial transport streams, ADTS, L-SMASH and DGIndex |
+| [Joining, the master clip, and transitions](technical/joining.md) | Writing several recordings into one file: what the master supplies, what happens to a clip that does not match it, and why a transition is the one thing here that cannot be smart rendered |
 | [Commercial detection internals](technical/cm-detection.md) | The detector's scoring, logo detection, subtitle resets, and how the accuracy was measured |
 
 ### Discs

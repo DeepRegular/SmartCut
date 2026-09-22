@@ -184,6 +184,14 @@ pub enum Subtitles {
 
 #[derive(Debug, Clone, Default)]
 pub struct CutOptions {
+    /// How the caller plans a range.
+    ///
+    /// Carried because a transition is planned *here*: the stretch it
+    /// covers has to come off the end of a range and be written afresh, and
+    /// what is left of that range has to be planned again against the new
+    /// bound. Nothing else reads it, and a run with no transition in it
+    /// never looks. See [`crate::transition`].
+    pub plan: crate::plan::PlanOptions,
     /// Reorder depth used when deriving DTS from decode order.
     /// `None` takes the source stream's own depth.
     pub reorder_depth: Option<i64>,
@@ -350,9 +358,13 @@ struct Emitted {
 /// the output time its video starts at, which is what keeps A/V sync from
 /// drifting when several ranges are joined: an error at one seam cannot
 /// accumulate into the next.
-struct AudioCtx {
+struct AudioCtx<'a> {
     /// Which of the output's sound tracks this is.
     track: usize,
+    /// The reel's own track that is being written into it, which is not the
+    /// track the output was declared from once more than one recording is
+    /// being written. See [`Threads`].
+    info: &'a crate::AudioInfo,
     in_index: usize,
     in_tb: f64,
     /// Seconds to add to a source time to reach the output timeline.
@@ -414,6 +426,41 @@ struct GraphicsCtx {
     in_index: usize,
     in_tb: f64,
     offset: f64,
+}
+
+/// Which of a reel's own streams stands in for each of the output's tracks.
+///
+/// The output's tracks are the master's, declared once and for good. A reel
+/// written after it carries streams of its own, on its own indices, in its
+/// own time base -- so every range needs telling which of them is the track
+/// it is writing into. **Positional, and deliberately.** There is nothing
+/// else to go on: a PID means one thing in one broadcast and another in the
+/// next, a stream index is something libavformat makes up per file, and a
+/// language is missing more often than not. Two recordings of the same
+/// broadcast carry their tracks in the same order, which is the case this is
+/// for.
+///
+/// The master's own threads are the streams it was declared from, so a cut
+/// of one recording goes through this unchanged.
+#[derive(Clone)]
+struct Threads {
+    /// One per output sound track. `None` where this reel has no track to
+    /// put there, which leaves that track a gap for the reel's length.
+    audio: Vec<Option<crate::AudioInfo>>,
+    /// One per output caption track, on the same terms.
+    captions: Vec<Option<crate::CaptionInfo>>,
+    /// **Only the master's disc subtitles travel.**
+    ///
+    /// Not a limit that saves work, a limit that keeps an answer honest.
+    /// What a graphics track carries is not packets but the state of a
+    /// plane: a display set puts something on screen and a later one takes
+    /// it off, the cut has to replay whatever was standing when a range
+    /// opens and take it down when the range ends, and a DVD's are converted
+    /// against a palette read off the disc they came from. None of that
+    /// composes across files -- two reels would be two planes and two
+    /// palettes written onto one track. So the master's are carried and the
+    /// rest are said out loud.
+    graphics: bool,
 }
 
 /// What a segment contributed, so the next one can be placed after it.
@@ -484,7 +531,7 @@ struct SegmentCtx<'a> {
     /// Set where the recording's NALs carry lengths and the container being
     /// written wants start codes. See [`Unframe`].
     unframe: Option<&'a Unframe>,
-    audio: &'a [AudioCtx],
+    audio: &'a [AudioCtx<'a>],
     captions: &'a [CaptionCtx],
     graphics: &'a [GraphicsCtx],
     /// How far this range moved, which is what a subtitle written beside the
@@ -633,8 +680,11 @@ struct AudioTrack {
     /// 90 kHz whatever it is handed.
     out_index: usize,
     out_tb: f64,
-    /// Where it came from.
-    in_index: usize,
+    /// The master's own track, which is what the output's stream was
+    /// declared from and what its messages name it by. **Not where a given
+    /// packet came from**: a reel written after the master carries its own
+    /// track on its own index, and which one stands in for this is settled
+    /// per reel. See [`Threads`].
     info: crate::AudioInfo,
     /// The rate the track is written at -- the recording's own unless one
     /// was asked for. What a re-encoded packet's sample count is turned into
@@ -682,12 +732,10 @@ struct AudioTrack {
 struct CaptionTrack {
     out_index: usize,
     out_tb: f64,
-    in_index: usize,
-    in_tb: f64,
     /// Whether the times are inside the documents rather than on the
-    /// packets, and where they are counted from. See [`crate::ttml`].
+    /// packets. Where they are counted *from* is the reel's, not this
+    /// track's, and rides on the per-range context. See [`crate::ttml`].
     ttml: bool,
-    base: f64,
     written: i64,
     /// The moment given to the last statement written. A muxer refuses a
     /// packet that does not come after the one before it, and says only
@@ -1336,11 +1384,8 @@ fn take_audio(
         };
         if claimed {
             let mut out = Vec::new();
-            let AudioTrack {
-                info, reencoder, ..
-            } = &mut writer.audio[audio.track];
-            if let Some(re) = reencoder.as_mut() {
-                re.take(&packet, info, src.start_time, audio.window, audio.fades)?;
+            if let Some(re) = writer.audio[audio.track].reencoder.as_mut() {
+                re.take(&packet, audio.info, src.start_time, audio.window, audio.fades)?;
                 re.drain(&mut out)?;
             }
             for (p, pts) in out {
@@ -2160,6 +2205,13 @@ fn read_graphics_before(src: &Source, until: f64, writer: &mut Writer) -> Result
     Ok(())
 }
 
+// Writing one reel's pictures into another's shape. A submodule rather than
+// a module of the crate because everything it works on is in this file; see
+// its own head for what it does.
+#[path = "cut_conform.rs"]
+mod conformed;
+use conformed::conform_segment;
+
 /// Take the segment's packets straight from the source, untouched.
 fn copy_segment(
     src: &Source,
@@ -2451,14 +2503,34 @@ enum Pictures {
 pub const VC1_DEFAULT_QUANT: u8 = 4;
 
 impl Pictures {
+    /// Pictures the shape of the recording they are replacing, which is what
+    /// a seam in an ordinary cut is.
     fn open(
         src: &Source,
         params: &ff::codec::Parameters,
         opts: &CutOptions,
         signalling: &Signalling,
     ) -> Result<Self> {
-        if matches!(src.video.codec.as_str(), "vc1" | "wmv3") {
-            let shape = src.video.vc1.as_ref().ok_or_else(|| {
+        Pictures::open_into(&src.video, default_bit_rate(src), params, opts, signalling)
+    }
+
+    /// Pictures of a stated shape, whoever is being decoded into them.
+    ///
+    /// Two callers and two meanings. A seam passes the recording's own
+    /// shape, because what it writes stands among that recording's pictures.
+    /// A reel that does not match the master passes the *master's*, because
+    /// what it writes stands among the master's -- and the size, the rate
+    /// and the codec then describe a recording other than the one being
+    /// read. See [`crate::conform`].
+    fn open_into(
+        video: &crate::VideoInfo,
+        bit_rate: usize,
+        params: &ff::codec::Parameters,
+        opts: &CutOptions,
+        signalling: &Signalling,
+    ) -> Result<Self> {
+        if matches!(video.codec.as_str(), "vc1" | "wmv3") {
+            let shape = video.vc1.as_ref().ok_or_else(|| {
                 anyhow!(
                     "this recording never states an advanced-profile sequence header, which is \
                      what a picture has to be written against, so the partial GOPs at the ends \
@@ -2467,13 +2539,12 @@ impl Pictures {
                 )
             })?;
             let step = opts.vc1_quant.unwrap_or(VC1_DEFAULT_QUANT);
-            let encoder =
-                smartcut_vc1::Encoder::new(shape, src.video.width, src.video.height, step)
-                    .map_err(|e| anyhow!("cannot write VC-1 for this recording: {e}"))?;
+            let encoder = smartcut_vc1::Encoder::new(shape, video.width, video.height, step)
+                .map_err(|e| anyhow!("cannot write VC-1 for this recording: {e}"))?;
             return Ok(Pictures::Vc1(Box::new(encoder)));
         }
         Ok(Pictures::Libav(Box::new(open_encoder(
-            src, params, opts, signalling,
+            video, bit_rate, params, opts, signalling,
         )?)))
     }
 }
@@ -2727,7 +2798,7 @@ fn signalling_of(src: &Source, opts: &CutOptions) -> Signalling {
     // output's stream header has been written and cannot be taken back.
     if out.has_dovi {
         out.dovi = true;
-        if let Err(e) = open_encoder(src, &params, opts, &out) {
+        if let Err(e) = open_encoder(&src.video, default_bit_rate(src), &params, opts, &out) {
             out.dovi = false;
             // And it is not left in the side data to be found again: the
             // encoder's own default is to decide for itself whether to write
@@ -2780,7 +2851,8 @@ fn encoders_for(id: ff::codec::Id) -> &'static [&'static str] {
 /// looked up. The last complaint is kept so that a build where none of them
 /// will open says why rather than naming the codec.
 fn open_encoder(
-    src: &Source,
+    video: &crate::VideoInfo,
+    bit_rate: usize,
     params: &ff::codec::Parameters,
     opts: &CutOptions,
     signalling: &Signalling,
@@ -2791,7 +2863,7 @@ fn open_encoder(
         let Some(codec) = ff::encoder::find_by_name(name) else {
             continue;
         };
-        match open_encoder_as(codec, src, params, opts, signalling) {
+        match open_encoder_as(codec, video, bit_rate, params, opts, signalling) {
             Ok(enc) => return Ok(enc),
             Err(e) => refused = Some(anyhow!("{name}: {e}")),
         }
@@ -2800,12 +2872,14 @@ fn open_encoder(
         return Err(e);
     }
     let codec = ff::encoder::find(id).ok_or_else(|| anyhow!("no encoder for {id:?}"))?;
-    open_encoder_as(codec, src, params, opts, signalling)
+    open_encoder_as(codec, video, bit_rate, params, opts, signalling)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn open_encoder_as(
     codec: ff::codec::codec::Codec,
-    src: &Source,
+    video: &crate::VideoInfo,
+    plain_bit_rate: usize,
     params: &ff::codec::Parameters,
     opts: &CutOptions,
     signalling: &Signalling,
@@ -2814,7 +2888,7 @@ fn open_encoder_as(
         .encoder()
         .video()?;
 
-    let v = &src.video;
+    let v = video;
     enc.set_width(v.width);
     enc.set_height(v.height);
     // One tick per picture. MPEG-2 writes a frame rate code into its sequence
@@ -2911,7 +2985,7 @@ fn open_encoder_as(
     // Otherwise the few frames this program writes at a seam would be the
     // only fine ones on the disc, and paid for by the rest.
     let bit_rate = opts.bit_rate.unwrap_or_else(|| {
-        let plain = default_bit_rate(src) as f64;
+        let plain = plain_bit_rate as f64;
         (plain * opts.video_share.unwrap_or(1.0).clamp(0.05, 1.0)) as usize
     });
     enc.set_bit_rate(bit_rate);
@@ -4679,6 +4753,238 @@ pub fn cut(src: &Source, plans: &[RangePlan], output: &str, opts: &CutOptions) -
     cut_with_progress(src, plans, output, opts, None)
 }
 
+/// The ranges of every reel, with the transitions cut into them.
+///
+/// **A transition is a stretch of a range, not a range of its own.** The
+/// sound is cut against the range -- one boundary decision per end, one
+/// anchor per range -- and a range split in two to make room for a fade
+/// would put a seam in the sound where the picture has none. So the range
+/// keeps its bounds and gains a segment: what is left of it is planned as
+/// usual and the transition's own seconds are written afresh after it, or
+/// before it.
+///
+/// The two exceptions are the two ends of an overlapping crossing, where the
+/// range really does lose those seconds. The clip after a dissolve gives up
+/// its first `seconds` -- they are on screen during the crossing, written by
+/// the crossing -- so its range starts that much later, sound and all. The
+/// clip before gives up nothing: its pictures are consumed by the crossing
+/// but its sound plays through it, which is what keeps the sound in step
+/// with the pictures on either side. See [`crate::transition`].
+fn ranges_with_transitions(
+    reels: &[Reel],
+    fits: &[crate::conform::Fit],
+    opts: &CutOptions,
+) -> Vec<Vec<RangePlan>> {
+    use crate::transition::{Crossing, Shade};
+    let last = reels.len().saturating_sub(1);
+    // What each reel gives up at each end. Read here rather than at each
+    // use, because the answer for one reel's head is the previous reel's
+    // setting.
+    let crossing = |n: usize| -> crate::transition::Transition {
+        let mut t = reels[n].after.clone();
+        // Nothing to give way to. The reference tool answers this the same
+        // way, and there is no other honest answer: two pictures cannot be
+        // shown together where there is only one.
+        if n == last && t.kind.overlaps() {
+            t.kind = Crossing::Fade(Shade::Black);
+        }
+        t
+    };
+    reels
+        .iter()
+        .enumerate()
+        .map(|(n, reel)| {
+            // What the reel before this one gives way with, which is what
+            // takes from this reel's head. The first reel has nothing in
+            // front of it.
+            let head = if n > 0 {
+                crossing(n - 1)
+            } else {
+                Default::default()
+            };
+            let tail = crossing(n);
+            let mut out = Vec::with_capacity(reel.plans.len());
+            for (k, plan) in reel.plans.iter().enumerate() {
+                let first = k == 0;
+                let last_range = k + 1 == reel.plans.len();
+                // How much of this range each end wants, held to half of it
+                // apiece: a transition longer than the clip it is joining is
+                // a transition with nothing left to join.
+                let room = ((plan.t_out - plan.t_in) / 2.0).max(0.0);
+                let want_head = if first { head.takes().1 } else { 0.0 };
+                let want_tail = if last_range { tail.takes().0 } else { 0.0 };
+                let (take_head, take_tail) = (want_head.min(room), want_tail.min(room));
+                // **A range no transition touches is the range the caller
+                // planned.** Re-planning it here would answer with this
+                // file's idea of the planner's settings rather than the
+                // caller's -- the open-GOP rule, the clean joins, the
+                // shortest copy worth making -- and a run with no
+                // transition in it would come out planned differently from
+                // the plan it was shown.
+                if take_head <= 0.0 && take_tail <= 0.0 {
+                    out.push(if fits[n].video {
+                        crate::plan::reencode_range(&reel.src.points, plan.t_in, plan.t_out)
+                    } else {
+                        plan.clone()
+                    });
+                    continue;
+                }
+                // Where the pictures of this range begin. An overlapping
+                // crossing has already shown its first seconds, so the range
+                // itself starts later -- sound with it.
+                let overlapped_head = take_head > 0.0 && head.kind.overlaps();
+                let t_in = if overlapped_head {
+                    plan.t_in + take_head
+                } else {
+                    plan.t_in
+                };
+                // And where they end. A crossing shows this range's last
+                // seconds as part of itself; a fade writes them afresh in
+                // place. Either way the range keeps its own `t_out`, which
+                // is what the sound is cut against.
+                let body_end = plan.t_out - take_tail;
+                let tinted_head = take_head > 0.0 && !head.kind.overlaps();
+                let body_start = if tinted_head { t_in + take_head } else { t_in };
+                let mut segments = Vec::new();
+                if tinted_head {
+                    segments.push(Segment {
+                        kind: SegmentKind::Reencode,
+                        start: t_in,
+                        end: body_start,
+                        frames: 0,
+                        copy_until: None,
+                        seek_from: seek_back(&reel.src.points, t_in),
+                        retouch: match head.kind {
+                            Crossing::Fade(shade) => Some(crate::plan::Retouch::Tint {
+                                shade,
+                                going_in: false,
+                                easing: head.easing,
+                            }),
+                            _ => None,
+                        },
+                    });
+                }
+                if body_end > body_start {
+                    let body = if fits[n].video {
+                        crate::plan::reencode_range(&reel.src.points, body_start, body_end)
+                    } else {
+                        crate::plan::plan_range(
+                            &reel.src.video,
+                            reel.src.duration,
+                            &reel.src.points,
+                            body_start,
+                            body_end,
+                            &opts.plan,
+                        )
+                    };
+                    segments.extend(body.segments);
+                }
+                if take_tail > 0.0 {
+                    segments.push(Segment {
+                        kind: SegmentKind::Reencode,
+                        start: body_end,
+                        end: plan.t_out,
+                        frames: 0,
+                        copy_until: None,
+                        seek_from: seek_back(&reel.src.points, body_end),
+                        retouch: Some(match tail.kind {
+                            Crossing::Fade(shade) => crate::plan::Retouch::Tint {
+                                shade,
+                                going_in: true,
+                                easing: tail.easing,
+                            },
+                            kind => crate::plan::Retouch::Cross {
+                                kind,
+                                easing: tail.easing,
+                                // Where the next reel's own pictures start,
+                                // which is the beginning of its first range.
+                                theirs: reels
+                                    .get(n + 1)
+                                    .and_then(|r| r.plans.first())
+                                    .map_or(0.0, |p| p.t_in),
+                            },
+                        }),
+                    });
+                }
+                out.push(RangePlan {
+                    t_in,
+                    t_out: plan.t_out,
+                    segments,
+                });
+            }
+            out
+        })
+        .collect()
+}
+
+/// An entry point far enough before `target` to decode into it cleanly. The
+/// planner's own answer, for the segments built above it.
+fn seek_back(points: &[crate::AccessPoint], target: f64) -> f64 {
+    let earlier: Vec<f64> = points
+        .iter()
+        .filter(|p| p.time <= target + 1e-6)
+        .map(|p| p.time)
+        .collect();
+    match earlier.len() {
+        0 => 0.0,
+        n => earlier[n.saturating_sub(3)],
+    }
+}
+
+/// One recording's contribution to an output, and its own kept ranges.
+///
+/// **A cut of one recording is a join of one reel**, which is how this
+/// arrived: the ranges of a single file were already being laid end to end
+/// on one output timeline, each anchored to the instant its own pictures
+/// start, so that an error at one seam cannot reach the next. Ranges from
+/// *different* files ask nothing more of that machinery than ranges from the
+/// same one -- every segment opens the file it reads for itself, and always
+/// did.
+///
+/// What is new is everything the output has only one of. A stream is
+/// declared before the first packet is written and cannot be taken back, so
+/// one reel is the master and the file is its shape: its size, its rate, its
+/// codec, its sound tracks, its tables. Every other reel either matches the
+/// master and is copied, or does not and is written afresh. See
+/// [`crate::conform`], which is where that is decided.
+pub struct Reel<'a> {
+    pub src: &'a Source,
+    pub plans: &'a [RangePlan],
+    /// What happens where this reel gives way to the next.
+    ///
+    /// On the reel written last there is nothing to give way to, so
+    /// anything but a fade becomes one -- to black, at the end of the file.
+    /// See [`crate::transition`].
+    pub after: crate::transition::Transition,
+}
+
+/// Write several recordings into one file, one after another.
+///
+/// `master` indexes the reel whose shape the output takes. Out of range is
+/// not an error worth failing a run over -- the first reel is the answer
+/// nobody has to think about, and it is what a list with no master chosen
+/// means.
+pub fn join(reels: &[Reel], master: usize, output: &str, opts: &CutOptions) -> Result<()> {
+    join_with_progress(reels, master, output, opts, None)
+}
+
+/// As [`join`], reporting how far along it is. See [`cut_with_progress`] for
+/// what a failed run leaves behind.
+pub fn join_with_progress(
+    reels: &[Reel],
+    master: usize,
+    output: &str,
+    opts: &CutOptions,
+    progress: Option<Report>,
+) -> Result<()> {
+    let ours = !std::path::Path::new(output).exists();
+    let done = cut_into(reels, master.min(reels.len().saturating_sub(1)), output, opts, progress);
+    if done.is_err() && ours {
+        let _ = std::fs::remove_file(output);
+    }
+    done
+}
+
 /// Which of a cut's two passes a report is about.
 ///
 /// A transport stream is written twice: once by the muxer, and once again by
@@ -4740,17 +5046,22 @@ pub fn cut_with_progress(
     opts: &CutOptions,
     progress: Option<Report>,
 ) -> Result<()> {
-    let ours = !std::path::Path::new(output).exists();
-    let done = cut_into(src, plans, output, opts, progress);
-    if done.is_err() && ours {
-        let _ = std::fs::remove_file(output);
-    }
-    done
+    join_with_progress(
+        &[Reel {
+            src,
+            plans,
+            after: Default::default(),
+        }],
+        0,
+        output,
+        opts,
+        progress,
+    )
 }
 
 fn cut_into(
-    src: &Source,
-    plans: &[RangePlan],
+    reels: &[Reel],
+    master: usize,
     output: &str,
     opts: &CutOptions,
     progress: Option<Report>,
@@ -4763,9 +5074,75 @@ fn cut_into(
     // behind, reported as written. Every caller can reach this -- the window
     // by cutting a clip away entirely, the command line by `--cut` covering
     // the recording -- so it is answered here rather than in each of them.
-    if plans.is_empty() {
+    if reels.iter().all(|r| r.plans.is_empty()) {
         anyhow::bail!("nothing is kept: every part of this recording has been cut away");
     }
+    // The reel whose shape the file takes, and its own ranges. Everything
+    // below that describes the *output* reads these two and nothing else:
+    // what the streams are, what the timeline is counted in, whose tables go
+    // back in at the end. See [`Reel`].
+    let src = reels[master].src;
+    // What each reel has to have done to it to go in beside the master.
+    // Settled here, before a stream is declared, because one of the answers
+    // -- whether a sound track has to be written afresh -- decides what that
+    // track is declared as.
+    let fits: Vec<crate::conform::Fit> = reels
+        .iter()
+        .enumerate()
+        .map(|(n, r)| {
+            if n == master {
+                crate::conform::Fit::as_is(src.audios.len())
+            } else {
+                crate::conform::fit(src, r.src)
+            }
+        })
+        .collect();
+    // What each reel is written as: its own ranges, planned afresh where it
+    // does not match the master -- there is no picture in such a reel a copy
+    // could carry -- and with the transitions cut into them. A run with
+    // neither comes back out of this the plan it went in as.
+    let reel_plans: Vec<Vec<RangePlan>> = ranges_with_transitions(reels, &fits, opts);
+    let plans = &reel_plans[master];
+    // Every range of every reel, in the order they are written, so that
+    // anything counted over the whole job is counted over the whole job.
+    let all_plans = || reel_plans.iter().flat_map(|p| p.iter());
+    let ranges_in_all: usize = reel_plans.iter().map(Vec::len).sum();
+    // Said once per reel, before a byte is written: a run that re-encodes an
+    // hour because two recordings disagree about the frame rate is a run
+    // somebody would want to have been told about at the start.
+    for (n, fit) in fits.iter().enumerate() {
+        if !fit.anything() {
+            continue;
+        }
+        let found: Vec<String> = crate::conform::compare(src, reels[n].src)
+            .iter()
+            .map(crate::conform::Mismatch::describe)
+            .collect();
+        crate::note_once(format!(
+            "note: {} is not the shape of {}, so {} written afresh to fit it -- {}. That is \
+             a decode and an encode of the whole of it, and the pictures are only as good as \
+             one pass can make them.",
+            reels[n].src.path,
+            src.path,
+            match (fit.video, fit.audio.iter().any(|&a| a)) {
+                (true, true) => "its pictures and its sound are",
+                (true, false) => "its pictures are",
+                _ => "its sound is",
+            },
+            found.join("; "),
+        ));
+    }
+    // Which of the output's sound tracks has to be written afresh. **One
+    // answer for the whole file, not one per reel.** A track is declared
+    // once, as one thing, and what a stream says about itself has to
+    // describe every frame on it: a track written from the master's own
+    // packets for one stretch and from an encoder for the next would be a
+    // track whose two halves are described by one header that fits one of
+    // them. So a track any reel cannot match is a track the master's own
+    // frames go through the encoder for as well.
+    let recast: Vec<bool> = (0..src.audios.len())
+        .map(|k| fits.iter().any(|f| f.audio.get(k) == Some(&true)))
+        .collect();
 
     let (ictx, ist_index) = open_input(&src.input.url)?;
     let params = ictx.stream(ist_index).unwrap().parameters();
@@ -4892,6 +5269,25 @@ fn cut_into(
     let setups: Vec<AudioSetup> = audios
         .iter()
         .map(|a| {
+            // A track that some reel cannot match is written through the
+            // encoder whatever the caller asked for, because the other
+            // arrangement is a stream whose header describes half of it.
+            // See `recast`.
+            let mine = src
+                .audios
+                .iter()
+                .position(|x| x.stream_index == a.stream_index);
+            let forced;
+            let opts = if mine.is_some_and(|k| recast[k]) && opts.audio_mode != AudioMode::Reencode
+            {
+                forced = CutOptions {
+                    audio_mode: AudioMode::Reencode,
+                    ..opts.clone()
+                };
+                &forced
+            } else {
+                opts
+            };
             plan_audio(
                 &src.input.url,
                 a,
@@ -5188,8 +5584,7 @@ fn cut_into(
     // declares its streams, because one of the answers -- whether the Dolby
     // Vision can be carried -- decides what the video stream may claim, and
     // by the first seam the header has been written and cannot be taken back.
-    let signalling = if plans
-        .iter()
+    let signalling = if all_plans()
         .flat_map(|p| &p.segments)
         .any(|s| s.kind == SegmentKind::Reencode)
     {
@@ -5199,7 +5594,7 @@ fn cut_into(
     };
     {
         let mut ost = octx.add_stream(ff::encoder::find(ff::codec::Id::None))?;
-        ost.set_parameters(params);
+        ost.set_parameters(params.clone());
         ost.set_time_base(grid.time_base());
         unsafe {
             // A stream that says Dolby Vision and hands a player no RPU to
@@ -5427,44 +5822,106 @@ fn cut_into(
     // lookup in it. Two frames per range edge, in a file of tens of
     // thousands -- per track, since where a boundary falls inside a frame is
     // a fact about one track's framing and not about the recording.
-    let mut patches: Vec<std::collections::HashMap<i64, crate::audio::Patch>> = Vec::new();
-    for setup in &setups {
-        let a = &setup.info;
-        patches.push(match setup.mode {
-            AudioMode::Smart => {
-                let windows: Vec<(i64, i64)> = plans
-                    .iter()
-                    .map(|p| {
-                        (
-                            (p.t_in * a.sample_rate as f64).round() as i64,
-                            (p.t_out * a.sample_rate as f64).round() as i64,
-                        )
-                    })
-                    .collect();
-                // The rate the track is written at, settled once in
-                // [`plan_audio`]: the frames at a seam are spliced in among
-                // the recording's own and have to have been written at what
-                // the rest of it was.
-                crate::audio::boundary_patches(
-                    src,
-                    a,
-                    &windows,
-                    setup.bit_rate,
-                    setup.frame_as,
-                    opts.audio_fade,
-                )?
+    //
+    // Per reel as well as per track. The frames are the reel's own, cut
+    // against the reel's own ranges, and where the seam falls inside a frame
+    // is a fact about the recording that frame came off.
+    let threads: Vec<Threads> = reels
+        .iter()
+        .enumerate()
+        .map(|(n, reel)| {
+            if n == master {
+                Threads {
+                    audio: audios.iter().cloned().map(Some).collect(),
+                    captions: captions.iter().cloned().map(Some).collect(),
+                    graphics: true,
+                }
+            } else {
+                Threads {
+                    audio: (0..audios.len())
+                        .map(|k| reel.src.audios.get(k).cloned())
+                        .collect(),
+                    captions: (0..captions.len())
+                        .map(|k| reel.src.captions.get(k).cloned())
+                        .collect(),
+                    graphics: false,
+                }
             }
-            _ => Default::default(),
-        });
+        })
+        .collect();
+    // Said once, where a reel carries something the output has no second
+    // place for. None of it stops a cut: what a joined file holds is the
+    // master's streams, and a reel is being written into them.
+    for (n, reel) in reels.iter().enumerate() {
+        if n == master {
+            continue;
+        }
+        let spare = reel.src.audios.len().saturating_sub(audios.len());
+        if spare > 0 {
+            crate::note_once(format!(
+                "note: {} carries {spare} more sound track(s) than the master does, and the \
+                 file has only the master's. They are not written.",
+                reel.src.path,
+            ));
+        }
+        if !reel.src.graphics.is_empty() || !reel.src.subpictures.is_empty() {
+            crate::note_once(format!(
+                "note: the subtitles a disc draws are carried from the master only, so {}'s \
+                 own are not in the file. A display set puts something on screen and a later \
+                 one takes it off, and two recordings cannot share one plane.",
+                reel.src.path,
+            ));
+        }
+    }
+    let mut nth_of_all = 0usize;
+    let mut patches_by_reel: Vec<Vec<std::collections::HashMap<i64, crate::audio::Patch>>> =
+        Vec::with_capacity(reels.len());
+    for (n, reel) in reels.iter().enumerate() {
+        let base = nth_of_all;
+        nth_of_all += reel_plans[n].len();
+        let mut per_track = Vec::with_capacity(setups.len());
+        for (k, setup) in setups.iter().enumerate() {
+            let Some(a) = threads[n].audio[k].as_ref().filter(|_| setup.mode == AudioMode::Smart)
+            else {
+                per_track.push(Default::default());
+                continue;
+            };
+            let windows: Vec<(i64, i64)> = reel_plans[n]
+                .iter()
+                .map(|p| {
+                    (
+                        (p.t_in * a.sample_rate as f64).round() as i64,
+                        (p.t_out * a.sample_rate as f64).round() as i64,
+                    )
+                })
+                .collect();
+            // The rate the track is written at, settled once in
+            // [`plan_audio`]: the frames at a seam are spliced in among
+            // the recording's own and have to have been written at what
+            // the rest of it was.
+            per_track.push(crate::audio::boundary_patches(
+                reel.src,
+                a,
+                &windows,
+                setup.bit_rate,
+                setup.frame_as,
+                opts.audio_fade,
+                base,
+                ranges_in_all,
+            )?);
+        }
+        patches_by_reel.push(per_track);
     }
     if std::env::var("SMARTCUT_DEBUG").is_ok() {
-        for (setup, p) in setups.iter().zip(&patches) {
-            if setup.mode == AudioMode::Smart {
-                eprintln!(
-                    "  audio 0x{:04x}: {} frame(s) prepared for the boundaries",
-                    setup.info.pid,
-                    p.len()
-                );
+        for (n, per_track) in patches_by_reel.iter().enumerate() {
+            for (setup, p) in setups.iter().zip(per_track) {
+                if setup.mode == AudioMode::Smart {
+                    eprintln!(
+                        "  reel {n} audio 0x{:04x}: {} frame(s) prepared for the boundaries",
+                        setup.info.pid,
+                        p.len()
+                    );
+                }
             }
         }
     }
@@ -5475,13 +5932,11 @@ fn cut_into(
     let audio_tracks: Vec<AudioTrack> = setups
         .iter()
         .zip(audio_pending)
-        .zip(patches)
-        .map(|((setup, (out_index, reencoder)), patches)| AudioTrack {
+        .map(|(setup, (out_index, reencoder))| AudioTrack {
             out_index,
             out_tb: octx
                 .stream(out_index)
                 .map_or(1.0 / 90_000.0, |s| f64::from(s.time_base())),
-            in_index: setup.info.stream_index,
             info: setup.info.clone(),
             out_rate: setup.sample_rate,
             mode: setup.mode,
@@ -5489,7 +5944,9 @@ fn cut_into(
             prev: None,
             end: None,
             reencoder,
-            patches,
+            // Filled in at the head of each reel, from the frames prepared
+            // for that reel's own boundaries.
+            patches: Default::default(),
             need_sync: mp4ish && matches!(setup.target, ff::codec::Id::TRUEHD | ff::codec::Id::MLP),
             joins_at_sync: matches!(setup.target, ff::codec::Id::TRUEHD | ff::codec::Id::MLP),
             last_out: None,
@@ -5506,10 +5963,7 @@ fn cut_into(
             out_tb: octx
                 .stream(out_index)
                 .map_or(1.0 / 90_000.0, |s| f64::from(s.time_base())),
-            in_index: info.stream_index,
-            in_tb: info.time_base,
             ttml: info.format == crate::TextFormat::Ttml,
-            base: info.base,
             written: 0,
             last_out: None,
         })
@@ -5722,20 +6176,67 @@ fn cut_into(
         subpictures,
         converted,
         progress: writing_report,
-        expected: plans
-            .iter()
+        expected: all_plans()
             .flat_map(|p| &p.segments)
             .map(|s| s.frames as i64)
             .sum(),
         shrink: shrink_for(src, opts),
     };
 
+    // What a reel that does not match is written into: the master's own
+    // size, rate, codec and pixels, and what its pictures cost per second.
+    let shaped = conformed::Shaped {
+        video: &src.video,
+        params: &params,
+        bit_rate: default_bit_rate(src),
+    };
     let mut display_base: i64 = 0;
     let mut pictures: i64 = 0;
-    // Where each kept range began in the output, which is what the tables
-    // grafted on afterwards are placed against.
+    // Where each of the master's kept ranges began in the output, which is
+    // what the tables grafted on afterwards are placed against. The master's
+    // and no others: the broadcast being described is the one the master
+    // came off, and a reel written after it is a stretch of the same file
+    // that carries no account of itself. See [`graft_tables`].
     let mut range_starts: Vec<f64> = Vec::with_capacity(plans.len());
-    for (nth, plan) in plans.iter().enumerate() {
+    // Which range of the whole job this is. A seam is a seam whether the
+    // range before it came off this recording or off the one before it, so
+    // everything that asks "is there something on the other side of this
+    // edge" counts across the reels rather than within one.
+    let mut nth = 0usize;
+    for (reel_no, reel) in reels.iter().enumerate() {
+        let rsrc = reel.src;
+        let thread = &threads[reel_no];
+        // The frames prepared for this reel's own boundaries, and a clean
+        // sheet for the lookup that places them: what `prev` remembers is
+        // the frame before, and at a reel's first range the frame before
+        // came off another recording.
+        for (k, track) in writer.audio.iter_mut().enumerate() {
+            track.patches = std::mem::take(&mut patches_by_reel[reel_no][k]);
+            track.prev = None;
+        }
+        // And the decoder in front of each track's encoder, where the track
+        // is one this file writes rather than copies. The encoder stays:
+        // see [`crate::audio::Reencoder::retune`].
+        if writer.audio.iter().any(|t| t.reencoder.is_some()) {
+            let at = crate::input::demux(&rsrc.input.url)?;
+            for k in 0..writer.audio.len() {
+                let Some(info) = thread.audio[k].clone() else {
+                    continue;
+                };
+                let params = at
+                    .stream(info.stream_index)
+                    .ok_or_else(|| {
+                        anyhow!("audio stream {} vanished from {}", info.stream_index, rsrc.path)
+                    })?
+                    .parameters();
+                if let Some(re) = writer.audio[k].reencoder.as_mut() {
+                    re.retune(params, &info)?;
+                }
+            }
+        }
+        // What this reel is written as: the plan it was given where it
+        // matches the master, and one segment per range where it does not.
+        for plan in &reel_plans[reel_no] {
         // Every range after the first drops a decoder that is already reading
         // into a stream from somewhere else. A TrueHD frame is read against
         // the last major sync seen, so one joined anywhere else is read
@@ -5754,7 +6255,9 @@ fn cut_into(
         // Anchor this range's audio to the output time its video starts at.
         // display_base counts fields, so two per frame.
         let target_start = display_base as f64 * grid.unit();
-        range_starts.push(target_start);
+        if reel_no == master {
+            range_starts.push(target_start);
+        }
         // How far each track actually laid down runs ahead of or behind where
         // this range's video starts. Zero for the first range, which is
         // positioned by the track's own start offset instead. Kept per track:
@@ -5764,11 +6267,15 @@ fn cut_into(
             .audio
             .iter()
             .enumerate()
-            .map(|(track, t)| {
+            .filter_map(|(track, t)| {
+                // The reel's own track for this one, where it has one. A
+                // reel that has not got it writes nothing there, and the
+                // track carries a gap for the reel's length.
+                let info = thread.audio[track].as_ref()?;
                 let drift = t.end.map_or(0.0, |end| end - target_start);
                 let window = (
-                    (plan.t_in * t.info.sample_rate as f64).round() as i64,
-                    (plan.t_out * t.info.sample_rate as f64).round() as i64,
+                    (plan.t_in * info.sample_rate as f64).round() as i64,
+                    (plan.t_out * info.sample_rate as f64).round() as i64,
                 );
                 if std::env::var("SMARTCUT_DEBUG").is_ok() {
                     eprintln!(
@@ -5776,15 +6283,16 @@ fn cut_into(
                          drift={:+.4}",
                         plan.t_in,
                         target_start,
-                        t.info.pid,
+                        info.pid,
                         t.end.map(|v| (v * 1e4).round() / 1e4),
                         drift
                     );
                 }
-                AudioCtx {
+                Some(AudioCtx {
                     track,
-                    in_index: t.in_index,
-                    in_tb: t.info.time_base,
+                    info,
+                    in_index: info.stream_index,
+                    in_tb: info.time_base,
                     offset: target_start - plan.t_in,
                     pick_from: plan.t_in + drift,
                     min_start: if t.end.is_none() {
@@ -5799,49 +6307,58 @@ fn cut_into(
                     // fade alike, or two tracks of one recording would.
                     fades: crate::audio::fades_for(
                         opts.audio_fade,
-                        t.info.sample_rate,
+                        info.sample_rate,
                         nth,
-                        plans.len(),
+                        ranges_in_all,
                         window,
                     ),
                     range_in: plan.t_in,
                     mode: t.mode,
-                }
+                })
             })
             .collect();
         let caption_ctx: Vec<CaptionCtx> = writer
             .captions
             .iter()
             .enumerate()
-            .map(|(track, t)| CaptionCtx {
-                track,
-                in_index: t.in_index,
-                in_tb: t.in_tb,
-                offset: target_start - plan.t_in,
-                ttml: t.ttml,
-                base: t.base,
-                range: (plan.t_in, plan.t_out),
+            .filter_map(|(track, t)| {
+                let info = thread.captions[track].as_ref()?;
+                Some(CaptionCtx {
+                    track,
+                    in_index: info.stream_index,
+                    in_tb: info.time_base,
+                    offset: target_start - plan.t_in,
+                    ttml: t.ttml,
+                    base: info.base,
+                    range: (plan.t_in, plan.t_out),
+                })
             })
             .collect();
-        let graphics_ctx: Vec<GraphicsCtx> = writer
-            .graphics
-            .iter()
-            .enumerate()
-            .map(|(track, t)| GraphicsCtx {
-                track,
-                in_index: t.in_index,
-                in_tb: t.in_tb,
-                offset: target_start - plan.t_in,
-            })
-            .collect();
+        // Only the master's, and the reason is in [`Threads::graphics`].
+        let graphics_ctx: Vec<GraphicsCtx> = if thread.graphics {
+            writer
+                .graphics
+                .iter()
+                .enumerate()
+                .map(|(track, t)| GraphicsCtx {
+                    track,
+                    in_index: t.in_index,
+                    in_tb: t.in_tb,
+                    offset: target_start - plan.t_in,
+                })
+                .collect()
+        } else {
+            Vec::new()
+        };
         // The same, for a DVD's subtitles: what was on screen when the range
         // opens is written again at its first frame. A unit that had already
         // taken itself down before the cut is not on screen and is not
         // written. See [`crate::vobsub`].
-        if !src.subpictures.is_empty()
+        if thread.graphics
+            && !rsrc.subpictures.is_empty()
             && (writer.subpictures.is_some() || !writer.converted.is_empty())
         {
-            for (id, shown, unit) in read_subpictures_before(src, plan.t_in)? {
+            for (id, shown, unit) in read_subpictures_before(rsrc, plan.t_in)? {
                 let over = crate::vobsub::stops_after(&unit)
                     .is_some_and(|after| shown + after <= plan.t_in);
                 if over {
@@ -5856,8 +6373,8 @@ fn cut_into(
         // What the recording had on screen at the instant this range opens
         // was put there by a display set the cut left behind, so it is put
         // up again here. See [`crate::pgs`].
-        if !writer.graphics.is_empty() {
-            read_graphics_before(src, plan.t_in, &mut writer)?;
+        if thread.graphics && !writer.graphics.is_empty() {
+            read_graphics_before(rsrc, plan.t_in, &mut writer)?;
             for track in 0..writer.graphics.len() {
                 for held in writer.graphics[track].plane.replay(target_start) {
                     writer.push_graphics(track, &held, 0.0, true)?;
@@ -5882,9 +6399,42 @@ fn cut_into(
             // next one starts exactly where it ended -- no reliance on the
             // planner's frame arithmetic, which cannot see either the
             // stream's frame phase or its pulldown.
-            let span = match seg.kind {
-                SegmentKind::Copy => copy_segment(src, seg, &ctx, &mut writer)?,
-                SegmentKind::Reencode => reencode_segment(src, seg, &ctx, opts, &mut writer)?,
+            // A transition's pictures are in neither recording, so its
+            // stretch goes through the path that makes pictures rather than
+            // the one that splices them -- whatever shape the reel is.
+            let span = match (seg.kind, &seg.retouch, fits[reel_no].video) {
+                (SegmentKind::Copy, _, _) => copy_segment(rsrc, seg, &ctx, &mut writer)?,
+                (SegmentKind::Reencode, Some(retouch), _) => {
+                    // The clip on the far side of an overlapping crossing,
+                    // which is read alongside this one.
+                    let next = reels.get(reel_no + 1).map(|r| r.src);
+                    // And whose transition this stretch belongs to. Every
+                    // one of them belongs to the reel that gives way, so
+                    // the half of a fade that *arrives* belongs to the reel
+                    // before this one.
+                    let whose = match retouch {
+                        crate::plan::Retouch::Tint { going_in: false, .. } => {
+                            reel_no.checked_sub(1)
+                        }
+                        _ => Some(reel_no),
+                    };
+                    let overlay = whose
+                        .and_then(|n| reels.get(n))
+                        .and_then(|r| r.after.overlay.as_deref());
+                    conformed::crossing_segment(
+                        rsrc, next, seg, retouch, overlay, &ctx, opts, &shaped, &mut writer,
+                    )?
+                }
+                // A reel that is not the master's shape has no copied
+                // pictures for a seam to stand among: it is the whole range,
+                // and what it is written into is the master's shape rather
+                // than its own. See [`conform_segment`].
+                (SegmentKind::Reencode, None, true) => {
+                    conform_segment(rsrc, seg, &ctx, opts, &shaped, &mut writer)?
+                }
+                (SegmentKind::Reencode, None, false) => {
+                    reencode_segment(rsrc, seg, &ctx, opts, &mut writer)?
+                }
             };
             display_base += span.fields;
             pictures += span.pictures;
@@ -5893,7 +6443,7 @@ fn cut_into(
         // the display set that would have done it belongs to the material
         // after the cut. Left undone, a subtitle stands into the next range
         // -- or, at the end of the file, to the end of the file.
-        if !writer.graphics.is_empty() {
+        if thread.graphics && !writer.graphics.is_empty() {
             let ends_at = display_base as f64 * grid.unit();
             for track in 0..writer.graphics.len() {
                 for held in writer.graphics[track].plane.clear(ends_at) {
@@ -5903,17 +6453,21 @@ fn cut_into(
         }
         // And a DVD's subtitles are taken down at the same instant, by a
         // unit that says stop and nothing else.
-        let ends_at = display_base as f64 * grid.unit();
-        if let Some(subs) = writer.subpictures.as_mut() {
-            subs.end_range(ends_at);
-        }
-        for which in 0..writer.converted.len() {
-            let c = &mut writer.converted[which];
-            let (track, screen) = (c.track, c.screen);
-            let sets = c.composer.take_down(screen, ends_at);
-            for held in &sets {
-                writer.push_graphics(track, held, 0.0, true)?;
+        if thread.graphics {
+            let ends_at = display_base as f64 * grid.unit();
+            if let Some(subs) = writer.subpictures.as_mut() {
+                subs.end_range(ends_at);
             }
+            for which in 0..writer.converted.len() {
+                let c = &mut writer.converted[which];
+                let (track, screen) = (c.track, c.screen);
+                let sets = c.composer.take_down(screen, ends_at);
+                for held in &sets {
+                    writer.push_graphics(track, held, 0.0, true)?;
+                }
+            }
+        }
+        nth += 1;
         }
     }
     // Flush whatever each audio encoder still holds before closing the file.

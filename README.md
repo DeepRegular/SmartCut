@@ -248,6 +248,26 @@ mean writing several kinds of table SmartCut does not write.
 programmes, optionally wrapped in a `.iso`. By default the output uses the same
 format and folder as the input.
 
+**Several recordings into one file.** Tick one box on the output settings
+screen and the list is written as a single output instead of one per row —
+two halves of a film, twelve episodes, the same broadcast recorded twice.
+Everything that matches is smart-rendered exactly as it would be on its own,
+so joining twenty recordings costs what cutting twenty of them costs.
+
+A recording that does *not* match — another size, another rate, another codec,
+another sound — is written afresh to fit the one you chose as the **master**,
+which is what makes a list of clips off different sources joinable at all.
+Only that recording is re-encoded, and the run says which of them and why
+before it writes a byte.
+
+**Transitions** can go at the joins: a fade through black or white, a dissolve,
+a wipe or a slide from any of the four sides, over as long as you like up to
+thirty seconds and shaped by any of twelve easing curves. A still image can be
+laid over the crossing. This is the one thing here that is not smart rendering
+— a transition is pictures that are in neither recording, so its seconds are
+written afresh — and that is exactly why it is offered at the joins and
+nowhere else.
+
 **Video:** H.264, HEVC, MPEG-2, MPEG-4 Part 2, VC-1, VP9, AV1. Interlaced
 material stays interlaced, and 2:3 pulldown is handled properly rather than
 flattened.
