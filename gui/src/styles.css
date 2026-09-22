@@ -393,18 +393,21 @@ main { flex: 1; min-height: 0; display: flex; gap: 0; }
   font-variant-numeric: tabular-nums;
 }
 #keyframes li:hover { background: #262626; }
-/* Cards gathered with Ctrl or Shift, for a Del to take away together. Dimmer
-   than the one card the window is looking at, and written above it so that a
-   card which is both reads as the one being looked at. */
-#keyframes li.picked { background: #14343e; }
+/* The card the window is looking at, and the cards gathered with Ctrl or
+   Shift for a Del to take away together. One colour for all of them: a run
+   chosen with Shift is one thing, and picking the last card touched out of
+   it in a second colour asks somebody to read a distinction that means
+   nothing to what Del is about to do. */
+#keyframes li.picked,
 #keyframes li.active { background: #1d4d5c; }
-/* The column has the keyboard, which is what makes Del take marks away
-   instead of cutting the selection. `:focus` rather than `:focus-visible`:
-   the way into this column is a click on a card, and that is exactly when
-   the difference is worth showing. */
-#keyframes:focus { outline: 1px solid var(--sel); outline-offset: -1px; }
+/* A click on a card hands the keyboard to the column, which is what makes Del
+   take marks away instead of cutting the selection -- but the cards in it
+   already say so, and a ring around the whole column on every click is a
+   second thing moving where nothing was asked for. */
+#keyframes:focus { outline: none; }
 #keyframes img { width: 84px; height: auto; display: block; border: 1px solid #fff; background: #000; }
 #keyframes .no { color: var(--dim); }
+#keyframes li.picked .no,
 #keyframes li.active .no { color: #cfefff; }
 #keyframes .at { font-size: 12px; }
 /* Which detection a mark is standing on, under the time on its card. Both

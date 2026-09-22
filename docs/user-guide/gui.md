@@ -579,7 +579,8 @@ three seconds for either pass out of the box, and -50 dB for the sound.
   click one to jump there, or click its `×` to remove it.
 - In that column, `Ctrl`-click gathers marks one at a time and `Shift`-click
   gathers a run of them. `Del` then removes the lot in one go, and `Ctrl+Z`
-  puts them all back.
+  puts them all back. Click the empty space below the cards to let the
+  selection go.
 - A **cut** is the edit. Set IN and OUT, press `✂ Cut`, and that range leaves
   the output.
 

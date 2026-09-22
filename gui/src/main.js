@@ -804,6 +804,24 @@ function renderKeyframes(scroll = true) {
   paintCards(live, imgs);
 }
 
+/// A click on the column past the cards lets the handful go.
+///
+/// The way out of a selection, and the one somebody reaches for: the cards
+/// are a handful chosen for a Del, and clicking the empty space below them is
+/// how every list says "none of these". Bound to the column rather than to
+/// each card, so a click anywhere in it that a card did not catch arrives
+/// here -- including the line that stands in for an empty list.
+///
+/// The playhead stays where it is: this is about which cards are chosen and
+/// nothing else, and moving the picture would be a decode nobody asked for.
+el("keyframes").addEventListener("click", (ev) => {
+  if (ev.target.closest("li")) return;
+  if (!pickedKeys.length && activeKey === null) return;
+  pickedKeys = [];
+  activeKey = null;
+  renderKeyframes(false);
+});
+
 /// Walk the marks, in the direction given.
 ///
 /// The column down the left is the list of the places this evening is about:
