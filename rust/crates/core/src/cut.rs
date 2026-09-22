@@ -4646,7 +4646,34 @@ const WRITING_SHARE: f64 = 0.7;
 pub type Report = Box<dyn Fn(Pass, f64, f64) + Send + Sync>;
 
 /// As [`cut`], reporting how far along it is.
+///
+/// A cut that fails takes its own output away again. What a refused stream
+/// leaves behind is a file with the name of a cut and nothing in it that can
+/// be played -- a nought-byte `.mov` the muxer would not write a header
+/// into, a transport stream whose sound was declared and never arrived --
+/// and the one thing a file like that says is that the cut is there. The
+/// same reasoning as [`write_audio_es`], where it was learned.
+///
+/// Only a file this cut made. Where one of that name was already there, the
+/// muxer has truncated it and whatever it holds now is all the caller has at
+/// that name; deleting somebody's file on top of that is a second loss, not
+/// a tidy-up.
 pub fn cut_with_progress(
+    src: &Source,
+    plans: &[RangePlan],
+    output: &str,
+    opts: &CutOptions,
+    progress: Option<Report>,
+) -> Result<()> {
+    let ours = !std::path::Path::new(output).exists();
+    let done = cut_into(src, plans, output, opts, progress);
+    if done.is_err() && ours {
+        let _ = std::fs::remove_file(output);
+    }
+    done
+}
+
+fn cut_into(
     src: &Source,
     plans: &[RangePlan],
     output: &str,
