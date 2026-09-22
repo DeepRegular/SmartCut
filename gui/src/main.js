@@ -2090,17 +2090,28 @@ function cellPx() {
   return clamp(Math.round(CELL_H * r), 48, 320);
 }
 
-/// Ceiling on how many pictures one reel is worth asking for.
+/// Ceiling on how many pictures one reel is worth asking for, and the
+/// narrowest a cell is worth drawing.
 ///
 /// A reel covers a fixed stretch of the recording rather than a fixed number
-/// of cells, so what it holds is whatever the material's entry points leave
-/// it: a cell is never shorter than half of what a picture stands for (see
-/// `opensAfter`), which puts the ceiling at twice the count a window of even
-/// GOPs comes to. Reached only where the entry points are dense -- a disc
-/// puts one at every scene change -- and there every cell is answered out of
-/// the held pictures, so what it limits is the drawing rather than the
-/// decoding.
-const MAX_CELLS = 96;
+/// of cells, and every access point in that stretch begins one, so what a
+/// reel holds is the material's business: broadcast material at `6 秒` comes
+/// to 24 cells and a disc's dense points to ten times that. These two are
+/// what stops it running away -- see `min` in `refreshStrip`, which turns
+/// them into the least time a cell may cover. Neither is reached on the
+/// material either is meant for.
+const MAX_CELLS = 200;
+/// The narrowest cell worth drawing, in pixels. Below this a cell is the line
+/// that divides it from its neighbour and nothing else: at this width it
+/// still carries a sliver of its own picture and the mark that says what it
+/// is. The reference tool's own narrowest came to 19 px, measured off a
+/// screenshot of it -- an access point 0.61 s after the one before it, drawn
+/// with its picture clipped to that and no room left for a timecode.
+const MIN_CELL_PX = 12;
+/// The narrowest cell that still carries its timecode. A timecode is 64 px
+/// at this size, and the marks that go in front of it -- `▲` for an access
+/// point, `⚑` for a keyframe -- want the rest.
+const CAPTION_PX = 80;
 
 const reel = el("reel");
 
@@ -2201,21 +2212,24 @@ function gopUnder(t, back) {
 /// `cut` says the cell begins on an access point, which is to say on a place
 /// a cut is free.
 ///
-/// `d` is what one picture's width stands for -- the length a cell is aimed
-/// at, so that a run of them comes out a picture apiece -- and cells are cut
-/// to the nearest boundary either side of it. That is what the menu's "3 分"
-/// means: three minutes across the window, with every cell still standing on
-/// a place a cut is free.
+/// `d` is what one picture's width stands for. It is no longer what a cell is
+/// aimed at -- every access point begins one -- but it is still what a long
+/// GOP is divided into, and the width the reel is carried on at past either
+/// end of the recording.
 ///
-/// **Aimed at by time, not by counting boundaries.** Giving each cell a fixed
-/// number of GOPs is the same thing only where the GOPs are evenly spaced,
-/// which broadcast material is and a disc is not: a Blu-ray puts an entry
-/// point at every scene change as well as every second or so, and on one
-/// VC-1 disc they run from 0.067 s to 0.801 s apart. One cell per GOP drew a
-/// window covering 0.6 s in an action scene and 7.2 s in a quiet one, both
-/// labelled "6 秒", and clicking a place on the strip landed nowhere near
-/// where it looked. Cells aimed at `d` and never shorter than half of it keep
-/// the window to what the menu says within a picture's width either way.
+/// **One cell per access point, `min` apart at the least.** A cell is as wide
+/// as the time it covers, so a run of points half a second apart draws a run
+/// of cells half a second wide, and the window still holds what the menu
+/// says: the unevenness that equal widths had is in the *widths* rather than
+/// in the ruler. What a cell says by existing is "a cut is free here", and
+/// the reference tool draws them the same way, down to cells too narrow to
+/// hold their own timecode -- one measured 19 px, on an access point 0.61 s
+/// after the one before it.
+///
+/// Cells aimed at `d` and rounded to the nearest boundary were tried first,
+/// and what they lose is those points: on that same material a point 0.61 s
+/// after the last one was swallowed by the cell it fell in, and the strip
+/// said a cut there would re-encode when it would not.
 ///
 /// **A cell covers at most a third of the window.** A recording off the web
 /// puts its entry points four seconds apart and one from a streaming service
@@ -2230,7 +2244,7 @@ function gopUnder(t, back) {
 /// lets the reel slide far enough to hold the playhead at the middle when it
 /// is near either end; without them the reel would run out and the marker
 /// would drift off the picture it is meant to be standing on.
-function gopCells(o, span, d, reach) {
+function gopCells(o, span, d, reach, min) {
   const n = gops.length;
   // A recording with nothing in it to divide on. The reel is cut on an even
   // grid instead -- the same cells at the same widths, standing for stretches
@@ -2262,7 +2276,15 @@ function gopCells(o, span, d, reach) {
     const i = Math.min(s.k - 1, Math.floor((t - s.from) / s.w + 1e-9));
     return s.from + i * s.w;
   };
-  /// Where the cell after the one beginning at `t` begins.
+  /// Where the cell after the one beginning at `t` begins: the next access
+  /// point, or the next mark inside a long GOP that has been divided.
+  ///
+  /// **Every access point begins a cell**, however soon after the last one it
+  /// comes -- which is what the reference tool does, and what makes the strip
+  /// say where a cut is free rather than only where there was room to say so.
+  /// Boundaries closer together than `min` are the exception, and `min` is a
+  /// question about the screen rather than about the recording: see
+  /// `refreshStrip`.
   const opensAfter = (t) => {
     const j = gopUnder(t);
     const s = split(j);
@@ -2272,23 +2294,11 @@ function gopCells(o, span, d, reach) {
       const i = Math.round((t - s.from) / s.w);
       return i + 1 >= s.k ? s.to : s.from + (i + 1) * s.w;
     }
-    // The boundary nearest `d` further on. Nearest rather than the first one
-    // past it, which would round every cell up and hand a recording with
-    // 0.5 s GOPs a window half as wide again as the menu says.
-    const want = t + d;
     let m = j + 1;
-    while (m < n && gops[m] < want - 1e-9) m++;
-    if (m >= n) return want;
-    // The boundary before it is nearer as often as not -- but never the
-    // cell's own, which would give it no width at all, and never one that
-    // would leave the cell less than half the width it was asked for. Where
-    // the boundaries are dense and then stop, nearest on its own picks the
-    // last of the dense run and draws a sliver beside a full-width cell,
-    // which is the unevenness this is here to stop.
-    if (m - 1 > j && gops[m - 1] - t >= d / 2 && want - gops[m - 1] < gops[m] - want) {
-      return gops[m - 1];
-    }
-    return gops[m];
+    while (m < n && gops[m] < t + min - 1e-9) m++;
+    // Past the last one there is nothing to stand on, so the reel is carried
+    // on at a picture a cell -- the width the blanks past either end want.
+    return m < n ? gops[m] : t + d;
   };
   /// Where the cell before the one beginning at `t` begins.
   const opensBefore = (t) => {
@@ -2299,14 +2309,9 @@ function gopCells(o, span, d, reach) {
       const i = Math.min(s.k, Math.round((t - s.from) / s.w));
       return s.from + Math.max(0, i - 1) * s.w;
     }
-    const want = t - d;
     let m = j;
-    while (m >= 0 && gops[m] > want + 1e-9) m--;
-    if (m < 0) return want;
-    if (m + 1 <= j && t - gops[m + 1] >= d / 2 && gops[m + 1] - want < want - gops[m]) {
-      return gops[m + 1];
-    }
-    return gops[m];
+    while (m >= 0 && gops[m] > t - min + 1e-9) m--;
+    return m >= 0 ? gops[m] : t - d;
   };
 
   // Out from the cell the playhead stands in until the reel covers `reach`
@@ -2631,13 +2636,25 @@ async function refreshStrip(at) {
   // Half the reel: the window, the margin it slides across while playback
   // runs, and a cell over so that there is always something to slide.
   const reach = (view.span * overscan()) / 2 + d;
+  // The narrowest a cell may be drawn, as a stretch of the recording.
+  //
+  // Two limits, whichever is the wider. **A cell has to be visible**: below
+  // [`MIN_CELL_PX`] a cell is the line that divides it from its neighbour and
+  // nothing else, and the access points it stands for are better said by one
+  // cell than by a fence. **And a reel has to be affordable**: every cell is
+  // a picture asked for, carried over and drawn, so a window that holds a
+  // thousand of them is a redraw nobody waits through. At `3 分` on broadcast
+  // material the points are a twentieth of a pixel apart -- the second limit
+  // is what answers that -- and at `6 秒` they are 110 px apart, where
+  // neither bites and every point gets its own cell.
+  const min = Math.max(MIN_CELL_PX / scale, (2 * reach) / MAX_CELLS);
   // Before the walk there are no access points to divide the reel on, so it
   // is cut on an even grid instead. Asked here rather than inside `gopCells`,
   // which cannot tell the difference: `gops` carries the start of every
   // surviving segment whether the walk has been over the recording or not, so
   // an unwalked recording arrives there looking like one with a single
   // boundary at zero -- and a reel cut on that is one cell wide.
-  const cells = walked() ? gopCells(o, view.span, d, reach) : evenCells(o, d, reach);
+  const cells = walked() ? gopCells(o, view.span, d, reach, min) : evenCells(o, d, reach);
   const live = cells.filter((c) => c.live);
   if (!live.length) return;
   // A cell is as wide as the time it covers. The floor is for the pictures
@@ -2932,7 +2949,12 @@ function renderStrip(shots, unit, win) {
     const img = document.createElement("img");
     img.src = s.url;
     const cap = document.createElement("figcaption");
-    cap.textContent = fmt(s.at);
+    // A cell too narrow for its own timecode keeps the bar and loses the
+    // text. Half a timecode is worse than none -- the digits that fit are
+    // the hours, which every cell on the reel shares -- and the bar is what
+    // makes a row of narrow cells read as cells. The reference tool leaves
+    // the same ones blank.
+    cap.textContent = s.px >= CAPTION_PX ? fmt(s.at) : "";
     fig.append(img, cap);
     fig.addEventListener("click", () => seekOut(s.at));
     // Where this cell sits in the recording, for the middle click below. On
