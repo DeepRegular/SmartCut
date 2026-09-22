@@ -2089,9 +2089,7 @@ const reel = el("reel");
 
 /// What the drawn reel holds: its cells, each with the stretch of output time
 /// it stands for and where it sits on the reel in pixels; `px`, how wide the
-/// whole reel is; `vis`, how much time the window shows, which is what says
-/// when the playhead has wandered far enough to want a fresh one; and `rest`,
-/// the place it was drawn for.
+/// whole reel is; and `rest`, the place it was drawn for.
 ///
 /// Pixels rather than shares of a span, because the cells are all one width
 /// and the time behind them is not.
@@ -2624,7 +2622,7 @@ async function refreshStrip(at) {
     }));
     const mid = live[live.length >> 1];
     const unit = mid.b - mid.a;
-    const win = { vis: vis * unit, rest: o, byNearest: false };
+    const win = { rest: o, byNearest: false };
     await fillByGlance(shots, cells, unit, win, view.span);
     return;
   }
@@ -2713,15 +2711,34 @@ async function refreshStrip(at) {
   });
   // what one cell covers, which is what the marks below are drawn against
   const mid = live[live.length >> 1];
-  renderStrip(shots, mid.b - mid.a, {
-    vis: vis * (mid.b - mid.a),
-    rest: o,
-    byNearest: false,
-  });
+  renderStrip(shots, mid.b - mid.a, { rest: o, byNearest: false });
 }
+
+/// How far ahead of the window a frame-divided reel is drawn while something
+/// is playing, in seconds of playback.
+///
+/// The margin every other reel takes from [`overscan`] is measured in
+/// windows, and a window of frames is a third of a second: playback crosses
+/// it three times over while a wider one lasts a minute. So this reel's
+/// margin is measured in playback instead -- a second of it, which is
+/// [`REEL_REFILL`] twice over and leaves the reel redrawn about twice a
+/// second.
+const FRAME_LEAD = 1.0;
 
 /// Frame mode: one cell per picture, with a wide window cached so that
 /// stepping does not pay for a seek and a GOP every time.
+///
+/// **While the playhead is moving the cells are stand-ins.** A cell here is
+/// one frame, and a frame that is not an entry point is a decode: a reel of
+/// them is fifty-odd, which measured 250 to 350 ms on broadcast material --
+/// against a reel that playback slides all the way across in a third of a
+/// second. The strip stood still for a fifth of every half second and then
+/// lurched, and a scroll search was the same thing under the hand. So a
+/// moving playhead gets here what it already gets on a GOP-divided reel (see
+/// [`refreshStrip`]): the picture from the entry point each cell stands
+/// after, which is in memory and costs nothing. The caption stays the cell's
+/// own frame, and the real pictures are decoded the moment the hand comes
+/// off.
 async function refreshFrameStrip(o) {
   const sp = frame();
   // One picture wide here too, so that changing the menu changes how much of
@@ -2729,15 +2746,17 @@ async function refreshFrameStrip(o) {
   const px = cellPx();
   const vis = Math.max(3, Math.ceil(el("strip").clientWidth / px));
   // cells either side of the middle one: the window holds `vis` of them, the
-  // reel that many again for the margin
+  // reel that many again for the margin, and playback a second of its own on
+  // the side it is heading for
   const half = Math.ceil((vis * overscan()) / 2);
+  const lead = playing ? Math.ceil(FRAME_LEAD / sp) : 0;
   const put = (shots, i) =>
     renderStrip(
       shots
-        .slice(i - half, i + half + 1)
+        .slice(i - half, i + half + lead + 1)
         .map((s) => ({ ...s, a: s.at - sp / 2, b: s.at + sp / 2, px })),
       sp,
-      { vis: vis * sp, rest: shots[i].at, byNearest: true }
+      { rest: shots[i].at, byNearest: true }
     );
   if (stripCache) {
     // by nearest picture rather than by index arithmetic: the playhead sits
@@ -2749,14 +2768,56 @@ async function refreshFrameStrip(o) {
       if (t === null) continue;
       if (i < 0 || Math.abs(t - playhead) < Math.abs(stripCache.shots[i].time - playhead)) i = j;
     }
-    if (i >= half && i + half < stripCache.shots.length) {
+    if (i >= half && i + half + lead < stripCache.shots.length) {
       put(stripCache.shots, i);
       return;
     }
   }
+  // The stand-ins. Asked for once each: a reel of frames stands on a handful
+  // of entry points, so one picture answers fifteen cells of it, and asking
+  // per cell would carry the same JPEG across fifteen times.
+  //
+  // The held pictures are what these come out of, so there have to be some:
+  // before the walk there is nothing to stand on and the decode below is all
+  // there is. It is also the only reel there is to draw at that point, and a
+  // recording still being read is not one anybody is playing yet.
+  if (moving() && walked()) {
+    const n = half + lead + half + 1;
+    const times = Array.from({ length: n }, (_, i) => o + (i - half) * sp);
+    const stand = times.map((t) => {
+      if (t < -1e-9 || t > outDur + 1e-9) return null;
+      const j = gopUnder(t);
+      return j < 0 ? null : outToSrc(gops[j]);
+    });
+    const uniq = [...new Set(stand.filter((t) => t !== null))];
+    const token = ++stripToken;
+    let lent;
+    try {
+      lent = uniq.length ? await invoke("thumbs_at", { times: uniq, width: 200 }) : [];
+    } catch (e) {
+      jlog(`thumbs_at: ${e}`);
+      return;
+    }
+    if (token !== stripToken) return;
+    const by = new Map(uniq.map((t, i) => [t, lent[i] ? lent[i].url : null]));
+    // The cells keep their own times: what the caption says, what the marks
+    // below are drawn against and where a click lands are all the frame's,
+    // and only the picture is borrowed.
+    put(
+      times.map((t, i) => ({
+        url: stand[i] === null ? null : by.get(stand[i]),
+        time: stand[i] === null ? null : outToSrc(t),
+        at: t,
+      })),
+      half
+    );
+    // `stripCache` is left alone: it holds real pictures, and the reel it was
+    // built for is the one to go back to when the playhead stops.
+    return;
+  }
   // wide enough that stepping through it finds a reel's worth of pictures
   // either side of the playhead before it has to be built again
-  const n = Math.max(41, 4 * half + 1);
+  const n = Math.max(41, 4 * half + 1) + 2 * lead;
   const first = o - (n >> 1) * sp;
   const times = Array.from({ length: n }, (_, i) => first + i * sp);
   const live = times.map((t) => (t < -1e-9 || t > outDur + 1e-9 ? null : outToSrc(t)));
@@ -3214,15 +3275,48 @@ function anchorPlay(o) {
     Math.abs(o - pred) > 0.3 ? { out: o, wall } : { out: pred + (o - pred) * 0.15, wall };
 }
 
-/// Slide the reel once per repaint, and build a fresh one when the playhead
-/// comes within a quarter-window of the edge of what was drawn -- that margin
-/// is what the round trip for the new pictures runs inside.
+/// How long before the reel runs out of slide a fresh one is asked for, in
+/// seconds of playback. The round trip is a held picture per cell while
+/// something is playing -- tens of milliseconds -- so half a second is slack
+/// rather than a measurement.
+const REEL_REFILL = 0.5;
+
+/// Where the reel stops sliding: the output time at which its right edge
+/// reaches the window's, which is where [`placeReel`] runs into its clamp and
+/// the strip stands still while the playhead goes on.
+///
+/// Read off the drawn cells rather than worked out from the menu, because the
+/// two are not the same thing. A cell is one picture wide whatever stretch of
+/// time it stands for, so a reel of short GOPs is used up in half the time a
+/// reel of long ones is -- and the reel this asks about carries both. The
+/// rule this replaced counted the *time* the playhead had moved since the
+/// reel was drawn, against a window measured from one cell in the middle: on
+/// a recording whose entry points are four seconds apart with scene changes
+/// between them, that window came out three times what the reel could
+/// actually slide, so the strip stood still for a fifth of a second before
+/// every redraw and then jumped.
+function reelEnd() {
+  const w = el("strip").clientWidth;
+  // A reel no wider than the window never slides at all, and a fresh one
+  // would be no wider: nothing to ask for.
+  if (w <= 0 || reelWin.px <= w) return Infinity;
+  const edge = reelWin.px - w / 2;
+  const cells = reelWin.cells;
+  let i = cells.length - 1;
+  while (i > 0 && cells[i].x > edge) i--;
+  const c = cells[i];
+  return c.a + ((edge - c.x) / c.px) * (c.b - c.a);
+}
+
+/// Slide the reel once per repaint, and build a fresh one before the playhead
+/// reaches the edge of what was drawn -- that margin is what the round trip
+/// for the new pictures runs inside.
 function reelTick() {
   reelRaf = 0;
   if (!playing) return;
   const o = playPos();
   placeReel(o);
-  if (!stripBusy && reelWin && Math.abs(o - reelWin.rest) > reelWin.vis / 4) askStrip(o);
+  if (!stripBusy && reelWin && reelEnd() - o < REEL_REFILL) askStrip(o);
   reelRaf = requestAnimationFrame(reelTick);
 }
 
