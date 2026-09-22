@@ -99,6 +99,12 @@ written afresh to fit it -- frame size: 640x360 vs 320x240; frame rate: 29.97
 vs 25; sample rate: 48000 Hz vs 44100 Hz; channels: 2 vs 1.
 ```
 
+The window asks the same question. The `join_fit` command takes the list's
+paths and which of them is the master, and answers, per clip, whether its
+pictures and its sound are written afresh and what differs. The output screen's
+re-encode note asks this before it asks for a plan: the other way round, a clip
+being written afresh from end to end is announced as copied losslessly.
+
 **29.97 and 30 are not the same rate.** The tolerance is a ten-thousandth,
 relative; what it is for is the last figure of a rate that arrived as a
 decimal, and it has to be well under the thousandth that separates 30000/1001

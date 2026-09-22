@@ -3201,6 +3201,103 @@ async fn clip_plan(
     .await
 }
 
+/// One thing a clip of a join does not have in common with the master.
+#[derive(Serialize)]
+struct MismatchInfo {
+    /// Which property differs, by a name that does not move with the prose:
+    /// the window looks it up in its own language. See
+    /// `smartcut_core::conform::What::slug`.
+    what: String,
+    /// What each of them says, as a reader wants it said.
+    master: String,
+    theirs: String,
+}
+
+/// What one clip of a join has to have done to it to go in beside the master.
+#[derive(Serialize)]
+struct FitInfo {
+    /// The recording this is about. The window matches on it rather than on
+    /// the position, because the answer is about a recording -- the same file
+    /// twice in one list gets the same answer twice.
+    path: String,
+    /// Every picture of it decoded and written afresh at the master's shape.
+    video: bool,
+    /// At least one of its sound tracks the same.
+    audio: bool,
+    /// Why, so the window can say more than that it is happening. Empty for
+    /// the master, which is the shape and cannot differ from it.
+    mismatches: Vec<MismatchInfo>,
+}
+
+/// What each clip of a join has to have done to it to go in beside the
+/// master.
+///
+/// **The one thing the output screen could not work out for itself.** A clip
+/// cut on its own is copied bar the partial GOPs at the ends of its ranges,
+/// and that is what [`clip_plan`] answers. A clip written into another
+/// recording's shape has no copy available at any point of it -- every
+/// picture is decoded and made again -- and the plan has nothing to say about
+/// that. Without this the screen showed a seam or two, or said the whole clip
+/// was being copied losslessly, over a run that was re-encoding an hour.
+///
+/// The judgement lives in `smartcut_core::conform` and only there, so that
+/// what the window says and what the engine does cannot differ: this is the
+/// window asking the same function `cut_into` asks.
+#[tauri::command]
+async fn join_fit(
+    paths: Vec<String>,
+    master: usize,
+    app: tauri::AppHandle,
+) -> Result<Vec<FitInfo>, String> {
+    off_thread(move || {
+        use smartcut_core::conform;
+        if paths.is_empty() {
+            return Ok(Vec::new());
+        }
+        // Opened rather than answered from what the list already holds. What
+        // counts as matching is a reading of the streams -- the pixel format,
+        // the colour, the field order, every sound track -- and a row holds
+        // only what a row shows. Every recording in the list has been indexed
+        // by the time this is asked, so each of these opens picks up a seek
+        // index instead of reading the file.
+        let mut sources = Vec::with_capacity(paths.len());
+        for path in &paths {
+            sources.push(scan_cached(&app, path)?.0);
+        }
+        let master = master.min(sources.len() - 1);
+        let shape = &sources[master];
+        Ok(sources
+            .iter()
+            .enumerate()
+            .map(|(n, src)| {
+                let fit = if n == master {
+                    conform::Fit::as_is(shape.audios.len())
+                } else {
+                    conform::fit(shape, src)
+                };
+                FitInfo {
+                    path: paths[n].clone(),
+                    video: fit.video,
+                    audio: fit.audio.iter().any(|&a| a),
+                    mismatches: if n == master {
+                        Vec::new()
+                    } else {
+                        conform::compare(shape, src)
+                            .iter()
+                            .map(|m| MismatchInfo {
+                                what: m.what.slug().to_string(),
+                                master: m.master.clone(),
+                                theirs: m.theirs.clone(),
+                            })
+                            .collect()
+                    },
+                }
+            })
+            .collect())
+    })
+    .await
+}
+
 /// One stream of a recording, as the track menu lists it.
 #[derive(Serialize)]
 struct StreamInfo {
@@ -6844,6 +6941,7 @@ pub fn run() {
             cm_cached,
             stop_batch,
             clip_plan,
+            join_fit,
             tracks,
             clip_thumbs,
             clip_poster,

@@ -3900,9 +3900,17 @@ function codecLabel() {
 /// -- and "the whole clip is copied losslessly" stops being true of the file
 /// the moment the audio is re-encoded from end to end, which a downmix always
 /// is. So the picture's own claim carries this after it.
-function audioNote(clip) {
+///
+/// `fit` is what a join has settled about this row -- a track that does not
+/// match the master's is written afresh however the settings are set, because
+/// a track is declared once and what the stream says has to describe every
+/// frame on it. Said only where the settings have not already said it.
+function audioNote(clip, fit = null) {
   const sound = audioOf(clip);
-  if (!sound || !reencodingAudio()) return "";
+  if (!sound) return "";
+  if (!reencodingAudio()) {
+    return fit && fit.audio ? " " + t("out.audioConformed") : "";
+  }
   const from = sound.channels || 0;
   const to = audioChannelsOut() || from;
   if (from && to && to !== from) {
@@ -4824,6 +4832,74 @@ function masterClip(list = ready()) {
   return list.find((c) => c.id === settings.master) || list[0] || null;
 }
 
+/// What each row of a join has to have done to it to go in beside the master,
+/// or null where the run is not a join.
+///
+/// **The output screen cannot work this out from a plan.** A plan is about
+/// the seams a cut leaves -- the partial GOPs at the ends of each kept range
+/// -- and it is the same plan whether the clip is written on its own or into
+/// another recording's shape. In the second case there is no seam at all:
+/// every picture is decoded and made again. So the question goes to the
+/// engine, which answers it with the same function the cut itself uses. See
+/// `smartcut_core::conform`.
+///
+/// Held as the promise rather than the answer, so that the half-dozen places
+/// that want it while it is still outstanding share the one ask: the settings
+/// screen repaints on every keystroke, and the stage asks again for each row
+/// the writing head reaches.
+let heldFits = null;
+
+function joinFits() {
+  const list = ready();
+  if (!joining() || list.length < 2) {
+    heldFits = null;
+    return Promise.resolve(null);
+  }
+  const paths = list.map((c) => c.path);
+  const master = Math.max(0, list.indexOf(masterClip(list)));
+  const sig = JSON.stringify([paths, master]);
+  if (!heldFits || heldFits.sig !== sig) {
+    // A list that cannot be read is not a reason to stop the screen: it goes
+    // back to saying what it said before this existed, which promises less
+    // but nothing untrue.
+    heldFits = { sig, at: invoke("join_fit", { paths, master }).catch(() => null) };
+  }
+  return heldFits.at;
+}
+
+/// The same, for one clip. Matched on the path, because the answer is about a
+/// recording: the same file twice in one list is the same answer twice.
+async function fitFor(clip) {
+  const all = await joinFits();
+  if (!all || !clip) return null;
+  return all.find((f) => f.path === clip.path) || null;
+}
+
+/// Whether a fit is one worth redrawing for, as a string to compare.
+///
+/// Part of what the stage is showing, beside the clip and its cuts: the same
+/// clip with the same cuts says something different once the master under it
+/// has changed.
+function fitSig(fit) {
+  return fit ? JSON.stringify([fit.video, fit.audio, fit.mismatches]) : null;
+}
+
+/// Which of a fit's differences are about the pictures.
+///
+/// Split because the two are said in different places: the pictures on the
+/// line under the stage, the sound in the note the output settings put after
+/// it. See `audioNote`.
+const SOUND_MISMATCH = ["audioCodec", "audioRate", "audioChannels", "audioTracks"];
+
+/// Why a clip does not match, in one phrase.
+function whyOf(fit, video = true) {
+  if (!fit) return "";
+  return fit.mismatches
+    .filter((m) => SOUND_MISMATCH.includes(m.what) !== video)
+    .map((m) => t("fit.line", { what: t(`fit.${m.what}`), master: m.master, theirs: m.theirs }))
+    .join(t("sep"));
+}
+
 /// What the crossings come to, beside the button that opens them.
 ///
 /// The button alone would say nothing about what is already set: a list of
@@ -4973,7 +5049,8 @@ function renderJoin() {
   // Nothing to join with one row, and nothing to be master of. The box is
   // left live all the same -- a list is built up a row at a time, and a box
   // that could only be ticked once the second row was in would be a box
-  // nobody found.
+  // nobody found. The picker under it is not: it is a question about a join,
+  // and there is no join until the box is ticked and a second row is in.
   const pick = el("out-master");
   const chosen = masterClip(list);
   pick.innerHTML = list
@@ -4981,7 +5058,42 @@ function renderJoin() {
     .join("");
   if (chosen) pick.value = String(chosen.id);
   el("row-master").hidden = !joining() || list.length < 2;
+  paintMasterNote();
   renderCrossing();
+}
+
+/// How much of the list the chosen master costs, beside the picker.
+///
+/// The picker on its own asks a question nobody can answer: twelve episodes
+/// off one recorder are all the same shape and it makes no difference which
+/// is picked, while one clip from a phone among them is an hour of encoding
+/// that turns on this control. So the line says how many rows do not match,
+/// before a run rather than during one.
+///
+/// Painted from the answer when it arrives. The ask is shared and cached --
+/// this runs on every keystroke in the panel -- and a list still being
+/// answered for leaves the line as it was rather than blinking through
+/// "working it out" a dozen times a second.
+let masterNoteToken = 0;
+function paintMasterNote() {
+  const note = el("master-note");
+  if (el("row-master").hidden) {
+    note.textContent = "";
+    return;
+  }
+  const token = ++masterNoteToken;
+  // Something in the gap where there is nothing yet. Only then: a list that
+  // has already been answered for keeps its answer while a repaint goes
+  // round, rather than blinking through this on every keystroke.
+  if (!note.textContent) note.textContent = t("outset.masterLooking");
+  const of = ready().length - 1;
+  joinFits().then((fits) => {
+    if (token !== masterNoteToken || !fits) return;
+    const n = fits.filter((f) => f.video).length;
+    note.textContent = n
+      ? t("outset.masterDiffer", { n, of: fits.length })
+      : t("outset.masterFits", { n: of });
+  });
 }
 
 function renderOutset() {
@@ -5227,7 +5339,7 @@ function paintShotsNote() {
   if (!onShow || !onShow.note) return;
   const box = el("out-shots-note");
   box.className = onShow.note.className;
-  box.textContent = onShow.note.text + audioNote(onShow.clip);
+  box.textContent = onShow.note.text + audioNote(onShow.clip, onShow.fit);
 }
 /// Keyed on the clip *and its cuts*, so coming back after changing one looks
 /// at the new joins rather than the ones that were there before.
@@ -5236,6 +5348,9 @@ let shownReencode = null;
 /// key rather than in it, because `stillHeld` builds the key from the clip
 /// alone and a run's share is not a fact about the clip.
 let shownShare = null;
+/// The same for what a join has settled about the clip, which changes under
+/// it when somebody picks a different master.
+let shownFit = null;
 let shotsToken = 0;
 
 /// Set when a run ends, to keep the stage where the writing head left it.
@@ -5287,12 +5402,19 @@ async function showReencode(clip, share = null) {
   // The share counts as part of what is on show: the same clip with the same
   // cuts says something different once a run has been told to make the
   // pictures fit a disc, and going by the key alone would leave the line the
-  // screen was showing before the button was pressed standing.
+  // screen was showing before the button was pressed standing. What a join
+  // has settled about the clip counts for the same reason, and counts for
+  // more -- it decides whether the plan below describes the file at all --
+  // so it is asked first.
+  const fit = await fitFor(clip);
+  if (token !== shotsToken) return;
   const key = JSON.stringify([clip.id, rangesOf(clip)]);
   const smaller = shrinkShare(clip, share);
-  if (shownReencode === key && shownShare === smaller) return;
+  const shape = fitSig(fit);
+  if (shownReencode === key && shownShare === smaller && shownFit === shape) return;
   shownReencode = key;
   shownShare = smaller;
+  shownFit = shape;
   el("out-shots-note").className = "grow dim";
   el("out-shots-note").textContent = t("out.looking");
   // Nothing to repaint until there is an answer: this runs on into an await,
@@ -5300,25 +5422,41 @@ async function showReencode(clip, share = null) {
   // back over "working it out".
   if (onShow) onShow.note = null;
   stageShot(null, t("out.lookingAt", { clip: clipLabel(clip) }));
+  // Two answers that do not need a plan, and must not wait for one. A clip
+  // with nothing left in it has no segments of any kind; a clip going into
+  // another recording's shape has no copied picture for a segment to sit
+  // among, so the plan is not about the file being written at all.
+  const nothing = { segs: [], shots: [], at: [], out: [], plan: null };
+  if (!rangesOf(clip).length) {
+    onShow = { clip, r: nothing, fit, at: -1, note: {
+      className: "grow dim",
+      text: t("out.allCutNote", { clip: clipLabel(clip) }),
+    } };
+    paintShotsNote();
+    stageShot(null, t("out.allCutStage"));
+    return;
+  }
+  if (fit && fit.video) {
+    onShow = { clip, r: nothing, fit, at: -1, note: {
+      className: "grow conform",
+      text: t("out.conformNote", {
+        clip: clipLabel(clip),
+        master: clipLabel(masterClip()),
+        why: whyOf(fit),
+      }),
+    } };
+    paintShotsNote();
+    // The clip's own poster, as in the lossless case below: there is no seam
+    // to show, and a frame out of the middle of the clip would be standing
+    // for a re-encode that covers every other frame just as much.
+    stageShot(null, t("out.conformStage"), posterOf(clip));
+    return;
+  }
   try {
     const r = await reencodeOf(clip);
     if (token !== shotsToken) return;
-    onShow = { clip, r, at: -1, note: null };
+    onShow = { clip, r, fit, at: -1, note: null };
     const redone = r.segs.reduce((n, g) => n + g.frames, 0);
-    // No segments to re-encode is two different states wearing one face.
-    // Usually it is the best one -- every cut landed on an access point --
-    // but a clip whose cuts cover the whole recording has no segments of any
-    // kind, and saying "the whole clip is copied losslessly" over the top of
-    // that promised a file the engine then refused to write.
-    if (!rangesOf(clip).length) {
-      onShow.note = {
-        className: "grow dim",
-        text: t("out.allCutNote", { clip: clipLabel(clip) }),
-      };
-      paintShotsNote();
-      stageShot(null, t("out.allCutStage"));
-      return;
-    }
     if (!r.segs.length) {
       // Cuts that all landed on access points, or no cuts at all. Worth
       // saying rather than leaving it blank: it is the best outcome this
@@ -5342,9 +5480,15 @@ async function showReencode(clip, share = null) {
       );
       return;
     }
+    // "everything else is copied byte for byte" is the whole point of the
+    // line -- and it is false where the plan came back with no copy in it at
+    // all, which is what a range too short to hold an access point comes to.
+    const copies = r.plan.segments.some((g) => g.kind === "copy");
     onShow.note = {
       className: "grow dim",
-      text: t("out.shots", { clip: clipLabel(clip), n: r.segs.length, frames: redone }),
+      text: copies
+        ? t("out.shots", { clip: clipLabel(clip), n: r.segs.length, frames: redone })
+        : t("out.shotsAll", { clip: clipLabel(clip), frames: redone }),
     };
     paintShotsNote();
     stageShot(0);
@@ -5371,17 +5515,34 @@ async function showReencode(clip, share = null) {
 /// starts: the same plan the frames on the stage below came from. A plan that
 /// could not be read leaves the plain line standing -- it promises nothing,
 /// which is all that can be honestly said there.
-function sayWhatIsWritten(clip, out, share) {
+/// `fit` is what a join has settled about the clip, and `row` says the line is
+/// about one clip of a list being written into one file: it then carries the
+/// clip's name, because "copying the video losslessly" over a join of twelve
+/// recordings does not say which of the twelve it is true of.
+function sayWhatIsWritten(clip, out, share, fit = null, row = false) {
   const name = nameOf(out);
+  // Which family of words this line is drawn from. The two say the same
+  // things about the same run; the join's carry the clip's name as well.
+  const say = (base, said = {}) =>
+    t(row ? `out.join${base}` : `out.writing${base}`, {
+      name,
+      ...(row ? { clip: clipLabel(clip) } : {}),
+      ...said,
+    });
+  // A clip going into another recording's shape is decoded and written afresh
+  // from end to end, and the plan below is not about it: it is about seams,
+  // and such a clip has none. Asked before everything else for that reason.
+  if (fit && fit.video) {
+    el("out-state").textContent = say("Conform");
+    return;
+  }
   // A run that has to fit a disc writes every picture back smaller, and the
-  // plan below has nothing to say about that: it is about the seams, and the
-  // seams are the cheap part of a cut whose whole length is being rewritten.
-  // So this is asked first -- "losslessly" over the top of a transcode
-  // describes a run nobody is having.
+  // plan below has nothing to say about that either: the seams are the cheap
+  // part of a cut whose whole length is being rewritten. So "losslessly" over
+  // the top of a transcode describes a run nobody is having.
   const smaller = shrinkShare(clip, share);
   if (smaller !== null) {
-    el("out-state").textContent =
-      t("out.writingShrink", { name, share: sharePct(smaller) });
+    el("out-state").textContent = say("Shrink", { share: sharePct(smaller) });
     return;
   }
   // The plan this clip is being written to, and not one left over from the
@@ -5393,11 +5554,23 @@ function sayWhatIsWritten(clip, out, share) {
   if (!segs.length) return;
   const redone = segs.filter((g) => g.kind !== "copy").length;
   const text = !segs.some((g) => g.kind === "copy")
-    ? t("out.writingAll", { name })
+    ? say("All")
     : redone === 0
-      ? t("out.writingCopy", { name })
-      : t("out.writingMost", { name, n: redone });
+      ? say("Copy")
+      : say("Most", { n: redone });
   el("out-state").textContent = text;
+}
+
+/// The same line, for the row of a join the writing head has just reached.
+///
+/// Read off what the stage has already worked out for that row rather than
+/// asked again: `showReencode` has just settled the plan and the fit, and
+/// asking for either of them a second time is a second plan and a second set
+/// of decodes for one line of text.
+function sayJoinRow(clip) {
+  if (!writingJoin || writingTables) return;
+  if (!onShow || onShow.clip !== clip) return;
+  sayWhatIsWritten(clip, writingJoin.out, writingJoin.share, onShow.fit, true);
 }
 
 /// Put segment `i` on the stage.
@@ -5506,7 +5679,15 @@ function followJoin(head) {
   // be asked for twice a second for as long as it took to write.
   if (writingJoin.asked !== part.clip) {
     writingJoin.asked = part.clip;
-    showReencode(part.clip, writingJoin.share);
+    const row = part.clip;
+    // And the line at the top with it, once the stage has an answer: what is
+    // being done to the pictures is a different answer for every row of a
+    // join -- one copied, the next written afresh to fit the master's shape
+    // -- and the line used to be settled once, from the first row, and stand
+    // through all of them.
+    showReencode(row, writingJoin.share).then(() => {
+      if (writingJoin && writingJoin.asked === row) sayJoinRow(row);
+    });
   }
   if (!onShow || onShow.clip !== part.clip) return moved;
   const span = Math.max(part.end - part.start, 1e-9);
@@ -5883,18 +6064,26 @@ async function writeJoined(list) {
   // place: see `writingJoin`. The share goes in beside them because the stage
   // is moved from row to row as the head passes, and what a recording's
   // pictures are written at is part of what the stage says about it.
-  writingJoin = { parts: joinParts(list), at: null, asked: list[0], done: 0, share };
+  // `asked` starts at nothing rather than at the first row: the first report
+  // is what puts that row's line up, and a row this already claimed to have
+  // asked for would never get one. The ask itself costs nothing -- the stage
+  // is showing that row already and `showReencode` sees as much.
+  writingJoin = { parts: joinParts(list), at: null, asked: null, done: 0, share, out };
   writingTables = false;
   writingName = nameOf(out);
   for (const c of list) c.out = { state: "waiting", progress: 0, note: t("out.waiting") };
   el("out-state").textContent = t("out.writing", { name: writingName });
   renderOutScreen();
   await showReencode(list[0], share);
-  sayWhatIsWritten(list[0], out, share);
-  // And over the top of it, where there are crossings: what that line says
-  // is what the *first clip's* ranges cost, and a transition is seconds of
-  // encoding that belong to no clip's ranges at all. Said here rather than
-  // folded into the line above, which is the one every other run shows.
+  sayWhatIsWritten(list[0], out, share, onShow && onShow.fit, true);
+  // And over the top of it, where there are crossings: a transition is
+  // seconds of encoding that belong to no clip's ranges at all, so no row's
+  // line will ever mention it. This is the run's own sentence and it stands
+  // until the first report arrives -- which is not the instant it goes up:
+  // every recording of the list is opened and planned before a byte is
+  // written, and on a dozen of them that is the several seconds this is on
+  // screen for. After that the line belongs to the row under the head, which
+  // is the thing that is actually happening.
   const crossings = list.slice(0, -1).filter((c) => c.after && c.after.kind !== "none");
   if (crossings.length) {
     const secs = crossings.reduce((n, c) => n + Number(c.after.seconds || 0), 0);

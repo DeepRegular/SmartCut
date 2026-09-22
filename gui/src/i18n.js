@@ -481,6 +481,10 @@ const CATALOG = {
     "outset.joinedInto": "{path}（クリップ {n} 本をまとめて 1 ファイル）",
     "outset.joinAll": "クリップを結合して出力",
     "outset.master": "基準クリップ:",
+    "outset.masterLooking": "調べています…",
+    "outset.masterFits": "ほかの {n} 本は同じ形式なので、そのままコピーされます",
+    "outset.masterDiffer":
+      "{of} 本中 {n} 本が基準クリップと形式が違うので、全編再エンコードになります",
     "outset.crossHead": "継ぎ目の効果",
     "outset.crossRow": "継ぎ目の効果:",
     "outset.crossClip": "対象クリップ:",
@@ -677,6 +681,26 @@ const CATALOG = {
     // every frame is still rewritten, so "losslessly" would be a lie.
     "out.shrinkNote": "{clip} — 継ぎ目の再エンコードはなし。ディスクに収めるため、全編を元の {share}% のサイズに書き直します",
     "out.shrinkStage": "ディスクに収めるため全編をトランスコード",
+    // 結合のとき、基準クリップと形式が違うクリップは継ぎ目だけでなく全編が
+    // 書き直されます。継ぎ目の計画からは分からないので、別の文言にしています。
+    "out.conformNote":
+      "{clip} — 基準クリップ「{master}」と映像の形式が違うので、全編を再エンコードします（{why}）",
+    "out.conformStage": "基準クリップの形式に合わせて全編を再エンコード",
+    "out.shotsAll": "{clip} — 全 {frames} フレームを再エンコードします（コピーできる区間がありません）",
+    // 形式の違いを 1 件ずつ並べるときの書き方。左がそのクリップの値、右が
+    // 基準クリップの値で、矢印はこれから行う変換の向きです。
+    "fit.line": "{what} {theirs} → {master}",
+    "fit.codec": "コーデック",
+    "fit.size": "画面サイズ",
+    "fit.pixels": "画素形式",
+    "fit.rate": "フレームレート",
+    "fit.scan": "走査方式",
+    "fit.aspect": "画素アスペクト比",
+    "fit.colour": "色",
+    "fit.audioCodec": "音声コーデック",
+    "fit.audioRate": "サンプリング周波数",
+    "fit.audioChannels": "チャンネル数",
+    "fit.audioTracks": "音声トラック数",
     "out.allCutNote": "{clip} — すべてカットされています。書き出すものがありません",
     "out.allCutStage": "すべてカットされています",
     "out.allCut": "すべてカットされています",
@@ -684,6 +708,7 @@ const CATALOG = {
     "out.audioAsCodec": "（音声は {codec} で再エンコードします）",
     "out.audioDownmixed": "（音声は {from} → {to} へダウンミックスして再エンコードします）",
     "out.audioUpmixed": "（音声は {from} → {to} へ広げて再エンコードします）",
+    "out.audioConformed": "（音声も基準クリップに合わせて再エンコードします）",
     "out.shots": "{clip} — {n} 箇所 / {frames} フレーム（ほかはバイト単位でコピー）",
     "out.ovlKind": "再エンコード {i} / {n}",
     "out.ovlNote": "{n} フレーム",
@@ -698,6 +723,16 @@ const CATALOG = {
       "\"{name}\" を出力中: {n} 箇所を再エンコードし、ほかは無劣化でコピーしています…",
     "out.writingAll": "\"{name}\" を出力中: 映像を再エンコードしています…",
     "out.writingShrink": "\"{name}\" を出力中: ディスクに収めるため、映像を元の {share}% のサイズに書き直しています…",
+    // 結合は 1 ファイルなので、状況の行は「いまどのクリップを書いているか」を
+    // 併せて示します。クリップごとに書き方が変わるため、単体出力とは別のキーです。
+    "out.joinCopy": "\"{name}\" を出力中: {clip} は映像を無劣化でコピーしています…",
+    "out.joinMost":
+      "\"{name}\" を出力中: {clip} は {n} 箇所を再エンコードし、ほかは無劣化でコピーしています…",
+    "out.joinAll": "\"{name}\" を出力中: {clip} は映像を再エンコードしています…",
+    "out.joinShrink":
+      "\"{name}\" を出力中: {clip} はディスクに収めるため、映像を元の {share}% のサイズに書き直しています…",
+    "out.joinConform":
+      "\"{name}\" を出力中: {clip} は基準クリップの形式に合わせて全編を書き直しています…",
     "out.writingTables": "\"{name}\" を仕上げ中: 放送の番組情報を書き戻しています…",
     "out.done": "完了{extra}",
     "out.doneKeyframes": " / キーフレーム {n} 個",
@@ -1464,6 +1499,10 @@ const CATALOG = {
     "outset.joinedInto": "{path} ({n} clips, written as one)",
     "outset.joinAll": "Write the list as one file",
     "outset.master": "Master clip:",
+    "outset.masterLooking": "Working it out…",
+    "outset.masterFits": "The other {n} clip{n?s} are this shape, so they are copied",
+    "outset.masterDiffer":
+      "{n} of {of} clips are not this shape, so every picture of them is written afresh",
     "outset.crossHead": "Between the clips",
     "outset.crossRow": "Between the clips:",
     "outset.crossClip": "After clip:",
@@ -1646,6 +1685,22 @@ const CATALOG = {
     "out.losslessStage": "Nothing re-encoded — the whole clip is copied losslessly",
     "out.shrinkNote": "{clip} — no seam to re-encode, but the whole clip is transcoded to {share}% to fit the disc",
     "out.shrinkStage": "The whole clip is transcoded to fit the disc",
+    "out.conformNote":
+      "{clip} — its pictures are not the shape of the master ({master}), so every one of them is written afresh ({why})",
+    "out.conformStage": "Written afresh at the master's shape",
+    "out.shotsAll": "{clip} — all {frames} frame{frames?s} re-encoded (no stretch of it can be copied)",
+    "fit.line": "{what} {theirs} → {master}",
+    "fit.codec": "codec",
+    "fit.size": "frame size",
+    "fit.pixels": "pixel format",
+    "fit.rate": "frame rate",
+    "fit.scan": "scan",
+    "fit.aspect": "pixel aspect",
+    "fit.colour": "colour",
+    "fit.audioCodec": "audio codec",
+    "fit.audioRate": "sample rate",
+    "fit.audioChannels": "channels",
+    "fit.audioTracks": "audio tracks",
     "out.allCutNote": "{clip} — everything has been cut, so there is nothing to write",
     "out.allCutStage": "Everything has been cut",
     "out.allCut": "Everything has been cut",
@@ -1653,6 +1708,7 @@ const CATALOG = {
     "out.audioAsCodec": "(the audio is re-encoded as {codec})",
     "out.audioDownmixed": "(the audio is downmixed {from} → {to} and re-encoded)",
     "out.audioUpmixed": "(the audio is spread {from} → {to} and re-encoded)",
+    "out.audioConformed": "(the sound is re-encoded to match the master as well)",
     "out.shots": "{clip} — {n} place{n?s} / {frames} frame{frames?s} (everything else is copied byte for byte)",
     "out.ovlKind": "Re-encode {i} of {n}",
     "out.ovlNote": "{n} frame{n?s}",
@@ -1667,6 +1723,13 @@ const CATALOG = {
       "Writing \"{name}\": re-encoding {n} place{n?s}, copying the rest losslessly…",
     "out.writingAll": "Writing \"{name}\": re-encoding the video…",
     "out.writingShrink": "Writing \"{name}\": transcoding the video to {share}% to fit the disc…",
+    "out.joinCopy": "Writing \"{name}\": {clip} — copying the video losslessly…",
+    "out.joinMost":
+      "Writing \"{name}\": {clip} — re-encoding {n} place{n?s}, copying the rest losslessly…",
+    "out.joinAll": "Writing \"{name}\": {clip} — re-encoding the video…",
+    "out.joinShrink":
+      "Writing \"{name}\": {clip} — transcoding the pictures to {share}% to fit the disc…",
+    "out.joinConform": "Writing \"{name}\": {clip} — written afresh at the master's shape…",
     "out.writingTables": "Finishing \"{name}\": putting the broadcast's own tables back…",
     "out.done": "Done{extra}",
     "out.doneKeyframes": " / {n} keyframe{n?s}",

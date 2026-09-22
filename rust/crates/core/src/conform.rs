@@ -97,6 +97,27 @@ impl What {
         !matches!(self, What::Sound(..) | What::SoundTracks)
     }
 
+    /// A name for this property that does not move with the prose.
+    ///
+    /// [`Self::describe`] is the English of it, and a window that has to say
+    /// the same thing in another language cannot look a sentence up. So the
+    /// two are separate: this one is a key, and it is allowed to be terse.
+    pub fn slug(self) -> &'static str {
+        match self {
+            What::Codec => "codec",
+            What::Size => "size",
+            What::Pixels => "pixels",
+            What::Rate => "rate",
+            What::Scan => "scan",
+            What::Aspect => "aspect",
+            What::Colour => "colour",
+            What::Sound(_, Sound::Codec) => "audioCodec",
+            What::Sound(_, Sound::Rate) => "audioRate",
+            What::Sound(_, Sound::Channels) => "audioChannels",
+            What::SoundTracks => "audioTracks",
+        }
+    }
+
     pub fn describe(self) -> &'static str {
         match self {
             What::Codec => "codec",

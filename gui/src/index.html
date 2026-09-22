@@ -405,6 +405,11 @@
           <div class="row" id="row-master" hidden>
             <span data-i18n="outset.master">基準クリップ:</span>
             <span class="drop"><select id="out-master"></select></span>
+            <!-- What picking this one costs the others, which is the whole
+                 question the picker raises: a row that is not this shape is
+                 decoded and written afresh, and nothing else on this screen
+                 would say so before the run started. -->
+            <span class="dim" id="master-note"></span>
           </div>
           <!-- What happens where one clip gives way to the next, which is
                settled in a window of its own: see `cross.html`. It used to be
