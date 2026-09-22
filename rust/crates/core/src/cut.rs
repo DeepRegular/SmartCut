@@ -3068,9 +3068,14 @@ struct Grid {
 impl Grid {
     fn of(src: &Source) -> Grid {
         let v = &src.video;
-        if !v.variable_rate {
-            let (num, den) = frame_rate_parts(v.frame_rate);
-            return Grid { num, den, sub: 1 };
+        Grid::from_rates(v.frame_rate, v.base_rate, v.variable_rate)
+    }
+
+    /// The grid a recording's two rates and the walk's answer come to.
+    fn from_rates(frame_rate: f64, base_rate: f64, variable: bool) -> Grid {
+        if !variable {
+            let (num, den) = frame_rate_parts(frame_rate);
+            return Grid::of_rate(num, den, 1);
         }
         // **A declared rate above the average is not a frame rate.** For an
         // interlaced recording `r_frame_rate` is the rate of its *fields*,
@@ -3084,9 +3089,45 @@ impl Grid {
         // which is what a recording that varies by holding a picture wanted
         // anyway: there the two agree, and all that is needed is the
         // finer division.
-        let usable = v.base_rate > 0.0 && v.base_rate <= v.frame_rate * 1.01;
-        let (num, den) = frame_rate_parts(if usable { v.base_rate } else { v.frame_rate });
-        Grid { num, den, sub: FINE }
+        let usable = base_rate > 0.0 && base_rate <= frame_rate * 1.01;
+        let (num, den) = frame_rate_parts(if usable { base_rate } else { frame_rate });
+        Grid::of_rate(num, den, FINE)
+    }
+
+    /// A grid of that rate, counted in units a container can state.
+    ///
+    /// **An MP4 counts its ticks in a 32-bit number**, and the timescale of
+    /// `2 * num * sub` a round rate comes to is nowhere near it: 60000 for
+    /// 29.97, and 1,536,000 for the finest grid this builds. A rate that is
+    /// not round is another matter. The average of a recording that holds a
+    /// picture whenever the light drops is a fraction with nothing round in
+    /// it -- one phone recording here averages 2033620773/34906711 -- and
+    /// twice that numerator is past what the muxer will take. What the
+    /// caller was told is `Numerical result out of range`, with no output
+    /// written and nothing naming the rate or the container.
+    ///
+    /// So the rate is approximated until the timescale fits, which costs
+    /// nothing worth counting: the nearest rational under the bound is
+    /// 158226409/2715926, which differs from the average in the thirteenth
+    /// figure. The rate being approximated is itself an average over a
+    /// recording that never ran at it, and the pictures are placed by their
+    /// own timestamps rather than by counting this rate off, so what the
+    /// approximation moves is the size of a tick and not where anything
+    /// lands.
+    fn of_rate(num: i64, den: i64, sub: i64) -> Grid {
+        let most = i64::from(i32::MAX) / (2 * sub);
+        if num <= most {
+            return Grid { num, den, sub };
+        }
+        let (mut n, mut d) = (0i32, 0i32);
+        // Bounds both terms, which is what is wanted: a frame rate is over
+        // 1, so holding the numerator down holds the denominator down too.
+        unsafe { ff::ffi::av_reduce(&mut n, &mut d, num, den, most) };
+        Grid {
+            num: i64::from(n).max(1),
+            den: i64::from(d).max(1),
+            sub,
+        }
     }
 
     /// Ticks per second in the output's own time base.
@@ -6235,13 +6276,7 @@ mod tests {
     /// A grid from the two rates and whether the walk called the recording
     /// variable, without a whole `Source` to hang them off.
     fn grid(frame_rate: f64, base_rate: f64, variable: bool) -> Grid {
-        if !variable {
-            let (num, den) = frame_rate_parts(frame_rate);
-            return Grid { num, den, sub: 1 };
-        }
-        let usable = base_rate > 0.0 && base_rate <= frame_rate * 1.01;
-        let (num, den) = frame_rate_parts(if usable { base_rate } else { frame_rate });
-        Grid { num, den, sub: FINE }
+        Grid::from_rates(frame_rate, base_rate, variable)
     }
 
     /// A constant recording is counted in whole fields of its own rate, and
@@ -6287,6 +6322,28 @@ mod tests {
         let avg = 30000.0 / 1001.0;
         let g = grid(avg, 0.0, true);
         assert_eq!(g.timescale(), 2 * 30000 * FINE);
+    }
+
+    /// **A rate that is not round has a numerator to match**, and the
+    /// timescale twice it comes to is past what an MP4 can state. A phone
+    /// recording at 60 that holds a picture whenever the light drops
+    /// averages this, and it used to be refused by the muxer with
+    /// `Numerical result out of range` and no output at all.
+    #[test]
+    fn an_unround_rate_still_fits_what_a_container_can_state() {
+        let avg = 2033620773.0 / 34906711.0;
+        for (g, sub) in [(grid(avg, 60.0, false), 1), (grid(avg, 0.0, true), FINE)] {
+            assert_eq!(g.sub, sub);
+            assert!(
+                g.timescale() <= i64::from(i32::MAX),
+                "timescale {} at sub {sub}",
+                g.timescale(),
+            );
+            // And the rate it settled on is the same rate: a part in a
+            // billion of it, which is under a nanosecond a second.
+            let rate = g.num as f64 / g.den as f64;
+            assert!((rate - avg).abs() / avg < 1e-9, "rate {rate} against {avg}");
+        }
     }
 
     /// What the output settings screen offers, which is what it asks about.

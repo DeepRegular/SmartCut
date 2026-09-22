@@ -326,6 +326,43 @@ report the same counts, the same first timestamps and the same jitter of zero
 as before, and `tests/run_vfr_tests.sh` has a constant-rate control in it for
 the same reason.
 
+### A rate with nothing round in it, and the ticks a container can state
+
+The output timeline is counted in `2 * num * sub` ticks a second, where `num`
+is the numerator of the rate it is built on. A round rate leaves that nowhere
+near any limit: 60000 ticks for 29.97, and 1,536,000 for the finest grid
+[`Grid`] builds. A rate that is not round is another matter. The average of a
+recording that holds a picture whenever the light drops is a fraction with
+nothing round in it -- one phone recording here averages 2033620773/34906711
+-- and twice that numerator is over four billion, which is past the 32-bit
+number an MP4 states its timescale in.
+
+**What that failure looks like is a broken recording.** `avformat_write_header`
+answers AVERROR(ERANGE), and the line the caller gets is `Numerical result out
+of range`, naming neither the rate nor the container, with no output written at
+all. The same recording writes to a `.ts` and to a `.mkv`, each of which counts
+its own ticks, so it reads as something wrong with MP4 rather than something
+wrong with the rate. `SMARTCUT_FFMPEG_LOG=2` is what says
+`video_track_timescale` was out of range, and it is off by default.
+
+So [`Grid`] approximates the rate until the timescale fits, and only then:
+where it already fits the terms are untouched and the output is what it was,
+byte for byte. For the recording above the nearest rational under the bound is
+158226409/2715926, which differs from the average in the thirteenth figure, and
+nothing moves as a result. A picture is placed by its own timestamp rather than
+by counting this rate off, so what the approximation changes is the size of a
+tick.
+
+**Five phone recordings say what this is worth**, three H.264 and two HEVC, all
+declaring 60 and averaging 56.59 to 59.98 by holding a picture in the dark, one
+of them for four frames at a time. One is the recording that could not be
+written; the four that already fitted come out hash for hash as before. Across
+the five, every range cut keeps the pictures the recording had in it, holds
+included -- 3,438 of 3,438 on the one that used to fail, its 151 held pictures
+still held -- with no picture more than 11 ms from where the recording had it,
+and sound and pictures ending within a frame of each other over a
+fifteen-minute range.
+
 [`held_to_the_end`]: ../../rust/crates/core/src/cut.rs
 [`Grid`]: ../../rust/crates/core/src/cut.rs
 
