@@ -389,18 +389,22 @@
                is a question about the shape of the run and not about what
                the files are called, so it belongs to the format panel and
                not to the naming rows it used to sit under -- and it is the
-               row the panel under it hangs on: a list written as one file is
-               a list with joins in it, and 継ぎ目の効果 has nothing to describe
-               until this is ticked. The master beside it, because the two are
-               one question: a file made of several recordings has to be one
-               shape, and that is the row it takes it from. -->
+               row the two rows under it hang on: a list written as one file
+               is a list with joins in it, and neither 基準クリップ nor
+               継ぎ目の効果 has anything to describe until this is ticked. -->
           <div class="row" id="row-join">
             <label class="opt"><input id="out-join" type="checkbox" />
               <span data-i18n="outset.joinAll">クリップを結合して出力</span></label>
-            <span class="seq" id="row-master">
-              <span class="lbl" data-i18n="outset.master">基準クリップ:</span>
-              <span class="drop"><select id="out-master"></select></span>
-            </span>
+          </div>
+          <!-- Which row the joined file takes its shape from. On screen only
+               while the box above is ticked, the way 継ぎ目の効果 under it is:
+               a file per row has no one shape to settle, so there is nothing
+               here to answer. A row of its own rather than a second control
+               beside the box, so that the name in it has the width every
+               other picker in the panel has. -->
+          <div class="row" id="row-master" hidden>
+            <span data-i18n="outset.master">基準クリップ:</span>
+            <span class="drop"><select id="out-master"></select></span>
           </div>
           <!-- What happens where one clip gives way to the next, which is
                settled in a window of its own: see `cross.html`. It used to be

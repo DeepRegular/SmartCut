@@ -1360,14 +1360,6 @@ input[type="number"]::-webkit-outer-spin-button {
    above it. Both numbers are the rules above: see `.row > span:first-child`
    and `.row`. */
 #row-join { padding-left: calc(132px + 8px); }
-/* 基準クリップ and its picker, beside the box that turns joining on. They were
-   a span of inline parts, so the picker dropped under its own label as soon
-   as the name in it was longer than the room left in the row -- which a
-   broadcast recording's name always is, and which left 結合 two lines tall.
-   A flex line of its own instead: the label keeps its width and the picker
-   gives way, the way every other picker in these rows does. */
-#row-master { display: flex; align-items: center; gap: 5px; min-width: 0; }
-#row-master .lbl { flex: none; min-width: 0; }
 /* A row whose control is taller than one line. The label sits at the top of
    it rather than halfway down the box. */
 .row.tall { align-items: flex-start; }

@@ -815,7 +815,7 @@ What is set on either tab stays there when you switch.
 | Field | |
 |---|---|
 | **Write the list as one file** | In the **Output format** panel above. Off, the run writes one file per row, which is what it has always done. On, the whole list becomes a single output, in the order the rows are in, named after the first row. See [Joining the list into one file](#joining-the-list-into-one-file) |
-| **Master clip** | Beside the box, and only while it is ticked. Which row the joined file takes its shape from: its frame size, its rate, its codec, its sound tracks |
+| **Master clip** | Under the box, and only while it is ticked. Which row the joined file takes its shape from: its frame size, its rate, its codec, its sound tracks |
 | **Between the clips** | In the **Output format** panel above, and only while the list is being joined. `Transition…` opens a window of its own. See [Transitions between the clips](#transitions-between-the-clips) |
 | **Output folder** | Empty means alongside the input. Use `Browse`, or type a path (an SMB path is fine) |
 | **Subfolder** | A folder of that name under the output folder, which is where the run writes. Offered where there is more than one file. The name is filled in the first time you look: the disc's name, or the project's, or else today's date. Emptied, the run writes straight into the folder above. **A folder of that name already there gets a branch number** — `night`, then `night-2`, `night-3` — so a second run never lands on the first one's files. The field keeps the name you gave; `already there → night-2` beside it says where the run will actually write |
