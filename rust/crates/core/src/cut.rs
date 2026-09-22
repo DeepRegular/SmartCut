@@ -3537,37 +3537,65 @@ fn reencode_segment(
 /// puts its captions at 0x1110, inside the range the sound is numbered from,
 /// and this does the same. Written into one run, as this did before, a
 /// recording carrying both had the second kind numbered after the first.
+/// **A stream is asked about by what it is and which one it is, not by the
+/// number it arrived on.** This was a map from the recording's own PID to
+/// the one it was written on, which is exactly right for a recording that
+/// has PIDs and answers nothing for one that has not. A Matroska file has
+/// none -- libavformat leaves every stream's id at nought -- so the
+/// pictures and the sound both asked the map about stream 0, both were
+/// given 0x1011, and the muxer refused two streams on one PID with
+/// `Invalid argument` and nothing else. Every `.m2ts` and every disc
+/// written out of a `.mkv` failed that way, while a `.ts` out of the same
+/// file was fine, because a `.ts` keeps what the recording had and a
+/// recording with nothing has nothing to keep.
 struct Pids {
-    moved: Vec<(i32, i32)>,
+    /// Whether the streams are being numbered the way a disc numbers them.
+    bluray: bool,
 }
 
 impl Pids {
     /// The recording's own numbering, which is what a `.ts` keeps.
     fn kept() -> Pids {
-        Pids { moved: Vec::new() }
+        Pids { bluray: false }
     }
 
-    /// Blu-ray's numbering, in the order the streams will be written.
-    fn bluray(video: i32, audios: &[i32], captions: &[i32], graphics: &[i32]) -> Pids {
-        let mut moved = vec![(video, 0x1011)];
-        for (i, pid) in audios.iter().enumerate() {
-            moved.push((*pid, 0x1100 + i as i32));
-        }
-        for (i, pid) in captions.iter().enumerate() {
-            moved.push((*pid, 0x1110 + i as i32));
-        }
-        for (i, pid) in graphics.iter().enumerate() {
-            moved.push((*pid, 0x1200 + i as i32));
-        }
-        Pids { moved }
+    /// Blu-ray's numbering, by the order the streams are written in.
+    fn bluray() -> Pids {
+        Pids { bluray: true }
     }
 
-    /// Where the stream that arrived on `was` is written.
-    fn out(&self, was: i32) -> i32 {
-        self.moved
-            .iter()
-            .find(|(from, _)| *from == was)
-            .map_or(was, |(_, to)| *to)
+    /// Where the pictures go.
+    fn video(&self, was: i32) -> i32 {
+        if self.bluray {
+            0x1011
+        } else {
+            was
+        }
+    }
+
+    /// Where the `nth` sound track goes, counting from nought in the order
+    /// the tracks are written.
+    fn audio(&self, nth: usize, was: i32) -> i32 {
+        self.nth(0x1100, nth, was)
+    }
+
+    /// And the `nth` of a broadcast's own captions.
+    fn caption(&self, nth: usize, was: i32) -> i32 {
+        self.nth(0x1110, nth, was)
+    }
+
+    /// And the `nth` stream of subtitles a disc draws, which the converted
+    /// ones are numbered on after the carried ones.
+    fn graphics(&self, nth: usize, was: i32) -> i32 {
+        self.nth(0x1200, nth, was)
+    }
+
+    fn nth(&self, first: i32, nth: usize, was: i32) -> i32 {
+        if self.bluray {
+            first + nth as i32
+        } else {
+            was
+        }
     }
 }
 
@@ -4408,12 +4436,12 @@ fn graft_tables(
     // reason to, so where the cut is a disc's it is added here. The same two
     // bytes the clip index will carry about the same stream go in with it,
     // which is what a recorder's own disc puts there.
-    let registration = if pids.moved.is_empty() {
+    let registration = if !pids.bluray {
         Vec::new()
     } else {
         crate::si::hdmv_registration(
             service
-                .stream(pids.out(video_pid) as u16)
+                .stream(pids.video(video_pid) as u16)
                 .or_else(|| service.stream(video_pid as u16))
                 .map_or_else(
                     || crate::bdav::video_coding(&src.video.codec),
@@ -4423,16 +4451,16 @@ fn graft_tables(
         )
     };
     let mut streams = vec![crate::si::GraftStream {
-        pid: pids.out(video_pid) as u16,
+        pid: pids.video(video_pid) as u16,
         was: video_pid as u16,
         faithful: true,
         declared: None,
         language: None,
         extra: registration,
     }];
-    for setup in setups {
+    for (nth, setup) in setups.iter().enumerate() {
         streams.push(crate::si::GraftStream {
-            pid: pids.out(setup.info.pid) as u16,
+            pid: pids.audio(nth, setup.info.pid) as u16,
             was: setup.info.pid as u16,
             // A folded track no longer has the channels the recording's own
             // audio component descriptor names, and saying it does is worse
@@ -4444,9 +4472,9 @@ fn graft_tables(
             extra: Vec::new(),
         });
     }
-    for c in captions {
+    for (nth, c) in captions.iter().enumerate() {
         streams.push(crate::si::GraftStream {
-            pid: pids.out(c.pid) as u16,
+            pid: pids.caption(nth, c.pid) as u16,
             was: c.pid as u16,
             faithful: true,
             declared: None,
@@ -4464,9 +4492,9 @@ fn graft_tables(
     // 0x90 only in a stream that has registered itself as HDMV, so the
     // registration goes in with it; where the recording's own map already
     // carried one, this adds nothing. See [`crate::si::Declared`].
-    for g in graphics {
+    for (nth, g) in graphics.iter().enumerate() {
         streams.push(crate::si::GraftStream {
-            pid: pids.out(g.pid) as u16,
+            pid: pids.graphics(nth, g.pid) as u16,
             was: g.pid as u16,
             faithful: true,
             declared: Some(crate::si::Declared {
@@ -4482,9 +4510,9 @@ fn graft_tables(
     // name the same way -- and here there is no recording's own entry to
     // fall back on, since the stream is this program's own. See
     // [`Subtitles`].
-    for c in converted {
+    for (nth, c) in converted.iter().enumerate() {
         streams.push(crate::si::GraftStream {
-            pid: pids.out(c.id) as u16,
+            pid: pids.graphics(graphics.len() + nth, c.id) as u16,
             was: c.id as u16,
             faithful: true,
             declared: Some(crate::si::Declared {
@@ -4555,7 +4583,7 @@ fn graft_tables(
         &crate::si::Graft {
             service,
             streams,
-            pcr_pid: pids.out(video_pid) as u16,
+            pcr_pid: pids.video(video_pid) as u16,
             ranges,
             tables,
             input: (!data.is_empty()).then_some(&src.input),
@@ -4747,25 +4775,11 @@ pub fn cut_with_progress(
     }
     // And where each of them goes. The recording's own PIDs, unless what is
     // being written is a Blu-ray's own framing; see [`Pids`].
+    // A converted subtitle stream is drawn the way a disc draws one, so it
+    // is numbered with those, after the ones the recording carried. See
+    // [`Subtitles`].
     let pids = if writing_m2ts(output) {
-        Pids::bluray(
-            video_pid,
-            &audios.iter().map(|a| a.pid).collect::<Vec<_>>(),
-            &captions.iter().map(|c| c.pid).collect::<Vec<_>>(),
-            &graphics
-                .iter()
-                .map(|g| g.pid)
-                // A converted subtitle stream is drawn the way a disc draws
-                // one, so it is numbered with those, from the id the disc
-                // knew it by. See [`Subtitles`].
-                .chain(
-                    inside
-                        .then(|| subpictures.iter().map(|s| s.id))
-                        .into_iter()
-                        .flatten(),
-                )
-                .collect::<Vec<_>>(),
-        )
+        Pids::bluray()
     } else {
         Pids::kept()
     };
@@ -4898,7 +4912,7 @@ pub fn cut_with_progress(
             // is being kept. Blu-ray's numbering is asked for stream by
             // stream, and its map has a PID of its own that the muxer
             // decides; see [`Pids`].
-            if pids.moved.is_empty() {
+            if !pids.bluray {
                 if l.first_pid > 0 {
                     muxer_opts.set("mpegts_start_pid", &first_pid);
                 }
@@ -5064,7 +5078,7 @@ pub fn cut_with_progress(
                 (Some(_), "hevc") => u32::from_le_bytes(*b"hev1"),
                 _ => 0,
             };
-            set_pid(&mut ost, to_ts, pids.out(video_pid));
+            set_pid(&mut ost, to_ts, pids.video(video_pid));
         }
     }
     // A fade needs sound this program is writing. A track copied through is
@@ -5086,7 +5100,7 @@ pub fn cut_with_progress(
     // Sound rides along beside the pictures: one output track for each the
     // recording carries, each copied packet for packet.
     let mut audio_pending: Vec<(usize, Option<crate::audio::Reencoder>)> = Vec::new();
-    for setup in &setups {
+    for (nth, setup) in setups.iter().enumerate() {
         let params = ictx
             .stream(setup.info.stream_index)
             .ok_or_else(|| anyhow!("audio stream {} vanished", setup.info.stream_index))?
@@ -5152,7 +5166,7 @@ pub fn cut_with_progress(
         let out_index = ost.index();
         unsafe {
             (*ost.parameters().as_mut_ptr()).codec_tag = 0;
-            set_pid(&mut ost, to_ts, pids.out(setup.info.pid));
+            set_pid(&mut ost, to_ts, pids.audio(nth, setup.info.pid));
         }
         audio_pending.push((out_index, reencoder));
     }
@@ -5162,7 +5176,7 @@ pub fn cut_with_progress(
     // as it arrived. The muxer knows this codec and writes the descriptors
     // that say a Japanese player should look here for subtitles.
     let mut caption_pending: Vec<usize> = Vec::new();
-    for info in &captions {
+    for (nth, info) in captions.iter().enumerate() {
         let params = ictx
             .stream(info.stream_index)
             .ok_or_else(|| anyhow!("caption stream {} vanished", info.stream_index))?
@@ -5178,7 +5192,7 @@ pub fn cut_with_progress(
         let out_index = ost.index();
         unsafe {
             (*ost.parameters().as_mut_ptr()).codec_tag = 0;
-            set_pid(&mut ost, to_ts, pids.out(info.pid));
+            set_pid(&mut ost, to_ts, pids.caption(nth, info.pid));
         }
         caption_pending.push(out_index);
     }
@@ -5191,7 +5205,7 @@ pub fn cut_with_progress(
     // carried, declared, and invisible. The map written over the muxer's own
     // says what they are; see [`declared_as`] and [`crate::si::Declared`].
     let mut graphics_pending: Vec<usize> = Vec::new();
-    for info in &graphics {
+    for (nth, info) in graphics.iter().enumerate() {
         let params = ictx
             .stream(info.stream_index)
             .ok_or_else(|| anyhow!("graphics stream {} vanished", info.stream_index))?
@@ -5207,7 +5221,7 @@ pub fn cut_with_progress(
         let out_index = ost.index();
         unsafe {
             (*ost.parameters().as_mut_ptr()).codec_tag = 0;
-            set_pid(&mut ost, to_ts, pids.out(info.pid));
+            set_pid(&mut ost, to_ts, pids.graphics(nth, info.pid));
         }
         graphics_pending.push(out_index);
     }
@@ -5226,7 +5240,7 @@ pub fn cut_with_progress(
         converting.extend(subpictures.iter().map(|info| (info.clone(), None)));
     }
     if inside && to_ts {
-        for info in &subpictures {
+        for (nth, info) in subpictures.iter().enumerate() {
             let mut ost = octx.add_stream(ff::encoder::find(ff::codec::Id::None))?;
             ost.set_time_base(ff::Rational::new(1, 90_000));
             if let Some(lang) = &info.language {
@@ -5242,7 +5256,7 @@ pub fn cut_with_progress(
                 (*p).width = src.video.width as i32;
                 (*p).height = src.video.height as i32;
                 (*p).codec_tag = 0;
-                set_pid(&mut ost, to_ts, pids.out(info.id));
+                set_pid(&mut ost, to_ts, pids.graphics(graphics.len() + nth, info.id));
             }
             converting.push((info.clone(), Some(out_index)));
         }
@@ -5898,7 +5912,7 @@ pub fn cut_with_progress(
              stream carries, on {}. The pixels and the colours are the disc's; what \
              changed is how they are spelled.",
             c.shown,
-            crate::track_name(true, pids.out(c.id), 0),
+            crate::track_name(true, pids.graphics(c.track.saturating_sub(graphics.len()), c.id), 0),
         );
     }
 
@@ -6022,7 +6036,7 @@ pub fn cut_with_progress(
     let own_map = unnamed
         .then(|| {
             let at = crate::input::Input::plain(output);
-            crate::si::read_service(&at, pids.out(video_pid) as u16, &[])
+            crate::si::read_service(&at, pids.video(video_pid) as u16, &[])
                 .map_err(|e| eprintln!("note: {output} cannot be read back to name its sound: {e}"))
                 .ok()
         })
@@ -6096,6 +6110,28 @@ pub fn cut_with_progress(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Two streams of a recording that has no PIDs of its own -- a Matroska
+    /// file, where libavformat leaves every stream's id at nought -- have to
+    /// come out on two PIDs all the same. Asked by the number they arrived
+    /// on, as this was, both were given the pictures' 0x1011 and the muxer
+    /// refused the pair with `Invalid argument`.
+    #[test]
+    fn a_disc_numbers_its_streams_by_position() {
+        let disc = Pids::bluray();
+        assert_eq!(disc.video(0), 0x1011);
+        assert_eq!((disc.audio(0, 0), disc.audio(1, 0)), (0x1100, 0x1101));
+        assert_eq!(disc.caption(0, 0), 0x1110);
+        // The subtitles converted from a DVD's are numbered after the ones
+        // the recording carried, in the same run.
+        assert_eq!((disc.graphics(0, 0), disc.graphics(1, 0)), (0x1200, 0x1201));
+        // And a `.ts` keeps whatever the recording had, which for that same
+        // Matroska file is nothing at all: the muxer numbers them itself.
+        let kept = Pids::kept();
+        assert_eq!(kept.video(0x100), 0x100);
+        assert_eq!(kept.audio(1, 0x101), 0x101);
+        assert_eq!(kept.graphics(0, 0), 0);
+    }
 
     /// A grid from the two rates and whether the walk called the recording
     /// variable, without a whole `Source` to hang them off.

@@ -79,6 +79,19 @@ something nothing can read them as. A recorder's own disc puts its captions at
 0x1110, inside the range the sound is numbered from, and this now does the
 same.
 
+**A stream is asked about by which one it is, not by the number it arrived
+on.** `Pids` was a map from the recording's own PID to the one the stream was
+written on, which answers perfectly for a recording that has PIDs and answers
+nothing for one that has not. A Matroska file has none — libavformat leaves
+every stream's id at nought — so the pictures and the sound both asked about
+stream 0, both were handed 0x1011, and the muxer refused two streams on one
+PID with `Invalid argument` and no more. **Every disc and every `.m2ts`
+written out of a `.mkv` failed that way**, while a `.ts` out of the same file
+was fine, because a `.ts` keeps what the recording had and a recording with
+nothing has nothing to keep. It is numbered by position now, which is what the
+table above was always describing; a disc written from a recording that does
+have PIDs comes out byte for byte as it did before.
+
 **The clock gets a PID of its own.** libavformat writes the clock reference
 into the adaptation field of the pictures, which is where a broadcast carries
 it; every reference disc here — a recorder's own and an authoring tool's alike
