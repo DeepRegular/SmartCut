@@ -529,7 +529,7 @@ body.zoom { padding: 0; }
    one does nothing here, and the arrow it drew is the one a window edge draws.
    A pointer that says "resize" over the middle of a picture is worse than a
    pointer that says nothing. */
-.strip { overflow: hidden; min-height: 78px; position: relative; }
+.strip { overflow: hidden; min-height: 86px; position: relative; }
 /* The cells hang on a reel wider than the window shows, so following the
    playhead during playback is a transform and not a re-layout. */
 .reel { display: flex; gap: 0; will-change: transform; }
@@ -547,34 +547,39 @@ body.zoom { padding: 0; }
 .playline::before { top: 0; border-top: 5px solid #2f7bff; }
 .playline::after { bottom: 0; border-bottom: 5px solid #2f7bff; }
 
-/* Every cell is one picture wide, whatever stretch of the recording it
-   speaks for -- `cellPx` in main.js sets the width, from this height and the
-   shape of the pictures themselves. */
+/* A cell is as wide as the stretch of the recording it speaks for --
+   `refreshStrip` in main.js sets the width, from that stretch and the
+   pixels-to-a-second the menu comes to. A cell holding what one picture's
+   width stands for comes out one picture wide; the rest are wider or
+   narrower, and clip or leave ground accordingly. */
 .strip figure {
   margin: 0; flex: none; min-width: 0; position: relative; overflow: hidden;
   border-right: 1px solid rgba(0,0,0,.65);
-  /* Under the picture, so a cell rounded up by a fraction of a pixel shows
-     the same ground an empty cell does rather than a bright seam. */
-  background: #0b0b0b;
+  /* The ground a cell wider than its picture shows to the right of it, and
+     the reference tool's answer to the same question: the cell's own colour
+     rather than the black an *empty* cell is drawn in, so that a long GOP
+     reads as one cell carrying on and not as a hole where a picture is
+     missing. Tinted for the cells inside the selection, as the caption is. */
+  background: #d5d5da;
 }
+.strip .inside { background: var(--sel-soft); }
 .strip figure:last-child { border-right: 0; }
 /* One height for every picture on the reel, and the width the picture's own
-   shape asks for at that height -- which is the width its cell was given, so
-   the two come out flush. Scaling the picture to fill the cell instead would
-   let the cell's shape decide the picture's, and a cell that is not 16:9 at
-   this height would either stretch it sideways or crop the top and bottom
-   off it.
+   shape asks for at that height. Scaling it to fill the cell instead would
+   let the cell's shape decide the picture's, and the cells are of a width
+   apiece: a long GOP would stretch its picture across the screen and a short
+   one squeeze it to a sliver.
 
-   `margin-left` and the transform together centre the picture in the cell,
-   which matters for the pixel or two either way that rounding leaves. */
+   At the left edge, which is where the cell begins -- so the picture stands
+   at the instant it was taken at, a wider cell leaves ground after it, and a
+   narrower one shows as much of the picture as it has room for. */
 .strip img {
-  display: block; height: 62px; width: auto; max-width: none;
-  margin-left: 50%; transform: translateX(-50%); background: #000;
+  display: block; height: 70px; width: auto; max-width: none; background: #000;
 }
 /* Captions light, as the reference tool has them: the timecodes are the
    thing being read here, and dark-on-light wins at this size. */
 .strip figcaption {
-  font-size: 10px; white-space: nowrap; overflow: hidden; text-align: center; color: #1a1a1a; background: #f3f3f3;
+  font-size: 10px; white-space: nowrap; overflow: hidden; text-align: left; color: #1a1a1a; background: #f3f3f3;
   font-variant-numeric: tabular-nums; padding: 1px 0;
   border: 1px solid #f3f3f3; border-top: 0;
 }
@@ -583,7 +588,7 @@ body.zoom { padding: 0; }
    its cell and is clipped by it, so an outline drawn on the picture itself
    would lose its sides. */
 .strip .inside::after {
-  content: ""; position: absolute; left: 0; right: 0; top: 0; height: 62px;
+  content: ""; position: absolute; left: 0; right: 0; top: 0; height: 70px;
   outline: 1px solid var(--sel-soft); outline-offset: -1px; pointer-events: none;
 }
 .strip .here { box-shadow: 0 0 0 2px #2f7bff inset; }

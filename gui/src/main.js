@@ -1983,14 +1983,19 @@ meterLook(meterOn);
 // at them are exactly the ones already held in memory, so a cell costs
 // nothing to fill.
 //
-// **Every cell is one picture wide.** What the menu picks is therefore how
-// much *time* a cell covers, not how wide it is drawn: at three minutes a
-// cell swallows a run of GOPs and the boundaries inside it are skipped, at
-// three seconds it holds a single one. Widths that followed each GOP's own
-// length were tried first and read badly -- a long GOP at a close zoom came
-// out as one small picture stranded in a wide black cell, and the same strip
-// drew cells of two different sizes for a reason nobody can see. A cell's
-// width now says the same thing everywhere, and its caption says when.
+// **A cell is as wide as the stretch of time it covers**, and the picture
+// sits at its left edge, where the cell begins. So a cell longer than one
+// picture leaves ground to the right of it, and a shorter one shows as much
+// of the picture as it has room for. What the menu picks is how much of the
+// recording the window holds, and that is now exactly what it holds.
+//
+// Cells of one width apiece were tried first, and what they cost is the
+// thing the strip is for: a cell stood for anything between half a picture's
+// worth of time and three, so the reel slid at whatever rate the material
+// happened to be cut at -- measured on one recording off the web, 247 px/s
+// across a divided GOP and 78 px/s across a whole one a moment later, which
+// reads as the strip stalling. The rate is the same everywhere now, whatever
+// the recording does with its entry points.
 //
 // The cells hang on a reel drawn wider than the window shows, and following
 // the playhead is a transform on that reel rather than a redraw. That is what
@@ -2058,8 +2063,10 @@ async function runStrip(at) {
   }
 }
 
-/// How much of the recording the strip covers, and whether it is divided by
-/// GOP or by frame. A null span means frame mode.
+/// How much of the recording the window shows, which is what the menu picks
+/// and what the cells are drawn to scale against. A null span means frame
+/// mode, where a cell is one picture and the window is however much of the
+/// recording that comes to.
 function stripView() {
   const v = el("strip-step").value;
   return v === "frame" ? { span: null } : { span: parseFloat(v.slice(4)) };
@@ -2067,13 +2074,15 @@ function stripView() {
 
 /// The height the pictures are drawn at -- `.strip img` in the stylesheet has
 /// the other copy of this number -- and, with the recording's own shape, how
-/// wide one cell comes out.
+/// wide one picture comes out. A cell that width is a cell holding as much
+/// time as the menu asks a picture to stand for; the rest are drawn to scale
+/// either side of it.
 ///
 /// The shape is read off a picture that is already on screen rather than off
 /// the coded size, because the coded size is not it: broadcast material is
 /// anamorphic, and the engine has already undone that in everything it hands
 /// over. 16:9 until there is a picture to ask.
-const CELL_H = 62;
+const CELL_H = 70;
 
 function cellPx() {
   const p = el("preview");
@@ -2081,9 +2090,17 @@ function cellPx() {
   return clamp(Math.round(CELL_H * r), 48, 320);
 }
 
-/// Ceiling on how many pictures one reel is worth asking for. Only reached on
-/// a very wide window during playback, where the margin doubles the count.
-const MAX_CELLS = 40;
+/// Ceiling on how many pictures one reel is worth asking for.
+///
+/// A reel covers a fixed stretch of the recording rather than a fixed number
+/// of cells, so what it holds is whatever the material's entry points leave
+/// it: a cell is never shorter than half of what a picture stands for (see
+/// `opensAfter`), which puts the ceiling at twice the count a window of even
+/// GOPs comes to. Reached only where the entry points are dense -- a disc
+/// puts one at every scene change -- and there every cell is answered out of
+/// the held pictures, so what it limits is the drawing rather than the
+/// decoding.
+const MAX_CELLS = 96;
 
 const reel = el("reel");
 
@@ -2091,8 +2108,9 @@ const reel = el("reel");
 /// it stands for and where it sits on the reel in pixels; `px`, how wide the
 /// whole reel is; and `rest`, the place it was drawn for.
 ///
-/// Pixels rather than shares of a span, because the cells are all one width
-/// and the time behind them is not.
+/// Pixels rather than shares of a span: the cells past either end of the
+/// recording stand for no time at all and are still drawn, and a reel is
+/// placed by where its pictures are.
 let reelWin = null;
 
 /// How many windows wide to draw the reel. The margin is what the reel slides
@@ -2175,58 +2193,52 @@ function gopUnder(t, back) {
   return lo - 1;
 }
 
-/// The cells a GOP-divided reel is made of: `slots` of them, covering about
-/// `span / vis` of the recording each and centred on the one the playhead
-/// stands in. `at` is the picture to show and the time to caption; `a` and
-/// `b` are the stretch the cell speaks for, which is what the playhead is
-/// placed against; `cut` says the cell begins on an access point, which is to
-/// say on a place a cut is free.
+/// The cells a GOP-divided reel is made of: as many as it takes to cover
+/// `reach` of the recording either side of the playhead, each beginning on an
+/// access point and running to the next. `at` is the picture to show and the
+/// time to caption; `a` and `b` are the stretch the cell speaks for, which is
+/// what its width is drawn from and what the playhead is placed against;
+/// `cut` says the cell begins on an access point, which is to say on a place
+/// a cut is free.
 ///
-/// A cell is as long as the menu asked for, rounded to the nearest boundary
-/// either side. That is what "GOP・3 分" means once the widths are fixed:
-/// three minutes across the window, near enough, with every cell still
-/// standing on a place a cut is free.
+/// `d` is what one picture's width stands for -- the length a cell is aimed
+/// at, so that a run of them comes out a picture apiece -- and cells are cut
+/// to the nearest boundary either side of it. That is what the menu's "3 分"
+/// means: three minutes across the window, with every cell still standing on
+/// a place a cut is free.
 ///
-/// **Chosen by time, not by counting boundaries.** Giving each cell a fixed
+/// **Aimed at by time, not by counting boundaries.** Giving each cell a fixed
 /// number of GOPs is the same thing only where the GOPs are evenly spaced,
 /// which broadcast material is and a disc is not: a Blu-ray puts an entry
 /// point at every scene change as well as every second or so, and on one
-/// VC-1 disc they run from 0.067 s to 0.801 s apart. One cell per GOP drew
-/// those as cells of equal width standing for stretches of time twelve times
-/// apart -- a window of nine cells covering 0.6 s in an action scene and
-/// 7.2 s in a quiet one, both labelled "6 秒". The strip stopped being a
-/// ruler: the playhead crawled across a cell and then jumped four of them,
-/// and clicking a place on it landed nowhere near where it looked.
+/// VC-1 disc they run from 0.067 s to 0.801 s apart. One cell per GOP drew a
+/// window covering 0.6 s in an action scene and 7.2 s in a quiet one, both
+/// labelled "6 秒", and clicking a place on the strip landed nowhere near
+/// where it looked. Cells aimed at `d` and never shorter than half of it keep
+/// the window to what the menu says within a picture's width either way.
 ///
-/// **A cell covers at most a third of the window.** Where the GOPs are short
-/// a cell cannot hold less than one of them, and the window then covers
-/// rather more than the menu says -- 7.5 s at "6 秒" on broadcast material,
-/// which reads as the menu being approximate. Where they are long that stops
-/// being an approximation and becomes a different strip: a recording off the
-/// web puts its entry points four seconds apart and one from a streaming
-/// service thirty-three, so "6 秒" drew a window of a minute and one of eight
-/// minutes, and the strip scrolled that many times slower than the same menu
-/// on a broadcast recording. Past a third of the window -- three cells, which
-/// is already the whole of what was asked for -- the GOP is divided by time
+/// **A cell covers at most a third of the window.** A recording off the web
+/// puts its entry points four seconds apart and one from a streaming service
+/// thirty-three, and a cell that long is a picture with five windows of empty
+/// ground after it. Past a third of the window -- three cells, which is
+/// already the whole of what was asked for -- the GOP is divided by time
 /// instead: into as many equal cells as fit, so that the boundary is still a
 /// cell of its own and the cells between it and the next are the length the
 /// menu named. What those cells cost is a decode; see `refreshStrip`.
 ///
-/// Slots that fall outside the recording are kept, as blanks. They are what
+/// Cells that fall outside the recording are kept, as blanks. They are what
 /// lets the reel slide far enough to hold the playhead at the middle when it
 /// is near either end; without them the reel would run out and the marker
 /// would drift off the picture it is meant to be standing on.
-function gopCells(o, span, slots, vis) {
+function gopCells(o, span, d, reach) {
   const n = gops.length;
   // A recording with nothing in it to divide on. The reel is cut on an even
   // grid instead -- the same cells at the same widths, standing for stretches
   // of time rather than for runs of GOPs. See `refreshStrip`, which sends
   // every unwalked recording the same way.
-  if (!n) return evenCells(o, span, slots, vis);
-  // What one cell is meant to cover, and the longest a GOP may be before it
-  // is divided rather than drawn whole.
-  const d = Math.max(span / Math.max(vis, 1), 1e-3);
-  const whole = (d * vis) / 3;
+  if (!n) return evenCells(o, d, reach);
+  // The longest a GOP may be before it is divided rather than drawn whole.
+  const whole = span / 3;
 
   /// How a long GOP is divided: where it runs to, the width of its cells and
   /// how many there are -- or null where it is short enough to be drawn
@@ -2297,18 +2309,36 @@ function gopCells(o, span, slots, vis) {
     return gops[m];
   };
 
-  const half = slots >> 1;
-  const starts = new Array(slots);
-  starts[half] = opens(o);
-  for (let k = half + 1; k < slots; k++) starts[k] = opensAfter(starts[k - 1]);
-  for (let k = half - 1; k >= 0; k--) starts[k] = opensBefore(starts[k + 1]);
+  // Out from the cell the playhead stands in until the reel covers `reach`
+  // either side. By time rather than by a count of cells, because a count is
+  // not what the reel has to reach: the cells are as wide as the stretches
+  // they stand for, so how many of them fill a window is the material's
+  // business and not this one's.
+  //
+  // Half the ceiling to a side, so that material dense enough to reach it
+  // runs out of cells at both edges of the reel rather than at one: a reel
+  // that stopped at the playhead would have nothing under the left half of
+  // the window and nowhere to slide.
+  const cap = MAX_CELLS >> 1;
+  const first = opens(o);
+  const after = [];
+  for (let t = first; t < o + reach && after.length < cap; ) {
+    t = opensAfter(t);
+    after.push(t);
+  }
+  const before = [];
+  for (let t = first; t > o - reach && before.length < cap; ) {
+    t = opensBefore(t);
+    before.push(t);
+  }
+  const starts = [...before.reverse(), first, ...after];
 
   const cells = [];
-  for (let k = 0; k < slots; k++) {
+  for (let k = 0; k < starts.length; k++) {
     const a = starts[k];
     // A cell runs to where the next one begins, so that the reel tiles the
     // recording without a gap or an overlap.
-    const b = k + 1 < slots ? starts[k + 1] : opensAfter(a);
+    const b = k + 1 < starts.length ? starts[k + 1] : opensAfter(a);
     const j = gopUnder(a);
     cells.push({
       at: a,
@@ -2322,15 +2352,14 @@ function gopCells(o, span, slots, vis) {
 }
 
 /// The reel cut on an even grid, for a recording whose GOP boundaries are not
-/// known yet. Same shape of answer as [`gopCells`]: `slots` cells centred on
-/// the one the playhead stands in, blanks past either end.
-function evenCells(o, span, slots, vis) {
-  const step = Math.max(span / Math.max(vis, 1), 1e-3);
-  const i0 = Math.floor(o / step);
-  const half = slots >> 1;
+/// known yet. Same shape of answer as [`gopCells`]: cells of `step` each,
+/// covering `reach` either side of the playhead, blanks past either end.
+function evenCells(o, step, reach) {
+  const from = Math.floor((o - reach) / step);
+  const to = Math.ceil((o + reach) / step);
   const cells = [];
-  for (let k = -half; k < slots - half; k++) {
-    const a = (i0 + k) * step;
+  for (let k = from; k <= to && cells.length < MAX_CELLS; k++) {
+    const a = k * step;
     const b = a + step;
     // Past either end of the material: kept as blanks so the reel can still
     // slide far enough to hold the playhead in the middle.
@@ -2589,22 +2618,32 @@ async function refreshStrip(at) {
   }
   stripCache = null;
 
-  const px = cellPx();
-  // as many cells as the window holds, and a reel of them wide enough to
-  // slide across while playback runs
-  const vis = Math.max(1, Math.ceil(el("strip").clientWidth / px));
-  const slots = Math.max(vis + 1, Math.min(vis * overscan() + 1, MAX_CELLS));
+  const pic = cellPx();
+  const w = el("strip").clientWidth;
+  if (w <= 0) return;
+  // Pixels to a second. The window covers what the menu says, so this one
+  // number draws the whole reel: a cell's width is the stretch it stands for
+  // taken through it.
+  const scale = w / view.span;
+  // What one picture's width stands for, which is the length the cells are
+  // aimed at.
+  const d = Math.max(pic / scale, 1e-3);
+  // Half the reel: the window, the margin it slides across while playback
+  // runs, and a cell over so that there is always something to slide.
+  const reach = (view.span * overscan()) / 2 + d;
   // Before the walk there are no access points to divide the reel on, so it
   // is cut on an even grid instead. Asked here rather than inside `gopCells`,
   // which cannot tell the difference: `gops` carries the start of every
   // surviving segment whether the walk has been over the recording or not, so
   // an unwalked recording arrives there looking like one with a single
   // boundary at zero -- and a reel cut on that is one cell wide.
-  const cells = walked()
-    ? gopCells(o, view.span, slots, vis)
-    : evenCells(o, view.span, slots, vis);
+  const cells = walked() ? gopCells(o, view.span, d, reach) : evenCells(o, d, reach);
   const live = cells.filter((c) => c.live);
   if (!live.length) return;
+  // A cell is as wide as the time it covers. The floor is for the pictures
+  // rather than for the arithmetic: a cell narrower than this is a sliver
+  // nobody can read, and the reel it sits on has to be drawn all the same.
+  const wide = (c) => Math.max(Math.round((c.b - c.a) * scale), 2);
 
   // Before the walk there are no held pictures and no opened recording to
   // decode an exact one out of. What there is is the container's own seek,
@@ -2618,12 +2657,10 @@ async function refreshStrip(at) {
       at: c.live ? c.at : c.a,
       a: c.a,
       b: c.b,
-      px,
+      px: wide(c),
     }));
-    const mid = live[live.length >> 1];
-    const unit = mid.b - mid.a;
     const win = { rest: o, byNearest: false };
-    await fillByGlance(shots, cells, unit, win, view.span);
+    await fillByGlance(shots, cells, d, win, view.span);
     return;
   }
   // **A cell that does not begin on an access point is a decode**, and a
@@ -2705,13 +2742,12 @@ async function refreshStrip(at) {
 
   let k = 0;
   const shots = cells.map((c) => {
+    const px = wide(c);
     if (!c.live) return { url: null, time: null, at: c.a, a: c.a, b: c.b, px, cut: !!c.cut };
     const i = k++;
     return { url: held[i], time: when[i], at: c.at, a: c.a, b: c.b, px, cut: !!c.cut };
   });
-  // what one cell covers, which is what the marks below are drawn against
-  const mid = live[live.length >> 1];
-  renderStrip(shots, mid.b - mid.a, { rest: o, byNearest: false });
+  renderStrip(shots, d, { rest: o, byNearest: false });
 }
 
 /// How far ahead of the window a frame-divided reel is drawn while something
@@ -2841,9 +2877,10 @@ async function refreshFrameStrip(o) {
   put(shots, n >> 1);
 }
 
-/// Lay the cells out on the reel. Each is drawn at its own `px` -- one
-/// picture wide, the same for every cell on the reel -- and `win` carries
-/// what `placeReel` needs to slide the result.
+/// Lay the cells out on the reel. Each is drawn at its own `px` -- as wide as
+/// the stretch of time it stands for -- and `win` carries what `placeReel`
+/// needs to slide the result. `unit` is what one picture's width stands for,
+/// which is what tells a frame-divided reel from a GOP-divided one.
 function renderStrip(shots, unit, win) {
   stripShots = shots;
   reel.innerHTML = "";
@@ -2880,11 +2917,15 @@ function renderStrip(shots, unit, win) {
     // all access points: every cell of a GOP-divided strip is one, so marking
     // them all says nothing.
     if (mixed ? s.cut : unit < 0.1 && atPoint(s.time)) classes.push("kf");
-    if (nearScene(s.time, unit / 2)) classes.push("scene");
-    if (keyframes.some((t) => Math.abs(t - s.time) < unit / 2)) classes.push("mark");
+    // Against the cell's own length rather than the reel's nominal one: the
+    // cells are of a length apiece now, and what is being asked is whether
+    // the scene or the mark falls inside *this* cell.
+    const len = s.b - s.a;
+    if (nearScene(s.time, len / 2)) classes.push("scene");
+    if (keyframes.some((t) => Math.abs(t - s.time) < len / 2)) classes.push("mark");
     // a join the cuts closed up sits between this cell and the one before it
     const prev = shots[i - 1];
-    if (prev && prev.time !== null && s.time - prev.time > unit * 2.5 + 0.5) {
+    if (prev && prev.time !== null && s.time - prev.time > (prev.b - prev.a) * 2.5 + 0.5) {
       classes.push("seam");
     }
     fig.className = classes.join(" ");
