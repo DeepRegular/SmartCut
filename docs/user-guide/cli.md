@@ -112,8 +112,16 @@ copy, so **the whole track is re-encoded**.
 | `--aac auto\|mpeg2\|mpeg4` | Which flavour of AAC the frames SmartCut writes announce themselves as. `auto`, the default, follows the recording — MPEG-2 AAC for a broadcast |
 | `--audio-es` | Also write the sound out as a bare stream beside the output. AAC only |
 | `--audio-fade SECONDS` | Take the level down into each seam and bring it back out over that many seconds. 0 to 10; 0, no fade, is the default |
+| `--join-fade-out SECONDS` | How long the sound takes to leave at the end of each clip, where `--join` writes several into one file. 0 to 10; 0 is the default |
+| `--join-fade-in SECONDS` | ...and how long it takes to come back at the start of the next one |
 
-> **What `--audio-fade` reaches.** Only sound this program writes: `smart` and
+> **A join between two clips is asked for at each end.** How the programme that
+> is ending should end and how the one that is starting should start are two
+> questions: `--join-fade-out 3 --join-fade-in 0` takes three seconds to leave
+> and starts the next one at full level. The seams *inside* one recording take
+> `--audio-fade`, which is one answer for the run.
+>
+> **What these reach.** Only sound this program writes: `smart` and
 > `reencode` fade, `copy` does not, and neither does sound carried through whole
 > because re-encoding it would lose what makes it lossless (TrueHD, DTS-HD MA).
 > Where it cannot be applied the cut says so. The beginning and the end of the

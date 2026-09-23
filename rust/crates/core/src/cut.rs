@@ -4753,6 +4753,49 @@ pub fn cut(src: &Source, plans: &[RangePlan], output: &str, opts: &CutOptions) -
     cut_with_progress(src, plans, output, opts, None)
 }
 
+/// How long the sound takes to leave and to come back at each of a job's
+/// range boundaries: one pair per range, in the order they are written.
+///
+/// A seam inside one recording gets [`CutOptions::audio_fade`] at both its
+/// ends, which is one answer for the whole run and always was. A join
+/// between two recordings gets that join's own two numbers -- the sound
+/// leaving at the end of the clip before it, and coming back at the start of
+/// the clip after -- because a join is two questions rather than one. A
+/// programme that ends on its own theme wants a long way down and no way up
+/// at all; two halves of a film want neither. See
+/// [`crate::transition::Transition::fade_out`].
+///
+/// The two ends of the *output* are not seams and get nothing, which
+/// [`crate::audio::fades_for`] settles from the range's place in the job
+/// rather than from this table.
+fn fade_lengths(
+    reels: &[Reel],
+    reel_plans: &[Vec<RangePlan>],
+    opts: &CutOptions,
+) -> Vec<(f64, f64)> {
+    let mut out = Vec::with_capacity(reel_plans.iter().map(Vec::len).sum());
+    for (n, plans) in reel_plans.iter().enumerate() {
+        for k in 0..plans.len() {
+            // The head of a reel's first range is the *previous* join's
+            // answer: a transition belongs to the clip that gives way, so
+            // what comes back at the start of this reel was asked for on the
+            // one before it.
+            let head = if k == 0 && n > 0 {
+                reels[n - 1].after.fade_in
+            } else {
+                opts.audio_fade
+            };
+            let tail = if k + 1 == plans.len() && n + 1 < reel_plans.len() {
+                reels[n].after.fade_out
+            } else {
+                opts.audio_fade
+            };
+            out.push((head, tail));
+        }
+    }
+    out
+}
+
 /// The ranges of every reel, with the transitions cut into them.
 ///
 /// **A transition is a stretch of a range, not a range of its own.** The
@@ -5141,6 +5184,9 @@ fn cut_into(
     // anything counted over the whole job is counted over the whole job.
     let all_plans = || reel_plans.iter().flat_map(|p| p.iter());
     let ranges_in_all: usize = reel_plans.iter().map(Vec::len).sum();
+    // How long the sound takes to leave and to come back at each of those
+    // ranges' two ends. See [`fade_lengths`].
+    let fade_lengths = fade_lengths(reels, &reel_plans, opts);
     // Said once per reel, before a byte is written: a run that re-encodes an
     // hour because two recordings disagree about the frame rate is a run
     // somebody would want to have been told about at the start.
@@ -5653,7 +5699,16 @@ fn cut_into(
     // A fade needs sound this program is writing. A track copied through is
     // copied through -- that is what copying is -- and a fade asked for on
     // one is a fade that silently does not happen unless it is said.
-    if opts.audio_fade > 0.0 {
+    //
+    // The longest one asked for anywhere in the job, which is the seams' own
+    // and the joins' between the clips. Saying the longest rather than each
+    // of them: what the sentence is for is that a fade was asked for and is
+    // not happening, and a list of eleven joins is eleven ways of saying it.
+    let longest_fade = fade_lengths
+        .iter()
+        .flat_map(|(a, b)| [*a, *b])
+        .fold(0.0f64, f64::max);
+    if longest_fade > 0.0 {
         for setup in &setups {
             if setup.mode == AudioMode::Copy {
                 crate::note_once(format!(
@@ -5661,7 +5716,7 @@ fn cut_into(
                      for at the seams is not on it. Smart rendering or a whole re-encode is what \
                      writes the sound, and only sound this program writes can be faded.",
                     crate::track_name(src.on_a_ts, setup.info.pid, setup.info.stream_index),
-                    opts.audio_fade,
+                    longest_fade,
                 ));
             }
         }
@@ -5939,7 +5994,7 @@ fn cut_into(
                 &windows,
                 setup.bit_rate,
                 setup.frame_as,
-                opts.audio_fade,
+                &fade_lengths,
                 base,
                 ranges_in_all,
             )?);
@@ -6340,7 +6395,7 @@ fn cut_into(
                     // list: a track re-encoded whole and one spliced have to
                     // fade alike, or two tracks of one recording would.
                     fades: crate::audio::fades_for(
-                        opts.audio_fade,
+                        fade_lengths.get(nth).copied().unwrap_or((0.0, 0.0)),
                         info.sample_rate,
                         nth,
                         ranges_in_all,

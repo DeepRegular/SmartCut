@@ -640,7 +640,7 @@ mod tests {
             kind,
             seconds,
             easing: Easing::parse("none", "in"),
-            overlay: None,
+            ..Default::default()
         };
         let want = transition.takes();
         let room_before = ((before_out - before_in) / 2.0).max(0.0);

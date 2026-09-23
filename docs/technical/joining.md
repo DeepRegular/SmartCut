@@ -228,9 +228,37 @@ really does lose those seconds:
 the clip after starts where it ends. That is a decision and not an omission:
 mixing two tracks would mean decoding both and encoding the result, which makes
 every sound track in the file one this program writes rather than one it
-copies — for a second of crossfade in an hour of programme. What the seam fade
-already does (`--audio-fade`) is available over the join and costs nothing that
-is not already being spent.
+copies — for a second of crossfade in an hour of programme. What softens the
+change instead is a fade, which costs nothing that is not already being spent.
+
+### A join's fade is asked for at each end
+
+The fade at a cut inside one recording is `CutOptions::audio_fade`, one number
+for the run. A join between two recordings is not that. How the programme that
+is ending should end and how the one that is starting should start are two
+questions, and one number cannot answer them: a programme that ends on its own
+theme wants a long way down and nothing at all on the way up.
+
+So `Transition` carries two lengths. `fade_out` is how long the sound of the
+clip before takes to leave, `fade_in` how long the clip after takes to come
+back. They are independent of the picture: a join whose `kind` is `None` can
+carry a fade. A crossing takes material off both clips to happen in
+(`Transition::takes`) and a fade is written over material that is staying, so
+it changes no length.
+
+A fade out lands on **the last sample the track still has** rather than on the
+end of the range. A broadcast recording's audio often stops half a second
+before its pictures do, and a ramp aimed at the range's end is still a quarter
+of the way up when the sound runs out — a fade out that stops dead at quarter
+level. `boundary_patches` takes the smaller of the range's end and the end of
+the frames in hand. (That half second is filled from the next clip's own
+sound — see `min_start` — which happens with or without a fade.)
+
+`cut::fade_lengths` builds the pair — head and tail — for every range of the
+job in the order they are written: `audio_fade` at a seam inside one recording,
+and the join's own two numbers where one recording gives way to the next. The
+two ends of the output are not seams and get nothing, which `audio::fades_for`
+settles from the range's place in the job rather than from that table.
 
 ### The kinds, and the arithmetic they are made of
 

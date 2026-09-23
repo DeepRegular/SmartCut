@@ -236,7 +236,7 @@ fn usage() -> String {
      [--clean-joins] [--no-data-broadcast] [--audio-fade SECONDS] \
      [--vc1-quant 3..31] [--title N] [--join RECORDING]... [--master N] \
      [--transition KIND] [--transition-seconds S] [--transition-easing C[:M]] \
-     [--transition-image FILE] \
+     [--transition-image FILE] [--join-fade-out S] [--join-fade-in S] \
      [-o OUTPUT | --bdav FOLDER]\n\
      <input> is a recording, or a disc -- a BDAV, BDMV or VIDEO_TS folder, \
      or an .iso of one -- whose recordings are listed when no --title \
@@ -263,6 +263,12 @@ fn usage() -> String {
      crossing -- a title, a card -- coming up and going down with it; the \
      frames it covers are being written afresh anyway, which is why it is \
      offered there and nowhere else\n\
+     --join-fade-out and --join-fade-in take the sound down at the end of \
+     each clip and bring it back at the start of the next one, over that \
+     many seconds. Two numbers, because a join between two recordings is \
+     two questions: how the one that is ending should end, and how the one \
+     that is starting should start. Like --audio-fade, they need sound this \
+     program is writing\n\
      --clean-joins spends up to two seconds of re-encoding at the start \
      of each range to reach an entry point the copy can be spliced onto \
      without a picture coming out of the decoder in the wrong order; \
@@ -323,6 +329,11 @@ fn main() -> Result<()> {
     let mut crossing_secs = 1.0f64;
     let mut easing = smartcut_core::transition::Easing::default();
     let mut crossing_image: Option<String> = None;
+    // How long the sound takes to leave at the end of a clip and to come
+    // back at the start of the next. Nought, like the fade at a cut: what a
+    // fade fades is the programme.
+    let mut join_fade_out = 0.0f64;
+    let mut join_fade_in = 0.0f64;
     let mut allow_open_gop = true;
     let mut clean_join = false;
     let mut output: Option<String> = None;
@@ -440,6 +451,21 @@ fn main() -> Result<()> {
                             smartcut_core::transition::LONGEST
                         )
                     })?;
+            }
+            "--join-fade-out" | "--join-fade-in" => {
+                let which = args[i].clone();
+                i += 1;
+                let v = args.get(i).with_context(|| format!("{which} needs a length"))?;
+                let secs = v
+                    .parse::<f64>()
+                    .ok()
+                    .filter(|s| (0.0..=10.0).contains(s))
+                    .with_context(|| format!("{which} wants 0..10 seconds, got {v:?}"))?;
+                if which.ends_with("out") {
+                    join_fade_out = secs;
+                } else {
+                    join_fade_in = secs;
+                }
             }
             "--transition-image" => {
                 i += 1;
@@ -1680,6 +1706,8 @@ fn main() -> Result<()> {
         seconds: crossing_secs,
         easing,
         overlay: crossing_image,
+        fade_out: join_fade_out,
+        fade_in: join_fade_in,
     };
     let mut reels = vec![smartcut_core::cut::Reel {
         src: &src,

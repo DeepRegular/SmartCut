@@ -5084,6 +5084,11 @@ struct Crossing {
     mode: String,
     /// A still laid over the crossing.
     image: Option<String>,
+    /// How long the sound takes to leave at the end of the clip before this
+    /// join, and to come back at the start of the clip after it. Absent from
+    /// a project written before these existed, which is nought.
+    fade_out: Option<f64>,
+    fade_in: Option<f64>,
 }
 
 impl Crossing {
@@ -5093,6 +5098,8 @@ impl Crossing {
             seconds: self.seconds,
             easing: smartcut_core::transition::Easing::parse(&self.curve, &self.mode),
             overlay: self.image.filter(|p| !p.is_empty()),
+            fade_out: self.fade_out.unwrap_or(0.0).max(0.0),
+            fade_in: self.fade_in.unwrap_or(0.0).max(0.0),
         }
     }
 }

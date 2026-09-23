@@ -317,6 +317,28 @@ pub struct Transition {
     /// It comes up and goes down with the crossing's own ends -- see
     /// [`SHOW_IN`] -- so that it is never cut on or off.
     pub overlay: Option<String>,
+    /// How long the sound of the clip *before* this join takes to leave, and
+    /// how long the clip after takes to come back, in seconds. Zero for
+    /// neither, which is what a join is unless somebody says otherwise.
+    ///
+    /// **Two numbers and not one.** A join between two recordings is two
+    /// different questions: how the one that is ending should end, and how
+    /// the one that is starting should start. A programme that ends on its
+    /// own theme wants a long way down and no way up at all; two halves of a
+    /// film want neither. One number cannot say that.
+    ///
+    /// Nothing to do with [`Self::kind`]. A crossing is about the pictures
+    /// and takes material off both sides to happen in ([`Self::takes`]); a
+    /// fade is written over material that is staying and changes no length.
+    /// The two are set together because they are set *at* the same place,
+    /// and that is the whole of the relation: a dissolve with no fade under
+    /// it and a fade with no dissolve over it are both ordinary settings.
+    ///
+    /// Like the fade at a cut ([`crate::cut::CutOptions::audio_fade`]), and
+    /// with the same caveat: only sound this program writes can be faded, so
+    /// a track being copied through is warned about rather than faded.
+    pub fade_out: f64,
+    pub fade_in: f64,
 }
 
 impl Default for Transition {
@@ -326,6 +348,8 @@ impl Default for Transition {
             seconds: 1.0,
             easing: Easing::default(),
             overlay: None,
+            fade_out: 0.0,
+            fade_in: 0.0,
         }
     }
 }
@@ -466,8 +490,7 @@ mod tests {
         let fade = Transition {
             kind: Crossing::Fade(Shade::Black),
             seconds: 2.0,
-            easing: Easing::default(),
-            overlay: None,
+            ..Default::default()
         };
         assert_eq!(fade.takes(), (1.0, 1.0));
         let dissolve = Transition {

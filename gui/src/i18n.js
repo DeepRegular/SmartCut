@@ -872,6 +872,14 @@ const CATALOG = {
     "xw.loading": "読み込み中…",
     "xw.whichHead": "対象のクリップ",
     "xw.setHead": "継ぎ目の設定",
+    "xw.soundHead": "音声のフェード",
+    "xw.fadeOut": "前のクリップ（フェードアウト）:",
+    "xw.fadeIn": "次のクリップ（フェードイン）:",
+    "xw.fadeTitle":
+      "0.1 秒単位、10 秒まで。0 でフェードなしです。" +
+      "映像の効果とは別で、どちらか片方だけでも設定できます。" +
+      "音声をコピーする設定では効きません（出力設定の「音声」を" +
+      "スマートレンダリングか再エンコードにしてください）",
     "xw.patternHead": "プレビュー",
     "xw.allHead": "一括適用／削除",
     "xw.clipTime": "実クリップ時間:",
@@ -1922,6 +1930,13 @@ const CATALOG = {
     "xw.loading": "Reading…",
     "xw.whichHead": "Which join",
     "xw.setHead": "The transition",
+    "xw.soundHead": "The sound",
+    "xw.fadeOut": "The clip before, fading out:",
+    "xw.fadeIn": "The clip after, fading in:",
+    "xw.fadeTitle":
+      "Tenths of a second, up to ten; 0 is no fade. Nothing to do with the transition above -- " +
+      "either end can be asked for on its own. It needs sound this program is writing, so set " +
+      "Audio on the output screen to smart rendering or a whole re-encode",
     "xw.patternHead": "What it does",
     "xw.allHead": "Every join",
     "xw.clipTime": "Previewed length:",

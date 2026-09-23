@@ -112,7 +112,28 @@ let nextId = 1;
 /// build has never heard of is no transition at all, which is the right
 /// answer for a file from a later version and costs nothing for one from an
 /// earlier.
-const NO_CROSSING = { kind: "none", seconds: 1, curve: "none", mode: "in", image: "" };
+const NO_CROSSING = {
+  kind: "none",
+  seconds: 1,
+  curve: "none",
+  mode: "in",
+  image: "",
+  /// How long the sound takes to leave at the end of the clip before this
+  /// join, and to come back at the start of the clip after it, in seconds.
+  /// Nought for both: what a fade fades is the programme.
+  fadeOut: 0,
+  fadeIn: 0,
+};
+
+/// Whether a join carries a setting worth writing down.
+///
+/// Two things happen at a join and either of them on its own counts: what
+/// the pictures do, and what the sound does. A fade under no crossing at all
+/// is an ordinary thing to ask for -- most joins between two programmes want
+/// exactly that -- and asking whether the *kind* was set would have thrown
+/// it away on the way into the project file.
+const crossingSet = (after) =>
+  !!after && (after.kind !== "none" || after.fadeOut > 0 || after.fadeIn > 0);
 
 /// A path for a file, one of those for a recording on a disc, and a saved row
 /// out of a project, which is the same shape written down.
@@ -5023,7 +5044,10 @@ function renderCrossing() {
     el("cross-note").textContent = t("outset.crossNoJoins");
     return;
   }
-  const set = joins.filter((c) => c.after && c.after.kind !== "none");
+  // Either of the two things that happen at a join counts as one being set:
+  // a join with no crossing over it and a second of fade under it is a join
+  // somebody has settled. See `crossingSet`.
+  const set = joins.filter((c) => crossingSet(c.after));
   if (set.length === 0) {
     el("cross-note").textContent = t("outset.crossNoneSet", { of: joins.length });
     return;
@@ -6848,7 +6872,7 @@ function captureProject(settled = outputSettled, forRun = false) {
       // What happens where this row gives way to the next, when the list is
       // being written as one file. Left out where nobody has said, which is
       // every row of every list that is not being joined.
-      after: c.after && c.after.kind !== "none" ? c.after : undefined,
+      after: crossingSet(c.after) ? c.after : undefined,
       // Blocks a detection found that the timeline has not been shown yet.
       // The blocks are not written -- they are beside the recording -- but
       // whether they are still owed to the editor is this list's own

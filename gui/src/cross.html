@@ -136,6 +136,36 @@
           </div>
         </div>
 
+        <!-- The sound at the same join, which is a different question from
+             the picture and is asked as one. A crossing takes material off
+             both clips to happen in; a fade is written over material that is
+             staying and changes no length, so the two are independent and
+             neither greys the other.
+
+             Two numbers, because a join between two recordings is two
+             questions: how the one that is ending should end, and how the one
+             that is starting should start. A programme that ends on its own
+             theme wants a long way down and no way up at all. -->
+        <div class="panel">
+          <div class="panel-head" data-i18n="xw.soundHead">音声のフェード</div>
+          <div class="row tall-label">
+            <span data-i18n="xw.fadeOut">前のクリップ（フェードアウト）:</span>
+          </div>
+          <div class="row">
+            <input id="x-fade-out" class="narrow" type="number" min="0" max="10" step="0.1"
+                   value="0" data-i18n-title="xw.fadeTitle" />
+            <span class="lbl" data-i18n="outset.seconds">秒</span>
+          </div>
+          <div class="row tall-label">
+            <span data-i18n="xw.fadeIn">次のクリップ（フェードイン）:</span>
+          </div>
+          <div class="row">
+            <input id="x-fade-in" class="narrow" type="number" min="0" max="10" step="0.1"
+                   value="0" data-i18n-title="xw.fadeTitle" />
+            <span class="lbl" data-i18n="outset.seconds">秒</span>
+          </div>
+        </div>
+
         <!-- What the effect does, drawn rather than named: which way a wipe
              travels and what a slide does to the picture behind it are things
              a name only half says. Halfway through, because that is where the

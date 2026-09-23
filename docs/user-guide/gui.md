@@ -960,6 +960,7 @@ with their sound. Like the cut editor, it is left with OK or キャンセル.
 | **Duration** | Up to thirty seconds, by the slider or typed |
 | **Easing** | How fast it runs at each point of itself: twelve curves, each in In, Out, In-out or Out-in. `None` is a straight line |
 | **Image over it** | A still drawn over the crossing — a title, a card. It fades up over the first quarter of the crossing, stands at full strength across the middle half, and fades down over the last quarter, so it is never cut on or off |
+| **The sound** | What happens to the sound at this join. **The clip before, fading out** is how long the sound that is ending takes to leave; **the clip after, fading in** is how long the sound that is starting takes to come back. Tenths of a second, up to ten; 0 is no fade |
 | **What it does** (the small picture) | How the two clips are put together halfway through. Which way a wipe travels, and whether a slide moves the picture behind it, are things the name only half says |
 | **Apply to every join** | Puts the settings on screen on every join in the list. Twelve episodes want the same crossing twelve times |
 | **Clear them all** | Takes every transition off |
@@ -1005,8 +1006,30 @@ after takes over as the effect ends. Through a **fade** it changes at the
 colour — the middle of the effect. Either way, whatever is on screen has
 brought its own sound with it.
 
-If the change is abrupt, the seam fade in [preferences](#output-settings) takes
-the sound down into the join and brings it back out.
+If the change is abrupt, **The sound** takes it down into the join and brings it
+back out.
+
+**The two ends are asked for apart**, because a join is two questions: how the
+programme that is ending should end, and how the one that is starting should
+start. A programme that ends on its own theme wants a long way down and nothing
+at all on the way up — three seconds out and none in, and that is what it does.
+The fade at the cuts *inside* one recording is a single answer for the run and
+lives in [preferences](#the-cut-editor-1); this one is per join.
+
+Nothing to do with the transition above it. A join with no crossing over it can
+carry a fade, and a dissolve can carry none: a crossing takes material off both
+clips to happen in, and a fade is written over material that is staying, so it
+changes no length.
+
+**It needs sound this program is writing.** Copying carries the recording's own
+frames through, and there is nothing in them to rewrite — set **Audio** on the
+output screen to smart rendering (the default) or to a whole re-encode. The
+preview on the right does not carry the fade yet; the written file does.
+
+A broadcast recording's sound often stops a fraction of a second (half of one,
+typically) before its pictures do. The fade out ends with the sound, there
+being none left to fade; the gap is filled from the next clip, which is what a
+join does there whether or not a fade was asked for.
 
 ### Why some choices are greyed out
 

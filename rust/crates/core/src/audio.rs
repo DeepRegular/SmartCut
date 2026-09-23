@@ -1110,6 +1110,12 @@ fn frame_shape(
 /// `windows.len()`: several recordings can be written into one file, and a
 /// fade belongs at a seam -- which the last range of the first recording has
 /// and the last range of the file has not. See [`crate::cut::Reel`].
+///
+/// `fades` is the whole job's table of fade lengths, one pair per range in
+/// that same order, so this recording's are at `nth_base..`. The job's and
+/// not this recording's, because the pair at the end of a recording is the
+/// join's answer rather than the recording's -- see `fade_lengths` in
+/// [`crate::cut`].
 #[allow(clippy::too_many_arguments)]
 pub fn boundary_patches(
     src: &Source,
@@ -1117,7 +1123,7 @@ pub fn boundary_patches(
     windows: &[(i64, i64)],
     bit_rate: usize,
     framing: Option<Framing>,
-    fade: f64,
+    fades: &[(f64, f64)],
     nth_base: usize,
     of_all: usize,
 ) -> Result<HashMap<i64, Patch>> {
@@ -1158,7 +1164,7 @@ pub fn boundary_patches(
             // A fade is a rewrite of the frames it runs over, so it cannot
             // happen on a track nothing rewrites. Said here rather than left
             // to be noticed in the output.
-            if fade > 0.0 {
+            if fades.iter().any(|(a, b)| *a > 0.0 || *b > 0.0) {
                 " The fade asked for at the seams is not on it either."
             } else {
                 ""
@@ -1193,7 +1199,14 @@ pub fn boundary_patches(
     const FOREIGN_CAP: f64 = 10.0;
 
     for (nth, &(w0, w1)) in windows.iter().enumerate() {
-        let fades = fades_for(fade, audio.sample_rate, nth_base + nth, of_all, (w0, w1));
+        let at = nth_base + nth;
+        let fades = fades_for(
+            fades.get(at).copied().unwrap_or((0.0, 0.0)),
+            audio.sample_rate,
+            at,
+            of_all,
+            (w0, w1),
+        );
         for (edge, is_head) in [(w0, true), (w1, false)] {
             let fade_reach = if is_head { fades.head } else { fades.tail };
             let at = edge as f64 / rate;
@@ -1246,11 +1259,23 @@ pub fn boundary_patches(
             let Some(emit) = run_range(&frames, edge, is_head, reach) else {
                 continue;
             };
+            // Where the fade should land. A range that runs to the end of a
+            // recording has a tail the sound does not reach: a broadcast's
+            // audio stops a little before its pictures do, and the range was
+            // cut to the pictures. A ramp aimed at the range's own end would
+            // still be a fifth of the way up when the sound ran out -- the
+            // fade-out at the end of a clip would stop dead at a quarter
+            // level. Aimed at the last sample there is, it arrives at
+            // silence. Anywhere else this is the range's own end: the frames
+            // in hand reach past it, and the smaller of the two is it.
+            let ends = frames
+                .last()
+                .map_or(w1, |f| w1.min(f.first + f.len() as i64));
             patch_run(
                 &frames,
                 emit,
                 is_head,
-                (w0, w1),
+                (w0, if is_head { w1 } else { ends }),
                 fades,
                 reach > fade_reach,
                 &params,
@@ -1311,16 +1336,40 @@ fn decode_around(
     let mut resampler = None;
     let mut floated = ff::frame::Audio::empty();
 
-    for (stream, packet) in ictx.packets() {
-        if stream.index() != audio.stream_index {
-            continue;
-        }
-        if decoder.send_packet(&packet).is_err() {
-            continue;
-        }
-        // One packet is one frame for everything here, so what the packet
-        // cost is what this frame cost.
-        let bytes = packet.size();
+    // The packets, and then end of stream. **The decoder is holding the last
+    // frames of the track when the packets run out**, and nothing pushes them
+    // out but being told there are no more -- so without this the track
+    // appeared to stop a decoder's delay short of where it does. Anywhere but
+    // the end of a recording that is invisible, the frames in hand reaching
+    // well past the edge either way; at the end of one it is exactly the
+    // frames a fade-out runs over.
+    let mut ended = false;
+    let mut last_bytes = 0;
+    let mut packets = ictx.packets();
+    loop {
+        let bytes = match packets.next() {
+            Some((stream, packet)) => {
+                if stream.index() != audio.stream_index {
+                    continue;
+                }
+                if decoder.send_packet(&packet).is_err() {
+                    continue;
+                }
+                // One packet is one frame for everything here, so what the
+                // packet cost is what this frame cost.
+                last_bytes = packet.size();
+                last_bytes
+            }
+            None => {
+                ended = true;
+                let _ = decoder.send_eof();
+                // What the frames still inside it cost, as well as can be
+                // said: they arrived in packets of their own and those are
+                // behind us. The figure is only read as an average over a
+                // run (`own_bit_rate`), where one frame's is a rounding.
+                last_bytes
+            }
+        };
         while decoder.receive_frame(&mut frame).is_ok() {
             let Some(pts) = frame.pts() else { continue };
             let t = pts as f64 * audio.time_base - src.start_time;
@@ -1363,6 +1412,9 @@ fn decode_around(
                 frames.remove(0);
             }
         }
+        if ended {
+            break;
+        }
         // Past the edge by the whole of the fade *and* the guard frames the
         // encoder needs beyond it. Stopping at the end of the fade leaves the
         // run with no frame to flush through, and the patch is dropped on the
@@ -1388,9 +1440,28 @@ fn decode_around(
 /// shape, and the recording's own frames are exact.
 fn run_range(frames: &[Decoded], edge: i64, is_head: bool, reach: i64) -> Option<(usize, usize)> {
     let at = if is_head { edge } else { edge - 1 };
-    let here = frames
+    let last = frames.last()?;
+    let here = match frames
         .iter()
-        .position(|f| f.first <= at && at < f.first + f.len() as i64)?;
+        .position(|f| f.first <= at && at < f.first + f.len() as i64)
+    {
+        Some(i) => i,
+        // **No frame is sitting on the edge.** A range that runs to the end
+        // of a recording has a tail the sound does not reach: a broadcast's
+        // audio track stops a little before its pictures do, and the range
+        // was cut to the pictures. There is nothing to trim there -- what is
+        // past the last frame is past the end of the recording -- but a fade
+        // running back from that edge has frames to ride over, and it was
+        // silently doing nothing until this. The last frame stands in for the
+        // frame the edge is in.
+        //
+        // The head has the same case at the other end and the same answer.
+        // Anything further out than that is a range this track has no sound
+        // for at all, and there is nothing to write.
+        None if !is_head && at >= last.first + last.len() as i64 => frames.len() - 1,
+        None if is_head && at < frames[0].first => 0,
+        None => return None,
+    };
     if reach <= 0 && straddler(frames, edge, is_head).is_none() {
         return None;
     }
@@ -1400,14 +1471,24 @@ fn run_range(frames: &[Decoded], edge: i64, is_head: bool, reach: i64) -> Option
         // fade at all. A frame that only overlaps the end of the ramp is
         // rewritten whole; what it carries past the ramp is full level, and
         // full level is what it already was.
-        let mut last = here + 1;
+        let mut last = (here + 1).min(frames.len() - 1);
         while last + 1 < frames.len() && frames[last].first < upto {
             last += 1;
         }
         Some((here, last))
     } else {
         let from = edge - reach;
-        let mut first = here.checked_sub(1)?;
+        // The guard beside the frame the edge is in. Where a fade runs back
+        // from the edge there may not be one -- the edge's own frame can be
+        // the first this pass decoded -- and the run is then that frame
+        // alone, which is better than the fade not happening. Without a fade
+        // the guard is the point of the run, so an edge with nothing before
+        // it is left as it is: that is what it always did.
+        let mut first = if reach > 0 {
+            here.saturating_sub(1)
+        } else {
+            here.checked_sub(1)?
+        };
         while first > 0 && frames[first].first + frames[first].len() as i64 > from {
             first -= 1;
         }
@@ -1499,10 +1580,21 @@ fn patch_run(
     // one frame beyond each end of it.
     let (emit_first, emit_last) = emit;
     let straddle = if is_head { emit_first } else { emit_last };
-    let (Some(lead), Some(trail)) = (emit_first.checked_sub(1), emit_last.checked_add(1)) else {
+    let Some(lead) = emit_first.checked_sub(1) else {
         return Ok(());
     };
-    if trail >= frames.len() {
+    let trail = emit_last + 1;
+    // A run that reaches the last frame the track has. There is nothing after
+    // it to flush the encoder through and there does not need to be: the
+    // encoder is flushed at end of stream, and what a trailing frame would
+    // have primed it with is material the recording has not got. This is the
+    // tail of a range that runs to the end of a recording, which is where a
+    // fade at the end of a clip lands -- and where it was doing nothing at
+    // all until this, the run being dropped on the floor here.
+    let ends_track = !is_head
+        && trail >= frames.len()
+        && frames.last().is_some_and(|f| f.first + f.len() as i64 <= window.1);
+    if trail >= frames.len() && !ends_track {
         // Not enough of the recording either side to prime the encoder with;
         // the frame stays the recording's own, boundary and all.
         return Ok(());
@@ -1520,7 +1612,7 @@ fn patch_run(
         return Ok(());
     }
 
-    let run = &frames[lead..=trail];
+    let run = &frames[lead..=trail.min(frames.len() - 1)];
     let size = run[0].len();
     if run.iter().any(|f| f.len() != size) {
         return Ok(());
@@ -1813,6 +1905,14 @@ impl Fades {
 /// What one range's fades come to, from what was asked for and where the
 /// range sits in the output.
 ///
+/// `secs` is a pair: how long the sound takes to come *back* at this range's
+/// head, and how long it takes to leave at its tail. Two numbers because the
+/// two ends can be asked for apart -- a join between two recordings is two
+/// questions, how the one that is ending should end and how the one that is
+/// starting should start -- and a seam inside one recording simply gets the
+/// same number twice. See [`crate::cut::CutOptions::audio_fade`] and
+/// [`crate::transition::Transition::fade_out`].
+///
 /// Clamped to half the range, so that the two never cross: a two second fade
 /// at both ends of a three second range would leave nothing at full level,
 /// and what came out would be the shape of the fade rather than the sound.
@@ -1820,15 +1920,21 @@ impl Fades {
 /// Worked out in two places -- here for the frames a smart cut rewrites, and
 /// again for a track being re-encoded whole -- so it is one function, and
 /// both are handed the same range list in the same order.
-pub fn fades_for(secs: f64, rate: u32, nth: usize, of: usize, window: (i64, i64)) -> Fades {
-    if !secs.is_finite() || secs <= 0.0 || of == 0 {
+pub fn fades_for(secs: (f64, f64), rate: u32, nth: usize, of: usize, window: (i64, i64)) -> Fades {
+    if of == 0 {
         return Fades::NONE;
     }
     let half = ((window.1 - window.0) / 2).max(0);
-    let n = ((secs * rate as f64).round() as i64).min(half);
+    let n = |s: f64| {
+        if !s.is_finite() || s <= 0.0 {
+            0
+        } else {
+            ((s * rate as f64).round() as i64).min(half)
+        }
+    };
     Fades {
-        head: if nth > 0 { n } else { 0 },
-        tail: if nth + 1 < of { n } else { 0 },
+        head: if nth > 0 { n(secs.0) } else { 0 },
+        tail: if nth + 1 < of { n(secs.1) } else { 0 },
     }
 }
 
@@ -1942,27 +2048,45 @@ mod tests {
         // Three ranges: the first fades only out of its tail, the last only
         // into its head, and the middle one at both ends.
         assert_eq!(
-            fades_for(1.0, 48_000, 0, 3, window),
+            fades_for((1.0, 1.0), 48_000, 0, 3, window),
             Fades { head: 0, tail: 48_000 }
         );
         assert_eq!(
-            fades_for(1.0, 48_000, 1, 3, window),
+            fades_for((1.0, 1.0), 48_000, 1, 3, window),
             Fades { head: 48_000, tail: 48_000 }
         );
         assert_eq!(
-            fades_for(1.0, 48_000, 2, 3, window),
+            fades_for((1.0, 1.0), 48_000, 2, 3, window),
             Fades { head: 48_000, tail: 0 }
         );
         // One range is the whole output and meets nothing.
-        assert_eq!(fades_for(1.0, 48_000, 0, 1, window), Fades::NONE);
+        assert_eq!(fades_for((1.0, 1.0), 48_000, 0, 1, window), Fades::NONE);
         // Nothing asked for is nothing done.
-        assert_eq!(fades_for(0.0, 48_000, 1, 3, window), Fades::NONE);
+        assert_eq!(fades_for((0.0, 0.0), 48_000, 1, 3, window), Fades::NONE);
         // Half the range is the most either end may take, so the two never
         // cross: a two second fade on a three second range.
         let short = (0, 48_000 * 3);
         assert_eq!(
-            fades_for(2.0, 48_000, 1, 3, short),
+            fades_for((2.0, 2.0), 48_000, 1, 3, short),
             Fades { head: 72_000, tail: 72_000 }
+        );
+    }
+
+    /// The two ends are asked for apart. At a join between two recordings
+    /// they are two questions -- how the one that is ending should end, and
+    /// how the one that is starting should start -- and one of the answers
+    /// is often nought.
+    #[test]
+    fn each_end_of_a_range_has_its_own_length() {
+        let window = (0, 48_000 * 10);
+        assert_eq!(
+            fades_for((0.5, 2.0), 48_000, 1, 3, window),
+            Fades { head: 24_000, tail: 96_000 }
+        );
+        // And the end that is not a seam stays nought whatever is asked.
+        assert_eq!(
+            fades_for((2.0, 2.0), 48_000, 2, 3, window),
+            Fades { head: 96_000, tail: 0 }
         );
     }
 

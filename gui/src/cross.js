@@ -77,7 +77,17 @@ const join = () => joins[at] || null;
 function crossing() {
   const j = join();
   if (!j) return null;
-  if (!j.after) j.after = { kind: "none", seconds: 1, curve: "none", mode: "in", image: "" };
+  if (!j.after) {
+    j.after = {
+      kind: "none",
+      seconds: 1,
+      curve: "none",
+      mode: "in",
+      image: "",
+      fadeOut: 0,
+      fadeIn: 0,
+    };
+  }
   return j.after;
 }
 
@@ -379,6 +389,10 @@ async function showJoin() {
   el("x-curve").value = c.curve || "none";
   el("x-mode").value = c.mode || "in";
   el("x-image").value = c.image || "";
+  // The sound, which is not greyed with the rest: a fade under no crossing
+  // at all is an ordinary thing to ask for.
+  el("x-fade-out").value = fadeSecs(c.fadeOut);
+  el("x-fade-in").value = fadeSecs(c.fadeIn);
   el("name-before").textContent = j.beforeName || "";
   el("name-after").textContent = j.afterName || "";
   el("pic-before").src = j.beforePic || "";
@@ -487,6 +501,24 @@ el("x-secs").addEventListener("change", () => {
   take("seconds", v);
 });
 el("x-image").addEventListener("change", () => take("image", el("x-image").value.trim()));
+
+/// A fade length as the field holds one: tenths of a second, none to ten.
+///
+/// Ten seconds is the ceiling the command line puts on the fade at a cut,
+/// and it is the same answer for the same reason -- past it the fade is not
+/// a join being smoothed, it is the programme being turned down.
+const fadeSecs = (v) => Math.round(clamp(Number(v) || 0, 0, 10) * 10) / 10;
+
+for (const [id, what] of [
+  ["x-fade-out", "fadeOut"],
+  ["x-fade-in", "fadeIn"],
+]) {
+  el(id).addEventListener("change", () => {
+    const secs = fadeSecs(el(id).value);
+    el(id).value = secs;
+    take(what, secs);
+  });
+}
 
 el("x-browse").addEventListener("click", async () => {
   if (!T.dialog) return;
