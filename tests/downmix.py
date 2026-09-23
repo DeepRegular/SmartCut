@@ -7,13 +7,15 @@ left surround into the left and nothing of the LFE anywhere, and a channel
 that received nothing it should have -- or something it should not -- says so
 as a missing or an extra peak.
 
-    python3 tests/downmix.py FILE CHANNELS "TONES;TONES;..." [--config N]
+    python3 tests/downmix.py FILE CHANNELS "TONES;TONES;..." [--config N] [--layout NAME]
 
 One `TONES` per channel, in order, each a comma-separated list of the
 frequencies that channel should carry and nothing else; an empty one is a
 channel that should be silent. `--config` additionally requires the ADTS
 headers to announce that many channels, which is what a transport stream's
-decoder actually reads.
+decoder actually reads. `--layout` requires the track to name that
+arrangement: 7.1 and 7.1(wide) are both eight channels, and the tones alone
+cannot tell a channel labelled for the side from one labelled for the front.
 """
 import subprocess, sys
 
@@ -23,6 +25,18 @@ import numpy as np
 # how far from a named frequency a peak may sit and still be it.
 FLOOR = 0.05
 SLACK = 8.0
+
+
+def layout(path):
+    """The arrangement the file names for its audio track.
+
+    The first line: a transport stream lists its streams once for the file
+    and again under its programme."""
+    out = subprocess.run(
+        ["ffprobe", "-v", "error", "-select_streams", "a:0",
+         "-show_entries", "stream=channel_layout", "-of", "default=nw=1:nk=1", path],
+        capture_output=True, text=True).stdout.strip()
+    return out.split("\n")[0] if out else ""
 
 
 def track(path):
@@ -95,6 +109,9 @@ path, want_channels, spec = sys.argv[1], int(sys.argv[2]), sys.argv[3]
 want_config = None
 if "--config" in sys.argv:
     want_config = int(sys.argv[sys.argv.index("--config") + 1])
+want_layout = None
+if "--layout" in sys.argv:
+    want_layout = sys.argv[sys.argv.index("--layout") + 1]
 wanted = [
     [float(f) for f in part.split(",") if f] for part in spec.split(";")
 ]
@@ -133,6 +150,12 @@ if want_config is not None:
     print(f"  ADTS channel_config: {got_config}")
     if got_config != want_config:
         bad.append(f"the frames announce channel_config {got_config}, want {want_config}")
+
+if want_layout is not None:
+    got_layout = layout(path)
+    print(f"  layout: {got_layout}")
+    if got_layout != want_layout:
+        bad.append(f"the track is laid out as {got_layout}, want {want_layout}")
 
 if bad:
     print("  BAD  " + "; ".join(bad))

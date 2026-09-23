@@ -553,6 +553,51 @@ nowhere. It checks the ADTS `channel_config` as well, and finishes by measuring 
 sync through the fold on a 5.1 impulse fixture — 0.83 ms at worst, against the 1 ms bar
 a whole-track re-encode is held to.
 
+### 7.1
+
+Eight channels go through every path six do: copied, spliced at the seams, re-encoded
+whole, folded, and played in the editor. What differs is which codecs can take them and
+how many ways there are to arrange them.
+
+- **AAC and linear PCM write 7.1; AC-3, E-AC-3 and DTS stop at 5.1.** That is the
+  encoders' own limit, not a choice made here, and it is asked of them the way every
+  other limit is (`opens_at`). A 7.1 recording asked for as AC-3 at "Same as the input"
+  is refused, and says it is refused over eight channels; the window greys AC-3 and DTS
+  out until 5.1 or fewer is chosen. Smart rendering of a 7.1 E-AC-3 track cannot rewrite
+  its seam frames for the same reason, and copies them whole with a note. FLAC and Opus
+  are carried as they are.
+- **The track's own arrangement is kept where the encoder takes it.** Two layouts of
+  eight channels are not the same channels — `7.1(wide)` has its extra pair at the front
+  rather than the sides — and the encoder used to be opened with the default for the
+  count whatever the recording said. A whole-track re-encode then had swresample remix
+  one into the other, and the seam frames, whose samples are copied across by position,
+  came out of the wrong speakers. The encoder is now opened with the recording's own
+  layout first (`encoder_layout`'s `keep`), and with the default only where it refuses
+  that one. A fold goes to the plain layout for the count it folds to.
+- **Playback on Linux puts the channels in ALSA's order.** libav, Windows and macOS all
+  order a layout by its channels' bits — front left, front right, centre, LFE, back
+  left, back right, then the sides. ALSA puts the rears before the centre: front left,
+  front right, rear left, rear right, centre, LFE, and the sides after those for 7.1. The
+  PulseAudio and PipeWire plugins every desktop routes "default" through read it that
+  way too. Handed libav's order, a 5.1 recording played its centre from the rear left and
+  its surrounds from the centre and the LFE, and a sound server folding that down to two
+  speakers put the dialogue on one side at a fraction of its level. `to_card_order`
+  reorders 5, 6 and 8 channels on the way into the ring buffer; this was a fault for 5.1
+  long before 7.1 was offered.
+- **The window offers 7.1ch.** It sits with the other counts and is greyed out the same
+  way — a count above the narrowest track in the list would spread a recording into
+  channels it was never sent with. The ladder's ceiling for eight channels is the codec's
+  top rung.
+
+`tests/run_surround71_tests.sh` does for 7.1 what the downmix suite does for 5.1: a tone
+per channel, and the spectrum read back. AAC in a transport stream, an MP4 and a
+Matroska file, FLAC, Opus and PCM in Matroska, and Blu-ray LPCM in an m2ts are cut,
+re-encoded and folded to 5.1 and to stereo; every output's pictures are decoded as well,
+and AC-3 at 7.1 has to be refused with a reason. FFmpeg's E-AC-3, TrueHD and DTS
+encoders stop at 5.1 and fold without being asked, so the disc codecs at 7.1 have no
+fixture here; nor does `7.1(wide)`, which FFmpeg's AAC encoder writes with a program
+config element and its own decoder reads back as eight channels in no named order.
+
 ## The rate and the width (`--audio-samplerate`, `--audio-bits`)
 
 A sample has three properties, and the channel count is only the first. The other two
@@ -993,12 +1038,12 @@ program is done with it.
 [Choosing the codec](#choosing-the-codec---audio-codec) for what each is for and what had
 to be settled to write them.
 
-**Audio channels** offers the recording's own count, 1ch, 2ch or 5.1ch, named by the
-count rather than by the direction. Which way it goes is the recording's to decide, not
-the setting's: one list can hold a 5.1 recording and a stereo one, where 2ch folds the
+**Audio channels** offers the recording's own count, 1ch, 2ch, 5.1ch or 7.1ch, named by
+the count rather than by the direction. Which way it goes is the recording's to decide,
+not the setting's: one list can hold a 5.1 recording and a stereo one, where 2ch folds the
 first and leaves the second alone. The readouts say which happened. (The engine takes any
-count from 1 to 8, and `--audio-channels` will do 7.1; the window offers the three that
-actually get asked for.)
+count from 1 to 8 through `--audio-channels`; the window offers the ones that get asked
+for. See [7.1](#71).)
 
 **Sample rate** offers the recording's own, 96, 48, 44.1 and 32 kHz: what a Blu-ray's
 LPCM is carried at, what a broadcast uses, what a CD uses, and what a small file gets
@@ -1057,12 +1102,12 @@ stereo it was folded into is worth.
 **The rungs are the codec's own, and where the ladder stops moves with the channel
 count:**
 
-| Codec | Rungs | 1ch | 2ch | 5.1 |
-|---|---|---|---|---|
-| AAC | 64 … 640 kbit/s | 192 | 384 | 640 |
-| AC-3 | the format's own table, 64 … 640 | 192 | 384 | 640 |
-| DTS | the format's own table, 384 … 1536 | 768 | 1536 | 1536 |
-| linear PCM | — | — | — | — |
+| Codec | Rungs | 1ch | 2ch | 5.1 | 7.1 |
+|---|---|---|---|---|---|
+| AAC | 64 … 640 kbit/s | 192 | 384 | 640 | 640 |
+| AC-3 | the format's own table, 64 … 640 | 192 | 384 | 640 | — |
+| DTS | the format's own table, 384 … 1536 | 768 | 1536 | 1536 | — |
+| linear PCM | — | — | — | — | — |
 
 AAC's rungs are where a broadcast puts them, with room over the top; AC-3's are where a
 disc puts them, and 640 is the format's own limit; DTS has two rates anyone uses, 768 and

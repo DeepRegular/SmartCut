@@ -2455,7 +2455,7 @@ function soundChoice(k) {
   option("", t("props.initial", { name: initial }));
   const answers = new Set(sound.map(([c, a]) => String(askedOf(c, a) || "")));
   const followed = new Set(sound.map(([, a]) => followedChannels(a)));
-  for (const n of [6, 2, 1]) {
+  for (const n of [8, 6, 2, 1]) {
     const chosen = answers.has(String(n));
     if (!chosen && (dual || (least && n > least))) continue;
     // Choosing what the row already gets would be the same answer twice.
@@ -3727,15 +3727,15 @@ function lockAudioDetail() {
 const AUDIO_LADDERS = {
   aac: {
     rungs: [64, 80, 96, 112, 128, 144, 160, 192, 224, 256, 320, 384, 448, 512, 640],
-    ceiling: { 1: 192_000, 2: 384_000, 6: 640_000 },
+    ceiling: { 1: 192_000, 2: 384_000, 6: 640_000, 8: 640_000 },
   },
   ac3: {
     rungs: [64, 80, 96, 112, 128, 160, 192, 224, 256, 320, 384, 448, 512, 576, 640],
-    ceiling: { 1: 192_000, 2: 384_000, 6: 640_000 },
+    ceiling: { 1: 192_000, 2: 384_000, 6: 640_000, 8: 640_000 },
   },
   dts: {
     rungs: [384, 512, 768, 960, 1024, 1152, 1280, 1408, 1536],
-    ceiling: { 1: 768_000, 2: 1_536_000, 6: 1_536_000 },
+    ceiling: { 1: 768_000, 2: 1_536_000, 6: 1_536_000, 8: 1_536_000 },
   },
 };
 for (const l of Object.values(AUDIO_LADDERS)) {

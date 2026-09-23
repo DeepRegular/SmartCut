@@ -973,7 +973,7 @@ fn main() -> Result<()> {
             String::new()
         };
         println!(
-            "audio{}: {} {}Hz {}ch{lang}{}{main}   [stream {}{pid}]",
+            "audio{}: {} {}Hz {}{lang}{}{main}   [stream {}{pid}]",
             if src.audios.len() > 1 {
                 format!(" {}", n + 1)
             } else {
@@ -981,7 +981,7 @@ fn main() -> Result<()> {
             },
             a.codec,
             a.sample_rate,
-            a.channels,
+            smartcut_core::audio::channels_named(a.channels),
             if n == 0 { form.as_str() } else { "" },
             a.stream_index,
         );

@@ -683,7 +683,7 @@ fn tracks(ifo: &[u8]) -> Vec<Track> {
         out.push(Track {
             kind: "audio",
             pid: base + i as i32,
-            detail: format!("{name} {channels}ch {rate}"),
+            detail: format!("{name} {} {rate}", crate::audio::channels_named(channels as u16)),
             language: language(&a[2..4]),
             coding: 0,
             // Everything a DVD calls sound is a stream of timed packets, and

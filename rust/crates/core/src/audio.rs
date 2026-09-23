@@ -145,22 +145,58 @@ fn encoder_format(codec: &ff::codec::codec::Codec, like: ff::format::Sample) -> 
 /// `avcodec_open2` a moment later, with nothing in it about channels -- so
 /// it is said here instead, and [`opens_at`] is how the window asks the
 /// question before anyone chooses.
+///
+/// `keep` is the arrangement the track already has, where the channels are
+/// not being folded. It comes first wherever the encoder takes it, because
+/// two arrangements of the same count are not the same channels: a 7.1 with
+/// its extra pair at the front (`7.1(wide)`) handed to an encoder opened as
+/// plain 7.1 is either remixed into it -- the front pair spread over the
+/// fronts and the sides left silent -- or, where the samples are copied
+/// across by position, played out of the wrong speakers.
 fn encoder_layout(
     codec: &ff::codec::codec::Codec,
     channels: u16,
+    keep: Option<&ff::channel_layout::ChannelLayout>,
 ) -> Option<ff::channel_layout::ChannelLayout> {
     let want = ff::channel_layout::ChannelLayout::default(channels as i32);
-    let Ok(audio) = codec.audio() else {
-        return Some(want);
-    };
-    let Some(listed) = audio.channel_layouts() else {
-        return Some(want);
+    let keep = keep.filter(|l| l.channels() == channels as i32);
+    let Some(listed) = codec.audio().ok().and_then(|a| a.channel_layouts()) else {
+        return Some(keep.cloned().unwrap_or(want));
     };
     let listed: Vec<ff::channel_layout::ChannelLayout> = listed.collect();
-    if listed.is_empty() || listed.contains(&want) {
+    if listed.is_empty() {
+        return Some(keep.cloned().unwrap_or(want));
+    }
+    if let Some(keep) = keep.filter(|l| listed.contains(l)) {
+        return Some(keep.clone());
+    }
+    if listed.contains(&want) {
         return Some(want);
     }
     listed.into_iter().find(|l| l.channels() == channels as i32)
+}
+
+/// A channel count by the name a track goes by: 5.1ch rather than 6ch, and
+/// 7.1ch rather than 8ch, because that is what the recording calls itself
+/// and what a player will call it back. The window's own `chLabel` says the
+/// same.
+pub fn channels_named(n: u16) -> String {
+    match n {
+        6 => "5.1ch".into(),
+        8 => "7.1ch".into(),
+        n => format!("{n}ch"),
+    }
+}
+
+/// The arrangement a track's parameters name, where they name one.
+///
+/// Only a native order is worth keeping: a track whose channels are in no
+/// stated order gives the encoder nothing to go on, and one with a custom
+/// map is not an arrangement an encoder can be opened with.
+pub(crate) fn layout_of(params: &ff::codec::Parameters) -> Option<ff::channel_layout::ChannelLayout> {
+    let layout = unsafe { ff::channel_layout::ChannelLayout::from((*params.as_ptr()).ch_layout) };
+    (layout.0.order == ff::ffi::AVChannelOrder::AV_CHANNEL_ORDER_NATIVE && layout.channels() > 0)
+        .then_some(layout)
 }
 
 /// The sample rate to open an encoder with, given the rate the output is to
@@ -234,11 +270,35 @@ fn encoder_for(id: ff::codec::Id) -> ff::codec::Id {
     }
 }
 
+/// `keep` is the arrangement to keep where the encoder takes it; see
+/// [`encoder_layout`]. An encoder that lists no arrangements can still turn
+/// one down when it is opened -- AAC writes the ones it has a channel
+/// configuration or a program config for, and no others -- so a refusal of
+/// the one kept is answered by opening with the default for the count.
 fn open_encoder(
     id: ff::codec::Id,
     like: ff::format::Sample,
     rate: u32,
     channels: u16,
+    keep: Option<&ff::channel_layout::ChannelLayout>,
+    bit_rate: usize,
+    quiet: bool,
+) -> Result<ff::encoder::Audio> {
+    let plain = ff::channel_layout::ChannelLayout::default(channels as i32);
+    if let Some(keep) = keep.filter(|l| **l != plain && l.channels() == channels as i32) {
+        if let Ok(enc) = open_encoder_as(id, like, rate, channels, Some(keep), bit_rate, true) {
+            return Ok(enc);
+        }
+    }
+    open_encoder_as(id, like, rate, channels, None, bit_rate, quiet)
+}
+
+fn open_encoder_as(
+    id: ff::codec::Id,
+    like: ff::format::Sample,
+    rate: u32,
+    channels: u16,
+    keep: Option<&ff::channel_layout::ChannelLayout>,
     bit_rate: usize,
     quiet: bool,
 ) -> Result<ff::encoder::Audio> {
@@ -259,7 +319,7 @@ fn open_encoder(
     }
     let rate = encoder_rate(&codec, rate);
     enc.set_rate(rate as i32);
-    enc.set_channel_layout(encoder_layout(&codec, channels).ok_or_else(|| {
+    enc.set_channel_layout(encoder_layout(&codec, channels, keep).ok_or_else(|| {
         anyhow!("{id:?} is not written with {channels} channels, whichever way they are arranged")
     })?);
     enc.set_format(encoder_format(&codec, like));
@@ -312,7 +372,7 @@ fn open_encoder(
 /// `bit_rate` of 0 asks about the encoder's own default, which is what a
 /// codec with nothing to spend gets.
 pub fn opens_at(id: ff::codec::Id, rate: u32, channels: u16, bit_rate: usize) -> bool {
-    open_encoder(id, PLANAR_F32, rate, channels, bit_rate, true).is_ok()
+    open_encoder(id, PLANAR_F32, rate, channels, None, bit_rate, true).is_ok()
 }
 
 /// Where a packet's samples begin, relative to the first sample fed in.
@@ -544,7 +604,10 @@ impl Reencoder {
             .decoder()
             .audio()?;
         let like = like.unwrap_or_else(|| sample_format(&params));
-        let encoder = open_encoder(target, like, rate, channels, bit_rate, false)?;
+        // The track's own arrangement where it keeps its count; a fold
+        // goes to the plain one for the count it folds to.
+        let keep = layout_of(&params).filter(|l| l.channels() == channels as i32);
+        let encoder = open_encoder(target, like, rate, channels, keep.as_ref(), bit_rate, false)?;
         let frame_size = frame_size_of(&encoder);
         let enc_format = encoder.format();
         let fixed = encoder.frame_size() > 0;
@@ -1212,6 +1275,7 @@ pub fn boundary_patches(
         sample_format(&params),
         audio.sample_rate,
         audio.channels,
+        layout_of(&params).as_ref(),
         bit_rate,
         true,
     ) {
@@ -1673,6 +1737,7 @@ fn patch_run(
             sample_format(params),
             audio.sample_rate,
             audio.channels,
+            layout_of(params).as_ref(),
             rate,
             false,
         )

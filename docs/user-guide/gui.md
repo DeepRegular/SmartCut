@@ -261,8 +261,8 @@ chosen on its own.
 - The `(default)` entry is what the output settings' channel count comes to
   for this recording: `Stereo (default)` for a 5.1 recording when the output
   settings say 2ch, `5.1ch (default)` when they say `Same as the input`.
-- Below it are the shapes the recording can be folded into — 5.1ch, Stereo,
-  Mono. Nothing wider than the recording is offered, and where there is only
+- Below it are the shapes the recording can be folded into — 7.1ch, 5.1ch,
+  Stereo, Mono. Nothing wider than the recording is offered, and where there is only
   one answer (a mono recording) the words are greyed.
 - Sound the programme description marks as dual mono — two languages in one
   track, one on each side — is named `Dual mono` and offered no fold: one
@@ -891,7 +891,7 @@ What is set on either tab stays there when you switch.
 | **Container** | The file format. `Same as the input`, or a specific one. A container that cannot hold the recordings in the list is greyed out (see [Why some choices are greyed out](#why-some-choices-are-greyed-out)). **Sound only, no pictures**, at the foot of the list, writes an audio file and no video at all — see [Writing the sound only](#writing-the-sound-only) |
 | **Audio** | `Smart rendering (default)` / `Copy through` / `Re-encode everything` |
 | **Audio codec** | `Same as the input`, or AAC, AC-3, DTS, linear PCM |
-| **Audio channels** | `Same as the input`, or 1ch, 2ch, 5.1ch. One answer for the list; to set it per row, use the **Audio:** line in the quick properties |
+| **Audio channels** | `Same as the input`, or 1ch, 2ch, 5.1ch, 7.1ch. One answer for the list; to set it per row, use the **Audio:** line in the quick properties. AC-3 and DTS go no further than 5.1ch, so for a 7.1 recording they are greyed out until 5.1ch or fewer is chosen |
 | **Sample rate** | `Same as the input`, or 96 / 48 / 44.1 / 32 kHz |
 | **Bit depth** | `Same as the input`, 16 or 24 bit (only meaningful for linear PCM) |
 | **Audio bitrate** | For frames that are rebuilt. `Leave it to the engine` is the safe answer |

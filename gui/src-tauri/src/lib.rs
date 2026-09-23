@@ -3437,7 +3437,12 @@ async fn tracks(path: String) -> Result<Vec<StreamInfo>, String> {
                 pid: a.pid,
                 language: a.language.clone(),
                 said: a.said.as_ref().and_then(|s| s.name.clone()),
-                detail: format!("{} {}Hz {}ch", a.codec, a.sample_rate, a.channels),
+                detail: format!(
+                    "{} {}Hz {}",
+                    a.codec,
+                    a.sample_rate,
+                    smartcut_core::audio::channels_named(a.channels)
+                ),
                 main: main == Some(a.stream_index),
                 optional: true,
             });

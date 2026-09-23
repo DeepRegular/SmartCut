@@ -620,6 +620,46 @@ fn resample<'a>(
     Ok(packed_f32(out, out.channels() as usize))
 }
 
+/// Where each of the card's channels takes its sample from, for the counts
+/// the card and libav put in different orders.
+///
+/// libav writes a layout's channels in the order of their bits -- front
+/// left, front right, centre, LFE, back left, back right, then the sides --
+/// and so do Windows and macOS. ALSA does not: its 5.1 is front left, front
+/// right, rear left, rear right, centre, LFE, and its 7.1 adds the sides
+/// after that, and every ALSA device a desktop routes to (the PulseAudio and
+/// PipeWire plugins included) reads interleaved samples that way. Handed
+/// libav's order, a 5.1 recording played its centre from the rear left and
+/// its surrounds from the centre and the LFE -- and a sound server folding it
+/// to two speakers put the dialogue on one side at a fraction of its level.
+fn card_order(channels: u16) -> Option<&'static [usize]> {
+    if !cfg!(target_os = "linux") {
+        return None;
+    }
+    match channels {
+        5 => Some(&[0, 1, 3, 4, 2]),
+        6 => Some(&[0, 1, 4, 5, 2, 3]),
+        8 => Some(&[0, 1, 4, 5, 2, 3, 6, 7]),
+        _ => None,
+    }
+}
+
+/// Put interleaved samples in libav's order into the card's. See
+/// [`card_order`].
+fn to_card_order(samples: &mut [f32], channels: u16) {
+    let Some(order) = card_order(channels) else {
+        return;
+    };
+    let n = channels as usize;
+    let mut held = [0f32; 8];
+    for frame in samples.chunks_exact_mut(n) {
+        held[..n].copy_from_slice(frame);
+        for (to, &from) in frame.iter_mut().zip(order) {
+            *to = held[from];
+        }
+    }
+}
+
 /// Devices to fall back on, best first, when the host default will not open.
 /// All of them are ALSA names: this is the Linux problem below, and on hosts
 /// that have no such PCMs the list simply finds nothing.
@@ -1085,6 +1125,7 @@ fn feed_from(
                         data[lo * channels as usize..hi * channels as usize].to_vec();
                     let at = t + lo as f64 / rate as f64;
                     ride_fade(&mut samples, channels, at, rate, (a, b), fades);
+                    to_card_order(&mut samples, channels);
                     let due = here + (at - start);
                     let bite = Bite { frames: hi - lo, channels: heard, peaks, due };
                     if !push(ring, cap, &stop, samples, bite) {
@@ -1257,6 +1298,24 @@ pub fn peaks_at(src: &Source, time: f64, window: f64, fold: &Fold) -> Result<Vec
 
 #[cfg(test)]
 mod tests {
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn surround_goes_out_in_alsa_order() {
+        // libav's 5.1: FL FR FC LFE BL BR, numbered for what they are.
+        let mut s = vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0];
+        super::to_card_order(&mut s, 6);
+        // ALSA's: FL FR RL RR FC LFE.
+        assert_eq!(s, [1.0, 2.0, 5.0, 6.0, 3.0, 4.0, 1.0, 2.0, 5.0, 6.0, 3.0, 4.0]);
+        // 7.1: FL FR FC LFE BL BR SL SR -> FL FR RL RR FC LFE SL SR.
+        let mut s: Vec<f32> = (1..=8).map(|c| c as f32).collect();
+        super::to_card_order(&mut s, 8);
+        assert_eq!(s, [1.0, 2.0, 5.0, 6.0, 3.0, 4.0, 7.0, 8.0]);
+        // Stereo is the same everywhere.
+        let mut s = vec![1.0, 2.0];
+        super::to_card_order(&mut s, 2);
+        assert_eq!(s, [1.0, 2.0]);
+    }
+
     use super::*;
 
     const RATE: u32 = 48_000;
