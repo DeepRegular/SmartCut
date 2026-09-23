@@ -269,7 +269,7 @@ const DEFAULTS = {
   /// **Off.** The same test catches a programme's own full-screen caption
   /// card, which takes the corner just as thoroughly and which some
   /// programmes lay over silence. Measured over twenty episodes of one such
-  /// programme, about a third of what came out was a caption card. Somebody
+  /// programme, about a quarter of what came out was a caption card. Somebody
   /// who knows their channel does this can ask for it; nobody should have it
   /// by default. The cut editor's button asks, and the clip list's lane does
   /// not.

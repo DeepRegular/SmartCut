@@ -3612,9 +3612,13 @@ fn detect_now(
         })),
     );
     // A recording with no sound to read still has marks worth having.
+    // Only that: a read that failed part way -- a share that went away, a
+    // file cut short -- is not a recording with no breaks in it, and an
+    // empty answer here would be kept as one.
     let (silences, resets) = match heard {
         Ok(v) => v,
-        Err(_) => (Vec::new(), smartcut_core::caption::resets(src)),
+        Err(_) if src.audio.is_none() => (Vec::new(), smartcut_core::caption::resets(src)),
+        Err(e) => return Err(e.to_string()),
     };
     let resets = resets
         .ok()
@@ -3665,7 +3669,7 @@ fn detect_now(
     let pictures = pictures();
     let mut blocks = match (&resets, &logo) {
         (Some(r), _) => smartcut_core::cm_blocks_from_resets(r, src.duration),
-        (None, Some(l)) if !l.absent.is_empty() => smartcut_core::cm_blocks_from_logo(
+        (None, Some(l)) if !l.absent.is_empty() || (opts.find_inserts && !l.brief.is_empty()) => smartcut_core::cm_blocks_from_logo(
             &cands,
             &l.absent,
             &l.brief,

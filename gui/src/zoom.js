@@ -182,9 +182,15 @@ window.addEventListener("mousemove", (ev) => {
   // `paint`, where device pixels are.
   const dx = (ev.clientX - drag.x) / scale;
   const dy = (ev.clientY - drag.y) / scale;
+  // Held to the centres `paint` can show. Dragged past an edge, a spot that
+  // went on moving would have to be dragged all the way back before the
+  // picture moved again.
+  const box = face.parentElement.getBoundingClientRect();
+  const hw = Math.min(0.5, box.width / scale / 2 / pic.naturalWidth);
+  const hh = Math.min(0.5, box.height / scale / 2 / pic.naturalHeight);
   spot = {
-    x: clamp(drag.spot.x - dx / pic.naturalWidth, 0, 1),
-    y: clamp(drag.spot.y - dy / pic.naturalHeight, 0, 1),
+    x: clamp(drag.spot.x - dx / pic.naturalWidth, hw, 1 - hw),
+    y: clamp(drag.spot.y - dy / pic.naturalHeight, hh, 1 - hh),
   };
   draw();
 });

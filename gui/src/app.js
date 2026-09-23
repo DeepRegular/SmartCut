@@ -5669,7 +5669,12 @@ function paintMasterNote() {
   const of = ready().length - 1;
   joinFits().then((fits) => {
     if (token !== masterNoteToken || !fits) return;
-    const odd = fits.filter((f) => f.video);
+    // Paired with the row by position: the answer comes back one per row in
+    // list order, and a recording put in twice is two rows that differ twice.
+    const list = ready();
+    const odd = fits
+      .map((fit, i) => ({ fit, clip: list[i] && list[i].path === fit.path ? list[i] : null }))
+      .filter((o) => o.fit.video);
     note.textContent = odd.length
       ? t("outset.masterDiffer", { n: odd.length, of: fits.length })
       : t("outset.masterFits", { n: of });
@@ -5700,8 +5705,8 @@ function paintMasterWhy(odd) {
   const box = el("master-why");
   box.innerHTML = "";
   box.hidden = !odd.length;
-  for (const fit of odd) {
-    const clip = ready().find((c) => c.path === fit.path);
+  for (const { fit, clip: at } of odd) {
+    const clip = at || ready().find((c) => c.path === fit.path);
     const line = document.createElement("div");
     const why = whyOf(fit) || t("fit.unstated");
     line.textContent = t("outset.masterWhy", {
@@ -5905,7 +5910,9 @@ el("out-channel-number").addEventListener("change", () => {
 /// neither worth repeating every time the screen is drawn.
 async function reencodeOf(clip) {
   const ranges = rangesOf(clip);
-  const sig = JSON.stringify(ranges);
+  // 環境設定 has a say in the plan as well as the cuts: a range that opens
+  // on an open GOP is re-encoded further in when clean joins are asked for.
+  const sig = JSON.stringify([ranges, !!prefs.get("cleanJoins")]);
   if (clip.reencode && clip.reencode.sig === sig) return clip.reencode;
   const plan = await invoke("clip_plan", { path: clip.path, ranges });
   const segs = plan.segments.filter((g) => g.kind !== "copy");
@@ -5987,7 +5994,7 @@ let heldAfterRun = false;
 function stillHeld() {
   if (!heldAfterRun || !onShow) return false;
   const clip = onShow.clip;
-  return ready().includes(clip) && shownReencode === JSON.stringify([clip.id, rangesOf(clip)]);
+  return ready().includes(clip) && shownReencode === JSON.stringify([clip.id, rangesOf(clip), !!prefs.get("cleanJoins")]);
 }
 
 /// What share this clip's pictures are actually written at, or null where
@@ -6026,7 +6033,7 @@ async function showReencode(clip, share = null) {
   // so it is asked first.
   const fit = await fitFor(clip);
   if (token !== shotsToken) return;
-  const key = JSON.stringify([clip.id, rangesOf(clip)]);
+  const key = JSON.stringify([clip.id, rangesOf(clip), !!prefs.get("cleanJoins")]);
   const smaller = shrinkShare(clip, share);
   const shape = fitSig(fit);
   if (shownReencode === key && shownShare === smaller && shownFit === shape) return;

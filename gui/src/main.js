@@ -3885,6 +3885,9 @@ async function prepare() {
   scenes = [];
   cardThumbs.clear();
   cardGuesses.clear();
+  // And the cards themselves, which are otherwise kept wherever the marks
+  // are the same times -- another recording's pictures on them.
+  cardsShown = [];
   el("prev-scene").disabled = true;
   el("next-scene").disabled = true;
   showWarm(tr("warm.start"));
@@ -4734,6 +4737,8 @@ el("preview").addEventListener("mousedown", (ev) => {
   sendZoomPoint();
 });
 el("preview").addEventListener("mousemove", (ev) => {
+  // A button let go outside the window never sends its mouseup here.
+  if (zoomAiming && !(ev.buttons & 1)) zoomAiming = false;
   if (!zoomAiming) return;
   const at = pictureFraction(ev);
   if (!at) return;
@@ -6450,7 +6455,12 @@ if (listen) {
     // The band under the timeline ends where 環境設定 says a stretch ends,
     // so it is drawn again. Marks already down are not moved: a mark is
     // something that was done, and this is an answer about the next one.
-    if (typeof said.flatMarkAt === "string") draw();
+    // The cards' 黒・白・無音 tags are read off the same answer.
+    if (typeof said.flatMarkAt === "string") {
+      draw();
+      cardsShown = [];
+      renderKeyframes(false);
+    }
   });
   // A row renamed in the list while this window is up. The name is the list's
   // to give -- it is the row that was renamed and not the recording -- so it

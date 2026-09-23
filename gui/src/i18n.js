@@ -129,7 +129,7 @@ const CATALOG = {
       "見分けているのは音で、挿入は音がいったん切れます。" +
       "ただし番組の全画面テロップも同じように隅のロゴを隠すので、" +
       "テロップの間だけ音を落とす番組では、それも拾います。" +
-      "ある番組で 20 話ぶん測ったところ、出たものの 3 分の 1 ほどがテロップでした。" +
+      "ある番組で 20 話ぶん測ったところ、出たものの 4 分の 1 ほどがテロップでした。" +
       "カット編集の「CM を検出」だけが対象で、入力一覧からの検出では拾いません。",
     "prefs.blankRun": "黒・白の区間とみなす長さ:",
     "prefs.blankRunNote":
@@ -1238,7 +1238,7 @@ const CATALOG = {
       "looked for out of the box. What finds one is the sound: an insert is cut in, so the " +
       "programme's audio stops for it. A programme's own full-screen caption card takes the " +
       "corner just as thoroughly, though, and some programmes lay one over silence — measured " +
-      "over twenty episodes of one such programme, about a third of what came out was a caption " +
+      "over twenty episodes of one such programme, about a quarter of what came out was a caption " +
       "card. Only the cut editor's Detect commercials asks this; the clip list's own pass does " +
       "not.",
     "prefs.blankRun": "Counts as blank after:",
@@ -1288,7 +1288,7 @@ const CATALOG = {
       "came back on, rather than on the frame that sample is in.",
     "prefs.cmKeyframesNote":
       "A detection marks the start and the end of every block it found. Off, it leaves the band " +
-      "under the timeline and the sentence beside it, and ≡ → 「Turn the detection into keyframes」 " +
+      "under the timeline and the sentence beside it, and ≡ → “Turn the detection into keyframes” " +
       "puts the marks down when you ask for them. Where a mark file beside the recording was read a " +
       "detection is not marked whatever this says, and a detection read from a file is marked " +
       "whatever this says.",
