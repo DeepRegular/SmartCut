@@ -50,6 +50,9 @@ let playhead = 0; // source time, always on material that still exists
 let selA = 0; // selection, in output time
 let selB = 0;
 let dragging = null;
+/// Where IN and OUT stood when a tab was taken hold of. See the `mouseup`
+/// handler under the scrubber.
+let dragFrom = null;
 let cuts = []; // source ranges taken out
 let keeps = []; // [{a, b, at}] source ranges that survive, with output offset
 let gops = []; // output times where a GOP starts
@@ -371,9 +374,14 @@ const touched = () => !!src && editSignature() !== arrivedAs;
 const HISTORY_DEPTH = 100;
 
 /// Put down where we are, on the way into an edit.
-function remember() {
+///
+/// `state` is for the one edit that cannot say so on its way in: a tab
+/// dragged along the scrubber moves IN or OUT on every pointer event, and a
+/// step per event is a history nobody can walk back. The drag hands in where
+/// the selection was when the hand closed on it. See the pointer handlers.
+function remember(state = snapshot()) {
   if (settling) return;
-  past.push(snapshot());
+  past.push(state);
   if (past.length > HISTORY_DEPTH) past.shift();
   undone = [];
   paintHistory();
@@ -4109,9 +4117,22 @@ const atLastPicture = (o) => o >= outDur - frame() * 1.5;
 // reason to lose the other. Only when the two cross does the end just set
 // win, and the other runs out to the edge of the timeline -- "from here
 // onwards" and "up to here" being the honest reading until it is narrowed.
-function setIn(o) {
-  selA = atFirstPicture(o) ? 0 : clamp(o, 0, outDur);
-  if (selB <= selA) selB = outDur;
+/// `mark` is whether this is a step in the history. It is for a key, a button
+/// and the end of a drag; it is not for the hundred pointer events in the
+/// middle of that drag, which are one thing somebody did. See `remember`.
+///
+/// Putting IN and OUT down *is* an edit, whatever the selection itself is.
+/// The pair decides what ✂ takes out, and finding the head of a break by
+/// putting IN on it, stepping about and putting it somewhere better is the
+/// work this window is for -- with 取消 saying nothing about any of it, the
+/// only way back to the mark you had was to remember the frame number.
+function setIn(o, mark = true) {
+  const a = atFirstPicture(o) ? 0 : clamp(o, 0, outDur);
+  const b = selB <= a ? outDur : selB;
+  if (a === selA && b === selB) return;
+  if (mark) remember();
+  selA = a;
+  selB = b;
   updateReadouts();
   draw();
   scheduleStrip();
@@ -4121,9 +4142,13 @@ function setIn(o) {
 /// removing it means removing everything up to the start of the next picture.
 const selEnd = () => (selB >= outDur - 1e-9 ? outDur : Math.min(selB + frame(), outDur));
 
-function setOut(o) {
-  selB = atLastPicture(o) ? outDur : clamp(o, 0, outDur);
-  if (selB <= selA) selA = 0;
+function setOut(o, mark = true) {
+  const b = atLastPicture(o) ? outDur : clamp(o, 0, outDur);
+  const a = b <= selA ? 0 : selA;
+  if (a === selA && b === selB) return;
+  if (mark) remember();
+  selA = a;
+  selB = b;
   updateReadouts();
   draw();
   scheduleStrip();
@@ -5185,6 +5210,9 @@ track.addEventListener("mousedown", (ev) => {
   const x = ev.offsetX;
   const near = (t) => Math.abs(timeToX(t, w) - x) < 8;
   dragging = near(selA) ? "in" : near(selB) ? "out" : "seek";
+  // Where the selection stood before the hand closed on the tab, so that the
+  // whole drag is one step in the history rather than one per pointer event.
+  dragFrom = dragging === "seek" ? null : { selA, selB };
   hideHover();
   if (dragging === "seek") seekOut(xToTime(x, w));
 });
@@ -5192,8 +5220,8 @@ window.addEventListener("mousemove", (ev) => {
   if (!dragging || !src) return;
   const rect = track.getBoundingClientRect();
   const o = xToTime(ev.clientX - rect.left, rect.width);
-  if (dragging === "in") setIn(o);
-  else if (dragging === "out") setOut(o);
+  if (dragging === "in") setIn(o, false);
+  else if (dragging === "out") setOut(o, false);
   else {
     playhead = outToSrc(o);
     updateReadouts();
@@ -5203,6 +5231,12 @@ window.addEventListener("mousemove", (ev) => {
 });
 window.addEventListener("mouseup", () => {
   if (dragging === "seek") showFrame(playhead);
+  // The step for the drag, put down now that it is over and only if it moved
+  // anything: a tab taken hold of and let go where it was is not an edit.
+  if (dragFrom && (dragFrom.selA !== selA || dragFrom.selB !== selB)) {
+    remember({ ...snapshot(), selA: dragFrom.selA, selB: dragFrom.selB });
+  }
+  dragFrom = null;
   dragging = null;
 });
 
@@ -5309,8 +5343,14 @@ el("snap").addEventListener("click", () => {
   let b = srcToOutSeam(nearestPoint(outToSrc(selB)));
   if (b <= a) b = srcToOutSeam(nearestPoint(outToSrc(a), 1));
   if (b <= a) a = srcToOutSeam(nearestPoint(outToSrc(b), -1));
-  selA = clamp(Math.min(a, b), 0, outDur);
-  selB = clamp(Math.max(a, b), 0, outDur);
+  const from = clamp(Math.min(a, b), 0, outDur);
+  const to = clamp(Math.max(a, b), 0, outDur);
+  if (from === selA && to === selB) return;
+  // A step like any other press that moves IN or OUT: this one moves both,
+  // and a button that cannot be undone is a button nobody presses twice.
+  remember();
+  selA = from;
+  selB = to;
   updateReadouts();
   draw();
   scheduleStrip();

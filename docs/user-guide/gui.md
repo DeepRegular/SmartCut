@@ -736,7 +736,12 @@ marked. Move the end and cut again. The playhead comes back too, to the frame
 you were looking at.
 
 Undo covers more than cutting. Marking a keyframe, deleting one, clearing them
-all, Clear all: every one of them is a step back.
+all, Clear all: every one of them is a step back. **So is putting IN or OUT
+down** — by key, by button, by dragging a tab along the scrubber, or by
+Snap to lossless. Finding the head of a break means putting IN on it, stepping
+about and putting it somewhere better, and Undo walks back through those the
+way it walks back through cuts. A tab dragged from one place to another is one
+step, not one per pixel.
 
 ### When re-encoding is needed
 
