@@ -229,21 +229,32 @@ fn video_mismatches(master: &VideoInfo, clip: &VideoInfo) -> Vec<Mismatch> {
         format!("{}x{}", master.width, master.height),
         format!("{}x{}", clip.width, clip.height),
     );
-    if !near(master.frame_rate, clip.frame_rate, RATE_TOLERANCE) {
+    if stated(master.frame_rate > 0.0, clip.frame_rate > 0.0)
+        && !near(master.frame_rate, clip.frame_rate, RATE_TOLERANCE)
+    {
         say(
             What::Rate,
             rate(master.frame_rate),
             rate(clip.frame_rate),
         );
     }
-    say(What::Scan, scan(master), scan(clip));
-    say(
-        What::Pixels,
-        pixels(master.shape.pix_fmt),
-        pixels(clip.shape.pix_fmt),
-    );
-    say(What::Colour, colour(&master.shape), colour(&clip.shape));
-    if !near(
+    if let (Some(m), Some(c)) = (scan(master), scan(clip)) {
+        say(What::Scan, m, c);
+    }
+    if stated(master.shape.pix_fmt >= 0, clip.shape.pix_fmt >= 0) {
+        say(
+            What::Pixels,
+            pixels(master.shape.pix_fmt),
+            pixels(clip.shape.pix_fmt),
+        );
+    }
+    if !same_colour(&master.shape, &clip.shape) {
+        say(What::Colour, colour(&master.shape), colour(&clip.shape));
+    }
+    if stated(
+        master.sample_aspect_ratio > 0.0,
+        clip.sample_aspect_ratio > 0.0,
+    ) && !near(
         master.sample_aspect_ratio,
         clip.sample_aspect_ratio,
         ASPECT_TOLERANCE,
@@ -255,6 +266,50 @@ fn video_mismatches(master: &VideoInfo, clip: &VideoInfo) -> Vec<Mismatch> {
         );
     }
     out
+}
+
+/// **A field one of the two recordings does not state is not a difference.**
+///
+/// Everything above is read out of the container, and a transport stream is
+/// not obliged to describe itself. Broadcast MPEG-2 states its colour in a
+/// sequence display extension that a recording begun mid-programme can be
+/// missing altogether; libavformat works the field order out from the
+/// pictures it probed and reports `unknown` where they did not settle it; a
+/// stream that never stated a pixel aspect ratio comes back as none at all.
+/// These are gaps in the description, and one recording of a programme can
+/// have them where the next week's has not.
+///
+/// Read as differences, they were an hour of encoding apiece. Two recordings
+/// off one channel are the same pictures in the same format, and re-encoding
+/// one of them because the other happened to say more about itself is work
+/// nobody would ask for if they were asked. So a comparison where either side
+/// is silent is passed over: the output states what the master states, which
+/// is the only claim there was, and the silent recording contradicts nothing.
+///
+/// This costs a real difference only where one recording states a thing the
+/// other actually is *not* -- and a recording that is not what it says it is
+/// cannot be told apart from one that does not say, so there is nothing to
+/// lose that was ever there to be had.
+fn stated(master: bool, clip: bool) -> bool {
+    master && clip
+}
+
+/// The colour fields, compared one at a time so that a recording which
+/// states two of the three and leaves the last unspecified is still the same
+/// colour as one that states all three.
+///
+/// Reported as one phrase all the same -- see [`colour`] -- because what the
+/// reader has to decide is the same whichever of the three it was.
+fn same_colour(master: &PictureShape, clip: &PictureShape) -> bool {
+    // `AVCOL_PRI_UNSPECIFIED`, `AVCOL_TRC_UNSPECIFIED` and
+    // `AVCOL_SPC_UNSPECIFIED` are all 2. Zero is not one of them: it is
+    // reserved for the primaries and the transfer, and it is RGB for the
+    // matrix, which is a claim like any other.
+    const UNSPECIFIED: i32 = 2;
+    let same = |m: i32, c: i32| m == c || m == UNSPECIFIED || c == UNSPECIFIED;
+    same(master.primaries, clip.primaries)
+        && same(master.transfer, clip.transfer)
+        && same(master.matrix, clip.matrix)
 }
 
 fn sound_mismatches(master: &[AudioInfo], clip: &[AudioInfo]) -> Vec<Mismatch> {
@@ -383,21 +438,32 @@ unsafe extern "C" fn colour_space_name(v: i32) -> *const std::os::raw::c_char {
     ff::ffi::av_color_space_name(std::mem::transmute::<i32, ff::ffi::AVColorSpace>(v))
 }
 
-/// Interlaced or not, and which field leads.
+/// Interlaced or not, and which field leads. `None` where the recording does
+/// not say.
 ///
 /// The field order is only asked where the scan is interlaced. A
 /// progressive stream may carry any of several numbers there depending on
 /// what wrote it, and none of them means anything: two progressive streams
 /// that disagree about a field order they do not have are not two shapes of
 /// picture.
-fn scan(v: &VideoInfo) -> String {
+///
+/// `AV_FIELD_UNKNOWN` is not "progressive", which is what it used to be read
+/// as. libavformat works the field order out from the pictures it probed and
+/// leaves it unknown where they did not settle it, so the same broadcast
+/// recorded two weeks running can come back interlaced once and unknown once.
+/// Called progressive, the second of those was an hour of encoding to make it
+/// match the first. See [`stated`].
+fn scan(v: &VideoInfo) -> Option<String> {
+    if v.field_order == 0 {
+        return None;
+    }
     if !v.interlaced() {
-        return "progressive".into();
+        return Some("progressive".into());
     }
     if v.top_field_first() {
-        "interlaced, top field first".into()
+        Some("interlaced, top field first".into())
     } else {
-        "interlaced, bottom field first".into()
+        Some("interlaced, bottom field first".into())
     }
 }
 
@@ -476,6 +542,59 @@ mod tests {
         let mut theirs = video();
         theirs.field_order = 1;
         assert!(video_mismatches(&video(), &theirs).is_empty());
+    }
+
+    /// ...and a recording that does not say which way its fields run is not
+    /// a recording that disagrees with one that does. libavformat leaves the
+    /// field order unknown where the pictures it probed did not settle it,
+    /// which is the same broadcast on a week when the recorder began a second
+    /// later. See `stated`.
+    #[test]
+    fn an_unstated_field_order_is_not_a_difference() {
+        let mut master = video();
+        master.field_order = 2;
+        let mut theirs = video();
+        theirs.field_order = 0;
+        assert!(video_mismatches(&master, &theirs).is_empty());
+        assert!(video_mismatches(&theirs, &master).is_empty());
+    }
+
+    /// The same for the colour, one field at a time: a recording that states
+    /// two of the three and leaves the matrix unspecified is the same colour
+    /// as one that states all three.
+    #[test]
+    fn an_unspecified_colour_is_not_a_difference() {
+        let mut theirs = video();
+        theirs.shape.matrix = ff::ffi::AVColorSpace::AVCOL_SPC_UNSPECIFIED as i32;
+        assert!(video_mismatches(&video(), &theirs).is_empty());
+        theirs.shape.primaries = ff::ffi::AVColorPrimaries::AVCOL_PRI_UNSPECIFIED as i32;
+        theirs.shape.transfer =
+            ff::ffi::AVColorTransferCharacteristic::AVCOL_TRC_UNSPECIFIED as i32;
+        assert!(video_mismatches(&video(), &theirs).is_empty());
+    }
+
+    /// A colour that is *stated* and differs is still a difference. Two
+    /// recordings whose pictures mean different things by the same numbers
+    /// look like pictures from two cameras, because that is what they are.
+    #[test]
+    fn a_stated_colour_that_differs_is_a_difference() {
+        let mut theirs = video();
+        theirs.shape.matrix = ff::ffi::AVColorSpace::AVCOL_SPC_BT470BG as i32;
+        let found = video_mismatches(&video(), &theirs);
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].what, What::Colour);
+    }
+
+    /// And a recording that never stated a pixel aspect ratio is not one
+    /// that claims square pixels.
+    #[test]
+    fn an_unstated_aspect_is_not_a_difference() {
+        let mut master = video();
+        master.sample_aspect_ratio = 4.0 / 3.0;
+        let mut theirs = video();
+        theirs.sample_aspect_ratio = 0.0;
+        assert!(video_mismatches(&master, &theirs).is_empty());
+        assert!(video_mismatches(&theirs, &master).is_empty());
     }
 
     /// A track the clip does not have is not a track that can be written

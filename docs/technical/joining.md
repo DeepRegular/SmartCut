@@ -105,6 +105,31 @@ pictures and its sound are written afresh and what differs. The output screen's
 re-encode note asks this before it asks for a plan: the other way round, a clip
 being written afresh from end to end is announced as copied losslessly.
 
+### A field a recording does not state is not a difference
+
+Everything compared above is read out of the container, and a transport stream
+is under no obligation to describe itself. Broadcast MPEG-2 states its colour
+in a sequence display extension that a recording begun mid-programme can be
+missing altogether. The field order is worked out by libavformat from the
+pictures it probed, and comes back unknown where those did not settle it. A
+stream that never stated a pixel aspect ratio has none to read.
+
+Those are gaps in the description rather than differences in the pictures, and
+one recording of a programme has them where the next week's has not. Read as
+differences they were an hour of encoding apiece — for two recordings off one
+channel, which are the same pictures in the same format.
+
+So **a comparison where either side is silent is passed over.** The output
+states what the master states, which is the only claim there was, and the
+silent recording contradicts nothing. The colour is three fields read one at a
+time, so a recording that states two of them and leaves the matrix unspecified
+is the same colour as one that states all three.
+
+What this costs is a real difference only where a recording states something it
+is not — and a recording whose description disagrees with its content cannot be
+told from one that says nothing, so there was never an answer there to lose.
+The rule is `conform::stated` and `conform::same_colour`.
+
 **29.97 and 30 are not the same rate.** The tolerance is a ten-thousandth,
 relative; what it is for is the last figure of a rate that arrived as a
 decimal, and it has to be well under the thousandth that separates 30000/1001
