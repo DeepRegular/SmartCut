@@ -1043,6 +1043,23 @@
                   </select>
                 </span>
               </div>
+              <!-- The sound a cut is written with, as the output settings
+                   screen starts out. The same standing of answer as the
+                   prefix above: somebody who writes every cut down to stereo
+                   writes the next one down too. Only the counts that screen
+                   can write, and only downwards -- see `soundCeiling`. -->
+              <div class="row">
+                <span data-i18n="prefs.audioChannels">出力の音声チャンネルの初期値:</span>
+                <span class="drop">
+                  <select id="pref-audio-channels">
+                    <option value="" data-i18n="channels.same">入力と同じ</option>
+                    <option value="1" data-i18n="channels.mono">1ch（モノラル）</option>
+                    <option value="2" data-i18n="channels.stereo">2ch（ステレオ）</option>
+                    <option value="6" data-i18n="channels.surround51">5.1ch（6ch）</option>
+                  </select>
+                </span>
+              </div>
+              <p class="dim" data-i18n="prefs.audioChannelsNote"></p>
               <!-- What a cut carries, rather than what it is called, and
                    here for a reason the two above do not have: the box this
                    is the default for is not always on screen. It appears only

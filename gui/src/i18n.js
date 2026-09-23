@@ -208,6 +208,13 @@ const CATALOG = {
     "prefs.numberNote":
       "出力するファイル名に一覧の行番号を付けます。例: cut_03_録画.ts",
     "prefs.digits": "連番の桁数:",
+    "prefs.audioChannels": "出力の音声チャンネルの初期値:",
+    "prefs.audioChannelsNote":
+      "出力設定の「音声チャンネル」が最初に選んでいるものです。" +
+      "既定は「入力と同じ」で、そのままコピーまたはスマートレンダリングされます。" +
+      "ここで本数を選ぶと、音声はすべて再エンコードになります。" +
+      "録画より多い本数は選べません。無かった音を作り出すことはできないためです。" +
+      "プロジェクトを開いたときは、そのプロジェクトの設定が優先されます。",
     "prefs.dataBroadcast": "データ放送も残す（.ts のみ）",
     "prefs.dataBroadcastNote":
       "リモコンの d ボタンで見られるページを、カットした出力にも残します。" +
@@ -1283,6 +1290,13 @@ const CATALOG = {
       "Carries the order of the list into the names that are written. The number is the one beside " +
       "the row: cut_03_recording.ts",
     "prefs.digits": "Digits in the number:",
+    "prefs.audioChannels": "Audio channels a cut starts at:",
+    "prefs.audioChannelsNote":
+      "What the output settings screen's Audio channels begins on. Same as the input out of the " +
+      "box, which is copied or smart-rendered as it stands; picking a count re-encodes every " +
+      "sound track. A count above what a recording was sent with is not offered -- spreading it " +
+      "into channels it never had adds size and not sound. A project opened carries its own " +
+      "answer, which wins over this one.",
     "prefs.dataBroadcast": "Keep the data broadcast (.ts only)",
     "prefs.dataBroadcastNote":
       "Carries the pages behind the d button into the cut. Only a .ts that keeps the broadcast's own " +

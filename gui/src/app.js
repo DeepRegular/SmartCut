@@ -3011,7 +3011,7 @@ const settings = {
 /// one from the last one's folder and prefix would be starting it half open.
 const SETTING_DEFAULTS = { ...settings };
 
-/// The three of them 環境設定 answers for, put into force.
+/// The four of them 環境設定 answers for, put into force.
 ///
 /// What a cut is called is the one output setting that is as much about the
 /// person as about the work: somebody who writes `編集_` in front of every file
@@ -3021,12 +3021,25 @@ const SETTING_DEFAULTS = { ...settings };
 /// on 新規作成, and on 既定に戻す, which is every moment the defaults are what
 /// is in force.
 ///
-/// A project saved with its own answer is not one of those moments:
-/// `loadProject` writes what the file says over all three.
+/// The sound the output is written with is the fourth, and it is the same
+/// kind of answer: somebody who writes every cut down to stereo does it to
+/// the next one too, and「入力と同じ」-- which is what the screen starts at
+/// -- is only the right answer for somebody who never downmixes at all.
+///
+/// A project saved with its own answers is not one of those moments:
+/// `loadProject` writes what the file says over all four.
 function applyNameDefaults() {
   settings.prefix = String(prefs.get("outPrefix") ?? SETTING_DEFAULTS.prefix);
   settings.number = !!prefs.get("outNumber");
   settings.digits = String(Number(prefs.get("outDigits")) || 2);
+  settings.audioChannels = String(prefs.get("outAudioChannels") ?? "");
+  // A count can only be delivered by writing the sound afresh -- copying is
+  // copying, and the smart path splices the recording's own frames -- so the
+  // mode comes with it. Without this the preference was a control that did
+  // nothing: the row it fills is on screen only under すべて再エンコード, and
+  // somebody who has asked for stereo has asked for the thing that produces
+  // stereo. 入力と同じ leaves the mode alone, that being no request at all.
+  if (settings.audioChannels) settings.audio = "reencode";
 }
 
 /// Which of them are worth carrying from one session to the next.
@@ -9130,6 +9143,7 @@ function paintPrefs() {
   el("pref-prefix").value = String(prefs.get("outPrefix") ?? "");
   el("pref-number").checked = !!prefs.get("outNumber");
   el("pref-digits").value = String(Number(prefs.get("outDigits")) || 2);
+  el("pref-audio-channels").value = String(prefs.get("outAudioChannels") ?? "");
   el("pref-data-broadcast").checked = prefs.get("dataBroadcast") !== false;
   el("pref-keep-output").checked = !!prefs.get("keepOutput");
   el("pref-clean-joins").checked = !!prefs.get("cleanJoins");
@@ -9462,7 +9476,21 @@ el("pref-digits").addEventListener("change", (ev) => {
   touch();
 });
 
-// What a cut carries. Unlike the three above it has no second home on the
+// The sound, which has a second home on the output screen like the three
+// above it -- and unlike them it is only in force where the sound is being
+// written. Set on a list already open, it lands there straight away; a row
+// whose track is narrower than this keeps its own, which is `soundCeiling`'s
+// doing and not this one's.
+el("pref-audio-channels").addEventListener("change", (ev) => {
+  prefs.set("outAudioChannels", ev.target.value);
+  settings.audioChannels = ev.target.value;
+  // With the mode, for the reason `applyNameDefaults` gives.
+  if (ev.target.value) settings.audio = "reencode";
+  showSettings();
+  touch();
+});
+
+// What a cut carries. Unlike the four above it has no second home on the
 // output settings screen, so there is nothing to write it into: the next run
 // reads it from here. See `prefs.dataBroadcast`.
 el("pref-data-broadcast").addEventListener("change", (ev) => {

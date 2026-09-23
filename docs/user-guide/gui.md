@@ -1260,6 +1260,13 @@ effect as you make it.
 as; the number is on by default. Changing one here puts it into the settings in
 force as well. A project that is opened brings its own and wins.
 
+**Audio channels a cut starts at** is the same kind of answer. Same as the input
+out of the box, which is the recording's own sound copied or smart-rendered as
+it stands. Pick 1ch, 2ch or 5.1ch and the sound has to be **written afresh** to
+come out at that count, so the output screen's **Audio** moves to
+`Re-encode everything` along with it. A count above what a recording was sent
+with is not offered: there is no sound there to spread.
+
 **Keep the data broadcast (.ts only)** carries the pages behind the d button
 into the cut. Only a `.ts` that keeps the broadcast's own tables can hold one, so
 a disc and an `.mp4` never get it whatever this says. **On** to begin with: a cut
