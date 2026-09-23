@@ -362,7 +362,15 @@ const TEMPLATE_STRETCHES: usize = 24;
 /// the sample saves nothing and pays for the seeks.
 fn template_reach(src: &Source) -> Reach {
     let points = src.points.len();
-    if !src.byte_seekable || points < TEMPLATE_PICTURES * 2 || src.duration <= 0.0 {
+    // ...and only where every entry point says what byte it starts at, which
+    // is what the seek is made of. An index that does not carry them would
+    // place no run at all and the pass would come back with nothing to build
+    // a template from, which reads from outside as a recording with no logo.
+    if !src.byte_seekable
+        || points < TEMPLATE_PICTURES * 2
+        || src.duration <= 0.0
+        || src.points.iter().any(|p| p.pos < 0)
+    {
         return Reach::Whole;
     }
     let each = TEMPLATE_PICTURES.div_ceil(TEMPLATE_STRETCHES);

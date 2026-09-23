@@ -14,7 +14,17 @@ fn main() -> Result<()> {
     // points that say where those runs are. What the application holds by
     // the time it asks for a logo is a walked recording.
     let src = sc::scan(&path)?;
-    let opts = sc::logo::LogoOptions::default();
+    // Swept from the environment so a threshold can be argued with over a
+    // pile of recordings without a rebuild between each answer.
+    let num = |k: &str, v: f64| std::env::var(k).ok().and_then(|s| s.parse().ok()).unwrap_or(v);
+    let d = sc::logo::LogoOptions::default();
+    let opts = sc::logo::LogoOptions {
+        min_absent: num("LOGO_MIN_ABSENT", d.min_absent),
+        min_present: num("LOGO_MIN_PRESENT", d.min_present),
+        typical_break: num("LOGO_TYPICAL_BREAK", d.typical_break),
+        window_seconds: num("LOGO_WINDOW", d.window_seconds),
+        ..d
+    };
     let began = std::time::Instant::now();
     let found = sc::logo::detect_with(&src, &opts, None);
     let took = began.elapsed().as_secs_f64();

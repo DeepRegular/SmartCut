@@ -110,6 +110,11 @@ fn loud_bounds(frame: &ff::frame::Audio, floor: f64) -> Option<(usize, usize)> {
     } else {
         1
     };
+    // Nothing to read. `planes` is nought where the frame carries no buffer
+    // at all, and asking one for its bytes is a panic rather than an error.
+    if frame.planes() == 0 {
+        return None;
+    }
     let mut first: Option<usize> = None;
     let mut last: Option<usize> = None;
     // An interleaved frame holds every channel in plane nought, so element
