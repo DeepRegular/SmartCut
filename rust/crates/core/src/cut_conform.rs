@@ -523,9 +523,18 @@ struct FarSide {
     /// The next one, and when it arrives.
     ahead: Option<(f64, ff::frame::Video)>,
     rescale: Option<Rescale>,
-    /// Set when the clip has no more pictures. The held one then stands for
-    /// the rest of the crossing.
+    /// Set when the clip has no more pictures at all. The held one then
+    /// stands for the rest of the crossing.
     spent: bool,
+    /// Set once the reader has run out of packets and the decoder has been
+    /// told so.
+    ///
+    /// Not the same as [`Self::spent`], and the two were one field until a
+    /// crossing that ran to the end of the far clip froze several frames
+    /// early: a decoder handed the end of the stream still has every
+    /// reordered picture it was holding, and stopping at the first of them
+    /// leaves the rest unread.
+    drained: bool,
 }
 
 impl FarSide {
@@ -553,6 +562,7 @@ impl FarSide {
             ahead: None,
             rescale: None,
             spent: false,
+            drained: false,
         })
     }
 
@@ -591,8 +601,8 @@ impl FarSide {
             let Some((stream, packet)) = self.ictx.packets().next() else {
                 // Nothing left to read. Whatever the decoder is still
                 // holding comes out now, and after that there is nothing.
-                if !self.spent {
-                    self.spent = true;
+                if !self.drained {
+                    self.drained = true;
                     self.decoder.send_eof()?;
                     continue;
                 }
