@@ -479,9 +479,14 @@ once.
 
 ![The magnifier](../images/usage-zoom.png)
 
-`Z`, or **Magnifier** in the ≡ menu, opens a window of its own. Move the
-pointer over the cut editor's picture and that part of it is magnified there,
-from 2x to 8x — the menu is at the foot of that window.
+`Z`, or **Magnifier** in the ≡ menu, opens a window of its own. Click the cut
+editor's picture and that part of it is magnified there, from 2x to 8x — the
+menu is at the foot of that window. Holding the button down and moving takes
+the aim with it.
+
+**The magnified picture is dragged about.** At 8x the window holds a couple of
+hundred of the recording's own pixels, so following an edge across a frame is
+one drag in there rather than a dozen clicks out here.
 
 **What it shows is the recording's own pixels.** The preview has been scaled to
 the width of the stage, and scaling is what takes the comb out of interlaced

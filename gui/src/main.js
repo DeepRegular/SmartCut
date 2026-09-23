@@ -4611,9 +4611,16 @@ let zoomOn = false;
 let zoomShown = null;
 let zoomToken = 0;
 let zoomAsk = null;
-/// Where the pointer last was over the picture, in fractions of it. Kept so
-/// a window opened while the pointer is elsewhere has somewhere to look, and
-/// so a new picture arrives already pointed at the same place.
+/// Where the picture was last clicked, in fractions of it. Kept so a window
+/// opened afterwards has somewhere to look, and so a new picture arrives
+/// already pointed at the same place.
+///
+/// **Clicked, not hovered.** It followed the pointer at first, which reads
+/// well for a glance and badly for the work: checking whether a frame is
+/// interlaced means looking at the magnified picture, and a magnifier that
+/// re-aims itself every time the hand moves on the way to it is one that
+/// shows the edge of the frame by the time the eye arrives. The reference
+/// viewer is clicked too.
 let zoomPoint = { x: 0.5, y: 0.5 };
 
 /// Where a pointer event landed on the picture, as fractions of the
@@ -4670,12 +4677,26 @@ function sendZoomPoint() {
   });
 }
 
+/// A press on the picture aims the magnifier, and holding the button down
+/// drags the aim about: a seam is checked at one edge and then at the next,
+/// and lifting the hand between them is a click nobody needs to make.
+let zoomAiming = false;
+el("preview").addEventListener("mousedown", (ev) => {
+  if (ev.button !== 0) return;
+  const at = pictureFraction(ev);
+  if (!at) return;
+  zoomAiming = true;
+  zoomPoint = at;
+  sendZoomPoint();
+});
 el("preview").addEventListener("mousemove", (ev) => {
+  if (!zoomAiming) return;
   const at = pictureFraction(ev);
   if (!at) return;
   zoomPoint = at;
   sendZoomPoint();
 });
+window.addEventListener("mouseup", () => (zoomAiming = false));
 
 /// Open it, or close the one that is up. The menu item and Z are the same
 /// press: a window that toggles has one way of being asked for.
@@ -4699,6 +4720,10 @@ function paintZoomItem() {
   if (!item) return;
   item.setAttribute("aria-pressed", zoomOn ? "true" : "false");
   item.classList.toggle("on", zoomOn);
+  // And on the picture itself, where the aiming is done: a press there does
+  // something while that window is up and nothing at all while it is not,
+  // and the pointer is the only place that difference can be seen.
+  el("preview").classList.toggle("aiming", zoomOn);
 }
 
 el("zoom-toggle").addEventListener("click", () => {

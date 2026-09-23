@@ -12,7 +12,7 @@
 // arrive as events:
 //
 //   * `zoom-frame`  a new picture -- the playhead moved, or a first one
-//   * `zoom-point`  where the pointer is over it, as fractions of the picture
+//   * `zoom-point`  where it was clicked, as fractions of the picture
 //
 // Nothing is drawn smooth. `imageSmoothingEnabled` is off and the pixels come
 // out as squares, because a magnifier that interpolates is a magnifier that
@@ -39,9 +39,11 @@ const ctx = face.getContext("2d");
 let pic = null;
 /// Its time in the recording, for the line under the canvas.
 let at = null;
-/// Where the pointer is over it, in fractions of its width and height. The
-/// middle until the editor says otherwise -- a window opened while the
-/// pointer is somewhere else entirely still has to show something.
+/// Which part of it is being looked at, as fractions of its width and
+/// height. The middle until the editor says otherwise -- a window opened
+/// before anything has been clicked still has to show something.
+///
+/// Two hands move it: a press on the editor's picture, and a drag in here.
 let spot = { x: 0.5, y: 0.5 };
 /// How far to magnify. Settled here rather than in 環境設定: it is the one
 /// question this window exists to answer, and the answer changes with what
@@ -75,7 +77,7 @@ function paint() {
   // eight device pixels.
   const sw = w / (scale * dpr);
   const sh = h / (scale * dpr);
-  // Centred on the pointer, and pulled back inside the picture at its edges
+  // Centred on that spot, and pulled back inside the picture at its edges
   // rather than padded with black: at the corner of a frame what somebody
   // wants to see is the corner, not a quarter of it in the middle of a black
   // square.
@@ -136,9 +138,9 @@ if (listen) {
     paintFoot();
   });
 
-  // Where the pointer is over the editor's picture. Fractions rather than
-  // pixels: the stage is whatever size that window happens to be, and what
-  // this window needs is the place in the *recording*.
+  // Where the editor's picture was clicked. Fractions rather than pixels:
+  // the stage is whatever size that window happens to be, and what this
+  // window needs is the place in the *recording*.
   hear("zoom-point", (ev) => {
     answered = true;
     const said = ev.payload || {};
@@ -149,6 +151,49 @@ if (listen) {
 
   hear("lang-changed", (ev) => setLang(ev.payload, false));
 }
+
+/// Dragging the picture about.
+///
+/// The editor says where to look -- a press on its picture -- and this moves
+/// that answer without going back to it. It is the shorter way to ask at this
+/// magnification: at 8x a window holds a couple of hundred source pixels, so
+/// following an edge across a frame is a dozen presses over there or one drag
+/// in here, and the reference viewer is dragged too.
+///
+/// The picture moves with the hand, which means the view goes the other way:
+/// dragging left brings what is to the right into the window.
+let drag = null;
+
+face.addEventListener("mousedown", (ev) => {
+  if (ev.button !== 0 || !pic) return;
+  drag = { x: ev.clientX, y: ev.clientY, spot };
+  face.classList.add("dragging");
+  // A canvas is not draggable, but the press still starts a selection that
+  // paints the window grey wherever the pointer goes.
+  ev.preventDefault();
+});
+
+// On the window rather than on the canvas, so a hand that runs off the edge
+// mid-drag goes on dragging and lets go where it lets go.
+window.addEventListener("mousemove", (ev) => {
+  if (!drag || !pic) return;
+  // CSS pixels to the recording's own: the magnification is screen pixels per
+  // source pixel, so the display's ratio is not in this arithmetic -- it is in
+  // `paint`, where device pixels are.
+  const dx = (ev.clientX - drag.x) / scale;
+  const dy = (ev.clientY - drag.y) / scale;
+  spot = {
+    x: clamp(drag.spot.x - dx / pic.naturalWidth, 0, 1),
+    y: clamp(drag.spot.y - dy / pic.naturalHeight, 0, 1),
+  };
+  draw();
+});
+
+window.addEventListener("mouseup", () => {
+  if (!drag) return;
+  drag = null;
+  face.classList.remove("dragging");
+});
 
 el("scale").addEventListener("change", (ev) => {
   scale = Number(ev.target.value) || 4;

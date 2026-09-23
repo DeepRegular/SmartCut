@@ -468,7 +468,10 @@ main { flex: 1; min-height: 0; display: flex; gap: 0; }
    canvas is drawn to whatever size the window is. */
 body.zoom { padding: 0; }
 .zoom-stage { flex: 1; min-height: 0; position: relative; background: #000; }
-.zoom-stage #face { display: block; width: 100%; height: 100%; }
+.zoom-stage #face { display: block; width: 100%; height: 100%; cursor: grab; }
+/* The picture is dragged about rather than re-aimed from the editor every
+   time, so the pointer over it says what it is: something to take hold of. */
+.zoom-stage #face.dragging { cursor: grabbing; }
 .zoom-empty {
   position: absolute; inset: 0; display: flex; align-items: center;
   justify-content: center; text-align: center; padding: 0 16px;
@@ -585,6 +588,9 @@ body.crosswin { padding: 0; }
   flex: 1 1 0; min-height: 160px;
 }
 #preview { display: block; width: 100%; height: 100%; object-fit: contain; }
+/* While 拡大表示 is up. A press on the picture aims that window, and the
+   pointer is the only place on screen that says so. */
+#preview.aiming { cursor: crosshair; }
 .overlay {
   position: absolute; left: 50%; bottom: 10px; transform: translateX(-50%);
   background: rgba(0,0,0,.55); padding: 4px 14px; border-radius: 2px;

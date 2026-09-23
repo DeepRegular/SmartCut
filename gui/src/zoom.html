@@ -7,17 +7,18 @@
     <link rel="stylesheet" href="styles.css" />
   </head>
   <!-- 拡大表示, in a window of its own. It shows the part of the cut editor's
-       picture the pointer is over, at the recording's own pixels: whether a
+       picture that was clicked, at the recording's own pixels: whether a
        frame is interlaced is a question about those pixels, and the stage's
        copy of them has been scaled to the width of the stage.
 
-       It owns nothing. The editor says which picture and which part of it;
-       this window decides how far to magnify and draws. -->
+       It owns nothing but the view. The editor says which picture and where
+       to start looking; this window decides how far to magnify, lets the
+       hand drag the view about, and draws. -->
   <body class="zoom">
     <div class="zoom-stage">
       <canvas id="face"></canvas>
       <div class="zoom-empty" id="empty" data-i18n="zoom.waiting">
-        カット編集の画面にマウスを乗せてください
+        カット編集の画面をクリックしてください
       </div>
     </div>
     <div class="zoom-foot">
