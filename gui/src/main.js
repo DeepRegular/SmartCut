@@ -670,10 +670,69 @@ function dropKeyframes(times, scroll = true) {
   scheduleStrip();
 }
 
+/// Which marks the cards on screen stand for, and the pictures in them.
+///
+/// Kept so that a render which changes nothing about *which* marks there are
+/// -- a click that picks a card out, a Ctrl that gathers another one -- can
+/// dress the cards that are already there instead of making them again. See
+/// the note on `renderKeyframes`.
+let cardsShown = [];
+let cardImgs = [];
+const sameCards = (live) =>
+  live.length === cardsShown.length && live.every((t, i) => t === cardsShown[i]);
+
+/// Where a mark came from, as the row of tags under its time.
+///
+/// `null` where no detection is standing on it, which is most marks. See the
+/// note in `renderKeyframes`: a card carries no such thing in it, so this is
+/// read off the stretches that are on screen.
+function cardTags(t) {
+  const from = flatKindsAt(t);
+  if (!from.length) return null;
+  const tags = document.createElement("div");
+  tags.className = "from";
+  for (const kind of from) {
+    const tag = document.createElement("span");
+    tag.className = kind;
+    tag.textContent = tr(`editor.keyframes.from.${kind}`);
+    tag.title = tr(`editor.keyframes.fromTitle.${kind}`);
+    tags.append(tag);
+  }
+  return tags;
+}
+
+/// Everything about a card that a render can change while the card itself
+/// stays: whether it is picked out, where in the output its mark now falls,
+/// and which detection is standing on it.
+///
+/// The number is not in here. It is the mark's place in the list, and a list
+/// whose marks are the same marks in the same order has the same numbers.
+function dressCard(li, t) {
+  const marks = [];
+  if (isActive(t)) marks.push("active");
+  if (isPicked(t)) marks.push("picked");
+  li.className = marks.join(" ");
+  const box = li.querySelector(".at").parentElement;
+  box.querySelector(".at").textContent = fmt(srcToOut(t));
+  const was = box.querySelector(".from");
+  const tags = cardTags(t);
+  if (was && tags) was.replaceWith(tags);
+  else if (was) was.remove();
+  else if (tags) box.append(tags);
+}
+
 /// `scroll` is whether the card picked out is worth scrolling to. It is,
 /// wherever the list is drawn because the playhead moved or a cut landed --
 /// and it is not when the hand is in the list itself, where scrolling under
 /// the pointer moves the next card somebody meant to click.
+///
+/// **A click in the column does not rebuild it.** The cards used to be thrown
+/// away and made again on every render, selection changes included, and a
+/// column scrolled a long way down came back at the top: a webview has
+/// nowhere to keep a scroll position for an element whose children have all
+/// gone. So a render that finds the same marks in the same order dresses the
+/// cards where they stand, which is both why the column stays put and why a
+/// click no longer blinks the pictures out and back.
 function renderKeyframes(scroll = true) {
   // Runs whenever the marks change, and on a bare selection change too --
   // which `sync` coalesces away.
@@ -686,12 +745,26 @@ function renderKeyframes(scroll = true) {
     pickedKeys = pickedKeys.filter((t) => live.some((x) => Math.abs(x - t) < frame() / 2));
   }
   el("key-count").textContent = live.length ? tr("editor.keyCount", { n: live.length }) : "";
+  // The same marks as last time: dress the cards and leave them where they
+  // are, scroll position and all.
+  if (live.length && sameCards(live) && list.children.length === live.length) {
+    live.forEach((t, i) => dressCard(list.children[i], t));
+    scrollToCard(list, live, scroll);
+    paintCards(live, cardImgs);
+    return;
+  }
   // The cards are thrown away and made again below, and one of them can be
   // where the keyboard is: the ✕ on a card is a button, and pressing it is
   // what brings us here. A webview hands the keyboard back to the page when
   // the element holding it goes, so the next Del would have been the cut
   // rather than another mark off the list. The column takes it back.
   const had = keysHaveKeyboard();
+  // ...and it has nowhere to keep a scroll position either, so the one it
+  // has is taken and put back. Best effort, this one: the list about to be
+  // built is a different list, and where the same offset lands in it is only
+  // the same place while the cards are the same height. It beats the top of
+  // the column, which is where it landed before.
+  const wasAt = list.scrollTop;
   list.innerHTML = "";
   if (!live.length) {
     const p = document.createElement("div");
@@ -703,25 +776,19 @@ function renderKeyframes(scroll = true) {
       prefs.get("cmKeyframes") === false ? "editor.keyframes.emptyManual" : "editor.keyframes.empty"
     );
     list.append(p);
+    cardsShown = [];
+    cardImgs = [];
     if (had && !keysHaveKeyboard()) list.focus({ preventScroll: true });
     return;
   }
   const imgs = [];
   live.forEach((t, i) => {
     const li = document.createElement("li");
-    const marks = [];
-    if (isActive(t)) {
-      marks.push("active");
-      // The list scrolls, and a mark a cut just made is often below the fold.
-      if (scroll) requestAnimationFrame(() => li.scrollIntoView({ block: "nearest" }));
-    }
-    if (isPicked(t)) marks.push("picked");
-    li.className = marks.join(" ");
     const img = document.createElement("img");
     img.alt = "";
     // Whatever was already standing in for this mark, before anything is
-    // asked for: this list is rebuilt from nothing every time it is drawn,
-    // and the walk landing draws it again.
+    // asked for: a render that finds a different set of marks builds its
+    // cards from nothing, and the walk landing is one of those.
     const guess = cardGuesses.get(cardKey(t));
     if (guess) img.src = guess;
     imgs.push(img);
@@ -732,26 +799,7 @@ function renderKeyframes(scroll = true) {
     no.textContent = `#${String(i + 1).padStart(2, "0")}`;
     const at = document.createElement("div");
     at.className = "at";
-    at.textContent = fmt(srcToOut(t));
     box.append(no, at);
-    // Where the mark came from, where one of the detections is what put it
-    // there. A card carries no such thing in it -- a mark is an instant and
-    // nothing else, which is what lets 取消 and a cut move them about -- so
-    // this is read off the stretches that are on screen: a mark standing on
-    // the end of one is that end.
-    const from = flatKindsAt(t);
-    if (from.length) {
-      const tags = document.createElement("div");
-      tags.className = "from";
-      for (const kind of from) {
-        const tag = document.createElement("span");
-        tag.className = kind;
-        tag.textContent = tr(`editor.keyframes.from.${kind}`);
-        tag.title = tr(`editor.keyframes.fromTitle.${kind}`);
-        tags.append(tag);
-      }
-      box.append(tags);
-    }
     const kill = document.createElement("button");
     kill.className = "kill";
     kill.textContent = "✕";
@@ -761,6 +809,9 @@ function renderKeyframes(scroll = true) {
       dropKeyframes([t], false);
     });
     li.append(img, box, kill);
+    // The time under the number, and the tags under that: everything about a
+    // card that a later render can change without the card itself changing.
+    dressCard(li, t);
     // A click picks the card out and goes to it, which is what this column is
     // for. With Ctrl or Shift it does neither: those two are somebody
     // gathering cards to be rid of -- the file manager's chord, and the same
@@ -800,8 +851,23 @@ function renderKeyframes(scroll = true) {
     });
     list.append(li);
   });
+  cardsShown = live.slice();
+  cardImgs = imgs;
+  list.scrollTop = wasAt;
+  scrollToCard(list, live, scroll);
   if (had && !keysHaveKeyboard()) list.focus({ preventScroll: true });
   paintCards(live, imgs);
+}
+
+/// Bring the card picked out into view, where this render is one the hand is
+/// not making: the list scrolls, and a mark a cut just made is often below
+/// the fold. See `renderKeyframes`.
+function scrollToCard(list, live, scroll) {
+  if (!scroll) return;
+  const n = live.findIndex((t) => isActive(t));
+  if (n < 0) return;
+  const card = list.children[n];
+  if (card) requestAnimationFrame(() => card.scrollIntoView({ block: "nearest" }));
 }
 
 /// A click on the column past the cards lets the handful go.
@@ -6315,6 +6381,10 @@ onLangChange(() => {
   paintSourceInfo();
   if (src) {
     updateReadouts();
+    // From nothing, so that what is written on a card in the other language
+    // -- the ✕ it is dismissed with, the line where there are no cards at all
+    // -- is written again. See `sameCards`.
+    cardsShown = [];
     renderKeyframes();
     showFrame(playhead);
     schedulePlan();

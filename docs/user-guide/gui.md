@@ -378,7 +378,7 @@ frames, and `Snap to lossless` can take those to zero once it lights up.
 |---|---|
 | Top line | The filename |
 | Info bar | Lossless points, resolution, fps, scan type, audio, codec. **Tracks** and **Detect commercials** on the right; the blank and silence passes are in the `≡` menu at the bottom right |
-| Left column | The **keyframes** — your marks, each with a thumbnail. Click one to jump there. A mark a detection put down carries `Black`, `White` or `Quiet` under its time |
+| Left column | The **keyframes** — your marks, each with a thumbnail. Click one to jump there; the column stays where it is scrolled to. A mark a detection put down carries `Black`, `White` or `Quiet` under its time |
 | The large picture | The preview. At its foot, in the middle: frame number, timecode, what kind of frame it is, and the current selection. **Counter**, on the bottom line, turns them off |
 | Beside it, on the left | The **audio level meter**: what is being heard while something plays, and the sound under the playhead while nothing does. **Preferences → Windows** turns it off |
 | The band under it | The **filmstrip**: the frames around you, laid out as pictures. The `Window` menu on the right sets how much of the recording the band shows; a cell is as wide as the stretch it covers |
