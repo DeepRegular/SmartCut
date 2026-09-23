@@ -2510,12 +2510,12 @@ fn cores() -> usize {
 /// have to be divided by. See [`BatchStop`], which has one count per lane and
 /// five of them.
 ///
-/// Two, not five: the walk touches no decoder at all -- it reads packet
-/// headers -- and neither the commercial detection nor the silences are
-/// threaded by libavcodec, which threads neither captions nor audio nor a
-/// logo. What is left is the thumbnail pass and the flat-picture pass, and
-/// those are what contend for cores with the film strip.
-const WIDE_LANES: usize = 2;
+/// Three, not five: the walk touches no decoder at all -- it reads packet
+/// headers -- and the silences decode sound, which libavcodec threads for
+/// neither captions nor audio. What is left is the thumbnail pass, the
+/// flat-picture pass and the logo half of the commercial detection, and those
+/// are what contend for cores with the film strip.
+const WIDE_LANES: usize = 3;
 
 /// How far into a clip its poster is taken from.
 const POSTER_AT: f64 = 0.1;
@@ -3541,6 +3541,7 @@ type Say = std::sync::Arc<dyn Fn(&str, f64) + Send + Sync>;
 fn detect_now(
     src: &Source,
     pictures: impl FnOnce() -> Option<Source>,
+    threads: usize,
     say: Say,
 ) -> Result<CmResult, String> {
     let opts = smartcut_core::DetectOptions::default();
@@ -3599,7 +3600,14 @@ fn detect_now(
         let reporter = say.clone();
         smartcut_core::logo::detect_with(
             src,
-            &Default::default(),
+            &smartcut_core::logo::LogoOptions {
+                // The logo half spreads its decoding over the cores it is
+                // allowed, which is the editor's share where the button was
+                // pressed there and the background share where the list is
+                // working through a queue. See [`asked_for_threads`].
+                threads,
+                ..Default::default()
+            },
             Some(Box::new(move |f| {
                 (*reporter)(
                     tr!("ロゴを探しています", "Looking for the logo"),
@@ -3866,6 +3874,7 @@ async fn detect_cm(path: String, app: tauri::AppHandle) -> Result<CmResult, Stri
             // is somehow still not, the blocks keep the times they were found
             // at -- an estimate, and a better one than nothing.
             move || opened_clone(&watcher, &owned),
+            asked_for_threads(),
             std::sync::Arc::new(move |phase: &str, done: f64| {
                 let _ = reporter.emit("cm-progress", (phase.to_string(), done));
             }),
@@ -3930,6 +3939,7 @@ async fn detect_cm_at(path: String, app: tauri::AppHandle) -> Result<CmResult, S
         let res = detect_now(
             &src,
             move || Some(refine),
+            background_threads(&app),
             std::sync::Arc::new(move |phase: &str, done: f64| {
                 let _ =
                     reporter.emit("clip-cm-progress", (owned.clone(), phase.to_string(), done));

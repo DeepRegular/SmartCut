@@ -264,9 +264,11 @@ tenth of a second**. What moved is the recording that was getting nothing: its b
 now sit on the head commercial, a break at 2:05, the break silence already had, and
 the shopping programme at the end — all four checked against the pictures.
 
-The cost is about 30 seconds on a 30-minute recording: two passes over the video,
-decoding only keyframes, so about an eighth of a full decode. Silence alone is 3
-seconds. The GUI offers it as "use the logo too".
+What this costs is whatever the recording can be read at. The two passes decode
+only entry pictures and spread them over the machine, so a 30-minute recording
+held in memory is 1.5 seconds of them; the same recording off the disc is 46,
+and 42 of that is reading 3.7 GB twice. Silence alone is 3 seconds. The GUI
+offers it as "use the logo too".
 
 ## Subtitle resets (`caption.rs`)
 
@@ -431,7 +433,8 @@ that contains the grey area of promos, there is no target to move `fill` or
 
 Silence and logo *guess* at "programme or commercial"; a reset reads the mark the
 broadcaster's own equipment stamped on the seam. And it needs no decoding: select a
-PID and read packets, 3 seconds for a 3.7 GB recording, against 30 for the logo.
+PID and read packets, 3 seconds for a 3.7 GB recording, against two more reads of
+the whole of it for the logo.
 Where the resets are used the logo pass is skipped outright, "use the logo too"
 ticked or not: on the Nihonkai TV recording that took the whole analysis from 50
 seconds to 7.
@@ -447,7 +450,7 @@ There are two costs.
   commercial. Resets alone cannot tell the difference: Nihonkai TV has the same
   shape, with the last reset 2 s before the end, and what follows there is programme.
   Extending the block would shave 1.7 s off that one. Telling the two cases apart
-  means looking at the logo, which costs 30 seconds of decoding for 3.4 seconds of
+  means looking at the logo, which costs two more reads of the recording for 3.4 seconds of
   commercial, so it is not worth paying. A miss is the cheap error.
 
 ## Tried and dropped: dividing the recording in one decision

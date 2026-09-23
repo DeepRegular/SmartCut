@@ -9,6 +9,15 @@
 //! never moves, so averaging a few thousand frames leaves it standing while
 //! the pictures behind it blur away; high-pass filtering that average is the
 //! template. Scoring a moment is then a correlation against it.
+//!
+//! **What this costs is now the reading, not the decoding.** The pass makes
+//! two walks over the entry pictures of the whole recording, and both of them
+//! used to run in one decoder libavcodec was never told it could thread: on a
+//! 30-minute terrestrial recording held in memory that was 6.9 seconds, and
+//! it is 1.5 now. What is left is the file itself. The same recording off the
+//! disc takes 46 seconds, of which 42 is two reads of 3.7 GB, and every
+//! measurement of this pass on material that does not fit in memory is a
+//! measurement of the drive it sits on.
 
 use anyhow::{anyhow, Result};
 use ffmpeg_next as ff;
@@ -44,6 +53,8 @@ pub struct LogoOptions {
     /// fixed count focuses on it however large the search region is -- a
     /// percentage of a big region is mostly the noise around it.
     pub mask_pixels: usize,
+    /// How many cores the decode may have. Zero, the default, is all of them.
+    pub threads: usize,
 }
 
 impl Default for LogoOptions {
@@ -58,6 +69,7 @@ impl Default for LogoOptions {
             max_breaks: 12,
             window_seconds: 5.0,
             mask_pixels: 500,
+            threads: 0,
         }
     }
 }
@@ -144,13 +156,80 @@ fn crop(frame: &ff::frame::Video, corner: Corner, cw: usize, ch: usize, out: &mu
     }
 }
 
-/// Decode the key frames and hand each one's four corners to `visit`.
-fn walk_keyframes(
-    src: &Source,
+/// All four corners of one picture, at full size. What the first pass
+/// averages.
+fn corners_of(frame: &ff::frame::Video, cw: usize, ch: usize) -> Option<Vec<Vec<u8>>> {
+    if (frame.width() as usize) < cw || (frame.height() as usize) < ch {
+        return None;
+    }
+    Some(
+        Corner::ALL
+            .iter()
+            .map(|corner| {
+                let mut buf = vec![0u8; cw * ch];
+                crop(frame, *corner, cw, ch, &mut buf);
+                buf
+            })
+            .collect(),
+    )
+}
+
+/// The handful of samples a corner's score is actually worked out from.
+///
+/// The correlation is taken over the mask alone -- a few hundred pixels of a
+/// region of a hundred thousand -- and the high pass in front of it reaches
+/// one pixel each way. So the whole of what the second pass needs of a corner
+/// is the mask and the ring around it, which is a fortieth of the corner, and
+/// carrying the rest home was the greater part of what that pass cost.
+fn wanted_of(
+    frame: &ff::frame::Video,
     cw: usize,
     ch: usize,
+    wanted: &[Vec<usize>],
+) -> Option<Vec<Vec<u8>>> {
+    let (w, h) = (frame.width() as usize, frame.height() as usize);
+    if w < cw || h < ch {
+        return None;
+    }
+    let stride = frame.stride(0);
+    let data = frame.data(0);
+    Some(
+        Corner::ALL
+            .iter()
+            .enumerate()
+            .map(|(k, corner)| {
+                let (ox, oy) = corner.origin(w, h, cw, ch);
+                wanted[k]
+                    .iter()
+                    .map(|&i| data[(oy + i / cw) * stride + ox + i % cw])
+                    .collect()
+            })
+            .collect(),
+    )
+}
+
+/// Decode the entry pictures and hand what `take` makes of each to `visit`.
+///
+/// **On as many cores as the machine will give it.** One decoder handed the
+/// entry pictures of a recording is one core's worth of work whatever else is
+/// idle, and this pass makes two of those walks over the whole file. The
+/// pictures are spread over a pool instead, exactly as the thumbnail pass and
+/// the film strip spread theirs; `take` runs on the worker that decoded the
+/// picture, so pulling the corners out of a frame is spread with it and what
+/// crosses back between threads is the small thing.
+///
+/// **And the entry pictures are picked out by packet, not by `skip_frame`.**
+/// That switch is per picture, and a field-coded entry point in broadcast
+/// MPEG-2 is an I top field followed by a P bottom field in one packet:
+/// `AVDISCARD_NONKEY` throws the bottom field away and leaves half a picture
+/// or none at all. [`crate::EntryPictures`] reads the packets instead, which
+/// is what every other pass here does with them.
+fn walk_keyframes<T: Send + 'static>(
+    src: &Source,
+    threads: usize,
+    take: impl Fn(&ff::frame::Video) -> Option<T> + Send + Sync + 'static,
     mut progress: Option<&mut dyn FnMut(f64)>,
-    mut visit: impl FnMut(f64, &[Vec<u8>]),
+    mut visit: impl FnMut(f64, T),
 ) -> Result<()> {
     let mut ictx = crate::input::demux(&src.input.url)?;
     let idx = src.video.stream_index;
@@ -160,38 +239,49 @@ fn walk_keyframes(
         .stream(idx)
         .ok_or_else(|| anyhow!("video stream vanished"))?
         .parameters();
-    let mut decoder = ff::codec::context::Context::from_parameters(params)?
-        .decoder()
-        .video()?;
-    // Only intra pictures are decoded: eight times faster, and a couple of
-    // samples a second is far more resolution than a commercial break needs.
-    unsafe {
-        (*decoder.as_mut_ptr()).skip_frame = ff::ffi::AVDiscard::AVDISCARD_NONKEY;
-    }
+    let mut pool = crate::entrypool::Pool::new(
+        params,
+        &src.video,
+        src.start_time,
+        crate::entrypool::width(threads, &src.video),
+        // Behind the rest of the machine: nobody is watching this pass
+        // picture by picture. See [`crate::nice`].
+        crate::entrypool::Standing::Behind,
+        move |t, frame| Ok(take(frame).map(|v| (t, v))),
+    )?;
 
-    let mut buffers: Vec<Vec<u8>> = (0..4).map(|_| vec![0u8; cw * ch]).collect();
-    let mut frame = ff::frame::Video::empty();
+    let duration = src.duration.max(1e-9);
+    let mut deliver = |made: Vec<Option<(f64, T)>>| {
+        for (t, v) in made.into_iter().flatten() {
+            visit(t, v);
+            if let Some(f) = progress.as_mut() {
+                f((t / duration).clamp(0.0, 1.0));
+            }
+        }
+    };
+
+    let mut entries = crate::EntryPictures::new(&src.video);
+    // One picture's packets: the key packet, and the one behind it where the
+    // material is field coded and the picture is two.
+    let mut pending: Vec<ff::Packet> = Vec::new();
     for (stream, packet) in ictx.packets() {
         if stream.index() != idx {
             continue;
         }
-        if decoder.send_packet(&packet).is_err() {
-            continue;
-        }
-        while decoder.receive_frame(&mut frame).is_ok() {
-            if (frame.width() as usize) < cw || (frame.height() as usize) < ch {
-                continue;
-            }
-            let Some(pts) = frame.pts() else { continue };
-            let t = pts as f64 * src.video.time_base - src.start_time;
-            for (k, corner) in Corner::ALL.iter().enumerate() {
-                crop(&frame, *corner, cw, ch, &mut buffers[k]);
-            }
-            visit(t, &buffers);
-            if let Some(f) = progress.as_mut() {
-                f((t / src.duration.max(1e-9)).clamp(0.0, 1.0));
+        match entries.step(&packet) {
+            crate::Step::Skip => continue,
+            crate::Step::Half => pending.push(packet),
+            crate::Step::Whole => {
+                pending.push(packet);
+                pool.push(std::mem::take(&mut pending));
+                while let Some(made) = pool.ready() {
+                    deliver(made?);
+                }
             }
         }
+    }
+    for made in pool.drain() {
+        deliver(made?);
     }
     Ok(())
 }
@@ -233,14 +323,20 @@ pub fn detect_with(
                 }
             }
         };
-        walk_keyframes(src, cw, ch, Some(&mut on), |_t, corners| {
-            for (k, buf) in corners.iter().enumerate() {
-                for (i, &v) in buf.iter().enumerate() {
-                    sums[k][i] += v as f64;
+        walk_keyframes(
+            src,
+            opts.threads,
+            move |frame| corners_of(frame, cw, ch),
+            Some(&mut on),
+            |_t, corners| {
+                for (k, buf) in corners.iter().enumerate() {
+                    for (i, &v) in buf.iter().enumerate() {
+                        sums[k][i] += v as f64;
+                    }
                 }
-            }
-            count += 1;
-        })?;
+                count += 1;
+            },
+        )?;
     }
     if count < 20 {
         return Err(anyhow!(
@@ -305,6 +401,36 @@ pub fn detect_with(
         let rate = count as f64 / src.duration.max(1.0);
         ((opts.window_seconds * rate).round() as usize).clamp(2, 64)
     };
+    // Which samples of each corner the score is worked out from: the mask,
+    // and the four neighbours the high pass reaches for at each of them. Every
+    // mask pixel is at least [`MARGIN`] inside the region, so all four exist.
+    // `slots` is the way back -- where a region index sits in that list -- and
+    // is a lookup rather than a search because it is read once per mask pixel
+    // per picture.
+    let wanted: Vec<Vec<usize>> = cands
+        .iter()
+        .map(|c| {
+            let mut v: Vec<usize> = c
+                .mask
+                .iter()
+                .flat_map(|&i| [i, i - 1, i + 1, i - cw, i + cw])
+                .collect();
+            v.sort_unstable();
+            v.dedup();
+            v
+        })
+        .collect();
+    let slots: Vec<Vec<u32>> = wanted
+        .iter()
+        .map(|w| {
+            let mut back = vec![0u32; n];
+            for (j, &i) in w.iter().enumerate() {
+                back[i] = j as u32;
+            }
+            back
+        })
+        .collect();
+    let mut sums: Vec<Vec<u32>> = wanted.iter().map(|w| vec![0u32; w.len()]).collect();
     let mut rings: Vec<std::collections::VecDeque<Vec<u8>>> =
         (0..4).map(|_| Default::default()).collect();
     let mut times: Vec<f64> = Vec::new();
@@ -319,33 +445,51 @@ pub fn detect_with(
                 }
             }
         };
-        walk_keyframes(src, cw, ch, Some(&mut on), |t, corners| {
-            times.push(t);
-            for k in 0..4 {
-                rings[k].push_back(corners[k].clone());
-                if rings[k].len() > ring_len {
-                    rings[k].pop_front();
-                }
-                let mut avg = vec![0.0; n];
-                for buf in &rings[k] {
-                    for i in 0..n {
-                        avg[i] += buf[i] as f64;
+        walk_keyframes(
+            src,
+            opts.threads,
+            move |frame| wanted_of(frame, cw, ch, &wanted),
+            Some(&mut on),
+            |t, corners| {
+                times.push(t);
+                for k in 0..4 {
+                    // The window average, kept rather than worked out afresh:
+                    // a picture joins the ring and the picture that falls out
+                    // of the other end leaves it, which is two touches of each
+                    // sample where summing the whole ring was `ring_len` of
+                    // them.
+                    for (j, &v) in corners[k].iter().enumerate() {
+                        sums[k][j] += v as u32;
                     }
+                    rings[k].push_back(corners[k].clone());
+                    if rings[k].len() > ring_len {
+                        let gone = rings[k].pop_front().expect("just checked");
+                        for (j, &v) in gone.iter().enumerate() {
+                            sums[k][j] -= v as u32;
+                        }
+                    }
+                    let held = rings[k].len() as f64;
+                    let c = &cands[k];
+                    let avg = |i: usize| sums[k][slots[k][i] as usize] as f64 / held;
+                    let hp = |i: usize| {
+                        avg(i) - (avg(i - 1) + avg(i + 1) + avg(i - cw) + avg(i + cw)) / 4.0
+                    };
+                    let mut dot = 0.0;
+                    let mut en = 0.0;
+                    for &i in &c.mask {
+                        let v = hp(i);
+                        dot += v * c.tmpl[i];
+                        en += v * v;
+                    }
+                    let en = en.sqrt();
+                    scores[k].push(if en > 0.0 && c.norm > 0.0 {
+                        dot / (en * c.norm)
+                    } else {
+                        0.0
+                    });
                 }
-                for v in avg.iter_mut() {
-                    *v /= rings[k].len() as f64;
-                }
-                let hp = region.highpass(&avg);
-                let c = &cands[k];
-                let dot: f64 = c.mask.iter().map(|&i| hp[i] * c.tmpl[i]).sum();
-                let en: f64 = c.mask.iter().map(|&i| hp[i] * hp[i]).sum::<f64>().sqrt();
-                scores[k].push(if en > 0.0 && c.norm > 0.0 {
-                    dot / (en * c.norm)
-                } else {
-                    0.0
-                });
-            }
-        })?;
+            },
+        )?;
     }
 
     // Thresholds from the recording itself: how boldly a logo reads varies
