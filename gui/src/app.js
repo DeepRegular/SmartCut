@@ -3558,8 +3558,8 @@ function outputPath(clip) {
 /// The first row's own name, numbering and all -- which is what the list is
 /// called on screen and what somebody would go looking for. Not a name of
 /// its own: a joined file is the list, and the list already has a name at
-/// the top of it. The subfolder still does its work, so twelve episodes
-/// joined into one land in the folder the twelve would have.
+/// the top of it. No subfolder either: one file needs no folder of its own,
+/// so it lands where a single cut would. See `subfolderWanted`.
 function joinedPath() {
   const list = ready();
   if (!list.length) return "";
@@ -4748,9 +4748,11 @@ function paintSubtitleChoices(from) {
 /// Always for a disc, which is a dozen files with names it chose itself and
 /// belongs nowhere near anything else. For files, only where there is more
 /// than one of them: a single cut goes where it was told to go, and burying
-/// it one level down is one more folder to open for no reason.
+/// it one level down is one more folder to open for no reason. A join is
+/// one file however many rows went into it, so it goes where a single cut
+/// would.
 function subfolderWanted() {
-  return bdavMode() || ready().length > 1;
+  return bdavMode() || (ready().length > 1 && !joining());
 }
 
 /// What that folder is called when nobody has said.
@@ -8104,14 +8106,17 @@ async function lookAtJobs() {
       // the disc, or after the project file -- so the card names it the same
       // way, rather than showing a job that writes loose into the folder
       // above and then making a folder anyway. See `settings.subfolder` and
-      // `autoSubfolder`.
+      // `autoSubfolder`. A join makes none whatever the setting says: it is
+      // one file, the same as a single cut. See `subfolderWanted`.
       sub:
-        settings.subfolder ??
-        (settings.mode === "bdav"
-          ? filenameSafe(settings.discTitle || "")
-          : held.length > 1
-            ? filenameSafe(stemOf(job.path))
-            : ""),
+        settings.mode !== "bdav" && settings.joinAll
+          ? ""
+          : settings.subfolder ??
+            (settings.mode === "bdav"
+              ? filenameSafe(settings.discTitle || "")
+              : held.length > 1
+                ? filenameSafe(stemOf(job.path))
+                : ""),
       disc: settings.mode === "bdav",
       image: settings.image || "",
       clips: held.length,
