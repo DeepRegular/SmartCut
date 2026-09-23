@@ -208,13 +208,6 @@ const CATALOG = {
     "prefs.numberNote":
       "出力するファイル名に一覧の行番号を付けます。例: cut_03_録画.ts",
     "prefs.digits": "連番の桁数:",
-    "prefs.audioChannels": "出力の音声チャンネルの初期値:",
-    "prefs.audioChannelsNote":
-      "出力設定の「音声チャンネル」が最初に選んでいるものです。" +
-      "既定は「入力と同じ」で、そのままコピーまたはスマートレンダリングされます。" +
-      "ここで本数を選ぶと、音声はすべて再エンコードになります。" +
-      "録画より多い本数は選べません。無かった音を作り出すことはできないためです。" +
-      "プロジェクトを開いたときは、そのプロジェクトの設定が優先されます。",
     "prefs.dataBroadcast": "データ放送も残す（.ts のみ）",
     "prefs.dataBroadcastNote":
       "リモコンの d ボタンで見られるページを、カットした出力にも残します。" +
@@ -358,6 +351,12 @@ const CATALOG = {
     "props.copyOf": "（同じ録画の {n} 本目）",
     // 「長さ」の行に続けて入ります。カットが入っていない行では空です。
     "props.cut": "　カット後 {len}",
+    "props.audioChannels": "出力の音声チャンネル:",
+    "props.followOutput": "出力設定に従う",
+    // 選んだ行で答えが割れているとき。選び直せば全部そろいます。
+    "props.audioMixed": "選んだ行で設定が違います",
+    "props.audioReencoded": "この行の音声は再エンコードされます",
+    "props.audioCopying": "出力設定の音声が「そのままコピー」のあいだは選べません",
     "props.unusable": "（うち {n} 個は開始位置には使えません）",
     // Sits inside "無劣化点 {points} 個" and two lines like it, so it has
     // to read as a missing number rather than as a word: 無劣化点 解析待ち
@@ -1305,13 +1304,6 @@ const CATALOG = {
       "Carries the order of the list into the names that are written. The number is the one beside " +
       "the row: cut_03_recording.ts",
     "prefs.digits": "Digits in the number:",
-    "prefs.audioChannels": "Audio channels a cut starts at:",
-    "prefs.audioChannelsNote":
-      "What the output settings screen's Audio channels begins on. Same as the input out of the " +
-      "box, which is copied or smart-rendered as it stands; picking a count re-encodes every " +
-      "sound track. A count above what a recording was sent with is not offered -- spreading it " +
-      "into channels it never had adds size and not sound. A project opened carries its own " +
-      "answer, which wins over this one.",
     "prefs.dataBroadcast": "Keep the data broadcast (.ts only)",
     "prefs.dataBroadcastNote":
       "Carries the pages behind the d button into the cut. Only a .ts that keeps the broadcast's own " +
@@ -1449,6 +1441,12 @@ const CATALOG = {
     "props.copyOf": " (copy {n} of this recording)",
     // Follows the length. Empty on a row nothing has been cut out of.
     "props.cut": "   {len} after cutting",
+    "props.audioChannels": "Sound written as:",
+    "props.followOutput": "As the output settings say",
+    // The chosen rows do not agree. Picking one gives them all that answer.
+    "props.audioMixed": "the chosen rows differ",
+    "props.audioReencoded": "this row's sound is written afresh",
+    "props.audioCopying": "not while the output settings copy the sound as it is",
     "props.unusable": " ({n} of them cannot start a cut)",
     "props.pending": "—",
     "props.cm": "\nCommercials:  {note}",

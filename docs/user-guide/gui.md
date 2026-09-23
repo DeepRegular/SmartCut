@@ -251,6 +251,26 @@ or take the row out and add the file again.
 **Quick properties**, along the bottom, describes whichever single clip is
 selected. With several selected, it just says how many.
 
+Under it, **Sound written as** is the one output setting that belongs to a
+*row*. `As the output settings say` is the default, and picking 1ch, 2ch or
+5.1ch makes that row come out at that count. **It answers for every row
+chosen**, so twelve episodes are a select-all and one choice; where the chosen
+rows disagree it shows nothing, and picking one gives them all that answer.
+
+It is per row because it is the one question the list cannot have a single
+answer to. Everything on the output settings screen describes the file being
+made; this describes a recording. A 5.1 film sitting in a list beside a stereo
+broadcast, folded to stereo while the broadcast is left alone, is an ordinary
+evening's work.
+
+**Picking a count writes that row's sound afresh** — nothing else can deliver
+one, since copying and smart rendering both carry the recording's own frames.
+It is greyed while the output settings copy the sound outright, and a count
+above what the recording carries is not offered.
+
+A joined run takes **the master clip's answer**: a file declares its sound
+once.
+
 ### Detecting commercials
 
 ![Commercial detection running](../images/usage-detect.png)
@@ -849,7 +869,7 @@ What is set on either tab stays there when you switch.
 | **Container** | The file format. `Same as the input`, or a specific one. A container that cannot hold the recordings in the list is greyed out (see [Why some choices are greyed out](#why-some-choices-are-greyed-out)). **Sound only, no pictures**, at the foot of the list, writes an audio file and no video at all — see [Writing the sound only](#writing-the-sound-only) |
 | **Audio** | `Smart rendering (default)` / `Copy through` / `Re-encode everything` |
 | **Audio codec** | `Same as the input`, or AAC, AC-3, DTS, linear PCM |
-| **Audio channels** | `Same as the input`, or 1ch, 2ch, 5.1ch |
+| **Audio channels** | `Same as the input`, or 1ch, 2ch, 5.1ch. One answer for the list; to set it per row, use **Sound written as** in the quick properties |
 | **Sample rate** | `Same as the input`, or 96 / 48 / 44.1 / 32 kHz |
 | **Bit depth** | `Same as the input`, 16 or 24 bit (only meaningful for linear PCM) |
 | **Audio bitrate** | For frames that are rebuilt. `Leave it to the engine` is the safe answer |
@@ -1314,13 +1334,6 @@ effect as you make it.
 (with its digits) are what the fields of the same name on the output screen start
 as; the number is on by default. Changing one here puts it into the settings in
 force as well. A project that is opened brings its own and wins.
-
-**Audio channels a cut starts at** is the same kind of answer. Same as the input
-out of the box, which is the recording's own sound copied or smart-rendered as
-it stands. Pick 1ch, 2ch or 5.1ch and the sound has to be **written afresh** to
-come out at that count, so the output screen's **Audio** moves to
-`Re-encode everything` along with it. A count above what a recording was sent
-with is not offered: there is no sound there to spread.
 
 **Keep the data broadcast (.ts only)** carries the pages behind the d button
 into the cut. Only a `.ts` that keeps the broadcast's own tables can hold one, so

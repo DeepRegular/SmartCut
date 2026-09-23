@@ -139,7 +139,7 @@ const crossingSet = (after) =>
 /// out of a project, which is the same shape written down.
 function makeClip(found) {
   const { path, name, renamed, stem, home, chapters, dropPids, made, description,
-          channel, channelNumber, programme, after, edited } =
+          channel, channelNumber, programme, after, edited, audioChannels } =
     typeof found === "string" ? { path: found } : found;
   return {
     // A row's own identity, which its path is not: the same recording can be
@@ -270,6 +270,23 @@ function makeClip(found) {
     quietFound: null,
     quietSource: null,
     edit: null,
+    /// How many channels this row's sound is written with, where that is not
+    /// what the output settings say: "1", "2", "6", or null to follow them.
+    ///
+    /// **The one output setting that belongs to a row rather than to the
+    /// list.** Everything else on that screen describes the file being made
+    /// -- where it goes, what it is called, what container it is -- and one
+    /// answer for the list is the only answer those questions have. The
+    /// channel count is not like them: a list holds a 5.1 film beside a
+    /// stereo broadcast, and folding the film to stereo while leaving the
+    /// broadcast alone is an ordinary evening's work that no single answer
+    /// can state.
+    ///
+    /// Set in the quick properties, under the row it is about. A count is
+    /// only deliverable by writing the sound afresh, so a row that carries
+    /// one has its track re-encoded whatever the screen's 音声 says -- see
+    /// `audioChannelsOut`.
+    audioChannels: audioChannels ?? null,
     /// Whether the cut editor has ever been used on this row.
     ///
     /// **Not "has it anything on its timeline".** A list read for commercials
@@ -2184,6 +2201,7 @@ function paintButtons() {
 }
 
 function paintProps() {
+  paintPropsAudio();
   const box = el("props");
   const picked = selected();
   if (picked.length !== 1) {
@@ -2259,6 +2277,60 @@ function paintProps() {
       (c.quietPhase ? t("props.quiet", { note: c.quietPhase }) : ""),
   });
 }
+
+/// The row's own channel count, under the row it is about.
+///
+/// On screen for any selection rather than for one row, and it answers for
+/// all of them: a list of twelve episodes off one recorder wants the same
+/// answer twelve times, and a control that could only be set one row at a
+/// time would be eleven presses too many. Where the rows disagree the
+/// control shows nothing, which is the honest reading of "these rows have
+/// different answers" -- and choosing one then gives them all that answer.
+///
+/// Greyed while nothing is chosen, and while the sound is being copied: a
+/// copy carries the recording's own frames and there is nowhere in that to
+/// put a different count. Asking for one *is* asking for the sound to be
+/// written, so the note beside it says the row will be re-encoded -- but a
+/// run that has been told そのままコピー outright is that run, and this does
+/// not argue with it.
+function paintPropsAudio() {
+  const row = el("props-audio");
+  const picked = selected();
+  const sound = picked.filter((c) => audioOf(c));
+  row.hidden = !sound.length;
+  if (row.hidden) return;
+  const select = el("prop-audio-channels");
+  const answers = new Set(sound.map((c) => String(c.audioChannels || "")));
+  select.value = answers.size === 1 ? [...answers][0] : "";
+  // A count above what the narrowest of the chosen rows carries is a count
+  // that would spread a recording into channels it was never sent with.
+  const least = Math.min(...sound.map((c) => trackChannels(c) || 99));
+  for (const opt of select.options) {
+    opt.disabled = !!opt.value && least < 99 && Number(opt.value) > least;
+  }
+  const copying = settings.audio === "copy";
+  select.disabled = copying;
+  const note = el("props-audio-note");
+  note.textContent = copying
+    ? t("props.audioCopying")
+    : answers.size > 1
+      ? t("props.audioMixed")
+      : select.value
+        ? t("props.audioReencoded")
+        : "";
+}
+
+el("prop-audio-channels").addEventListener("change", (ev) => {
+  const want = ev.target.value || null;
+  for (const clip of selected()) {
+    if (!audioOf(clip)) continue;
+    clip.audioChannels = want;
+  }
+  paintPropsAudio();
+  paintList();
+  if (screen === "outset") renderOutset();
+  if (screen === "out") renderOutScreen();
+});
 
 // --- selection ----------------------------------------------------------
 
@@ -3042,7 +3114,7 @@ const settings = {
 /// one from the last one's folder and prefix would be starting it half open.
 const SETTING_DEFAULTS = { ...settings };
 
-/// The four of them 環境設定 answers for, put into force.
+/// The three of them 環境設定 answers for, put into force.
 ///
 /// What a cut is called is the one output setting that is as much about the
 /// person as about the work: somebody who writes `編集_` in front of every file
@@ -3052,25 +3124,12 @@ const SETTING_DEFAULTS = { ...settings };
 /// on 新規作成, and on 既定に戻す, which is every moment the defaults are what
 /// is in force.
 ///
-/// The sound the output is written with is the fourth, and it is the same
-/// kind of answer: somebody who writes every cut down to stereo does it to
-/// the next one too, and「入力と同じ」-- which is what the screen starts at
-/// -- is only the right answer for somebody who never downmixes at all.
-///
-/// A project saved with its own answers is not one of those moments:
-/// `loadProject` writes what the file says over all four.
+/// A project saved with its own answer is not one of those moments:
+/// `loadProject` writes what the file says over all three.
 function applyNameDefaults() {
   settings.prefix = String(prefs.get("outPrefix") ?? SETTING_DEFAULTS.prefix);
   settings.number = !!prefs.get("outNumber");
   settings.digits = String(Number(prefs.get("outDigits")) || 2);
-  settings.audioChannels = String(prefs.get("outAudioChannels") ?? "");
-  // A count can only be delivered by writing the sound afresh -- copying is
-  // copying, and the smart path splices the recording's own frames -- so the
-  // mode comes with it. Without this the preference was a control that did
-  // nothing: the row it fills is on screen only under すべて再エンコード, and
-  // somebody who has asked for stereo has asked for the thing that produces
-  // stereo. 入力と同じ leaves the mode alone, that being no request at all.
-  if (settings.audioChannels) settings.audio = "reencode";
 }
 
 /// Which of them are worth carrying from one session to the next.
@@ -3268,6 +3327,9 @@ function soundExt(clip) {
   );
 }
 
+/// Whether the run writes the sound and no pictures. See `settings.container`.
+const soundOnly = () => settings.container === "sound";
+
 function containerFor(clip) {
   // The sound on its own is named by what the sound is; there is no
   // container to choose. See `soundExt`.
@@ -3327,9 +3389,6 @@ function outputPath(clip) {
 /// the top of it. The subfolder still does its work, so twelve episodes
 /// joined into one land in the folder the twelve would have.
 function joinedPath() {
-/// Whether the run writes the sound and no pictures. See `settings.container`.
-const soundOnly = () => settings.container === "sound";
-
   const list = ready();
   if (!list.length) return "";
   const { dir, name, ext } = outputBase(list[0]);
@@ -3587,7 +3646,7 @@ function audioOf(clip) {
 function lpcmBitRate(clip, container) {
   const sound = audioOf(clip);
   if (!sound) return 0;
-  const channels = audioChannelsOut() || sound.channels || 0;
+  const channels = audioChannelsOut(clip) || sound.channels || 0;
   const bits = audioBitsOut() || sound.bits || 0;
   const rate = writableRate(audioRateOut() || sound.sample_rate || 0, container);
   if (!channels || !bits || !rate) return 0;
@@ -4044,13 +4103,40 @@ function fillBitrates() {
   select.value = settings.audioBitrate;
 }
 
-/// What the engine will actually be asked for. A control that is greyed out
-/// still holds whatever it was last set to -- that is the point of greying it
-/// out rather than clearing it -- and what it holds must not reach the cut
-/// behind the screen's back.
-function audioChannelsOut() {
+/// How many channels a row's sound is written with, as the engine is asked
+/// for it.
+///
+/// The row's own answer where it has one, and the screen's where it has not.
+/// A control that is greyed out still holds whatever it was last set to --
+/// that is the point of greying it out rather than clearing it -- so the
+/// screen's is read only while the sound is being written at all; a row's own
+/// is not, because choosing one *is* asking for the sound to be written. See
+/// `reencodesSound`.
+///
+/// Held under what the recording actually carries either way: spreading a
+/// stereo track into 5.1 adds a file's worth of size and not a sound.
+function audioChannelsOut(clip) {
+  const mine = clip && clip.audioChannels ? Number(clip.audioChannels) : 0;
+  if (mine) return under(mine, trackChannels(clip));
   if (!reencodingAudio()) return null;
   return under(Number(settings.audioChannels), soundCeiling().channels);
+}
+
+/// How many channels the track this row would write actually has, or 0 where
+/// nothing has been read out of it yet.
+function trackChannels(clip) {
+  const sound = clip ? audioOf(clip) : null;
+  return sound && sound.channels > 0 ? sound.channels : 0;
+}
+
+/// Whether this row's sound is written afresh rather than spliced or copied.
+///
+/// The screen's answer, or the row's own count: a count can only be delivered
+/// by an encoder -- copying is copying, and the smart path splices the
+/// recording's own frames -- so a row that asks for one has asked for the
+/// thing that produces it.
+function reencodesSound(clip) {
+  return reencodingAudio() || !!audioChannelsOut(clip);
 }
 
 function audioBitrateOut() {
@@ -4100,11 +4186,11 @@ function codecLabel() {
 function audioNote(clip, fit = null) {
   const sound = audioOf(clip);
   if (!sound) return "";
-  if (!reencodingAudio()) {
+  if (!reencodesSound(clip)) {
     return fit && fit.audio ? " " + t("out.audioConformed") : "";
   }
   const from = sound.channels || 0;
-  const to = audioChannelsOut() || from;
+  const to = audioChannelsOut(clip) || from;
   if (from && to && to !== from) {
     // Which way it goes is the recording's to decide, not the setting's: one
     // list can hold a 5.1 recording and a stereo one, and 2ch asked of both
@@ -4126,7 +4212,7 @@ function audioSummary(clip, container) {
   const sound = audioOf(clip);
   if (!sound) return t("media.audioNo");
   const from = sound.channels || 0;
-  const to = audioChannelsOut() || from;
+  const to = audioChannelsOut(clip) || from;
   const down = !!(from && to && to !== from);
   // Here the figure can be exact, because here there is one clip: the
   // control above has a whole list to answer for and may only be able to
@@ -4148,7 +4234,12 @@ function audioSummary(clip, container) {
   const bits = audioBitsOut();
   if (bits) detail.push(`${bits} bit`);
   if (rate) detail.push(`${rate / 1000} kbps`);
-  const mode = t(`audio.${settings.audio}.short`);
+  // How the sound is produced, which is the screen's answer unless this row
+  // has asked for a count: nothing but an encoder delivers one, so the row
+  // says re-encode however the screen is set. See `reencodesSound`.
+  const mode = t(
+    `audio.${reencodesSound(clip) ? "reencode" : settings.audio}.short`
+  );
   return detail.length ? t("outset.audioLine", { mode, detail: detail.join(", ") }) : mode;
 }
 
@@ -6344,9 +6435,14 @@ async function writeJoined(list) {
       master: Math.max(0, list.indexOf(master)),
       output: out,
       audioCopy: settings.audio === "copy",
-      audioReencode: settings.audio === "reencode",
+      // A joined file declares its sound once, so the count is the master's
+      // -- its own where that row has one, and the screen's where it has not.
+      // The same rule every other question about a join follows. A row that
+      // asked for a count and is not the master has asked it of a file that
+      // cannot answer per row; `renderOutset` says so beside the picker.
+      audioReencode: settings.audio === "reencode" || !!audioChannelsOut(master),
       audioCodec: audioCodecOut(),
-      audioChannels: audioChannelsOut(),
+      audioChannels: audioChannelsOut(master),
       audioBitrate: audioBitrateOut(),
       audioSampleRate: audioRateOut(),
       audioBits: audioBitsOut(),
@@ -6521,9 +6617,11 @@ async function runExport() {
         ranges: rangesOf(clip),
         output: out,
         audioCopy: settings.audio === "copy",
-        audioReencode: settings.audio === "reencode",
+        // A row that asks for a channel count has asked for the sound to be
+        // written: nothing else can deliver one. See `reencodesSound`.
+        audioReencode: reencodesSound(clip),
         audioCodec: audioCodecOut(),
-        audioChannels: audioChannelsOut(),
+        audioChannels: audioChannelsOut(clip),
         audioBitrate: audioBitrateOut(),
         audioSampleRate: audioRateOut(),
         audioBits: audioBitsOut(),
@@ -6939,6 +7037,14 @@ function captureProject(settled = outputSettled, forRun = false) {
       // detection's. Left out on a row nobody has been through, which is what
       // a file written before this existed looks like. See `edited`.
       edited: c.edited || undefined,
+      // How this row's sound is written, where the row has said. Left out
+      // where it follows the output settings, which is every row of every
+      // list nobody has answered for.
+      audioChannels: c.audioChannels || undefined,
+      // How this row's sound is written, where the row has said. Left out
+      // where it follows the output settings, which is every row of every
+      // list nobody has answered for.
+      audioChannels: c.audioChannels || undefined,
       // What happens where this row gives way to the next, when the list is
       // being written as one file. Left out where nobody has said, which is
       // every row of every list that is not being joined.
@@ -7002,6 +7108,7 @@ function shapeOf() {
       programme: c.programme,
       edit: c.edit,
       edited: c.edited,
+      audioChannels: c.audioChannels,
       after: c.after,
     })),
   });
@@ -9237,7 +9344,6 @@ function paintPrefs() {
   el("pref-prefix").value = String(prefs.get("outPrefix") ?? "");
   el("pref-number").checked = !!prefs.get("outNumber");
   el("pref-digits").value = String(Number(prefs.get("outDigits")) || 2);
-  el("pref-audio-channels").value = String(prefs.get("outAudioChannels") ?? "");
   el("pref-data-broadcast").checked = prefs.get("dataBroadcast") !== false;
   el("pref-keep-output").checked = !!prefs.get("keepOutput");
   el("pref-clean-joins").checked = !!prefs.get("cleanJoins");
@@ -9570,21 +9676,7 @@ el("pref-digits").addEventListener("change", (ev) => {
   touch();
 });
 
-// The sound, which has a second home on the output screen like the three
-// above it -- and unlike them it is only in force where the sound is being
-// written. Set on a list already open, it lands there straight away; a row
-// whose track is narrower than this keeps its own, which is `soundCeiling`'s
-// doing and not this one's.
-el("pref-audio-channels").addEventListener("change", (ev) => {
-  prefs.set("outAudioChannels", ev.target.value);
-  settings.audioChannels = ev.target.value;
-  // With the mode, for the reason `applyNameDefaults` gives.
-  if (ev.target.value) settings.audio = "reencode";
-  showSettings();
-  touch();
-});
-
-// What a cut carries. Unlike the four above it has no second home on the
+// What a cut carries. Unlike the three above it has no second home on the
 // output settings screen, so there is nothing to write it into: the next run
 // reads it from here. See `prefs.dataBroadcast`.
 el("pref-data-broadcast").addEventListener("change", (ev) => {

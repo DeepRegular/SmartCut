@@ -210,6 +210,25 @@
       <div class="props">
         <div class="props-head" data-i18n="props.head">クイックプロパティ</div>
         <div id="props" class="props-body dim"></div>
+        <!-- The one output setting that belongs to a row rather than to the
+             list. Everything on the output settings screen describes the file
+             being made and has one answer for the whole of it; a list holds a
+             5.1 film beside a stereo broadcast, and folding the film while
+             leaving the broadcast alone is an ordinary evening's work that no
+             single answer can state. So it is asked here, under the row it is
+             about, and it applies to every row chosen. -->
+        <div class="props-row" id="props-audio" hidden>
+          <span data-i18n="props.audioChannels">出力の音声チャンネル:</span>
+          <span class="drop">
+            <select id="prop-audio-channels">
+              <option value="" data-i18n="props.followOutput">出力設定に従う</option>
+              <option value="1" data-i18n="channels.mono">1ch（モノラル）</option>
+              <option value="2" data-i18n="channels.stereo">2ch（ステレオ）</option>
+              <option value="6" data-i18n="channels.surround51">5.1ch（6ch）</option>
+            </select>
+          </span>
+          <span class="dim" id="props-audio-note"></span>
+        </div>
       </div>
     </section>
 
@@ -500,9 +519,17 @@
                 <option value="mkv">Matroska (.mkv)</option>
                 <option value="webm">WebM (.webm)</option>
                 <option value="mov">QuickTime (.mov)</option>
+                <!-- The sound and no pictures. In this list because that is
+                     the question it answers -- what kind of file comes out --
+                     and because a file with no pictures in it is not a
+                     variant of one that has them. The extension follows what
+                     the sound is, so the line under this says which it will
+                     be for the list in hand. See `soundExt`. -->
+                <option value="sound" data-i18n="container.sound">音声のみ（映像なし）</option>
               </select>
             </span>
           </div>
+          <p class="dim" id="sound-only-note" hidden></p>
           <div class="row">
             <span data-i18n="outset.audio">音声(A):</span>
             <span class="drop">
@@ -1051,23 +1078,6 @@
                   </select>
                 </span>
               </div>
-              <!-- The sound a cut is written with, as the output settings
-                   screen starts out. The same standing of answer as the
-                   prefix above: somebody who writes every cut down to stereo
-                   writes the next one down too. Only the counts that screen
-                   can write, and only downwards -- see `soundCeiling`. -->
-              <div class="row">
-                <span data-i18n="prefs.audioChannels">出力の音声チャンネルの初期値:</span>
-                <span class="drop">
-                  <select id="pref-audio-channels">
-                    <option value="" data-i18n="channels.same">入力と同じ</option>
-                    <option value="1" data-i18n="channels.mono">1ch（モノラル）</option>
-                    <option value="2" data-i18n="channels.stereo">2ch（ステレオ）</option>
-                    <option value="6" data-i18n="channels.surround51">5.1ch（6ch）</option>
-                  </select>
-                </span>
-              </div>
-              <p class="dim" data-i18n="prefs.audioChannelsNote"></p>
               <!-- What a cut carries, rather than what it is called, and
                    here for a reason the two above do not have: the box this
                    is the default for is not always on screen. It appears only

@@ -92,18 +92,6 @@ const DEFAULTS = {
   /// front of a name that did not need one costs nothing to read past.
   outNumber: true,
   outDigits: 2,
-  /// How many channels the sound of a cut is written with, as the output
-  /// settings screen starts out: "" for the recording's own, or "1", "2" or
-  /// "6".
-  ///
-  /// The recording's own, which is what a cut has always been. It is here for
-  /// the same reason the prefix is: somebody who writes every cut down to
-  /// stereo is going to write the next one down too, and the answer is about
-  /// the person rather than about the work. Only the counts the output screen
-  /// can actually write are offered, and only downwards -- spreading a
-  /// recording into channels it was never sent with adds a file's worth of
-  /// size and not a sound. See `soundCeiling`.
-  outAudioChannels: "",
   /// Whether a cut written as a `.ts` carries the recording's data broadcast
   /// -- what is behind the d button.
   ///
