@@ -1881,15 +1881,22 @@ function paintRow(clip) {
   // is the matter with it.
   const i = factsOf(clip);
   const wrong = clip.state === "error" && clip.error;
+  // The length is the *cut's* where there is one; see [`cutLength`]. The
+  // frame count with it, since the two are one statement -- a length in
+  // minutes and a count of the frames the file holds would be two different
+  // clips described in one line.
+  const cut = cutLength(clip);
+  const runs = cut === null ? (i ? i.duration : 0) : cut;
   setLine(
     li.querySelector(".sub"),
     wrong
       ? clip.error
       : i
-        ? t("row.sub", {
-            len: coarse(i.duration),
-            frames: i.frames,
-            end: fmt(i.duration),
+        ? t(cut === null ? "row.sub" : "row.subCut", {
+            len: coarse(runs),
+            frames: cut === null ? i.frames : Math.round(runs * i.fps),
+            full: coarse(i.duration),
+            end: fmt(runs),
             w: i.width,
             h: i.height,
             fps: i.fps.toFixed(2),
@@ -1933,10 +1940,9 @@ function paintRow(clip) {
     }
   }
   const cutCount = clip.edit ? clip.edit.cuts.length : 0;
-  if (cutCount && i) {
-    const kept = keepsOf(clip).reduce((n, k) => n + (k.b - k.a), 0);
-    bits.push(t("row.cuts", { n: cutCount, kept: fmt(kept) }));
-  }
+  // How many, and no longer what they leave: the line above is the length of
+  // what they leave.
+  if (cutCount && i) bits.push(t("row.cuts", { n: cutCount }));
   if (clip.edit && clip.edit.keyframes.length) {
     bits.push(t("row.keyframes", { n: clip.edit.keyframes.length }));
   }
@@ -2058,12 +2064,21 @@ function paintTotals() {
   // program stream and the walk corrects it there, and a total that waits
   // for every walk to finish says "未解析 20 本を除く" over a list whose
   // every row is already showing its length.
-  const known = clips.map(factsOf).filter(Boolean);
-  const total = known.reduce((n, i) => n + i.duration, 0);
+  const known = clips.filter((c) => factsOf(c));
+  // What the rows add up to, which is what the rows say: the cut's length
+  // where the clip has been cut, and the file's where it has not. The file's
+  // total is still worth having beside it -- it is what was recorded, and the
+  // difference between the two is the evening's work -- so it follows in
+  // brackets, and only where something has actually been cut.
+  const total = known.reduce((n, c) => n + (cutLength(c) ?? factsOf(c).duration), 0);
+  const full = known.reduce((n, c) => n + factsOf(c).duration, 0);
   const pending = clips.length - known.length;
   el("clip-total").textContent =
-    t("input.total", { n: clips.length, t: coarse(total) }) +
-    (pending ? t("input.totalPending", { n: pending }) : "");
+    t(full - total > 0.5 ? "input.totalCut" : "input.total", {
+      n: clips.length,
+      t: coarse(total),
+      full: coarse(full),
+    }) + (pending ? t("input.totalPending", { n: pending }) : "");
 }
 
 /// One detection's badge on one row: booked, being made, or an answer.
@@ -2205,6 +2220,10 @@ function paintProps() {
       : t("media.audioNo"),
     len: coarse(i.duration),
     frames: i.frames,
+    // The file's own length, and what the cut leaves where one has been
+    // made. This panel is the one place that says both: the row says the
+    // length the clip now has, which is the one being worked to.
+    cut: cutLength(c) === null ? "" : t("props.cut", { len: coarse(cutLength(c)) }),
     points: walked ? i.points : pending,
     unusable:
       walked && i.unusable_points ? t("props.unusable", { n: i.unusable_points }) : "",
@@ -2857,6 +2876,24 @@ function keepsOf(clip) {
 }
 
 const rangesOf = (clip) => keepsOf(clip).map((k) => [k.a, k.b]);
+
+/// How long the cut of a clip runs, or `null` where nothing has been cut out
+/// of it.
+///
+/// What the row shows as the clip's length, because that is the length the
+/// clip now has: a two-hour recording with the commercials taken out is an
+/// hour and a half, and a list still reading 2 時間 8 分 against every row of
+/// an evening's work says nothing about the evening. The file's own length is
+/// still on the row, behind カット前, and in the properties panel.
+///
+/// `null` rather than the file's length, so that every caller has to decide
+/// what to say about a clip nobody has cut -- which is not "the cut is the
+/// same length", it is that there is no cut to be about.
+function cutLength(clip) {
+  if (!clip.edit || !clip.edit.cuts.length) return null;
+  if (!factsOf(clip)) return null;
+  return keepsOf(clip).reduce((n, k) => n + (k.b - k.a), 0);
+}
 
 function srcToOut(keeps, s) {
   for (const k of keeps) {

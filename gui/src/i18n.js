@@ -289,6 +289,9 @@ const CATALOG = {
 
     // --- 入力設定画面 ----------------------------------------------------
     "input.total": "クリップ合計数: {n}　合計時間: {t}",
+    // カットが入っている一覧では、合計時間もカット後の長さです。録画そのものの
+    // 長さは括弧に入れて残します。
+    "input.totalCut": "クリップ合計数: {n}　合計時間: {t}（カット前 {full}）",
     "input.totalPending": "（未解析 {n} 本を除く）",
     "input.dropHint.title": "クリップ（映像ファイル）を追加してください",
     "input.dropHint.body":
@@ -343,9 +346,11 @@ const CATALOG = {
     "props.error": "{name}\n{error}",
     "props.body":
       "クリップ名:　{name}{copy}\n{path}\n映像:　{codec}, {w}x{h}, {fps} fps, {flags}\n" +
-      "音声:　{audio}\n長さ:　{len} ({frames} フレーム)　無劣化点 {points} 個{unusable}" +
+      "音声:　{audio}\n長さ:　{len} ({frames} フレーム){cut}　無劣化点 {points} 個{unusable}" +
       "\nシーン {scenes} 箇所　インデックス {index}{cm}{flat}",
     "props.copyOf": "（同じ録画の {n} 本目）",
+    // 「長さ」の行に続けて入ります。カットが入っていない行では空です。
+    "props.cut": "　カット後 {len}",
     "props.unusable": "（うち {n} 個は開始位置には使えません）",
     // Sits inside "無劣化点 {points} 個" and two lines like it, so it has
     // to read as a missing number rather than as a word: 無劣化点 解析待ち
@@ -410,6 +415,10 @@ const CATALOG = {
     "queue.quiet": "無音を検出中: {clip}",
     "row.sub":
       "{len} ({frames} フレーム)　00:00:00.00-{end}　{w}x{h}　{fps} fps　{codec}{audio}",
+    // カットが入っている行の同じ行。長さはカット後のもので、録画そのものの
+    // 長さは「カット前」として残します。
+    "row.subCut":
+      "{len} ({frames} フレーム)　カット前 {full}　{w}x{h}　{fps} fps　{codec}{audio}",
     "row.noAudio": "　音声なし",
     "row.cmRunning": "CM 検出中 {pct}% — {phase}",
     "row.cmQueued": "CM 検出 待機中",
@@ -434,7 +443,7 @@ const CATALOG = {
     "row.quietQueued": "無音の検出 待機中",
     "row.quietReserved": "解析後に無音を検出",
     "row.quietNote": "無音: {note}",
-    "row.cuts": "カット {n} 箇所 — 出力 {kept}",
+    "row.cuts": "カット {n} 箇所",
     "row.keyframes": "キーフレーム {n}",
     "badge.smart": "Smart",
     "badge.error": "エラー",
@@ -1357,6 +1366,9 @@ const CATALOG = {
 
     // --- input screen ----------------------------------------------------
     "input.total": "Clips: {n}   Total length: {t}",
+    // Where anything has been cut, the total is what the cuts leave; what was
+    // recorded follows in brackets.
+    "input.totalCut": "Clips: {n}   Total length: {t} (before cutting {full})",
     "input.totalPending": " ({n} not yet read)",
     "input.dropHint.title": "Add clips — the recordings you want to cut",
     "input.dropHint.body":
@@ -1403,9 +1415,11 @@ const CATALOG = {
     "props.error": "{name}\n{error}",
     "props.body":
       "Clip:  {name}{copy}\n{path}\nVideo:  {codec}, {w}x{h}, {fps} fps, {flags}\n" +
-      "Audio:  {audio}\nLength:  {len} ({frames} frame{frames?s})   {points} lossless points{unusable}" +
+      "Audio:  {audio}\nLength:  {len} ({frames} frame{frames?s}){cut}   {points} lossless points{unusable}" +
       "\n{scenes} scenes   index {index}{cm}{flat}",
     "props.copyOf": " (copy {n} of this recording)",
+    // Follows the length. Empty on a row nothing has been cut out of.
+    "props.cut": "   {len} after cutting",
     "props.unusable": " ({n} of them cannot start a cut)",
     "props.pending": "—",
     "props.cm": "\nCommercials:  {note}",
@@ -1467,6 +1481,10 @@ const CATALOG = {
     "queue.quiet": "Detecting silent stretches: {clip}",
     "row.sub":
       "{len} ({frames} frames)   00:00:00.00-{end}   {w}x{h}   {fps} fps   {codec}{audio}",
+    // The same line on a row that has been cut: the length is what the cuts
+    // leave, and what was recorded follows it.
+    "row.subCut":
+      "{len} ({frames} frames)   before cutting {full}   {w}x{h}   {fps} fps   {codec}{audio}",
     "row.noAudio": "   no audio",
     "row.cmRunning": "Detecting commercials {pct}% — {phase}",
     "row.cmQueued": "Commercial detection queued",
@@ -1488,7 +1506,7 @@ const CATALOG = {
     "row.quietQueued": "Silence detection queued",
     "row.quietReserved": "Silence detection after the read",
     "row.quietNote": "Silence: {note}",
-    "row.cuts": "{n} cut{n?s} — {kept} out",
+    "row.cuts": "{n} cut{n?s}",
     "row.keyframes": "{n} keyframe{n?s}",
     "badge.smart": "Smart",
     "badge.error": "Error",

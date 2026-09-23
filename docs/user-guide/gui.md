@@ -183,6 +183,12 @@ resolution, the frame rate and the codec; and then whatever commercial detection
 and your own cuts have to say. On the right, `Smart` means smart rendering
 applies to this material, and `CM 2` means two commercial blocks were found.
 
+**The length is the length after cutting.** On a row with cuts in it, what was
+recorded follows on the same line under `before cutting`. The total across the
+top is the same: once anything has been cut, it is what will be written, with
+what was recorded in brackets after it. The recording's own length is in the
+quick properties at the foot of the screen either way.
+
 | | |
 |---|---|
 | **Double-click** / `Enter` | Open that recording in the cut editor |

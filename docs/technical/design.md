@@ -2363,7 +2363,7 @@ That is fine until the same sentence has to exist twice, at which point **the pl
 written down has to stop being the place it is printed**.
 
 So every line either window shows lives in one catalogue (`gui/src/i18n.js`), under a name, and is
-fetched with `t("row.cuts", { n, kept })`. Nothing else about the code changed: the callers still
+fetched with `t("row.sub", { len, frames, ... })`. Nothing else about the code changed: the callers still
 build their sentences where they built them, they merely ask for the words rather than holding
 them. The markup asks for itself — `data-i18n` on an element is its text, and `applyStatic()` fills
 in every one of them, with `-html`, `-title`, `-aria` and `-ph` for the markup, the tooltip, the
