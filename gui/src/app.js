@@ -5869,9 +5869,17 @@ async function showReencode(clip, share = null) {
   const smaller = shrinkShare(clip, share);
   const shape = fitSig(fit);
   if (shownReencode === key && shownShare === smaller && shownFit === shape) return;
-  shownReencode = key;
-  shownShare = smaller;
-  shownFit = shape;
+  // Recorded once the answer is on screen, not here. Written before the
+  // await, a call that was overtaken -- `renderOutScreen` draws twice when
+  // the folder name it asks for comes back changed, which on a first visit
+  // it always does -- left the key behind without painting anything, and
+  // the call that overtook it found the key already shown and went home:
+  // 調べています… for good, and every later visit went home the same way.
+  const settle = () => {
+    shownReencode = key;
+    shownShare = smaller;
+    shownFit = shape;
+  };
   el("out-shots-note").className = "grow dim";
   el("out-shots-note").textContent = t("out.looking");
   // Nothing to repaint until there is an answer: this runs on into an await,
@@ -5889,6 +5897,7 @@ async function showReencode(clip, share = null) {
       className: "grow dim",
       text: t("out.allCutNote", { clip: clipLabel(clip) }),
     } };
+    settle();
     paintShotsNote();
     stageShot(null, t("out.allCutStage"));
     return;
@@ -5902,6 +5911,7 @@ async function showReencode(clip, share = null) {
         why: whyOf(fit),
       }),
     } };
+    settle();
     paintShotsNote();
     // The clip's own poster, as in the lossless case below: there is no seam
     // to show, and a frame out of the middle of the clip would be standing
@@ -5912,6 +5922,7 @@ async function showReencode(clip, share = null) {
   try {
     const r = await reencodeOf(clip);
     if (token !== shotsToken) return;
+    settle();
     onShow = { clip, r, fit, at: -1, note: null };
     const redone = r.segs.reduce((n, g) => n + g.frames, 0);
     if (!r.segs.length) {
