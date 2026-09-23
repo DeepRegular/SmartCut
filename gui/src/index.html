@@ -935,6 +935,19 @@
                 </span>
               </div>
               <p class="dim" data-i18n="prefs.blankShadesNote"></p>
+              <!-- Where the mark at the end of a stretch goes. The stretch
+                   itself is the same either way; the question is which of
+                   the two pictures at its far edge is named. -->
+              <div class="row">
+                <span data-i18n="prefs.flatMarkAt">黒白区間の終わりの印:</span>
+                <span class="drop">
+                  <select id="pref-flat-mark-at">
+                    <option value="after" data-i18n="prefs.markAt.after"></option>
+                    <option value="last" data-i18n="prefs.markAt.last"></option>
+                  </select>
+                </span>
+              </div>
+              <p class="dim" data-i18n="prefs.flatMarkAtNote"></p>
               <label class="opt"><input id="pref-blank-keyframes" type="checkbox" />
                 <span data-i18n="prefs.blankKeyframes">黒白を検出したら、自動でキーフレームを置く</span></label>
               <div class="row">

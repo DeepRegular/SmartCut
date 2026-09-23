@@ -137,6 +137,17 @@ const CATALOG = {
     "prefs.shades.both": "黒と白",
     "prefs.shades.black": "黒だけ",
     "prefs.shades.white": "白だけ",
+    "prefs.flatMarkAt": "黒白区間の終わりの印:",
+    "prefs.flatMarkAtNote":
+      "既定は「黒でなくなったフレーム」です。区間の始まりと終わりの 2 つで切ると、" +
+      "黒がちょうど無くなります。他のツールは「最後の黒いフレーム」を区間の終わりと" +
+      "呼ぶので、数字を突き合わせると 1 フレームずれて見えます。" +
+      "そちらに合わせたいときは下を選んでください。" +
+      "無音の区間は変わりません。音が戻るのはサンプル単位なので、" +
+      "2 つの答えのあいだにフレームがありません。" +
+      "すでに置いた印は動きません。次に置く印から変わります。",
+    "prefs.markAt.after": "黒でなくなったフレーム",
+    "prefs.markAt.last": "最後の黒いフレーム",
     "prefs.blankKeyframes": "黒白を検出したら、自動でキーフレームを置く",
     "prefs.quietRun": "無音の区間とみなす長さ:",
     "prefs.quietRunNote":
@@ -146,8 +157,9 @@ const CATALOG = {
       "意図して空けた無音だけを見たいときは、このくらいが目安です。",
     "prefs.quietLevel": "無音とみなす音量:",
     "prefs.quietLevelNote":
-      "音声フレームの最大値で判定します。0 dB が最大で、既定は -50 dB です。" +
-      "小さくすると本当に何も鳴っていないところだけを拾います。",
+      "1 サンプルごとに判定します。0 dB が最大で、既定は -50 dB です。" +
+      "小さくすると本当に何も鳴っていないところだけを拾います。" +
+      "区間の始まりと終わりは、音が止まった／戻ったサンプルそのものです。",
     "prefs.cmKeyframesNote":
       "CM ブロックの先頭と終わりに印を置きます。" +
       "外すと印は置かず、タイムラインに帯が出るだけになります。" +
@@ -1168,6 +1180,15 @@ const CATALOG = {
     "prefs.shades.both": "Black and white",
     "prefs.shades.black": "Black only",
     "prefs.shades.white": "White only",
+    "prefs.flatMarkAt": "A blank stretch ends on:",
+    "prefs.flatMarkAtNote":
+      "The first picture that is no longer flat, out of the box: cut at a stretch's two ends and " +
+      "the black is gone exactly. Other tools call the last black picture the end of the stretch, " +
+      "so a reading held up against one is a frame out every time -- pick the other answer to " +
+      "match. Silences are unaffected: the sound comes back on a sample, and there is no picture " +
+      "between the two answers. Marks already down do not move; this is about the next ones.",
+    "prefs.markAt.after": "The picture after it",
+    "prefs.markAt.last": "Its own last picture",
     "prefs.blankKeyframes": "Turn a blank detection into keyframes",
     "prefs.quietRun": "Counts as silence after:",
     "prefs.quietRunNote":
@@ -1176,8 +1197,9 @@ const CATALOG = {
       "stretches, most of them somebody drawing breath.",
     "prefs.quietLevel": "Silence is quieter than:",
     "prefs.quietLevelNote":
-      "Measured on the loudest sample of each audio frame, 0 dB being full scale. " +
-      "Lower than the default of -50 dB finds only what is truly silent.",
+      "Measured sample by sample, 0 dB being full scale. Lower than the default of -50 dB finds " +
+      "only what is truly silent. A stretch begins and ends on the sample the sound stopped or " +
+      "came back on, rather than on the frame that sample is in.",
     "prefs.cmKeyframesNote":
       "A detection marks the start and the end of every block it found. Off, it leaves the band " +
       "under the timeline and the sentence beside it, and ≡ → 「Turn the detection into keyframes」 " +

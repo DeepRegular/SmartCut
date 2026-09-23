@@ -231,6 +231,18 @@ const DEFAULTS = {
   /// both afterwards reads the recording again rather than pretending the
   /// white was there all along.
   blankShades: "black",
+  /// Where the mark at the end of a black or white stretch goes.
+  ///
+  /// `after` is the first picture that is no longer flat, which is where a
+  /// cut belongs: the two marks together take the stretch out exactly, and
+  /// neither of them is a picture anybody would miss. `last` is the final
+  /// picture of the stretch itself, which is the frame the reference tool
+  /// names -- so a reading held up against one is a frame out at every
+  /// stretch unless this says otherwise.
+  ///
+  /// The silences are not affected either way. The sound comes back on a
+  /// sample, and there is no picture between the two answers to choose.
+  flatMarkAt: "after",
   /// Whether each of the two flat detections puts its marks down by itself,
   /// as `cmKeyframes` says for the commercial one.
   ///

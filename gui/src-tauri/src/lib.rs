@@ -3955,6 +3955,15 @@ struct FlatRun {
     kind: String,
     start: f64,
     end: f64,
+    /// The last picture that is still flat, for 環境設定's answer about
+    /// where the mark at the end of a stretch belongs. The same as `end` on
+    /// a silence, which has no picture between the two: the sound comes back
+    /// on a sample.
+    ///
+    /// Absent from every detection written before this was asked, and `end`
+    /// is the answer those were made with.
+    #[serde(default)]
+    last: f64,
     /// How many pictures it holds, for the two that are about pictures. Zero
     /// for a silence, which is measured in samples and would be answering a
     /// question nobody asked.
@@ -4223,6 +4232,7 @@ fn blank_now(
             kind: r.shade.as_str().to_string(),
             start: r.start,
             end: r.end,
+            last: r.last,
             pictures: r.pictures,
         })
         .collect();
@@ -4263,6 +4273,7 @@ fn quiet_now(
             kind: "quiet".to_string(),
             start: s.start,
             end: s.end,
+            last: s.end,
             pictures: 0,
         })
         .collect();

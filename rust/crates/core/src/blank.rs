@@ -57,6 +57,15 @@ pub struct Run {
     /// what came before, and the start of what comes after -- and neither of
     /// them is a picture the viewer would miss.
     pub end: f64,
+    /// The last picture that is still flat, which is the one before
+    /// [`Run::end`].
+    ///
+    /// Both are reported because the two answer different questions and the
+    /// reference tool answers the other one. Cut at `end` and the flat
+    /// stretch is gone exactly; stand on `last` and the picture on screen is
+    /// the final frame of black. A reading held up against another tool's is
+    /// otherwise a frame out at every stretch, which is what was reported.
+    pub last: f64,
     /// How many pictures the run holds. Counted, not worked out from the
     /// length: a broadcast recording does not space its pictures evenly, and
     /// a stretch that repeats a field runs half a picture longer than
@@ -302,25 +311,28 @@ fn look_at(frame: &ff::frame::Video, luma: &Luma, opts: &BlankOptions) -> Option
 /// black still says where that black stopped.
 fn runs_from(looks: &[Look], tail: f64, opts: &BlankOptions) -> Vec<Run> {
     let mut out: Vec<Run> = Vec::new();
-    let mut open: Option<(Shade, f64, usize)> = None;
-    let close = |out: &mut Vec<Run>, open: Option<(Shade, f64, usize)>, end: f64| {
-        if let Some((shade, start, pictures)) = open {
+    // The shade, where the run began, how many pictures it holds, and the
+    // last of them.
+    let mut open: Option<(Shade, f64, usize, f64)> = None;
+    let close = |out: &mut Vec<Run>, open: Option<(Shade, f64, usize, f64)>, end: f64| {
+        if let Some((shade, start, pictures, last)) = open {
             out.push(Run {
                 shade,
                 start,
                 end,
+                last,
                 pictures,
             });
         }
     };
     for look in looks {
         match (open, look.shade) {
-            (Some((shade, start, n)), Some(now)) if shade == now => {
-                open = Some((shade, start, n + 1));
+            (Some((shade, start, n, _)), Some(now)) if shade == now => {
+                open = Some((shade, start, n + 1, look.time));
             }
             (held, now) => {
                 close(&mut out, held, look.time);
-                open = now.map(|shade| (shade, look.time, 1));
+                open = now.map(|shade| (shade, look.time, 1, look.time));
             }
         }
     }
@@ -466,6 +478,9 @@ mod tests {
         assert_eq!(runs[0].start, 0.1);
         // 0.3 -- the first picture that is not black -- and not 0.2.
         assert_eq!(runs[0].end, 0.3);
+        // ...and 0.2 is the last one that is, which the other tool reports
+        // and 環境設定 can ask for.
+        assert_eq!(runs[0].last, 0.2);
         assert_eq!(runs[0].pictures, 2);
     }
 
@@ -490,6 +505,7 @@ mod tests {
         let runs = runs_from(&looks(&[(0.0, N), (0.1, B), (0.2, B)]), 0.3, &opts);
         assert_eq!(runs.len(), 1);
         assert_eq!(runs[0].end, 0.3);
+        assert_eq!(runs[0].last, 0.2);
     }
 
     #[test]

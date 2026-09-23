@@ -937,13 +937,28 @@ const flatMarks = (which) =>
 function applyFlatRuns(kinds, runs, marks = true) {
   flatRuns = flatRuns.filter((r) => !kinds.includes(r.kind)).concat(runs);
   flatRuns.sort((a, b) => a.start - b.start);
-  if (marks && runs.length) addKeyframes(runs.flatMap((r) => [r.start, r.end]));
+  if (marks && runs.length) addKeyframes(runs.flatMap((r) => [r.start, flatEnd(r)]));
   // The cards say which detection each mark stands on, so a detection that
   // put nothing down still changes what the list reads. Not scrolled to: no
   // card was chosen, and nothing moved.
   else renderKeyframes(false);
   draw();
 }
+
+/// Where the mark at the end of a stretch goes.
+///
+/// Two answers, and 環境設定 picks. `end` is the first picture that is no
+/// longer flat: cut there and the stretch is gone exactly, which is what the
+/// two marks are for. `last` is the final picture of the stretch itself,
+/// which is the frame the reference tool names and the reason a reading held
+/// up against one was a frame out every time.
+///
+/// A silence has no picture between the two -- the sound comes back on a
+/// sample, and both are that instant -- so the answer only moves the
+/// pictures' stretches. A detection written before this was asked carries no
+/// `last`, and the answer it was made with is `end`.
+const flatEnd = (r) =>
+  prefs.get("flatMarkAt") === "last" && r.last ? r.last : r.end;
 
 /// Which detections have an end standing on this instant, in the order the
 /// lanes are drawn in.
@@ -954,7 +969,7 @@ function applyFlatRuns(kinds, runs, marks = true) {
 /// everything that asks "is the mark on this picture" is.
 function flatKindsAt(t) {
   const half = frame() / 2;
-  const on = (r) => Math.abs(r.start - t) < half || Math.abs(r.end - t) < half;
+  const on = (r) => Math.abs(r.start - t) < half || Math.abs(flatEnd(r) - t) < half;
   return ["black", "white", "quiet"].filter((kind) =>
     flatRuns.some((r) => r.kind === kind && on(r))
   );
@@ -965,7 +980,7 @@ function flatKindsAt(t) {
 const flatEdges = (kinds) =>
   flatRuns
     .filter((r) => kinds.includes(r.kind))
-    .flatMap((r) => [r.start, r.end])
+    .flatMap((r) => [r.start, flatEnd(r)])
     .filter((t) => srcToOut(t) !== null)
     .sort((a, b) => a - b);
 
@@ -1119,7 +1134,7 @@ function draw() {
     const lane = FLAT_LANES[r.kind];
     if (!lane) continue;
     ctx.fillStyle = lane.colour;
-    for (const [a, e] of srcRangeToOut(r.start, r.end)) {
+    for (const [a, e] of srcRangeToOut(r.start, flatEnd(r))) {
       const x = timeToX(a, w);
       ctx.fillRect(x, lane.y, Math.max(1, timeToX(e, w) - x), 5);
     }
@@ -4363,7 +4378,7 @@ function markCmBlocks() {
 function markFlatRuns(which) {
   const runs = flatRuns.filter((r) => flatKinds(which).includes(r.kind));
   if (!src || !runs.length) return;
-  addKeyframes(runs.flatMap((r) => [r.start, r.end]));
+  addKeyframes(runs.flatMap((r) => [r.start, flatEnd(r)]));
   el("status").textContent = tr("flat.marked", { n: runs.length, what: flatWhat(which) });
 }
 
@@ -6251,6 +6266,10 @@ if (listen) {
     // press that needs them -- so what arrives here is only the news that the
     // line in the menu is naming the wrong pass.
     if (typeof said.blankShades === "string") paintDetectLabels();
+    // The band under the timeline ends where 環境設定 says a stretch ends,
+    // so it is drawn again. Marks already down are not moved: a mark is
+    // something that was done, and this is an answer about the next one.
+    if (typeof said.flatMarkAt === "string") draw();
   });
   // A row renamed in the list while this window is up. The name is the list's
   // to give -- it is the row that was renamed and not the recording -- so it

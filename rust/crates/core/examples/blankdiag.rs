@@ -40,10 +40,11 @@ fn main() -> Result<()> {
 
     for r in &runs {
         println!(
-            "{:>5} {:>10.3} -> {:>10.3}  {:>6.3} s  {:>4} pictures",
+            "{:>5} {:>10.3} -> {:>10.3}  (last {:>10.3})  {:>6.3} s  {:>4} pictures",
             r.shade.as_str(),
             r.start,
             r.end,
+            r.last,
             r.duration(),
             r.pictures
         );
