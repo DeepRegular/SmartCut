@@ -985,6 +985,9 @@ function flatAsk() {
     // stand in for one that was asked about white.
     black: shades !== "white",
     white: shades !== "black",
+    // ...and what it is to call black, white and enough of the picture. See
+    // `blankLevels`: 環境設定 asks in percent and the engine holds fractions.
+    levels: prefs.blankLevels(),
     quietSeconds: prefs.get("quietRunUnit") === "frame" ? quiet * frame() : quiet,
     thresholdDb: Number(prefs.get("quietLevel")) || -50,
   };
@@ -1095,6 +1098,7 @@ async function loadFlatCached(marks) {
       minPictures: ask.minPictures,
       black: ask.black,
       white: ask.white,
+      levels: ask.levels,
       thresholdDb: ask.thresholdDb,
       quietSeconds: ask.quietSeconds,
     });
@@ -6054,6 +6058,7 @@ el("detect-blank").addEventListener("click", () => {
       minPictures: ask.minPictures,
       black: ask.black,
       white: ask.white,
+      levels: ask.levels,
     })
   );
 });

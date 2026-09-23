@@ -1371,6 +1371,7 @@ async function restoreFlat(clip) {
       minPictures: ask.minPictures,
       black: ask.black,
       white: ask.white,
+      levels: ask.levels,
       thresholdDb: ask.thresholdDb,
       quietSeconds: ask.quietInPictures ? ask.quietRun / fps : ask.quietRun,
     });
@@ -1501,6 +1502,10 @@ function flatAsk() {
     // one that was asked about white.
     black: shades !== "white",
     white: shades !== "black",
+    // ...and what it is to call black, white and enough of the picture. Sent
+    // together because they are answered together, and as fractions because
+    // that is how the engine holds them: 環境設定 asks in percent.
+    levels: prefs.blankLevels(),
     // In seconds whatever it was typed in: the sound has no pictures to
     // count. A list holds recordings of different frame rates, so the
     // conversion is per clip and is made below.
@@ -1526,6 +1531,7 @@ async function runBlank(clip) {
       minPictures: ask.minPictures,
       black: ask.black,
       white: ask.white,
+      levels: ask.levels,
     })
   );
 }
@@ -9041,6 +9047,7 @@ function paintPrefs() {
   el("pref-cm-keyframes").checked = prefs.get("cmKeyframes") !== false;
   el("pref-cm-inserts").checked = prefs.get("cmInserts") === true;
   el("pref-blank-shades").value = String(prefs.get("blankShades") || "both");
+  for (const [id, name] of BLANK_LEVELS) el(id).value = String(prefs.get(name));
   el("pref-flat-mark-at").value = String(prefs.get("flatMarkAt") || "after");
   el("pref-blank-keyframes").checked = prefs.get("blankKeyframes") !== false;
   el("pref-quiet-keyframes").checked = prefs.get("quietKeyframes") !== false;
@@ -9281,18 +9288,18 @@ el("pref-flat-mark-at").addEventListener("change", (ev) => {
   prefs.set("flatMarkAt", ev.target.value);
   tellEditorPrefs();
 });
-el("pref-blank-shades").addEventListener("change", (ev) => {
-  prefs.set("blankShades", ev.target.value);
-  // What this window offers, and what the editor's menu offers: both name
-  // the pass, and the pass has just been told to look for something else.
-  paintBlankLabels();
-  tellEditorPrefs();
-  // ...and what the rows are already showing, which is an answer to the
-  // question that has just been withdrawn. Forgotten and asked again of the
-  // cache with the shades now in force: a pass that looked for both answers
-  // either of them on its own, and one that looked for black alone has
-  // nothing to say about white. A row whose pass is booked or running is
-  // left where it is; that one is about to write its own answer.
+/// What the rows are showing about their flat pictures is an answer to a
+/// question that has just been withdrawn.
+///
+/// Forgotten and asked again of the cache with what is now in force. Some of
+/// those asks come back with the same answer -- a pass that looked for both
+/// shades answers for either on its own -- and some read the recording again,
+/// which is the honest outcome: a threshold changes where a fade is *called*
+/// black, and that is the frame a mark goes on.
+///
+/// A row whose pass is booked or running is left where it is. That one is
+/// about to write its own answer.
+function forgetBlank() {
   for (const c of clips) {
     if (c.blankState !== "done") continue;
     c.blankState = "none";
@@ -9304,7 +9311,43 @@ el("pref-blank-shades").addEventListener("change", (ev) => {
   }
   paintButtons();
   paintProps();
+}
+
+el("pref-blank-shades").addEventListener("change", (ev) => {
+  prefs.set("blankShades", ev.target.value);
+  // What this window offers, and what the editor's menu offers: both name
+  // the pass, and the pass has just been told to look for something else.
+  paintBlankLabels();
+  tellEditorPrefs();
+  forgetBlank();
 });
+
+/// How dark is black, how bright is white, and how much of the picture has to
+/// be one of them. Percentages on screen and fractions in the engine.
+///
+/// Each has a floor and a ceiling it is held inside, and an empty field or a
+/// word typed into one keeps the answer it had -- the same bargain the step
+/// fields make, and for the same reason: a threshold of NaN is a detection
+/// that silently finds nothing.
+const BLANK_LEVELS = [
+  ["pref-blank-black", "blankBlackLevel", 0, 100],
+  ["pref-blank-white", "blankWhiteLevel", 0, 100],
+  ["pref-blank-coverage", "blankCoverage", 1, 100],
+];
+
+for (const [id, name, lo, hi] of BLANK_LEVELS) {
+  el(id).addEventListener("change", (ev) => {
+    const typed = Number(ev.target.value);
+    const kept =
+      ev.target.value.trim() !== "" && isFinite(typed)
+        ? Math.min(hi, Math.max(lo, Math.round(typed)))
+        : prefs.get(name);
+    const moved = kept !== prefs.get(name);
+    prefs.set(name, kept);
+    ev.target.value = String(kept);
+    if (moved) forgetBlank();
+  });
+}
 
 el("pref-blank-keyframes").addEventListener("change", (ev) => {
   prefs.set("blankKeyframes", ev.target.checked);

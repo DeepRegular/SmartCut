@@ -146,6 +146,17 @@ const CATALOG = {
     "prefs.shades.both": "黒と白",
     "prefs.shades.black": "黒だけ",
     "prefs.shades.white": "白だけ",
+    "prefs.blankBlackLevel": "黒とみなす明るさ:",
+    "prefs.blankWhiteLevel": "白とみなす明るさ:",
+    "prefs.blankCoverage": "その明るさが占める割合:",
+    "prefs.blankLevelNote":
+      "画素がどれだけ暗ければ黒とみなすか、どれだけ明るければ白とみなすか、" +
+      "そしてそういう画素が画面のどれだけを占めていれば、" +
+      "そのフレームを黒（白）と呼ぶかです。既定は黒 10%、白 92%、割合 98% です。" +
+      "フェードの終わりが真っ黒まで落ちない放送では、黒の値を 14〜16% に上げると拾えます。" +
+      "局のロゴや焼き込みの字幕が出たままの録画では、割合を 95% ほどまで下げてください。" +
+      "画面のいちばん外側 2% は、どの値でも判定に使いません。" +
+      "変えると、それまでの検出結果は答えにならないので、録画を読み直します。",
     "prefs.flatMarkAt": "黒白区間の終わりの印:",
     "prefs.flatMarkAtNote":
       "既定は「黒でなくなったフレーム」です。区間の始まりと終わりの 2 つで切ると、" +
@@ -1201,6 +1212,17 @@ const CATALOG = {
     "prefs.shades.both": "Black and white",
     "prefs.shades.black": "Black only",
     "prefs.shades.white": "White only",
+    "prefs.blankBlackLevel": "Counts as black below:",
+    "prefs.blankWhiteLevel": "Counts as white above:",
+    "prefs.blankCoverage": "...over this much of the picture:",
+    "prefs.blankLevelNote":
+      "How dark a pixel has to be to count as black, how bright to count as white, and how much " +
+      "of the frame has to be one of them before the frame is called that. 10%, 92% and 98% out " +
+      "of the box. A channel that fades to a very dark grey rather than to black is caught by " +
+      "raising the first to 14 or 16; a recording with a station logo or burnt-in text standing " +
+      "in a corner wants the third down around 95. The outermost 2% of each edge is left out of " +
+      "the judgement whatever these say. Changing any of them leaves every saved detection " +
+      "unable to answer, so the recording is read again.",
     "prefs.flatMarkAt": "A blank stretch ends on:",
     "prefs.flatMarkAtNote":
       "The first picture that is no longer flat, out of the box: cut at a stretch's two ends and " +

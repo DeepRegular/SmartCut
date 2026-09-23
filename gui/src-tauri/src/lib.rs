@@ -4005,12 +4005,14 @@ struct FlatRun {
 /// cores too, and the second half of them is worth about a third of this
 /// pass's wall time. See [`asked_for_threads`].
 #[tauri::command]
+#[allow(clippy::too_many_arguments)]
 async fn detect_blank(
     path: String,
     min_seconds: f64,
     min_pictures: usize,
     black: bool,
     white: bool,
+    levels: Levels,
     app: tauri::AppHandle,
 ) -> Result<Vec<FlatRun>, String> {
     off_thread_behind(move || {
@@ -4027,6 +4029,7 @@ async fn detect_blank(
             min_pictures,
             black,
             white,
+            levels,
             asked_for_threads(),
             say,
         )
@@ -4087,6 +4090,17 @@ struct FlatSaved {
     black: bool,
     #[serde(default = "looked_for")]
     white: bool,
+    /// ...and how dark, how bright and how much of the picture it was told to
+    /// call flat. The engine's own answers where the file does not say, which
+    /// is what every file written before these could be chosen holds -- they
+    /// were the only answers then. The sound's half carries them and means
+    /// nothing by them, as it does the shades.
+    #[serde(default = "level_black")]
+    black_level: f64,
+    #[serde(default = "level_white")]
+    white_level: f64,
+    #[serde(default = "level_coverage")]
+    coverage: f64,
     threshold_db: f64,
     runs: Vec<FlatRun>,
 }
@@ -4094,6 +4108,29 @@ struct FlatSaved {
 fn looked_for() -> bool {
     true
 }
+
+/// What a pass looks for when nobody has said: the engine's own answers, so
+/// that the three screens and the three defaults cannot drift apart.
+fn level_black() -> f64 {
+    smartcut_core::BlankOptions::default().black_level
+}
+fn level_white() -> f64 {
+    smartcut_core::BlankOptions::default().white_level
+}
+fn level_coverage() -> f64 {
+    smartcut_core::BlankOptions::default().coverage
+}
+
+/// How dark, how bright, and how much of the picture: the three 環境設定 puts
+/// on the pictures pass, carried together because they are answered together.
+#[derive(Clone, Copy, Debug, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct Levels {
+    black_level: f64,
+    white_level: f64,
+    coverage: f64,
+}
+
 
 /// What both windows are told about a recording's flat stretches. Absent means
 /// nothing has been detected, which is not the same as nothing being there.
@@ -4156,15 +4193,32 @@ fn saved_flat(app: &tauri::AppHandle, src_path: &str, quiet: bool) -> Option<Fla
 /// written down. A level is not a minimum at all -- sound below -50 dB is not
 /// a part of sound below -45 dB, it is a different question -- so the quiet
 /// half answers only for the level it was read at.
+///
+/// The pictures' three levels are read the same way, and for a reason worth
+/// stating: a stretch found at one threshold is not the same stretch found at
+/// another even where both find it. What moves with the threshold is where a
+/// fade is called black, which is exactly the end a mark is put on. So a saved
+/// half answers only for the three it was read with, and a number typed in
+/// 環境設定 sends every row back to the recording.
 fn flat_answers(
     saved: &FlatSaved,
     min_seconds: f64,
     min_pictures: usize,
     db: Option<f64>,
     shades: Option<(bool, bool)>,
+    levels: Option<Levels>,
 ) -> bool {
     if saved.min_seconds > min_seconds + 1e-9 || saved.min_pictures > min_pictures {
         return false;
+    }
+    if let Some(want) = levels {
+        let same = |a: f64, b: f64| (a - b).abs() < 1e-9;
+        if !same(saved.black_level, want.black_level)
+            || !same(saved.white_level, want.white_level)
+            || !same(saved.coverage, want.coverage)
+        {
+            return false;
+        }
     }
     // A shade is like a minimum and not like a level: a pass that looked for
     // both answers for either of them alone, by leaving the other's stretches
@@ -4232,6 +4286,7 @@ fn blank_now(
     min_pictures: usize,
     black: bool,
     white: bool,
+    levels: Levels,
     threads: usize,
     say: impl FnMut(f64) + Send + 'static,
 ) -> Result<Vec<FlatRun>, String> {
@@ -4240,6 +4295,9 @@ fn blank_now(
         min_pictures,
         black,
         white,
+        black_level: levels.black_level,
+        white_level: levels.white_level,
+        coverage: levels.coverage,
         threads,
         ..Default::default()
     };
@@ -4263,6 +4321,9 @@ fn blank_now(
             min_pictures,
             black,
             white,
+            black_level: levels.black_level,
+            white_level: levels.white_level,
+            coverage: levels.coverage,
             threshold_db: 0.0,
             runs: runs.clone(),
         },
@@ -4304,6 +4365,9 @@ fn quiet_now(
             min_pictures: 0,
             black: true,
             white: true,
+            black_level: level_black(),
+            white_level: level_white(),
+            coverage: level_coverage(),
             threshold_db,
             runs: runs.clone(),
         },
@@ -4326,6 +4390,7 @@ async fn flat_cached(
     min_pictures: usize,
     black: bool,
     white: bool,
+    levels: Levels,
     threshold_db: f64,
     quiet_seconds: f64,
     app: tauri::AppHandle,
@@ -4334,12 +4399,12 @@ async fn flat_cached(
         let mut out = FlatFound::default();
         let shades = Some((black, white));
         if let Some(saved) = saved_flat(&app, &path, false) {
-            if flat_answers(&saved, min_seconds, min_pictures, None, shades) {
+            if flat_answers(&saved, min_seconds, min_pictures, None, shades, Some(levels)) {
                 out.blank = Some(flat_keep(&saved.runs, min_seconds, min_pictures, shades));
             }
         }
         if let Some(saved) = saved_flat(&app, &path, true) {
-            if flat_answers(&saved, quiet_seconds, 0, Some(threshold_db), None) {
+            if flat_answers(&saved, quiet_seconds, 0, Some(threshold_db), None, None) {
                 out.quiet = Some(flat_keep(&saved.runs, quiet_seconds, 0, None));
             }
         }
@@ -4371,12 +4436,14 @@ async fn flat_cached(
 /// every core while the editor is closed, a quarter of them while it is open.
 /// See [`background_threads`].
 #[tauri::command]
+#[allow(clippy::too_many_arguments)]
 async fn detect_blank_at(
     path: String,
     min_seconds: f64,
     min_pictures: usize,
     black: bool,
     white: bool,
+    levels: Levels,
     app: tauri::AppHandle,
 ) -> Result<Vec<FlatRun>, String> {
     off_thread_behind(move || {
@@ -4386,7 +4453,14 @@ async fn detect_blank_at(
             return Err("cancelled".into());
         }
         if let Some(saved) = saved_flat(&app, &path, false) {
-            if flat_answers(&saved, min_seconds, min_pictures, None, Some((black, white))) {
+            if flat_answers(
+                &saved,
+                min_seconds,
+                min_pictures,
+                None,
+                Some((black, white)),
+                Some(levels),
+            ) {
                 return Ok(flat_keep(
                     &saved.runs,
                     min_seconds,
@@ -4409,6 +4483,7 @@ async fn detect_blank_at(
             min_pictures,
             black,
             white,
+            levels,
             background_threads(&app),
             say,
         )?;
@@ -4444,7 +4519,7 @@ async fn detect_quiet_at(
             return Err("cancelled".into());
         }
         if let Some(saved) = saved_flat(&app, &path, true) {
-            if flat_answers(&saved, min_seconds, 0, Some(threshold_db), None) {
+            if flat_answers(&saved, min_seconds, 0, Some(threshold_db), None, None) {
                 return Ok(flat_keep(&saved.runs, min_seconds, 0, None));
             }
         }

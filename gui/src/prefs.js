@@ -231,6 +231,25 @@ const DEFAULTS = {
   /// both afterwards reads the recording again rather than pretending the
   /// white was there all along.
   blankShades: "black",
+  /// What "black" and "white" mean to that pass, in percent: how dark a pixel
+  /// has to be, how bright, and how much of the picture has to be one of them
+  /// before the picture is called that.
+  ///
+  /// The engine's own three (`BlankOptions`), which is why they are written
+  /// as percentages of a scale rather than as 16 and 235: the recording's own
+  /// depth decides what those are, and a ten-bit picture holds four times the
+  /// numbers an eight-bit one does.
+  ///
+  /// On screen because the answers are material and not universal. A channel
+  /// that fades through a very dark grey rather than to black is missed at 10
+  /// and found at 16; a station that leaves a clock or a scoreboard up wants
+  /// the coverage below 98, since a black frame with a clock on it is not 98%
+  /// black. The pass is told them, and a saved detection answers only for the
+  /// three it was made with -- a level is not a minimum, and what moves with
+  /// it is where a fade is *called* black, which is the frame a mark goes on.
+  blankBlackLevel: 10,
+  blankWhiteLevel: 92,
+  blankCoverage: 98,
   /// Where the mark at the end of a black or white stretch goes.
   ///
   /// `after` is the first picture that is no longer flat, which is where a
@@ -355,6 +374,25 @@ export function set(name, value) {
   } catch {
     // Nothing to say here that the next start will not say for itself.
   }
+}
+
+/// The pictures pass's three thresholds, in the shape the engine wants them.
+///
+/// 環境設定 asks in percent, because that is how anybody thinks about "98% of
+/// the picture"; `BlankOptions` holds fractions. The one conversion, in the
+/// one place, so the two windows cannot come to different numbers -- and the
+/// cache would notice if they did, a saved detection answering only for the
+/// three it was made with.
+export function blankLevels() {
+  const share = (name) => {
+    const n = Number(get(name));
+    return (isFinite(n) ? n : DEFAULTS[name]) / 100;
+  };
+  return {
+    blackLevel: share("blankBlackLevel"),
+    whiteLevel: share("blankWhiteLevel"),
+    coverage: share("blankCoverage"),
+  };
 }
 
 /// Everything, for handing to whatever wants the lot.

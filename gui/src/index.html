@@ -941,6 +941,34 @@
                 </span>
               </div>
               <p class="dim" data-i18n="prefs.blankShadesNote"></p>
+              <!-- And what "black" and "white" mean, which is two questions
+                   rather than one: how dark a pixel has to be, and how much
+                   of the picture has to be that dark. Both in percent, which
+                   is how the engine holds them and how the reference tools
+                   ask for them. The third is the same question for white.
+
+                   Worth having on screen because the answer is material. A
+                   broadcast that fades through a very dark grey rather than
+                   to black is missed at 10% and found at 16%; a channel bug
+                   or a scrap of burnt-in text is a percent or two of the
+                   frame, and a station that leaves a clock up needs the
+                   coverage down before a black frame is called one. -->
+              <div class="row">
+                <span data-i18n="prefs.blankBlackLevel">黒とみなす明るさ:</span>
+                <input id="pref-blank-black" class="pref-num" type="number" min="0" max="100" step="1" />
+                <span class="dim">%</span>
+              </div>
+              <div class="row">
+                <span data-i18n="prefs.blankWhiteLevel">白とみなす明るさ:</span>
+                <input id="pref-blank-white" class="pref-num" type="number" min="0" max="100" step="1" />
+                <span class="dim">%</span>
+              </div>
+              <div class="row">
+                <span data-i18n="prefs.blankCoverage">その明るさが占める割合:</span>
+                <input id="pref-blank-coverage" class="pref-num" type="number" min="1" max="100" step="1" />
+                <span class="dim">%</span>
+              </div>
+              <p class="dim" data-i18n="prefs.blankLevelNote"></p>
               <!-- Where the mark at the end of a stretch goes. The stretch
                    itself is the same either way; the question is which of
                    the two pictures at its far edge is named. -->
