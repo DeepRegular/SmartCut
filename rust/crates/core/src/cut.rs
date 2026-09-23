@@ -5688,9 +5688,25 @@ fn cut_into(
              the streams measured. It is written all the same; a .ts carries it as it was."
         );
     }
-    // Only MP4-family containers need the reframing dance; Annex-B containers
-    // already carry parameter sets in-band, and their muxers convert as needed.
-    let reframe = match (mp4ish, src.video.framing, src.video.codec.as_str()) {
+    // Which containers keep a NAL's length in front of it, as an MP4 does.
+    //
+    // **Matroska is one of them.** Its `CodecPrivate` is the same `avcC` or
+    // `hvcC` an MP4 carries, and its muxer converts start codes to lengths
+    // only where that record is written in start codes as well -- which it
+    // is when the recording was a transport stream, and is not when it was an
+    // MP4 or a Matroska file. Those went down the transport stream's road
+    // below: every copied picture rewritten into start codes under a record
+    // that says lengths, which a decoder reads as a NAL one byte long followed
+    // by garbage. A cut of H.264 from one Matroska file into another decoded
+    // to nothing but its re-encoded fringes.
+    let lengths = mp4ish || {
+        let format = octx.format();
+        format.name().contains("matroska") || format.name().contains("webm")
+    };
+    // Only containers that keep lengths need the reframing dance; Annex-B
+    // containers already carry parameter sets in-band, and their muxers
+    // convert as needed.
+    let reframe = match (lengths, src.video.framing, src.video.codec.as_str()) {
         (true, NalFraming::Length(n), "h264" | "hevc") => {
             let sets = parameter_sets(&src.video.codec, &extradata);
             if sets.is_empty() {
@@ -5707,7 +5723,7 @@ fn cut_into(
     // And the reverse, for the copied pictures of an MP4 being written as a
     // transport stream. The sets ride in front of every key picture, because
     // the container this is going into has nowhere else to keep them.
-    let unframe = match (mp4ish, src.video.framing, src.video.codec.as_str()) {
+    let unframe = match (lengths, src.video.framing, src.video.codec.as_str()) {
         (false, NalFraming::Length(n), "h264" | "hevc") => Some(Unframe {
             nal_length: n,
             sets: parameter_sets(&src.video.codec, &extradata),
@@ -5743,10 +5759,14 @@ fn cut_into(
             // `avc3`/`hev1` say the parameter sets may live in the samples,
             // which is what lets copied and re-encoded pictures carry
             // different ones in the same track.
+            //
+            // An MP4's tags only. Matroska names its codecs by string and has
+            // no such distinction to make: sets in the samples are simply
+            // read there.
             (*ost.parameters().as_mut_ptr()).codec_tag = match (&reframe, src.video.codec.as_str())
             {
-                (Some(_), "h264") => u32::from_le_bytes(*b"avc3"),
-                (Some(_), "hevc") => u32::from_le_bytes(*b"hev1"),
+                (Some(_), "h264") if mp4ish => u32::from_le_bytes(*b"avc3"),
+                (Some(_), "hevc") if mp4ish => u32::from_le_bytes(*b"hev1"),
                 _ => 0,
             };
             set_pid(&mut ost, to_ts, pids.video(video_pid));

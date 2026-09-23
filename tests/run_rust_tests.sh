@@ -93,19 +93,44 @@ frames() {
   ffprobe -v error -count_frames -select_streams v:0 \
     -show_entries stream=nb_read_frames -of csv=p=0 "$1" 2>/dev/null | head -1
 }
+#
+# And Matroska, which keeps lengths as an MP4 does but was sent down the
+# transport stream's road: every copied picture rewritten into start codes
+# under a record that says lengths. The count alone does not catch that --
+# the decoder still hands back a picture for most of them -- so what the
+# decoder said about them is counted too.
+broken() {
+  ffmpeg -v error -i "$1" -map 0:v -f null - 2>&1 | wc -l
+}
 for src in h264.mp4 hevc.mp4; do
-  name="${src%.mp4} into a transport stream"
-  "$BIN" "$FX/$src" --keep 5.3-12.7 -o "$OUT/container.mp4" >/dev/null 2>&1
-  "$BIN" "$FX/$src" --keep 5.3-12.7 -o "$OUT/container.ts"  >/dev/null 2>&1
-  a=$(frames "$OUT/container.mp4"); b=$(frames "$OUT/container.ts")
-  if [ -n "$a" ] && [ "$a" = "$b" ]; then
-    printf "  ok    %-26s %s pictures either way\n" "$name" "$a"
-    pass=$((pass+1))
-  else
-    printf "  FAIL  %-26s mp4 %s, ts %s\n" "$name" "${a:-none}" "${b:-none}"
-    fail=$((fail+1))
-  fi
+  for into in ts mkv; do
+    name="${src%.mp4} into .$into"
+    "$BIN" "$FX/$src" --keep 5.3-12.7 -o "$OUT/container.mp4"  >/dev/null 2>&1
+    "$BIN" "$FX/$src" --keep 5.3-12.7 -o "$OUT/container.$into" >/dev/null 2>&1
+    a=$(frames "$OUT/container.mp4"); b=$(frames "$OUT/container.$into")
+    e=$(broken "$OUT/container.$into")
+    if [ -n "$a" ] && [ "$a" = "$b" ] && [ "$e" -eq 0 ]; then
+      printf "  ok    %-26s %s pictures either way\n" "$name" "$a"
+      pass=$((pass+1))
+    else
+      printf "  FAIL  %-26s mp4 %s, %s %s, %s decode error(s)\n" "$name" "${a:-none}" "$into" "${b:-none}" "$e"
+      fail=$((fail+1))
+    fi
+  done
 done
+# The same from a Matroska recording, which is where the fault was found:
+# one H.264 file cut into another.
+"$BIN" "$FX/h264.mp4" --keep 0-30 -o "$OUT/h264-whole.mkv" >/dev/null 2>&1
+name="h264 .mkv into .mkv"
+"$BIN" "$OUT/h264-whole.mkv" --keep 5.3-12.7 -o "$OUT/mkv-mkv.mkv" >/dev/null 2>&1
+a=$(frames "$OUT/container.mp4"); b=$(frames "$OUT/mkv-mkv.mkv"); e=$(broken "$OUT/mkv-mkv.mkv")
+if [ -n "$b" ] && [ "$e" -eq 0 ]; then
+  printf "  ok    %-26s %s pictures, none broken\n" "$name" "$b"
+  pass=$((pass+1))
+else
+  printf "  FAIL  %-26s %s pictures, %s decode error(s)\n" "$name" "${b:-none}" "$e"
+  fail=$((fail+1))
+fi
 
 # --- a cut that keeps nothing ---------------------------------------------
 #

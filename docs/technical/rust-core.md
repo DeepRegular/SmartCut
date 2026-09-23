@@ -101,6 +101,17 @@ arrived out of 635**, and the 36 were the re-encoded fringes. `tests/
 run_rust_tests.sh` now counts the pictures in an MP4 cut and in the same cut
 written as a transport stream, and they have to agree.
 
+**Matroska keeps lengths, as an MP4 does**, and was on the wrong side of that
+line. Its `CodecPrivate` is the same `avcC`/`hvcC` record, and its muxer turns
+start codes into lengths only where that record is itself written in start
+codes — true of a cut from a transport stream, false of one from an MP4 or a
+Matroska file. Those went through `Unframe`, so every copied picture reached
+the file start-coded under a record that says lengths: `sps_id 32 out of range`
+and `Invalid NAL unit size`, once per picture, from a cut of H.264 out of one
+`.mkv` into another. Matroska now goes through `Reframe` like an MP4; only the
+`avc3`/`hev1` tag stays the MP4's own. The same suite writes each fixture into
+`.mkv` as well, and counts the decoder's complaints as well as the pictures.
+
 ### HDR is in the pictures too
 
 HDR10 is two SEI messages — the mastering display's primaries and luminance
