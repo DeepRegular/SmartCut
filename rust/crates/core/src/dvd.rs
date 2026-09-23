@@ -601,7 +601,8 @@ pub fn subtitles_of(spec: &str) -> Option<Subtitles> {
 /// The disc is whatever the path says before `VIDEO_TS`, which is a
 /// directory on one and an image on the other; [`Volume::open`] takes either.
 fn title_set_of(base: &str) -> Option<(&str, usize)> {
-    let upper = base.to_ascii_uppercase();
+    // One separator, for a folder disc on Windows (`D:\disc\VIDEO_TS\...`).
+    let upper = base.to_ascii_uppercase().replace('\\', "/");
     let at = upper.rfind("/VIDEO_TS/")?;
     let file = &upper[at + "/VIDEO_TS/".len()..];
     let number = file.strip_prefix("VTS_")?.get(..2)?.parse().ok()?;

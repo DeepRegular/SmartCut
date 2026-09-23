@@ -740,7 +740,7 @@ impl Finite for f64 {
 }
 
 /// Is an environment switch turned off?
-fn off(key: &str) -> bool {
+pub(crate) fn off(key: &str) -> bool {
     matches!(
         std::env::var(key).as_deref(),
         Ok("0") | Ok("off") | Ok("no")

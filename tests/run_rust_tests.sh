@@ -102,8 +102,11 @@ frames() {
 broken() {
   ffmpeg -v error -i "$1" -map 0:v -f null - 2>&1 | wc -l
 }
+# And `.m4v`, which is an MP4 by another name but was handed by that name to
+# libavformat's `ipod` muxer: H.264 went down the transport stream's road as
+# Matroska had, and HEVC was refused outright.
 for src in h264.mp4 hevc.mp4; do
-  for into in ts mkv; do
+  for into in ts mkv m4v; do
     name="${src%.mp4} into .$into"
     "$BIN" "$FX/$src" --keep 5.3-12.7 -o "$OUT/container.mp4"  >/dev/null 2>&1
     "$BIN" "$FX/$src" --keep 5.3-12.7 -o "$OUT/container.$into" >/dev/null 2>&1
@@ -130,6 +133,62 @@ if [ -n "$b" ] && [ "$e" -eq 0 ]; then
 else
   printf "  FAIL  %-26s %s pictures, %s decode error(s)\n" "$name" "${b:-none}" "$e"
   fail=$((fail+1))
+fi
+
+# --- a join of recordings framed differently ------------------------------
+#
+# The master's framing was applied to every reel: a transport stream joined
+# onto an MP4 was copied as start codes into a track of lengths, and an MP4
+# joined onto a transport stream went in as lengths. Its sound likewise --
+# an MP4's raw AAC among a broadcast's ADTS frames stopped the MP4 and
+# Matroska writers outright, and garbled the transport stream's.
+sound_broken() {
+  ffmpeg -v error -i "$1" -map 0:a -f null - 2>&1 | wc -l
+}
+ffmpeg -v error -y -i "$FX/h264.mp4" -c copy -f mpegts "$OUT/h264-whole.ts"
+for pair in "h264.mp4 h264-whole.ts" "h264-whole.ts h264.mp4"; do
+  set -- $pair
+  first=$1; second=$2
+  [ -e "$FX/$first" ] && first="$FX/$first" || first="$OUT/$first"
+  [ -e "$FX/$second" ] && second="$FX/$second" || second="$OUT/$second"
+  for into in mp4 mkv ts; do
+    name="${1##*.}+${2##*.} join .$into"
+    out="$OUT/join-${1##*.}-${2##*.}.$into"
+    rm -f "$out"
+    "$BIN" "$first" --keep 5.3-12.7 --join "$second" -o "$out" >/dev/null 2>&1
+    n=$(frames "$out"); e=$(broken "$out"); ea=$(sound_broken "$out")
+    # 7.4 s of the first and all 30 s of the second, at 30 fps.
+    if [ "${n:-0}" = 1122 ] && [ "$e" -eq 0 ] && [ "$ea" -eq 0 ]; then
+      printf "  ok    %-26s %s pictures, picture and sound clean\n" "$name" "$n"
+      pass=$((pass+1))
+    else
+      printf "  FAIL  %-26s %s pictures, %s/%s decode error(s)\n" "$name" "${n:-none}" "$e" "$ea"
+      fail=$((fail+1))
+    fi
+  done
+done
+
+# --- sound on its own -----------------------------------------------------
+#
+# The same join as sound alone into an ADTS file: the frames were framed
+# twice over. And big-endian PCM, which an MP4 or a QuickTime file holds,
+# written into a .wav, which takes it the other way round.
+out="$OUT/join-sound.aac"; rm -f "$out"
+"$BIN" "$OUT/h264-whole.ts" --keep 5.3-12.7 --join "$FX/h264.mp4" --sound-only -o "$out" >/dev/null 2>&1
+ea=$( [ -s "$out" ] && sound_broken "$out" || echo missing)
+if [ "$ea" = 0 ]; then
+  printf "  ok    %-26s decodes clean\n" "ts+mp4 join, sound only"; pass=$((pass+1))
+else
+  printf "  FAIL  %-26s %s\n" "ts+mp4 join, sound only" "$ea"; fail=$((fail+1))
+fi
+ffmpeg -v error -y -i "$FX/h264.mp4" -c:v copy -c:a pcm_s16be "$OUT/be.mov"
+out="$OUT/be.wav"; rm -f "$out"
+"$BIN" "$OUT/be.mov" --keep 5.3-12.7 --sound-only -o "$out" >/dev/null 2>&1
+codec=$(ffprobe -v error -show_entries stream=codec_name -of csv=p=0 "$out" 2>/dev/null)
+if [ "$codec" = pcm_s16le ] && [ "$(sound_broken "$out")" -eq 0 ]; then
+  printf "  ok    %-26s written as %s\n" "big-endian PCM into .wav" "$codec"; pass=$((pass+1))
+else
+  printf "  FAIL  %-26s %s\n" "big-endian PCM into .wav" "${codec:-no file}"; fail=$((fail+1))
 fi
 
 # --- a cut that keeps nothing ---------------------------------------------

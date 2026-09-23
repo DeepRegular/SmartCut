@@ -644,6 +644,21 @@ fn card_order(channels: u16) -> Option<&'static [usize]> {
     }
 }
 
+/// The layout the card is fed in, for a count of channels.
+///
+/// libav's four is 4.0 -- front left, front right, centre, back centre --
+/// and ALSA's is quad, front and rear pairs, with no centre in it to reorder
+/// into. So four channels are mixed to quad on the way, which keeps the
+/// centre in the front pair and the back centre in the rear one rather than
+/// playing the dialogue from the rear left. Everywhere else, and for every
+/// other count, it is libav's default and [`card_order`] does the rest.
+fn card_layout(channels: u16) -> ff::channel_layout::ChannelLayout {
+    if cfg!(target_os = "linux") && channels == 4 {
+        return ff::channel_layout::ChannelLayout::QUAD;
+    }
+    ff::channel_layout::ChannelLayout::default(i32::from(channels))
+}
+
 /// Put interleaved samples in libav's order into the card's. See
 /// [`card_order`].
 fn to_card_order(samples: &mut [f32], channels: u16) {
@@ -1045,7 +1060,7 @@ fn feed_from(
     clock: &Start,
     stop: &impl Fn() -> bool,
 ) -> Result<()> {
-    let layout = ff::channel_layout::ChannelLayout::default(channels as i32);
+    let layout = card_layout(channels);
     let Heard { src, ranges, from, fades } = part;
     let (from, fades) = (*from, *fades);
     let Some(audio) = src.audio.clone() else {

@@ -397,7 +397,10 @@ fn template_reach(src: &Source) -> Reach {
     // is what the seek is made of. An index that does not carry them would
     // place no run at all and the pass would come back with nothing to build
     // a template from, which reads from outside as a recording with no logo.
+    // The switch that turns byte seeks off for a measurement turns them off
+    // here too: `seek_to_entry` would refuse every run and leave nothing.
     if !src.byte_seekable
+        || crate::index::off("SMARTCUT_BYTE_SEEK")
         || points < TEMPLATE_PICTURES * 2
         || src.duration <= 0.0
         || src.points.iter().any(|p| p.pos < 0)

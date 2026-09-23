@@ -464,13 +464,22 @@ pub(crate) fn clip_on_a_disc(path: &str) -> Option<(&str, &str)> {
     // A name that plays one sequence of a clip still names the clip, and the
     // index beside it is the clip's.
     let path = crate::input::clip_window(path).map_or(path, |(base, _, _)| base);
-    let (root, rest) = ["/BDMV/STREAM/", "/BDAV/STREAM/"]
+    // Asked of a copy with one separator and one case, because on Windows a
+    // folder disc comes back as `D:\disc\BDAV\STREAM/00001.m2ts` -- the
+    // folder as the user named it and the rest as [`Volume::stream`] put it
+    // -- and a recorder's disc copied off a FAT card can be lower case. The
+    // copy is the same length, so what is found in it is found in `path`.
+    let plain: String = path
+        .chars()
+        .map(|c| if c == '\\' { '/' } else { c.to_ascii_uppercase() })
+        .collect();
+    let (at, marker) = ["/BDMV/STREAM/", "/BDAV/STREAM/"]
         .iter()
-        .find_map(|marker| path.split_once(marker))?;
-    let clip = rest
-        .strip_suffix(".m2ts")
-        .or_else(|| rest.strip_suffix(".M2TS"))?;
-    (!clip.is_empty() && !clip.contains('/')).then_some((root, clip))
+        .find_map(|marker| plain.find(marker).map(|at| (at, marker.len())))?;
+    let (root, rest) = (&path[..at], &path[at + marker..]);
+    let clip = rest.get(..rest.len().checked_sub(".m2ts".len())?)?;
+    let named = rest[clip.len()..].eq_ignore_ascii_case(".m2ts");
+    (named && !clip.is_empty() && !clip.contains(['/', '\\'])).then_some((root, clip))
 }
 
 pub fn carry_languages(src: &mut crate::Source, tracks: &[Track]) {
@@ -2094,10 +2103,11 @@ pub fn clip_restamp(path: &str) -> Option<crate::restamp::Restamp> {
     // Only a recorder writes several clocks into one clip, and only a
     // recorder writes `BDAV`. Asked of the name so that a pressed disc pays
     // nothing at all: no image opened, no index read.
-    if !path.to_ascii_uppercase().contains("/BDAV/STREAM/") {
+    let (root, clip) = clip_on_a_disc(path)?;
+    let dialect = path.get(root.len() + 1..root.len() + 5);
+    if !dialect.is_some_and(|d| d.eq_ignore_ascii_case("BDAV")) {
         return None;
     }
-    let (root, clip) = clip_on_a_disc(path)?;
     let mut vol = Volume::open(Path::new(root)).ok()?;
     let raw = vol.read(&format!("CLIPINF/{clip}.clpi")).ok()?;
     joined(&raw, vol.bytes(clip) / SOURCE_PACKET)
@@ -2944,6 +2954,15 @@ mod tests {
         assert_eq!(clip_on_a_disc("/rec/programme.ts"), None);
         assert_eq!(clip_on_a_disc("/rec/Anime.iso/BDMV/STREAM/00014.mp4"), None);
         assert_eq!(clip_on_a_disc("/rec/BDMV/STREAM/"), None);
+        // Windows: the folder as named, the rest as the volume joined it.
+        assert_eq!(
+            clip_on_a_disc(r"D:\rec\disc\BDAV\STREAM/00001.m2ts"),
+            Some((r"D:\rec\disc", "00001"))
+        );
+        assert_eq!(
+            clip_on_a_disc(r"D:\rec\disc\bdmv\stream\00014.M2TS"),
+            Some((r"D:\rec\disc", "00014"))
+        );
     }
 
     /// A recorder's clip index, holding these streams: the header, the

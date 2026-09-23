@@ -171,8 +171,9 @@ impl Revision {
 /// recorder wants to see before it will add a recording to a disc or take one
 /// off. A disc burned from a read-only image plays on the recorder and cannot
 /// be edited on it. So the choice is offered: the image is the same either
-/// way apart from this number, and only the person burning it knows which
-/// disc it is going on.
+/// way apart from this number and the write-protect flags on the domain
+/// (which a recorder's disc leaves clear), and only the person burning it
+/// knows which disc it is going on.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Access {
     /// Nothing will be written to this disc again.
@@ -255,7 +256,7 @@ pub fn write(
     }
     let now = Stamp::now();
     let plan = lay_out(&mut tree);
-    let meta = metadata_image(&tree, &plan, revision, &now, label)?;
+    let meta = metadata_image(&tree, &plan, revision, access, &now, label)?;
 
     let dst =
         std::fs::File::create(to).with_context(|| format!("cannot write {}", to.display()))?;
@@ -351,6 +352,16 @@ pub fn write(
     out.sector(&sized(&anchor(&plan, plan.sectors - 1))?)?;
     out.to.flush()?;
     Ok(plan.sectors * SECTOR as u64)
+}
+
+/// What under `from` an image of it would not carry, by path.
+///
+/// Asked before a folder is taken away because an image holds it: a file
+/// the image left out would go with the folder and be in neither.
+pub fn left_out(from: &Path) -> Result<Vec<String>> {
+    let mut out = Vec::new();
+    read_tree(from, &mut out)?;
+    Ok(out)
 }
 
 /// Name what could not go on the volume.
@@ -587,6 +598,7 @@ fn metadata_image(
     tree: &[Node],
     plan: &Plan,
     rev: Revision,
+    access: Access,
     now: &Stamp,
     label: &str,
 ) -> Result<Vec<u8>> {
@@ -599,7 +611,7 @@ fn metadata_image(
     put(
         &mut out,
         0,
-        &sized(&file_set(tree[0].entry, rev, now, label))?,
+        &sized(&file_set(tree[0].entry, rev, access, now, label))?,
     );
     put(&mut out, 1, &sized(&terminating(1))?);
 
@@ -768,7 +780,7 @@ fn metadata_entry(kind: u8, at: u32, blocks: u64, entry_at: u32, now: &Stamp) ->
 }
 
 /// The file set: which directory is the root of it.
-fn file_set(root: u32, rev: Revision, now: &Stamp, label: &str) -> Vec<u8> {
+fn file_set(root: u32, rev: Revision, access: Access, now: &Stamp, label: &str) -> Vec<u8> {
     let mut d = vec![0u8; 512];
     d[16..28].copy_from_slice(&now.bytes());
     le16(&mut d, 28, 3); // interchange level
@@ -780,7 +792,7 @@ fn file_set(root: u32, rev: Revision, now: &Stamp, label: &str) -> Vec<u8> {
     charspec(&mut d, 240);
     dstring(&mut d, 304, 32, label);
     long_ad(&mut d, 400, SECTOR as u32, root, METADATA_PART);
-    d[416..448].copy_from_slice(&regid(0, "*OSTA UDF Compliant", &domain_suffix(rev)));
+    d[416..448].copy_from_slice(&regid(0, "*OSTA UDF Compliant", &domain_suffix(rev, access)));
     tag(&mut d, TAG_FILE_SET, 0);
     d
 }
@@ -802,7 +814,7 @@ fn volume_descriptors(
         primary(now, label, at),
         implementation_use(rev, label, at + 1),
         partition(plan, access, at + 2),
-        logical_volume(plan, rev, label, at + 3),
+        logical_volume(plan, rev, access, label, at + 3),
         unallocated(at + 4),
         terminating(at + 5),
     ]
@@ -861,13 +873,13 @@ fn partition(plan: &Plan, access: Access, at: u64) -> Vec<u8> {
     d
 }
 
-fn logical_volume(plan: &Plan, rev: Revision, label: &str, at: u64) -> Vec<u8> {
+fn logical_volume(plan: &Plan, rev: Revision, access: Access, label: &str, at: u64) -> Vec<u8> {
     let mut d = vec![0u8; 512];
     le32(&mut d, 16, 3);
     charspec(&mut d, 20);
     dstring(&mut d, 84, 128, label);
     le32(&mut d, 212, SECTOR as u32);
-    d[216..248].copy_from_slice(&regid(0, "*OSTA UDF Compliant", &domain_suffix(rev)));
+    d[216..248].copy_from_slice(&regid(0, "*OSTA UDF Compliant", &domain_suffix(rev, access)));
     // Where the file set is: the first two blocks of the metadata partition.
     long_ad(&mut d, 248, 2 * SECTOR as u32, 0, METADATA_PART);
     le32(&mut d, 264, 6 + 64); // the two maps below
@@ -1070,18 +1082,21 @@ fn regid(flags: u8, id: &str, suffix: &[u8]) -> [u8; 32] {
 }
 
 /// The suffix on the identifiers that name UDF itself: which revision the
-/// image is written to, and -- on the two that name the *domain* -- that the
-/// volume is not to be written to again. Both reference images say so, which
-/// is what an image of a disc is.
+/// image is written to, and -- on the two that name the *domain* -- whether
+/// the volume is to be written to again. Both reference images say it is
+/// not, which is what an image of a disc is; a recorder's own BD-RE says
+/// nothing of the kind, and an overwritable image says what it says.
 fn udf_suffix(rev: Revision) -> [u8; 8] {
     let mut out = [0u8; 8];
     out[..2].copy_from_slice(&rev.number().to_le_bytes());
     out
 }
 
-fn domain_suffix(rev: Revision) -> [u8; 8] {
+fn domain_suffix(rev: Revision, access: Access) -> [u8; 8] {
     let mut out = udf_suffix(rev);
-    out[2] = 0x03; // hard and soft write protected
+    if access == Access::ReadOnly {
+        out[2] = 0x03; // hard and soft write protected
+    }
     out
 }
 

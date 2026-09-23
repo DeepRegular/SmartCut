@@ -696,7 +696,12 @@ fn main() -> Result<()> {
             // and what the programme is called goes in the index beside it.
             "--bdav" => {
                 i += 1;
-                bdav = Some(args.get(i).context("--bdav needs a folder")?.clone());
+                // Without a separator on the end: the image is named by
+                // appending `.iso` to this, and `disc/` would make it
+                // `disc/.iso`, inside the folder it is an image of.
+                let v = args.get(i).context("--bdav needs a folder")?;
+                let trimmed = v.trim_end_matches(['/', '\\']);
+                bdav = Some(if trimmed.is_empty() { v.clone() } else { trimmed.to_string() });
             }
             // And whether to wrap the finished disc in an image. The
             // folder is what is written either way; this is the burner's
@@ -760,9 +765,51 @@ fn main() -> Result<()> {
                 );
             }
             a if a.starts_with('-') => bail!("unknown option {a}"),
+            // One recording per run; the rest of a join is named by `--join`.
+            // Taken quietly, the second name replaced the first and a
+            // different recording was cut from the one the user began with.
+            a if input.is_some() => bail!(
+                "one recording at a time: {a:?} follows {:?} -- to join several, name the \
+                 others with --join",
+                input.as_deref().unwrap_or_default()
+            ),
             a => input = Some(a.to_string()),
         }
         i += 1;
+    }
+    // What a disc's index says, which a run that writes no disc would take
+    // and do nothing with.
+    if bdav.is_none() {
+        let disc_only = [
+            ("--iso", iso.is_some()),
+            ("--disc-title", disc_title.is_some()),
+            ("--programme", programme.is_some()),
+            ("--channel", given_channel.is_some()),
+            ("--about", about.is_some()),
+            ("--made", given_made.is_some()),
+        ];
+        if let Some((name, _)) = disc_only.iter().find(|(_, given)| *given) {
+            bail!("{name} describes a disc and needs --bdav <folder>");
+        }
+    }
+    // A disc names its own recordings, so `-o` would be overwritten by it.
+    if bdav.is_some() && output.is_some() {
+        bail!("-o and --bdav are two places to write the same cut: give one");
+    }
+    // The elementary stream would land in the disc's STREAM folder, and from
+    // there in its image, as a file no player asked for.
+    if bdav.is_some() && audio_es {
+        bail!("--audio-es writes a file beside the cut, which does not go onto a disc");
+    }
+    // The size is worked out from the first recording's ranges before the
+    // others are opened, so it would leave them out of the sum and say a
+    // join fits that does not. And a cut of sound alone has no pictures to
+    // shrink.
+    if fit.is_some() && !joined.is_empty() {
+        bail!("--fit cannot yet count the recordings of a --join: fit them one at a time");
+    }
+    if fit.is_some() && sound_only {
+        bail!("--fit shrinks the pictures, and --sound-only writes none");
     }
     // Nothing to take the folder away *for*: the image is what is kept in
     // its place, and without one this would be a run that deletes its own

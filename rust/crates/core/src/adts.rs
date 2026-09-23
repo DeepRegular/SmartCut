@@ -62,8 +62,14 @@ impl AacVersion {
 /// Header length in bytes: 7, or 9 when the frame carries a CRC.
 pub const HEADER_LEN: usize = 7;
 
+/// The twelve sync bits, and the two layer bits after the ID, which ADTS
+/// always writes as zero. Without them an MPEG audio frame passes too -- its
+/// sync is the same twelve bits with a layer after them -- and a broadcast's
+/// MP2 was taken for ADTS: re-encoded to AAC into a transport stream, its
+/// frames went out under headers built from MP2's bitrate bits, which read
+/// as the SSR profile.
 fn has_sync(data: &[u8]) -> bool {
-    data.len() >= 7 && data[0] == 0xFF && data[1] & 0xF0 == 0xF0
+    data.len() >= 7 && data[0] == 0xFF && data[1] & 0xF6 == 0xF0
 }
 
 impl AdtsFormat {
@@ -236,6 +242,13 @@ mod tests {
         assert!(!f.as_version(AacVersion::Mpeg4).mpeg2);
         assert!(f.as_version(AacVersion::Mpeg2).mpeg2);
         assert!(f.as_version(AacVersion::Auto).mpeg2);
+    }
+
+    #[test]
+    fn an_mpeg_audio_frame_is_not_adts() {
+        // MPEG-1 Layer II, 48 kHz, 256 kbit/s: the same twelve sync bits.
+        assert!(AdtsFormat::parse(&[0xFF, 0xFD, 0xC4, 0x00, 0, 0, 0]).is_none());
+        assert!(AdtsFormat::parse(&BROADCAST).is_some());
     }
 
     #[test]

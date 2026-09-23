@@ -300,6 +300,16 @@ pub fn remove_disc(at: &Path) -> Result<()> {
     if !root.is_dir() {
         bail!("{} holds no disc to remove", at.display());
     }
+    // Not while it holds a file the image could not: that file would be in
+    // neither. See `udfw::left_out`.
+    let stranded = crate::udfw::left_out(&root)?;
+    if let Some(first) = stranded.first() {
+        bail!(
+            "{} is kept: {} file(s) in it are not in the image, {first} among them",
+            root.display(),
+            stranded.len()
+        );
+    }
     std::fs::remove_dir_all(&root).with_context(|| format!("removing {}", root.display()))?;
     // `remove_dir` and not `remove_dir_all`: it removes an empty folder and
     // refuses anything else, which is the rule here rather than a check

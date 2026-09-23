@@ -180,28 +180,39 @@ impl<T: Send + 'static> Pool<T> {
                     // decoded: the lock is the queue, not the work.
                     let job = rx.lock().unwrap().recv();
                     let Ok((i, packets)) = job else { return };
-                    let mut made = Vec::new();
-                    let mut err = None;
-                    for p in &packets {
-                        if decoder.send_packet(p).is_err() {
-                            break;
-                        }
-                    }
-                    // Drained and flushed for this picture alone, which is
-                    // what makes one picture a job at all.
-                    let _ = decoder.send_eof();
-                    while decoder.receive_frame(&mut frame).is_ok() {
-                        let Some(pts) = frame.pts() else { continue };
-                        match make(pts as f64 * time_base - start_time, &frame) {
-                            Ok(t) => made.push(t),
-                            Err(e) => {
-                                err = Some(e);
+                    // A panic in `make` would take this worker down without
+                    // answering job `i`, and `drain` would wait for it while
+                    // the other workers, still alive, kept the channel open.
+                    // It is answered as the failure it is instead.
+                    let answer = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                        let mut made = Vec::new();
+                        let mut err = None;
+                        for p in &packets {
+                            if decoder.send_packet(p).is_err() {
                                 break;
                             }
                         }
-                    }
-                    decoder.flush();
-                    if tx.send((i, err.map_or(Ok(made), Err))).is_err() {
+                        // Drained and flushed for this picture alone, which
+                        // is what makes one picture a job at all.
+                        let _ = decoder.send_eof();
+                        while decoder.receive_frame(&mut frame).is_ok() {
+                            let Some(pts) = frame.pts() else { continue };
+                            match make(pts as f64 * time_base - start_time, &frame) {
+                                Ok(t) => made.push(t),
+                                Err(e) => {
+                                    err = Some(e);
+                                    break;
+                                }
+                            }
+                        }
+                        decoder.flush();
+                        err.map_or(Ok(made), Err)
+                    }));
+                    let Ok(answer) = answer else {
+                        let _ = tx.send((i, Err(anyhow::anyhow!("a decoding worker failed"))));
+                        return;
+                    };
+                    if tx.send((i, answer)).is_err() {
                         return;
                     }
                 }

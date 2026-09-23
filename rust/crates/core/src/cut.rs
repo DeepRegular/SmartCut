@@ -37,6 +37,11 @@ const LEAD_IN: f64 = 0.4;
 struct Reframe {
     nal_length: usize,
     sets: Vec<Vec<u8>>,
+    /// How the pictures being copied arrive. The master's own come framed
+    /// the way the output is; a recording joined on can come from a
+    /// transport stream, or from an MP4 that counts its lengths in fewer
+    /// bytes, and is rewritten to `nal_length` on the way through.
+    from: NalFraming,
 }
 
 /// The other direction: a recording out of an MP4 on its way into a
@@ -750,6 +755,53 @@ struct AudioTrack {
     /// Frames left out for having no length at all -- neither their own nor
     /// a measured one. See [`Writer::push_audio`].
     no_length: usize,
+    /// For an AAC track copied through: whether the master's frames carry an
+    /// ADTS header, and which. `Some(None)` is raw AAC, `None` is a track
+    /// this does not apply to. A recording joined on can be the other kind
+    /// -- an MP4's raw frames after a broadcast's ADTS ones, or the reverse
+    /// -- and its frames are put into the master's framing as they are
+    /// copied. Without that the MP4 muxer, running the whole track through
+    /// `aac_adtstoasc`, stopped the run at the first raw frame.
+    adts: Option<Option<crate::adts::AdtsFormat>>,
+}
+
+impl AudioTrack {
+    /// A copied frame in the framing the track is written in. See
+    /// [`Self::adts`].
+    fn framed(&self, packet: ff::Packet) -> ff::Packet {
+        let Some(want) = self.adts else { return packet };
+        let data = packet.data().unwrap_or(&[]);
+        let has = crate::adts::AdtsFormat::parse(data);
+        let body = match (want, has) {
+            (Some(f), None) => f.wrap(data),
+            (None, Some(_)) => match adts_payload(data) {
+                Some(raw) => raw.to_vec(),
+                None => return packet,
+            },
+            _ => return packet,
+        };
+        let mut out = ff::Packet::copy(&body);
+        out.set_flags(packet.flags());
+        out.set_duration(packet.duration());
+        out.set_pts(packet.pts());
+        out.set_dts(packet.dts());
+        out
+    }
+}
+
+/// The raw frame inside one ADTS frame, where it holds exactly one: a
+/// header of seven bytes, or nine with its checksum, and a length that
+/// covers the whole packet.
+fn adts_payload(data: &[u8]) -> Option<&[u8]> {
+    if data.len() < 7 {
+        return None;
+    }
+    let header = if data[1] & 0x01 == 1 { 7 } else { 9 };
+    let length = ((usize::from(data[3]) & 0x03) << 11)
+        | (usize::from(data[4]) << 3)
+        | (usize::from(data[5]) >> 5);
+    let blocks = data[6] & 0x03;
+    (blocks == 0 && length == data.len() && data.len() > header).then(|| &data[header..])
 }
 
 /// One caption track being written.
@@ -1473,7 +1525,7 @@ fn take_audio(
             patched.set_duration(packet.duration());
             patched
         }
-        None => packet,
+        None => track.framed(packet),
     };
     writer.audio[audio.track].prev = Some(pts);
     writer.push_audio(audio.track, packet, t + audio.offset, dur)?;
@@ -2435,11 +2487,26 @@ fn copy_segment(
         span.fields = span.fields.max(display - display_base + fields);
         span.pictures += 1;
         let packet = match (reframe, ctx.unframe) {
-            (Some(r), _) if packet.is_key() => {
+            (Some(r), _) if packet.is_key() || r.from != NalFraming::Length(r.nal_length) => {
                 let data = packet.data().unwrap_or(&[]);
-                let mut out =
-                    ff::Packet::copy(&prepend_parameter_sets(data, &r.sets, r.nal_length));
-                out.set_flags(ff::packet::Flags::KEY);
+                let body = match r.from {
+                    NalFraming::Length(k) if k == r.nal_length => std::borrow::Cow::Borrowed(data),
+                    NalFraming::Length(k) => std::borrow::Cow::Owned(annexb_to_length(
+                        &length_to_annexb(data, k),
+                        r.nal_length,
+                    )),
+                    NalFraming::AnnexB => {
+                        std::borrow::Cow::Owned(annexb_to_length(data, r.nal_length))
+                    }
+                };
+                let mut out = if packet.is_key() {
+                    ff::Packet::copy(&prepend_parameter_sets(&body, &r.sets, r.nal_length))
+                } else {
+                    ff::Packet::copy(&body)
+                };
+                if packet.is_key() {
+                    out.set_flags(ff::packet::Flags::KEY);
+                }
                 out
             }
             (_, Some(u)) => {
@@ -3822,6 +3889,10 @@ pub(crate) struct AudioSetup {
     /// broadcast, LATM from a 4K one; anything else leaves the frames this
     /// tool encodes unframed, exactly as the packets they sit among are.
     pub(crate) frame_as: Option<crate::aac::Framing>,
+    /// How the recording's own frames of this track are framed, which is
+    /// what every copied frame of the track has to be. See
+    /// [`AudioTrack::adts`].
+    pub(crate) source_framing: Option<crate::aac::Framing>,
     pub(crate) bit_rate: usize,
     /// What one of the recording's own frames of this track is worth in
     /// time, where its packets do not carry a duration. See
@@ -4536,6 +4607,7 @@ pub(crate) fn plan_audio(
         sample_rate,
         downmix,
         frame_as,
+        source_framing: source_adts,
         bit_rate,
         frame_secs,
     })
@@ -5052,6 +5124,58 @@ fn seek_back(points: &[crate::AccessPoint], target: f64) -> f64 {
 /// codec, its sound tracks, its tables. Every other reel either matches the
 /// master and is copied, or does not and is written afresh. See
 /// [`crate::conform`], which is where that is decided.
+/// How a recording joined onto the master has its copied pictures framed
+/// for the output, given how the master's are (see where `reframe` and
+/// `unframe` are worked out in the writer).
+///
+/// Into a container that keeps lengths -- the master's `reframe` is set --
+/// the reel is rewritten to the master's length size, whatever it arrived
+/// in, with its own parameter sets in front of each key picture: the tag is
+/// `avc3`/`hev1`, which lets them differ from the master's. Anywhere else
+/// the output is start codes, and a reel that carries lengths is unframed
+/// with its own sets, as the master would be.
+fn framing_for(
+    rsrc: &Source,
+    master: Option<&Reframe>,
+) -> Result<(Option<Reframe>, Option<Unframe>)> {
+    if !matches!(rsrc.video.codec.as_str(), "h264" | "hevc") {
+        return Ok((None, None));
+    }
+    let extradata = {
+        let (ictx, index) = open_input(&rsrc.input.url)?;
+        let params = ictx
+            .stream(index)
+            .ok_or_else(|| anyhow!("{}: the video stream went away", rsrc.path))?
+            .parameters();
+        unsafe {
+            let p = params.as_ptr();
+            if (*p).extradata.is_null() || (*p).extradata_size <= 0 {
+                Vec::new()
+            } else {
+                std::slice::from_raw_parts((*p).extradata, (*p).extradata_size as usize).to_vec()
+            }
+        }
+    };
+    let sets = parameter_sets(&rsrc.video.codec, &extradata);
+    Ok(match (master, rsrc.video.framing) {
+        (Some(m), from) => (
+            Some(Reframe {
+                nal_length: m.nal_length,
+                // A transport stream's sets are in its pictures already.
+                sets: if sets.is_empty() && from != NalFraming::AnnexB {
+                    m.sets.clone()
+                } else {
+                    sets
+                },
+                from,
+            }),
+            None,
+        ),
+        (None, NalFraming::Length(n)) => (None, Some(Unframe { nal_length: n, sets })),
+        (None, NalFraming::AnnexB) => (None, None),
+    })
+}
+
 pub struct Reel<'a> {
     pub src: &'a Source,
     pub plans: &'a [RangePlan],
@@ -5638,7 +5762,15 @@ fn cut_into(
     // Note: muxer options belong to `write_header`, not to opening the file --
     // `output_with` hands its dictionary to the *protocol*, so anything meant
     // for the muxer is quietly dropped there. This one goes below.
-    let mut octx = ff::format::output(&output)?;
+    // A `.m4v` is an MP4 by another name, and is written as one. Left to
+    // the name, libavformat hands it to its `ipod` muxer, which takes H.264
+    // and nothing newer and turns down the `avc3` tag a cut with rewritten
+    // seams needs.
+    let mut octx = if output.to_ascii_lowercase().ends_with(".m4v") {
+        ff::format::output_as(&output, "mp4")?
+    } else {
+        ff::format::output(&output)?
+    };
     // The lead a disc gives a decoder: how far the first picture is shown
     // after the clock that has to be running to show it arrives.
     //
@@ -5715,6 +5847,7 @@ fn cut_into(
                 Some(Reframe {
                     nal_length: n,
                     sets,
+                    from: NalFraming::Length(n),
                 })
             }
         }
@@ -6118,6 +6251,13 @@ fn cut_into(
             dropped: 0,
             frame_secs: setup.frame_secs.unwrap_or(0.0),
             no_length: 0,
+            adts: (setup.mode != AudioMode::Reencode
+                && setup.target == ff::codec::Id::AAC
+                && !matches!(setup.source_framing, Some(crate::aac::Framing::Latm(_))))
+            .then_some(match setup.source_framing {
+                Some(crate::aac::Framing::Adts(f)) => Some(f),
+                _ => None,
+            }),
         })
         .collect();
     let caption_tracks: Vec<CaptionTrack> = captions
@@ -6371,6 +6511,23 @@ fn cut_into(
     for (reel_no, reel) in reels.iter().enumerate() {
         let rsrc = reel.src;
         let thread = &threads[reel_no];
+        // How this reel's copied pictures are put into the output's framing.
+        // The master's answer was worked out above; a recording joined on
+        // brings its own framing and its own parameter sets, and copied
+        // under the master's it came out as a transport stream's start codes
+        // in an MP4, or an MP4's lengths in a transport stream -- or, from
+        // one MP4 into another, decoded against the first one's sets.
+        let own = std::ptr::eq(rsrc, src);
+        let (reel_reframe, reel_unframe) = if own {
+            (None, None)
+        } else {
+            framing_for(rsrc, reframe.as_ref())?
+        };
+        let (reframe_here, unframe_here) = if own {
+            (reframe.as_ref(), unframe.as_ref())
+        } else {
+            (reel_reframe.as_ref(), reel_unframe.as_ref())
+        };
         // The frames prepared for this reel's own boundaries, and a clean
         // sheet for the lookup that places them: what `prev` remembers is
         // the frame before, and at a reel's first range the frame before
@@ -6551,8 +6708,8 @@ fn cut_into(
             let ctx = SegmentCtx {
                 display_base,
                 grid,
-                reframe: reframe.as_ref(),
-                unframe: unframe.as_ref(),
+                reframe: reframe_here,
+                unframe: unframe_here,
                 audio: &audio_ctx,
                 captions: &caption_ctx,
                 graphics: &graphics_ctx,

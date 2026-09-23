@@ -186,13 +186,29 @@ fn run(
     // copied into a stream declared as the first one's. The picture writer
     // re-encodes just those reels to the master's shape; with one track and
     // no pictures, re-encoding the whole of it comes to the same file.
+    //
+    // Framed differently counts as well: a broadcast's ADTS frames and an
+    // MP4's raw ones are the same AAC, and one stream cannot hold both.
+    let framing = |src: &Source| {
+        (info.codec == "aac").then(|| crate::aac::of_source(src).map(|f| f.as_str()))
+    };
+    let first_framing = framing(first.src);
     let unlike = pieces.iter().skip(1).any(|p| {
         track_of(p.src, opts).is_ok_and(|t| {
-            t.codec != info.codec || t.sample_rate != info.sample_rate || t.channels != info.channels
+            t.codec != info.codec
+                || t.sample_rate != info.sample_rate
+                || t.channels != info.channels
+                || framing(p.src) != first_framing
         })
     });
     if unlike && setup.mode != AudioMode::Reencode {
         setup.mode = AudioMode::Reencode;
+        // Smart mode frames what it encodes so it can sit among the copied
+        // frames; a whole re-encode has none to sit among, and into a file
+        // that is not a transport stream it is written raw, as the picture
+        // writer writes it. Left set, the ADTS muxer put a second header in
+        // front of every frame.
+        setup.frame_as = None;
     }
     let fades = fade_lengths(pieces, opts);
 
@@ -213,13 +229,25 @@ fn run(
     {
         // The muxer names its sixteen-bit default; a track that is wider
         // keeps its width and changes only its byte order.
-        setup.target = match (guess, setup.target) {
-            (
-                ff::codec::Id::PCM_S16LE,
-                ff::codec::Id::PCM_S24BE | ff::codec::Id::PCM_S24LE,
-            ) => ff::codec::Id::PCM_S24LE,
+        use ff::codec::Id;
+        let wanted = match (guess, setup.target) {
+            (Id::PCM_S16LE, Id::PCM_S24BE | Id::PCM_S24LE) => Id::PCM_S24LE,
+            (Id::PCM_S16LE, Id::PCM_S32BE | Id::PCM_S32LE) => Id::PCM_S32LE,
+            (Id::PCM_F32LE | Id::PCM_S16LE, Id::PCM_F32BE | Id::PCM_F32LE) => Id::PCM_F32LE,
+            (Id::PCM_F64LE | Id::PCM_S16LE, Id::PCM_F64BE | Id::PCM_F64LE) => Id::PCM_F64LE,
             _ => guess,
         };
+        // A different byte order is a different codec, and copied frames
+        // are still in the old one: they have to go through the encoder,
+        // which for PCM is a rearrangement and loses nothing. Declared the
+        // new way with the old frames, the header write failed.
+        if wanted != setup.target {
+            setup.target = wanted;
+            if setup.mode != AudioMode::Reencode {
+                setup.mode = AudioMode::Reencode;
+                setup.frame_as = None;
+            }
+        }
     }
 
     // A container that has no box for the codec says so only as "Invalid
@@ -268,6 +296,25 @@ fn run(
             Some(re) => ost.set_parameters(re.parameters()),
             None => ost.set_parameters(params.clone()),
         }
+        // What the frames are rather than what the head of the recording
+        // was, as the picture writer declares it: a broadcast that opens on
+        // the mono bulletin before the programme is stereo from then on.
+        // See `crate::audio::settled_shape`.
+        unsafe {
+            let p = ost.parameters().as_mut_ptr();
+            if (*p).ch_layout.nb_channels != i32::from(setup.channels) {
+                ff::ffi::av_channel_layout_uninit(&mut (*p).ch_layout);
+                ff::ffi::av_channel_layout_default(&mut (*p).ch_layout, i32::from(setup.channels));
+            }
+            if (*p).sample_rate != setup.sample_rate as i32 {
+                (*p).sample_rate = setup.sample_rate as i32;
+            }
+        }
+        if let Some(lang) = &setup.info.language {
+            let mut meta = ff::Dictionary::new();
+            meta.set("language", lang);
+            ost.set_metadata(meta);
+        }
         // The muxer works the tag out for the container it is writing;
         // carrying the recording's own over means writing a transport
         // stream's idea of the codec into an MP4. Same as `write_audio_es`.
@@ -307,7 +354,19 @@ fn run(
     say(0);
 
     for (n, piece) in pieces.iter().enumerate() {
-        let track = track_of(piece.src, opts)?.clone();
+        // A clip joined on with no sound has none to give, and failing the
+        // whole file over it would lose every other clip's. Its ranges are
+        // left out, which makes the file that much shorter than the cut
+        // with pictures, and that is said.
+        let Ok(track) = track_of(piece.src, opts).cloned() else {
+            crate::note_once(format!(
+                "note: {} has no sound, so its part of the join is left out of the audio file",
+                piece.src.path,
+            ));
+            ranges_done += piece.ranges.len();
+            say(ranges_done);
+            continue;
+        };
         let base = pieces[..n].iter().map(|p| p.ranges.len()).sum::<usize>();
         let ranges = &kept[n];
         let windows: Vec<(i64, i64)> = ranges
