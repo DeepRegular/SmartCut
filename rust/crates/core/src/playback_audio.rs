@@ -873,7 +873,18 @@ pub fn peaks_at(src: &Source, time: f64, window: f64) -> Result<Vec<f32>> {
                 continue;
             }
             let data = resample(&mut resampler, &mut resampled, &frame, audio.sample_rate, layout)?;
-            for (i, &s) in data.iter().enumerate() {
+            // Only the samples inside the window, not every sample of every
+            // frame that overlaps it. A frame of AAC is 21 milliseconds and a
+            // picture is 33, so two or three frames reach into one picture's
+            // window and each of them brings sound from either side of it.
+            // The meter beside the picture read that sound as the picture's
+            // own, which is what a mark at a junction was being judged
+            // against: half a frame of level that belongs to the frame before
+            // and half that belongs to the frame after.
+            let rate = audio.sample_rate.max(1) as f64;
+            let from = (((time - t) * rate).ceil().max(0.0) as usize).min(data.len() / channels);
+            let to = (((end - t) * rate).ceil().max(0.0) as usize).min(data.len() / channels);
+            for (i, &s) in data[from * channels..to * channels].iter().enumerate() {
                 let ch = i % channels;
                 let m = s.abs();
                 if m > peaks[ch] {

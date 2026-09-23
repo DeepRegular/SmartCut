@@ -84,9 +84,21 @@ impl Default for DetectOptions {
     }
 }
 
-/// Peak amplitude of one decoded audio frame, as a fraction of full scale.
-fn frame_peak(frame: &ff::frame::Audio) -> f64 {
-    use ff::format::sample::{Sample, Type};
+/// Where the loud samples of one decoded audio frame begin and end.
+///
+/// Sample positions, not element indexes and not frames: a stretch of
+/// silence is timed to the sample it starts on, because the frame it starts
+/// in is 21 milliseconds of AAC and two thirds of a picture. Asked of the
+/// whole frame it came back as "somewhere in here", and the mark the editor
+/// puts at a boundary was up to a frame away from where the sound actually
+/// stops -- which is what a level meter beside it shows, and what was
+/// reported.
+///
+/// `None` where every sample is under the level. The loudest channel is what
+/// answers, as it did when this was a peak: a stretch is silent when all of
+/// them are.
+fn loud_bounds(frame: &ff::frame::Audio, floor: f64) -> Option<(usize, usize)> {
+    use ff::format::sample::Sample;
     // A frame can claim more planes than an `AVFrame` has pointers to hold:
     // eight is all there are, and a corrupt header in an off-air recording is
     // enough to ask for a ninth. Reading it is a panic rather than an error,
@@ -98,34 +110,89 @@ fn frame_peak(frame: &ff::frame::Audio) -> f64 {
     } else {
         1
     };
-    let mut peak = 0.0f64;
-    for p in 0..planes {
-        match frame.format() {
-            Sample::F32(_) => {
-                for &s in frame.plane::<f32>(p) {
-                    peak = peak.max(s.abs() as f64);
-                }
-            }
-            Sample::I16(_) => {
-                for &s in frame.plane::<i16>(p) {
-                    peak = peak.max(s.unsigned_abs() as f64 / 32768.0);
-                }
-            }
-            Sample::I32(_) => {
-                for &s in frame.plane::<i32>(p) {
-                    peak = peak.max(s.unsigned_abs() as f64 / 2147483648.0);
-                }
-            }
-            Sample::F64(_) => {
-                for &s in frame.plane::<f64>(p) {
-                    peak = peak.max(s.abs());
-                }
-            }
-            _ => return 1.0, // unknown layout: treat as loud, never silent
+    let mut first: Option<usize> = None;
+    let mut last: Option<usize> = None;
+    // An interleaved frame holds every channel in plane nought, so element
+    // `i` stands at sample `i / step`.
+    let step = if frame.is_planar() {
+        1
+    } else {
+        (frame.channels() as usize).max(1)
+    };
+    let mut take = |bounds: Option<(usize, usize)>| {
+        if let Some((from, to)) = bounds {
+            first = Some(first.map_or(from / step, |f: usize| f.min(from / step)));
+            last = Some(last.map_or(to / step, |l: usize| l.max(to / step)));
         }
-        let _ = Type::Packed;
+    };
+    if frame.is_planar() {
+        for p in 0..planes {
+            // `plane` rather than `data`: an `AVFrame` sets `linesize` for
+            // the first plane alone, so the second channel of a planar frame
+            // reads as no bytes at all.
+            take(match frame.format() {
+                Sample::F32(_) => over(frame.plane::<f32>(p).iter().map(|v| v.abs() as f64), floor),
+                Sample::F64(_) => over(frame.plane::<f64>(p).iter().map(|v| v.abs()), floor),
+                Sample::I16(_) => over(
+                    frame.plane::<i16>(p).iter().map(|v| v.unsigned_abs() as f64 / 32768.0),
+                    floor,
+                ),
+                Sample::I32(_) => over(
+                    frame
+                        .plane::<i32>(p)
+                        .iter()
+                        .map(|v| v.unsigned_abs() as f64 / 2147483648.0),
+                    floor,
+                ),
+                // An unknown layout is never called silent, so the whole
+                // frame reads as loud.
+                _ => return Some((0, frame.samples().saturating_sub(1))),
+            });
+        }
+    } else {
+        // `plane` cannot be asked for an interleaved frame's samples: it
+        // hands back `samples()` elements whatever the layout, which is one
+        // channel's worth. The bytes are read instead, and `linesize` is the
+        // buffer rather than what the frame holds, so the padding at the end
+        // of it is left alone.
+        let (width, scale) = match frame.format() {
+            Sample::F32(_) => (4, 1.0),
+            Sample::F64(_) => (8, 1.0),
+            Sample::I16(_) => (2, 32768.0),
+            Sample::I32(_) => (4, 2147483648.0),
+            _ => return Some((0, frame.samples().saturating_sub(1))),
+        };
+        let bytes = frame.data(0);
+        let held = (frame.samples() * step * width).min(bytes.len());
+        let level = |c: &[u8]| -> f64 {
+            match frame.format() {
+                Sample::F32(_) => f32::from_ne_bytes(c.try_into().expect("width")).abs() as f64,
+                Sample::F64(_) => f64::from_ne_bytes(c.try_into().expect("width")).abs(),
+                Sample::I16(_) => {
+                    i16::from_ne_bytes(c.try_into().expect("width")).unsigned_abs() as f64
+                }
+                _ => i32::from_ne_bytes(c.try_into().expect("width")).unsigned_abs() as f64,
+            }
+        };
+        take(over(
+            bytes[..held].chunks_exact(width).map(|c| level(c) / scale),
+            floor,
+        ));
     }
-    peak
+    Some((first?, last?))
+}
+
+/// The first and last of a run of levels that reach `floor`.
+fn over(levels: impl Iterator<Item = f64>, floor: f64) -> Option<(usize, usize)> {
+    let mut first: Option<usize> = None;
+    let mut last: Option<usize> = None;
+    for (i, v) in levels.enumerate() {
+        if v >= floor {
+            first.get_or_insert(i);
+            last = Some(i);
+        }
+    }
+    Some((first?, last?))
 }
 
 /// Walk the audio and note every stretch quieter than the threshold.
@@ -157,9 +224,16 @@ pub fn find_silences_with(
         .audio()?;
 
     let floor = 10f64.powf(opts.threshold_db / 20.0);
+    let rate = audio.sample_rate.max(1) as f64;
     let mut frame = ff::frame::Audio::empty();
     let mut out: Vec<Silence> = Vec::new();
+    // Where a stretch of quiet began, which is the instant after the last
+    // loud sample before it -- not the start of the first frame that
+    // happened to hold none.
     let mut quiet_from: Option<f64> = None;
+    // ...and the instant after the last loud sample seen at all, which is
+    // what the next stretch of quiet will start at.
+    let mut loud_until = 0.0;
     let mut last_end = 0.0;
     let mut told = -1.0;
 
@@ -173,14 +247,27 @@ pub fn find_silences_with(
         while decoder.receive_frame(&mut frame).is_ok() {
             let Some(pts) = frame.pts() else { continue };
             let t = pts as f64 * audio.time_base - src.start_time;
-            let dur = frame.samples() as f64 / audio.sample_rate.max(1) as f64;
-            if frame_peak(&frame) < floor {
-                quiet_from.get_or_insert(t);
-            } else if let Some(from) = quiet_from.take() {
-                out.push(Silence {
-                    start: from,
-                    end: t,
-                });
+            let dur = frame.samples() as f64 / rate;
+            match loud_bounds(&frame, floor) {
+                // The sound comes back at the first loud sample, which is
+                // where a stretch of quiet ends.
+                Some((first, last)) => {
+                    if let Some(from) = quiet_from.take() {
+                        out.push(Silence {
+                            start: from,
+                            end: t + first as f64 / rate,
+                        });
+                    }
+                    loud_until = t + (last + 1) as f64 / rate;
+                }
+                // Nothing in this frame. A stretch already running carries
+                // on; a new one began where the sound last stopped, which
+                // may be part way through the frame before this one.
+                None => {
+                    if quiet_from.is_none() {
+                        quiet_from = Some(loud_until.min(t));
+                    }
+                }
             }
             last_end = t + dur;
             if let Some(f) = progress.as_mut() {
@@ -580,4 +667,76 @@ pub fn blocks_from_resets(resets: &[f64], duration: f64) -> Vec<Block> {
             }
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A planar frame of `samples` per channel, with the named positions
+    /// carrying full scale on the channel given.
+    fn planar(samples: usize, channels: i32, loud: &[(usize, usize)]) -> ff::frame::Audio {
+        let layout = ff::channel_layout::ChannelLayout::default(channels);
+        let mut frame =
+            ff::frame::Audio::new(ff::format::Sample::F32(ff::format::sample::Type::Planar), samples, layout);
+        // A fresh frame's buffer is whatever was in the allocation.
+        for p in 0..frame.planes() {
+            frame.plane_mut::<f32>(p).fill(0.0);
+        }
+        for &(ch, at) in loud {
+            frame.plane_mut::<f32>(ch)[at] = 1.0;
+        }
+        frame
+    }
+
+    /// ...and the same thing interleaved, where element `i` stands at sample
+    /// `i / channels` and reading it as if it did not is what put a boundary
+    /// in the wrong place.
+    fn packed(samples: usize, channels: i32, loud: &[(usize, usize)]) -> ff::frame::Audio {
+        let layout = ff::channel_layout::ChannelLayout::default(channels);
+        let mut frame =
+            ff::frame::Audio::new(ff::format::Sample::I16(ff::format::sample::Type::Packed), samples, layout);
+        frame.data_mut(0).fill(0);
+        let width = 2;
+        let step = channels as usize;
+        for &(ch, at) in loud {
+            let i = (at * step + ch) * width;
+            frame.data_mut(0)[i..i + width].copy_from_slice(&i16::MAX.to_ne_bytes());
+        }
+        frame
+    }
+
+    #[test]
+    fn a_silent_frame_has_no_loud_samples() {
+        assert_eq!(loud_bounds(&planar(1024, 2, &[]), 0.003), None);
+    }
+
+    /// The whole point of the pass: where the sound stops inside a frame, not
+    /// which frame it stopped in.
+    #[test]
+    fn the_bounds_are_the_first_and_last_loud_sample() {
+        let frame = planar(1024, 2, &[(0, 100), (1, 900)]);
+        assert_eq!(loud_bounds(&frame, 0.003), Some((100, 900)));
+        // Either channel alone answers for the frame: a stretch is silent
+        // when all of them are.
+        assert_eq!(loud_bounds(&planar(1024, 2, &[(1, 5)]), 0.003), Some((5, 5)));
+    }
+
+    /// Under the level is not loud, however many samples of it there are.
+    #[test]
+    fn the_level_is_what_decides() {
+        let mut frame = planar(1024, 1, &[]);
+        for (i, v) in frame.plane_mut::<f32>(0).iter_mut().enumerate() {
+            *v = if i == 400 { 0.01 } else { 0.001 };
+        }
+        assert_eq!(loud_bounds(&frame, 0.003), Some((400, 400)));
+        assert_eq!(loud_bounds(&frame, 0.05), None);
+    }
+
+    /// An interleaved frame's element index is not its sample position.
+    #[test]
+    fn an_interleaved_frame_is_divided_by_its_channels() {
+        let frame = packed(512, 2, &[(1, 300)]);
+        assert_eq!(loud_bounds(&frame, 0.003), Some((300, 300)));
+    }
 }

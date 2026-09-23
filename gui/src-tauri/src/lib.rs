@@ -3968,8 +3968,8 @@ struct FlatRun {
     start: f64,
     end: f64,
     /// How many pictures it holds, for the two that are about pictures. Zero
-    /// for a silence, which is measured in audio frames and would be
-    /// answering a question nobody asked.
+    /// for a silence, which is measured in samples and would be answering a
+    /// question nobody asked.
     pictures: usize,
 }
 
@@ -4168,7 +4168,7 @@ fn flat_answers(
 
 /// The runs of a saved half that clear the minimums being asked for now.
 ///
-/// A silence has no pictures to count -- it is measured in audio frames, and
+/// A silence has no pictures to count -- it is measured in samples, and
 /// [`FlatRun::pictures`] is zero on one -- so the count is applied only where
 /// there is one.
 fn flat_keep(
