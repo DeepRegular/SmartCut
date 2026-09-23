@@ -113,7 +113,7 @@ copy, so **the whole track is re-encoded**.
 | `--audio-bitrate RATE` | Bits per second when re-encoding, as `192k` or `192000`. Left out, it follows the recording. A figure the encoder will not accept is raised to what that codec is ordinarily carried at, with a note saying so |
 | `--aac auto\|mpeg2\|mpeg4` | Which flavour of AAC the frames SmartCut writes announce themselves as. `auto`, the default, follows the recording — MPEG-2 AAC for a broadcast |
 | `--audio-es` | Also write the sound out as a bare stream beside the output. AAC only |
-| `--sound-only` | Write the sound and no pictures: the ranges, the joins and the fades exactly as they would be inside the video, and nothing read or written for the frames. `-o` names the file and its extension picks the container — `.aac`, `.ac3`, `.mp2`, `.mp3`, `.dts`, `.m4a`, or `.wav`, which is always written as linear PCM. A sound the container has no room for stops the run before anything is written. One sound track, and not with `--bdav` |
+| `--sound-only` | Write the sound and no pictures: the ranges, the joins and the fades exactly as they would be inside the video, and nothing read or written for the frames. `-o` names the file and its extension picks the container — `.aac`, `.ac3`, `.mp2`, `.mp3`, `.dts`, `.m4a`, or `.wav`, which is always written as linear PCM. A sound the container has no room for stops the run before anything is written. One sound track, and not with `--bdav`. A recording joined on with no sound is left out of the file, and the run says so |
 | `--audio-fade SECONDS` | Take the level down into each seam and bring it back out over that many seconds. 0 to 10; 0, no fade, is the default |
 | `--join-fade-out SECONDS` | How long the sound takes to leave at the end of each clip, where `--join` writes several into one file. 0 to 10; 0 is the default |
 | `--join-fade-in SECONDS` | ...and how long it takes to come back at the start of the next one |
@@ -140,17 +140,19 @@ copy, so **the whole track is re-encoded**.
 ## Writing a disc (BDAV)
 
 `--bdav` writes **the same shape a recorder writes to a BD-RE** — a folder, not a
-file. The disc decides the filenames, so `-o` is not used. If a disc is already
-there, the recording is **added** to it.
+file. The disc decides the filenames, so `-o` is not used, and giving both is an
+error. If a disc is already there, the recording is **added** to it. `--iso` and
+everything below it in the table describe a disc, and without `--bdav` they are
+refused rather than quietly ignored.
 
 | Option | Meaning |
 |---|---|
 | `--bdav FOLDER` | Write a BDAV disc into this folder (one recording becomes `BDAV/STREAM/00001.m2ts`). The index is built afterwards |
-| `--fit bd25\|bd50\|bd100\|bd128\|BYTES` | Write the pictures back smaller, by as much as it takes for the output to fit that much room. Where it already fits, nothing is done. The sound, the subtitles and the programme information are untouched; only the pictures give anything up. MPEG-2 only -- anything else is written at its full size and says so. What share they will be written at is printed before the writing starts. See [Fitting a disc](../technical/transrate.md) |
+| `--fit bd25\|bd50\|bd100\|bd128\|BYTES` | Write the pictures back smaller, by as much as it takes for the output to fit that much room. Where it already fits, nothing is done. The sound, the subtitles and the programme information are untouched; only the pictures give anything up. MPEG-2 only -- anything else is written at its full size and says so. What share they will be written at is printed before the writing starts. Not with `--join` or `--sound-only`. See [Fitting a disc](../technical/transrate.md) |
 | `--video-share 0.35..1` | The share itself, where you would rather name it than have a size worked out into one |
 | `--iso 2.50\|2.60` | Wrap the finished disc in an `.iso` beside it: `--bdav ~/disc` writes `~/disc/BDAV` and `~/disc.iso`. The folder stays |
 | `--iso-access read-only\|overwritable` | What the image says may be done to the disc it is burned onto. `read-only`, the default, is the truth about a disc nothing will write to again — a BD-R, or a BD-RE you only play. `overwritable` is what a recorder writes on a BD-RE, and what it wants to see before it will add a recording to the disc or take one off. Needs `--iso` |
-| `--iso-only` | And then take the folder away, leaving the image on its own. Needs `--iso`: the image is made *of* the folder, so the folder is written first and goes once the image holds it. What goes is `BDAV`, and the folder above it only where that leaves it empty — a disc written into a folder of your own leaves everything else in it alone |
+| `--iso-only` | And then take the folder away, leaving the image on its own. Needs `--iso`: the image is made *of* the folder, so the folder is written first and goes once the image holds it. What goes is `BDAV`, and the folder above it only where that leaves it empty — a disc written into a folder of your own leaves everything else in it alone. A file in `BDAV` that the image could not carry keeps the folder where it is |
 | `--disc-title NAME` | What the disc is called. Left out, the series the recording is an episode of: the programme name with the episode number, the episode's own title and the broadcast's marks taken off it |
 | `--programme NAME` | What this recording is called in the disc's index. Left out, the name its playlist gave it if it came off a disc, otherwise the programme name the broadcast carries |
 | `--channel NAME[,N]` | The channel, and optionally the three digits a viewer knows it by (`--channel "衛星第一,161"`). Left out, both come from the recording |

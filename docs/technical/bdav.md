@@ -690,8 +690,12 @@ to again, so it is the default. A recorder writes *overwritable* on a BD-RE,
 and that is what it wants to see before it will add a recording to a disc or
 take one off; a disc burned from a read-only image plays on the recorder and
 cannot be edited on it. So the choice is offered, in the output settings and
-as `--iso-access`: the image is the same either way apart from that number,
-and only the person burning it knows which disc it is going on.
+as `--iso-access`: the image is the same either way apart from that number
+and the write-protect flags on the domain identifier, and only the person
+burning it knows which disc it is going on. Those flags are set on a read-only
+image, as both reference images set them, and clear on an overwritable one, as
+a recorder's own BD-RE has them; until 0.8.2 they were set on both, and an
+overwritable image said one thing in its partition and the other in its domain.
 
 **A file a UDF volume cannot name is named rather than dropped.** The names
 written here are plain ASCII of 200 characters or fewer, which is what a disc
@@ -699,6 +703,9 @@ of recordings has — the files on one are `00001.m2ts` and `info.bdav` — but 
 folder handed over is whatever the caller named. Anything else is left out of
 the image, and now said so, with up to four of the names printed the way the
 folder spells them. A dot-file is left out silently, being nobody's recording.
+**A folder that held such a file is not taken away** after the image is made
+(`--iso-only`, or **Remove the folder once the image is written** in the output settings): the file
+would otherwise be in neither.
 
 ## What was checked
 

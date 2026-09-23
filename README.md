@@ -145,11 +145,11 @@ install.
 
 | Platform | File | Notes |
 |---|---|---|
-| **Linux** | `SmartCut_0.8.1_amd64.AppImage` | Make it executable and run it |
-| **Linux** | `SmartCut-0.8.1-linux-x86_64.tar.gz` | Unpack and run `./smartcut`. Use this if you would rather not deal with FUSE |
-| **Linux (Debian/Ubuntu)** | `smartcut_0.8.1_amd64.deb` | `sudo apt install ./smartcut_0.8.1_amd64.deb`. Only 4.8 MB, because it uses the FFmpeg already on your system |
-| **Windows** | `SmartCut_0.8.1_x64-setup.exe` | Installer. The command-line tool, `smartcut-cli.exe`, goes into the same folder |
-| **Windows** | `smartcut-portable-x64-0.8.1.zip` | Unzip and run `smartcut.exe`. The command-line tool is `smartcut-cli.exe` |
+| **Linux** | `SmartCut_0.8.2_amd64.AppImage` | Make it executable and run it |
+| **Linux** | `SmartCut-0.8.2-linux-x86_64.tar.gz` | Unpack and run `./smartcut`. Use this if you would rather not deal with FUSE |
+| **Linux (Debian/Ubuntu)** | `smartcut_0.8.2_amd64.deb` | `sudo apt install ./smartcut_0.8.2_amd64.deb`. Only 4.8 MB, because it uses the FFmpeg already on your system |
+| **Windows** | `SmartCut_0.8.2_x64-setup.exe` | Installer. The command-line tool, `smartcut-cli.exe`, goes into the same folder |
+| **Windows** | `smartcut-portable-x64-0.8.2.zip` | Unzip and run `smartcut.exe`. The command-line tool is `smartcut-cli.exe` |
 
 **Requirements.** The AppImage and the tar.gz need glibc 2.39 or newer, which
 means Ubuntu 24.04, Debian 13, Fedora 40 or later. The `.deb` needs FFmpeg 7.1,
@@ -518,7 +518,7 @@ verification, and both have to report the same lossless ratio on the same input.
 An engine change the oracle disagrees with does not get to be called correct.
 That is the whole reason the Python is still there.
 
-`tests/` holds the 25 end-to-end suites and 485 checks both sides are run
+`tests/` holds the 30 end-to-end suites and 556 checks both sides are run
 through. See [Rust core](docs/technical/rust-core.md) for what lives in each
 module, and [Design notes](docs/technical/design.md) for why the split is shaped
 this way.

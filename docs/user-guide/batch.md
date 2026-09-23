@@ -126,41 +126,41 @@ A job is a project file and nothing else. A `.scproj` already holds the
 recordings, the cuts, the track choices and the output settings, so the queue
 only has to say which files and in what order.
 
-**That file is the queue's own copy.** バッチに登録 and ジョブ追加 both write
+**That file is the queue's own copy.** Add to batch and Add jobs both write
 one into a folder of the queue's, and it is the copy that runs: editing the
 project you queued from does not change what the queue will write, and taking
 the row out does not touch it. To change a job, open it from its own row with
-`プロジェクトを開く`.
+`Open the project`.
 
 ```
 ①  cut an evening's recordings
-②  出力 tab → バッチに登録 (one press: it saves the project and opens the tool)
+②  Export tab → Add to batch (one press: it saves the project and opens the tool)
 ③  do the same for the next evening's work
-④  press バッチ開始 in the tool's window, and go to bed
+④  press Start batch in the tool's window, and go to bed
 ```
 
 ### The tool is a window of its own
 
 ![The batch tool working through its queue](../images/usage-batch.png)
 
-`バッチ出力ツール` on the SmartCut menu opens **a second window, in a process
+`Batch tool…` on the SmartCut menu opens **a second window, in a process
 of its own**. That is the point of it: closing the main window — or quitting
 SmartCut entirely — does not stop a queue that is being written.
 
 The queue lives there and nowhere else. The tool shows it, orders it, runs it
-and stops it; the main window's only part in it is `バッチに登録`, which puts
+and stops it; the main window's only part in it is `Add to batch`, which puts
 the list on screen at the end of the queue — **and starts the tool if one is
 not already up**. It works while the queue is running, too: an added job lands
 behind the one being written, and the tool notices it within a second or two
 and picks it up when it gets there.
 
-**The bar is what you say to the queue as a whole.** `バッチ開始` starts it and
-`すべて中止` calls off the job being written and every job behind it. Beside
-them are the two things a queue is made of: `ジョブ追加`, which takes projects
+**The bar is what you say to the queue as a whole.** `Start batch` starts it and
+`Stop everything` calls off the job being written and every job behind it. Beside
+them are the two things a queue is made of: `Add jobs`, which takes projects
 saved earlier, several at a time — **what it takes is a copy, and the queue
-runs the copy**, leaving the file you picked exactly as it was; and `ジョブ削除`, which takes out the rows you
+runs the copy**, leaving the file you picked exactly as it was; and `Remove job`, which takes out the rows you
 have picked, with the `▾` on the end of it holding the two ways of doing that
-in bulk — `出力済みのジョブを削除` and `すべて削除`.
+in bulk — `Remove the jobs already written` and `Remove all`.
 
 **Rows are picked the way they are picked on the input screen**: a click for
 that row, Ctrl for one more or one fewer, Shift for everything between here and
@@ -173,13 +173,13 @@ stretches it, `Ctrl+A` takes the lot and `Delete` takes the picked rows out.
 does a double click on the row.
 
 **A single job is called off from its own row.** While the queue is running
-each row that still has something to do carries a `中止`. On the job being
-written it stops the way `出力中止` does — the recording in hand is finished
+each row that still has something to do carries a `Stop`. On the job being
+written it stops the way `Stop export` does — the recording in hand is finished
 first, so nothing half-written is left behind, which for a job of one
 recording means that one is written anyway — and the queue goes on to the next
 job. On a job whose turn has not come, the queue passes over it. Either way it
-is waiting again the next time you press `バッチ開始`: calling a job off is
-about this run, and `ジョブ削除` is what takes it out for good.
+is waiting again the next time you press `Start batch`: calling a job off is
+about this run, and `Remove job` is what takes it out for good.
 
 The tool stays on the queue while it works, so **each job is a card rather
 than a line**. It leads with **where the job writes** — the folder the project
@@ -210,10 +210,10 @@ cannot be read falls back to the name the job was queued under.
 
 **The bar is a box that fills in**, and the numbers stand in it: the elapsed
 time on the left, the percentage in the middle, an estimate of what is left on
-the right, with the job's own `中止` beside it. They stay once the job has
+the right, with the job's own `Stop` beside it. They stay once the job has
 finished — the clock stops where the job stopped, what is left reads zero, and
 the bar keeps what it reached — so a queue that has run can be read afterwards.
-`中止` stays on every row too, and is live only while there is something on
+`Stop` stays on every row too, and is live only while there is something on
 that row to stop.
 
 **A job that writes a disc fills the bar three times**: the cuts, the index,
@@ -235,25 +235,25 @@ it, carry it to where it belongs, and a line shows the gap it will drop into.
 Several picked rows are carried together. Escape puts them back.
 
 **A right click on a row** is where the rest of what can be done to the picked
-jobs is: `先頭へ移動` / `上に移動` / `下に移動` / `末尾へ移動` for the order, and
+jobs is: `Move to the top` / `Move up` / `Move down` / `Move to the bottom` for the order, and
 then the four below — of which the middle two are about one file, and are live
 only while a single row is picked.
 
 | | |
 |---|---|
-| `もう一度出力する` | Puts a job that has been written — or failed, or been called off — back in the queue as one that is waiting, in the place it already holds; every picked row it applies to goes back at once. Without it the only way to write a job twice is to take it out and add it again |
-| `プロジェクトを開く` | Opens that job in a list window of its own, to be worked on. On that window's 出力 screen `バッチに登録` reads **`バッチを上書き`**, and pressing it puts what you have done back into the job in the queue; `Ctrl+S` does the same |
-| `出力先フォルダーを開く` | Shows where it writes, in whatever your desktop uses to show folders |
-| `ジョブ削除` | Takes the picked jobs out of the queue for good, and the queue's copy of each goes with the row. The project it was copied from is left alone |
+| `Write it again` | Puts a job that has been written — or failed, or been called off — back in the queue as one that is waiting, in the place it already holds; every picked row it applies to goes back at once. Without it the only way to write a job twice is to take it out and add it again |
+| `Open the project` | Opens that job in a list window of its own, to be worked on. On that window's Export screen `Add to batch` reads **`Overwrite the job`**, and pressing it puts what you have done back into the job in the queue; `Ctrl+S` does the same |
+| `Open the output folder` | Shows where it writes, in whatever your desktop uses to show folders |
+| `Remove job` | Takes the picked jobs out of the queue for good, and the queue's copy of each goes with the row. The project it was copied from is left alone |
 
 **The queue survives the program.** It is written to a file as it is changed,
 so a queue lined up at midnight is still there in the morning — and a job that
 has been written stays in the list with what it wrote, and is not written
-again. `出力済みのジョブを削除` clears out that half of it in one go, leaving
+again. `Remove the jobs already written` clears out that half of it in one go, leaving
 exactly the jobs still to do.
 
 Each job runs exactly as it would by hand: the project is opened, the list is
-read, and the 出力 screen writes it — the disc pass, the image and the sidecars
+read, and the Export screen writes it — the disc pass, the image and the sidecars
 included.
 
 **A job that fails does not stop the queue.** It is marked in red with what went
@@ -262,13 +262,13 @@ there to answer a question.
 
 ### Sleeping or shutting down at the end
 
-`完了後`, on the `SmartCut` menu in the corner, folds out to `何もしない`,
-`スリープ` or `シャットダウン`, and shows which of them is the answer without
+`When done`, on the `SmartCut` menu in the corner, folds out to `Nothing`,
+`Sleep` or `Shut down`, and shows which of them is the answer without
 being opened. It is remembered with the queue. It fires once the queue has run to the end — including a queue
 that ended with failures, which are still on the screen when the machine comes
 back — and never over a queue somebody stopped.
 
-Before anything happens there is **a minute's countdown with a 中止 button**
+Before anything happens there is **a minute's countdown with a Cancel button**
 next to it. A machine that turns itself off is a machine that should say so
 first.
 

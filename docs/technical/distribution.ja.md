@@ -7,7 +7,7 @@
 ```bash
 cargo install tauri-cli --version ^2 --locked   # 初回のみ
 cd gui/src-tauri && NO_STRIP=1 cargo tauri build --bundles appimage
-# -> target/release/bundle/appimage/SmartCut_0.8.1_amd64.AppImage
+# -> target/release/bundle/appimage/SmartCut_0.8.2_amd64.AppImage
 ```
 
 成果物は 186.2 MB で、共有ライブラリ 716 個をすべて同梱している。WebKitGTK 4.1 も、
@@ -48,7 +48,7 @@ libasound2 はデスクトップ Linux ならまず入っているし、ALSA を
 展開して確認できる。
 
 ```bash
-./SmartCut_0.8.1_amd64.AppImage --appimage-extract >/dev/null
+./SmartCut_0.8.2_amd64.AppImage --appimage-extract >/dev/null
 ldd squashfs-root/usr/bin/smartcut | grep -E 'asound|jack|pulse'
 # libasound.so.2 / libjack.so.0 -> /lib/x86_64-linux-gnu/...   (システム側)
 # libpulse.so.0                 -> squashfs-root/usr/bin/../lib/...  (同梱)
@@ -71,8 +71,8 @@ AppImage 自体で動作を確認している。素材を開く、走査する�
 
 ```bash
 ./gui/build-linux.sh
-# -> gui/src-tauri/target/release/bundle/linux/SmartCut-0.8.1-linux-x86_64.tar.gz
-# -> gui/src-tauri/target/release/bundle/linux/smartcut_0.8.1_amd64.deb
+# -> gui/src-tauri/target/release/bundle/linux/SmartCut-0.8.2-linux-x86_64.tar.gz
+# -> gui/src-tauri/target/release/bundle/linux/smartcut_0.8.2_amd64.deb
 ```
 
 同じビルドを 2 通りに詰めたものである。どちらも GUI を `smartcut`、コマンド
@@ -83,14 +83,14 @@ cargo のクレート名は `gui` なので、放っておくと Tauri はその
 インストールしてしまう。1 つのアプリが占有してよい名前ではない。`tauri.conf.json` の
 `mainBinaryName` で `smartcut` に固定してある（0.2.0 以降。それ以前は Windows 用
 だけに設定されていた）。一方 Tauri が書き出すバンドル*ファイル*の名前は
-`productName` に従うので、`SmartCut_0.8.1_amd64.deb` になる。deb のパッケージ名
+`productName` に従うので、`SmartCut_0.8.2_amd64.deb` になる。deb のパッケージ名
 `smartcut` と食い違うのはこのためである。`build-linux.sh` は両方を
 `tauri.conf.json` から読む。
 
 | 成果物 | サイズ | FFmpeg | 必要条件 |
 |---|---|---|---|
-| `SmartCut-0.8.1-linux-x86_64.tar.gz` | 202.4 MB | 同梱 | glibc 2.39 以上。FUSE 不要 |
-| `smartcut_0.8.1_amd64.deb` | 4.8 MB | システムのものを使用 | FFmpeg 7.1（Debian 13 / Ubuntu 25.04 以降） |
+| `SmartCut-0.8.2-linux-x86_64.tar.gz` | 202.4 MB | 同梱 | glibc 2.39 以上。FUSE 不要 |
+| `smartcut_0.8.2_amd64.deb` | 4.8 MB | システムのものを使用 | FFmpeg 7.1（Debian 13 / Ubuntu 25.04 以降） |
 
 tar.gz の中身は、AppImage と同じ AppDir を展開したものである。linuxdeploy が
 `ldd` を辿って集めた 716 個のライブラリがそのまま `app/` にある。`./smartcut` は
@@ -160,7 +160,7 @@ Linux の開発 VM から `x86_64-pc-windows-msvc` へクロスビルドして�
 
 ```bash
 ./gui/build-windows.sh
-# -> gui/src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis/SmartCut_0.8.1_x64-setup.exe
+# -> gui/src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis/SmartCut_0.8.2_x64-setup.exe
 # -> gui/src-tauri/target/x86_64-pc-windows-msvc/release/bundle/portable/smartcut-portable-x64.zip
 ```
 
@@ -255,8 +255,9 @@ Tauri がバンドル種別を exe に刻印するので、インストーラの
   48 kHz の放送が完全に無音になっていた。5.1ch の放送をステレオ出力へ送った場合も
   同様である。デバイスにミキシング形式を問い合わせてそれに合わせ、swresample による
   レート変換とチャンネルレイアウト変換を追加して修正した
-  （`playback_audio::candidates`）。素材自身の形式は最初の候補として残してあるので、
-  Linux では従来どおり無変換で再生される。ALSA の
+  （`playback_audio::candidates`）。素材自身のレートとサンプル形式は最初の候補として
+  残してあるので、Linux ではそのまま再生される。変わるのはチャンネルの並びだけで、
+  ALSA の順に並べ替える（[音声](audio.ja.md)を参照）。ALSA の
   `snd_pcm_hw_params_set_buffer_size` は割り切れないサイズを拒否し、44.1 kHz の
   882 フレームが一部のカードで失敗するので、固定期間を外した候補も末尾に追加した。
 

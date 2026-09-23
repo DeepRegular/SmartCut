@@ -60,11 +60,12 @@ For how the AppImage, tar.gz, deb and the Windows installer are produced, see
 
 ```bash
 bash tests/run_tests.sh               # Python E2E                                     13
-bash tests/run_rust_tests.sh          # Rust E2E (+11 with the container index)         16
+bash tests/run_rust_tests.sh          # Rust E2E (+11 with the container index)         29
 bash tests/run_audio_tests.sh         # A/V sync (+10 with copy and reencode)            5
 bash tests/run_audio_content_tests.sh # is real material's audio in the right place      6
 bash tests/run_aac_tests.sh           # what the output's AAC frames are made of         8
 bash tests/run_downmix_tests.sh       # where 5.1 goes when it is folded to stereo       9
+bash tests/run_surround71_tests.sh    # 7.1 through every codec, each channel in place  14
 bash tests/run_audio_codec_tests.sh   # writing the sound as another codec entirely     39
 bash tests/run_audio_smart_tests.sh   # smart rendering, codec by codec                 24
 bash tests/run_audio_format_tests.sh  # the rate and the width the samples are written  23

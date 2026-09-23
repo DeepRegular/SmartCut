@@ -112,6 +112,23 @@ and `Invalid NAL unit size`, once per picture, from a cut of H.264 out of one
 `avc3`/`hev1` tag stays the MP4's own. The same suite writes each fixture into
 `.mkv` as well, and counts the decoder's complaints as well as the pictures.
 
+**A `.m4v` is written as an MP4.** By its name libavformat hands it to the `ipod`
+muxer, which is not one the test above recognised as keeping lengths, takes no
+`avc3`, and takes no HEVC at all.
+
+**In a join, each recording brings its own framing.** `Reframe` and `Unframe` were
+worked out once, from the master, and every reel was copied through them: a
+transport stream joined onto an MP4 went in start-coded, an MP4 joined onto a
+transport stream went in with its lengths, and an MP4 joined onto another MP4 was
+decoded against the first one's parameter sets. `framing_for` now works out a reel's
+own: into lengths, whatever it arrived in and with its own sets in front of each key
+picture; into start codes, unframed with its own sets. The sound had the same fault
+one layer down. An MP4's raw AAC among a broadcast's ADTS frames stopped the MP4 and
+Matroska writers at the first raw frame, since their muxers run the whole track
+through `aac_adtstoasc`, and garbled a transport stream's. A copied frame is now put
+into the master's framing on its way out (`AudioTrack::framed`), a header added or
+taken off.
+
 ### HDR is in the pictures too
 
 HDR10 is two SEI messages — the mastering display's primaries and luminance

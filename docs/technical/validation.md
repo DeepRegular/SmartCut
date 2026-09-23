@@ -273,6 +273,15 @@ These only surfaced on real material:
   this started with — a seam of H.264 is a second of work either way, and the measured
   difference there is nil — but libvpx spent 6.56 s on two seconds of 1080p24 held to
   one core and 2.45 s given the machine.
+- **H.264 and HEVC out of an MP4 or a Matroska file could not be written into a `.mkv`
+  until 0.8.2.** Matroska keeps a length in front of each NAL, as an MP4 does, and the
+  copied pictures were rewritten into a transport stream's start codes on the way in:
+  everything but the re-encoded fringes was unreadable. A `.m4v` went the same way,
+  being handed by its name to libavformat's `ipod` muxer (and HEVC was refused there
+  outright); it is written as the MP4 it is now. So did a join of recordings framed
+  differently — a transport stream and an MP4 in either order — whose second recording
+  was copied in the first one's framing, pictures and AAC alike.
+  `run_rust_tests.sh` checks every one of these pairings for decoder errors.
 - **Dolby Vision survives a copy but not a re-encode.** The RPU on every picture is
   copied with it, so a range whose ends fall on the recording's own entry points comes
   through with all of them; the pictures rewritten at a seam have none, because

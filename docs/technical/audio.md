@@ -583,7 +583,10 @@ how many ways there are to arrange them.
   its surrounds from the centre and the LFE, and a sound server folding that down to two
   speakers put the dialogue on one side at a fraction of its level. `to_card_order`
   reorders 5, 6 and 8 channels on the way into the ring buffer; this was a fault for 5.1
-  long before 7.1 was offered.
+  long before 7.1 was offered. Four channels cannot be put right by reordering: libav's
+  four is 4.0, with a centre and a back centre, and ALSA's is quad, two pairs and no
+  centre. They are mixed to quad on the way instead (`card_layout`), so a 3/1 broadcast's
+  dialogue comes from the front pair rather than the rear left. Fixed in 0.8.2.
 - **The window offers 7.1ch.** It sits with the other counts and is greyed out the same
   way — a count above the narrowest track in the list would spread a recording into
   channels it was never sent with. The ladder's ceiling for eight channels is the codec's

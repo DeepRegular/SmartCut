@@ -7,7 +7,7 @@
 ```bash
 cargo install tauri-cli --version ^2 --locked   # once
 cd gui/src-tauri && NO_STRIP=1 cargo tauri build --bundles appimage
-# -> target/release/bundle/appimage/SmartCut_0.8.1_amd64.AppImage
+# -> target/release/bundle/appimage/SmartCut_0.8.2_amd64.AppImage
 ```
 
 The artifact is **186.2 MB and carries all 716 shared libraries**. WebKitGTK 4.1 is in
@@ -50,7 +50,7 @@ make things *more* fragile across environments, so the exclusion stays. What is 
 can be checked by extracting:
 
 ```bash
-./SmartCut_0.8.1_amd64.AppImage --appimage-extract >/dev/null
+./SmartCut_0.8.2_amd64.AppImage --appimage-extract >/dev/null
 ldd squashfs-root/usr/bin/smartcut | grep -E 'asound|jack|pulse'
 # libasound.so.2 / libjack.so.0 -> /lib/x86_64-linux-gnu/...   (system)
 # libpulse.so.0                 -> squashfs-root/usr/bin/../lib/...  (bundled)
@@ -75,8 +75,8 @@ errors and no panics.
 
 ```bash
 ./gui/build-linux.sh
-# -> gui/src-tauri/target/release/bundle/linux/SmartCut-0.8.1-linux-x86_64.tar.gz
-# -> gui/src-tauri/target/release/bundle/linux/smartcut_0.8.1_amd64.deb
+# -> gui/src-tauri/target/release/bundle/linux/SmartCut-0.8.2-linux-x86_64.tar.gz
+# -> gui/src-tauri/target/release/bundle/linux/smartcut_0.8.2_amd64.deb
 ```
 
 Two ways of packing the same build. Both install **the GUI as `smartcut` and the
@@ -87,13 +87,13 @@ The cargo crate is named `gui`, so left alone Tauri installs it straight to
 `/usr/bin/gui` — not a name anyone should be occupying. `mainBinaryName` in
 `tauri.conf.json` pins it to `smartcut` (since 0.2.0; before that it was set for Windows
 only). The bundle *files* Tauri writes are named after `productName` instead —
-`SmartCut_0.8.1_amd64.deb` and the like — which is why they and the deb's package name
+`SmartCut_0.8.2_amd64.deb` and the like — which is why they and the deb's package name
 `smartcut` differ. `build-linux.sh` reads both out of `tauri.conf.json`.
 
 | Artifact | Size | FFmpeg | Requires |
 |---|---|---|---|
-| `SmartCut-0.8.1-linux-x86_64.tar.gz` | 202.4 MB | Bundled | glibc 2.39 or newer. No FUSE needed |
-| `smartcut_0.8.1_amd64.deb` | 4.8 MB | Uses the system's | FFmpeg 7.1 (Debian 13 / Ubuntu 25.04 and later) |
+| `SmartCut-0.8.2-linux-x86_64.tar.gz` | 202.4 MB | Bundled | glibc 2.39 or newer. No FUSE needed |
+| `smartcut_0.8.2_amd64.deb` | 4.8 MB | Uses the system's | FFmpeg 7.1 (Debian 13 / Ubuntu 25.04 and later) |
 
 **The tar.gz contains the same AppDir as the AppImage, extracted.** The 716 libraries
 linuxdeploy gathered by following `ldd` sit in `app/` as they are, `./smartcut` is a
@@ -163,7 +163,7 @@ Cross-built from the Linux development VM to `x86_64-pc-windows-msvc`.
 
 ```bash
 ./gui/build-windows.sh
-# -> gui/src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis/SmartCut_0.8.1_x64-setup.exe
+# -> gui/src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis/SmartCut_0.8.2_x64-setup.exe
 # -> gui/src-tauri/target/x86_64-pc-windows-msvc/release/bundle/portable/smartcut-portable-x64.zip
 ```
 
@@ -256,8 +256,9 @@ portable zip.
   44.1 kHz was completely silent on 48 kHz broadcasts**, and the same happened sending a
   5.1 broadcast to a stereo output. Fixed by asking the device what it mixes in and
   matching that, and adding rate and channel-layout conversion via swresample
-  (`playback_audio::candidates`). **The material's own format is kept as the first
-  candidate**, so Linux still plays unconverted as before. A candidate with the fixed
+  (`playback_audio::candidates`). **The material's own rate and sample format are kept
+  as the first candidate**, so Linux plays them unconverted; only the order of the
+  channels is changed there, into ALSA's (see [Audio](audio.md)). A candidate with the fixed
   period removed was appended at the end too — ALSA's
   `snd_pcm_hw_params_set_buffer_size` rejects sizes that do not divide evenly, so 882
   frames at 44.1 kHz fails on some cards.

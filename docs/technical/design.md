@@ -460,7 +460,10 @@ against 49 ms with an unlimited pass running beside it and 49 ms with a one-core
 **the run-to-run noise is larger than the effect.** The mechanism says why. The stage and
 the filmstrip ask for **one** core (`video_decoder_with(params, 1)` in `preview.rs`,
 because frame threading holds the first picture back until its pipeline fills), and a
-four-core machine has one to spare however wide the pass beside it is. The share is worth
+four-core machine has one to spare however wide the pass beside it is. Playback is the
+exception and asks for every core (`Cores::All`): it reads ahead of what is on screen,
+so a pipeline filling up is not a wait, and on one core a UHD disc's 4K HEVC came out at
+21 pictures a second against the 23.976 it plays at. The share is worth
 keeping for the machine where that is not true and for the promise the other lanes
 already keep — not for a number this one could show.
 

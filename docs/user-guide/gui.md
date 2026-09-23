@@ -37,7 +37,7 @@ at a time: it needs a moment where you can say "this one is finished". That
 moment is the **OK** button.
 
 The batch tool has no tab, because it is about a queue of lists rather than
-about this one; it is opened from the `バッチ出力ツール` item on the menu. Its
+about this one; it is opened from the `Batch tool…` item on the menu. Its
 own process, because a queue lined up at midnight has to go on being written
 after the window it was lined up in is closed.
 
@@ -994,7 +994,7 @@ before you press it.
 `Dissolve, 1.4s, Sine in-out` does to your two particular recordings is not
 something the words can tell you. This window composites the seconds either
 side of the join exactly as the output will composite them, and plays them
-with their sound. Like the cut editor, it is left with OK or キャンセル.
+with their sound. Like the cut editor, it is left with OK or Cancel.
 
 | Field | |
 |---|---|
@@ -1099,7 +1099,13 @@ frames a boundary falls inside are rebuilt and the rest are the recording's
 own; change the channels or the rate and the whole track is re-encoded, the
 same as in a video run.
 
-**One sound track.** A bilingual recording's second is left out.
+**One sound track.** A bilingual recording's second is left out, and a
+recording in the join that has no sound at all is left out of the file, with a
+line on the export screen saying so.
+
+It belongs to the file output. Switch to the disc tab and the recordings are
+written with their pictures, whatever the container list says; the choice is
+still there when you switch back.
 
 ### Why some choices are greyed out
 
@@ -1345,7 +1351,7 @@ effect as you make it.
 | **PageUp / PageDown** | What those keys do. Four answers — plain, `Shift`, `Ctrl`, `Shift+Ctrl` — each a number and a unit: **frames**, **seconds**, or **% a second, scrolling**. The first two are amounts, one per press. A percentage is a speed: a share of the fastest scroll here, which is sixty times the recording's own speed. 25 is fifteen times, so a second of holding covers fifteen seconds of the recording, whatever is open. Out of the box: 15 frames, 30 with `Shift`, 25% with `Ctrl` and 50% with both. A step of 0 is a key that does nothing |
 | **When more than one is there, read** | Which file is picked up when a recording has more than one of a `.keyframe`, a `.trim.avs` and a `.cm.json` beside it |
 | **Turn a detection into keyframes** | On out of the box. Off, a detection leaves the band and the sentence and nothing else, and ≡ → **Turn the detection into keyframes** places the marks. Where a mark file beside the recording was read, a detection is not marked whatever this says |
-| **Also find the short inserts (a channel's own ident)** | Off out of the box. Some subscription channels drop two to nine seconds of their own animated ident into a programme, where the terrestrial broadcast had its commercials; a break that short is not looked for otherwise. What finds one is the sound — an insert is cut in, so the programme's audio stops for it. **A programme's own full-screen caption card takes the corner just as thoroughly**, and some programmes lay one over silence: measured over twenty episodes of one such programme, about a quarter of what came out was a caption card. Only the cut editor's **CM を検出** asks this; the clip list's own pass does not |
+| **Also find the short inserts (a channel's own ident)** | Off out of the box. Some subscription channels drop two to nine seconds of their own animated ident into a programme, where the terrestrial broadcast had its commercials; a break that short is not looked for otherwise. What finds one is the sound — an insert is cut in, so the programme's audio stops for it. **A programme's own full-screen caption card takes the corner just as thoroughly**, and some programmes lay one over silence: measured over twenty episodes of one such programme, about a quarter of what came out was a caption card. Only the cut editor's **Detect commercials** asks this; the clip list's own pass does not |
 | **Counts as blank after** | Shorter stretches are left out. The unit is pictures or seconds; 3 s out of the box, which reports the long gaps and not the two-to-four-picture black a broadcast junction is laid on. For those, say 2 and pick pictures |
 | **The blank pass looks for** | Black and white, black alone, or white alone. **Black out of the box**, that being where a junction is laid; the button in the list, the line in the editor's menu and what a row says it found are all named after this answer — *Detect black*, *Black: 1 stretch*. White belongs as often to the programme — a title sequence cuts on a flash — so on some material it is dozens of stretches nobody asked about. A shade that was not looked for was not written down either, so changing this clears what the rows are showing, and detecting again reads the recording |
 | **Counts as black below / Counts as white above / ...over this much of the picture** | What makes a picture a black one or a white one: how dark or how bright a pixel has to be, and how much of the frame has to be that. 10%, 92% and 98% out of the box. The two levels are shares of the recording's own scale, so the same numbers mean the same thing on eight-bit and ten-bit material. A channel that fades through a very dark grey rather than to black is caught by raising the first to 14 or 16; a recording with a station logo, burnt-in text or a clock standing in a corner wants the third down around 95. The outermost 2% of each edge is left out of the judgement whatever these say — broadcast pictures carry a line or two of rubbish down the edges. Changing any of them leaves every saved detection unable to answer, so the rows drop their results and a fresh detection reads the recording again |

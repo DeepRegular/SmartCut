@@ -731,12 +731,20 @@ out is not mistaken for a seek that needed a wider margin.
 **What the map cannot say** is whether a GOP is open, or whether the leading
 pictures hanging off one may be thrown away — that is in the bitstream, not in
 any index. So the points arrive with `leading_known: false` and
-`index::refine_leading` measures the ones a boundary can actually land on: a
-couple of dozen either side of each end of each range, a seek and a short read
-apiece. Measuring every point inside the range instead — which is what it used
-to do, invisibly, because a walk answers for itself and this never ran — took
-ten minutes on those sixteen thousand entry points, which is to say the disc's
-own index bought nothing at all.
+`index::refine_leading` measures the ones a boundary can actually land on: 24
+points either side of each end of each range, each read from the byte the map
+gives for it. Measuring every point inside the range instead — which is what it
+used to do, invisibly, because a walk answers for itself and this never ran —
+took ten minutes on those sixteen thousand entry points, which is to say the
+disc's own index bought nothing at all.
+
+**A point is measured once.** It is marked (`AccessPoint::measured`), and for
+as long as the recording is open the next edit does not measure it again. Until 0.8.1 it
+was measured again on every edit, and by a timestamp seek that bisected the
+file: on a UHD title that was thirty seconds a plan, and the cut editor waited
+on it, because the measuring held the open recording that every picture it draws
+is read through. Now the plan measures on a copy and lets the recording go, and
+only a byte read that misses falls back to the timestamp.
 
 It cannot say what the pictures weigh either, and a re-encoded stretch is
 written at [the rate the recording came in at](rust-core.md#the-splice). Where

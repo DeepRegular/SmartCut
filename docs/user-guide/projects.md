@@ -28,7 +28,7 @@ The keyboard does the same things.
 exactly the state you get when you start the program. If you have unsaved work,
 it asks first.
 
-At the foot of the menu is **終了**, which is the window's own cross by another
+At the foot of the menu is **Quit**, which is the window's own cross by another
 route: unsaved work stops it the same way. The batch tool's menu has it too.
 
 You can also open a saved file by dropping it on the window, or by passing it on
@@ -73,8 +73,8 @@ Whatever is missing simply gets read again.
 
 ### The output settings go in once you have settled them
 
-A list saved from the 入力 screen has not been given an output yet. What the
-program is holding at that moment is its own defaults, whatever 環境設定 says
+A list saved from the Input screen has not been given an output yet. What the
+program is holding at that moment is its own defaults, whatever Preferences says
 a cut is called, and whatever the last session was carrying — none of it an
 answer you gave about this work. So none of it is written down, and opening
 that project later asks those standing answers again. Which is what you want
@@ -86,7 +86,7 @@ is opened. Merely walking onto that screen is not using it. The folder name
 and the disc title it fills in for you are worked out from the recordings,
 and are worked out again next time.
 
-A batch job is the exception. `バッチに登録` writes the output settings into
+A batch job is the exception. `Add to batch` writes the output settings into
 the queue's copy whether or not you have been to that screen, because a job is
 to be written the way this window would write it now — not the way another
 process would work it out hours later.
@@ -116,7 +116,7 @@ says what happened. The other nineteen work as usual.
 
 ## A saved project is also a batch job
 
-`バッチに登録` on the 出力 screen saves the list, puts it at the end of the
+`Add to batch` on the Export screen saves the list, puts it at the end of the
 queue and opens the batch tool over it, with no picker in the way. The tool —
 a window in a process of its own — writes the queue out one job after another
 overnight.
@@ -125,13 +125,13 @@ What is queued is a copy. The queue writes the list as it stands into a folder
 of its own and runs that, under the name of the project you have open or of the
 list's first row where there is none. The copy is the queue's, and goes when the
 job is taken out of it; to change it, open the job from its row in the tool with
-`プロジェクトを開く`.
+`Open the project`.
 
 **Registering is also saving.** The project you have open is written as well,
 the way `Ctrl+S` writes it, and an untitled list counts as saved by the copy —
 either way the `*` comes off the title bar. Note what that means for an
 untitled one: taking the job out of the queue takes the copy with it, so save
-it yourself with `名前を付けて保存` if you will want it again. A job is a `.scproj` and nothing
+it yourself with `Save project as…` if you will want it again. A job is a `.scproj` and nothing
 besides, because the file already holds everything a job is. See
 [Working through a batch](batch.md#an-overnight-queue-of-projects).
 
