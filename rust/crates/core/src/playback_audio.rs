@@ -618,6 +618,10 @@ pub fn play_audio(
             src,
             ranges: ranges.to_vec(),
             from,
+            // The cut editor plays the recording as it is. What a fade at a
+            // seam does to it is a question with more in it than one pair of
+            // numbers -- see `Heard::fades`.
+            fades: (0.0, 0.0),
         }],
         volume,
         levels,
@@ -633,6 +637,22 @@ pub struct Heard<'a> {
     pub src: &'a Source,
     pub ranges: Vec<(f64, f64)>,
     pub from: f64,
+    /// How long the sound takes to come back at the head of each of those
+    /// ranges and to leave at its tail, in seconds. `(0.0, 0.0)` for neither,
+    /// which is what an ordinary playback is.
+    ///
+    /// **What this is for is the seam preview.** A fade at a join is settled
+    /// in a window that exists to be judged by ear, and a fade that is only
+    /// in the written file cannot be judged at all -- the same argument that
+    /// put the pictures of a crossing on screen there rather than six rows
+    /// of settings. The curve is [`crate::audio::fade_shape`], which is the
+    /// curve the cut writes, so what is heard here is what is written.
+    ///
+    /// One pair for the whole part rather than one per range: the preview
+    /// hands over one range per clip, and the ends of a *cut's* ranges are a
+    /// question with more in it -- the two ends of the output fade at
+    /// neither, and the pair differs per seam. See `cut::fade_lengths`.
+    pub fades: (f64, f64),
 }
 
 /// Play several recordings' sound, one after another, through one output.
@@ -725,8 +745,8 @@ fn feed_from(
     ring: &Arc<Mutex<Feed>>,
     stop: &impl Fn() -> bool,
 ) -> Result<()> {
-    let Heard { src, ranges, from } = part;
-    let from = *from;
+    let Heard { src, ranges, from, fades } = part;
+    let (from, fades) = (*from, *fades);
     let Some(audio) = src.audio.clone() else {
         return Ok(());
     };
@@ -790,7 +810,9 @@ fn feed_from(
                 let data = resample(&mut resampler, &mut resampled, &frame, rate, layout)?;
                 let n = data.len() / channels as usize;
                 if let Some((lo, hi)) = frame_window(n, rate, t, start, b) {
-                    let samples = data[lo * channels as usize..hi * channels as usize].to_vec();
+                    let mut samples =
+                        data[lo * channels as usize..hi * channels as usize].to_vec();
+                    ride_fade(&mut samples, channels, t + lo as f64 / rate as f64, rate, (a, b), fades);
                     let bite = Bite { frames: hi - lo, channels: heard, peaks };
                     if !push(ring, cap, &stop, samples, bite) {
                         break 'ranges;
@@ -803,6 +825,39 @@ fn feed_from(
         }
     }
     Ok(())
+}
+
+/// Ride the fades over one frame's worth of interleaved samples.
+///
+/// `at` is where the first of them sits on the recording's own clock, and
+/// `range` is the stretch being played: the head fade runs from its start and
+/// the tail fade back from its end. The two are taken together and the
+/// quieter wins, so a range shorter than its two fades has one answer
+/// wherever they overlap -- the same rule [`crate::audio`] applies to the
+/// frames a cut rewrites.
+fn ride_fade(
+    samples: &mut [f32],
+    channels: u16,
+    at: f64,
+    rate: u32,
+    range: (f64, f64),
+    fades: (f64, f64),
+) {
+    if fades.0 <= 0.0 && fades.1 <= 0.0 {
+        return;
+    }
+    let channels = channels.max(1) as usize;
+    let step = 1.0 / rate as f64;
+    for (k, frame) in samples.chunks_mut(channels).enumerate() {
+        let t = at + k as f64 * step;
+        let gain = crate::audio::fade_shape(t - range.0, fades.0)
+            .min(crate::audio::fade_shape(range.1 - t, fades.1));
+        if gain < 1.0 {
+            for s in frame.iter_mut() {
+                *s *= gain;
+            }
+        }
+    }
 }
 
 /// How loud each channel is at `time`, over a window `window` seconds long.

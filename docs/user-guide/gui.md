@@ -1043,8 +1043,12 @@ changes no length.
 
 **It needs sound this program is writing.** Copying carries the recording's own
 frames through, and there is nothing in them to rewrite — set **Audio** on the
-output screen to smart rendering (the default) or to a whole re-encode. The
-preview on the right does not carry the fade yet; the written file does.
+output screen to smart rendering (the default) or to a whole re-encode.
+
+**The preview carries it.** Press `▶ Play` and the sound goes down and comes
+back on the same curve the file is written with — how many seconds is right
+is not a thing anybody can settle by reading, which is the argument this whole
+window is built on.
 
 A broadcast recording's sound often stops a fraction of a second (half of one,
 typically) before its pictures do. The fade out ends with the sound, there

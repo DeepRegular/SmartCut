@@ -2224,6 +2224,14 @@ async fn cross_play(
     // Audio runs on its own thread and its own clock: it keeps a ring buffer
     // fed and the sound card paces itself. `Playing` is the one thing the two
     // sides share, so stopping either one stops both. See [`play`].
+    // What the join does to the sound, heard rather than read. The clip
+    // before fades out into the handover and the clip after fades in from it,
+    // over the seconds this join was given -- the same curve the cut writes,
+    // so the window can be judged by ear. See `Heard::fades`.
+    //
+    // Read here rather than in the thread below: the picture half owns the
+    // spec after that closure takes what it needs.
+    let (out_secs, in_secs) = (seam.crossing.fade_out(), seam.crossing.fade_in());
     let audio_handle = (!silent).then(|| {
         let level = app.state::<Vol>().0.clone();
         let meter = app.state::<Meter>().0.clone();
@@ -2245,11 +2253,13 @@ async fn cross_play(
                     // already beyond the handover, which is how a part that
                     // has nothing left to play is skipped.
                     from: sound.before.0 + from,
+                    fades: (0.0, out_secs),
                 },
                 smartcut_core::Heard {
                     src: &b_src,
                     ranges: vec![sound.after],
                     from: sound.after.0 + (from - sound.at).max(0.0),
+                    fades: (in_secs, 0.0),
                 },
             ];
             if let Err(e) = smartcut_core::play_audio_across(&parts, &level, &meter, stop) {
@@ -5119,6 +5129,17 @@ struct Crossing {
 }
 
 impl Crossing {
+    /// How long the sound takes to leave before this join and to come back
+    /// after it. Read without consuming the setting, which `into_transition`
+    /// does: the preview asks the same join over and over.
+    fn fade_out(&self) -> f64 {
+        self.fade_out.unwrap_or(0.0).max(0.0)
+    }
+
+    fn fade_in(&self) -> f64 {
+        self.fade_in.unwrap_or(0.0).max(0.0)
+    }
+
     fn into_transition(self) -> smartcut_core::transition::Transition {
         smartcut_core::transition::Transition {
             kind: smartcut_core::transition::Crossing::parse(&self.kind).unwrap_or_default(),

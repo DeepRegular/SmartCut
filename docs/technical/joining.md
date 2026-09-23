@@ -379,6 +379,13 @@ through the crossing each instant is comes from the same `transition.rs`.
 The way to keep a preview and an output from disagreeing is for there to be
 one of them.
 
+The sound's fade is the same bargain. The preview is handed the seconds as
+`Heard::fades` and rides `audio::fade_shape` over them -- the curve the cut
+writes with (`audio::fade_run`), in the other one's units: that counts samples
+because it is writing them, this counts seconds because it is playing. How
+many seconds is right is not a thing anybody settles by reading, so it has to
+be answerable in this window, the same as the pictures.
+
 What is written twice is the **schedule** — which instant shows what. The
 cutter builds it as plan segments around a whole edit (`ranges_with_transitions`);
 the preview has no edit, only two recordings and a setting, so it builds the

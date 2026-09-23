@@ -261,6 +261,13 @@ function seamSpec() {
       curve: c.curve || "none",
       mode: c.mode || "in",
       image: c.image || null,
+      // The sound, which the preview plays: the clip before fades out into
+      // the handover and the clip after fades in from it, over the same
+      // curve the cut writes. A fade that could only be heard in the
+      // finished file would be a setting made blind, which is the one thing
+      // this window exists not to be.
+      fadeOut: Number(c.fadeOut) || 0,
+      fadeIn: Number(c.fadeIn) || 0,
     },
   };
 }

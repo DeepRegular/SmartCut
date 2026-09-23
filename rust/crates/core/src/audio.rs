@@ -1985,6 +1985,25 @@ fn fade_run(samples: &mut [f32], first: i64, window: (i64, i64), fades: Fades) {
     }
 }
 
+/// The gain a raised-cosine fade gives `into` seconds after it begins, over
+/// `secs`: nought at the start, full level at the end, and full level
+/// wherever no fade was asked for.
+///
+/// The same curve [`fade_run`] rides over the frames a cut rewrites, in the
+/// units the other caller has. That one counts samples because it is writing
+/// them; this counts seconds because playback keeps a clock. **One shape, so
+/// a fade heard in a preview is the fade written into the file.**
+pub fn fade_shape(into: f64, secs: f64) -> f32 {
+    if secs.is_nan() || secs <= 0.0 || into >= secs {
+        return 1.0;
+    }
+    if into <= 0.0 {
+        return 0.0;
+    }
+    let x = (into / secs).clamp(0.0, 1.0);
+    (0.5 - 0.5 * (std::f64::consts::PI * x).cos()) as f32
+}
+
 fn ramp(k: usize, fade: usize) -> f32 {
     if fade == 0 {
         return 1.0;
@@ -2079,6 +2098,24 @@ mod tests {
             fades_for((2.0, 2.0), 48_000, 1, 3, short),
             Fades { head: 72_000, tail: 72_000 }
         );
+    }
+
+    /// The curve the preview rides is the curve the cut writes. Sampled at
+    /// the two ends and the middle, in the units each side counts in.
+    #[test]
+    fn the_two_fades_are_one_shape() {
+        // Silent at the start, full at the end, half way up in the middle.
+        assert!(fade_shape(0.0, 2.0) < 0.001);
+        assert!(fade_shape(2.0, 2.0) > 0.999);
+        assert!((fade_shape(1.0, 2.0) - 0.5).abs() < 0.001);
+        // Nothing asked for changes nothing, at any distance.
+        assert_eq!(fade_shape(0.0, 0.0), 1.0);
+        assert_eq!(fade_shape(-1.0, 0.0), 1.0);
+        // And it agrees with the one that counts samples. A quarter of the
+        // way up a two second fade at 48 kHz is sample 24000 of 96000.
+        let by_sample = ramp(24_000, 96_000);
+        let by_clock = fade_shape(0.5, 2.0);
+        assert!((by_sample - by_clock).abs() < 0.001);
     }
 
     /// The two ends are asked for apart. At a join between two recordings
