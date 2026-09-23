@@ -2972,15 +2972,17 @@ const settings = {
   /// worth keeping more often than not.
   number: true,
   digits: "2",
-  container: "",
-  /// Whether a run writes the sound and no pictures at all.
+  /// What kind of file comes out: "" for the kind each recording came out
+  /// of, a container's name, or `sound` for the sound alone.
   ///
-  /// Not a container: what it writes is the audio file the cut would have
-  /// had, ranges and joins and fades already in it, and the engine reads and
-  /// writes nothing for frames that are not going anywhere. The file's name
-  /// follows the codec rather than the container picker, which has nothing
-  /// to choose and is greyed. See `soundExt` and `crate::sound`.
-  soundOnly: false,
+  /// `sound` is in this answer rather than beside it because it is the same
+  /// question -- what kind of file is this -- and because a file with no
+  /// pictures in it is not a variant of one that has them. What it writes is
+  /// the audio file the cut would have had, ranges and joins and fades
+  /// already in it, and the engine reads and writes nothing for frames that
+  /// are not going anywhere. Its extension follows what the sound is; see
+  /// `soundExt` and `crate::sound`.
+  container: "",
   audio: "smart",
   /// Empty writes the recording's own codec back; anything else is a
   /// conversion, which like a downmix decides the mode instead of living
@@ -3269,7 +3271,7 @@ function soundExt(clip) {
 function containerFor(clip) {
   // The sound on its own is named by what the sound is; there is no
   // container to choose. See `soundExt`.
-  if (settings.soundOnly) return soundExt(clip);
+  if (soundOnly()) return soundExt(clip);
   // A disc's recordings are `.m2ts` whatever the recording arrived as, so
   // that is what the audio has to be writable into -- which is not the same
   // question as what an `.mp4` can hold.
@@ -3325,6 +3327,9 @@ function outputPath(clip) {
 /// the top of it. The subfolder still does its work, so twelve episodes
 /// joined into one land in the folder the twelve would have.
 function joinedPath() {
+/// Whether the run writes the sound and no pictures. See `settings.container`.
+const soundOnly = () => settings.container === "sound";
+
   const list = ready();
   if (!list.length) return "";
   const { dir, name, ext } = outputBase(list[0]);
@@ -3391,7 +3396,6 @@ bindSetting("out-prefix", "prefix");
 bindSetting("out-number", "number", "checked");
 bindSetting("out-digits", "digits");
 bindSetting("out-container", "container");
-bindSetting("out-sound-only", "soundOnly", "checked");
 bindSetting("out-audio", "audio");
 bindSetting("out-audio-codec", "audioCodec");
 bindSetting("out-audio-channels", "audioChannels");
@@ -3883,8 +3887,12 @@ function writableContainers() {
   const lower = (s) => String(s || "").toLowerCase();
   const ask = {
     // Read off the control rather than written out again, so a container
-    // added to the window is a container asked about.
-    want: [...el("out-container").options].map((o) => o.value).filter(Boolean),
+    // added to the window is a container asked about. Less 音声のみ, which
+    // is not a container for pictures and is not a question the engine has
+    // an answer to.
+    want: [...el("out-container").options]
+      .map((o) => o.value)
+      .filter((v) => v && v !== "sound"),
     video: once(facts.map((i) => lower(i.codec))),
     audio: once(list.flatMap((c) => keptAudio(c).map((a) => lower(a.codec)))),
     // What the sound will be written as, which is what the cut is sent.
@@ -3923,11 +3931,10 @@ function writableContainers() {
 /// container: each recording goes back into the kind it came out of, which
 /// held those codecs already.
 function lockContainer() {
-  // Nothing to choose while the sound is being written on its own: the file
-  // is named by what is in it. The row is greyed rather than hidden, for the
-  // reason `lockUnwritable` gives about greying.
-  const alone = !!settings.soundOnly;
-  el("out-container").disabled = alone || bdavMode();
+  // What 音声のみ will actually be called, which is the one thing that
+  // answer does not say for itself: it follows the sound rather than the
+  // choice. Under the row rather than in it, the sentence being a sentence.
+  const alone = soundOnly();
   const note = el("sound-only-note");
   note.hidden = !alone;
   if (alone) {
@@ -3938,9 +3945,14 @@ function lockContainer() {
   }
   const can = writableContainers();
   for (const opt of el("out-container").options) {
-    opt.disabled = !!can && !!opt.value && !can.includes(opt.value);
+    // 音声のみ is never greyed and is never asked about: what it holds is
+    // the sound, which every recording in the list has or has not, and a
+    // recording with none is already answered for elsewhere. The engine's
+    // list is about containers for pictures.
+    opt.disabled = !!can && !!opt.value && opt.value !== "sound" && !can.includes(opt.value);
   }
-  if (!can || !settings.container || can.includes(settings.container)) return;
+  if (!can || !settings.container || settings.container === "sound") return;
+  if (can.includes(settings.container)) return;
   // Held and no longer writable: back to 入力と同じ, which is always
   // somewhere to fall back to.
   settings.container = "";
@@ -6338,7 +6350,7 @@ async function writeJoined(list) {
       audioBitrate: audioBitrateOut(),
       audioSampleRate: audioRateOut(),
       audioBits: audioBitsOut(),
-      soundOnly: !!settings.soundOnly,
+      soundOnly: soundOnly(),
       subtitles: settings.subtitles,
       dataBroadcast: prefs.get("dataBroadcast") !== false,
       videoShare: share,
@@ -6515,7 +6527,7 @@ async function runExport() {
         audioBitrate: audioBitrateOut(),
         audioSampleRate: audioRateOut(),
         audioBits: audioBitsOut(),
-        soundOnly: !!settings.soundOnly,
+        soundOnly: soundOnly(),
         // What the editor's track menu switched off for this clip. Per clip
         // and not per list: the audio settings above are one answer for the
         // whole run, but which of a recording's own streams are wanted is a

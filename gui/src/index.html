@@ -489,16 +489,6 @@
               </span>
             </span>
           </div>
-          <!-- The sound and no pictures. A run of its own rather than a
-               container: what it writes is the audio file the cut would have
-               had, with the ranges, the joins and the fades already in it,
-               and nothing is read or written for frames that are not going
-               anywhere. The name follows the codec -- a .aac for what a
-               broadcast carries, a .wav for linear PCM -- so the container
-               row below has nothing to choose and is greyed. -->
-          <label class="opt"><input id="out-sound-only" type="checkbox" />
-            <span data-i18n="outset.soundOnly">音声だけを出力する（映像なし）</span></label>
-          <p class="dim" id="sound-only-note" hidden></p>
           <div class="row" id="row-container">
             <span data-i18n="outset.container">コンテナタイプ(Y):</span>
             <span class="drop">
@@ -529,9 +519,17 @@
                five rows to read past, so they are absent instead until the
                mode asks for them. The last two are a pair -- リニア PCM has
                no bitrate to choose, since its size is the samples' own
+                <!-- The sound and no pictures. In this list because that is
+                     the question it answers -- what kind of file comes out --
+                     and because a file with no pictures in it is not a
+                     variant of one that has them. The extension follows what
+                     the sound is, so the line under this says which it will
+                     be for the list in hand. See `soundExt`. -->
+                <option value="sound" data-i18n="container.sound">音声のみ（映像なし）</option>
                arithmetic, and every other codec has no width to choose, since
                it writes a description of the sound rather than the sound --
                and that pair stays a matter of grey: both belong to the encode
+          <p class="dim" id="sound-only-note" hidden></p>
                that is being written, and which one is live moves with the
                codec, so the panel would jump under the hand if they came and
                went. -->

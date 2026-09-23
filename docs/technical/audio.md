@@ -956,6 +956,10 @@ that container writes PCM as.
 tracks in it is a thing only some containers hold; the first kept track is
 written and the run says so.
 
+It is asked for in the container list rather than beside it, because it
+answers that list's question -- what kind of file comes out -- and a file with
+no pictures in it is not a variant of one that has them.
+
 ## The output settings screen
 
 Six controls: one above five, though the five are on screen only some of the time.
