@@ -783,6 +783,15 @@ fn mark_scenes(diffs: &[(f64, f64)], duration: f64, opts: &ThumbOptions) -> (Vec
 /// change between consecutive pictures, which is the cut -- and answers with
 /// `at` unchanged when there is no cut in the window worth the name.
 pub fn cut_near(src: &Source, at: f64, window: f64, floor: f64) -> Result<f64> {
+    let seen = differences_near(src, at, window)?;
+    Ok(cut_from(&seen, at, floor))
+}
+
+/// The difference between each pair of consecutive pictures around `at`.
+///
+/// Split out of [`cut_near`] so that what the rule is applied to can be
+/// looked at on its own; `examples/cutdiag.rs` is what does the looking.
+pub fn differences_near(src: &Source, at: f64, window: f64) -> Result<Vec<(f64, f64)>> {
     crate::init()?;
     let fd = src.video.frame_duration();
     let from = (at - window).max(0.0);
@@ -836,6 +845,14 @@ pub fn cut_near(src: &Source, at: f64, window: f64, floor: f64) -> Result<f64> {
         }
     }
     seen.sort_by(|a, b| a.0.total_cmp(&b.0));
+    Ok(seen
+        .windows(2)
+        .map(|w| (w[1].0, distance(&w[0].1, &w[1].1)))
+        .collect())
+}
+
+/// Which picture of a window the cut is on, or `at` where none of them is.
+fn cut_from(seen: &[(f64, f64)], at: f64, floor: f64) -> f64 {
     // The *nearest* cut, not the strongest. A commercial cuts between images
     // as unlike each other as anything at its edges, so "the biggest change
     // in the window" reaches past the boundary and lands inside the break --
@@ -844,12 +861,11 @@ pub fn cut_near(src: &Source, at: f64, window: f64, floor: f64) -> Result<f64> {
     // do is put it on the picture the change happens on.
     let mut best: Option<(f64, f64)> = None;
     let show = std::env::var_os("SMARTCUT_DEBUG_CUT").is_some();
-    for w in seen.windows(2) {
-        let d = distance(&w[0].1, &w[1].1);
+    for &(t, d) in seen {
         if show && d >= floor / 3.0 {
             eprintln!(
                 "    {:9.3}  差 {:.3}{}",
-                w[1].0,
+                t,
                 d,
                 if d >= floor { "" } else { "  (床未満)" }
             );
@@ -857,12 +873,12 @@ pub fn cut_near(src: &Source, at: f64, window: f64, floor: f64) -> Result<f64> {
         if d < floor {
             continue;
         }
-        let away = (w[1].0 - at).abs();
-        if best.is_none_or(|(t, _)| away < (t - at).abs()) {
-            best = Some((w[1].0, d));
+        let away = (t - at).abs();
+        if best.is_none_or(|(o, _)| away < (o - at).abs()) {
+            best = Some((t, d));
         }
     }
-    Ok(best.map(|(t, _)| t).unwrap_or(at))
+    best.map(|(t, _)| t).unwrap_or(at)
 }
 
 /// Find the exact picture a scene starts on, given the key picture that
