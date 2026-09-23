@@ -1231,10 +1231,19 @@ else is copied at its own size, and says so.
 Nor for a clip that is not the master's shape in a joined run. Every frame of
 it is written afresh, so there are no seams to show: you get the representative
 frame with `Written afresh at the master's shape`, and the line underneath says
-what differs — the frame size, the rate, the scan, and the rest. **Which clips
+what differs — the frame size, the rate, the codec, and the rest. **Which clips
 this will happen to, and what about each of them differs, is on the output
 settings screen before the run**: the count beside the master picker, and a
 line under it for each row that does not match.
+
+**A scan that is read differently is not one of those.** Whether a recording
+is interlaced or progressive is not a field the stream states: it is
+libavformat's reading of the pictures it probed, and a Japanese broadcast
+carries progressive-coded frames inside a 1080i stream constantly. The same
+programme two weeks running comes back one way and then the other — and a
+single recording holds both kinds of picture anyway (two measured over a
+minute each: 31% against 69%, and 72% against 28%). Every picture carries its
+own, so they are copied together and the run says it saw the difference.
 
 While the list is being written the picture follows along. When the run ends it
 **stays on the last frame encoded** rather than going back to the top.

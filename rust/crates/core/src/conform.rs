@@ -92,9 +92,43 @@ pub enum Sound {
 }
 
 impl What {
-    /// Whether this is a reason to write the pictures afresh.
+    /// Whether this is about the pictures rather than about the sound.
+    ///
+    /// Not the same question as [`Self::costs_pictures`], and the difference
+    /// is one property wide. This one sorts the differences into the two
+    /// places they are said.
     pub fn is_video(self) -> bool {
         !matches!(self, What::Sound(..) | What::SoundTracks)
+    }
+
+    /// ...and whether it is a reason to write the pictures afresh.
+    ///
+    /// **The scan is not.** It is the one property here that no stream
+    /// states: libavformat works it out from the pictures it probed, and a
+    /// Japanese broadcast carries progressive-coded frames inside a 1080i
+    /// stream constantly -- most animation is coded that way. So whether the
+    /// frames a probe happened to see were progressive turns on whether the
+    /// recording began in the programme or in the commercial before it, and
+    /// the same programme two weeks running comes back progressive once and
+    /// interlaced once.
+    ///
+    /// Measured over 1186 recordings off 32 channels: twelve of those
+    /// channels hold recordings that are not all one shape and **differ in
+    /// nothing but this**, and 40 recordings are the odd one out on a channel
+    /// whose others agree. Every one of them was an hour of encoding to join
+    /// two episodes of one series -- for a reading rather than for a
+    /// difference. The reference tool does not re-cue for it either.
+    ///
+    /// Nothing is lost by copying them together. Each picture carries its own
+    /// flags -- a frame is coded as a frame or as two fields whatever the
+    /// container says about the track -- so a decoder reads them as it reads
+    /// the recording's own. What the output declares is the master's, which
+    /// is what it declares about every other reel as well.
+    ///
+    /// It is still *reported*: the run says which two readings met and that
+    /// the pictures were copied anyway. See [`crate::cut`].
+    pub fn costs_pictures(self) -> bool {
+        self.is_video() && self != What::Scan
     }
 
     /// A name for this property that does not move with the prose.
@@ -194,7 +228,7 @@ fn of_parts(
 
 fn fit_of(found: &[Mismatch], master_tracks: usize, clip_tracks: usize) -> Fit {
     let mut fit = Fit {
-        video: found.iter().any(|m| m.what.is_video()),
+        video: found.iter().any(|m| m.what.costs_pictures()),
         audio: vec![false; master_tracks],
     };
     for m in found {
@@ -595,6 +629,37 @@ mod tests {
         theirs.sample_aspect_ratio = 0.0;
         assert!(video_mismatches(&master, &theirs).is_empty());
         assert!(video_mismatches(&theirs, &master).is_empty());
+    }
+
+    /// A scan read one way on one recording and the other way on the next is
+    /// reported and costs nothing: no stream states it, and the pictures
+    /// carry their own flags whatever the container was read as saying. See
+    /// `costs_pictures`.
+    #[test]
+    fn a_scan_is_said_and_not_re_encoded() {
+        let mut master = video();
+        master.field_order = 2;
+        let mut theirs = video();
+        theirs.field_order = 1;
+        let found = video_mismatches(&master, &theirs);
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].what, What::Scan);
+        assert!(!fit_of(&found, 1, 1).video);
+        assert!(!fit_of(&found, 1, 1).anything());
+    }
+
+    /// ...and it does not hide a difference beside it. A recording of another
+    /// size is written afresh whatever its scan was read as.
+    #[test]
+    fn a_scan_beside_a_real_difference_still_costs() {
+        let mut master = video();
+        master.field_order = 2;
+        let mut theirs = video();
+        theirs.field_order = 1;
+        theirs.width = 1440;
+        let found = video_mismatches(&master, &theirs);
+        assert_eq!(found.len(), 2);
+        assert!(fit_of(&found, 1, 1).video);
     }
 
     /// A track the clip does not have is not a track that can be written

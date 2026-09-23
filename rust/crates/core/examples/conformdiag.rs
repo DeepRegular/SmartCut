@@ -119,13 +119,25 @@ fn main() -> Result<()> {
             println!("master: {}\n  {}\n", leaf(master_path), shape_of(master));
             for (path, src) in read.iter().skip(1) {
                 let found = sc::conform::compare(master, src);
-                if found.is_empty() {
-                    println!("copies: {}", leaf(path));
-                } else {
-                    println!("re-encodes: {}", leaf(path));
-                    for m in &found {
-                        println!("    {}", m.describe());
-                    }
+                // What the cut will actually do, which is not the same as
+                // whether anything differs: a difference the pictures carry
+                // for themselves costs nothing. See `What::costs_pictures`.
+                let fit = sc::conform::fit(master, src);
+                println!(
+                    "{}: {}",
+                    match (fit.video, found.is_empty()) {
+                        (true, _) => "re-encodes",
+                        (false, true) => "copies",
+                        (false, false) => "copies, and differs",
+                    },
+                    leaf(path)
+                );
+                for m in &found {
+                    println!(
+                        "    {}{}",
+                        m.describe(),
+                        if m.what.costs_pictures() { "" } else { "  (costs nothing)" }
+                    );
                 }
             }
         }

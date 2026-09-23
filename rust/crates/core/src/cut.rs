@@ -5195,10 +5195,38 @@ fn cut_into(
     // hour because two recordings disagree about the frame rate is a run
     // somebody would want to have been told about at the start.
     for (n, fit) in fits.iter().enumerate() {
+        let differs = crate::conform::compare(src, reels[n].src);
+        // What was read differently and costs nothing to carry. The scan is
+        // the whole of this list -- see [`crate::conform::What::costs_pictures`]
+        // -- and it is said rather than passed over silently: two recordings
+        // of one programme really were read as different shapes, and a person
+        // holding a reading out of a tool that names them wants to know this
+        // one was seen and decided about.
+        //
+        // Only where the pictures are being copied. On a reel that is written
+        // afresh anyway the sentence below says everything that differed, and
+        // this would be the same news twice.
+        if !fit.video {
+            let free: Vec<String> = differs
+                .iter()
+                .filter(|m| m.what.is_video() && !m.what.costs_pictures())
+                .map(crate::conform::Mismatch::describe)
+                .collect();
+            if !free.is_empty() {
+                crate::note_once(format!(
+                    "note: {} and {} were read as different shapes -- {}. That is a reading \
+                     rather than a difference: no stream states its scan, and every picture \
+                     carries its own. The pictures are copied.",
+                    reels[n].src.path,
+                    src.path,
+                    free.join("; "),
+                ));
+            }
+        }
         if !fit.anything() {
             continue;
         }
-        let found: Vec<String> = crate::conform::compare(src, reels[n].src)
+        let found: Vec<String> = differs
             .iter()
             .map(crate::conform::Mismatch::describe)
             .collect();

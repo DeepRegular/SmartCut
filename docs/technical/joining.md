@@ -149,10 +149,32 @@ the recording began in the programme or in the commercial before it. The same
 programme two weeks running comes back progressive once and interlaced once.
 
 **That is a whole clip re-encoded for a reading rather than for a difference**,
-and it is what somebody joining two episodes of one series actually hits. The
-`unknown` case is answered above; `progressive` against `interlaced` is a
-stated disagreement and is not, so it stands as a mismatch and the screen now
-says which field it was.
+and it is what somebody joining two episodes of one series actually hits.
+
+The clincher is what the pictures themselves say. Two recordings off one
+channel, a day apart, one read as interlaced and the other as progressive;
+sixty seconds sampled from the middle of each:
+
+| container says | progressive-coded pictures | interlaced-coded |
+|---|---|---|
+| interlaced, top field first | 507 | 1138 |
+| progressive | 1090 | 427 |
+
+**Both recordings hold both kinds**, and the container's single answer is only
+which way the frames a probe happened to see leaned. There is no property here
+to conform one clip to the other's.
+
+So the scan does not cost the pictures anything: `What::costs_pictures` is
+`is_video` less `Scan`, and `fit_of` asks that one. Every picture carries its
+own flags -- a frame is coded as a frame or as two fields whatever the track
+is declared as -- so a decoder reads a copied one as it reads the recording's
+own. The reference tool does not re-cue for it either.
+
+It is still compared and still reported. A run that copies such a pair says
+so once: *"were read as different shapes -- scan: interlaced, top field first
+vs progressive. That is a reading rather than a difference."* A difference
+that is seen and decided about is worth a line; one that is silently dropped
+is a tool nobody can check.
 
 **29.97 and 30 are not the same rate.** The tolerance is a ten-thousandth,
 relative; what it is for is the last figure of a rate that arrived as a
