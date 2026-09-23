@@ -323,7 +323,27 @@ that the return was one. The start now mirrors it — the first sample under the
 | Mid-programme break | 924.1 – 973.2 (48.8 s) | **913.1 – 973.2 (60.0 s)** | 912.9 – 973 |
 | The break after it | 1588.2 – 1640.2 (52.0 s) | **1580.1 – 1640.2 (60.0 s)** | |
 
-The five pinned recordings are unchanged.
+**Reading the edge earlier is not enough on its own.** Two silences frequently
+stand within reach of it — the one at the head of the break and the one between
+its first commercial and its second — and which of them is nearer is a coin toss
+the lag decides. Over thirty recordings the correction put two blocks right and
+two wrong, and the ruler moved by one.
+
+A break begins where the picture is replaced, so a silence that no cut stands on
+is a pause in a programme and is passed over. That settled both of the two it
+had got wrong and kept both of the two it had put right. The junctions are asked
+about only where the recording has been walked, and only those a start could be
+snapped to: each question is a seek and a second of decoding, and a half-hour
+recording carries forty that no edge is near.
+
+| Thirty BS Nittele and BS Asahi recordings | Before | After |
+|---|---|---|
+| Boundaries on the frame a cut happens on | 180 (87%) | 182 (88%) |
+| Blocks a whole number of 15-second units | 47/66 | **50/66** |
+| ...of 5-second units | 52/66 | **55/66** |
+
+Four recordings changed and none for the worse. The five pinned recordings are
+unchanged.
 
 What this costs is whatever the recording can be read at. The two passes decode
 only entry pictures and spread them over the machine, so a 30-minute recording
