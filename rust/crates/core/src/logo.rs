@@ -741,7 +741,15 @@ fn intervals_from(
             if s < absent_t {
                 present = false;
                 transitions += 1;
-                from = going.take().unwrap_or(times[i]);
+                // Back no further than the window that was averaged. What is
+                // being undone is that average's lag, and a score that has
+                // been sliding for half a minute -- a dark scene at the end
+                // of a programme -- is not a logo that went half a minute
+                // ago. Past the window the correction would be swallowing
+                // programme, which is the expensive mistake.
+                from = going
+                    .take()
+                    .map_or(times[i], |t| t.max(times[i] - opts.window_seconds));
                 back = None;
             }
         } else if s >= present_t {
