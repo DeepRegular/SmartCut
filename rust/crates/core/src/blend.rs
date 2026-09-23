@@ -342,7 +342,7 @@ pub fn over(frame: &mut ff::frame::Video, laid: &Laid, opacity: f64) -> Result<(
         } else {
             (shape.log2_w, shape.log2_h)
         };
-        let over = laid.picture.data(nth).to_vec();
+        let over = laid.picture.data(nth);
         let data = frame.data_mut(nth);
         for y in 0..h {
             let ri = &over[y * si..y * si + w * step];
