@@ -1,17 +1,15 @@
 //! Live audio for the preview player, straight to the sound card.
 //!
 //! The video half of playback (`preview::play_from`) paces itself against a
-//! wall clock. Audio does not need that: once the samples are in the ring
-//! buffer, the card's own clock plays them at the right speed on its own.
-//! The two clocks are independent and can drift apart over a long stretch --
-//! accepted for the same reason `audio.rs` accepts 10.7ms of splice error:
-//! this is for checking that a cut sounds right, not for watching the
-//! programme through.
+//! wall clock, and so does this: both are handed the one instant playback
+//! began at, and every sample carries the moment on that clock it is due to
+//! be heard. See [`SLACK`] for why that has to be said rather than left to
+//! the card.
 
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicU32, Ordering};
-use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::sync::{Arc, Condvar, Mutex, OnceLock};
+use std::time::{Duration, Instant};
 
 use anyhow::{anyhow, Result};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
@@ -158,16 +156,21 @@ struct Meter {
 ///
 /// The count is in output frames because that is what the card consumes, and
 /// what the card has consumed is the only measure of what has been heard.
+///
+/// It is also where the samples are due. The ring is a run of these, one per
+/// decoded frame, and `due` is when the first frame still in it is to be
+/// heard, in seconds after playback began -- the clock the pictures are
+/// paced on. See [`SLACK`].
 #[derive(Clone, Copy)]
 struct Bite {
     frames: usize,
     channels: usize,
     peaks: [f32; METERED],
+    due: f64,
 }
 
 impl Levels {
-    /// Take what the card has just played: `frames` output frames' worth of
-    /// the peaks waiting in `bites`.
+    /// Take a bite the card has just played some of.
     ///
     /// A frame's peak counts in full as soon as any of it has been heard --
     /// it is a peak, not an average, and a decoded frame is tens of
@@ -177,20 +180,11 @@ impl Levels {
     /// applied to the samples on their way out of the ring and these were
     /// measured on the way in: the meter says what the recording holds, and
     /// turning the monitoring down does not make a programme quieter.
-    fn eat(&self, bites: &mut VecDeque<Bite>, mut frames: usize) {
-        while frames > 0 {
-            let Some(front) = bites.front_mut() else { break };
-            let took = front.frames.min(frames);
-            let channels = front.channels.clamp(1, METERED);
-            self.0.channels.store(channels as u32, Ordering::Relaxed);
-            for ch in 0..channels {
-                self.0.peak[ch].fetch_max(front.peaks[ch].to_bits(), Ordering::Relaxed);
-            }
-            front.frames -= took;
-            frames -= took;
-            if front.frames == 0 {
-                bites.pop_front();
-            }
+    fn eat(&self, bite: &Bite) {
+        let channels = bite.channels.clamp(1, METERED);
+        self.0.channels.store(channels as u32, Ordering::Relaxed);
+        for ch in 0..channels {
+            self.0.peak[ch].fetch_max(bite.peaks[ch].to_bits(), Ordering::Relaxed);
         }
     }
 
@@ -218,10 +212,198 @@ impl Levels {
 /// go with them. One lock covers both, because the output callback takes
 /// them together and a callback that takes two locks is a callback with two
 /// ways to be late.
+///
+/// The two are in step: a bite of `frames` frames stands for that many frames
+/// of `samples`, in the same order.
 #[derive(Default)]
 struct Feed {
     samples: VecDeque<f32>,
     bites: VecDeque<Bite>,
+    /// What [`settle`] has had to do, for the log. Here rather than beside
+    /// the ring because it is written under the same lock.
+    tally: Tally,
+}
+
+impl Feed {
+    /// When the frame at the head of the ring is due, if there is one.
+    fn due(&self) -> Option<f64> {
+        self.bites.front().map(|b| b.due)
+    }
+
+    /// Move the bites on by `frames`, handing each one to `heard` as any of
+    /// it goes. The samples are the caller's to take.
+    fn pass(&mut self, mut frames: usize, rate: u32, mut heard: impl FnMut(&Bite)) {
+        while frames > 0 {
+            let Some(front) = self.bites.front_mut() else { break };
+            let took = front.frames.min(frames);
+            heard(front);
+            front.frames -= took;
+            front.due += took as f64 / rate as f64;
+            frames -= took;
+            if front.frames == 0 {
+                self.bites.pop_front();
+            }
+        }
+    }
+
+    /// Throw `frames` away unheard.
+    fn skip(&mut self, frames: usize, rate: u32, channels: usize) {
+        let n = (frames * channels).min(self.samples.len());
+        self.samples.drain(..n);
+        self.pass(frames, rate, |_| {});
+    }
+}
+
+/// How far the sound may stray from the pictures before it is put back.
+///
+/// **Left to the card, the sound started late and stayed late.** The card
+/// was opened and started before the recording was, and played silence
+/// through the device's own opening, the demuxer's, the seek and the first
+/// decode. Every sample after that was heard that much after the picture it
+/// belonged to. Measured from the moment 再生 was pressed to the first
+/// sample reaching the card: 0.55 to 0.8 s on a PipeWire desktop, a quarter
+/// of it opening the device. The pictures are on the wall clock and drop
+/// what is late; the sound had nothing to measure lateness against. A
+/// buffer the decode fell behind on added its silence to the delay, and a
+/// gap in the recording's own audio took time out of it.
+///
+/// So the clock does not start until the sound is ready (see [`Start`]), and
+/// each buffer compares the head of the ring with the moment it will leave
+/// the speaker: now, plus what the host says it still holds. Anything further
+/// out than this is set right in one go -- late samples are thrown away,
+/// early ones wait behind silence. Only past this, because every correction
+/// is heard: 40 ms is under what anyone notices of sound against a face
+/// (ITU-R BT.1359 puts that at 45 ms early), and wide enough that the card
+/// and the wall clock drifting apart comes to one correction every several
+/// minutes rather than one a buffer.
+///
+/// **What the host holds is not always said.** ALSA's PulseAudio plugin
+/// reports a delay of zero, on PipeWire and on PulseAudio alike, so there the
+/// sound is heard later than this reckons by the server's own buffer -- 70 ms
+/// on the PipeWire desktop above. That is about what the window takes to put
+/// a picture on screen once it has it, so the two are left to cancel.
+const SLACK: f64 = 0.040;
+
+/// What [`settle`] has had to do over one run, for the log.
+#[derive(Default)]
+struct Tally {
+    /// Frames thrown away because they were late, and how many times.
+    dropped: usize,
+    drops: usize,
+    /// Frames of silence waited because the sound was early.
+    waited: usize,
+    waits: usize,
+}
+
+impl Tally {
+    fn say(&self, rate: u32) {
+        if self.drops + self.waits > 0 {
+            let ms = |n: usize| n as f64 * 1000.0 / rate as f64;
+            eprintln!(
+                "audio sync: {:.0} ms dropped in {}, {:.0} ms waited in {}",
+                ms(self.dropped),
+                self.drops,
+                ms(self.waited),
+                self.waits,
+            );
+        }
+    }
+}
+
+/// Bring the head of the ring to `now`, the moment the next buffer will be
+/// heard, and say how many frames of silence it should open with.
+///
+/// Late samples are dropped here, as many bites deep as it takes -- a gap in
+/// the recording's timestamps is a bite whose `due` jumps ahead, and that one
+/// is then early. Early ones are waited for, up to the whole buffer. See
+/// [`SLACK`].
+fn settle(q: &mut Feed, now: f64, rate: u32, channels: usize, frames: usize) -> usize {
+    let mut dropped = 0;
+    while let Some(due) = q.due() {
+        let late = now - due;
+        if late <= SLACK {
+            break;
+        }
+        let front = q.bites.front().map_or(0, |b| b.frames);
+        let n = ((late * rate as f64).round() as usize).clamp(1, front.max(1));
+        q.skip(n, rate, channels);
+        dropped += n;
+    }
+    if dropped > 0 {
+        q.tally.drops += 1;
+        q.tally.dropped += dropped;
+    }
+    match q.due() {
+        Some(due) if due - now > SLACK => {
+            let lead = (((due - now) * rate as f64).round() as usize).min(frames);
+            q.tally.waits += 1;
+            q.tally.waited += lead;
+            lead
+        }
+        _ => 0,
+    }
+}
+
+/// The instant playback begins at: the one the pictures are paced from and
+/// the sound is due against.
+///
+/// Set by whichever side is ready last to be able to say so -- the sound,
+/// when its first samples are in the ring. Taken any earlier and those
+/// samples are already late when they get there, and the first half second
+/// of every playback is thrown away to catch up; a preview is started from
+/// just before a cut more often than not, and that half second is the part
+/// being listened to.
+///
+/// The pictures wait for it, but not forever: see [`Start::wait`].
+#[derive(Clone, Default)]
+pub struct Start(Arc<Gate>);
+
+#[derive(Default)]
+struct Gate {
+    at: OnceLock<Instant>,
+    lock: Mutex<()>,
+    ready: Condvar,
+}
+
+impl Start {
+    /// It begins now, unless it already has.
+    pub fn mark(&self) -> Instant {
+        if let Some(at) = self.get() {
+            return at;
+        }
+        let at = *self.0.at.get_or_init(Instant::now);
+        let _held = self.0.lock.lock().unwrap();
+        self.0.ready.notify_all();
+        at
+    }
+
+    /// When it began, if it has. Never waits, so the output callback may ask.
+    fn get(&self) -> Option<Instant> {
+        self.0.at.get().copied()
+    }
+
+    /// When it begins, waiting at most `longest` for the other side to say --
+    /// after which it begins now. A sound that never comes (a card that will
+    /// not open, a stretch with no audio in it) does not hold the pictures
+    /// up for longer than that.
+    pub fn wait(&self, longest: Duration) -> Instant {
+        let held = self.0.lock.lock().unwrap();
+        let _held = self
+            .0
+            .ready
+            .wait_timeout_while(held, longest, |_| self.0.at.get().is_none())
+            .unwrap();
+        *self.0.at.get_or_init(Instant::now)
+    }
+}
+
+/// Marks a [`Start`] when dropped, however the function holding it returns.
+struct Marks<'a>(&'a Start);
+
+impl Drop for Marks<'_> {
+    fn drop(&mut self) {
+        self.0.mark();
+    }
 }
 
 /// Block until there is room, or `stop` says to give up. Never blocks forever
@@ -457,31 +639,49 @@ fn build_stream(
     ring: &Arc<Mutex<Feed>>,
     volume: &Volume,
     levels: &Levels,
+    start: &Start,
 ) -> Result<cpal::Stream, cpal::BuildStreamError> {
     let feed = ring.clone();
     let level = volume.clone();
     let meter = levels.clone();
+    let start = start.clone();
     let channels = config.channels.max(1) as usize;
+    let rate = config.sample_rate.0;
     let mut was = level.get();
     device.build_output_stream(
         config,
-        move |data: &mut [f32], _: &cpal::OutputCallbackInfo| {
+        move |data: &mut [f32], info: &cpal::OutputCallbackInfo| {
             let want = level.get();
             let frames = (data.len() / channels).max(1);
             let mut q = feed.lock().unwrap();
+            // Kept to the clock once there is one. Until then nothing has
+            // been handed over, and there is nothing to keep in time.
+            let lead = match start.get() {
+                Some(began) => {
+                    // When this buffer will be heard: now, and behind what
+                    // the host says it still holds. See [`SLACK`].
+                    let stamp = info.timestamp();
+                    let held = stamp.playback.duration_since(&stamp.callback).unwrap_or_default();
+                    let now = (began.elapsed() + held).as_secs_f64();
+                    settle(&mut q, now, rate, channels, frames)
+                }
+                None => 0,
+            };
             // What was actually there to play. A buffer the decode did not
             // keep up with is padded with silence below, and silence nobody
             // recorded is not something to meter.
-            let had = q.samples.len().min(data.len()) / channels;
+            let had = (q.samples.len() / channels).min(frames - lead);
             for (i, out) in data.iter_mut().enumerate() {
                 // Per frame, not per sample: the two channels of one instant
                 // are one instant, and they are scaled by the one number.
-                let at = (i / channels) as f32 / frames as f32;
-                *out = q.samples.pop_front().unwrap_or(0.0) * (was + (want - was) * at);
+                let frame = i / channels;
+                let at = frame as f32 / frames as f32;
+                let s = if frame < lead { 0.0 } else { q.samples.pop_front().unwrap_or(0.0) };
+                *out = s * (was + (want - was) * at);
             }
             // Under the same lock, and before it is let go: the peaks behind
             // the samples just played are what the meter is about.
-            meter.eat(&mut q.bites, had);
+            q.pass(had, rate, |bite| meter.eat(bite));
             drop(q);
             was = want;
         },
@@ -549,10 +749,11 @@ fn open_on(
     ring: &Arc<Mutex<Feed>>,
     volume: &Volume,
     levels: &Levels,
+    start: &Start,
     why: &mut Option<cpal::BuildStreamError>,
 ) -> Option<Output> {
     for config in candidates(device, want) {
-        match build_stream(device, &config, ring, volume, levels) {
+        match build_stream(device, &config, ring, volume, levels, start) {
             Ok(stream) => {
                 return Some(Output {
                     stream,
@@ -582,12 +783,13 @@ fn open_output(
     ring: &Arc<Mutex<Feed>>,
     volume: &Volume,
     levels: &Levels,
+    start: &Start,
 ) -> Result<Output> {
     let host = cpal::default_host();
     let mut why = None;
 
     if let Some(device) = host.default_output_device() {
-        if let Some(out) = open_on(&device, want, ring, volume, levels, &mut why) {
+        if let Some(out) = open_on(&device, want, ring, volume, levels, start, &mut why) {
             return Ok(out);
         }
     }
@@ -610,7 +812,7 @@ fn open_output(
             .unwrap_or(usize::MAX)
     });
     for device in named {
-        if let Some(out) = open_on(&device, want, ring, volume, levels, &mut why) {
+        if let Some(out) = open_on(&device, want, ring, volume, levels, start, &mut why) {
             let name = device.name().unwrap_or_default();
             eprintln!("audio output: default would not open, playing through {name}");
             return Ok(out);
@@ -635,14 +837,20 @@ fn open_output(
 /// as the video gets), starting at `from`, until `stop()` answers true or the
 /// ranges run out, at whatever `volume` says at each moment.
 ///
+/// `from` is heard at `start`, the instant the caller's pictures are paced
+/// from, and the rest in step with it. This marks it, once the first of the
+/// sound is ready to go -- or on the way out, if it never is. See [`Start`].
+///
 /// Runs entirely on the calling thread. The `cpal::Stream` it opens is not
 /// guaranteed `Send` on every backend, so nothing here may cross a thread
 /// boundary once created -- the caller is expected to give this its own
 /// thread and simply join it.
+#[allow(clippy::too_many_arguments)]
 pub fn play_audio(
     src: &Source,
     ranges: &[(f64, f64)],
     from: f64,
+    start: &Start,
     volume: &Volume,
     levels: &Levels,
     fold: &Fold,
@@ -658,6 +866,7 @@ pub fn play_audio(
             // numbers -- see `Heard::fades`.
             fades: (0.0, 0.0),
         }],
+        start,
         volume,
         levels,
         fold,
@@ -707,11 +916,14 @@ pub struct Heard<'a> {
 /// way a recording that does not match the card already is.
 pub fn play_audio_across(
     parts: &[Heard],
+    start: &Start,
     volume: &Volume,
     levels: &Levels,
     fold: &Fold,
     stop: impl Fn() -> bool,
 ) -> Result<()> {
+    // Whatever way this ends, the pictures are not left waiting on it.
+    let _mark = Marks(start);
     // The format is the first one with sound in it. A silent clip contributes
     // nothing to play and nothing to open a device for.
     let Some(first) = parts.iter().find(|p| p.src.audio.is_some()) else {
@@ -737,7 +949,7 @@ pub fn play_audio_across(
     // the same and spread back over the card's channels.
     let want = (audio.sample_rate, fold.of(audio.channels));
     let ring = Arc::new(Mutex::new(Feed::default()));
-    let out = open_output(want, &ring, volume, levels)?;
+    let out = open_output(want, &ring, volume, levels, start)?;
     let (rate, channels) = (out.sample_rate, out.channels);
     if (rate, channels) != want {
         eprintln!(
@@ -750,11 +962,14 @@ pub fn play_audio_across(
         .play()
         .map_err(|e| anyhow!("cannot start audio output: {e}"))?;
 
+    // Where on the output's clock each part begins: the one after the other,
+    // as the pictures are laid out.
+    let mut base = 0.0;
     for part in parts {
         if stop() {
             break;
         }
-        feed_from(part, rate, channels, cap, &ring, fold, &stop)?;
+        feed_from(part, rate, channels, cap, &ring, fold, &mut base, start, &stop)?;
     }
 
     // Let the tail play out rather than cutting it off the instant decoding
@@ -769,6 +984,7 @@ pub fn play_audio_across(
     // The meter is left holding whatever the last buffer reached otherwise,
     // which reads as a sound that is still playing.
     levels.clear();
+    ring.lock().unwrap().tally.say(rate);
     Ok(())
 }
 
@@ -776,6 +992,7 @@ pub fn play_audio_across(
 ///
 /// The body [`play_audio`] used to be. It is a function of its own so that
 /// [`play_audio_across`] can run it twice over one device.
+#[allow(clippy::too_many_arguments)]
 fn feed_from(
     part: &Heard,
     rate: u32,
@@ -783,6 +1000,8 @@ fn feed_from(
     cap: usize,
     ring: &Arc<Mutex<Feed>>,
     fold: &Fold,
+    base: &mut f64,
+    clock: &Start,
     stop: &impl Fn() -> bool,
 ) -> Result<()> {
     let layout = ff::channel_layout::ChannelLayout::default(channels as i32);
@@ -818,6 +1037,11 @@ fn feed_from(
         if start >= b - 1e-9 {
             continue;
         }
+        // Counted the way the pictures count it (see `play` in the GUI):
+        // this range takes up `b - start` of the output however much of it
+        // the file turns out to hold.
+        let here = *base;
+        *base += b - start;
         // Seek a little early rather than exactly on the target: the
         // container's seek is only approximate, and landing late would lose
         // the beginning of the range outright, where landing early just
@@ -858,11 +1082,15 @@ fn feed_from(
                 if let Some((lo, hi)) = frame_window(n, rate, t, start, b) {
                     let mut samples =
                         data[lo * channels as usize..hi * channels as usize].to_vec();
-                    ride_fade(&mut samples, channels, t + lo as f64 / rate as f64, rate, (a, b), fades);
-                    let bite = Bite { frames: hi - lo, channels: heard, peaks };
+                    let at = t + lo as f64 / rate as f64;
+                    ride_fade(&mut samples, channels, at, rate, (a, b), fades);
+                    let due = here + (at - start);
+                    let bite = Bite { frames: hi - lo, channels: heard, peaks, due };
                     if !push(ring, cap, &stop, samples, bite) {
                         break 'ranges;
                     }
+                    // The first of it is in, and the clock can start.
+                    clock.mark();
                 }
             }
             if past_end {
@@ -1020,4 +1248,66 @@ pub fn peaks_at(src: &Source, time: f64, window: f64, fold: &Fold) -> Result<Vec
         }
     }
     Ok(peaks)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const RATE: u32 = 48_000;
+
+    /// A ring of stereo bites, each `frames` long and due at the given times.
+    fn ring(bites: &[(f64, usize)]) -> Feed {
+        let mut q = Feed::default();
+        for &(due, frames) in bites {
+            q.samples.extend(std::iter::repeat_n(1.0, frames * 2));
+            q.bites.push_back(Bite { frames, channels: 2, peaks: [0.0; METERED], due });
+        }
+        q
+    }
+
+    #[test]
+    fn a_late_start_is_dropped_up_to_now() {
+        // The first sound arrived 300 ms after playback began.
+        let mut q = ring(&[(0.0, 1024), (1024.0 / 48e3, 24_000)]);
+        let lead = settle(&mut q, 0.3, RATE, 2, 960);
+        assert_eq!(lead, 0);
+        assert!((q.due().unwrap() - 0.3).abs() < 1.0 / 48e3);
+        assert_eq!(q.samples.len(), q.bites.iter().map(|b| b.frames * 2).sum::<usize>());
+        assert_eq!(q.tally.dropped, 14_400);
+    }
+
+    #[test]
+    fn inside_the_slack_nothing_moves() {
+        let mut q = ring(&[(0.0, 1024)]);
+        assert_eq!(settle(&mut q, 0.030, RATE, 2, 960), 0);
+        assert_eq!(settle(&mut q, -0.030, RATE, 2, 960), 0);
+        assert_eq!(q.bites.front().unwrap().frames, 1024);
+    }
+
+    #[test]
+    fn a_gap_in_the_recording_is_waited_out() {
+        // 100 ms missing between two frames: the second is early by that much.
+        let mut q = ring(&[(0.2, 480)]);
+        assert_eq!(settle(&mut q, 0.1, RATE, 2, 960), 960);
+        assert_eq!(settle(&mut q, 0.18, RATE, 2, 960), 0);
+    }
+
+    #[test]
+    fn the_pictures_wait_for_the_sound_but_not_forever() {
+        let start = Start::default();
+        let other = start.clone();
+        let marked = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(30));
+            other.mark()
+        });
+        let waited = start.wait(Duration::from_secs(5));
+        assert_eq!(waited, marked.join().unwrap());
+
+        let alone = Start::default();
+        let asked = Instant::now();
+        alone.wait(Duration::from_millis(20));
+        assert!(asked.elapsed() >= Duration::from_millis(20));
+        assert_eq!(alone.mark(), alone.get().unwrap());
+    }
 }

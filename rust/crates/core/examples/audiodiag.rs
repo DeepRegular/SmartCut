@@ -2,7 +2,9 @@
 //! file straight to the sound card, the same way the GUI's preview does when
 //! ranges hold a cut. Runs until each range plays out or `--seconds` elapses.
 //!
-//! usage: audiodiag <file> [seconds]
+//! usage: audiodiag <file> [seconds] [volume]
+//!
+//! A volume of 0 times the card without anything coming out of it.
 
 use anyhow::Result;
 use smartcut_core as sc;
@@ -14,6 +16,7 @@ fn main() -> Result<()> {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let path = args.first().expect("usage: audiodiag <file> [seconds]");
     let seconds: f64 = args.get(1).and_then(|s| s.parse().ok()).unwrap_or(20.0);
+    let volume: f32 = args.get(2).and_then(|s| s.parse().ok()).unwrap_or(1.0);
 
     let src = sc::scan(path)?;
     println!(
@@ -40,11 +43,18 @@ fn main() -> Result<()> {
     });
 
     let began = Instant::now();
-    let level = sc::Volume::default();
+    let level = sc::Volume::new(volume);
     let meter = sc::Levels::default();
-    let r = sc::play_audio(&src, &ranges, ranges[0].0, &level, &meter, &sc::Fold::default(), move || {
-        stop.load(Ordering::SeqCst)
-    });
+    let r = sc::play_audio(
+        &src,
+        &ranges,
+        ranges[0].0,
+        &sc::Start::default(),
+        &level,
+        &meter,
+        &sc::Fold::default(),
+        move || stop.load(Ordering::SeqCst),
+    );
     println!(
         "play_audio -> {r:?}  elapsed {:.2}s",
         began.elapsed().as_secs_f64()

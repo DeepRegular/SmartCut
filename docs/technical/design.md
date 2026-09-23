@@ -1235,8 +1235,8 @@ it feels faster.
 **It plays** (`▶ Play` / `Space`). The pictures come at the stage's own width, capped at
 1280, and at the recording's own frame rate. Each one becomes a JPEG and a data URL, so on a
 machine that cannot make that many the pacing lets the late ones go by: a picture more than
-two frames past its moment is decoded and dropped rather than shown, since the sound runs on
-the card's clock and waits for nothing. What that buys is that playback is never slow — it is
+two frames past its moment is decoded and dropped rather than shown, since the sound keeps
+to the same clock and waits for nothing. What that buys is that playback is never slow — it is
 in time at whatever rate the machine can draw. Asking for fewer pictures outright, which is
 what this did before there was anything to drop a late one, made the whole preview run slow
 instead.
@@ -1246,10 +1246,22 @@ for watching the programme, and that is enough for it. The clock runs on the edi
 timeline, so cuts take no time and playback continues straight across an interval boundary.
 
 The audio follows the same intervals as the video (`playback_audio.rs`), so it jumps at the
-seams too. It **keeps no clock of its own**: once samples are in the ring buffer, the sound
-card's own clock plays them at the right rate. That is independent of the video's wall
-clock, so they drift apart slowly over a long run, which is accepted for the same reason
-`audio.rs` allows 10.7 ms of error at a seam.
+seams too. **It keeps to the pictures' clock.** Left to the sound card, it did not: the card
+was opened before the recording and played silence through the device's opening, the
+demuxer's, the seek and the first decode, and every sample after that was heard that much
+late -- 0.55 to 0.8 s on a PipeWire desktop, measured from Play to the first sample reaching
+the card. A decode that fell behind added its silence to that, and a gap in the recording's
+own audio took time out of it.
+
+Now each sample carries the moment on the edited timeline it is due, and both halves start
+their clock from one instant: the one at which the first of the sound is in the ring buffer
+(`Start`). The pictures wait for it, for two seconds at most. Each buffer the card asks for
+compares its head with when it will leave the speaker, and past 40 ms either way the sound is
+put right in one go -- late samples thrown away, early ones waited for behind silence. On that
+desktop no correction was needed after the start. What is not measured is the sound server's
+own buffer: ALSA's PulseAudio plugin reports no delay, on PipeWire or on PulseAudio, so the
+sound leaves about 70 ms after this reckons. That is about what the window takes to draw a
+picture once it has it, and the two are left to cancel.
 
 **Closing the window stops it.** The two threads watch one flag and have no handle on the
 window, so until the editor's `Destroyed` and `CloseRequested` events cleared that flag they

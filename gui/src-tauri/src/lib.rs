@@ -2246,9 +2246,9 @@ async fn cross_play(
         .sound();
     let silent = before.audio.is_none() && after.audio.is_none();
 
-    // Audio runs on its own thread and its own clock: it keeps a ring buffer
-    // fed and the sound card paces itself. `Playing` is the one thing the two
-    // sides share, so stopping either one stops both. See [`play`].
+    // Audio runs on its own thread, keeping a ring buffer fed, and keeps to
+    // the same clock as the pictures. That and `Playing` are the two things
+    // the sides share; stopping either one stops both. See [`play`].
     // What the join does to the sound, heard rather than read. The clip
     // before fades out into the handover and the clip after fades in from it,
     // over the seconds this join was given -- the same curve the cut writes,
@@ -2257,7 +2257,10 @@ async fn cross_play(
     // Read here rather than in the thread below: the picture half owns the
     // spec after that closure takes what it needs.
     let (out_secs, in_secs) = (seam.crossing.fade_out(), seam.crossing.fade_in());
+    // The one clock both halves keep to. See [`play`].
+    let clock = smartcut_core::Start::default();
     let audio_handle = (!silent).then(|| {
+        let clock = clock.clone();
         let level = app.state::<Vol>().0.clone();
         let meter = app.state::<Meter>().0.clone();
         let (a_src, b_src) = (before.clone(), after.clone());
@@ -2290,7 +2293,7 @@ async fn cross_play(
             // The recordings as they are. A seam is heard between two rows,
             // and the one fold this window could name is the editor's row.
             let fold = smartcut_core::Fold::default();
-            if let Err(e) = smartcut_core::play_audio_across(&parts, &level, &meter, &fold, stop) {
+            if let Err(e) = smartcut_core::play_audio_across(&parts, &clock, &level, &meter, &fold, stop) {
                 eprintln!("audio playback: {e}");
                 // Otherwise this fails in total silence: a release build has
                 // no console, and the picture half plays on regardless.
@@ -2302,7 +2305,8 @@ async fn cross_play(
     tauri::async_runtime::spawn_blocking(move || {
         let playing = app.state::<Playing>();
         let up = app.state::<CrossUp>();
-        let began = std::time::Instant::now();
+        let hearing = audio_handle.is_some();
+        let mut began = None;
         let gap = 1.0 / fps.max(1.0);
         let s = seam_over(&before, &after, &seam);
         let window = s.window(smartcut_core::crossview::LEAD);
@@ -2318,14 +2322,14 @@ async fn cross_play(
                 }
                 let out_t = (t - from).max(0.0);
                 let due = std::time::Duration::from_secs_f64(out_t);
-                let now = began.elapsed();
+                let now = began.get_or_insert_with(|| clock_from(&clock, hearing)).elapsed();
                 if due > now {
                     std::thread::sleep(due - now);
                 } else if out_t + 2.0 * gap < now.as_secs_f64() {
                     // Already more than two pictures late. Showing it would
                     // put the picture further behind the sound rather than
-                    // catch it up: the sound plays at the card's own speed and
-                    // waits for nothing. A skip costs the composite and no
+                    // catch it up: the sound keeps to the clock and waits for
+                    // nothing. A skip costs the composite and no
                     // more. See [`play`], which says the same at length.
                     return smartcut_core::Pace::Skip;
                 }
@@ -5687,6 +5691,20 @@ fn clipped(covered: &[(f64, f64)], asked: &[(f64, f64)]) -> Vec<(f64, f64)> {
     out
 }
 
+/// When the pictures of a playback start their clock: when the sound says
+/// it is ready, if there is any sound, and now if there is none.
+///
+/// Asked on the first picture, so the two start up side by side. A sound that
+/// has not said so within two seconds is not coming -- over a slow share the
+/// first read alone is under a second -- and the pictures go without it.
+fn clock_from(start: &smartcut_core::Start, hearing: bool) -> std::time::Instant {
+    if hearing {
+        start.wait(std::time::Duration::from_secs(2))
+    } else {
+        start.mark()
+    }
+}
+
 /// Play the edited timeline back from `from`, as a stream of pictures.
 ///
 /// Paced against a wall clock on the *edited* timeline, so a cut costs no
@@ -5723,14 +5741,19 @@ async fn play(
     // of them starts. See [`to_play`].
     let ranges = to_play(&audio_from, &keeps, &ranges);
 
-    // Audio runs on its own thread and its own clock (see `play_audio`'s
-    // doc comment): it just keeps a ring buffer fed, and the sound card
-    // paces itself. `Playing` is the one thing the two sides share, so
-    // stopping either one stops both.
+    // Audio runs on its own thread: it keeps a ring buffer fed, and each
+    // sample in it knows when on the shared clock it is due (see `SLACK` in
+    // `playback_audio`). That and `Playing` are the two things the sides
+    // share; stopping either one stops both.
     // Nothing has been heard of this run yet, and what the meter holds is
     // the end of the last one.
     app.state::<Meter>().0.clear();
+    // The one clock both halves keep to. It starts when the sound is ready
+    // to be heard, which is the slower of the two to get going: see
+    // `smartcut_core::Start`.
+    let clock = smartcut_core::Start::default();
     let audio_handle = audio_from.audio.is_some().then(|| {
+        let clock = clock.clone();
         let level = app.state::<Vol>().0.clone();
         let meter = app.state::<Meter>().0.clone();
         let fold = app.state::<Folded>().0.clone();
@@ -5749,7 +5772,7 @@ async fn play(
                     || !stop_app.state::<EditorUp>().0.load(Ordering::SeqCst)
             };
             if let Err(e) =
-                smartcut_core::play_audio(&audio_src, &audio_ranges, from, &level, &meter, &fold, stop)
+                smartcut_core::play_audio(&audio_src, &audio_ranges, from, &clock, &level, &meter, &fold, stop)
             {
                 eprintln!("audio playback: {e}");
                 // Otherwise this fails in total silence: the release build has
@@ -5765,7 +5788,8 @@ async fn play(
     tauri::async_runtime::spawn_blocking(move || {
         let playing = app.state::<Playing>();
         let up = app.state::<EditorUp>();
-        let began = std::time::Instant::now();
+        let hearing = audio_handle.is_some();
+        let mut began = None;
         let mut elapsed_out = 0.0f64;
         let mut next_show = 0.0f64;
         let mut outcome: Result<(), String> = Ok(());
@@ -5796,14 +5820,14 @@ async fn play(
                     }
                     let out_t = (base + t - seg_from).max(0.0);
                     let due = std::time::Duration::from_secs_f64(out_t);
-                    let now = began.elapsed();
+                    let now = began.get_or_insert_with(|| clock_from(&clock, hearing)).elapsed();
                     if due > now {
                         std::thread::sleep(due - now);
                     } else if out_t + 2.0 * gap < now.as_secs_f64() {
                         // Already more than two pictures late. Showing it
                         // would put the picture further behind the sound
-                        // rather than catch it up -- the sound plays at the
-                        // card's own speed and waits for nothing -- so it
+                        // rather than catch it up -- the sound keeps to the
+                        // clock and waits for nothing -- so it
                         // goes by instead. A skip costs the decode and no
                         // more, which is what lets the window ask for the
                         // recording's full rate on a machine that cannot
