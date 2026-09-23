@@ -242,7 +242,7 @@ fn collect_run(
     for (attempt, margin) in [0.0, src.seek_margin].into_iter().enumerate() {
         let mut slots = Slots::new(wanted, window);
         let mut failed = None;
-        let began = walk(src, from, margin, false, |t, frame| {
+        let began = walk(src, from, margin, false, Cores::One, |t, frame| {
             if t > last + fd {
                 return false;
             }
@@ -463,7 +463,7 @@ pub fn play_from(
     let mut stopped = false;
     for (attempt, margin) in [0.0, src.seek_margin].into_iter().enumerate() {
         let mut began_late = true;
-        let first = walk(src, entry, margin, false, |t, frame| {
+        let first = walk(src, entry, margin, false, Cores::All, |t, frame| {
             if t >= until - 1e-6 {
                 stopped = true;
                 return false;
@@ -531,7 +531,7 @@ pub fn picture_at(src: &Source, time: f64) -> Result<(f64, ff::frame::Video)> {
     for (attempt, margin) in [0.0, src.seek_margin].into_iter().enumerate() {
         let mut hit: Option<(f64, ff::frame::Video)> = None;
         let mut tail: Option<(f64, ff::frame::Video)> = None;
-        let began = walk(src, from, margin, false, |t, frame| {
+        let began = walk(src, from, margin, false, Cores::One, |t, frame| {
             // The wanted picture is whichever of the two straddling `time` is
             // nearer -- not "the first one at or after it". Under 2:3
             // pulldown the pictures are 41.7ms apart inside a 29.97 fps
@@ -1115,6 +1115,25 @@ fn place(ictx: &mut crate::input::Demux, src: &Source, from: f64, margin: f64) -
     Ok(())
 }
 
+/// How many cores [`walk`] decodes on.
+///
+/// One, for a walk that stops as soon as it has the picture it came for:
+/// frame threading holds pictures back until its pipeline fills, so every
+/// core means reading and decoding further past the answer before it comes
+/// out.
+///
+/// Every core for playback, which has to keep up with the recording and is
+/// going to read on anyway. On one core a UHD disc's 4K HEVC decoded at 21
+/// pictures a second against the 23.976 it plays at -- 88% of real time, so
+/// the picture fell behind the sound and 再生 went by in lurches -- and a
+/// 1080p Blu-ray at 45, which is too little headroom to survive the
+/// thumbnail pass running beside it. See `examples/playrate.rs`.
+#[derive(Clone, Copy)]
+enum Cores {
+    One,
+    All,
+}
+
 /// Decode forward from an access point, handing each picture to `visit`.
 ///
 /// Returns the presentation time of the first picture that came out, which is
@@ -1133,6 +1152,7 @@ fn walk(
     from: f64,
     margin: f64,
     keys: bool,
+    cores: Cores,
     mut visit: impl FnMut(f64, &ff::frame::Video) -> bool,
 ) -> Result<Option<f64>> {
     let mut ictx = crate::input::demux(&src.input.url)?;
@@ -1148,9 +1168,12 @@ fn walk(
         .stream(idx)
         .ok_or_else(|| anyhow!("stream {idx} vanished"))?
         .parameters();
-    let mut decoder = ff::codec::context::Context::from_parameters(params)?
-        .decoder()
-        .video()?;
+    let mut decoder = match cores {
+        Cores::One => ff::codec::context::Context::from_parameters(params)?
+            .decoder()
+            .video()?,
+        Cores::All => crate::video_decoder(params)?,
+    };
 
     let mut frame = ff::frame::Video::empty();
     let mut first = None;
