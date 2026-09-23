@@ -107,6 +107,17 @@ pub struct AccessPoint {
     /// landing a little late means missing the entry point entirely. Given
     /// the byte it starts at there is nothing left to approximate.
     pub pos: i64,
+    /// Whether the leading pictures above were read off the stream rather
+    /// than assumed.
+    ///
+    /// A disc's entry-point map and a container's seek table give an entry
+    /// point's time and byte and nothing about what hangs off it, so their
+    /// points start out assumed closed and [`index::refine_leading`] reads the
+    /// ones a cut lands near. Marked here so that it reads each of them once:
+    /// the plan is made again on every edit, and it used to measure the same
+    /// points every time -- thirty seconds a plan on a UHD disc, with the
+    /// recording locked away from the preview for all of it.
+    pub measured: bool,
 }
 
 impl AccessPoint {

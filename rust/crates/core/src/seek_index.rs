@@ -286,6 +286,9 @@ impl SeekIndex {
                 lead_indices,
                 droppable,
                 pos,
+                // Not written down point by point: an index either measured
+                // all of them or left the lot to be read when a cut needs it.
+                measured: flags & FLAG_LEADING_KNOWN != 0,
             });
         }
 

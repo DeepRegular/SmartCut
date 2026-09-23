@@ -835,20 +835,29 @@ fn log(msg: String) {
 /// Takes one lock at a time, never both. `detect_cm` holds `Opened` for
 /// minutes at a stretch, and a preview arriving in the middle of that has to
 /// be able to answer from the proxy rather than queue behind it.
+///
+/// **And holds neither while `f` runs.** What is handed over is a copy --
+/// a twentieth of a millisecond for the sixteen thousand entry points of a
+/// UHD title -- and `f` is a decode. Held, every picture the editor asks for
+/// stood in one queue: the stage behind the film strip's cells, and both
+/// behind whatever else had the recording. On a Blu-ray read out of an
+/// image while its thumbnails were being made, a click on the timeline took
+/// six seconds to reach the stage, all of it spent waiting for the strip.
 fn with_pictures<T>(
     app: &tauri::AppHandle,
     f: impl FnOnce(&Source, Option<&proxy::Marks>) -> Result<T, String>,
 ) -> Result<T, String> {
-    {
-        let state = app.state::<Proxy>();
-        let guard = locked(&state.0);
-        if let Some(p) = guard.as_ref() {
-            return f(&p.src, Some(&p.marks));
-        }
+    let proxied = locked(&app.state::<Proxy>().0)
+        .as_ref()
+        .map(|p| (p.src.clone(), p.marks.clone()));
+    if let Some((src, marks)) = proxied {
+        return f(&src, Some(&marks));
     }
-    let state = app.state::<Opened>();
-    let guard = locked(&state.0);
-    f(guard.as_ref().ok_or("no file open")?, None)
+    let src = locked(&app.state::<Opened>().0)
+        .as_ref()
+        .ok_or("no file open")?
+        .clone();
+    f(&src, None)
 }
 
 /// Run `f` on a worker thread, and hand its answer back when it is done.
@@ -3176,20 +3185,50 @@ async fn make_plan(ranges: Vec<(f64, f64)>, app: tauri::AppHandle) -> Result<Pla
     off_thread(move || plan_now(&ranges, &app)).await
 }
 
+/// The plan for `ranges` against the open recording.
+///
+/// **The leading pictures are read with the recording let go.** Everything
+/// that looks at a picture -- the stage, the film strip, 再生 -- waits on the
+/// same lock, and on a disc this read is a seek per entry point: it held the
+/// editor still for over a minute on a Blu-ray read out of an image while
+/// its thumbnails were being made, and for thirty seconds on every edit of a
+/// UHD title. So the points are measured on a copy and put back afterwards.
 fn plan_now(ranges: &[(f64, f64)], app: &tauri::AppHandle) -> Result<PlanInfo, String> {
     let state = app.state::<Opened>();
-    let mut guard = locked(&state.0);
-    let src = guard.as_mut().ok_or("no file open")?;
-    if !src.leading_known {
-        index::refine_leading(
-            &src.input.url.clone(),
-            &src.video.clone(),
-            src.start_time,
-            &mut src.points,
-            ranges,
-        )
-        .map_err(|e| e.to_string())?;
+    let pending = {
+        let guard = locked(&state.0);
+        let src = guard.as_ref().ok_or("no file open")?;
+        (!src.leading_known).then(|| {
+            (
+                src.path.clone(),
+                src.input.url.clone(),
+                src.video.clone(),
+                src.start_time,
+                src.byte_seekable,
+                src.points.clone(),
+            )
+        })
+    };
+    if let Some((path, url, video, start_time, byte_seek, mut points)) = pending {
+        index::refine_leading(&url, &video, start_time, byte_seek, &mut points, ranges)
+            .map_err(|e| e.to_string())?;
+        // Only into the recording they were read from, and only what this
+        // read added: another plan may have measured points of its own while
+        // this one was reading.
+        let mut guard = locked(&state.0);
+        if let Some(src) = guard
+            .as_mut()
+            .filter(|s| s.path == path && s.points.len() == points.len())
+        {
+            for (held, read) in src.points.iter_mut().zip(points) {
+                if read.measured && !held.measured {
+                    *held = read;
+                }
+            }
+        }
     }
+    let guard = locked(&state.0);
+    let src = guard.as_ref().ok_or("no file open")?;
     Ok(plan_info(&build_plan(src, ranges)))
 }
 
@@ -3233,6 +3272,7 @@ async fn clip_plan(
                 &src.input.url.clone(),
                 &src.video.clone(),
                 src.start_time,
+                src.byte_seekable,
                 &mut src.points,
                 &ranges,
             )
@@ -5001,6 +5041,7 @@ async fn export(
                 &src.input.url.clone(),
                 &src.video.clone(),
                 src.start_time,
+                src.byte_seekable,
                 &mut src.points,
                 &ranges,
             )
@@ -5256,6 +5297,7 @@ async fn export_joined(
                     &src.input.url.clone(),
                     &src.video.clone(),
                     src.start_time,
+                    src.byte_seekable,
                     &mut src.points,
                     &clip.ranges,
                 )

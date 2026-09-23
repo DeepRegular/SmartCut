@@ -1409,6 +1409,7 @@ fn main() -> Result<()> {
             &src.input.url,
             &src.video,
             src.start_time,
+            src.byte_seekable,
             &mut src.points,
             &ranges,
         )?;
@@ -1699,6 +1700,7 @@ fn main() -> Result<()> {
                 &also.input.url.clone(),
                 &also.video.clone(),
                 also.start_time,
+                also.byte_seekable,
                 &mut also.points,
                 &whole,
             )?;

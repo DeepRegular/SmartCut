@@ -697,6 +697,7 @@ mod tests {
                     lead_indices: if i == 0 { Vec::new() } else { vec![1] },
                     droppable: true,
                     pos: -1,
+                    measured: true,
                 }
             })
             .collect()

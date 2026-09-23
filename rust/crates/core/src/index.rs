@@ -363,6 +363,7 @@ impl IndexSource for DiscIndex {
                     lead_indices: Vec::new(),
                     droppable: true,
                     pos: pos as i64,
+                    measured: false,
                 }
             })
             .filter(|p| p.time >= -1.0)
@@ -486,6 +487,7 @@ impl IndexSource for ContainerIndex {
                     lead_indices: Vec::new(),
                     droppable: true,
                     pos,
+                    measured: false,
                 }
             })
             .collect();
@@ -828,6 +830,7 @@ fn point_at(packets: &[PacketView], i: usize, always_droppable: bool) -> AccessP
         lead_indices,
         droppable,
         pos: pkt.pos,
+        measured: true,
     }
 }
 
@@ -866,54 +869,74 @@ fn points_from(packets: &[PacketView], codec: &str) -> Vec<AccessPoint> {
 /// sixteen thousand entry points a Blu-ray records for a two-and-a-half-hour
 /// title, it took ten minutes to do what the walk it replaced took nine to
 /// do -- which is to say the disc's own index bought nothing at all.
+///
+/// **Each point once.** A point read here is marked [`AccessPoint::measured`]
+/// and passed over from then on, because the plan is made again on every edit
+/// and the same boundaries come round again and again.
+///
+/// **By byte where the index knows it** (`byte_seek`, which is
+/// [`crate::Source::byte_seekable`]). A timestamp seek on a transport stream
+/// bisects the file, and on an 81 GB UHD title that is most of a second and a
+/// half a point -- a minute for the forty-six points a plan over the whole
+/// title reads. The entry-point map says which byte each picture begins at.
 pub fn refine_leading(
     url: &str,
     video: &VideoInfo,
     start_time: f64,
+    byte_seek: bool,
     points: &mut [AccessPoint],
     ranges: &[(f64, f64)],
 ) -> Result<()> {
     /// How many entry points either side of a boundary are measured.
+    ///
+    /// Counted in points rather than turned into seconds, because what the
+    /// planner walks is points. A disc puts an entry point at every scene
+    /// change, and on the UHD title measured here there are runs of them a
+    /// frame apart: a stretch of seconds says nothing about how many that is.
     const SKIRT: usize = 24;
     let always_droppable = bitstream::leading_always_droppable(&video.codec);
-    let mut ictx = crate::input::demux(url)?;
-    // How far `SKIRT` points reaches in seconds, so the test below can stay a
-    // comparison of times: the points are sorted by time and a boundary can
-    // fall between two of them.
-    let gaps: Vec<f64> = points.windows(2).map(|w| w[1].time - w[0].time).collect();
-    let mean_gop = if gaps.is_empty() {
-        1.0
-    } else {
-        gaps.iter().sum::<f64>() / gaps.len() as f64
-    };
-    let skirt = (mean_gop * SKIRT as f64).clamp(2.0, 60.0);
+    let mut wanted = vec![false; points.len()];
     for (t_in, t_out) in ranges {
-        for slot in points.iter_mut() {
-            let near_start = (slot.time - *t_in).abs() <= skirt;
-            let near_end = (slot.time - *t_out).abs() <= skirt;
-            if !near_start && !near_end {
-                continue;
-            }
-            let window = window_at(&mut ictx, video, start_time, slot.time)?;
-            let half = video.frame_duration() / 2.0;
-            // Match on either clock: a walk reports presentation time, a
-            // container's seek table reports decode time.
-            let hit = window.iter().position(|p| {
-                p.key && ((p.pts - slot.time).abs() < half || (p.dts - slot.time).abs() < half)
-            });
-            if let Some(i) = hit {
-                let found = point_at(&window, i, always_droppable);
-                slot.time = found.time;
-                slot.lead_start = found.lead_start;
-                slot.lead_indices = found.lead_indices;
-                slot.droppable = found.droppable;
-                // A container's seek table already gave a position; keep it
-                // if this read could not better it.
-                if found.pos >= 0 {
-                    slot.pos = found.pos;
-                }
+        for t in [*t_in, *t_out] {
+            let i = points.partition_point(|p| p.time < t);
+            let lo = i.saturating_sub(SKIRT);
+            let hi = (i + SKIRT).min(points.len());
+            for w in &mut wanted[lo..hi] {
+                *w = true;
             }
         }
+    }
+    if !points.iter().zip(&wanted).any(|(p, &w)| w && !p.measured) {
+        return Ok(());
+    }
+    let mut ictx = crate::input::demux(url)?;
+    for (slot, &w) in points.iter_mut().zip(&wanted) {
+        if !w || slot.measured {
+            continue;
+        }
+        let at = (byte_seek && slot.pos >= 0).then_some(slot.pos);
+        let window = window_at(&mut ictx, video, start_time, slot.time, at)?;
+        let half = video.frame_duration() / 2.0;
+        // Match on either clock: a walk reports presentation time, a
+        // container's seek table reports decode time.
+        let hit = window.iter().position(|p| {
+            p.key && ((p.pts - slot.time).abs() < half || (p.dts - slot.time).abs() < half)
+        });
+        if let Some(i) = hit {
+            let found = point_at(&window, i, always_droppable);
+            slot.time = found.time;
+            slot.lead_start = found.lead_start;
+            slot.lead_indices = found.lead_indices;
+            slot.droppable = found.droppable;
+            // A container's seek table already gave a position; keep it
+            // if this read could not better it.
+            if found.pos >= 0 {
+                slot.pos = found.pos;
+            }
+        }
+        // Whether or not the read found it: a second read of the same
+        // bytes would find the same thing.
+        slot.measured = true;
     }
     Ok(())
 }
@@ -1006,6 +1029,7 @@ fn stretch_points(
                 lead_indices: Vec::new(),
                 droppable: true,
                 pos: read_at as i64,
+                measured: false,
             });
         }
     }
@@ -1100,9 +1124,44 @@ fn window_at(
     video: &VideoInfo,
     start_time: f64,
     at: f64,
+    byte: Option<i64>,
 ) -> Result<Vec<PacketView>> {
+    // Straight to the picture's own packet where the index says where it is,
+    // and a timestamp seek a second short of it otherwise. Should the read
+    // from the byte not find it there, the timestamp is tried instead.
+    if let Some(pos) = byte {
+        let placed = unsafe {
+            ff::ffi::av_seek_frame(ictx.as_mut_ptr(), -1, pos, ff::ffi::AVSEEK_FLAG_BYTE) >= 0
+        };
+        if placed {
+            let out = window_from(ictx, video, start_time, at, Some(pos))?;
+            if out.iter().any(|p| p.key && p.pos == pos) {
+                return Ok(out);
+            }
+        }
+    }
     let target = ((at - 1.0).max(0.0) + start_time) * ff::ffi::AV_TIME_BASE as f64;
     let _ = ictx.seek(target as i64, ..target as i64);
+    window_from(ictx, video, start_time, at, None)
+}
+
+/// The packets from wherever `ictx` stands up to the access point after `at`.
+///
+/// `landed` is the byte a read was placed on, where it was placed by byte.
+/// Then the picture wanted is the one that begins *there*, and nothing else
+/// will do: in a run of entry points a frame apart, the next picture's decode
+/// time is this one's presentation time, and matching on either clock took
+/// the neighbour for it. Where the first key picture out is some other one,
+/// the demuxer dropped the packet on the seek -- it does, when the read
+/// before stopped on that very packet -- and this gives up at once rather
+/// than read on to the cap, which on 4K is a hundred megabytes for nothing.
+fn window_from(
+    ictx: &mut ff::format::context::Input,
+    video: &VideoInfo,
+    start_time: f64,
+    at: f64,
+    landed: Option<i64>,
+) -> Result<Vec<PacketView>> {
     let mut out = Vec::new();
     let mut target: Option<usize> = None;
     for (s, p) in ictx.packets() {
@@ -1114,8 +1173,15 @@ fn window_at(
         let d = p.dts().unwrap_or(pts) as f64 * video.time_base - start_time;
         let key = p.is_key();
         let half = video.frame_duration() / 2.0;
-        if target.is_none() && key && ((t - at).abs() < half || (d - at).abs() < half) {
+        let here = match landed {
+            Some(byte) => p.position() as i64 == byte,
+            None => (t - at).abs() < half || (d - at).abs() < half,
+        };
+        if target.is_none() && key && here {
             target = Some(out.len());
+        }
+        if landed.is_some() && target.is_none() && (key || d > at + 1.0) {
+            break;
         }
         let reference = p
             .data()
