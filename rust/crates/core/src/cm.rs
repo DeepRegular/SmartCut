@@ -568,14 +568,17 @@ pub fn blocks_from_logo(
     // has walked has no entry points to seek to, and reading it from the
     // beginning to place one boundary is a great deal worse than placing it
     // with the silences alone. See [`refine_boundaries`].
+    //
+    // Only the junctions a break's start could be snapped to are asked
+    // about. Every one of them costs a seek and a second of decoding, and a
+    // half-hour recording carries forty that no edge is anywhere near.
+    let in_reach = |t: f64| logo_absent.iter().any(|&(a, _)| (a - t).abs() <= snap * 2.0);
     let usable: Vec<f64> = match pictures {
-        Some(src) if !src.points.is_empty() => candidates
+        Some(src) if !src.points.is_empty() => junctions
             .iter()
-            .filter(|c| c.score >= 0.6)
-            .filter(|c| {
-                crate::thumbs::cut_within(src, c.time, CUT_WINDOW, CUT_FLOOR).unwrap_or(true)
-            })
-            .map(|c| c.time)
+            .copied()
+            .filter(|&t| in_reach(t))
+            .filter(|&t| crate::thumbs::cut_within(src, t, CUT_WINDOW, CUT_FLOOR).unwrap_or(true))
             .collect(),
         _ => Vec::new(),
     };
