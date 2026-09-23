@@ -5653,11 +5653,15 @@ function renderJoin() {
 let masterNoteToken = 0;
 function paintMasterNote() {
   const note = el("master-note");
+  const token = ++masterNoteToken;
+  // The list under the row goes with it. It is painted only when an answer
+  // arrives, so nothing else takes it down once the box is unticked -- and
+  // the token above stops an answer still on its way from putting it back.
   if (el("row-master").hidden) {
     note.textContent = "";
+    paintMasterWhy([]);
     return;
   }
-  const token = ++masterNoteToken;
   // Something in the gap where there is nothing yet. Only then: a list that
   // has already been answered for keeps its answer while a repaint goes
   // round, rather than blinking through this on every keystroke.
