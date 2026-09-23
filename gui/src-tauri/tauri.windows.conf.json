@@ -6,7 +6,8 @@
       "nsis"
     ],
     "resources": {
-      "windows-deps/*.dll": "./"
+      "windows-deps/*.dll": "./",
+      "windows-deps/smartcut-cli.exe": "./"
     },
     "windows": {
       "nsis": {

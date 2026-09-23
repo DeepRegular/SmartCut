@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Cross-build the Windows app on the Linux dev VM (see DEVENV.md).
-#   ./build-windows.sh   -> NSIS installer + portable zip
+#   ./build-windows.sh   -> NSIS installer + portable zip, each holding the GUI
+#                           (smartcut.exe) and the command line (smartcut-cli.exe)
 #
 # Nothing in the Rust code is Linux-specific — it all goes through libav — so
 # the only Windows-shaped pieces are the FFmpeg import libraries the linker
@@ -34,6 +35,12 @@ for d in "${DLLS[@]}"; do cp -u "$FF/bin/$d.dll" src-tauri/windows-deps/; done
 export FFMPEG_DIR="$FF"       # ffmpeg-sys-next links $FFMPEG_DIR/lib/*.lib
 export XWIN_ACCEPT_LICENSE=1  # cargo-xwin fetches the MSVC headers on first run
 
+# The CLI's binary is called smartcut too, which on Windows is the GUI's name.
+# It goes in under the same name the Linux packages give it, and rides along as
+# a resource like the DLLs so the installer puts it next to the GUI.
+cargo xwin build --release --target "$TARGET" --manifest-path ../rust/Cargo.toml -p smartcut-cli
+cp "../rust/target/$TARGET/release/smartcut.exe" src-tauri/windows-deps/smartcut-cli.exe
+
 cd src-tauri
 cargo tauri build --runner cargo-xwin --target "$TARGET" --bundles nsis
 
@@ -41,7 +48,7 @@ cargo tauri build --runner cargo-xwin --target "$TARGET" --bundles nsis
 OUT="target/$TARGET/release"
 STAGE="$OUT/bundle/portable"
 rm -rf "$STAGE" && mkdir -p "$STAGE/smartcut"
-cp "$OUT/smartcut.exe" "$STAGE/smartcut/"
+cp "$OUT/smartcut.exe" windows-deps/smartcut-cli.exe "$STAGE/smartcut/"
 for d in "${DLLS[@]}"; do cp "$FF/bin/$d.dll" "$STAGE/smartcut/"; done
 (cd "$STAGE" && 7z a -tzip -mx=9 smartcut-portable-x64.zip smartcut >/dev/null)
 
