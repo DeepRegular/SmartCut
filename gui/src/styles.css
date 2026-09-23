@@ -1498,6 +1498,11 @@ input[type="number"]::-webkit-outer-spin-button {
 }
 #out-list .n { color: var(--dim); text-align: right; }
 #out-list .nm { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+/* Why the rows that do not match the master do not match it: a line each,
+   under the row the master is picked in. Indented to the picker rather than
+   to the panel, so it reads as an answer to that row. */
+.why { margin: -2px 0 6px 118px; line-height: 1.5; }
+.why div { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 #out-list .note { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 #out-list .pbar { height: 7px; background: var(--sunken); border: 1px solid var(--line); overflow: hidden; }
 #out-list .pbar span { display: block; height: 100%; background: var(--copy); }

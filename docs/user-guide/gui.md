@@ -1178,9 +1178,10 @@ else is copied at its own size, and says so.
 Nor for a clip that is not the master's shape in a joined run. Every frame of
 it is written afresh, so there are no seams to show: you get the representative
 frame with `Written afresh at the master's shape`, and the line underneath says
-what differs — the frame size, the rate, the scan, and the rest. How many clips
-this will happen to is said beside the master picker on the output settings
-screen, before the run.
+what differs — the frame size, the rate, the scan, and the rest. **Which clips
+this will happen to, and what about each of them differs, is on the output
+settings screen before the run**: the count beside the master picker, and a
+line under it for each row that does not match.
 
 While the list is being written the picture follows along. When the run ends it
 **stays on the last frame encoded** rather than going back to the top.

@@ -5142,11 +5142,49 @@ function paintMasterNote() {
   const of = ready().length - 1;
   joinFits().then((fits) => {
     if (token !== masterNoteToken || !fits) return;
-    const n = fits.filter((f) => f.video).length;
-    note.textContent = n
-      ? t("outset.masterDiffer", { n, of: fits.length })
+    const odd = fits.filter((f) => f.video);
+    note.textContent = odd.length
+      ? t("outset.masterDiffer", { n: odd.length, of: fits.length })
       : t("outset.masterFits", { n: of });
+    paintMasterWhy(odd);
   });
+}
+
+/// ...and which rows those are, and what about each of them differs.
+///
+/// The count on its own is the question rather than the answer. A list of
+/// twelve episodes off one recorder with one row that does not match is an
+/// hour of encoding, and what to do about it is a different thing in each of
+/// the cases it can be: a recording made at another size is one to write out
+/// on its own, a recording whose stream states a colour the others leave
+/// unstated is one to make the master instead, and a recording with a second
+/// sound track is neither -- that difference is in the sound and costs the
+/// pictures nothing.
+///
+/// Said here and not only in the run's own log, which is where it was: the
+/// log is read while an hour of encoding is already under way, and this is
+/// the screen the hour is agreed to on.
+///
+/// Every one of them, with no ceiling on the list. A row that does not match
+/// is a row somebody is about to spend an hour on; a list where twenty of
+/// them differ is a list where the master is the odd one out, and a line
+/// saying「ほか 17 件」would hide exactly the case worth seeing.
+function paintMasterWhy(odd) {
+  const box = el("master-why");
+  box.innerHTML = "";
+  box.hidden = !odd.length;
+  for (const fit of odd) {
+    const clip = ready().find((c) => c.path === fit.path);
+    const line = document.createElement("div");
+    const why = whyOf(fit) || t("fit.unstated");
+    line.textContent = t("outset.masterWhy", {
+      n: clip ? ready().indexOf(clip) + 1 : "?",
+      clip: clip ? clipLabel(clip) : nameOf(fit.path),
+      why,
+    });
+    line.title = line.textContent;
+    box.append(line);
+  }
 }
 
 function renderOutset() {

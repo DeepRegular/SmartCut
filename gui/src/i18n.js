@@ -519,6 +519,10 @@ const CATALOG = {
     "outset.masterFits": "ほかの {n} 本は同じ形式なので、そのままコピーされます",
     "outset.masterDiffer":
       "{of} 本中 {n} 本が基準クリップと形式が違うので、全編再エンコードになります",
+    "outset.masterWhy": "{n}: {clip} — {why}",
+    // 差が音声だけのときに、映像側の理由として出す言葉。音声の違いは
+    // 下の「音声」の行が別に説明します。
+    "fit.unstated": "音声だけが違います",
     "outset.crossHead": "継ぎ目の効果",
     "outset.crossRow": "継ぎ目の効果:",
     "outset.crossClip": "対象クリップ:",
@@ -1570,6 +1574,10 @@ const CATALOG = {
     "outset.masterFits": "The other {n} clip{n?s} are this shape, so they are copied",
     "outset.masterDiffer":
       "{n} of {of} clips are not this shape, so every picture of them is written afresh",
+    "outset.masterWhy": "{n}: {clip} — {why}",
+    // What stands in for the video reason where only the sound differs. The
+    // audio note below says what about the sound.
+    "fit.unstated": "only the sound differs",
     "outset.crossHead": "Between the clips",
     "outset.crossRow": "Between the clips:",
     "outset.crossClip": "After clip:",
