@@ -9,7 +9,11 @@ use smartcut_core as sc;
 
 fn main() -> Result<()> {
     let path = std::env::args().nth(1).expect("usage: logodiag <file>");
-    let src = sc::outline(&path)?.into_source();
+    // Walked, not the container's answer alone: the template's pass reads a
+    // long recording in runs rather than end to end, and it is the access
+    // points that say where those runs are. What the application holds by
+    // the time it asks for a logo is a walked recording.
+    let src = sc::scan(&path)?;
     let opts = sc::logo::LogoOptions::default();
     let began = std::time::Instant::now();
     let found = sc::logo::detect_with(&src, &opts, None);

@@ -447,6 +447,21 @@ pub fn keep_only(ictx: &mut Demux, keep: &[usize]) {
     }
 }
 
+/// Put every stream back, so the recording can be seeked again.
+///
+/// A pass that seeks more than once has to: libavformat will not seek by a
+/// stream it has been told to discard, and the note on [`keep_only`] is
+/// about doing the two in the right order the first time. Doing them in that
+/// order every time is this.
+pub fn keep_everything(ictx: &mut Demux) {
+    for stream in ictx.streams() {
+        // SAFETY: as in [`keep_only`].
+        unsafe {
+            (*(stream.as_ptr() as *mut ff::ffi::AVStream)).discard = ff::Discard::Default.into();
+        }
+    }
+}
+
 /// How far into a recording to look for a stream the first program map did
 /// not mention. libavformat's own limit is five megabytes.
 ///

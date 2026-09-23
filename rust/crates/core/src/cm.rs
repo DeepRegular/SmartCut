@@ -204,17 +204,55 @@ pub fn find_silences(src: &Source, opts: &DetectOptions) -> Result<Vec<Silence>>
 pub fn find_silences_with(
     src: &Source,
     opts: &DetectOptions,
-    mut progress: Option<Box<dyn FnMut(f64) + Send>>,
+    progress: Option<Box<dyn FnMut(f64) + Send>>,
 ) -> Result<Vec<Silence>> {
+    Ok(read_sound(src, opts, false, progress)?.0)
+}
+
+/// The sound and the caption marks, out of one read of the recording.
+///
+/// They were two reads, and on a share reading the recording is the whole of
+/// what either of them costs: a caption stream is a few hundred kilobytes of
+/// a four-gigabyte file and the sound is a few tens of megabytes, and both
+/// passes went past every byte to find them. The caption stream is read
+/// where the recording carries one, and what it says is handed back beside
+/// the silences for the caller to prefer or to drop.
+///
+/// The sound is walked either way, which costs a decode that a recording
+/// whose marks turn out to be good does not need. That decode is seconds and
+/// the read it would otherwise have to make is minutes.
+pub fn silences_and_resets(
+    src: &Source,
+    opts: &DetectOptions,
+    progress: Option<Box<dyn FnMut(f64) + Send>>,
+) -> Result<(Vec<Silence>, Result<Vec<f64>>)> {
+    read_sound(src, opts, true, progress)
+}
+
+fn read_sound(
+    src: &Source,
+    opts: &DetectOptions,
+    marks_too: bool,
+    mut progress: Option<Box<dyn FnMut(f64) + Send>>,
+) -> Result<(Vec<Silence>, Result<Vec<f64>>)> {
     crate::init()?;
     let audio = src
         .audio
         .as_ref()
         .ok_or_else(|| anyhow!("{} has no audio", src.path))?;
     let mut ictx = crate::input::demux(&src.input.url)?;
-    // Only the sound is read, so the pictures go by unassembled -- which is
-    // most of the recording. See [`crate::input::keep_only`].
-    crate::input::keep_only(&mut ictx, &[audio.stream_index]);
+    let captions = if marks_too {
+        crate::caption::reset_streams(&ictx)
+    } else {
+        Vec::new()
+    };
+    // The sound and, where it is wanted, the subtitles. Everything else goes
+    // by unassembled, which is most of the recording. See
+    // [`crate::input::keep_only`].
+    let mut keep: Vec<usize> = captions.iter().map(|(i, _)| *i).collect();
+    keep.push(audio.stream_index);
+    crate::input::keep_only(&mut ictx, &keep);
+    let mut marks = crate::caption::Marks::new(captions.clone());
     let params = ictx
         .stream(audio.stream_index)
         .ok_or_else(|| anyhow!("audio stream vanished"))?
@@ -239,6 +277,7 @@ pub fn find_silences_with(
 
     for (stream, packet) in ictx.packets() {
         if stream.index() != audio.stream_index {
+            marks.take(stream.index(), &packet, src);
             continue;
         }
         if decoder.send_packet(&packet).is_err() {
@@ -289,7 +328,12 @@ pub fn find_silences_with(
         });
     }
     out.retain(|s| s.duration() >= opts.min_silence);
-    Ok(out)
+    let resets = if captions.is_empty() {
+        Err(crate::caption::NoResets.into())
+    } else {
+        marks.settle()
+    };
+    Ok((out, resets))
 }
 
 /// Rank the silences by how much they look like commercial junctions.

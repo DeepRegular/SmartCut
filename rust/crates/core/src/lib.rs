@@ -63,7 +63,8 @@ pub use cm::{
     blocks as cm_blocks, blocks_from_logo as cm_blocks_from_logo,
     blocks_from_resets as cm_blocks_from_resets, candidates as cm_candidates, find_silences,
     find_silences_with, marks_every_junction as cm_marks_every_junction,
-    refine_boundaries as cm_refine_boundaries, DetectOptions,
+    refine_boundaries as cm_refine_boundaries, silences_and_resets as cm_silences_and_resets,
+    DetectOptions,
 };
 pub use cut::{
     can_carry_data_broadcast, cut, cut_with_progress, tables_for, writable_sound, write_audio_es,

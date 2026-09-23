@@ -1147,7 +1147,12 @@ fn main() -> Result<()> {
         // the other two readings can be, and they cost one pass over a
         // stream that needs no decoding. When they are absent -- and on
         // several channels they are -- nothing is lost by having looked.
-        let resets = match smartcut_core::caption::resets(&src) {
+        let opts = smartcut_core::DetectOptions::default();
+        // The sound and the caption stream out of one read of the recording,
+        // as the window reads them. See `cm::silences_and_resets`.
+        let (silences, found) = smartcut_core::cm_silences_and_resets(&src, &opts, None)
+            .unwrap_or_else(|_| (Vec::new(), smartcut_core::caption::resets(&src)));
+        let resets = match found {
             // And read instead of the other two only where the station marks
             // every junction rather than only the places its programme stops
             // and starts; see `cm_marks_every_junction`.
@@ -1167,8 +1172,8 @@ fn main() -> Result<()> {
                 None
             }
         };
-        // The logo costs half a minute of decoding and is the weaker signal
-        // where the resets exist, so it is not paid for then.
+        // The logo costs two more reads and is the weaker signal where the
+        // resets exist, so it is not paid for then.
         let logo = if use_logo && resets.is_none() {
             match smartcut_core::logo::detect(&src, &Default::default()) {
                 Ok(l) => Some(l),
@@ -1191,12 +1196,6 @@ fn main() -> Result<()> {
                 println!("   {}  →  {}   ({:6.1}s)", fmt_hms(*a), fmt_hms(*b), b - a);
             }
         }
-        let opts = smartcut_core::DetectOptions::default();
-        // Silences are only wanted where they still decide something.
-        let silences = match &resets {
-            Some(_) => Vec::new(),
-            None => smartcut_core::find_silences(&src, &opts)?,
-        };
         let cands = smartcut_core::cm_candidates(&silences, &opts);
         // The same reading the window makes, arrived at the same way, so
         // that the two do not answer differently about one recording. The

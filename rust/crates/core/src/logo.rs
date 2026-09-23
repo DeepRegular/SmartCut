@@ -226,6 +226,7 @@ fn wanted_of(
 /// is what every other pass here does with them.
 fn walk_keyframes<T: Send + 'static>(
     src: &Source,
+    reach: &Reach,
     threads: usize,
     take: impl Fn(&ff::frame::Video) -> Option<T> + Send + Sync + 'static,
     mut progress: Option<&mut dyn FnMut(f64)>,
@@ -250,32 +251,70 @@ fn walk_keyframes<T: Send + 'static>(
         move |t, frame| Ok(take(frame).map(|v| (t, v))),
     )?;
 
-    let duration = src.duration.max(1e-9);
     let mut deliver = |made: Vec<Option<(f64, T)>>| {
+        let mut last = None;
         for (t, v) in made.into_iter().flatten() {
             visit(t, v);
-            if let Some(f) = progress.as_mut() {
-                f((t / duration).clamp(0.0, 1.0));
-            }
+            last = Some(t);
         }
+        last
     };
 
-    let mut entries = crate::EntryPictures::new(&src.video);
-    // One picture's packets: the key packet, and the one behind it where the
-    // material is field coded and the picture is two.
-    let mut pending: Vec<ff::Packet> = Vec::new();
-    for (stream, packet) in ictx.packets() {
-        if stream.index() != idx {
-            continue;
+    let (starts, each) = match reach {
+        Reach::Whole => (vec![None], usize::MAX),
+        Reach::Stretches { from, each } => {
+            (from.iter().map(|&t| Some(t)).collect(), (*each).max(1))
         }
-        match entries.step(&packet) {
-            crate::Step::Skip => continue,
-            crate::Step::Half => pending.push(packet),
-            crate::Step::Whole => {
-                pending.push(packet);
-                pool.push(std::mem::take(&mut pending));
-                while let Some(made) = pool.ready() {
-                    deliver(made?);
+    };
+    let duration = src.duration.max(1e-9);
+    let mut pending: Vec<ff::Packet> = Vec::new();
+    for (n, start) in starts.iter().enumerate() {
+        if let Some(at) = *start {
+            // Seek with the streams back, then throw them away again: the
+            // recording is seeked by one of them. See
+            // [`crate::input::keep_only`].
+            crate::input::keep_everything(&mut ictx);
+            let placed = crate::index::seek_to_entry(&mut ictx, src, at).is_some();
+            crate::input::keep_only(&mut ictx, &[idx]);
+            if !placed {
+                // The index could not place it, and reading on from wherever
+                // the file stands would sample the same stretch twice.
+                continue;
+            }
+        }
+        // A seek leaves whatever was half sent behind it.
+        pending.clear();
+        let mut entries = crate::EntryPictures::new(&src.video);
+        let mut took = 0usize;
+        // One picture's packets: the key packet, and the one behind it where
+        // the material is field coded and the picture is two.
+        for (stream, packet) in ictx.packets() {
+            if stream.index() != idx {
+                continue;
+            }
+            match entries.step(&packet) {
+                crate::Step::Skip => continue,
+                crate::Step::Half => pending.push(packet),
+                crate::Step::Whole => {
+                    pending.push(packet);
+                    pool.push(std::mem::take(&mut pending));
+                    took += 1;
+                    let mut last = None;
+                    while let Some(made) = pool.ready() {
+                        last = deliver(made?).or(last);
+                    }
+                    if let Some(f) = progress.as_mut() {
+                        f(match (last, each) {
+                            (_, e) if e != usize::MAX => {
+                                (n as f64 + took as f64 / e as f64) / starts.len() as f64
+                            }
+                            (Some(t), _) => (t / duration).clamp(0.0, 1.0),
+                            (None, _) => 0.0,
+                        });
+                    }
+                    if took >= each {
+                        break;
+                    }
                 }
             }
         }
@@ -284,6 +323,53 @@ fn walk_keyframes<T: Send + 'static>(
         deliver(made?);
     }
     Ok(())
+}
+
+/// Which entry pictures a walk is to decode.
+enum Reach {
+    /// Every one of them, reading the recording from end to end.
+    Whole,
+    /// `each` of them from every one of these instants.
+    Stretches { from: Vec<f64>, each: usize },
+}
+
+/// How many entry pictures the template is built from, where the recording
+/// holds enough more than that to be worth not reading.
+///
+/// The template is an average, and an average of a couple of thousand
+/// broadcast pictures has the picture behind the logo blurred away already:
+/// it is the *number* of pictures that does that and not the share of the
+/// recording they came from. A 30-minute recording carries 3600 entry
+/// pictures and two and a half hours carries seventeen thousand, and the
+/// second one does not need a template five times as good.
+const TEMPLATE_PICTURES: usize = 1800;
+
+/// ...taken in this many runs spread across the recording, rather than one
+/// picture in every N.
+///
+/// What is being saved is the reading, and on a share that is the whole of
+/// what this pass costs. A run of packets is read at the share's speed and a
+/// scattered sample at its seek time, so the sample is contiguous where it
+/// can be and spread where it matters: a template drawn from one stretch of
+/// a recording has whatever was on screen during that stretch standing as
+/// still as the logo.
+const TEMPLATE_STRETCHES: usize = 24;
+
+/// Where the template's pass is to read, given what the recording holds.
+///
+/// Reading end to end wherever the saving would be small: a recording with
+/// twice the sample in it saves half a read, and one with barely more than
+/// the sample saves nothing and pays for the seeks.
+fn template_reach(src: &Source) -> Reach {
+    let points = src.points.len();
+    if !src.byte_seekable || points < TEMPLATE_PICTURES * 2 || src.duration <= 0.0 {
+        return Reach::Whole;
+    }
+    let each = TEMPLATE_PICTURES.div_ceil(TEMPLATE_STRETCHES);
+    let from = (0..TEMPLATE_STRETCHES)
+        .map(|k| src.duration * k as f64 / TEMPLATE_STRETCHES as f64)
+        .collect();
+    Reach::Stretches { from, each }
 }
 
 pub fn detect(src: &Source, opts: &LogoOptions) -> Result<Logo> {
@@ -310,6 +396,13 @@ pub fn detect_with(
     // First pass: what is always there, in each corner?
     let mut sums: Vec<Vec<f64>> = (0..4).map(|_| vec![0.0; n]).collect();
     let mut count = 0usize;
+    // How far apart the entry pictures stand, which is what the second
+    // pass's smoothing window is measured in. Taken from the pictures
+    // themselves rather than from the count over the length: the template's
+    // pass may have sampled the recording in runs, and a count over the
+    // whole length would then read as a quarter of the real rate.
+    let mut gaps: Vec<f64> = Vec::new();
+    let mut previous = f64::NEG_INFINITY;
     // Two passes over the key pictures, so each is half of the reported
     // progress. The adaptor is scoped to its pass: it borrows `progress`,
     // and the second pass needs it back.
@@ -325,15 +418,20 @@ pub fn detect_with(
         };
         walk_keyframes(
             src,
+            &template_reach(src),
             opts.threads,
             move |frame| corners_of(frame, cw, ch),
             Some(&mut on),
-            |_t, corners| {
+            |t, corners| {
                 for (k, buf) in corners.iter().enumerate() {
                     for (i, &v) in buf.iter().enumerate() {
                         sums[k][i] += v as f64;
                     }
                 }
+                if previous.is_finite() && t > previous {
+                    gaps.push(t - previous);
+                }
+                previous = t;
                 count += 1;
             },
         )?;
@@ -396,10 +494,13 @@ pub fn detect_with(
 
     // Second pass: score every key frame against all four templates.
     let ring_len = {
-        // key frames are not evenly spaced, so size the window from the
-        // recording's actual rate
-        let rate = count as f64 / src.duration.max(1.0);
-        ((opts.window_seconds * rate).round() as usize).clamp(2, 64)
+        // Key pictures are not evenly spaced, so size the window from what
+        // they actually turned out to be. The median stands up to a sampled
+        // pass: the jumps between one run and the next are two dozen gaps
+        // out of eighteen hundred.
+        gaps.sort_by(f64::total_cmp);
+        let gap = gaps.get(gaps.len() / 2).copied().unwrap_or(0.5).max(1e-6);
+        ((opts.window_seconds / gap).round() as usize).clamp(2, 64)
     };
     // Which samples of each corner the score is worked out from: the mask,
     // and the four neighbours the high pass reaches for at each of them. Every
@@ -447,6 +548,7 @@ pub fn detect_with(
         };
         walk_keyframes(
             src,
+            &Reach::Whole,
             opts.threads,
             move |frame| wanted_of(frame, cw, ch, &wanted),
             Some(&mut on),

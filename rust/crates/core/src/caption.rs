@@ -246,11 +246,7 @@ pub fn resets_with(
 ) -> Result<Vec<f64>> {
     crate::init()?;
     let mut ictx = crate::input::demux(&src.input.url)?;
-    let streams: Vec<(usize, f64)> = ictx
-        .streams()
-        .filter(|s| s.parameters().medium() == ff::media::Type::Subtitle)
-        .map(|s| (s.index(), f64::from(s.time_base())))
-        .collect();
+    let streams = reset_streams(&ictx);
     if streams.is_empty() {
         return Err(NoResets.into());
     }
@@ -259,22 +255,12 @@ pub fn resets_with(
     let keep: Vec<usize> = streams.iter().map(|(i, _)| *i).collect();
     crate::input::keep_only(&mut ictx, &keep);
 
-    let mut out: Vec<f64> = Vec::new();
-    let mut scratch: Vec<u8> = Vec::new();
+    let mut marks = Marks::new(streams);
     let mut told = -1.0;
     for (stream, packet) in ictx.packets() {
-        let Some(&(_, tb)) = streams.iter().find(|(i, _)| *i == stream.index()) else {
+        let Some(t) = marks.take(stream.index(), &packet, src) else {
             continue;
         };
-        let (Some(data), Some(pts)) = (packet.data(), packet.pts()) else {
-            continue;
-        };
-        let t = pts as f64 * tb - src.start_time;
-        if is_reset(data, &mut scratch) {
-            if let Some(t) = unwrapped(t, src.duration) {
-                out.push(t);
-            }
-        }
         if let Some(f) = progress.as_mut() {
             let done = (t / src.duration.max(1e-9)).clamp(0.0, 1.0);
             if done - told >= 0.02 {
@@ -286,13 +272,61 @@ pub fn resets_with(
     if let Some(f) = progress.as_mut() {
         f(1.0);
     }
+    marks.settle()
+}
 
-    out.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
-    out.dedup_by(|later, earlier| *later - *earlier < MIN_GAP);
-    if out.len() < MIN_MARKS {
-        return Err(NoResets.into());
+/// Which streams of a recording carry subtitles, and on what clock.
+pub(crate) fn reset_streams(ictx: &crate::input::Demux) -> Vec<(usize, f64)> {
+    ictx.streams()
+        .filter(|s| s.parameters().medium() == ff::media::Type::Subtitle)
+        .map(|s| (s.index(), f64::from(s.time_base())))
+        .collect()
+}
+
+/// The marks found so far, and what a packet adds to them.
+///
+/// Split out of [`resets_with`] because the same reading is made beside the
+/// sound: the two passes were two reads of the whole recording, and on a
+/// share reading it is the whole cost. See [`crate::cm::find_silences_with`].
+pub(crate) struct Marks {
+    streams: Vec<(usize, f64)>,
+    at: Vec<f64>,
+    scratch: Vec<u8>,
+}
+
+impl Marks {
+    pub(crate) fn new(streams: Vec<(usize, f64)>) -> Self {
+        Self {
+            streams,
+            at: Vec::new(),
+            scratch: Vec::new(),
+        }
     }
-    Ok(out)
+
+    /// Note whatever this packet says, and answer with its own instant --
+    /// which is what a caller reports progress against. `None` for a packet
+    /// of some other stream, or one with no time on it.
+    pub(crate) fn take(&mut self, index: usize, packet: &ff::Packet, src: &Source) -> Option<f64> {
+        let &(_, tb) = self.streams.iter().find(|(i, _)| *i == index)?;
+        let (data, pts) = (packet.data()?, packet.pts()?);
+        let t = pts as f64 * tb - src.start_time;
+        if is_reset(data, &mut self.scratch) {
+            if let Some(t) = unwrapped(t, src.duration) {
+                self.at.push(t);
+            }
+        }
+        Some(t)
+    }
+
+    pub(crate) fn settle(mut self) -> Result<Vec<f64>> {
+        self.at
+            .sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+        self.at.dedup_by(|later, earlier| *later - *earlier < MIN_GAP);
+        if self.at.len() < MIN_MARKS {
+            return Err(NoResets.into());
+        }
+        Ok(self.at)
+    }
 }
 
 /// A character a broadcaster sent the picture of.

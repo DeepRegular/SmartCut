@@ -3546,52 +3546,40 @@ fn detect_now(
 ) -> Result<CmResult, String> {
     let opts = smartcut_core::DetectOptions::default();
 
-    // Reading the audio is a few seconds; the logo is two passes over the
-    // video and takes ten times as long. Weighting them that way is what
-    // makes the bar move at an honest rate rather than sitting at 10%.
+    // The sound and the caption stream come out of one read of the
+    // recording. Reading it is the cost on a share -- a caption stream is a
+    // few hundred kilobytes of four gigabytes -- and these were two reads of
+    // the whole file to find two small things in it.
     //
-    // The caption stream goes first: where the broadcaster resets the
-    // service at its junctions, those marks are exact and cost one pass
-    // over a stream nothing has to decode. It is also the only signal of
-    // the three that is cheap enough to try speculatively.
-    const CAPTION_SHARE: f64 = 0.15;
+    // The logo is two more, and is much the larger share of the wait, so the
+    // bar moves at an honest rate by giving it three quarters.
+    const SOUND_SHARE: f64 = 0.25;
     let reporter = say.clone();
-    let resets = smartcut_core::caption::resets_with(
+    let heard = smartcut_core::cm_silences_and_resets(
         src,
+        &opts,
         Some(Box::new(move |f| {
-            (*reporter)(tr!("字幕を調べています", "Reading the captions"), f * CAPTION_SHARE)
-        })),
-    )
-    .ok()
-    // And only where the station marks every junction rather than only the
-    // places its programme stops and starts. A sparse marking is exact about
-    // the few breaks it names and silent about the rest, and read instead of
-    // the other two it emits one break where the recording has four. See
-    // [`smartcut_core::cm_marks_every_junction`].
-    .filter(|r| smartcut_core::cm_marks_every_junction(r));
-
-    // With the resets in hand neither of the other two reads anything:
-    // the audio is a few seconds, but the logo is two passes over the
-    // video, and it is the weaker signal wherever the marks exist.
-    let rest = 1.0 - CAPTION_SHARE;
-    let audio_share = 0.1 * rest;
-    let silences = match &resets {
-        Some(_) => Vec::new(),
-        None => {
-            let reporter = say.clone();
-            smartcut_core::find_silences_with(
-                src,
-                &opts,
-                Some(Box::new(move |f| {
-                    (*reporter)(
-                        tr!("音声を調べています", "Reading the audio"),
-                        CAPTION_SHARE + f * audio_share,
-                    )
-                })),
+            (*reporter)(
+                tr!("音声と字幕を調べています", "Reading the sound and the captions"),
+                f * SOUND_SHARE,
             )
-            .map_err(|e| e.to_string())?
-        }
+        })),
+    );
+    // A recording with no sound to read still has marks worth having.
+    let (silences, resets) = match heard {
+        Ok(v) => v,
+        Err(_) => (Vec::new(), smartcut_core::caption::resets(src)),
     };
+    let resets = resets
+        .ok()
+        // And only where the station marks every junction rather than only
+        // the places its programme stops and starts. A sparse marking is
+        // exact about the few breaks it names and silent about the rest, and
+        // read instead of the other two it emits one break where the
+        // recording has four. See
+        // [`smartcut_core::cm_marks_every_junction`].
+        .filter(|r| smartcut_core::cm_marks_every_junction(r));
+
     let cands = smartcut_core::cm_candidates(&silences, &opts);
 
     // The logo is the better read on how far a break runs, but not every
@@ -3611,7 +3599,7 @@ fn detect_now(
             Some(Box::new(move |f| {
                 (*reporter)(
                     tr!("ロゴを探しています", "Looking for the logo"),
-                    CAPTION_SHARE + audio_share + f * (rest - audio_share),
+                    SOUND_SHARE + f * (1.0 - SOUND_SHARE),
                 )
             })),
         )
