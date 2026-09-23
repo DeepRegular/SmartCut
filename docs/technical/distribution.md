@@ -92,8 +92,8 @@ only). The bundle *files* Tauri writes are named after `productName` instead —
 
 | Artifact | Size | FFmpeg | Requires |
 |---|---|---|---|
-| `SmartCut-0.8.1-linux-x86_64.tar.gz` | 202.3 MB | Bundled | glibc 2.39 or newer. No FUSE needed |
-| `smartcut_0.8.1_amd64.deb` | 4.7 MB | Uses the system's | FFmpeg 7.1 (Debian 13 / Ubuntu 25.04 and later) |
+| `SmartCut-0.8.1-linux-x86_64.tar.gz` | 202.4 MB | Bundled | glibc 2.39 or newer. No FUSE needed |
+| `smartcut_0.8.1_amd64.deb` | 4.8 MB | Uses the system's | FFmpeg 7.1 (Debian 13 / Ubuntu 25.04 and later) |
 
 **The tar.gz contains the same AppDir as the AppImage, extracted.** The 716 libraries
 linuxdeploy gathered by following `ldd` sit in `app/` as they are, `./smartcut` is a
@@ -169,8 +169,15 @@ Cross-built from the Linux development VM to `x86_64-pc-windows-msvc`.
 
 | Artifact | Size | Contents |
 |---|---|---|
-| NSIS installer | 54.1 MB | 173.6 MB installed (15.3 MB exe plus 8 FFmpeg DLLs) |
-| Portable zip | 67.6 MB | The same set. Unzip and run `smartcut.exe` |
+| NSIS installer | 55.0 MB | 176.4 MB installed (the GUI's exe, the CLI's exe and 8 FFmpeg DLLs) |
+| Portable zip | 68.8 MB | The same set. Unzip and run `smartcut.exe` for the GUI, `smartcut-cli.exe` for the command line |
+
+**The command-line tool ships under the name the Linux packages give it.** Its cargo
+binary is called `smartcut`, which on Windows is the GUI's name, so the script builds it
+first with `cargo xwin`, copies it into `windows-deps/` as `smartcut-cli.exe`, and
+`tauri.windows.conf.json` lists it as a resource beside the DLLs. That is what puts it
+next to the GUI in the install folder; the portable zip takes it from the same place.
+Before 0.8.1 neither package carried it.
 
 **Exactly one piece of code had to be rewritten for the port: audio output.** Everything
 else goes through libav, so there is no `Command::new` and no POSIX path. All that was
@@ -209,17 +216,9 @@ Checked under wine 10.0 on the VM.
 - **The CLI's output does not differ from the Linux build by a single byte.** `--cut
   5-10` on the same `mpeg2.ts` matches to the md5. The index (41 access points, 39 open
   GOPs) is identical, as is the 0.3% re-encoded for the partial GOPs at the boundaries.
-  Note that **the `smartcut.exe` in the portable zip is the GUI**, so the CLI has to be
-  built separately:
-
-  ```bash
-  cd rust && FFMPEG_DIR=~/win-deps/ffmpeg-7.1.1-full_build-shared \
-    XWIN_ACCEPT_LICENSE=1 cargo xwin build --release \
-    --target x86_64-pc-windows-msvc -p smartcut-cli
-  ```
-
-  Put the same DLLs as the GUI next to the exe. Right now this is effectively the only
-  route left for confirming that the FFmpeg DLLs resolve — see the next point.
+  The CLI checked is the `smartcut-cli.exe` out of the portable zip, run in the folder
+  it unpacks to. Right now this is effectively the only route left for confirming that
+  the FFmpeg DLLs resolve — see the next point.
 
 - **The GUI no longer starts under wine** (as of 2026-08-27). `tao`'s
   `event_loop.rs:709` hits `assertion failed: subclass_result.as_bool()`, meaning

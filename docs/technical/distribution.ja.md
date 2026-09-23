@@ -89,8 +89,8 @@ cargo のクレート名は `gui` なので、放っておくと Tauri はその
 
 | 成果物 | サイズ | FFmpeg | 必要条件 |
 |---|---|---|---|
-| `SmartCut-0.8.1-linux-x86_64.tar.gz` | 202.3 MB | 同梱 | glibc 2.39 以上。FUSE 不要 |
-| `smartcut_0.8.1_amd64.deb` | 4.7 MB | システムのものを使用 | FFmpeg 7.1（Debian 13 / Ubuntu 25.04 以降） |
+| `SmartCut-0.8.1-linux-x86_64.tar.gz` | 202.4 MB | 同梱 | glibc 2.39 以上。FUSE 不要 |
+| `smartcut_0.8.1_amd64.deb` | 4.8 MB | システムのものを使用 | FFmpeg 7.1（Debian 13 / Ubuntu 25.04 以降） |
 
 tar.gz の中身は、AppImage と同じ AppDir を展開したものである。linuxdeploy が
 `ldd` を辿って集めた 716 個のライブラリがそのまま `app/` にある。`./smartcut` は
@@ -166,8 +166,16 @@ Linux の開発 VM から `x86_64-pc-windows-msvc` へクロスビルドして�
 
 | 成果物 | サイズ | 内容 |
 |---|---|---|
-| NSIS インストーラ | 54.1 MB | インストール後 173.6 MB（exe 15.3 MB ＋ FFmpeg の DLL 8 個） |
-| ポータブル zip | 67.6 MB | 同じ一式。展開して `smartcut.exe` を実行する |
+| NSIS インストーラ | 55.0 MB | インストール後 176.4 MB（GUI の exe、CLI の exe、FFmpeg の DLL 8 個） |
+| ポータブル zip | 68.8 MB | 同じ一式。GUI は `smartcut.exe`、コマンドライン版は `smartcut-cli.exe` を実行する |
+
+**コマンドライン版は、Linux のパッケージと同じ `smartcut-cli` という名前で
+入れている。** cargo が作る CLI のバイナリ名は `smartcut` で、Windows では GUI と
+同じ名前になってしまう。そこでビルドスクリプトは先に `cargo xwin` で CLI を
+ビルドし、`windows-deps/smartcut-cli.exe` として置く。`tauri.windows.conf.json` は
+これを DLL と同じくリソースとして指定しているので、インストール先では GUI と
+同じフォルダーに入る。ポータブル zip にも同じものを入れる。0.8.0 までは、
+どちらにも入っていなかった。
 
 移植のために書き直したコードは、**音声出力の 1 か所だけ**である。ほかはすべて libav
 を通るので、`Command::new` も POSIX パスも出てこない。必要だったのはリンク先の
@@ -205,16 +213,10 @@ VM 上の wine 10.0 で確認している。
 
 - **CLI の出力は Linux 版と 1 バイトも違わない。** 同じ `mpeg2.ts` に対する
   `--cut 5-10` が md5 まで一致する。索引（アクセスポイント 41 個、オープン GOP
-  39 個）も同一で、境界の部分 GOP に対する再エンコード 0.3% も同じである。なお
-  ポータブル zip の `smartcut.exe` は GUI なので、CLI は別途ビルドする。
-
-  ```bashcd rust && FFMPEG_DIR=~/win-deps/ffmpeg-7.1.1-full_build-shared \
-    XWIN_ACCEPT_LICENSE=1 cargo xwin build --release \
-    --target x86_64-pc-windows-msvc -p smartcut-cli
-  ```
-
-  GUI と同じ DLL を exe と同じ場所に置く。現状、FFmpeg の DLL が解決できることを
-  確認する方法は事実上これだけである（次の項目を参照）。
+  39 個）も同一で、境界の部分 GOP に対する再エンコード 0.3% も同じである。
+  確認に使うのは、ポータブル zip を展開したフォルダーの `smartcut-cli.exe` である。
+  現状、FFmpeg の DLL が解決できることを確認する方法は事実上これだけである
+  （次の項目を参照）。
 
 - GUI は wine で起動しなくなった（2026-08-27 時点）。`tao` の
   `event_loop.rs:709` で `assertion failed: subclass_result.as_bool()` に当たる。

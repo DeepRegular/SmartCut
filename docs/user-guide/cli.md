@@ -2,9 +2,11 @@
 
 [← Documentation](../README.md) ・ [← SmartCut](../../README.md) ・ [日本語](cli.ja.md)
 
-**The same engine that runs inside the GUI** is also available as a command
-called `smartcut`. (If you installed the `.deb`, it is called `smartcut-cli`
-there — `smartcut` is the GUI.)
+**The same engine that runs inside the GUI** is also available as a command.
+The packages install it as `smartcut-cli` — `smartcut-cli.exe` on Windows,
+`./smartcut-cli` in the unpacked tar.gz — and `smartcut` is the GUI. Built
+from source, the command is called `smartcut`, which is what the examples on
+this page use.
 
 It is for repeating the same job, for calling from a script, and for machines
 with no screen to put a window on. It can do everything the GUI can.
@@ -111,7 +113,7 @@ copy, so **the whole track is re-encoded**.
 | `--audio-bitrate RATE` | Bits per second when re-encoding, as `192k` or `192000`. Left out, it follows the recording. A figure the encoder will not accept is raised to what that codec is ordinarily carried at, with a note saying so |
 | `--aac auto\|mpeg2\|mpeg4` | Which flavour of AAC the frames SmartCut writes announce themselves as. `auto`, the default, follows the recording — MPEG-2 AAC for a broadcast |
 | `--audio-es` | Also write the sound out as a bare stream beside the output. AAC only |
-| `--sound-only` | Write the sound and no pictures: the ranges, the joins and the fades exactly as they would be inside the video, and nothing read or written for the frames. `-o` names the file and its extension picks the container — `.aac`, `.ac3`, `.m4a`, or `.wav` for linear PCM. One sound track |
+| `--sound-only` | Write the sound and no pictures: the ranges, the joins and the fades exactly as they would be inside the video, and nothing read or written for the frames. `-o` names the file and its extension picks the container — `.aac`, `.ac3`, `.mp2`, `.mp3`, `.dts`, `.m4a`, or `.wav`, which is always written as linear PCM. A sound the container has no room for stops the run before anything is written. One sound track, and not with `--bdav` |
 | `--audio-fade SECONDS` | Take the level down into each seam and bring it back out over that many seconds. 0 to 10; 0, no fade, is the default |
 | `--join-fade-out SECONDS` | How long the sound takes to leave at the end of each clip, where `--join` writes several into one file. 0 to 10; 0 is the default |
 | `--join-fade-in SECONDS` | ...and how long it takes to come back at the start of the next one |

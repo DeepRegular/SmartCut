@@ -147,14 +147,15 @@ install.
 |---|---|---|
 | **Linux** | `SmartCut_0.8.1_amd64.AppImage` | Make it executable and run it |
 | **Linux** | `SmartCut-0.8.1-linux-x86_64.tar.gz` | Unpack and run `./smartcut`. Use this if you would rather not deal with FUSE |
-| **Linux (Debian/Ubuntu)** | `smartcut_0.8.1_amd64.deb` | `sudo apt install ./smartcut_0.8.1_amd64.deb`. Only 4.7 MB, because it uses the FFmpeg already on your system |
-| **Windows** | `SmartCut_0.8.1_x64-setup.exe` | Installer |
-| **Windows** | `smartcut-portable-x64-0.8.1.zip` | Unzip and run `smartcut.exe` |
+| **Linux (Debian/Ubuntu)** | `smartcut_0.8.1_amd64.deb` | `sudo apt install ./smartcut_0.8.1_amd64.deb`. Only 4.8 MB, because it uses the FFmpeg already on your system |
+| **Windows** | `SmartCut_0.8.1_x64-setup.exe` | Installer. The command-line tool, `smartcut-cli.exe`, goes into the same folder |
+| **Windows** | `smartcut-portable-x64-0.8.1.zip` | Unzip and run `smartcut.exe`. The command-line tool is `smartcut-cli.exe` |
 
 **Requirements.** The AppImage and the tar.gz need glibc 2.39 or newer, which
 means Ubuntu 24.04, Debian 13, Fedora 40 or later. The `.deb` needs FFmpeg 7.1,
 which means Debian 13 or Ubuntu 25.04 or later; it installs the GUI as
-`smartcut` and the command-line tool as `smartcut-cli`. The Windows builds are
+`smartcut` and the command-line tool as `smartcut-cli`, which on Windows is
+`smartcut-cli.exe`. The Windows builds are
 x64 only and need the WebView2 runtime, which ships with Windows 11 and is
 already present on nearly all Windows 10 machines.
 
@@ -266,7 +267,9 @@ thirty seconds and shaped by any of twelve easing curves. A still image can be
 laid over the crossing. This is the one thing here that is not smart rendering
 — a transition is pictures that are in neither recording, so its seconds are
 written afresh — and that is exactly why it is offered at the joins and
-nowhere else.
+nowhere else. The sound has its own two settings at each join: how long the
+clip that is ending takes to fade out, and how long the next one takes to come
+back.
 
 **Video:** H.264, HEVC, MPEG-2, MPEG-4 Part 2, VC-1, VP9, AV1. Interlaced
 material stays interlaced, and 2:3 pulldown is handled properly rather than
@@ -326,7 +329,12 @@ keeps both languages.
 5.1 can be folded down to stereo, and the sound can be written as a different
 codec entirely — AAC, AC-3, DTS or linear PCM — although that leaves no frame to
 copy, so the whole track is rebuilt. The same is true of changing the sample
-rate.
+rate. The fold is chosen per row and per track, so the 5.1 film in a list can
+go to stereo while the broadcast beside it is left alone.
+
+**Sound only**, at the foot of the container list, writes the sound of the cut
+— ranges, joins and fades — as an audio file, without reading or writing a
+single picture.
 
 The output settings screen only offers combinations that **can actually be
 written**: a rate a codec does not support, or a bitrate below what its frames

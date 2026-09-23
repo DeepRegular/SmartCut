@@ -945,12 +945,32 @@ so a range's worth of them is a whole number of frames however the range was
 chosen, and end to end is the only arrangement that neither overlaps nor
 drifts.
 
+**An overlapping crossing takes the same seconds out of the sound as it does
+in a video run.** A dissolve, a wipe or a slide shows the head of the next clip
+while the one before it is still sounding, so the video's writer starts that
+clip later by the crossing's length, sound and all
+(`cut::ranges_with_transitions`). The sound alone now makes the same cut with
+the same arithmetic — each end gives at most half its range, and the pair is
+held to the smaller. Before 0.8.1 it did not, and the file came out a
+crossing's length longer at every join. A fade takes nothing from either side.
+
+**A joined recording whose sound is another shape re-encodes the track.** The
+output stream is declared as the first recording's, and packets of another
+codec, rate or channel count cannot be copied into it. The video's writer
+re-encodes only the reels that differ; with one track and no pictures,
+re-encoding all of it comes to the same file.
+
 The file's name picks the container, and the container picks the codec where
 it insists: `carriage` answers for the containers a *cut* goes into, where
 big-endian PCM is what an MP4 has a box for, and a `.wav` wants its samples
 the other way round. Asked for the wrong one it says "Function not
 implemented" — after creating the file. So a PCM target is taken to whatever
-that container writes PCM as.
+that container writes PCM as — keeping its width, since the muxer names its
+sixteen-bit default and a 24-bit track would otherwise be cut down to it. The
+CLI writes a `.wav` as linear PCM whatever the recording's own sound is. And a
+container with no room for the codec at all — MP2 in an `.m4a` — says only
+"Invalid argument", once the header is being written; `avformat_query_codec` is
+asked first, so the run stops naming the codec and the file.
 
 **One track.** A bilingual recording has two, and an audio file with two
 tracks in it is a thing only some containers hold; the first kept track is

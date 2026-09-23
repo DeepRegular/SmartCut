@@ -249,12 +249,14 @@ out: the row turns red and says the file is no longer there. Put the name back,
 or take the row out and add the file again.
 
 **Quick properties**, along the bottom, describes whichever single clip is
-selected. With several selected, it just says how many.
+selected. With several selected, it says how many and shows the Audio line.
 
 The **Audio:** line in quick properties gives the codec and sample rate and
 then, underlined, **what that row's sound will be written as** — say
 `aac, 48000 Hz, Stereo (default)`. Clicking the underlined words opens the
-choices, and the answer belongs to that *row*.
+choices, and the answer belongs to that *row*. A recording with more than one
+sound track has a line for each — `Audio 1:`, `Audio 2:` — and each track is
+chosen on its own.
 
 - The `(default)` entry is what the output settings' channel count comes to
   for this recording: `Stereo (default)` for a 5.1 recording when the output
@@ -267,8 +269,9 @@ choices, and the answer belongs to that *row*.
   channel of it is both languages at once.
 
 **It answers for every row chosen**, so twelve episodes are a select-all and
-one choice. With several rows selected the Audio line is still shown, and
-where they disagree it says so; picking one gives them all that answer.
+one choice. With several rows selected there is a line for the first tracks of
+all of them, one for the second tracks, and so on; where they disagree it says
+so, and picking one gives them all that answer.
 
 It is per row because it is the one question the list cannot have a single
 answer to. Everything on the output settings screen describes the file being
@@ -282,7 +285,7 @@ bars. It can be changed with the editor open; while playing, the change is
 heard about a second later. A fold asked for by the output settings is heard
 the same way.
 
-**Picking anything but the default writes that row's sound afresh** —
+**Picking anything but the default writes that track afresh** —
 nothing else can change the channel count, since copying and smart rendering
 both carry the recording's own frames. A note beside the choice says so. It is
 greyed while the output settings copy the sound outright.
@@ -879,10 +882,10 @@ What is set on either tab stays there when you switch.
 | Field | |
 |---|---|
 | **Write the list as one file** | In the **Output format** panel above. Off, the run writes one file per row, which is what it has always done. On, the whole list becomes a single output, in the order the rows are in, named after the first row. See [Joining the list into one file](#joining-the-list-into-one-file) |
-| **Master clip** | Under the box, and only while it is ticked. Which row the joined file takes its shape from: its frame size, its rate, its codec, its sound tracks |
+| **Master clip** | Under the box, and only while it is ticked. Which row the joined file takes its shape from: its frame size, its rate, its codec, its sound tracks. Where rows do not match it, a line for each says which row and what differs |
 | **Between the clips** | In the **Output format** panel above, and only while the list is being joined. `Transition…` opens a window of its own. See [Transitions between the clips](#transitions-between-the-clips) |
 | **Output folder** | Empty means alongside the input. Use `Browse`, or type a path (an SMB path is fine) |
-| **Subfolder** | A folder of that name under the output folder, which is where the run writes. Offered where there is more than one file. The name is filled in the first time you look: the disc's name, or the project's, or else today's date. Emptied, the run writes straight into the folder above. **A folder of that name already there gets a branch number** — `night`, then `night-2`, `night-3` — so a second run never lands on the first one's files. The field keeps the name you gave; `already there → night-2` beside it says where the run will actually write |
+| **Subfolder** | A folder of that name under the output folder, which is where the run writes. Offered where there is more than one file, and not for a join, which is one file. The name is filled in the first time you look: the disc's name, or the project's, or else today's date. Emptied, the run writes straight into the folder above. **A folder of that name already there gets a branch number** — `night`, then `night-2`, `night-3` — so a second run never lands on the first one's files. The field keeps the name you gave; `already there → night-2` beside it says where the run will actually write |
 | **Filename prefix** | `cut_` by default, in front of the name. What it starts as is a [preference](#output-settings) |
 | **Number** | Puts the row's number in the list behind the prefix, in 2 to 4 digits. **On by default**, so `cut_01_recording.ts`; turned off, `cut_recording.ts`. For a list whose order means something and a folder that sorts by name |
 | **Container** | The file format. `Same as the input`, or a specific one. A container that cannot hold the recordings in the list is greyed out (see [Why some choices are greyed out](#why-some-choices-are-greyed-out)). **Sound only, no pictures**, at the foot of the list, writes an audio file and no video at all — see [Writing the sound only](#writing-the-sound-only) |
@@ -955,8 +958,9 @@ answer if you say nothing.
 A row that matches the master is smart-rendered exactly as it would be on its
 own. **A row that does not is decoded and written afresh to fit** — another
 size is scaled, another frame rate is converted by holding or passing over
-pictures, another sound is re-encoded. Only that row. The output screen says
-which rows and why before it writes anything:
+pictures, another sound is re-encoded. Only that row. Which rows, and why, is
+listed under the master clip on the output settings screen, and the output
+screen says it again as the run writes them:
 
 ```
 note: holiday.mp4 is not the shape of episode01.ts, so its pictures and its
@@ -1053,7 +1057,7 @@ programme that is ending should end, and how the one that is starting should
 start. A programme that ends on its own theme wants a long way down and nothing
 at all on the way up — three seconds out and none in, and that is what it does.
 The fade at the cuts *inside* one recording is a single answer for the run and
-lives in [preferences](#the-cut-editor-1); this one is per join.
+lives in [preferences](#how-cuts-are-made); this one is per join.
 
 Nothing to do with the transition above it. A join with no crossing over it can
 carry a fade, and a dissolve can carry none: a crossing takes material off both
@@ -1086,9 +1090,9 @@ rather than a video run with the sound extracted afterwards: two recordings
 of eleven minutes take under a second, where writing the video takes four.
 
 The extension follows **what the sound is**: `.aac` for a broadcast's own,
-`.ac3` for AC-3, `.wav` if **Audio codec** is set to linear PCM, and `.m4a`
-for anything with no file of its own. The line under the container row says
-which it will be for the list in hand.
+`.ac3` for AC-3 and E-AC-3, `.mp2`, `.mp3` and `.dts` for those, `.wav` for
+linear PCM (a disc's own, or **Audio codec** set to it), and `.m4a` for
+anything with no file of its own.
 
 The audio settings work as they always do. Left at smart rendering, only the
 frames a boundary falls inside are rebuilt and the rest are the recording's
@@ -1258,8 +1262,9 @@ The large picture is not a representative frame. It is **a frame that will be
 re-encoded** — the only place in the output whose quality is this program's
 doing.
 
-`Re-encode 1 of 2` says how many such places there are, and the line above says
-how many frames in total.
+`Re-encode 1 of 2` on the picture says which of those places it is, and the
+**Re-encoded:** line under the picture says how many places and frames there are
+in all.
 
 For a clip whose cuts all landed on lossless points, you get an ordinary
 representative frame instead, with `Nothing re-encoded — the whole clip is
@@ -1327,9 +1332,9 @@ effect as you make it.
 | Setting | What it does |
 |---|---|
 | **Language** | English, Japanese, or follow the system (the default). A change takes effect in both windows at once |
-| **Frame number and clock over the picture** | The box at the foot of the cut editor's picture. The same answer as its **Counter** button |
-| **Audio level meter** | The meter to the left of the cut editor's picture. This is the only place it is switched on and off |
-| **Show the subtitles from the start** | Opens a recording that carries subtitles with the first track already chosen. It can still be switched while cutting |
+| **Draw the frame number and clock over the picture in the cut editor** | The box at the foot of the cut editor's picture. The same answer as its **Counter** button |
+| **Show the audio level meter in the cut editor** | The meter to the left of the cut editor's picture. This is the only place it is switched on and off |
+| **Show the subtitles in the cut editor from the start** | Opens a recording that carries subtitles with the first track already chosen. It can still be switched while cutting |
 
 ### Cut editor
 
