@@ -92,9 +92,8 @@ are for recordings that do not.
 where the programme stops and starts and nothing in between. Marks like that
 are put aside, and the logo and the silences decide instead.
 
-**Where the marks are used, the logo is not read at all**, even with "use the
-logo too" ticked. The marks are the better answer, and the analysis finishes in
-a fraction of the time.
+**Where the marks are used, the logo is not read at all.** The marks are the
+better answer, and the analysis finishes in a fraction of the time.
 
 There are three possible answers: **subtitle marks**, **logo and silence**, and
 **no commercials**. The last one is a recording where the logo never went away
