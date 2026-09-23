@@ -122,6 +122,41 @@ The leading commercial's boundary was checked to the frame as well: 3.80 s is st
 commercial (a picture of a can), and 3.835 s is the programme's first picture. The
 mark is in the right place.
 
+### How often it lands on one, and what a wider window would cost
+
+The report behind this was marks sitting mid-shot: "not an entry picture, not a
+scene change". `examples/cutdiag.rs` measures it — run the detection over a
+recording and print, for every boundary it emits, what the window around that
+boundary actually holds. Thirty BS Nittele and BS Asahi recordings, every one of
+them read by logo and silence:
+
+| | |
+|---|---|
+| Put on the frame a cut happens on | **87%**, median shift 0.088 s, worst 0.49 s |
+| No cut within half a second of them | 13% |
+
+A cut stands within 2.5 s of most of the second group, so a wider window would
+move them. Measured over the blocks that sit wholly inside a recording, it buys
+nothing and then costs:
+
+| Window | A whole number of 15-second units | ...of 5-second units |
+|---|---|---|
+| ±0.5 s | 47/66 | 52/66 |
+| ±1.0 s | 47/66 | 52/66 |
+| ±1.5 s | 47/66 | 52/66 |
+| ±2.5 s | 45/66 | 50/66 |
+
+The boundaries that stay put are on the grid already. Their estimate is right and
+the junction there is simply not a change of picture — a fade, or two commercials
+that look alike — and dragging them onto the nearest cut takes them off it.
+
+**And a BS anime slot is not sold only in fifteens.** Of those same blocks, 47 are a
+whole number of 15-second units and 52 a whole number of 5: the ones that are not
+run 65.97, 70.10, 85.39 and 115.01 seconds, which are exact multiples of five and
+read as a sixty- or ninety-second break with a five-second sponsor card on the end.
+Measured against the fifteen alone a block like that looks wrong when it is not, and
+the ruler is worth the more careful reading.
+
 ## How it is scored
 
 The ground truth for five recordings is pinned in `tests/run_cm_tests.sh`. The two
