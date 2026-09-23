@@ -130,6 +130,30 @@ is not — and a recording whose description disagrees with its content cannot b
 told from one that says nothing, so there was never an answer there to lose.
 The rule is `conform::stated` and `conform::same_colour`.
 
+### What actually differs, measured
+
+A month of broadcast: 1186 recordings off 32 channels, read with `conformdiag
+--group`. Twelve channels hold recordings that are not all one shape **and
+differ in nothing but the scan**; three more differ in something real (a
+programme broadcast at 720x480 among a channel's 1440x1080, one file that
+would not open). Across the whole corpus, 1088 recordings come back
+interlaced top field first, 76 progressive and 22 bottom field first — and 40
+of those are the odd one out on a channel whose other recordings are all the
+same.
+
+The scan is libavformat's reading of the pictures it probed, not a field the
+stream states outright. A Japanese broadcast carries progressive-coded frames
+inside a 1080i stream constantly — most animation is coded that way — so
+whether the frames a probe happens to see are progressive depends on whether
+the recording began in the programme or in the commercial before it. The same
+programme two weeks running comes back progressive once and interlaced once.
+
+**That is a whole clip re-encoded for a reading rather than for a difference**,
+and it is what somebody joining two episodes of one series actually hits. The
+`unknown` case is answered above; `progressive` against `interlaced` is a
+stated disagreement and is not, so it stands as a mismatch and the screen now
+says which field it was.
+
 **29.97 and 30 are not the same rate.** The tolerance is a ten-thousandth,
 relative; what it is for is the last figure of a rate that arrived as a
 decimal, and it has to be well under the thousandth that separates 30000/1001
