@@ -218,6 +218,25 @@ else
   bad "a wipe writes and decodes" "nothing usable was written"
 fi
 
+# --- a crossing held to the shorter of its two ends -------------------------
+#
+# The two clips of an overlapping crossing are on screen together, so the
+# seconds the clip before spends on it are the seconds the clip after gives
+# up at its head. Each end is capped at half of its own range, and where one
+# of those ranges is short the two caps differ -- at which point the clip
+# after either loses material the crossing never showed, or shows its first
+# seconds twice. A two-second range against a whole recording is the case:
+# the crossing may run one second, so the output is the range plus what is
+# left of the second clip.
+$CUT "$FX/one.ts" --keep 0-2 --join "$FX/two.ts" --transition dissolve \
+  --transition-seconds 2 -o "$OUT/short.ts" >/dev/null 2>&1
+got=$(secs "$OUT/short.ts"); want=$(python3 -c "print(2.0 + $TWO - 1.0)")
+if near "$got" "$want" 0.5; then
+  ok "a crossing takes what both ends allow" "$(printf '%.2f' "$got")s of a wanted $(printf '%.2f' "$want")"
+else
+  bad "a crossing takes what both ends allow" "$got s, wanted about $want"
+fi
+
 # --- and the path an ordinary cut takes is unchanged ------------------------
 #
 # The whole of the above is reached through the same function a single

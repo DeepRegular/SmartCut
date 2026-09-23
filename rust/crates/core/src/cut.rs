@@ -4790,6 +4790,41 @@ fn ranges_with_transitions(
         }
         t
     };
+    // Half a range, which is the most either of its ends may give a
+    // transition: a transition longer than the clip it is joining is a
+    // transition with nothing left to join.
+    let room =
+        |plan: Option<&RangePlan>| plan.map_or(0.0, |p| ((p.t_out - p.t_in) / 2.0).max(0.0));
+    // What each junction really takes from the clip before it and from the
+    // clip after it.
+    //
+    // **An overlapping crossing takes the same seconds from both**, because
+    // they are the same seconds: the two clips are on screen together, and
+    // what the clip before spends on the crossing is what the clip after
+    // gives up at its head. Capped separately -- each end against half of
+    // its own range -- the two come out different lengths as soon as one of
+    // the ranges is short, and then the clip after either loses material the
+    // crossing never showed or shows its first seconds twice. So the pair is
+    // held to whichever end allows less, which is the answer the window
+    // previewing the seam gives; see [`crate::crossview::Seam::takes`].
+    //
+    // A fade is not a pair. Its two halves are written in place, each inside
+    // its own range, and neither costs the other anything, so each is capped
+    // on its own.
+    let takes_at: Vec<(f64, f64)> = (0..reels.len())
+        .map(|n| {
+            let t = crossing(n);
+            let (want_before, want_after) = t.takes();
+            let before = want_before.min(room(reels[n].plans.last()));
+            let after = want_after.min(room(reels.get(n + 1).and_then(|r| r.plans.first())));
+            if t.kind.overlaps() {
+                let both = before.min(after);
+                (both, both)
+            } else {
+                (before, after)
+            }
+        })
+        .collect();
     reels
         .iter()
         .enumerate()
@@ -4807,13 +4842,12 @@ fn ranges_with_transitions(
             for (k, plan) in reel.plans.iter().enumerate() {
                 let first = k == 0;
                 let last_range = k + 1 == reel.plans.len();
-                // How much of this range each end wants, held to half of it
-                // apiece: a transition longer than the clip it is joining is
-                // a transition with nothing left to join.
-                let room = ((plan.t_out - plan.t_in) / 2.0).max(0.0);
-                let want_head = if first { head.takes().1 } else { 0.0 };
-                let want_tail = if last_range { tail.takes().0 } else { 0.0 };
-                let (take_head, take_tail) = (want_head.min(room), want_tail.min(room));
+                // How much of this range each end gives up, worked out
+                // once per junction above so that the two sides of one
+                // crossing agree. A range in the middle of a reel has a
+                // transition at neither end.
+                let take_head = if first && n > 0 { takes_at[n - 1].1 } else { 0.0 };
+                let take_tail = if last_range { takes_at[n].0 } else { 0.0 };
                 // **A range no transition touches is the range the caller
                 // planned.** Re-planning it here would answer with this
                 // file's idea of the planner's settings rather than the

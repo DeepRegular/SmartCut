@@ -70,15 +70,16 @@ impl Seam<'_> {
     /// How much of each clip the crossing really takes.
     ///
     /// [`Transition::takes`] says what it asks for; this is what the material
-    /// allows. The planner holds each end to half the range it takes from --
-    /// a transition longer than the clip it is joining is a transition with
-    /// nothing left to join -- and it caps the two ends independently,
-    /// because each is working on a range of its own.
+    /// allows. Each end is held to half the range it takes from -- a
+    /// transition longer than the clip it is joining is a transition with
+    /// nothing left to join.
     ///
-    /// An overlapping crossing cannot be lopsided on screen, though: the two
-    /// clips are shown *together*, so it runs for whichever of the two ends
-    /// allows less. A fade is two separate halves and keeps the planner's
-    /// answer exactly.
+    /// An overlapping crossing cannot be lopsided: the two clips are shown
+    /// *together*, so what one end spends is what the other gives up, and it
+    /// runs for whichever of the two allows less. A fade is two separate
+    /// halves written in place, so each of those is capped on its own. The
+    /// cutter answers both the same way; see `ranges_with_transitions` in
+    /// [`crate::cut`].
     pub fn takes(&self) -> (f64, f64) {
         let (want_before, want_after) = self.transition.takes();
         let room_before = ((self.before_out - self.before_in) / 2.0).max(0.0);
