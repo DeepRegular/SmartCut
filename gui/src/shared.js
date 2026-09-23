@@ -196,8 +196,17 @@ export const MENU_LEAST = 120;
 /// what that draws has to answer a keyboard too, because the control it
 /// stands in for did.
 ///
+/// How `wireDrops` takes a control over, for one that did not exist when it
+/// ran -- a control drawn into a panel whose text is written afresh.
+let adopt = null;
+
+/// Take over a `.drop > select` built after `wireDrops` ran.
+export function adoptDrop(select) {
+  if (adopt) adopt(select);
+}
+
 /// Called once per window, after the markup is up. Every `.drop > select` in
-/// the page is taken over.
+/// the page is taken over; one built later is handed to `adoptDrop`.
 export function wireDrops() {
   /// The menu that is up: `{ hide, onKey }`. Only ever one.
   let openDrop = null;
@@ -359,6 +368,7 @@ export function wireDrops() {
   }
 
   document.querySelectorAll(".drop > select").forEach(opensUpward);
+  adopt = opensUpward;
   // Anywhere else, and it is not a choice being made.
   window.addEventListener("mousedown", (ev) => {
     if (!ev.target.closest(".drop")) closeDrop();

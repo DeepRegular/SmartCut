@@ -128,6 +128,17 @@ struct Vol(smartcut_core::Volume);
 #[derive(Default)]
 struct Meter(smartcut_core::Levels);
 
+/// How many channels the row in the cut editor is written in, where that is
+/// fewer than its recording has; 0 for the recording's own.
+///
+/// Set by the list window, which is where the answer is made -- the row's
+/// own choice in the quick properties, or the output settings' -- and read
+/// by the editor's playback and its meter, so both of them are the output's
+/// sound rather than the recording's. See [`smartcut_core::Fold`] and
+/// [`set_audio_fold`].
+#[derive(Default)]
+struct Folded(smartcut_core::Fold);
+
 /// Whether the cut editor is on screen.
 ///
 /// Playback belongs to that window, and [`Playing`] on its own cannot say so.
@@ -230,6 +241,13 @@ struct AudioTrackInfo {
     channels: u16,
     sample_rate: u32,
     bits: u8,
+    /// Two programmes of one channel each rather than a left and a right --
+    /// the main language and the dub, sent in one track. Nothing in the
+    /// frames' own description tells the two apart; the broadcaster's
+    /// programme description does, and only where it was read, which is on
+    /// a recording that carries more than one track. See
+    /// [`smartcut_core::si::SoundTrack::arrangement`].
+    dual_mono: bool,
 }
 
 /// Takes the tracks rather than the recording, because the cheap first look
@@ -245,6 +263,7 @@ fn audio_tracks_of(audios: &[smartcut_core::AudioInfo]) -> Vec<AudioTrackInfo> {
             channels: a.channels,
             sample_rate: a.sample_rate,
             bits: a.bits,
+            dual_mono: a.said.as_ref().is_some_and(|s| s.arrangement == 0x02),
         })
         .collect()
 }
@@ -2262,7 +2281,10 @@ async fn cross_play(
                     fades: (in_secs, 0.0),
                 },
             ];
-            if let Err(e) = smartcut_core::play_audio_across(&parts, &level, &meter, stop) {
+            // The recordings as they are. A seam is heard between two rows,
+            // and the one fold this window could name is the editor's row.
+            let fold = smartcut_core::Fold::default();
+            if let Err(e) = smartcut_core::play_audio_across(&parts, &level, &meter, &fold, stop) {
                 eprintln!("audio playback: {e}");
                 // Otherwise this fails in total silence: a release build has
                 // no console, and the picture half plays on regardless.
@@ -5691,6 +5713,7 @@ async fn play(
     let audio_handle = audio_from.audio.is_some().then(|| {
         let level = app.state::<Vol>().0.clone();
         let meter = app.state::<Meter>().0.clone();
+        let fold = app.state::<Folded>().0.clone();
         let audio_src = audio_from.clone();
         let audio_ranges = ranges.clone();
         let audio_app = app.clone();
@@ -5706,7 +5729,7 @@ async fn play(
                     || !stop_app.state::<EditorUp>().0.load(Ordering::SeqCst)
             };
             if let Err(e) =
-                smartcut_core::play_audio(&audio_src, &audio_ranges, from, &level, &meter, stop)
+                smartcut_core::play_audio(&audio_src, &audio_ranges, from, &level, &meter, &fold, stop)
             {
                 eprintln!("audio playback: {e}");
                 // Otherwise this fails in total silence: the release build has
@@ -5988,6 +6011,15 @@ fn set_volume(level: f64, volume: State<Vol>) {
     volume.0.set(level as f32);
 }
 
+/// Say how many channels the editor's row is written in. See [`Folded`].
+///
+/// Taken while playing as well as before: the decode loop reads it on every
+/// frame, so a choice made in the list is heard from the next frame on.
+#[tauri::command]
+fn set_audio_fold(channels: u16, fold: State<Folded>) {
+    fold.0.set(channels);
+}
+
 /// What the sound has reached since this was last asked, per channel.
 ///
 /// Emptied by the asking: a meter draws the peak of the moment it is
@@ -6023,7 +6055,8 @@ async fn audio_peak_at(time: f64, window: f64, app: tauri::AppHandle) -> Result<
             let guard = locked(&state.0);
             guard.as_ref().ok_or("no file open")?.clone()
         };
-        smartcut_core::peaks_at(&src, time, window).map_err(|e| e.to_string())
+        let fold = app.state::<Folded>().0.clone();
+        smartcut_core::peaks_at(&src, time, window, &fold).map_err(|e| e.to_string())
     })
     .await
 }
@@ -7037,6 +7070,7 @@ pub fn run() {
         .manage(Playing::default())
         .manage(Vol::default())
         .manage(Meter::default())
+        .manage(Folded::default())
         .manage(EditorUp::default())
         .manage(CrossUp::default())
         .manage(Crossed::default())
@@ -7109,6 +7143,7 @@ pub fn run() {
             play,
             stop_play,
             set_volume,
+            set_audio_fold,
             subtitle_at,
             export,
             export_joined,

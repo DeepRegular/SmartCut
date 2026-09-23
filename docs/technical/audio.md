@@ -1096,8 +1096,8 @@ popup in the wrong place.
 Two places say what will happen, because there are two screens:
 
 - The format panel names it as part of the audio line — `Audio: re-encoded (5.1ch → 2ch,
-  48 kHz → 44.1 kHz, 192 kbps)`, and `Audio: yes (5.1ch)` in quick properties and in the
-  editor's info bar,
+  48 kHz → 44.1 kHz, 192 kbps)`, and quick properties says what each row is written as —
+  `Audio: ac3, 48000 Hz, 5.1ch (default)`, the underlined words being the row's own choice —
   so a 5.1 clip can be picked out of a list of stereo ones **before** the output has been
   written rather than after.
 - The output screen is about pictures, and its best line is "nothing re-encoded, the whole

@@ -20,7 +20,7 @@
 // lanes here and a window of its own, and the passes hold themselves to part
 // of the machine while that window is up.
 
-import { fmt, clock, coarse, chLabel, cmNote, esc, size, blankKey, flatKey, noBrowserMenu, noNativeDrag, wireDrops }
+import { fmt, clock, coarse, chLabel, cmNote, esc, size, blankKey, flatKey, noBrowserMenu, noNativeDrag, wireDrops, adoptDrop }
   from "./shared.js";
 import { t, applyStatic, preference, currentLang, setLang, onLangChange, tellBackend, confirmWithOs }
   from "./i18n.js";
@@ -487,6 +487,27 @@ async function edit(clip) {
   pump();
 }
 
+/// The channel count last told to the engine for the editor's row.
+let toldFold = -1;
+
+/// Tell the engine how many channels the editor's row is written in, so that
+/// the editor plays and meters it that way -- a 5.1 recording this list is
+/// folding into stereo is heard in stereo on two bars. 0 is the recording's
+/// own. See `Folded` in the engine.
+///
+/// Said again whenever either of the two things that decide it moves: the
+/// row's own choice in the quick properties, and the output settings. Only
+/// when the answer changed, unless `always`: a new window has heard nothing.
+function tellFold(always = false) {
+  if (!editing || !invoke) return;
+  const channels = audioChannelsOut(editing) || 0;
+  if (!always && channels === toldFold) return;
+  toldFold = channels;
+  invoke("set_audio_fold", { channels }).catch((e) => jlog(`set_audio_fold: ${e}`));
+  // The meter under a still playhead was read before; it is read again.
+  if (emit) emit("editor-fold", { channels });
+}
+
 /// Say which clip, and hand over what is known about it.
 ///
 /// Called twice for a window that had to be built: once as soon as it exists,
@@ -498,6 +519,7 @@ async function edit(clip) {
 /// `editor-state` that comes back with the detection's note on it.
 function tellEditor() {
   if (!editing || !emit) return;
+  tellFold(true);
   emit("editor-open", {
     id: editing.id,
     path: editing.path,
@@ -2201,14 +2223,18 @@ function paintButtons() {
 }
 
 function paintProps() {
-  paintPropsAudio();
   const box = el("props");
   const picked = selected();
   if (picked.length !== 1) {
     box.className = "props-body dim";
-    box.textContent = picked.length
-      ? t("props.many", { n: picked.length })
-      : t("props.none");
+    if (!picked.length) {
+      box.textContent = t("props.none");
+      return;
+    }
+    // Many rows are still one question about their sound -- see
+    // `soundChoice` -- so the line is here for them too, and only the line.
+    const sound = picked.some((c) => audioOf(c));
+    fillProps(box, t("props.many", { n: picked.length }) + (sound ? t("props.manyAudio", { audio: SOUND_SLOT }) : ""));
     return;
   }
   const c = picked[0];
@@ -2240,7 +2266,8 @@ function paintProps() {
     .join(", ");
   const n = copyNo(c);
   const sound = audioOf(c);
-  box.textContent = t("props.body", {
+  const more = keptAudio(c).length - 1;
+  fillProps(box, t("props.body", {
     name: clipName(c),
     copy: n ? t("props.copyOf", { n }) : "",
     path: c.path,
@@ -2249,13 +2276,15 @@ function paintProps() {
     h: i.height,
     fps: i.fps.toFixed(2),
     flags,
-    // With the channel count, because that is what says whether there is
-    // anything to downmix -- and a 5.1 clip in a list of stereo ones is
-    // otherwise indistinguishable until the output has already been written.
-    // The count belongs to the track this clip keeps, not to whichever one
+    // What the track is, and then what it will be written as -- the one
+    // output setting that belongs to a row, asked where the row's sound is
+    // described. The shape is the track this clip keeps, not whichever one
     // the demuxer thinks is the main one. See [`audioOf`].
     audio: sound
-      ? `${t("media.audioYes")}${sound.channels ? ` (${chLabel(sound.channels)})` : ""}`
+      ? [sound.codec, sound.sample_rate ? `${sound.sample_rate} Hz` : ""]
+          .filter(Boolean)
+          .concat(SOUND_SLOT)
+          .join(", ") + (more > 0 ? t("props.moreTracks", { n: more }) : "")
       : t("media.audioNo"),
     len: coarse(i.duration),
     frames: i.frames,
@@ -2275,62 +2304,165 @@ function paintProps() {
     flat:
       (c.blankPhase ? t(blankKey("props.blank"), { note: c.blankPhase }) : "") +
       (c.quietPhase ? t("props.quiet", { note: c.quietPhase }) : ""),
-  });
+  }));
 }
 
-/// The row's own channel count, under the row it is about.
+/// Where in the panel's text the sound control goes. A character no
+/// translation will ever contain, so the text can be written whole by `t` and
+/// cut at it afterwards.
+const SOUND_SLOT = "\u0001";
+
+/// Write the panel's text, with the sound control standing in its slot.
+///
+/// Not while the control's list is up. The panel is written again on every
+/// step of a pass running on the row -- a percentage at a time -- and a list
+/// written away from under the pointer is a choice that could not be made.
+/// The next step after it closes brings the text up to date.
+function fillProps(box, text) {
+  if (box.querySelector(".drop-menu:not([hidden])")) return;
+  const [before, ...rest] = text.split(SOUND_SLOT);
+  box.replaceChildren(document.createTextNode(before));
+  if (!rest.length) return;
+  const choice = soundChoice();
+  box.append(choice, document.createTextNode(rest.join("")));
+  fitToAnswer(choice.querySelector("select"));
+}
+
+/// Size a `<select>` to the words it is showing rather than to its longest
+/// choice, which is what a select is otherwise as wide as -- a gap after
+/// ステレオ the width of 選んだ行で設定が違います, in the middle of a line
+/// of text.
+function fitToAnswer(select) {
+  const shown = select.options[select.selectedIndex];
+  if (!shown) return;
+  const pen = (fitToAnswer.canvas ??= document.createElement("canvas")).getContext("2d");
+  // Put together from its parts: WebKit leaves the shorthand empty, and a
+  // pen given nothing measures in its own 10px.
+  const cs = getComputedStyle(select);
+  pen.font = `${cs.fontStyle} ${cs.fontWeight} ${cs.fontSize} ${cs.fontFamily}`;
+  select.style.width = `${Math.ceil(pen.measureText(shown.textContent).width) + 2}px`;
+}
+
+/// A channel count by its name: モノラル, ステレオ, 5.1ch.
+///
+/// Dual mono is two channels as well and is named apart from stereo, because
+/// what it holds is two programmes rather than two sides of one -- folding it
+/// to one channel mixes the languages together.
+function layoutLabel(channels, dual = false) {
+  if (dual && channels === 2) return t("layout.dualMono");
+  if (channels === 1) return t("layout.mono");
+  if (channels === 2) return t("layout.stereo");
+  return chLabel(channels);
+}
+
+/// How many channels a row is written with while it asks for nothing of its
+/// own: the output settings' count where they are writing the sound and it
+/// fits, and the recording's own otherwise. 0 where the recording has not
+/// said.
+function followedChannels(clip) {
+  const own = trackChannels(clip);
+  const asked = reencodingAudio() ? under(Number(settings.audioChannels), soundCeiling().channels) : null;
+  return asked && (!own || asked <= own) ? asked : own;
+}
+
+/// What a row's sound will be written as, named the way the reference tool
+/// names it: ステレオ (初期値) for a row that follows the output settings,
+/// and the other shapes the recording can be folded into as the choices.
 ///
 /// On screen for any selection rather than for one row, and it answers for
 /// all of them: a list of twelve episodes off one recorder wants the same
 /// answer twelve times, and a control that could only be set one row at a
-/// time would be eleven presses too many. Where the rows disagree the
-/// control shows nothing, which is the honest reading of "these rows have
-/// different answers" -- and choosing one then gives them all that answer.
+/// time would be eleven presses too many. Where the rows disagree the control
+/// shows nothing, which is the honest reading of "these rows have different
+/// answers" -- and choosing one then gives them all that answer.
 ///
-/// Greyed while nothing is chosen, and while the sound is being copied: a
-/// copy carries the recording's own frames and there is nowhere in that to
-/// put a different count. Asking for one *is* asking for the sound to be
-/// written, so the note beside it says the row will be re-encoded -- but a
-/// run that has been told そのままコピー outright is that run, and this does
-/// not argue with it.
-function paintPropsAudio() {
-  const row = el("props-audio");
-  const picked = selected();
-  const sound = picked.filter((c) => audioOf(c));
-  row.hidden = !sound.length;
-  if (row.hidden) return;
-  const select = el("prop-audio-channels");
+/// Greyed while the sound is being copied: a copy carries the recording's own
+/// frames and there is nowhere in that to put a different count. Asking for
+/// one *is* asking for the sound to be written, so the note beside it says
+/// the row will be re-encoded -- but a run that has been told そのままコピー
+/// outright is that run, and this does not argue with it.
+///
+/// Only folds are offered. A count above what the narrowest of the chosen
+/// rows carries would spread a recording into channels it was never sent
+/// with, and dual mono is not folded at all: its two channels are two
+/// languages, and one channel of it is both of them talking at once.
+function soundChoice() {
+  const sound = selected().filter((c) => audioOf(c));
+  const holder = document.createElement("span");
+  const drop = document.createElement("span");
+  drop.className = "drop sound-drop";
+  const select = document.createElement("select");
+  drop.append(select);
+  holder.append(drop);
+  const own = sound.map(trackChannels);
+  const least = own.every((n) => n > 0) ? Math.min(...own) : 0;
+  const dual = sound.some((c) => audioOf(c).dual_mono);
+  const named = (clip) => {
+    const n = followedChannels(clip);
+    return n ? layoutLabel(n, audioOf(clip).dual_mono && n === trackChannels(clip)) : "";
+  };
+  const names = new Set(sound.map(named));
+  const initial = names.size === 1 && [...names][0] ? [...names][0] : t("props.followOutput");
+  const option = (value, label) => {
+    const o = document.createElement("option");
+    o.value = value;
+    o.textContent = label;
+    select.append(o);
+  };
+  option("", t("props.initial", { name: initial }));
   const answers = new Set(sound.map((c) => String(c.audioChannels || "")));
-  select.value = answers.size === 1 ? [...answers][0] : "";
-  // A count above what the narrowest of the chosen rows carries is a count
-  // that would spread a recording into channels it was never sent with.
-  const least = Math.min(...sound.map((c) => trackChannels(c) || 99));
-  for (const opt of select.options) {
-    opt.disabled = !!opt.value && least < 99 && Number(opt.value) > least;
+  const followed = new Set(sound.map(followedChannels));
+  for (const n of [6, 2, 1]) {
+    const chosen = answers.has(String(n));
+    if (!chosen && (dual || (least && n > least))) continue;
+    // Choosing what the row already gets would be the same answer twice.
+    if (!chosen && followed.size === 1 && followed.has(n)) continue;
+    option(String(n), layoutLabel(n));
+  }
+  // Rows that disagree are shown as disagreeing, in the words' place: an
+  // empty underline is not an answer anybody can read.
+  if (answers.size > 1) {
+    const o = document.createElement("option");
+    o.value = "-";
+    o.disabled = true;
+    o.textContent = t("props.audioMixed");
+    select.prepend(o);
+    select.value = "-";
+  } else {
+    select.value = [...answers][0];
   }
   const copying = settings.audio === "copy";
-  select.disabled = copying;
-  const note = el("props-audio-note");
-  note.textContent = copying
+  select.disabled = copying || select.options.length < 2;
+  const note = copying
     ? t("props.audioCopying")
-    : answers.size > 1
-      ? t("props.audioMixed")
-      : select.value
-        ? t("props.audioReencoded")
-        : "";
-}
-
-el("prop-audio-channels").addEventListener("change", (ev) => {
-  const want = ev.target.value || null;
-  for (const clip of selected()) {
-    if (!audioOf(clip)) continue;
-    clip.audioChannels = want;
+    : answers.size === 1 && select.value
+      ? t("props.audioReencoded")
+      : "";
+  if (note) {
+    const span = document.createElement("span");
+    span.className = "dim";
+    span.textContent = ` ${t("props.noteOpen")}${note}${t("props.noteClose")}`;
+    holder.append(span);
   }
-  paintPropsAudio();
-  paintList();
-  if (screen === "outset") renderOutset();
-  if (screen === "out") renderOutScreen();
-});
+  adoptDrop(select);
+  select.addEventListener("change", () => {
+    // The list raises this before it shuts, and a list that is up keeps the
+    // panel from being written. See `fillProps`.
+    const menu = drop.querySelector(".drop-menu");
+    if (menu) menu.hidden = true;
+    const want = select.value || null;
+    for (const clip of selected()) {
+      if (!audioOf(clip)) continue;
+      clip.audioChannels = want;
+    }
+    paintProps();
+    paintList();
+    if (screen === "outset") renderOutset();
+    if (screen === "out") renderOutScreen();
+    tellFold();
+  });
+  return holder;
+}
 
 // --- selection ----------------------------------------------------------
 
@@ -3411,6 +3543,7 @@ function bindSetting(id, key, kind = "value") {
     renderOutScreen();
     rememberOutput();
     touch();
+    tellFold();
   };
   input.addEventListener(kind === "checked" ? "change" : "input", read);
   settingInputs.push([input, key, kind]);

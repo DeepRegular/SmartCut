@@ -251,11 +251,24 @@ or take the row out and add the file again.
 **Quick properties**, along the bottom, describes whichever single clip is
 selected. With several selected, it just says how many.
 
-Under it, **Sound written as** is the one output setting that belongs to a
-*row*. `As the output settings say` is the default, and picking 1ch, 2ch or
-5.1ch makes that row come out at that count. **It answers for every row
-chosen**, so twelve episodes are a select-all and one choice; where the chosen
-rows disagree it shows nothing, and picking one gives them all that answer.
+The **Audio:** line in quick properties gives the codec and sample rate and
+then, underlined, **what that row's sound will be written as** — say
+`aac, 48000 Hz, Stereo (default)`. Clicking the underlined words opens the
+choices, and the answer belongs to that *row*.
+
+- The `(default)` entry is what the output settings' channel count comes to
+  for this recording: `Stereo (default)` for a 5.1 recording when the output
+  settings say 2ch, `5.1ch (default)` when they say `Same as the input`.
+- Below it are the shapes the recording can be folded into — 5.1ch, Stereo,
+  Mono. Nothing wider than the recording is offered, and where there is only
+  one answer (a mono recording) the words are greyed.
+- Sound the programme description marks as dual mono — two languages in one
+  track, one on each side — is named `Dual mono` and offered no fold: one
+  channel of it is both languages at once.
+
+**It answers for every row chosen**, so twelve episodes are a select-all and
+one choice. With several rows selected the Audio line is still shown, and
+where they disagree it says so; picking one gives them all that answer.
 
 It is per row because it is the one question the list cannot have a single
 answer to. Everything on the output settings screen describes the file being
@@ -263,10 +276,16 @@ made; this describes a recording. A 5.1 film sitting in a list beside a stereo
 broadcast, folded to stereo while the broadcast is left alone, is an ordinary
 evening's work.
 
-**Picking a count writes that row's sound afresh** — nothing else can deliver
-one, since copying and smart rendering both carry the recording's own frames.
-It is greyed while the output settings copy the sound outright, and a count
-above what the recording carries is not offered.
+**The cut editor plays and meters the row the way it is written.** A 5.1
+recording set to Stereo here is heard folded to stereo in the editor, on two
+bars. It can be changed with the editor open; while playing, the change is
+heard about a second later. A fold asked for by the output settings is heard
+the same way.
+
+**Picking anything but the default writes that row's sound afresh** —
+nothing else can change the channel count, since copying and smart rendering
+both carry the recording's own frames. A note beside the choice says so. It is
+greyed while the output settings copy the sound outright.
 
 A joined run takes **the master clip's answer**: a file declares its sound
 once.
@@ -869,7 +888,7 @@ What is set on either tab stays there when you switch.
 | **Container** | The file format. `Same as the input`, or a specific one. A container that cannot hold the recordings in the list is greyed out (see [Why some choices are greyed out](#why-some-choices-are-greyed-out)). **Sound only, no pictures**, at the foot of the list, writes an audio file and no video at all — see [Writing the sound only](#writing-the-sound-only) |
 | **Audio** | `Smart rendering (default)` / `Copy through` / `Re-encode everything` |
 | **Audio codec** | `Same as the input`, or AAC, AC-3, DTS, linear PCM |
-| **Audio channels** | `Same as the input`, or 1ch, 2ch, 5.1ch. One answer for the list; to set it per row, use **Sound written as** in the quick properties |
+| **Audio channels** | `Same as the input`, or 1ch, 2ch, 5.1ch. One answer for the list; to set it per row, use the **Audio:** line in the quick properties |
 | **Sample rate** | `Same as the input`, or 96 / 48 / 44.1 / 32 kHz |
 | **Bit depth** | `Same as the input`, 16 or 24 bit (only meaningful for linear PCM) |
 | **Audio bitrate** | For frames that are rebuilt. `Leave it to the engine` is the safe answer |

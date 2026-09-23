@@ -351,8 +351,17 @@ const CATALOG = {
     "props.copyOf": "（同じ録画の {n} 本目）",
     // 「長さ」の行に続けて入ります。カットが入っていない行では空です。
     "props.cut": "　カット後 {len}",
-    "props.audioChannels": "出力の音声チャンネル:",
+    "props.manyAudio": "\n音声:　{audio}",
+    // 録画の音声トラックのうち、行に書いたもの以外の本数。
+    "props.moreTracks": "　ほか {n} 本",
+    // 行の音声を何で書くかの選択肢の先頭。出力設定の答えをそのまま名乗ります。
+    "props.initial": "{name} (初期値)",
     "props.followOutput": "出力設定に従う",
+    "props.noteOpen": "（",
+    "props.noteClose": "）",
+    "layout.mono": "モノラル",
+    "layout.stereo": "ステレオ",
+    "layout.dualMono": "デュアルモノラル",
     // 選んだ行で答えが割れているとき。選び直せば全部そろいます。
     "props.audioMixed": "選んだ行で設定が違います",
     "props.audioReencoded": "この行の音声は再エンコードされます",
@@ -1441,8 +1450,15 @@ const CATALOG = {
     "props.copyOf": " (copy {n} of this recording)",
     // Follows the length. Empty on a row nothing has been cut out of.
     "props.cut": "   {len} after cutting",
-    "props.audioChannels": "Sound written as:",
+    "props.manyAudio": "\nAudio: {audio}",
+    "props.moreTracks": " and {n} more",
+    "props.initial": "{name} (default)",
     "props.followOutput": "As the output settings say",
+    "props.noteOpen": "(",
+    "props.noteClose": ")",
+    "layout.mono": "Mono",
+    "layout.stereo": "Stereo",
+    "layout.dualMono": "Dual mono",
     // The chosen rows do not agree. Picking one gives them all that answer.
     "props.audioMixed": "the chosen rows differ",
     "props.audioReencoded": "this row's sound is written afresh",

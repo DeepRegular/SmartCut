@@ -368,7 +368,7 @@ const PLANAR_F32: ff::format::Sample = ff::format::Sample::F32(ff::format::sampl
 /// instant the programme began. A fresh context at the change costs one
 /// allocation. The same fact the playback side answers in
 /// [`crate::playback_audio`].
-fn conform<'a>(
+pub(crate) fn conform<'a>(
     resampler: &mut Option<ff::software::resampling::Context>,
     out: &'a mut ff::frame::Audio,
     frame: &'a ff::frame::Audio,

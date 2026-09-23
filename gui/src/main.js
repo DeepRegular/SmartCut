@@ -6316,6 +6316,12 @@ async function askCancelEdit() {
 if (listen) {
   // The list's answer to `editor-ready`: which recording, and what was done
   // to it the last time it was in here.
+  // The list has changed how many channels this row is written in. Playback
+  // picks that up by itself, frame by frame; a meter standing still has to
+  // be read again.
+  hear("editor-fold", () => {
+    if (!playing) scheduleMeterAt();
+  });
   hear("editor-open", async (ev) => {
     const { id, path, name, side, saved, cm, chapters, dropPids } = ev.payload;
     // The list has spoken, so this window stops asking; see `announceReady`.

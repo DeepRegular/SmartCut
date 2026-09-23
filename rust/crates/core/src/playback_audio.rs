@@ -71,6 +71,40 @@ impl Default for Volume {
     }
 }
 
+/// How many channels the sound is heard in, where that is fewer than the
+/// recording has: 0 for the recording's own.
+///
+/// What a row is written as, heard before it is written. A 5.1 film that the
+/// list has been told to fold into stereo is played folded and metered on
+/// two bars, so what the cut editor says about the sound is what the output
+/// will hold rather than what the recording held. The fold is swresample's
+/// with libav's own coefficients, the same one the cutter applies -- see
+/// `conform` in [`crate::audio`].
+///
+/// Shared like [`Volume`], and for the same reason: the answer is changed in
+/// the list window while the editor is playing, and the decode loop reads it
+/// afresh on every frame.
+#[derive(Clone, Default)]
+pub struct Fold(Arc<AtomicU32>);
+
+impl Fold {
+    pub fn set(&self, channels: u16) {
+        self.0.store(u32::from(channels), Ordering::Relaxed);
+    }
+
+    pub fn get(&self) -> u16 {
+        self.0.load(Ordering::Relaxed) as u16
+    }
+
+    /// How many channels a track of `own` is heard in.
+    fn of(&self, own: u16) -> u16 {
+        match self.get() {
+            n if n > 0 && n < own => n,
+            _ => own,
+        }
+    }
+}
+
 /// As many channels as the meter has room for. Everything broadcast is one,
 /// two or six; a recording with more of them is metered on the first eight
 /// and the rest are not drawn. See [`Levels`].
@@ -611,6 +645,7 @@ pub fn play_audio(
     from: f64,
     volume: &Volume,
     levels: &Levels,
+    fold: &Fold,
     stop: impl Fn() -> bool,
 ) -> Result<()> {
     play_audio_across(
@@ -625,6 +660,7 @@ pub fn play_audio(
         }],
         volume,
         levels,
+        fold,
         stop,
     )
 }
@@ -673,6 +709,7 @@ pub fn play_audio_across(
     parts: &[Heard],
     volume: &Volume,
     levels: &Levels,
+    fold: &Fold,
     stop: impl Fn() -> bool,
 ) -> Result<()> {
     // The format is the first one with sound in it. A silent clip contributes
@@ -694,7 +731,11 @@ pub fn play_audio_across(
     // glitch. Picking a period ourselves sidesteps the plugin's answer
     // entirely; ~20ms is short enough nobody previewing a cut would notice
     // the added latency. `candidates` heads its ladder with that.
-    let want = (audio.sample_rate, audio.channels);
+    //
+    // At the count it is heard in, so a fold asked for before playing opens
+    // the card at that count. One asked for part-way through is folded all
+    // the same and spread back over the card's channels.
+    let want = (audio.sample_rate, fold.of(audio.channels));
     let ring = Arc::new(Mutex::new(Feed::default()));
     let out = open_output(want, &ring, volume, levels)?;
     let (rate, channels) = (out.sample_rate, out.channels);
@@ -704,7 +745,6 @@ pub fn play_audio_across(
             want.0, want.1
         );
     }
-    let layout = ff::channel_layout::ChannelLayout::default(channels as i32);
     let cap = capacity(rate, channels);
     out.stream
         .play()
@@ -714,7 +754,7 @@ pub fn play_audio_across(
         if stop() {
             break;
         }
-        feed_from(part, rate, channels, layout, cap, &ring, &stop)?;
+        feed_from(part, rate, channels, cap, &ring, fold, &stop)?;
     }
 
     // Let the tail play out rather than cutting it off the instant decoding
@@ -740,11 +780,12 @@ fn feed_from(
     part: &Heard,
     rate: u32,
     channels: u16,
-    layout: ff::channel_layout::ChannelLayout,
     cap: usize,
     ring: &Arc<Mutex<Feed>>,
+    fold: &Fold,
     stop: &impl Fn() -> bool,
 ) -> Result<()> {
+    let layout = ff::channel_layout::ChannelLayout::default(channels as i32);
     let Heard { src, ranges, from, fades } = part;
     let (from, fades) = (*from, *fades);
     let Some(audio) = src.audio.clone() else {
@@ -766,6 +807,8 @@ fn feed_from(
         .audio()?;
     let mut resampler: Option<ff::software::resampling::Context> = None;
     let mut resampled = ff::frame::Audio::empty();
+    let mut folder: Option<ff::software::resampling::Context> = None;
+    let mut folded = ff::frame::Audio::empty();
 
     'ranges: for &(a, b) in ranges.iter() {
         if stop() {
@@ -803,11 +846,14 @@ fn feed_from(
                     past_end = true;
                     break;
                 }
+                // Folded first, where the row is written in fewer channels:
+                // both what is heard and what is metered are the output's.
+                let heard_as = fold_frame(&mut folder, &mut folded, &frame, fold)?;
                 // Measured before the resampling, so the meter answers for
                 // the recording's channels rather than the card's.
                 let mut peaks = [0f32; METERED];
-                let heard = frame_peaks(&frame, &mut peaks);
-                let data = resample(&mut resampler, &mut resampled, &frame, rate, layout)?;
+                let heard = frame_peaks(heard_as, &mut peaks);
+                let data = resample(&mut resampler, &mut resampled, heard_as, rate, layout)?;
                 let n = data.len() / channels as usize;
                 if let Some((lo, hi)) = frame_window(n, rate, t, start, b) {
                     let mut samples =
@@ -825,6 +871,27 @@ fn feed_from(
         }
     }
     Ok(())
+}
+
+/// A decoded frame in the channels it is heard in. See [`Fold`].
+///
+/// The frame itself where there is nothing to fold -- the ordinary case --
+/// and where its decoder named no layout, since swresample cannot be told
+/// where the channels of such a frame are. The sample format is kept: the
+/// conversion to the card's is [`resample`]'s.
+fn fold_frame<'a>(
+    folder: &mut Option<ff::software::resampling::Context>,
+    folded: &'a mut ff::frame::Audio,
+    frame: &'a ff::frame::Audio,
+    fold: &Fold,
+) -> Result<&'a ff::frame::Audio> {
+    let own = frame.channels();
+    let to = fold.of(own);
+    if to >= own || frame.channel_layout().is_empty() {
+        return Ok(frame);
+    }
+    let layout = ff::channel_layout::ChannelLayout::default(i32::from(to));
+    crate::audio::conform(folder, folded, frame, layout, frame.format())
 }
 
 /// Ride the fades over one frame's worth of interleaved samples.
@@ -875,12 +942,16 @@ fn ride_fade(
 /// One seek and a short decode. The caller is expected to hold off until the
 /// playhead has settled -- this is a read of the file, and at a frame a
 /// keystroke it would be one read per keystroke.
-pub fn peaks_at(src: &Source, time: f64, window: f64) -> Result<Vec<f32>> {
+///
+/// In the channels the row is heard in, where it is folded: the resampling
+/// below lays every frame out at `channels`, and that is a fold whenever it
+/// is fewer than the frame's. See [`Fold`].
+pub fn peaks_at(src: &Source, time: f64, window: f64, fold: &Fold) -> Result<Vec<f32>> {
     let Some(audio) = src.audio.as_ref() else {
         return Ok(Vec::new());
     };
     crate::init()?;
-    let channels = (audio.channels as usize).clamp(1, METERED);
+    let channels = (fold.of(audio.channels) as usize).clamp(1, METERED);
     let mut peaks = vec![0f32; channels];
 
     let mut ictx = crate::input::demux(&src.input.url)?;

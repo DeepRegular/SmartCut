@@ -42,7 +42,7 @@ fn main() -> Result<()> {
     let began = Instant::now();
     let level = sc::Volume::default();
     let meter = sc::Levels::default();
-    let r = sc::play_audio(&src, &ranges, ranges[0].0, &level, &meter, move || {
+    let r = sc::play_audio(&src, &ranges, ranges[0].0, &level, &meter, &sc::Fold::default(), move || {
         stop.load(Ordering::SeqCst)
     });
     println!(
