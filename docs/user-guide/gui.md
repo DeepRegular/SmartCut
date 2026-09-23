@@ -382,7 +382,7 @@ frames, and `Snap to lossless` can take those to zero once it lights up.
 | The large picture | The preview. At its foot, in the middle: frame number, timecode, what kind of frame it is, and the current selection. **Counter**, on the bottom line, turns them off |
 | Beside it, on the left | The **audio level meter**: what is being heard while something plays, and the sound under the playhead while nothing does. **Preferences → Windows** turns it off |
 | The band under it | The **filmstrip**: the frames around you, laid out as pictures. The `Window` menu on the right sets how much of the recording the band shows; a cell is as wide as the stretch it covers |
-| The scrubber | **Green is the output itself.** `▼` are keyframes, a red vertical line is a join left by a cut, the fine ticks below are scene changes, and the two rows under those are the blank and the silent stretches |
+| The scrubber | **Green is the output itself.** `▼` are keyframes, a dull red line inside the green is a join left by a cut, the fine ticks below are scene changes, and the two rows under those are the blank and the silent stretches. **The playhead is the `◎` and a bright red line running the whole height of the track** — the `◎` sits inside the green and the line is what lines it up against everything drawn above and below it |
 | The button row | **Cut** in the middle, `[ IN` to its left and `OUT ]` to its right, and outwards from there: go to, one frame, lossless point, start and end |
 | The band and lines below | **The export plan**: what will be copied and what will be rebuilt |
 | The bottom line | On the left, what the cut costs, and beside it **Counter** and **Subtitles** — what the preview carries. **OK** and **Cancel** on the right |

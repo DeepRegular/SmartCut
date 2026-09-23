@@ -1259,6 +1259,21 @@ function draw() {
   ctx.arc(px, MID, 3, 0, Math.PI * 2);
   ctx.fillStyle = "#1b1b1b";
   ctx.fill();
+  // ...and the same instant down the whole of the track, the ◎ included.
+  //
+  // The ◎ says where the playhead is in the trough, which is where it is
+  // dragged. It does not say where it is against anything drawn outside the
+  // trough -- the marks above it, the scene changes and the two detections'
+  // stretches below -- and lining those up by eye across thirty pixels of
+  // background is exactly the question this row is read for: is the mark on
+  // the fade, is the break on the silence. The line answers it.
+  //
+  // Over the ◎ rather than under it, so that a hand looking for the playhead
+  // finds one thing rather than a circle and a line that might be two.
+  // Stopping short of the two times written along the bottom, which are the
+  // ends of the recording and not part of the scale.
+  ctx.fillStyle = "#ff4646";
+  ctx.fillRect(Math.round(px), 0, 1, TRACK_H - 12);
 
   ctx.fillStyle = "#8a8a8a";
   ctx.font = "10px system-ui";
