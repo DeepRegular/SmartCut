@@ -264,6 +264,32 @@ tenth of a second**. What moved is the recording that was getting nothing: its b
 now sit on the head commercial, a break at 2:05, the break silence already had, and
 the shopping programme at the end — all four checked against the pictures.
 
+### An absence begins before the average says it has
+
+The report was a keyframe sitting in the middle of a mid-programme commercial
+block, on BS Nittele and BS Asahi. It was eleven seconds into a sixty-second
+break, and the cause is in the two thresholds.
+
+A moment is scored on an average of the seconds behind it, so a step down in the
+corner reaches the *lower* of the two thresholds only once most of that window
+is inside the break. On a recording with a pale grey watermark that was seven
+seconds late. A break's start is then pulled onto the nearest silence within six
+seconds of the logo's edge, which from seven seconds in does not reach the
+junction at the head of the break — and finds instead the junction between the
+first commercial and the second.
+
+The end of an absence was already read the other way: it ends where the logo
+returned, not where the return was confirmed, the wait being only to establish
+that the return was one. The start now mirrors it — the first sample under the
+*present* threshold, confirmed by the absent one.
+
+| | Before | After | By eye |
+|---|---|---|---|
+| Mid-programme break | 924.1 – 973.2 (48.8 s) | **913.1 – 973.2 (60.0 s)** | 912.9 – 973 |
+| The break after it | 1588.2 – 1640.2 (52.0 s) | **1580.1 – 1640.2 (60.0 s)** | |
+
+The five pinned recordings are unchanged.
+
 What this costs is whatever the recording can be read at. The two passes decode
 only entry pictures and spread them over the machine, so a 30-minute recording
 held in memory is 1.5 seconds of them; the same recording off the disc is 46,
