@@ -720,12 +720,28 @@ fn intervals_from(
     // While absent: when the logo first came back, if it has been back ever
     // since. Going absent needs one sample; coming back needs to be held.
     let mut back: Option<f64> = None;
+    // ...and the mirror of it while present: when the score first fell off,
+    // if it has been down ever since.
+    //
+    // **An absence begins where the logo went, not where it was confirmed
+    // gone.** The score is an average over the seconds behind it, so it
+    // reaches the lower threshold only once most of that window is inside
+    // the break -- measured on a BS recording with a pale logo, seven
+    // seconds after the commercials started, which put the block's start
+    // inside the first spot. The end of an absence was already read this
+    // way; the start was not.
+    let mut going: Option<f64> = None;
     for (i, &s) in scores.iter().enumerate() {
         if present {
+            if s < present_t {
+                going.get_or_insert(times[i]);
+            } else {
+                going = None;
+            }
             if s < absent_t {
                 present = false;
                 transitions += 1;
-                from = times[i];
+                from = going.take().unwrap_or(times[i]);
                 back = None;
             }
         } else if s >= present_t {
