@@ -3480,7 +3480,10 @@ const streamOf = (p) => p.replace(/@\d+-\d+$/, "");
 /// was left at 入力と同じ. `null` where neither answers, which is a list
 /// nothing has been read out of yet.
 function soundExt(clip) {
-  const chosen = String(settings.audioCodec || "");
+  // The codec the run will actually ask for: a choice left in a greyed-out
+  // menu is not one, and naming the file after it gave an AC-3 track a
+  // `.aac` the muxer then refused.
+  const chosen = String(audioCodecOut() || "");
   const codec = chosen || (audioOf(clip) || {}).codec || "";
   return (
     {
@@ -3500,16 +3503,18 @@ function soundExt(clip) {
 }
 
 /// Whether the run writes the sound and no pictures. See `settings.container`.
-const soundOnly = () => settings.container === "sound";
+/// Never on the disc tab, which keeps the file tab's container for when the
+/// user goes back to it but writes recordings with pictures in them.
+const soundOnly = () => settings.container === "sound" && !bdavMode();
 
 function containerFor(clip) {
-  // The sound on its own is named by what the sound is; there is no
-  // container to choose. See `soundExt`.
-  if (soundOnly()) return soundExt(clip);
   // A disc's recordings are `.m2ts` whatever the recording arrived as, so
   // that is what the audio has to be writable into -- which is not the same
   // question as what an `.mp4` can hold.
   if (bdavMode()) return "m2ts";
+  // The sound on its own is named by what the sound is; there is no
+  // container to choose. See `soundExt`.
+  if (soundOnly()) return soundExt(clip);
   if (settings.container) return settings.container;
   const ext = extOf(streamOf(clip.path));
   return TS_LIKE.includes(ext) || PS_LIKE.includes(ext) ? "ts" : ext || "mp4";
@@ -4298,7 +4303,12 @@ function screenChannels() {
 const trackKey = (track) => String(track.index ?? "*");
 
 /// The count a row asked of one of its tracks, or 0 where it asked nothing.
+///
+/// Nothing under そのままコピー, which carries every track as it is: the
+/// quick properties grey the choice out then, and the answer kept for later
+/// must not go on folding the track behind that.
 function askedOf(clip, track) {
+  if (settings.audio === "copy") return 0;
   const table = clip && track ? clip.audioChannels : null;
   if (!table) return 0;
   return Number(table[trackKey(track)] ?? table["*"]) || 0;

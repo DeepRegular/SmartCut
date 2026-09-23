@@ -3779,7 +3779,14 @@ fn cm_dir(app: &tauri::AppHandle) -> Result<std::path::PathBuf, String> {
 /// stopped being thrown away, and a mark from before the clock wrapped
 /// stopped being read as a block at the head. Every recording those touch was
 /// remembered with an answer this version would not give.
-const CM_VERSION: u32 = 2;
+///
+/// 3: a silence is placed to the sample rather than to the audio frame, a
+/// logo's absence is read from when it began to go rather than from when the
+/// average noticed, and a break is closed on a junction where the picture
+/// changes in preference to one where it does not. All in 0.8.1, which left
+/// this at 2 and went on showing 0.8.0's boundaries for every recording
+/// detected before it.
+const CM_VERSION: u32 = 3;
 
 /// Where this recording's commercial detection belongs.
 fn cm_path(app: &tauri::AppHandle, src_path: &str) -> Result<std::path::PathBuf, String> {
