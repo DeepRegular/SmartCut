@@ -787,6 +787,18 @@ pub fn cut_near(src: &Source, at: f64, window: f64, floor: f64) -> Result<f64> {
     Ok(cut_from(&seen, at, floor))
 }
 
+/// Does the picture change on any frame within `window` of `at`?
+///
+/// The question `cut_near` answers with a time, asked of an instant that is
+/// only a candidate. A commercial junction is a place the picture is
+/// replaced, so a silence with no change on it is a pause in a programme and
+/// not the head of a break.
+pub fn cut_within(src: &Source, at: f64, window: f64, floor: f64) -> Result<bool> {
+    Ok(differences_near(src, at, window)?
+        .iter()
+        .any(|&(_, d)| d >= floor))
+}
+
 /// The difference between each pair of consecutive pictures around `at`.
 ///
 /// Split out of [`cut_near`] so that what the rule is applied to can be

@@ -1210,7 +1210,7 @@ fn main() -> Result<()> {
                 "（字幕リセット）",
             ),
             (None, Some(l)) if !l.absent.is_empty() => (
-                smartcut_core::cm_blocks_from_logo(&cands, &l.absent, &opts, 3.0, src.duration),
+                smartcut_core::cm_blocks_from_logo(&cands, &l.absent, &opts, 3.0, src.duration, Some(&src)),
                 "（ロゴ＋無音）",
             ),
             (None, Some(_)) => (Vec::new(), "（ロゴが一度も消えない）"),

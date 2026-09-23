@@ -26,7 +26,7 @@ fn blocks_of(src: &sc::Source) -> Vec<(f64, f64)> {
     let blocks = match (&resets, &logo) {
         (Some(r), _) => sc::cm_blocks_from_resets(r, src.duration),
         (None, Some(l)) if !l.absent.is_empty() => {
-            sc::cm_blocks_from_logo(&cands, &l.absent, &opts, 3.0, src.duration)
+            sc::cm_blocks_from_logo(&cands, &l.absent, &opts, 3.0, src.duration, Some(src))
         }
         (None, Some(_)) => Vec::new(),
         _ => sc::cm_blocks(&cands, &opts, 0.6),

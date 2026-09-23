@@ -38,7 +38,7 @@ fn blocks_of(src: &sc::Source) -> (Vec<sc::cm::Block>, Vec<sc::cm::Candidate>, &
     let blocks = match (&resets, &logo) {
         (Some(r), _) => (sc::cm_blocks_from_resets(r, src.duration), "resets"),
         (None, Some(l)) if !l.absent.is_empty() => (
-            sc::cm_blocks_from_logo(&cands, &l.absent, &opts, 3.0, src.duration),
+            sc::cm_blocks_from_logo(&cands, &l.absent, &opts, 3.0, src.duration, Some(src)),
             "logo+silence",
         ),
         (None, Some(_)) => (Vec::new(), "logo never absent"),

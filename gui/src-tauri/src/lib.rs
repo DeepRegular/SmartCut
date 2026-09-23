@@ -3608,11 +3608,25 @@ fn detect_now(
         None
     };
     (*say)(tr!("まとめています", "Putting it together"), 1.0);
-    let blocks = match (&resets, &logo) {
+    // What a boundary is put on the frame with, and what a junction is asked
+    // about before a break's start is snapped to it.
+    //
+    // Asked for only now: see the note where this is passed in. The readings
+    // above are the minutes of this pass, so by here a walk that had not
+    // finished when it began has long since. Where there is still nothing --
+    // no recording walked yet -- the blocks keep their estimates, and both
+    // callers below make that check themselves.
+    let pictures = pictures();
+    let mut blocks = match (&resets, &logo) {
         (Some(r), _) => smartcut_core::cm_blocks_from_resets(r, src.duration),
-        (None, Some(l)) if !l.absent.is_empty() => {
-            smartcut_core::cm_blocks_from_logo(&cands, &l.absent, &opts, 3.0, src.duration)
-        }
+        (None, Some(l)) if !l.absent.is_empty() => smartcut_core::cm_blocks_from_logo(
+            &cands,
+            &l.absent,
+            &opts,
+            3.0,
+            src.duration,
+            pictures.as_ref(),
+        ),
         (None, Some(_)) => Vec::new(),
         _ => smartcut_core::cm_blocks(&cands, &opts, 0.6),
     };
@@ -3621,14 +3635,8 @@ fn detect_now(
     // Neither is a picture. The cut itself is a scene change, so a
     // boundary within reach of one is moved onto the exact frame it
     // happens on.
-    //
-    // Asked for only now: see the note where this is passed in. Where there
-    // is nothing to refine against -- no recording walked yet -- the blocks
-    // keep their estimates, and `refine_boundaries` makes the same check
-    // itself for a recording whose points have not been found.
-    let mut blocks = blocks;
-    if let Some(pictures) = pictures() {
-        smartcut_core::cm_refine_boundaries(&pictures, &mut blocks, 0.5, 0.08);
+    if let Some(pictures) = &pictures {
+        smartcut_core::cm_refine_boundaries(pictures, &mut blocks, 0.5, 0.08);
     }
 
     Ok(CmResult {

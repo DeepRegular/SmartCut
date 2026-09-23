@@ -502,6 +502,11 @@ pub fn refine_boundaries(src: &crate::Source, blocks: &mut [Block], window: f64,
 /// How close to either end of the recording still counts as its edge.
 const EDGE: f64 = 1.5;
 
+/// What a junction is asked about the pictures with, which is what
+/// [`refine_boundaries`] puts a boundary on the frame with.
+const CUT_WINDOW: f64 = 0.5;
+const CUT_FLOOR: f64 = 0.08;
+
 /// What share of a block's 15-second boundaries actually carry a junction.
 fn fill(b: &Block) -> f64 {
     let units = ((b.end - b.start) / 15.0).round().max(1.0);
@@ -536,6 +541,7 @@ pub fn blocks_from_logo(
     opts: &DetectOptions,
     snap: f64,
     duration: f64,
+    pictures: Option<&crate::Source>,
 ) -> Vec<Block> {
     let mut junctions: Vec<f64> = candidates
         .iter()
@@ -550,12 +556,40 @@ pub fn blocks_from_logo(
             .filter(|x| (x - t).abs() <= within)
             .min_by(|a, b| (a - t).abs().partial_cmp(&(b - t).abs()).unwrap())
     };
+    // **A junction with no change of picture on it is not the head of a
+    // break.** Two silences frequently stand within reach of a logo's edge --
+    // the one at the head of the break and the one between its first
+    // commercial and its second -- and taking the nearer of them is a coin
+    // toss the edge's own lag decides. A break begins where the picture is
+    // replaced, so a silence that no cut stands on is a pause in a programme
+    // and is passed over.
+    //
+    // Asked of the pictures where there are any to ask. A recording nothing
+    // has walked has no entry points to seek to, and reading it from the
+    // beginning to place one boundary is a great deal worse than placing it
+    // with the silences alone. See [`refine_boundaries`].
+    let usable: Vec<f64> = match pictures {
+        Some(src) if !src.points.is_empty() => candidates
+            .iter()
+            .filter(|c| c.score >= 0.6)
+            .filter(|c| {
+                crate::thumbs::cut_within(src, c.time, CUT_WINDOW, CUT_FLOOR).unwrap_or(true)
+            })
+            .map(|c| c.time)
+            .collect(),
+        _ => Vec::new(),
+    };
+    // The nearest junction a cut stands on, or -- where none of them does, or
+    // there were no pictures to ask -- the nearest junction there is.
+    let pick = |t: f64, within: f64| -> Option<f64> {
+        nearest(t, within, &usable).or_else(|| nearest(t, within, &junctions))
+    };
 
     logo_absent
         .iter()
         .map(|&(a, b)| {
             // the start lags by the scoring window, so allow a wider pull
-            let start = nearest(a, snap * 2.0, &junctions).unwrap_or(a);
+            let start = pick(a, snap * 2.0).unwrap_or(a);
 
             // The break's own junctions, and the grid continuing past the
             // last of them: that is where the final commercial ends, and no
