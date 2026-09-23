@@ -153,6 +153,7 @@ there, the recording is **added** to it.
 | `--analyze` | Work out the plan and print it. **Writes nothing** — not even into a `--bdav` folder |
 | `--detect-cm` | Look for the commercial breaks |
 | `--logo` | Let commercial detection use the station logo as well |
+| `--inserts` | ...and report the few seconds a subscription channel drops into a programme — its own animated ident. Off by default: the same test catches a programme's own caption card. See the [commercial detection guide](cm-detection.md) |
 | `--scenes` | List the scene changes |
 | `--preview TIME` | Decode one picture at `TIME` and write it as a JPEG (`preview.jpg`, or `-o`). It prints the time actually decoded beside the time asked for |
 | `--cut-near TIME` | Print where the nearest picture-to-picture change is to `TIME`, in windows of ±0.5, ±1 and ±2 seconds |

@@ -107,6 +107,22 @@ out at 60, 120 or 135 seconds and not at something in between. **A block of
 119.8 seconds where it should be 120.0 means a boundary landed slightly off** —
 worth a look before you cut.
 
+## The few seconds a subscription channel drops in
+
+Where a terrestrial broadcast had its commercials, some subscription channels
+put two to nine seconds of their own animated ident instead. A break that short
+is not looked for out of the box: **Also find the short inserts** in Preferences
+turns it on for the cut editor's **CM を検出** (`--inserts` on the command
+line).
+
+It is off because the same test catches a programme's own full-screen caption
+card. What finds an insert is the sound — it is cut in, so the programme's audio
+stops for it — and a card takes the corner just as thoroughly, so a programme
+that lays its cards over silence gives both. Measured over twenty episodes of
+one such programme, about a quarter of what came out was a caption card. Worth
+having where you know your channel does this, and worth a look at each mark
+either way.
+
 ## When it gets one wrong
 
 | What you see | What to do |
@@ -115,6 +131,7 @@ worth a look before you cut.
 | **A break was missed** | `↑` and `↓` (and `S` / `Shift+S`) step through the scene changes. That is the fastest way to find a boundary by hand |
 | **The block swallows part of the programme** | Delete the offending mark with the `×` on its card and cut around it by hand. This is the expensive mistake, and the detector is tuned to avoid it, but material with an unusual rhythm can still trip it |
 | **Nothing is found** | The recording may genuinely have no commercials. Otherwise it carries neither subtitle marks nor a logo |
+| **A few seconds of channel ident are left in** | See above: ask for the short inserts |
 
 ## Cut on the marks and nothing is re-encoded
 
