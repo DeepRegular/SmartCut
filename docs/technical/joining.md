@@ -268,9 +268,38 @@ than placed in a corner, because where to put a smaller one is a question with
 no answer that suits everybody and an image with an alpha channel answers it
 itself.
 
+### The preview on the settings screen (`crossview.rs`)
+
+A join's transition is set in a window of its own, with the seconds either
+side of the seam composited and playing. `crossview.rs` is the path that
+produces them.
+
+**None of the arithmetic is written here.** Every sample of the preview and
+every sample of the output go through the same `blend.rs`, and how far
+through the crossing each instant is comes from the same `transition.rs`.
+The way to keep a preview and an output from disagreeing is for there to be
+one of them.
+
+What is written twice is the **schedule** — which instant shows what. The
+cutter builds it as plan segments around a whole edit (`ranges_with_transitions`);
+the preview has no edit, only two recordings and a setting, so it builds the
+same thing around one seam. The tests at the foot of `crossview.rs` are what
+hold the two answers together.
+
+| | Preview | Output |
+|---|---|---|
+| Composited into | the preview's own size, `yuv420p` | the master clip's shape |
+| Scaler | `FAST_BILINEAR` — a picture is looked at once and dropped | `BICUBIC` — it is paid for the length of the reel |
+| Sound | the two clips in turn to one output device (`play_audio_across`) | the same order, written |
+
+The composite is done in studio-range `yuv420p` and the conversion to JPEG
+comes after it. The other way round, the studio black `Shade::yuv` gives
+would land at a different brightness in the full-range `yuvj420p` a JPEG
+wants.
+
 ## What was measured
 
-`tests/run_join_tests.sh`, sixteen checks, fixtures generated so it needs
+`tests/run_join_tests.sh`, seventeen checks, fixtures generated so it needs
 nothing but ffmpeg.
 
 | | |
@@ -281,6 +310,7 @@ nothing but ffmpeg.
 | A fade | The file keeps its length, and the middle of the fade is black |
 | A dissolve | The file comes out its own seconds shorter |
 | A wipe | Writes and decodes |
+| A crossing against a short range | Held to whichever of its two ends allows less, so the clip after it loses nothing the crossing did not show |
 | A cut of one recording | Byte for byte what it was, and the run says nothing about joining |
 
 On real material: two twenty-second stretches of a broadcast recording came out

@@ -71,7 +71,7 @@ bash tests/run_audio_smart_tests.sh   # コーデックごとのスマートレ�
 bash tests/run_audio_format_tests.sh  # 音声のサンプリングレートと量子化ビット数         23
 bash tests/run_audio_head_tests.sh    # 冒頭が前の番組になっている録画                   22
 bash tests/run_preview_tests.sh       # スクラブで指定した時刻の映像が出るか              7
-bash tests/run_index_tests.sh         # 索引が走査と同じ答えを返すか                     33
+bash tests/run_index_tests.sh         # 索引が走査と同じ答えを返すか                     38
 bash tests/run_proxy_tests.sh         # プロキシが録画の代役になれるか                   22
 bash tests/run_scene_tests.sh         # シーン検出と CM 境界の照合                        1
 bash tests/run_ts_layout_tests.sh     # TS の出自とシーケンスヘッダ                       5
@@ -86,8 +86,9 @@ bash tests/run_bd_audio_tests.sh      # ディスクの音声が書き出せる�
 bash tests/run_vc1_tests.sh           # VC-1 エンコーダをデコーダに通す                  4
 bash tests/run_vp9_av1_tests.sh       # VP9 と AV1 を継いで、録画のバイトのままか        5
 bash tests/run_vfr_tests.sh           # 保持されたフレームが保持されたままか、速い差し込みが残るか  8
-bash tests/run_transrate_tests.sh    # 容量に合わせる。同一性・サイズ・代償         15
-bash tests/run_join_tests.sh          # 複数の録画を 1 ファイルに。継ぎ目の効果も      16
+bash tests/run_demux_tests.sh         # 読まないストリームを切ると何が戻るか              9
+bash tests/run_transrate_tests.sh     # 容量に合わせる。同一性・サイズ・代償         15
+bash tests/run_join_tests.sh          # 複数の録画を 1 ファイルに。継ぎ目の効果も      17
 ```
 
 **どのスイートも全件通るのが正常である。** 落ちるものがあれば回帰である。

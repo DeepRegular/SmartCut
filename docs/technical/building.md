@@ -70,7 +70,7 @@ bash tests/run_audio_smart_tests.sh   # smart rendering, codec by codec         
 bash tests/run_audio_format_tests.sh  # the rate and the width the samples are written  23
 bash tests/run_audio_head_tests.sh    # a recording whose opening is another programme  22
 bash tests/run_preview_tests.sh       # does a scrub show the time you asked for         7
-bash tests/run_index_tests.sh         # does the index answer as the walk did           33
+bash tests/run_index_tests.sh         # does the index answer as the walk did           38
 bash tests/run_proxy_tests.sh         # can the proxy stand in for the recording        22
 bash tests/run_scene_tests.sh         # scene detection vs commercial boundaries         1
 bash tests/run_ts_layout_tests.sh     # TS provenance and sequence headers               5
@@ -83,10 +83,11 @@ bash tests/run_udf_tests.sh           # the image as a filesystem, beside real d
 bash tests/run_dvd_tests.sh           # a DVD-Video disc, as a folder and as an .iso    23
 bash tests/run_bd_audio_tests.sh      # the sound a disc carries, written out             39
 bash tests/run_vc1_tests.sh           # the VC-1 encoder, put through a decoder          4
-bash tests/run_vp9_av1_tests.sh       # VP9 and AV1: joined, and still the source's bytes 5
+bash tests/run_vp9_av1_tests.sh       # VP9 and AV1: cut, and still the source's bytes   5
 bash tests/run_vfr_tests.sh           # variable rate, both ways round                   8
-bash tests/run_transrate_tests.sh    # fitting a disc: the identity, the size, the cost  15
-bash tests/run_join_tests.sh          # several recordings into one file, and the crossings 16
+bash tests/run_demux_tests.sh         # what a reader loses by reading what it does not  9
+bash tests/run_transrate_tests.sh     # fitting a disc: the identity, the size, the cost 15
+bash tests/run_join_tests.sh          # several recordings into one file, and the seams  17
 ```
 
 **Every suite passes whole.** Anything that fails is a regression.

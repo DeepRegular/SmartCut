@@ -885,7 +885,7 @@ all of them gone.
 **The master clip is what the file is shaped like.** A file has one answer for
 how big its pictures are, how often they come and what they are coded as, and a
 list of recordings has as many answers as it has rows. So one row supplies them
-all, and the picker beside the box is where you say which. The first row is the
+all, and the picker under the box is where you say which. The first row is the
 answer if you say nothing.
 
 A row that matches the master is smart-rendered exactly as it would be on its
@@ -934,7 +934,7 @@ with their sound. Like the cut editor, it is left with OK or キャンセル.
 | **Effect** | `None`, a fade through black or white, a dissolve, or a wipe or slide from any of the four sides |
 | **Duration** | Up to thirty seconds, by the slider or typed |
 | **Easing** | How fast it runs at each point of itself: twelve curves, each in In, Out, In-out or Out-in. `None` is a straight line |
-| **Image over it** | A still drawn over the crossing — a title, a card. It comes up as the crossing starts and goes down as it ends |
+| **Image over it** | A still drawn over the crossing — a title, a card. It fades up over the first quarter of the crossing, stands at full strength across the middle half, and fades down over the last quarter, so it is never cut on or off |
 | **What it does** (the small picture) | How the two clips are put together halfway through. Which way a wipe travels, and whether a slide moves the picture behind it, are things the name only half says |
 | **Apply to every join** | Puts the settings on screen on every join in the list. Twelve episodes want the same crossing twelve times |
 | **Clear them all** | Takes every transition off |
