@@ -5468,6 +5468,16 @@ window.addEventListener("keydown", (ev) => {
     askCancelEdit();
     return;
   }
+  // ...and Shift+Enter is the other way out: OK, which keeps what was done in
+  // here and closes the window. Shift rather than Enter by itself, because
+  // Enter on its own is the key that presses whichever button the keyboard
+  // happens to be on -- and the keyboard is on 追加 or ✕ as often as not,
+  // this window being worked by the hand.
+  if (ev.key === "Enter" && ev.shiftKey && !ev.ctrlKey && !ev.altKey && !ev.metaKey) {
+    ev.preventDefault();
+    el("editor-ok").click();
+    return;
+  }
   if (!src) return;
   if (ev.key === " ") {
     ev.preventDefault();

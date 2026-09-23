@@ -1375,6 +1375,7 @@ can quote it straight into a bug report.
 | `Ctrl+H` | Write the keyframe list beside the recording |
 | `Ctrl+Shift+H` | Write the Trim line beside the recording |
 | `Ctrl+Alt+H` | Write the detection beside the recording |
+| `Shift+Enter` | Keep what was done here and close (the same as OK) |
 | `Esc` | Throw away what was done here and close (the same as Cancel). Both ask first where anything was done |
 
 ---
