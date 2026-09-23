@@ -516,7 +516,7 @@ const CATALOG = {
     "cross.slideRight": "スライド（右から）",
     "cross.slideTop": "スライド（上から）",
     "cross.slideBottom": "スライド（下から）",
-    "ease.none": "無し",
+    "ease.none": "なし",
     "ease.back": "Back",
     "ease.bounce": "Bounce",
     "ease.circle": "Circle",
