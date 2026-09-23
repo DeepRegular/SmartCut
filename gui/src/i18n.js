@@ -122,6 +122,15 @@ const CATALOG = {
       "見つかったのが 1 つだけなら、この設定に関わらずそれを読み込みます。" +
       "どれかを読み込んだときは、CM 検出の結果に印は置きません。帯だけ出ます。",
     "prefs.cmKeyframes": "CM を検出したら、自動でキーフレームを置く",
+    "prefs.cmInserts": "番組中の短い挿入（局の ID など）も検出する",
+    "prefs.cmInsertsNote":
+      "CS の一部の局は、地上波で CM が入っていたところに自局の動画 ID を 2〜9 秒だけ" +
+      "差し込みます。ふつうの CM ブロックより短いので既定では拾いません。" +
+      "見分けているのは音で、挿入は音がいったん切れます。" +
+      "ただし番組の全画面テロップも同じように隅のロゴを隠すので、" +
+      "テロップの間だけ音を落とす番組では、それも拾います。" +
+      "ある番組で 20 話ぶん測ったところ、出たものの 3 分の 1 ほどがテロップでした。" +
+      "カット編集の「CM を検出」だけが対象で、入力一覧からの検出では拾いません。",
     "prefs.blankRun": "黒・白の区間とみなす長さ:",
     "prefs.blankRunNote":
       "これ以上続いた区間だけを扱います。既定は 3 秒です。" +
@@ -1166,6 +1175,16 @@ const CATALOG = {
       "detection it was, band and marks and all. Any of them on its own is read whatever this says. " +
       "Where one of them was read, a detection the list is holding is not mixed into the marks.",
     "prefs.cmKeyframes": "Turn a detection into keyframes",
+    "prefs.cmInserts": "Also find the short inserts (a channel's own ident)",
+    "prefs.cmInsertsNote":
+      "Some subscription channels drop two to nine seconds of their own animated ident into a " +
+      "programme where the terrestrial broadcast had its commercials. A break that short is not " +
+      "looked for out of the box. What finds one is the sound: an insert is cut in, so the " +
+      "programme's audio stops for it. A programme's own full-screen caption card takes the " +
+      "corner just as thoroughly, though, and some programmes lay one over silence — measured " +
+      "over twenty episodes of one such programme, about a third of what came out was a caption " +
+      "card. Only the cut editor's Detect commercials asks this; the clip list's own pass does " +
+      "not.",
     "prefs.blankRun": "Counts as blank after:",
     "prefs.blankRunNote":
       "Shorter stretches are left out. The default of 3 s reports only long gaps -- the black " +

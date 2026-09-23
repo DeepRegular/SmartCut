@@ -243,6 +243,18 @@ const DEFAULTS = {
   /// The silences are not affected either way. The sound comes back on a
   /// sample, and there is no picture between the two answers to choose.
   flatMarkAt: "after",
+  /// Whether commercial detection also reports the few seconds of missing
+  /// logo a subscription channel drops into a programme -- its own animated
+  /// ident, where the terrestrial broadcast had its commercials.
+  ///
+  /// **Off.** The same test catches a programme's own full-screen caption
+  /// card, which takes the corner just as thoroughly and which some
+  /// programmes lay over silence. Measured over twenty episodes of one such
+  /// programme, about a third of what came out was a caption card. Somebody
+  /// who knows their channel does this can ask for it; nobody should have it
+  /// by default. The cut editor's button asks, and the clip list's lane does
+  /// not.
+  cmInserts: false,
   /// Whether each of the two flat detections puts its marks down by itself,
   /// as `cmKeyframes` says for the commercial one.
   ///

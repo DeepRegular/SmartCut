@@ -338,6 +338,7 @@ fn main() -> Result<()> {
     let mut scenes = false;
     let mut audio_es = false;
     let mut cut_near: Option<f64> = None;
+    let mut find_inserts = false;
     let mut use_logo = false;
     // Whatever the engine has as its default, which is smart rendering.
     let mut audio_mode = smartcut_core::AudioMode::default();
@@ -461,6 +462,7 @@ fn main() -> Result<()> {
                 cut_near = Some(parse_time(args.get(i).context("--cut-near needs a time")?)?);
             }
             "--logo" => use_logo = true,
+            "--inserts" => find_inserts = true,
             "--title" => {
                 i += 1;
                 title = Some(
@@ -1147,7 +1149,10 @@ fn main() -> Result<()> {
         // the other two readings can be, and they cost one pass over a
         // stream that needs no decoding. When they are absent -- and on
         // several channels they are -- nothing is lost by having looked.
-        let opts = smartcut_core::DetectOptions::default();
+        let opts = smartcut_core::DetectOptions {
+            find_inserts,
+            ..Default::default()
+        };
         // The sound and the caption stream out of one read of the recording,
         // as the window reads them. See `cm::silences_and_resets`.
         let (silences, found) = smartcut_core::cm_silences_and_resets(&src, &opts, None)
@@ -1210,7 +1215,15 @@ fn main() -> Result<()> {
                 "（字幕リセット）",
             ),
             (None, Some(l)) if !l.absent.is_empty() => (
-                smartcut_core::cm_blocks_from_logo(&cands, &l.absent, &opts, 3.0, src.duration, Some(&src)),
+                smartcut_core::cm_blocks_from_logo(
+                    &cands,
+                    &l.absent,
+                    &l.brief,
+                    &opts,
+                    3.0,
+                    src.duration,
+                    Some(&src),
+                ),
                 "（ロゴ＋無音）",
             ),
             (None, Some(_)) => (Vec::new(), "（ロゴが一度も消えない）"),

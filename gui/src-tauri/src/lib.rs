@@ -3542,9 +3542,13 @@ fn detect_now(
     src: &Source,
     pictures: impl FnOnce() -> Option<Source>,
     threads: usize,
+    inserts: bool,
     say: Say,
 ) -> Result<CmResult, String> {
-    let opts = smartcut_core::DetectOptions::default();
+    let opts = smartcut_core::DetectOptions {
+        find_inserts: inserts,
+        ..Default::default()
+    };
 
     // The sound and the caption stream come out of one read of the
     // recording. Reading it is the cost on a share -- a caption stream is a
@@ -3622,6 +3626,7 @@ fn detect_now(
         (None, Some(l)) if !l.absent.is_empty() => smartcut_core::cm_blocks_from_logo(
             &cands,
             &l.absent,
+            &l.brief,
             &opts,
             3.0,
             src.duration,
@@ -3838,7 +3843,7 @@ async fn cm_cached(path: String, app: tauri::AppHandle) -> Result<Option<CmResul
 
 /// The editor's own detection, against the recording that is open.
 #[tauri::command]
-async fn detect_cm(path: String, app: tauri::AppHandle) -> Result<CmResult, String> {
+async fn detect_cm(path: String, inserts: bool, app: tauri::AppHandle) -> Result<CmResult, String> {
     // Reads the whole audio track, so it belongs off the UI thread -- and
     // runs for minutes, so it belongs behind the rest of the machine as well.
     off_thread_behind(move || {
@@ -3871,6 +3876,7 @@ async fn detect_cm(path: String, app: tauri::AppHandle) -> Result<CmResult, Stri
             // at -- an estimate, and a better one than nothing.
             move || opened_clone(&watcher, &owned),
             asked_for_threads(),
+            inserts,
             std::sync::Arc::new(move |phase: &str, done: f64| {
                 let _ = reporter.emit("cm-progress", (phase.to_string(), done));
             }),
@@ -3936,6 +3942,10 @@ async fn detect_cm_at(path: String, app: tauri::AppHandle) -> Result<CmResult, S
             &src,
             move || Some(refine),
             background_threads(&app),
+            // The clip list has no screen of its own to ask on, and this is
+            // an answer somebody gives while looking at one recording. See
+            // [`smartcut_core::DetectOptions::find_inserts`].
+            false,
             std::sync::Arc::new(move |phase: &str, done: f64| {
                 let _ =
                     reporter.emit("clip-cm-progress", (owned.clone(), phase.to_string(), done));

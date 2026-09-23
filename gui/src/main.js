@@ -5793,7 +5793,14 @@ el("detect-cm").addEventListener("click", async () => {
   el("detect-cm").disabled = true;
   showCmNote(tr("editor.detecting"));
   try {
-    const res = await invoke("detect_cm", { path: src.path });
+    const res = await invoke("detect_cm", {
+      path: src.path,
+      // 環境設定's answer about the few seconds of missing logo a
+      // subscription channel drops into a programme. Asked here rather than
+      // stored with the detection: it is a question about this recording,
+      // and the list's own lane never asks it.
+      inserts: prefs.get("cmInserts") === true,
+    });
     cmSummary = cmNote(res);
     cmFinding = { logo_found: !!res.logo_found, resets: res.resets || 0 };
     showCmNote(cmSummary);

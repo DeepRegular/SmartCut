@@ -8987,6 +8987,7 @@ function paintPrefs() {
   el("pref-quiet-level").value = String(prefs.get("quietLevel"));
   el("pref-sidecar").value = String(prefs.get("sidecarPriority"));
   el("pref-cm-keyframes").checked = prefs.get("cmKeyframes") !== false;
+  el("pref-cm-inserts").checked = prefs.get("cmInserts") === true;
   el("pref-blank-shades").value = String(prefs.get("blankShades") || "both");
   el("pref-flat-mark-at").value = String(prefs.get("flatMarkAt") || "after");
   el("pref-blank-keyframes").checked = prefs.get("blankKeyframes") !== false;
@@ -9221,6 +9222,9 @@ el("pref-cm-keyframes").addEventListener("change", (ev) => {
 // itself -- a detection saved for black alone is a black detection -- so a
 // row that has already been read is read again when this changes; that falls
 // out of the cache being asked with the shades in it.
+el("pref-cm-inserts").addEventListener("change", (ev) => {
+  prefs.set("cmInserts", ev.target.checked);
+});
 el("pref-flat-mark-at").addEventListener("change", (ev) => {
   prefs.set("flatMarkAt", ev.target.value);
   tellEditorPrefs();

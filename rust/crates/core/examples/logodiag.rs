@@ -41,6 +41,11 @@ fn main() -> Result<()> {
             for (a, b) in &l.absent {
                 println!("    {a:9.2} - {b:9.2}   ({:.1}s)", b - a);
             }
+            // The short ones, which are an insert or a caption card and
+            // which only the sound tells apart. See `cm::blocks_from_logo`.
+            for (a, b) in &l.brief {
+                println!("    {a:9.2} - {b:9.2}   ({:.1}s)  brief", b - a);
+            }
         }
         Err(e) => println!("no logo: {e}  ({took:.0}s)"),
     }

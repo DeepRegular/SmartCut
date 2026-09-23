@@ -31,6 +31,24 @@ pub struct LogoOptions {
     pub absent: f64,
     /// Ignore absences shorter than this; a commercial break never is.
     pub min_absent: f64,
+    /// ...but a channel's own animated ident is, and a subscription channel
+    /// drops one into a programme where the terrestrial broadcast had its
+    /// commercials. An absence at least this long is reported separately as
+    /// [`Logo::brief`], for the caller to keep where a junction stands in
+    /// it; see [`crate::cm::blocks_from_logo`].
+    ///
+    /// Not simply a smaller `min_absent`: a programme's own full-screen
+    /// caption card takes the corner as thoroughly as an ident does, and
+    /// what tells them apart is the sound -- which runs through a caption
+    /// card and stops for an insert. A programme that lays its cards over
+    /// silence defeats that, and one measured does.
+    ///
+    /// **1.75 is a gap in the measurement, not a round number.** Sixty-six
+    /// short absences over twenty episodes of that programme come out as two
+    /// groups with nothing between them: twenty-five between 1.53 and 1.67
+    /// seconds, every one of them a caption card, and forty-one from 1.83
+    /// upwards, which is where the idents are.
+    pub min_insert: f64,
     /// ...except at the two ends. An absence that runs off the start or the
     /// end of the recording is not a break at all -- it is the recorder
     /// having begun before the programme did, or stopped after it ended --
@@ -63,6 +81,7 @@ impl Default for LogoOptions {
             present: 0.05,
             absent: 0.02,
             min_absent: 20.0,
+            min_insert: 1.75,
             min_edge_absent: 1.0,
             min_present: 5.0,
             typical_break: 30.0,
@@ -107,6 +126,18 @@ pub struct Logo {
     pub strength: f64,
     /// Stretches, in seconds, where the logo is not on screen.
     pub absent: Vec<(f64, f64)>,
+    /// The stretches that fell short of [`LogoOptions::min_absent`] but
+    /// reach [`LogoOptions::min_insert`].
+    ///
+    /// A few seconds of corner with no logo in it is either a channel ident
+    /// dropped into the programme or the programme's own full-screen caption
+    /// card, and **nothing in the corner tells them apart**. A card carries
+    /// the logo -- drawn grey on black rather than over the picture -- and
+    /// the correlation still falls to nought on it, because the template was
+    /// built from the logo as it is drawn over a picture. Measured on two
+    /// recordings, the lowest score reached inside an ident and inside a card
+    /// are the same number. The caller decides, and on something else.
+    pub brief: Vec<(f64, f64)>,
 }
 
 /// Nothing in any corner behaved like a station logo.
@@ -626,11 +657,12 @@ pub fn detect_with(
         /// Only used to settle a tie: see where `chosen` is decided.
         present: f64,
         absent: Vec<(f64, f64)>,
+        brief: Vec<(f64, f64)>,
     }
     let mut chosen: Option<Pick> = None;
     for k in 0..4 {
         let (present_t, absent_t) = thresholds[k];
-        let (intervals, transitions) =
+        let (intervals, brief, transitions) =
             intervals_from(&times, &scores[k], present_t, absent_t, opts);
         let present: usize = scores[k].iter().filter(|&&s| s >= present_t).count();
         let frac = present as f64 / scores[k].len().max(1) as f64;
@@ -677,11 +709,12 @@ pub fn detect_with(
                 transitions,
                 present: frac,
                 absent: intervals,
+                brief,
             });
         }
     }
     let pick = chosen.ok_or(NoLogo)?;
-    let (absent, k) = (pick.absent, pick.corner_index);
+    let (absent, brief, k) = (pick.absent, pick.brief, pick.corner_index);
     let corner = cands[k].corner;
     let strength = cands[k].strength;
 
@@ -689,6 +722,7 @@ pub fn detect_with(
         corner,
         strength,
         absent,
+        brief,
     })
 }
 
@@ -703,13 +737,14 @@ pub fn detect_with(
 /// resemble the template, and splitting one break there produces blocks that
 /// overlap -- each edge is snapped to its own nearest junction, and the
 /// earlier block's end can pass the later block's start.
+#[allow(clippy::type_complexity)]
 fn intervals_from(
     times: &[f64],
     scores: &[f64],
     present_t: f64,
     absent_t: f64,
     opts: &LogoOptions,
-) -> (Vec<(f64, f64)>, usize) {
+) -> (Vec<(f64, f64)>, Vec<(f64, f64)>, usize) {
     // Each stretch, and whether it runs off an end of the recording -- an
     // edge is held to a much shorter minimum than a break is.
     let mut absent: Vec<(f64, f64, bool)> = Vec::new();
@@ -773,19 +808,29 @@ fn intervals_from(
         }
     }
 
+    let long = |a: f64, b: f64, edge: bool| {
+        b - a
+            >= if edge {
+                opts.min_edge_absent
+            } else {
+                opts.min_absent
+            }
+    };
+    // The short ones are handed back beside the long ones rather than
+    // thrown away: a few seconds of corner with no logo in it is either a
+    // channel ident dropped into the programme or the programme's own
+    // caption card. See [`LogoOptions::min_insert`].
+    let brief = absent
+        .iter()
+        .filter(|&&(a, b, edge)| !long(a, b, edge) && b - a >= opts.min_insert)
+        .map(|&(a, b, _)| (a, b))
+        .collect();
     let absent = absent
         .into_iter()
-        .filter(|&(a, b, edge)| {
-            b - a
-                >= if edge {
-                    opts.min_edge_absent
-                } else {
-                    opts.min_absent
-                }
-        })
+        .filter(|&(a, b, edge)| long(a, b, edge))
         .map(|(a, b, _)| (a, b))
         .collect();
-    (absent, transitions)
+    (absent, brief, transitions)
 }
 
 /// How far apart two mask pixels may sit and still belong to the same mark.

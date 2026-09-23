@@ -70,6 +70,26 @@ pub struct DetectOptions {
     /// is -- up to a point, beyond which it is not a junction being measured
     /// but a quiet passage.
     pub grid_max_slack: f64,
+    /// Whether a few seconds of missing logo counts as a break.
+    ///
+    /// **Off, and it has to be asked for.** A subscription channel drops its
+    /// own animated ident into a programme where the terrestrial broadcast
+    /// had its commercials, three to nine seconds of it, and a break that
+    /// short is thrown away by [`crate::logo::LogoOptions::min_absent`]. The
+    /// sound is what says one is there -- an insert is cut in, so the
+    /// programme's audio stops for it.
+    ///
+    /// It is not asked for by default because **the same test catches a
+    /// programme's own full-screen caption card**, which takes the corner
+    /// just as thoroughly and which some programmes lay over silence.
+    /// Nothing in the corner separates the two -- the correlation falls to
+    /// nought on a card as surely as on an ident, the card carrying the logo
+    /// drawn grey on black -- and the silences overlap, 0.8 to 1.0 s on a
+    /// card against 1.1 to 1.5 on an ident. What thins them out is the floor
+    /// on the length, and it does not clear them: over twenty episodes of
+    /// one such programme, a quarter of what was left after that floor was
+    /// still a caption card. See [`crate::logo::LogoOptions::min_insert`].
+    pub find_inserts: bool,
 }
 
 impl Default for DetectOptions {
@@ -80,6 +100,7 @@ impl Default for DetectOptions {
             grid_tolerance: 0.15,
             grid_max_slack: 0.6,
             min_fill: 0.6,
+            find_inserts: false,
         }
     }
 }
@@ -538,6 +559,7 @@ fn flush(out: &mut Vec<Block>, run: &[&Candidate]) {
 pub fn blocks_from_logo(
     candidates: &[Candidate],
     logo_absent: &[(f64, f64)],
+    logo_brief: &[(f64, f64)],
     opts: &DetectOptions,
     snap: f64,
     duration: f64,
@@ -588,7 +610,48 @@ pub fn blocks_from_logo(
         nearest(t, within, &usable).or_else(|| nearest(t, within, &junctions))
     };
 
-    logo_absent
+    // A few seconds of corner with no logo in it, which a subscription
+    // channel drops into a programme where the terrestrial broadcast had its
+    // commercials -- its own animated ident, three to six seconds of it. The
+    // pictures cannot tell one from the programme's own full-screen caption
+    // card, which takes the corner just as thoroughly; on the recording this
+    // was measured against there were three of each.
+    //
+    // **The sound can.** An insert is cut in, so the programme's audio stops
+    // for it; a caption card is the programme, and the audio runs through.
+    // Measured on that recording, every ident carries a silence of about a
+    // second and no caption card has one within two and a half seconds of it.
+    //
+    // A junction's silence is around a second and a pause in dialogue is 0.1
+    // to 0.4, so the length asked for is the middle of that gap. See
+    // [`DetectOptions::min_silence`], which is the floor the silences
+    // arrived at.
+    const INSERT_SILENCE: f64 = 0.7;
+    //
+    // An insert is taken as it stands rather than put through the snapping
+    // below. That machinery is about a break whose edges the logo is vague
+    // about and whose junctions say where the commercials meet; three
+    // seconds of ident has one junction, in the middle of it, and pulling an
+    // edge six seconds onto it would step outside the insert altogether.
+    // What the ends want is the frame the picture changes on, and
+    // [`refine_boundaries`] is what does that.
+    let inserts: Vec<Block> = logo_brief
+        .iter()
+        .filter(|_| opts.find_inserts)
+        .filter(|&&(a, b)| {
+            candidates
+                .iter()
+                .any(|c| c.silence >= INSERT_SILENCE && c.end > a && c.start < b)
+        })
+        .map(|&(a, b)| Block {
+            start: a,
+            end: b,
+            junctions: 1,
+            score: 0.8,
+        })
+        .collect();
+
+    let mut out: Vec<Block> = logo_absent
         .iter()
         .map(|&(a, b)| {
             // the start lags by the scoring window, so allow a wider pull
@@ -626,7 +689,11 @@ pub fn blocks_from_logo(
             let edge = blk.start <= EDGE || blk.end >= duration - EDGE;
             blk.duration() >= if edge { 1.0 } else { opts.min_silence.max(5.0) }
         })
-        .collect()
+        .collect();
+    // ...and the inserts, which are shorter than that floor by their nature.
+    out.extend(inserts);
+    out.sort_by(|a, b| a.start.total_cmp(&b.start));
+    out
 }
 
 /// How far off a 15-second multiple two resets may sit. Far tighter than the
