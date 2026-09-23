@@ -612,7 +612,7 @@ pub fn blocks_from_logo(
 
     // A few seconds of corner with no logo in it, which a subscription
     // channel drops into a programme where the terrestrial broadcast had its
-    // commercials -- its own animated ident, three to six seconds of it. The
+    // commercials -- its own animated ident, three to nine seconds of it. The
     // pictures cannot tell one from the programme's own full-screen caption
     // card, which takes the corner just as thoroughly; on the recording this
     // was measured against there were three of each.
@@ -691,6 +691,12 @@ pub fn blocks_from_logo(
         })
         .collect();
     // ...and the inserts, which are shorter than that floor by their nature.
+    // A break's start may have been pulled back onto an ident's own silence,
+    // and an insert that the break now covers is not a second block.
+    let inserts: Vec<Block> = inserts
+        .into_iter()
+        .filter(|i| !out.iter().any(|b| i.end > b.start && i.start < b.end))
+        .collect();
     out.extend(inserts);
     out.sort_by(|a, b| a.start.total_cmp(&b.start));
     out

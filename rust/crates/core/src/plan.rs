@@ -197,6 +197,39 @@ pub fn reencode_range(points: &[AccessPoint], t_in: f64, t_out: f64) -> RangePla
     }
 }
 
+/// How many pictures are on screen from `a` up to `b`, not counting a picture
+/// that begins at `b`.
+///
+/// Counted on the grid the pictures really sit on, which is the one the
+/// nearest entry point is on. A recording's pictures start wherever its clock
+/// started, not on multiples of the frame duration, and rounding each bound
+/// to the nearest multiple instead miscounts by one whenever the two bounds
+/// round different ways -- a re-encode of fourteen pictures reported as
+/// thirteen on the output screen, measured against the file written.
+///
+/// `duration` is the recording's length. A range asked for to the end of it
+/// runs past the start of a picture that is not there -- the last one began a
+/// frame before the end -- so the count stops half a frame short of it.
+fn frames_in(points: &[AccessPoint], fps: f64, a: f64, b: f64, duration: f64) -> usize {
+    let b = if duration > 0.0 { b.min(duration - 0.5 / fps) } else { b };
+    if b <= a || fps <= 0.0 {
+        return 0;
+    }
+    let at = points.partition_point(|p| p.time < a);
+    let phase = [at.checked_sub(1), Some(at)]
+        .into_iter()
+        .flatten()
+        .filter_map(|i| points.get(i))
+        .map(|p| p.time)
+        .min_by(|x, y| (x - a).abs().total_cmp(&(y - a).abs()))
+        .unwrap_or(0.0);
+    // The first picture at or after `t`. A bound within a hundredth of a
+    // picture of one is taken as that picture, which is what a time read off
+    // a picture comes back as after a trip through floating point.
+    let first = |t: f64| ((t - phase) * fps - 0.01).ceil();
+    (first(b) - first(a)).max(0.0) as usize
+}
+
 pub fn plan_range(
     video: &VideoInfo,
     duration: f64,
@@ -221,7 +254,6 @@ pub fn plan_range(
     } else {
         30.0
     };
-    let index = |t: f64| (t * fps).round();
 
     // Nothing before the file's first access point can be decoded -- a
     // recording that begins mid-GOP, or any byte-sliced stream, simply has no
@@ -235,7 +267,7 @@ pub fn plan_range(
 
     let finish = |mut segments: Vec<Segment>| -> RangePlan {
         for s in &mut segments {
-            s.frames = (index(s.end) - index(s.start)).max(0.0) as usize;
+            s.frames = frames_in(points, fps, s.start, s.end, duration);
         }
         // A re-encode window with no picture in it is not a small piece of
         // work, it is an error: the cutter decodes the window, finds nothing
@@ -562,7 +594,7 @@ fn clean_the_join(src: &crate::Source, plan: &mut RangePlan, opts: &PlanOptions)
     } else {
         30.0
     };
-    let frames = |a: f64, b: f64| ((b * fps).round() - (a * fps).round()).max(0.0) as usize;
+    let frames = |a: f64, b: f64| frames_in(&src.points, fps, a, b, src.duration);
     plan.segments[0].end = clean;
     plan.segments[0].frames = frames(plan.segments[0].start, clean);
     plan.segments[1].start = clean;

@@ -368,6 +368,29 @@ const PLANAR_F32: ff::format::Sample = ff::format::Sample::F32(ff::format::sampl
 /// instant the programme began. A fresh context at the change costs one
 /// allocation. The same fact the playback side answers in
 /// [`crate::playback_audio`].
+/// Give a decoded frame whose channels are in no stated order the ordinary
+/// layout for its count.
+///
+/// A frame that is to be converted has to say where its channels are,
+/// because swresample holds it to the layout it was built for and a frame
+/// whose order is "unspecified" never matches one: "Input changed", on the
+/// first frame. Matroska stores no layout for PCM, so every recording with
+/// PCM in an .mkv came to this. The frame is the caller's own, fresh out of
+/// the decoder, which is why writing to it through a shared reference is
+/// sound here.
+pub(crate) fn name_layout(frame: &ff::frame::Audio) {
+    unsafe {
+        let raw = frame.as_ptr() as *mut ff::ffi::AVFrame;
+        if (*raw).ch_layout.order == ff::ffi::AVChannelOrder::AV_CHANNEL_ORDER_UNSPEC
+            && (*raw).ch_layout.nb_channels > 0
+        {
+            let n = (*raw).ch_layout.nb_channels;
+            ff::ffi::av_channel_layout_uninit(&mut (*raw).ch_layout);
+            ff::ffi::av_channel_layout_default(&mut (*raw).ch_layout, n);
+        }
+    }
+}
+
 pub(crate) fn conform<'a>(
     resampler: &mut Option<ff::software::resampling::Context>,
     out: &'a mut ff::frame::Audio,
@@ -383,6 +406,18 @@ pub(crate) fn conform<'a>(
     if same && frame.format() == format {
         return Ok(frame);
     }
+    // The layout asked for can be as silent as the frame -- it is read off
+    // the same stream -- and swresample will not write into a frame whose
+    // channels are in no stated order.
+    let layout = if layout.0.order == ff::ffi::AVChannelOrder::AV_CHANNEL_ORDER_UNSPEC
+        || layout.channels() <= 0
+    {
+        let n = if layout.channels() > 0 { layout.channels() } else { frame.channels() as i32 };
+        ff::channel_layout::ChannelLayout::default(n)
+    } else {
+        layout
+    };
+    name_layout(frame);
     let arriving = ff::software::resampling::context::Definition {
         format: frame.format(),
         channel_layout: frame.channel_layout(),

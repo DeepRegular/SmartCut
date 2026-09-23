@@ -14,7 +14,7 @@ use std::time::{Duration, Instant};
 
 fn main() -> Result<()> {
     let args: Vec<String> = std::env::args().skip(1).collect();
-    let path = args.first().expect("usage: audiodiag <file> [seconds]");
+    let path = args.first().expect("usage: audiodiag <file> [seconds] [volume]");
     let seconds: f64 = args.get(1).and_then(|s| s.parse().ok()).unwrap_or(20.0);
     let volume: f32 = args.get(2).and_then(|s| s.parse().ok()).unwrap_or(1.0);
 

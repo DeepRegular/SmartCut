@@ -773,6 +773,11 @@ fn main() -> Result<()> {
     if iso_access != smartcut_core::udfw::Access::default() && iso.is_none() {
         bail!("--iso-access needs --iso 2.50|2.60: it is a thing the image says");
     }
+    // A disc is a list of recordings with pictures in them; a clip of sound
+    // alone would be written into its folder with nothing to describe it.
+    if sound_only && bdav.is_some() {
+        bail!("--sound-only writes an audio file, which does not go onto a disc: use -o");
+    }
     let Some(input) = input else { bail!(usage()) };
     // A share the machine has already mounted may be named the way it is
     // written down -- `smb://nas/rec/a.ts` or `\\nas\rec\a.ts` -- rather than
@@ -1191,8 +1196,13 @@ fn main() -> Result<()> {
         };
         // The sound and the caption stream out of one read of the recording,
         // as the window reads them. See `cm::silences_and_resets`.
-        let (silences, found) = smartcut_core::cm_silences_and_resets(&src, &opts, None)
-            .unwrap_or_else(|_| (Vec::new(), smartcut_core::caption::resets(&src)));
+        // A recording with no sound still has captions to read; one whose
+        // sound could not be read is an error, not a recording with no breaks.
+        let (silences, found) = if src.audio.is_none() {
+            (Vec::new(), smartcut_core::caption::resets(&src))
+        } else {
+            smartcut_core::cm_silences_and_resets(&src, &opts, None)?
+        };
         let resets = match found {
             // And read instead of the other two only where the station marks
             // every junction rather than only the places its programme stops
@@ -1250,7 +1260,7 @@ fn main() -> Result<()> {
                 smartcut_core::cm_blocks_from_resets(r, src.duration),
                 "（字幕リセット）",
             ),
-            (None, Some(l)) if !l.absent.is_empty() => (
+            (None, Some(l)) if !l.absent.is_empty() || (opts.find_inserts && !l.brief.is_empty()) => (
                 smartcut_core::cm_blocks_from_logo(
                     &cands,
                     &l.absent,
@@ -1708,6 +1718,16 @@ fn main() -> Result<()> {
     // is open: what the sound writer wants is the ranges and the joins, both
     // of which are in hand, and nothing the planner works out.
     if sound_only {
+        // A .wav is linear PCM, and the usage says so. Left to the recording,
+        // a broadcast's AAC would be copied into a RIFF header few players
+        // open.
+        let audio_codec = if out.to_ascii_lowercase().ends_with(".wav")
+            && audio_codec == smartcut_core::AudioCodec::Source
+        {
+            smartcut_core::AudioCodec::Lpcm
+        } else {
+            audio_codec
+        };
         let between = smartcut_core::transition::Transition {
             kind: crossing,
             seconds: crossing_secs,

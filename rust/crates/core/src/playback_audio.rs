@@ -582,6 +582,7 @@ fn resample<'a>(
     rate: u32,
     layout: ff::channel_layout::ChannelLayout,
 ) -> Result<&'a [f32]> {
+    crate::audio::name_layout(frame);
     let arriving = ff::software::resampling::context::Definition {
         format: frame.format(),
         channel_layout: frame.channel_layout(),
@@ -1141,6 +1142,10 @@ fn ride_fade(
     if fades.0 <= 0.0 && fades.1 <= 0.0 {
         return;
     }
+    // Neither end takes more than half the range, as `fades_for` holds a
+    // written one to; the curve over a short range is otherwise another one.
+    let half = ((range.1 - range.0) / 2.0).max(0.0);
+    let fades = (fades.0.min(half), fades.1.min(half));
     let channels = channels.max(1) as usize;
     let step = 1.0 / rate as f64;
     for (k, frame) in samples.chunks_mut(channels).enumerate() {

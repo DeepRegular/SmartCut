@@ -39,7 +39,8 @@ use crate::{AudioInfo, Source};
 /// The same shape [`crate::cut::Reel`] has, less the pictures: the ranges are
 /// the kept stretches in the recording's own seconds, in the order they are
 /// written, and `after` is the join that follows this piece -- which this
-/// module reads for its two fade lengths and nothing else.
+/// module reads for its two fade lengths and for how much of the next
+/// piece's head an overlapping crossing takes.
 pub struct Piece<'a> {
     pub src: &'a Source,
     pub ranges: &'a [(f64, f64)],
@@ -109,6 +110,38 @@ fn fade_lengths(pieces: &[Piece], opts: &CutOptions) -> Vec<(f64, f64)> {
     out
 }
 
+/// The ranges as the sound of a joined cut plays them.
+///
+/// An overlapping crossing -- a dissolve, a wipe, a slide -- shows the first
+/// seconds of the clip after it while the clip before is still sounding, so
+/// the clip after starts that much later, sound and all, and the output is
+/// that much shorter. The same arithmetic as `ranges_with_transitions` in
+/// [`crate::cut`], which is what keeps this file as long as the video's own
+/// sound: each end gives at most half its range, and the pair is held to the
+/// smaller. A fade takes nothing from either side, and nothing follows the
+/// last piece.
+fn overlapped(pieces: &[Piece]) -> Vec<Vec<(f64, f64)>> {
+    let mut out: Vec<Vec<(f64, f64)>> = pieces.iter().map(|p| p.ranges.to_vec()).collect();
+    let room = |r: Option<&(f64, f64)>| r.map_or(0.0, |&(a, b)| ((b - a) / 2.0).max(0.0));
+    for n in 0..pieces.len().saturating_sub(1) {
+        let t = &pieces[n].after;
+        if !t.kind.overlaps() {
+            continue;
+        }
+        let take = t
+            .takes()
+            .1
+            .min(room(pieces[n].ranges.last()))
+            .min(room(pieces[n + 1].ranges.first()));
+        if let Some(first) = out[n + 1].first_mut() {
+            if take > 0.0 {
+                first.0 += take;
+            }
+        }
+    }
+    out
+}
+
 /// A range on the recording's own sample clock.
 fn window(range: (f64, f64), rate: u32) -> (i64, i64) {
     (
@@ -129,20 +162,38 @@ fn run(
     if ranges_in_all == 0 {
         return Err(anyhow!("nothing is kept, so there is no sound to write"));
     }
+    let kept = overlapped(pieces);
     let info = track_of(first.src, opts)?.clone();
+    let tracks = first
+        .src
+        .audios
+        .iter()
+        .filter(|a| !opts.drop_streams.contains(&a.stream_index))
+        .count();
     let many = first.src.audios.len() > 1;
-    if many {
+    if tracks > 1 {
         crate::note_once(format!(
-            "note: {} carries {} sound tracks and an audio file is written with one. \
+            "note: {} carries {tracks} sound tracks and an audio file is written with one. \
              The first is written; the rest are left out.",
             first.src.path,
-            first.src.audios.len(),
         ));
     }
     // What the track becomes. Settled by the picture writer's own planner, so
     // that an audio-only run and an ordinary one cannot disagree about it.
     let mut setup =
         crate::cut::plan_audio(&first.src.path, &info, opts, false, first.src.on_a_ts, many)?;
+    // A recording joined on whose sound is written another way cannot be
+    // copied into a stream declared as the first one's. The picture writer
+    // re-encodes just those reels to the master's shape; with one track and
+    // no pictures, re-encoding the whole of it comes to the same file.
+    let unlike = pieces.iter().skip(1).any(|p| {
+        track_of(p.src, opts).is_ok_and(|t| {
+            t.codec != info.codec || t.sample_rate != info.sample_rate || t.channels != info.channels
+        })
+    });
+    if unlike && setup.mode != AudioMode::Reencode {
+        setup.mode = AudioMode::Reencode;
+    }
     let fades = fade_lengths(pieces, opts);
 
     let mut octx = ff::format::output(&output)?;
@@ -160,7 +211,33 @@ fn run(
         && crate::audio::uncompressed(guess)
         && guess != setup.target
     {
-        setup.target = guess;
+        // The muxer names its sixteen-bit default; a track that is wider
+        // keeps its width and changes only its byte order.
+        setup.target = match (guess, setup.target) {
+            (
+                ff::codec::Id::PCM_S16LE,
+                ff::codec::Id::PCM_S24BE | ff::codec::Id::PCM_S24LE,
+            ) => ff::codec::Id::PCM_S24LE,
+            _ => guess,
+        };
+    }
+
+    // A container that has no box for the codec says so only as "Invalid
+    // argument", once the header is being written. Asked first, so the run
+    // can say which codec and which file.
+    let holds = unsafe {
+        ff::ffi::avformat_query_codec(
+            (*octx.as_ptr()).oformat,
+            setup.target.into(),
+            ff::ffi::FF_COMPLIANCE_NORMAL,
+        )
+    };
+    if holds == 0 {
+        return Err(anyhow!(
+            "{output} cannot hold {:?} sound. Name the file for that codec (.mp2, .ac3, \
+             .aac and so on), or ask for another with --audio-codec",
+            setup.target
+        ));
     }
 
     let ictx = crate::input::demux(&first.src.input.url)?;
@@ -232,8 +309,8 @@ fn run(
     for (n, piece) in pieces.iter().enumerate() {
         let track = track_of(piece.src, opts)?.clone();
         let base = pieces[..n].iter().map(|p| p.ranges.len()).sum::<usize>();
-        let windows: Vec<(i64, i64)> = piece
-            .ranges
+        let ranges = &kept[n];
+        let windows: Vec<(i64, i64)> = ranges
             .iter()
             .map(|&r| window(r, track.sample_rate))
             .collect();
@@ -270,7 +347,7 @@ fn run(
         }
 
         let mut prev: Option<i64> = None;
-        for (k, &range) in piece.ranges.iter().enumerate() {
+        for (k, &range) in ranges.iter().enumerate() {
             let at = base + k;
             let win = windows[k];
             let ramp = fades_for(
