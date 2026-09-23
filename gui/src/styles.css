@@ -1187,6 +1187,10 @@ input[type="number"]::-webkit-outer-spin-button {
 .dbadge.detecting {
   background: #16304a; color: #cfe6f7; border-color: #4e8cc0;
 }
+/* Settled in the cut editor. The same violet 編集中 is drawn in, because the
+   two are the same thing at two moments: the row is in there now, and the row
+   has been. Nothing about a detection is this colour. */
+.dbadge.edited { background: #2f2a50; color: #bdb2ff; border-color: #4b4380; }
 .clip .badge.queued { background: #3a3a3a; color: var(--dim); border-color: #4a4a4a; }
 .clip .badge.indexing { background: #4a3a10; color: #f0c060; border-color: #6a5420; }
 .clip .badge.error { background: #4a1e1e; color: #ff9a90; border-color: #7a3030; }

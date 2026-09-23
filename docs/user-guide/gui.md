@@ -213,7 +213,16 @@ something, **Number** in the output settings carries it into the filenames.
 **The name has the width of the row**, on a line of its own above everything
 else read out of the recording. Where it still does not fit, the end of it is
 cut off — which on a broadcast recording is where the episode number is — so
-the whole of it is a hover away.
+the whole of it is a hover away. The two lines under it are the same: where the
+codec or the tail of a detection's sentence is cut off, hover the line.
+
+**`Edited` is the badge for a row that has been settled in the cut editor.** A
+row that has only been read and detected does not carry it: a detection is
+SmartCut's answer rather than a decision anybody made, so the number of marks
+on a row says nothing about whether you have been through it. On twenty
+recordings it is the one thing separating the work that is done from the work
+that is waiting. Cancelling out of the editor leaves the row as it was found,
+and the badge is written into the project, so it is still there next week.
 
 **A clip can be renamed:** `F2`, the **Rename clip** button, or the right-click
 menu. The name on the row becomes a field where it stands. `Enter` keeps it,

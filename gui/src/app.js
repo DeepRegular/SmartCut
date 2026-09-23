@@ -118,7 +118,7 @@ const NO_CROSSING = { kind: "none", seconds: 1, curve: "none", mode: "in", image
 /// out of a project, which is the same shape written down.
 function makeClip(found) {
   const { path, name, renamed, stem, home, chapters, dropPids, made, description,
-          channel, channelNumber, programme, after } =
+          channel, channelNumber, programme, after, edited } =
     typeof found === "string" ? { path: found } : found;
   return {
     // A row's own identity, which its path is not: the same recording can be
@@ -249,6 +249,21 @@ function makeClip(found) {
     quietFound: null,
     quietSource: null,
     edit: null,
+    /// Whether the cut editor has ever been used on this row.
+    ///
+    /// **Not "has it anything on its timeline".** A list read for commercials
+    /// comes back with marks on every row and blocks on most of them, and a
+    /// detection is not something anybody decided: the question this answers
+    /// is which rows have been looked at and settled, which on an evening's
+    /// twenty recordings is the only thing separating the work that is done
+    /// from the work that is waiting.
+    ///
+    /// So it is set where an edit arrives that the editor did not open with
+    /// -- see the `editor-state` handler, which measures against the state
+    /// the window was given -- and it is not set by a detection landing,
+    /// whichever window ran it. Written into the project, because a list
+    /// reopened next week is exactly when the question is asked.
+    edited: !!edited,
     /// The row's picture, out of the thumbnail track and taken against
     /// whatever the cuts leave. Null until the picture pass has been over the
     /// clip; `glance` stands for it until then.
@@ -334,6 +349,10 @@ let editing = null;
 /// What that clip's edit looked like before the editor was opened on it, so
 /// that キャンセル has something to put back.
 let before = null;
+/// ...and whether the row was already marked as edited then, for the same
+/// reason. See `edited` on a clip.
+let editedBefore = false;
+
 /// Whether an editor window is being built right now.
 ///
 /// Every `editor-closed` that lands while it is is about the window before
@@ -387,6 +406,7 @@ async function edit(clip) {
   if (!clips.includes(clip)) return;
   editing = clip;
   before = clip.edit ? JSON.parse(JSON.stringify(clip.edit)) : null;
+  editedBefore = clip.edited;
   // A lane in flight on this very clip is left alone. It used to be stopped
   // here -- the editor is about to make the same pass, and reading one file
   // twice at once is the thing most worth avoiding -- but that traded a real
@@ -492,6 +512,11 @@ if (listen) {
     // handed over at `editor-open` (`cmPending`), or one run from inside the
     // editor, which comes back with a note the clip did not have before.
     const landed = state.cmNote && (clip.cmPending || state.cmNote !== clip.cmPhase);
+    // Has somebody done something in there? The editor answers it, having
+    // the one thing needed to: what the timeline held when the recording
+    // finished arriving. The marks beside the file, a disc's chapters and
+    // every detection are not edits, whichever window ran them.
+    if (state.touched) clip.edited = true;
     clip.edit = state;
     if (state.cmNote) {
       clip.cmPhase = state.cmNote;
@@ -523,6 +548,10 @@ if (listen) {
   listen("editor-cancel", (ev) => {
     const clip = byId(ev.payload) || editing;
     if (clip) clip.edit = before;
+    // Along with the mark that says the row has been edited: what is being
+    // put back is the row as the window found it, and a row cancelled out of
+    // has not been edited unless it had been before.
+    if (clip) clip.edited = editedBefore;
     paintList();
     // Put back the picture the cuts being put back are of.
     if (clip) refreshPoster(clip);
@@ -1632,6 +1661,7 @@ function renderList() {
           <span class="cmbadge dbadge" hidden></span>
           <span class="blankbadge dbadge" hidden></span>
           <span class="quietbadge dbadge" hidden></span>
+          <span class="editbadge dbadge edited" hidden></span>
           <span class="badge"></span>
         </div>
         <div class="pbar"><span></span></div>
@@ -1699,17 +1729,19 @@ function setText(node, text) {
   if (node.textContent !== text) node.textContent = text;
 }
 
-/// The name of a row, with the whole of it a hover away.
+/// A line of a row, with the whole of it a hover away.
 ///
-/// The name has the width of the row and still ends in an ellipsis now and
-/// then, and what is cut off is the end -- which on a broadcast recording is
-/// where the episode number is. The title is the rest of it.
+/// Every line in a row is one line whatever the window is: the name ends in
+/// an ellipsis where the episode number should be, and the two lines under it
+/// lose the tail of a list of facts -- the codec, what the detections found,
+/// how much the edit takes out. All three are worth having in full, and the
+/// only room for them is over the row.
 ///
-/// The name only. The two lines under it are cut off as often, but what is
-/// missing from them is the tail of a list of facts rather than the one thing
-/// telling two rows apart, and a tooltip on every line of every row is one
-/// that follows the pointer down the list saying nothing anybody asked for.
-function setName(node, text) {
+/// The name alone carried one at first, on the grounds that the lines under
+/// it were a list rather than the one thing telling two rows apart. That is
+/// true of the *first* fact on each of those lines and not of the last, which
+/// is the one being cut off.
+function setLine(node, text) {
   setText(node, text);
   if (node.title !== text) node.title = text;
 }
@@ -1830,7 +1862,7 @@ function paintRow(clip) {
   const poster = posterOf(clip);
   if (poster && img.src !== poster) img.src = poster;
   img.classList.toggle("blank", !poster);
-  setName(li.querySelector(".nm"), clipLabel(clip));
+  setLine(li.querySelector(".nm"), clipLabel(clip));
 
   // Everything on this line is something the container itself knows, so it
   // is filled in from the cheap first look and corrected by the walk. See
@@ -1843,7 +1875,7 @@ function paintRow(clip) {
   // is the matter with it.
   const i = factsOf(clip);
   const wrong = clip.state === "error" && clip.error;
-  setText(
+  setLine(
     li.querySelector(".sub"),
     wrong
       ? clip.error
@@ -1902,7 +1934,7 @@ function paintRow(clip) {
   if (clip.edit && clip.edit.keyframes.length) {
     bits.push(t("row.keyframes", { n: clip.edit.keyframes.length }));
   }
-  setText(li.querySelector(".cm"), bits.join(t("sep")));
+  setLine(li.querySelector(".cm"), bits.join(t("sep")));
 
   // Being edited is worth saying over anything else the row could say: it
   // is the one state that is about where the clip is rather than what has
@@ -1966,6 +1998,21 @@ function paintRow(clip) {
   paintDetectBadge(li.querySelector(".cmbadge"), clip.cmState, blocks, "cm");
   paintDetectBadge(li.querySelector(".blankbadge"), clip.blankState, clip.blankFound, "blank");
   paintDetectBadge(li.querySelector(".quietbadge"), clip.quietState, clip.quietFound, "quiet");
+
+  // And whether the row has been settled in the cut editor, which is the one
+  // thing about it that nothing else on the row says. A list read overnight
+  // comes back with marks and blocks on every row: what cannot be seen by
+  // looking at it is which of them somebody has since been through.
+  //
+  // Not while that window is open on it -- the state badge beside this one is
+  // saying 編集中, and a row cannot usefully be both.
+  const done = li.querySelector(".editbadge");
+  done.hidden = !clip.edited || clip === editing;
+  if (!done.hidden) {
+    setText(done, t("badge.edited"));
+    const tip = t("badge.editedTitle");
+    if (done.title !== tip) done.title = tip;
+  }
 
   // The bar serves whichever of the three passes is on this row. The two in
   // the index lane share `progress` because only one of them can be running
@@ -6700,6 +6747,10 @@ function captureProject(settled = outputSettled, forRun = false) {
       // cuts, the marks, and where the playhead was left. Null for a row
       // nobody has opened yet, which is not the same as a row cut to nothing.
       edit: c.edit,
+      // ...and whether any of it was somebody's doing rather than a
+      // detection's. Left out on a row nobody has been through, which is what
+      // a file written before this existed looks like. See `edited`.
+      edited: c.edited || undefined,
       // What happens where this row gives way to the next, when the list is
       // being written as one file. Left out where nobody has said, which is
       // every row of every list that is not being joined.
@@ -6762,6 +6813,7 @@ function shapeOf() {
       dropPids: c.dropPids,
       programme: c.programme,
       edit: c.edit,
+      edited: c.edited,
       after: c.after,
     })),
   });

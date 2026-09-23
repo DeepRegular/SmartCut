@@ -6040,6 +6040,13 @@ function captureEdit() {
     // detection the list has not handed over yet arrives at whichever visit
     // it is run before; see `markFileKind`.
     markFileKind,
+    // Whether anything in here was done by the hand rather than arrived with
+    // the recording. The list marks its row with it, which is what tells the
+    // rows that have been settled from the rows that have only been read; the
+    // question is `arrivedAs`'s, and a detection is not an edit. Sticky out
+    // there: this goes false again when a detection moves the mark on, and
+    // what the row remembers is that it was true once.
+    touched: touched(),
     // Streams the track menu switched off, by source stream index. Part of
     // the edit because it is about this clip and nothing else: the same
     // recording can be in the list twice, one copy with the dub and one
