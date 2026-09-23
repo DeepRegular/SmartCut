@@ -1,0 +1,454 @@
+//! The sound of a cut, written on its own.
+//!
+//! What this produces is the audio file the cut would have had, with the
+//! ranges, the joins and the fades already in it and no pictures anywhere.
+//! Somebody keeping a radio programme, or a drama they listen to rather than
+//! watch, wants the sound and not a video file to extract it from later.
+//!
+//! **A writer of its own rather than a switch in [`crate::cut`].** That
+//! writer is built around the pictures, and rightly: a range is chosen at an
+//! entry point, a segment is copied or re-encoded by what the pictures need,
+//! the progress is the writing head moving through them, and the output's
+//! clock is a grid of fields. None of that has anything to say here. Asked to
+//! write no pictures it would still read them, plan them, and spend the whole
+//! of a run's time on material it then throws away -- a two hour recording is
+//! ten gigabytes written to keep three hundred megabytes.
+//!
+//! What it does share is every decision. The track is planned by
+//! [`crate::cut::plan_audio`], which is the one place that settles what a
+//! track becomes; the frames at a boundary are prepared by
+//! [`crate::audio::boundary_patches`], which is the one place that re-encodes
+//! them; a whole-track re-encode goes through [`crate::audio::Reencoder`],
+//! which is the one place that does that. The sound of an audio-only run and
+//! the sound inside an ordinary cut are the same sound because they are made
+//! by the same code.
+//!
+//! What it does not do yet is carry more than one track. A bilingual
+//! recording has two, and an audio file with two tracks in it is a thing only
+//! some containers hold; the first kept track is written and the run says so.
+
+use anyhow::{anyhow, Result};
+use ffmpeg_next as ff;
+
+use crate::audio::{boundary_patches, fades_for, Patch, Reencoder};
+use crate::cut::{AudioMode, CutOptions, Pass, Report};
+use crate::{AudioInfo, Source};
+
+/// One recording of an audio-only run, and what is kept of it.
+///
+/// The same shape [`crate::cut::Reel`] has, less the pictures: the ranges are
+/// the kept stretches in the recording's own seconds, in the order they are
+/// written, and `after` is the join that follows this piece -- which this
+/// module reads for its two fade lengths and nothing else.
+pub struct Piece<'a> {
+    pub src: &'a Source,
+    pub ranges: &'a [(f64, f64)],
+    pub after: crate::transition::Transition,
+}
+
+/// Write the sound of a cut, or of a list of them joined, as one file.
+pub fn write(pieces: &[Piece], output: &str, opts: &CutOptions) -> Result<()> {
+    write_with_progress(pieces, output, opts, None)
+}
+
+/// As [`write`], reporting how far along it is.
+///
+/// The fraction is ranges finished out of ranges asked for, which is a
+/// coarser bar than the picture writer's and is the honest one here: there is
+/// no writing head to follow, only a read of the sound of each range, and a
+/// range is seconds rather than minutes.
+pub fn write_with_progress(
+    pieces: &[Piece],
+    output: &str,
+    opts: &CutOptions,
+    progress: Option<Report>,
+) -> Result<()> {
+    let ours = !std::path::Path::new(output).exists();
+    let done = run(pieces, output, opts, progress);
+    if done.is_err() && ours {
+        // The same bargain the picture writer makes: a run that failed leaves
+        // nothing behind that reads as an answer.
+        let _ = std::fs::remove_file(output);
+    }
+    done
+}
+
+/// The track each piece supplies, which is its first that the caller has not
+/// dropped.
+fn track_of<'a>(src: &'a Source, opts: &CutOptions) -> Result<&'a AudioInfo> {
+    src.audios
+        .iter()
+        .find(|a| !opts.drop_streams.contains(&a.stream_index))
+        .ok_or_else(|| anyhow!("{} has no sound to write", src.path))
+}
+
+/// How long the sound takes to leave and to come back at each range's two
+/// ends: one pair per range, in the order they are written.
+///
+/// The same rule as `cut::fade_lengths` and for the same reasons -- a seam
+/// inside one recording takes the run's own answer, a join between two takes
+/// that join's two. Written twice rather than shared because the two walk
+/// different lists: that one has plans, this one has ranges.
+fn fade_lengths(pieces: &[Piece], opts: &CutOptions) -> Vec<(f64, f64)> {
+    let mut out = Vec::new();
+    for (n, piece) in pieces.iter().enumerate() {
+        for k in 0..piece.ranges.len() {
+            let head = if k == 0 && n > 0 {
+                pieces[n - 1].after.fade_in
+            } else {
+                opts.audio_fade
+            };
+            let tail = if k + 1 == piece.ranges.len() && n + 1 < pieces.len() {
+                piece.after.fade_out
+            } else {
+                opts.audio_fade
+            };
+            out.push((head, tail));
+        }
+    }
+    out
+}
+
+/// A range on the recording's own sample clock.
+fn window(range: (f64, f64), rate: u32) -> (i64, i64) {
+    (
+        (range.0 * rate as f64).round() as i64,
+        (range.1 * rate as f64).round() as i64,
+    )
+}
+
+fn run(
+    pieces: &[Piece],
+    output: &str,
+    opts: &CutOptions,
+    progress: Option<Report>,
+) -> Result<()> {
+    crate::init()?;
+    let first = pieces.first().ok_or_else(|| anyhow!("nothing to write"))?;
+    let ranges_in_all: usize = pieces.iter().map(|p| p.ranges.len()).sum();
+    if ranges_in_all == 0 {
+        return Err(anyhow!("nothing is kept, so there is no sound to write"));
+    }
+    let info = track_of(first.src, opts)?.clone();
+    let many = first.src.audios.len() > 1;
+    if many {
+        crate::note_once(format!(
+            "note: {} carries {} sound tracks and an audio file is written with one. \
+             The first is written; the rest are left out.",
+            first.src.path,
+            first.src.audios.len(),
+        ));
+    }
+    // What the track becomes. Settled by the picture writer's own planner, so
+    // that an audio-only run and an ordinary one cannot disagree about it.
+    let mut setup =
+        crate::cut::plan_audio(&first.src.path, &info, opts, false, first.src.on_a_ts, many)?;
+    let fades = fade_lengths(pieces, opts);
+
+    let mut octx = ff::format::output(&output)?;
+    // Which way round this container writes samples. `carriage` answers for
+    // the containers a cut goes into, where big-endian PCM is what an MP4
+    // has a box for; a `.wav` wants them the other way round and says
+    // "Function not implemented" about anything else -- after the file has
+    // been created, which is the worst moment to find out. Only PCM is
+    // second-guessed here: every other codec is a codec, and a container
+    // that cannot hold one is a question for `carriage`.
+    let guess = octx
+        .format()
+        .codec(std::path::Path::new(output), ff::media::Type::Audio);
+    if crate::audio::uncompressed(setup.target)
+        && crate::audio::uncompressed(guess)
+        && guess != setup.target
+    {
+        setup.target = guess;
+    }
+
+    let ictx = crate::input::demux(&first.src.input.url)?;
+    let params = ictx
+        .stream(info.stream_index)
+        .ok_or_else(|| anyhow!("audio stream {} vanished", info.stream_index))?
+        .parameters();
+    drop(ictx);
+
+    let mut recoder = if setup.mode == AudioMode::Reencode {
+        Some(Reencoder::new(
+            params.clone(),
+            setup.target,
+            setup.like,
+            &setup.info,
+            setup.channels,
+            setup.sample_rate,
+            setup.bit_rate,
+            setup.frame_as,
+        )?)
+    } else {
+        None
+    };
+
+    {
+        let mut ost = octx.add_stream(ff::encoder::find(ff::codec::Id::None))?;
+        match recoder.as_ref() {
+            Some(re) => ost.set_parameters(re.parameters()),
+            None => ost.set_parameters(params.clone()),
+        }
+        // The muxer works the tag out for the container it is writing;
+        // carrying the recording's own over means writing a transport
+        // stream's idea of the codec into an MP4. Same as `write_audio_es`.
+        unsafe {
+            (*ost.parameters().as_mut_ptr()).codec_tag = 0;
+        }
+    }
+    let mut muxer_opts = ff::Dictionary::new();
+    // An ADTS header says which AAC it is framing, and a broadcast's is
+    // MPEG-2. libavformat writes MPEG-4 unless it is told.
+    if octx.format().name().contains("adts") && opts.aac == crate::AacVersion::Mpeg2 {
+        muxer_opts.set("write_mpeg2", "1");
+    }
+    octx.write_header_with(muxer_opts)?;
+    let out_tb = f64::from(
+        octx.stream(0)
+            .ok_or_else(|| anyhow!("no output stream"))?
+            .time_base(),
+    );
+    // The rate a re-encoded packet's own clock counts in, which is the
+    // encoder's last word rather than what was asked for.
+    let out_rate = recoder.as_ref().map_or(setup.sample_rate, Reencoder::rate) as f64;
+
+    // Where the sound has reached, in seconds. Frames are laid end to end:
+    // they are whole, so a range's worth of them is a whole number of frames
+    // however the range was chosen, and end to end is the only arrangement
+    // that neither overlaps nor drifts. The picture writer lays its sound the
+    // same way. See `Writer::push_audio`.
+    let mut written = 0.0f64;
+    let mut ranges_done = 0usize;
+    let say = |done: usize| {
+        if let Some(report) = progress.as_ref() {
+            let share = done as f64 / ranges_in_all as f64;
+            report(Pass::Writing, share, share);
+        }
+    };
+    say(0);
+
+    for (n, piece) in pieces.iter().enumerate() {
+        let track = track_of(piece.src, opts)?.clone();
+        let base = pieces[..n].iter().map(|p| p.ranges.len()).sum::<usize>();
+        let windows: Vec<(i64, i64)> = piece
+            .ranges
+            .iter()
+            .map(|&r| window(r, track.sample_rate))
+            .collect();
+        // The frames the boundaries fall inside, re-encoded with the far side
+        // silenced and the fade ridden over the near one. Smart rendering,
+        // and the same call the picture writer makes.
+        let patches: std::collections::HashMap<i64, Patch> = if setup.mode == AudioMode::Smart {
+            boundary_patches(
+                piece.src,
+                &track,
+                &windows,
+                setup.bit_rate,
+                setup.frame_as,
+                &fades,
+                base,
+                ranges_in_all,
+            )?
+        } else {
+            Default::default()
+        };
+        // A reel of another recording is another stream: the decoder inside
+        // the re-encoder has to be told, or it reads the next recording's
+        // frames against the one before it.
+        if let Some(re) = recoder.as_mut() {
+            if n > 0 {
+                let probe = crate::input::demux(&piece.src.input.url)?;
+                let theirs = probe
+                    .stream(track.stream_index)
+                    .ok_or_else(|| anyhow!("audio stream {} vanished", track.stream_index))?
+                    .parameters();
+                drop(probe);
+                re.retune(theirs, &track)?;
+            }
+        }
+
+        let mut prev: Option<i64> = None;
+        for (k, &range) in piece.ranges.iter().enumerate() {
+            let at = base + k;
+            let win = windows[k];
+            let ramp = fades_for(
+                fades.get(at).copied().unwrap_or((0.0, 0.0)),
+                track.sample_rate,
+                at,
+                ranges_in_all,
+                win,
+            );
+            written = take_range(
+                piece.src,
+                &track,
+                range,
+                win,
+                ramp,
+                &patches,
+                &mut prev,
+                recoder.as_mut(),
+                &mut octx,
+                Clock { tb: out_tb, rate: out_rate, frame_secs: setup.frame_secs },
+                written,
+            )?;
+            ranges_done += 1;
+            say(ranges_done);
+        }
+    }
+
+    if let Some(re) = recoder.as_mut() {
+        let mut out = Vec::new();
+        re.finish(&mut out)?;
+        let clock = Clock { tb: out_tb, rate: out_rate, frame_secs: setup.frame_secs };
+        for (packet, pts) in out {
+            written = write_encoded(&mut octx, packet, pts, clock)?.max(written);
+        }
+    }
+    octx.write_trailer()?;
+    say(ranges_in_all);
+    Ok(())
+}
+
+/// How the output keeps time.
+#[derive(Clone, Copy)]
+struct Clock {
+    /// The container's time base, which is its own business: MP4 happens to
+    /// count in samples and MPEG-TS insists on 90 kHz.
+    tb: f64,
+    /// The rate a re-encoded packet's own timestamps count in.
+    rate: f64,
+    /// What one of the recording's frames is worth, for a track whose
+    /// packets do not say. See `assumed_frame` in [`crate::cut`].
+    frame_secs: Option<f64>,
+}
+
+/// Read one range's sound and write it.
+///
+/// Returns where the output has reached, in seconds.
+#[allow(clippy::too_many_arguments)]
+fn take_range(
+    src: &Source,
+    track: &AudioInfo,
+    range: (f64, f64),
+    win: (i64, i64),
+    ramp: crate::audio::Fades,
+    patches: &std::collections::HashMap<i64, Patch>,
+    prev: &mut Option<i64>,
+    mut recoder: Option<&mut Reencoder>,
+    octx: &mut ff::format::context::Output,
+    clock: Clock,
+    mut written: f64,
+) -> Result<f64> {
+    let mut ictx = crate::input::demux(&src.input.url)?;
+    // Half a second before the range, so the frame it opens on has been
+    // decoded up to rather than seeked into: a seek in a transport stream
+    // lands where it can rather than where it was asked, and an AAC frame
+    // decoded straight after one is missing half its window.
+    let landing = ((range.0 - 0.5).max(0.0) + src.start_time) * f64::from(ff::ffi::AV_TIME_BASE);
+    let target = landing as i64;
+    ictx.seek(target, ..target)?;
+    // After the seek, for the reason [`crate::input::keep_only`] gives.
+    crate::input::keep_only(&mut ictx, &[track.stream_index]);
+
+    let in_tb = track.time_base;
+    for (stream, packet) in ictx.packets() {
+        if stream.index() != track.stream_index {
+            continue;
+        }
+        let Some(pts) = packet.pts() else { continue };
+        let t = pts as f64 * in_tb - src.start_time;
+        let dur = match packet.duration() {
+            own if own > 0 => own as f64 * in_tb,
+            _ => clock.frame_secs.unwrap_or(0.0),
+        };
+        if t >= range.1 {
+            break;
+        }
+        if let Some(re) = recoder.as_deref_mut() {
+            // The re-encoder is handed every frame the range touches and
+            // trims to the sample: the window says where the range really
+            // begins and ends, which is inside the frames at both of them.
+            if t + dur > range.0 {
+                re.take(&packet, track, src.start_time, win, ramp)?;
+                let mut out = Vec::new();
+                re.drain(&mut out)?;
+                for (p, at) in out {
+                    written = write_encoded(octx, p, at, clock)?.max(written);
+                }
+            }
+            continue;
+        }
+        // Open on whichever frame sits nearest the range's start, so the
+        // error is at most half a frame either way rather than a whole frame
+        // late. The picture writer's own rule; see `take_audio` there, which
+        // records why being cleverer is not available.
+        if t + dur / 2.0 <= range.0 {
+            continue;
+        }
+        if dur <= 0.0 {
+            // A frame with no length is a frame there is nowhere to put:
+            // what follows would land on top of it.
+            continue;
+        }
+        // The frame a boundary falls inside, re-encoded beforehand with the
+        // material outside the range silenced and the fade ridden over what
+        // is kept. A guard is only used when it is what came before it.
+        let patch = patches
+            .get(&pts)
+            .filter(|p| p.after.is_none() || p.after == *prev);
+        let packet = match patch {
+            Some(p) => {
+                let mut patched = ff::Packet::copy(&p.bytes);
+                patched.set_flags(ff::packet::Flags::KEY);
+                patched.set_duration(packet.duration());
+                patched
+            }
+            None => packet,
+        };
+        *prev = Some(pts);
+        write_copied(octx, packet, written, dur, clock)?;
+        written += dur;
+    }
+    Ok(written)
+}
+
+/// Write one of the recording's own frames where the sound has reached.
+fn write_copied(
+    octx: &mut ff::format::context::Output,
+    mut packet: ff::Packet,
+    at: f64,
+    dur: f64,
+    clock: Clock,
+) -> Result<()> {
+    let pts = (at.max(0.0) / clock.tb).round() as i64;
+    packet.set_stream(0);
+    packet.set_pts(Some(pts));
+    packet.set_dts(Some(pts));
+    packet.set_duration((dur / clock.tb).round() as i64);
+    packet.set_position(-1);
+    packet.write_interleaved(octx)?;
+    Ok(())
+}
+
+/// ...and one the re-encoder made, which carries its own clock.
+///
+/// `at` counts the encoder's samples, because that is the clock it keeps.
+/// The container keeps whatever time it likes: an MP4 counts in samples,
+/// which hid this for a long time, and MPEG-TS insists on 90 kHz.
+fn write_encoded(
+    octx: &mut ff::format::context::Output,
+    mut packet: ff::Packet,
+    at: i64,
+    clock: Clock,
+) -> Result<f64> {
+    let seconds = at as f64 / clock.rate.max(1.0);
+    let pts = (seconds / clock.tb).round() as i64;
+    packet.set_stream(0);
+    packet.set_pts(Some(pts));
+    packet.set_dts(Some(pts));
+    packet.set_position(-1);
+    packet.write_interleaved(octx)?;
+    Ok(seconds)
+}

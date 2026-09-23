@@ -43,6 +43,7 @@ pub mod restamp;
 pub mod seek_index;
 pub mod series;
 pub mod si;
+pub mod sound;
 pub mod subs;
 pub mod text;
 pub mod thumbs;

@@ -1580,8 +1580,17 @@ fn patch_run(
     // one frame beyond each end of it.
     let (emit_first, emit_last) = emit;
     let straddle = if is_head { emit_first } else { emit_last };
-    let Some(lead) = emit_first.checked_sub(1) else {
-        return Ok(());
+    // The frame before the run, which primes the encoder. At the very start
+    // of a track there is none, and there does not need to be: a decoder
+    // opening a file is in the same position. That is where a fade in at the
+    // head of a clip lands -- a range that begins at the recording's first
+    // sample -- and it was doing nothing at all there.
+    let starts_track =
+        is_head && emit_first == 0 && frames.first().is_some_and(|f| f.first >= window.0);
+    let lead = match emit_first.checked_sub(1) {
+        Some(lead) => lead,
+        None if starts_track && fades.any() => 0,
+        None => return Ok(()),
     };
     let trail = emit_last + 1;
     // A run that reaches the last frame the track has. There is nothing after

@@ -586,6 +586,13 @@ const CATALOG = {
     "ease.out": "アウト",
     "ease.inOut": "イン-アウト",
     "ease.outIn": "アウト-イン",
+    "outset.soundOnly": "音声だけを出力する（映像なし）",
+    "outset.soundOnlyNote":
+      "カットも結合も継ぎ目のフェードも入ったまま、音声だけのファイルを書き出します。" +
+      "映像は読みも書きもしないので、そのぶん速く終わります。" +
+      "ファイル名の拡張子は音声の種類で決まります（この一覧では .{ext}）。" +
+      "コンテナタイプは選べません。音声トラックは 1 本だけで、" +
+      "二か国語の録画の 2 本目は入りません。",
     "outset.container": "コンテナタイプ(Y):",
     "outset.audio": "音声(A):",
     "outset.audioCodec": "音声コーデック:",
@@ -1665,6 +1672,12 @@ const CATALOG = {
     "ease.out": "Out",
     "ease.inOut": "In-out",
     "ease.outIn": "Out-in",
+    "outset.soundOnly": "Write the sound only, with no pictures",
+    "outset.soundOnlyNote":
+      "An audio file with the cuts, the joins and the seam fades already in it. Nothing is read " +
+      "or written for the pictures, so it finishes in a fraction of the time. The extension " +
+      "follows what the sound is (.{ext} for this list), so there is no container to choose. " +
+      "One sound track: a bilingual recording's second is left out.",
     "outset.container": "Container (Y):",
     "outset.audio": "Audio (A):",
     "outset.audioCodec": "Audio codec:",

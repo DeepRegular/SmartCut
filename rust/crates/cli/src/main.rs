@@ -237,6 +237,7 @@ fn usage() -> String {
      [--vc1-quant 3..31] [--title N] [--join RECORDING]... [--master N] \
      [--transition KIND] [--transition-seconds S] [--transition-easing C[:M]] \
      [--transition-image FILE] [--join-fade-out S] [--join-fade-in S] \
+     [--sound-only] \
      [-o OUTPUT | --bdav FOLDER]\n\
      <input> is a recording, or a disc -- a BDAV, BDMV or VIDEO_TS folder, \
      or an .iso of one -- whose recordings are listed when no --title \
@@ -263,6 +264,12 @@ fn usage() -> String {
      crossing -- a title, a card -- coming up and going down with it; the \
      frames it covers are being written afresh anyway, which is why it is \
      offered there and nowhere else\n\
+     --sound-only writes the sound of the cut and no pictures at all: the \
+     ranges, the joins and the fades are in it exactly as they would be \
+     inside the video, and nothing is read or written for the frames. The \
+     output is named by -o and its extension picks the container -- .aac \
+     for the ADTS a broadcast's sound goes into, .m4a, .wav for linear \
+     PCM. One sound track; a bilingual recording's second is left out\n\
      --join-fade-out and --join-fade-in take the sound down at the end of \
      each clip and bring it back at the start of the next one, over that \
      many seconds. Two numbers, because a join between two recordings is \
@@ -348,6 +355,8 @@ fn main() -> Result<()> {
     let mut detect_cm = false;
     let mut scenes = false;
     let mut audio_es = false;
+    // Write the sound and no pictures. See `smartcut_core::sound`.
+    let mut sound_only = false;
     let mut cut_near: Option<f64> = None;
     let mut find_inserts = false;
     let mut use_logo = false;
@@ -483,6 +492,7 @@ fn main() -> Result<()> {
             "--detect-cm" => detect_cm = true,
             "--scenes" => scenes = true,
             "--audio-es" => audio_es = true,
+            "--sound-only" => sound_only = true,
             "--cut-near" => {
                 i += 1;
                 cut_near = Some(parse_time(args.get(i).context("--cut-near needs a time")?)?);
@@ -1693,6 +1703,56 @@ fn main() -> Result<()> {
             also.duration,
         );
         joined_src.push(also);
+    }
+    // The sound and no pictures. Taken here, once every recording of the run
+    // is open: what the sound writer wants is the ranges and the joins, both
+    // of which are in hand, and nothing the planner works out.
+    if sound_only {
+        let between = smartcut_core::transition::Transition {
+            kind: crossing,
+            seconds: crossing_secs,
+            easing,
+            overlay: crossing_image.clone(),
+            fade_out: join_fade_out,
+            fade_in: join_fade_in,
+        };
+        let mut pieces = vec![smartcut_core::sound::Piece {
+            src: &src,
+            ranges: &ranges,
+            after: between.clone(),
+        }];
+        let whole: Vec<Vec<(f64, f64)>> = joined_src
+            .iter()
+            .map(|s| vec![(0.0, s.duration)])
+            .collect();
+        for (s, r) in joined_src.iter().zip(&whole) {
+            pieces.push(smartcut_core::sound::Piece {
+                src: s,
+                ranges: r,
+                after: between.clone(),
+            });
+        }
+        if let Some(last) = pieces.last_mut() {
+            last.after = Default::default();
+        }
+        smartcut_core::sound::write(
+            &pieces,
+            &out,
+            &CutOptions {
+                audio_mode,
+                audio_codec,
+                aac,
+                audio_channels,
+                audio_bit_rate,
+                audio_sample_rate,
+                audio_bits,
+                drop_streams,
+                audio_fade,
+                ..Default::default()
+            },
+        )?;
+        println!("wrote {out} (sound only)");
+        return Ok(());
     }
     let joined_plans: Vec<Vec<smartcut_core::RangePlan>> = joined_src
         .iter()

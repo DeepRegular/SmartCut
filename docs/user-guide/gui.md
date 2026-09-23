@@ -846,6 +846,7 @@ What is set on either tab stays there when you switch.
 | **Subfolder** | A folder of that name under the output folder, which is where the run writes. Offered where there is more than one file. The name is filled in the first time you look: the disc's name, or the project's, or else today's date. Emptied, the run writes straight into the folder above. **A folder of that name already there gets a branch number** — `night`, then `night-2`, `night-3` — so a second run never lands on the first one's files. The field keeps the name you gave; `already there → night-2` beside it says where the run will actually write |
 | **Filename prefix** | `cut_` by default, in front of the name. What it starts as is a [preference](#output-settings) |
 | **Number** | Puts the row's number in the list behind the prefix, in 2 to 4 digits. **On by default**, so `cut_01_recording.ts`; turned off, `cut_recording.ts`. For a list whose order means something and a folder that sorts by name |
+| **Write the sound only, with no pictures** | An audio file with the cuts, the joins and the seam fades already in it. Nothing is read or written for the pictures. See [Writing the sound only](#writing-the-sound-only) |
 | **Container** | The file format. `Same as the input`, or a specific one. A container that cannot hold the recordings in the list is greyed out (see [Why some choices are greyed out](#why-some-choices-are-greyed-out)) |
 | **Audio** | `Smart rendering (default)` / `Copy through` / `Re-encode everything` |
 | **Audio codec** | `Same as the input`, or AAC, AC-3, DTS, linear PCM |
@@ -1030,6 +1031,29 @@ A broadcast recording's sound often stops a fraction of a second (half of one,
 typically) before its pictures do. The fade out ends with the sound, there
 being none left to fade; the gap is filled from the next clip, which is what a
 join does there whether or not a fade was asked for.
+
+### Writing the sound only
+
+**Write the sound only, with no pictures** turns the output into an audio
+file. The ranges that were cut, the order the clips were joined in and the
+fades at the seams are all in it exactly as they are in a video output. The
+only difference is that there are no pictures.
+
+**Nothing is read or written for them either.** This is a writer of its own
+rather than a video run with the sound extracted afterwards: two recordings
+of eleven minutes take under a second, where writing the video takes four.
+
+The extension follows **what the sound is**: `.aac` for a broadcast's own,
+`.ac3` for AC-3, `.wav` if **Audio codec** is set to linear PCM, and `.m4a`
+for anything with no file of its own. There is nothing left for the container
+row to choose, so it is greyed.
+
+The audio settings work as they always do. Left at smart rendering, only the
+frames a boundary falls inside are rebuilt and the rest are the recording's
+own; change the channels or the rate and the whole track is re-encoded, the
+same as in a video run.
+
+**One sound track.** A bilingual recording's second is left out.
 
 ### Why some choices are greyed out
 

@@ -916,6 +916,46 @@ The judgement is that what is lost — downstream tools cannot read the file —
 what is gained, an improvement of roughly 0 ms. It is still in the engine and the CLI,
 so `--audio-mode reencode` is there if it is needed.
 
+## The sound on its own (`--sound-only`, `crate::sound`)
+
+What this writes is the audio file the cut would have had: the ranges, the
+joins and the fades already in it, and no pictures anywhere.
+
+**A writer of its own rather than a switch in `crate::cut`.** That writer is
+built around the pictures — a range is chosen at an entry point, a segment is
+copied or re-encoded by what the pictures need, the progress is the writing
+head moving through them, and the output's clock is a grid of fields. None of
+it has anything to say about an audio file. Asked to write no pictures it
+would still read them, plan them, and spend the whole of a run's time on
+material it then threw away: a two hour recording is ten gigabytes written to
+keep three hundred megabytes. Measured on two recordings of eleven minutes,
+the sound alone is written in under a second against four for the video.
+
+**Every decision is still made once.** The track is planned by
+`cut::plan_audio`, which is the one place that settles what a track becomes;
+the frames at a boundary come from `audio::boundary_patches`, which is the one
+place that re-encodes them; a whole-track re-encode goes through
+`audio::Reencoder`. The sound of an audio-only run and the sound inside an
+ordinary cut are the same sound because they are made by the same code. What
+this module adds is the walk: which packets each range claims, and where they
+go on a timeline that has no pictures in it.
+
+Frames are laid end to end, as the picture writer lays them. They are whole,
+so a range's worth of them is a whole number of frames however the range was
+chosen, and end to end is the only arrangement that neither overlaps nor
+drifts.
+
+The file's name picks the container, and the container picks the codec where
+it insists: `carriage` answers for the containers a *cut* goes into, where
+big-endian PCM is what an MP4 has a box for, and a `.wav` wants its samples
+the other way round. Asked for the wrong one it says "Function not
+implemented" — after creating the file. So a PCM target is taken to whatever
+that container writes PCM as.
+
+**One track.** A bilingual recording has two, and an audio file with two
+tracks in it is a thing only some containers hold; the first kept track is
+written and the run says so.
+
 ## The output settings screen
 
 Six controls: one above five, though the five are on screen only some of the time.

@@ -2973,6 +2973,14 @@ const settings = {
   number: true,
   digits: "2",
   container: "",
+  /// Whether a run writes the sound and no pictures at all.
+  ///
+  /// Not a container: what it writes is the audio file the cut would have
+  /// had, ranges and joins and fades already in it, and the engine reads and
+  /// writes nothing for frames that are not going anywhere. The file's name
+  /// follows the codec rather than the container picker, which has nothing
+  /// to choose and is greyed. See `soundExt` and `crate::sound`.
+  soundOnly: false,
   audio: "smart",
   /// Empty writes the recording's own codec back; anything else is a
   /// conversion, which like a downmix decides the mode instead of living
@@ -3227,7 +3235,41 @@ const PS_LIKE = ["vob", "mpg", "mpeg", "m2p"];
 /// -- and what it is written in is the part in front of that.
 const streamOf = (p) => p.replace(/@\d+-\d+$/, "");
 
+/// What an audio-only run's file is called, by what is in it.
+///
+/// The codec's own name, because an audio file is its codec: a broadcast's
+/// sound is AAC and goes into the ADTS a `.aac` means, AC-3 into a `.ac3`,
+/// and linear PCM into a `.wav`, which is the one container everything
+/// opens. A codec with no file of its own goes into an `.m4a`, which has a
+/// box for most of them.
+///
+/// Read off the setting where one was chosen, and off the recording where it
+/// was left at 入力と同じ. `null` where neither answers, which is a list
+/// nothing has been read out of yet.
+function soundExt(clip) {
+  const chosen = String(settings.audioCodec || "");
+  const codec = chosen || (audioOf(clip) || {}).codec || "";
+  return (
+    {
+      aac: "aac",
+      ac3: "ac3",
+      eac3: "ac3",
+      lpcm: "wav",
+      pcm_s16le: "wav",
+      pcm_s24le: "wav",
+      pcm_bluray: "wav",
+      pcm_dvd: "wav",
+      mp2: "mp2",
+      mp3: "mp3",
+      dts: "dts",
+    }[codec] || "m4a"
+  );
+}
+
 function containerFor(clip) {
+  // The sound on its own is named by what the sound is; there is no
+  // container to choose. See `soundExt`.
+  if (settings.soundOnly) return soundExt(clip);
   // A disc's recordings are `.m2ts` whatever the recording arrived as, so
   // that is what the audio has to be writable into -- which is not the same
   // question as what an `.mp4` can hold.
@@ -3349,6 +3391,7 @@ bindSetting("out-prefix", "prefix");
 bindSetting("out-number", "number", "checked");
 bindSetting("out-digits", "digits");
 bindSetting("out-container", "container");
+bindSetting("out-sound-only", "soundOnly", "checked");
 bindSetting("out-audio", "audio");
 bindSetting("out-audio-codec", "audioCodec");
 bindSetting("out-audio-channels", "audioChannels");
@@ -3880,6 +3923,19 @@ function writableContainers() {
 /// container: each recording goes back into the kind it came out of, which
 /// held those codecs already.
 function lockContainer() {
+  // Nothing to choose while the sound is being written on its own: the file
+  // is named by what is in it. The row is greyed rather than hidden, for the
+  // reason `lockUnwritable` gives about greying.
+  const alone = !!settings.soundOnly;
+  el("out-container").disabled = alone || bdavMode();
+  const note = el("sound-only-note");
+  note.hidden = !alone;
+  if (alone) {
+    const list = ready();
+    note.textContent = t("outset.soundOnlyNote", {
+      ext: list.length ? soundExt(list[0]) : "aac",
+    });
+  }
   const can = writableContainers();
   for (const opt of el("out-container").options) {
     opt.disabled = !!can && !!opt.value && !can.includes(opt.value);
@@ -6282,6 +6338,7 @@ async function writeJoined(list) {
       audioBitrate: audioBitrateOut(),
       audioSampleRate: audioRateOut(),
       audioBits: audioBitsOut(),
+      soundOnly: !!settings.soundOnly,
       subtitles: settings.subtitles,
       dataBroadcast: prefs.get("dataBroadcast") !== false,
       videoShare: share,
@@ -6458,6 +6515,7 @@ async function runExport() {
         audioBitrate: audioBitrateOut(),
         audioSampleRate: audioRateOut(),
         audioBits: audioBitsOut(),
+        soundOnly: !!settings.soundOnly,
         // What the editor's track menu switched off for this clip. Per clip
         // and not per list: the audio settings above are one answer for the
         // whole run, but which of a recording's own streams are wanted is a

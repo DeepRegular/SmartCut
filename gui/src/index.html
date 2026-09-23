@@ -489,6 +489,16 @@
               </span>
             </span>
           </div>
+          <!-- The sound and no pictures. A run of its own rather than a
+               container: what it writes is the audio file the cut would have
+               had, with the ranges, the joins and the fades already in it,
+               and nothing is read or written for frames that are not going
+               anywhere. The name follows the codec -- a .aac for what a
+               broadcast carries, a .wav for linear PCM -- so the container
+               row below has nothing to choose and is greyed. -->
+          <label class="opt"><input id="out-sound-only" type="checkbox" />
+            <span data-i18n="outset.soundOnly">音声だけを出力する（映像なし）</span></label>
+          <p class="dim" id="sound-only-note" hidden></p>
           <div class="row" id="row-container">
             <span data-i18n="outset.container">コンテナタイプ(Y):</span>
             <span class="drop">

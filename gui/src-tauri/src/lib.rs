@@ -4884,6 +4884,10 @@ async fn export(
     audio_sample_rate: Option<u32>,
     audio_bits: Option<u8>,
     audio_es: Option<bool>,
+    // Whether the run writes the sound and no pictures at all. See
+    // [`smartcut_core::sound`]: a writer of its own, so nothing is read or
+    // written for frames that are not going anywhere.
+    sound_only: Option<bool>,
     // Streams the track menu switched off, by source stream index. Nothing
     // sent means nothing dropped, which is what a clip nobody opened the
     // menu on amounts to.
@@ -4937,11 +4941,13 @@ async fn export(
                 .ok_or("no file open")?
                 .clone(),
         };
+        let sound_only = sound_only.unwrap_or(false);
         // Which pictures a GOP leads with decides where a copy can start.
         // The editor's plan panel has usually settled that already, but a
         // clip going straight from the list to the output screen was never
-        // planned, and a fresh open knows nothing of it either way.
-        if !src.leading_known {
+        // planned, and a fresh open knows nothing of it either way. A run
+        // writing no pictures asks none of this: what it needs is the ranges.
+        if !sound_only && !src.leading_known {
             index::refine_leading(
                 &src.input.url.clone(),
                 &src.video.clone(),
@@ -4951,7 +4957,11 @@ async fn export(
             )
             .map_err(|e| e.to_string())?;
         }
-        let plans = build_plan(&src, &ranges);
+        let plans = if sound_only {
+            Vec::new()
+        } else {
+            build_plan(&src, &ranges)
+        };
         let reporter = app.clone();
         // Tagged with the recording it belongs to: the output screen runs
         // through a list, and an untagged fraction would move whichever row
@@ -5011,6 +5021,23 @@ async fn export(
             audio_fade: prefs::audio_fade(),
             ..Default::default()
         };
+        if sound_only {
+            let pieces = [smartcut_core::sound::Piece {
+                src: &src,
+                ranges: &ranges,
+                after: Default::default(),
+            }];
+            smartcut_core::sound::write_with_progress(
+                &pieces,
+                &output,
+                &opts,
+                Some(Box::new(move |_, done, within| {
+                    let _ = reporter.emit("export-progress", (whose.clone(), false, done, within));
+                })),
+            )
+            .map_err(|e| e.to_string())?;
+            return Ok(());
+        }
         smartcut_core::cut_with_progress(
             &src,
             &plans,
@@ -5131,6 +5158,7 @@ async fn export_joined(
     audio_sample_rate: Option<u32>,
     audio_bits: Option<u8>,
     audio_es: Option<bool>,
+    sound_only: Option<bool>,
     subtitles: Option<String>,
     data_broadcast: Option<bool>,
     video_share: Option<f64>,
@@ -5151,10 +5179,13 @@ async fn export_joined(
         // the shape of the output depends on all of them: which sound tracks
         // are written afresh is an answer over the whole list. See
         // `smartcut_core::conform`.
+        let sound_only = sound_only.unwrap_or(false);
         let mut sources = Vec::with_capacity(clips.len());
         for clip in &clips {
             let mut src = scan_cached(&app, &clip.path)?.0;
-            if !src.leading_known {
+            // A run writing no pictures asks nothing about where a copy of
+            // them could start.
+            if !sound_only && !src.leading_known {
                 index::refine_leading(
                     &src.input.url.clone(),
                     &src.video.clone(),
@@ -5166,11 +5197,15 @@ async fn export_joined(
             }
             sources.push(src);
         }
-        let plans: Vec<Vec<smartcut_core::RangePlan>> = sources
-            .iter()
-            .zip(&clips)
-            .map(|(src, clip)| build_plan(src, &clip.ranges))
-            .collect();
+        let plans: Vec<Vec<smartcut_core::RangePlan>> = if sound_only {
+            sources.iter().map(|_| Vec::new()).collect()
+        } else {
+            sources
+                .iter()
+                .zip(&clips)
+                .map(|(src, clip)| build_plan(src, &clip.ranges))
+                .collect()
+        };
         // Which of them the file takes its shape from, and whose streams it
         // is declared with. Read off the list before the clips are consumed
         // below: the tracks the output declares are the master's, and a
@@ -5178,6 +5213,7 @@ async fn export_joined(
         let master = master.min(clips.len() - 1);
         let by_index = clips[master].drop_streams.clone();
         let by_pid = clips[master].drop_pids.clone();
+        let ranges: Vec<Vec<(f64, f64)>> = clips.iter().map(|c| c.ranges.clone()).collect();
         let afters: Vec<smartcut_core::transition::Transition> = clips
             .into_iter()
             .map(|c| c.after.map(Crossing::into_transition).unwrap_or_default())
@@ -5185,7 +5221,7 @@ async fn export_joined(
         let reels: Vec<smartcut_core::cut::Reel> = sources
             .iter()
             .zip(&plans)
-            .zip(afters)
+            .zip(afters.clone())
             .map(|((src, plans), after)| smartcut_core::cut::Reel { src, plans, after })
             .collect();
         let whose = reels[0].src.path.clone();
@@ -5228,6 +5264,28 @@ async fn export_joined(
             },
             ..Default::default()
         };
+        if sound_only {
+            let pieces: Vec<smartcut_core::sound::Piece> = sources
+                .iter()
+                .zip(&ranges)
+                .zip(afters)
+                .map(|((src, ranges), after)| smartcut_core::sound::Piece {
+                    src,
+                    ranges,
+                    after,
+                })
+                .collect();
+            smartcut_core::sound::write_with_progress(
+                &pieces,
+                &output,
+                &opts,
+                Some(Box::new(move |_, done, within| {
+                    let _ = reporter.emit("export-progress", (whose.clone(), false, done, within));
+                })),
+            )
+            .map_err(|e| e.to_string())?;
+            return Ok(());
+        }
         smartcut_core::cut::join_with_progress(
             &reels,
             master,

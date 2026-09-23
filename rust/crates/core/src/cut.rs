@@ -3764,41 +3764,45 @@ unsafe fn set_pid(ost: &mut ff::format::stream::StreamMut, to_ts: bool, pid: i32
 }
 
 /// What is to become of one sound track, settled before anything is written.
-struct AudioSetup {
-    info: crate::AudioInfo,
+///
+/// `pub(crate)` for [`crate::sound`], which writes a cut's sound on its own
+/// and has to arrive at the same answers this does. One place decides what a
+/// track becomes; the two writers differ in what they do with it.
+pub(crate) struct AudioSetup {
+    pub(crate) info: crate::AudioInfo,
     /// How the track is produced, which is not always how it was asked for:
     /// a downmix is a whole-track re-encode however it was requested.
-    mode: AudioMode,
+    pub(crate) mode: AudioMode,
     /// The codec the track is written as. The recording's own, except where
     /// one was asked for by name or the container has no box for it -- see
     /// [`carriage`].
-    target: ff::codec::Id,
+    pub(crate) target: ff::codec::Id,
     /// Whether that is a different codec from the one that arrived. What
     /// the output says about the track then has to be said afresh: the
     /// recording's own map describes a stream this file does not contain.
-    recoded: bool,
+    pub(crate) recoded: bool,
     /// What to ask the encoder to take, where the recording's own answer is
     /// not the one meant. `None` follows the recording -- see `like` in
     /// [`crate::audio`].
-    like: Option<ff::format::Sample>,
+    pub(crate) like: Option<ff::format::Sample>,
     /// Channels out.
-    channels: u16,
+    pub(crate) channels: u16,
     /// The rate out, which is the encoder's last word rather than the
     /// caller's: the stream is declared at it and its packets are timed
     /// against it.
-    sample_rate: u32,
+    pub(crate) sample_rate: u32,
     /// The fold, when there is one: what it was, and what it became.
-    downmix: Option<(u16, u16)>,
+    pub(crate) downmix: Option<(u16, u16)>,
     /// How the frames this cut encodes for the track are framed, where they
     /// are framed at all. Only an answer for AAC -- ADTS from an HD
     /// broadcast, LATM from a 4K one; anything else leaves the frames this
     /// tool encodes unframed, exactly as the packets they sit among are.
-    frame_as: Option<crate::aac::Framing>,
-    bit_rate: usize,
+    pub(crate) frame_as: Option<crate::aac::Framing>,
+    pub(crate) bit_rate: usize,
     /// What one of the recording's own frames of this track is worth in
     /// time, where its packets do not carry a duration. See
     /// [`assumed_frame`].
-    frame_secs: Option<f64>,
+    pub(crate) frame_secs: Option<f64>,
 }
 
 /// What a track is written as, given where it is going.
@@ -4131,7 +4135,7 @@ fn assumed_frame(probe: &mut ff::format::context::Input, info: &crate::AudioInfo
 /// mono, and folding one of them says nothing about the other.
 ///
 /// `many` only decides whether the notes name which track they are about.
-fn plan_audio(
+pub(crate) fn plan_audio(
     path: &str,
     info: &crate::AudioInfo,
     opts: &CutOptions,

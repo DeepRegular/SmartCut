@@ -111,6 +111,7 @@ copy, so **the whole track is re-encoded**.
 | `--audio-bitrate RATE` | Bits per second when re-encoding, as `192k` or `192000`. Left out, it follows the recording. A figure the encoder will not accept is raised to what that codec is ordinarily carried at, with a note saying so |
 | `--aac auto\|mpeg2\|mpeg4` | Which flavour of AAC the frames SmartCut writes announce themselves as. `auto`, the default, follows the recording — MPEG-2 AAC for a broadcast |
 | `--audio-es` | Also write the sound out as a bare stream beside the output. AAC only |
+| `--sound-only` | Write the sound and no pictures: the ranges, the joins and the fades exactly as they would be inside the video, and nothing read or written for the frames. `-o` names the file and its extension picks the container — `.aac`, `.ac3`, `.m4a`, or `.wav` for linear PCM. One sound track |
 | `--audio-fade SECONDS` | Take the level down into each seam and bring it back out over that many seconds. 0 to 10; 0, no fade, is the default |
 | `--join-fade-out SECONDS` | How long the sound takes to leave at the end of each clip, where `--join` writes several into one file. 0 to 10; 0 is the default |
 | `--join-fade-in SECONDS` | ...and how long it takes to come back at the start of the next one |
