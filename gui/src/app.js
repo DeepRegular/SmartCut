@@ -4123,18 +4123,6 @@ function writableContainers() {
 /// container: each recording goes back into the kind it came out of, which
 /// held those codecs already.
 function lockContainer() {
-  // What 音声のみ will actually be called, which is the one thing that
-  // answer does not say for itself: it follows the sound rather than the
-  // choice. Under the row rather than in it, the sentence being a sentence.
-  const alone = soundOnly();
-  const note = el("sound-only-note");
-  note.hidden = !alone;
-  if (alone) {
-    const list = ready();
-    note.textContent = t("outset.soundOnlyNote", {
-      ext: list.length ? soundExt(list[0]) : "aac",
-    });
-  }
   const can = writableContainers();
   for (const opt of el("out-container").options) {
     // 音声のみ is never greyed and is never asked about: what it holds is

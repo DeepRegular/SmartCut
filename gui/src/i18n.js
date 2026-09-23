@@ -595,12 +595,6 @@ const CATALOG = {
     "ease.inOut": "イン-アウト",
     "ease.outIn": "アウト-イン",
     "container.sound": "音声のみ（映像なし）",
-    "outset.soundOnlyNote":
-      "カットも結合も継ぎ目のフェードも入ったまま、音声だけのファイルを書き出します。" +
-      "映像は読みも書きもしないので、そのぶん速く終わります。" +
-      "拡張子は音声の種類で決まります（この一覧では .{ext}）。" +
-      "音声コーデックでリニア PCM を選べば .wav になります。" +
-      "音声トラックは 1 本だけで、二か国語の録画の 2 本目は入りません。",
     "outset.container": "コンテナタイプ(Y):",
     "outset.audio": "音声(A):",
     "outset.audioCodec": "音声コーデック:",
@@ -1687,11 +1681,6 @@ const CATALOG = {
     "ease.inOut": "In-out",
     "ease.outIn": "Out-in",
     "container.sound": "Sound only, no pictures",
-    "outset.soundOnlyNote":
-      "An audio file with the cuts, the joins and the seam fades already in it. Nothing is read " +
-      "or written for the pictures, so it finishes in a fraction of the time. The extension " +
-      "follows what the sound is — .{ext} for this list, and .wav if Audio codec is set to " +
-      "linear PCM. One sound track: a bilingual recording's second is left out.",
     "outset.container": "Container (Y):",
     "outset.audio": "Audio (A):",
     "outset.audioCodec": "Audio codec:",
