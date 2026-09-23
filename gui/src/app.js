@@ -135,6 +135,19 @@ const NO_CROSSING = {
 const crossingSet = (after) =>
   !!after && (after.kind !== "none" || after.fadeOut > 0 || after.fadeIn > 0);
 
+/// A row's channel counts as read out of a project: the per-track table, or
+/// the one count a project from before the tracks were told apart holds,
+/// which answered for every track and still does.
+function asAsked(saved) {
+  if (saved && typeof saved === "object") {
+    const table = Object.fromEntries(
+      Object.entries(saved).map(([k, v]) => [k, Number(v)]).filter(([, v]) => v > 0),
+    );
+    return Object.keys(table).length ? table : null;
+  }
+  return Number(saved) > 0 ? { "*": Number(saved) } : null;
+}
+
 /// A path for a file, one of those for a recording on a disc, and a saved row
 /// out of a project, which is the same shape written down.
 function makeClip(found) {
@@ -282,11 +295,15 @@ function makeClip(found) {
     /// broadcast alone is an ordinary evening's work that no single answer
     /// can state.
     ///
-    /// Set in the quick properties, under the row it is about. A count is
-    /// only deliverable by writing the sound afresh, so a row that carries
-    /// one has its track re-encoded whatever the screen's 音声 says -- see
-    /// `audioChannelsOut`.
-    audioChannels: audioChannels ?? null,
+    /// Set in the quick properties, under the row it is about, and per
+    /// track: a pressed disc's 5.1 main track beside its stereo commentary
+    /// is the same question one level down. Kept by stream index, so that
+    /// the answer stays with its track when another is switched off -- and
+    /// under `*` for every track, which is what a project written before
+    /// the tracks were told apart says. A count is only deliverable by
+    /// writing the sound afresh, so a track that carries one is re-encoded
+    /// whatever the screen's 音声 says -- see `audioChannelsOut`.
+    audioChannels: asAsked(audioChannels),
     /// Whether the cut editor has ever been used on this row.
     ///
     /// **Not "has it anything on its timeline".** A list read for commercials
@@ -2232,9 +2249,13 @@ function paintProps() {
       return;
     }
     // Many rows are still one question about their sound -- see
-    // `soundChoice` -- so the line is here for them too, and only the line.
-    const sound = picked.some((c) => audioOf(c));
-    fillProps(box, t("props.many", { n: picked.length }) + (sound ? t("props.manyAudio", { audio: SOUND_SLOT }) : ""));
+    // `soundChoice` -- so the lines are here for them too, and only the
+    // lines: one per track, the first tracks of every row together.
+    const most = Math.max(...picked.map((c) => keptAudio(c).length));
+    const lines = Array.from({ length: most }, (_, k) =>
+      "\n" + soundLine(most > 1 ? k + 1 : 0, SOUND_SLOT),
+    );
+    fillProps(box, t("props.many", { n: picked.length }) + lines.join(""));
     return;
   }
   const c = picked[0];
@@ -2265,8 +2286,7 @@ function paintProps() {
     .filter(Boolean)
     .join(", ");
   const n = copyNo(c);
-  const sound = audioOf(c);
-  const more = keptAudio(c).length - 1;
+  const tracks = keptAudio(c);
   fillProps(box, t("props.body", {
     name: clipName(c),
     copy: n ? t("props.copyOf", { n }) : "",
@@ -2276,16 +2296,24 @@ function paintProps() {
     h: i.height,
     fps: i.fps.toFixed(2),
     flags,
-    // What the track is, and then what it will be written as -- the one
+    // What each track is, and then what it will be written as -- the one
     // output setting that belongs to a row, asked where the row's sound is
-    // described. The shape is the track this clip keeps, not whichever one
-    // the demuxer thinks is the main one. See [`audioOf`].
-    audio: sound
-      ? [sound.codec, sound.sample_rate ? `${sound.sample_rate} Hz` : ""]
-          .filter(Boolean)
-          .concat(SOUND_SLOT)
-          .join(", ") + (more > 0 ? t("props.moreTracks", { n: more }) : "")
-      : t("media.audioNo"),
+    // described. A line per track the clip keeps, each with a control of its
+    // own: a disc's 5.1 main track and the stereo commentary beside it are
+    // two answers. See [`keptAudio`].
+    audio: tracks.length
+      ? tracks
+          .map((a, k) =>
+            soundLine(
+              tracks.length > 1 ? k + 1 : 0,
+              [a.codec, a.sample_rate ? `${a.sample_rate} Hz` : ""]
+                .filter(Boolean)
+                .concat(SOUND_SLOT)
+                .join(", "),
+            ),
+          )
+          .join("\n")
+      : soundLine(0, t("media.audioNo")),
     len: coarse(i.duration),
     frames: i.frames,
     // The file's own length, and what the cut leaves where one has been
@@ -2312,7 +2340,14 @@ function paintProps() {
 /// cut at it afterwards.
 const SOUND_SLOT = "\u0001";
 
-/// Write the panel's text, with the sound control standing in its slot.
+/// One track's line in the panel: 音声 on its own where there is one track,
+/// and 音声 1, 音声 2 where there are more. `n` is 0 for the first kind.
+function soundLine(n, audio) {
+  return n ? t("props.audioTrack", { n, audio }) : t("props.audio", { audio });
+}
+
+/// Write the panel's text, with a sound control standing in each slot -- the
+/// first slot for the first track the cut keeps, and so on.
 ///
 /// Not while the control's list is up. The panel is written again on every
 /// step of a pass running on the row -- a percentage at a time -- and a list
@@ -2322,10 +2357,11 @@ function fillProps(box, text) {
   if (box.querySelector(".drop-menu:not([hidden])")) return;
   const [before, ...rest] = text.split(SOUND_SLOT);
   box.replaceChildren(document.createTextNode(before));
-  if (!rest.length) return;
-  const choice = soundChoice();
-  box.append(choice, document.createTextNode(rest.join("")));
-  fitToAnswer(choice.querySelector("select"));
+  rest.forEach((after, k) => {
+    const choice = soundChoice(k);
+    box.append(choice, document.createTextNode(after));
+    fitToAnswer(choice.querySelector("select"));
+  });
 }
 
 /// Size a `<select>` to the words it is showing rather than to its longest
@@ -2355,19 +2391,22 @@ function layoutLabel(channels, dual = false) {
   return chLabel(channels);
 }
 
-/// How many channels a row is written with while it asks for nothing of its
-/// own: the output settings' count where they are writing the sound and it
-/// fits, and the recording's own otherwise. 0 where the recording has not
+/// How many channels a track is written with while it asks for nothing of
+/// its own: the output settings' count where they are writing the sound and
+/// it fits, and the recording's own otherwise. 0 where the recording has not
 /// said.
-function followedChannels(clip) {
-  const own = trackChannels(clip);
-  const asked = reencodingAudio() ? under(Number(settings.audioChannels), soundCeiling().channels) : null;
+function followedChannels(track) {
+  const own = track.channels > 0 ? track.channels : 0;
+  const asked = screenChannels();
   return asked && (!own || asked <= own) ? asked : own;
 }
 
 /// What a row's sound will be written as, named the way the reference tool
 /// names it: ステレオ (初期値) for a row that follows the output settings,
 /// and the other shapes the recording can be folded into as the choices.
+///
+/// One control per track, `k` being which: the first track each row keeps,
+/// the second, and so on. A row with fewer tracks than that has no say.
 ///
 /// On screen for any selection rather than for one row, and it answers for
 /// all of them: a list of twelve episodes off one recorder wants the same
@@ -2386,20 +2425,24 @@ function followedChannels(clip) {
 /// rows carries would spread a recording into channels it was never sent
 /// with, and dual mono is not folded at all: its two channels are two
 /// languages, and one channel of it is both of them talking at once.
-function soundChoice() {
-  const sound = selected().filter((c) => audioOf(c));
+function soundChoice(k) {
+  const pairs = () =>
+    selected()
+      .map((c) => [c, keptAudio(c)[k]])
+      .filter(([, a]) => a);
+  const sound = pairs();
   const holder = document.createElement("span");
   const drop = document.createElement("span");
   drop.className = "drop sound-drop";
   const select = document.createElement("select");
   drop.append(select);
   holder.append(drop);
-  const own = sound.map(trackChannels);
+  const own = sound.map(([, a]) => (a.channels > 0 ? a.channels : 0));
   const least = own.every((n) => n > 0) ? Math.min(...own) : 0;
-  const dual = sound.some((c) => audioOf(c).dual_mono);
-  const named = (clip) => {
-    const n = followedChannels(clip);
-    return n ? layoutLabel(n, audioOf(clip).dual_mono && n === trackChannels(clip)) : "";
+  const dual = sound.some(([, a]) => a.dual_mono);
+  const named = ([, a]) => {
+    const n = followedChannels(a);
+    return n ? layoutLabel(n, a.dual_mono && n === a.channels) : "";
   };
   const names = new Set(sound.map(named));
   const initial = names.size === 1 && [...names][0] ? [...names][0] : t("props.followOutput");
@@ -2410,8 +2453,8 @@ function soundChoice() {
     select.append(o);
   };
   option("", t("props.initial", { name: initial }));
-  const answers = new Set(sound.map((c) => String(c.audioChannels || "")));
-  const followed = new Set(sound.map(followedChannels));
+  const answers = new Set(sound.map(([c, a]) => String(askedOf(c, a) || "")));
+  const followed = new Set(sound.map(([, a]) => followedChannels(a)));
   for (const n of [6, 2, 1]) {
     const chosen = answers.has(String(n));
     if (!chosen && (dual || (least && n > least))) continue;
@@ -2435,7 +2478,7 @@ function soundChoice() {
   select.disabled = copying || select.options.length < 2;
   const note = copying
     ? t("props.audioCopying")
-    : answers.size === 1 && select.value
+    : answers.size === 1 && sound.some(([c, a]) => refolds(c, a))
       ? t("props.audioReencoded")
       : "";
   if (note) {
@@ -2450,11 +2493,8 @@ function soundChoice() {
     // panel from being written. See `fillProps`.
     const menu = drop.querySelector(".drop-menu");
     if (menu) menu.hidden = true;
-    const want = select.value || null;
-    for (const clip of selected()) {
-      if (!audioOf(clip)) continue;
-      clip.audioChannels = want;
-    }
+    const want = Number(select.value) || 0;
+    for (const [clip, track] of pairs()) setAsked(clip, track, want);
     paintProps();
     paintList();
     if (screen === "outset") renderOutset();
@@ -3776,10 +3816,9 @@ function audioOf(clip) {
 /// channels' worth of bytes. Everywhere else the count is the count.
 ///
 /// 0 for a clip with no sound, or one read by a version that did not say.
-function lpcmBitRate(clip, container) {
-  const sound = audioOf(clip);
+function lpcmBitRate(clip, container, sound = audioOf(clip)) {
   if (!sound) return 0;
-  const channels = audioChannelsOut(clip) || sound.channels || 0;
+  const channels = audioChannelsOut(clip, sound) || sound.channels || 0;
   const bits = audioBitsOut() || sound.bits || 0;
   const rate = writableRate(audioRateOut() || sound.sample_rate || 0, container);
   if (!channels || !bits || !rate) return 0;
@@ -3831,8 +3870,10 @@ function writableRate(hz, container) {
 /// is two figures. Naming a range says that honestly; naming one of them
 /// would be picking a clip at random and calling it the answer.
 function lpcmLabel() {
+  // Every track: each is written at its own count, so a disc's 5.1 track
+  // folded to stereo beside one left alone is two figures in one row.
   const rates = ready()
-    .map((c) => lpcmBitRate(c, containerFor(c)))
+    .flatMap((c) => keptAudio(c).map((a) => lpcmBitRate(c, containerFor(c), a)))
     .filter((b) => b > 0);
   const distinct = [...new Set(rates)].sort((a, b) => a - b);
   if (!distinct.length) return t("bitrate.none");
@@ -4232,32 +4273,89 @@ function fillBitrates() {
 /// that is the point of greying it out rather than clearing it -- so the
 /// screen's is read only while the sound is being written at all; a row's own
 /// is not, because choosing one *is* asking for the sound to be written. See
-/// `reencodesSound`.
+/// `refolds`.
 ///
 /// Held under what the recording actually carries either way: spreading a
 /// stereo track into 5.1 adds a file's worth of size and not a sound.
-function audioChannelsOut(clip) {
-  const mine = clip && clip.audioChannels ? Number(clip.audioChannels) : 0;
-  if (mine) return under(mine, trackChannels(clip));
+///
+/// About one track, the first the cut keeps unless another is named: the
+/// lines that have room for one figure speak for that one. See `audioOf`.
+function audioChannelsOut(clip, track = clip ? audioOf(clip) : null) {
+  const mine = askedOf(clip, track);
+  if (mine) return under(mine, track.channels > 0 ? track.channels : 0);
+  return screenChannels();
+}
+
+/// The screen's channel count, which every track without an answer of its
+/// own is written with. Null while the sound is not being written at all.
+function screenChannels() {
   if (!reencodingAudio()) return null;
   return under(Number(settings.audioChannels), soundCeiling().channels);
 }
 
-/// How many channels the track this row would write actually has, or 0 where
-/// nothing has been read out of it yet.
-function trackChannels(clip) {
-  const sound = clip ? audioOf(clip) : null;
-  return sound && sound.channels > 0 ? sound.channels : 0;
+/// What a track's own answer is kept under in `audioChannels`. A track read
+/// by a version that did not list them has no index, and is every track.
+const trackKey = (track) => String(track.index ?? "*");
+
+/// The count a row asked of one of its tracks, or 0 where it asked nothing.
+function askedOf(clip, track) {
+  const table = clip && track ? clip.audioChannels : null;
+  if (!table) return 0;
+  return Number(table[trackKey(track)] ?? table["*"]) || 0;
 }
 
-/// Whether this row's sound is written afresh rather than spliced or copied.
+/// Give one of a row's tracks its own count, or take it away with 0.
 ///
-/// The screen's answer, or the row's own count: a count can only be delivered
-/// by an encoder -- copying is copying, and the smart path splices the
-/// recording's own frames -- so a row that asks for one has asked for the
-/// thing that produces it.
-function reencodesSound(clip) {
-  return reencodingAudio() || !!audioChannelsOut(clip);
+/// A count that was every track's -- see `asAsked` -- is spelled out track
+/// by track first, so that answering for one of them leaves the others
+/// where they were rather than taking the old answer away from all of them.
+function setAsked(clip, track, want) {
+  const table = {};
+  for (const [k, v] of Object.entries(clip.audioChannels || {})) {
+    if (k !== "*") table[k] = v;
+  }
+  for (const a of keptAudio(clip)) {
+    const n = askedOf(clip, a);
+    if (n) table[trackKey(a)] = n;
+  }
+  if (want) table[trackKey(track)] = want;
+  else delete table[trackKey(track)];
+  clip.audioChannels = Object.keys(table).length ? table : null;
+}
+
+/// What the engine is told about a row's channels: the count every track
+/// without an answer of its own takes, and each answer by stream index.
+function channelsAsked(clip) {
+  let every = screenChannels();
+  const each = [];
+  for (const a of keptAudio(clip)) {
+    if (!askedOf(clip, a)) continue;
+    const n = audioChannelsOut(clip, a) || 0;
+    if (a.index == null) every = n || null;
+    else if (n) each.push([a.index, n]);
+  }
+  return { audioChannels: every, audioTrackChannels: each };
+}
+
+/// Whether a track is written afresh rather than having its frames go
+/// through: the screen asked for every track to be, or this one was asked
+/// for a count it does not have.
+///
+/// Lossless sound is the exception, as it is in the cut: it is carried
+/// whole whatever is asked of it, unless a codec was named. See
+/// `carried_whole` in the engine.
+function rewritten(clip, track) {
+  const whole = ["dts", "truehd", "mlp"].includes(track.codec) && !audioCodecOut();
+  return !whole && (reencodingAudio() || refolds(clip, track));
+}
+
+/// Whether a track's own answer changes how many channels it has -- which is
+/// what makes the engine write it afresh. Stereo asked of a stereo track is
+/// the track as it is, and it goes the way the screen says.
+function refolds(clip, track) {
+  if (!askedOf(clip, track)) return false;
+  const n = audioChannelsOut(clip, track);
+  return !!n && n !== track.channels;
 }
 
 function audioBitrateOut() {
@@ -4304,23 +4402,37 @@ function codecLabel() {
 /// match the master's is written afresh however the settings are set, because
 /// a track is declared once and what the stream says has to describe every
 /// frame on it. Said only where the settings have not already said it.
+///
+/// Said per track, since each track is answered for apart from the others:
+/// the ones written afresh are named, and the ones whose frames go through
+/// are left out. Where every track is written the same way the tracks are
+/// not counted off one by one -- 音声は再エンコードします says it once.
 function audioNote(clip, fit = null) {
-  const sound = audioOf(clip);
-  if (!sound) return "";
-  if (!reencodesSound(clip)) {
-    return fit && fit.audio ? " " + t("out.audioConformed") : "";
-  }
-  const from = sound.channels || 0;
-  const to = audioChannelsOut(clip) || from;
-  if (from && to && to !== from) {
+  const all = soundOnly() ? keptAudio(clip).slice(0, 1) : keptAudio(clip);
+  const tracks = all.filter((a) => rewritten(clip, a));
+  if (!tracks.length) return fit && fit.audio ? " " + t("out.audioConformed") : "";
+  const what = tracks.map((a) => {
+    const from = a.channels || 0;
+    const to = audioChannelsOut(clip, a) || from;
     // Which way it goes is the recording's to decide, not the setting's: one
     // list can hold a 5.1 recording and a stereo one, and 2ch asked of both
     // folds the first and spreads the second.
-    const key = to < from ? "out.audioDownmixed" : "out.audioUpmixed";
-    return " " + t(key, { from: chLabel(from), to: chLabel(to) });
-  }
-  const codec = codecLabel();
-  return " " + (codec ? t("out.audioAsCodec", { codec }) : t("out.audioReencoded"));
+    if (from && to && to !== from) {
+      return [to < from ? "out.soundDownmixed" : "out.soundUpmixed", { from: chLabel(from), to: chLabel(to) }];
+    }
+    const codec = codecLabel();
+    return codec ? ["out.soundAsCodec", { codec }] : ["out.soundReencoded", {}];
+  });
+  const alike = tracks.length === all.length && what.every((w) => JSON.stringify(w) === JSON.stringify(what[0]));
+  const said = alike
+    ? [t(what[0][0], { ...what[0][1], who: t("out.soundWho") })]
+    : tracks.map((a, k) =>
+        t(what[k][0], {
+          ...what[k][1],
+          who: all.length > 1 ? t("out.soundWhoN", { n: all.indexOf(a) + 1 }) : t("out.soundWho"),
+        }),
+      );
+  return " " + t("out.audioParen", { what: said.join(t("out.soundSep")) });
 }
 
 /// A sample rate as it is spoken: 48 kHz, 44.1 kHz.
@@ -4328,17 +4440,29 @@ function khzLabel(hz) {
   return `${hz % 1000 ? (hz / 1000).toFixed(1) : hz / 1000} kHz`;
 }
 
-/// What the output's audio will be, in the one line the format panel has.
+/// What the output's audio will be, in the format panel.
+///
+/// A line per track the cut writes, the way the quick properties list them:
+/// each track has its own count, so each can be folded, re-encoded or left
+/// alone apart from the others. An audio file is written with the first
+/// track only, and says only that.
 function audioSummary(clip, container) {
-  const sound = audioOf(clip);
-  if (!sound) return t("media.audioNo");
+  const tracks = soundOnly() ? keptAudio(clip).slice(0, 1) : keptAudio(clip);
+  if (!tracks.length) return soundLine(0, t("media.audioNo"));
+  return tracks
+    .map((a, k) => soundLine(tracks.length > 1 ? k + 1 : 0, trackSummary(clip, a, container)))
+    .join("\n");
+}
+
+/// What one track will be written as, for `audioSummary`.
+function trackSummary(clip, sound, container) {
   const from = sound.channels || 0;
-  const to = audioChannelsOut(clip) || from;
+  const to = audioChannelsOut(clip, sound) || from;
   const down = !!(from && to && to !== from);
   // Here the figure can be exact, because here there is one clip: the
   // control above has a whole list to answer for and may only be able to
   // name a range.
-  const rate = codecHasNoBitrate() ? lpcmBitRate(clip, container) : audioBitrateOut();
+  const rate = codecHasNoBitrate() ? lpcmBitRate(clip, container, sound) : audioBitrateOut();
   const detail = [];
   const codec = codecLabel();
   if (codec) detail.push(codec);
@@ -4355,11 +4479,12 @@ function audioSummary(clip, container) {
   const bits = audioBitsOut();
   if (bits) detail.push(`${bits} bit`);
   if (rate) detail.push(`${rate / 1000} kbps`);
-  // How the sound is produced, which is the screen's answer unless this row
-  // has asked for a count: nothing but an encoder delivers one, so the row
-  // says re-encode however the screen is set. See `reencodesSound`.
+  // How the track is produced, which is the screen's answer unless the row
+  // has asked this track for a different count: nothing but an encoder
+  // delivers one, so the track says re-encode however the screen is set.
+  // See `refolds`.
   const mode = t(
-    `audio.${reencodesSound(clip) ? "reencode" : settings.audio}.short`
+    `audio.${reencodingAudio() || refolds(clip, sound) ? "reencode" : settings.audio}.short`
   );
   return detail.length ? t("outset.audioLine", { mode, detail: detail.join(", ") }) : mode;
 }
@@ -5064,9 +5189,51 @@ function discCosts() {
       clip: c,
       seconds: keepsOf(c).reduce((n, k) => n + (k.b - k.a), 0),
       video_rate: c.info.video_rate,
-      audio_rate: c.info.audio_rate,
+      audio_rate: soundRate(c),
       can_shrink: !!c.info.can_shrink,
     }));
+}
+
+/// What a clip's sound costs the disc per second, the tracks it keeps each
+/// counted as they will be written.
+///
+/// The recording's own figure is every track it carries as it came in, which
+/// is two things this list may have changed: a track switched off costs
+/// nothing, and one folded from 5.1 to stereo costs what the encoder spends
+/// on stereo. A row read by a version that did not price its tracks one by
+/// one has only the recording's figure to go on.
+function soundRate(clip) {
+  const tracks = keptAudio(clip);
+  if (tracks.some((a) => !(a.rate > 0))) return clip.info.audio_rate;
+  const container = containerFor(clip);
+  return tracks.reduce((n, a) => n + trackRate(clip, a, container), 0);
+}
+
+/// What one track costs per second once written. The same arithmetic the
+/// cut runs in `plan_audio`: the track's own figure where its frames go
+/// through, the figure asked for where one was, and otherwise what the codec
+/// is worth at the count being written -- or, for the recording's own codec,
+/// its own figure taken down with the channels.
+function trackRate(clip, track, container) {
+  if (!rewritten(clip, track)) return track.rate;
+  const named = audioCodecOut();
+  const target = named || track.codec;
+  if (target === "lpcm" || target.startsWith("pcm_")) return lpcmBitRate(clip, container, track);
+  const asked = audioBitrateOut();
+  if (asked) return asked;
+  const from = track.channels || 0;
+  const to = audioChannelsOut(clip, track) || from;
+  if (named && named !== track.codec) return plainRate(named, to);
+  return from && to !== from ? Math.max((track.rate * to) / from, 128000) : track.rate;
+}
+
+/// What a codec is written at when nobody said, by channel count. The
+/// engine's `derived_bit_rate`, which is the figure it actually spends.
+function plainRate(codec, channels) {
+  if (codec === "ac3") return channels <= 1 ? 96000 : channels === 2 ? 192000 : 448000;
+  if (codec === "dts") return channels > 2 ? 1536000 : 768000;
+  if (codec === "mp2" || codec === "mp3") return channels <= 1 ? 128000 : 256000;
+  return channels <= 1 ? 96000 : channels === 2 ? 192000 : 64000 * channels;
 }
 
 /// Ask the engine, unless it has already been asked this exact question.
@@ -6567,14 +6734,15 @@ async function writeJoined(list) {
       master: Math.max(0, list.indexOf(master)),
       output: out,
       audioCopy: settings.audio === "copy",
-      // A joined file declares its sound once, so the count is the master's
-      // -- its own where that row has one, and the screen's where it has not.
-      // The same rule every other question about a join follows. A row that
-      // asked for a count and is not the master has asked it of a file that
-      // cannot answer per row; `renderOutset` says so beside the picker.
-      audioReencode: settings.audio === "reencode" || !!audioChannelsOut(master),
+      // A joined file declares its sound once, so the counts are the
+      // master's -- each track's own where that row has one, and the
+      // screen's where it has not. The same rule every other question about
+      // a join follows. A row that asked for a count and is not the master
+      // has asked it of a file that cannot answer per row; `renderOutset`
+      // says so beside the picker.
+      audioReencode: settings.audio === "reencode",
       audioCodec: audioCodecOut(),
-      audioChannels: audioChannelsOut(master),
+      ...channelsAsked(master),
       audioBitrate: audioBitrateOut(),
       audioSampleRate: audioRateOut(),
       audioBits: audioBitsOut(),
@@ -6749,11 +6917,12 @@ async function runExport() {
         ranges: rangesOf(clip),
         output: out,
         audioCopy: settings.audio === "copy",
-        // A row that asks for a channel count has asked for the sound to be
-        // written: nothing else can deliver one. See `reencodesSound`.
-        audioReencode: reencodesSound(clip),
+        // Only the screen's answer. A track the row asked a count of has
+        // asked for that track to be written, and the engine settles it
+        // track by track -- sending it here would re-encode the others too.
+        audioReencode: reencodingAudio(),
         audioCodec: audioCodecOut(),
-        audioChannels: audioChannelsOut(clip),
+        ...channelsAsked(clip),
         audioBitrate: audioBitrateOut(),
         audioSampleRate: audioRateOut(),
         audioBits: audioBitsOut(),
@@ -7169,10 +7338,6 @@ function captureProject(settled = outputSettled, forRun = false) {
       // detection's. Left out on a row nobody has been through, which is what
       // a file written before this existed looks like. See `edited`.
       edited: c.edited || undefined,
-      // How this row's sound is written, where the row has said. Left out
-      // where it follows the output settings, which is every row of every
-      // list nobody has answered for.
-      audioChannels: c.audioChannels || undefined,
       // How this row's sound is written, where the row has said. Left out
       // where it follows the output settings, which is every row of every
       // list nobody has answered for.

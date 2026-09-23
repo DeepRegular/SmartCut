@@ -163,7 +163,7 @@ pub fn rates(src: &Source) -> Rates {
 /// came out 14% over on each of them: eight percent of a disc handed back for
 /// nothing. So what a codec is worth at this many channels stands in
 /// instead, which is what a re-encode of the track would spend.
-fn audio_rate(a: &crate::AudioInfo) -> f64 {
+pub fn audio_rate(a: &crate::AudioInfo) -> f64 {
     if let Some(stated) = a.bit_rate.filter(|r| *r > 0) {
         return stated as f64;
     }

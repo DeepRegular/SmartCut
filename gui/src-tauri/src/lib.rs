@@ -248,6 +248,11 @@ struct AudioTrackInfo {
     /// a recording that carries more than one track. See
     /// [`smartcut_core::si::SoundTrack::arrangement`].
     dual_mono: bool,
+    /// Bits per second the track costs as it stands, as the disc gauge
+    /// counts it. See [`smartcut_core::fit::audio_rate`]. Per track because
+    /// the window decides per track what is kept and what is re-encoded,
+    /// and the recording's one figure is every track's, switched off or not.
+    rate: f64,
 }
 
 /// Takes the tracks rather than the recording, because the cheap first look
@@ -264,6 +269,7 @@ fn audio_tracks_of(audios: &[smartcut_core::AudioInfo]) -> Vec<AudioTrackInfo> {
             sample_rate: a.sample_rate,
             bits: a.bits,
             dual_mono: a.said.as_ref().is_some_and(|s| s.arrangement == 0x02),
+            rate: smartcut_core::fit::audio_rate(a),
         })
         .collect()
 }
@@ -4909,6 +4915,9 @@ async fn export(
     // sends every other empty control.
     audio_codec: Option<String>,
     audio_channels: Option<u16>,
+    // A count of the row's own for each track that has one, by stream index.
+    // See [`smartcut_core::CutOptions::track_channels`].
+    audio_track_channels: Option<Vec<(usize, u16)>>,
     audio_bitrate: Option<usize>,
     // The other two things a sample has. Zero and nothing mean the same
     // thing for both -- follow the recording -- so the screen can send its
@@ -5024,6 +5033,11 @@ async fn export(
             // -- follow the recording -- so the screen can send its "as it
             // is" the way it sends every other empty control.
             audio_channels: audio_channels.filter(|&c| c > 0),
+            track_channels: audio_track_channels
+                .unwrap_or_default()
+                .into_iter()
+                .filter(|&(_, c)| c > 0)
+                .collect(),
             audio_bit_rate: audio_bitrate.filter(|&b| b > 0),
             // A rate or a width that is not the recording's leaves no frame
             // to copy either, and the engine answers both the same way it
@@ -5197,6 +5211,7 @@ async fn export_joined(
     audio_copy: Option<bool>,
     audio_codec: Option<String>,
     audio_channels: Option<u16>,
+    audio_track_channels: Option<Vec<(usize, u16)>>,
     audio_bitrate: Option<usize>,
     audio_sample_rate: Option<u32>,
     audio_bits: Option<u8>,
@@ -5282,6 +5297,11 @@ async fn export_joined(
                 .and_then(smartcut_core::AudioCodec::parse)
                 .unwrap_or_default(),
             audio_channels: audio_channels.filter(|&c| c > 0),
+            track_channels: audio_track_channels
+                .unwrap_or_default()
+                .into_iter()
+                .filter(|&(_, c)| c > 0)
+                .collect(),
             audio_bit_rate: audio_bitrate.filter(|&b| b > 0),
             audio_sample_rate: audio_sample_rate.filter(|&r| r > 0),
             audio_bits: audio_bits.filter(|&b| b > 0),

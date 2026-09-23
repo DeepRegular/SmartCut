@@ -219,6 +219,17 @@ pub struct CutOptions {
     /// among the recording's 5.1 ones, so asking for one asks for the whole
     /// track, and [`AudioMode::Reencode`] is what actually runs.
     pub audio_channels: Option<u16>,
+    /// Channels one sound track is written with, by the recording's stream
+    /// index, where that track has an answer of its own. A track not named
+    /// here takes `audio_channels`. See [`CutOptions::channels_for`].
+    ///
+    /// One count for the whole recording is the wrong shape for a pressed
+    /// disc: its 5.1 main track wants folding to stereo and the stereo
+    /// commentary beside it wants leaving alone, and a count asked of both
+    /// either leaves the first wide or spreads nothing into the second. Each
+    /// track settles its own mode off its own answer in [`plan_audio`], so a
+    /// fold here re-encodes that track and no other.
+    pub track_channels: Vec<(usize, u16)>,
     /// Samples per second the audio is written at. `None` follows the source.
     ///
     /// A rate that is not the source's is a resample, and like a downmix it
@@ -326,6 +337,19 @@ pub struct CutOptions {
     /// it would lose what makes it lossless stays carried whole. The cut says
     /// so rather than fading nothing quietly.
     pub audio_fade: f64,
+}
+
+impl CutOptions {
+    /// How many channels one sound track was asked for: its own answer where
+    /// it has one, and the run's where it has not. `None` follows the
+    /// recording.
+    pub fn channels_for(&self, stream_index: usize) -> Option<u16> {
+        self.track_channels
+            .iter()
+            .find(|&&(i, _)| i == stream_index)
+            .map(|&(_, n)| n)
+            .or(self.audio_channels)
+    }
 }
 
 /// How far past a segment's end the reader will go for a stream that has
@@ -4196,7 +4220,7 @@ pub(crate) fn plan_audio(
     // told, and the encoder it would have refused to open is not the
     // recording's own but the one that was named.
     let lossless = crate::audio::carried_whole(source_id) && !asked_for;
-    let asked_channels = opts.audio_channels.unwrap_or(info.channels);
+    let asked_channels = opts.channels_for(info.stream_index).unwrap_or(info.channels);
     // Everything about the samples themselves that was asked for and cannot
     // be given, said in one breath: a lossless track is carried through as
     // it is, and each of these is a way of asking for it not to be.
@@ -7135,6 +7159,23 @@ mod tests {
         };
         let can = writable_sound(&[three], &opts, &offered());
         assert!(can.codecs.contains(&AudioCodec::Dts));
+    }
+
+    #[test]
+    fn a_track_of_its_own_count_leaves_the_others_to_the_run() {
+        let opts = CutOptions {
+            audio_channels: Some(6),
+            track_channels: vec![(2, 2)],
+            ..Default::default()
+        };
+        assert_eq!(opts.channels_for(2), Some(2));
+        assert_eq!(opts.channels_for(1), Some(6));
+        let own = CutOptions {
+            track_channels: vec![(1, 1)],
+            ..Default::default()
+        };
+        assert_eq!(own.channels_for(1), Some(1));
+        assert_eq!(own.channels_for(2), None);
     }
 
     #[test]

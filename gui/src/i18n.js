@@ -346,14 +346,14 @@ const CATALOG = {
     "props.error": "{name}\n{error}",
     "props.body":
       "クリップ名:　{name}{copy}\n{path}\n映像:　{codec}, {w}x{h}, {fps} fps, {flags}\n" +
-      "音声:　{audio}\n長さ:　{len} ({frames} フレーム){cut}　無劣化点 {points} 個{unusable}" +
+      "{audio}\n長さ:　{len} ({frames} フレーム){cut}　無劣化点 {points} 個{unusable}" +
       "\nシーン {scenes} 箇所　インデックス {index}{cm}{flat}",
     "props.copyOf": "（同じ録画の {n} 本目）",
     // 「長さ」の行に続けて入ります。カットが入っていない行では空です。
     "props.cut": "　カット後 {len}",
-    "props.manyAudio": "\n音声:　{audio}",
-    // 録画の音声トラックのうち、行に書いたもの以外の本数。
-    "props.moreTracks": "　ほか {n} 本",
+    // 音声の行。トラックが 2 本以上あるときは番号付きで 1 本 1 行になります。
+    "props.audio": "音声:　{audio}",
+    "props.audioTrack": "音声 {n}:　{audio}",
     // 行の音声を何で書くかの選択肢の先頭。出力設定の答えをそのまま名乗ります。
     "props.initial": "{name} (初期値)",
     "props.followOutput": "出力設定に従う",
@@ -364,7 +364,7 @@ const CATALOG = {
     "layout.dualMono": "デュアルモノラル",
     // 選んだ行で答えが割れているとき。選び直せば全部そろいます。
     "props.audioMixed": "選んだ行で設定が違います",
-    "props.audioReencoded": "この行の音声は再エンコードされます",
+    "props.audioReencoded": "このトラックは再エンコードされます",
     "props.audioCopying": "出力設定の音声が「そのままコピー」のあいだは選べません",
     "props.unusable": "（うち {n} 個は開始位置には使えません）",
     // Sits inside "無劣化点 {points} 個" and two lines like it, so it has
@@ -635,12 +635,12 @@ const CATALOG = {
     "bitrate.fixedRange": "{from}〜{to} kbps（固定）",
     "outset.audioLine": "{mode}（{detail}）",
     "outset.format":
-      "映像:　{codec}, {w}x{h}, {fps} fps, {scan}\n音声:　{audio}\n" +
+      "映像:　{codec}, {w}x{h}, {fps} fps, {scan}\n{audio}\n" +
       "区間:　{keeps} 区間 / 出力 {kept}（元 {dur}、カット {cuts} 箇所）\n出力先:　{out}{side}",
     // 同じ 3 行に、ディスクの索引へ書かれるものを足したもの。ファイル名の
     // 代わりに、この録画がディスクのどこに入るかを言う。
     "outset.formatBdav":
-      "映像:　{codec}, {w}x{h}, {fps} fps, {scan}\n音声:　{audio}\n" +
+      "映像:　{codec}, {w}x{h}, {fps} fps, {scan}\n{audio}\n" +
       "区間:　{keeps} 区間 / 出力 {kept}（元 {dur}、カット {cuts} 箇所）\n" +
       "チャプター:　{marks} 個\nディスク:　{out}",
     // 索引の欄が空のまま書かれるときに、その欄が見せるもの。録画が何も
@@ -767,10 +767,16 @@ const CATALOG = {
     "out.allCutNote": "{clip} — すべてカットされています。書き出すものがありません",
     "out.allCutStage": "すべてカットされています",
     "out.allCut": "すべてカットされています",
-    "out.audioReencoded": "（音声は再エンコードします）",
-    "out.audioAsCodec": "（音声は {codec} で再エンコードします）",
-    "out.audioDownmixed": "（音声は {from} → {to} へダウンミックスして再エンコードします）",
-    "out.audioUpmixed": "（音声は {from} → {to} へ広げて再エンコードします）",
+    // 再エンコードするトラックごとに 1 句。{who} は「音声」か「音声 2 」で、
+    // 全トラックが同じ扱いのときは番号を付けずに 1 句だけにします。
+    "out.audioParen": "（{what}）",
+    "out.soundWho": "音声",
+    "out.soundWhoN": "音声 {n} ",
+    "out.soundSep": "、",
+    "out.soundReencoded": "{who}は再エンコードします",
+    "out.soundAsCodec": "{who}は {codec} で再エンコードします",
+    "out.soundDownmixed": "{who}は {from} → {to} へダウンミックスして再エンコードします",
+    "out.soundUpmixed": "{who}は {from} → {to} へ広げて再エンコードします",
     "out.audioConformed": "（音声も基準クリップに合わせて再エンコードします）",
     "out.shots": "{clip} — {n} 箇所 / {frames} フレーム（ほかはバイト単位でコピー）",
     "out.ovlKind": "再エンコード {i} / {n}",
@@ -1439,13 +1445,13 @@ const CATALOG = {
     "props.error": "{name}\n{error}",
     "props.body":
       "Clip:  {name}{copy}\n{path}\nVideo:  {codec}, {w}x{h}, {fps} fps, {flags}\n" +
-      "Audio:  {audio}\nLength:  {len} ({frames} frame{frames?s}){cut}   {points} lossless points{unusable}" +
+      "{audio}\nLength:  {len} ({frames} frame{frames?s}){cut}   {points} lossless points{unusable}" +
       "\n{scenes} scenes   index {index}{cm}{flat}",
     "props.copyOf": " (copy {n} of this recording)",
     // Follows the length. Empty on a row nothing has been cut out of.
     "props.cut": "   {len} after cutting",
-    "props.manyAudio": "\nAudio: {audio}",
-    "props.moreTracks": " and {n} more",
+    "props.audio": "Audio:  {audio}",
+    "props.audioTrack": "Audio {n}:  {audio}",
     "props.initial": "{name} (default)",
     "props.followOutput": "As the output settings say",
     "props.noteOpen": "(",
@@ -1455,7 +1461,7 @@ const CATALOG = {
     "layout.dualMono": "Dual mono",
     // The chosen rows do not agree. Picking one gives them all that answer.
     "props.audioMixed": "the chosen rows differ",
-    "props.audioReencoded": "this row's sound is written afresh",
+    "props.audioReencoded": "this track is written afresh",
     "props.audioCopying": "not while the output settings copy the sound as it is",
     "props.unusable": " ({n} of them cannot start a cut)",
     "props.pending": "—",
@@ -1721,10 +1727,10 @@ const CATALOG = {
     "bitrate.fixedRange": "{from}–{to} kbps (fixed)",
     "outset.audioLine": "{mode} ({detail})",
     "outset.format":
-      "Video:  {codec}, {w}x{h}, {fps} fps, {scan}\nAudio:  {audio}\n" +
+      "Video:  {codec}, {w}x{h}, {fps} fps, {scan}\n{audio}\n" +
       "Ranges:  {keeps} kept / {kept} out (of {dur}, {cuts} cut{cuts?s})\nWritten to:  {out}{side}",
     "outset.formatBdav":
-      "Video:  {codec}, {w}x{h}, {fps} fps, {scan}\nAudio:  {audio}\n" +
+      "Video:  {codec}, {w}x{h}, {fps} fps, {scan}\n{audio}\n" +
       "Ranges:  {keeps} kept / {kept} out (of {dur}, {cuts} cut{cuts?s})\n" +
       "Chapters:  {marks}\nDisc:  {out}",
     "outset.fieldBlank": "(left blank)",
@@ -1835,10 +1841,14 @@ const CATALOG = {
     "out.allCutNote": "{clip} — everything has been cut, so there is nothing to write",
     "out.allCutStage": "Everything has been cut",
     "out.allCut": "Everything has been cut",
-    "out.audioReencoded": "(the audio is re-encoded)",
-    "out.audioAsCodec": "(the audio is re-encoded as {codec})",
-    "out.audioDownmixed": "(the audio is downmixed {from} → {to} and re-encoded)",
-    "out.audioUpmixed": "(the audio is spread {from} → {to} and re-encoded)",
+    "out.audioParen": "({what})",
+    "out.soundWho": "the audio",
+    "out.soundWhoN": "audio {n}",
+    "out.soundSep": "; ",
+    "out.soundReencoded": "{who} is re-encoded",
+    "out.soundAsCodec": "{who} is re-encoded as {codec}",
+    "out.soundDownmixed": "{who} is downmixed {from} → {to} and re-encoded",
+    "out.soundUpmixed": "{who} is spread {from} → {to} and re-encoded",
     "out.audioConformed": "(the sound is re-encoded to match the master as well)",
     "out.shots": "{clip} — {n} place{n?s} / {frames} frame{frames?s} (everything else is copied byte for byte)",
     "out.ovlKind": "Re-encode {i} of {n}",
