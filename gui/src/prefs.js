@@ -238,17 +238,19 @@ const DEFAULTS = {
   /// The engine's own three (`BlankOptions`), which is why they are written
   /// as percentages of a scale rather than as 16 and 235: the recording's own
   /// depth decides what those are, and a ten-bit picture holds four times the
-  /// numbers an eight-bit one does.
+  /// numbers an eight-bit one does. The two levels are the way from black
+  /// (0%) up to white (100%), so 0% is broadcast black itself; see
+  /// `carryLevels` for the names they had when they were a share of 0..255.
   ///
   /// On screen because the answers are material and not universal. A channel
-  /// that fades through a very dark grey rather than to black is missed at 10
-  /// and found at 16; a station that leaves a clock or a scoreboard up wants
+  /// that fades through a very dark grey rather than to black is missed at 4
+  /// and found at 10; a station that leaves a clock or a scoreboard up wants
   /// the coverage below 98, since a black frame with a clock on it is not 98%
   /// black. The pass is told them, and a saved detection answers only for the
   /// three it was made with -- a level is not a minimum, and what moves with
   /// it is where a fade is *called* black, which is the frame a mark goes on.
-  blankBlackLevel: 10,
-  blankWhiteLevel: 92,
+  blankBlack: 4,
+  blankWhite: 99,
   blankCoverage: 98,
   /// Where the mark at the end of a black or white stretch goes.
   ///
@@ -366,6 +368,43 @@ export function get(name) {
   }
 }
 
+/// The two levels as somebody set them before they were measured from black.
+///
+/// They were a share of 0..255 then, under other names, so the same number
+/// means a different luma now: the 7% a report was written at was 17, one
+/// code over black, and 7% of the way up from black is 31. Worked over once
+/// into the new scale and stored under the new name, the old names going so
+/// that a later start does not carry them over a second time.
+///
+/// Onto the highest whole percent whose luma is not past the one the old
+/// level compared against, not the nearest: rounded, the 92 that white was
+/// stored at by anybody who ever touched the field came to 100, which is
+/// 235 -- stricter than the 234 it had been and than the new default. This
+/// way white never misses a flash it used to find, black never takes in
+/// grey it used to leave out, and the report's 7% lands on 0, black itself.
+function carryLevels() {
+  const pairs = [
+    ["blankBlackLevel", "blankBlack"],
+    ["blankWhiteLevel", "blankWhite"],
+  ];
+  try {
+    for (const [old, now] of pairs) {
+      const raw = localStorage.getItem(KEY(old));
+      if (raw === null) continue;
+      localStorage.removeItem(KEY(old));
+      const was = Number(JSON.parse(raw));
+      if (!isFinite(was) || stored(now)) continue;
+      // The engine truncates both, so these are the lumas actually compared.
+      const luma = Math.floor((was / 100) * 255);
+      const percent = Math.floor(((luma - 16) / (235 - 16)) * 100 + 1e-9);
+      set(now, Math.min(100, Math.max(0, percent)));
+    }
+  } catch {
+    // A store that will not be read has nothing in it to carry.
+  }
+}
+carryLevels();
+
 /// Settle one. Storing is best effort -- a session whose store will not take
 /// it still runs the way it was asked, and only the next one forgets.
 export function set(name, value) {
@@ -389,8 +428,8 @@ export function blankLevels() {
     return (isFinite(n) ? n : DEFAULTS[name]) / 100;
   };
   return {
-    blackLevel: share("blankBlackLevel"),
-    whiteLevel: share("blankWhiteLevel"),
+    blackLevel: share("blankBlack"),
+    whiteLevel: share("blankWhite"),
     coverage: share("blankCoverage"),
   };
 }

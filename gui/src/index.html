@@ -204,6 +204,9 @@
           <button id="select-all" class="side-btn" data-i18n="side.selectAll" disabled>全選択</button>
           <button id="remove-clip" class="side-btn" data-i18n="side.removeClip" disabled>クリップ削除</button>
           <button id="remove-all" class="side-btn" data-i18n="side.removeAll" disabled>全削除</button>
+          <!-- Only the removals: a row taken out by mistake is a row's cuts
+               lost, which nothing else on this side can cost. -->
+          <button id="undo-remove" class="side-btn" data-i18n="side.undoRemove" disabled>削除を元に戻す</button>
         </aside>
       </div>
 
@@ -965,7 +968,7 @@
 
                    Worth having on screen because the answer is material. A
                    broadcast that fades through a very dark grey rather than
-                   to black is missed at 10% and found at 16%; a channel bug
+                   to black is missed at 4% and found at 10%; a channel bug
                    or a scrap of burnt-in text is a percent or two of the
                    frame, and a station that leaves a clock up needs the
                    coverage down before a black frame is called one. -->

@@ -698,6 +698,19 @@ body.crosswin { padding: 0; }
   outline: 1px solid var(--sel-soft); outline-offset: -1px; pointer-events: none;
 }
 .strip .here { box-shadow: 0 0 0 2px #2f7bff inset; }
+/* The box that stands in for the line on a reel of frames. Over
+   the picture and the caption rather than under them: the inset shadow
+   above is painted on the cell's own background, and a frame cell is one
+   picture wide, so the picture and its caption cover it edge to edge and
+   nothing of it shows. A pseudo-element of its own because `.inside` has
+   the other one. */
+.strip.boxed .here::before {
+  content: ""; position: absolute; top: 0; right: 0; bottom: 0; left: 0;
+  border: 3px solid #2f7bff; pointer-events: none; z-index: 2;
+}
+/* ...and the timecode moved out from under the box's left edge, which
+   otherwise covers its first digit. */
+.strip.boxed .here figcaption { padding-left: 4px; }
 .strip .here figcaption { font-weight: 700; }
 .strip .kf figcaption::before { content: "▲"; color: #148f4c; }
 .strip .scene figcaption::after { content: "✂"; color: #b45309; }

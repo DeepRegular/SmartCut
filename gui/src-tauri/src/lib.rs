@@ -4280,9 +4280,19 @@ async fn detect_silence(
     .await
 }
 
-/// Bumped when this pass stops meaning what it used to, as [`CM_VERSION`] is.
+/// Bumped when the pictures pass stops meaning what it used to, as
+/// [`CM_VERSION`] is.
 /// 1: as first written.
-const FLAT_VERSION: u32 = 1;
+/// 2: the two levels measured up from the recording's black rather than up
+///    from nought, so a level saved at 1 names a different luma.
+const FLAT_VERSION: u32 = 2;
+
+/// ...and the sound's, apart from it. The two halves are two passes, and a
+/// change to one is no reason to throw the other away: the pictures' version
+/// 2 would have sent every recording's silences back to be read again, which
+/// off a NAS is a minute a half hour for an answer that had not changed.
+/// 1: as first written.
+const QUIET_VERSION: u32 = 1;
 
 /// A detection kept on disc: what it was found with, and what it found.
 ///
@@ -4297,18 +4307,20 @@ struct FlatSaved {
     min_pictures: usize,
     /// Which shades the pictures pass was told to look for.
     ///
-    /// Both where the file does not say, which is what every file written
-    /// before the shades could be chosen holds: that pass looked for both.
-    /// The sound's half carries them too and means nothing by them.
+    /// Always written. The default is for the sound's half, whose files from
+    /// before the shades could be chosen do not say, and which means nothing
+    /// by them. A pictures half that old is never opened: its name was made
+    /// with [`FLAT_VERSION`] 1.
     #[serde(default = "looked_for")]
     black: bool,
     #[serde(default = "looked_for")]
     white: bool,
     /// ...and how dark, how bright and how much of the picture it was told to
-    /// call flat. The engine's own answers where the file does not say, which
-    /// is what every file written before these could be chosen holds -- they
-    /// were the only answers then. The sound's half carries them and means
-    /// nothing by them, as it does the shades.
+    /// call flat. Defaulted for the same reason as the shades and only ever in
+    /// the sound's half: a pictures half written before the levels could be
+    /// chosen was found with 0.10 and 0.92 of 0..255, which are not the
+    /// engine's answers now, and [`FLAT_VERSION`] 2 is what keeps it from
+    /// being read as if they were.
     #[serde(default = "level_black")]
     black_level: f64,
     #[serde(default = "level_white")]
@@ -4361,7 +4373,8 @@ fn flat_path(
     quiet: bool,
 ) -> Result<std::path::PathBuf, String> {
     let ext = if quiet { "qtj" } else { "blkj" };
-    detection_path(app, src_path, "flat", ext, FLAT_VERSION)
+    let version = if quiet { QUIET_VERSION } else { FLAT_VERSION };
+    detection_path(app, src_path, "flat", ext, version)
 }
 
 /// Write a half down, so the next window to ask does not read the recording

@@ -610,13 +610,19 @@ either, so asking for white afterwards reads the recording again.
 
 The flat pictures are `blank.rs`, which decodes every picture rather than the
 entry ones. Broadcast black runs two to four pictures, and a sample every half
-second misses it. Moving the threshold from 0.05 to 0.16 does not change how
-many stretches are found; it changes only how much of a fade is called black.
-So both ends of a stretch are reported and neither is named the junction.
+second misses it. Moving the black threshold across luma 12 to 40 (of 255) does
+not change how many stretches are found; it changes only how much of a fade is
+called black. So both ends of a stretch are reported and neither is named the
+junction.
 
-The white level, 0.92, is not a fraction of the largest sample the depth can
-hold either. Broadcast white is 235 at 8 bits and 940 at 10 -- the same value
-shifted up -- while the largest sample goes 255 to 1023. 940 out of 1023 is
-0.919, under the 0.922 that 235 out of 255 clears, so taken against the largest
-sample a 10-bit recording's flash to white is never found. A recorder's 4K is
-10-bit HEVC, which is where this was missing them.
+The two levels are fractions of the way from studio black up to studio white:
+16 to 235 at 8 bits and the same values shifted up at higher depths, 64 to 940
+at 10. So 0% is black itself, and the defaults, 0.04 and 0.99, are luma 24 and
+232. Two scales were tried first and both went wrong. Taken as a fraction of
+0..255, the bottom six percent of the scale was under broadcast black and found
+nothing. Taken against the largest sample the depth can hold, which goes 255 to
+1023 rather than being shifted, a 10-bit flash to white was never found: 940 out
+of 1023 is 0.919, under the 0.922 that 235 out of 255 clears. A recorder's 4K is
+10-bit HEVC, which is where this was missing them. The span is the studio one
+whatever range a picture says it is in, so a full-range picture's black and
+white fall outside it and are still found.

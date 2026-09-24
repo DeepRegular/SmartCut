@@ -2292,6 +2292,7 @@ function paintButtons() {
   el("select-all").disabled = clips.length === 0;
   el("remove-clip").disabled = !can.remove;
   el("remove-all").disabled = clips.length === 0;
+  el("undo-remove").disabled = removed.length === 0;
   paintExportButton();
   paintEnlistButton();
   // The queue drives this screen, so what it can do changes with it.
@@ -2657,8 +2658,66 @@ function selectAll() {
   paintList();
 }
 
-async function remove(doomed) {
+/// What 削除を元に戻す can put back, newest last: one entry per removal, each
+/// the rows it took and where they stood.
+///
+/// Only removals from the list, and only as the list stood: a row comes back
+/// with its cuts, its detections and its name, which is what somebody who
+/// pressed Delete on the wrong row has lost. Nothing else here is undone --
+/// that is what was asked for, and a list's other acts (a move, a rename, a
+/// duplicate) are each one press to take back by hand. Emptied when the list
+/// is replaced, because a row from the last project put back into this one
+/// is not a mistake undone but a new one made.
+let removed = [];
+const REMOVED_KEPT = 20;
+
+async function remove(doomed, { undoable = true } = {}) {
   const gone = new Set(doomed.map((c) => c.id));
+  // Which passes to stop and whether the editor goes, settled now, before the
+  // first round trip. Asked after one, a Ctrl+Z that landed in the meantime
+  // had already put the rows back as 待ち: the pass behind them was never
+  // stopped and went on reading under a row that said it was waiting, and
+  // the editor was closed on a row that was back in the list.
+  const stops = [
+    ["walk", (c) => c.state === "indexing"],
+    ["pics", (c) => c.pics === "running"],
+    ["cm", (c) => c.cmState === "running"],
+    ["blank", (c) => c.blankState === "running"],
+    ["quiet", (c) => c.quietState === "running"],
+  ]
+    .filter(([, on]) => doomed.some(on))
+    .map(([lane]) => lane);
+  const leaving = editing && gone.has(editing.id) ? editing : null;
+  let taken = null;
+  if (undoable) {
+    const rows = clips.map((clip, at) => ({ clip, at })).filter((e) => gone.has(e.clip.id));
+    if (rows.length) {
+      // What else a row coming back has to be checked against: the question
+      // its detections answered, the language its sentences are in, the
+      // first id handed out after it went, and whether the lanes were
+      // stopped by hand -- which emptying the list lets go of below.
+      taken = {
+        rows,
+        asked: JSON.stringify(flatAsk()),
+        lang: currentLang(),
+        since: nextId,
+        held: paused && !exporting && !starting,
+        after: exporting || starting ? resumeAfterRun : null,
+      };
+      // Not kept: the row is drawn afresh when it comes back, and the
+      // re-encode shots and the glance are worked out again when asked for.
+      // Held here they were megabytes a 全削除, twenty times over.
+      for (const { clip } of rows) {
+        clip.row = null;
+        clip.reencode = null;
+        if (clip.poster) clip.glance = null;
+      }
+      removed.push(taken);
+      if (removed.length > REMOVED_KEPT) removed.shift();
+    }
+  } else {
+    removed = [];
+  }
   // Out of the list before anything is asked of the other side.
   //
   // The rows used to go after the passes had been told to stop, and every one
@@ -2692,30 +2751,20 @@ async function remove(doomed) {
     resumeLanes();
     paintQueueNote();
   }
+  // Said after the line above has been cleared for an empty list, which is
+  // where 全削除 leaves it and where the way back matters most.
+  if (taken) note(t("list.removed", { n: taken.rows.length }));
   // And now the passes. A clip being read right now has one behind it that
   // has to be told to stop, or it would go on reading a file nothing is
   // listed against. Only the lanes that are on one of these clips: the others
   // are working on clips that are staying, and the lanes are stopped apart
   // for that reason. Before `pump`, which is what starts the next pass --
   // a stop raised after that would put the new one down with the old.
-  if (doomed.some((c) => c.state === "indexing")) {
-    await invoke("stop_batch", { lane: "walk" });
-  }
-  if (doomed.some((c) => c.pics === "running")) {
-    await invoke("stop_batch", { lane: "pics" });
-  }
-  if (doomed.some((c) => c.cmState === "running")) {
-    await invoke("stop_batch", { lane: "cm" });
-  }
-  if (doomed.some((c) => c.blankState === "running")) {
-    await invoke("stop_batch", { lane: "blank" });
-  }
-  if (doomed.some((c) => c.quietState === "running")) {
-    await invoke("stop_batch", { lane: "quiet" });
-  }
+  for (const lane of stops) await invoke("stop_batch", { lane });
   // The editor is open on a recording that is no longer in the list, so the
-  // window it is in has nothing left to be about.
-  if (editing && gone.has(editing.id)) {
+  // window it is in has nothing left to be about -- unless it is back in the
+  // list by now, or the window is on another row.
+  if (leaving && editing === leaving && !clips.includes(leaving)) {
     editing = null;
     before = null;
     await invoke("close_editor");
@@ -2723,7 +2772,79 @@ async function remove(doomed) {
   pump();
 }
 
+/// Put the last removal back, each row where it stood.
+///
+/// Where it stood is its place in the list as it was then, which the rows
+/// that have come and gone since may have moved. Put back in the order they
+/// were in, lowest first, each at the smaller of its old place and the end:
+/// rows taken from the middle go back between the same neighbours when
+/// nothing else has changed, and in the same order among themselves when
+/// something has.
+///
+/// A pass that was reading one of them was stopped by the removal and
+/// answered nothing, so a row that went while being read comes back waiting
+/// to be read again, as a duplicate does. The editor was closed on it and
+/// stays closed.
+///
+/// A row whose recording has been added to the list again since stays out:
+/// two rows of one file that nobody duplicated is the recording written
+/// twice. And a row comes back to the list as it is now rather than as it
+/// was: a detection made under other settings is asked again, the sentences
+/// are said in the language in force, and a stop that emptying the list let
+/// go of is put back.
+function restoreRemoved() {
+  const taken = removed.pop();
+  if (!taken) return;
+  const back = (state) => (state === "running" ? "queued" : state);
+  const wasEmpty = !clips.length;
+  const again = (clip) => clips.some((c) => c.path === clip.path && c.id >= taken.since);
+  const clash = taken.rows.filter((e) => again(e.clip));
+  const rows = taken.rows.filter((e) => !again(e.clip));
+  const asked = JSON.stringify(flatAsk()) !== taken.asked;
+  const relang = currentLang() !== taken.lang;
+  clips.forEach((c) => (c.selected = false));
+  for (const { clip, at } of rows.slice().sort((a, b) => a.at - b.at)) {
+    clip.state = clip.state === "indexing" ? "queued" : clip.state;
+    clip.pics = back(clip.pics);
+    clip.cmState = back(clip.cmState);
+    clip.blankState = back(clip.blankState);
+    clip.quietState = back(clip.quietState);
+    if (asked) {
+      for (const which of ["blank", "quiet"]) {
+        if (clip[`${which}State`] === "done") forgetFlatRow(clip, which);
+      }
+    }
+    if (relang) relocaliseRow(clip);
+    clip.selected = true;
+    clips.splice(Math.min(at, clips.length), 0, clip);
+  }
+  // Emptying the list let go of a 解析を中止, which is not something the
+  // rows coming back asked for.
+  if (wasEmpty) {
+    if (taken.held && !exporting && !starting) paused = true;
+    if (taken.after !== null && (exporting || starting)) resumeAfterRun = taken.after;
+  }
+  anchor = rows.length ? clips.indexOf(rows[0].clip) : -1;
+  if (clash.length) {
+    note(t("list.restoreClash", { names: clash.map((e) => clipLabel(e.clip)).join(t("sep")) }));
+  } else if (paused && !exporting && !starting) {
+    note(t(queuedWork() ? "list.stopped" : "list.stoppedAll"));
+  } else {
+    note("");
+  }
+  renderList();
+  rows[0]?.clip.row?.scrollIntoView({ block: "nearest" });
+  // What a detection in the editor left in the cache, and what one asked
+  // again above finds there: a row the editor was open on went before the
+  // editor's closing could read it for the row.
+  for (const { clip } of rows) {
+    if (clip.blankState !== "done" || clip.quietState !== "done") restoreFlat(clip);
+  }
+  pump();
+}
+
 el("select-all").addEventListener("click", selectAll);
+el("undo-remove").addEventListener("click", restoreRemoved);
 el("remove-clip").addEventListener("click", () => remove(selected()));
 el("remove-all").addEventListener("click", () => remove(clips.slice()));
 el("edit-clip").addEventListener("click", () => selected()[0] && edit(selected()[0]));
@@ -7616,7 +7737,14 @@ let savedShape = shapeOf();
 /// belongs to. Without that, emptying a list left a `*` in the title that
 /// nothing could clear -- there was nothing to save, so saving could not
 /// clear it.
-const dirty = () => (!clips.length && !projectPath ? false : shapeOf() !== savedShape);
+///
+/// Except where what it held can still be put back. 全削除 says Ctrl+Z will
+/// return the rows, and an empty list that asked nothing before 開く or
+/// closing the window let that sentence be true for one keypress: the
+/// history went with the list, and an unsaved evening's cuts with it. The
+/// `*` clears the way it came -- Ctrl+Z, or a new project.
+const dirty = () =>
+  !clips.length && !projectPath ? removed.length > 0 : shapeOf() !== savedShape;
 
 /// The last title and the last answer sent down, so that neither is sent
 /// twice: this runs after every repaint, and most repaints change neither.
@@ -7766,7 +7894,7 @@ async function askReplace(title = t("project.replaceTitle"), body = t("project.r
 /// from.
 async function newProject() {
   if (!(await askReplace(t("project.newTitle"), t("project.newBody")))) return;
-  await remove(clips.slice());
+  await remove(clips.slice(), { undoable: false });
   // Back to the defaults -- unless the settings are being carried, in which
   // case the answer to "what should a new list be written as" is the one
   // being carried. That is what the preference is for: a new project then
@@ -7829,7 +7957,7 @@ async function loadProject(path) {
   // Not merely emptied: a lane reading a row has to be told to stop, and the
   // editor open on one has nothing left to be about. All of which `remove`
   // already knows how to do.
-  await remove(clips.slice());
+  await remove(clips.slice(), { undoable: false });
   // Whether this project has an output of its own. One saved from the 入力
   // screen has not been given one and says nothing about it; see
   // `outputSettled`.
@@ -10159,15 +10287,21 @@ function forgetQuiet() {
 function forgetFlat(which) {
   for (const c of clips) {
     if (c[`${which}State`] !== "done") continue;
-    c[`${which}State`] = "none";
-    c[`${which}Found`] = null;
-    c[`${which}Phase`] = "";
-    c[`${which}Source`] = null;
+    forgetFlatRow(c, which);
     paintRow(c);
     restoreFlat(c);
   }
   paintButtons();
   paintProps();
+}
+
+/// One row's half of that, for a row the list did not hold when the question
+/// changed. See `restoreRemoved`.
+function forgetFlatRow(c, which) {
+  c[`${which}State`] = "none";
+  c[`${which}Found`] = null;
+  c[`${which}Phase`] = "";
+  c[`${which}Source`] = null;
 }
 
 el("pref-blank-shades").addEventListener("change", (ev) => {
@@ -10187,8 +10321,8 @@ el("pref-blank-shades").addEventListener("change", (ev) => {
 /// fields make, and for the same reason: a threshold of NaN is a detection
 /// that silently finds nothing.
 const BLANK_LEVELS = [
-  ["pref-blank-black", "blankBlackLevel", 0, 100],
-  ["pref-blank-white", "blankWhiteLevel", 0, 100],
+  ["pref-blank-black", "blankBlack", 0, 100],
+  ["pref-blank-white", "blankWhite", 0, 100],
   ["pref-blank-coverage", "blankCoverage", 1, 100],
 ];
 
@@ -10498,28 +10632,7 @@ function paintBlankLabels() {
 /// row remembers where its note came from. A note the editor wrote is left
 /// alone: this window does not hold what it was made of.
 function relocalise() {
-  for (const c of clips) {
-    // Not while the picture pass is on this row or has just failed on it:
-    // the sentence there is that pass's and this one would talk over it.
-    if (c.state === "ready" && c.info && c.pics !== "running" && c.pics !== "error") {
-      c.phase = indexNote(c);
-    }
-    if (c.pics === "running") c.phase = t("phase.pictures");
-    if (c.pics === "error") c.phase = t("phase.noPictures");
-    if (c.cmState === "done" && c.cm && c.cmSource) {
-      const note = cmNote(c.cm);
-      c.cmPhase = c.cmSource === "cache" ? t("cm.previous", { note }) : note;
-    }
-    // The two flat detections say the same sentence in either language: a
-    // count, and whether it was made in this session. Both are held as
-    // numbers and a flag rather than as the sentence, for this.
-    for (const which of ["blank", "quiet"]) {
-      if (c[`${which}State`] !== "done" || c[`${which}Found`] === null) continue;
-      const note = t(`${which}.rowNote`, { n: c[`${which}Found`] });
-      c[`${which}Phase`] =
-        c[`${which}Source`] === "cache" ? t("flat.previous", { note }) : note;
-    }
-  }
+  for (const c of clips) relocaliseRow(c);
   renderList();
   renderOutset();
   renderOutScreen();
@@ -10532,6 +10645,32 @@ function relocalise() {
   // put it right.
   if (editing) {
     invoke("retitle_editor", { title: t("editor.windowTitle", { clip: clipLabel(editing) }) });
+  }
+}
+
+/// One row's stored sentences, said again in the language in force. Apart,
+/// for a row that was out of the list when the language changed; see
+/// `restoreRemoved`.
+function relocaliseRow(c) {
+  // Not while the picture pass is on this row or has just failed on it:
+  // the sentence there is that pass's and this one would talk over it.
+  if (c.state === "ready" && c.info && c.pics !== "running" && c.pics !== "error") {
+    c.phase = indexNote(c);
+  }
+  if (c.pics === "running") c.phase = t("phase.pictures");
+  if (c.pics === "error") c.phase = t("phase.noPictures");
+  if (c.cmState === "done" && c.cm && c.cmSource) {
+    const note = cmNote(c.cm);
+    c.cmPhase = c.cmSource === "cache" ? t("cm.previous", { note }) : note;
+  }
+  // The two flat detections say the same sentence in either language: a
+  // count, and whether it was made in this session. Both are held as
+  // numbers and a flag rather than as the sentence, for this.
+  for (const which of ["blank", "quiet"]) {
+    if (c[`${which}State`] !== "done" || c[`${which}Found`] === null) continue;
+    const note = t(`${which}.rowNote`, { n: c[`${which}Found`] });
+    c[`${which}Phase`] =
+      c[`${which}Source`] === "cache" ? t("flat.previous", { note }) : note;
   }
 }
 onLangChange(relocalise);
@@ -10611,6 +10750,11 @@ window.addEventListener("keydown", (ev) => {
   if ((ev.ctrlKey || ev.metaKey) && key === "d") {
     ev.preventDefault();
     detectSelected();
+    return;
+  }
+  if ((ev.ctrlKey || ev.metaKey) && !ev.shiftKey && key === "z") {
+    ev.preventDefault();
+    restoreRemoved();
     return;
   }
   // The other two detections, on the keys the cut editor answers them with:

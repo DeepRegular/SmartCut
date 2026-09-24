@@ -150,11 +150,14 @@ const CATALOG = {
     "prefs.blankWhiteLevel": "白とみなす明るさ:",
     "prefs.blankCoverage": "その明るさが占める割合:",
     "prefs.blankLevelNote":
-      "画素がどれだけ暗ければ黒とみなすか、どれだけ明るければ白とみなすか、" +
-      "そしてそういう画素が画面のどれだけを占めていれば、" +
-      "そのフレームを黒（白）と呼ぶかです。既定は黒 10%、白 92%、割合 98% です。" +
-      "フェードの終わりが真っ黒まで落ちない放送では、黒の値を 14〜16% に上げると拾えます。" +
+      "明るさは、放送の黒を 0%、白を 100% とした目盛りです。0% なら黒そのものの画素だけを黒と数えます。" +
+      "割合は、そういう画素が画面のどれだけを占めていればそのフレームを黒（白）と呼ぶかです。" +
+      "既定は黒 4%、白 99%、割合 98% です。" +
+      "フェードの終わりが真っ黒まで落ちない放送では、黒を 9〜11% に上げると拾えます。" +
       "局のロゴや焼き込みの字幕が出たままの録画では、割合を 95% ほどまで下げてください。" +
+      "割合を上げても区間の数は減るとはかぎりません。" +
+      "黒地にクレジットが出る場面では、文字が出ているあいだだけ割合が下がります。" +
+      "そこで長い区間が割れて、数が増えることがあります。" +
       "画面のいちばん外側 2% は、どの値でも判定に使いません。" +
       "変えると、それまでの検出結果は答えにならないので、録画を読み直します。",
     "prefs.flatMarkAt": "黒白区間の終わりの印:",
@@ -320,6 +323,9 @@ const CATALOG = {
     "side.selectAll": "全選択",
     "side.removeClip": "クリップ削除",
     "side.removeAll": "全削除",
+    "side.undoRemove": "削除を元に戻す",
+    "list.removed": "クリップを {n} 本削除しました。Ctrl+Z か「削除を元に戻す」で戻せます",
+    "list.restoreClash": "{names} は同じファイルがもう一覧にあるので、戻していません",
 
     // --- 右クリックメニュー ------------------------------------------------
     //
@@ -1261,13 +1267,15 @@ const CATALOG = {
     "prefs.blankWhiteLevel": "Counts as white above:",
     "prefs.blankCoverage": "...over this much of the picture:",
     "prefs.blankLevelNote":
-      "How dark a pixel has to be to count as black, how bright to count as white, and how much " +
-      "of the frame has to be one of them before the frame is called that. 10%, 92% and 98% out " +
-      "of the box. A channel that fades to a very dark grey rather than to black is caught by " +
-      "raising the first to 14 or 16; a recording with a station logo or burnt-in text standing " +
-      "in a corner wants the third down around 95. The outermost 2% of each edge is left out of " +
-      "the judgement whatever these say. Changing any of them leaves every saved detection " +
-      "unable to answer, so the recording is read again.",
+      "The two levels run from broadcast black at 0% to white at 100%, so 0% counts only a pixel " +
+      "that is black itself. The third is how much of the frame has to be one of them before the " +
+      "frame is called that. 4%, 99% and 98% out of the box. A channel that fades to a very dark " +
+      "grey rather than to black is caught by raising the first to 9 or 11; a recording with a " +
+      "station logo or burnt-in text standing in a corner wants the third down around 95. " +
+      "Raising the third does not always find fewer stretches: credits on black lower it for as " +
+      "long as a card is up, a long stretch comes apart there, and the count can go up. The outermost 2% of each edge is left out of the judgement whatever these say. " +
+      "Changing any of them leaves every saved detection unable to answer, so the recording is " +
+      "read again.",
     "prefs.flatMarkAt": "A blank stretch ends on:",
     "prefs.flatMarkAtNote":
       "The first picture that is no longer flat, out of the box: cut at a stretch's two ends and " +
@@ -1427,6 +1435,9 @@ const CATALOG = {
     "side.selectAll": "Select all",
     "side.removeClip": "Remove clip",
     "side.removeAll": "Remove all",
+    "side.undoRemove": "Undo remove",
+    "list.removed": "Removed {n} clip{n?s}. Ctrl+Z or Undo remove puts them back",
+    "list.restoreClash": "Not put back because the same file is in the list again: {names}",
 
     // --- the menu on the right button --------------------------------------
     "rowmenu.edit": "Cut editor",

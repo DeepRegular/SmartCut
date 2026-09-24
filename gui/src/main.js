@@ -2343,6 +2343,23 @@ function markHere(o) {
   reelWin.here = i;
 }
 
+/// How the strip says where the playhead is: on a reel of frames, a box
+/// round the cell the playhead is on; on every other reel, the line down the
+/// middle.
+///
+/// A box only where a cell is one picture: there the line stands on the
+/// middle of the cell and says nothing its edges would not say better. On a
+/// reel divided on GOPs a cell stands for a stretch, and the line says how
+/// far into it the playhead has got -- which a box cannot.
+///
+/// `frames` is whether the reel on screen is divided into frames, which the
+/// reel knows and the menu may not yet: the menu changes the moment it is
+/// picked, and the reel under it is the old one until the redraw lands.
+function paintStripMarker(frames) {
+  el("strip").classList.toggle("boxed", frames);
+  el("playline").hidden = frames;
+}
+
 /// The last GOP boundary at or before output time `t`, as an index into
 /// `gops`, or -1 before the first. `back` asks for the last one strictly
 /// before it, which is what stepping backwards off a boundary wants: the GOP
@@ -3117,7 +3134,7 @@ function renderStrip(shots, unit, win) {
     reel.append(fig);
   });
   reel.style.width = `${x.toFixed(2)}px`;
-  el("playline").hidden = false;
+  paintStripMarker(!!win.byNearest);
   reelWin = { ...win, cells, px: x, here: null };
   holdReel();
 }

@@ -82,29 +82,48 @@ impl Run {
 
 pub struct BlankOptions {
     /// Luma at or below which a pixel counts as black, as a fraction of the
-    /// scale [`Luma::scale`] works out for the recording's depth.
+    /// way from the recording's black up to its white -- see [`Luma::span`].
+    /// Nought is black itself, 16 in an 8-bit broadcast.
     ///
-    /// Not "16", which is what black is written as and what nothing in a
-    /// recording actually holds: noise, dither and the tail of a fade all sit
-    /// above it. Measured across 0.05 to 0.16 on the recording in the module
+    /// Measured from black, and not from nought, because nought is a level a
+    /// broadcast never uses. Taken as a fraction of 0..255 the bottom six
+    /// percent of the scale was under 16 and found nothing in a recording
+    /// that is black at 16 -- which was reported: 6% found no black at all
+    /// and 7%, one code above black, found stretches. This is also what
+    /// ffmpeg's `blackdetect` means by its own `pix_th`.
+    ///
+    /// Not "black itself" either, which is where nothing in a recording
+    /// actually stays: noise, dither and the tail of a fade all sit above it.
+    /// Measured across 12 to 40 out of 255 on the recording in the module
     /// note, the *number* of stretches found does not change -- the same four
     /// either way. What changes is only how much of a fade is called black:
-    /// the one long stretch began a quarter of a second earlier at 0.16 than
-    /// at 0.05, while the instant the picture came back was the same picture
-    /// at every threshold.
+    /// the one long stretch began a quarter of a second earlier at 40 than at
+    /// 12, while the instant the picture came back was the same picture at
+    /// every threshold.
     ///
     /// So one end of a fade is soft and the other is exact, which is why both
-    /// ends are reported and neither is called the junction. 0.10 is the
-    /// middle of the plateau, and is what ffmpeg's `blackdetect` defaults to.
+    /// ends are reported and neither is called the junction. 0.04 is 24 out
+    /// of 255, the nearest whole percent under the 25 that 0.10 of 0..255
+    /// came to before the level was measured from black.
     pub black_level: f64,
-    /// ...and the luma at or above which it counts as white. Higher than the
-    /// black level is low, because a white frame is a deliberate flash rather
-    /// than the end of a fade and is written close to the top of the scale:
-    /// 235 out of 255, which is 0.92 of it and is where this sits.
+    /// ...and the luma at or above which it counts as white, on the same
+    /// span. Higher than the black level is low, because a white frame is a
+    /// deliberate flash rather than the end of a fade and is written at the
+    /// top of the scale: 0.99 is 232 of the 235 that white is.
     pub white_level: f64,
     /// How much of the picture has to be that dark, or that bright, 0..1. A
     /// channel bug or a scrap of burnt-in text is a percent or two of the
     /// frame and must not keep a black frame from being one.
+    ///
+    /// **Raising it does not always find fewer stretches.** It finds fewer
+    /// black pictures -- that much only ever goes down -- but pictures that
+    /// stop counting in the middle of a long stretch cut it in two, and both
+    /// halves may still be over the minimum length. Credits on black are the
+    /// usual case: while a card is up its text covers two or three percent of
+    /// the frame, so on a two-hour film off a movie channel a 51-second
+    /// opening at 95% came apart at 96% into 10 and 26 seconds, with the
+    /// seconds of a card between them, and the count went up by one.
+    /// Reported from the other side as 12 stretches at 94% and 23 at 97%.
     pub coverage: f64,
     /// A border to leave out of the judgement, as a fraction of each side.
     ///
@@ -140,8 +159,8 @@ pub struct BlankOptions {
 impl Default for BlankOptions {
     fn default() -> Self {
         Self {
-            black_level: 0.10,
-            white_level: 0.92,
+            black_level: 0.04,
+            white_level: 0.99,
             coverage: 0.98,
             inset: 0.02,
             min_seconds: 0.0,
@@ -211,27 +230,38 @@ impl Luma {
         })
     }
 
-    /// What a level is a fraction of, at this depth.
+    /// Where black and white are at this depth: the two ends a level is a
+    /// fraction of the way between.
     ///
-    /// **Not the largest sample the depth can hold.** The same picture at two
+    /// **Shifted, not scaled to the largest sample.** The same picture at two
     /// depths is the same code values shifted up -- white is 235 at 8 bits
     /// and 940 at 10, which is 235 times four -- while the largest sample
     /// goes 255 to 1023, which is not 255 times four. Taking the fraction of
     /// that would make every level a shade stricter the deeper the recording
-    /// is written, and at the one value it matters that is the difference
-    /// between finding a flash to white and missing it: 940 out of 1023 is
-    /// 0.919, which is under the 0.92 that 235 out of 255 clears.
+    /// is written, and a 10-bit flash to white in a 4K recording off a
+    /// recorder was missed that way.
     ///
-    /// So a level is a fraction of 255, shifted the way the samples are. A
-    /// recording written full range clears it as it always did -- 1023 is
-    /// over 0.92 of 1020 -- and a 10-bit flash to white reads as the 8-bit
-    /// one it is.
-    fn scale(&self) -> f64 {
-        if self.depth >= 8 {
-            (255u32 << (self.depth - 8)) as f64
-        } else {
-            ((1u32 << self.depth) - 1) as f64
+    /// **Studio levels whatever range the picture says it is in**, the ones a
+    /// fade is written with (`transition::Shade::yuv`). A full-range picture's
+    /// black is under the bottom of this span and its white over the top, so
+    /// both are still found, and a level means the same luma on a phone's
+    /// recording as on a broadcast one. Measured from nought and full scale
+    /// there instead, the defaults came to 10 and 252 on full-range material,
+    /// where 0.8.5 had looked for 25 and 234 -- a phone's noisy fade to black
+    /// and its JPEG-soft flash to white were both missed.
+    fn span(&self) -> (f64, f64) {
+        if self.depth < 8 {
+            return (0.0, ((1u32 << self.depth) - 1) as f64);
         }
+        let black = crate::transition::Shade::Black.yuv(self.depth).0;
+        let white = crate::transition::Shade::White.yuv(self.depth).0;
+        (black as f64, white as f64)
+    }
+
+    /// The sample a level comes to.
+    fn level(&self, fraction: f64) -> u32 {
+        let (black, white) = self.span();
+        (black + fraction.clamp(0.0, 1.0) * (white - black)) as u32
     }
 
     /// One sample out of the plane's bytes.
@@ -263,9 +293,8 @@ fn look_at(frame: &ff::frame::Video, luma: &Luma, opts: &BlankOptions) -> Option
     if iw == 0 || ih == 0 {
         return None;
     }
-    let scale = luma.scale();
-    let dark = (opts.black_level.clamp(0.0, 1.0) * scale) as u32;
-    let bright = (opts.white_level.clamp(0.0, 1.0) * scale) as u32;
+    let dark = luma.level(opts.black_level);
+    let bright = luma.level(opts.white_level);
     let stride = frame.stride(0);
     let data = frame.data(0);
     let cols = GRID_X.min(iw);
@@ -543,15 +572,15 @@ mod tests {
         assert_eq!(both.len(), 1);
     }
 
-    /// A level is a fraction of the same scale the samples are shifted on,
+    /// A level is a fraction of the same span the samples are shifted on,
     /// so the same picture reads the same whether its luma is 8-bit or
     /// 10-bit.
     #[test]
     fn depth_is_read_from_the_format() {
         let eight = Luma::of(ff::format::Pixel::YUV420P).unwrap();
-        assert_eq!((eight.depth, eight.scale()), (8, 255.0));
+        assert_eq!((eight.depth, eight.span()), (8, (16.0, 235.0)));
         let ten = Luma::of(ff::format::Pixel::YUV420P10LE).unwrap();
-        assert_eq!((ten.depth, ten.scale()), (10, 1020.0));
+        assert_eq!((ten.depth, ten.span()), (10, (64.0, 940.0)));
         assert!(!ten.big_endian);
         assert_eq!(ten.at(&[0x40, 0x00], 0), 64);
         assert_eq!(eight.at(&[16], 0), 16);
@@ -598,11 +627,38 @@ mod tests {
         let level = BlankOptions::default().white_level;
         let eight = Luma::of(ff::format::Pixel::YUV420P).unwrap();
         let ten = Luma::of(ff::format::Pixel::YUV420P10LE).unwrap();
-        assert!(235 >= (level * eight.scale()) as u32);
-        assert!(940 >= (level * ten.scale()) as u32);
+        assert!(235 >= eight.level(level));
+        assert!(940 >= ten.level(level));
         // ...and black, which is 16 and 64, stays under the other end.
         let dark = BlankOptions::default().black_level;
-        assert!(16 <= (dark * eight.scale()) as u32);
-        assert!(64 <= (dark * ten.scale()) as u32);
+        assert!(16 <= eight.level(dark));
+        assert!(64 <= ten.level(dark));
+    }
+
+    /// Nought is black itself, so every level on the scale finds a picture
+    /// written at broadcast black. Measured against 0..255 the bottom six
+    /// percent was under 16, and a black frame was not black at any of them.
+    #[test]
+    fn the_bottom_of_the_scale_is_black() {
+        let luma = Luma::of(ff::format::Pixel::YUV420P).unwrap();
+        for percent in 0..=10 {
+            let opts = BlankOptions {
+                black_level: percent as f64 / 100.0,
+                ..Default::default()
+            };
+            assert_eq!(look_at(&flat(16), &luma, &opts), Some(Shade::Black), "{percent}%");
+        }
+        // One step above black is not black at nought...
+        let none = BlankOptions {
+            black_level: 0.0,
+            ..Default::default()
+        };
+        assert_eq!(look_at(&flat(17), &luma, &none), None);
+        // ...and a full-range picture is judged on the same span: its black,
+        // nought, is under the bottom of it, and its white over the top.
+        let full = Luma::of(ff::format::Pixel::YUVJ420P).unwrap();
+        assert_eq!(full.span(), (16.0, 235.0));
+        assert_eq!(look_at(&flat(0), &full, &none), Some(Shade::Black));
+        assert_eq!(look_at(&flat(255), &full, &none), Some(Shade::White));
     }
 }
