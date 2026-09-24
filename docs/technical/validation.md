@@ -274,7 +274,7 @@ These only surfaced on real material:
   difference there is nil — but libvpx spent 6.56 s on two seconds of 1080p24 held to
   one core and 2.45 s given the machine.
 - **H.264 and HEVC out of an MP4 or a Matroska file could not be written into a `.mkv`
-  until 0.8.2.** Matroska keeps a length in front of each NAL, as an MP4 does, and the
+  until 0.8.1.** Matroska keeps a length in front of each NAL, as an MP4 does, and the
   copied pictures were rewritten into a transport stream's start codes on the way in:
   everything but the re-encoded fringes was unreadable. A `.m4v` went the same way,
   being handed by its name to libavformat's `ipod` muxer (and HEVC was refused there
@@ -306,6 +306,11 @@ These only surfaced on real material:
   hands over. A read that gave up is not the end of the file to a pass that writes:
   the cut stops with an error, rather than ending where the share went away and
   saying it had succeeded.
+- **The map's unwrapping started again at every seam, in 0.8.4.** libavformat
+  takes the first timestamp in the file, less a minute, as its reference for the
+  whole file and never resets it. On a recording whose clock drops back low at a
+  seam, the entry points of the stretch after it came out a day away from their
+  pictures. The map is now unwrapped once, by the same rule.
 - **Re-encoded sound was laid end to end, until 0.8.3.** Its packets were placed by
   the samples fed to the encoder, so every stretch the track did not have — a dropout
   in a broadcast, a track that starts after the pictures or stops before them, a

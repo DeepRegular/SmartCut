@@ -37,7 +37,7 @@ smartcut input.ts --cut 8.0-20.0 --bdav ~/disc  # onto a disc instead of a file
 | Option | Meaning |
 |---|---|
 | `--keep START-END` | A range to keep. Repeatable |
-| `--cut START-END` | A range to drop. Repeatable |
+| `--cut START-END` | A range to drop. Repeatable. Not with `--keep` |
 | `--no-open-gop` | Never start a copy at an open GOP |
 | `--clean-joins` | Re-encode up to two extra seconds at the start of each range, far enough to reach a point where no picture comes out of the decoder in the wrong order. **Off by default** — see the note below |
 
@@ -79,9 +79,13 @@ before it writes a byte. Everything that matches is smart-rendered as usual.
 | Option | Meaning |
 |---|---|
 | `--transition KIND` | `none`, `fade-black`, `fade-white`, `dissolve`, `wipe-left\|right\|top\|bottom`, `slide-left\|right\|top\|bottom`. Applied at **every** join between two clips |
-| `--transition-seconds S` | How long it runs. Up to 30 |
-| `--transition-easing C[:M]` | The curve and the end it is applied at: `none`, `back`, `bounce`, `circle`, `elastic`, `exponential`, `power`, `sine`, `quadratic`, `cubic`, `quartic`, `quintic`, each with `:in`, `:out`, `:in-out` or `:out-in`. Default `none:in`, which is a straight line |
+| `--transition-seconds S` | How long it runs. Up to 30; 1 when left out |
+| `--transition-easing C[:M]` | The curve and the end it is applied at: `none`, `back`, `bounce`, `circle`, `elastic`, `exponential`, `power`, `sine`, `quadratic`, `cubic`, `quartic`, `quintic`, each with `:in`, `:out`, `:in-out` or `:out-in`. Default `none:in`, which is a straight line. A name not on the list is refused |
 | `--transition-image FILE` | A still laid over each crossing, coming up and going down with it |
+
+All four are about the joins, and so are `--join-fade-out` and
+`--join-fade-in`: given without a `--join`, they stop the run rather than
+being ignored.
 
 ```bash
 smartcut a.ts --join b.ts --transition dissolve --transition-seconds 2 \
@@ -116,7 +120,7 @@ copy, so **the whole track is re-encoded**.
 | `--audio-bitrate RATE` | Bits per second when re-encoding, as `192k` or `192000`. Left out, it follows the recording. A figure the encoder will not accept is raised to what that codec is ordinarily carried at, with a note saying so |
 | `--aac auto\|mpeg2\|mpeg4` | Which flavour of AAC the frames SmartCut writes announce themselves as. `auto`, the default, follows the recording — MPEG-2 AAC for a broadcast |
 | `--audio-es` | Also write the sound out as a bare stream beside the output. AAC only |
-| `--sound-only` | Write the sound and no pictures: the ranges, the joins and the fades exactly as they would be inside the video, and nothing read or written for the frames. `-o` names the file and its extension picks the container — `.aac`, `.ac3`, `.mp2`, `.mp3`, `.dts`, `.m4a`, or `.wav`, which is written as linear PCM unless `--audio-codec` names another codec. A sound the container has no room for stops the run before anything is written. One sound track, and not with `--bdav`. A recording joined on with no sound is left out of the file, and the run says so |
+| `--sound-only` | Write the sound and no pictures: the ranges, the joins and the fades exactly as they would be inside the video, and nothing read or written for the frames. `-o` names the file and its extension picks the container — `.aac`, `.ac3`, `.mp2`, `.mp3`, `.dts`, `.m4a`, or `.wav`, which is written as linear PCM unless `--audio-codec` names another codec. A sound the container has no room for stops the run before anything is written. One sound track, taken from the recording `--master` names, and not with `--bdav`, `--video-share` or `--audio-es`. A recording joined on with no sound is left out of the file, and the run says so |
 | `--audio-fade SECONDS` | Take the level down into each seam and bring it back out over that many seconds. 0 to 10; 0, no fade, is the default |
 | `--join-fade-out SECONDS` | How long the sound takes to leave at the end of each clip, where `--join` writes several into one file. 0 to 10; 0 is the default |
 | `--join-fade-in SECONDS` | ...and how long it takes to come back at the start of the next one |
@@ -151,14 +155,14 @@ refused rather than quietly ignored.
 | Option | Meaning |
 |---|---|
 | `--bdav FOLDER` | Write a BDAV disc into this folder (one recording becomes `BDAV/STREAM/00001.m2ts`). The index is built afterwards |
-| `--fit bd25\|bd50\|bd100\|bd128\|BYTES` | Write the pictures back smaller, by as much as it takes for the output to fit that much room. Where it already fits, nothing is done. The sound, the subtitles and the programme information are untouched; only the pictures give anything up. MPEG-2 only -- anything else is written at its full size and says so. What share they will be written at is printed before the writing starts. Not with `--join` or `--sound-only`. See [Fitting a disc](../technical/transrate.md) |
-| `--video-share 0.35..1` | The share itself, where you would rather name it than have a size worked out into one |
+| `--fit bd25\|bd50\|bd100\|bd128\|BYTES` | Write the pictures back smaller, by as much as it takes for the output to fit that much room. Where it already fits, nothing is done. The sound, the subtitles and the programme information are untouched; only the pictures give anything up. The sound is counted as it will be written, so `--audio-codec lpcm` or a track left out with `--drop-stream` is in the sum. MPEG-2 only -- anything else is written at its full size and says so, and where that does not fit the run stops. What share they will be written at is printed before the writing starts. Not with `--join` or `--sound-only`. See [Fitting a disc](../technical/transrate.md) |
+| `--video-share 0.35..1` | The share itself, where you would rather name it than have a size worked out into one. Not with `--fit`, which works one out |
 | `--iso 2.50\|2.60` | Wrap the finished disc in an `.iso` beside it: `--bdav ~/disc` writes `~/disc/BDAV` and `~/disc.iso`. The folder stays. Refused before anything is written where that `.iso` is the image the recording is being read out of |
-| `--iso-access read-only\|overwritable` | What the image says may be done to the disc it is burned onto. `read-only`, the default, is the truth about a disc nothing will write to again — a BD-R, or a BD-RE you only play. `overwritable` is what a recorder writes on a BD-RE, and what it wants to see before it will add a recording to the disc or take one off. Needs `--iso` |
+| `--iso-access read-only\|overwritable` | What the image says may be done to the disc it is burned onto. `read-only`, the default, is the truth about a disc nothing will write to again — a BD-R, or a BD-RE you only play. `overwritable` is what a recorder writes on a BD-RE, and what it wants to see before it will add a recording to the disc or take one off; the image is then laid out the way a recorder lays out a BD-RE, and is the size of the whole disc (25 GB, or 50 GB where one layer will not hold it — the part with nothing in it takes no room on the disk it is written to). Needs `--iso` |
 | `--iso-only` | And then take the folder away, leaving the image on its own. Needs `--iso`: the image is made *of* the folder, so the folder is written first and goes once the image holds it. What goes is `BDAV`, and the folder above it only where that leaves it empty — a disc written into a folder of your own leaves everything else in it alone. A file in `BDAV` that the image could not carry keeps the folder where it is |
 | `--disc-title NAME` | What the disc is called. Left out, the series the recording is an episode of: the programme name with the episode number, the episode's own title and the broadcast's marks taken off it |
 | `--programme NAME` | What this recording is called in the disc's index. Left out, the name its playlist gave it if it came off a disc, otherwise the programme name the broadcast carries |
-| `--channel NAME[,N]` | The channel, and optionally the three digits a viewer knows it by (`--channel "衛星第一,161"`). Left out, both come from the recording |
+| `--channel NAME[,N]` | The channel, and optionally the three digits a viewer knows it by (`--channel "衛星第一,161"`). Left out, both come from the recording. A number that is not one is refused |
 | `--about TEXT` | What the disc's index says the programme was. Left out, the description the recording carries |
 | `--made "Y-M-D H:M:S"` | When the recording was made. Left out, when the programme went out, where the recording still says |
 

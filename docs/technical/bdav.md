@@ -704,12 +704,37 @@ to again, so it is the default. A recorder writes *overwritable* on a BD-RE,
 and that is what it wants to see before it will add a recording to a disc or
 take one off; a disc burned from a read-only image plays on the recorder and
 cannot be edited on it. So the choice is offered, in the output settings and
-as `--iso-access`: the image is the same either way apart from that number
-and the write-protect flags on the domain identifier, and only the person
-burning it knows which disc it is going on. Those flags are set on a read-only
-image, as both reference images set them, and clear on an overwritable one, as
-a recorder's own BD-RE has them; until 0.8.2 they were set on both, and an
-overwritable image said one thing in its partition and the other in its domain.
+as `--iso-access`, and only the person burning it knows which disc it is going
+on. The write-protect flags on the domain identifier go with it: set on a
+read-only image, as both reference images set them, and clear on an
+overwritable one, as a recorder's own BD-RE has them; until 0.8.1 they were set
+on both, and an overwritable image said one thing in its partition and the
+other in its domain.
+
+**An overwritable image is laid out as a recorder lays out a BD-RE**, because
+the number alone is not enough to write to. Until 0.8.4 it was the read-only
+image with the number changed, and it said the disc had no room: a partition
+exactly as long as what was in it, no record of which blocks were free, and a
+metadata partition with no room for another file entry. Measured on four BD-REs
+a recorder wrote, which agree in everything but the counts, it now has:
+
+| | read-only | overwritable |
+|---|---|---|
+| Image | as long as its contents | the whole disc: 11,826,176 sectors, or twice that where a single layer will not hold it |
+| Partition | what is in use | from 288 to 288 short of the end |
+| Space bitmap | none | at partition block 4128, one bit a block, set where free; each file used in 32-block units |
+| Metadata partition | as large as its entries | 4096 blocks, with a bitmap file of its own |
+| Metadata mirror | behind the files | its file entry at partition block 11,809,504 on a single-layer disc, the mirror itself 32 blocks on |
+| Files | from the end of the metadata | from partition block 32768 |
+| Integrity sequence | 2 blocks | 32 blocks |
+| Free space in the integrity descriptor | 0 | what the two bitmaps leave free |
+
+The last two anchors and the reserve descriptors go where the disc's end is,
+so the image is the disc's size; what nothing is written to is left as a hole,
+which takes no room on Linux and macOS and is asked for on Windows (the file is
+marked sparse). The layout was read back against the recorder's with the same
+script that measured the recorder's, and agrees block for block in every place
+listed above.
 
 **A file a UDF volume cannot name is named rather than dropped.** The names
 written here are plain ASCII of 200 characters or fewer, which is what a disc

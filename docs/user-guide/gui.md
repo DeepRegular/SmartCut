@@ -196,7 +196,7 @@ quick properties at the foot of the screen either way.
 | `Ctrl+A` | Select all |
 | `Ctrl+D` | Detect commercials in the selection |
 | `Ctrl+B` / `Ctrl+Q` | Detect blank / silent stretches in the selection |
-| `Delete` | Remove it from the list (**the file itself is not touched**) |
+| `Delete` / `Backspace` | Remove it from the list (**the file itself is not touched**) |
 | `↑` `↓` | Move the selection. Hold `Shift` to extend it |
 | **Drag a row** | Reorder. `Esc` cancels |
 | **Click where there is no row** | Clear the selection |
@@ -332,7 +332,10 @@ the detection.
 and the start of each commercial block, and each return to the programme, is
 already there as a keyframe. See [Commercial detection](cm-detection.md).
 
-To stop, press **Stop analysis**; pressing it again picks up where it left off.
+To stop, press **Stop analysis**. It stops at once, in the middle of a read or
+of a detection, and the button says **Stopping…** until it has. Where
+recordings are still waiting, it then becomes **Resume analysis**, which goes
+on with them; a recording stopped part way through starts again from the top.
 
 Running a whole evening's worth at once is covered in
 [Working through a batch](batch.md).
@@ -1169,7 +1172,7 @@ Writing a disc adds these fields:
 | **Recorded** | Per clip. When the programme went out, as `2026-08-17 01:00:00`. Slashes, a missing seconds field and single digits are understood and put back in that shape; anything that cannot be read as a moment stops the run rather than being written as no moment at all |
 | **About** | Per clip, and several lines of it: the sentence a listing carries and the cast and staff under it. This is what a recorder shows when the programme is selected in its list |
 | **Image** | Whether to wrap the finished disc in a `.iso` (`None` / `UDF 2.50` / `UDF 2.60`). The folder is written either way, and the image goes beside it under the same name |
-| **Disc kind** | Under the image, and only there when one is being made. What the image says may be done to the disc it is burned onto. *Nothing writes to it again* is the default and is the truth about a BD-R, or a BD-RE you only play. *The recorder may go on editing it* is what a recorder writes on a BD-RE, and what it wants to see before it will add a recording to the disc or take one off — pick it if the disc is going back into the recorder |
+| **Disc kind** | Under the image, and only there when one is being made. What the image says may be done to the disc it is burned onto. *Nothing writes to it again* is the default and is the truth about a BD-R, or a BD-RE you only play. *The recorder may go on editing it* is what a recorder writes on a BD-RE, and what it wants to see before it will add a recording to the disc or take one off — pick it if the disc is going back into the recorder. The image is then laid out as a recorder lays out a BD-RE, and is the size of the whole disc (25 or 50 GB); the part with nothing in it takes no room where the image is saved |
 | **Remove the folder once the image is written** | Under the image, and only there when one is being made: the same thirty gigabytes twice over is not what most runs want to be left with. The folder is still written and the image still made of it — this happens afterwards, and only where the image was written. `BDAV` goes, and the folder above it only where that leaves it empty, so a disc written into a folder of your own leaves the rest of it alone |
 | **Disc** | The disc this is going to be burned onto (25GB / DL 50GB / XL 100GB / XL 128GB). The gauge below is drawn against it |
 | **Transcode** | Where the list does not fit the disc chosen above, the pictures are transcoded smaller until it does. **Where it fits, nothing is done to them.** The sound, the subtitles and the programme information are untouched; only the pictures give anything up. Turning it on adds a second row to the gauge -- "before" and "after" -- showing what the disc comes to afterwards and what share the pictures are written at. MPEG-2 recordings only; anything else takes its full room. What happens inside is in [Fitting a disc](../technical/transrate.md) |
@@ -1462,7 +1465,7 @@ can quote it straight into a bug report.
 | `Ctrl+O` | Open project |
 | `Enter` / double-click | Open the cut editor |
 | `F2` | Rename the clip |
-| `Delete` | Remove from the list |
+| `Delete` / `Backspace` | Remove from the list |
 | `↑` `↓` (`Shift` to extend) | Move the selection |
 
 ### Cut editor

@@ -67,6 +67,18 @@ range's first is decoded as well and thrown away: AAC, AC-3 and MP2 decode a
 frame against the one before it, and without it the first frame of every range
 was mixed with the end of the range before — a click at each join.
 
+Two more things the whole-track encoder does, both missing until 0.8.4. **An encoder whose delay is
+not a whole frame is fed a lead of silence first** — 1280 samples for AC-3, 671 for
+MP2, the same [`lead_in`](#which-codecs-it-reaches) the spliced frames
+use — so that a packet begins on the track's first sample. Without it the first packet
+held the priming and the first 1280 samples of the sound together, and was dropped
+whole for the priming in it: a re-encoded AC-3 track began 27 ms late, MP2 14 ms.
+**And a range's fade-out is put on when the range closes**, aimed at the last sample
+the recording had rather than at the range's end. A range cut to the pictures at the end
+of a recording runs on past the sound, and a ramp aimed at its end stopped at a quarter
+of its level when the sound ran out; measured on a joined fixture, the last 80 ms
+before the sound ends went from −40 dB to −69 dB.
+
 A trap hit while implementing smart mode: audio frames straddling a segment boundary
 were submitted twice, once from each of the two adjacent segments, and the error
 accumulated one AAC frame (21.3 ms) at a time. Fixed by adopting the same exclusive
@@ -1014,8 +1026,10 @@ held to the smaller. Before 0.8.1 it did not, and the file came out a
 crossing's length longer at every join. A fade takes nothing from either side.
 
 **A joined recording whose sound is another shape re-encodes the track.** The
-output stream is declared as the first recording's, and packets of another
-codec, rate or channel count cannot be copied into it. The video's writer
+output stream is declared as the master's (the first recording's unless
+`--master` or the reference clip names another), and packets of another
+codec, rate or channel count cannot be copied into it. Before 0.8.5 the
+master was not asked, and the file always took the first recording's shape. The video's writer
 re-encodes only the reels that differ; with one track and no pictures,
 re-encoding all of it comes to the same file.
 

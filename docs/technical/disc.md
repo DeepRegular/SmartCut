@@ -342,6 +342,15 @@ because the twelve bytes a recorder writes in front of each document count it.
 What comes out is counted from the first picture of the cut, which is where a file with
 no playlist in front of it begins.
 
+**A caption already up when a range opens is read back for.** A document is sent once,
+when it goes up, and one stood for 38 seconds on the recordings here — so the one a
+range opens in the middle of was sent well before the range, and usually before the
+seek margin its first segment reads from. Until 0.8.4 that caption was left out of the
+cut. The opening of each range now reads the 40 seconds in front of it for documents
+begun before it and not yet ended (`cut::read_ttml_before`), with the pictures as the
+clock, as the Blu-ray's and the DVD's look backs do; the segments carry only documents
+that begin inside the range, so nothing is written twice.
+
 ## What a row is
 
 **One clip, one row** — not one playlist, one row.
@@ -542,7 +551,14 @@ whole of the difference, and it comes to three rules — [`pgs.rs`](../../rust/c
    it was left behind with the material before the cut, so the cutter reads
    the eight seconds in front of every kept range, keeps the last display set
    that can stand on its own, and sends it again at the range's first frame —
-   marked as opening an epoch, because for this output it does.
+   marked as opening an epoch, because for this output it does. A set begun
+   in those eight seconds and shown only after the range opens — a set is
+   sent 2 to 70 ms ahead of its moment — is finished rather than cut off at
+   the range's start, left out of what is put up again, and written at its
+   own time. Until 0.8.4 the read stopped at the range's start with that set
+   half read, and the range's own read does not carry a set begun before it:
+   the subtitle due a moment into the range went missing, one boundary in
+   fifty or so.
 3. **What is on screen when a range ends is taken down.** The set that would
    have cleared it is in the material after the cut. The clear is the standing
    composition with its objects removed and its number advanced, which is

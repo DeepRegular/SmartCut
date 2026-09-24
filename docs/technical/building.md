@@ -80,7 +80,7 @@ bash tests/run_bilingual_tests.sh     # a second sound track that comes late or 
 bash tests/run_cm_tests.sh            # commercial detection vs a human's answer         5
 bash tests/run_disc_tests.sh          # a BDAV and a BDMV disc, as folders and as .isos 38
 bash tests/run_bdav_tests.sh          # writing a disc: the index, the image, and both   72
-bash tests/run_udf_tests.sh           # the image as a filesystem, beside real discs     33
+bash tests/run_udf_tests.sh           # the image as a filesystem, beside real discs     50
 bash tests/run_dvd_tests.sh           # a DVD-Video disc, as a folder and as an .iso    23
 bash tests/run_bd_audio_tests.sh      # the sound a disc carries, written out             39
 bash tests/run_vc1_tests.sh           # the VC-1 encoder, put through a decoder          4
@@ -122,14 +122,16 @@ point at, the partition and the entries inside it, and where each file's bytes a
 lie -- and the suite checks the invariants that hold for any image at all: an anchor at
 each end, every file inside the partition, nothing written over anything, no extent
 longer than its own length field, the streams beginning on a 64 KB cluster, and the
-tree matching the folder the image was made of file for file and byte for byte.
+tree matching the folder the image was made of file for file and byte for byte. The
+image for a recorder to go on editing (`--iso-access overwritable`) is checked the same
+way, and for being the size of a whole BD-RE while taking only what it holds.
 
 It then prints the same report for one image per other writer it can find under
 `$SMARTCUT_DISCS` (`~/Documents/claude/TMPGEnc` unless set), so the places where our
 dialect differs from a recorder's or a burner's are in front of you rather than
 waiting on a disc that will not play. **So the count at the top follows the images on
-the machine it is run on** -- 33 here, where five other writers are represented; it was
-28 when three were. Those columns are never failures: a recorder
+the machine it is run on** -- 50 here, where five other writers are represented, and
+45 where there are none. Those columns are never failures: a recorder
 writes an overwritable partition where an image file is read-only, keeps three anchors
 to a burner's two, and leaves deleted file identifiers in its directories, and all of
 it is legal. The comparison earned its place immediately -- it is what found the

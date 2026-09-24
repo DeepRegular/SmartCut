@@ -95,10 +95,14 @@ are put aside, and the logo and the silences decide instead.
 **Where the marks are used, the logo is not read at all.** The marks are the
 better answer, and the analysis finishes in a fraction of the time.
 
-There are three possible answers: **subtitle marks**, **logo and silence**, and
-**no commercials**. The last one is a recording where the logo never went away
-from start to finish — that is an answer, not a failure to find anything. Which
-one was used is shown next to the number of blocks.
+There are three things to go on: **subtitle marks** (`n caption resets`),
+**logo and silence** (`logo + silence`), and, where no logo can be found,
+**silence alone** (`silence only (no logo)`). Which one was used is shown in
+front of the number of blocks.
+
+A recording where the logo never went away from start to finish says
+`nothing that looks like a commercial` — that is an answer, not a failure to
+find anything.
 
 ## A quick check: the blocks should be multiples of fifteen
 

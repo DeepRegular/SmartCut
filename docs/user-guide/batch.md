@@ -67,9 +67,10 @@ detections wear the same three looks — `Blank booked`, `Detecting silence`,
 **Detection only places marks; it does not cut.** You decide what to remove,
 later, in the editor. See [Commercial detection](cm-detection.md).
 
-**To stop, press "Stop analysis".** Press it again to resume. Loading and
-thumbnails can stop in the middle of a file, but commercial detection cannot, so
-it stops **between** recordings.
+**To stop, press "Stop analysis".** Press it again to resume. Loading,
+thumbnails and commercial detection all stop at once, in the middle of a file;
+a recording stopped part way through is started again from the top when you
+resume.
 
 Only what is running stops. You can stop a batch and immediately start detection
 on something else.
