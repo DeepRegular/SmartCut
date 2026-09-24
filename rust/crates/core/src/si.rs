@@ -340,10 +340,19 @@ impl SectionReader {
             // being short enough that the standard did not think it worth
             // one, and checking it for a CRC it never had would throw away
             // the only table that says when the recording was made.
-            let checked = if sec[1] & 0x80 == 0 {
-                sec.len() >= 3
-            } else {
-                sec.len() > 4 && crc32(&sec) == 0
+            // The bit alone is not to be trusted, though: one flip of it
+            // would let a damaged map through unchecked, and it would go
+            // out re-signed with a fresh CRC. The tables that must have the
+            // syntax are held to it, and the offset table, which carries a
+            // CRC whatever its bit says, is checked.
+            let crc = || sec.len() > 4 && crc32(&sec) == 0;
+            let checked = match sec[0] {
+                TABLE_TOT => crc(),
+                0x00 | 0x02 | 0x40..=0x42 | 0x46 | 0x4E..=0x6F | 0x7F => {
+                    sec[1] & 0x80 != 0 && crc()
+                }
+                _ if sec[1] & 0x80 == 0 => sec.len() >= 3,
+                _ => crc(),
             };
             if checked {
                 visit(&sec);
@@ -2082,21 +2091,10 @@ fn build_pmt_as(g: &Graft, pcr_pid: u16, components: &Components, lean: bool) ->
     // below are not filtered this way: a stream's own descriptors are about
     // that stream, and it is in the output or it is not written at all.
     let mut program_info = if lean {
-        // What says how the programme may be copied stays: the digital copy
-        // control and content availability descriptors. Dropped with the
-        // rest, a cut of a copy-once broadcast came out saying nothing about
-        // it -- which is not what the recording said.
-        let kept = keep_carried(&s.program_info, components);
-        let mut out = Vec::new();
-        let mut at = 0;
-        while at + 2 <= kept.len() {
-            let end = (at + 2 + kept[at + 1] as usize).min(kept.len());
-            if matches!(kept[at], 0xC1 | 0xDE) {
-                out.extend_from_slice(&kept[at..end]);
-            }
-            at = end;
-        }
-        out
+        // Nothing the programme loop says is needed to play the file. The
+        // copy control that was once kept here is gone from the loop already,
+        // with the rest of `DROP_DESCRIPTORS`, when the map is read.
+        Vec::new()
     } else {
         keep_carried(&s.program_info, components)
     };
@@ -2524,6 +2522,11 @@ fn build_sit(service: &Service, present: Option<&Present>, version: u8, peak_rat
 /// carried as a modified Julian day and three bytes of binary-coded decimal,
 /// so moving it is arithmetic on the day and the clock separately.
 fn advance_time(section: &[u8], seconds: f64) -> Option<Vec<u8>> {
+    // An offset table has its descriptor loop length and CRC after the
+    // time; one too short for them would have the CRC written over the time.
+    if section.first() == Some(&TABLE_TOT) && section.len() < 14 {
+        return None;
+    }
     let time = section.get(3..8)?;
     let mjd = ((time[0] as i64) << 8) | time[1] as i64;
     let bcd = |b: u8| (b >> 4) as i64 * 10 + (b & 0x0F) as i64;
@@ -3110,6 +3113,40 @@ pub fn graft(output: &str, on: Option<&(dyn Fn(f64) + Sync)>, g: &Graft) -> Resu
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Every section `drain` hands over out of these bytes.
+    fn drained(bytes: &[u8]) -> Vec<Vec<u8>> {
+        let mut r = SectionReader { buf: bytes.to_vec(), filling: true };
+        let mut out = Vec::new();
+        r.drain(&mut |sec: &[u8]| out.push(sec.to_vec()));
+        out
+    }
+
+    #[test]
+    fn a_map_is_held_to_its_crc_whatever_its_syntax_bit_says() {
+        let mut sec = vec![TABLE_PMT, 0xB0, 0x00, 0x00, 0x01, 0xC1, 0x00, 0x00, 0xE1, 0x00, 0xF0, 0x00];
+        finish_section(&mut sec);
+        assert_eq!(drained(&sec).len(), 1, "a whole map goes through");
+        // One bit flipped, and a stream type damaged behind it.
+        let mut bad = sec.clone();
+        bad[1] &= 0x7F;
+        bad[9] ^= 0x10;
+        assert!(drained(&bad).is_empty(), "the bit does not excuse the map its CRC");
+    }
+
+    #[test]
+    fn the_offset_table_is_checked_and_the_clock_is_not() {
+        // TOT: syntax bit clear, a CRC all the same.
+        let mut tot = vec![TABLE_TOT, 0x70, 0x00, 0xEE, 0x48, 0x12, 0x00, 0x00, 0xF0, 0x00];
+        finish_section(&mut tot);
+        assert_eq!(drained(&tot).len(), 1);
+        let mut bad = tot.clone();
+        bad[5] ^= 0x01;
+        assert!(drained(&bad).is_empty(), "a damaged offset table is not re-signed");
+        // TDT: no CRC at all, and taken as it is.
+        let tdt = vec![0x70, 0x70, 0x05, 0xEE, 0x48, 0x12, 0x00, 0x00];
+        assert_eq!(drained(&tdt).len(), 1);
+    }
 
     /// A program association table naming one service.
     fn pat(service: u16, map_pid: u16) -> Vec<u8> {

@@ -6716,9 +6716,19 @@ fn cut_into(
         // DTS trails PTS by the stream's reorder depth. Being generous costs
         // nothing: the muxer writes an edit list for the negative lead-in,
         // just as it would for any encoder's output.
-        depth: opts
-            .reorder_depth
-            .unwrap_or(src.video.has_b_frames.max(0) as i64),
+        //
+        // The deepest of every reel's, not the master's alone: a recording
+        // copied in after a master that reorders less had its B pictures
+        // arrive after pictures shown later than them, and each was dropped
+        // as though the recording were damaged.
+        depth: opts.reorder_depth.unwrap_or(
+            reels
+                .iter()
+                .map(|r| r.src.video.has_b_frames.max(0) as i64)
+                .chain(std::iter::once(src.video.has_b_frames.max(0) as i64))
+                .max()
+                .unwrap_or(0),
+        ),
         pending: Default::default(),
         seen: Default::default(),
         last_dts: None,
@@ -6844,7 +6854,14 @@ fn cut_into(
                 // reel that has not got it writes nothing there, and the
                 // track carries a gap for the reel's length.
                 let info = thread.audio[track].as_ref()?;
-                let drift = t.end.map_or(0.0, |end| end - target_start);
+                // A track that stops seconds short of where this range starts
+                // has not drifted: the reel before had no such track, and the
+                // gap it left is the file's. Taken as drift, this range read
+                // that many seconds of the sound it had cut away and laid it
+                // in front of its own start. So the track starts over here,
+                // as it does on the first range.
+                let gap = t.end.is_some_and(|end| end - target_start < -0.5);
+                let drift = if gap { 0.0 } else { t.end.map_or(0.0, |end| end - target_start) };
                 let window = (
                     (plan.t_in * info.sample_rate as f64).round() as i64,
                     (plan.t_out * info.sample_rate as f64).round() as i64,
@@ -6867,7 +6884,7 @@ fn cut_into(
                     in_tb: info.time_base,
                     offset: target_start - plan.t_in,
                     pick_from: plan.t_in + drift,
-                    min_start: if t.end.is_none() {
+                    min_start: if t.end.is_none() || gap {
                         plan.t_in
                     } else {
                         f64::NEG_INFINITY
@@ -7336,14 +7353,25 @@ fn cut_into(
             .any(|s| s.recoded && s.target == ff::codec::Id::PCM_BLURAY)
             || !graphics.is_empty()
             || !converted_streams.is_empty());
-    let own_map = unnamed
-        .then(|| {
-            let at = crate::input::Input::plain(output);
-            crate::si::read_service(&at, pids.video(video_pid) as u16, &[])
-                .map_err(|e| eprintln!("note: {output} cannot be read back to name its sound: {e}"))
-                .ok()
-        })
-        .flatten();
+    // Of the three, the sound is the one a file cannot do without: left as
+    // `bin_data` it plays silent. Where naming it fails, the cut has failed.
+    let pcm = unnamed
+        && setups
+            .iter()
+            .any(|s| s.recoded && s.target == ff::codec::Id::PCM_BLURAY);
+    let own_map = if unnamed {
+        let at = crate::input::Input::plain(output);
+        match crate::si::read_service(&at, pids.video(video_pid) as u16, &[]) {
+            Ok(service) => Some(service),
+            Err(e) if pcm => bail!("{output} cannot be read back to name its sound: {e}"),
+            Err(e) => {
+                eprintln!("note: {output} cannot be read back to name its tracks: {e}");
+                None
+            }
+        }
+    } else {
+        None
+    };
     // The file is complete and correct as a file; what it does not yet have
     // is the broadcast's own account of itself. See [`crate::si`].
     if let Some(service) = tables.as_ref().or(own_map.as_ref()) {
@@ -7389,6 +7417,9 @@ fn cut_into(
                 );
             }
             Ok(_) => {}
+            Err(e) if pcm && tables.is_none() => {
+                bail!("the cut's sound could not be declared as what it is, so it would play silent: {e}")
+            }
             // A cut that came out right is not worth failing over a table.
             // Say what was lost and leave the file alone.
             Err(e) => eprintln!(

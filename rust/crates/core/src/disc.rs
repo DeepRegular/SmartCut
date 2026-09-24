@@ -74,6 +74,7 @@ use crate::arib;
 use crate::dvd;
 use crate::udf;
 use anyhow::{anyhow, bail, Context, Result};
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 /// Playlist and clip times are in 45 kHz ticks -- half the clock the packets
@@ -592,7 +593,10 @@ fn read_bluray(at: &Path) -> Result<Disc> {
     // that offers them. A disc names an episode twice -- once in a playlist
     // of its own and once inside the "play all" -- and only the first of
     // those has chapter points this can be sure it has placed correctly.
-    let mut seen: Vec<((String, i64, i64), usize, usize)> = Vec::new();
+    let mut seen: HashMap<(String, i64, i64), (usize, usize)> = HashMap::new();
+    // Every row of a clip lists the same tracks, and a disc may play one
+    // clip from hundreds of playlists: its index is read once.
+    let mut clip_tracks: HashMap<String, Vec<Track>> = HashMap::new();
 
     for name in vol.playlists() {
         let Ok(raw) = vol.read(&format!("PLAYLIST/{name}")) else {
@@ -605,7 +609,7 @@ fn read_bluray(at: &Path) -> Result<Disc> {
         let many = rows.len();
         for (i, c) in rows.iter().enumerate() {
             let key = (c.clip.clone(), ticks(c.start), ticks(c.end));
-            if let Some((_, row, from)) = seen.iter_mut().find(|(k, _, _)| *k == key) {
+            if let Some((row, from)) = seen.get_mut(&key) {
                 if many < *from && !c.marks.is_empty() {
                     entries[*row].marks = c.marks.clone();
                     *from = many;
@@ -631,7 +635,7 @@ fn read_bluray(at: &Path) -> Result<Disc> {
                 Some(programme) => format!("{programme}{part}"),
                 None => format!("{label} {}{part}", c.clip),
             };
-            seen.push((key, entries.len(), many));
+            seen.insert(key, (entries.len(), many));
             entries.push(Entry {
                 path: c.path.clone(),
                 clip: c.clip.clone(),
@@ -647,7 +651,14 @@ fn read_bluray(at: &Path) -> Result<Disc> {
                 channel: title.channel.clone(),
                 channel_number: title.channel_number,
                 bytes: vol.bytes(&c.clip),
-                tracks: vol.tracks(&c.clip),
+                tracks: match clip_tracks.get(&c.clip) {
+                    Some(t) => t.clone(),
+                    None => {
+                        let t = vol.tracks(&c.clip);
+                        clip_tracks.insert(c.clip.clone(), t.clone());
+                        t
+                    }
+                },
                 // Filled in below, once the whole disc is known.
                 wanted: false,
             });
@@ -869,6 +880,17 @@ pub(crate) fn filename(name: &str) -> String {
     // Windows will not have a name that ends in a dot or a space, and no
     // filesystem is improved by one.
     let out = out.trim_matches([' ', '.', '\u{3000}']).to_string();
+    // And a name Windows keeps for a device, with or without an extension:
+    // a programme called `AUX` would be written to no file at all.
+    let device = {
+        let stem = out.split('.').next().unwrap_or("").to_ascii_uppercase();
+        matches!(stem.as_str(), "CON" | "PRN" | "AUX" | "NUL")
+            || (stem.len() == 4
+                && (stem.starts_with("COM") || stem.starts_with("LPT"))
+                && stem.as_bytes()[3].is_ascii_digit()
+                && stem.as_bytes()[3] != b'0')
+    };
+    let out = if device { format!("_{out}") } else { out };
     if out.is_empty() {
         "recording".to_string()
     } else {
@@ -2237,6 +2259,11 @@ fn tracks(raw: &[u8]) -> Vec<Track> {
             }
             if let Some(track) = track_of(pid, attr) {
                 out.push(track);
+                // More than a disc's player could offer: what follows is
+                // damage, and each row would carry a copy of it.
+                if out.len() >= 128 {
+                    return out;
+                }
             }
         }
     }

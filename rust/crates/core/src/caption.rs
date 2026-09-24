@@ -717,7 +717,14 @@ struct Pen {
     /// When the page being written went up.
     page_at: f32,
     pages: Vec<Page>,
+    /// How many sent pictures of characters the statement has drawn.
+    glyphs: usize,
 }
+
+/// The most sent pictures one statement draws. A screen holds a few hundred
+/// characters; each picture is copied into its run, and a statement of
+/// nothing but references to one 255-dot glyph was half a gigabyte.
+const MAX_GLYPHS: usize = 2048;
 
 impl Pen {
     fn new(layout: &Layout) -> Pen {
@@ -732,6 +739,7 @@ impl Pen {
             clock: 0.0,
             page_at: 0.0,
             pages: Vec::new(),
+            glyphs: 0,
         }
     }
 
@@ -851,7 +859,12 @@ impl Pen {
             // middle of a recording, which is what scrubbing a timeline
             // does -- what is left is what a receiver without it shows.
             crate::arib::Step::Glyph(drcs) => {
-                let glyph = layout.glyphs.get(&drcs).cloned();
+                let glyph = if self.glyphs < MAX_GLYPHS {
+                    layout.glyphs.get(&drcs).cloned()
+                } else {
+                    None
+                };
+                self.glyphs += usize::from(glyph.is_some());
                 let text = match glyph {
                     Some(_) => String::new(),
                     None => crate::arib::UNKNOWN.to_string(),

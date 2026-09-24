@@ -857,7 +857,7 @@ fn video_of(sec: &[u8]) -> Option<u16> {
     if *sec.first()? != 0x02 {
         return None;
     }
-    let len = ((usize::from(sec[1] & 0x0F)) << 8) | usize::from(sec[2]);
+    let len = ((usize::from(sec.get(1)? & 0x0F)) << 8) | usize::from(*sec.get(2)?);
     let end = 3 + len.checked_sub(4)?;
     let mut at = 12 + (((usize::from(sec.get(10)? & 0x0F)) << 8) | usize::from(*sec.get(11)?));
     while at + 5 <= end && at + 5 <= sec.len() {

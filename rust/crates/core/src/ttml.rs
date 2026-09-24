@@ -113,7 +113,11 @@ fn clock(text: &str) -> Option<f64> {
     let h: f64 = parts.next()?.parse().ok()?;
     let m: f64 = parts.next()?.parse().ok()?;
     let s: f64 = parts.next()?.parse().ok()?;
-    parts.next().is_none().then_some(h * 3600.0 + m * 60.0 + s)
+    // `f64::parse` takes `inf` and `1e300` as readily as `12`: a clock is
+    // digits, and a time that is not a number of seconds is no time at all.
+    let t = h * 3600.0 + m * 60.0 + s;
+    let digits = |p: &str| !p.is_empty() && p.bytes().all(|b| b.is_ascii_digit() || b == b'.');
+    (parts.next().is_none() && text.split(':').all(digits) && t.is_finite()).then_some(t)
 }
 
 /// And back again, in the width the document already spends on one.
@@ -442,6 +446,14 @@ fn unescape(text: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_clock_is_digits() {
+        assert_eq!(clock("00:01:02.500"), Some(62.5));
+        for text in ["inf:00:00", "00:00:inf", "1e300:00:00", "-1:00:00", "00::00", "00:00:00:00"] {
+            assert_eq!(clock(text), None, "{text}");
+        }
+    }
 
     /// One document as a 4K recorder sends it, trimmed to one span and its
     /// styles. The twelve bytes in front of it are the recorder's own.

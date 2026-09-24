@@ -175,6 +175,8 @@ fn packed(kind: u8, body: &[u8]) -> Vec<u8> {
 pub struct Plane {
     /// Packets of the set being read, which is not a set until its END.
     building: Vec<Held>,
+    /// What `building` holds, in bytes of payload, kept as it grows.
+    building_bytes: usize,
     /// The composition and the window that set carries, as they arrive.
     /// A set with no composition in it is not a set at all: that is what a
     /// read joining half way through hands over.
@@ -194,6 +196,8 @@ pub struct Plane {
 
 /// The most a display set being put together is allowed to hold.
 const MAX_SET_BYTES: usize = 64 << 20;
+/// And the most packets: a set of the largest objects is a few thousand.
+const MAX_SET_PACKETS: usize = 1 << 16;
 
 impl Plane {
     /// Forget everything, for a read that starts somewhere else.
@@ -222,6 +226,7 @@ impl Plane {
                 // middle of a set -- and is not part of this one.
                 PCS => {
                     self.building.clear();
+                    self.building_bytes = 0;
                     self.opening = Some(body.to_vec());
                     self.framing = None;
                 }
@@ -230,17 +235,25 @@ impl Plane {
                 _ => {}
             }
         }
+        self.building_bytes += held.data.len();
         self.building.push(held);
         if !ends {
             // A set is a screenful of subtitle: a few megabytes on a UHD disc
             // at the very most. One that has not ended by far more than that
             // is not going to, and holding every packet of the stream until
-            // it does was memory without limit.
-            if self.building.iter().map(|h| h.data.len()).sum::<usize>() > MAX_SET_BYTES {
+            // it does was memory without limit. Counted in packets too: a
+            // stream of tiny ones stays under the bytes and still grows.
+            if self.building_bytes > MAX_SET_BYTES || self.building.len() > MAX_SET_PACKETS {
                 self.building.clear();
+                self.building_bytes = 0;
+                // What was being built is gone, and an END that turns up
+                // later closes nothing it began.
+                self.opening = None;
+                self.framing = None;
             }
             return None;
         }
+        self.building_bytes = 0;
         let set = std::mem::take(&mut self.building);
         let opening = self.opening.take()?;
         let framing = self.framing.take();

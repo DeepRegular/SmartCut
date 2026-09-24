@@ -438,7 +438,10 @@ fn program_chains(ifo: &[u8]) -> Result<Vec<Pgc>> {
     if table.len() < 8 {
         bail!("this title set holds no program chains");
     }
-    let count = u16be(table, 0) as usize;
+    // A part of a title names its chain by a number of at most 999, so no
+    // title set has more that could be played; a table that says otherwise
+    // is damaged, and each chain it names may hold 255 cells.
+    let count = (u16be(table, 0) as usize).min(999);
     let mut out = Vec::new();
     for i in 0..count {
         let at = 8 + i * 8;
@@ -529,7 +532,10 @@ fn parts_of_titles(ifo: &[u8]) -> Vec<Vec<(usize, usize)>> {
     if table.len() < 8 {
         return Vec::new();
     }
-    let count = u16be(table, 0) as usize;
+    // A title set holds at most 99 titles, and a title at most 999 parts.
+    // Nothing else stops a damaged table from having every title claim the
+    // whole of it, which grows with the square of its length.
+    let count = (u16be(table, 0) as usize).min(99);
     let last = u32be(table, 4) as usize;
     let mut out = Vec::new();
     for i in 0..count {
@@ -550,7 +556,7 @@ fn parts_of_titles(ifo: &[u8]) -> Vec<Vec<(usize, usize)>> {
         };
         let mut parts = Vec::new();
         let mut p = from;
-        while p + 4 <= to.min(table.len()) {
+        while p + 4 <= to.min(table.len()) && parts.len() < 999 {
             parts.push((u16be(table, p) as usize, u16be(table, p + 2) as usize));
             p += 4;
         }

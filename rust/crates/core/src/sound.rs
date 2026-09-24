@@ -86,12 +86,35 @@ pub fn write_with_progress(
     done
 }
 
-/// The track each piece supplies, which is its first that the caller has not
+/// The track the master supplies, which is its first that the caller has not
 /// dropped.
 fn track_of<'a>(src: &'a Source, opts: &CutOptions) -> Result<&'a AudioInfo> {
     src.audios
         .iter()
         .find(|a| !opts.drop_streams.contains(&a.stream_index))
+        .ok_or_else(|| anyhow!("{} has no sound to write", src.path))
+}
+
+/// The track a piece supplies: the one in the master's track's place among
+/// its sound tracks, as the picture writer pairs them (see `cut::Threads`).
+///
+/// Not the piece's own first undropped one. The streams dropped are the
+/// master's numbers, and in another recording the same numbers can be a
+/// data stream and the wrong language: an audio-only cut of a join wrote
+/// the second recording's Japanese where the cut with pictures had its
+/// English.
+fn track_for<'a>(pieces: &[Piece<'a>], master: usize, n: usize, opts: &CutOptions) -> Result<&'a AudioInfo> {
+    let shape = pieces[master].src;
+    let chosen = track_of(shape, opts)?;
+    if n == master {
+        return Ok(chosen);
+    }
+    let src = pieces[n].src;
+    shape
+        .audios
+        .iter()
+        .position(|a| a.stream_index == chosen.stream_index)
+        .and_then(|p| src.audios.get(p))
         .ok_or_else(|| anyhow!("{} has no sound to write", src.path))
 }
 
@@ -212,8 +235,8 @@ fn run(
         (info.codec == "aac").then(|| crate::aac::of_source(src).map(|f| f.as_str()))
     };
     let shape_framing = framing(shape.src);
-    let unlike = pieces.iter().enumerate().filter(|&(n, _)| n != master).any(|(_, p)| {
-        track_of(p.src, opts).is_ok_and(|t| {
+    let unlike = pieces.iter().enumerate().filter(|&(n, _)| n != master).any(|(n, p)| {
+        track_for(pieces, master, n, opts).is_ok_and(|t| {
             t.codec != info.codec
                 || t.sample_rate != info.sample_rate
                 || t.channels != info.channels
@@ -377,7 +400,7 @@ fn run(
         // whole file over it would lose every other clip's. Its ranges are
         // left out, which makes the file that much shorter than the cut
         // with pictures, and that is said.
-        let Ok(track) = track_of(piece.src, opts).cloned() else {
+        let Ok(track) = track_for(pieces, master, n, opts).cloned() else {
             crate::note_once(format!(
                 "note: {} has no sound, so its part of the join is left out of the audio file",
                 piece.src.path,

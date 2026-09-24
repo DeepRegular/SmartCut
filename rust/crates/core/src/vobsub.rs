@@ -158,6 +158,11 @@ pub fn stopped_after(spu: &[u8], after: f64) -> Vec<u8> {
     let Some(&last) = chain.last() else {
         return out;
     };
+    // The unit states its own size in sixteen bits; one already that close
+    // to the most would come out saying it is a few bytes long.
+    if out.len() + 6 > usize::from(u16::MAX) {
+        return out;
+    }
     let added = out.len();
     out[last + 2..last + 4].copy_from_slice(&(added as u16).to_be_bytes());
     out.extend_from_slice(&delay.to_be_bytes());
@@ -669,10 +674,12 @@ pub fn unit(drawn: &Drawn, ink: &mut Ink) -> Option<Vec<u8>> {
     // bits each is what it states them in: a 4K screen is inside that and
     // nothing a disc carries is outside it, but a picture that would be is
     // refused rather than wrapped around.
-    let (x2, y2) = (x1 + drawn.width - 1, y1 + drawn.height - 1);
+    let x2 = u32::from(x1) + u32::from(drawn.width.max(1)) - 1;
+    let y2 = u32::from(y1) + u32::from(drawn.height.max(1)) - 1;
     if x2 > 0xFFF || y2 > 0xFFF {
         return None;
     }
+    let (x2, y2) = (x2 as u16, y2 as u16);
 
     // Four bytes of header, then the picture in its two fields, each of them
     // starting on an even address as a disc's own units do.

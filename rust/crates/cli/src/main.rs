@@ -473,6 +473,7 @@ fn main() -> Result<()> {
     let mut drop_streams: Vec<usize> = Vec::new();
     let mut drop_subpictures: Vec<i32> = Vec::new();
     let mut subtitles = smartcut_core::cut::Subtitles::default();
+    let mut subtitles_given = false;
     // Unsaid, the shape follows where the cut is going: a `.ts` carries the
     // broadcast's own tables and a Blu-ray clip is a partial transport
     // stream. See `smartcut_core::tables_for`.
@@ -739,6 +740,7 @@ fn main() -> Result<()> {
                 let v = args
                     .get(i)
                     .context("--subtitles needs pgs, beside or sup")?;
+                subtitles_given = true;
                 subtitles = match v.as_str() {
                     "beside" => smartcut_core::cut::Subtitles::Beside,
                     "pgs" => smartcut_core::cut::Subtitles::Pgs,
@@ -949,6 +951,27 @@ fn main() -> Result<()> {
     }
     if fit.is_some() && sound_only {
         bail!("--fit shrinks the pictures, and --sound-only writes none");
+    }
+    // The rest of what only a file with pictures in it has: its tables, its
+    // subtitles, its data broadcast and how its pictures are joined.
+    if sound_only {
+        let moot = [
+            (tables.is_some(), "--tables"),
+            (data_broadcast.is_some(), "--data-broadcast / --no-data-broadcast"),
+            (subtitles_given, "--subtitles"),
+            (!drop_subpictures.is_empty(), "--drop-subpicture"),
+            (vc1_quant.is_some(), "--vc1-quant"),
+            (clean_join, "--clean-joins"),
+            (!allow_open_gop, "--no-open-gop"),
+        ];
+        if let Some((_, name)) = moot.iter().find(|(given, _)| *given) {
+            bail!("--sound-only writes the sound alone: {name} has nothing to act on");
+        }
+    }
+    // Two ways of reading the recording for commercials, which only the
+    // detection does.
+    if (use_logo || find_inserts) && !detect_cm {
+        bail!("--logo and --inserts are ways of running --detect-cm: give it too");
     }
     // Nothing to take the folder away *for*: the image is what is kept in
     // its place, and without one this would be a run that deletes its own
@@ -1878,6 +1901,19 @@ fn main() -> Result<()> {
                 "ts" | "m2ts" | "mts" | "m2t"
             )
         });
+    // A number that names no track that can be dropped would drop nothing,
+    // and the run would go ahead as though it had been obeyed.
+    let droppable = |n: usize| {
+        src.audios.iter().any(|a| a.stream_index == n)
+            || src.captions.iter().any(|c| c.stream_index == n)
+            || src.graphics.iter().any(|g| g.stream_index == n)
+    };
+    if let Some(n) = drop_streams.iter().find(|&&n| !droppable(n)) {
+        bail!(
+            "--drop-stream {n}: {} has no sound, caption or subtitle stream {n} (the pictures cannot be dropped)",
+            src.path
+        );
+    }
     let kept_audio = src
         .audios
         .iter()
