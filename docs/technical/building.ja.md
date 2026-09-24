@@ -77,7 +77,7 @@ bash tests/run_proxy_tests.sh         # プロキシが録画の代役になれ�
 bash tests/run_scene_tests.sh         # シーン検出と CM 境界の照合                        1
 bash tests/run_ts_layout_tests.sh     # TS の出自とシーケンスヘッダ                       5
 bash tests/run_broadcast_tests.sh     # 字幕・番組情報・データ放送・音声多重             17
-bash tests/run_bilingual_tests.sh     # 番組の途中から現れる副音声                        6
+bash tests/run_bilingual_tests.sh     # 途中から現れる副音声と、前の番組だけの副音声      9
 bash tests/run_cm_tests.sh            # CM 検出と目視の正解との照合                       5
 bash tests/run_disc_tests.sh          # BDAV と BDMV をフォルダーと .iso から読む       38
 bash tests/run_bdav_tests.sh          # ディスクを書く。索引・イメージ・その中身       72

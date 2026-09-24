@@ -1052,8 +1052,10 @@ first, either way.
 
 Nesting one protocol inside another needs saying: whatever is allowed at the
 top level, the protocol *inside* one is checked against a whitelist holding
-`file` and nothing else. `input::demux` sets `protocol_whitelist` for the URLs
-this program writes, and never for a plain path.
+`file` and nothing else. `input::demux` sets `protocol_whitelist` to
+`file,subfile,concat` for every recording it opens, plain paths included:
+since 0.8.3, because a "recording" can be a playlist under a `.ts` name, and
+libavformat would fetch whatever one lists.
 
 ### A title is a run of cells
 

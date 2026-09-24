@@ -76,7 +76,7 @@ bash tests/run_proxy_tests.sh         # can the proxy stand in for the recording
 bash tests/run_scene_tests.sh         # scene detection vs commercial boundaries         1
 bash tests/run_ts_layout_tests.sh     # TS provenance and sequence headers               5
 bash tests/run_broadcast_tests.sh     # captions, tables, data broadcast, dual audio    17
-bash tests/run_bilingual_tests.sh     # a second sound track announced late              6
+bash tests/run_bilingual_tests.sh     # a second sound track that comes late or goes early 9
 bash tests/run_cm_tests.sh            # commercial detection vs a human's answer         5
 bash tests/run_disc_tests.sh          # a BDAV and a BDMV disc, as folders and as .isos 38
 bash tests/run_bdav_tests.sh          # writing a disc: the index, the image, and both   72

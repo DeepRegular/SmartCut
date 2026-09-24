@@ -137,11 +137,11 @@ deb 以外はすべて FFmpeg を同梱しているので、ほかに用意す�
 
 | プラットフォーム | ファイル | 備考 |
 |---|---|---|
-| **Linux** | `SmartCut_0.8.2_amd64.AppImage` | 実行権限を付けて起動します |
-| **Linux** | `SmartCut-0.8.2-linux-x86_64.tar.gz` | 展開して `./smartcut` を実行します。FUSE を使いたくない場合はこちらです |
-| **Linux (Debian/Ubuntu)** | `smartcut_0.8.2_amd64.deb` | `sudo apt install ./smartcut_0.8.2_amd64.deb`。システムに入っている FFmpeg を使うので 4.8 MB で済みます |
-| **Windows** | `SmartCut_0.8.2_x64-setup.exe` | インストーラ。コマンドライン版の `smartcut-cli.exe` も同じフォルダーに入ります |
-| **Windows** | `smartcut-portable-x64-0.8.2.zip` | 展開して `smartcut.exe` を実行します。コマンドライン版は `smartcut-cli.exe` です |
+| **Linux** | `SmartCut_0.8.3_amd64.AppImage` | 実行権限を付けて起動します |
+| **Linux** | `SmartCut-0.8.3-linux-x86_64.tar.gz` | 展開して `./smartcut` を実行します。FUSE を使いたくない場合はこちらです |
+| **Linux (Debian/Ubuntu)** | `smartcut_0.8.3_amd64.deb` | `sudo apt install ./smartcut_0.8.3_amd64.deb`。システムに入っている FFmpeg を使うので 4.8 MB で済みます |
+| **Windows** | `SmartCut_0.8.3_x64-setup.exe` | インストーラ。コマンドライン版の `smartcut-cli.exe` も同じフォルダーに入ります |
+| **Windows** | `smartcut-portable-x64-0.8.3.zip` | 展開して `smartcut.exe` を実行します。コマンドライン版は `smartcut-cli.exe` です |
 
 **動作条件。** AppImage と tar.gz には glibc 2.39 以降が必要です（Ubuntu 24.04、
 Debian 13、Fedora 40 以降）。deb は FFmpeg 7.1 を使うので、Debian 13 または
@@ -409,7 +409,7 @@ VC-1 だけは事情が違います。2010 年頃までにプレスされた Blu
 
 **GUI では書き出す前に結果が分かります。** タイムライン下のステータス行には、
 エンジンが実際に実行する計画がそのまま表示されます。どの区間をコピーし、どこを
-何フレーム作り直すかが分かります。「映像は完全に無劣化」と出ていれば、1 フレームも
+何フレーム作り直すかが分かります。「映像 完全無劣化」と出ていれば、1 フレームも
 再エンコードしません。
 
 **四捨五入で「100%」にすることはありません。** 40000 フレーム中 2 フレームを
@@ -490,7 +490,7 @@ VC-1 だけは事情が違います。2010 年頃までにプレスされた Blu
 オラクルと結果が食い違う変更は、エンジン側が正しいとは見なしません。
 Python 実装を今も残しているのは、この照合のためです。
 
-両方に通している E2E テスト 30 スイート・556 チェックは `tests/` にあります。
+両方に通している E2E テスト 30 スイート・559 チェックは `tests/` にあります。
 どのモジュールに何が入っているかは [Rust コア](docs/technical/rust-core.ja.md)、
 なぜこの分け方なのかは[設計ノート](docs/technical/design.ja.md)にあります。
 

@@ -111,7 +111,7 @@ worth a look before you cut.
 
 Where a terrestrial broadcast had its commercials, some subscription channels
 put two to nine seconds of their own animated ident instead. A break that short
-is not looked for out of the box: **Also find the short inserts** in Preferences
+is not looked for out of the box: **Also find the short inserts (a channel's own ident)** in Preferences
 turns it on for the cut editor's **Detect commercials** (`--inserts` on the command
 line).
 

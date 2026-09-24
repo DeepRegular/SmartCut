@@ -27,8 +27,9 @@ smartcut input.ts --cut 8.0-20.0 --bdav ~/disc  # onto a disc instead of a file
 - `--keep` and `--cut` can be given **as many times as you like**.
   `--keep 0-60 --keep 180-240` keeps those two ranges.
 - Times can be plain seconds or the `1:23:45.6` form.
-- **`--analyze` writes nothing.** It prints the plan — what gets copied and what
+- **`--analyze` writes no cut.** It prints the plan — what gets copied and what
   gets rebuilt. Running it first is the safe way to check before committing.
+  (What other options write is still written: a `--seek-index` file, say.)
 
 ## Choosing where to cut
 
@@ -49,8 +50,8 @@ smartcut input.ts --cut 8.0-20.0 --bdav ~/disc  # onto a disc instead of a file
 
 | Option | Meaning |
 |---|---|
-| `-o OUTPUT` (or `--output`) | Output path. **The extension picks the container** |
-| `--drop-stream INDEX` | Leave one of the recording's streams out of the output. Repeatable. The same thing the cut editor's **Tracks** menu does |
+| `-o OUTPUT` (or `--output`) | Output path. **The extension picks the container**. It has to be a file on this machine, and not the recording being read (or a link to it): either is refused before anything is written |
+| `--drop-stream INDEX` | Leave one of the recording's streams out of the output. Repeatable. The same thing the cut editor's **Tracks** menu does. A broadcast's sound track with nothing in the ranges kept (a second track the programme before this one had, say) is left out without being asked, and the run says so |
 | `--title N` | Which recording on a disc (a folder or an `.iso`) to open. Part of the programme's name works in place of the number. **Left out, it lists what is on the disc and stops** |
 
 ## Joining several recordings
@@ -92,9 +93,10 @@ are on screen at once for the whole of it.
 
 Every frame a transition covers is written afresh: it is pictures that are in
 neither recording. Two seconds is two seconds of encoding per join and nothing
-anywhere else. The sound is not mixed — the clip before plays through the
-crossing and the clip after starts where it ends — so `--audio-fade` is what
-softens the change if it needs softening.
+anywhere else. The sound is not mixed. Where the two clips are on screen
+together, the clip before plays through the crossing and the clip after starts
+where it ends; through a fade, the sound changes over at the colour, in the
+middle. `--audio-fade` is what softens the change if it needs softening.
 
 ## Audio
 
@@ -113,7 +115,7 @@ copy, so **the whole track is re-encoded**.
 | `--audio-bitrate RATE` | Bits per second when re-encoding, as `192k` or `192000`. Left out, it follows the recording. A figure the encoder will not accept is raised to what that codec is ordinarily carried at, with a note saying so |
 | `--aac auto\|mpeg2\|mpeg4` | Which flavour of AAC the frames SmartCut writes announce themselves as. `auto`, the default, follows the recording — MPEG-2 AAC for a broadcast |
 | `--audio-es` | Also write the sound out as a bare stream beside the output. AAC only |
-| `--sound-only` | Write the sound and no pictures: the ranges, the joins and the fades exactly as they would be inside the video, and nothing read or written for the frames. `-o` names the file and its extension picks the container — `.aac`, `.ac3`, `.mp2`, `.mp3`, `.dts`, `.m4a`, or `.wav`, which is always written as linear PCM. A sound the container has no room for stops the run before anything is written. One sound track, and not with `--bdav`. A recording joined on with no sound is left out of the file, and the run says so |
+| `--sound-only` | Write the sound and no pictures: the ranges, the joins and the fades exactly as they would be inside the video, and nothing read or written for the frames. `-o` names the file and its extension picks the container — `.aac`, `.ac3`, `.mp2`, `.mp3`, `.dts`, `.m4a`, or `.wav`, which is written as linear PCM unless `--audio-codec` names another codec. A sound the container has no room for stops the run before anything is written. One sound track, and not with `--bdav`. A recording joined on with no sound is left out of the file, and the run says so |
 | `--audio-fade SECONDS` | Take the level down into each seam and bring it back out over that many seconds. 0 to 10; 0, no fade, is the default |
 | `--join-fade-out SECONDS` | How long the sound takes to leave at the end of each clip, where `--join` writes several into one file. 0 to 10; 0 is the default |
 | `--join-fade-in SECONDS` | ...and how long it takes to come back at the start of the next one |
@@ -135,7 +137,7 @@ copy, so **the whole track is re-encoded**.
 | Option | Meaning |
 |---|---|
 | `--tables partial\|broadcast\|muxer` | How a transport stream describes its own contents. Unsaid, a `.ts` gets `broadcast` — the recording's own SDT, EIT and TOT, which is where a player reads the programme name, the station and the clock — and a `.m2ts` gets `partial`, the shape a disc's stream is written in. `muxer` adds nothing. `--no-tables` is the old name for `muxer` |
-| `--no-data-broadcast` | Leave out the recording's data broadcast — what is behind the d button. It is otherwise carried into any `.ts` that keeps the broadcast's own tables, which is the only shape that can hold one: the modules come out whole and byte for byte, so a receiver draws the same pages. What turning it down buys is size — a carousel is between a hundredth and a fifth of what a broadcast multiplex spends. `--data-broadcast` asks for it outright, which only changes what is said when it cannot be carried |
+| `--no-data-broadcast` | Leave out the recording's data broadcast — what is behind the d button. It is otherwise carried into any `.ts` whose tables are not left to the muxer (`broadcast` or `partial`); a `.m2ts` has nowhere to put one: the modules come out whole and byte for byte, so a receiver draws the same pages. What turning it down buys is size — a carousel is between a hundredth and a fifth of what a broadcast multiplex spends. `--data-broadcast` asks for it outright, which only changes what is said when it cannot be carried |
 
 ## Writing a disc (BDAV)
 
@@ -150,7 +152,7 @@ refused rather than quietly ignored.
 | `--bdav FOLDER` | Write a BDAV disc into this folder (one recording becomes `BDAV/STREAM/00001.m2ts`). The index is built afterwards |
 | `--fit bd25\|bd50\|bd100\|bd128\|BYTES` | Write the pictures back smaller, by as much as it takes for the output to fit that much room. Where it already fits, nothing is done. The sound, the subtitles and the programme information are untouched; only the pictures give anything up. MPEG-2 only -- anything else is written at its full size and says so. What share they will be written at is printed before the writing starts. Not with `--join` or `--sound-only`. See [Fitting a disc](../technical/transrate.md) |
 | `--video-share 0.35..1` | The share itself, where you would rather name it than have a size worked out into one |
-| `--iso 2.50\|2.60` | Wrap the finished disc in an `.iso` beside it: `--bdav ~/disc` writes `~/disc/BDAV` and `~/disc.iso`. The folder stays |
+| `--iso 2.50\|2.60` | Wrap the finished disc in an `.iso` beside it: `--bdav ~/disc` writes `~/disc/BDAV` and `~/disc.iso`. The folder stays. Refused before anything is written where that `.iso` is the image the recording is being read out of |
 | `--iso-access read-only\|overwritable` | What the image says may be done to the disc it is burned onto. `read-only`, the default, is the truth about a disc nothing will write to again — a BD-R, or a BD-RE you only play. `overwritable` is what a recorder writes on a BD-RE, and what it wants to see before it will add a recording to the disc or take one off. Needs `--iso` |
 | `--iso-only` | And then take the folder away, leaving the image on its own. Needs `--iso`: the image is made *of* the folder, so the folder is written first and goes once the image holds it. What goes is `BDAV`, and the folder above it only where that leaves it empty — a disc written into a folder of your own leaves everything else in it alone. A file in `BDAV` that the image could not carry keeps the folder where it is |
 | `--disc-title NAME` | What the disc is called. Left out, the series the recording is an episode of: the programme name with the episode number, the episode's own title and the broadcast's marks taken off it |
@@ -163,7 +165,7 @@ refused rather than quietly ignored.
 
 | Option | Meaning |
 |---|---|
-| `--analyze` | Work out the plan and print it. **Writes nothing** — not even into a `--bdav` folder |
+| `--analyze` | Work out the plan and print it. **Writes no cut** — not even into a `--bdav` folder. A `--seek-index` file, a `--proxy` or a `--preview` asked for alongside is still written |
 | `--detect-cm` | Look for the commercial breaks |
 | `--logo` | Let commercial detection use the station logo as well |
 | `--inserts` | ...and report the few seconds a subscription channel drops into a programme — its own animated ident. Off by default: the same test catches a programme's own caption card. See the [commercial detection guide](cm-detection.md) |

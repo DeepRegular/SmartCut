@@ -28,7 +28,7 @@ The screens are laid out in the order you use them.
 | **Input** | List window, first tab | Line the recordings up |
 | **Cut editor** | **Its own window** | Open one recording, cut it, press **OK** to go back |
 | **Output settings** | List window, second tab | Where files go, what format, what happens to the sound. **Applies to the whole list** |
-| **Output** | List window, third tab | Write the list out, top to bottom |
+| **Export** | List window, third tab | Write the list out, top to bottom |
 | **Batch tool** | **Its own window, its own process** | Queue up saved projects and write them out, top to bottom. Closing the main window does not stop it. See [Working through a batch](batch.md#an-overnight-queue-of-projects) |
 
 The cut editor is a separate window because the three tabs above it are
@@ -1235,7 +1235,7 @@ after the run, and the next run puts it down as it starts.
 **Writing a `.ts` takes two passes.** After the video and the sound are written,
 the finished file goes through once more so the broadcast's own programme
 information can be put back. The state line says so while it does —
-`Finishing …: putting the broadcast's own tables back` — and the bar runs across
+`Finishing "…": putting the broadcast's own tables back…` — and the bar runs across
 both passes, so it never stands still. A clip written onto a disc is the same.
 
 While it writes, that same button reads `Stop export`. Pressing it **finishes
@@ -1394,7 +1394,7 @@ session has not seen.
 
 | Setting | What it does |
 |---|---|
-| **Tidy the start of each range** | Re-encodes up to the first two seconds of a range that begins on an open GOP. The join is steadier; that much less of the output is copied losslessly. The same thing as the CLI's `--clean-joins` |
+| **Tidy the start of each range (steadier joins)** | Re-encodes up to the first two seconds of a range that begins on an open GOP. The join is steadier; that much less of the output is copied losslessly. The same thing as the CLI's `--clean-joins` |
 | **Build a proxy before cutting** | Re-encodes the whole recording and cuts against the lighter copy. Costs minutes and gigabytes per hour, and only pays where decoding one picture is itself slow. The width is a setting of its own |
 | **Fade the sound at each seam** | Takes the level down into a join and brings it back out over that many seconds; 0 is no fade, which is the default. The same thing as the CLI's `--audio-fade` |
 
@@ -1422,7 +1422,8 @@ cached stays where it is.
 
 How many files and how many bytes there are shows by kind, and **Delete all**
 removes them. Nothing there is worth keeping: it is what another pass would
-build again, never a cut or a project.
+build again, never a cut or a project. Only files SmartCut named itself are
+removed, so a folder of your own chosen as the cache keeps everything else in it.
 
 ### Logging
 

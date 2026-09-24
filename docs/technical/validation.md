@@ -282,6 +282,17 @@ These only surfaced on real material:
   differently — a transport stream and an MP4 in either order — whose second recording
   was copied in the first one's framing, pictures and AAC alike.
   `run_rust_tests.sh` checks every one of these pairings for decoder errors.
+- **A broadcast whose second sound track belonged to the programme before it was
+  read tens of times over, from 0.8.0 to 0.8.2.** Reads that look for one track stop
+  by counting packets or by the clock, and 0.8.0 began throwing every other stream
+  away before them. libavformat then returns nothing until it finds a packet of the
+  track, and a track that is there for the first minute of the recording and never
+  again is not found: each such read went on to the end of the file. Opening a
+  two-and-a-half-hour recording took three hours instead of four minutes, and every
+  seam of a cut read the file again. The pictures are kept for those reads now
+  (`input::keep_with_pictures`), and a track with nothing in the ranges kept is left
+  out of the cut with a note rather than failing it at the end.
+  `run_bilingual_tests.sh` builds that shape and counts the bytes read.
 - **Dolby Vision survives a copy but not a re-encode.** The RPU on every picture is
   copied with it, so a range whose ends fall on the recording's own entry points comes
   through with all of them; the pictures rewritten at a seam have none, because
