@@ -1621,9 +1621,9 @@ fn take_caption(
 /// a counter, and the document says `begin` and `end` on the clip's own
 /// presentation clock. See [`crate::ttml`].
 ///
-/// So a document is claimed by the segment its beginning falls in -- or, for
-/// one already on screen when the range opened, by the range's first segment
-/// -- and what is written is the same document with its times moved onto the
+/// So a document is claimed by the segment its beginning falls in -- and one
+/// already on screen when the range opened is written by the opening of the
+/// range, which reads back for it ([`read_ttml_before`]) -- and what is written is the same document with its times moved onto the
 /// output's clock and clipped to the range. A caption that would have run
 /// past the end of a range ends with it; a caption that belongs to no kept
 /// range is not carried at all.
@@ -1637,19 +1637,29 @@ fn take_ttml(
     let Some(data) = packet.data() else {
         return Ok(false);
     };
-    let Some((begin, end)) = crate::ttml::cue(data) else {
+    let Some((begin, _)) = crate::ttml::cue(data) else {
         return Ok(false);
     };
-    let (begin, end) = (begin + caption.base, end + caption.base);
+    let begin = begin + caption.base;
     // Documents arrive in the order they are shown, so one that begins past
     // this segment is the end of what this segment can hold.
     if begin >= seg.end {
         return Ok(true);
     }
-    let claimed = begin >= seg.start || (first_segment && end > caption.range.0);
+    // One already up when the range opens is the range's opening's to
+    // write: see [`read_ttml_before`]. Claimed here, it was only ever the
+    // ones inside the seek margin in front of the first segment.
+    let claimed = begin >= seg.start || (first_segment && begin >= caption.range.0);
     if !claimed {
         return Ok(false);
     }
+    write_ttml(caption, data, begin, writer)?;
+    Ok(false)
+}
+
+/// Write one TTML document, moved onto the output's clock and clipped to the
+/// kept range.
+fn write_ttml(caption: &CaptionCtx, data: &[u8], begin: f64, writer: &mut Writer) -> Result<()> {
     // The document counts from the clip's presentation start and the cut
     // counts from the file's beginning, so both the window the document is
     // clipped to and the move it is given are put on the document's own
@@ -1657,13 +1667,59 @@ fn take_ttml(
     // which is where a file with no playlist in front of it begins.
     let window = (caption.range.0 - caption.base, caption.range.1 - caption.base);
     let Some(bytes) = crate::ttml::retimed(data, caption.base + caption.offset, window) else {
-        return Ok(false);
+        return Ok(());
     };
     let at = begin.max(caption.range.0) + caption.offset;
     let mut out = ff::Packet::copy(&bytes);
     out.set_flags(ff::packet::Flags::KEY);
-    writer.push_caption(caption.track, out, at)?;
-    Ok(false)
+    writer.push_caption(caption.track, out, at)
+}
+
+/// How far in front of a range to look for a TTML document still on screen
+/// when it opens. The longest measured on the 4K recordings here stood for
+/// 38 seconds.
+const TTML_LOOKBACK: f64 = 40.0;
+
+/// The TTML documents on screen at `until`: begun before it, and not yet
+/// ended.
+///
+/// A document is sent once, when it goes up, so one that a range opens in
+/// the middle of was sent before the range -- and before the seek margin
+/// the first segment reads from, as often as not. Read here, as the DVD's
+/// and the Blu-ray's are (see [`read_subpictures_before`]); until 0.8.4 a
+/// line already up when a range began was left out of the cut.
+fn read_ttml_before(src: &Source, caption: &CaptionCtx, until: f64) -> Result<Vec<(f64, Vec<u8>)>> {
+    let mut ictx = crate::input::demux(&src.input.url)?;
+    let from = until - TTML_LOOKBACK - src.seek_margin;
+    if from > 0.0 {
+        let _ = seek_to(&mut ictx, src, until - TTML_LOOKBACK);
+    }
+    // The pictures as the clock, for the reason [`read_subpictures_before`]
+    // gives: a track with nothing after the range's start never says so.
+    crate::input::keep_with_pictures(&mut ictx, &[caption.in_index]);
+    let mut up: Vec<(f64, Vec<u8>)> = Vec::new();
+    for (stream, packet) in ictx.read_packets() {
+        if stream.index() != caption.in_index {
+            if crate::input::packet_time(&stream, &packet, src.start_time)
+                .is_some_and(|t| t >= until + PAST_UNTIL)
+            {
+                break;
+            }
+            continue;
+        }
+        let Some(data) = packet.data() else { continue };
+        let Some((begin, end)) = crate::ttml::cue(data) else {
+            continue;
+        };
+        let (begin, end) = (begin + caption.base, end + caption.base);
+        if begin >= until {
+            break;
+        }
+        if end > until {
+            up.push((begin, data.to_vec()));
+        }
+    }
+    Ok(up)
 }
 
 /// Take one packet of a graphics stream: give it to the plane, and carry the
@@ -2279,7 +2335,20 @@ fn read_subpictures_before(src: &Source, until: f64) -> Result<Vec<(i32, f64, Ve
 /// past rather than assembled. What it costs is the disc reading a few
 /// seconds of itself, once per kept range, on a recording that has graphics
 /// in it at all.
-fn read_graphics_before(src: &Source, until: f64, writer: &mut Writer) -> Result<()> {
+///
+/// Handed back: the sets begun in front of the range and shown inside it. A
+/// set is sent 2 to 70 ms ahead of the moment it is shown, so the one a
+/// range opens on can be half read by then; stopping at the first packet
+/// timed past the range's start left it unfinished, and the first segment
+/// does not carry a set begun before it -- the subtitle shown a moment into
+/// the range was carried by nobody. They are finished here, left off the
+/// plane (what is on screen at the opening is what was up before them), and
+/// written at their own time by the caller.
+fn read_graphics_before(
+    src: &Source,
+    until: f64,
+    writer: &mut Writer,
+) -> Result<Vec<(usize, Vec<crate::pgs::Held>)>> {
     for t in writer.graphics.iter_mut() {
         t.plane.reset();
     }
@@ -2297,6 +2366,8 @@ fn read_graphics_before(src: &Source, until: f64, writer: &mut Writer) -> Result
     // end of the clip once per range. See [`read_subpictures_before`].
     crate::input::keep_with_pictures(&mut ictx, &wanted);
     let mut done = vec![false; writer.graphics.len()];
+    let mut before: Vec<Option<crate::pgs::Plane>> = vec![None; writer.graphics.len()];
+    let mut late = Vec::new();
     for (stream, packet) in ictx.read_packets() {
         let Some(k) = wanted.iter().position(|i| *i == stream.index()) else {
             if crate::input::packet_time(&stream, &packet, src.start_time)
@@ -2313,20 +2384,37 @@ fn read_graphics_before(src: &Source, until: f64, writer: &mut Writer) -> Result
         let tb = writer.graphics[k].in_tb;
         let at = |stamp: i64| stamp as f64 * tb - src.start_time;
         let t = at(pts);
-        if t >= until {
+        let dts = packet.dts().map_or(t, at);
+        // Past the start, and not in the middle of a set: done. A set that
+        // is part read is finished first, within reason.
+        let arrives = t.min(dts);
+        let plane = &mut writer.graphics[k].plane;
+        if arrives >= until && (!plane.building() || arrives >= until + TRAIL) {
             done[k] = true;
             if done.iter().all(|&d| d) {
                 break;
             }
             continue;
         }
-        writer.graphics[k].plane.feed(crate::pgs::Held {
+        if !plane.building() {
+            before[k] = Some(plane.clone());
+        }
+        let set = plane.feed(crate::pgs::Held {
             pts: t,
-            dts: packet.dts().map_or(t, at),
+            dts,
             data: packet.data().unwrap_or(&[]).to_vec(),
         });
+        if let Some(set) = set {
+            let shown = set.iter().map(|h| h.pts).fold(f64::NEG_INFINITY, f64::max);
+            if shown >= until {
+                if let Some(was) = before[k].take() {
+                    *plane = was;
+                }
+                late.push((k, set));
+            }
+        }
     }
-    Ok(())
+    Ok(late)
 }
 
 // Writing one reel's pictures into another's shape. A submodule rather than
@@ -6818,6 +6906,13 @@ fn cut_into(
                 })
             })
             .collect();
+        // A 4K recording's subtitles that are already up when the range
+        // opens. See [`read_ttml_before`].
+        for caption in caption_ctx.iter().filter(|c| c.ttml) {
+            for (begin, data) in read_ttml_before(rsrc, caption, plan.t_in)? {
+                write_ttml(caption, &data, begin, &mut writer)?;
+            }
+        }
         // Only the master's, and the reason is in [`Threads::graphics`].
         let graphics_ctx: Vec<GraphicsCtx> = if thread.graphics {
             writer
@@ -6867,10 +6962,31 @@ fn cut_into(
         // was put there by a display set the cut left behind, so it is put
         // up again here. See [`crate::pgs`].
         if thread.graphics && !writer.graphics.is_empty() {
-            read_graphics_before(rsrc, plan.t_in, &mut writer)?;
+            let late = read_graphics_before(rsrc, plan.t_in, &mut writer)?;
+            // When the first of the late sets goes up, on each track. A
+            // replay is placed a few milliseconds into the range, and a late
+            // set that goes up sooner than that would have the older line
+            // drawn over it; that track's replay is left out, since the late
+            // set replaces what it would have shown within a frame or two.
+            let shift = target_start - plan.t_in;
+            let mut late_from = vec![f64::INFINITY; writer.graphics.len()];
+            for (track, set) in &late {
+                if let (Some(first), Some(at)) = (set.first(), late_from.get_mut(*track)) {
+                    *at = at.min(first.pts + shift);
+                }
+            }
             for track in 0..writer.graphics.len() {
-                for held in writer.graphics[track].plane.replay(target_start) {
+                let replay = writer.graphics[track].plane.replay(target_start);
+                if replay.iter().any(|h| h.pts >= late_from[track]) {
+                    continue;
+                }
+                for held in replay {
                     writer.push_graphics(track, &held, 0.0, true)?;
+                }
+            }
+            for (track, set) in late {
+                for held in &set {
+                    writer.push_graphics(track, held, shift, true)?;
                 }
             }
         }

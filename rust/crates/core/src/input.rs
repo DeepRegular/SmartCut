@@ -487,6 +487,55 @@ pub struct Packets<'a> {
     ctx: &'a mut ff::format::context::Input,
     failures: u32,
     failed: Option<String>,
+    read: u32,
+}
+
+thread_local! {
+    /// What a pass on this thread is to be stopped by. See [`stop_reads_when`].
+    static STOP_READS: std::cell::RefCell<Option<Box<dyn Fn() -> bool>>> =
+        const { std::cell::RefCell::new(None) };
+    static READS_STOPPED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Stop every read on this thread once `stop` says so, until the answer is
+/// dropped.
+///
+/// **For a pass with no stop of its own.** The commercial detection and the
+/// two flat passes read a recording several times over and took no stop
+/// anywhere inside, so 解析を中止 in the list landed only when the pass had
+/// finished -- three minutes on a two-and-a-half-hour broadcast, with the
+/// button saying nothing meanwhile. Every read here goes through [`Packets`],
+/// so it is asked there, and each read ends as though at a failure: a pass
+/// that writes says so ([`Packets::finished`]), and one that only looks comes
+/// back early with part of an answer, which its caller throws away on
+/// seeing the stop -- see [`reads_stopped`].
+pub fn stop_reads_when(stop: impl Fn() -> bool + 'static) -> StopReads {
+    STOP_READS.with(|s| *s.borrow_mut() = Some(Box::new(stop)));
+    READS_STOPPED.with(|s| s.set(false));
+    StopReads(())
+}
+
+/// Whether a read on this thread was ended by [`stop_reads_when`]: an answer
+/// made since then is only part of one.
+pub fn reads_stopped() -> bool {
+    READS_STOPPED.with(|s| s.get())
+}
+
+/// Held for as long as [`stop_reads_when`] is to apply.
+pub struct StopReads(());
+
+impl Drop for StopReads {
+    fn drop(&mut self) {
+        STOP_READS.with(|s| *s.borrow_mut() = None);
+        READS_STOPPED.with(|s| s.set(false));
+    }
+}
+
+/// Asked every this many packets: a few milliseconds of reading.
+const STOP_EVERY: u32 = 64;
+
+fn asked_to_stop() -> bool {
+    STOP_READS.with(|s| s.borrow().as_ref().is_some_and(|f| f()))
 }
 
 impl Packets<'_> {
@@ -521,6 +570,12 @@ impl<'a> Iterator for Packets<'a> {
             match packet.read(self.ctx) {
                 Ok(()) => {
                     self.failures = 0;
+                    self.read = self.read.wrapping_add(1);
+                    if self.read % STOP_EVERY == 1 && asked_to_stop() {
+                        READS_STOPPED.with(|s| s.set(true));
+                        self.failed = Some("stopped".to_string());
+                        return None;
+                    }
                     // As ffmpeg-next's own iterator does: the stream borrows
                     // the context for as long as the iterator does, and
                     // nothing reads from the context while it is held.
@@ -561,7 +616,7 @@ pub trait ReadPackets {
 
 impl ReadPackets for ff::format::context::Input {
     fn read_packets(&mut self) -> Packets<'_> {
-        Packets { ctx: self, failures: 0, failed: None }
+        Packets { ctx: self, failures: 0, failed: None, read: 0 }
     }
 }
 

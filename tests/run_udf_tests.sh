@@ -46,13 +46,27 @@ ffmpeg -v error -y -f lavfi -i "testsrc2=size=1440x1080:rate=30000/1001:duration
        -c:v mpeg2video -b:v 4M -c:a mp2 -f mpegts "$WORK/src.ts" || exit 2
 
 # --- what we write -------------------------------------------------------
-for rev in 2.50 2.60; do
-  out="$WORK/disc-$rev"
-  "$BIN" "$WORK/src.ts" --keep 1.0-9.0 --bdav "$out" --iso "$rev" >/dev/null 2>&1 \
-    || { bad "UDF $rev: an image is written"; continue; }
-  s=$($SHAPE "$out.iso") || { bad "UDF $rev: the image can be read back"; continue; }
+# The third is the image a recorder is to go on editing: laid out as a
+# recorder lays out a BD-RE, the size of the whole disc, and sparse.
+for kind in 2.50 2.60 2.50:overwritable; do
+  rev=${kind%%:*}
+  access=read-only; [ "$kind" != "${kind#*:}" ] && access=${kind#*:}
+  out="$WORK/disc-${kind/:/-}"
+  "$BIN" "$WORK/src.ts" --keep 1.0-9.0 --bdav "$out" --iso "$rev" --iso-access "$access" \
+    >/dev/null 2>&1 || { bad "UDF $kind: an image is written"; continue; }
+  s=$($SHAPE "$out.iso") || { bad "UDF $kind: the image can be read back"; continue; }
 
-  echo "UDF $rev"
+  echo "UDF $kind"
+  if [ "$access" = overwritable ]; then
+    same "  the partition may be rewritten" "overwritable" "$(field "$s" access)"
+    same "  the image is the whole disc" "$((11826176 * 2048))" "$(stat -c %s "$out.iso")"
+    used=$(( $(stat -c %b "$out.iso") * $(stat -c %B "$out.iso") ))
+    if [ "$used" -lt $((1024 * 1024 * 1024)) ]; then
+      ok "  and takes only what it holds" "$((used / 1024 / 1024)) MB on disk"
+    else
+      bad "  and takes only what it holds" "$((used / 1024 / 1024)) MB on disk"
+    fi
+  fi
   # Layer one: the descriptors a reader finds before it finds anything else.
   # An anchor at 256, one at the last sector and one 256 back from it; a
   # drive that cannot read one reads another, and a reader that finds none of

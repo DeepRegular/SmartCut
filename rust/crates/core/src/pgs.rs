@@ -171,7 +171,7 @@ fn packed(kind: u8, body: &[u8]) -> Vec<u8> {
 /// Fed every packet of the stream in the order the recording carries them,
 /// including the ones before a kept range begins -- which is the point: the
 /// set that drew what is on screen at the cut is one of those.
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 pub struct Plane {
     /// Packets of the set being read, which is not a set until its END.
     building: Vec<Held>,
@@ -417,10 +417,9 @@ impl Sup {
     /// `cut_title.eng.sup` -- or the number it sits on where the disc says
     /// nothing or says the same thing twice.
     pub fn write(&self, beside: &str) -> Result<String> {
-        let stem = std::path::Path::new(beside).with_extension("");
         let at = match &self.tag {
-            None => stem.with_extension("sup"),
-            Some(tag) => stem.with_extension(format!("{tag}.sup")),
+            None => crate::vobsub::named_after(beside, "sup"),
+            Some(tag) => crate::vobsub::named_after(beside, &format!("{tag}.sup")),
         };
         std::fs::File::create(&at)?.write_all(&self.out)?;
         Ok(at.to_string_lossy().into_owned())

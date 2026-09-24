@@ -169,6 +169,20 @@ pub fn stopped_after(spu: &[u8], after: f64) -> Vec<u8> {
     out
 }
 
+/// A file named after the cut, with `ext` where the cut's own extension
+/// was: `ep.01.mkv` gives `ep.01.idx`. `Path::with_extension` cannot be
+/// used twice for this -- stripping the extension and then setting one
+/// replaces the next dotted part of the name, and `ep.01.mkv` came out as
+/// `ep.idx`, the same name the next episode's subtitles were written to.
+pub(crate) fn named_after(cut: &str, ext: &str) -> std::path::PathBuf {
+    let path = std::path::Path::new(cut);
+    let stem = path.file_stem().map(|s| s.to_os_string()).unwrap_or_default();
+    let mut name = stem;
+    name.push(".");
+    name.push(ext);
+    path.with_file_name(name)
+}
+
 /// The two-letter code `.idx` takes for the three-letter one a disc gives.
 ///
 /// Not the first two letters: Japanese is `jpn` and `ja`, German `ger` or
@@ -992,9 +1006,8 @@ impl Sidecar {
     /// name with their own extensions, which is what makes a player find
     /// them without being told.
     pub fn write(&self, beside: &str) -> Result<(String, String)> {
-        let stem = std::path::Path::new(beside).with_extension("");
-        let idx = stem.with_extension("idx");
-        let sub = stem.with_extension("sub");
+        let idx = named_after(beside, "idx");
+        let sub = named_after(beside, "sub");
         std::fs::File::create(&idx)?.write_all(self.index().as_bytes())?;
         std::fs::File::create(&sub)?.write_all(&self.sub)?;
         Ok((
@@ -1061,6 +1074,15 @@ fn u16be(b: &[u8], at: usize) -> u16 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A dot inside the name is part of the name, not a second extension.
+    #[test]
+    fn names_follow_the_whole_cut_name() {
+        let at = |cut: &str, ext: &str| named_after(cut, ext).to_string_lossy().into_owned();
+        assert_eq!(at("/v/ep.01.mkv", "idx"), "/v/ep.01.idx");
+        assert_eq!(at("/v/2026.09.24.ts", "eng.sup"), "/v/2026.09.24.eng.sup");
+        assert_eq!(at("/v/cut", "sub"), "/v/cut.sub");
+    }
 
     /// A unit that puts a picture up and never says when to take it down,
     /// which is what the disc measured here sends.

@@ -69,6 +69,22 @@ const MAIN_VDS: u64 = 32;
 const VDS_BLOCKS: u64 = 16;
 const INTEGRITY: u64 = 64;
 const INTEGRITY_BLOCKS: u64 = 2;
+/// A recorder's disc keeps 32 blocks for the integrity sequence, which it
+/// goes on writing to each time it changes the disc.
+const INTEGRITY_BLOCKS_RECORDER: u64 = 32;
+
+/// How many sectors a BD-RE holds: single layer, and dual. The first is
+/// what every recorder disc measured here is, to the sector; the second is
+/// twice it.
+const BD_RE_SECTORS: [u64; 2] = [11_826_176, 23_652_352];
+
+/// Where a recorder's image puts what an overwritable one needs, in blocks of
+/// its partition. The metadata partition is 4096 blocks from block 32, the
+/// space bitmap follows it, and the files begin at 32768; the mirror stands
+/// this far short of the partition's end.
+const RECORDER_META_BLOCKS: u64 = 4096;
+const RECORDER_FILES_AT: u64 = 32768;
+const RECORDER_MIRROR_GAP: u64 = 11_968;
 
 /// Where the two entries that describe the metadata partition sit, in blocks
 /// from the start of the partition. The first two blocks of it, which is
@@ -108,6 +124,7 @@ const TAG_INTEGRITY: u16 = 9;
 const TAG_FILE_SET: u16 = 256;
 const TAG_FILE_ID: u16 = 257;
 const TAG_EXTENDED_FILE_ENTRY: u16 = 266;
+const TAG_SPACE_BITMAP: u16 = 264;
 
 /// The kinds of file an entry can be. 250 and 251 are the metadata file and
 /// its mirror, which is how a reader tells them from the files a person put
@@ -116,6 +133,7 @@ const FILE_DIRECTORY: u8 = 4;
 const FILE_ORDINARY: u8 = 5;
 const FILE_METADATA: u8 = 250;
 const FILE_METADATA_MIRROR: u8 = 251;
+const FILE_METADATA_BITMAP: u8 = 252;
 
 /// Which revision of UDF the image says it is.
 ///
@@ -283,11 +301,12 @@ fn write_to(
         bail!("{}: there is nothing here to put on a disc", from.display());
     }
     let now = Stamp::now();
-    let plan = lay_out(&mut tree);
+    let plan = lay_out(&mut tree, access)?;
     let meta = metadata_image(&tree, &plan, revision, access, &now, label)?;
 
     let dst =
         std::fs::File::create(to).with_context(|| format!("cannot write {}", to.display()))?;
+    make_sparse(&dst);
     let mut out = Writer {
         to: BufWriter::with_capacity(1 << 20, dst),
         at: 0,
@@ -325,8 +344,20 @@ fn write_to(
         METADATA_FILE_ENTRY,
         &now,
     ))?)?;
+    // The metadata partition's own bitmap, where a recorder's is: its entry
+    // in the block after the metadata file's, and the bitmap after that.
+    if plan.room.is_some() {
+        let map = space_bitmap(plan.meta_blocks, &[(0, plan.meta_used)], 2);
+        out.sector(&sized(&bitmap_entry(map.len() as u64, 2, 1, &now))?)?;
+        out.sector(&map)?;
+    }
     out.pad_to(PARTITION + plan.meta_at as u64)?;
     out.write_all(&meta)?;
+    if let Some(room) = &plan.room {
+        out.pad_to(PARTITION + room.bitmap_at)?;
+        out.write_all(&space_bitmap(plan.partition_blocks, &room.used, room.bitmap_at))?;
+        out.align()?;
+    }
 
     let total: u64 = tree.iter().map(|n| n.size).sum();
     let mut done = 0u64;
@@ -442,6 +473,34 @@ struct Plan {
     directories: u32,
     /// The number the next file written onto this volume would take.
     next_unique: u32,
+    /// Blocks of the metadata partition in use: the file set, every entry
+    /// and every directory.
+    meta_used: u64,
+    /// Blocks of the integrity sequence.
+    integrity_blocks: u64,
+    /// What an overwritable image adds. See [`Room`].
+    room: Option<Room>,
+}
+
+/// What a disc a recorder may go on writing to has to say about the space it
+/// has left.
+///
+/// **Measured on four discs a recorder wrote, which agree in everything but
+/// the counts.** The partition covers the whole disc, not the part in use; a
+/// bitmap of it, one bit a block and set where the block is free, says what
+/// is in use -- every file rounded out to 32 blocks, and the structures
+/// between; the metadata partition is 4096 blocks with a bitmap of its own;
+/// and the integrity descriptor counts what both bitmaps leave free. An image
+/// without them, as this wrote until 0.8.4, said the disc was full: access
+/// type 4 and nowhere to put a recording.
+struct Room {
+    /// Where the partition's bitmap is, and how many blocks it takes.
+    bitmap_at: u64,
+    bitmap_blocks: u64,
+    /// The blocks in use, as runs of the partition.
+    used: Vec<(u64, u64)>,
+    /// How many of the partition's blocks are free.
+    free: u64,
 }
 
 /// Read the folder into the tree that will be written.
@@ -522,7 +581,7 @@ fn fill(dir: &Path, parent: usize, tree: &mut Vec<Node>, left_out: &mut Vec<Stri
 }
 
 /// Give every node its blocks, and the image its length.
-fn lay_out(tree: &mut [Node]) -> Plan {
+fn lay_out(tree: &mut [Node], access: Access) -> Result<Plan> {
     // What a directory's contents come to: the entry for its parent, and one
     // for each thing in it.
     for i in 0..tree.len() {
@@ -559,6 +618,10 @@ fn lay_out(tree: &mut [Node]) -> Plan {
             }
         }
     }
+    let meta_used = next as u64;
+    if access == Access::Overwritable {
+        return recorder_layout(tree, meta_used);
+    }
     let meta_blocks = align(next as u64);
 
     // The partition: the two entries that describe the metadata partition,
@@ -590,7 +653,10 @@ fn lay_out(tree: &mut [Node]) -> Plan {
     // 11,825,920.
     let reserve_vds = PARTITION + partition_blocks + ALIGN;
 
-    Plan {
+    Ok(Plan {
+        meta_used,
+        integrity_blocks: INTEGRITY_BLOCKS,
+        room: None,
         meta_blocks,
         meta_at,
         mirror_at,
@@ -613,7 +679,141 @@ fn lay_out(tree: &mut [Node]) -> Plan {
         files: tree.iter().filter(|n| !n.is_dir()).count() as u32,
         directories: tree.iter().filter(|n| n.is_dir()).count() as u32,
         next_unique: 15 + tree.len() as u32,
+    })
+}
+
+/// The layout a recorder writes on a BD-RE, for an image to be burned to
+/// one and then written to by a recorder. See [`Room`].
+///
+/// The image is the whole disc -- the partition, the last two anchors and
+/// the reserve descriptors are placed from its end -- so it is as long as
+/// the disc is. What is not written is left as a hole where the filesystem
+/// has them, and costs nothing there.
+fn recorder_layout(tree: &mut [Node], meta_used: u64) -> Result<Plan> {
+    let meta_blocks = align(meta_used).max(RECORDER_META_BLOCKS);
+    let meta_at = ALIGN;
+    let bitmap_at = meta_at + meta_blocks;
+    for &sectors in &BD_RE_SECTORS {
+        let partition_blocks = sectors - 2 * ANCHOR - 2 * ALIGN;
+        let bitmap_bytes = 24 + partition_blocks.div_ceil(8);
+        let bitmap_blocks = blocks(bitmap_bytes);
+        let mut at = align(bitmap_at + bitmap_blocks).max(RECORDER_FILES_AT);
+        for node in tree.iter_mut().filter(|n| !n.is_dir()) {
+            node.data = at as u32;
+            node.blocks = blocks(node.size);
+            at = align(at + node.blocks);
+        }
+        let Some(mirror_entry) =
+            partition_blocks.checked_sub(RECORDER_MIRROR_GAP + meta_blocks + ALIGN)
+        else {
+            continue;
+        };
+        if at > mirror_entry {
+            continue;
+        }
+        let mirror_at = mirror_entry + ALIGN;
+        let mut used = vec![
+            (0, ALIGN),
+            (meta_at, meta_blocks),
+            (bitmap_at, align(bitmap_blocks)),
+        ];
+        for node in tree.iter().filter(|n| !n.is_dir()) {
+            if node.blocks > 0 {
+                used.push((node.data as u64, align(node.blocks)));
+            }
+        }
+        used.push((mirror_entry, ALIGN));
+        used.push((mirror_at, meta_blocks));
+        let free = partition_blocks - used.iter().map(|&(_, n)| n).sum::<u64>();
+        return Ok(Plan {
+            meta_blocks,
+            meta_at: meta_at as u32,
+            mirror_at: mirror_at as u32,
+            mirror_entry: mirror_entry as u32,
+            partition_blocks,
+            // In front of the reserve descriptors, the second anchor; and
+            // they are 256 back from the last sector, where the third is.
+            reserve_vds: sectors - ANCHOR,
+            sectors,
+            files: tree.iter().filter(|n| !n.is_dir()).count() as u32,
+            directories: tree.iter().filter(|n| n.is_dir()).count() as u32,
+            next_unique: 15 + tree.len() as u32,
+            meta_used,
+            integrity_blocks: INTEGRITY_BLOCKS_RECORDER,
+            room: Some(Room { bitmap_at, bitmap_blocks, used, free }),
+        });
     }
+    bail!("this is more than a dual-layer BD-RE holds, so it cannot be written as an overwritable disc")
+}
+
+/// Ask for the holes the writer leaves to take no room.
+///
+/// A Unix filesystem does that by itself. NTFS does not: a file written at
+/// a place past its end is filled with zeros up to there, and an overwritable
+/// image is the whole of a disc -- 24 GB for a few hundred megabytes of
+/// recording -- unless the file is marked sparse first.
+#[cfg(windows)]
+fn make_sparse(file: &std::fs::File) {
+    use std::ffi::{c_int, c_void};
+    use std::os::windows::io::AsRawHandle;
+    #[link(name = "kernel32")]
+    extern "system" {
+        fn DeviceIoControl(
+            device: *mut c_void,
+            code: u32,
+            in_buf: *mut c_void,
+            in_len: u32,
+            out_buf: *mut c_void,
+            out_len: u32,
+            returned: *mut u32,
+            overlapped: *mut c_void,
+        ) -> c_int;
+    }
+    const FSCTL_SET_SPARSE: u32 = 0x0009_00C4;
+    let mut returned = 0u32;
+    // A filesystem that cannot is not a reason to stop: the image is the
+    // same, only larger on the disk it is written to.
+    unsafe {
+        DeviceIoControl(
+            file.as_raw_handle() as *mut c_void,
+            FSCTL_SET_SPARSE,
+            std::ptr::null_mut(),
+            0,
+            std::ptr::null_mut(),
+            0,
+            &mut returned,
+            std::ptr::null_mut(),
+        )
+    };
+}
+
+#[cfg(not(windows))]
+fn make_sparse(_file: &std::fs::File) {}
+
+/// A space bitmap descriptor: one bit a block, set where the block is free.
+///
+/// Its checksum covers nothing past the tag, which is what a recorder's own
+/// writes -- the descriptor is megabytes long, and the length a tag can
+/// state is sixteen bits.
+fn space_bitmap(bits: u64, used: &[(u64, u64)], location: u64) -> Vec<u8> {
+    let bytes = bits.div_ceil(8) as usize;
+    let mut d = vec![0u8; 24 + bytes];
+    le32(&mut d, 16, bits as u32);
+    le32(&mut d, 20, bytes as u32);
+    let map = &mut d[24..];
+    map.fill(0xFF);
+    // Past the last block there is nothing to be free.
+    let spare = bytes as u64 * 8 - bits;
+    if spare > 0 {
+        map[bytes - 1] &= 0xFF >> spare;
+    }
+    for &(from, len) in used {
+        for b in from..(from + len).min(bits) {
+            map[(b / 8) as usize] &= !(1 << (b % 8));
+        }
+    }
+    tag_with(&mut d, TAG_SPACE_BITMAP, location, 0);
+    d
 }
 
 fn blocks(bytes: u64) -> u64 {
@@ -819,6 +1019,32 @@ fn metadata_entry(kind: u8, at: u32, blocks: u64, entry_at: u32, now: &Stamp) ->
     d
 }
 
+/// The entry for the metadata partition's bitmap, which is a file on the
+/// partition beside it like the metadata file is.
+fn bitmap_entry(bytes: u64, at: u32, entry_at: u32, now: &Stamp) -> Vec<u8> {
+    let mut d = vec![0u8; 216];
+    icb(&mut d, FILE_METADATA_BITMAP, 0);
+    le32(&mut d, 36, 0xFFFF_FFFF);
+    le32(&mut d, 40, 0xFFFF_FFFF);
+    le32(&mut d, 44, 0x14A5);
+    le16(&mut d, 48, 1);
+    le64(&mut d, 56, bytes);
+    le64(&mut d, 64, bytes);
+    le64(&mut d, 72, blocks(bytes));
+    for at in [80, 92, 104, 116] {
+        d[at..at + 12].copy_from_slice(&now.bytes());
+    }
+    le32(&mut d, 128, 1);
+    d[168..200].copy_from_slice(&regid(0, "*SmartCut", &[]));
+    let mut ad = vec![0u8; 8];
+    le32(&mut ad, 0, bytes as u32);
+    le32(&mut ad, 4, at);
+    le32(&mut d, 212, ad.len() as u32);
+    d.extend_from_slice(&ad);
+    tag(&mut d, TAG_EXTENDED_FILE_ENTRY, entry_at as u64);
+    d
+}
+
 /// The file set: which directory is the root of it.
 fn file_set(root: u32, rev: Revision, access: Access, now: &Stamp, label: &str) -> Vec<u8> {
     let mut d = vec![0u8; 512];
@@ -905,6 +1131,12 @@ fn partition(plan: &Plan, access: Access, at: u64) -> Vec<u8> {
     le16(&mut d, 20, 1); // allocated
     le16(&mut d, 22, 0); // partition number
     d[24..56].copy_from_slice(&regid(0, "+NSR03", &[]));
+    // The partition header: where the bitmap of the free blocks is, for a
+    // disc that is to be written to again.
+    if let Some(room) = &plan.room {
+        le32(&mut d, 56 + 8, (room.bitmap_blocks * SECTOR as u64) as u32);
+        le32(&mut d, 56 + 12, room.bitmap_at as u32);
+    }
     le32(&mut d, 184, access.number()); // what may be done to the disc
     le32(&mut d, 188, PARTITION as u32);
     le32(&mut d, 192, plan.partition_blocks as u32);
@@ -925,7 +1157,7 @@ fn logical_volume(plan: &Plan, rev: Revision, access: Access, label: &str, at: u
     le32(&mut d, 264, 6 + 64); // the two maps below
     le32(&mut d, 268, 2);
     d[272..304].copy_from_slice(&regid(0, "*SmartCut", &[]));
-    le32(&mut d, 432, (INTEGRITY_BLOCKS * SECTOR as u64) as u32);
+    le32(&mut d, 432, (plan.integrity_blocks * SECTOR as u64) as u32);
     le32(&mut d, 436, INTEGRITY as u32);
 
     // The physical partition, and the metadata partition whose blocks are
@@ -946,7 +1178,9 @@ fn logical_volume(plan: &Plan, rev: Revision, access: Access, label: &str, at: u
     // the other at the back, each beside the copy it describes.
     le32(&mut d, m + 40, METADATA_FILE_ENTRY);
     le32(&mut d, m + 44, plan.mirror_entry);
-    le32(&mut d, m + 48, 0xFFFF_FFFF); // no bitmap: nothing here is allocated later
+    // The metadata partition's bitmap, where there is one: nothing is
+    // allocated later on a disc written once.
+    le32(&mut d, m + 48, if plan.room.is_some() { 1 } else { 0xFFFF_FFFF });
     le32(&mut d, m + 52, ALIGN as u32);
     le16(&mut d, m + 56, ALIGN as u16);
     d[m + 58] = 1; // the mirror is a copy of the metadata, not a spare
@@ -990,8 +1224,14 @@ fn integrity(plan: &Plan, rev: Revision, now: &Stamp) -> Vec<u8> {
     le64(&mut d, 40, plan.next_unique as u64);
     le32(&mut d, 72, 2); // two partitions
     le32(&mut d, 76, 46); // the implementation use below
-    le32(&mut d, 80, 0); // free on the physical partition
-    le32(&mut d, 84, 0); // and on the metadata partition
+    // Free on the physical partition and on the metadata partition: what
+    // the two bitmaps leave set, where there are bitmaps.
+    let (free, meta_free) = match &plan.room {
+        Some(room) => (room.free, plan.meta_blocks - plan.meta_used),
+        None => (0, 0),
+    };
+    le32(&mut d, 80, free as u32);
+    le32(&mut d, 84, meta_free as u32);
     le32(&mut d, 88, plan.partition_blocks as u32);
     le32(&mut d, 92, plan.meta_blocks as u32);
     let iu = 96;
@@ -1013,11 +1253,16 @@ fn integrity(plan: &Plan, rev: Revision, now: &Stamp) -> Vec<u8> {
 /// Fill in the tag: its identifier, where it is recorded, and the two sums
 /// that say it arrived intact.
 fn tag(d: &mut [u8], id: u16, location: u64) {
+    let crc_len = d.len() - 16;
+    tag_with(d, id, location, crc_len);
+}
+
+/// As [`tag`], with the checksum over only `crc_len` bytes past the tag.
+fn tag_with(d: &mut [u8], id: u16, location: u64, crc_len: usize) {
     le16(d, 0, id);
     le16(d, 2, 3); // descriptor version, 3 for UDF 2.00 and later
     le16(d, 6, 1); // tag serial number
-    let crc_len = d.len() - 16;
-    le16(d, 8, crc16(&d[16..]));
+    le16(d, 8, crc16(&d[16..16 + crc_len]));
     le16(d, 10, crc_len as u16);
     le32(d, 12, location as u32);
     // The checksum is of the tag itself, and of every byte of it but its own.
@@ -1314,6 +1559,45 @@ mod tests {
     /// down. `resize` shortens as readily as it lengthens, and an image
     /// written from a truncated file entry is one that says it is finished
     /// and is not.
+    #[test]
+    fn a_space_bitmap_marks_what_is_used() {
+        // Ten blocks, of which 2..5 are in use: set means free.
+        let d = space_bitmap(10, &[(2, 3)], 7);
+        assert_eq!(u16::from_le_bytes([d[0], d[1]]), TAG_SPACE_BITMAP);
+        assert_eq!(u32::from_le_bytes([d[12], d[13], d[14], d[15]]), 7);
+        assert_eq!(u16::from_le_bytes([d[10], d[11]]), 0); // no checksum past the tag
+        assert_eq!(u32::from_le_bytes([d[16], d[17], d[18], d[19]]), 10);
+        assert_eq!(u32::from_le_bytes([d[20], d[21], d[22], d[23]]), 2);
+        assert_eq!(d[24], 0b1110_0011);
+        // And the six bits past the last block are not free space.
+        assert_eq!(d[25], 0b0000_0011);
+    }
+
+    /// Laid out as a recorder lays out a BD-RE: the whole disc, the bitmap
+    /// after the metadata, the files from 32768 and the mirror where its is.
+    #[test]
+    fn an_overwritable_image_is_the_whole_disc() {
+        let mut tree = vec![
+            Node { name: String::new(), source: None, size: 0, children: vec![1], entry: 0, data: 0, blocks: 0, unique: 0 },
+            Node { name: "a".into(), source: Some("a".into()), size: 5 << 20, children: vec![], entry: 0, data: 0, blocks: 0, unique: 0 },
+        ];
+        let plan = lay_out(&mut tree, Access::Overwritable).unwrap();
+        assert_eq!(plan.sectors, 11_826_176);
+        assert_eq!(plan.partition_blocks, 11_825_600);
+        assert_eq!(plan.reserve_vds, 11_825_920);
+        assert_eq!(plan.mirror_entry, 11_809_504);
+        assert_eq!(plan.meta_blocks, 4096);
+        assert_eq!(tree[1].data, 32_768);
+        let room = plan.room.as_ref().unwrap();
+        assert_eq!(room.bitmap_at, 4128);
+        assert_eq!(room.bitmap_blocks, 722);
+        // 32 + 4096 + 736 + the file's 2560 + 32 + 4096 in use.
+        assert_eq!(room.free, 11_825_600 - (32 + 4096 + 736 + 2560 + 32 + 4096));
+        // A read-only image is only as long as what is in it.
+        let plan = lay_out(&mut tree, Access::ReadOnly).unwrap();
+        assert!(plan.room.is_none() && plan.sectors < 20_000);
+    }
+
     #[test]
     fn a_descriptor_too_large_for_its_block_is_refused() {
         assert!(sized(&vec![0u8; 216]).is_ok());

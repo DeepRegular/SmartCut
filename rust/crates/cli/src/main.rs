@@ -311,7 +311,11 @@ const HELP: &[(&str, &[(&str, &str)])] = &[
                 "--tables KIND",
                 "broadcast (default for .ts), partial (default for .m2ts), or muxer",
             ),
-            ("--no-data-broadcast", "Leave out the data broadcast (the d button's pages)"),
+            (
+                "--no-data-broadcast",
+                "Leave out the data broadcast (the d button's pages), which a .ts otherwise carries",
+            ),
+            ("--data-broadcast", "Ask for it outright: a cut that cannot carry it says so"),
         ],
     ),
     (
@@ -494,6 +498,7 @@ fn main() -> Result<()> {
     // What the image says may be done to the disc it is burned onto; see
     // `smartcut_core::udfw::Access`.
     let mut iso_access = smartcut_core::udfw::Access::default();
+    let mut iso_access_given = false;
     let mut programme: Option<String> = None;
     let mut given_channel: Option<String> = None;
     let mut given_number: Option<u16> = None;
@@ -548,7 +553,7 @@ fn main() -> Result<()> {
                     .filter(|s| *s > 0.0 && *s <= smartcut_core::transition::LONGEST)
                     .with_context(|| {
                         format!(
-                            "--transition-seconds wants 0 to {}, got {v:?}",
+                            "--transition-seconds wants more than 0 and up to {}, got {v:?}",
                             smartcut_core::transition::LONGEST
                         )
                     })?;
@@ -577,7 +582,14 @@ fn main() -> Result<()> {
                 i += 1;
                 let v = args.get(i).context("--transition-easing needs a curve")?;
                 let (curve, mode) = v.split_once(':').unwrap_or((v.as_str(), "in"));
-                easing = smartcut_core::transition::Easing::parse(curve, mode);
+                easing = smartcut_core::transition::Easing::try_parse(curve, mode)
+                    .with_context(|| {
+                        format!(
+                            "--transition-easing does not know {v:?}: a curve (none, back, \
+                             bounce, circle, elastic, exponential, power, sine, quadratic, \
+                             cubic, quartic, quintic) and :in, :out, :in-out or :out-in"
+                        )
+                    })?;
             }
             "--no-open-gop" => allow_open_gop = false,
             "--clean-joins" => clean_join = true,
@@ -817,6 +829,7 @@ fn main() -> Result<()> {
                 iso_access = smartcut_core::udfw::Access::parse(v).with_context(|| {
                     format!("--iso-access wants read-only or overwritable, got {v:?}")
                 })?;
+                iso_access_given = true;
             }
             "--disc-title" => {
                 i += 1;
@@ -839,7 +852,9 @@ fn main() -> Result<()> {
                 match v.split_once(',') {
                     Some((name, n)) => {
                         given_channel = Some(name.to_string());
-                        given_number = n.trim().parse().ok();
+                        given_number = Some(n.trim().parse().with_context(|| {
+                            format!("--channel {v:?}: the number after the comma is not one")
+                        })?);
                     }
                     None => given_channel = Some(v),
                 }
@@ -900,6 +915,22 @@ fn main() -> Result<()> {
     if fit.is_some() && !joined.is_empty() {
         bail!("--fit cannot yet count the recordings of a --join: fit them one at a time");
     }
+    // What happens between recordings, asked of a run that has only one:
+    // nothing reads it, and a run that ignores what it was told should say
+    // so rather than succeed.
+    if joined.is_empty() {
+        let join_only = [
+            ("--transition", crossing != smartcut_core::transition::Crossing::None),
+            ("--transition-seconds", crossing_secs != 1.0),
+            ("--transition-easing", easing != smartcut_core::transition::Easing::default()),
+            ("--transition-image", crossing_image.is_some()),
+            ("--join-fade-out", join_fade_out > 0.0),
+            ("--join-fade-in", join_fade_in > 0.0),
+        ];
+        if let Some((name, _)) = join_only.iter().find(|(_, given)| *given) {
+            bail!("{name} is about the joins between recordings and needs --join");
+        }
+    }
     // One past the last recording was taken as the last, without a word.
     if master > joined.len() {
         bail!(
@@ -907,6 +938,14 @@ fn main() -> Result<()> {
             master + 1,
             joined.len() + 1
         );
+    }
+    // Two answers to one question: the share would have been applied where
+    // the cut already fits, and replaced without a word where it does not.
+    if fit.is_some() && video_share.is_some() {
+        bail!("--fit works the share out and --video-share names it: give one");
+    }
+    if sound_only && (video_share.is_some() || audio_es) {
+        bail!("--sound-only writes the sound alone: --video-share and --audio-es have nothing to act on");
     }
     if fit.is_some() && sound_only {
         bail!("--fit shrinks the pictures, and --sound-only writes none");
@@ -917,7 +956,7 @@ fn main() -> Result<()> {
     if iso_only && iso.is_none() {
         bail!("--iso-only needs --iso 2.50|2.60: the image is made of the folder");
     }
-    if iso_access != smartcut_core::udfw::Access::default() && iso.is_none() {
+    if iso_access_given && iso.is_none() {
         bail!("--iso-access needs --iso 2.50|2.60: it is a thing the image says");
     }
     // A disc is a list of recordings with pictures in them; a clip of sound
@@ -1679,7 +1718,26 @@ fn main() -> Result<()> {
             } else {
                 smartcut_core::fit::Going::File
             };
-            let rates = smartcut_core::fit::rates(&src);
+            // The sound as it will be written: a track dropped or turned
+            // into linear PCM changes what the disc holds as much as the
+            // pictures do.
+            let to_ts = going == smartcut_core::fit::Going::Disc
+                || output.as_deref().is_some_and(|o| {
+                    let o = o.to_ascii_lowercase();
+                    [".ts", ".m2ts", ".mts", ".m2t"].iter().any(|e| o.ends_with(e))
+                });
+            let rates = smartcut_core::fit::rates_as_written(
+                &src,
+                &smartcut_core::fit::SoundAsked {
+                    codec: audio_codec,
+                    channels: audio_channels,
+                    sample_rate: audio_sample_rate,
+                    bits: audio_bits,
+                    bit_rate: audio_bit_rate,
+                    dropped: drop_streams.clone(),
+                    to_ts,
+                },
+            );
             let mut estimate = smartcut_core::fit::estimate_at(rates, kept, going);
             // The file's own rate stands in for everything a cut into a file
             // carries that was never counted -- see `fit::estimate`.
@@ -1698,6 +1756,11 @@ fn main() -> Result<()> {
             if f.fits {
                 println!("        it fits as it is");
                 video_share
+            } else if !f.reachable && f.video_bytes == 0 {
+                bail!(
+                    "this will not fit, and only MPEG-2 pictures can be written smaller: a \
+                     larger disc, or less of the recording."
+                );
             } else if !f.reachable {
                 bail!(
                     "this will not fit: the pictures would have to be written at {:.1}% of their \
@@ -1993,6 +2056,7 @@ fn main() -> Result<()> {
         }
         smartcut_core::sound::write(
             &pieces,
+            master,
             &out,
             &CutOptions {
                 audio_mode,

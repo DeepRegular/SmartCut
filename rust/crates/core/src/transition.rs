@@ -223,29 +223,51 @@ impl Easing {
         }
     }
 
+    /// Lenient: a name not on the list is a straight line, or "in". What a
+    /// project written by another version carries is read this way.
     pub fn parse(curve: &str, mode: &str) -> Easing {
-        let curve = match curve {
-            "back" => Curve::Back,
-            "bounce" => Curve::Bounce,
-            "circle" => Curve::Circle,
-            "elastic" => Curve::Elastic,
-            "exponential" => Curve::Exponential,
-            "power" => Curve::Power,
-            "sine" => Curve::Sine,
-            "quadratic" => Curve::Quadratic,
-            "cubic" => Curve::Cubic,
-            "quartic" => Curve::Quartic,
-            "quintic" => Curve::Quintic,
-            _ => Curve::None,
-        };
-        let mode = match mode {
-            "out" => Mode::Out,
-            "in-out" | "inout" => Mode::InOut,
-            "out-in" | "outin" => Mode::OutIn,
-            _ => Mode::In,
-        };
-        Easing { curve, mode }
+        Easing {
+            curve: curve_named(curve).unwrap_or_default(),
+            mode: mode_named(mode).unwrap_or_default(),
+        }
     }
+
+    /// Strict: `None` where either name is not on the list, so that a
+    /// command line can say so rather than quietly draw a straight line.
+    pub fn try_parse(curve: &str, mode: &str) -> Option<Easing> {
+        Some(Easing {
+            curve: curve_named(curve)?,
+            mode: mode_named(mode)?,
+        })
+    }
+}
+
+fn curve_named(name: &str) -> Option<Curve> {
+    Some(match name {
+        "none" => Curve::None,
+        "back" => Curve::Back,
+        "bounce" => Curve::Bounce,
+        "circle" => Curve::Circle,
+        "elastic" => Curve::Elastic,
+        "exponential" => Curve::Exponential,
+        "power" => Curve::Power,
+        "sine" => Curve::Sine,
+        "quadratic" => Curve::Quadratic,
+        "cubic" => Curve::Cubic,
+        "quartic" => Curve::Quartic,
+        "quintic" => Curve::Quintic,
+        _ => return None,
+    })
+}
+
+fn mode_named(name: &str) -> Option<Mode> {
+    Some(match name {
+        "in" => Mode::In,
+        "out" => Mode::Out,
+        "in-out" | "inout" => Mode::InOut,
+        "out-in" | "outin" => Mode::OutIn,
+        _ => return None,
+    })
 }
 
 /// The slow-at-the-start half of each curve. Everything else is this one

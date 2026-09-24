@@ -100,6 +100,11 @@ const SOURCE_PACKET: u64 = 192;
 /// map is not one turn out of step but wrong, and it is left as it reads.
 const TURNS: u32 = 64;
 
+/// One turn of the 33-bit clock, and the minute libavformat keeps back from
+/// the first timestamp when it decides which side of a turn a stamp is on.
+const WRAP: i64 = 1 << 33;
+const WRAP_MARGIN: i64 = 60 * 90_000;
+
 /// What wrote this disc.
 ///
 /// Two of the three are the halves of the Blu-ray specification and are read
@@ -1777,8 +1782,38 @@ fn entry_points(raw: &[u8]) -> Vec<(f64, u64)> {
         // a day), and every entry point after it came out a day before the
         // clip began and was thrown away. libavformat unwraps the clock it
         // hands over, and the map is unwrapped to match.
-        let mut wrapped = 0u64;
-        let mut earlier = 0u64;
+        //
+        // **By libavformat's own rule, and not by watching for the drop.**
+        // It takes the first timestamp it meets, less a minute, as a
+        // reference for the whole file: where that first timestamp is more
+        // than a minute short of the wrap, everything below the reference
+        // has 2^33 added; where it is inside that last minute, everything at
+        // or above the reference has 2^33 taken off instead. One reference,
+        // never reset -- so after a seam where the recorder's clock restarts
+        // low, what libavformat hands over has been moved up a turn, and an
+        // unwrapping that started again at each seam, as this did until
+        // 0.8.4, put that stretch's entry points a day away from its
+        // pictures. The first entry point stands in for the first packet:
+        // they are a picture's reordering apart, and the minute swallows it.
+        let reference = coarse
+            .first()
+            .map(|&(_, hi, _)| {
+                let v = u32be(raw, fine_at);
+                ((hi << 19) | (((v >> 17) & 0x7FF) as u64) << 9) as i64
+            })
+            .unwrap_or(0)
+            - WRAP_MARGIN;
+        let adds = reference + WRAP_MARGIN < WRAP - WRAP_MARGIN;
+        let unwrap = |pts: i64| -> i64 {
+            if adds && pts < reference {
+                pts + WRAP
+            } else if !adds && pts >= reference {
+                pts - WRAP
+            } else {
+                pts
+            }
+        };
+        let mut earlier = i64::MIN;
         // Each fine entry belongs to one coarse entry, so the coarse ones
         // hand them out in order and never twice. A map whose coarse entries
         // point back at fine ones already given out is not a map: taken as
@@ -1830,24 +1865,19 @@ fn entry_points(raw: &[u8]) -> Vec<(f64, u64)> {
                 // backwards.
                 while spn >= seams.get(seam).copied().unwrap_or(u64::MAX) {
                     seam += 1;
-                    earlier = 0;
-                    wrapped = 0;
-                }
-                pts += wrapped;
-                if pts + (1 << 32) < earlier {
-                    wrapped += 1 << 33;
-                    pts += 1 << 33;
+                    earlier = i64::MIN;
                 }
                 let mut turns = 0;
-                while pts < earlier && turns < TURNS {
+                while unwrap(pts as i64) < earlier && turns < TURNS {
                     ceiling += 0x10_0000;
                     pts += 0x10_0000;
                     turns += 1;
                 }
-                earlier = pts;
+                let at = unwrap(pts as i64);
+                earlier = at;
                 // A source packet is 192 bytes: a transport packet behind the
                 // four that say when it arrived.
-                out.push((pts as f64 / 90_000.0, spn * SOURCE_PACKET));
+                out.push((at as f64 / 90_000.0, spn * SOURCE_PACKET));
             }
         }
         return out;
@@ -2959,6 +2989,26 @@ mod tests {
         assert_eq!(ticks(found[2].0), (6 << 19) | (100 << 9));
         // And every time still climbs.
         assert!(found.windows(2).all(|w| w[0].0 < w[1].0));
+    }
+
+    /// A clip whose clock passes 2^33, unwrapped as libavformat unwraps the
+    /// stream: its first timestamp less a minute is the line.
+    #[test]
+    fn a_clock_that_wraps_is_unwrapped_as_libavformat_does() {
+        let ticks = |t: f64| (t * 90_000.0).round() as i64;
+        // Ninety seconds short of the wrap: what comes after it is moved up
+        // a turn.
+        let raw = clpi_with_ep_map(&[(0, 0x3FF0, 0), (1, 1, 200)], &[(0, 0), (0, 200)]);
+        let found = entry_points(&raw);
+        assert_eq!(ticks(found[0].0), 0x3FF0 << 19);
+        assert_eq!(ticks(found[1].0), (1 << 19) + (1 << 33));
+        // Eleven seconds short of it, inside the minute: libavformat takes
+        // the turn off what comes before instead, so the first entry point
+        // is below nought and the one after the wrap is left as it reads.
+        let raw = clpi_with_ep_map(&[(0, 0x3FFE, 0), (1, 1, 200)], &[(0, 0), (0, 200)]);
+        let found = entry_points(&raw);
+        assert_eq!(ticks(found[0].0), (0x3FFE << 19) - (1 << 33));
+        assert_eq!(ticks(found[1].0), 1 << 19);
     }
 
     #[test]

@@ -567,6 +567,15 @@ pub struct Reencoder {
     /// taken should be. See `take`, where a hole in the sound is filled.
     window: Option<(i64, i64)>,
     next: i64,
+    /// The end of the window being taken, held back from the encoder until
+    /// the window closes. See `close_window`.
+    stage: Pcm,
+    /// How long the fade-out at the end of that window is, in samples.
+    stage_tail: i64,
+    /// Silence fed ahead of the track, so that a packet boundary falls on
+    /// its first sample. See [`lead_in`], and `collect`, which takes it off
+    /// the stamps again.
+    lead: i64,
     /// Set when the frames are to leave here already framed, which is what
     /// keeps a re-encoded transport stream MPEG-2 AAC throughout -- and what
     /// gives a 4K recording's LATM frames their sync word.
@@ -620,6 +629,17 @@ impl Reencoder {
         // What the encoder settled on, which is the rate asked for wherever
         // the codec has it and the nearest it does have otherwise.
         let out_rate = encoder.rate();
+        // The encoder's delay as a lead of silence: see [`lead_in`]. Without
+        // it, AC-3's first packet covered 256 samples of priming and 1280 of
+        // the recording and was thrown away whole for the priming in it --
+        // the first 27 ms of every re-encoded AC-3 track, 14 ms of MP2's.
+        // Zero for AAC, whose delay is a whole frame.
+        let lead = if fixed {
+            let delay = unsafe { (*encoder.as_ptr()).initial_padding.max(0) as usize };
+            lead_in(delay, frame_size) as i64
+        } else {
+            0
+        };
         // Planar float in and planar float out: the resampler is here to
         // change the rate and nothing else, because the channels have
         // already been put right per frame on the way in and the encoder's
@@ -647,11 +667,14 @@ impl Reencoder {
             sample_rate: audio.sample_rate,
             out_rate,
             resample,
-            ready: vec![Vec::new(); channels as usize],
+            ready: vec![vec![0.0; lead as usize]; channels as usize],
             fed: 0,
             last_pts: None,
             window: None,
             next: 0,
+            stage: vec![Vec::new(); channels as usize],
+            stage_tail: 0,
+            lead,
             framing,
             enc_format,
             to_encoder: None,
@@ -689,6 +712,7 @@ impl Reencoder {
         self.last_pts = None;
         // The next recording's windows are counted on its own clock, and can
         // be the same numbers as the last one's.
+        self.close_window();
         self.window = None;
         // Built per frame from the shape the decoder hands over, so it
         // would rebuild itself -- but only when the shape changes, and the
@@ -752,8 +776,10 @@ impl Reencoder {
         at_out: Option<f64>,
     ) -> Result<()> {
         if self.window != Some(window) {
+            self.close_window();
             self.window = Some(window);
             self.next = window.0;
+            self.stage_tail = fades.tail;
             if let Some(at) = at_out {
                 self.align(at);
             }
@@ -800,26 +826,69 @@ impl Reencoder {
             let have = src.samples();
             let a = ((lo - first) as usize).min(have);
             let b = ((hi - first) as usize).min(have);
-            take_samples(src, self.channels, &mut self.pending, (a, b));
+            take_samples(src, self.channels, &mut self.stage, (a, b));
             // The fade rides on the samples as they are taken, before the
             // resampler and before the encoder: what is asked for is a shape
             // on the recording's sound, and this is the last place the sound
-            // is still the recording's.
-            if fades.any() && b > a {
+            // is still the recording's. The fade-in only: the fade-out is
+            // put on when the window closes, where the sound really ended.
+            let head = Fades { head: fades.head, tail: 0 };
+            if head.any() && b > a {
                 let added = b - a;
-                for ch in self.pending.iter_mut().take(self.channels) {
+                for ch in self.stage.iter_mut().take(self.channels) {
                     let held = ch.len();
-                    fade_run(&mut ch[held - added..], first + a as i64, window, fades);
+                    fade_run(&mut ch[held - added..], first + a as i64, window, head);
                 }
             }
+            self.spill();
         }
         Ok(())
     }
 
     /// Silence, at the recording's rate, after what is waiting.
     fn silence(&mut self, samples: usize) {
-        for ch in self.pending.iter_mut().take(self.channels) {
+        for ch in self.stage.iter_mut().take(self.channels) {
             ch.extend(std::iter::repeat_n(0.0, samples));
+        }
+        self.spill();
+    }
+
+    /// Hand on everything but what the fade-out may yet fall on.
+    fn spill(&mut self) {
+        let keep = self.stage_tail.max(0) as usize;
+        let len = self.stage[0].len();
+        if len <= keep {
+            return;
+        }
+        for ch in 0..self.channels {
+            let out: Vec<f32> = self.stage[ch].drain(..len - keep).collect();
+            self.pending[ch].extend(out);
+        }
+    }
+
+    /// The window is over: put the fade-out on and hand the rest on.
+    ///
+    /// **Aimed at the last sample there was, not at the window's end.** A
+    /// range cut to the pictures at the end of a recording runs on past the
+    /// sound -- a broadcast's audio stops a little before its pictures do --
+    /// and a ramp aimed at the range's end was still a fifth of the way up
+    /// when the sound ran out: the fade-out stopped dead at a quarter of its
+    /// level. The patched frames of a spliced track were put right the same
+    /// way; see `ends` in [`boundary_patches`].
+    fn close_window(&mut self) {
+        let len = self.stage[0].len();
+        if len > 0 && self.stage_tail > 0 {
+            if let Some((from, _)) = self.window {
+                let fades = Fades { head: 0, tail: self.stage_tail };
+                let first = self.next - len as i64;
+                for ch in self.stage.iter_mut().take(self.channels) {
+                    fade_run(ch, first, (from, self.next), fades);
+                }
+            }
+        }
+        for ch in 0..self.channels {
+            let out = std::mem::take(&mut self.stage[ch]);
+            self.pending[ch].extend(out);
         }
     }
 
@@ -829,7 +898,7 @@ impl Reencoder {
     /// late is the lesser harm.
     fn align(&mut self, at: f64) {
         let out = f64::from(self.out_rate.max(1));
-        let laid = self.fed as f64
+        let laid = (self.fed - self.lead) as f64
             + self.ready[0].len() as f64
             + self.pending[0].len() as f64 * out / f64::from(self.sample_rate.max(1));
         let short = at * out - laid;
@@ -943,6 +1012,7 @@ impl Reencoder {
         // Everything still on the input side, and then the resampler's own
         // tail after it -- in that order, or the last few milliseconds of
         // the track arrive in front of the samples they follow.
+        self.close_window();
         self.convert()?;
         self.flush_resampler()?;
         self.drain(out)?;
@@ -970,9 +1040,10 @@ impl Reencoder {
             if self.encoder.receive_packet(&mut packet).is_err() {
                 return Ok(());
             }
-            // The priming packet holds the encoder's warm-up and nothing of
-            // the audio, so there is nothing in it to write.
-            let Some(pts) = at_sample(&packet) else {
+            // The priming packet holds the encoder's warm-up and the lead of
+            // silence, and nothing of the audio, so there is nothing in it to
+            // write. The rest are stamped from the first sample of the track.
+            let Some(pts) = at_sample(&packet).map(|p| p - self.lead).filter(|&p| p >= 0) else {
                 continue;
             };
             let packet = match &self.framing {

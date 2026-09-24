@@ -176,6 +176,86 @@ pub fn audio_rate(a: &crate::AudioInfo) -> f64 {
     f64::from(a.sample_rate) * f64::from(a.channels) * f64::from(a.bits.max(16))
 }
 
+/// What the sound will be written as, where a command line asked for it to
+/// be written differently from how it came.
+///
+/// Each field is `None` (or [`crate::cut::AudioCodec::Source`]) for "as the
+/// recording has it".
+#[derive(Clone, Debug, Default)]
+pub struct SoundAsked {
+    pub codec: crate::cut::AudioCodec,
+    pub channels: Option<u16>,
+    pub sample_rate: Option<u32>,
+    pub bits: Option<u8>,
+    pub bit_rate: Option<usize>,
+    /// Stream indices left out of the cut.
+    pub dropped: Vec<usize>,
+    /// Whether the cut is going into a transport stream, where linear PCM
+    /// is carried in pairs of channels.
+    pub to_ts: bool,
+}
+
+/// [`rates`], with the sound counted as it will be written rather than as it
+/// came in: a track left out costs nothing, and one re-encoded costs what
+/// the encoder spends. The window does the same sum for its disc gauge
+/// (`soundRate` in `app.js`); `--fit` asked the recording, and a cut to
+/// linear PCM came out a gigabyte and more past the disc it was fitted to.
+pub fn rates_as_written(src: &Source, asked: &SoundAsked) -> Rates {
+    let mut r = rates(src);
+    r.audio = src
+        .audios
+        .iter()
+        .filter(|a| !asked.dropped.contains(&a.stream_index))
+        .map(|a| written_rate(a, asked))
+        .sum();
+    r
+}
+
+fn written_rate(a: &crate::AudioInfo, asked: &SoundAsked) -> f64 {
+    use crate::cut::AudioCodec;
+    let target = match asked.codec {
+        AudioCodec::Source => a.codec.as_str(),
+        c => c.as_str(),
+    };
+    let pcm = target == "lpcm" || target.starts_with("pcm_");
+    // Lossless sound is carried through frame by frame unless a codec was
+    // named for it -- see `plan_audio`.
+    let whole = matches!(a.codec.as_str(), "dts" | "truehd" | "mlp")
+        && asked.codec == AudioCodec::Source;
+    let channels = asked.channels.unwrap_or(a.channels);
+    let rewritten = !whole
+        && (target != a.codec
+            || channels != a.channels
+            || asked.sample_rate.is_some_and(|r| r != a.sample_rate)
+            || asked.bit_rate.is_some()
+            || (pcm && asked.bits.is_some_and(|b| b != a.bits)));
+    if !rewritten {
+        return audio_rate(a);
+    }
+    if pcm {
+        let rate = asked.sample_rate.unwrap_or(a.sample_rate);
+        let bits = asked.bits.unwrap_or(a.bits).max(16);
+        let paid = if asked.to_ts { channels + channels % 2 } else { channels };
+        return f64::from(rate) * f64::from(paid) * f64::from(bits);
+    }
+    if let Some(b) = asked.bit_rate {
+        return b as f64;
+    }
+    if target != a.codec {
+        return ff::decoder::find_by_name(target)
+            .map(|c| crate::cut::derived_bit_rate(c.id(), channels) as f64)
+            .unwrap_or_else(|| audio_rate(a));
+    }
+    // The recording's own codec, folded: its figure comes down with the
+    // channels, as the cut takes it down.
+    let own = audio_rate(a);
+    if a.channels > 0 && channels != a.channels {
+        (own * f64::from(channels) / f64::from(a.channels)).max(128_000.0)
+    } else {
+        own
+    }
+}
+
 /// What a cut of this recording is expected to come to.
 pub fn estimate(src: &Source, keeps: &[(f64, f64)], going: Going) -> Estimate {
     let seconds = if keeps.is_empty() {

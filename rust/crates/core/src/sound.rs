@@ -49,8 +49,12 @@ pub struct Piece<'a> {
 }
 
 /// Write the sound of a cut, or of a list of them joined, as one file.
-pub fn write(pieces: &[Piece], output: &str, opts: &CutOptions) -> Result<()> {
-    write_with_progress(pieces, output, opts, None)
+///
+/// `master` is the piece the file takes its shape from -- its track, its
+/// codec, its rate -- as [`crate::cut::join`] takes it; out of range is the
+/// last.
+pub fn write(pieces: &[Piece], master: usize, output: &str, opts: &CutOptions) -> Result<()> {
+    write_with_progress(pieces, master, output, opts, None)
 }
 
 /// As [`write`], reporting how far along it is.
@@ -61,6 +65,7 @@ pub fn write(pieces: &[Piece], output: &str, opts: &CutOptions) -> Result<()> {
 /// range is seconds rather than minutes.
 pub fn write_with_progress(
     pieces: &[Piece],
+    master: usize,
     output: &str,
     opts: &CutOptions,
     progress: Option<Report>,
@@ -72,7 +77,7 @@ pub fn write_with_progress(
         piece.src.input.refuse_as_output(output)?;
     }
     let ours = !std::path::Path::new(output).exists();
-    let done = run(pieces, output, opts, progress);
+    let done = run(pieces, master, output, opts, progress);
     if done.is_err() && ours {
         // The same bargain the picture writer makes: a run that failed leaves
         // nothing behind that reads as an answer.
@@ -159,38 +164,45 @@ fn window(range: (f64, f64), rate: u32) -> (i64, i64) {
 
 fn run(
     pieces: &[Piece],
+    master: usize,
     output: &str,
     opts: &CutOptions,
     progress: Option<Report>,
 ) -> Result<()> {
     crate::init()?;
-    let first = pieces.first().ok_or_else(|| anyhow!("nothing to write"))?;
+    if pieces.is_empty() {
+        return Err(anyhow!("nothing to write"));
+    }
+    // The piece the file takes its shape from; the tracks it declares are
+    // the master's, as the picture writer's are.
+    let master = master.min(pieces.len() - 1);
+    let shape = &pieces[master];
     let ranges_in_all: usize = pieces.iter().map(|p| p.ranges.len()).sum();
     if ranges_in_all == 0 {
         return Err(anyhow!("nothing is kept, so there is no sound to write"));
     }
     let kept = overlapped(pieces);
-    let info = track_of(first.src, opts)?.clone();
-    let tracks = first
+    let info = track_of(shape.src, opts)?.clone();
+    let tracks = shape
         .src
         .audios
         .iter()
         .filter(|a| !opts.drop_streams.contains(&a.stream_index))
         .count();
-    let many = first.src.audios.len() > 1;
+    let many = shape.src.audios.len() > 1;
     if tracks > 1 {
         crate::note_once(format!(
             "note: {} carries {tracks} sound tracks and an audio file is written with one. \
              The first is written; the rest are left out.",
-            first.src.path,
+            shape.src.path,
         ));
     }
     // What the track becomes. Settled by the picture writer's own planner, so
     // that an audio-only run and an ordinary one cannot disagree about it.
     let mut setup =
-        crate::cut::plan_audio(&first.src.input.url, &info, opts, false, first.src.on_a_ts, many)?;
+        crate::cut::plan_audio(&shape.src.input.url, &info, opts, false, shape.src.on_a_ts, many)?;
     // A recording joined on whose sound is written another way cannot be
-    // copied into a stream declared as the first one's. The picture writer
+    // copied into a stream declared as the master's. The picture writer
     // re-encodes just those reels to the master's shape; with one track and
     // no pictures, re-encoding the whole of it comes to the same file.
     //
@@ -199,13 +211,13 @@ fn run(
     let framing = |src: &Source| {
         (info.codec == "aac").then(|| crate::aac::of_source(src).map(|f| f.as_str()))
     };
-    let first_framing = framing(first.src);
-    let unlike = pieces.iter().skip(1).any(|p| {
+    let shape_framing = framing(shape.src);
+    let unlike = pieces.iter().enumerate().filter(|&(n, _)| n != master).any(|(_, p)| {
         track_of(p.src, opts).is_ok_and(|t| {
             t.codec != info.codec
                 || t.sample_rate != info.sample_rate
                 || t.channels != info.channels
-                || framing(p.src) != first_framing
+                || framing(p.src) != shape_framing
         })
     });
     if unlike && setup.mode != AudioMode::Reencode {
@@ -275,7 +287,7 @@ fn run(
         ));
     }
 
-    let ictx = crate::input::demux(&first.src.input.url)?;
+    let ictx = crate::input::demux(&shape.src.input.url)?;
     let params = ictx
         .stream(info.stream_index)
         .ok_or_else(|| anyhow!("audio stream {} vanished", info.stream_index))?
@@ -399,9 +411,10 @@ fn run(
         };
         // A reel of another recording is another stream: the decoder inside
         // the re-encoder has to be told, or it reads the next recording's
-        // frames against the one before it.
+        // frames against the one before it. It was opened on the master's,
+        // which need not be the first.
         if let Some(re) = recoder.as_mut() {
-            if n > 0 {
+            if n > 0 || n != master {
                 let probe = crate::input::demux(&piece.src.input.url)?;
                 let theirs = probe
                     .stream(track.stream_index)
