@@ -197,6 +197,10 @@ What that costs is that the data sits in the decoder's buffer for as long as
 the reference moved, so the rate is chosen to keep the move small: the
 slowest rate that moves no reference by more than a fifth of a second, found
 by searching between 25.8 and 48 Mbit/s, and the fastest where no rate does.
+A stream that even 48 Mbit/s would have to move by more than a second is
+refused. Until 0.8.3 it was written: a cut that averages above 48 Mbit/s, a
+UHD Blu-ray's say, had its first reference dragged tens of minutes ahead of
+its picture, and past zero it wrapped round to the far end of the clock.
 
 **A fifth of a second, because a tenth does not reach the rate a disc is
 written at.** At a tenth, six recordings off one broadcast came out between 32
@@ -567,12 +571,19 @@ are the ones the recorder fills in.
 
 ## Adding to a disc
 
-A run writes onto the disc rather than over it. The numbering continues from
-the highest `00NNN.m2ts` already in `STREAM`, the table in `info.bdav` is
-written from every playlist in `PLAYLIST` rather than only from the ones just
-made, and nothing this writes ever removes a recording somebody else put
-there. An evening's second batch belongs beside the first, which is how a
-recorder behaves and what makes a disc worth filling over a week.
+A run writes onto the disc rather than over it. The numbering continues past
+the highest number the disc uses anywhere — a stream in `STREAM`, a clip index
+in `CLIPINF`, a playlist in `PLAYLIST`, the recorder's own virtual playlists
+(`.vpls`, its edits) among them — the table in `info.bdav` is written from
+every playlist in `PLAYLIST` rather than only from the ones just made, and
+nothing this writes ever removes a recording somebody else put there. An
+evening's second batch belongs beside the first, which is how a recorder
+behaves and what makes a disc worth filling over a week.
+
+Each number is taken by creating its stream, empty, before it is handed out.
+Read and not reserved, as it was until 0.8.3, two runs into one folder at
+once — two command lines, or one beside the window's export — were given the
+same number and wrote over each other's recording.
 
 The disc's own name is the one exception: it is one name for the disc, so the
 one on the screen wins.
@@ -584,7 +595,10 @@ left is a stream no playlist names, one the next run's numbering walks past
 and any image made of the disc afterwards carries. Those streams -- and the
 stream of a recording whose cut failed while the rest of the list went on --
 are removed at the end of the run. Only the numbers the run itself was given
-are ever named, so nothing another run put on the disc is touched.
+are ever named, so nothing another run put on the disc is touched. The same
+goes for the index: a recording that cannot be indexed — the disk filled
+while its arrival times were rewritten, say — is taken off the disc with those
+after it, and the ones before it are still put in the table.
 
 ## The image
 

@@ -1260,6 +1260,11 @@ not optional: of the units on the disc measured here, **not one carries a stop
 of its own**. Each subtitle stands until the next replaces it, so a cut that
 ended in the middle of one would leave it standing with nothing coming.
 
+A unit written again at a range's opening has its stop, where it has one,
+counted from the range's first frame. A stop counts from when its unit is
+shown, and until 0.8.3 the unit went out as it was: the line stood for as long
+again as it had already been up before the range began.
+
 #### A DVD's subtitles, converted into a Blu-ray's
 
 **The default, because the cut should be one file.** This takes the picture out
@@ -1285,6 +1290,12 @@ standing, a unit that said when to go is taken down at its own moment, and
 what is still up when a range ends is taken down there. It is the same
 mending the two ends of a range get [above](#the-subtitles-a-disc-draws), done
 from the other side.
+
+A unit with nothing to show — a stop on its own, or a picture that is all
+transparent — is how a disc takes a subtitle down, and libavcodec answers one
+by decoding nothing. Until 0.8.3 that nothing was passed over, and the line it
+should have taken down stood until the next one arrived. It now clears the
+plane at the moment the unit is shown.
 
 #### A Blu-ray's subtitles, written as a DVD's
 

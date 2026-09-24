@@ -30,6 +30,7 @@ smartcut input.ts --cut 8.0-20.0 --bdav ~/disc  # onto a disc instead of a file
 - **`--analyze` writes no cut.** It prints the plan — what gets copied and what
   gets rebuilt. Running it first is the safe way to check before committing.
   (What other options write is still written: a `--seek-index` file, say.)
+- `smartcut --help` lists every option, grouped by what it is for.
 
 ## Choosing where to cut
 
@@ -59,7 +60,7 @@ smartcut input.ts --cut 8.0-20.0 --bdav ~/disc  # onto a disc instead of a file
 | Option | Meaning |
 |---|---|
 | `--join RECORDING` | Another recording, written into the same output after this one. **Repeatable**, and they go in the order they are named |
-| `--master N` | Which of them the output takes its shape from — frame size, rate, codec, sound tracks, tables. Counting the first as 1. **Left out, it is the first** |
+| `--master N` | Which of them the output takes its shape from — frame size, rate, codec, sound tracks, tables. Counting the first as 1. **Left out, it is the first**. A number past the last recording is refused |
 
 `--keep` and `--cut` belong to the first recording; a joined one is written
 whole. A command line giving every file its own ranges would be a project file
@@ -177,7 +178,7 @@ refused rather than quietly ignored.
 
 | Option | Meaning |
 |---|---|
-| `--seek-index PATH` | Where to keep the seek index. Written on the first run and read on the next, which saves walking the recording again |
+| `--seek-index PATH` | Where to keep the seek index. Written on the first run and read on the next, which saves walking the recording again. One that cannot be read — another version's, or a damaged one — is made again |
 | `--index auto\|disc\|scan\|container` | Where the entry points come from. `auto`, the default, asks whoever already knows and falls back: the disc's own map, then the container's seek table, then the walk over the packets. `disc` and `container` ask one of those and stop; `scan` always walks, which is what a transport stream needs — it has neither table. A container table is taken only where it covers the whole recording |
 | `--proxy` | Build the editing proxy (a light stand-in file) beside the recording and stop (`.proxy.mp4`, or `-o`) |
 | `--as-proxy` | Treat the input as a proxy rather than a recording — how a proxy is checked against what it stands in for |
@@ -200,7 +201,7 @@ language (`cut_title.eng.sup`). See
 
 | Option | Meaning |
 |---|---|
-| `--vc1-quant 3..31` | How finely the join pictures of VC-1 material are written; 3 is the finest. The default is 4, which lands around 46 dB against the pictures it replaces |
+| `--vc1-quant 3..31` | How finely the join pictures of VC-1 material are written; 3 is the finest. The default is 4, which lands around 46 dB against the pictures it replaces. On material that uses overlap smoothing, anything coarser than 8 is written at 8 |
 
 This setting exists only for VC-1 because **there is no VC-1 encoder anywhere** —
 not in FFmpeg, not on a graphics card. SmartCut writes those join pictures

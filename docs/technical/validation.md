@@ -293,6 +293,31 @@ These only surfaced on real material:
   (`input::keep_with_pictures`), and a track with nothing in the ranges kept is left
   out of the cut with a note rather than failing it at the end.
   `run_bilingual_tests.sh` builds that shape and counts the bytes read.
+- **Other reads could run to the end of the file, until 0.8.3.** The same shape of
+  fault in three more places: a read that stopped on an error only at the end of the
+  file (ffmpeg-next's packet iterator retries every other error at once and for ever,
+  so a recording on a share that went away spun a core and could not be stopped);
+  the look back for a DVD's or a Blu-ray's subtitles before each range, which on a
+  track with nothing after the range's start read the rest of the title once per
+  range; and a disc's entry-point map whose clock passed 2^33 inside a clip, whose
+  entry points after that were all thrown away. Reads now go through
+  `input::Packets`, which gives up after a run of failures, the look backs keep the
+  pictures as their clock, and the map is unwrapped to match the stream libavformat
+  hands over. A read that gave up is not the end of the file to a pass that writes:
+  the cut stops with an error, rather than ending where the share went away and
+  saying it had succeeded.
+- **Re-encoded sound was laid end to end, until 0.8.3.** Its packets were placed by
+  the samples fed to the encoder, so every stretch the track did not have — a dropout
+  in a broadcast, a track that starts after the pictures or stops before them, a
+  joined recording without the track — moved everything after it earlier by as much.
+  A hole is now filled with silence, and each range's sound starts where its pictures
+  do. On a test recording with a two-second hole, the beeps after it came out two
+  seconds early; they now land within 5 ms of where a copy puts them.
+- **The logo and the scene signature read ten-bit pictures as eight-bit ones, until
+  0.8.3.** A sample of HEVC Main10 is two bytes, and both passes read bytes: a corner
+  at the right of the picture was read from near its middle. The logo strength of a
+  test pattern came out 8413 at ten bits against 2325 at eight; it is 2305 now.
+  `Luma8` reads either.
 - **Dolby Vision survives a copy but not a re-encode.** The RPU on every picture is
   copied with it, so a range whose ends fall on the recording's own entry points comes
   through with all of them; the pictures rewritten at a seam have none, because
@@ -313,6 +338,14 @@ These only surfaced on real material:
   and two things in the format are refused by name rather than written wrongly: a
   pan-scan window, and a quantiser that varies at the picture edges (`DQUANT=2`).
   Field pictures are read but written back as interlaced frames.
+  Two things in the entry point are answered rather than refused. Where it allows
+  overlap smoothing, pictures are held at PQUANT 8 or finer, because a decoder smooths
+  every intra picture coarser than that and this encoder does not prepare for it
+  (until 0.8.3 they were not: 37.9 dB against 42.3 now, on a patched progressive
+  source). Range mapping (`RANGE_MAPY`/`RANGE_MAPUV`) needs nothing: libavcodec does
+  not apply it ("Luma scaling is not supported"), so the pictures handed over are in
+  the coded range and are written back in it. Narrowing them first was tried and
+  measured at 17 dB.
 - **One video track only**, and in the Python reference implementation one audio track
   only. The Rust engine reads every sound track the recording carries and writes them
   all, and carries every kind of subtitle across when writing a `.ts`: the ARIB

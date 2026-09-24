@@ -56,6 +56,17 @@ Two routes to trimming in the container were tried, and both are dead ends:
 That leaves re-encoding, which is what `--audio-mode reencode` does: each interval's
 audio is cut sample-exactly and fed continuously into a single encoder.
 
+Continuously, but not blindly end to end. Until 0.8.3 a packet's place was the
+count of samples fed before it, so a stretch the track did not have — a
+dropout in a broadcast, sound that starts after the pictures or stops before
+them, a joined recording without the track — moved everything after it earlier
+by as much. Now a hole of more than a frame inside a range is filled with
+silence, and at the start of each range silence is added until the sound
+reaches the output time the range's pictures start at. The frame before each
+range's first is decoded as well and thrown away: AAC, AC-3 and MP2 decode a
+frame against the one before it, and without it the first frame of every range
+was mixed with the end of the range before — a click at each join.
+
 A trap hit while implementing smart mode: audio frames straddling a segment boundary
 were submitted twice, once from each of the two adjacent segments, and the error
 accumulated one AAC frame (21.3 ms) at a time. Fixed by adopting the same exclusive
