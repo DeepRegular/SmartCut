@@ -2558,8 +2558,25 @@ fn clip_name(path: &str) -> String {
     path.rsplit(['/', '\\']).next().unwrap_or(path).to_string()
 }
 
-/// Ask the clip list's background passes to stop: `"index"`, `"cm"`, or
-/// both when no lane is named.
+/// Stop every read of the pass on this thread once its lane is asked to stop.
+///
+/// Each pass also asks for itself between its phases, and the walk and the
+/// pictures inside their reads; the detections did not, and ran to the end
+/// of the recording after 解析を中止. See
+/// [`smartcut_core::input::stop_reads_when`].
+fn stop_reads_on(
+    app: &tauri::AppHandle,
+    lane: fn(&BatchStop) -> &AtomicU64,
+    mine: u64,
+) -> smartcut_core::input::StopReads {
+    let app = app.clone();
+    smartcut_core::input::stop_reads_when(move || {
+        lane(&app.state::<BatchStop>()).load(Ordering::SeqCst) != mine
+    })
+}
+
+/// Ask the clip list's background passes to stop: one lane (`"walk"`,
+/// `"pics"`, `"cm"`, `"blank"`, `"quiet"`), or all five when none is named.
 ///
 /// It says nothing about what comes after. A pass that has not started yet
 /// takes the count as it finds it, so there is nothing to undo and no
@@ -2763,6 +2780,7 @@ fn index_clip_now(
     // What the lane had been asked to stop before this pass existed is not
     // about this pass. See [`BatchStop`].
     let mine = app.state::<BatchStop>().walk.load(Ordering::SeqCst);
+    let _reads = stop_reads_on(app, |s| &s.walk, mine);
     let stopped = move || app.state::<BatchStop>().walk.load(Ordering::SeqCst) != mine;
     // Named by the lane as well as by the clip. The two index lanes run at
     // the same time on different recordings, and a recording can be in the
@@ -2949,6 +2967,7 @@ fn clip_pictures_now(
 ) -> Result<ClipPictures, String> {
     let began = std::time::Instant::now();
     let mine = app.state::<BatchStop>().pics.load(Ordering::SeqCst);
+    let _reads = stop_reads_on(app, |s| &s.pics, mine);
     let stopped = move || app.state::<BatchStop>().pics.load(Ordering::SeqCst) != mine;
     if stopped() {
         return Err("cancelled".into());
@@ -4116,13 +4135,15 @@ fn opened_clone(app: &tauri::AppHandle, path: &str) -> Option<Source> {
 /// clip that was never opened, so the recording answers for its own pictures
 /// when a boundary is refined.
 ///
-/// [`BatchStop`] is read at the ends and not in the middle: none of the three
-/// passes takes a stop, so asking the list to stop lands between clips rather
-/// than inside one.
+/// [`BatchStop`] is read at the ends, and in the middle by every read the
+/// passes make (see [`stop_reads_on`]). Read only at the ends, as it was until
+/// 0.8.4, a stop landed when the detection had finished -- minutes, on a long
+/// broadcast -- and the list sat saying it was busy until then.
 #[tauri::command]
 async fn detect_cm_at(path: String, app: tauri::AppHandle) -> Result<CmResult, String> {
     off_thread_behind(move || {
         let mine = app.state::<BatchStop>().cm.load(Ordering::SeqCst);
+        let _reads = stop_reads_on(&app, |s| &s.cm, mine);
         let stopped = || app.state::<BatchStop>().cm.load(Ordering::SeqCst) != mine;
         if stopped() {
             return Err("cancelled".into());
@@ -4505,6 +4526,10 @@ fn blank_now(
             pictures: r.pictures,
         })
         .collect();
+    // Part of an answer, ended by 解析を中止: not one to keep.
+    if smartcut_core::input::reads_stopped() {
+        return Err("cancelled".into());
+    }
     remember_flat(
         app,
         path,
@@ -4549,6 +4574,9 @@ fn quiet_now(
             pictures: 0,
         })
         .collect();
+    if smartcut_core::input::reads_stopped() {
+        return Err("cancelled".into());
+    }
     remember_flat(
         app,
         path,
@@ -4641,6 +4669,7 @@ async fn detect_blank_at(
 ) -> Result<Vec<FlatRun>, String> {
     off_thread_behind(move || {
         let mine = app.state::<BatchStop>().blank.load(Ordering::SeqCst);
+        let _reads = stop_reads_on(&app, |s| &s.blank, mine);
         let stopped = || app.state::<BatchStop>().blank.load(Ordering::SeqCst) != mine;
         if stopped() {
             return Err("cancelled".into());
@@ -4707,6 +4736,7 @@ async fn detect_quiet_at(
 ) -> Result<Vec<FlatRun>, String> {
     off_thread_behind(move || {
         let mine = app.state::<BatchStop>().quiet.load(Ordering::SeqCst);
+        let _reads = stop_reads_on(&app, |s| &s.quiet, mine);
         let stopped = || app.state::<BatchStop>().quiet.load(Ordering::SeqCst) != mine;
         if stopped() {
             return Err("cancelled".into());
@@ -5231,6 +5261,7 @@ async fn export(
             }];
             smartcut_core::sound::write_with_progress(
                 &pieces,
+                0,
                 &output,
                 &opts,
                 Some(Box::new(move |_, done, within| {
@@ -5497,6 +5528,7 @@ async fn export_joined(
                 .collect();
             smartcut_core::sound::write_with_progress(
                 &pieces,
+                master,
                 &output,
                 &opts,
                 Some(Box::new(move |_, done, within| {

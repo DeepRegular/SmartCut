@@ -1153,6 +1153,39 @@ if (listen) {
 const lanes = { walk: false, pics: false, cm: false, blank: false, quiet: false };
 const running = () => lanes.walk || lanes.pics || lanes.cm || lanes.blank || lanes.quiet;
 
+/// Set between a press on 解析を中止 and the last pass giving up.
+///
+/// The stop is a counter the passes read as they go, so what is running
+/// ends a moment after the press rather than at it -- and until 0.8.4 a
+/// detection read on to the end of the recording first. The list said
+/// 解析を止めました at once all the same, and the button went on offering
+/// 解析を中止 until the pass came back: a press that looked as if it had done
+/// nothing. So the button says 中止しています… for as long as that takes, and
+/// the sentence waits for it. See `stopSettled`.
+let stopping = false;
+
+/// The last pass has come back since 解析を中止: say so, and say whether
+/// there is anything left for 解析を再開 to pick up.
+function stopSettled() {
+  if (!stopping || running()) return;
+  stopping = false;
+  // A run started in the meantime has the line for what it is doing, and
+  // this sentence would sit over it on the output screen.
+  if (!exporting && !starting) note(t(queuedWork() ? "list.stopped" : "list.stoppedAll"));
+  paintButtons();
+}
+
+/// Whether any row is waiting for a pass.
+const queuedWork = () =>
+  clips.some(
+    (c) =>
+      c.state === "queued" ||
+      c.pics === "queued" ||
+      c.cmState === "queued" ||
+      c.blankState === "queued" ||
+      c.quietState === "queued"
+  );
+
 /// Raised by 解析を中止 and while an export is running. Not the same as an
 /// empty queue: the work is still queued, it is just not being taken.
 let paused = false;
@@ -1167,6 +1200,13 @@ function resumeLanes() {
     return;
   }
   paused = false;
+  // Going again before the stop had landed: nothing is stopping any more,
+  // and the button left saying 中止しています… could not be pressed until
+  // every pass started after it had finished.
+  if (stopping) {
+    stopping = false;
+    paintButtons();
+  }
 }
 
 /// Whether somebody asked for the lanes to go again while a run was writing.
@@ -1278,6 +1318,7 @@ async function pumpLane(lane) {
     lanes[lane] = false;
     paintButtons();
     paintQueueNote();
+    stopSettled();
   }
 }
 
@@ -2241,16 +2282,11 @@ function paintButtons() {
   el("detect-selected").disabled = !can.detect;
   el("detect-blank-selected").disabled = !can.detectBlank;
   el("detect-quiet-selected").disabled = !can.detectQuiet;
-  const queued = clips.some(
-    (c) =>
-      c.state === "queued" ||
-      c.pics === "queued" ||
-      c.cmState === "queued" ||
-      c.blankState === "queued" ||
-      c.quietState === "queued"
+  const queued = queuedWork();
+  el("stop-batch").disabled = stopping || (!busy && !(paused && queued));
+  el("stop-batch").textContent = t(
+    stopping ? "list.stopping" : paused && queued && !busy ? "side.resumeBatch" : "side.stopBatch"
   );
-  el("stop-batch").disabled = !busy && !(paused && queued);
-  el("stop-batch").textContent = t(paused && queued && !busy ? "side.resumeBatch" : "side.stopBatch");
   el("move-up").disabled = !can.move;
   el("move-down").disabled = !can.move;
   el("select-all").disabled = clips.length === 0;
@@ -2643,6 +2679,19 @@ async function remove(doomed) {
   clips = clips.filter((c) => !gone.has(c.id));
   anchor = -1;
   renderList();
+  // The line above the list named what the lanes were on, and a row taken
+  // out is not being read whatever the pass behind it is still doing.
+  paintQueueNote();
+  // An empty list has nothing to stop or to resume. Left stood aside, the
+  // next file added sat at 解析待ち with nothing on screen saying why, and
+  // the sentence about 解析を再開 stayed up over a list with nothing in it.
+  if (!clips.length) {
+    // Including 中止しています…: `resumeLanes` lets go of the stop, so the
+    // pass that comes back after it has no sentence left to replace it with.
+    sticky = "";
+    resumeLanes();
+    paintQueueNote();
+  }
   // And now the passes. A clip being read right now has one behind it that
   // has to be told to stop, or it would go on reading a file nothing is
   // listed against. Only the lanes that are on one of these clips: the others
@@ -2690,10 +2739,12 @@ el("stop-batch").addEventListener("click", async () => {
     return;
   }
   paused = true;
+  stopping = true;
   note(t("list.stopping"));
-  await invoke("stop_batch", { lane: null });
-  note(t("list.stopped"));
   paintButtons();
+  await invoke("stop_batch", { lane: null });
+  // Said when the last pass has given up, which may be now.
+  stopSettled();
 });
 
 function move(dir) {
@@ -5977,7 +6028,16 @@ async function reencodeOf(clip) {
   const outDur = keeps.reduce((n, k) => n + (k.b - k.a), 0) || 1;
   const out = segs.map((g) => srcToOut(keeps, g.start) ?? 0);
   const at = out.map((o) => o / outDur);
-  clip.reencode = { sig, plan, segs, shots, out, at };
+  // And where the picture on the stage is. Not the segment's start, which is
+  // what `out` is for: the picture is the middle of the segment, and the
+  // number printed under it was the start's -- as many frames off as half
+  // the segment is long, which is most of a GOP. The picture's own time,
+  // as the decoder handed it back, is the frame the number has to name.
+  const shown = segs.map((g, i) => {
+    const t = shots[i] && isFinite(shots[i].time) ? shots[i].time : (g.start + g.end) / 2;
+    return srcToOut(keeps, t) ?? out[i];
+  });
+  clip.reencode = { sig, plan, segs, shots, out, at, shown };
   return clip.reencode;
 }
 
@@ -6284,10 +6344,37 @@ function stageShot(i, note = "", poster = null) {
   if (shot) img.src = shot.url;
   else img.removeAttribute("src");
   stageSrc = shot ? shot.url : null;
-  el("out-ovl-frame").textContent = String(Math.round(r.out[i] * clip.info.fps));
-  el("out-ovl-time").textContent = fmt(r.out[i]);
+  // In the file being written: a row of a join starts where the rows in
+  // front of it end, and its own clock said the first row's numbers.
+  const o = (r.shown ? r.shown[i] : r.out[i]) + joinOffset(clip);
+  // Counted on the joined file's grid, which is the master's.
+  const shape = joining() && ready().length > 1 ? masterClip() : null;
+  const fps = (shape && shape.info && shape.info.fps) || clip.info.fps;
+  el("out-ovl-frame").textContent = String(Math.round(o * fps));
+  el("out-ovl-time").textContent = fmt(o);
   el("out-ovl-kind").textContent = t("out.ovlKind", { i: i + 1, n: r.segs.length });
   el("out-ovl-note").textContent = t("out.ovlNote", { n: g.frames });
+}
+
+/// Where a row of a join begins in the one file, in seconds; nought for a
+/// clip written on its own.
+///
+/// The rows in front of it, each as long as what its cuts keep, less what a
+/// crossing between two rows shares: every kind but a fade shows both clips
+/// at once and shortens the file by its length. See `outset.crossShortens`.
+function joinOffset(clip) {
+  const list = ready();
+  if (!joining() || list.length < 2) return 0;
+  let at = 0;
+  for (const row of list) {
+    if (row === clip) return at;
+    at += keepsOf(row).reduce((n, k) => n + (k.b - k.a), 0);
+    const x = row.after;
+    if (x && x.kind && x.kind !== "none" && !x.kind.startsWith("fade")) {
+      at -= Math.max(0, Number(x.seconds) || 0);
+    }
+  }
+  return 0;
 }
 
 /// Follow the writing head: put the segment it is passing through on the

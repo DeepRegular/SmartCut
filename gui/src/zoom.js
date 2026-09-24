@@ -217,6 +217,17 @@ el("scale").addEventListener("change", (ev) => {
   draw();
 });
 
+// `Z` closes it from here too. The window takes the focus as it opens, so
+// the key the editor opened it with was the one key that did nothing to it.
+window.addEventListener("keydown", (ev) => {
+  if (ev.ctrlKey || ev.metaKey || ev.altKey || ev.repeat) return;
+  if (ev.target && ev.target.tagName === "SELECT") return;
+  if ((ev.key === "z" || ev.key === "Z") && invoke) {
+    ev.preventDefault();
+    invoke("close_zoom");
+  }
+});
+
 // The canvas is sized to the window, so every resize is a redraw.
 window.addEventListener("resize", draw);
 

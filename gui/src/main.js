@@ -402,7 +402,18 @@ function remember(state = snapshot()) {
   // An edit made while the row is still coming up -- a cut placed during the
   // walk, which is allowed -- is somebody's work, and the arrival that ends
   // after it must not count it as what the row arrived with.
-  if (opening !== null) editedWhileArriving = true;
+  //
+  // Only an edit that changes what is kept: moving IN or OUT goes into the
+  // history too, and counted here it left a row that had only been looked at
+  // marked as edited and asking before Escape for the rest of the session.
+  // The edit follows this call in the same handler, so it is done by the
+  // time a microtask runs.
+  if (opening !== null) {
+    const before = editSignature();
+    queueMicrotask(() => {
+      if (editSignature() !== before) editedWhileArriving = true;
+    });
+  }
   past.push(state);
   if (past.length > HISTORY_DEPTH) past.shift();
   undone = [];
@@ -481,7 +492,13 @@ function afterCutsChanged(back = null) {
   // carries the mark that was picked out when it was current.
   if (!back) {
     const fresh = joins.filter((t) => !had.some((o) => Math.abs(o - t) < frame() / 2));
-    if (fresh.length) activeKey = fresh[fresh.length - 1];
+    // And only that mark: the cards chosen before the cut were a choice
+    // about the list as it was, and left standing beside the new one they
+    // were what the next Del took away.
+    if (fresh.length) {
+      activeKey = fresh[fresh.length - 1];
+      pickedKeys = [];
+    }
   }
   const all = keyframes.concat(joins).sort((a, b) => a - b);
   keyframes = all.filter((t, i) => i === 0 || t - all[i - 1] > frame() / 2);
@@ -639,7 +656,11 @@ function addKeyframes(times, focus = null) {
   // same frame marked twice -- is not something that was done.
   if (next.length !== keyframes.length) remember();
   keyframes = next;
-  if (focus !== null && isFinite(focus)) activeKey = focus;
+  // The new mark alone, for the reason `afterCutsChanged` gives.
+  if (focus !== null && isFinite(focus)) {
+    activeKey = focus;
+    pickedKeys = [];
+  }
   renderKeyframes();
   draw();
   scheduleStrip();
@@ -5575,7 +5596,7 @@ window.addEventListener("keydown", (ev) => {
     playing ? stopPlay() : startPlay();
     return;
   }
-  if (ev.ctrlKey && (ev.key === "d" || ev.key === "D")) {
+  if ((ev.ctrlKey || ev.metaKey) && (ev.key === "d" || ev.key === "D")) {
     ev.preventDefault();
     el("detect-cm").click();
     return;
