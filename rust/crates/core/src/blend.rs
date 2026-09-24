@@ -44,9 +44,13 @@ impl Shape {
         if nth == 0 {
             (width as usize, height as usize)
         } else {
+            // Rounded up, as libav sizes them: an odd-sized 4:2:0 picture
+            // has a last chroma column and row that cover one luma sample,
+            // and rounding down left them untouched by every effect -- a
+            // strip of the previous instant down one edge.
             (
-                (width >> self.log2_w).max(1) as usize,
-                (height >> self.log2_h).max(1) as usize,
+                width.div_ceil(1 << self.log2_w).max(1) as usize,
+                height.div_ceil(1 << self.log2_h).max(1) as usize,
             )
         }
     }
@@ -350,7 +354,11 @@ pub fn over(frame: &mut ff::frame::Video, laid: &Laid, opacity: f64) -> Result<(
             for x in 0..w {
                 // The alpha is kept at luma resolution, so a chroma sample
                 // asks the luma sample it sits over.
-                let a = u32::from(laid.alpha[((y << shift_h) * width as usize) + (x << shift_w)]);
+                // Clamped: the last chroma sample of an odd size sits over a
+                // luma sample one past the edge.
+                let ly = (y << shift_h).min(height as usize - 1);
+                let lx = (x << shift_w).min(width as usize - 1);
+                let a = u32::from(laid.alpha[ly * width as usize + lx]);
                 let mix = (a * scale) / 255;
                 if mix == 0 {
                     continue;
@@ -381,7 +389,7 @@ pub fn over(frame: &mut ff::frame::Video, laid: &Laid, opacity: f64) -> Result<(
 /// that looked one way in the preview and another in the output would be
 /// worse than no preview at all. See [`crate::crossview`].
 pub fn read_laid(path: &str, width: u32, height: u32, want: ff::format::Pixel) -> Result<Laid> {
-    let mut ictx = ff::format::input(&path)
+    let mut ictx = crate::input::open_local(path)
         .map_err(|e| anyhow::anyhow!("the image over the transition, {path}: {e}"))?;
     let stream = ictx
         .streams()

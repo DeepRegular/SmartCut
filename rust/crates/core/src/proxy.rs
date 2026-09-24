@@ -331,7 +331,9 @@ pub fn prune(dir: &Path, keep: usize, budget: u64) -> Result<usize> {
     let mut found: Vec<(std::time::SystemTime, u64, PathBuf)> = Vec::new();
     for entry in std::fs::read_dir(dir)? {
         let path = entry?.path();
-        if path.extension().and_then(|e| e.to_str()) != Some("mp4") {
+        if path.extension().and_then(|e| e.to_str()) != Some("mp4")
+            || !crate::seek_index::ours(&path)
+        {
             continue;
         }
         // A proxy still being built is not one of the finished ones, however
@@ -578,6 +580,13 @@ pub fn build(
     // Built under another name and renamed at the end: a proxy that was
     // interrupted must not be picked up next time as if it were whole.
     let part = out_path.with_extension("part.mp4");
+    // Both names are written over -- the second one renamed onto the first
+    // -- and either can be the recording itself: `--proxy -o` naming the
+    // recording replaced it with its own low-resolution copy and said so as
+    // a success. See [`crate::input::Input::refuse_as_output`].
+    crate::input::refuse_url_output(out)?;
+    src.input.refuse_as_output(out)?;
+    src.input.refuse_as_output(&part.to_string_lossy())?;
 
     let mut ictx = crate::input::demux(&src.input.url)?;
     let idx = src.video.stream_index;

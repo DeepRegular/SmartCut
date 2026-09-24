@@ -87,7 +87,10 @@ fn sequences(spu: &[u8]) -> Vec<usize> {
     let mut out = Vec::new();
     let size = u16be(spu, 0) as usize;
     let mut at = u16be(spu, 2) as usize;
-    while at + 4 <= size.min(spu.len()) && !out.contains(&at) {
+    // A unit has two or three sequences -- show, and take down. A chain of
+    // tens of thousands, each two bytes on from the last, is a crafted one,
+    // and following it to the end was a quadratic search per unit.
+    while at + 4 <= size.min(spu.len()) && out.len() < 64 && !out.contains(&at) {
         out.push(at);
         let next = u16be(spu, at + 2) as usize;
         if next == at || next == 0 {

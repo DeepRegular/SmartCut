@@ -1108,11 +1108,10 @@ pub fn settled_shape(
         return None;
     }
     let mut ictx = crate::input::demux(url).ok()?;
-    // Only this track: the reads below are bounded at a few thousand
-    // packets, and on a recording whose pictures are still being handed over
-    // that budget goes on packets this cannot use. See
-    // [`crate::input::keep_only`].
-    crate::input::keep_only(&mut ictx, &[audio.stream_index]);
+    // This track and the pictures: the reads below are bounded at a few
+    // thousand packets, and a count of this track's alone never runs out
+    // where the track has stopped. See [`crate::input::keep_with_pictures`].
+    crate::input::keep_with_pictures(&mut ictx, &[audio.stream_index]);
     let params = ictx.stream(audio.stream_index)?.parameters();
     // Sound that is carried through byte for byte is described by the
     // container and by nothing this could decode. Asking its decoder would be
@@ -1124,14 +1123,15 @@ pub fn settled_shape(
         return None;
     }
     // Read from where the context stands, which is the beginning.
-    let opening = frame_shape(&mut ictx, &params, audio.stream_index)?;
+    let opening = frame_shape(&mut ictx, &params, audio.stream_index, start_time, 0.0)?;
     let mut seen: Vec<(u16, u32)> = Vec::new();
     for fraction in AT {
         let at = ((start_time + duration * fraction) * ff::ffi::AV_TIME_BASE as f64) as i64;
         if ictx.seek(at, ..at).is_err() {
             continue;
         }
-        if let Some(shape) = frame_shape(&mut ictx, &params, audio.stream_index) {
+        let from = duration * fraction;
+        if let Some(shape) = frame_shape(&mut ictx, &params, audio.stream_index, start_time, from) {
             seen.push(shape);
         }
     }
@@ -1157,10 +1157,16 @@ pub fn settled_shape(
 /// answer. The samples are thrown away -- the frame straight after a seek is
 /// missing half its window and is wrong for any other purpose -- but what it
 /// says about itself is read off its header and is right.
+///
+/// Given up ten seconds of pictures past `from` with no frame of the track:
+/// the track is not there, and counting packets to four thousand was two
+/// minutes of pictures read at each place asked about.
 fn frame_shape(
     ictx: &mut ff::format::context::Input,
     params: &ff::codec::Parameters,
     stream_index: usize,
+    start_time: f64,
+    from: f64,
 ) -> Option<(u16, u32)> {
     let mut decoder = ff::codec::context::Context::from_parameters(params.clone())
         .ok()?
@@ -1170,6 +1176,10 @@ fn frame_shape(
     let mut frame = ff::frame::Audio::empty();
     for (stream, packet) in ictx.packets().take(4096) {
         if stream.index() != stream_index {
+            if crate::input::packet_time(&stream, &packet, start_time).is_some_and(|t| t > from + 10.0)
+            {
+                return None;
+            }
             continue;
         }
         if decoder.send_packet(&packet).is_err() {
@@ -1230,8 +1240,9 @@ pub fn boundary_patches(
         return Ok(out);
     }
     let mut ictx = crate::input::demux(&src.input.url)?;
-    // Only this track. See [`crate::input::keep_only`].
-    crate::input::keep_only(&mut ictx, &[audio.stream_index]);
+    // This track, and the pictures to know when it has stopped. See
+    // [`crate::input::keep_with_pictures`] and [`decode_around`].
+    crate::input::keep_with_pictures(&mut ictx, &[audio.stream_index]);
     let stream = ictx
         .stream(audio.stream_index)
         .ok_or_else(|| anyhow!("audio stream {} vanished", audio.stream_index))?;
@@ -1406,6 +1417,9 @@ fn decode_around(
     /// Frames to keep either side of the edge: the straddler, its guard, and
     /// the lead-in and lead-out the encoder needs around both.
     const KEEP: usize = 6;
+    /// How far past the edge the pictures may go with no frame of this
+    /// track before it is taken to have stopped.
+    const GIVE_UP: f64 = 10.0;
 
     // A fade is rewritten frame by frame like the boundary itself, so every
     // frame it reaches has to be decoded. Taken on both sides of the edge
@@ -1447,10 +1461,21 @@ fn decode_around(
     let mut packets = ictx.packets();
     loop {
         let bytes = match packets.next() {
-            Some((stream, packet)) => {
-                if stream.index() != audio.stream_index {
+            Some((stream, packet)) if stream.index() != audio.stream_index => {
+                // The pictures, which are kept to say where the reading has
+                // got to. Well past the edge with nothing of this track is a
+                // track that is not there -- the programme before this one's
+                // second sound, say -- and is the end of what there is.
+                let gone = crate::input::packet_time(&stream, &packet, src.start_time)
+                    .is_some_and(|t| t > at + GIVE_UP + reach as f64 / rate);
+                if !gone {
                     continue;
                 }
+                ended = true;
+                let _ = decoder.send_eof();
+                last_bytes
+            }
+            Some((_, packet)) => {
                 if decoder.send_packet(&packet).is_err() {
                     continue;
                 }

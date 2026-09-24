@@ -940,6 +940,7 @@ fn main() -> Result<()> {
     // writes it again with the track once it has one.
     let writing = index_file.filter(|_| held.is_none() && !as_proxy);
     if let Some(p) = &writing {
+        src.input.refuse_as_output(&p.to_string_lossy())?;
         smartcut_core::SeekIndex::of(&src, None).save(p)?;
     }
     let v = &src.video;
@@ -1200,6 +1201,7 @@ fn main() -> Result<()> {
             src.duration / track.scenes.len().max(1) as f64
         );
         if let Some(p) = &writing {
+            src.input.refuse_as_output(&p.to_string_lossy())?;
             smartcut_core::SeekIndex::of(&src, Some(track)).save(p)?;
             println!(
                 "シーク用インデックス : {} ({:.1} MB)",
@@ -1404,6 +1406,8 @@ fn main() -> Result<()> {
     if let Some(at) = preview_at {
         let shot = smartcut_core::shot_at(&src, at, 720)?;
         let path = output.clone().unwrap_or_else(|| "preview.jpg".into());
+        // Not over the recording: `-o` naming it wrote a JPEG where it was.
+        src.input.refuse_as_output(&path)?;
         std::fs::write(&path, &shot.jpeg)?;
         // The time reported back is the picture actually decoded, not the one
         // asked for: a transport stream seek can land late, and saying so is
@@ -1579,6 +1583,25 @@ fn main() -> Result<()> {
     // A recording on a disc is `BDAV/STREAM/00001.m2ts`, and which number it
     // is depends on what is on the disc already. So the name is the disc's
     // to give, not `-o`'s.
+    // The image goes beside the folder under the folder's name, and that can
+    // be the very image the recording is being read out of. It would be
+    // replaced by one of the new disc once the cut was done.
+    if let (Some(at), Some(_)) = (&bdav, iso) {
+        let image = format!("{at}.iso");
+        let reads = std::iter::once(src.input.file.clone()).chain(
+            joined
+                .iter()
+                .filter_map(|j| smartcut_core::input::Input::parse(j).ok().map(|i| i.file)),
+        );
+        for file in reads {
+            if smartcut_core::input::same_file(&file, std::path::Path::new(&image)) {
+                bail!(
+                    "{image} is the image being read; making the new disc's image there would \
+                     replace it. Give --bdav another folder"
+                );
+            }
+        }
+    }
     let onto = match &bdav {
         Some(at) => {
             let at = std::path::PathBuf::from(at);

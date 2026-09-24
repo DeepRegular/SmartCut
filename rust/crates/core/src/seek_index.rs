@@ -265,6 +265,12 @@ impl SeekIndex {
         let flags = r.u32()?;
         let end = r.f64()?;
         let end = (flags & FLAG_END_KNOWN != 0).then_some(end);
+        // A time that is not a number, or not a finite one, is an index
+        // damaged on disc -- this never writes one. Taken as read, an end at
+        // infinity made every whole-file range endless. Read again instead.
+        if end.is_some_and(|e| !e.is_finite()) {
+            bail!("{} holds a length that is not a time", path.display());
+        }
 
         let n = r.u64()? as usize;
         let n = r.fits(n, ACCESS_POINT)?;
@@ -272,6 +278,9 @@ impl SeekIndex {
         for _ in 0..n {
             let time = r.f64()?;
             let lead_start = r.f64()?;
+            if !time.is_finite() || !lead_start.is_finite() {
+                bail!("{} holds an entry point that is not at a time", path.display());
+            }
             let pos = r.i64()?;
             let droppable = r.u8()? != 0;
             let leads = r.u32()? as usize;
@@ -459,6 +468,25 @@ pub fn prune(dir: &Path, keep: usize, budget: u64) -> Result<usize> {
     Ok(gone)
 }
 
+/// Whether a file in a cache directory is one of this program's: every cache
+/// names its files `<stem>-<sixteen hex digits>.<ext>`, and a sidecar or a
+/// file being written adds to the end of that.
+///
+/// Asked before deleting anything, because the cache can be put anywhere in
+/// 環境設定 -- and a folder of somebody's own work with a `proxy` or an
+/// `index` folder in it would otherwise be emptied as though it were ours.
+pub fn ours(path: &Path) -> bool {
+    let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
+        return false;
+    };
+    name.char_indices().any(|(i, c)| {
+        c == '-'
+            && name
+                .get(i + 1..i + 18)
+                .is_some_and(|t| t.ends_with('.') && t[..16].bytes().all(|b| b.is_ascii_hexdigit()))
+    })
+}
+
 /// Mark a file as used just now, so that the least-recently-used pruning is
 /// about use and not about when the file happened to be written.
 pub fn touch(path: &Path) {
@@ -553,6 +581,16 @@ impl<'a> Reader<'a> {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn only_our_names_are_ours() {
+        assert!(ours(Path::new("/c/proxy/rec-0123456789abcdef.mp4")));
+        assert!(ours(Path::new("/c/proxy/a-b-0123456789abcdef.part.mp4")));
+        assert!(ours(Path::new("/c/proxy/rec-0123456789abcdef.marks")));
+        assert!(!ours(Path::new("/work/proxy/holiday.mp4")));
+        assert!(!ours(Path::new("/work/proxy/take-2.mp4")));
+        assert!(!ours(Path::new("/work/proxy/rec-0123456789abcdeg.mp4")));
+    }
     use super::*;
 
     /// Forty bytes that say they hold a trillion access points.

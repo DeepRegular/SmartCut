@@ -82,8 +82,18 @@ pub fn framing(
     audio_index: usize,
 ) -> Option<Framing> {
     let mut seen = 0;
+    // Where the reading began, on whichever stream spoke first. Thirty
+    // seconds past it with no frame of the track is a track that is not
+    // there, rather than a reason to read eight thousand pictures.
+    let mut began: Option<f64> = None;
     for (stream, packet) in ictx.packets().take(8192) {
         if stream.index() != audio_index {
+            if let Some(t) = crate::input::packet_time(&stream, &packet, 0.0) {
+                let first = *began.get_or_insert(t);
+                if t > first + 30.0 {
+                    return None;
+                }
+            }
             continue;
         }
         let Some(data) = packet.data() else { continue };
@@ -105,7 +115,8 @@ pub fn framing(
 pub fn of_source(src: &crate::Source) -> Option<Framing> {
     let audio = src.audio.as_ref()?;
     let mut ictx = crate::input::demux(&src.input.url).ok()?;
-    // Only this track. See [`crate::input::keep_only`].
-    crate::input::keep_only(&mut ictx, &[audio.stream_index]);
+    // This track, with the pictures, so the bounded read below is bounded. See
+    // [`crate::input::keep_with_pictures`].
+    crate::input::keep_with_pictures(&mut ictx, &[audio.stream_index]);
     framing(&mut ictx, audio.stream_index)
 }

@@ -828,7 +828,7 @@ pub fn sound_tracks(
         let p = &buf[at..at + PACKET];
         at += stride;
         if p[0] != 0x47 {
-            match find_sync(&buf[at..], stride) {
+            match buf.get(at..).and_then(|rest| find_sync(rest, stride)) {
                 Some(off) => at += off,
                 None => break,
             }
@@ -984,7 +984,7 @@ fn read_service_within(
         if p[0] != 0x47 {
             // A recording can be cut short mid-packet or carry a bad read;
             // re-find the grid rather than giving up on the file.
-            match find_sync(&buf[at..], stride) {
+            match buf.get(at..).and_then(|rest| find_sync(rest, stride)) {
                 Some(off) => at += off,
                 None => break,
             }
@@ -1260,7 +1260,7 @@ pub fn snapshot_at(input: &crate::input::Input, pos: i64, service_id: u16) -> Re
         let p = &buf[at..at + PACKET];
         at += stride;
         if p[0] != 0x47 {
-            match find_sync(&buf[at..], stride) {
+            match buf.get(at..).and_then(|rest| find_sync(rest, stride)) {
                 Some(off) => at += off,
                 None => break,
             }
@@ -1274,8 +1274,11 @@ pub fn snapshot_at(input: &crate::input::Input, pos: i64, service_id: u16) -> Re
                 if (((sec[3] as u16) << 8) | sec[4] as u16) != service_id {
                     return;
                 }
+                // Present and following, which are sections 0 and 1 and
+                // nothing else; a table that numbered more would have them
+                // all written into the output again and again.
                 let number = sec[6];
-                if seen.insert(number) {
+                if number <= 1 && seen.insert(number) {
                     out.eit.push(sec.to_vec());
                 }
             }),
@@ -1477,7 +1480,7 @@ pub fn programme(input: &crate::input::Input, service_id: u16) -> Result<Program
         let p = &buf[at..at + PACKET];
         at += stride;
         if p[0] != 0x47 {
-            match find_sync(&buf[at..], stride) {
+            match buf.get(at..).and_then(|rest| find_sync(rest, stride)) {
                 Some(off) => at += off,
                 None => break,
             }
@@ -1748,8 +1751,10 @@ fn service_name(whole: &[u8], written: crate::text::Written) -> Option<String> {
 /// own annex, which is exact for every date this will ever see.
 fn began_at(raw: &[u8]) -> Option<Began> {
     let mjd = ((*raw.first()? as u32) << 8) | *raw.get(1)? as u32;
-    // All ones is how a broadcaster says the time is not known.
-    if mjd == 0 || mjd == 0xFFFF {
+    // All ones is how a broadcaster says the time is not known. And before
+    // 1900-03-01 (MJD 15079) is not a broadcast at all, and the arithmetic
+    // below, which is ARIB's, runs below nought there.
+    if mjd < 15079 || mjd == 0xFFFF {
         return None;
     }
     let d = |i: usize| -> Option<u8> {
@@ -2083,8 +2088,12 @@ fn build_pmt(g: &Graft, pcr_pid: u16, components: &Components) -> Vec<u8> {
         // the tables point at it, and a re-encoded track is still the track
         // the programme described.
         let identity = |es: &ElementaryStream| match descriptor(&es.descriptors, 0x52) {
-            Some(body) => vec![0x52, body.len() as u8, body[0]],
-            None => Vec::new(),
+            // One byte of tag, whatever length the source claimed for it:
+            // written with the source's length and one byte of body, a
+            // descriptor that said two put the rest of the loop out of step,
+            // and one that said nought had no byte to take.
+            Some(&[tag, ..]) => vec![0x52, 1, tag],
+            _ => Vec::new(),
         };
         let (stream_type, mut desc) = match (s.stream(gs.was), &gs.declared) {
             // Written in another codec, so nothing the recording says about
@@ -2275,7 +2284,7 @@ fn recorded_service(buf: &[u8], base: usize, stride: usize) -> Option<u16> {
         let p = &buf[at..at + PACKET];
         at += stride;
         if p[0] != 0x47 {
-            match find_sync(&buf[at..], stride) {
+            match buf.get(at..).and_then(|rest| find_sync(rest, stride)) {
                 Some(off) => at += off,
                 None => break,
             }

@@ -651,7 +651,9 @@ impl Default for Layout {
 impl Layout {
     /// A character field: the character and the space around it.
     fn field(&self) -> (u16, u16) {
-        (self.cell.0 + self.gap.0, self.cell.1 + self.gap.1)
+        // Saturating: a statement sets these, and a size of 60000 dots
+        // is a number it can send.
+        (self.cell.0.saturating_add(self.gap.0), self.cell.1.saturating_add(self.gap.1))
     }
 
     /// Take in the glyphs a statement carries the pictures of.
@@ -793,7 +795,7 @@ impl Pen {
         //
         // Only from somewhere past the left edge, so that a field wider than
         // the whole area moves the pen once rather than for ever.
-        let edge = (layout.origin.0 + layout.area.0) as f32;
+        let edge = layout.origin.0 as f32 + layout.area.0 as f32;
         if self.x > layout.origin.0 as f32 && self.x + advance > edge + 0.5 {
             self.finish();
             self.x = layout.origin.0 as f32;
@@ -815,7 +817,7 @@ impl Pen {
                     && r.colour == self.colour
                     && r.height == height.round() as u16
                     && (r.y as f32 - top).abs() < 0.5
-                    && ((r.x + r.width) as f32 - self.x).abs() < 0.5
+                    && ((r.x as f32 + r.width as f32) - self.x).abs() < 0.5
             });
         if !fits {
             self.finish();
@@ -831,7 +833,7 @@ impl Pen {
             colour: self.colour,
         });
         run.text.push_str(text);
-        run.width += advance_u;
+        run.width = run.width.saturating_add(advance_u);
         self.x += advance;
         if run.glyph.is_some() {
             self.finish();
@@ -1049,7 +1051,7 @@ fn csi_args(bytes: &[u8]) -> Vec<u16> {
         match b {
             b'0'..=b'9' => {
                 let last = out.last_mut().expect("one to start with");
-                *last = last.saturating_mul(10) + u16::from(b - b'0');
+                *last = last.saturating_mul(10).saturating_add(u16::from(b - b'0'));
             }
             b';' => out.push(0),
             // The intermediate byte, and anything else that is not a number.

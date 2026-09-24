@@ -92,6 +92,12 @@ pub fn retimed(payload: &[u8], shift: f64, window: (f64, f64)) -> Option<Vec<u8>
         let hay = &doc[div_at..div_end];
         let at = hay.find(&format!("{name}=\""))? + name.len() + 2;
         let text = written_clock(value);
+        // Only over a time written the same width: a shorter one would be
+        // overwritten past its closing quote and into whatever follows.
+        let old = hay[at..].find('"')?;
+        if old != text.len() {
+            return None;
+        }
         let start = doc_at + div_at + at;
         if out.len() < start + text.len() {
             return None;
@@ -181,7 +187,7 @@ pub fn written(payload: &[u8]) -> Option<Written> {
             if tag.is_none() {
                 // `<br/>`: down one line, back to the region's left edge.
                 x = origin.0;
-                line += 1;
+                line = line.saturating_add(1);
                 continue;
             }
             let style = tag
@@ -193,19 +199,24 @@ pub fn written(payload: &[u8]) -> Option<Written> {
             if count == 0 {
                 continue;
             }
-            let advance = style.size.0 + style.spacing;
+            // Saturating throughout: the sizes are the document's, and a
+            // font of 60000 dots is something one can say.
+            let advance = style.size.0.saturating_add(style.spacing);
             let leading = style.line_height.saturating_sub(style.size.1) / 2;
             runs.push(Run {
                 x,
-                y: origin.1 + line * style.line_height + leading,
-                width: advance * count,
+                y: origin
+                    .1
+                    .saturating_add(line.saturating_mul(style.line_height))
+                    .saturating_add(leading),
+                width: advance.saturating_mul(count),
                 height: style.size.1,
                 advance,
                 text,
                 glyph: None,
                 colour: style.colour,
             });
-            x += advance * count;
+            x = x.saturating_add(advance.saturating_mul(count));
         }
         // A region that says how tall it is and a document that fills it
         // disagree only where this has misread the sizes; nothing is drawn
@@ -351,9 +362,9 @@ fn px(text: &str) -> Option<u16> {
 /// what draws these puts them over a picture with its own opacity.
 fn colour(text: &str) -> Option<u32> {
     let text = text.trim().strip_prefix('#')?;
-    (text.len() >= 6)
-        .then(|| u32::from_str_radix(&text[..6], 16).ok())
-        .flatten()
+    // `get`, because the sixth byte of a colour somebody wrote can be the
+    // middle of a character.
+    u32::from_str_radix(text.get(..6)?, 16).ok()
 }
 
 /// The elements whose opening tag begins with `open`, as (tag, body).

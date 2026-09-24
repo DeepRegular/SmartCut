@@ -1358,11 +1358,19 @@ fn outline_of(path: &str) -> Result<(Outline, input::Demux)> {
         )
     };
     let framing = bitstream::framing_from_extradata(&codec, &extradata);
-    let frame_rate = f64::from(stream.avg_frame_rate());
     // And what the container says its pictures are *meant* to come at, which
     // is a different question and on a variable-rate recording a different
     // number. See [`VideoInfo::base_rate`].
     let base_rate = f64::from(stream.rate());
+    // The average, where libavformat worked one out. Where it did not -- 0/0
+    // or 0/1 -- the stated rate stands in: left as it was, the cut was
+    // planned on a grid of one picture a second and all but one picture in
+    // each second was left out, with only a note to say so.
+    let frame_rate = match f64::from(stream.avg_frame_rate()) {
+        r if r.is_finite() && r > 0.0 => r,
+        _ if base_rate.is_finite() && base_rate > 0.0 && base_rate <= 1000.0 => base_rate,
+        r => r,
+    };
 
     // Read before the sound is described rather than with the rest of the
     // file's own numbers below, because describing the sound needs them: see

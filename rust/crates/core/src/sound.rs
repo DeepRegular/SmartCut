@@ -64,6 +64,12 @@ pub fn write_with_progress(
     opts: &CutOptions,
     progress: Option<Report>,
 ) -> Result<()> {
+    // See [`crate::input::Input::refuse_as_output`].
+    crate::init()?;
+    crate::input::refuse_url_output(output)?;
+    for piece in pieces {
+        piece.src.input.refuse_as_output(output)?;
+    }
     let ours = !std::path::Path::new(output).exists();
     let done = run(pieces, output, opts, progress);
     if done.is_err() && ours {
@@ -181,7 +187,7 @@ fn run(
     // What the track becomes. Settled by the picture writer's own planner, so
     // that an audio-only run and an ordinary one cannot disagree about it.
     let mut setup =
-        crate::cut::plan_audio(&first.src.path, &info, opts, false, first.src.on_a_ts, many)?;
+        crate::cut::plan_audio(&first.src.input.url, &info, opts, false, first.src.on_a_ts, many)?;
     // A recording joined on whose sound is written another way cannot be
     // copied into a stream declared as the first one's. The picture writer
     // re-encodes just those reels to the master's shape; with one track and
@@ -485,12 +491,20 @@ fn take_range(
     let landing = ((range.0 - 0.5).max(0.0) + src.start_time) * f64::from(ff::ffi::AV_TIME_BASE);
     let target = landing as i64;
     ictx.seek(target, ..target)?;
-    // After the seek, for the reason [`crate::input::keep_only`] gives.
-    crate::input::keep_only(&mut ictx, &[track.stream_index]);
+    // After the seek, for the reason [`crate::input::keep_only`] gives, and
+    // with the pictures, which say when the range is over where the track
+    // has nothing in it. See [`crate::input::keep_with_pictures`].
+    crate::input::keep_with_pictures(&mut ictx, &[track.stream_index]);
 
     let in_tb = track.time_base;
     for (stream, packet) in ictx.packets() {
         if stream.index() != track.stream_index {
+            // Leeway for the pictures running a little ahead of their sound.
+            if crate::input::packet_time(&stream, &packet, src.start_time)
+                .is_some_and(|t| t >= range.1 + 5.0)
+            {
+                break;
+            }
             continue;
         }
         let Some(pts) = packet.pts() else { continue };

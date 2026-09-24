@@ -192,6 +192,9 @@ pub struct Plane {
     last: Option<(Vec<u8>, Option<Vec<u8>>)>,
 }
 
+/// The most a display set being put together is allowed to hold.
+const MAX_SET_BYTES: usize = 64 << 20;
+
 impl Plane {
     /// Forget everything, for a read that starts somewhere else.
     pub fn reset(&mut self) {
@@ -229,6 +232,13 @@ impl Plane {
         }
         self.building.push(held);
         if !ends {
+            // A set is a screenful of subtitle: a few megabytes on a UHD disc
+            // at the very most. One that has not ended by far more than that
+            // is not going to, and holding every packet of the stream until
+            // it does was memory without limit.
+            if self.building.iter().map(|h| h.data.len()).sum::<usize>() > MAX_SET_BYTES {
+                self.building.clear();
+            }
             return None;
         }
         let set = std::mem::take(&mut self.building);

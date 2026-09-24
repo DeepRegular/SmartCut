@@ -659,6 +659,10 @@ fn card_layout(channels: u16) -> ff::channel_layout::ChannelLayout {
     ff::channel_layout::ChannelLayout::default(i32::from(channels))
 }
 
+/// How far the pictures may run past what is being read for with nothing of
+/// the sound track turning up, before the track is taken not to be there.
+const PAST: f64 = 5.0;
+
 /// Put interleaved samples in libav's order into the card's. See
 /// [`card_order`].
 fn to_card_order(samples: &mut [f32], channels: u16) {
@@ -1069,10 +1073,11 @@ fn feed_from(
     let mut ictx = crate::input::demux(&src.input.url)?;
     let idx = audio.stream_index;
     let in_tb = audio.time_base;
-    // Only this track is read, so the pictures go by unassembled -- which is
-    // most of a recording, and the seeks below still land without them. See
-    // [`crate::input::keep_only`].
-    crate::input::keep_only(&mut ictx, &[idx]);
+    // This track, and the pictures only to know how far the reading has got:
+    // a track the programme before this one had and this one does not is
+    // otherwise read for to the end of the file, once per range. See
+    // [`crate::input::keep_with_pictures`].
+    crate::input::keep_with_pictures(&mut ictx, &[idx]);
     let params = ictx
         .stream(idx)
         .ok_or_else(|| anyhow!("stream {idx} vanished"))?
@@ -1113,6 +1118,14 @@ fn feed_from(
                 break 'ranges;
             }
             if stream.index() != idx {
+                // Well past the range with nothing of this track in it.
+                // Leeway, because a transport stream carries its pictures a
+                // little ahead of the sound that goes with them.
+                if crate::input::packet_time(&stream, &packet, src.start_time)
+                    .is_some_and(|t| t >= b + PAST)
+                {
+                    break;
+                }
                 continue;
             }
             if decoder.send_packet(&packet).is_err() {
@@ -1245,8 +1258,9 @@ pub fn peaks_at(src: &Source, time: f64, window: f64, fold: &Fold) -> Result<Vec
 
     let mut ictx = crate::input::demux(&src.input.url)?;
     let idx = audio.stream_index;
-    // Only this track. See [`crate::input::keep_only`].
-    crate::input::keep_only(&mut ictx, &[idx]);
+    // With the pictures, as `feed_from` reads. See
+    // [`crate::input::keep_with_pictures`].
+    crate::input::keep_with_pictures(&mut ictx, &[idx]);
     let params = ictx
         .stream(idx)
         .ok_or_else(|| anyhow!("stream {idx} vanished"))?
@@ -1271,6 +1285,11 @@ pub fn peaks_at(src: &Source, time: f64, window: f64, fold: &Fold) -> Result<Vec
 
     'packets: for (stream, packet) in ictx.packets() {
         if stream.index() != idx {
+            if crate::input::packet_time(&stream, &packet, src.start_time)
+                .is_some_and(|t| t >= end + PAST)
+            {
+                break;
+            }
             continue;
         }
         if decoder.send_packet(&packet).is_err() {

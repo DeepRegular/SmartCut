@@ -1779,8 +1779,10 @@ fn segment_streams(ictx: &crate::input::Demux, ctx: &SegmentCtx, ist: usize) -> 
 /// said. `aac` only reaches the frames this has to frame itself, which is
 /// what audio taken back out of an MP4 amounts to.
 pub fn write_audio_es(cut: &str, output: &str, aac: AacVersion) -> Result<usize> {
+    let ours = !std::path::Path::new(output).exists();
     let done = write_one_track_out(cut, output, aac);
-    if done.is_err() {
+    // Only a file this made: one that was there before the run is somebody's.
+    if done.is_err() && ours {
         // What a refused stream leaves behind is a nought-byte file with an
         // `.aac` on the end of it, which reads as an AAC stream and is not
         // one. Worse than no file at all, and this is the only place that
@@ -1792,6 +1794,7 @@ pub fn write_audio_es(cut: &str, output: &str, aac: AacVersion) -> Result<usize>
 
 fn write_one_track_out(cut: &str, output: &str, aac: AacVersion) -> Result<usize> {
     crate::init()?;
+    crate::input::refuse_url_output(output)?;
     let mut ictx = crate::input::demux(&cut)?;
     let ist = ictx
         .streams()
@@ -2494,13 +2497,13 @@ fn copy_segment(
                     NalFraming::Length(k) => std::borrow::Cow::Owned(annexb_to_length(
                         &length_to_annexb(data, k),
                         r.nal_length,
-                    )),
+                    )?),
                     NalFraming::AnnexB => {
-                        std::borrow::Cow::Owned(annexb_to_length(data, r.nal_length))
+                        std::borrow::Cow::Owned(annexb_to_length(data, r.nal_length)?)
                     }
                 };
                 let mut out = if packet.is_key() {
-                    ff::Packet::copy(&prepend_parameter_sets(&body, &r.sets, r.nal_length))
+                    ff::Packet::copy(&prepend_parameter_sets(&body, &r.sets, r.nal_length)?)
                 } else {
                     ff::Packet::copy(&body)
                 };
@@ -3444,7 +3447,7 @@ fn drain_encoder(
         let packet = match reframe {
             // The encoder writes start codes; the container wants lengths.
             Some(r) if packet.data().map(is_annexb).unwrap_or(false) => {
-                let data = annexb_to_length(packet.data().unwrap_or(&[]), r.nal_length);
+                let data = annexb_to_length(packet.data().unwrap_or(&[]), r.nal_length)?;
                 let mut out = ff::Packet::copy(&data);
                 if packet.is_key() {
                     out.set_flags(ff::packet::Flags::KEY);
@@ -5124,6 +5127,51 @@ fn seek_back(points: &[crate::AccessPoint], target: f64) -> f64 {
 /// codec, its sound tracks, its tables. Every other reel either matches the
 /// master and is copied, or does not and is written afresh. See
 /// [`crate::conform`], which is where that is decided.
+/// Whether a sound track has anything in the ranges being kept.
+///
+/// Looked for at three places in each range -- its start, its middle and
+/// near its end -- a few seconds at each, with the pictures kept to say when
+/// the few seconds are up. A track that is sounding is found at the first
+/// of them within a frame; one that is not there costs three short reads a
+/// range. Any error is taken as "heard": this only ever leaves a track out
+/// on positive evidence that it is empty.
+fn heard_in(src: &Source, stream_index: usize, plans: &[RangePlan]) -> bool {
+    const LOOK: f64 = 4.0;
+    let Ok(mut ictx) = crate::input::demux(&src.input.url) else {
+        return true;
+    };
+    for plan in plans {
+        let (a, b) = (plan.t_in, plan.t_out);
+        if b <= a {
+            continue;
+        }
+        for at in [a, (a + b) / 2.0, (b - LOOK).max(a)] {
+            crate::input::keep_everything(&mut ictx);
+            let landing = ((at - 1.0).max(0.0) + src.start_time) * ff::ffi::AV_TIME_BASE as f64;
+            let target = landing as i64;
+            if ictx.seek(target, ..target).is_err() {
+                return true;
+            }
+            crate::input::keep_with_pictures(&mut ictx, &[stream_index]);
+            for (stream, packet) in ictx.packets() {
+                let Some(t) = crate::input::packet_time(&stream, &packet, src.start_time) else {
+                    continue;
+                };
+                if stream.index() == stream_index {
+                    if t >= at - 1.0 && t < b + 1.0 {
+                        return true;
+                    }
+                    continue;
+                }
+                if t > at + LOOK {
+                    break;
+                }
+            }
+        }
+    }
+    false
+}
+
 /// How a recording joined onto the master has its copied pictures framed
 /// for the output, given how the master's are (see where `reframe` and
 /// `unframe` are worked out in the writer).
@@ -5206,6 +5254,12 @@ pub fn join_with_progress(
     opts: &CutOptions,
     progress: Option<Report>,
 ) -> Result<()> {
+    // Before anything is created: see [`crate::input::Input::refuse_as_output`].
+    crate::init()?;
+    crate::input::refuse_url_output(output)?;
+    for reel in reels {
+        reel.src.input.refuse_as_output(output)?;
+    }
     let ours = !std::path::Path::new(output).exists();
     let done = cut_into(reels, master.min(reels.len().saturating_sub(1)), output, opts, progress);
     if done.is_err() && ours {
@@ -5303,7 +5357,13 @@ fn cut_into(
     // behind, reported as written. Every caller can reach this -- the window
     // by cutting a clip away entirely, the command line by `--cut` covering
     // the recording -- so it is answered here rather than in each of them.
-    if reels.iter().all(|r| r.plans.is_empty()) {
+    // And ranges shorter than a picture, which plan to no segments at all: a
+    // `--cut` that leaves a sliver at the end wrote a file of headers and
+    // called it done.
+    if reels
+        .iter()
+        .all(|r| r.plans.iter().all(|p| p.segments.is_empty()))
+    {
         anyhow::bail!("nothing is kept: every part of this recording has been cut away");
     }
     // The reel whose shape the file takes, and its own ranges. Everything
@@ -5436,12 +5496,41 @@ fn cut_into(
     // Which of the recording's streams are being written. Everything it
     // carries that a cut can carry, less whatever the caller named.
     let kept = |i: usize| !opts.drop_streams.contains(&i);
-    let audios: Vec<crate::AudioInfo> = src
+    let mut audios: Vec<crate::AudioInfo> = src
         .audios
         .iter()
         .filter(|a| kept(a.stream_index))
         .cloned()
         .collect();
+    // A broadcast's second sound track can belong to the programme before
+    // this one: there in the first minute of the recording and gone for the
+    // rest. Cut to the programme, such a track has nothing in it, and the
+    // check at the end refused the whole cut for it -- after writing all of
+    // it. Found out first here instead and left out, and said. One recording
+    // only: in a join the track may be another reel's.
+    if reels.len() == 1 && src.on_a_ts && audios.len() > 1 {
+        audios.retain(|a| {
+            let heard = heard_in(src, a.stream_index, plans);
+            if !heard {
+                crate::note_once(format!(
+                    "note: {} has no sound in the ranges kept -- it belongs to another part \
+                     of the recording -- and is left out of the cut",
+                    crate::track_name(src.on_a_ts, a.pid, a.stream_index),
+                ));
+            }
+            heard
+        });
+        // Never all of them: a cut with no sound left is not what anybody
+        // asked for, and the check at the end says so better than this can.
+        if audios.is_empty() {
+            audios = src
+                .audios
+                .iter()
+                .filter(|a| kept(a.stream_index))
+                .cloned()
+                .collect();
+        }
+    }
     // Captions go into a transport stream and nowhere else. MP4 has no
     // sample entry for an ARIB caption stream -- there is nothing to declare
     // it as, and no format to turn it into that is still what it was.
@@ -6135,12 +6224,29 @@ fn cut_into(
                     graphics: true,
                 }
             } else {
+                // By where the master's track sits among all of the master's
+                // tracks, not among the ones kept: with the main sound dropped
+                // to keep the second, the output's first track is the
+                // master's second, and every other recording has to give its
+                // second as well -- not its first. `recast` counts the same way.
                 Threads {
-                    audio: (0..audios.len())
-                        .map(|k| reel.src.audios.get(k).cloned())
+                    audio: audios
+                        .iter()
+                        .map(|a| {
+                            src.audios
+                                .iter()
+                                .position(|x| x.stream_index == a.stream_index)
+                                .and_then(|p| reel.src.audios.get(p).cloned())
+                        })
                         .collect(),
-                    captions: (0..captions.len())
-                        .map(|k| reel.src.captions.get(k).cloned())
+                    captions: captions
+                        .iter()
+                        .map(|c| {
+                            src.captions
+                                .iter()
+                                .position(|x| x.stream_index == c.stream_index)
+                                .and_then(|p| reel.src.captions.get(p).cloned())
+                        })
                         .collect(),
                     graphics: false,
                 }

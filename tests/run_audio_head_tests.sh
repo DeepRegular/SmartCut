@@ -99,7 +99,9 @@ fi
 
 # What the cutter says the sound is, off its own first lines.
 described() {
-  "$BIN" "$1" 2>/dev/null | sed -n 's/^audio  : aac \([0-9]*\)Hz \([0-9]*\)ch.*/\1 \2/p'
+  # Six and eight channels are named 5.1ch and 7.1ch; counted back here.
+  "$BIN" "$1" 2>/dev/null | sed -n 's/^audio  : aac \([0-9]*\)Hz \([0-9.]*\)ch.*/\1 \2/p' \
+    | sed 's/ 5\.1$/ 6/; s/ 7\.1$/ 8/'
 }
 # What a track in a written file is, asked of the container rather than of the
 # frames: the two are separate claims and a cut has to get both right. The

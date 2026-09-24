@@ -41,7 +41,12 @@ fn nal_payloads(data: &[u8], framing: NalFraming) -> Vec<&[u8]> {
                     len = (len << 8) | data[i + k] as usize;
                 }
                 i += n;
-                if len == 0 || i + len > data.len() {
+                // A NAL of no length is nothing, and what follows it is still
+                // the packet's; only one that runs past the end stops this.
+                if len == 0 {
+                    continue;
+                }
+                if i + len > data.len() {
                     break;
                 }
                 out.push(&data[i..i + len]);
@@ -274,21 +279,33 @@ pub fn is_annexb(data: &[u8]) -> bool {
         && (data[2] == 1 || (data[2] == 0 && data[3] == 1))
 }
 
-fn push_length_prefixed(out: &mut Vec<u8>, nal: &[u8], n: usize) {
+/// A NAL behind its length, in `n` bytes. A recording can count its lengths
+/// in one or two, and a picture this program encodes can be longer than two
+/// bytes will say: written with only its low bytes, it went out as a length
+/// that points into the middle of itself, and everything after it in the
+/// sample was read as garbage. So that is an error rather than a file.
+fn push_length_prefixed(out: &mut Vec<u8>, nal: &[u8], n: usize) -> anyhow::Result<()> {
     let len = nal.len();
+    if n < std::mem::size_of::<usize>() && len >> (8 * n) != 0 {
+        anyhow::bail!(
+            "a NAL of {len} bytes does not fit the {n}-byte lengths this recording counts in; \
+             write it as a .ts, or re-encode it whole"
+        );
+    }
     for k in (0..n).rev() {
         out.push((len >> (8 * k)) as u8);
     }
     out.extend_from_slice(nal);
+    Ok(())
 }
 
 /// Re-frame an Annex-B payload with length prefixes, as MP4 stores them.
-pub fn annexb_to_length(data: &[u8], n: usize) -> Vec<u8> {
+pub fn annexb_to_length(data: &[u8], n: usize) -> anyhow::Result<Vec<u8>> {
     let mut out = Vec::with_capacity(data.len() + 16);
     for nal in nal_payloads(data, NalFraming::AnnexB) {
-        push_length_prefixed(&mut out, nal, n);
+        push_length_prefixed(&mut out, nal, n)?;
     }
-    out
+    Ok(out)
 }
 
 /// Re-frame a length-prefixed payload with start codes, as MPEG-TS wants it.
@@ -323,13 +340,13 @@ pub fn prepend_parameter_sets_annexb(data: &[u8], sets: &[Vec<u8>]) -> Vec<u8> {
 }
 
 /// Put the given parameter sets in front of a length-prefixed payload.
-pub fn prepend_parameter_sets(data: &[u8], sets: &[Vec<u8>], n: usize) -> Vec<u8> {
+pub fn prepend_parameter_sets(data: &[u8], sets: &[Vec<u8>], n: usize) -> anyhow::Result<Vec<u8>> {
     let mut out = Vec::with_capacity(data.len() + sets.iter().map(|s| s.len() + n).sum::<usize>());
     for s in sets {
-        push_length_prefixed(&mut out, s, n);
+        push_length_prefixed(&mut out, s, n)?;
     }
     out.extend_from_slice(data);
-    out
+    Ok(out)
 }
 
 /// How many fields this picture occupies: two normally, more under pulldown.
@@ -499,7 +516,9 @@ fn h264_scaling_lists(b: &mut Bits, lists: usize) -> Option<()> {
         let (mut last, mut next) = (8i32, 8i32);
         for _ in 0..if i < 6 { 16 } else { 64 } {
             if next != 0 {
-                next = (last + b.se()? + 256).rem_euclid(256);
+                // In i64: `delta_scale` is ±128 by the standard and ±2³¹ by
+                // what a damaged header can carry.
+                next = (i64::from(last) + i64::from(b.se()?) + 256).rem_euclid(256) as i32;
             }
             if next != 0 {
                 last = next;

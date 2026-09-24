@@ -78,6 +78,25 @@ const MAX_DIR: u64 = 16 << 20;
 /// elsewhere before the chain is called a loop.
 const MAX_CONTINUATIONS: usize = 64;
 
+/// The most a continuation of allocation descriptors is read as. The format
+/// gives one a logical block; an image that says one is a hundred megabytes
+/// is asking for millions of extents per file, and sixty-four of those.
+const MAX_CONTINUED: u64 = 64 << 10;
+
+/// How many extents one file may be in. A clip a recorder wrote in thirty-two
+/// block units is a few thousand at the very most.
+const MAX_EXTENTS: usize = 1 << 20;
+
+/// The largest file [`Image::read`] pulls into memory: an index, a playlist,
+/// a clip's information, an IFO. Megabytes at most; a length past this is an
+/// image asking for the same bytes read over and over.
+const MAX_READ: u64 = 64 << 20;
+
+/// How many directories are walked. Loops are caught by the blocks already
+/// seen; this is for a tree that is wide rather than circular, many entries
+/// pointing at the same sixteen-megabyte directory.
+const MAX_DIRS: usize = 4_096;
+
 /// One unbroken run of bytes in the image.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Extent {
@@ -200,6 +219,9 @@ impl Image {
     /// The whole of a small file. For streams, take [`Entry::contiguous`] and
     /// read the range instead of pulling a gigabyte into memory.
     pub fn read(&mut self, entry: &Entry) -> Result<Vec<u8>> {
+        if entry.size > MAX_READ {
+            bail!("{} says it is {} bytes, which is not an index file", entry.path, entry.size);
+        }
         self.read_data(&entry.data, entry.size)
     }
 
@@ -474,6 +496,9 @@ impl Image {
                     0 => {
                         out.extend(byte_runs(&map, block, len)?);
                         recorded += len;
+                        if out.len() > MAX_EXTENTS {
+                            bail!("a file in more than {MAX_EXTENTS} pieces is not one to read");
+                        }
                     }
                     // Allocated but not recorded, or neither. Past the end of
                     // the file it is room a recorder took and never filled --
@@ -500,6 +525,9 @@ impl Image {
             let Some((map, block, len)) = carry_on else {
                 break;
             };
+            if len > MAX_CONTINUED {
+                bail!("the allocation descriptors are continued over {len} bytes");
+            }
             let more = self.read_runs(&byte_runs(&map, block, len)?)?;
             // An allocation extent descriptor is a tag, the location of the
             // descriptors that led here, and the length of the ones carried.
@@ -542,6 +570,9 @@ impl Image {
             if !seen.insert((icb.partition, icb.block)) {
                 continue;
             }
+            if seen.len() > MAX_DIRS {
+                bail!("this image has more than {MAX_DIRS} directories, which no disc does");
+            }
             let fe = self.read_blocks(icb.partition, icb.block, 1)?;
             let home = self.map(icb.partition)?.clone();
             let (size, data) = self.file_data(&fe, home)?;
@@ -559,6 +590,9 @@ impl Image {
                 } else {
                     format!("{prefix}/{name}")
                 };
+                if self.files.len() + queue.len() >= MAX_ENTRIES {
+                    break;
+                }
                 if chars & FID_DIRECTORY != 0 {
                     queue.push((path, child, depth + 1));
                     continue;

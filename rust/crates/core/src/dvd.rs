@@ -231,9 +231,14 @@ pub fn titles(vol: &mut Volume) -> Result<Vec<Title>> {
     if srpt.len() < 8 {
         bail!("VIDEO_TS.IFO holds no table of titles");
     }
-    let count = u16be(srpt, 0) as usize;
+    // The format allows 99 titles, and a table that says 65535 of them, all
+    // pointing at the same one, was a disc read cell by cell for hours.
+    let count = (u16be(srpt, 0) as usize).min(99);
 
     let mut out = Vec::new();
+    // A title the table lists twice is still one title; the second listing
+    // would only be read again and thrown away as a duplicate afterwards.
+    let mut listed: std::collections::HashSet<(usize, usize)> = Default::default();
     // One title set is read once however many of the disc's titles are in it.
     let mut cache: Vec<(usize, Option<TitleSet>)> = Vec::new();
     for i in 0..count {
@@ -243,7 +248,7 @@ pub fn titles(vol: &mut Volume) -> Result<Vec<Title>> {
         }
         let vts = srpt[at + 6] as usize;
         let vts_ttn = srpt[at + 7] as usize;
-        if vts == 0 || vts > MAX_TITLE_SETS {
+        if vts == 0 || vts > MAX_TITLE_SETS || !listed.insert((vts, vts_ttn)) {
             continue;
         }
         if !cache.iter().any(|(n, _)| *n == vts) {

@@ -57,7 +57,6 @@
 //! writing a zero into a field whose name is unknown.
 
 use anyhow::{bail, Context, Result};
-use ffmpeg_next as ff;
 use std::io::{BufReader, BufWriter, Read, Write};
 use std::path::{Path, PathBuf};
 
@@ -1074,7 +1073,7 @@ fn read_clip(
 /// puts them back where they were. The video does not: there is only ever
 /// one of it. So it is asked of the file.
 fn video_pid(path: &str, index: usize) -> Result<u16> {
-    let ictx = ff::format::input(&path)?;
+    let ictx = crate::input::open_local(path)?;
     Ok(ictx.stream(index).map_or(0, |s| s.id()) as u16)
 }
 

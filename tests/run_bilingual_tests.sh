@@ -30,7 +30,7 @@
 # by hand.
 set -u
 cd "$(dirname "$0")/.."
-BIN=rust/target/release/smartcut
+BIN=${BIN:-rust/target/release/smartcut}
 FX="${TMPDIR:-/tmp}/smartcut-fixtures"
 mkdir -p "$FX"
 [ -x "$BIN" ] || { echo "build first: (cd rust && cargo build --release)" >&2; exit 2; }
@@ -101,6 +101,77 @@ if "$BIN" "$FX/late_sound.ts" --keep 2.0-8.0 -o "$FX/late_cut.ts" >/dev/null 2>&
   same "as many tracks as went in" "2" "$kept"
 else
   bad "the cutter failed on the late-sound recording"
+fi
+
+# --- the other way round ----------------------------------------------------
+#
+# The programme before this one had two sound tracks, and this one has one:
+# the second is there for the first seconds of the recording and never again.
+# Every read that looks for it past that point -- the four places a track's
+# shape is sampled at when the recording is opened, the frames around each
+# seam of a cut -- found nothing and went on to the end of the file looking,
+# because with every other stream thrown away libavformat does not come back
+# until it finds one. A broadcast of two and a half hours was read some thirty
+# times over while it was being added to the list, and a cut of the programme
+# alone failed at the end for a track with nothing in it.
+if [ ! -f "$FX/early_sound.ts" ]; then
+  echo "generating the early-sound fixture ..."
+  ffmpeg -hide_banner -loglevel error -y \
+    -f lavfi -i "testsrc=size=640x360:rate=30:duration=6" \
+    -f lavfi -i "sine=frequency=440:sample_rate=48000:duration=6" \
+    -f lavfi -i "sine=frequency=880:sample_rate=48000:duration=6" \
+    -map 0:v -map 1:a -map 2:a -c:v mpeg2video -g 15 -b:v 4000k -c:a aac -b:a 128k \
+    -streamid 0:256 -streamid 1:257 -streamid 2:258 \
+    -f mpegts "$FX/early_head.ts" || exit 2
+  ffmpeg -hide_banner -loglevel error -y \
+    -f lavfi -i "testsrc2=size=640x360:rate=30:duration=90" \
+    -f lavfi -i "sine=frequency=440:sample_rate=48000:duration=90" \
+    -map 0:v -map 1:a -c:v mpeg2video -g 15 -b:v 4000k -c:a aac -b:a 128k \
+    -streamid 0:256 -streamid 1:257 -output_ts_offset 6 \
+    -f mpegts "$FX/early_body.ts" || exit 2
+  cat "$FX/early_head.ts" "$FX/early_body.ts" > "$FX/early_sound.ts"
+fi
+
+# What reading it costs, in bytes read. Counted against the same recording
+# without its first six seconds, which has one track from start to end: the
+# count includes the program loading its own libraries, which on a file this
+# small is most of it, and that is the same either way. So is the deeper
+# probe a recording with a second track is opened with -- thirty-two
+# megabytes a time, which on this fixture is six times over and on a real
+# recording nothing. The fault read the file some twenty-eight times more.
+read_bytes() {
+  "$@" >/dev/null 2>&1 &
+  local p=$! r=0 now
+  while kill -0 "$p" 2>/dev/null; do
+    now=$(awk '/^rchar/{print $2}' "/proc/$p/io" 2>/dev/null) && [ -n "$now" ] && r=$now
+    sleep 0.05
+  done
+  echo "$r"
+}
+echo
+echo "a recording whose second sound track belongs to the programme before it"
+size=$(stat -c%s "$FX/early_sound.ts")
+bytes=$(read_bytes "$BIN" "$FX/early_sound.ts")
+plain=$(read_bytes "$BIN" "$FX/early_body.ts")
+more=$(( (bytes - plain) / size ))
+if [ "$more" -le 10 ]; then
+  ok "opening it does not read it over and over" "+${more}x"
+else
+  bad "opening it does not read it over and over" "+${more}x the file"
+fi
+if "$BIN" "$FX/early_sound.ts" --keep 20-40 --keep 60-80 -o "$FX/early_cut.ts" >/dev/null 2>&1; then
+  kept=$(ffprobe -v error -select_streams a -show_entries stream=id \
+    -of default=nw=1:nk=1 "$FX/early_cut.ts" 2>/dev/null | sort -u | wc -l)
+  same "a cut of the programme writes its one track" "1" "$kept"
+else
+  bad "a cut of the programme writes its one track" "the cut failed"
+fi
+if "$BIN" "$FX/early_sound.ts" --keep 2-20 -o "$FX/early_cut2.ts" >/dev/null 2>&1; then
+  kept=$(ffprobe -v error -select_streams a -show_entries stream=id \
+    -of default=nw=1:nk=1 "$FX/early_cut2.ts" 2>/dev/null | sort -u | wc -l)
+  same "a cut that reaches back into it keeps both" "2" "$kept"
+else
+  bad "a cut that reaches back into it keeps both" "the cut failed"
 fi
 
 echo

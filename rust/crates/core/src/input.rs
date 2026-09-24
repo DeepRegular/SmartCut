@@ -131,6 +131,27 @@ pub struct Input {
 }
 
 impl Input {
+    /// Refuse to write `output` over any file this input reads from.
+    ///
+    /// A muxer creates its file before a packet has been read, so an output
+    /// named the same as the recording -- or reaching it through a link --
+    /// truncated the recording to nothing and then failed to read it: the
+    /// cut was lost and so was the recording it was being made from.
+    pub fn refuse_as_output(&self, output: &str) -> Result<()> {
+        let out = Path::new(output);
+        let clash = std::iter::once(&self.file)
+            .chain(self.parts.iter())
+            .any(|file| same_file(file, out));
+        if clash {
+            anyhow::bail!(
+                "{output} is the recording being read ({}); writing there would destroy it. \
+                 Choose another name or folder",
+                self.file.display()
+            );
+        }
+        Ok(())
+    }
+
     /// Work out how to open what this names.
     ///
     /// A name that is neither a file nor a path into an image is handed on as
@@ -447,6 +468,40 @@ pub fn keep_only(ictx: &mut Demux, keep: &[usize]) {
     }
 }
 
+/// As [`keep_only`], and the pictures as well.
+///
+/// **For a read that stops by counting packets, or by the clock.** With
+/// every other stream thrown away, libavformat hands back nothing until it
+/// finds a packet of the ones kept -- and a broadcast's second sound track
+/// is often there only for the programme before this one, in the first
+/// minute of the recording. A read for it anywhere after that went on to the
+/// end of the file without returning, once per place it was asked about: a
+/// two-and-a-half-hour recording was read some thirty times over while it
+/// was being added to the list, and every seam of a cut did it again. The
+/// pictures are in every stretch of a recording, so with them kept a count
+/// runs out and a clock moves on whether the track is there or not.
+pub fn keep_with_pictures(ictx: &mut Demux, keep: &[usize]) {
+    let mut keep = keep.to_vec();
+    if let Some(video) = ictx.streams().best(ff::media::Type::Video) {
+        keep.push(video.index());
+    }
+    keep_only(ictx, &keep);
+}
+
+/// When a packet of any stream is presented, on the recording's own clock --
+/// what a read kept with [`keep_with_pictures`] watches to know it has gone
+/// past what it was looking for.
+pub fn packet_time(
+    stream: &ff::format::stream::Stream,
+    packet: &ff::Packet,
+    start_time: f64,
+) -> Option<f64> {
+    packet
+        .pts()
+        .or(packet.dts())
+        .map(|p| p as f64 * f64::from(stream.time_base()) - start_time)
+}
+
 /// Put every stream back, so the recording can be seeked again.
 ///
 /// A pass that seeks more than once has to: libavformat will not seek by a
@@ -557,6 +612,45 @@ fn is_program_stream(ictx: &ff::format::context::Input) -> bool {
     ictx.format().name().split(',').any(|n| n.trim() == "mpeg")
 }
 
+/// What libavformat may open to read a recording. See [`open_with`].
+pub(crate) const LOCAL_PROTOCOLS: &str = "file,subfile,concat";
+
+/// Open a file that is not a recording -- an image, a stream this program
+/// has just written -- under the same rule as [`open_with`].
+pub fn open_local(path: &str) -> Result<ff::format::context::Input> {
+    no_nul(path)?;
+    let mut opts = ff::Dictionary::new();
+    opts.set("protocol_whitelist", LOCAL_PROTOCOLS);
+    Ok(ff::format::input_with_dictionary(&path, opts)?)
+}
+
+/// A name with a NUL in it cannot be handed to libavformat, and ffmpeg-next
+/// unwraps the conversion: it would panic rather than fail.
+fn no_nul(name: &str) -> Result<()> {
+    if name.contains('\0') {
+        bail!("that name has a NUL character in it and cannot be opened");
+    }
+    Ok(())
+}
+
+/// Refuse an output that is not a file on this machine.
+///
+/// libavformat opens an output by name, and a name that is a URL is opened
+/// as one: `http://host/x.ts` would have the cut sent there. Nothing in this
+/// program writes anywhere but a file, and a project or a batch job that
+/// says otherwise is not to be taken at its word.
+pub fn refuse_url_output(output: &str) -> Result<()> {
+    let name = CString::new(output).context("that name cannot be written")?;
+    let protocol = unsafe {
+        let p = ff::ffi::avio_find_protocol_name(name.as_ptr());
+        (!p.is_null()).then(|| std::ffi::CStr::from_ptr(p).to_string_lossy().into_owned())
+    };
+    match protocol.as_deref() {
+        None | Some("file") => Ok(()),
+        Some(other) => bail!("{output} names a {other} address; the output has to be a file"),
+    }
+}
+
 fn open(url: &str, generate_pts: bool) -> Result<Demux> {
     open_with(url, generate_pts, false, false)
 }
@@ -565,19 +659,19 @@ fn open_with(url: &str, generate_pts: bool, all_maps: bool, deep_probe: bool) ->
     if let Some((table, under)) = split_restamp(url) {
         return restamped(under, table, generate_pts, all_maps, deep_probe);
     }
-    let nested = url.starts_with("subfile,") || url.starts_with("concat:");
-    if !nested && !generate_pts && !all_maps && !deep_probe {
-        return Ok(Demux::plain(ff::format::input(&url)?));
-    }
+    no_nul(url)?;
     let mut opts = ff::Dictionary::new();
+    // Local files and the two ways this program names a part of one, and
+    // nothing else -- here and in everything the demuxer opens on its own
+    // behalf. A "recording" can be a playlist in disguise: an HLS or concat
+    // file named `.ts` has libavformat fetch whatever it lists, over the
+    // network if it says so, as soon as a list or a batch opens it.
+    opts.set("protocol_whitelist", LOCAL_PROTOCOLS);
     if all_maps {
         opts.set("scan_all_pmts", "1");
     }
     if deep_probe {
         opts.set("probesize", DEEP_PROBE);
-    }
-    if nested {
-        opts.set("protocol_whitelist", "file,subfile,concat");
     }
     if generate_pts {
         opts.set("fflags", "+genpts");
@@ -786,14 +880,11 @@ fn restamped(
     all_maps: bool,
     deep_probe: bool,
 ) -> Result<Demux> {
-    let nested = under.starts_with("subfile,") || under.starts_with("concat:");
     unsafe {
         let mut below: *mut ff::ffi::AVIOContext = ptr::null_mut();
         let name = CString::new(under).context("that name cannot be opened")?;
         let mut opts: *mut ff::ffi::AVDictionary = ptr::null_mut();
-        if nested {
-            set(&mut opts, "protocol_whitelist", "file,subfile,concat");
-        }
+        set(&mut opts, "protocol_whitelist", LOCAL_PROTOCOLS);
         let err = ff::ffi::avio_open2(
             &mut below,
             name.as_ptr(),
@@ -826,6 +917,7 @@ fn restamped(
         (*ctx).pb = pb;
         (*ctx).flags |= ff::ffi::AVFMT_FLAG_CUSTOM_IO as c_int;
         let mut opts: *mut ff::ffi::AVDictionary = ptr::null_mut();
+        set(&mut opts, "protocol_whitelist", LOCAL_PROTOCOLS);
         if all_maps {
             set(&mut opts, "scan_all_pmts", "1");
         }
@@ -1103,6 +1195,27 @@ fn vob_names(first: &str) -> Vec<String> {
     let stem = &first[..at - 1];
     let ext = &first[at..];
     (1..=MAX_VOB).map(|n| format!("{stem}{n}{ext}")).collect()
+}
+
+/// Whether two paths name one file: the same name, a link to it, or on Unix
+/// a hard link. A path that does not exist names nothing yet.
+pub fn same_file(a: &Path, b: &Path) -> bool {
+    let (Ok(ma), Ok(mb)) = (std::fs::metadata(a), std::fs::metadata(b)) else {
+        return false;
+    };
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        ma.dev() == mb.dev() && ma.ino() == mb.ino()
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = (ma, mb);
+        match (std::fs::canonicalize(a), std::fs::canonicalize(b)) {
+            (Ok(x), Ok(y)) => x == y,
+            _ => false,
+        }
+    }
 }
 
 #[cfg(test)]

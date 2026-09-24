@@ -1333,7 +1333,12 @@ fn table_of_playlists(raw: &[u8]) -> Vec<String> {
         let Some(name) = raw.get(name_at..name_at + 10) else {
             break;
         };
-        if !name.iter().all(|b| b.is_ascii_graphic()) {
+        // `01001.RPLS`: digits, a dot and letters. Anything else -- a `/`,
+        // a `..` -- would be joined onto the disc's folder and read from
+        // outside it.
+        if !name.iter().all(|b| b.is_ascii_alphanumeric() || *b == b'.')
+            || name.windows(2).any(|w| w == b"..")
+        {
             break;
         }
         out.push(String::from_utf8_lossy(name).into_owned());
@@ -1406,6 +1411,12 @@ fn play_items(raw: &[u8], at: usize, vol: &mut Volume) -> Result<Vec<Clip>> {
         };
         if body.len() < 20 {
             break;
+        }
+        // Five digits, which is what a clip is called on every disc. A name
+        // with a NUL or a separator in it goes into a path, and from there to
+        // libavformat.
+        if !body[..5].iter().all(u8::is_ascii_digit) {
+            bail!("a clip in this playlist is not named with five digits");
         }
         let name = String::from_utf8_lossy(&body[..5]).into_owned();
         let codec = &body[5..9];
@@ -1759,6 +1770,14 @@ fn entry_points(raw: &[u8]) -> Vec<(f64, u64)> {
         let seams: Vec<u64> = sequence_starts(raw).into_iter().skip(1).map(|s| s.at).collect();
         let mut seam = 0usize;
         let mut earlier = 0u64;
+        // Each fine entry belongs to one coarse entry, so the coarse ones
+        // hand them out in order and never twice. A map whose coarse entries
+        // point back at fine ones already given out is not a map: taken as
+        // written, a clip of a megabyte and a half asked for hundreds of
+        // gigabytes of entry points.
+        if coarse.windows(2).any(|w| w[1].0 < w[0].0) {
+            return Vec::new();
+        }
         for (k, &(first, pts_hi, spn_hi)) in coarse.iter().enumerate() {
             let last = coarse.get(k + 1).map_or(fine_n, |c| c.0);
             // The top of the packet number comes from the coarse entry and
