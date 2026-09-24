@@ -186,7 +186,10 @@ function rebuildTimeline() {
   // actually gets written.
   let pos = headTime();
   for (const c of cuts) {
-    if (c.a > pos + 1e-6) keeps.push({ a: pos, b: Math.min(c.a, src.duration) });
+    // A cut past the end keeps nothing, rather than a range that runs
+    // backwards and takes its length off everything after it.
+    const a = Math.min(c.a, src.duration);
+    if (a > pos + 1e-6) keeps.push({ a: pos, b: a });
     pos = Math.max(pos, c.b);
   }
   if (pos < src.duration - 1e-6) keeps.push({ a: pos, b: src.duration });
@@ -381,6 +384,15 @@ const settleMark = () => {
   arrivedAs = editedWhileArriving ? "" : editSignature();
 };
 const touched = () => !!src && editSignature() !== arrivedAs;
+/// After a detection has put its marks down on an open timeline.
+///
+/// The marks are not an edit, so a window nobody had worked on stays one
+/// that closes without asking. One that had been worked on keeps its old
+/// mark: moved on to the whole timeline, cuts and all, Escape then threw away
+/// every cut made before the detection without a word.
+const settleUnlessTouched = (was) => {
+  if (!was) settleMark();
+};
 
 /// How far back 取消 reaches.
 ///
@@ -995,6 +1007,24 @@ function nearestPoint(t, dir = 0) {
   let best = src.points[0];
   for (const p of src.points) if (Math.abs(p - t) < Math.abs(best - t)) best = p;
   return best;
+}
+
+/// The next lossless point from the playhead in `dir` that is somewhere else
+/// on the output's timeline.
+///
+/// Not simply the next one in the recording: a point inside a cut lands on
+/// the seam, which is where the playhead already is once it is standing just
+/// past one, so stepping back stayed on the seam however often it was asked.
+function stepPoint(dir) {
+  if (!src || !src.points.length) return playhead;
+  const here = srcToOutSeam(playhead);
+  const pts = dir > 0 ? src.points : [...src.points].reverse();
+  for (const p of pts) {
+    if (dir > 0 ? p <= playhead + 1e-6 : p >= playhead - 1e-6) continue;
+    if (Math.abs(srcToOutSeam(p) - here) < frame() / 2) continue;
+    return p;
+  }
+  return playhead;
 }
 
 const atPoint = (t) => src && src.points.some((p) => Math.abs(p - t) < frame() / 2);
@@ -1794,6 +1824,9 @@ if (subsPicker) {
   subsPicker.addEventListener("change", () => {
     subsId = subsPicker.value === "" ? null : Number(subsPicker.value);
     if (subsId === null) {
+      // And anything still on its way for the track that was on: landing
+      // after this, it drew the subtitle back over a picker that says none.
+      subsToken += 1;
       clearSubs();
     } else {
       showSubs(shownTime >= 0 ? shownTime : playhead);
@@ -1822,7 +1855,9 @@ function updateReadouts() {
   const sel = counted
     ? tr("editor.selection", {
         a: frameNo(selA),
-        b: frameNo(selB),
+        // At the end OUT is snapped to the length, which is where the last
+        // frame ends rather than a frame: the last one is one before it.
+        b: frameNo(selB >= outDur - 1e-9 ? Math.max(0, outDur - frame()) : selB),
         len: fmt(selEnd() - selA),
       })
     : tr("editor.selectionTime", { a: fmt(selA), b: fmt(selB), len: fmt(selEnd() - selA) });
@@ -3466,8 +3501,13 @@ window.addEventListener(
     // A notch is a frame, so the GOP boundaries creep across the window
     // rather than jumping; Shift hops whole GOPs for covering ground.
     const dir = Math.sign(ev.deltaY);
-    if (ev.shiftKey) scrubTo(srcToOutSeam(nearestPoint(playhead, dir)));
-    else scrubTo(playOut() + dir * frame());
+    // Stopped first, as the arrow keys stop it: `scrubTo` moves the playhead
+    // before the picture is asked for, so the picture found nothing to stop
+    // and the playback carried on from where it had been.
+    const from = playOut();
+    if (playing) stopPlay(false);
+    if (ev.shiftKey) scrubTo(srcToOutSeam(stepPoint(dir)));
+    else scrubTo(from + dir * frame());
   },
   { passive: false }
 );
@@ -3910,8 +3950,12 @@ async function toScene(dir, from = playhead) {
   try {
     // A scene inside a cut no longer exists; step past it to the next one.
     for (let i = 0; i < 6; i++) {
+      const asked = playhead;
       const t = await invoke("scene_search", { from, dir });
       if (t === null || t === undefined) return;
+      // Moved somewhere else while the search ran: that is where the
+      // playhead is wanted now, not where the search was asked from.
+      if (playhead !== asked) return;
       if (srcToOut(t) !== null) {
         showFrame(t);
         return;
@@ -4198,7 +4242,10 @@ const atLastPicture = (o) => o >= outDur - frame() * 1.5;
 /// only way back to the mark you had was to remember the frame number.
 function setIn(o, mark = true) {
   const a = atFirstPicture(o) ? 0 : clamp(o, 0, outDur);
-  const b = selB <= a ? outDur : selB;
+  // Both ends on one frame is a selection of that frame, not a crossing:
+  // counted as one, I then O on the same frame selected from the start, and
+  // the next Del took everything up to it.
+  const b = selB < a ? outDur : selB;
   if (a === selA && b === selB) return;
   if (mark) remember();
   selA = a;
@@ -4214,7 +4261,7 @@ const selEnd = () => (selB >= outDur - 1e-9 ? outDur : Math.min(selB + frame(), 
 
 function setOut(o, mark = true) {
   const b = atLastPicture(o) ? outDur : clamp(o, 0, outDur);
-  const a = b <= selA ? 0 : selA;
+  const a = b < selA ? 0 : selA;
   if (a === selA && b === selB) return;
   if (mark) remember();
   selA = a;
@@ -4263,10 +4310,12 @@ async function readKeyframeFile(path) {
     return null;
   }
   if (!frames) return 0;
+  // Pictures counted from the recording's first, as `markNumbers` writes
+  // them -- not positions on the cut. Read as those, a list saved after a
+  // cut came back late by everything cut before each mark.
   const times = frames
-    .map((n) => n / src.fps)
-    .filter((o) => o <= outDur + 1e-6)
-    .map(outToSrc);
+    .map((n) => headTime() + n / src.fps)
+    .filter((t) => t <= src.duration + 1e-6);
   if (!times.length) return 0;
   addKeyframes(times);
   el("status").textContent = tr("keyframes.read", {
@@ -4326,7 +4375,9 @@ function trimBody() {
   for (const k of keeps) {
     const a = Math.max(0, no(k.a));
     const b = no(k.b) - 1;
-    if (b >= a) parts.push(`Trim(${a},${b})`);
+    // An end of 0 is AviSynth's "to the end of the clip", so a single frame
+    // kept at the head is written by its length instead.
+    if (b >= a) parts.push(b === 0 ? `Trim(${a},-1)` : `Trim(${a},${b})`);
   }
   return `${parts.join(" ++ ")}\r\n`;
 }
@@ -4358,14 +4409,18 @@ async function readCmFile(path) {
     el("status").textContent = tr("cm.readFailed", { e });
     return null;
   }
-  const blocks = (said && said.blocks) || [];
+  // Numbers where numbers are meant, and nothing else: a file written by
+  // hand or by something else with an object for the list, a null in it or
+  // a time in quotes threw rather than saying it could not be used.
+  const num = (v) => typeof v === "number" && Number.isFinite(v);
+  const blocks = said && Array.isArray(said.blocks) ? said.blocks : [];
   const good = blocks
-    .filter((b) => isFinite(b.start) && isFinite(b.end) && b.end > b.start)
+    .filter((b) => b && typeof b === "object" && num(b.start) && num(b.end) && b.end > b.start)
     .map((b) => ({
       start: b.start,
       end: b.end,
-      junctions: b.junctions || 0,
-      score: b.score || 0,
+      junctions: num(b.junctions) ? b.junctions : 0,
+      score: num(b.score) ? b.score : 0,
     }));
   if (!good.length) return 0;
   applyCmBlocks(good);
@@ -4373,7 +4428,11 @@ async function readCmFile(path) {
   // the recording was read; the one it was saved with otherwise.
   cmFinding =
     typeof said.resets === "number" ? { logo_found: !!said.logo_found, resets: said.resets } : null;
-  cmSummary = cmFinding ? cmNote({ ...cmFinding, blocks: good }) : said.note || "";
+  cmSummary = cmFinding
+    ? cmNote({ ...cmFinding, blocks: good })
+    : typeof said.note === "string"
+      ? said.note
+      : "";
   showCmNote(cmSummary);
   el("status").textContent = tr("cm.read", { n: good.length, file: leaf(path) });
   sync();
@@ -4863,6 +4922,12 @@ function trimCuts(body) {
   for (const m of body.matchAll(/\bTrim\s*\(\s*(\d+)\s*,\s*(-?\d+)\s*\)/gi)) {
     const a = Number(m[1]);
     const end = Number(m[2]);
+    // AviSynth's own three readings of the second number: a negative one is
+    // a length, 0 is the end of the clip, and anything else the last frame.
+    if (end === 0) {
+      kept.push({ a: at(a), b: src.duration });
+      continue;
+    }
     const b = end < 0 ? a - end - 1 : end;
     if (b >= a) kept.push({ a: at(a), b: at(b + 1) });
   }
@@ -5075,9 +5140,20 @@ function paintSourceInfo() {
 /// chapter points are put down under the same rule, and only where there was
 /// no list beside the recording: a `.keyframe` file is somebody's answer,
 /// and the disc's is the answer when nobody has given one.
+/// Counts opens, so that one overtaken by the next can tell. See `openPath`.
+let openGen = 0;
+
 async function openPath(picked, saved, side, name, chapters, dropPids) {
   jlog(`openPath ${picked}`);
   if (!picked) return;
+  // A second row can be sent while this one is still coming up. Everything
+  // below the first wait writes the window's state, so an open that has been
+  // overtaken stops at the next one rather than finishing on top of the row
+  // that replaced it -- reading that row's mark files a second time,
+  // settling its cuts as what it arrived with, or pointing the engine back
+  // at this recording.
+  const gen = ++openGen;
+  const overtaken = () => gen !== openGen;
   shownName = name || null;
   sideBase = side || picked.replace(/\.[^./\\]*$/, "");
   // Held for the menu, which can put them down again after they have been
@@ -5104,7 +5180,9 @@ async function openPath(picked, saved, side, name, chapters, dropPids) {
     // A failure has to be somebody's, or the promise is unhandled and the
     // window gets a console error instead of a message. Answered again below.
     exact.catch(() => {});
-    src = await invoke("open_outline", { path: picked });
+    const outline = await invoke("open_outline", { path: picked });
+    if (overtaken()) return;
+    src = outline;
     paintSourceInfo();
     paintSubsPicker();
     cuts = saved ? saved.cuts.map((c) => ({ a: c.a, b: c.b })) : [];
@@ -5140,7 +5218,9 @@ async function openPath(picked, saved, side, name, chapters, dropPids) {
     // switch off both halves of it.
     if (!saved && dropPids && dropPids.length) {
       try {
-        trackList = await invoke("tracks", { path: picked });
+        const listed = await invoke("tracks", { path: picked });
+        if (overtaken()) return;
+        trackList = listed;
         dropStreams = trackList
           .filter((k) => k.optional && dropPids.includes(k.pid))
           .map((k) => k.index);
@@ -5188,9 +5268,11 @@ async function openPath(picked, saved, side, name, chapters, dropPids) {
     const early = !saved && src.points.length === 0 && src.head !== null;
     let marks = false;
     if (early) marks = await settle(() => loadMarkFiles());
+    if (overtaken()) return;
     // Everything the row being left had is replaced by now.
     swapping = false;
     await showFrame(saved ? saved.playhead : 0);
+    if (overtaken()) return;
     schedulePlan();
     // And now the walk, which has been running behind all of the above.
     // Everything on screen is right without it; what it adds is exactness --
@@ -5198,12 +5280,15 @@ async function openPath(picked, saved, side, name, chapters, dropPids) {
     // the frame asked for rather than the nearest one a container seek could
     // find.
     await pointsArrived(exact, picked);
+    if (overtaken()) return;
     if (!saved && !early) marks = await settle(() => loadMarkFiles());
+    if (overtaken()) return;
     // The disc's own chapters, which fill a timeline no file beside the
     // recording had anything to say about. Left until here either way: they
     // arrive on the stream's own clock and are dropped rather than clamped
     // where they fall outside the material, which is a question for the walk.
     if (!saved && !marks) await settle(() => applyDiscChapters(discChapters));
+    if (overtaken()) return;
     // Whatever the recording came up with -- what was saved for this row, the
     // file beside it, the disc's chapters -- is what leaving compares against.
     // Said again here because a row that arrives with its own edit settles
@@ -5212,6 +5297,7 @@ async function openPath(picked, saved, side, name, chapters, dropPids) {
     // recording. Marks only on a first visit: a row coming back brings its
     // own marks with it, and putting these down again would undo a Del.
     await settle(() => loadFlatCached(!saved));
+    if (overtaken()) return;
     settleMark();
     prepare();
     // Asked again now that the open is over. Everything above schedules the
@@ -5224,6 +5310,7 @@ async function openPath(picked, saved, side, name, chapters, dropPids) {
     // recording in a wide window it did not.
     schedulePlan();
   } catch (e) {
+    if (overtaken()) return;
     el("title").textContent = "";
     el("status").textContent = tr("editor.openFailed", { e });
     throw e;
@@ -5254,6 +5341,13 @@ async function pointsArrived(exact, picked) {
   }
   if (!src || src.path !== picked) return;
   const at = playhead;
+  // A cut that ran to the end the container gave runs to the end the walk
+  // found. The walk can find the recording longer -- the last packets past
+  // what the header said -- and a Trim line read before it had cut the tail
+  // to the old end, which left the frames beyond it in the cut.
+  if (full.duration > src.duration + 1e-6) {
+    for (const c of cuts) if (c.b >= src.duration - 1e-6) c.b = full.duration;
+  }
   src = full;
   paintSourceInfo();
   paintSubsPicker();
@@ -5392,8 +5486,8 @@ el("go-start").addEventListener("click", () => seekOut(0));
 el("go-end").addEventListener("click", () => seekOut(outDur));
 holdStep("step-back", -1);
 holdStep("step-fwd", 1);
-el("prev-kf").addEventListener("click", () => showFrame(nearestPoint(playhead, -1)));
-el("next-kf").addEventListener("click", () => showFrame(nearestPoint(playhead, 1)));
+el("prev-kf").addEventListener("click", () => showFrame(stepPoint(-1)));
+el("next-kf").addEventListener("click", () => showFrame(stepPoint(1)));
 el("goto-in").addEventListener("click", () => seekOut(selA));
 el("goto-out").addEventListener("click", () => seekOut(selB));
 el("set-in").addEventListener("click", () => setIn(playOut()));
@@ -5413,12 +5507,22 @@ el("snap").addEventListener("click", () => {
   if (!src || outDur <= 0) return;
   // Access points are places in the recording, so the round trip through
   // source time is the whole job.
-  let a = srcToOutSeam(nearestPoint(outToSrc(selA)));
-  let b = srcToOutSeam(nearestPoint(outToSrc(selB)));
-  if (b <= a) b = srcToOutSeam(nearestPoint(outToSrc(a), 1));
-  if (b <= a) a = srcToOutSeam(nearestPoint(outToSrc(b), -1));
-  const from = clamp(Math.min(a, b), 0, outDur);
-  const to = clamp(Math.max(a, b), 0, outDur);
+  //
+  // OUT is the last frame the selection takes, so what has to land on a
+  // point is the frame after it, where the recording resumes. Put on the
+  // point itself, OUT left that frame in the cut and the material resumed
+  // one frame into a GOP -- a re-encode after a snap that was meant to save
+  // one. A selection that runs to the end stays there.
+  const a = srcToOutSeam(nearestPoint(outToSrc(selA)));
+  let b = outDur;
+  if (!(selB >= outDur - 1e-9 || atLastPicture(selB))) {
+    let resume = srcToOutSeam(nearestPoint(outToSrc(selEnd())));
+    if (resume - frame() <= a) resume = srcToOutSeam(nearestPoint(outToSrc(a), 1));
+    b = resume - frame();
+  }
+  if (b <= a) return;
+  const from = clamp(a, 0, outDur);
+  const to = clamp(b, 0, outDur);
   if (from === selA && to === selB) return;
   // A step like any other press that moves IN or OUT: this one moves both,
   // and a button that cannot be undone is a button nobody presses twice.
@@ -5450,7 +5554,7 @@ el("snap").addEventListener("click", () => {
 /// on it. Read as an end to cut up to, it would take the very frame the mark
 /// is sitting on. The start of the last picture is what the mark meant.
 function cutSelection(inner) {
-  if (!src || selB <= selA) return;
+  if (!src || selB < selA) return;
   const a = inner ? selA + frame() : atFirstPicture(selA) ? 0 : selA;
   const b = inner
     ? Math.min(selB, Math.max(0, outDur - frame()))
@@ -5471,7 +5575,7 @@ function cutSelection(inner) {
 
 el("cut-range").addEventListener("click", () => cutSelection(false));
 el("cut-outside").addEventListener("click", () => {
-  if (!src || selB <= selA) return;
+  if (!src || selB < selA) return;
   const keep = outRangeToSrc(selA, selB);
   applyCuts(cuts.concat(outRangeToSrc(0, selA)).concat(outRangeToSrc(selEnd(), outDur)));
   selA = 0;
@@ -5483,6 +5587,9 @@ el("undo-cut").addEventListener("click", () => stepHistory(past, undone));
 el("redo-cut").addEventListener("click", () => stepHistory(undone, past));
 el("clear-all").addEventListener("click", () => {
   if (!src) return;
+  // Nothing to clear is not a step: taken as one, it emptied the redo list
+  // and left 取消 with a press that did nothing.
+  if (!cuts.length && !keyframes.length && selA === 0 && selB === outDur) return;
   // Not through `applyCuts`, so it stops playback itself: it puts the whole
   // recording back, which is a bigger move under a running playback than any
   // single cut.
@@ -5587,7 +5694,13 @@ window.addEventListener("keydown", (ev) => {
     if (ev.key === "Escape") el("tracks-modal").hidden = true;
     return;
   }
-  if (ev.target.tagName === "INPUT" || ev.target.tagName === "SELECT") return;
+  // The volume slider and the two pickers keep the keyboard after they are
+  // used, and nothing in here types into them: holding on to it, they took
+  // every shortcut in the window -- Esc, Space, I and O -- and the arrows
+  // turned the volume. They hand it back at the first key instead.
+  const t = ev.target;
+  if (t.tagName === "SELECT" || (t.tagName === "INPUT" && t.type === "range")) t.blur();
+  else if (t.tagName === "INPUT") return;
   // Escape leaves the window, and leaves it the way キャンセル does: the cuts
   // made in here are dropped. It asks first where there is anything to drop;
   // see `askCancelEdit`. Nothing is lost that was not made in this window:
@@ -5797,7 +5910,7 @@ window.addEventListener("keydown", (ev) => {
     ev.preventDefault();
     if (!arrowDue(ev)) return;
     const dir = ev.key === "ArrowDown" ? 1 : -1;
-    if (ev.shiftKey) scrubTo(srcToOutSeam(nearestPoint(playhead, dir)));
+    if (ev.shiftKey) scrubTo(srcToOutSeam(stepPoint(dir)));
     else toScene(dir);
     return;
   }
@@ -6040,11 +6153,12 @@ el("detect-cm").addEventListener("click", async () => {
     showCmNote(cmSummary);
     // Whether a detection puts its marks down is 環境設定; off, the band and
     // the sentence are the whole of what it says until the menu is asked.
+    const was = touched();
     applyCmBlocks(res.blocks, prefs.get("cmKeyframes") !== false);
     // Marks a detection put down are the detection's answer and not
     // something anybody did in here; leaving is not losing them. See
-    // `arrivedAs`.
-    settleMark();
+    // `settleUnlessTouched`.
+    settleUnlessTouched(was);
     // Reported to the clip list too, so the row says what was found and a
     // later visit to this clip does not have to detect it again.
     sync();
@@ -6094,8 +6208,9 @@ async function runFlat(id, label, which, kinds, call) {
   try {
     const runs = await call();
     if (editId !== asked) return;
+    const was = touched();
     applyFlatRuns(kinds, runs, flatMarks(which));
-    settleMark();
+    settleUnlessTouched(was);
     el("status").textContent = flatSaid(which, runs.length);
   } catch (e) {
     if (editId === asked) el("status").textContent = tr("flat.failed", { e });
@@ -6429,12 +6544,17 @@ if (listen) {
         // `openPath` has put the reason on the status line already. The row
         // is let go of here so that being sent it again is another attempt
         // rather than a window that thinks it is already on that recording.
-        editId = null;
+        if (editId === id) editId = null;
         return;
       } finally {
-        opening = null;
-        swapping = false;
+        // Not when another row has been sent since: that open is still
+        // coming up, and it is its own to finish.
+        if (opening === id) {
+          opening = null;
+          swapping = false;
+        }
       }
+      if (editId !== id) return;
     }
     // Blocks the list found on its own, which only this window can turn into
     // marks: it is the one that knows where the material begins. Applied
@@ -6466,8 +6586,9 @@ if (listen) {
       if (arriving) {
         await settle(() => applyCmBlocks(cm.blocks, marks));
       } else {
+        const was = touched();
         applyCmBlocks(cm.blocks, marks);
-        settleMark();
+        settleUnlessTouched(was);
       }
       cmFinding =
         typeof cm.resets === "number"
@@ -6510,8 +6631,9 @@ if (listen) {
     const said = ev.payload || {};
     if (said.id !== editId || !Array.isArray(said.runs)) return;
     const which = said.which === "quiet" ? "quiet" : "blank";
+    const was = touched();
     applyFlatRuns(flatKinds(which), said.runs, flatMarks(which));
-    settleMark();
+    settleUnlessTouched(was);
     el("status").textContent = flatSaid(which, said.runs.length);
   });
   // The list window is where 環境設定 lives, so a language change is news

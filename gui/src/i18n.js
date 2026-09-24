@@ -70,6 +70,9 @@ const CATALOG = {
     "project.newBody":
       "現在の一覧と編集内容は破棄されます。保存していない作業は失われます。続けますか？",
     "project.newDone": "新しいプロジェクトを始めました",
+    "project.sharesTitle": "ネットワーク上の録画",
+    "project.sharesBody": "このプロジェクトは、次のコンピューターの共有フォルダーにある録画を使っています。\n\n{hosts}\n\nWindows では、開いた時点で録画を読みに行くので、そのコンピューターにサインインの情報が送られます。自分で作ったプロジェクトか、信頼できる相手から受け取ったものだけを開いてください。\n\n開きますか？",
+    "project.busyWriting": "出力中は、プロジェクトを開いたり新規作成したりできません。出力が終わるのを待つか、中止してください",
     "project.quitTitle": "SmartCut を終了",
     "project.quitBody":
       "保存していない作業があります。保存せずに終了しますか？",
@@ -159,7 +162,7 @@ const CATALOG = {
       "黒地にクレジットが出る場面では、文字が出ているあいだだけ割合が下がります。" +
       "そこで長い区間が割れて、数が増えることがあります。" +
       "画面のいちばん外側 2% は、どの値でも判定に使いません。" +
-      "変えると、それまでの検出結果は答えにならないので、録画を読み直します。",
+      "変えると、それまでの検出結果は使えなくなるので、録画を読み直します。",
     "prefs.flatMarkAt": "黒白区間の終わりの印:",
     "prefs.flatMarkAtNote":
       "既定は「黒でなくなったフレーム」です。区間の始まりと終わりの 2 つで切ると、" +
@@ -793,6 +796,7 @@ const CATALOG = {
     "out.skipped": "中止",
     "outset.branched": "同名のフォルダーあり → {name}",
     "out.sameName": "入力と同じ名前になります",
+    "out.overwritesInput": "一覧にある別の録画と同じファイルになるので、書き出していません",
     "out.branched": "「{asked}」フォルダーが既にあるので「{name}」に書き出します",
     "out.writing": "\"{name}\" を出力中…",
     "out.writingCopy": "\"{name}\" を出力中: 映像を無劣化でコピーしています…",
@@ -1191,6 +1195,9 @@ const CATALOG = {
     "project.newBody":
       "The list and everything cut in it will be discarded. Any work you have not saved will be lost. Continue?",
     "project.newDone": "Started a new project",
+    "project.sharesTitle": "Recordings on the network",
+    "project.sharesBody": "This project uses recordings in shared folders on these computers:\n\n{hosts}\n\nOn Windows, opening it reads the recordings straight away, which sends your sign-in details to those computers. Open it only if you made it yourself or it came from someone you trust.\n\nOpen it?",
+    "project.busyWriting": "A project cannot be opened or started while this one is being written. Wait for it to finish, or stop it",
     "project.quitTitle": "Quit SmartCut",
     "project.quitBody": "There is work here that has not been saved. Quit without saving it?",
     "project.quitOk": "Quit",
@@ -1872,6 +1879,7 @@ const CATALOG = {
     "out.skipped": "Stopped",
     "outset.branched": "already there → {name}",
     "out.sameName": "This would overwrite the input",
+    "out.overwritesInput": "Not written: this would overwrite another recording in the list",
     "out.branched": "A folder called \"{asked}\" was already there, so this run writes into \"{name}\"",
     "out.writing": "Writing \"{name}\"…",
     "out.writingCopy": "Writing \"{name}\": copying the video losslessly…",

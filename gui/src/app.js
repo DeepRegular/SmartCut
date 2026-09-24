@@ -611,6 +611,8 @@ if (listen) {
     // handed over and would not be offered again.
     if (landed && clip === editing) before = JSON.parse(JSON.stringify(state));
     paintRow(clip);
+    // And the line over the list, whose length is the rows' cut lengths.
+    paintTotals();
     // The row's picture is about the cuts as much as the line under the name
     // is. It repaints the row itself when it has one, and says nothing when
     // the cuts have not moved.
@@ -623,7 +625,11 @@ if (listen) {
   });
 
   listen("editor-cancel", (ev) => {
-    const clip = byId(ev.payload) || editing;
+    // What is put back is what the row being edited had: a cancel naming
+    // another row -- the one the window was on before a double-click moved
+    // it along -- would write this row's cuts over that one's.
+    const named = byId(ev.payload);
+    const clip = named && named !== editing ? null : named || editing;
     if (clip) clip.edit = before;
     // Along with the mark that says the row has been edited: what is being
     // put back is the row as the window found it, and a row cancelled out of
@@ -659,11 +665,15 @@ if (listen) {
     // the two mistakes is not the same: a close passed over for good leaves
     // the list thinking it is still editing, with the row wearing 編集中 and
     // the lanes walking past it until the program is restarted.
-    if (opening || (await invoke("editor_up").catch(() => false))) return;
+    if (opening) return;
+    const was = editing;
+    if (await invoke("editor_up").catch(() => false)) return;
+    // Asked again after the answer: a row opened while it was on its way is
+    // the window being built, and the question was about the one before it.
+    if (opening || editing !== was) return;
     // What that window found while it had the row. Its commercial detection
     // comes back inside the edit (`editor-state`); the two flat ones are in
     // the cache, and this is where the row goes and reads them.
-    const was = editing;
     editing = null;
     before = null;
     paintList();
@@ -714,6 +724,7 @@ async function addPaths(inputs) {
   // has to become the mount point it is under before anything can open it,
   // and a folder stands for the files in it, which is how a night's
   // recordings arrive as one line pasted from the NAS.
+  const gen = listGen;
   let resolved;
   try {
     resolved = await invoke("resolve_paths", { paths: inputs });
@@ -721,8 +732,12 @@ async function addPaths(inputs) {
     note(`${e}`);
     return [];
   }
+  // Another project was put up while the folder was being read.
+  if (gen !== listGen) return [];
   const failed = resolved.filter((r) => r.error);
   const found = resolved.flatMap((r) => r.files);
+  // Named by the person adding them, so a project naming them is theirs.
+  trustShares(inputs);
   const taken = [];
   const skipped = [];
   for (const f of found) {
@@ -731,7 +746,9 @@ async function addPaths(inputs) {
     // time, in the order the discs turned up, and the list is left alone
     // until it has been answered.
     if (f.what === "disc") {
-      for (const chosen of await chooseFromDisc(f)) {
+      const picked = await chooseFromDisc(f);
+      if (gen !== listGen) return [];
+      for (const chosen of picked) {
         if (byPath(chosen.path)) continue;
         const clip = makeClip(chosen);
         clips.push(clip);
@@ -797,6 +814,10 @@ async function addPaths(inputs) {
 
 /// What the chooser is looking at, or null when it is not open.
 let chooser = null;
+
+/// Counts the lists this window has put up, so that recordings still being
+/// added to the one before can tell. See `addPaths` and `dropPendingAdds`.
+let listGen = 0;
 /// The discs already waiting to be asked about. Two drops can be in flight at
 /// once -- a folder being walked while a second is dropped on top of it -- and
 /// there is one dialog, so they queue rather than the second one taking the
@@ -2632,6 +2653,9 @@ function duplicate(sources) {
       reencode: null,
       row: null,
       selected: false,
+      // Made here rather than added: see `restoreRemoved`, which keeps a
+      // removed row out only where its recording was added to the list again.
+      duplicated: true,
     };
     // The saved edit names the row it was taken from; this is a different row.
     if (copy.edit) copy.edit.id = copy.id;
@@ -2701,8 +2725,9 @@ async function remove(doomed, { undoable = true } = {}) {
         asked: JSON.stringify(flatAsk()),
         lang: currentLang(),
         since: nextId,
-        held: paused && !exporting && !starting,
-        after: exporting || starting ? resumeAfterRun : null,
+        // Whether the lanes were to stay stopped once this settles: now,
+        // or when the run that is writing ends.
+        held: exporting || starting ? heldBeforeRun && !resumeAfterRun : paused,
       };
       // Not kept: the row is drawn afresh when it comes back, and the
       // re-encode shots and the glance are worked out again when asked for.
@@ -2797,12 +2822,14 @@ function restoreRemoved() {
   if (!taken) return;
   const back = (state) => (state === "running" ? "queued" : state);
   const wasEmpty = !clips.length;
-  const again = (clip) => clips.some((c) => c.path === clip.path && c.id >= taken.since);
+  const again = (clip) =>
+    clips.some((c) => c.path === clip.path && c.id >= taken.since && !c.duplicated);
   const clash = taken.rows.filter((e) => again(e.clip));
   const rows = taken.rows.filter((e) => !again(e.clip));
   const asked = JSON.stringify(flatAsk()) !== taken.asked;
   const relang = currentLang() !== taken.lang;
-  clips.forEach((c) => (c.selected = false));
+  // Nothing coming back leaves the selection alone.
+  if (rows.length) clips.forEach((c) => (c.selected = false));
   for (const { clip, at } of rows.slice().sort((a, b) => a.at - b.at)) {
     clip.state = clip.state === "indexing" ? "queued" : clip.state;
     clip.pics = back(clip.pics);
@@ -2820,16 +2847,28 @@ function restoreRemoved() {
   }
   // Emptying the list let go of a 解析を中止, which is not something the
   // rows coming back asked for.
-  if (wasEmpty) {
-    if (taken.held && !exporting && !starting) paused = true;
-    if (taken.after !== null && (exporting || starting)) resumeAfterRun = taken.after;
+  //
+  // Put back into whichever state holds it now: the run that is writing, if
+  // there is one, since it is what lets the lanes go when it ends; the lanes
+  // themselves otherwise -- still 中止しています… if a pass is winding down,
+  // or the button read 解析を中止 over lanes it said were stopped.
+  if (wasEmpty && taken.held && rows.length) {
+    if (exporting || starting) resumeAfterRun = false;
+    else {
+      paused = true;
+      stopping = running();
+    }
   }
   anchor = rows.length ? clips.indexOf(rows[0].clip) : -1;
   if (clash.length) {
     note(t("list.restoreClash", { names: clash.map((e) => clipLabel(e.clip)).join(t("sep")) }));
+  } else if (stopping) {
+    note(t("list.stopping"));
   } else if (paused && !exporting && !starting) {
     note(t(queuedWork() ? "list.stopped" : "list.stoppedAll"));
-  } else {
+  } else if (sticky === t("list.removed", { n: taken.rows.length })) {
+    // The sentence the removal left, which is no longer true. Anything else
+    // on the line -- an error from before -- is left standing.
     note("");
   }
   renderList();
@@ -2840,6 +2879,10 @@ function restoreRemoved() {
   for (const { clip } of rows) {
     if (clip.blankState !== "done" || clip.quietState !== "done") restoreFlat(clip);
   }
+  // A row taken out before its first look came in -- a folder added and
+  // emptied straight away -- would otherwise stand without a picture until
+  // its lane came round to it.
+  if (rows.length) fillFirstLook();
   pump();
 }
 
@@ -2869,13 +2912,22 @@ el("stop-batch").addEventListener("click", async () => {
 });
 
 function move(dir) {
+  const anchored = clips[anchor];
   const order = dir < 0 ? clips.map((_, i) => i) : clips.map((_, i) => clips.length - 1 - i);
   for (const i of order) {
     const j = i + dir;
     if (!clips[i].selected || j < 0 || j >= clips.length || clips[j].selected) continue;
     [clips[i], clips[j]] = [clips[j], clips[i]];
   }
+  followAnchor(anchored);
   renderList();
+}
+
+/// Keep the Shift-click and arrow-key anchor on the row it was on, after the
+/// rows have been moved about under it.
+function followAnchor(row) {
+  const at = row ? clips.indexOf(row) : -1;
+  if (at >= 0) anchor = at;
 }
 el("move-up").addEventListener("click", () => move(-1));
 el("move-down").addEventListener("click", () => move(1));
@@ -3201,7 +3253,9 @@ function endDrag() {
   const held = clips.filter((c) => ids.has(c.id));
   const rest = clips.filter((c) => !ids.has(c.id));
   const above = clips.slice(0, at).filter((c) => !ids.has(c.id)).length;
+  const anchored = clips[anchor];
   clips = [...rest.slice(0, above), ...held, ...rest.slice(above)];
+  followAnchor(anchored);
   clearDrag();
   renderList();
 }
@@ -3328,7 +3382,10 @@ function keepsOf(clip) {
   const keeps = [];
   let pos = clip.info ? clip.info.first_point : 0;
   for (const c of normalise(clip.edit ? clip.edit.cuts : [])) {
-    if (c.a > pos + 1e-6) keeps.push({ a: pos, b: Math.min(c.a, dur) });
+    // A cut past the end -- a Trim line written for a longer file -- keeps
+    // nothing, rather than a range that runs backwards.
+    const a = Math.min(c.a, dur);
+    if (a > pos + 1e-6) keeps.push({ a: pos, b: a });
     pos = Math.max(pos, c.b);
   }
   if (pos < dur - 1e-6) keeps.push({ a: pos, b: dur });
@@ -3593,8 +3650,21 @@ function fileSafe(name) {
   }
   // Windows will not have a name that ends in a dot or a space, and no
   // filesystem is improved by one.
-  return out.replace(/^[\s.\u3000]+|[\s.\u3000]+$/g, "");
+  return notADevice(out.replace(/^[\s.\u3000]+|[\s.\u3000]+$/g, ""));
 }
+
+/// A name Windows keeps for a device, with or without an extension, given
+/// a character in front: a row renamed `AUX` wrote its cut to no file at all.
+function notADevice(name) {
+  return /^(con|prn|aux|nul|com[1-9]|lpt[1-9])(\.|$)/i.test(name) ? `_${name}` : name;
+}
+
+/// Characters a file name will not take, out of a prefix. Not trimmed as a
+/// name is: a prefix ends where the name begins, and a space there is meant.
+/// A `:` left in one wrote the cut on NTFS into a stream beside a file named
+/// after what came before it, and nothing appeared in the folder.
+const prefixSafe = (p) =>
+  String(p || "").replace(/[\\/:*?"<>|\x00-\x1f]/g, (c) => FULLWIDTH[c] ?? " ");
 
 /// What a cut of this clip is called, before the prefix and the number.
 ///
@@ -3625,8 +3695,13 @@ function outStem(clip) {
 function seqNo(clip) {
   if (!settings.number) return "";
   const digits = clamp(Number(settings.digits) || 2, 1, 6);
-  return `${String(clips.indexOf(clip) + 1).padStart(digits, "0")}_`;
+  const order = runOrder || clips;
+  return `${String(order.indexOf(clip) + 1).padStart(digits, "0")}_`;
 }
+
+/// The list as it stood when the run being written began, or null between
+/// runs. See `startExport`.
+let runOrder = null;
 
 /// Where a clip will be written, given the settings.
 ///
@@ -3736,7 +3811,7 @@ function outputBase(clip) {
   const dir = `${beneath(outDir() || beside)}/`;
   // The prefix is a name, not a path: a separator typed into it would put
   // the cut in a folder the output screen never mentions.
-  const prefix = String(settings.prefix || "").replace(/[\\/]/g, (c) => FULLWIDTH[c]);
+  const prefix = prefixSafe(settings.prefix);
   return { dir, name: `${prefix}${seqNo(clip)}${outStem(clip)}`, ext };
 }
 
@@ -3751,7 +3826,7 @@ function outputBase(clip) {
 /// and one would be gone.
 function outNo(clip) {
   const mine = outputBase(clip);
-  const twins = clips.filter((c) => {
+  const twins = (runOrder || clips).filter((c) => {
     const it = outputBase(c);
     return it.dir === mine.dir && it.name === mine.name && it.ext === mine.ext;
   });
@@ -4900,7 +4975,7 @@ function filenameSafe(name) {
     out += safe;
     bytes += n;
   }
-  return out.replace(/^[\s.\u3000]+|[\s.\u3000]+$/g, "");
+  return notADevice(out.replace(/^[\s.\u3000]+|[\s.\u3000]+$/g, ""));
 }
 
 /// Whether anything in the list is a DVD title.
@@ -5232,6 +5307,8 @@ el("browse-dir").addEventListener("click", async (ev) => {
   if (!picked) return;
   settings.dir = picked;
   settleOutput();
+  // Set rather than typed, so no input event carries it to the store.
+  rememberOutput();
   el("out-dir").value = picked;
   renderOutset();
   renderOutScreen();
@@ -6119,6 +6196,16 @@ el("out-channel-number").addEventListener("change", () => {
 // them: this screen is watched while it works rather than worked in, and the
 // frame the head is passing through is the one being asked about.
 
+/// What a held plan was worked out for.
+///
+/// 環境設定 has a say in the plan as well as the cuts: a range that opens on
+/// an open GOP is re-encoded further in when clean joins are asked for. Both
+/// the stage and the line under it compare against this one shape; the line
+/// once compared the ranges alone, matched nothing, and never said a word.
+function reencodeSig(ranges) {
+  return JSON.stringify([ranges, !!prefs.get("cleanJoins")]);
+}
+
 /// The plan's re-encoded segments for `clip`, with a frame out of each.
 ///
 /// Cached against the cuts they were worked out for, because the plan is a
@@ -6126,9 +6213,7 @@ el("out-channel-number").addEventListener("change", () => {
 /// neither worth repeating every time the screen is drawn.
 async function reencodeOf(clip) {
   const ranges = rangesOf(clip);
-  // 環境設定 has a say in the plan as well as the cuts: a range that opens
-  // on an open GOP is re-encoded further in when clean joins are asked for.
-  const sig = JSON.stringify([ranges, !!prefs.get("cleanJoins")]);
+  const sig = reencodeSig(ranges);
   if (clip.reencode && clip.reencode.sig === sig) return clip.reencode;
   const plan = await invoke("clip_plan", { path: clip.path, ranges });
   const segs = plan.segments.filter((g) => g.kind !== "copy");
@@ -6410,7 +6495,7 @@ function sayWhatIsWritten(clip, out, share, fit = null, row = false) {
   // ranges it had before somebody moved them.
   const held = clip.reencode;
   const plan =
-    held && held.sig === JSON.stringify(rangesOf(clip)) ? held.plan : null;
+    held && held.sig === reencodeSig(rangesOf(clip)) ? held.plan : null;
   const segs = (plan && plan.segments) || [];
   if (!segs.length) return;
   const redone = segs.filter((g) => g.kind !== "copy").length;
@@ -6892,8 +6977,12 @@ if (listen) {
 function paintExportButton() {
   const button = el("run-export");
   if (!button || button.hidden) return;
-  button.textContent = t(exporting ? "out.abort" : "out.run");
-  button.disabled = exporting ? abort : ready().length === 0 || batchRunning;
+  // Starting is part of the run: the disc's names being read, the numbers
+  // being taken. Still labelled 出力開始 then, a second press looked like
+  // a start and stopped the run instead.
+  const running = exporting || starting;
+  button.textContent = t(running ? "out.abort" : "out.run");
+  button.disabled = running ? abort : ready().length === 0 || batchRunning;
 }
 
 /// The button beside it, which is about the queue rather than about now.
@@ -7034,10 +7123,13 @@ async function writeJoined(list) {
 async function runExport() {
   if (exporting || starting) return;
   starting = true;
+  paintExportButton();
   try {
     await startExport();
   } finally {
     starting = false;
+    runOrder = null;
+    paintExportButton();
   }
 }
 
@@ -7046,6 +7138,12 @@ async function runExport() {
 let heldBeforeRun = false;
 
 async function startExport() {
+  // Cleared first, before any of the ways this can decline to start: a stop
+  // left over from the run before -- a batch job stopped from its row --
+  // reported the next job as stopped when it was in fact refused. And not
+  // when the writing starts: a 中止 pressed while the disc's names are being
+  // read is a stop for this run, and clearing it later threw it away.
+  abort = false;
   // Nothing to collect from the editor first: it reports every change as it
   // makes it, so what the list holds is already what is on screen in there.
   const list = ready();
@@ -7082,10 +7180,6 @@ async function startExport() {
   // watching. Both lanes stand aside until the list is written out.
   heldBeforeRun = paused;
   resumeAfterRun = false;
-  // Cleared here rather than when the writing starts: a 中止 pressed while the
-  // disc's names are being read is a stop for this run, and clearing it
-  // later threw it away.
-  abort = false;
   paused = true;
   await invoke("stop_batch", { lane: null });
   // What each recording will be called on the disc, and what the disc is
@@ -7151,6 +7245,11 @@ async function startExport() {
   }
 
   exporting = true;
+  // The numbers in the names, held for the run. A row moved or taken out
+  // while the list is being written would otherwise renumber the rows still
+  // to come, and one of them could be given the name a row already written
+  // has -- and be written over it.
+  runOrder = clips.slice();
   began = Date.now();
   phaseBegan = began;
   discSteps = [];
@@ -7177,6 +7276,13 @@ async function startExport() {
     const out = disc ? slots[i].path : outputPath(clip);
     if (out === clip.path) {
       clip.out = { state: "error", progress: 0, note: t("out.sameName") };
+      renderOutScreen();
+      continue;
+    }
+    // Nor over another row's recording, which the engine does not know is
+    // in the list: its turn would come after its file had been cut short.
+    if (await invoke("names_an_input", { output: out, inputs: (runOrder || clips).map((c) => c.path) })) {
+      clip.out = { state: "error", progress: 0, note: t("out.overwritesInput") };
       renderOutScreen();
       continue;
     }
@@ -7515,6 +7621,51 @@ function namesAProtocol(path) {
     !/^[A-Za-z]:[\\/]/.test(path) &&
     !/^smb:/i.test(path)
   );
+}
+
+/// The host a path names a network share on, in lower case, or null.
+///
+/// `\\host\share\…`, `//host/share/…` and `smb://host/share/…`. A drive
+/// letter is not a host, even one mapped to a share: Windows already holds
+/// the credentials that mapping it took.
+function shareHost(path) {
+  if (typeof path !== "string") return null;
+  const m = /^(?:[\\/]{2}|smb:\/\/)([^\\/]+)/i.exec(path);
+  return m ? m[1].toLowerCase() : null;
+}
+
+/// Remember the shares of recordings somebody added themselves.
+function trustShares(paths) {
+  const known = new Set(prefs.get("trustedShares"));
+  const before = known.size;
+  for (const p of paths) {
+    const host = shareHost(p);
+    if (host) known.add(host);
+  }
+  if (known.size !== before) prefs.set("trustedShares", [...known]);
+}
+
+/// Whether a project that names shares nobody here has added from may open.
+///
+/// Opening one reads every row at once, and on Windows reading a file on a
+/// share is the machine signing in to it: a project somebody sent, naming
+/// `\\their-host\…`, handed their host the user's sign-in the moment it
+/// was opened. So a host is asked about once, and remembered when allowed.
+async function sharesAsked(doc) {
+  const known = new Set(prefs.get("trustedShares"));
+  const named = [];
+  for (const c of Array.isArray(doc.clips) ? doc.clips : []) {
+    if (c) named.push(c.path, c.home);
+  }
+  if (doc.settings && typeof doc.settings === "object") named.push(doc.settings.dir);
+  const hosts = [...new Set(named.map(shareHost).filter((h) => h && !known.has(h)))];
+  if (!hosts.length) return true;
+  const go = await dialog.ask(t("project.sharesBody", { hosts: hosts.join(t("sep")) }), {
+    title: t("project.sharesTitle"),
+    kind: "warning",
+  });
+  if (go) prefs.set("trustedShares", [...known, ...hosts]);
+  return go;
 }
 
 /// The format's own number, which is not the program's. It goes up when a
@@ -7880,8 +8031,23 @@ async function saveProject(rename = false) {
 /// are not the same question: one is replacing this work with another
 /// project's, the other is throwing it away for an empty list.
 async function askReplace(title = t("project.replaceTitle"), body = t("project.replaceBody")) {
+  // Not while a run is writing this list: the clips still to come would be
+  // written with the other project's settings -- its container, its prefix,
+  // its disc title -- into the folder this one chose.
+  if (exporting || starting) {
+    note(t("project.busyWriting"));
+    return false;
+  }
   if (!dirty()) return true;
   return dialog.ask(body, { title, kind: "warning" });
+}
+
+/// Let go of anything still on its way into the list being put down: a
+/// disc's chooser still up, a folder still being read off a share. Answered
+/// after the other project was open, they went into it.
+function dropPendingAdds() {
+  listGen += 1;
+  closeChooser(false);
 }
 
 /// An empty list with nothing behind it: the state the program opens in,
@@ -7894,6 +8060,7 @@ async function askReplace(title = t("project.replaceTitle"), body = t("project.r
 /// from.
 async function newProject() {
   if (!(await askReplace(t("project.newTitle"), t("project.newBody")))) return;
+  dropPendingAdds();
   await remove(clips.slice(), { undoable: false });
   // Back to the defaults -- unless the settings are being carried, in which
   // case the answer to "what should a new list be written as" is the one
@@ -7954,9 +8121,11 @@ async function loadProject(path) {
     note(t("project.wrongFormat", { name: nameOf(path) }));
     return false;
   }
+  if (!(await sharesAsked(doc))) return false;
   // Not merely emptied: a lane reading a row has to be told to stop, and the
   // editor open on one has nothing left to be about. All of which `remove`
   // already knows how to do.
+  dropPendingAdds();
   await remove(clips.slice(), { undoable: false });
   // Whether this project has an output of its own. One saved from the 入力
   // screen has not been given one and says nothing about it; see
@@ -8010,7 +8179,11 @@ async function loadProject(path) {
     // the cut there, and a prefix with a separator in it writes beside some
     // other folder. See `namesAProtocol`.
     if (namesAProtocol(settings.dir)) settings.dir = SETTING_DEFAULTS.dir;
-    settings.prefix = settings.prefix.replace(/[\\/]/g, (c) => FULLWIDTH[c]);
+    settings.prefix = prefixSafe(settings.prefix);
+    // The container becomes the extension as it stands, so only one the
+    // screen offers: anything else could carry a separator into the name.
+    const offered = [...el("out-container").options].map((o) => o.value);
+    if (!offered.includes(settings.container)) settings.container = SETTING_DEFAULTS.container;
     // Held as a position in the file and as a row id here; the rows do not
     // exist yet, so the position is kept and turned into an id below.
     masterAt = Number.isInteger(said.master) ? said.master : null;
@@ -10738,8 +10911,10 @@ window.addEventListener("keydown", (ev) => {
   if (screen !== "input") return;
   // A panel is over the list: the ground behind it says the rest of the
   // program is not listening, and Delete deleting a clip out from under it
-  // would be the list listening anyway.
-  if (!prefsPanel.hidden || !about.hidden) return;
+  // would be the list listening anyway. The disc's chooser is one of them,
+  // and it holds the keyboard on a button, which the check for a field
+  // below lets through.
+  if (!prefsPanel.hidden || !about.hidden || chooser) return;
   if (ev.target.tagName === "INPUT" || ev.target.tagName === "SELECT") return;
   const key = ev.key.toLowerCase();
   if ((ev.ctrlKey || ev.metaKey) && key === "a") {

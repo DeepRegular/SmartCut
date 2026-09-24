@@ -28,7 +28,7 @@ window.addEventListener("error", (e) => jlog(`zoom error ${e.message}`));
 window.addEventListener("unhandledrejection", (e) => jlog(`zoom reject ${e.reason}`));
 
 import { fmt, noBrowserMenu, noNativeDrag } from "./shared.js";
-import { t as tr, applyStatic, setLang, onLangChange } from "./i18n.js";
+import { t as tr, applyStatic, setLang, onLangChange, confirmWithOs } from "./i18n.js";
 import * as prefs from "./prefs.js";
 
 const el = (id) => document.getElementById(id);
@@ -256,3 +256,5 @@ async function announceReady() {
 }
 
 announceReady();
+// The machine's own language, as the other windows take it. See `confirmWithOs`.
+confirmWithOs(invoke);

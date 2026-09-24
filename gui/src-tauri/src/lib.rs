@@ -908,9 +908,20 @@ async fn off_thread_behind<T: Send + 'static>(
     .await
 }
 
+/// Counts the editor's opens. See [`open_source`].
+static OPEN_TICKET: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// Open a recording for the editor, and make it the one every later command
+/// works on.
+///
+/// Unless another open was asked for while this one was reading. The walk
+/// takes tens of seconds over a share, and a row picked during it would be
+/// on screen with the first recording under it once that walk came back --
+/// the stage, the strip and the plan all answered out of the wrong file.
 #[tauri::command]
 async fn open_source(path: String, app: tauri::AppHandle) -> Result<SourceInfo, String> {
-    off_thread(move || open_now(&path, &app)).await
+    let ticket = OPEN_TICKET.fetch_add(1, Ordering::SeqCst) + 1;
+    off_thread(move || open_now(&path, &app, ticket)).await
 }
 
 /// What the container says about a recording, for a window that has not read
@@ -1209,8 +1220,11 @@ fn info_of(src: &Source) -> SourceInfo {
 
 /// Reading a recording's index is a pass over the file, so it runs on a
 /// worker thread; see [`off_thread`].
-fn open_now(path: &str, app: &tauri::AppHandle) -> Result<SourceInfo, String> {
+fn open_now(path: &str, app: &tauri::AppHandle, ticket: u64) -> Result<SourceInfo, String> {
     let (src, held) = scan_cached(app, path)?;
+    if OPEN_TICKET.load(Ordering::SeqCst) != ticket {
+        return Err("another recording was opened in the meantime".into());
+    }
     // Anything still building for the file that was open belongs to nothing
     // now; the count going up is what tells it so.
     app.state::<Generation>().0.fetch_add(1, Ordering::SeqCst);
@@ -1817,6 +1831,33 @@ fn index_info(app: &tauri::AppHandle, src: &Source, cached: bool) -> Option<Inde
 /// the recording is on, which is a share more often than not, and a share
 /// that has gone to sleep answered it in its own time with the window
 /// stopped until it did.
+/// Whether writing `output` would write over one of the list's recordings.
+///
+/// The engine refuses an output that is the recording being cut, but a run
+/// writes a list: a cut into the folder another row's recording is in, under
+/// its name, truncated that recording before its own turn came. Asked of the
+/// files rather than of the strings, which a share's mount, a symbolic link
+/// or the case of a Windows name can make differ for one file.
+#[tauri::command]
+async fn names_an_input(output: String, inputs: Vec<String>) -> bool {
+    tauri::async_runtime::spawn_blocking(move || {
+        let out = std::path::Path::new(&output);
+        if !out.exists() {
+            return false;
+        }
+        inputs.iter().any(|p| {
+            // A title on a disc image is named as the image and where on it.
+            let file = match p.rsplit_once('@') {
+                Some((file, _)) if !std::path::Path::new(p).exists() => file,
+                _ => p.as_str(),
+            };
+            smartcut_core::input::same_file(std::path::Path::new(file), out)
+        })
+    })
+    .await
+    .unwrap_or(true)
+}
+
 #[tauri::command]
 async fn clip_gone(path: String) -> bool {
     tauri::async_runtime::spawn_blocking(move || clip_gone_now(&path)).await.unwrap_or(false)
@@ -5809,6 +5850,15 @@ async fn bdav_finish(
 ) -> Result<u64, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let at = local_path(&dir)?;
+        // Each clip names files in three folders of the disc, and the ones a
+        // failed index removes: only the five-digit slots `bdav_prepare`
+        // hands out, as `bdav_discard` insists.
+        if let Some(bad) = entries
+            .iter()
+            .find(|e| e.clip.len() != 5 || !e.clip.bytes().all(|b| b.is_ascii_digit()))
+        {
+            return Err(format!("{}: not a clip on this disc", bad.clip));
+        }
         let recordings: Vec<smartcut_core::bdav::Recording> = entries
             .into_iter()
             .map(|e| smartcut_core::bdav::Recording {
@@ -6393,8 +6443,18 @@ fn write_whole(path: &std::path::Path, body: &[u8]) -> std::io::Result<()> {
         std::process::id(),
         NEXT.fetch_add(1, Ordering::Relaxed)
     ));
-    if let Err(e) = std::fs::write(&temp, body) {
-        let _ = std::fs::remove_file(&temp);
+    // Made new rather than opened: a name that is already there -- left by
+    // somebody else in a shared folder, as a link to a file of the user's --
+    // is not written through.
+    let made = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&temp)
+        .and_then(|mut f| std::io::Write::write_all(&mut f, body));
+    if let Err(e) = made {
+        if e.kind() != std::io::ErrorKind::AlreadyExists {
+            let _ = std::fs::remove_file(&temp);
+        }
         if e.kind() == std::io::ErrorKind::PermissionDenied {
             return std::fs::write(path, body);
         }
@@ -6431,8 +6491,26 @@ async fn read_keyframes(path: String) -> Result<Option<Vec<u32>>, String> {
     off_thread(move || read_keyframes_now(&path)).await
 }
 
+/// A mark file, read whole -- if it is a file, and one of a size a list of
+/// marks could be.
+///
+/// These are found by name beside a recording and read without anybody
+/// asking. A pipe of that name held the reading thread for good, and a file
+/// of gigabytes was read into memory whole.
+fn read_mark_file(path: &str) -> std::io::Result<String> {
+    const MOST: u64 = 64 << 20;
+    let meta = std::fs::metadata(path)?;
+    if !meta.is_file() || meta.len() > MOST {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            tr!("マークのファイルとして読めません", "not readable as a mark file"),
+        ));
+    }
+    std::fs::read_to_string(path)
+}
+
 fn read_keyframes_now(path: &str) -> Result<Option<Vec<u32>>, String> {
-    let body = match std::fs::read_to_string(path) {
+    let body = match read_mark_file(path) {
         Ok(b) => b,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         Err(e) => return Err(e.to_string()),
@@ -6466,7 +6544,7 @@ async fn write_sidecar(path: String, body: String) -> Result<(), String> {
 /// one?" gets asked, before writing over it.
 #[tauri::command]
 async fn read_sidecar(path: String) -> Result<Option<String>, String> {
-    off_thread(move || match std::fs::read_to_string(&path) {
+    off_thread(move || match read_mark_file(&path) {
         Ok(body) => Ok(Some(body)),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
         Err(e) => Err(e.to_string()),
@@ -6658,7 +6736,9 @@ fn free_in(dir: &std::path::Path, stem: &str, ext: &str) -> Result<String, Strin
 
 /// Where to write a list that is going into the queue. The name is the list
 /// window's; the folder is this side's.
-#[tauri::command]
+// Off the main thread: the queue's lock can be waited on for seconds, and
+// the window does not draw while a plain command runs.
+#[tauri::command(async)]
 fn queue_temp_path(app: tauri::AppHandle, stem: String, ext: String) -> Result<String, String> {
     free_in(&queue_dir(&app)?, &stem, &ext)
 }
@@ -6700,7 +6780,9 @@ fn queue_copy_now(app: &tauri::AppHandle, path: &str) -> Result<String, String> 
 /// saved and then queued is not the queue's to throw away, and a path outside
 /// the folder is answered `false` and left alone -- as is one already gone,
 /// which is the answer for every row of a queue written before this existed.
-#[tauri::command]
+// Off the main thread: the queue's lock can be waited on for seconds, and
+// the window does not draw while a plain command runs.
+#[tauri::command(async)]
 fn drop_temp_project(app: tauri::AppHandle, path: String) -> Result<bool, String> {
     let dir = queue_dir(&app)?;
     let at = std::path::Path::new(&path);
@@ -6716,7 +6798,9 @@ fn drop_temp_project(app: tauri::AppHandle, path: String) -> Result<bool, String
 /// A file that will not parse is an empty queue as well. It is a list of work
 /// to do rather than the work itself, and a tool that refused to start
 /// because of it would be a tool nobody could clear.
-#[tauri::command]
+// Off the main thread: the queue's lock can be waited on for seconds, and
+// the window does not draw while a plain command runs.
+#[tauri::command(async)]
 fn batch_read(app: tauri::AppHandle) -> BatchQueue {
     let Ok(dir) = batch_dir(&app) else {
         return BatchQueue::default();
@@ -6738,7 +6822,9 @@ fn batch_read(app: tauri::AppHandle) -> BatchQueue {
 /// at the end rather than written away; and a row's `edited` is never moved
 /// back. The tool used to put its own rows down whole, and a job added in the
 /// seconds before it did was gone.
-#[tauri::command]
+// Off the main thread: the queue's lock can be waited on for seconds, and
+// the window does not draw while a plain command runs.
+#[tauri::command(async)]
 fn batch_write(
     app: tauri::AppHandle,
     queue: BatchQueue,
@@ -6849,7 +6935,9 @@ fn with_queue_lock<T>(
 /// nothing it has written is read back stale and put down again.
 ///
 /// A path already in the queue is not added twice.
-#[tauri::command]
+// Off the main thread: the queue's lock can be waited on for seconds, and
+// the window does not draw while a plain command runs.
+#[tauri::command(async)]
 fn batch_append(app: tauri::AppHandle, jobs: Vec<BatchJob>) -> Result<BatchQueue, String> {
     let dir = batch_dir(&app)?;
     with_queue_lock(&dir, || {
@@ -6876,7 +6964,9 @@ fn batch_append(app: tauri::AppHandle, jobs: Vec<BatchJob>) -> Result<BatchQueue
 /// said again about the list as it now stands, and it lands only on a row
 /// that is still waiting: a row that has run says how it went, and how many
 /// recordings the project holds is not news worth that line.
-#[tauri::command]
+// Off the main thread: the queue's lock can be waited on for seconds, and
+// the window does not draw while a plain command runs.
+#[tauri::command(async)]
 fn batch_touch(app: tauri::AppHandle, path: String, note: Option<String>) -> Result<(), String> {
     let dir = batch_dir(&app)?;
     with_queue_lock(&dir, || touch_job(&dir, &path, note))
@@ -7650,6 +7740,7 @@ pub fn run() {
             clip_poster,
             clip_glance,
             clip_gone,
+            names_an_input,
             open_editor,
             open_cross,
             close_cross,

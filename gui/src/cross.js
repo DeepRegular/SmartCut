@@ -28,7 +28,7 @@ window.addEventListener("error", (e) => jlog(`cross error ${e.message}`));
 window.addEventListener("unhandledrejection", (e) => jlog(`cross reject ${e.reason}`));
 
 import { fmt, noBrowserMenu, noNativeDrag, wireDrops, MENU_MARGIN, MENU_LEAST } from "./shared.js";
-import { t as tr, applyStatic, onLangChange, setLang } from "./i18n.js";
+import { t as tr, applyStatic, onLangChange, setLang, confirmWithOs } from "./i18n.js";
 import * as prefs from "./prefs.js";
 
 const el = (id) => document.getElementById(id);
@@ -782,11 +782,16 @@ el("x-all").addEventListener("click", () => {
   const c = crossing();
   if (!c) return;
   for (const j of joins) j.after = { ...c };
+  // Changed here as much as a field is: see the `cross-open` handler, which
+  // would otherwise take the list's joins back over these.
+  changedHere = true;
   paintNote();
 });
 
 el("x-clear").addEventListener("click", () => {
   for (const j of joins) j.after = null;
+  changedHere = true;
+  stopPlay(false);
   drawPattern();
   paintLive();
   showJoin();
@@ -910,7 +915,9 @@ window.addEventListener("keydown", (ev) => {
   } else if (ev.key === "Enter" && !typing && !own) {
     ev.preventDefault();
     done();
-  } else if (ev.key === " " && !typing) {
+  } else if (ev.key === " " && !typing && !ev.repeat) {
+    // Held down it is one press: repeated, it started and stopped the
+    // playback in turn for as long as the key was down.
     ev.preventDefault();
     playing ? stopPlay() : startPlay();
   }
@@ -935,6 +942,9 @@ if (listen) {
       joins = theirs;
       changedHere = false;
     }
+    // What is playing is the join that was up. Carried on over another, it
+    // drew the old crossing's frames while the head moved along the new one.
+    stopPlay(false);
     at = clamp(Number(said.pick) || 0, 0, Math.max(0, joins.length - 1));
     // Nothing to build for the picker: its list is drawn on the way down, so
     // it is always the joins as they are now and in the language the window
@@ -943,7 +953,10 @@ if (listen) {
   });
 
   hear("cross-play-ended", (ev) => {
-    if (ev.payload !== playRun) return;
+    // A playback stopped by hand ends too, and says so. Taken as one that
+    // ran to its end, the loop started it again from the top: with the loop
+    // on, nothing -- the button, Space, a scrub -- could stop it.
+    if (ev.payload !== playRun || !playing) return;
     setPlaying(false);
     if (looping) {
       head = 0;
@@ -969,6 +982,8 @@ if (listen) {
 onLangChange(() => {
   updateReadouts();
   paintNote();
+  // The play button's words are its state's, written by `setPlaying` alone.
+  setPlaying(playing);
   const j = join();
   if (j) nameWindow(j);
 });
@@ -1002,3 +1017,6 @@ async function announceReady() {
 }
 
 announceReady();
+// The machine's own language, as the list and the editor take it: a window
+// opened with the preference on "auto" otherwise went by the webview's.
+confirmWithOs(invoke);

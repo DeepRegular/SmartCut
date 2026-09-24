@@ -30,6 +30,10 @@
 /// `SMARTCUT_PROXY=1` still opens with the box ticked. A preference actually
 /// stored beats both.
 const DEFAULTS = {
+  /// The hosts of shares a project may name without asking, in lower case.
+  /// One is added when recordings are added from it, or when a project that
+  /// names it is opened after asking. See `sharesAsked` in `app.js`.
+  trustedShares: [],
   /// Whether the output settings are put back the way they were left at the
   /// next start. Off, because the settings screen decides what a recording
   /// becomes and a program that quietly remembers yesterday's answer is one
@@ -396,8 +400,12 @@ function carryLevels() {
       if (!isFinite(was) || stored(now)) continue;
       // The engine truncates both, so these are the lumas actually compared.
       const luma = Math.floor((was / 100) * 255);
-      const percent = Math.floor(((luma - 16) / (235 - 16)) * 100 + 1e-9);
-      set(now, Math.min(100, Math.max(0, percent)));
+      // Walked down rather than solved for, because the engine truncates
+      // the new level as well: 16 was 40, and 11% is 40.09, which it
+      // compares as 40 -- solving 16 + 2.19p <= 40 stops a percent short.
+      let percent = 100;
+      while (percent > 0 && Math.floor(16 + (percent / 100) * (235 - 16)) > luma) percent -= 1;
+      set(now, percent);
     }
   } catch {
     // A store that will not be read has nothing in it to carry.
