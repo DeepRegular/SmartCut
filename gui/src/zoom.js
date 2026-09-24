@@ -117,6 +117,10 @@ function draw() {
   paintFoot();
 }
 
+/// The number of the last picture asked for, and of the one on screen.
+let asked = 0;
+let shown = 0;
+
 if (listen) {
   // A picture to magnify: the editor fetched it at the recording's own size.
   // Held as an `Image` rather than drawn straight away -- the url has to be
@@ -129,7 +133,13 @@ if (listen) {
     if (!said.url) return;
     at = typeof said.time === "number" ? said.time : null;
     const next = new Image();
+    const run = ++asked;
+    // Pictures load at their own pace, and stepping through frames asks for
+    // the next before the last has arrived: a large frame landing after a
+    // small later one put the older picture up under the newer time.
     next.onload = () => {
+      if (run < shown) return;
+      shown = run;
       pic = next;
       draw();
     };

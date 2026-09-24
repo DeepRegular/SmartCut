@@ -61,6 +61,21 @@ let playUrl = null;
 /// Set while the list has not answered yet. See `announceReady`.
 let answered = false;
 
+/// Counts which join and which setting are the latest asked about, so that
+/// an answer overtaken by a later one is dropped rather than drawn. See
+/// `showJoin` and `refreshSpan`.
+let joinRun = 0;
+let spanRun = 0;
+
+/// The loads of a join's two recordings, one after another. The backend
+/// holds one pair at a time, and two loads side by side finished in either
+/// order: the slower, older one left the pair behind and every picture after
+/// it came out of the recordings of the join before.
+let loading = Promise.resolve();
+
+/// Whether anything in this window has been changed since the list sent it.
+let changedHere = false;
+
 const wiring = [];
 const hear = (name, fn) => wiring.push(listen(name, fn));
 
@@ -277,12 +292,18 @@ function seamSpec() {
 async function refreshSpan() {
   const spec = seamSpec();
   if (!spec || !invoke) return;
+  const run = ++spanRun;
+  let got;
   try {
-    span = await invoke("cross_span", { seam: spec });
+    got = await invoke("cross_span", { seam: spec });
   } catch (e) {
     jlog(`cross_span: ${e}`);
     return;
   }
+  // A slider dragged asks on every step, and the answers need not come back
+  // in order: only the last question's is the setting on screen.
+  if (run !== spanRun) return;
+  span = got;
   head = clamp(head, 0, span.seconds);
   drawScrub();
   updateReadouts();
@@ -378,7 +399,7 @@ function startPlay() {
 
 function stopPlay(repaint = true) {
   if (!playing) return;
-  invoke && invoke("stop_play");
+  invoke && invoke("stop_play", { cross: true });
   setPlaying(false);
   if (repaint) showFrame(head);
 }
@@ -386,6 +407,18 @@ function stopPlay(repaint = true) {
 // --- the join in hand ----------------------------------------------------
 
 /// Put a join's settings into the controls, and open its two recordings.
+/// The line in the window and the window's own title bar say the same
+/// thing, and both move with the picker: a title bar left naming the join
+/// before this one is a window that says it is about something it is not.
+function nameWindow(j) {
+  const named = tr("xw.windowTitle", {
+    before: j.beforeName || "",
+    after: j.afterName || "",
+  });
+  el("title").textContent = named;
+  invoke && invoke("retitle_cross", { title: named }).catch(() => {});
+}
+
 async function showJoin() {
   const j = join();
   if (!j) return;
@@ -404,15 +437,7 @@ async function showJoin() {
   el("name-after").textContent = j.afterName || "";
   el("pic-before").src = j.beforePic || "";
   el("pic-after").src = j.afterPic || "";
-  // The line in the window and the window's own title bar say the same
-  // thing, and both move with the picker: a title bar left naming the join
-  // before this one is a window that says it is about something it is not.
-  const named = tr("xw.windowTitle", {
-    before: j.beforeName || "",
-    after: j.afterName || "",
-  });
-  el("title").textContent = named;
-  invoke && invoke("retitle_cross", { title: named }).catch(() => {});
+  nameWindow(j);
   drawPattern();
   paintLive();
   head = 0;
@@ -420,12 +445,22 @@ async function showJoin() {
   updateReadouts();
   if (!invoke) return;
   el("note").textContent = tr("xw.reading");
+  const run = ++joinRun;
+  const load = loading.then(() =>
+    invoke("cross_load", { before: j.beforePath, after: j.afterPath }),
+  );
+  loading = load.catch(() => {});
+  let got;
   try {
-    facts = await invoke("cross_load", { before: j.beforePath, after: j.afterPath });
+    got = await load;
   } catch (e) {
-    el("note").textContent = tr("xw.cannotRead", { e });
+    if (run === joinRun) el("note").textContent = tr("xw.cannotRead", { e });
     return;
   }
+  // Another join was picked while this one loaded; its own load comes after
+  // this one and is the pair the backend ends up holding.
+  if (run !== joinRun) return;
+  facts = got;
   el("note").textContent = "";
   // The sound is only offered where one of the two has any.
   const heard = facts.beforeAudio || facts.afterAudio;
@@ -468,6 +503,7 @@ function take(what, value) {
   const c = crossing();
   if (!c) return;
   c[what] = value;
+  changedHere = true;
   if (what === "kind") {
     drawPattern();
     paintLive();
@@ -863,11 +899,15 @@ el("cross-cancel").addEventListener("click", () => {
 // a field has the focus and something is being typed into it: Enter in the
 // seconds field means "take this number".
 window.addEventListener("keydown", (ev) => {
-  const typing = ev.target && ev.target.tagName === "INPUT" && ev.target.type !== "range";
+  const tag = ev.target && ev.target.tagName;
+  const typing = tag === "INPUT" && ev.target.type !== "range";
+  // A button or a list that has the focus answers Enter itself: キャンセル
+  // with the focus on it is not OK.
+  const own = tag === "BUTTON" || tag === "SELECT" || tag === "TEXTAREA";
   if (ev.key === "Escape") {
     ev.preventDefault();
     invoke && invoke("close_cross");
-  } else if (ev.key === "Enter" && !typing) {
+  } else if (ev.key === "Enter" && !typing && !own) {
     ev.preventDefault();
     done();
   } else if (ev.key === " " && !typing) {
@@ -882,7 +922,19 @@ if (listen) {
   hear("cross-open", (ev) => {
     answered = true;
     const said = ev.payload || {};
-    joins = Array.isArray(said.joins) ? said.joins : [];
+    const theirs = Array.isArray(said.joins) ? said.joins : [];
+    // Sent again to a window already open -- the list's button pressed a
+    // second time. Where it is the same joins, what has been changed in here
+    // and not yet OK'd is kept, and only the join picked moves.
+    const same =
+      theirs.length === joins.length &&
+      theirs.every(
+        (j, k) => j.beforePath === joins[k].beforePath && j.afterPath === joins[k].afterPath,
+      );
+    if (!(changedHere && same)) {
+      joins = theirs;
+      changedHere = false;
+    }
     at = clamp(Number(said.pick) || 0, 0, Math.max(0, joins.length - 1));
     // Nothing to build for the picker: its list is drawn on the way down, so
     // it is always the joins as they are now and in the language the window
@@ -912,10 +964,13 @@ if (listen) {
   });
 }
 
+// Only the words change. Loading the join again for them stopped a crossing
+// being played and put the head back at its start.
 onLangChange(() => {
   updateReadouts();
   paintNote();
-  showJoin();
+  const j = join();
+  if (j) nameWindow(j);
 });
 
 window.addEventListener("resize", () => {

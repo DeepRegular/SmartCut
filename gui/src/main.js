@@ -351,6 +351,20 @@ function editSignature() {
   return JSON.stringify([cuts.map((c) => [c.a, c.b]), keyframes, dropStreams]);
 }
 
+/// Which row of the list is being cut. Not the path: the same recording can
+/// be in the list twice, cut two different ways, and what comes back out of
+/// here has to land on the row it came from.
+let editId = null;
+/// Whether the list has named a recording yet. See `announceReady`.
+let answered = false;
+/// The row being loaded, if one is. See the `editor-open` handler.
+let opening = null;
+/// Whether the row coming up has yet to replace the one before it: its cuts,
+/// marks and settings. Shorter than `opening`, which lasts through the walk
+/// -- and a cut placed during the walk, which is allowed, has to be sent.
+/// See `captureEdit`.
+let swapping = false;
+
 /// The same string for the timeline as it arrived.
 ///
 /// What it is for is Escape, which throws away the session: the question it
@@ -359,8 +373,12 @@ function editSignature() {
 /// says so -- and neither is a detection, and undoing every cut back to the
 /// start leaves a window that has nothing in it to lose.
 let arrivedAs = "";
+/// Set by an edit made while a row was still coming up. See `remember`.
+let editedWhileArriving = false;
 const settleMark = () => {
-  arrivedAs = editSignature();
+  // Nothing counts as "as it arrived" once somebody has worked on it during
+  // the arrival: leaving asks, rather than throwing their cut away.
+  arrivedAs = editedWhileArriving ? "" : editSignature();
 };
 const touched = () => !!src && editSignature() !== arrivedAs;
 
@@ -381,6 +399,10 @@ const HISTORY_DEPTH = 100;
 /// the selection was when the hand closed on it. See the pointer handlers.
 function remember(state = snapshot()) {
   if (settling) return;
+  // An edit made while the row is still coming up -- a cut placed during the
+  // walk, which is allowed -- is somebody's work, and the arrival that ends
+  // after it must not count it as what the row arrived with.
+  if (opening !== null) editedWhileArriving = true;
   past.push(state);
   if (past.length > HISTORY_DEPTH) past.shift();
   undone = [];
@@ -989,7 +1011,10 @@ function flatAsk() {
     // `blankLevels`: 環境設定 asks in percent and the engine holds fractions.
     levels: prefs.blankLevels(),
     quietSeconds: prefs.get("quietRunUnit") === "frame" ? quiet * frame() : quiet,
-    thresholdDb: Number(prefs.get("quietLevel")) || -50,
+    // Not `|| -50`: 0 dB is a level the field takes, and it is falsy.
+    thresholdDb: Number.isFinite(Number(prefs.get("quietLevel")))
+      ? Number(prefs.get("quietLevel"))
+      : -50,
   };
 }
 
@@ -5125,6 +5150,8 @@ async function openPath(picked, saved, side, name, chapters, dropPids) {
     const early = !saved && src.points.length === 0 && src.head !== null;
     let marks = false;
     if (early) marks = await settle(() => loadMarkFiles());
+    // Everything the row being left had is replaced by now.
+    swapping = false;
     await showFrame(saved ? saved.playhead : 0);
     schedulePlan();
     // And now the walk, which has been running behind all of the above.
@@ -6190,7 +6217,11 @@ function relayout() {
 
 /// Everything this session has done to the recording, in source time.
 function captureEdit() {
-  if (!src) return null;
+  // Nothing while another row is taking over: `editId` names the new row
+  // from the start of that, and `src` and the cuts are the old one's until
+  // they are replaced -- sent in between, the old row's edit landed on the
+  // new row.
+  if (!src || swapping) return null;
   return {
     id: editId,
     path: src.path,
@@ -6231,23 +6262,15 @@ function captureEdit() {
   };
 }
 
+let syncTimer = null;
 /// Tell the list what the timeline looks like now.
 ///
 /// Coalesced: a cut moves the marks, the plan, the strip and the scrubber,
 /// and each of those would otherwise report the same state again.
-/// Which row of the list is being cut. Not the path: the same recording can
-/// be in the list twice, cut two different ways, and what comes back out of
-/// here has to land on the row it came from.
-let editId = null;
-/// Whether the list has named a recording yet. See `announceReady`.
-let answered = false;
-/// The row being loaded, if one is. See the `editor-open` handler.
-let opening = null;
-
-let syncTimer = null;
 function sync() {
   clearTimeout(syncTimer);
   syncTimer = setTimeout(() => {
+    syncTimer = null;
     const state = captureEdit();
     if (state && emit) emit("editor-state", state);
   }, 150);
@@ -6349,8 +6372,19 @@ if (listen) {
     // be the same file cut two different ways, and coming from one to the
     // other has to bring the other one's cuts with it.
     if (arriving) {
+      // The row being left is owed what it was last told it would get: a
+      // change made in the last moment before the switch is sent now, under
+      // its own id, rather than dropped or sent under the new one.
+      if (syncTimer) {
+        clearTimeout(syncTimer);
+        syncTimer = null;
+        const state = captureEdit();
+        if (state && emit) emit("editor-state", state);
+      }
       opening = id;
+      swapping = true;
       editId = id;
+      editedWhileArriving = false;
       try {
         await openPath(path, saved, side, name, chapters, dropPids);
       } catch (e) {
@@ -6361,6 +6395,7 @@ if (listen) {
         return;
       } finally {
         opening = null;
+        swapping = false;
       }
     }
     // Blocks the list found on its own, which only this window can turn into

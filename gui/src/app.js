@@ -1157,6 +1157,26 @@ const running = () => lanes.walk || lanes.pics || lanes.cm || lanes.blank || lan
 /// empty queue: the work is still queued, it is just not being taken.
 let paused = false;
 
+/// Let the lanes go again -- except while a run is writing, which has them
+/// stood aside until it ends. Asked for during one, it is remembered and the
+/// run lets them go as it finishes, rather than the lanes starting to read
+/// beside it.
+function resumeLanes() {
+  if (exporting || starting) {
+    resumeAfterRun = true;
+    return;
+  }
+  paused = false;
+}
+
+/// Whether somebody asked for the lanes to go again while a run was writing.
+let resumeAfterRun = false;
+
+/// A run between the press and `exporting` being set: the lanes stopped, the
+/// disc's names asked, the folder settled. A second press in those seconds
+/// started a second run over the same list.
+let starting = false;
+
 /// The last thing worth saying that was not a lane saying it -- an error, or
 /// what 中止 did. Shown when no lane has anything to report.
 let sticky = "";
@@ -1588,7 +1608,10 @@ function flatAsk() {
     // conversion is per clip and is made below.
     quietRun: quiet,
     quietInPictures: prefs.get("quietRunUnit") === "frame",
-    thresholdDb: Number(prefs.get("quietLevel")) || -50,
+    // Not `|| -50`: 0 dB is a level the field takes, and it is falsy.
+    thresholdDb: Number.isFinite(Number(prefs.get("quietLevel")))
+      ? Number(prefs.get("quietLevel"))
+      : -50,
   };
 }
 
@@ -2560,6 +2583,11 @@ function duplicate(sources) {
       state: src.state === "indexing" ? "queued" : src.state,
       pics: src.pics === "running" ? "queued" : src.pics,
       cmState: src.cmState === "running" ? "queued" : src.cmState,
+      // And the two flat detections, which were copied as they stood: a
+      // copy left "running" was taken by no lane, finished by nothing, and
+      // taking it out of the list stopped the original's pass.
+      blankState: src.blankState === "running" ? "queued" : src.blankState,
+      quietState: src.quietState === "running" ? "queued" : src.quietState,
       edit: src.edit ? JSON.parse(JSON.stringify(src.edit)) : null,
       cm: src.cm ? JSON.parse(JSON.stringify(src.cm)) : null,
       out: { state: "idle", progress: 0, note: "" },
@@ -2656,7 +2684,7 @@ el("detect-blank-selected").addEventListener("click", () => detectFlatSelected("
 el("detect-quiet-selected").addEventListener("click", () => detectFlatSelected("quiet"));
 el("stop-batch").addEventListener("click", async () => {
   if (paused) {
-    paused = false;
+    resumeLanes();
     note("");
     pump();
     return;
@@ -3060,7 +3088,7 @@ function detectFlatSelected(which) {
     c[`${which}State`] = "queued";
     c[`${which}Phase`] = "";
   });
-  paused = false;
+  resumeLanes();
   paintList();
   pump();
 }
@@ -3087,7 +3115,7 @@ function detectSelected() {
     c.cmState = "queued";
     c.cmPhase = "";
   });
-  paused = false;
+  resumeLanes();
   paintList();
   pump();
 }
@@ -6675,7 +6703,7 @@ function paintEnlistButton() {
 }
 
 el("run-export").addEventListener("click", () => {
-  if (!exporting) {
+  if (!exporting && !starting) {
     runExport();
     return;
   }
@@ -6796,7 +6824,20 @@ async function writeJoined(list) {
 }
 
 async function runExport() {
-  if (exporting) return;
+  if (exporting || starting) return;
+  starting = true;
+  try {
+    await startExport();
+  } finally {
+    starting = false;
+  }
+}
+
+/// Whether the lanes were stood aside by somebody before this run began,
+/// which is what they go back to when it ends. See `runExport`.
+let heldBeforeRun = false;
+
+async function startExport() {
   // Nothing to collect from the editor first: it reports every change as it
   // makes it, so what the list holds is already what is on screen in there.
   const list = ready();
@@ -6831,6 +6872,12 @@ async function runExport() {
   // A pass over another recording would be competing for the same disc, and
   // unlike the editor this is work with an end in sight that somebody is
   // watching. Both lanes stand aside until the list is written out.
+  heldBeforeRun = paused;
+  resumeAfterRun = false;
+  // Cleared here rather than when the writing starts: a 中止 pressed while the
+  // disc's names are being read is a stop for this run, and clearing it
+  // later threw it away.
+  abort = false;
   paused = true;
   await invoke("stop_batch", { lane: null });
   // What each recording will be called on the disc, and what the disc is
@@ -6870,7 +6917,7 @@ async function runExport() {
       note(t("out.bdavFailed", { e: String(e) }));
       runDir = null;
       runFolder = null;
-      paused = false;
+      paused = heldBeforeRun && !resumeAfterRun;
       pump();
       return;
     }
@@ -6882,9 +6929,20 @@ async function runExport() {
   // time than the short one for no reason but its length.
   const share = await fitShare();
   if (share !== null) note(t("out.shrinking", { share: sharePct(share) }));
+  // Stopped before a byte was written. The disc's numbers were taken, as
+  // empty streams, and are given back.
+  if (abort) {
+    if (slots) {
+      invoke("bdav_discard", { dir: discDir(), clips: slots.map((s) => s.clip) }).catch(() => {});
+    }
+    runDir = null;
+    runFolder = null;
+    paused = heldBeforeRun && !resumeAfterRun;
+    pump();
+    return;
+  }
 
   exporting = true;
-  abort = false;
   began = Date.now();
   phaseBegan = began;
   discSteps = [];
@@ -7192,11 +7250,17 @@ async function runExport() {
     done,
     all: list.length,
     failed: failed ? t("out.summaryFailed", { n: failed }) : "",
-    aborted: abort ? t("out.summaryAborted") : "",
+    // Only where the stop left something unwritten: a join finishes the
+    // file it has started, and "stopped" over a list that is all written
+    // said the opposite of what happened.
+    aborted: abort && list.some((c) => c.out.state !== "done") ? t("out.summaryAborted") : "",
     elapsed: clock((Date.now() - began) / 1000),
   });
   paintOutProgress(1);
-  paused = false;
+  // Back to what they were before the run: a list somebody had stopped
+  // reading stays stopped, unless they asked for it during the run.
+  paused = heldBeforeRun && !resumeAfterRun;
+  resumeAfterRun = false;
   pump();
   // Whatever is on the stage now is the last frame the run made: hold it.
   heldAfterRun = !!onShow;
@@ -7435,6 +7499,13 @@ function shapeOf() {
       renamed: c.renamed,
       dropPids: c.dropPids,
       programme: c.programme,
+      // What the output screen lets somebody type about the programme. Saved
+      // with the rest, and left out of this, so a change to one of them
+      // closed without asking and was lost.
+      made: c.made,
+      description: c.description,
+      channel: c.channel,
+      channelNumber: c.channelNumber,
       edit: c.edit,
       edited: c.edited,
       audioChannels: c.audioChannels,
@@ -7929,6 +8000,9 @@ window.addEventListener("keydown", (ev) => {
 let batchRole = "main";
 /// The jobs, in the order they will run.
 let batchJobs = [];
+/// The paths of every job read off the queue's file by this window. See
+/// `saveQueue`.
+let batchKnown = new Set();
 /// Which rows the ↑↓ and 削除 buttons are about, by path. A set rather than
 /// one path, and picked the way the clip list picks rows: a queue lined up
 /// for the night is a queue whose middle five rows are sometimes all wrong,
@@ -8004,11 +8078,21 @@ async function saveQueue() {
         })),
         after: batchAfter,
       },
+      // Every job this window has read off the file. One on the file that
+      // is not among them was added by the other window since, and is kept.
+      // See `batch_write`.
+      known: [...batchKnown],
     });
+    // A job taken out here is off the file now. Still counted as read, it
+    // was one the next save took out again -- the same path added back from
+    // the other window in between went with it.
+    const kept = new Set(batchJobs.map((j) => j.path));
+    for (const p of [...batchKnown]) if (!kept.has(p)) batchKnown.delete(p);
   } catch (e) {
     note(t("batch.queueFailed", { e: String(e) }));
   }
 }
+
 
 /// Read the queue back off the file.
 ///
@@ -8023,6 +8107,9 @@ async function refreshQueue() {
     queue = await invoke("batch_read");
   } catch {
     return;
+  }
+  for (const j of (queue && Array.isArray(queue.jobs) ? queue.jobs : [])) {
+    if (j && typeof j.path === "string") batchKnown.add(j.path);
   }
   // What the file holds, plus what this session has watched happen to it: how
   // far a job got and how long it took are not in the file -- they are about
@@ -9397,7 +9484,12 @@ async function walkQueue() {
           // a disc has nowhere to be written. There is nobody on that screen
           // here, and this window is its queue.
           show("batch");
-          if (calledOff() || abort) {
+          // Called off, unless everything was written anyway: a join is one
+          // file and runs to its end once started, and a job whose whole list
+          // is written is done, whatever was pressed while it was -- saved as
+          // waiting, it was written again by the next run of the queue.
+          const allWritten = list.every((c) => c.out.state === "done");
+          if ((calledOff() || abort) && !allWritten) {
             // Either this job was called off or the whole queue was; which of
             // them decides whether there is a next job.
             job.state = "skipped";
@@ -9427,7 +9519,9 @@ async function walkQueue() {
       // left to the next caller, the way the end of the pass puts them down.
       // `abort` is not among them: `runExport` clears it as it starts.
       exporting = false;
-      paused = false;
+      // Back to what they were before the run, as the end of a pass leaves
+      // them: lanes somebody had stood aside stay aside.
+      paused = heldBeforeRun && !resumeAfterRun;
       runDir = null;
       runFolder = null;
       writing = null;
@@ -9459,6 +9553,9 @@ async function takeAdded() {
     queue = await invoke("batch_read");
   } catch {
     queue = null;
+  }
+  for (const j of (queue && queue.jobs) || []) {
+    if (j && typeof j.path === "string") batchKnown.add(j.path);
   }
   const added = ((queue && queue.jobs) || [])
     .filter((j) => j && j.path && !batchJobs.some((mine) => mine.path === j.path))
@@ -9889,8 +9986,10 @@ for (const [id, name] of PAGE_STEPS.concat(RUN_LENGTHS)) {
       ev.target.value.trim() !== "" && isFinite(typed) && typed >= 0
         ? stepValue(typed, prefs.get(`${name}Unit`))
         : prefs.get(name);
+    const moved = kept !== prefs.get(name);
     prefs.set(name, kept);
     ev.target.value = String(kept);
+    if (moved) forgetRun(name);
   });
   // Changing the unit does not convert the number: 15 seconds is not 15
   // percent of anything, and a program that answered a unit change by
@@ -9903,7 +10002,15 @@ for (const [id, name] of PAGE_STEPS.concat(RUN_LENGTHS)) {
     const at = stepValue(Number(prefs.get(name)) || 0, unit);
     prefs.set(name, at);
     el(id).value = String(at);
+    forgetRun(name);
   });
+}
+
+/// A detection's minimum length changed: the answers the rows hold were
+/// found under the old one. The page steps are not answers to anything.
+function forgetRun(name) {
+  if (name === "blankRun") forgetBlank();
+  else if (name === "quietRun") forgetQuiet();
 }
 
 el("pref-sidecar").addEventListener("change", (ev) => {
@@ -9919,8 +10026,10 @@ el("pref-quiet-level").addEventListener("change", (ev) => {
     ev.target.value.trim() !== "" && isFinite(typed) && typed <= 0 && typed >= -90
       ? Math.round(typed)
       : prefs.get("quietLevel");
+  const moved = kept !== prefs.get("quietLevel");
   prefs.set("quietLevel", kept);
   ev.target.value = String(kept);
+  if (moved) forgetQuiet();
 });
 
 el("pref-cm-keyframes").addEventListener("change", (ev) => {
@@ -9951,12 +10060,22 @@ el("pref-flat-mark-at").addEventListener("change", (ev) => {
 /// A row whose pass is booked or running is left where it is. That one is
 /// about to write its own answer.
 function forgetBlank() {
+  forgetFlat("blank");
+}
+
+/// The same for the sound: its length and its level are the question its
+/// answer was to.
+function forgetQuiet() {
+  forgetFlat("quiet");
+}
+
+function forgetFlat(which) {
   for (const c of clips) {
-    if (c.blankState !== "done") continue;
-    c.blankState = "none";
-    c.blankFound = null;
-    c.blankPhase = "";
-    c.blankSource = null;
+    if (c[`${which}State`] !== "done") continue;
+    c[`${which}State`] = "none";
+    c[`${which}Found`] = null;
+    c[`${which}Phase`] = "";
+    c[`${which}Source`] = null;
     paintRow(c);
     restoreFlat(c);
   }

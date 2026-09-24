@@ -110,6 +110,12 @@ struct Held(Mutex<Option<SeekIndex>>);
 #[derive(Default)]
 struct Playing(std::sync::atomic::AtomicU64);
 
+/// The same, for the seam window's own playback. Kept apart because each
+/// window numbers its runs from one: shared, a run of each with the same
+/// number both played at once, and stopping or closing either stopped both.
+#[derive(Default)]
+struct CrossPlaying(std::sync::atomic::AtomicU64);
+
 /// How loud the preview plays, held here rather than in the window.
 ///
 /// The level has to outlive one playback: it is set once and then holds for
@@ -1116,7 +1122,7 @@ fn held_index(app: &tauri::AppHandle, path: &str) -> Option<SeekIndex> {
 /// background while another one is being edited, and neither pass may stand
 /// on the other's [`Opened`], [`Thumbs`] or [`Held`].
 fn scan_cached(app: &tauri::AppHandle, path: &str) -> Result<(Source, Option<SeekIndex>), String> {
-    scan_cached_reporting(app, path, None)
+    scan_cached_reporting(app, path, None, None)
 }
 
 /// As [`scan_cached`], with somewhere to say how far through the walk is.
@@ -1129,6 +1135,7 @@ fn scan_cached_reporting(
     app: &tauri::AppHandle,
     path: &str,
     on: Option<smartcut_core::index::OnProgress>,
+    stop: Option<&(dyn Fn() -> bool + Sync)>,
 ) -> Result<(Source, Option<SeekIndex>), String> {
     // The pass over the packets is the same answer every time, so a previous
     // session's is taken where there is one: about a second per gigabyte
@@ -1143,9 +1150,20 @@ fn scan_cached_reporting(
         // gigabytes to arrive at the same list; an MP4 or a Matroska file
         // carries a seek table of its own. The walk is what answers for a
         // transport stream, which has neither.
-        None => smartcut_core::scan_reporting(path, &smartcut_core::index::DiscIndex, on)
-            .or_else(|_| smartcut_core::scan_reporting(path, &smartcut_core::ContainerIndex, on))
-            .or_else(|_| smartcut_core::scan_reporting(path, &smartcut_core::PacketScan, on)),
+        //
+        // The disc's map only for a clip on a disc: asked of anything else it
+        // opened the recording and read its head before saying no, and a
+        // broadcast was opened three times over on its way to the walk.
+        None => {
+            let container = || smartcut_core::scan_reporting(path, &smartcut_core::ContainerIndex, on);
+            let first = if smartcut_core::disc::clip_on_a_disc(path).is_some() {
+                smartcut_core::scan_reporting(path, &smartcut_core::index::DiscIndex, on)
+                    .or_else(|_| container())
+            } else {
+                container()
+            };
+            first.or_else(|_| smartcut_core::scan_stoppable(path, &smartcut_core::PacketScan, on, stop))
+        }
     };
     // An index that the key could not tell was stale is still an index that
     // does not fit. Out it goes, and this open reads the file.
@@ -1157,7 +1175,7 @@ fn scan_cached_reporting(
             }
         }
         held = None;
-        src = smartcut_core::scan_reporting(path, &smartcut_core::PacketScan, on);
+        src = smartcut_core::scan_stoppable(path, &smartcut_core::PacketScan, on, stop);
     }
     Ok((src.map_err(|e| e.to_string())?, held))
 }
@@ -1626,6 +1644,16 @@ async fn prepare(app: tauri::AppHandle) -> Result<PrepareInfo, String> {
                     }
                     eprintln!("proxy: {why}");
                     note = why;
+                    // What the failed build handed out while it ran is the
+                    // head of a track that will not be finished. Left, the
+                    // pass below put its own pictures after those, the same
+                    // times twice and out of order, and wrote that down as
+                    // the recording's index.
+                    let thumbs_state = app.state::<Thumbs>();
+                    let mut thumbs = locked(&thumbs_state.0);
+                    if app.state::<Generation>().0.load(Ordering::SeqCst) == generation {
+                        *thumbs = None;
+                    }
                 }
             }
         }
@@ -1658,11 +1686,14 @@ fn without_proxy(
     let kept = locked(&app.state::<Held>().0).as_mut().and_then(|ix| ix.track.take());
     if let Some(track) = kept {
         let info = track_info(&track, began.elapsed().as_secs_f64());
+        let index = index_info(app, src, true);
+        // The count asked with the lock held; see `hold`.
+        let thumbs_state = app.state::<Thumbs>();
+        let mut thumbs = locked(&thumbs_state.0);
         if current() != generation {
             return Err("cancelled".to_string());
         }
-        let index = index_info(app, src, true);
-        *locked(&app.state::<Thumbs>().0) = Some(track);
+        *thumbs = Some(track);
         return Ok(PrepareInfo { proxy: None, index, track: info, note });
     }
 
@@ -1684,20 +1715,27 @@ fn without_proxy(
     // was for is not the one on screen any more, and the one that is has a
     // pass of its own running.
     .map_err(|e| if current() != generation { "cancelled".to_string() } else { e.to_string() })?;
+    // The pictures handed over during the pass are already held; what came
+    // back has the tail of them and the scene index. Both halves are this
+    // pass's, so they go back together in the order they were made. Under
+    // the one lock, with the count asked inside it, so that another
+    // recording opened meanwhile is never given this one's pictures -- nor
+    // this one's written down as its index. See `hold`.
+    let thumbs_state = app.state::<Thumbs>();
+    let mut thumbs = locked(&thumbs_state.0);
     if current() != generation {
         return Err("cancelled".to_string());
     }
-    // The pictures handed over during the pass are already held; what came
-    // back has the tail of them and the scene index. Both halves are this
-    // pass's, so they go back together in the order they were made.
-    if let Some(head) = locked(&app.state::<Thumbs>().0).take() {
+    if let Some(head) = thumbs.take() {
         let tail = std::mem::take(&mut track.thumbs);
         track.thumbs = head.thumbs;
         track.thumbs.extend(tail);
     }
     let info = track_info(&track, began.elapsed().as_secs_f64());
-    let index = remember(app, src, Some(&track));
-    *locked(&app.state::<Thumbs>().0) = Some(track);
+    let taken = SeekIndex::of(src, Some(&track));
+    *thumbs = Some(track);
+    drop(thumbs);
+    let index = remember_index(app, src, taken);
     Ok(PrepareInfo { proxy: None, index, track: info, note })
 }
 
@@ -1710,9 +1748,17 @@ fn remember(
     src: &Source,
     track: Option<&smartcut_core::Track>,
 ) -> Option<IndexInfo> {
+    remember_index(app, src, SeekIndex::of(src, track))
+}
+
+/// [`remember`], for an index already taken: where it was taken under the
+/// pictures' lock and is written after it. Writing tens of megabytes held
+/// that lock, and the pointer over the seek bar waits on it -- the window
+/// stopped until the file was down.
+fn remember_index(app: &tauri::AppHandle, src: &Source, index: SeekIndex) -> Option<IndexInfo> {
     let dir = index_dir(app).ok()?;
     let file = seek_index::cache_path(&dir, &src.path).ok()?;
-    if let Err(e) = SeekIndex::of(src, track).save(&file) {
+    if let Err(e) = index.save(&file) {
         eprintln!("index: cannot write {}: {e}", file.display());
         return None;
     }
@@ -1766,9 +1812,18 @@ fn index_info(app: &tauri::AppHandle, src: &Source, cached: bool) -> Option<Inde
 /// shapes properly. This does not: it opens nothing, and a name it cannot
 /// account for is left alone. A recording that is there and unreadable is not
 /// this question -- the open says that, and says why.
+///
+/// Off the window's thread: every one of these is a question put to the disk
+/// the recording is on, which is a share more often than not, and a share
+/// that has gone to sleep answered it in its own time with the window
+/// stopped until it did.
 #[tauri::command]
-fn clip_gone(path: String) -> bool {
-    let named = std::path::Path::new(&path);
+async fn clip_gone(path: String) -> bool {
+    tauri::async_runtime::spawn_blocking(move || clip_gone_now(&path)).await.unwrap_or(false)
+}
+
+fn clip_gone_now(path: &str) -> bool {
+    let named = std::path::Path::new(path);
     if named.exists() {
         return false;
     }
@@ -1998,7 +2053,7 @@ async fn open_cross(title: String, app: tauri::AppHandle) -> Result<(), String> 
             tauri::WindowEvent::CloseRequested { .. } | tauri::WindowEvent::Destroyed
         ) {
             teller.state::<CrossUp>().0.store(false, Ordering::SeqCst);
-            teller.state::<Playing>().0.store(0, Ordering::SeqCst);
+            teller.state::<CrossPlaying>().0.store(0, Ordering::SeqCst);
         }
         if matches!(event, tauri::WindowEvent::Destroyed) {
             // The two recordings go with it. They are an open file each and
@@ -2144,10 +2199,17 @@ fn with_seam<T>(
     spec: &SeamSpec,
     what: impl FnOnce(&smartcut_core::crossview::Seam) -> Result<T, String>,
 ) -> Result<T, String> {
-    let state = app.state::<Crossed>();
-    let held = locked(&state.0);
-    let pair = held.as_ref().ok_or("no join open")?;
-    what(&seam_over(&pair.before, &pair.after, spec))
+    // Copied out and the lock let go before `what` runs: a shot is a seek and
+    // a decode of both recordings, and `cross_span`, which the window's own
+    // thread answers, waits on this lock -- the whole window stopped for as
+    // long as each picture took. `cross_play` copies them out the same way.
+    let (before, after) = {
+        let state = app.state::<Crossed>();
+        let held = locked(&state.0);
+        let pair = held.as_ref().ok_or("no join open")?;
+        (pair.before.clone(), pair.after.clone())
+    };
+    what(&seam_over(&before, &after, spec))
 }
 
 /// The seam itself, over two recordings that are already open.
@@ -2243,7 +2305,11 @@ async fn cross_play(
         let pair = held.as_ref().ok_or("no join open")?;
         (pair.before.clone(), pair.after.clone())
     };
-    app.state::<Playing>().0.store(run, Ordering::SeqCst);
+    app.state::<CrossPlaying>().0.store(run, Ordering::SeqCst);
+    // One sound at a time, as before the two were counted apart: the editor's
+    // playback stops when a crossing starts, and the other way round (see
+    // `play`). Both at once opened two streams onto the one meter.
+    app.state::<Playing>().0.store(0, Ordering::SeqCst);
     // Nothing has been heard of this run yet, and what the meter holds is the
     // end of the last one.
     app.state::<Meter>().0.clear();
@@ -2279,7 +2345,7 @@ async fn cross_play(
             // Either answer stops it: this run is no longer the one in force,
             // or the window it plays for has gone.
             let stop = move || {
-                stop_app.state::<Playing>().0.load(Ordering::SeqCst) != run
+                stop_app.state::<CrossPlaying>().0.load(Ordering::SeqCst) != run
                     || !stop_app.state::<CrossUp>().0.load(Ordering::SeqCst)
             };
             let parts = vec![
@@ -2312,7 +2378,7 @@ async fn cross_play(
     });
 
     tauri::async_runtime::spawn_blocking(move || {
-        let playing = app.state::<Playing>();
+        let playing = app.state::<CrossPlaying>();
         let up = app.state::<CrossUp>();
         let hearing = audio_handle.is_some();
         let mut began = None;
@@ -2333,7 +2399,14 @@ async fn cross_play(
                 let due = std::time::Duration::from_secs_f64(out_t);
                 let now = began.get_or_insert_with(|| clock_from(&clock, hearing)).elapsed();
                 if due > now {
-                    std::thread::sleep(due - now);
+                    // In steps, asking between them: a recording with a hole in
+                    // its pictures is a wait of that many seconds, and a stop or
+                    // a closed window has to reach this before the next one.
+                    if !pace_until(due - now, || {
+                        playing.0.load(Ordering::SeqCst) != run || !up.0.load(Ordering::SeqCst)
+                    }) {
+                        return smartcut_core::Pace::Stop;
+                    }
                 } else if out_t + 2.0 * gap < now.as_secs_f64() {
                     // Already more than two pictures late. Showing it would
                     // put the picture further behind the sound rather than
@@ -2716,7 +2789,10 @@ fn index_clip_now(
         return merged_clip_now(path, keeps, app, began, &on, &stopped);
     }
 
-    let (src, held) = scan_cached_reporting(app, path, Some(&on))?;
+    // A walk given up because the row was taken out of the list reads as the
+    // stop it was, not as the recording failing to read.
+    let (src, held) = scan_cached_reporting(app, path, Some(&on), Some(&stopped))
+        .map_err(|e| if stopped() { "cancelled".to_string() } else { e })?;
     if stopped() {
         return Err("cancelled".into());
     }
@@ -2982,8 +3058,13 @@ fn make_proxy(
         // The pictures handed over during the build are already held; what
         // came back has the tail of them and the scene index. Both halves are
         // this build's, so they go back together in the order they were made.
-        if app.state::<Generation>().0.load(Ordering::SeqCst) == generation {
-            if let Some(head) = locked(&app.state::<Thumbs>().0).take() {
+        {
+            let thumbs_state = app.state::<Thumbs>();
+            let mut thumbs = locked(&thumbs_state.0);
+            if app.state::<Generation>().0.load(Ordering::SeqCst) != generation {
+                return Ok(None);
+            }
+            if let Some(head) = thumbs.take() {
                 let tail = std::mem::take(&mut built.track.thumbs);
                 built.track.thumbs = head.thumbs;
                 built.track.thumbs.extend(tail);
@@ -3021,21 +3102,29 @@ fn make_proxy(
     };
     let tinfo = track_info(&track, info.seconds);
 
-    if app.state::<Generation>().0.load(Ordering::SeqCst) != generation {
-        return Ok(None);
-    }
     // The access points are the recording's whichever file the pictures came
     // from, and a proxy's thumbnails sit on the same key pictures as the
     // recording's -- that is what makes the two interchangeable. So the seek
     // index is written here too, and a later open with the proxy turned back
     // off still finds it.
-    let index = remember(app, src, Some(&track));
+    //
+    // All of it under the pictures' lock with the count asked inside it: see
+    // `hold`. `open_now` takes that lock before the proxy's and the held
+    // index's, so these are cleared after this, never before it.
+    let thumbs_state = app.state::<Thumbs>();
+    let mut thumbs = locked(&thumbs_state.0);
+    if app.state::<Generation>().0.load(Ordering::SeqCst) != generation {
+        return Ok(None);
+    }
+    let taken = SeekIndex::of(src, Some(&track));
     // Whatever a held index was carrying, the proxy's own track is what the
     // timeline will use. Dropped rather than left to sit: it is tens of
     // megabytes of pictures nothing will ask for again.
     *locked(&app.state::<Held>().0) = None;
-    *locked(&app.state::<Thumbs>().0) = Some(track);
+    *thumbs = Some(track);
     *locked(&app.state::<Proxy>().0) = Some(Proxied { src: psrc, marks });
+    drop(thumbs);
+    let index = remember_index(app, src, taken);
     Ok(Some(PrepareInfo { proxy: Some(info), index, track: tinfo, note: String::new() }))
 }
 
@@ -3058,6 +3147,12 @@ fn hold(app: &tauri::AppHandle, batch: smartcut_core::thumbs::Batch, generation:
     {
         let state = app.state::<Thumbs>();
         let mut guard = locked(&state.0);
+        // Asked again with the lock held: `open_now` moves the count on and
+        // then empties this under the same lock, so a batch that passed the
+        // check above can still be for the recording just closed.
+        if app.state::<Generation>().0.load(Ordering::SeqCst) != generation {
+            return;
+        }
         match guard.as_mut() {
             Some(track) => {
                 track.thumbs.extend(batch.thumbs);
@@ -3854,7 +3949,7 @@ fn remember_cm(app: &tauri::AppHandle, src_path: &str, res: &CmResult) {
     let Ok(file) = cm_path(app, src_path) else { return };
     match serde_json::to_vec(res) {
         Ok(json) => {
-            if let Err(e) = std::fs::write(&file, json) {
+            if let Err(e) = write_whole(&file, &json) {
                 eprintln!("cm: cannot write {}: {e}", file.display());
                 return;
             }
@@ -4257,7 +4352,7 @@ fn remember_flat(app: &tauri::AppHandle, src_path: &str, quiet: bool, saved: &Fl
     let Ok(json) = serde_json::to_vec(saved) else {
         return;
     };
-    if let Err(e) = std::fs::write(&file, json) {
+    if let Err(e) = write_whole(&file, &json) {
         eprintln!("flat: cannot write {}: {e}", file.display());
         return;
     }
@@ -5559,9 +5654,12 @@ async fn bdav_discard(dir: String, clips: Vec<String>) -> Result<usize, String> 
             }
             let path = smartcut_core::bdav::stream_of(&at, &clip);
             // A slot that was never written to is not an error -- the run
-            // may have been stopped before it reached that recording.
+            // may have been stopped before it reached that recording -- and
+            // not a recording taken back either: it is the empty stream that
+            // held the number (see `bdav::prepare`).
+            let written = std::fs::metadata(&path).is_ok_and(|m| m.len() > 0);
             match std::fs::remove_file(&path) {
-                Ok(()) => gone += 1,
+                Ok(()) => gone += usize::from(written),
                 Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
                 Err(e) => return Err(format!("{}: {e}", path.display())),
             }
@@ -5810,6 +5908,7 @@ async fn play(
         guard.as_ref().ok_or("no file open")?.clone()
     };
     app.state::<Playing>().0.store(run, Ordering::SeqCst);
+    app.state::<CrossPlaying>().0.store(0, Ordering::SeqCst);
     // Both halves play the same stretches, so this is settled before either
     // of them starts. See [`to_play`].
     let ranges = to_play(&audio_from, &keeps, &ranges);
@@ -5895,7 +5994,13 @@ async fn play(
                     let due = std::time::Duration::from_secs_f64(out_t);
                     let now = began.get_or_insert_with(|| clock_from(&clock, hearing)).elapsed();
                     if due > now {
-                        std::thread::sleep(due - now);
+                        // In steps; see `pace_until`.
+                        if !pace_until(due - now, || {
+                            playing.0.load(Ordering::SeqCst) != run
+                                || !up.0.load(Ordering::SeqCst)
+                        }) {
+                            return smartcut_core::Pace::Stop;
+                        }
                     } else if out_t + 2.0 * gap < now.as_secs_f64() {
                         // Already more than two pictures late. Showing it
                         // would put the picture further behind the sound
@@ -6112,8 +6217,25 @@ async fn subtitle_at(
 }
 
 #[tauri::command]
-fn stop_play(playing: State<Playing>) {
-    playing.0.store(0, std::sync::atomic::Ordering::SeqCst);
+fn stop_play(playing: State<Playing>, crossed: State<CrossPlaying>, cross: Option<bool>) {
+    let which = if cross == Some(true) { &crossed.0 } else { &playing.0 };
+    which.store(0, std::sync::atomic::Ordering::SeqCst);
+}
+
+/// Wait `left`, a twentieth of a second at a time, giving up as soon as
+/// `stopped` says so. `false` where it gave up.
+fn pace_until(left: std::time::Duration, stopped: impl Fn() -> bool) -> bool {
+    let until = std::time::Instant::now() + left;
+    loop {
+        if stopped() {
+            return false;
+        }
+        let now = std::time::Instant::now();
+        if now >= until {
+            return true;
+        }
+        std::thread::sleep((until - now).min(std::time::Duration::from_millis(50)));
+    }
 }
 
 /// How loud to play, as a multiplier on the samples: 0 for silence, 1 for
@@ -6195,8 +6317,58 @@ fn write_keyframes_now(path: &str, frames: &[u32], fps: f64) -> Result<usize, St
     for f in frames {
         let _ = write!(body, "{f}\r\n");
     }
-    std::fs::write(path, body).map_err(|e| e.to_string())?;
+    write_whole(std::path::Path::new(path), body.as_bytes()).map_err(|e| e.to_string())?;
     Ok(frames.len())
+}
+
+/// Write a file so that it is either the old one or the new one, never half
+/// of the new one over the end of the old.
+///
+/// Written beside itself under a name of this process's and renamed into
+/// place, which both platforms do as one step. A project written straight
+/// over itself by a disc that filled, or a share that went away, was a
+/// project emptied -- and the batch tool reading a job while the list window
+/// saved it read whatever part of it was down.
+///
+/// A link is written through, to the file it names: replaced, it became a
+/// file of its own and the one it pointed at kept the old contents. A folder
+/// where only the file may be written -- a share set up that way -- takes
+/// the file straight, as before. And on Windows a rename over a file that
+/// something else has open -- an editor, a virus scan reading it -- fails
+/// for a moment, so it is tried a few times before it is an error.
+fn write_whole(path: &std::path::Path, body: &[u8]) -> std::io::Result<()> {
+    static NEXT: AtomicU64 = AtomicU64::new(0);
+    let path = &std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+    let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+    // Two saves of the one file at once -- the project written twice in a
+    // row -- each have a name of their own, or the second truncated the
+    // first's while it was being renamed into place.
+    let temp = path.with_file_name(format!(
+        ".{name}.{}.{}.part",
+        std::process::id(),
+        NEXT.fetch_add(1, Ordering::Relaxed)
+    ));
+    if let Err(e) = std::fs::write(&temp, body) {
+        let _ = std::fs::remove_file(&temp);
+        if e.kind() == std::io::ErrorKind::PermissionDenied {
+            return std::fs::write(path, body);
+        }
+        return Err(e);
+    }
+    let mut tries = 0;
+    loop {
+        match std::fs::rename(&temp, path) {
+            Ok(()) => return Ok(()),
+            Err(e) if cfg!(windows) && e.kind() == std::io::ErrorKind::PermissionDenied && tries < 10 => {
+                tries += 1;
+                std::thread::sleep(std::time::Duration::from_millis(50));
+            }
+            Err(e) => {
+                let _ = std::fs::remove_file(&temp);
+                return Err(e);
+            }
+        }
+    }
 }
 
 /// Read a keyframe list back, for the sidecar beside a recording being opened.
@@ -6235,7 +6407,7 @@ fn read_keyframes_now(path: &str) -> Result<Option<Vec<u32>>, String> {
 #[tauri::command]
 async fn write_sidecar(path: String, body: String) -> Result<(), String> {
     off_thread(move || {
-        std::fs::write(&path, body)
+        write_whole(std::path::Path::new(&path), body.as_bytes())
             .map_err(|e| trf!("保存できません: {} ({})", "Cannot save: {} ({})", path, e))
     })
     .await
@@ -6266,7 +6438,7 @@ async fn read_sidecar(path: String) -> Result<Option<String>, String> {
 #[tauri::command]
 async fn write_project(path: String, body: String) -> Result<(), String> {
     off_thread(move || {
-        std::fs::write(&path, body)
+        write_whole(std::path::Path::new(&path), body.as_bytes())
             .map_err(|e| trf!("保存できません: {} ({})", "Cannot save: {} ({})", path, e))
     })
     .await
@@ -6514,13 +6686,114 @@ fn batch_read(app: tauri::AppHandle) -> BatchQueue {
 ///
 /// Written beside itself and renamed over, so that a process reading it while
 /// this runs reads one state or the other and never half of each.
+///
+/// `known` is every job the writer had read off the file before it wrote. A
+/// job on the file now that is in neither list was added by the other window
+/// since -- the list window's バッチに登録 while the tool runs -- and is kept
+/// at the end rather than written away; and a row's `edited` is never moved
+/// back. The tool used to put its own rows down whole, and a job added in the
+/// seconds before it did was gone.
 #[tauri::command]
-fn batch_write(app: tauri::AppHandle, queue: BatchQueue) -> Result<(), String> {
+fn batch_write(
+    app: tauri::AppHandle,
+    queue: BatchQueue,
+    known: Option<Vec<String>>,
+) -> Result<(), String> {
     let dir = batch_dir(&app)?;
-    let body = serde_json::to_string_pretty(&queue).map_err(|e| e.to_string())?;
-    let temp = dir.join("batch.json.new");
+    with_queue_lock(&dir, || {
+        let mut queue = queue;
+        if let Some(known) = known {
+            let now = read_queue(&dir);
+            for theirs in &now.jobs {
+                match queue.jobs.iter_mut().find(|j| j.path == theirs.path) {
+                    Some(mine) => {
+                        if theirs.edited > mine.edited {
+                            mine.edited = theirs.edited;
+                            if mine.state == "waiting" {
+                                mine.note = theirs.note.clone();
+                            }
+                        }
+                    }
+                    None if !known.contains(&theirs.path) => queue.jobs.push(theirs.clone()),
+                    None => {}
+                }
+            }
+        }
+        put_queue(&dir, &queue)
+    })
+}
+
+/// The queue off its file, where there is one that reads.
+///
+/// One that does not is put aside under another name rather than read as an
+/// empty queue and written over: the next job added would otherwise have
+/// been the whole of it.
+fn read_queue(dir: &std::path::Path) -> BatchQueue {
+    let at = dir.join("batch.json");
+    let Ok(body) = std::fs::read_to_string(&at) else {
+        return BatchQueue::default();
+    };
+    match serde_json::from_str(&body) {
+        Ok(queue) => queue,
+        Err(e) => {
+            let aside = dir.join(format!("batch.json.unreadable-{}", now_secs()));
+            eprintln!("batch: {} does not read ({e}); kept as {}", at.display(), aside.display());
+            let _ = std::fs::rename(&at, &aside);
+            BatchQueue::default()
+        }
+    }
+}
+
+/// Write the queue through a temporary named for this process, so that the
+/// two windows writing at once each rename a whole file of their own.
+fn put_queue(dir: &std::path::Path, queue: &BatchQueue) -> Result<(), String> {
+    let body = serde_json::to_string_pretty(queue).map_err(|e| e.to_string())?;
+    let temp = dir.join(format!("batch.json.{}.new", std::process::id()));
     std::fs::write(&temp, body).map_err(|e| e.to_string())?;
     std::fs::rename(&temp, dir.join("batch.json")).map_err(|e| e.to_string())
+}
+
+/// Run a read-modify-write of the queue with the other process kept out.
+///
+/// A file created only if it is not there is the one lock both platforms
+/// agree on. One left behind by a process that died holding it is taken as
+/// stale after a few seconds, which is far longer than any write here takes.
+fn with_queue_lock<T>(
+    dir: &std::path::Path,
+    work: impl FnOnce() -> Result<T, String>,
+) -> Result<T, String> {
+    let lock = dir.join("batch.lock");
+    let mut held = false;
+    for _ in 0..200 {
+        match std::fs::OpenOptions::new().write(true).create_new(true).open(&lock) {
+            Ok(_) => {
+                held = true;
+                break;
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+                let stale = std::fs::metadata(&lock)
+                    .and_then(|m| m.modified())
+                    .ok()
+                    .and_then(|t| t.elapsed().ok())
+                    .is_some_and(|age| age > std::time::Duration::from_secs(5));
+                if stale {
+                    let _ = std::fs::remove_file(&lock);
+                    continue;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(25));
+            }
+            Err(e) => return Err(e.to_string()),
+        }
+    }
+    // Five seconds of waiting on a lock that keeps being renewed is another
+    // process at work on the queue. Going ahead without it wrote over what
+    // that one was writing, and taking the lock away afterwards took its.
+    if !held {
+        return Err("the batch queue is busy; try again".to_string());
+    }
+    let done = work();
+    let _ = std::fs::remove_file(&lock);
+    done
 }
 
 /// Add to the end of the queue without touching the rest of it.
@@ -6533,15 +6806,18 @@ fn batch_write(app: tauri::AppHandle, queue: BatchQueue) -> Result<(), String> {
 /// A path already in the queue is not added twice.
 #[tauri::command]
 fn batch_append(app: tauri::AppHandle, jobs: Vec<BatchJob>) -> Result<BatchQueue, String> {
-    let mut queue = batch_read(app.clone());
-    for job in jobs {
-        if queue.jobs.iter().any(|j| j.path == job.path) {
-            continue;
+    let dir = batch_dir(&app)?;
+    with_queue_lock(&dir, || {
+        let mut queue = read_queue(&dir);
+        for job in jobs {
+            if queue.jobs.iter().any(|j| j.path == job.path) {
+                continue;
+            }
+            queue.jobs.push(job);
         }
-        queue.jobs.push(job);
-    }
-    batch_write(app, queue.clone())?;
-    Ok(queue)
+        put_queue(&dir, &queue)?;
+        Ok(queue)
+    })
 }
 
 /// Say that the project behind one row has been written over.
@@ -6557,7 +6833,12 @@ fn batch_append(app: tauri::AppHandle, jobs: Vec<BatchJob>) -> Result<BatchQueue
 /// recordings the project holds is not news worth that line.
 #[tauri::command]
 fn batch_touch(app: tauri::AppHandle, path: String, note: Option<String>) -> Result<(), String> {
-    let mut queue = batch_read(app.clone());
+    let dir = batch_dir(&app)?;
+    with_queue_lock(&dir, || touch_job(&dir, &path, note))
+}
+
+fn touch_job(dir: &std::path::Path, path: &str, note: Option<String>) -> Result<(), String> {
+    let mut queue = read_queue(dir);
     let mut found = false;
     for job in queue.jobs.iter_mut() {
         if job.path == path {
@@ -6573,7 +6854,7 @@ fn batch_touch(app: tauri::AppHandle, path: String, note: Option<String>) -> Res
     if !found {
         return Ok(());
     }
-    batch_write(app, queue)
+    put_queue(dir, &queue)
 }
 
 /// How long a tool that has stopped saying anything is still believed.
@@ -6672,15 +6953,22 @@ fn batch_live(app: tauri::AppHandle) -> bool {
 /// granted, not refused.
 #[tauri::command]
 fn open_batch_tool(app: tauri::AppHandle) -> Result<bool, String> {
-    if batch_live(app) {
+    if batch_live(app.clone()) {
         return Ok(false);
     }
     let exe = std::env::current_exe().map_err(|e| e.to_string())?;
-    std::process::Command::new(exe)
+    let child = std::process::Command::new(exe)
         .arg("--batch")
         .spawn()
-        .map(|_| true)
-        .map_err(|e| e.to_string())
+        .map_err(|e| e.to_string())?;
+    // Said on the new tool's behalf until it can say so itself, and a while
+    // ahead of now: between here and the new process's first beat, asking
+    // again found nobody and started another one.
+    if let Ok(dir) = batch_dir(&app) {
+        let beat = format!("{} {}", child.id(), now_secs() + 60);
+        let _ = std::fs::write(dir.join("batch.beat"), beat);
+    }
+    Ok(true)
 }
 
 /// Put this window in the middle of the screen.
@@ -6753,8 +7041,15 @@ struct Queued(bool);
 /// files is a file manager's business, and every desktop already has the one
 /// its owner chose.
 #[tauri::command]
-fn show_folder(path: String) -> Result<(), String> {
-    let dir = std::path::Path::new(&path);
+async fn show_folder(path: String) -> Result<(), String> {
+    // Off the window's thread, for the reason `clip_gone` gives.
+    tauri::async_runtime::spawn_blocking(move || show_folder_now(&path))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+fn show_folder_now(path: &str) -> Result<(), String> {
+    let dir = std::path::Path::new(path);
     if !dir.is_dir() {
         return Err(trf!(
             "フォルダーが見つかりません: {}",
@@ -7195,6 +7490,7 @@ pub fn run() {
         .manage(OpenPath::default())
         .manage(Held::default())
         .manage(Playing::default())
+        .manage(CrossPlaying::default())
         .manage(Vol::default())
         .manage(Meter::default())
         .manage(Folded::default())
@@ -7214,6 +7510,18 @@ pub fn run() {
             // What the three windows were last left at, before there is a
             // window on screen to put it on. See [`geometry`].
             geometry::load(app.handle());
+            // The tool says it is here as soon as its process is, rather than
+            // once its page has come up: a webview can take a minute or more
+            // to start, and a second バッチに登録 in that minute started a
+            // second tool over the same queue. See [`open_batch_tool`].
+            if batch {
+                if let Ok(dir) = batch_dir(app.handle()) {
+                    // Two minutes ahead, which the page's own beat every ten
+                    // seconds takes over from once it is running.
+                    let beat = format!("{} {}", std::process::id(), now_secs() + 120);
+                    let _ = std::fs::write(dir.join("batch.beat"), beat);
+                }
+            }
             if let Some(w) = app.get_webview_window(MAIN) {
                 // The tool is named for what it is, at once: the frontend
                 // retitles the list window as a project is opened, and the
