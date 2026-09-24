@@ -720,7 +720,10 @@ detection into keyframes**, on out of the box.
 window opens, and pressing one goes there. A long recording takes a while to
 analyse; the marks are usable before it does.
 
-The numbers in both count from the recording's first picture.
+The numbers in both count from the recording's first picture, so a list read
+back after cutting still lands on the same frames of the recording. A `Trim` is
+read the way AviSynth reads one: a second number of 0 runs to the end, as in
+`Trim(300,0)`, and a negative one is a length, as in `Trim(300,-10)`.
 
 ### Selecting with IN and OUT
 
@@ -738,6 +741,7 @@ frames you want to *keep* and it takes out what lies between them.
 - **Setting one end leaves the other alone**, because you place IN and OUT one
   at a time as you close in. Only when the two cross does the one you just
   placed win, and the other retreats to the end of the timeline.
+- **IN and OUT on the same frame select that one frame.**
 - The selection is shown under the preview and on the status line, as
   `Selection 1800 - 3599 : 00:01:00.06`.
 
@@ -777,7 +781,7 @@ there.
 | Button | |
 |---|---|
 | **Cut outside** | Drop everything **outside** the selection. One press for lifting a single stretch out |
-| **Snap to lossless** | Move both ends of the selection to the nearest lossless point. **Press it and the re-encoding goes to zero** |
+| **Snap to lossless** | Move both ends of the selection to the nearest lossless point. OUT is the last frame the selection takes, so it goes one frame before the point, and the programme comes back on the point itself. **Press it and the re-encoding goes to zero** |
 | **↺ Undo** | Step back to before the last edit (a hundred deep, `Ctrl+Z`) |
 | **↻ Redo** | Put the edit back (`Ctrl+Y`) |
 | **Clear all** | Remove every cut and every keyframe. Undo takes it back |
@@ -1244,7 +1248,12 @@ both passes, so it never stands still. A clip written onto a disc is the same.
 
 While it writes, that same button reads `Stop export`. Pressing it **finishes
 writing the clip currently in progress**, then stops. It never leaves a
-half-written file behind.
+half-written file behind. While it writes, no project can be opened or started.
+
+A clip whose output would be the file of another recording in the list is not
+written, and its row says so. It happens when the output folder is another
+recording's folder and the prefix is empty, say: written anyway, that recording
+would be cut short before its own turn came.
 
 `Add to batch` puts the list in the queue instead of writing it now, with no
 picker. **What goes into the queue is a copy of the list, written into a folder

@@ -114,6 +114,26 @@ A recording named in the project may have been moved to another folder, or
 deleted. The **project still opens normally.** Only the row for that recording
 says what happened. The other nineteen work as usual.
 
+## A project with recordings on a share
+
+A project that names recordings in a shared folder — `\\nas\rec\…` or
+`smb://nas/rec/…` — asks before it opens, if it names a computer SmartCut has
+not been used with yet.
+
+An open project starts reading every row at once, and on Windows reading a file
+on a share sends your sign-in details to the computer it is on. A project from
+someone else that names a computer you do not know would hand them over just by
+being opened. The question is there to stop that.
+
+| When | Asked again |
+|---|---|
+| Recordings were added to the list from that share | No |
+| You answered Yes | No |
+| You answered No | The project does not open, and is asked about next time too |
+
+The batch tool asks the same when it starts a job. A folder mapped as a
+network drive (`Z:\` and so on) is not asked about.
+
 ## A saved project is also a batch job
 
 `Add to batch` on the Export screen saves the list, puts it at the end of the

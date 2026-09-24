@@ -145,11 +145,11 @@ install.
 
 | Platform | File | Notes |
 |---|---|---|
-| **Linux** | `SmartCut_0.8.5_amd64.AppImage` | Make it executable and run it |
-| **Linux** | `SmartCut-0.8.5-linux-x86_64.tar.gz` | Unpack and run `./smartcut`. Use this if you would rather not deal with FUSE |
-| **Linux (Debian/Ubuntu)** | `smartcut_0.8.5_amd64.deb` | `sudo apt install ./smartcut_0.8.5_amd64.deb`. Only 4.8 MB, because it uses the FFmpeg already on your system |
-| **Windows** | `SmartCut_0.8.5_x64-setup.exe` | Installer. The command-line tool, `smartcut-cli.exe`, goes into the same folder |
-| **Windows** | `smartcut-portable-x64-0.8.5.zip` | Unzip and run `smartcut.exe`. The command-line tool is `smartcut-cli.exe` |
+| **Linux** | `SmartCut_0.8.6_amd64.AppImage` | Make it executable and run it |
+| **Linux** | `SmartCut-0.8.6-linux-x86_64.tar.gz` | Unpack and run `./smartcut`. Use this if you would rather not deal with FUSE |
+| **Linux (Debian/Ubuntu)** | `smartcut_0.8.6_amd64.deb` | `sudo apt install ./smartcut_0.8.6_amd64.deb`. Only 4.8 MB, because it uses the FFmpeg already on your system |
+| **Windows** | `SmartCut_0.8.6_x64-setup.exe` | Installer. The command-line tool, `smartcut-cli.exe`, goes into the same folder |
+| **Windows** | `smartcut-portable-x64-0.8.6.zip` | Unzip and run `smartcut.exe`. The command-line tool is `smartcut-cli.exe` |
 
 **Requirements.** The AppImage and the tar.gz need glibc 2.39 or newer, which
 means Ubuntu 24.04, Debian 13, Fedora 40 or later. The `.deb` needs FFmpeg 7.1,
