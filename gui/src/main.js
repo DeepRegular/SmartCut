@@ -5957,6 +5957,9 @@ el("detect-cm").addEventListener("click", async () => {
   if (!src) return;
   el("detect-cm").disabled = true;
   showCmNote(tr("editor.detecting"));
+  // The recording this was asked of. The window can be handed another row
+  // while the pass runs, and its answer is not that row's.
+  const asked = editId;
   try {
     const res = await invoke("detect_cm", {
       path: src.path,
@@ -5966,6 +5969,7 @@ el("detect-cm").addEventListener("click", async () => {
       // and the list's own lane never asks it.
       inserts: prefs.get("cmInserts") === true,
     });
+    if (editId !== asked) return;
     cmSummary = cmNote(res);
     cmFinding = { logo_found: !!res.logo_found, resets: res.resets || 0 };
     showCmNote(cmSummary);
@@ -5980,7 +5984,7 @@ el("detect-cm").addEventListener("click", async () => {
     // later visit to this clip does not have to detect it again.
     sync();
   } catch (e) {
-    showCmNote(tr("cm.failed", { e }));
+    if (editId === asked) showCmNote(tr("cm.failed", { e }));
   } finally {
     el("detect-cm").disabled = false;
     el("detect-cm").textContent = tr("editor.detectCm");
@@ -6020,13 +6024,16 @@ async function runFlat(id, label, which, kinds, call) {
   flatBusy.add(id);
   btn.disabled = true;
   el("status").textContent = tr("flat.detecting");
+  // As with the commercial detection: an answer for the row that was open.
+  const asked = editId;
   try {
     const runs = await call();
+    if (editId !== asked) return;
     applyFlatRuns(kinds, runs, flatMarks(which));
     settleMark();
     el("status").textContent = flatSaid(which, runs.length);
   } catch (e) {
-    el("status").textContent = tr("flat.failed", { e });
+    if (editId === asked) el("status").textContent = tr("flat.failed", { e });
   } finally {
     flatBusy.delete(id);
     btn.disabled = false;

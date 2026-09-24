@@ -5586,9 +5586,24 @@ async fn bdav_image(
     title: String,
     revision: String,
     access: String,
+    reading: Option<Vec<String>>,
 ) -> Result<String, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let at = local_path(&dir)?;
+        // The image is named after the folder and goes beside it, which can be
+        // the very image a row of the list was read out of: a disc cut into a
+        // folder of the same name had its source replaced by the new one.
+        let image_at = std::path::PathBuf::from(format!("{}.iso", at.display()));
+        for spec in reading.unwrap_or_default() {
+            let Ok(input) = smartcut_core::input::Input::parse(&spec) else { continue };
+            if smartcut_core::input::same_file(&input.file, &image_at) {
+                return Err(format!(
+                    "{} is the image the list was read from; making the new one there would \
+                     replace it. Choose another folder",
+                    image_at.display()
+                ));
+            }
+        }
         let revision = smartcut_core::udfw::Revision::parse(&revision)
             .ok_or_else(|| format!("{revision}: not a UDF revision this writes"))?;
         // What the burned disc is to say about itself. A window that has not
@@ -6787,7 +6802,13 @@ struct Role(String);
 /// program that cuts video has no business holding that.
 #[tauri::command]
 fn after_batch(what: String) -> Result<(), String> {
-    let sleep = what == "sleep";
+    // Two answers and no default: anything else -- a queue file edited by
+    // hand, a value a later version adds -- is not a request to power off.
+    let sleep = match what.as_str() {
+        "sleep" => true,
+        "shutdown" => false,
+        other => return Err(format!("{other}: not something to do after a batch")),
+    };
     let (program, args): (&str, &[&str]) = if cfg!(target_os = "windows") {
         match sleep {
             // The documented way to suspend from a command line, and the
@@ -6976,7 +6997,8 @@ fn folder_use(dir: &std::path::Path) -> CacheUse {
     let Ok(entries) = std::fs::read_dir(dir) else { return held };
     for entry in entries.flatten() {
         let Ok(meta) = entry.metadata() else { continue };
-        if !meta.is_file() {
+        // Counted as `clear_cache` deletes: only what SmartCut named.
+        if !meta.is_file() || !smartcut_core::seek_index::ours(&entry.path()) {
             continue;
         }
         held.files += 1;
@@ -7022,7 +7044,10 @@ async fn clear_cache(app: tauri::AppHandle) -> Result<(), String> {
         for kind in CACHE_KINDS {
             let Ok(entries) = std::fs::read_dir(root.join(kind)) else { continue };
             for entry in entries.flatten() {
-                if entry.metadata().map(|m| m.is_file()).unwrap_or(false) {
+                // Only files this program named: see `seek_index::ours`.
+                if entry.metadata().map(|m| m.is_file()).unwrap_or(false)
+                    && smartcut_core::seek_index::ours(&entry.path())
+                {
                     let _ = std::fs::remove_file(entry.path());
                 }
             }

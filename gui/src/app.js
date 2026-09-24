@@ -173,13 +173,13 @@ function makeClip(found) {
     renamed: renamed || null,
     /// What a cut of it is called and where it goes, when the recording's own
     /// path cannot answer either. Null for an ordinary file.
-    stem: stem || null,
-    home: home || null,
+    stem: typeof stem === "string" && stem ? stem : null,
+    home: typeof home === "string" && home ? home : null,
     /// The chapter points the disc's index carried, on the recording's own
     /// clock. Held here rather than turned into marks on the spot: only the
     /// editor knows where the container's clock begins, and it is the one
     /// that owns marks. Empty for an ordinary file.
-    chapters: chapters || [],
+    chapters: Array.isArray(chapters) ? chapters : [],
     /// Streams switched off when the disc was read, by PID.
     ///
     /// A PID rather than a stream index because this answer was given before
@@ -193,7 +193,7 @@ function makeClip(found) {
     /// speaks for this row -- otherwise a track switched back *on* in the
     /// editor would be switched off again on the way out by an answer given
     /// before anybody had seen the recording.
-    dropPids: dropPids || [],
+    dropPids: Array.isArray(dropPids) ? dropPids : [],
     /// What a disc's index will say about the recording besides its name:
     /// when it was made, as `2026-08-17 01:00:00`, what it was about, and the
     /// channel it came off with the three digits a viewer knows that channel
@@ -3353,7 +3353,8 @@ function restoreOutput() {
 /// The path a sidecar of this clip has, without the extension.
 function sidecarBase(clip) {
   const dir = clip.home ? `${clip.home.replace(/[/\\]*$/, "")}/` : dirOf(clip.path);
-  return `${dir}${clip.stem || stemOf(clip.path)}`;
+  // `fileSafe`, as `outStem` has it: the stem can arrive in a project.
+  return `${dir}${fileSafe(clip.stem || "") || stemOf(clip.path)}`;
 }
 
 /// Bytes, which is what a filesystem counts a name in. One encoder rather
@@ -3403,7 +3404,9 @@ function fileSafe(name) {
 /// never reached the place it matters. Then the disc's answer, and then the
 /// recording's own file name.
 function outStem(clip) {
-  return fileSafe(clip.renamed || "") || clip.stem || stemOf(clip.path);
+  // The stem too goes through `fileSafe`: it can arrive in a project, and a
+  // `/` or a `..` in it would put the cut somewhere else entirely.
+  return fileSafe(clip.renamed || "") || fileSafe(clip.stem || "") || stemOf(clip.path);
 }
 
 /// The row's place in the list, as a file name carries it -- `03_`, or "" where
@@ -3531,7 +3534,10 @@ function outputBase(clip) {
   // one that was typed, or the one the recording came out of. A batch left
   // to write beside its inputs is exactly the case that wants it.
   const dir = `${beneath(outDir() || beside)}/`;
-  return { dir, name: `${settings.prefix}${seqNo(clip)}${outStem(clip)}`, ext };
+  // The prefix is a name, not a path: a separator typed into it would put
+  // the cut in a folder the output screen never mentions.
+  const prefix = String(settings.prefix || "").replace(/[\\/]/g, (c) => FULLWIDTH[c]);
+  return { dir, name: `${prefix}${seqNo(clip)}${outStem(clip)}`, ext };
 }
 
 /// Which of the rows that would be written to the same file this one is,
@@ -7136,6 +7142,9 @@ async function runExport() {
               title: discTitleFor(list),
               revision: settings.image,
               access: settings.imageAccess,
+              // What the list was read from, which the image must not be
+              // written over. See `bdav_image`.
+              reading: list.map((c) => c.path),
             });
             finishStep("image", "done");
             note(t("out.imageDone", { path }));
@@ -7692,9 +7701,30 @@ async function loadProject(path) {
     // out keeps the answer put back above -- which for `subfolder` is null,
     // so a project written before there were folders of their own opens
     // unsettled and the name follows the project just opened.
+    //
+    // And of the kind the control holds: a number where a string belongs is
+    // not an answer the screen can show, and `null` only where the default is.
     for (const key of Object.keys(settings)) {
-      if (key in said) settings[key] = said[key];
+      if (!(key in said)) continue;
+      const want = SETTING_DEFAULTS[key];
+      const got = said[key];
+      // `null` defaults are the master row's position and the subfolder's
+      // name; only the first of those is ever a number.
+      const fits =
+        want === null
+          ? got === null || typeof got === "string" || (key === "master" && typeof got === "number")
+          : typeof got === typeof want;
+      if (fits) settings[key] = got;
+      // A number written where the control holds its text -- an older
+      // version's `digits`, say -- is the same answer.
+      else if (typeof want === "string" && typeof got === "number") settings[key] = String(got);
     }
+    // Where the output goes is the one answer in a project that can reach
+    // outside the list: a folder that is a URL would have libavformat send
+    // the cut there, and a prefix with a separator in it writes beside some
+    // other folder. See `namesAProtocol`.
+    if (namesAProtocol(settings.dir)) settings.dir = SETTING_DEFAULTS.dir;
+    settings.prefix = settings.prefix.replace(/[\\/]/g, (c) => FULLWIDTH[c]);
     // Held as a position in the file and as a row id here; the rows do not
     // exist yet, so the position is kept and turned into an id below.
     masterAt = Number.isInteger(said.master) ? said.master : null;
@@ -7723,7 +7753,7 @@ async function loadProject(path) {
     // A project is the one thing in the list that can arrive from somebody
     // else, and every row in it is opened without being asked for -- the
     // index lanes start as soon as the list is up. See `namesAProtocol`.
-    if (namesAProtocol(saved.path)) {
+    if (namesAProtocol(saved.path) || (typeof saved.home === "string" && namesAProtocol(saved.home))) {
       refused += 1;
       continue;
     }
@@ -7743,8 +7773,14 @@ async function loadProject(path) {
     if (saved.edit) {
       clip.edit = {
         ...saved.edit,
-        cuts: Array.isArray(saved.edit.cuts) ? saved.edit.cuts : [],
-        keyframes: Array.isArray(saved.edit.keyframes) ? saved.edit.keyframes : [],
+        // Ranges of two numbers each; anything else in the list is dropped
+        // rather than left to stop every drawing of the row.
+        cuts: Array.isArray(saved.edit.cuts)
+          ? saved.edit.cuts.filter((r) => r && Number.isFinite(r.a) && Number.isFinite(r.b))
+          : [],
+        keyframes: Array.isArray(saved.edit.keyframes)
+          ? saved.edit.keyframes.filter((k) => Number.isFinite(k))
+          : [],
         id: clip.id,
         path: clip.path,
       };
@@ -8004,8 +8040,8 @@ async function refreshQueue() {
       return {
         path: j.path,
         label: j.label || stemOf(j.path),
-        state: j.state || "waiting",
-        note: j.note || "",
+        state: ["done", "error", "running"].includes(j.state) ? j.state : "waiting",
+        note: typeof j.note === "string" ? j.note : "",
         edited: j.edited || 0,
         began: was.began,
         spent: was.spent,
@@ -8019,7 +8055,7 @@ async function refreshQueue() {
         now: was.now,
       };
     });
-  batchAfter = queue && queue.after ? queue.after : "nothing";
+  batchAfter = queue && ["sleep", "shutdown"].includes(queue.after) ? queue.after : "nothing";
   // A row that has left the queue -- written out of it by the tool, taken out
   // of it in the other window -- takes its pick with it.
   for (const path of [...batchPicked]) {
@@ -8112,7 +8148,8 @@ async function lookAtJobs() {
     const beside = [];
     for (const c of held) {
       if (!c || typeof c.path !== "string") continue;
-      const at = c.home ? c.home.replace(/[/\\]+$/, "") : dirOf(c.path).replace(/[/\\]+$/, "");
+      const home = typeof c.home === "string" ? c.home : "";
+      const at = (home || dirOf(c.path)).replace(/[/\\]+$/, "");
       if (at && !beside.includes(at)) beside.push(at);
     }
     // The recording the row leads with, named the way the list window would
@@ -8146,8 +8183,10 @@ async function lookAtJobs() {
     };
     jobLook.set(job.path, look);
     renderBatch();
-    const first = held.length && typeof held[0].path === "string" ? held[0].path : "";
-    if (!first) continue;
+    const first = held.length && held[0] && typeof held[0].path === "string" ? held[0].path : "";
+    // The same refusal a project meets when it is opened: a queue is drawn
+    // the moment a job is added, and a job is a file from anywhere.
+    if (!first || namesAProtocol(first)) continue;
     try {
       look.poster = (await invoke("clip_glance", { path: first })) || "";
     } catch {
