@@ -10,6 +10,7 @@
 //! on here, in front of the payload, rather than left to the muxer.
 
 use crate::adts::{AacVersion, AdtsFormat};
+use crate::input::ReadPackets;
 use crate::latm::LatmFormat;
 
 /// How the frames of a track are framed, where they are framed at all.
@@ -86,7 +87,7 @@ pub fn framing(
     // seconds past it with no frame of the track is a track that is not
     // there, rather than a reason to read eight thousand pictures.
     let mut began: Option<f64> = None;
-    for (stream, packet) in ictx.packets().take(8192) {
+    for (stream, packet) in ictx.read_packets().take(8192) {
         if stream.index() != audio_index {
             if let Some(t) = crate::input::packet_time(&stream, &packet, 0.0) {
                 let first = *began.get_or_insert(t);

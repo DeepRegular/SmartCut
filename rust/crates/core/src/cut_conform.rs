@@ -299,7 +299,8 @@ fn pictures_afresh(
         };
     }
 
-    for (stream, packet) in ictx.packets() {
+    let mut packets = ictx.read_packets();
+    for (stream, packet) in packets.by_ref() {
         let index = stream.index();
         if index != ist_index {
             if let Some(k) = ctx.audio.iter().position(|a| a.in_index == index) {
@@ -347,6 +348,7 @@ fn pictures_afresh(
         }
         feed!();
     }
+    packets.finished()?;
     if !past_end {
         decoder.send_eof()?;
         // The last pictures the decoder was holding. Nothing reads
@@ -598,7 +600,7 @@ impl FarSide {
                 let t = pts as f64 * self.in_tb - self.start_time;
                 return Ok(Some((t, reshape(&frame, into, &mut self.rescale)?)));
             }
-            let Some((stream, packet)) = self.ictx.packets().next() else {
+            let Some((stream, packet)) = self.ictx.read_packets().next() else {
                 // Nothing left to read. Whatever the decoder is still
                 // holding comes out now, and after that there is nothing.
                 if !self.drained {

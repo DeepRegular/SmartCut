@@ -263,7 +263,7 @@ fn video_mismatches(master: &VideoInfo, clip: &VideoInfo) -> Vec<Mismatch> {
         format!("{}x{}", master.width, master.height),
         format!("{}x{}", clip.width, clip.height),
     );
-    if stated(master.frame_rate > 0.0, clip.frame_rate > 0.0)
+    if stated(master.rate_known(), clip.rate_known())
         && !near(master.frame_rate, clip.frame_rate, RATE_TOLERANCE)
     {
         say(

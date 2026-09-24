@@ -14,6 +14,7 @@
 
 use anyhow::{anyhow, bail, Context, Result};
 use ffmpeg_next as ff;
+use crate::input::ReadPackets;
 
 use crate::adts::AacVersion;
 use crate::bitstream::{
@@ -455,6 +456,8 @@ struct GraphicsCtx {
     in_index: usize,
     in_tb: f64,
     offset: f64,
+    /// Where the range ends, on the recording's clock. See `take_graphics`.
+    ends: f64,
 }
 
 /// Which of a reel's own streams stands in for each of the output's tracks.
@@ -1453,15 +1456,28 @@ fn take_audio(
         // track drifts a frame later each time. The opening segment also
         // takes the frame straddling the range's start; the sample window
         // trims whatever of it belongs to the material before the cut.
+        //
+        // And the frame before that one, which the window drops whole. A
+        // frame of AAC, AC-3 or MP2 is decoded against the one before it,
+        // and the decoder's last was the end of the previous range: the
+        // opening frame of every range came out mixed with sound the cut
+        // had taken away, a click at each seam.
         let claimed = if first_segment {
-            t + dur > audio.range_in && t < seg.end
+            t + 2.0 * dur > audio.range_in && t < seg.end
         } else {
             t >= seg.start && t < seg.end
         };
         if claimed {
             let mut out = Vec::new();
             if let Some(re) = writer.audio[audio.track].reencoder.as_mut() {
-                re.take(&packet, audio.info, src.start_time, audio.window, audio.fades)?;
+                re.take(
+                    &packet,
+                    audio.info,
+                    src.start_time,
+                    audio.window,
+                    audio.fades,
+                    Some(audio.offset + audio.range_in),
+                )?;
                 re.drain(&mut out)?;
             }
             for (p, pts) in out {
@@ -1712,7 +1728,12 @@ fn take_graphics(
             .iter()
             .map(|h| h.pts.min(h.dts))
             .fold(f64::INFINITY, f64::min);
-        if (seg.start..seg.end).contains(&opened) {
+        // Except past the end of the range. A set begins to be decoded 2 to
+        // 70 ms before it is shown, and one shown just after the range ended
+        // was carried and landed after the clear that ends the range: the
+        // line it put up stood into whatever came next.
+        let shown = set.iter().map(|h| h.pts).fold(f64::NEG_INFINITY, f64::max);
+        if (seg.start..seg.end).contains(&opened) && shown < graphics.ends {
             for held in &set {
                 writer.push_graphics(graphics.track, held, graphics.offset, false)?;
             }
@@ -1824,7 +1845,8 @@ fn write_one_track_out(cut: &str, output: &str, aac: AacVersion) -> Result<usize
         .time_base();
 
     let mut written = 0usize;
-    for (stream, mut packet) in ictx.packets() {
+    let mut packets = ictx.read_packets();
+    for (stream, mut packet) in packets.by_ref() {
         if stream.index() != index {
             continue;
         }
@@ -1834,6 +1856,7 @@ fn write_one_track_out(cut: &str, output: &str, aac: AacVersion) -> Result<usize
         packet.write(&mut octx)?;
         written += 1;
     }
+    packets.finished()?;
     octx.write_trailer()?;
     Ok(written)
 }
@@ -2135,9 +2158,11 @@ fn take_subpicture(
 /// Nothing at all where this cut is not converting: the two destinations are
 /// exclusive, and [`Subtitles::Beside`] leaves this untouched.
 ///
-/// A unit that carries no picture is one that only takes the last one down,
-/// which the composer does of its own accord when the next one arrives or
-/// the range ends -- so there is nothing to do with it here.
+/// A unit that carries no picture is one that only takes the last one down:
+/// libavcodec answers a unit with nothing to show -- a stop on its own, or a
+/// picture that is all transparent -- by decoding nothing, and that is how a
+/// disc with no stop times takes its subtitles off the screen. Left to the
+/// next unit, a line stood through the silence after it.
 fn convert_subpicture(
     id: i32,
     at: f64,
@@ -2151,6 +2176,10 @@ fn convert_subpicture(
     let (track, sets) = {
         let c = &mut writer.converted[which];
         let Some(drawn) = c.reader.read(unit)? else {
+            let (track, sets) = (c.track, c.composer.take_down(c.screen, at));
+            for held in &sets {
+                writer.push_graphics(track, held, 0.0, mended)?;
+            }
             return Ok(());
         };
         let picture = crate::pgs::write::Picture {
@@ -2170,6 +2199,11 @@ fn convert_subpicture(
     }
     Ok(())
 }
+
+/// How far past a range's start the pictures may run, in a look back for
+/// subtitles, before the look back is over. Leeway for a stream that is
+/// muxed a little ahead of the pictures it goes with.
+const PAST_UNTIL: f64 = 2.0;
 
 /// Read the subtitles of the stretch in front of a kept range, so that one
 /// already on screen when it opens can be written again at its first frame.
@@ -2195,10 +2229,12 @@ fn read_subpictures_before(src: &Source, until: f64) -> Result<Vec<(i32, f64, Ve
     if from > 0.0 {
         let _ = seek_to(&mut ictx, src, until - crate::pgs::LOOKBACK);
     }
-    // The pictures and the sound are walked past rather than assembled. What
-    // is left is the subtitles and a DVD's navigation packs, which are small.
-    let mut heavy: Vec<usize> = src.audios.iter().map(|a| a.stream_index).collect();
-    heavy.push(src.video.stream_index);
+    // The sound is walked past rather than assembled. The pictures are kept,
+    // though never decoded: they are the clock that says the look back is
+    // over. A range after the last subtitle of a title has no subtitle packet
+    // to say so, and without the pictures the read went on to the end of the
+    // title looking for one -- once per such range.
+    let heavy: Vec<usize> = src.audios.iter().map(|a| a.stream_index).collect();
     for stream in ictx.streams() {
         if heavy.contains(&stream.index()) {
             unsafe {
@@ -2207,8 +2243,14 @@ fn read_subpictures_before(src: &Source, until: f64) -> Result<Vec<(i32, f64, Ve
         }
     }
     let mut last: Vec<(i32, f64, Vec<u8>)> = Vec::new();
-    for (stream, packet) in ictx.packets() {
+    for (stream, packet) in ictx.read_packets() {
         if stream.parameters().id() != ff::codec::Id::DVD_SUBTITLE {
+            if stream.index() == src.video.stream_index
+                && crate::input::packet_time(&stream, &packet, src.start_time)
+                    .is_some_and(|t| t >= until + PAST_UNTIL)
+            {
+                break;
+            }
             continue;
         }
         let Some(pts) = packet.pts() else { continue };
@@ -2249,16 +2291,19 @@ fn read_graphics_before(src: &Source, until: f64, writer: &mut Writer) -> Result
     if from > 0.0 {
         seek_to(&mut ictx, src, until - crate::pgs::LOOKBACK)?;
     }
-    for stream in ictx.streams() {
-        if !wanted.contains(&stream.index()) {
-            unsafe {
-                (*(stream.as_ptr() as *mut ff::ffi::AVStream)).discard = ff::Discard::All.into();
-            }
-        }
-    }
+    // The graphics, and the pictures as the clock: a track with no display
+    // set after the range begins -- forced subtitles only, or a range past
+    // the last line -- never says it is done, and the read went on to the
+    // end of the clip once per range. See [`read_subpictures_before`].
+    crate::input::keep_with_pictures(&mut ictx, &wanted);
     let mut done = vec![false; writer.graphics.len()];
-    for (stream, packet) in ictx.packets() {
+    for (stream, packet) in ictx.read_packets() {
         let Some(k) = wanted.iter().position(|i| *i == stream.index()) else {
+            if crate::input::packet_time(&stream, &packet, src.start_time)
+                .is_some_and(|t| t >= until + PAST_UNTIL)
+            {
+                break;
+            }
             continue;
         };
         if done[k] {
@@ -2342,7 +2387,8 @@ fn copy_segment(
     let mut sub_done =
         src.subpictures.is_empty() || (writer.subpictures.is_none() && writer.converted.is_empty());
 
-    for (stream, packet) in ictx.packets() {
+    let mut packets = ictx.read_packets();
+    for (stream, packet) in packets.by_ref() {
         let index = stream.index();
         // Where the read has got to, in bytes into the clip. Not every packet
         // says -- the second field of a pair does not -- so the last one that
@@ -2547,6 +2593,7 @@ fn copy_segment(
             fields,
         })?;
     }
+    packets.finished()?;
     if !started {
         // **Two things look the same here and only one of them is a seek.**
         // Either the read landed past the entry point, which a larger margin
@@ -2802,7 +2849,7 @@ fn signalling_of(src: &Source, opts: &CutOptions) -> Signalling {
         // return sends home. It costs no decoding: the header is in the
         // bytes, restated at every entry point of a transport stream.
         if matches!(src.video.codec.as_str(), "mpeg2video" | "mpeg1video") {
-            for (stream, packet) in ictx.packets().take(64) {
+            for (stream, packet) in ictx.read_packets().take(64) {
                 if stream.index() != ist {
                     continue;
                 }
@@ -2842,7 +2889,7 @@ fn signalling_of(src: &Source, opts: &CutOptions) -> Signalling {
             .iter()
             .find_map(|set| crate::bitstream::coded_transfer(set));
     }
-    for (stream, packet) in ictx.packets().take(64) {
+    for (stream, packet) in ictx.read_packets().take(64) {
         if stream.index() != ist {
             continue;
         }
@@ -3616,7 +3663,8 @@ fn reencode_segment(
         };
     }
 
-    for (stream, packet) in ictx.packets() {
+    let mut packets = ictx.read_packets();
+    for (stream, packet) in packets.by_ref() {
         let index = stream.index();
         // Where the read has got to, in bytes into the clip. Not every packet
         // says -- the second field of a pair does not -- so the last one that
@@ -3702,6 +3750,7 @@ fn reencode_segment(
         // picks out exactly the pictures this segment owns.
         feed!();
     }
+    packets.finished()?;
     if !drained {
         decoder.send_eof()?;
         feed!();
@@ -4205,7 +4254,7 @@ pub fn writable_sound(
 fn assumed_frame(probe: &mut ff::format::context::Input, info: &crate::AudioInfo) -> Option<f64> {
     const ENOUGH: usize = 256;
     let mut times: Vec<i64> = Vec::new();
-    for (stream, packet) in probe.packets().take(8192) {
+    for (stream, packet) in probe.read_packets().take(8192) {
         if stream.index() != info.stream_index {
             continue;
         }
@@ -5153,7 +5202,8 @@ fn heard_in(src: &Source, stream_index: usize, plans: &[RangePlan]) -> bool {
                 return true;
             }
             crate::input::keep_with_pictures(&mut ictx, &[stream_index]);
-            for (stream, packet) in ictx.packets() {
+            let mut packets = ictx.read_packets();
+            for (stream, packet) in packets.by_ref() {
                 let Some(t) = crate::input::packet_time(&stream, &packet, src.start_time) else {
                     continue;
                 };
@@ -5166,6 +5216,10 @@ fn heard_in(src: &Source, stream_index: usize, plans: &[RangePlan]) -> bool {
                 if t > at + LOOK {
                     break;
                 }
+            }
+            // A read that failed is not evidence of an empty track.
+            if packets.finished().is_err() {
+                return true;
             }
         }
     }
@@ -5260,7 +5314,9 @@ pub fn join_with_progress(
     for reel in reels {
         reel.src.input.refuse_as_output(output)?;
     }
-    let ours = !std::path::Path::new(output).exists();
+    // An empty file is ours as well: it is how a disc's number is held
+    // before the cut is written into it (see `bdav::prepare`).
+    let ours = std::fs::metadata(output).map_or(true, |m| m.len() == 0);
     let done = cut_into(reels, master.min(reels.len().saturating_sub(1)), output, opts, progress);
     if done.is_err() && ours {
         let _ = std::fs::remove_file(output);
@@ -6773,6 +6829,7 @@ fn cut_into(
                     in_index: t.in_index,
                     in_tb: t.in_tb,
                     offset: target_start - plan.t_in,
+                    ends: plan.t_out,
                 })
                 .collect()
         } else {
@@ -6787,11 +6844,19 @@ fn cut_into(
             && (writer.subpictures.is_some() || !writer.converted.is_empty())
         {
             for (id, shown, unit) in read_subpictures_before(rsrc, plan.t_in)? {
-                let over = crate::vobsub::stops_after(&unit)
-                    .is_some_and(|after| shown + after <= plan.t_in);
-                if over {
+                let stops = crate::vobsub::stops_after(&unit);
+                if stops.is_some_and(|after| shown + after <= plan.t_in) {
                     continue;
                 }
+                // A stop is counted from when the unit is shown, which is
+                // now the range's first frame: left as it was, the line
+                // stood for as long again as it had already been up.
+                let unit = match stops {
+                    Some(after) => {
+                        crate::vobsub::stopped_after(&unit, shown + after - plan.t_in)
+                    }
+                    None => unit,
+                };
                 if let Some(subs) = writer.subpictures.as_mut() {
                     subs.take(id, target_start, &unit);
                 }

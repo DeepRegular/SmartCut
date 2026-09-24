@@ -14,6 +14,7 @@
 
 use anyhow::{anyhow, bail, Result};
 use ffmpeg_next as ff;
+use crate::input::ReadPackets;
 
 use crate::{bitstream, AccessPoint, Source, VideoInfo};
 
@@ -60,6 +61,9 @@ pub struct IndexInput<'a> {
     /// Only the walk has anything to report: the sources that read a table
     /// the container already holds are done before a bar could be drawn.
     pub on: Option<OnProgress<'a>>,
+    /// Asked as the walk goes, where somebody may want it to stop: the list
+    /// window's reading of a row that has since been taken out of the list.
+    pub stop: Option<&'a (dyn Fn() -> bool + Sync)>,
 }
 
 pub trait IndexSource {
@@ -86,9 +90,10 @@ impl IndexSource for PacketScan {
             start_time,
             ictx,
             on,
+            stop,
             ..
         } = input;
-        walk(video, start_time, ictx, on, |_| Ok(()), None)
+        walk(video, start_time, ictx, on, |_| Ok(()), stop)
     }
 }
 
@@ -162,7 +167,7 @@ pub fn walk(
     // What is offered is throttled where it is decided, in [`crate::Told`].
     let mut told = crate::Told::new();
     let mut seen: u64 = 0;
-    for (s, p) in ictx.packets() {
+    for (s, p) in ictx.read_packets() {
         seen += 1;
         if seen.is_multiple_of(256) {
             // Asked on the same count as the progress, but not behind it: a
@@ -606,7 +611,7 @@ pub fn table_shift(
         // at all after the seek: the landing is one, so this is reached only
         // where something is wrong.
         let mut landed = None;
-        for (s, p) in ictx.packets().take(4096) {
+        for (s, p) in ictx.read_packets().take(4096) {
             if s.index() != video.stream_index || !p.is_key() {
                 continue;
             }
@@ -969,7 +974,7 @@ fn key_at_byte(
             return None;
         }
     }
-    for (s, p) in ictx.packets().take(8192) {
+    for (s, p) in ictx.read_packets().take(8192) {
         if s.index() != video.stream_index || !p.is_key() {
             continue;
         }
@@ -1009,7 +1014,7 @@ fn stretch_points(
     let mut out = Vec::new();
     let mut last = f64::NEG_INFINITY;
     let mut read_at = lo;
-    for (s, p) in ictx.packets() {
+    for (s, p) in ictx.read_packets() {
         if p.position() >= 0 {
             read_at = p.position() as u64;
         }
@@ -1164,7 +1169,7 @@ fn window_from(
 ) -> Result<Vec<PacketView>> {
     let mut out = Vec::new();
     let mut target: Option<usize> = None;
-    for (s, p) in ictx.packets() {
+    for (s, p) in ictx.read_packets() {
         if s.index() != video.stream_index {
             continue;
         }
@@ -1312,7 +1317,7 @@ pub fn sample_bit_rate(
             }
         }
         let (mut took, mut read_at) = (0u64, from.pos);
-        for (s, p) in ictx.packets() {
+        for (s, p) in ictx.read_packets() {
             if p.position() >= 0 {
                 read_at = p.position() as i64;
             }

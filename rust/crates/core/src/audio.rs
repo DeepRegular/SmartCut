@@ -35,6 +35,7 @@
 
 use anyhow::{anyhow, Result};
 use ffmpeg_next as ff;
+use crate::input::ReadPackets;
 use std::collections::HashMap;
 
 use crate::aac::Framing;
@@ -562,6 +563,10 @@ pub struct Reencoder {
     fed: i64,
     /// Last source packet consumed, so a frame offered twice is ignored.
     last_pts: Option<i64>,
+    /// The window being taken from, and the recording's sample the next one
+    /// taken should be. See `take`, where a hole in the sound is filled.
+    window: Option<(i64, i64)>,
+    next: i64,
     /// Set when the frames are to leave here already framed, which is what
     /// keeps a re-encoded transport stream MPEG-2 AAC throughout -- and what
     /// gives a 4K recording's LATM frames their sync word.
@@ -645,6 +650,8 @@ impl Reencoder {
             ready: vec![Vec::new(); channels as usize],
             fed: 0,
             last_pts: None,
+            window: None,
+            next: 0,
             framing,
             enc_format,
             to_encoder: None,
@@ -680,6 +687,9 @@ impl Reencoder {
             .decoder()
             .audio()?;
         self.last_pts = None;
+        // The next recording's windows are counted on its own clock, and can
+        // be the same numbers as the last one's.
+        self.window = None;
         // Built per frame from the shape the decoder hands over, so it
         // would rebuild itself -- but only when the shape changes, and the
         // shape can be the same one while the recording behind it is not.
@@ -724,6 +734,14 @@ impl Reencoder {
 
     /// Decode a packet and keep whatever falls inside `[from, to)` samples of
     /// the source timeline.
+    ///
+    /// `at_out` is where on the output the window's first sample belongs, in
+    /// seconds, where the caller knows. **The sound is kept on the pictures'
+    /// clock rather than laid end to end.** Counted only by what was fed,
+    /// every stretch the track was missing -- a dropout in a broadcast, a
+    /// track that starts after the pictures or stops before them, a joined
+    /// recording without it -- moved everything after it earlier by as much,
+    /// and the sound ran ahead of the pictures from there to the end.
     pub fn take(
         &mut self,
         packet: &ff::Packet,
@@ -731,7 +749,15 @@ impl Reencoder {
         start_time: f64,
         window: (i64, i64),
         fades: Fades,
+        at_out: Option<f64>,
     ) -> Result<()> {
+        if self.window != Some(window) {
+            self.window = Some(window);
+            self.next = window.0;
+            if let Some(at) = at_out {
+                self.align(at);
+            }
+        }
         if let (Some(pts), Some(last)) = (packet.pts(), self.last_pts) {
             if pts <= last {
                 return Ok(());
@@ -752,6 +778,15 @@ impl Reencoder {
             if hi <= lo {
                 continue;
             }
+            // A hole in the track: silence for it, so that what follows
+            // stays where it was. Less than a frame is the timestamps'
+            // own rounding -- a Matroska track keeps milliseconds -- and is
+            // read past, as it always was.
+            let slack = n.max(i64::from(self.sample_rate) / 100);
+            if lo - self.next > slack {
+                self.silence((lo - self.next) as usize);
+            }
+            self.next = self.next.max(hi);
             let src = conform(
                 &mut self.resampler,
                 &mut self.remixed,
@@ -779,6 +814,30 @@ impl Reencoder {
             }
         }
         Ok(())
+    }
+
+    /// Silence, at the recording's rate, after what is waiting.
+    fn silence(&mut self, samples: usize) {
+        for ch in self.pending.iter_mut().take(self.channels) {
+            ch.extend(std::iter::repeat_n(0.0, samples));
+        }
+    }
+
+    /// Fill up to `at` seconds of the output with silence, where the sound
+    /// laid down so far falls short of it. Never the other way: sound
+    /// already written is not taken back, and a range that begins a frame
+    /// late is the lesser harm.
+    fn align(&mut self, at: f64) {
+        let out = f64::from(self.out_rate.max(1));
+        let laid = self.fed as f64
+            + self.ready[0].len() as f64
+            + self.pending[0].len() as f64 * out / f64::from(self.sample_rate.max(1));
+        let short = at * out - laid;
+        // Twenty milliseconds, under which the frames at a seam decide.
+        if short > out / 50.0 {
+            let samples = short * f64::from(self.sample_rate) / out;
+            self.silence(samples.round() as usize);
+        }
     }
 
     /// The rate the track is written at, which is not always the rate it was
@@ -1174,7 +1233,7 @@ fn frame_shape(
         .audio()
         .ok()?;
     let mut frame = ff::frame::Audio::empty();
-    for (stream, packet) in ictx.packets().take(4096) {
+    for (stream, packet) in ictx.read_packets().take(4096) {
         if stream.index() != stream_index {
             if crate::input::packet_time(&stream, &packet, start_time).is_some_and(|t| t > from + 10.0)
             {
@@ -1458,7 +1517,7 @@ fn decode_around(
     // frames a fade-out runs over.
     let mut ended = false;
     let mut last_bytes = 0;
-    let mut packets = ictx.packets();
+    let mut packets = ictx.read_packets();
     loop {
         let bytes = match packets.next() {
             Some((stream, packet)) if stream.index() != audio.stream_index => {

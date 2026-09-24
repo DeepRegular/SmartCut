@@ -14,6 +14,7 @@ use std::time::{Duration, Instant};
 use anyhow::{anyhow, Result};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use ffmpeg_next as ff;
+use crate::input::ReadPackets;
 
 use crate::Source;
 
@@ -1068,6 +1069,16 @@ fn feed_from(
     let Heard { src, ranges, from, fades } = part;
     let (from, fades) = (*from, *fades);
     let Some(audio) = src.audio.clone() else {
+        // Nothing to hear, but the time still passes: a part with no sound
+        // takes up its ranges of the output as one with sound does, and the
+        // part after it is due that much later. Returned without this, the
+        // next clip's sound played from the head of a seam preview.
+        for &(a, b) in ranges.iter() {
+            let start = a.max(from);
+            if start < b - 1e-9 {
+                *base += b - start;
+            }
+        }
         return Ok(());
     };
     let mut ictx = crate::input::demux(&src.input.url)?;
@@ -1113,7 +1124,7 @@ fn feed_from(
         decoder.flush();
 
         let mut frame = ff::frame::Audio::empty();
-        for (stream, packet) in ictx.packets() {
+        for (stream, packet) in ictx.read_packets() {
             if stop() {
                 break 'ranges;
             }
@@ -1283,7 +1294,7 @@ pub fn peaks_at(src: &Source, time: f64, window: f64, fold: &Fold) -> Result<Vec
     let mut frame = ff::frame::Audio::empty();
     let end = time + window.max(0.0);
 
-    'packets: for (stream, packet) in ictx.packets() {
+    'packets: for (stream, packet) in ictx.read_packets() {
         if stream.index() != idx {
             if crate::input::packet_time(&stream, &packet, src.start_time)
                 .is_some_and(|t| t >= end + PAST)

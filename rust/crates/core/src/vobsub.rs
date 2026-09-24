@@ -169,6 +169,49 @@ pub fn stopped_after(spu: &[u8], after: f64) -> Vec<u8> {
     out
 }
 
+/// The two-letter code `.idx` takes for the three-letter one a disc gives.
+///
+/// Not the first two letters: Japanese is `jpn` and `ja`, German `ger` or
+/// `deu` and `de`. The languages a disc sold here is likely to carry; any
+/// other is written as unknown rather than as a wrong one.
+fn two_letters(lang: &str) -> String {
+    let lower = lang.to_ascii_lowercase();
+    // A DVD's own codes are already two letters.
+    if lower.len() == 2 && lower.bytes().all(|b| b.is_ascii_lowercase()) {
+        return lower;
+    }
+    let two = match lower.as_str() {
+        "jpn" => "ja",
+        "eng" => "en",
+        "zho" | "chi" => "zh",
+        "kor" => "ko",
+        "fra" | "fre" => "fr",
+        "deu" | "ger" => "de",
+        "spa" => "es",
+        "ita" => "it",
+        "por" => "pt",
+        "rus" => "ru",
+        "nld" | "dut" => "nl",
+        "swe" => "sv",
+        "nor" => "no",
+        "dan" => "da",
+        "fin" => "fi",
+        "pol" => "pl",
+        "ces" | "cze" => "cs",
+        "hun" => "hu",
+        "tur" => "tr",
+        "gre" | "ell" => "el",
+        "heb" => "he",
+        "ara" => "ar",
+        "tha" => "th",
+        "hin" => "hi",
+        "ind" => "id",
+        "vie" => "vi",
+        _ => "--",
+    };
+    two.to_string()
+}
+
 /// A unit that puts nothing up and takes down whatever is there.
 ///
 /// Ten bytes: its own length, where the sequences begin, and one sequence
@@ -881,6 +924,7 @@ impl Sidecar {
             let take = rest.len().min(room);
             let payload = &rest[..take];
             let length = header - 6 + 1 + take;
+            let start = sector.len();
             sector.extend_from_slice(&[0x00, 0x00, 0x01, 0xBD]);
             sector.extend_from_slice(&(length as u16).to_be_bytes());
             sector.push(0x81); // no scrambling, original
@@ -892,6 +936,16 @@ impl Sidecar {
             sector.push(id);
             sector.extend_from_slice(payload);
             // The rest of the sector is padding, which every reader skips.
+            // A padding packet needs six bytes of its own; with fewer left,
+            // they go into this packet's header as stuffing instead.
+            let short = SECTOR - sector.len();
+            if (1..6).contains(&short) {
+                let at = start + if first { 9 + 5 } else { 9 };
+                sector.splice(at..at, std::iter::repeat_n(0xFF, short));
+                sector[start + 8] += short as u8;
+                let length = u16::from_be_bytes([sector[start + 4], sector[start + 5]]) + short as u16;
+                sector[start + 4..start + 6].copy_from_slice(&length.to_be_bytes());
+            }
             if sector.len() < SECTOR {
                 let pad = SECTOR - sector.len();
                 sector.extend_from_slice(&[0x00, 0x00, 0x01, 0xBE]);
@@ -922,11 +976,8 @@ impl Sidecar {
         out.push_str("langidx: 0\n");
         for (index, s) in self.streams.iter().enumerate() {
             // Two letters is what the format takes, and a disc says three.
-            let lang = s.language.as_deref().unwrap_or("--");
-            out.push_str(&format!(
-                "\nid: {}, index: {index}\n",
-                &lang[..lang.len().min(2)]
-            ));
+            let lang = s.language.as_deref().map_or_else(|| "--".to_string(), two_letters);
+            out.push_str(&format!("\nid: {lang}, index: {index}\n"));
             for &(at, filepos) in &s.at {
                 out.push_str(&format!(
                     "timestamp: {}, filepos: {filepos:09x}\n",
@@ -1122,6 +1173,38 @@ mod tests {
     /// The streams are named in the order they were declared, whatever order
     /// they turn up in.
     #[test]
+    fn a_sector_with_too_little_room_for_padding_is_stuffed() {
+        // Room in a first sector: 14 of pack header, 14 of packet header and
+        // one substream byte. Short of it by 1 to 5, there is no room for a
+        // padding packet's own six bytes.
+        for short in 1..6 {
+            let mut side = Sidecar::new(720, 480, Palette::grey());
+            let unit = vec![0x55u8; SECTOR - 29 - short];
+            side.add(0x20, 1.0, &unit);
+            let sub = &side.sub;
+            assert_eq!(sub.len(), SECTOR, "short {short}");
+            assert_eq!(&sub[14..18], &[0x00, 0x00, 0x01, 0xBD]);
+            // The packet runs to the end of the sector...
+            let length = u16::from_be_bytes([sub[18], sub[19]]) as usize;
+            assert_eq!(14 + 6 + length, SECTOR, "short {short}");
+            // ...its header grown by the stuffing, and the unit after it.
+            assert_eq!(sub[22] as usize, 5 + short);
+            assert!(sub[28..28 + short].iter().all(|&b| b == 0xFF));
+            assert_eq!(sub[28 + short], 0x20);
+            assert_eq!(&sub[29 + short..], &unit[..]);
+        }
+    }
+
+    #[test]
+    fn a_disc_language_is_written_as_its_two_letter_code() {
+        assert_eq!(two_letters("jpn"), "ja");
+        assert_eq!(two_letters("ger"), "de");
+        assert_eq!(two_letters("en"), "en");
+        assert_eq!(two_letters("xyz"), "--");
+        assert_eq!(two_letters("日本"), "--");
+    }
+
+    #[test]
     fn the_index_names_every_stream_it_was_told_about() {
         let mut side = Sidecar::new(720, 480, Palette::grey());
         side.declare(0x20, Some("eng".into()));
@@ -1129,7 +1212,7 @@ mod tests {
         side.add(0x21, 1.0, &standing(64));
         let idx = side.index();
         assert!(idx.contains("id: en, index: 0"), "{idx}");
-        assert!(idx.contains("id: jp, index: 1"), "{idx}");
+        assert!(idx.contains("id: ja, index: 1"), "{idx}");
         assert!(!side.is_empty());
     }
 

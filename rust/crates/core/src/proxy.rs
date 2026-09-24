@@ -29,6 +29,7 @@
 
 use anyhow::{anyhow, bail, Context, Result};
 use ffmpeg_next as ff;
+use crate::input::ReadPackets;
 use std::path::{Path, PathBuf};
 
 use crate::{thumbs, Source};
@@ -700,7 +701,8 @@ pub fn build(
             };
 
         'read: {
-            for (stream, packet) in ictx.packets() {
+            let mut packets = ictx.read_packets();
+            for (stream, packet) in packets.by_ref() {
                 if stream.index() != idx {
                     continue;
                 }
@@ -724,6 +726,7 @@ pub fn build(
                     }
                 }
             }
+            packets.finished()?;
             if !cancelled {
                 let _ = decoder.send_eof();
                 loop {

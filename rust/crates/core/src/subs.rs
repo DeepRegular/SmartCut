@@ -43,6 +43,7 @@ use anyhow::{anyhow, Result};
 use ffmpeg_next as ff;
 
 use crate::caption;
+use crate::input::ReadPackets;
 use crate::vobsub::{self, Drawn};
 use crate::Source;
 
@@ -345,16 +346,11 @@ impl Reader {
                 )
             })
             .collect();
-        loop {
-            // Read by hand rather than through the packet iterator, which
-            // treats every error but the end of the file as something to
-            // try again: a recording that stops in the middle of a packet
-            // -- a capture that was cut off, which is half of what this
-            // program is pointed at -- makes that iterator spin.
-            let mut packet = ff::Packet::empty();
-            if packet.read(ictx).is_err() {
-                break;
-            }
+        // Read through [`crate::input::Packets`], which reads past the
+        // "try again" a transport stream answers with over damage: stopping
+        // at the first error left everything after a dropout without its
+        // subtitles for as long as the window lasted.
+        for (_, packet) in ictx.read_packets() {
             let Some(&(stream_id, tb, medium)) = streams.get(packet.stream()) else {
                 continue;
             };
@@ -451,6 +447,18 @@ impl Reader {
                 Some(decoder) => {
                     let mut sub = ff::codec::subtitle::Subtitle::new();
                     if !decoder.decode(&packet, &mut sub).unwrap_or(false) {
+                        // A DVD's unit with nothing to show is one that takes
+                        // the last down (see `convert_subpicture` in
+                        // `cut.rs`). A Blu-ray's graphics decode nothing for
+                        // every segment but the last of a set, so there it
+                        // is only a packet read.
+                        if kind == Kind::Subpicture {
+                            events.push(Event {
+                                at,
+                                until: None,
+                                shown: None,
+                            });
+                        }
                         continue;
                     }
                     let drawn = vobsub::drawn_from(&sub);

@@ -26,6 +26,7 @@
 
 use anyhow::{anyhow, Result};
 use ffmpeg_next as ff;
+use crate::input::ReadPackets;
 
 use crate::Source;
 
@@ -416,7 +417,7 @@ pub fn find_runs_with(
     let mut frame = ff::frame::Video::empty();
     let mut told = -1.0;
 
-    for (stream, packet) in ictx.packets() {
+    for (stream, packet) in ictx.read_packets() {
         if stream.index() != idx {
             continue;
         }

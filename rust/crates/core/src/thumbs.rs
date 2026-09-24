@@ -16,6 +16,7 @@
 
 use anyhow::{anyhow, bail, Result};
 use ffmpeg_next as ff;
+use crate::input::ReadPackets;
 
 use crate::Source;
 
@@ -227,7 +228,11 @@ fn signature(frame: &ff::frame::Video) -> [u8; SIG] {
     let stride = frame.stride(0);
     let data = frame.data(0);
     let mut out = [0u8; SIG];
-    if w == 0 || h == 0 || data.len() < (h - 1) * stride + w {
+    // Eight bits a sample whatever the picture was decoded in. See
+    // [`crate::Luma8`].
+    let luma = crate::Luma8::of(frame);
+    let row_bytes = if luma.bytes() { w } else { 2 * w };
+    if w == 0 || h == 0 || data.len() < (h - 1) * stride + row_bytes {
         return out;
     }
     for cy in 0..SIG_H {
@@ -241,10 +246,9 @@ fn signature(frame: &ff::frame::Video) -> [u8; SIG] {
             // wanted and reading them all costs sixteen times as much.
             let mut y = y0;
             while y < y1 {
-                let row = y * stride;
                 let mut x = x0;
                 while x < x1 {
-                    sum += data[row + x] as u32;
+                    sum += luma.at(x, y) as u32;
                     n += 1;
                     x += 4;
                 }
@@ -668,7 +672,7 @@ pub fn build_with(
     // One picture's packets: the key packet, and the one behind it where the
     // material is field coded and the picture is two.
     let mut pending: Vec<ff::Packet> = Vec::new();
-    for (stream, packet) in ictx.packets() {
+    for (stream, packet) in ictx.read_packets() {
         if let Some(f) = stop.as_ref() {
             if f() {
                 bail!("abandoned");
@@ -838,7 +842,7 @@ pub fn differences_near(src: &Source, at: f64, window: f64) -> Result<Vec<(f64, 
 
     let mut seen: Vec<(f64, [u8; SIG])> = Vec::new();
     let mut frame = ff::frame::Video::empty();
-    'outer: for (stream, packet) in ictx.packets() {
+    'outer: for (stream, packet) in ictx.read_packets() {
         if stream.index() != idx {
             continue;
         }
@@ -935,7 +939,7 @@ pub fn refine(src: &Source, at: f64) -> Result<f64> {
 
     let mut seen: Vec<(f64, [u8; SIG])> = Vec::new();
     let mut frame = ff::frame::Video::empty();
-    'outer: for (stream, packet) in ictx.packets() {
+    'outer: for (stream, packet) in ictx.read_packets() {
         if stream.index() != idx {
             continue;
         }

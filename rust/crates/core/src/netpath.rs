@@ -81,6 +81,19 @@ pub fn parse(input: &str) -> Option<Share> {
     let take = |s: &str| if encoded { decode(s) } else { s.to_string() };
     let mut parts = body.split('/').filter(|s| !s.is_empty());
     let host = take(parts.next()?);
+    // `smb://user@nas:445/...` names the same machine as `smb://nas/...`: the
+    // account and the port are how to reach it, not which it is, and a mount
+    // is listed under the bare name.
+    let host = if encoded {
+        let bare = host.rsplit_once('@').map_or(host.as_str(), |(_, h)| h);
+        let bare = match bare.rsplit_once(':') {
+            Some((h, port)) if !h.is_empty() && port.bytes().all(|b| b.is_ascii_digit()) => h,
+            _ => bare,
+        };
+        bare.to_string()
+    } else {
+        host
+    };
     let share = take(parts.next()?);
     if host.is_empty() || share.is_empty() {
         return None;
@@ -328,6 +341,12 @@ fn eq_ci(a: &str, b: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn an_account_and_a_port_are_not_the_machine() {
+        let s = parse("smb://kaz@nas:445/rec/a.ts").unwrap();
+        assert_eq!((s.host.as_str(), s.share.as_str(), s.rest.as_str()), ("nas", "rec", "a.ts"));
+    }
+
     use super::*;
 
     fn share(host: &str, name: &str, rest: &str) -> Share {

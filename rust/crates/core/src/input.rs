@@ -468,6 +468,103 @@ pub fn keep_only(ictx: &mut Demux, keep: &[usize]) {
     }
 }
 
+/// Packets, read the way [`ff::format::context::Input::packets`] reads them
+/// but with an end to it.
+///
+/// That iterator answers the end of the file by stopping and every other
+/// error by reading again, at once and for ever. A recording on a share that
+/// goes away while it is being read answers every read with the same error,
+/// and the pass that was reading it spun one core at full speed and could
+/// not be stopped -- the checks for a stop are in the loops' bodies, and the
+/// spinning was inside `next`. A damaged recording can fail a read and then
+/// carry on, so a few failures in a row are read past; a run of them is the
+/// end of what can be read, and is said once.
+///
+/// What stops the reading is kept: a pass that only looks can use what it
+/// read, but one that writes a cut must not call a recording that went away
+/// half way through "the end of the file". See [`Packets::finished`].
+pub struct Packets<'a> {
+    ctx: &'a mut ff::format::context::Input,
+    failures: u32,
+    failed: Option<String>,
+}
+
+impl Packets<'_> {
+    /// Whether the reading got to the end of the file, or was stopped by the
+    /// errors described above. For the loops that write: a share that went
+    /// away left a cut that ended there and said it had succeeded.
+    pub fn finished(&self) -> anyhow::Result<()> {
+        match &self.failed {
+            None => Ok(()),
+            Some(e) => anyhow::bail!("the recording could not be read to the end ({e})"),
+        }
+    }
+}
+
+/// How many reads in a row may fail before the reading is over.
+const MOST_FAILURES: u32 = 64;
+
+/// How many "try again"s count as one failure. See [`Packets`].
+const EAGAIN_WORTH: u32 = 1024;
+
+/// EAGAIN as libavutil numbers it on this platform.
+fn libc_eagain() -> i32 {
+    ff::util::error::EAGAIN
+}
+
+impl<'a> Iterator for Packets<'a> {
+    type Item = (ff::format::stream::Stream<'a>, ff::Packet);
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let mut packet = ff::Packet::empty();
+        loop {
+            match packet.read(self.ctx) {
+                Ok(()) => {
+                    self.failures = 0;
+                    // As ffmpeg-next's own iterator does: the stream borrows
+                    // the context for as long as the iterator does, and
+                    // nothing reads from the context while it is held.
+                    let ctx: &'a ff::format::context::Input =
+                        unsafe { &*(self.ctx as *const ff::format::context::Input) };
+                    let stream = unsafe { ff::format::stream::Stream::wrap(ctx, packet.stream()) };
+                    return Some((stream, packet));
+                }
+                Err(ff::Error::Eof) => return None,
+                Err(e) => {
+                    // "Try again" is what the transport stream demuxer says
+                    // while it resynchronises over damage, many times in a
+                    // row and then carries on; every other error in a row
+                    // this long is a read that is not going to succeed.
+                    let again = matches!(
+                        e,
+                        ff::Error::Other { errno } if errno == libc_eagain()
+                    );
+                    self.failures += if again { 1 } else { EAGAIN_WORTH };
+                    if self.failures >= MOST_FAILURES * EAGAIN_WORTH {
+                        self.failed = Some(e.to_string());
+                        crate::note_once(format!(
+                            "note: reading stopped at an error the recording kept giving ({e}); \
+                             what was read before it is used"
+                        ));
+                        return None;
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// The reading every pass here does. See [`Packets`].
+pub trait ReadPackets {
+    fn read_packets(&mut self) -> Packets<'_>;
+}
+
+impl ReadPackets for ff::format::context::Input {
+    fn read_packets(&mut self) -> Packets<'_> {
+        Packets { ctx: self, failures: 0, failed: None }
+    }
+}
+
 /// As [`keep_only`], and the pictures as well.
 ///
 /// **For a read that stops by counting packets, or by the clock.** With
@@ -576,6 +673,11 @@ fn announced_late(url: &str, ictx: &ff::format::context::Input) -> bool {
 /// disc is a folder, and the wrapper this module writes around a range of an
 /// image, which is the only thing that produces one.
 fn off_a_disc(url: &str) -> bool {
+    // A recorder's clip whose clocks are put back together is a `restamp:`
+    // URL wrapping one of the other two, and it is off a disc as much as
+    // they are: taken for a broadcast, it was opened a second time with the
+    // deep probe on every open.
+    let url = split_restamp(url).map_or(url, |(_, under)| under);
     url.starts_with("subfile,") || crate::disc::clip_on_a_disc(url).is_some()
 }
 

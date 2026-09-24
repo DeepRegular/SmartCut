@@ -23,6 +23,7 @@
 //! For a closed GOP `lead_start == time` and both collapse to the simple case.
 
 use crate::restamp::Seam;
+use crate::input::ReadPackets;
 use crate::{AccessPoint, VideoInfo};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -626,9 +627,18 @@ pub fn clean_start(src: &crate::Source, from: f64, until: f64) -> Option<f64> {
     crate::input::keep_only(&mut ictx, &[idx]);
     let tb = src.video.time_base;
     for want in wanted {
-        crate::index::seek_to_entry(&mut ictx, src, want)?;
+        // By the byte where the index holds one, and by the clock where it
+        // does not -- an MP4 or a Matroska file. Asked with `?`, as this used
+        // to be, the first entry point without a byte ended the search, and
+        // `--clean-joins` did nothing at all on those containers.
+        if crate::index::seek_to_entry(&mut ictx, src, want).is_none() {
+            let target = ((want + src.start_time) * ffmpeg_next::ffi::AV_TIME_BASE as f64) as i64;
+            if ictx.seek(target, ..target).is_err() {
+                continue;
+            }
+        }
         let mut clean = false;
-        for (stream, packet) in ictx.packets() {
+        for (stream, packet) in ictx.read_packets() {
             if stream.index() != idx {
                 continue;
             }

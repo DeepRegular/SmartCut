@@ -123,6 +123,19 @@ impl Shade {
             Shade::White => (((235 << (depth - 8)) as u32).min(top) as u16, neutral),
         }
     }
+
+    /// As [`Self::yuv`], for pictures coded in the full range where that is
+    /// what they are: there the colour is nought or full scale.
+    pub fn yuv_in(self, depth: u32, full: bool) -> (u16, u16) {
+        if !full {
+            return self.yuv(depth);
+        }
+        let neutral = (1u32 << (depth - 1)) as u16;
+        match self {
+            Shade::Black => (0, neutral),
+            Shade::White => (((1u32 << depth) - 1) as u16, neutral),
+        }
+    }
 }
 
 /// Which side of the frame the next clip comes in from.

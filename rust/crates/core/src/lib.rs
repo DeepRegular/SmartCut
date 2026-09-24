@@ -8,6 +8,7 @@
 
 use anyhow::{anyhow, Result};
 use ffmpeg_next as ff;
+use crate::input::ReadPackets;
 
 pub mod aac;
 pub mod adts;
@@ -257,6 +258,16 @@ impl VideoInfo {
     /// AV_FIELD_TT and AV_FIELD_TB lead with the top field.
     pub fn top_field_first(&self) -> bool {
         self.field_order == 2 || self.field_order == 4
+    }
+
+    /// Whether the recording said how fast its pictures come, rather than
+    /// being given the thirty a second a recording that says nothing is
+    /// read at (see where `frame_rate` is worked out). A join compares rates
+    /// only where both said: an assumed thirty against a 29.97 master was
+    /// reported as a different rate.
+    pub fn rate_known(&self) -> bool {
+        let base = self.base_rate.is_finite() && self.base_rate > 0.0 && self.base_rate <= 1000.0;
+        self.frame_rate > 0.0 && (base || self.frame_rate != 30.0)
     }
 
     pub fn frame_duration(&self) -> f64 {
@@ -744,6 +755,55 @@ pub fn video_decoder(params: ff::codec::Parameters) -> Result<ff::decoder::Video
     video_decoder_with(params, 0)
 }
 
+/// A decoded picture's luma, read as eight bits whatever it was decoded in.
+///
+/// The passes that look at pictures -- the logo, the scene signature -- were
+/// written against eight-bit luma and read a sample as a byte. A ten-bit
+/// picture has two bytes a sample: read that way, a corner at the right of
+/// the picture was a place near its middle, and every value was half of one
+/// sample and half of the next. HEVC Main10 is what a 4K broadcast and every
+/// HDR recording is.
+pub(crate) struct Luma8<'a> {
+    data: &'a [u8],
+    stride: usize,
+    /// Two bytes a sample, and how far to shift one to get eight bits.
+    wide: Option<(u32, bool)>,
+}
+
+impl<'a> Luma8<'a> {
+    pub(crate) fn of(frame: &'a ff::frame::Video) -> Self {
+        let desc = unsafe { ff::ffi::av_pix_fmt_desc_get(frame.format().into()) };
+        let wide = (!desc.is_null())
+            .then(|| unsafe { &*desc })
+            .and_then(|d| {
+                let depth = d.comp[0].depth as u32;
+                let big = d.flags & ff::ffi::AV_PIX_FMT_FLAG_BE as u64 != 0;
+                // `shift` is where the bits sit in their two bytes: nought for
+                // the planar formats, six for P010's high-aligned samples.
+                (depth > 8).then(|| (d.comp[0].shift as u32 + depth - 8, big))
+            });
+        Luma8 { data: frame.data(0), stride: frame.stride(0), wide }
+    }
+
+    /// Whether a sample is a byte, which is what lets a caller copy rows.
+    pub(crate) fn bytes(&self) -> bool {
+        self.wide.is_none()
+    }
+
+    #[inline]
+    pub(crate) fn at(&self, x: usize, y: usize) -> u8 {
+        match self.wide {
+            None => self.data[y * self.stride + x],
+            Some((shift, big)) => {
+                let i = y * self.stride + 2 * x;
+                let pair = [self.data[i], self.data[i + 1]];
+                let v = if big { u16::from_be_bytes(pair) } else { u16::from_le_bytes(pair) };
+                (v >> shift).min(255) as u8
+            }
+        }
+    }
+}
+
 /// As [`video_decoder`], but held to `threads` of them; zero still means
 /// every core.
 ///
@@ -929,6 +989,16 @@ pub fn scan_reporting(
     source: &dyn index::IndexSource,
     on: Option<index::OnProgress>,
 ) -> Result<Source> {
+    scan_stoppable(path, source, on, None)
+}
+
+/// As [`scan_reporting`], giving up where `stop` says to.
+pub fn scan_stoppable(
+    path: &str,
+    source: &dyn index::IndexSource,
+    on: Option<index::OnProgress>,
+    stop: Option<&(dyn Fn() -> bool + Sync)>,
+) -> Result<Source> {
     let (outline, ictx) = outline_of(path)?;
     let idx = source.build(index::IndexInput {
         path,
@@ -936,6 +1006,7 @@ pub fn scan_reporting(
         start_time: outline.start_time,
         ictx,
         on,
+        stop,
     })?;
     assemble(path, outline, idx, source.name())
 }
@@ -1369,7 +1440,9 @@ fn outline_of(path: &str) -> Result<(Outline, input::Demux)> {
     let frame_rate = match f64::from(stream.avg_frame_rate()) {
         r if r.is_finite() && r > 0.0 => r,
         _ if base_rate.is_finite() && base_rate > 0.0 && base_rate <= 1000.0 => base_rate,
-        r => r,
+        // Neither: the thirty a second `VideoInfo::frame_duration` already
+        // assumes, rather than a nought the grid would round to one.
+        _ => 30.0,
     };
 
     // Read before the sound is described rather than with the rest of the
@@ -1823,7 +1896,7 @@ fn first_picture(ictx: &mut input::Demux, video: &VideoInfo, start_time: f64) ->
     const PACKETS: u64 = 200_000;
     let mut head: Option<f64> = None;
     let mut seen: u64 = 0;
-    for (s, p) in ictx.packets() {
+    for (s, p) in ictx.read_packets() {
         seen += 1;
         if p.position() > LIMIT || seen > PACKETS {
             break;

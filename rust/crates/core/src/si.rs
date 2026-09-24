@@ -2051,13 +2051,55 @@ fn build_pat(transport_stream_id: u16, service_id: u16, pmt_pid: u16, network_pi
 }
 
 /// Build the program map the recording had, for the streams that were kept.
+///
+/// A program map section holds 1021 bytes after its length field, and the
+/// length field is twelve bits: a map that grew past that -- the recording's
+/// own descriptors, plus a language and a registration for each stream this
+/// adds -- was written with its length wrapped round, which a receiver reads
+/// as a short, corrupt table. Where that would happen the map is written
+/// again with only what the streams cannot do without, and that is said.
 fn build_pmt(g: &Graft, pcr_pid: u16, components: &Components) -> Vec<u8> {
+    let sec = build_pmt_as(g, pcr_pid, components, false);
+    if sec.len() - 3 <= PMT_MOST {
+        return sec;
+    }
+    crate::note_once(
+        "note: the recording's program map, with what this cut adds to it, is longer than a \
+         program map may be; it is written with the descriptors each stream needs and the \
+         rest of the recording's own left out"
+            .to_string(),
+    );
+    build_pmt_as(g, pcr_pid, components, true)
+}
+
+/// The most a program map section may hold after its length field.
+const PMT_MOST: usize = 1021;
+
+fn build_pmt_as(g: &Graft, pcr_pid: u16, components: &Components, lean: bool) -> Vec<u8> {
     let s = g.service;
     // The programme-level loop can name components too -- a data content
     // descriptor sits there as readily as in an event. The per-stream loops
     // below are not filtered this way: a stream's own descriptors are about
     // that stream, and it is in the output or it is not written at all.
-    let mut program_info = keep_carried(&s.program_info, components);
+    let mut program_info = if lean {
+        // What says how the programme may be copied stays: the digital copy
+        // control and content availability descriptors. Dropped with the
+        // rest, a cut of a copy-once broadcast came out saying nothing about
+        // it -- which is not what the recording said.
+        let kept = keep_carried(&s.program_info, components);
+        let mut out = Vec::new();
+        let mut at = 0;
+        while at + 2 <= kept.len() {
+            let end = (at + 2 + kept[at + 1] as usize).min(kept.len());
+            if matches!(kept[at], 0xC1 | 0xDE) {
+                out.extend_from_slice(&kept[at..end]);
+            }
+            at = end;
+        }
+        out
+    } else {
+        keep_carried(&s.program_info, components)
+    };
     // What a re-encoded track needs the programme to say about it, added
     // once however many tracks ask for it.
     for gs in &g.streams {
@@ -2104,7 +2146,7 @@ fn build_pmt(g: &Graft, pcr_pid: u16, components: &Components) -> Vec<u8> {
                 desc.extend_from_slice(&d.descriptors);
                 (d.stream_type, desc)
             }
-            (Some(es), None) if gs.faithful => (es.stream_type, es.descriptors.clone()),
+            (Some(es), None) if gs.faithful && !lean => (es.stream_type, es.descriptors.clone()),
             // Only the stream's identity survives; see `GraftStream`.
             (Some(es), None) => (es.stream_type, identity(es)),
             (None, None) => continue,
@@ -3507,6 +3549,52 @@ mod tests {
         // The language the disc's index knew and the map never said.
         let desc_len = (((es[3] & 0x0F) as usize) << 8) | es[4] as usize;
         assert_eq!(&es[5..5 + desc_len], [0x0A, 0x04, b'j', b'p', b'n', 0x00]);
+    }
+
+    #[test]
+    fn a_program_map_too_long_is_written_lean() {
+        // Two streams whose own descriptors come to 600 bytes each: more than
+        // a program map may hold, together.
+        let mut service = recording(None);
+        let big = |tag: u8| {
+            let mut d = vec![0x52, 1, tag];
+            for _ in 0..3 {
+                d.push(0xC4); // a private descriptor, 197 bytes of body
+                d.push(197);
+                d.extend(std::iter::repeat_n(0xAA, 197));
+            }
+            d
+        };
+        service.streams = vec![
+            ElementaryStream { pid: 0x0111, stream_type: 0x02, descriptors: big(0x00) },
+            ElementaryStream { pid: 0x0112, stream_type: 0x0F, descriptors: big(0x10) },
+        ];
+        let stream = |pid| GraftStream {
+            pid,
+            was: pid,
+            faithful: true,
+            declared: None,
+            language: None,
+            extra: Vec::new(),
+        };
+        let graft = Graft {
+            service: &service,
+            streams: vec![stream(0x0111), stream(0x0112)],
+            pcr_pid: 0x0111,
+            ranges: Vec::new(),
+            tables: Tables::Muxer,
+            input: None,
+            carry: Vec::new(),
+            source_pcr_pid: 0x0111,
+        };
+        let none = Components { described: HashSet::new(), carried: HashSet::new() };
+        let sec = build_pmt(&graft, 0x0111, &none);
+        let len = (((sec[1] & 0x0F) as usize) << 8) | sec[2] as usize;
+        assert_eq!(len, sec.len() - 3, "the length says what is there");
+        assert!(len <= PMT_MOST, "within what a program map may hold: {len}");
+        // Each stream keeps what names it.
+        assert!(sec.windows(3).any(|w| w == [0x52, 1, 0x00]));
+        assert!(sec.windows(3).any(|w| w == [0x52, 1, 0x10]));
     }
 
     #[test]

@@ -23,6 +23,7 @@
 
 use anyhow::{bail, Result};
 use ffmpeg_next as ff;
+use crate::input::ReadPackets;
 
 use crate::transition::{Shade, Side};
 
@@ -68,7 +69,13 @@ pub fn shape_of(format: ff::format::Pixel) -> Result<Shape> {
     let rgb = d.flags & ff::ffi::AV_PIX_FMT_FLAG_RGB as u64 != 0;
     let big_endian = d.flags & ff::ffi::AV_PIX_FMT_FLAG_BE as u64 != 0;
     let depth = u32::from(d.comp[0].depth.max(0) as u16);
-    if !planar || rgb || big_endian || d.nb_components < 3 {
+    // Three planes of their own, samples at the bottom of their bytes. NV12
+    // and its kind flag themselves planar with the chroma interleaved in one
+    // plane, and P010 keeps its bits at the top: read as three planes, the
+    // first asked for a plane that is not there.
+    let three = d.comp[0].plane != d.comp[1].plane && d.comp[1].plane != d.comp[2].plane;
+    let low = d.comp[0].shift == 0;
+    if !planar || rgb || big_endian || d.nb_components < 3 || !three || !low {
         bail!(
             "a transition needs pictures in a planar YUV format and these are {format:?}. \
              Every recording this program decodes is one; a format that is not can still be \
@@ -151,7 +158,14 @@ pub fn tint(frame: &mut ff::frame::Video, shade: Shade, mix: f64) -> Result<()> 
     if mix <= 0.0 {
         return Ok(());
     }
-    let (luma, chroma) = shade.yuv(shape.depth);
+    // A full-range picture's black is nought and its white full scale; the
+    // studio levels in it are a dark grey and a light one.
+    let full = frame.color_range() == ff::util::color::Range::JPEG
+        || matches!(
+            frame.format(),
+            ff::format::Pixel::YUVJ420P | ff::format::Pixel::YUVJ422P | ff::format::Pixel::YUVJ444P
+        );
+    let (luma, chroma) = shade.yuv_in(shape.depth, full);
     let (width, height) = (frame.width(), frame.height());
     let scaled = (mix * 4096.0).round() as u32;
     for nth in 0..3 {
@@ -401,7 +415,7 @@ pub fn read_laid(path: &str, width: u32, height: u32, want: ff::format::Pixel) -
         .video()?;
     let mut frame = ff::frame::Video::empty();
     let mut got = None;
-    for (s, packet) in ictx.packets() {
+    for (s, packet) in ictx.read_packets() {
         if s.index() != index {
             continue;
         }

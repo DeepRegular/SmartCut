@@ -13,6 +13,7 @@
 
 use anyhow::{anyhow, Result};
 use ffmpeg_next as ff;
+use crate::input::ReadPackets;
 
 use crate::Source;
 
@@ -301,7 +302,7 @@ fn read_sound(
     let mut last_end = 0.0;
     let mut told = -1.0;
 
-    for (stream, packet) in ictx.packets() {
+    for (stream, packet) in ictx.read_packets() {
         if stream.index() != audio.stream_index {
             marks.take(stream.index(), &packet, src);
             continue;
@@ -312,6 +313,14 @@ fn read_sound(
         while decoder.receive_frame(&mut frame).is_ok() {
             let Some(pts) = frame.pts() else { continue };
             let t = pts as f64 * audio.time_base - src.start_time;
+            // The frame's own rate, which is the one its samples are counted
+            // at: HE-AAC declares the core's half rate in the container and
+            // decodes to the full one, and counting at the declared rate put
+            // every silence's edges twice as far into its frame as they are.
+            let rate = match frame.rate() {
+                0 => rate,
+                own => f64::from(own),
+            };
             let dur = frame.samples() as f64 / rate;
             match loud_bounds(&frame, floor) {
                 // The sound comes back at the first loud sample, which is

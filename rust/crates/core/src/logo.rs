@@ -21,6 +21,7 @@
 
 use anyhow::{anyhow, Result};
 use ffmpeg_next as ff;
+use crate::input::ReadPackets;
 
 use crate::Source;
 
@@ -179,11 +180,21 @@ impl Region {
 fn crop(frame: &ff::frame::Video, corner: Corner, cw: usize, ch: usize, out: &mut [u8]) {
     let (w, h) = (frame.width() as usize, frame.height() as usize);
     let (ox, oy) = corner.origin(w, h, cw, ch);
-    let stride = frame.stride(0);
-    let data = frame.data(0);
+    let luma = crate::Luma8::of(frame);
+    if luma.bytes() {
+        let stride = frame.stride(0);
+        let data = frame.data(0);
+        for y in 0..ch {
+            let src = (oy + y) * stride + ox;
+            out[y * cw..(y + 1) * cw].copy_from_slice(&data[src..src + cw]);
+        }
+        return;
+    }
+    // Ten bits and more, read as eight. See [`crate::Luma8`].
     for y in 0..ch {
-        let src = (oy + y) * stride + ox;
-        out[y * cw..(y + 1) * cw].copy_from_slice(&data[src..src + cw]);
+        for x in 0..cw {
+            out[y * cw + x] = luma.at(ox + x, oy + y);
+        }
     }
 }
 
@@ -222,8 +233,7 @@ fn wanted_of(
     if w < cw || h < ch {
         return None;
     }
-    let stride = frame.stride(0);
-    let data = frame.data(0);
+    let luma = crate::Luma8::of(frame);
     Some(
         Corner::ALL
             .iter()
@@ -232,7 +242,7 @@ fn wanted_of(
                 let (ox, oy) = corner.origin(w, h, cw, ch);
                 wanted[k]
                     .iter()
-                    .map(|&i| data[(oy + i / cw) * stride + ox + i % cw])
+                    .map(|&i| luma.at(ox + i % cw, oy + i / cw))
                     .collect()
             })
             .collect(),
@@ -319,7 +329,7 @@ fn walk_keyframes<T: Send + 'static>(
         let mut took = 0usize;
         // One picture's packets: the key packet, and the one behind it where
         // the material is field coded and the picture is two.
-        for (stream, packet) in ictx.packets() {
+        for (stream, packet) in ictx.read_packets() {
             if stream.index() != idx {
                 continue;
             }

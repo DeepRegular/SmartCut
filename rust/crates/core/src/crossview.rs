@@ -27,6 +27,7 @@
 
 use anyhow::{anyhow, Result};
 use ffmpeg_next as ff;
+use crate::input::ReadPackets;
 
 use crate::blend::Laid;
 use crate::transition::{Crossing, Easing, Shade, Transition};
@@ -462,6 +463,8 @@ struct Reader {
     rescale: Option<Rescale>,
     shape: (u32, u32),
     spent: bool,
+    /// Whether the decoder has been told the stream is over. See `pull`.
+    drained: bool,
 }
 
 impl Reader {
@@ -495,6 +498,7 @@ impl Reader {
             rescale: None,
             shape,
             spent: false,
+            drained: false,
         })
     }
 
@@ -527,9 +531,15 @@ impl Reader {
                 let t = pts as f64 * self.in_tb - self.start_time;
                 return Ok(Some((t, reshape(&frame, self.shape, &mut self.rescale)?)));
             }
-            let Some((stream, packet)) = self.ictx.packets().next() else {
-                if !self.spent {
-                    self.spent = true;
+            // The decoder told the stream is over, which is not the same as
+            // the decoder having nothing left: it is holding its reorder
+            // depth and a frame for each of its threads, half a second of
+            // the end of a clip. Marking the reader spent here, as this used
+            // to, left those unread and the preview stopped short of the
+            // clip's end. `FarSide` in the cutter keeps the two apart too.
+            let Some((stream, packet)) = self.ictx.read_packets().next() else {
+                if !self.drained {
+                    self.drained = true;
                     self.decoder.send_eof()?;
                     continue;
                 }

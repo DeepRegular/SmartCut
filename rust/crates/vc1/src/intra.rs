@@ -186,7 +186,7 @@ impl Encoder {
         // The index and the step are the same number except where the
         // entry-point header left the choice to the picture, and there the
         // low indices mean something else. See [`tables::PQUANT`].
-        let (pqindex, uniform) = match shape.entry.quantizer {
+        let (mut pqindex, uniform) = match shape.entry.quantizer {
             Quantizer::Implicit => (step.max(9), false),
             Quantizer::Explicit => (step, false),
             Quantizer::NonUniform => (step, false),
@@ -196,6 +196,18 @@ impl Encoder {
             Quantizer::Implicit => 0,
             _ => 1,
         };
+        // Where the stream allows overlap smoothing, a decoder applies it to
+        // every intra picture coded at PQUANT 9 or above -- there is no
+        // CONDOVER to say otherwise at those steps. This encoder does not
+        // apply the forward half of it, so a picture written that coarse
+        // came out with its block edges filtered for nothing. Held at 8,
+        // where CONDOVER can say no.
+        if shape.entry.overlap {
+            let floor = if row == 0 { 9 } else { 3 };
+            while tables::PQUANT[row][pqindex as usize] > 8 && pqindex > floor {
+                pqindex -= 1;
+            }
+        }
         let quant = Quant::new(tables::PQUANT[row][pqindex as usize] as i32, uniform);
         // Table zero of each pair, whose meaning depends on how fine the
         // quantizer is. Naming one of the others would cost a table apiece
@@ -368,6 +380,13 @@ impl Encoder {
             4 => (&frame.u, x * 8, y * 8),
             _ => (&frame.v, x * 8, y * 8),
         };
+        // Written as they are even where the entry point asks for range
+        // mapping (RANGE_MAPY / RANGE_MAPUV). A decoder that honours it widens
+        // what it reconstructs by (R + 9) / 8 about 128 -- but libavcodec does
+        // not ("Luma scaling is not supported"), so the samples it handed
+        // over are still in the coded range, which is the range these
+        // pictures have to be written in to be widened with the recording's
+        // own. Narrowing them first was tried and measured: 46 dB became 17.
         let mut samples = [0i16; 64];
         for row in 0..8 {
             for col in 0..8 {

@@ -223,99 +223,191 @@ fn list_disc(input: &str, disc: &smartcut_core::disc::Disc) {
     println!("\nname one with --title N to open it");
 }
 
-/// How to call this, for somebody who asked and for somebody who did not.
-///
-/// One text for both: `--help` prints it and stops, and a run with no
-/// recording named ends with it as the error. A summary rather than the
-/// whole list -- every option is in `docs/user-guide/cli.md`, and a screen
-/// of forty rows is one nobody reads to the end of.
+/// How to call this, for a run with no recording named. `--help` puts the
+/// options under it; see [`help`].
 fn usage() -> String {
-    "usage: smartcut <input> [--keep START-END]... [--cut START-END]... \
-     [--drop-stream INDEX]... [--drop-subpicture ID]... \
-     [--subtitles pgs|beside|sup] [--tables partial|broadcast|muxer] [--no-open-gop] \
-     [--clean-joins] [--no-data-broadcast] [--audio-fade SECONDS] \
-     [--vc1-quant 3..31] [--title N] [--join RECORDING]... [--master N] \
-     [--transition KIND] [--transition-seconds S] [--transition-easing C[:M]] \
-     [--transition-image FILE] [--join-fade-out S] [--join-fade-in S] \
-     [--sound-only] \
-     [-o OUTPUT | --bdav FOLDER]\n\
-     <input> is a recording, or a disc -- a BDAV, BDMV or VIDEO_TS folder, \
-     or an .iso of one -- whose recordings are listed when no --title \
-     is given\n\
-     --join names another recording to write into the same output after \
-     this one, and may be given more than once; the ranges asked for by \
-     --keep and --cut belong to the first recording, and a joined one is \
-     written whole. --master says which of them the output takes its \
-     shape from -- its frame size, rate and codec, its sound tracks and \
-     its tables -- counting the first as 1; a recording that is not that \
-     shape is written afresh to fit it\n\
-     --transition says what happens at each join between two clips: \
-     none, fade-black, fade-white, dissolve, wipe-left|right|top|bottom \
-     or slide-left|right|top|bottom, over --transition-seconds and shaped \
-     by --transition-easing CURVE[:in|out|in-out|out-in]. A fade takes half \
-     its time from each side and the output keeps its length; every other \
-     kind has both clips on screen at once and the output comes out that \
-     much shorter. Every frame it covers is written afresh -- a transition \
-     is pictures that are in neither recording -- and the sound is not \
-     mixed: the clip before plays through the crossing and hands over to \
-     the one after part way through it -- at the end of an overlapping \
-     crossing, and at the colour, which is the middle, of a fade. \
-     --transition-image lays a still over the \
-     crossing -- a title, a card -- coming up and going down with it; the \
-     frames it covers are being written afresh anyway, which is why it is \
-     offered there and nowhere else\n\
-     --sound-only writes the sound of the cut and no pictures at all: the \
-     ranges, the joins and the fades are in it exactly as they would be \
-     inside the video, and nothing is read or written for the frames. The \
-     output is named by -o and its extension picks the container -- .aac \
-     for the ADTS a broadcast's sound goes into, .m4a, .wav for linear \
-     PCM. One sound track; a bilingual recording's second is left out\n\
-     --join-fade-out and --join-fade-in take the sound down at the end of \
-     each clip and bring it back at the start of the next one, over that \
-     many seconds. Two numbers, because a join between two recordings is \
-     two questions: how the one that is ending should end, and how the one \
-     that is starting should start. Like --audio-fade, they need sound this \
-     program is writing\n\
-     --clean-joins spends up to two seconds of re-encoding at the start \
-     of each range to reach an entry point the copy can be spliced onto \
-     without a picture coming out of the decoder in the wrong order; \
-     what it costs is that those seconds stop being an exact copy\n\
-     --audio-fade takes the sound down into each seam and brings it \
-     back out over that many seconds, so that a join is heard as a pause \
-     rather than as a step; what it costs is the programme, which is that \
-     much quieter either side of every join, and it needs sound this \
-     program is writing -- a copied track is copied\n\
-     --subtitles says where the subtitles a disc draws go: pgs, the \
-     default, puts them inside the cut, which only a .ts or an .m2ts \
-     can hold; beside writes them as the .idx and .sub pair next to it, \
-     which is a DVD's own subtitles untouched and a Blu-ray's read back \
-     out of the display sets it draws them with; sup writes those \
-     display sets themselves, into a .sup beside the cut, which is the \
-     one destination that converts a Blu-ray's subtitles not at all\n\
-     --tables says how a transport stream describes itself; unsaid, a .ts \
-     carries the broadcast's own SDT, EIT and TOT, which is where a player \
-     reads the programme name, the station and the clock, and a Blu-ray \
-     clip is written as a partial transport stream, which is what that \
-     format is\n\
-     --no-data-broadcast leaves out what is behind the d button -- the \
-     carousel a station sends its pages on -- which is otherwise carried \
-     into any .ts that keeps the broadcast's own tables, that being the \
-     only shape which can hold one. What it costs is size: a carousel is \
-     between a hundredth and a fifth of what a multiplex spends\n\
-     --fit bd25|bd50|bd100|bd128|BYTES writes the pictures back smaller, by \
-     as much as it takes for the output to fit that much room, and does \
-     nothing to them where it already fits; MPEG-2 only, and --video-share \
-     names the share outright rather than working it out from a size\n\
-     --bdav writes the cut onto a disc of recordings in FOLDER rather than \
-     into a file; --disc-title, --programme, --channel, --about and --made \
-     fill in what its index says, which is otherwise taken from what the \
-     recording says about itself; --iso 2.50|2.60 wraps the finished disc \
-     in a UDF image beside it, and --iso-only takes the folder away \
-     once the image has been made of it; --iso-access overwritable has \
-     that image describe a disc a recorder may go on managing, where the \
-     default read-only describes one nothing will write to again\n\
-     every option is in docs/user-guide/cli.md"
+    "usage: smartcut <input> [options] -o OUTPUT\n       \
+     smartcut <input> [options] --bdav FOLDER\n\
+     <input> is a recording, or a disc (a BDAV, BDMV or VIDEO_TS folder, or an .iso\n\
+     of one), whose recordings are listed when no --title is given.\n\
+     smartcut --help lists every option."
         .to_string()
+}
+
+/// The options, grouped as `docs/user-guide/cli.md` groups them, one to a
+/// line and wrapped to a terminal's eighty columns. What used to be here was
+/// the same material as paragraphs, and came out as fourteen lines of up to
+/// nine hundred characters each.
+const HELP: &[(&str, &[(&str, &str)])] = &[
+    (
+        "Where to cut",
+        &[
+            ("--keep START-END", "A range to keep, in seconds or as 1:23:45.6. Repeatable"),
+            ("--cut START-END", "A range to drop. Repeatable. Not with --keep"),
+            ("--no-open-gop", "Never start a copy at an open GOP"),
+            (
+                "--clean-joins",
+                "Re-encode up to 2 s at the start of each range, so that no picture \
+                 is decoded out of order",
+            ),
+        ],
+    ),
+    (
+        "Where the output goes",
+        &[
+            (
+                "-o, --output OUTPUT",
+                "The output file; its extension picks the container. Not the recording \
+                 being read, and not a URL",
+            ),
+            ("--drop-stream INDEX", "Leave one of the recording's streams out. Repeatable"),
+            ("--title N|NAME", "Which recording on a disc. Left out, the disc's recordings are listed"),
+        ],
+    ),
+    (
+        "Joining recordings",
+        &[
+            ("--join RECORDING", "Another recording, written after this one, whole. Repeatable"),
+            ("--master N", "Which of them the output takes its shape from, counting from 1"),
+            (
+                "--transition KIND",
+                "none, fade-black, fade-white, dissolve, wipe-left|right|top|bottom, \
+                 slide-left|right|top|bottom. At every join",
+            ),
+            ("--transition-seconds S", "How long it runs, up to 30. Default 1"),
+            ("--transition-easing C[:M]", "The curve, and in|out|in-out|out-in"),
+            ("--transition-image FILE", "A still laid over each crossing"),
+            ("--join-fade-out S", "Fade the sound out at the end of each clip (0-10)"),
+            ("--join-fade-in S", "...and in at the start of the next one (0-10)"),
+        ],
+    ),
+    (
+        "Audio",
+        &[
+            (
+                "--audio-mode MODE",
+                "smart (default): rebuild only the frames a boundary falls inside; \
+                 copy; reencode",
+            ),
+            ("--audio-codec CODEC", "source (default), aac, lpcm, ac3 or dts"),
+            ("--audio-channels N", "1 to 8. Fewer than the recording's is a downmix"),
+            ("--audio-samplerate RATE", "48k or 48000, and so on"),
+            ("--audio-bits 16|24", "Sample width, for linear PCM"),
+            ("--audio-bitrate RATE", "192k or 192000, and so on, when re-encoding"),
+            ("--aac auto|mpeg2|mpeg4", "Which AAC the frames written announce themselves as"),
+            ("--audio-fade S", "Fade the sound into and out of every seam (0-10)"),
+            ("--audio-es", "Also write the AAC beside the output, as a bare stream"),
+            (
+                "--sound-only",
+                "Write one sound track and no pictures: .aac, .ac3, .mp2, .mp3, \
+                 .dts, .m4a or .wav",
+            ),
+        ],
+    ),
+    (
+        "Writing a broadcast .ts",
+        &[
+            (
+                "--tables KIND",
+                "broadcast (default for .ts), partial (default for .m2ts), or muxer",
+            ),
+            ("--no-data-broadcast", "Leave out the data broadcast (the d button's pages)"),
+        ],
+    ),
+    (
+        "Writing a disc (BDAV)",
+        &[
+            ("--bdav FOLDER", "Write the cut onto a disc of recordings in FOLDER, instead of -o"),
+            (
+                "--fit SIZE",
+                "bd25, bd50, bd100, bd128 or bytes: shrink the pictures to fit. MPEG-2 only",
+            ),
+            ("--video-share 0.35..1", "The share to shrink the pictures to, named outright"),
+            ("--iso 2.50|2.60", "Wrap the finished disc in a UDF image, FOLDER.iso"),
+            ("--iso-access ACCESS", "read-only (default) or overwritable, for a recorder"),
+            ("--iso-only", "Take the folder away once the image holds it"),
+            ("--disc-title NAME", "What the disc is called"),
+            ("--programme NAME", "What this recording is called on the disc"),
+            ("--channel NAME[,N]", "The channel, and its number"),
+            ("--about TEXT", "What the programme was"),
+            ("--made \"Y-M-D H:M:S\"", "When it was recorded"),
+        ],
+    ),
+    (
+        "Looking before writing",
+        &[
+            ("--analyze", "Print the plan and write no cut"),
+            ("--detect-cm", "Look for the commercial breaks"),
+            ("--logo", "Use the station logo in that as well"),
+            ("--inserts", "And report a channel's own few-second idents"),
+            ("--scenes", "List the scene changes"),
+            ("--preview TIME", "Save the picture at TIME as a JPEG (or -o)"),
+            ("--cut-near TIME", "Where the nearest picture change to TIME is"),
+        ],
+    ),
+    (
+        "Index and proxy",
+        &[
+            ("--seek-index PATH", "Keep the seek index here, and read it back next time"),
+            ("--index KIND", "auto (default), disc, scan or container"),
+            ("--proxy", "Build the editing proxy and stop (.proxy.mp4 or -o)"),
+            ("--as-proxy", "Treat the input as a proxy"),
+        ],
+    ),
+    (
+        "Subtitles and VC-1 discs",
+        &[
+            ("--subtitles WHERE", "pgs (default, in the cut), beside (.idx/.sub), sup"),
+            ("--drop-subpicture ID", "Leave out one of a DVD's subtitle streams, as 0x20"),
+            ("--vc1-quant 3..31", "How finely VC-1 join pictures are written. Default 4"),
+        ],
+    ),
+];
+
+/// Everything, for `--help`.
+fn help() -> String {
+    const WIDTH: usize = 80;
+    const FLAG: usize = 27;
+    let mut out = usage();
+    out.push('\n');
+    for (group, options) in HELP {
+        out.push('\n');
+        out.push_str(group);
+        out.push_str(":\n");
+        for (flag, says) in options.iter() {
+            let words: Vec<&str> = says.split_whitespace().collect();
+            let mut line = format!("  {flag}");
+            // A flag too long for its column has its words start on the line
+            // below, where the column is.
+            if line.chars().count() >= FLAG {
+                out.push_str(&line);
+                out.push('\n');
+                line = String::new();
+            }
+            let mut first = true;
+            for word in words {
+                let room = line.chars().count().max(FLAG);
+                if !first && room + 1 + word.chars().count() > WIDTH {
+                    out.push_str(&line);
+                    out.push('\n');
+                    line = String::new();
+                    first = true;
+                }
+                if first {
+                    let pad = FLAG - line.chars().count().min(FLAG);
+                    line.push_str(&" ".repeat(pad));
+                } else {
+                    line.push(' ');
+                }
+                line.push_str(word);
+                first = false;
+            }
+            out.push_str(&line);
+            out.push('\n');
+        }
+    }
+    out.push_str("\nEvery option, with what it costs and why: docs/user-guide/cli.md\n");
+    out
 }
 
 fn main() -> Result<()> {
@@ -416,7 +508,7 @@ fn main() -> Result<()> {
             // this wants the text, not an argument three places later being
             // held against them.
             "--help" | "-h" => {
-                println!("{}", usage());
+                print!("{}", help());
                 return Ok(());
             }
             "--keep" => {
@@ -808,6 +900,14 @@ fn main() -> Result<()> {
     if fit.is_some() && !joined.is_empty() {
         bail!("--fit cannot yet count the recordings of a --join: fit them one at a time");
     }
+    // One past the last recording was taken as the last, without a word.
+    if master > joined.len() {
+        bail!(
+            "--master {} names a recording there is not: there are {}",
+            master + 1,
+            joined.len() + 1
+        );
+    }
     if fit.is_some() && sound_only {
         bail!("--fit shrinks the pictures, and --sound-only writes none");
     }
@@ -905,18 +1005,37 @@ fn main() -> Result<()> {
     // the packets last. Which one answered is printed with the access points,
     // so a run that took a second instead of nine minutes says why.
     let index_source: Box<dyn index::IndexSource> = match index_kind.as_str() {
+        // A recording that is not a clip on a disc has no disc map to ask,
+        // and asking opened it and read its head before saying so -- once for
+        // the map, once for the container, once more for the walk.
+        "auto" if smartcut_core::disc::clip_on_a_disc(&input).is_none() => {
+            Box::new(index::ContainerIndex)
+        }
         "auto" | "disc" => Box::new(index::DiscIndex),
         "scan" => Box::new(index::PacketScan),
         "container" => Box::new(index::ContainerIndex),
         other => bail!("unknown --index {other}; want auto, disc, scan or container"),
     };
     let fall_back_to_the_walk = index_kind == "auto";
+    // Where the first choice was the container's table, the fallback goes
+    // straight to the walk: asking the container again is the same answer.
+    let asked_the_container =
+        index_kind == "auto" && smartcut_core::disc::clip_on_a_disc(&input).is_none();
     // A seek index written by an earlier run stands in for the walk over the
     // packets. Reading it back is the whole point: it is the same answer, and
     // it did not cost a pass over the recording to get.
     let index_file = seek_index.as_ref().map(std::path::PathBuf::from);
+    // One that cannot be read -- written by another version, or damaged --
+    // is written again rather than stopping the run: it is a cache, and the
+    // walk it stands in for is still there to be done.
     let held = match &index_file {
-        Some(p) if p.is_file() => Some(smartcut_core::SeekIndex::load(p)?),
+        Some(p) if p.is_file() => match smartcut_core::SeekIndex::load(p) {
+            Ok(held) => Some(held),
+            Err(e) => {
+                eprintln!("note: {e}; it is made again");
+                None
+            }
+        },
         _ => None,
     };
     // `--as-proxy` reads the input as a proxy of something else: same file,
@@ -928,6 +1047,9 @@ fn main() -> Result<()> {
     } else {
         match smartcut_core::scan_with(&input, index_source.as_ref()) {
             Ok(src) => src,
+            Err(_) if fall_back_to_the_walk && asked_the_container => {
+                smartcut_core::scan_with(&input, &index::PacketScan)?
+            }
             Err(_) if fall_back_to_the_walk => {
                 smartcut_core::scan_with(&input, &index::ContainerIndex)
                     .or_else(|_| smartcut_core::scan_with(&input, &index::PacketScan))?
@@ -1485,26 +1607,47 @@ fn main() -> Result<()> {
     };
     let plans = plan_on(&src, &ranges, &opts);
 
-    let total: f64 = plans.iter().map(|p| p.copied() + p.reencoded()).sum();
+    // What is said, as against what is planned. A range asked for past the
+    // end of the recording is planned as asked -- the copy stops where the
+    // packets do, and a container's length is not always to be believed --
+    // but saying so printed a 99899-second output for a two-hour recording.
+    // Said up to the recording's end, and never below nought (a start a hair
+    // under it printed as -0.000).
+    let said = |t: f64| {
+        let t = if src.duration > 0.0 { t.min(src.duration) } else { t };
+        t.max(0.0)
+    };
+    let span = |a: f64, b: f64| (said(b) - said(a)).max(0.0);
+    let copied: f64 = plans
+        .iter()
+        .flat_map(|p| &p.segments)
+        .filter(|s| s.kind == smartcut_core::SegmentKind::Copy)
+        .map(|s| span(s.start, s.end))
+        .sum::<f64>()
+        + 0.0;
+    let enc: f64 = plans
+        .iter()
+        .flat_map(|p| &p.segments)
+        .filter(|s| s.kind != smartcut_core::SegmentKind::Copy)
+        .map(|s| span(s.start, s.end))
+        // An empty sum of floats is -0.0, which prints with its sign.
+        .sum::<f64>()
+        + 0.0;
+    let total = copied + enc;
     println!("\nplan  : {} range(s), {total:.3}s output", plans.len());
     for p in &plans {
-        println!("  keep {:.3} -> {:.3}", p.t_in, p.t_out);
+        println!("  keep {:.3} -> {:.3}", said(p.t_in), said(p.t_out));
         for s in &p.segments {
             println!(
                 "    {:>8}  {:8.3} -> {:8.3}  ({:6.3}s, {} frames)",
                 s.kind.as_str(),
-                s.start,
-                s.end,
-                s.duration(),
+                said(s.start),
+                said(s.end),
+                span(s.start, s.end),
                 s.frames
             );
         }
     }
-    // Summed over segment ends against segment starts, so a plan that copies
-    // nothing lands a hair below zero and used to print as `-0.000s (-0.0%)`.
-    // Nought is nought.
-    let copied: f64 = plans.iter().map(|p| p.copied()).sum::<f64>().max(0.0);
-    let enc: f64 = plans.iter().map(|p| p.reencoded()).sum::<f64>().max(0.0);
     if total > 0.0 {
         println!(
             "        copied {copied:.3}s ({:.1}%), re-encoded {enc:.3}s ({:.1}%)",
@@ -1602,11 +1745,16 @@ fn main() -> Result<()> {
             }
         }
     }
+    // A disc's slot is taken before the cut, as an empty stream (see
+    // `bdav::prepare`). A run that stops before the cut is written leaves it,
+    // or half a recording, on the disc under a number nothing names.
+    let mut slot = Slot(None);
     let onto = match &bdav {
         Some(at) => {
             let at = std::path::PathBuf::from(at);
             let clip = smartcut_core::bdav::prepare(&at, 1)?.remove(0);
             let stream = smartcut_core::bdav::stream_of(&at, &clip);
+            slot = Slot(Some(stream.clone()));
             println!("\ndisc  : {} -- recording {clip}", at.display());
             output = Some(stream.to_string_lossy().into_owned());
             Some((at, clip))
@@ -1759,8 +1907,24 @@ fn main() -> Result<()> {
         let at = smartcut_core::netpath::resolve(path)?
             .to_string_lossy()
             .into_owned();
-        let mut also = match smartcut_core::scan_with(&at, index_source.as_ref()) {
+        // Chosen for this recording, as the first one's was: a disc map for
+        // a clip on a disc, the container's table for anything else.
+        let own: Box<dyn index::IndexSource> = match index_kind.as_str() {
+            "auto" if smartcut_core::disc::clip_on_a_disc(&at).is_some() => {
+                Box::new(index::DiscIndex)
+            }
+            "auto" | "container" => Box::new(index::ContainerIndex),
+            "scan" => Box::new(index::PacketScan),
+            _ => Box::new(index::DiscIndex),
+        };
+        let on_a_disc = smartcut_core::disc::clip_on_a_disc(&at).is_some();
+        let mut also = match smartcut_core::scan_with(&at, own.as_ref()) {
             Ok(s) => s,
+            // The container's table was the first choice and has answered
+            // already; the walk is what is left.
+            Err(_) if !on_a_disc && matches!(index_kind.as_str(), "auto" | "container") => {
+                smartcut_core::scan_with(&at, &index::PacketScan)?
+            }
             Err(_) => smartcut_core::scan_with(&at, &index::ContainerIndex)
                 .or_else(|_| smartcut_core::scan_with(&at, &index::PacketScan))?,
         };
@@ -1890,7 +2054,7 @@ fn main() -> Result<()> {
             reels[master.min(reels.len() - 1)].src.path,
         );
     }
-    smartcut_core::cut::join(
+    let written = smartcut_core::cut::join(
         &reels,
         master,
         &out,
@@ -1913,7 +2077,9 @@ fn main() -> Result<()> {
             plan: opts.clone(),
             ..Default::default()
         },
-    )?;
+    );
+    written?;
+    slot.keep();
     // The sidecar exists for the ARIB workflow, where what is wanted beside
     // the video is an AAC elementary stream. A cut written in another codec
     // has no AAC in it to put there, and a `.aac` holding AC-3 would be worse
@@ -2046,6 +2212,23 @@ fn main() -> Result<()> {
     Ok(())
 }
 
+/// A disc's stream taken for this run, given back unless the run keeps it.
+struct Slot(Option<std::path::PathBuf>);
+
+impl Slot {
+    fn keep(&mut self) {
+        self.0 = None;
+    }
+}
+
+impl Drop for Slot {
+    fn drop(&mut self) {
+        if let Some(path) = self.0.take() {
+            let _ = std::fs::remove_file(path);
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2103,3 +2286,4 @@ mod tests {
         );
     }
 }
+

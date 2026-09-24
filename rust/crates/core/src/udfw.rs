@@ -240,7 +240,35 @@ impl Node {
 /// `label` is what the volume is called -- what a machine that mounts the
 /// image shows. `on` is told how far through the copy it is, because a disc
 /// of recordings is twenty gigabytes of file data.
+///
+/// Written under a name of its own and put in place once it is whole. A copy
+/// that failed part way -- a full disk, a file that would not read -- left a
+/// short image under the finished name, which looks like a disc and burns
+/// like one.
 pub fn write(
+    from: &Path,
+    to: &Path,
+    revision: Revision,
+    access: Access,
+    label: &str,
+    on: Option<&(dyn Fn(f64) + Sync)>,
+) -> Result<u64> {
+    let mut part = to.as_os_str().to_owned();
+    part.push(".part");
+    let part = PathBuf::from(part);
+    match write_to(from, &part, revision, access, label, on) {
+        Ok(size) => {
+            std::fs::rename(&part, to).with_context(|| format!("cannot write {}", to.display()))?;
+            Ok(size)
+        }
+        Err(e) => {
+            let _ = std::fs::remove_file(&part);
+            Err(e)
+        }
+    }
+}
+
+fn write_to(
     from: &Path,
     to: &Path,
     revision: Revision,
@@ -457,7 +485,19 @@ fn fill(dir: &Path, parent: usize, tree: &mut Vec<Node>, left_out: &mut Vec<Stri
             }
             continue;
         }
-        let meta = e.metadata()?;
+        // A link is followed to a file, for its real length -- the entry's
+        // own metadata is the link's, and the image got a file cut down to
+        // the length of a path. A link to a folder is left out: one that
+        // pointed back up the tree never ended.
+        let meta = std::fs::metadata(e.path())?;
+        let linked = e.file_type().is_ok_and(|t| t.is_symlink());
+        // What a run that stopped part way leaves behind: a stream being
+        // stamped, an image being written.
+        let unfinished = name.ends_with(".ats") || name.ends_with(".part");
+        if (linked && meta.is_dir()) || unfinished {
+            left_out.push(dir.join(&name).to_string_lossy().into_owned());
+            continue;
+        }
         entries.push((name, e.path(), meta.is_dir(), meta.len()));
     }
     entries.sort_by(|a, b| a.0.to_lowercase().cmp(&b.0.to_lowercase()));

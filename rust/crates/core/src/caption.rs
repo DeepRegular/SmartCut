@@ -29,6 +29,7 @@ use std::collections::HashMap;
 
 use anyhow::Result;
 use ffmpeg_next as ff;
+use crate::input::ReadPackets;
 
 use crate::Source;
 
@@ -257,7 +258,7 @@ pub fn resets_with(
 
     let mut marks = Marks::new(streams);
     let mut told = -1.0;
-    for (stream, packet) in ictx.packets() {
+    for (stream, packet) in ictx.read_packets() {
         let Some(t) = marks.take(stream.index(), &packet, src) else {
             continue;
         };
@@ -968,11 +969,19 @@ impl Pen {
                     // half-tone colours are not followed: what stands behind
                     // a caption here is the box the window draws, not the
                     // one the broadcaster chose.
+                    //
+                    // 0x48 is transparent, which is not a colour to draw
+                    // letters in, and 0x49 to 0x4F are the same seven at
+                    // half their brightness.
                     0x90 => {
                         if params.first() != Some(&0x20) {
                             if let Some(&c) = params.first() {
-                                if (0x40..=0x4F).contains(&c) {
-                                    self.colour = COLOURS[(c & 0x07) as usize];
+                                match c {
+                                    0x40..=0x47 => self.colour = COLOURS[(c & 0x07) as usize],
+                                    0x49..=0x4F => {
+                                        self.colour = (COLOURS[(c & 0x07) as usize] >> 1) & 0x7F7F7F
+                                    }
+                                    _ => {}
                                 }
                             }
                         }

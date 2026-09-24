@@ -460,7 +460,7 @@ pub fn carry_disc_languages(src: &mut crate::Source) {
 /// The shape is the same on both dialects and is the only thing being asked
 /// for: which disc, and which clip on it. Anything else is not on a disc as
 /// far as this is concerned.
-pub(crate) fn clip_on_a_disc(path: &str) -> Option<(&str, &str)> {
+pub fn clip_on_a_disc(path: &str) -> Option<(&str, &str)> {
     // A name that plays one sequence of a clip still names the clip, and the
     // index beside it is the clip's.
     let path = crate::input::clip_window(path).map_or(path, |(base, _, _)| base);
@@ -1769,6 +1769,15 @@ fn entry_points(raw: &[u8]) -> Vec<(f64, u64)> {
         // exactly as it reads. See [`sequence_starts`].
         let seams: Vec<u64> = sequence_starts(raw).into_iter().skip(1).map(|s| s.at).collect();
         let mut seam = 0usize;
+        // Whole turns of the 33-bit clock the map has gone past. A broadcast
+        // recording carries the broadcaster's clock, which can pass 2^33 in
+        // the middle of a clip -- a couple of hours of recording does about
+        // one time in twelve. The map then drops back to near nought, which
+        // the stepping below cannot answer (it steps by 11.65 seconds, not by
+        // a day), and every entry point after it came out a day before the
+        // clip began and was thrown away. libavformat unwraps the clock it
+        // hands over, and the map is unwrapped to match.
+        let mut wrapped = 0u64;
         let mut earlier = 0u64;
         // Each fine entry belongs to one coarse entry, so the coarse ones
         // hand them out in order and never twice. A map whose coarse entries
@@ -1822,6 +1831,12 @@ fn entry_points(raw: &[u8]) -> Vec<(f64, u64)> {
                 while spn >= seams.get(seam).copied().unwrap_or(u64::MAX) {
                     seam += 1;
                     earlier = 0;
+                    wrapped = 0;
+                }
+                pts += wrapped;
+                if pts + (1 << 32) < earlier {
+                    wrapped += 1 << 33;
+                    pts += 1 << 33;
                 }
                 let mut turns = 0;
                 while pts < earlier && turns < TURNS {

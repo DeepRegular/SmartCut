@@ -5,6 +5,7 @@
 
 use anyhow::{anyhow, Result};
 use ffmpeg_next as ff;
+use crate::input::ReadPackets;
 
 use crate::{AccessPoint, Source};
 
@@ -381,7 +382,7 @@ fn entry_packets(
     let mut first = None;
     let mut pending: Vec<ff::Packet> = Vec::new();
     let mut at: Option<f64> = None;
-    for (stream, packet) in ictx.packets() {
+    for (stream, packet) in ictx.read_packets() {
         if stream.index() != idx {
             continue;
         }
@@ -842,7 +843,7 @@ impl Glancer {
                 .pts()
                 .map_or(0.0, |pts| pts as f64 * time_base - start)
         };
-        for (s, packet) in ictx.packets() {
+        for (s, packet) in ictx.read_packets() {
             if s.index() != idx {
                 continue;
             }
@@ -958,17 +959,20 @@ impl Glancer {
                 .pts()
                 .map_or(0.0, |pts| pts as f64 * time_base - start)
         };
-        'read: for (s, packet) in ictx.packets() {
+        'read: for (s, packet) in ictx.read_packets() {
             if s.index() != idx {
                 continue;
+            }
+            // Counted before the wait for a key packet as well as after it:
+            // a container that flags none never ends that wait, and the
+            // strip read to the end of the file on every update.
+            left -= 1;
+            if left <= 0 {
+                break;
             }
             started = started || packet.is_key();
             if !started {
                 continue;
-            }
-            left -= 1;
-            if left <= 0 {
-                break;
             }
             if decoder.send_packet(&packet).is_err() {
                 continue;
@@ -1179,7 +1183,7 @@ fn walk(
     let mut first = None;
     let mut stopped = false;
     let mut entries = crate::EntryPictures::new(&src.video);
-    'outer: for (stream, packet) in ictx.packets() {
+    'outer: for (stream, packet) in ictx.read_packets() {
         if stream.index() != idx {
             continue;
         }
@@ -1241,10 +1245,11 @@ fn walk(
         // of the file is answered rather than falling off it.
         let _ = decoder.send_eof();
         while decoder.receive_frame(&mut frame).is_ok() {
-            let t = frame
-                .pts()
-                .map(|p| p as f64 * in_tb - src.start_time)
-                .unwrap_or(from);
+            // As the loop above does: a picture with no time is passed over,
+            // not given the time of the entry point it was decoded from.
+            let Some(t) = frame.pts().map(|p| p as f64 * in_tb - src.start_time) else {
+                continue;
+            };
             if first.is_none() {
                 first = Some(t);
             }

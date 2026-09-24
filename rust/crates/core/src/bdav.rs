@@ -274,13 +274,49 @@ pub fn prepare(at: &Path, n: usize) -> Result<Vec<String>> {
         std::fs::create_dir_all(root.join(dir))
             .with_context(|| format!("making {}", root.join(dir).display()))?;
     }
+    // Past every number the disc uses anywhere, and not only its streams': a
+    // playlist of a recorder's own -- a virtual one, an edit -- can carry a
+    // number no stream has, and a playlist written under it replaced it.
     let mut next = 1u32;
-    for name in numbered(&root.join("STREAM"), "m2ts")? {
-        if let Some(taken) = name.parse::<u32>().ok().filter(|t| *t >= next) {
-            next = taken + 1;
+    for (dir, ext) in [
+        ("STREAM", "m2ts"),
+        ("CLIPINF", "clpi"),
+        ("PLAYLIST", "rpls"),
+        ("PLAYLIST", "vpls"),
+    ] {
+        for name in numbered(&root.join(dir), ext)? {
+            if let Some(taken) = name.parse::<u32>().ok().filter(|t| *t >= next) {
+                next = taken + 1;
+            }
         }
     }
-    Ok((0..n as u32).map(|i| format!("{:05}", next + i)).collect())
+    // Each number is taken by making its stream, empty, before it is handed
+    // out. Read and not reserved, two runs into the same folder -- two
+    // command lines at once, or one beside the window's export -- were given
+    // the same number and wrote over each other's recording.
+    let mut out = Vec::with_capacity(n);
+    while out.len() < n {
+        if next > 99_999 {
+            bail!("{} has no recording numbers left", root.display());
+        }
+        let clip = format!("{next:05}");
+        next += 1;
+        match std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(stream_of(at, &clip))
+        {
+            Ok(_) => out.push(clip),
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(e) => {
+                for clip in &out {
+                    let _ = std::fs::remove_file(stream_of(at, clip));
+                }
+                return Err(e).with_context(|| format!("reserving recording {clip}"));
+            }
+        }
+    }
+    Ok(out)
 }
 
 /// Take the written disc away, for a run that wanted the image of it.
@@ -352,10 +388,52 @@ pub fn write(
     at: &Path,
     title: &str,
     recordings: &[Recording],
-    on: Option<&(dyn Fn(&str, f64) + Sync)>,
+    on: OnRecording<'_>,
 ) -> Result<()> {
     let root = root(at);
-    for rec in recordings {
+    let mut failed = None;
+    for (k, rec) in recordings.iter().enumerate() {
+        if let Err(e) = index_one(at, &root, rec, on) {
+            failed = Some((k, e));
+            break;
+        }
+    }
+    // A recording that could not be indexed, and those after it, are
+    // streams nothing names: no player lists them, the next run numbers past
+    // them and an image made of the folder carries their gigabytes. They go,
+    // and the ones before them are put in the table all the same -- left
+    // out, they were on the disc and in nobody's list.
+    if let Some((k, _)) = &failed {
+        for rec in &recordings[*k..] {
+            let _ = std::fs::remove_file(stream_of(at, &rec.clip));
+            let _ = std::fs::remove_file(stream_of(at, &rec.clip).with_extension("m2ts.ats"));
+            let _ = std::fs::remove_file(root.join("CLIPINF").join(format!("{}.clpi", rec.clip)));
+            let _ = std::fs::remove_file(root.join("PLAYLIST").join(format!("{}.rpls", rec.clip)));
+        }
+    }
+    let table = write_table(&root, title);
+    if let Some((k, e)) = failed {
+        return Err(e.context(format!(
+            "recording {} could not be indexed; it and any after it were taken off the disc",
+            recordings[k].clip
+        )));
+    }
+    table
+}
+
+/// What [`write`] tells how far it has got: which recording, and how far
+/// through it.
+type OnRecording<'a> = Option<&'a (dyn Fn(&str, f64) + Sync)>;
+
+/// Index one recording whose stream is written: its arrival times, its clip
+/// index and its playlist.
+fn index_one(
+    at: &Path,
+    root: &Path,
+    rec: &Recording,
+    on: OnRecording<'_>,
+) -> Result<()> {
+    {
         let stream = stream_of(at, &rec.clip);
         if !stream.exists() {
             bail!(
@@ -392,14 +470,26 @@ pub fn write(
         )
         .with_context(|| format!("writing the playlist of {}", rec.clip))?;
     }
+    Ok(())
+}
 
+/// Write `info.bdav`, the table a recorder reads the disc through.
+fn write_table(root: &Path, title: &str) -> Result<()> {
     // Every playlist on the disc and not only the ones just written: the
     // table is what a recorder reads the disc through, and one that named
     // three of five recordings would have lost two of them.
-    let playlists: Vec<String> = numbered(&root.join("PLAYLIST"), "rpls")?
+    // A recorder's virtual playlists -- its edits of a recording -- are in
+    // the table as well, in the one order of their numbers.
+    let mut playlists: Vec<String> = numbered(&root.join("PLAYLIST"), "rpls")?
         .iter()
         .map(|n| format!("{n}.rpls"))
+        .chain(
+            numbered(&root.join("PLAYLIST"), "vpls")?
+                .iter()
+                .map(|n| format!("{n}.vpls")),
+        )
         .collect();
+    playlists.sort();
     std::fs::write(root.join("info.bdav"), info(&playlists, title))
         .with_context(|| format!("writing {}", root.join("info.bdav").display()))?;
     Ok(())
@@ -594,6 +684,26 @@ pub fn stamp(path: &Path, on: Option<&(dyn Fn(f64) + Sync)>) -> Result<Timing> {
     })?;
     let step = choose_step(&anchors);
     let plan = Schedule::new(&anchors, step);
+    // Faster than a disc is written. Held to 48 Mbit/s anyway, the backlog
+    // piles up and drags the clock references ever earlier: at 70 Mbit/s for
+    // two hours the first went nearly an hour ahead of its picture, and past
+    // zero it wrapped to the far end of the clock. A second is already a
+    // stream no player can be fed in time.
+    let moved = plan.moved(&anchors);
+    if moved > 27_000_000 {
+        bail!(
+            "the stream is faster than a Blu-ray recording is written (48 Mbit/s): \
+             its clock would have to be moved {:.1} s to fit",
+            moved as f64 / 27e6
+        );
+    }
+    if moved > MOVE_BUDGET {
+        eprintln!(
+            "note: the stream is faster than a Blu-ray recording is written in places; \
+             its clock was moved up to {:.2} s to fit 48 Mbit/s",
+            moved as f64 / 27e6
+        );
+    }
 
     let temp = path.with_extension("m2ts.ats");
     let done = (|| -> Result<u32> {
@@ -1364,7 +1474,14 @@ fn clpi(clip: &Clip) -> Vec<u8> {
 fn ep_map(clip: &Clip) -> Vec<u8> {
     let mut coarse: Vec<(u32, u32, u32)> = Vec::new(); // fine id, time, packet
     let mut fine: Vec<&Entry> = Vec::new();
-    for entry in &clip.entries {
+    // Eighteen bits count the fine entries. A stream of nothing but key
+    // pictures passes that in a couple of hours, and the count spilled into
+    // the coarse one beside it and broke the whole map; such a stream is
+    // indexed at every second or third entry point instead, which a player
+    // seeks through as well.
+    const MOST_FINE: usize = (1 << 18) - 1;
+    let every = clip.entries.len().div_ceil(MOST_FINE).max(1);
+    for entry in clip.entries.iter().step_by(every) {
         let (pts, spn) = (entry.pts, entry.packet);
         let new = match coarse.last() {
             None => true,

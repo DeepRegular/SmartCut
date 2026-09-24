@@ -29,6 +29,7 @@
 
 use anyhow::{anyhow, Result};
 use ffmpeg_next as ff;
+use crate::input::ReadPackets;
 
 use crate::audio::{boundary_patches, fades_for, Patch, Reencoder};
 use crate::cut::{AudioMode, CutOptions, Pass, Report};
@@ -497,7 +498,8 @@ fn take_range(
     crate::input::keep_with_pictures(&mut ictx, &[track.stream_index]);
 
     let in_tb = track.time_base;
-    for (stream, packet) in ictx.packets() {
+    let mut packets = ictx.read_packets();
+    for (stream, packet) in packets.by_ref() {
         if stream.index() != track.stream_index {
             // Leeway for the pictures running a little ahead of their sound.
             if crate::input::packet_time(&stream, &packet, src.start_time)
@@ -520,8 +522,10 @@ fn take_range(
             // The re-encoder is handed every frame the range touches and
             // trims to the sample: the window says where the range really
             // begins and ends, which is inside the frames at both of them.
-            if t + dur > range.0 {
-                re.take(&packet, track, src.start_time, win, ramp)?;
+            // From the frame before the one the range opens in: the decoder
+            // needs it to decode that one whole, and the window drops it.
+            if t + 2.0 * dur > range.0 {
+                re.take(&packet, track, src.start_time, win, ramp, None)?;
                 let mut out = Vec::new();
                 re.drain(&mut out)?;
                 for (p, at) in out {
@@ -561,6 +565,7 @@ fn take_range(
         write_copied(octx, packet, written, dur, clock)?;
         written += dur;
     }
+    packets.finished()?;
     Ok(written)
 }
 
