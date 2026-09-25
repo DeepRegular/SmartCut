@@ -143,12 +143,36 @@ pub fn mount_of(share: &Share) -> Option<PathBuf> {
 /// caller's question.
 #[cfg(not(windows))]
 pub fn local(share: &Share) -> Result<PathBuf> {
-    let at = mount_of(share).ok_or_else(|| anyhow!("{} is not mounted", share.unc()))?;
-    Ok(if share.rest.is_empty() {
-        at
-    } else {
-        at.join(&share.rest)
-    })
+    if let Some(at) = mount_of(share) {
+        return Ok(if share.rest.is_empty() {
+            at
+        } else {
+            at.join(&share.rest)
+        });
+    }
+    // A folder inside the share, mounted on its own: `//nas/rec/anime` on
+    // `/mnt/anime` is an ordinary fstab line, and the share it belongs to is
+    // not mounted anywhere at all. A path under that folder is a path under
+    // its mount point.
+    mounts()
+        .iter()
+        .find_map(|m| inside_folder_mount(m, share))
+        .ok_or_else(|| anyhow!("{} is not mounted", share.unc()))
+}
+
+/// Where `share` lies under `m`, when `m` is a mount of a folder inside the
+/// share rather than of the share itself and `share` names something in that
+/// folder.
+#[cfg(any(not(windows), test))]
+fn inside_folder_mount(m: &Mount, share: &Share) -> Option<PathBuf> {
+    let (name, folder) = m.share.split_once('/')?;
+    if !eq_ci(&m.host, &share.host) || !eq_ci(name, &share.share) {
+        return None;
+    }
+    let folder: Vec<&str> = folder.split('/').filter(|s| !s.is_empty()).collect();
+    let rest: Vec<&str> = share.rest.split('/').filter(|s| !s.is_empty()).collect();
+    let inside = rest.len() >= folder.len() && folder.iter().zip(&rest).all(|(a, b)| eq_ci(a, b));
+    inside.then(|| rest[folder.len()..].iter().fold(m.at.clone(), |at, part| at.join(part)))
 }
 
 /// On Windows the UNC path is already the path: the redirector does what gvfs
@@ -190,13 +214,16 @@ fn mount_line(line: &str) -> Option<Mount> {
         .strip_prefix("//")
         .or_else(|| source.strip_prefix(r"\\"))?;
     let (host, share) = rest.split_once(['/', '\\'])?;
-    let share = share.trim_end_matches(['/', '\\']);
+    // Everything after the host, which is the share and -- where a folder
+    // inside it was mounted rather than the share -- the folder's path too,
+    // forward-slashed as [`Share::rest`] is. See [`inside_folder_mount`].
+    let share = share.trim_end_matches(['/', '\\']).replace('\\', "/");
     if host.is_empty() || share.is_empty() {
         return None;
     }
     Some(Mount {
         host: host.to_string(),
-        share: share.to_string(),
+        share,
         at: PathBuf::from(at),
     })
 }
@@ -406,6 +433,23 @@ mod tests {
         assert_eq!(m.at, PathBuf::from("/mnt/rec"));
         assert!(mount_line("/dev/sda1 / ext4 rw 0 0").is_none());
         assert!(mount_line("//nas/rec /mnt/rec nfs rw 0 0").is_none());
+    }
+
+    /// A folder inside a share, mounted on its own, answers for the paths
+    /// under that folder and for nothing else in the share.
+    #[test]
+    fn finds_a_path_under_a_folder_mounted_on_its_own() {
+        let m = mount_line(r"//nas/rec/Anime\040TV /mnt/anime cifs rw 0 0").unwrap();
+        assert_eq!(m.share, "rec/Anime TV");
+        let under = |rest: &str| inside_folder_mount(&m, &share("NAS", "Rec", rest));
+        assert_eq!(under("anime tv/2026/a.ts"), Some(PathBuf::from("/mnt/anime/2026/a.ts")));
+        assert_eq!(under("Anime TV"), Some(PathBuf::from("/mnt/anime")));
+        assert_eq!(under("Drama/a.ts"), None);
+        assert_eq!(under(""), None);
+        assert_eq!(inside_folder_mount(&m, &share("nas", "other", "Anime TV/a.ts")), None);
+        // A mount of the share itself is not one of these.
+        let whole = mount_line("//nas/rec /mnt/rec cifs rw 0 0").unwrap();
+        assert_eq!(inside_folder_mount(&whole, &share("nas", "rec", "a.ts")), None);
     }
 
     #[test]

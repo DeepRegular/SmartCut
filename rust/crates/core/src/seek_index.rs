@@ -442,15 +442,32 @@ pub fn cache_path(dir: &Path, src_path: &str) -> Result<PathBuf> {
 /// The most recent is never deleted, however far over budget it is on its
 /// own: it is almost certainly the recording being cut right now.
 pub fn prune(dir: &Path, keep: usize, budget: u64) -> Result<usize> {
+    /// How long a temporary may sit untouched before it is taken for one
+    /// whose writer is gone. Writing one takes seconds.
+    const ABANDONED: std::time::Duration = std::time::Duration::from_secs(24 * 60 * 60);
     let mut found: Vec<(std::time::SystemTime, u64, PathBuf)> = Vec::new();
+    let mut gone = 0;
     for entry in std::fs::read_dir(dir)? {
         let path = entry?.path();
         // Only ours: the folder can be one the user chose, with other files in it.
         if path.extension().and_then(|e| e.to_str()) != Some("scix") || !ours(&path) {
             continue;
         }
-        // One still being written is not one of the finished ones.
+        // One still being written is not one of the finished ones. One that
+        // nothing has written to for a day is the temporary of a process
+        // that was closed or killed part way through writing it: `save` only
+        // takes back its own on an error it lives to see, and nothing else
+        // ever would -- tens of megabytes apiece, outside the budget.
         if path.to_string_lossy().ends_with(".part.scix") {
+            let abandoned = path
+                .metadata()
+                .and_then(|m| m.modified())
+                .ok()
+                .and_then(|t| t.elapsed().ok())
+                .is_some_and(|age| age > ABANDONED);
+            if abandoned && std::fs::remove_file(&path).is_ok() {
+                gone += 1;
+            }
             continue;
         }
         let meta = path.metadata();
@@ -465,7 +482,6 @@ pub fn prune(dir: &Path, keep: usize, budget: u64) -> Result<usize> {
     found.sort_by_key(|(when, _, _)| std::cmp::Reverse(*when));
 
     let mut running = 0u64;
-    let mut gone = 0;
     for (i, (_, bytes, path)) in found.into_iter().enumerate() {
         running = running.saturating_add(bytes);
         if i == 0 || (i < keep && running <= budget) {
@@ -621,6 +637,31 @@ mod tests {
         std::fs::write(&at, &raw).unwrap();
         assert!(SeekIndex::load(&at).is_err());
         let _ = std::fs::remove_file(&at);
+    }
+
+    /// A temporary whose writer is gone is taken away; one being written now
+    /// is left to its writer, and neither counts as a finished index.
+    #[test]
+    fn an_abandoned_temporary_is_taken_away() {
+        let dir = std::env::temp_dir().join(format!("smartcut-scix-prune-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        let old = dir.join("rec-0123456789abcdef.1-0.part.scix");
+        let new = dir.join("rec-0123456789abcdef.2-0.part.scix");
+        let done = dir.join("rec-0123456789abcdef.scix");
+        for p in [&old, &new, &done] {
+            std::fs::write(p, b"x").unwrap();
+        }
+        let long_ago = std::time::SystemTime::now() - std::time::Duration::from_secs(3 * 86_400);
+        std::fs::OpenOptions::new()
+            .write(true)
+            .open(&old)
+            .unwrap()
+            .set_times(std::fs::FileTimes::new().set_modified(long_ago))
+            .unwrap();
+        assert_eq!(prune(&dir, 8, 1 << 20).unwrap(), 1);
+        assert!(!old.exists());
+        assert!(new.exists() && done.exists());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// And one that says it holds none, which is a file that reads.

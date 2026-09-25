@@ -275,6 +275,10 @@ fn run(
         let wanted = match (guess, setup.target) {
             (Id::PCM_S16LE, Id::PCM_S24BE | Id::PCM_S24LE) => Id::PCM_S24LE,
             (Id::PCM_S16LE, Id::PCM_S32BE | Id::PCM_S32LE) => Id::PCM_S32LE,
+            // And the containers whose default is big-endian (.aiff, .au,
+            // .caf): named sixteen bits, they took a 24-bit track down to 16.
+            (Id::PCM_S16BE, Id::PCM_S24BE | Id::PCM_S24LE) => Id::PCM_S24BE,
+            (Id::PCM_S16BE, Id::PCM_S32BE | Id::PCM_S32LE) => Id::PCM_S32BE,
             (Id::PCM_F32LE | Id::PCM_S16LE, Id::PCM_F32BE | Id::PCM_F32LE) => Id::PCM_F32LE,
             (Id::PCM_F64LE | Id::PCM_S16LE, Id::PCM_F64BE | Id::PCM_F64LE) => Id::PCM_F64LE,
             _ => guess,

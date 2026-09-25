@@ -386,12 +386,12 @@ pub fn plan_range(
                       });
     }
     // Report the bounds the output actually covers, so audio lines up with
-    // the video that was really produced.
-    let effective_in = segments.first().map_or(t_in, |s| s.start);
-    let effective_out = segments.last().map_or(t_out, |s| s.end);
+    // the video that was really produced -- after `finish`, which drops a
+    // tail with no picture in it: taken before, the range's sound ran on to
+    // where that tail would have ended.
     let mut plan = finish(segments);
-    plan.t_in = effective_in;
-    plan.t_out = effective_out;
+    plan.t_in = plan.segments.first().map_or(t_in, |s| s.start);
+    plan.t_out = plan.segments.last().map_or(t_out, |s| s.end);
     plan
 }
 
@@ -732,6 +732,8 @@ mod tests {
             plan.segments
         );
         assert_eq!(plan.segments.last().unwrap().kind, SegmentKind::Copy);
+        // And the range is said to end where its pictures do.
+        assert_eq!(plan.t_out, plan.segments.last().unwrap().end);
     }
 
     /// And the tail is still written where there is a picture in it.

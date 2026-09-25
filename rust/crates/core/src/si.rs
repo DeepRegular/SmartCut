@@ -183,6 +183,17 @@ pub(crate) fn framing(buf: &[u8]) -> Option<(usize, usize)> {
     [PACKET, M2TS_PACKET]
         .into_iter()
         .find_map(|stride| find_sync(buf, stride).map(|at| (at, stride)))
+        .map(|(at, stride)| {
+            // The first of the four bytes in front of a 192-byte packet holds
+            // the copy permission and the top of the arrival clock, and with
+            // a permission of 01 it reads 0x47 for most of a second at a
+            // time: a run found there is the header's, four bytes early.
+            if stride == M2TS_PACKET && sync_at(buf, at + 4, stride) {
+                (at + 4, stride)
+            } else {
+                (at, stride)
+            }
+        })
 }
 
 pub(crate) fn pid_of(p: &[u8]) -> u16 {
@@ -3138,6 +3149,22 @@ mod tests {
         let mut out = Vec::new();
         r.drain(&mut |sec: &[u8]| out.push(sec.to_vec()));
         out
+    }
+
+    #[test]
+    fn a_clip_header_reading_0x47_is_not_taken_for_the_sync_byte() {
+        let mut buf = vec![0u8; M2TS_PACKET * 8];
+        for p in buf.chunks_mut(M2TS_PACKET) {
+            p[0] = 0x47; // copy permission 01, clock top bits 000111
+            p[4] = 0x47;
+        }
+        assert_eq!(framing(&buf), Some((4, M2TS_PACKET)));
+        for p in buf.chunks_mut(M2TS_PACKET) {
+            p[0] = 0x00;
+        }
+        assert_eq!(framing(&buf), Some((4, M2TS_PACKET)));
+        let ts: Vec<u8> = (0..PACKET * 8).map(|i| if i % PACKET == 0 { 0x47 } else { 0 }).collect();
+        assert_eq!(framing(&ts), Some((0, PACKET)));
     }
 
     #[test]

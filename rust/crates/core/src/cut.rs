@@ -3585,10 +3585,15 @@ fn mark_interlacing(frame: &mut ff::frame::Video, video: &crate::VideoInfo) {
 struct Mpeg2Display {
     /// The recording's own `progressive_sequence`, inverted.
     interlaced_sequence: bool,
-    /// Each picture's field order, and whether it repeats its first field,
-    /// by the index it went into the encoder with. Kept here rather than
-    /// read back off `placed`, which counts in the timeline's units and not
-    /// in fields.
+    /// Each picture's `top_field_first` and `repeat_first_field` as they
+    /// are to be written, by the index it went into the encoder with. Kept
+    /// here rather than read back off `placed`, which counts in the
+    /// timeline's units and not in fields.
+    ///
+    /// In a progressive sequence the pair means something else: not which
+    /// field leads, but how many times the frame is shown -- once with
+    /// neither, twice with the repeat alone, three times with both. A
+    /// 59.94p recording carrying film says it that way.
     top_first: std::collections::HashMap<i64, (bool, bool)>,
 }
 
@@ -3603,18 +3608,7 @@ struct Mpeg2Display {
 fn mpeg2_segment_shape(src: &Source, seg: &Segment, tol: f64) -> Result<(bool, Option<bool>)> {
     let (mut ictx, idx) = open_input(&src.input.url)?;
     let in_tb = f64::from(ictx.stream(idx).ok_or_else(|| anyhow!("no video"))?.time_base());
-    let mut sequence = ictx
-        .stream(idx)
-        .and_then(|s| {
-            let p = s.parameters();
-            unsafe {
-                let p = p.as_ptr();
-                ((*p).extradata_size > 0).then(|| {
-                    std::slice::from_raw_parts((*p).extradata, (*p).extradata_size as usize).to_vec()
-                })
-            }
-        })
-        .and_then(|x| crate::bitstream::mpeg2_interlaced_sequence(&x));
+    let mut sequence = ictx.stream(idx).and_then(|s| stated_sequence(&s.parameters()));
     let (floor, wall) = stretch_bytes(src, seg, tol);
     seek_into(&mut ictx, src, seg.seek_from, floor)?;
     crate::input::keep_only(&mut ictx, &[idx]);
@@ -3658,21 +3652,24 @@ fn mpeg2_segment_shape(src: &Source, seg: &Segment, tol: f64) -> Result<(bool, O
     Ok((repeats, sequence))
 }
 
-/// Pull everything the encoder is ready to hand over.
+/// Whether the sequence extension a stream's parameters carry calls the
+/// sequence interlaced, where they carry one.
+fn stated_sequence(params: &ff::codec::Parameters) -> Option<bool> {
+    let extradata = unsafe {
+        let p = params.as_ptr();
+        if (*p).extradata.is_null() || (*p).extradata_size <= 0 {
+            return None;
+        }
+        std::slice::from_raw_parts((*p).extradata, (*p).extradata_size as usize)
+    };
+    crate::bitstream::mpeg2_interlaced_sequence(extradata)
+}
+
+/// Pull everything the encoder is ready to hand over, saying how each MPEG-2
+/// picture is shown where the encoder could not; see [`Mpeg2Display`].
 ///
 /// This has to happen between sends, not just at the end: an encoder that
 /// has filled its output queue refuses further frames with EAGAIN.
-fn drain_encoder(
-    encoder: &mut ff::encoder::video::Encoder,
-    reframe: Option<&Reframe>,
-    placed: &std::collections::HashMap<i64, (i64, i64)>,
-    writer: &mut Writer,
-) -> Result<()> {
-    drain_encoder_shown(encoder, reframe, placed, None, writer)
-}
-
-/// As [`drain_encoder`], saying how each MPEG-2 picture is shown where the
-/// encoder could not; see [`Mpeg2Display`].
 fn drain_encoder_shown(
     encoder: &mut ff::encoder::video::Encoder,
     reframe: Option<&Reframe>,
@@ -3705,7 +3702,14 @@ fn drain_encoder_shown(
         let packet = match shown {
             Some(m) => {
                 let mut data = packet.data().unwrap_or(&[]).to_vec();
-                let (tff, rff) = m.top_first.get(&index).copied().unwrap_or((true, false));
+                // Top first and shown once where nothing was noted. A
+                // progressive sequence may not lead with the top field
+                // unless it repeats.
+                let (tff, rff) = m
+                    .top_first
+                    .get(&index)
+                    .copied()
+                    .unwrap_or((m.interlaced_sequence, false));
                 crate::bitstream::mpeg2_set_display(&mut data, m.interlaced_sequence, tff, rff);
                 let mut out = ff::Packet::copy(&data);
                 out.set_flags(packet.flags());
@@ -3768,12 +3772,22 @@ fn reencode_segment(
     } else {
         Pictures::open(src, &params, opts, ctx.signalling)?
     };
-    let as_frames = repeats || !src.video.interlaced();
-    let mut shown = (src.video.codec == "mpeg2video" && as_frames && interlaced_sequence == Some(true))
-        .then(|| Mpeg2Display {
-            interlaced_sequence: true,
-            top_first: Default::default(),
-        });
+    // As the encoder was opened just above, and not merely where a field
+    // repeats: with the sequence type unread the encoder is interlaced, and
+    // its pictures have to be told so.
+    let as_frames = (repeats && interlaced_sequence.is_some()) || !src.video.interlaced();
+    // A progressive sequence only where a frame repeats: without one there
+    // is nothing libavcodec wrote wrong, and the seam stays as it was.
+    let mut shown = match interlaced_sequence {
+        Some(true) if as_frames => Some(true),
+        Some(false) if as_frames && repeats => Some(false),
+        _ => None,
+    }
+    .filter(|_| src.video.codec == "mpeg2video")
+    .map(|interlaced_sequence| Mpeg2Display {
+        interlaced_sequence,
+        top_first: Default::default(),
+    });
 
     let (floor, wall) = stretch_bytes(src, seg, tol);
     let mut read_at: Option<u64> = None;
@@ -3854,10 +3868,17 @@ fn reencode_segment(
                 // Before `mark_interlacing`, which states the stream's order
                 // over the picture's own -- and under pulldown the two
                 // alternate.
-                let tff = unsafe {
-                    (*$f.as_ptr()).flags & ff::ffi::AV_FRAME_FLAG_TOP_FIELD_FIRST != 0
+                let flags = if m.interlaced_sequence {
+                    let tff = unsafe {
+                        (*$f.as_ptr()).flags & ff::ffi::AV_FRAME_FLAG_TOP_FIELD_FIRST != 0
+                    };
+                    (tff, shown_for == 3)
+                } else {
+                    // Shown for two frames or three, which libavcodec reads
+                    // back as four fields or six.
+                    (shown_for >= 6, shown_for >= 4)
                 };
-                m.top_first.insert(fed, (tff, shown_for == 3));
+                m.top_first.insert(fed, flags);
             }
             span.fields = span.fields.max(display - display_base + fields);
             span.pictures += 1;
@@ -3897,8 +3918,12 @@ fn reencode_segment(
                     continue;
                 }
                 if t < seg.start - tol {
+                    // Taken rather than cloned: a clone of a frame is a
+                    // fresh buffer and a copy of every pixel, and this is
+                    // every picture of the run-up to every seam.
                     if anchor.is_none() {
-                        still_on_screen = Some(frame.clone());
+                        still_on_screen =
+                            Some(std::mem::replace(&mut frame, ff::frame::Video::empty()));
                     }
                     continue;
                 }
@@ -3906,9 +3931,25 @@ fn reencode_segment(
                 // what belongs there is the picture that was already up --
                 // shown from the range's own start rather than from its own,
                 // which is before the range.
+                //
+                // Only a picture held past its own coded length, though. One
+                // that repeats a field -- film at 29.97 -- or a frame -- film
+                // in a 59.94p sequence -- is up until the next by its own
+                // coding, and the next can arrive more than a frame after a
+                // range opening inside it. Placed at the range's start, it
+                // kept the repeat it no longer had room for: three fields
+                // written where two fit, and a stream that counts one field
+                // more than its timestamps. There the range opens on the
+                // next picture, as it did before holds were kept.
                 if anchor.is_none() && t - seg.start >= fd {
                     if let Some(mut held) = still_on_screen.take() {
-                        place!(held, seg.start);
+                        let own_end = held.pts().map(|p| {
+                            let shown_for = 2 + unsafe { (*held.as_ptr()).repeat_pict.max(0) };
+                            p as f64 * in_tb - src.start_time + f64::from(shown_for) * fd / 2.0
+                        });
+                        if own_end.is_none_or(|end| end < t - fd / 4.0) {
+                            place!(held, seg.start);
+                        }
                     }
                 }
                 still_on_screen = None;

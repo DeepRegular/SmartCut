@@ -165,7 +165,9 @@ impl Track {
         }
         let i = self.thumbs.partition_point(|t| t.time < a - 1e-6);
         let j = self.thumbs.partition_point(|t| t.time <= b + 1e-6);
-        spacing(&self.thumbs[i..j])
+        // Out of order only in a damaged cache, where the two searches can
+        // cross; that too is nothing to measure.
+        spacing(self.thumbs.get(i..j)?)
     }
 
     pub fn scene_after(&self, time: f64) -> Option<f64> {

@@ -1962,6 +1962,16 @@ fn patch_run(
     if run.iter().any(|f| f.len() != size) {
         return Ok(());
     }
+    // A frame at another rate than the track's -- the programme before this
+    // one, at the head of a broadcast recording -- holds samples on a grid
+    // these cannot be put on: its `first` and its length are counted at the
+    // track's rate, so the mask would land in the wrong place, and its
+    // samples encoded as the track's would play at the wrong pitch under a
+    // header saying the track's rate between copied frames saying their own.
+    // Left as the recording has it, as [`foreign_reach`] leaves a run of them.
+    if run.iter().any(|f| f.shape.1 != audio.sample_rate) {
+        return Ok(());
+    }
 
     // What the frames written here are worth, in bits per second. The
     // recording's own figure where its frames say what that is, and what
@@ -2000,7 +2010,12 @@ fn patch_run(
     // frame there to take it from there is nothing to feed.
     let delay = unsafe { (*encoder.as_ptr()).initial_padding.max(0) as usize };
     let lead_in = lead_in(delay, size);
-    if lead_in > 0 && (lead == 0 || frames[lead - 1].len() < lead_in) {
+    // The frame the lead-in comes from is held to the same rule as the run.
+    if lead_in > 0
+        && (lead == 0
+            || frames[lead - 1].len() < lead_in
+            || frames[lead - 1].shape.1 != audio.sample_rate)
+    {
         return Ok(());
     }
     let channels = audio.channels as usize;

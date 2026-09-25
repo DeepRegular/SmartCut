@@ -131,6 +131,20 @@ fn pictures_afresh(
         opts,
         ctx.signalling,
     )?;
+    // A master whose container reported the field order of a first picture
+    // that happened to be film is encoded progressive, and libavcodec then
+    // writes `progressive_sequence=1` among the master's own pictures saying
+    // 0 -- at every transition of such a recording. Put back the way
+    // [`reencode_segment`] puts it back; each picture here is a whole frame
+    // shown for two fields, top first. See [`Mpeg2Display`].
+    let shown = (into.video.codec == "mpeg2video" && !into.video.interlaced())
+        .then(|| stated_sequence(into.params))
+        .flatten()
+        .filter(|&interlaced| interlaced)
+        .map(|_| Mpeg2Display {
+            interlaced_sequence: true,
+            top_first: Default::default(),
+        });
 
     // The output's own frame, in the units the writer counts in. Two for an
     // ordinary recording, more where the master's timeline is divided
@@ -256,7 +270,7 @@ fn pictures_afresh(
                     match &mut encoder {
                         Pictures::Libav(enc) => {
                             enc.send_frame(picture)?;
-                            drain_encoder(enc, ctx.reframe, &placed, writer)?;
+                            drain_encoder_shown(enc, ctx.reframe, &placed, shown.as_ref(), writer)?;
                         }
                         Pictures::Vc1(enc) => {
                             let packet = encode_vc1(enc, picture, per_frame)?;
@@ -362,7 +376,7 @@ fn pictures_afresh(
     lay!(until);
     if let Pictures::Libav(enc) = &mut encoder {
         enc.send_eof()?;
-        drain_encoder(enc, ctx.reframe, &placed, writer)?;
+        drain_encoder_shown(enc, ctx.reframe, &placed, shown.as_ref(), writer)?;
     }
 
     if span.pictures == 0 {

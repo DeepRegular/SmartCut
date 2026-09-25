@@ -35,6 +35,7 @@ use std::collections::HashSet;
 use std::fs::File;
 use std::io::{Read, Seek, SeekFrom};
 use std::path::Path;
+use std::sync::Arc;
 
 /// A UDF logical block is 2048 bytes on every disc format that carries video,
 /// and every descriptor is aligned to it.
@@ -96,6 +97,24 @@ const MAX_READ: u64 = 64 << 20;
 /// seen; this is for a tree that is wide rather than circular, many entries
 /// pointing at the same sixteen-megabyte directory.
 const MAX_DIRS: usize = 4_096;
+
+/// How many allocation descriptors the whole image may make this read, the
+/// ones a continuation is read as included. The limits above are per file,
+/// and twenty thousand files can share one entry: each continued sixty-four
+/// times over the same block of eight thousand descriptors, the image asked
+/// for a hundred and sixty gigabytes of extents. A disc filled in
+/// sixty-four kilobyte units is a few hundred thousand.
+const MAX_DESCRIPTORS: usize = 1 << 22;
+
+/// How many bytes of directories the walk reads in all. The same trick at
+/// the level above: four thousand directories that all point at one
+/// sixteen-megabyte run of bytes are sixty-four gigabytes of reading.
+const MAX_DIR_BYTES: u64 = 256 << 20;
+
+/// How many pieces the metadata file may be in. Every block read through
+/// the metadata partition walks them, so their number multiplies the cost
+/// of everything else; a disc's metadata file is one or two.
+const MAX_METADATA_PIECES: usize = 1_024;
 
 /// One unbroken run of bytes in the image.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -167,7 +186,9 @@ enum Map {
     /// entries of a disc could be kept together and read in one go, away
     /// from the file data; every image written to UDF 2.50 or later has one,
     /// and an image written to 1.02 has none.
-    Metadata { extents: Vec<Extent> },
+    /// Shared rather than owned: a map is cloned for every descriptor read
+    /// through it.
+    Metadata { extents: Arc<[Extent]> },
 }
 
 /// An opened image: the descriptors have been read, the tree has been walked,
@@ -176,6 +197,10 @@ pub struct Image {
     file: File,
     maps: Vec<Map>,
     files: Vec<Entry>,
+    /// Allocation descriptors read so far. See [`MAX_DESCRIPTORS`].
+    descriptors: usize,
+    /// Directory bytes read so far. See [`MAX_DIR_BYTES`].
+    dir_bytes: u64,
 }
 
 impl Image {
@@ -191,6 +216,8 @@ impl Image {
             file,
             maps: Vec::new(),
             files: Vec::new(),
+            descriptors: 0,
+            dir_bytes: 0,
         };
         let root = img
             .read_descriptors()
@@ -386,7 +413,12 @@ impl Image {
                         let Data::Extents(extents) = data else {
                             bail!("the metadata file has no extents")
                         };
-                        maps.push(Map::Metadata { extents });
+                        if extents.len() > MAX_METADATA_PIECES {
+                            bail!("the metadata file is in {} pieces", extents.len());
+                        }
+                        maps.push(Map::Metadata {
+                            extents: extents.into(),
+                        });
                     } else {
                         // Virtual and sparable partitions are for rewritable
                         // and write-once media that this will not be reading:
@@ -483,7 +515,8 @@ impl Image {
         // the room the file was given.
         let mut recorded = 0u64;
         let mut chunk = ads.to_vec();
-        for _ in 0..MAX_CONTINUATIONS {
+        let mut continued = 0usize;
+        loop {
             let mut carry_on = None;
             let mut at = 0usize;
             while at + step <= chunk.len() {
@@ -492,6 +525,7 @@ impl Image {
                 if len == 0 {
                     break;
                 }
+                self.spend(1)?;
                 let block = u32le(&chunk, at + block_at) as u64;
                 let map = match kind {
                     0 => home.clone(),
@@ -531,9 +565,18 @@ impl Image {
             let Some((map, block, len)) = carry_on else {
                 break;
             };
+            // Stopping here rather than refusing, as this did, handed back
+            // a file shorter than its entry says with nothing to say so.
+            continued += 1;
+            if continued > MAX_CONTINUATIONS {
+                bail!("the allocation descriptors are continued more than {MAX_CONTINUATIONS} times");
+            }
             if len > MAX_CONTINUED {
                 bail!("the allocation descriptors are continued over {len} bytes");
             }
+            // Charged by what it could hold, since that is what reading it
+            // costs whether or not it holds that many.
+            self.spend(len as usize / 8)?;
             let more = self.read_runs(&byte_runs(&map, block, len)?)?;
             // An allocation extent descriptor is a tag, the location of the
             // descriptors that led here, and the length of the ones carried.
@@ -544,6 +587,15 @@ impl Image {
             chunk = more[24..].get(..carried).unwrap_or(&more[24..]).to_vec();
         }
         Ok((size, Data::Extents(out)))
+    }
+
+    /// Count descriptors against [`MAX_DESCRIPTORS`].
+    fn spend(&mut self, n: usize) -> Result<()> {
+        self.descriptors += n;
+        if self.descriptors > MAX_DESCRIPTORS {
+            bail!("this image holds more than {MAX_DESCRIPTORS} allocation descriptors");
+        }
+        Ok(())
     }
 
     fn read_runs(&mut self, runs: &[Extent]) -> Result<Vec<u8>> {
@@ -584,6 +636,10 @@ impl Image {
             let (size, data) = self.file_data(&fe, home)?;
             if size > MAX_DIR {
                 bail!("a directory of {size} bytes is not a directory");
+            }
+            self.dir_bytes += size;
+            if self.dir_bytes > MAX_DIR_BYTES {
+                bail!("this image's directories come to more than {MAX_DIR_BYTES} bytes");
             }
             let dir = self.read_data(&data, size)?;
 
@@ -633,7 +689,7 @@ fn byte_runs(map: &Map, block: u64, len: u64) -> Result<Vec<Extent>> {
             let mut want = block * SECTOR;
             let mut left = len;
             let mut out = Vec::new();
-            for e in extents {
+            for e in extents.iter() {
                 if want >= e.len {
                     want -= e.len;
                     continue;
@@ -802,6 +858,109 @@ mod tests {
         let _ = std::fs::remove_file(&at);
     }
 
+    /// An image of `files` files that all name one entry, whose descriptors
+    /// are continued into a block of eight thousand more -- and, when
+    /// `looped`, from there into the same block again.
+    fn shared_continuation(files: usize, looped: bool) -> Result<Image> {
+        fn put16(img: &mut [u8], at: usize, v: u16) {
+            img[at..at + 2].copy_from_slice(&v.to_le_bytes());
+        }
+        fn put32(img: &mut [u8], at: usize, v: u32) {
+            img[at..at + 4].copy_from_slice(&v.to_le_bytes());
+        }
+        const S: usize = SECTOR as usize;
+        let (dir_at, fe_at, aed_at) = (1000usize, 400usize, 401usize);
+        let dir_len = files * 48;
+        let mut img = vec![0u8; (dir_at + dir_len / S + 1) * S];
+        // The anchor, pointing the main descriptor sequence at sector 200.
+        put16(&mut img, ANCHOR as usize * S, TAG_ANCHOR);
+        put32(&mut img, ANCHOR as usize * S + 16, 2 * SECTOR as u32);
+        put32(&mut img, ANCHOR as usize * S + 20, 200);
+        // A partition, number 0, starting at sector 0.
+        put16(&mut img, 200 * S, TAG_PARTITION);
+        // The logical volume: one physical map, and the file set at 300.
+        let lvd = 201 * S;
+        put16(&mut img, lvd, TAG_LOGICAL_VOLUME);
+        put32(&mut img, lvd + 212, SECTOR as u32);
+        put32(&mut img, lvd + 252, 300);
+        put32(&mut img, lvd + 264, 6);
+        put32(&mut img, lvd + 268, 1);
+        img[lvd + 440] = 1;
+        img[lvd + 441] = 6;
+        // The file set, naming the root's entry at 301.
+        put16(&mut img, 300 * S, TAG_FILE_SET);
+        put32(&mut img, 300 * S + 404, 301);
+        // The root: one short_ad over the directory.
+        let root = 301 * S;
+        put16(&mut img, root, TAG_FILE_ENTRY);
+        img[root + 56..root + 64].copy_from_slice(&(dir_len as u64).to_le_bytes());
+        put32(&mut img, root + 172, 8);
+        put32(&mut img, root + 176, dir_len as u32);
+        put32(&mut img, root + 180, dir_at as u32);
+        // The directory: every file names the same entry.
+        for i in 0..files {
+            let at = dir_at * S + i * 48;
+            put16(&mut img, at, TAG_FILE_ID);
+            img[at + 19] = 7;
+            put32(&mut img, at + 24, fe_at as u32);
+            img[at + 38] = 8;
+            img[at + 39..at + 45].copy_from_slice(format!("f{i:05}").as_bytes());
+        }
+        // That entry: its descriptors are continued at once, over 64 KiB.
+        let fe = fe_at * S;
+        put16(&mut img, fe, TAG_FILE_ENTRY);
+        img[fe + 56..fe + 64].copy_from_slice(&(1u64 << 40).to_le_bytes());
+        put32(&mut img, fe + 172, 8);
+        put32(&mut img, fe + 176, (3 << 30) | MAX_CONTINUED as u32);
+        put32(&mut img, fe + 180, aed_at as u32);
+        // And the continuation: eight thousand extents, and then itself.
+        let aed = aed_at * S;
+        let carried = MAX_CONTINUED as usize - 24;
+        put16(&mut img, aed, TAG_ALLOCATION_EXTENT);
+        put32(&mut img, aed + 20, carried as u32);
+        let n = carried / 8;
+        for k in 0..n - 1 {
+            put32(&mut img, aed + 24 + k * 8, SECTOR as u32);
+        }
+        if looped {
+            put32(&mut img, aed + 24 + (n - 1) * 8, (3 << 30) | MAX_CONTINUED as u32);
+            put32(&mut img, aed + 24 + (n - 1) * 8 + 4, aed_at as u32);
+        }
+
+        let at = std::env::temp_dir().join(format!(
+            "smartcut-udf-shared-continuation-{files}-{looped}.iso"
+        ));
+        std::fs::write(&at, &img).unwrap();
+        let opened = Image::open(&at);
+        let _ = std::fs::remove_file(&at);
+        opened
+    }
+
+    /// Many files sharing one entry whose descriptors are continued into
+    /// the same block of eight thousand more.
+    ///
+    /// Every limit that existed was per file, and each file here stays
+    /// inside them. Twenty thousand such files -- which one directory can
+    /// list -- continued sixty-four times each came to eight megabytes of
+    /// extents apiece and a hundred and sixty gigabytes in all, with no
+    /// refusal anywhere. The image as a whole now has a budget.
+    #[test]
+    fn many_files_continued_into_one_block_are_refused() {
+        let few = shared_continuation(4, false).expect("a few files open");
+        assert_eq!(few.files().len(), 4);
+        let err = shared_continuation(1000, false).err().expect("refused");
+        assert!(format!("{err:#}").contains("more than 4194304 allocation descriptors"), "{err:#}");
+    }
+
+    /// A continuation that continues into itself is a loop, and is called
+    /// one. It used to stop after sixty-four turns and hand back what it had
+    /// as the whole file.
+    #[test]
+    fn a_continuation_into_itself_is_refused() {
+        let err = shared_continuation(1, true).err().expect("refused");
+        assert!(format!("{err:#}").contains("continued more than"), "{err:#}");
+    }
+
     fn entry(runs: &[(u64, u64)], size: u64) -> Entry {
         Entry {
             path: "BDAV/STREAM/00001.m2ts".into(),
@@ -840,7 +999,7 @@ mod tests {
     #[test]
     fn a_metadata_partition_maps_through_its_own_file() {
         let map = Map::Metadata {
-            extents: vec![
+            extents: Arc::from(vec![
                 Extent {
                     at: 655_360,
                     len: 4096,
@@ -849,7 +1008,7 @@ mod tests {
                     at: 1_000_000,
                     len: 4096,
                 },
-            ],
+            ]),
         };
         // Second block of the metadata file.
         assert_eq!(

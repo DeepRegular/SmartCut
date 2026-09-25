@@ -19,13 +19,25 @@ fn fmt_hms(t: f64) -> String {
     )
 }
 
+/// A time on the recording's clock, in seconds or as 1:23:45.6.
+///
+/// Every field a number of seconds, minutes or hours at or past nought.
+/// `f64`'s own parser also takes `nan`, `inf` and a sign, and each of them
+/// used to go through: `--preview nan` wrote a JPEG "asked NaNs", and
+/// `--cut-near -5` answered with a picture five seconds before the recording.
 fn parse_time(s: &str) -> Result<f64> {
     let mut total = 0.0;
     for part in s.trim().split(':') {
         let v: f64 = part
             .parse()
             .with_context(|| format!("bad timestamp {s:?}"))?;
+        if !v.is_finite() || v.is_sign_negative() {
+            bail!("bad timestamp {s:?}: a time is a number of seconds from nought");
+        }
         total = total * 60.0 + v;
+    }
+    if !total.is_finite() {
+        bail!("bad timestamp {s:?}: a time is a number of seconds from nought");
     }
     Ok(total)
 }
@@ -136,7 +148,12 @@ fn pick<'a>(
 /// a gigabyte.
 fn disc_size(v: &str) -> Result<u64> {
     let lower = v.trim().to_ascii_lowercase();
-    let key = lower.trim_start_matches("bd").trim_start_matches('-');
+    // The dash only after `bd`, as in `bd-25`. Taken off a plain number it
+    // read `-30000000000` as thirty gigabytes.
+    let key = match lower.strip_prefix("bd") {
+        Some(rest) => rest.strip_prefix('-').unwrap_or(rest),
+        None => lower.as_str(),
+    };
     if let Some(d) = smartcut_core::fit::DISCS
         .iter()
         .find(|d| (d.bytes / 1_000_000_000).to_string() == key)
@@ -806,6 +823,11 @@ fn main() -> Result<()> {
                 // appending `.iso` to this, and `disc/` would make it
                 // `disc/.iso`, inside the folder it is an image of.
                 let v = args.get(i).context("--bdav needs a folder")?;
+                // An empty name is the folder the run stands in, and its
+                // image a hidden `.iso` beside whatever else is there.
+                if v.trim().is_empty() {
+                    bail!("--bdav needs a folder");
+                }
                 let trimmed = v.trim_end_matches(['/', '\\']);
                 bdav = Some(if trimmed.is_empty() { v.clone() } else { trimmed.to_string() });
             }
@@ -1126,6 +1148,24 @@ fn main() -> Result<()> {
     // recording it was made from -- the window keys its own by the path, size
     // and time, and this is a path somebody typed -- so a recording recorded
     // again under the same name was cut by the old one's byte positions.
+    //
+    // Both of those write over the file, so it has to be a seek index to
+    // begin with. A path that names something else -- another recording, a
+    // cut, a typo that landed on a real file -- was read whole into memory,
+    // found not to be one, and replaced with an index. The first four bytes
+    // are `SCIX` (`seek_index::MAGIC`); an empty file is nobody's.
+    if let Some(p) = index_file.as_ref().filter(|p| p.is_file()) {
+        use std::io::Read as _;
+        let mut head = [0u8; 4];
+        let got = std::fs::File::open(p).and_then(|mut f| f.read(&mut head));
+        if matches!(got, Ok(n) if head[..n] != b"SCIX"[..n]) {
+            bail!(
+                "--seek-index {}: that file is not a seek index, and is left alone. Name \
+                 another file",
+                p.display()
+            );
+        }
+    }
     let modified = |p: &std::path::Path| std::fs::metadata(p).and_then(|m| m.modified()).ok();
     let recorded = smartcut_core::input::Input::parse(&input)
         .ok()
@@ -2398,6 +2438,22 @@ mod tests {
         assert!(parse_range("9-3").is_err());
         assert!(parse_range("2-2").is_err());
         assert!(parse_range("3").is_err());
+    }
+
+    #[test]
+    fn a_time_is_seconds_from_nought() {
+        assert_eq!(parse_time("1:02:03.5").unwrap(), 3723.5);
+        for bad in ["nan", "inf", "-5", "1:-30", "1e400", "0-inf"] {
+            assert!(parse_time(bad).is_err(), "{bad}");
+        }
+        assert!(parse_range("0-inf").is_err());
+    }
+
+    #[test]
+    fn a_size_is_a_disc_or_bytes() {
+        assert_eq!(disc_size("bd-25").unwrap(), disc_size("bd25").unwrap());
+        assert_eq!(disc_size("2000000000").unwrap(), 2_000_000_000);
+        assert!(disc_size("-30000000000").is_err());
     }
 
     #[test]

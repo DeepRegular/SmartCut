@@ -128,7 +128,11 @@ impl Weave {
         let first_top = unsafe {
             (*picture.as_ptr()).flags & ff::ffi::AV_FRAME_FLAG_TOP_FIELD_FIRST != 0
         };
-        let from = ((t - head) / self.field).round() as i64;
+        // Bounded well inside i64: a container's clock can be anything, and
+        // a saturated `as` cast plus the fields counted on from it below
+        // would overflow.
+        const FAR: f64 = (1i64 << 52) as f64;
+        let from = ((t - head) / self.field).round().clamp(-FAR, FAR) as i64;
         let picture = Rc::new(picture);
         let first = !std::mem::replace(&mut self.started, true);
 

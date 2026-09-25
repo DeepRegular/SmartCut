@@ -554,7 +554,10 @@ fn fill(dir: &Path, parent: usize, tree: &mut Vec<Node>, left_out: &mut Vec<Stri
         // own metadata is the link's, and the image got a file cut down to
         // the length of a path. A link to a folder is left out: one that
         // pointed back up the tree never ended.
-        let meta = std::fs::metadata(e.path())?;
+        // A link that leads nowhere is named with the error: bare, it was
+        // "No such file or directory" and no file.
+        let meta = std::fs::metadata(e.path())
+            .with_context(|| format!("reading {}", e.path().display()))?;
         let linked = e.file_type().is_ok_and(|t| t.is_symlink());
         // What a run that stopped part way leaves behind: a stream being
         // stamped, an image being written.

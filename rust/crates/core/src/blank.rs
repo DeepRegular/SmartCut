@@ -640,6 +640,20 @@ mod tests {
         assert!(64 <= ten.level(dark));
     }
 
+    /// A luma value typed in 環境設定 is carried as the percent it comes to,
+    /// `(v - 16) * 100 / 219`, and has to come back as that value -- at
+    /// either depth -- and not as the one under it.
+    #[test]
+    fn a_typed_value_comes_back_whole() {
+        let eight = Luma::of(ff::format::Pixel::YUV420P).unwrap();
+        let ten = Luma::of(ff::format::Pixel::YUV420P10LE).unwrap();
+        for v in 16..=235u32 {
+            let fraction = ((v as f64 - 16.0) * 100.0 / 219.0) / 100.0;
+            assert_eq!(eight.level(fraction), v, "{v}");
+            assert_eq!(ten.level(fraction), v << 2, "{v}");
+        }
+    }
+
     /// Nought is black itself, so every level on the scale finds a picture
     /// written at broadcast black. Measured against 0..255 the bottom six
     /// percent was under 16, and a black frame was not black at any of them.

@@ -1438,8 +1438,25 @@ fn outline_of(path: &str) -> Result<(Outline, input::Demux)> {
     // or 0/1 -- the stated rate stands in: left as it was, the cut was
     // planned on a grid of one picture a second and all but one picture in
     // each second was left out, with only a note to say so.
-    let frame_rate = match f64::from(stream.avg_frame_rate()) {
-        r if r.is_finite() && r > 0.0 => r,
+    //
+    // **Not for MPEG-1 and MPEG-2, which state their rate outright.** The
+    // sequence header names one of the few rates the standard lists, and
+    // every picture sits on that grid: `repeat_first_field` only lengthens
+    // how long one is shown, it does not move the grid. The average is the
+    // container's arithmetic -- MP4 divides its sample count by its length --
+    // and on a soft-telecine stream remuxed into an MP4 that came to 25.46
+    // for a stream at 29.97, where the transport stream, the program stream
+    // and Matroska all say 29.97. The editor's grid was a fifth out, and the
+    // fields were woven in pairs of the wrong length. The decoder's reading
+    // of the header is kept in the stream's parameters, so it costs nothing.
+    let stated = matches!(codec.as_str(), "mpeg1video" | "mpeg2video")
+        .then(|| unsafe { (*params.as_ptr()).framerate })
+        .filter(|r| r.num > 0 && r.den > 0)
+        .map(|r| f64::from(r.num) / f64::from(r.den))
+        .filter(|r| r.is_finite() && *r > 0.0 && *r <= 1000.0);
+    let frame_rate = match (stated, f64::from(stream.avg_frame_rate())) {
+        (Some(r), _) => r,
+        (None, r) if r.is_finite() && r > 0.0 => r,
         _ if base_rate.is_finite() && base_rate > 0.0 && base_rate <= 1000.0 => base_rate,
         // Neither: the thirty a second `VideoInfo::frame_duration` already
         // assumes, rather than a nought the grid would round to one.
