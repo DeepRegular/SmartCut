@@ -125,7 +125,7 @@ impl Weave {
         // picture's, and come back as that picture again on each frame.
         let fields = 2 + i64::from(unsafe { (*picture.as_ptr()).repeat_pict }.clamp(0, 4));
         let first_top = unsafe {
-            (*picture.as_ptr()).flags & ff::ffi::AV_FRAME_FLAG_TOP_FIELD_FIRST as i32 != 0
+            (*picture.as_ptr()).flags & ff::ffi::AV_FRAME_FLAG_TOP_FIELD_FIRST != 0
         };
         let from = ((t - head) / self.field).round() as i64;
         let picture = Rc::new(picture);
@@ -282,9 +282,9 @@ mod tests {
             let p = f.as_mut_ptr();
             (*p).repeat_pict = fields - 2;
             if top_first {
-                (*p).flags |= ff::ffi::AV_FRAME_FLAG_TOP_FIELD_FIRST as i32;
+                (*p).flags |= ff::ffi::AV_FRAME_FLAG_TOP_FIELD_FIRST;
             } else {
-                (*p).flags &= !(ff::ffi::AV_FRAME_FLAG_TOP_FIELD_FIRST as i32);
+                (*p).flags &= !ff::ffi::AV_FRAME_FLAG_TOP_FIELD_FIRST;
             }
         }
         f

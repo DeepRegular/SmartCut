@@ -134,6 +134,53 @@ duration in decode order overtakes presentation once field durations vary, and t
 muxer rejects it with `pts < dts`. It was replaced with the correct construction,
 deriving DTS from the position in display order.
 
+### Repeated fields in a re-encoded stretch
+
+The field timeline placed the re-encoded pictures correctly, but **the pictures
+themselves never said so.** libavcodec's MPEG-2 encoder does not write
+`repeat_first_field` at all, so a re-encoded stretch of film came out two fields a
+picture, its length carried only by the timestamps. A player that goes by those
+showed the right thing; anything that counts fields — a set-top decoder, a disc
+player — was handed a stretch a fifth short and a parity that no longer alternated
+into the copied pictures after it. And on a recording whose first picture happens to
+be film, the container reports the field order as progressive, the encoder was
+opened progressive, and the re-encoded stretch announced `progressive_sequence=1`
+among copied pictures saying 0.
+
+A picture may repeat a field only if it is coded as a whole frame
+(`progressive_frame`, `frame_pred_frame_dct`), and libavcodec codes those only in a
+progressive sequence. So a segment with a repeated field in it — known from the
+packets before the encoder is opened, the flags being plain bytes at the head of
+each picture — is encoded as one, and each picture is put back into the recording's
+sequence on the way out: the sequence extension gets the recording's
+`progressive_sequence`, and the picture its own field order and repeat
+(`Mpeg2Display`, `bitstream::mpeg2_set_display`). The macroblocks read the same
+either way, since a frame picture with `frame_pred_frame_dct` set carries neither
+`dct_type` nor `frame_motion_type`.
+
+Cuts of two AT-X clips, checked on the elementary stream with
+`tests/mpeg2_fields.py` (`tests/run_pulldown_tests.sh`):
+
+| Range | Fields wanted | 0.8.6 | 0.8.7 |
+|---|---|---|---|
+| Film clip, all re-encoded (1.456 s) | 87 | 70, `progressive_sequence` 1 | 87 |
+| Film clip, copy and tail (2.002 s) | 120 | 119, sequence 0 and 1 | 120 |
+| Film clip, both ends mid-GOP | 453 | 452, 2 parity breaks | 453 |
+| Video turning to film, film head | 455 | 441, 1 parity break | 455 |
+| Video turning to film, across | 846 | 833, 1 parity break | 846 |
+
+Where the encoder was already opened progressive, the decoded pictures are identical
+to 0.8.6's (35 of 35 by framemd5), because only header bits moved. Where it is now
+switched from interlaced to whole frames for a film stretch, the re-encoded pictures
+measure 49.5 dB against the recording's, the same as before. A broadcast with no
+repeated field is not read for any of this, and its cuts are the same file as
+0.8.6's, byte for byte.
+
+A segment that mixes film and video pictures is encoded as whole frames too, so the
+video pictures in it are coded as frames rather than fields. That is what keeps the
+field sequence whole, and such a segment is only ever the fraction of a second where
+a programme changes from one to the other.
+
 ### A recorder's own disc codes field pairs (a bug found on real material)
 
 A SONY recorder's BD-RE writes 1440x1080 29.97 H.264 as **PAFF**: every frame is a

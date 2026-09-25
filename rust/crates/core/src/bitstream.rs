@@ -374,6 +374,80 @@ pub fn mpeg2_repeats_field(data: &[u8]) -> bool {
         .is_some_and(|e| e[3] & 0x02 != 0)
 }
 
+/// Whether an MPEG-2 packet's sequence extension says the sequence is
+/// interlaced (`progressive_sequence` clear), or nothing where it carries none.
+///
+/// That flag is what decides whether a picture may repeat a field at all:
+/// in a progressive sequence the same bit repeats whole frames instead.
+pub fn mpeg2_interlaced_sequence(data: &[u8]) -> Option<bool> {
+    let mut i = 0;
+    while i + 6 <= data.len() {
+        if data[i] == 0 && data[i + 1] == 0 && data[i + 2] == 1 && data[i + 3] == 0xB5 {
+            if data[i + 4] >> 4 == 0x1 {
+                return Some(data[i + 5] & 0x08 == 0);
+            }
+            i += 4;
+            continue;
+        }
+        i += 1;
+    }
+    None
+}
+
+/// Whether any picture in an MPEG-2 packet asks for a field to be repeated.
+///
+/// Every picture of it, which [`mpeg2_repeats_field`] does not ask: the
+/// parser joins the two fields of a field pair into one packet, and a packet
+/// is not always one picture.
+pub fn mpeg2_any_repeat(data: &[u8]) -> bool {
+    mpeg2_coding_extensions(data).iter().any(|e| e[3] & 0x02 != 0)
+}
+
+/// Say how an MPEG-2 picture written by libavcodec is to be shown.
+///
+/// libavcodec's encoder never writes `repeat_first_field`, and writes
+/// `top_field_first` only in an interlaced sequence -- which is also the only
+/// sequence in which it codes a picture as two fields, and so the one in
+/// which a field may not be repeated. A picture that repeats a field has to
+/// be a frame picture coded as a frame (`progressive_frame` and
+/// `frame_pred_frame_dct` set), so such pictures are encoded as a
+/// progressive sequence and put back into the recording's own here: the
+/// sequence extension is given the recording's `progressive_sequence`, and
+/// the picture its field order and its repeat.
+///
+/// Nothing about how the picture decodes changes. A frame picture with
+/// `frame_pred_frame_dct` set carries neither `dct_type` nor
+/// `frame_motion_type`, whatever the sequence says, so the macroblocks read
+/// the same either way.
+pub fn mpeg2_set_display(data: &mut [u8], interlaced_sequence: bool, tff: bool, rff: bool) {
+    let mut i = 0;
+    while i + 9 <= data.len() {
+        if data[i] == 0 && data[i + 1] == 0 && data[i + 2] == 1 && data[i + 3] == 0xB5 {
+            match data[i + 4] >> 4 {
+                0x1 => {
+                    if interlaced_sequence {
+                        data[i + 5] &= !0x08;
+                    } else {
+                        data[i + 5] |= 0x08;
+                    }
+                }
+                // Only a picture coded as a frame and predicted as one may
+                // repeat a field. Anything else is left as it was written.
+                0x8 if data[i + 6] & 0x03 == 0x03 && data[i + 7] & 0x40 != 0 => {
+                    let e = &mut data[i + 4..];
+                    e[3] = (e[3] & !0x80) | if tff { 0x80 } else { 0 };
+                    let rff = rff && e[4] & 0x80 != 0;
+                    e[3] = (e[3] & !0x02) | if rff { 0x02 } else { 0 };
+                }
+                _ => {}
+            }
+            i += 4;
+            continue;
+        }
+        i += 1;
+    }
+}
+
 /// The picture coding extensions in a packet, each from its extension id
 /// onwards. Everything MPEG-2 says about how a picture is shown is in here,
 /// and there is one per picture -- which is not always one per packet. See
@@ -855,6 +929,50 @@ fn short_term_ref_pic_set(b: &mut Bits, idx: usize, sets: usize, deltas: &[u32])
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A sequence extension saying progressive, and a picture as libavcodec
+    /// writes one in a progressive sequence: frame structure, frame DCT,
+    /// progressive frame, top field first clear, no repeat.
+    fn progressive_picture() -> Vec<u8> {
+        let mut v = vec![0, 0, 1, 0xB5, 0x14, 0x8A, 0x00, 0x01, 0x00, 0x00];
+        v.extend_from_slice(&[0, 0, 1, 0x00, 0x00, 0x0F, 0xFF, 0xF8]);
+        // ext id 8, f_codes, dc precision 0, frame; tff 0, fpfd 1, rff 0,
+        // chroma_420_type 1; progressive_frame 1
+        v.extend_from_slice(&[0, 0, 1, 0xB5, 0x81, 0x11, 0xF3, 0x41, 0x80]);
+        v.extend_from_slice(&[0, 0, 1, 0x01, 0x12]);
+        v
+    }
+
+    #[test]
+    fn a_progressive_picture_is_put_back_into_an_interlaced_sequence() {
+        let mut p = progressive_picture();
+        assert_eq!(mpeg2_interlaced_sequence(&p), Some(false));
+        assert!(!mpeg2_any_repeat(&p));
+        mpeg2_set_display(&mut p, true, true, true);
+        assert_eq!(mpeg2_interlaced_sequence(&p), Some(true));
+        assert!(mpeg2_any_repeat(&p));
+        let e = mpeg2_coding_extensions(&p)[0];
+        assert_eq!(e[3] & 0x80, 0x80, "top field first");
+        // Everything else in the byte is as the encoder wrote it.
+        assert_eq!(e[3] & 0x7D, 0x41);
+        // And back: two fields, bottom first.
+        mpeg2_set_display(&mut p, true, false, false);
+        let e = mpeg2_coding_extensions(&p)[0];
+        assert_eq!(e[3], 0x41);
+    }
+
+    #[test]
+    fn a_picture_coded_as_fields_is_never_told_to_repeat_one() {
+        let mut p = progressive_picture();
+        // frame_pred_frame_dct clear and progressive_frame clear: an
+        // interlaced picture, which may not repeat a field.
+        let at = p.len() - 9 - 5 + 7;
+        p[at] &= !0x40;
+        let before = p.clone();
+        mpeg2_set_display(&mut p, true, true, true);
+        assert!(!mpeg2_any_repeat(&p));
+        assert_eq!(mpeg2_coding_extensions(&p)[0], mpeg2_coding_extensions(&before)[0]);
+    }
 
     fn sps(hex: &str) -> Vec<u8> {
         (0..hex.len() / 2)

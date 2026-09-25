@@ -3559,6 +3559,90 @@ fn mark_interlacing(frame: &mut ff::frame::Video, video: &crate::VideoInfo) {
     }
 }
 
+/// How the MPEG-2 pictures a segment writes are to be told to show
+/// themselves, where libavcodec cannot be told.
+///
+/// **libavcodec never writes `repeat_first_field`.** A recording carrying
+/// film at 29.97 shows every other picture for three fields, and a stretch
+/// of it re-encoded came out two fields a picture: the length was still in
+/// the timestamps, so a player that goes by those showed the right thing,
+/// but the stream itself said the re-encoded second was a fifth shorter
+/// than it is, and anything that counts fields -- a set-top decoder, a
+/// disc player -- was given the wrong picture sequence at every seam.
+///
+/// A picture may only repeat a field if it is coded as a whole frame
+/// (`progressive_frame`), and libavcodec codes those only in a progressive
+/// sequence. So a segment with a repeated field in it is encoded as one, and
+/// each picture is put back into the recording's own sequence on the way
+/// out, with the field order and the repeat its source picture had. See
+/// [`crate::bitstream::mpeg2_set_display`].
+///
+/// The same goes for a sequence the recording calls interlaced and
+/// libavcodec was opened progressive for anyway, because the container
+/// reported the field order of a first picture that happened to be film:
+/// the sequence extension it wrote said progressive among pictures that say
+/// otherwise.
+struct Mpeg2Display {
+    /// The recording's own `progressive_sequence`, inverted.
+    interlaced_sequence: bool,
+    /// Each picture's field order, by the index it went into the encoder
+    /// with. How long it lasts is in `placed` already.
+    top_first: std::collections::HashMap<i64, bool>,
+}
+
+/// What an MPEG-2 segment has to be encoded as: whether any picture it
+/// writes repeats a field, and whether the recording's sequence is
+/// interlaced, where it says.
+///
+/// Read off the packets rather than the pictures, because the encoder has to
+/// be opened before the first picture is decoded and its mode cannot change
+/// after. A GOP or two of packets, not decoded: the flags sit in plain bytes
+/// at the head of each picture.
+fn mpeg2_segment_shape(src: &Source, seg: &Segment, tol: f64) -> Result<(bool, Option<bool>)> {
+    let (mut ictx, idx) = open_input(&src.input.url)?;
+    let in_tb = f64::from(ictx.stream(idx).ok_or_else(|| anyhow!("no video"))?.time_base());
+    let mut sequence = ictx
+        .stream(idx)
+        .and_then(|s| {
+            let p = s.parameters();
+            unsafe {
+                let p = p.as_ptr();
+                ((*p).extradata_size > 0).then(|| {
+                    std::slice::from_raw_parts((*p).extradata, (*p).extradata_size as usize).to_vec()
+                })
+            }
+        })
+        .and_then(|x| crate::bitstream::mpeg2_interlaced_sequence(&x));
+    let (floor, _) = stretch_bytes(src, seg, tol);
+    seek_into(&mut ictx, src, seg.seek_from, floor)?;
+    crate::input::keep_only(&mut ictx, &[idx]);
+    let mut repeats = false;
+    for (stream, packet) in ictx.read_packets() {
+        if stream.index() != idx {
+            continue;
+        }
+        let Some(data) = packet.data() else { continue };
+        if sequence.is_none() {
+            sequence = crate::bitstream::mpeg2_interlaced_sequence(data);
+        }
+        let Some(pts) = packet.pts() else { continue };
+        let t = pts as f64 * in_tb - src.start_time;
+        // In decode order, so the pictures of the window can arrive up to a
+        // reorder's depth after its end has gone by.
+        let dts = packet.dts().map_or(t, |d| d as f64 * in_tb - src.start_time);
+        if dts > seg.end + 1.0 {
+            break;
+        }
+        if t >= seg.start - tol && t < seg.end - tol && crate::bitstream::mpeg2_any_repeat(data) {
+            repeats = true;
+        }
+        if repeats && sequence.is_some() {
+            break;
+        }
+    }
+    Ok((repeats, sequence))
+}
+
 /// Pull everything the encoder is ready to hand over.
 ///
 /// This has to happen between sends, not just at the end: an encoder that
@@ -3567,6 +3651,18 @@ fn drain_encoder(
     encoder: &mut ff::encoder::video::Encoder,
     reframe: Option<&Reframe>,
     placed: &std::collections::HashMap<i64, (i64, i64)>,
+    writer: &mut Writer,
+) -> Result<()> {
+    drain_encoder_shown(encoder, reframe, placed, None, writer)
+}
+
+/// As [`drain_encoder`], saying how each MPEG-2 picture is shown where the
+/// encoder could not; see [`Mpeg2Display`].
+fn drain_encoder_shown(
+    encoder: &mut ff::encoder::video::Encoder,
+    reframe: Option<&Reframe>,
+    placed: &std::collections::HashMap<i64, (i64, i64)>,
+    shown: Option<&Mpeg2Display>,
     writer: &mut Writer,
 ) -> Result<()> {
     loop {
@@ -3590,6 +3686,19 @@ fn drain_encoder(
                 out
             }
             _ => packet,
+        };
+        let packet = match shown {
+            Some(m) => {
+                let mut data = packet.data().unwrap_or(&[]).to_vec();
+                let tff = m.top_first.get(&index).copied().unwrap_or(true);
+                crate::bitstream::mpeg2_set_display(&mut data, m.interlaced_sequence, tff, fields == 3);
+                let mut out = ff::Packet::copy(&data);
+                out.set_flags(packet.flags());
+                out.set_pts(packet.pts());
+                out.set_dts(packet.dts());
+                out
+            }
+            None => packet,
         };
         writer.push(Emitted {
             packet,
@@ -3622,7 +3731,32 @@ fn reencode_segment(
     let mut decoder = ff::codec::context::Context::from_parameters(params.clone())?
         .decoder()
         .video()?;
-    let mut encoder = Pictures::open(src, &params, opts, ctx.signalling)?;
+    // MPEG-2 is told how its pictures are shown after it has written them;
+    // see [`Mpeg2Display`]. A segment that repeats a field is written as
+    // whole frames, which is the only way a picture may repeat one.
+    //
+    // Not asked where the answer is already known to be no: an interlaced
+    // recording the walk read through and found no repeated field in. That
+    // is most broadcast, and its seams are written exactly as they were.
+    let unknown = src.video.pulldown || !src.video.interlaced() || src.index_name != "packet scan";
+    let (repeats, interlaced_sequence) = if src.video.codec == "mpeg2video" && unknown {
+        mpeg2_segment_shape(src, seg, tol)?
+    } else {
+        (false, None)
+    };
+    let mut encoder = if repeats && src.video.interlaced() {
+        let mut frames = src.video.clone();
+        frames.field_order = 1; // AV_FIELD_PROGRESSIVE
+        Pictures::open_into(&frames, default_bit_rate(src), &params, opts, ctx.signalling)?
+    } else {
+        Pictures::open(src, &params, opts, ctx.signalling)?
+    };
+    let as_frames = repeats || !src.video.interlaced();
+    let mut shown = (src.video.codec == "mpeg2video" && as_frames && interlaced_sequence == Some(true))
+        .then(|| Mpeg2Display {
+            interlaced_sequence: true,
+            top_first: Default::default(),
+        });
 
     let (floor, wall) = stretch_bytes(src, seg, tol);
     let mut read_at: Option<u64> = None;
@@ -3695,16 +3829,27 @@ fn reencode_segment(
             let display = display_base + ((t - a) / field).round() as i64;
             let fields = 2 + unsafe { (*$f.as_ptr()).repeat_pict.max(0) as i64 };
             placed.insert(fed, (display, fields));
+            if let Some(m) = shown.as_mut() {
+                // Before `mark_interlacing`, which states the stream's order
+                // over the picture's own -- and under pulldown the two
+                // alternate.
+                let tff = unsafe {
+                    (*$f.as_ptr()).flags & ff::ffi::AV_FRAME_FLAG_TOP_FIELD_FIRST != 0
+                };
+                m.top_first.insert(fed, tff);
+            }
             span.fields = span.fields.max(display - display_base + fields);
             span.pictures += 1;
             $f.set_pts(Some(fed));
             fed += 1;
             $f.set_kind(ff::picture::Type::None);
-            mark_interlacing(&mut $f, &src.video);
+            if !as_frames {
+                mark_interlacing(&mut $f, &src.video);
+            }
             match &mut encoder {
                 Pictures::Libav(enc) => {
                     enc.send_frame(&$f)?;
-                    drain_encoder(enc, reframe, &placed, writer)?;
+                    drain_encoder_shown(enc, reframe, &placed, shown.as_ref(), writer)?;
                 }
                 // Nothing is held back: a picture that references
                 // nothing is finished the moment it is written, so it
@@ -3854,7 +3999,7 @@ fn reencode_segment(
     let _ = fed; // the count only matters while pictures are still going in
     if let Pictures::Libav(enc) = &mut encoder {
         enc.send_eof()?;
-        drain_encoder(enc, reframe, &placed, writer)?;
+        drain_encoder_shown(enc, reframe, &placed, shown.as_ref(), writer)?;
     }
 
     if span.pictures == 0 {

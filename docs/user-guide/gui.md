@@ -463,8 +463,9 @@ frames, and `Snap to lossless` can take those to zero once it lights up.
 > five frames, as a television or a DVD player does, and two of every five are
 > woven from the last field of one picture and the first of the next: a moving
 > edge combs on them, which is how the recording really looks. The output is
-> still cut picture by picture, and what is copied carries its RFF flags as the
-> recording had them. An IN placed on one of the woven frames starts the output
+> still cut picture by picture, and every picture carries the RFF flag the
+> recording gave it, those re-encoded at a seam included — up to 0.8.6 those
+> came out two fields each. An IN placed on one of the woven frames starts the output
 > with the picture that begins there, a field (a sixtieth of a second) after the
 > frame on screen. Up to 0.8.6 the four pictures were shown as they were, so one
 > frame in five had no picture of its own: the filmstrip drew it black in

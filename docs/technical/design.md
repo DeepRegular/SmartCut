@@ -1258,9 +1258,11 @@ never moved. They reach the editor as the frame they fall in (`weave::on_frame`)
 placed there still copies from that picture: the planner takes the first entry point within half
 a frame of the bound.
 
-What is written is not changed. A copy carries its pictures with their flags, so the output
-repeats exactly the fields the recording did. An IN on a mixed frame starts the output with the
-picture that begins in it, one field after the frame on screen.
+What is written is cut picture by picture as before, and every picture repeats exactly the
+fields the recording did — the copied ones carry their flags, and the re-encoded ones are given
+theirs back (see [validation](validation.md#repeated-fields-in-a-re-encoded-stretch)). An IN on
+a mixed frame starts the output with the picture that begins in it, one field after the frame on
+screen.
 
 ## Playback
 
