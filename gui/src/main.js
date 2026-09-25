@@ -172,6 +172,22 @@ function normalise(list) {
 /// held no picture to find -- the clock's own zero, as before.
 const headTime = () => (src ? (src.points.length ? src.points[0] : (src.head ?? 0)) : 0);
 
+/// Where the frame holding the instant `t` begins, on a recording whose
+/// fields repeat; the same instant everywhere else. The backend's
+/// `weave::on_frame`, for what reaches the editor without passing through it.
+///
+/// A detection's ends and a silence are instants of their own, and under 2:3
+/// pulldown a picture can begin half way through a frame. The stage shows the
+/// frame holding such an instant, so a mark kept there was half a frame ahead
+/// of the frame it showed: a step to the next mark landed on the same frame
+/// and found that mark still ahead, and Insert on it put a second mark down
+/// instead of taking the first away.
+const onFrame = (t) => {
+  if (!src || !src.pulldown || !src.points.length || !isFinite(t)) return t;
+  const head = headTime();
+  return head + Math.floor((t - head) / frame() + 0.25) * frame();
+};
+
 /// Recompute what survives the cuts, and where each surviving piece lands in
 /// the output.
 function rebuildTimeline() {
@@ -660,9 +676,10 @@ function paintCards(times, imgs) {
 /// `focus` is the mark to leave selected. Adding one by hand selects it; a
 /// batch (CM detection) selects nothing, there being no one mark it is about.
 function addKeyframes(times, focus = null) {
-  const all = keyframes.concat(times.filter((t) => isFinite(t)));
+  const all = keyframes.concat(times.filter((t) => isFinite(t)).map(onFrame));
   all.sort((a, b) => a - b);
   const next = all.filter((t, i) => i === 0 || t - all[i - 1] > frame() / 2);
+  if (focus !== null) focus = onFrame(focus);
   // A mark is not a cut, but it is still something that was done, and 取消
   // steps back through what was done. A press that puts nothing down -- the
   // same frame marked twice -- is not something that was done.
@@ -1133,7 +1150,7 @@ function flatKindsAt(t) {
 const flatEdges = (kinds) =>
   flatRuns
     .filter((r) => kinds.includes(r.kind))
-    .flatMap((r) => [r.start, flatEnd(r)])
+    .flatMap((r) => [r.start, flatEnd(r)].map(onFrame))
     .filter((t) => srcToOut(t) !== null)
     .sort((a, b) => a - b);
 
@@ -1416,8 +1433,7 @@ async function showFrame(t) {
   // all, and a frame short of the container's length left it out of reach.
   // A last picture the edit has taken away leaves the end of what is kept
   // as the end, and that is a frame short of the timeline's length as ever.
-  const end = tailSrc === null || srcToOut(tailSrc) === null ? outDur - frame() : lastOut();
-  playhead = outToSrc(clamp(srcToOutSeam(t), 0, Math.max(0, end)));
+  playhead = outToSrc(clamp(srcToOutSeam(t), 0, lastStop()));
   updateReadouts();
   draw();
 
@@ -1457,8 +1473,11 @@ async function showFrame(t) {
     // really on, and from there the two agree exactly.
     const exact = walked();
     // Asked for a frame in the last few and answered with one further back:
-    // that one is the last picture there is. See `tailSrc`.
-    if (exact && tailSrc === null && playhead - shot.time > frame() / 2 &&
+    // that one is the last picture there is. See `tailSrc`. Where fields
+    // repeat the frame holding an instant can begin up to three quarters of a
+    // frame before it (`onFrame`), which is not a frame further back.
+    const behind = frame() * (src.pulldown ? 0.8 : 0.5);
+    if (exact && tailSrc === null && playhead - shot.time > behind &&
         src.duration - playhead < 3 * frame()) {
       tailSrc = shot.time;
     }
@@ -1835,10 +1854,11 @@ const subsPicker = el("subs-track");
 if (subsPicker) {
   subsPicker.addEventListener("change", () => {
     subsId = subsPicker.value === "" ? null : Number(subsPicker.value);
+    // And anything still on its way for the track that was on: landing after
+    // this, it drew that track's subtitle back over a picker that says none
+    // or names another one.
+    subsToken += 1;
     if (subsId === null) {
-      // And anything still on its way for the track that was on: landing
-      // after this, it drew the subtitle back over a picker that says none.
-      subsToken += 1;
       clearSubs();
     } else {
       showSubs(shownTime >= 0 ? shownTime : playhead);
@@ -3286,9 +3306,9 @@ function startScroll(rateAt, extra) {
   const tick = () => {
     const rate = search.rateAt();
     if (!rate) return;
-    playhead = outToSrc(
-      clamp(playOut() + rate * (SCROLL_TICK / 1000), 0, Math.max(0, outDur - frame())),
-    );
+    // Held at the last picture, as a step is: run past it, the counter read
+    // frames that are not there and jumped back when the key came up.
+    playhead = outToSrc(clamp(playOut() + rate * (SCROLL_TICK / 1000), 0, lastStop()));
     updateReadouts();
     draw();
     paintFast(playhead);
@@ -3456,13 +3476,23 @@ function lastOut() {
   return o === null ? outDur : Math.min(outDur, o);
 }
 
+/// The last place the playhead may stand, on the edited timeline: a frame
+/// short of the end until the last picture is known, and that picture after.
+/// See `showFrame`, which says why the two differ.
+const lastStop = () =>
+  Math.max(0, tailSrc === null || srcToOut(tailSrc) === null ? outDur - frame() : lastOut());
+
 /// Ask for the picture at the very end of the recording, to learn where the
 /// last one is before anybody steps into the gap after it.
+///
+/// This answer is the exact one and replaces whatever the stage learnt first:
+/// that one is inferred from a step that came back short, and a picture held
+/// longer than a frame near the end answers a step the same way.
 async function learnTail(path) {
-  if (!src || src.path !== path || tailSrc !== null) return;
+  if (!src || src.path !== path) return;
   try {
     const shot = await invoke("preview", { time: src.duration, width: 320 });
-    if (src && src.path === path && tailSrc === null) tailSrc = shot.time;
+    if (src && src.path === path) tailSrc = shot.time;
   } catch (e) {
     jlog(`learnTail: ${e}`);
   }
@@ -3542,10 +3572,16 @@ window.addEventListener(
     if (!el("tracks-modal").hidden) return;
     if (scrolls(ev.target)) return;
     ev.preventDefault();
-    wheelStep(Math.sign(ev.deltaY), ev.shiftKey);
+    wheelStep(Math.sign(notch(ev)), ev.shiftKey);
   },
   { passive: false }
 );
+
+/// Which way a notch went. With Shift held a webview can report the notch
+/// as sideways -- WebView2 on Windows does, turning Shift+wheel into a
+/// horizontal scroll -- and read off `deltaY` alone the GOP hop was a notch
+/// that did nothing.
+const notch = (ev) => ev.deltaY || (ev.shiftKey ? ev.deltaX : 0);
 
 /// One notch of the wheel: a frame, or with Shift a whole GOP.
 ///
@@ -4427,9 +4463,12 @@ function trimBody() {
   const head = headTime();
   const no = (t) => Math.round((t - head) * src.fps);
   const parts = [];
+  // Not past the last picture there is: a recording whose sound runs on
+  // after its pictures has a container end a frame or two beyond it.
+  const end = tailSrc === null ? Infinity : tailSrc + frame();
   for (const k of keeps) {
     const a = Math.max(0, no(k.a));
-    const b = no(k.b) - 1;
+    const b = no(Math.min(k.b, end)) - 1;
     // An end of 0 is AviSynth's "to the end of the clip", so a single frame
     // kept at the head is written by its length instead.
     if (b >= a) parts.push(b === 0 ? `Trim(${a},-1)` : `Trim(${a},${b})`);
@@ -5310,6 +5349,12 @@ async function openPath(picked, saved, side, name, chapters, dropPids) {
     selA = saved ? Math.min(saved.selA, outDur) : 0;
     selB = saved ? Math.min(saved.selB, outDur) : outDur;
     el("status").textContent = "";
+    // What the row arrived with, said now as well as once the open is over.
+    // The timeline is reported to the list while the walk is still reading
+    // (`renderKeyframes` -> `sync`), and against the empty mark a fresh window
+    // starts with, that report called a row nobody had touched an edited one:
+    // a second visit to a row was enough to badge it 編集済み for good.
+    settleMark();
     // The files beside the recording, before the walk rather than after it.
     // Their numbers count pictures from the recording's first one, so what
     // they need is the head -- and the outline now says where that is, read
@@ -5403,9 +5448,19 @@ async function pointsArrived(exact, picked) {
   // to the old end, which left the frames beyond it in the cut.
   if (full.duration > src.duration + 1e-6) {
     for (const c of cuts) if (c.b >= src.duration - 1e-6) c.b = full.duration;
+    // The same cut, not an edit -- for the reason `openPath` gives above.
+    settleMark();
   }
   src = full;
   tailSrc = null;
+  // The marks that came up with the row, onto the frames they show now that
+  // there are access points to count frames from. See `onFrame`.
+  if (src.pulldown) {
+    const all = keyframes.map(onFrame).sort((a, b) => a - b);
+    keyframes = all.filter((t, i) => i === 0 || t - all[i - 1] > frame() / 2);
+    if (activeKey !== null) activeKey = onFrame(activeKey);
+    pickedKeys = pickedKeys.map(onFrame);
+  }
   // A moment after, so that it does not stand in front of the first picture
   // the stage asks for.
   setTimeout(() => learnTail(picked), 1500);
@@ -6672,9 +6727,6 @@ if (listen) {
     sendZoomPoint();
     scheduleZoom(true);
   });
-  // And that it has gone, whichever way it went -- the menu, the key, or its
-  // own title bar. Reported from the backend, because the page going away is
-  // the thing being reported.
   // A notch over 拡大表示. The same gate as the wheel over this window: a
   // panel over the timeline is the timeline not listening.
   hear("zoom-wheel", (ev) => {
@@ -6682,6 +6734,9 @@ if (listen) {
     if (!el("tracks-modal").hidden) return;
     wheelStep(Math.sign(Number(said.dir) || 0), !!said.shift);
   });
+  // And that it has gone, whichever way it went -- the menu, the key, or its
+  // own title bar. Reported from the backend, because the page going away is
+  // the thing being reported.
   hear("zoom-closed", () => {
     zoomOn = false;
     zoomShown = null;

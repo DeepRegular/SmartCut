@@ -1230,18 +1230,29 @@ fn open_now(path: &str, app: &tauri::AppHandle, ticket: u64) -> Result<SourceInf
     if OPEN_TICKET.load(Ordering::SeqCst) != ticket {
         return Err("another recording was opened in the meantime".into());
     }
-    // Anything still building for the file that was open belongs to nothing
-    // now; the count going up is what tells it so.
-    app.state::<Generation>().0.fetch_add(1, Ordering::SeqCst);
-    *locked(&app.state::<Thumbs>().0) = None;
-    // Named by what was asked for rather than by what came back: this is
-    // compared against a path the list window holds, and that is the string
-    // it handed over.
-    *locked(&app.state::<OpenPath>().0) = Some(path.to_string());
-    *locked(&app.state::<Proxy>().0) = None;
-    *locked(&app.state::<Held>().0) = held;
     let info = info_of(&src);
-    *locked(&app.state::<Opened>().0) = Some(src);
+    // All of it under the recording's own lock, because `prepare` reads the
+    // recording and the count together under that lock and then takes the
+    // held index. Done one by one, a `prepare` for the recording just closed
+    // could land in between -- the new count beside the old recording, or
+    // the new recording beside the old held index -- and those pictures were
+    // then kept as the new recording's. Nothing that holds any of the four
+    // below ever waits on `Opened`, so the nesting cannot deadlock.
+    {
+        let opened = app.state::<Opened>();
+        let mut opened = locked(&opened.0);
+        // Anything still building for the file that was open belongs to
+        // nothing now; the count going up is what tells it so.
+        app.state::<Generation>().0.fetch_add(1, Ordering::SeqCst);
+        *locked(&app.state::<Thumbs>().0) = None;
+        // Named by what was asked for rather than by what came back: this is
+        // compared against a path the list window holds, and that is the
+        // string it handed over.
+        *locked(&app.state::<OpenPath>().0) = Some(path.to_string());
+        *locked(&app.state::<Proxy>().0) = None;
+        *locked(&app.state::<Held>().0) = held;
+        *opened = Some(src);
+    }
     // After the recording is in, not before: `subtitle_at` builds its reader
     // out of whatever `Opened` holds, and one built in between was the last
     // recording's, kept and answered from for as long as the same track
@@ -6450,12 +6461,16 @@ fn write_keyframes_now(path: &str, frames: &[u32], fps: f64) -> Result<usize, St
 fn write_whole(path: &std::path::Path, body: &[u8]) -> std::io::Result<()> {
     static NEXT: AtomicU64 = AtomicU64::new(0);
     let path = &std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
-    let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
     // Two saves of the one file at once -- the project written twice in a
     // row -- each have a name of their own, or the second truncated the
     // first's while it was being renamed into place.
+    //
+    // A name of its own length rather than the file's with more on the end:
+    // a name is at most 255 bytes, and a sidecar named after a recording with
+    // a long Japanese title -- three bytes a character -- fits with a few to
+    // spare and did not fit with twenty more, so it could not be saved at all.
     let temp = path.with_file_name(format!(
-        ".{name}.{}.{}.part",
+        ".smartcut-{}-{}.part",
         std::process::id(),
         NEXT.fetch_add(1, Ordering::Relaxed)
     ));
@@ -7350,8 +7365,17 @@ struct PrefsOut {
 /// at the next open, in the middle of a pass, with nobody looking at the
 /// panel that asked for it. So it is made and written to here, and a refusal
 /// comes back as a sentence the panel can show.
-#[tauri::command]
+///
+/// Off the main thread: that folder can be on a share, and the window sends
+/// this at every start. A share that is asleep or gone answered the probe in
+/// its own time -- tens of seconds -- with the list window stopped until it
+/// did. Numbered, so that a call held up like that and answered after a later
+/// one does not put the older settings back over the newer.
+#[tauri::command(async)]
 fn set_prefs(want: PrefsIn) -> Result<(), String> {
+    static ASKED: AtomicU64 = AtomicU64::new(0);
+    static SETTLED: Mutex<u64> = Mutex::new(0);
+    let ticket = ASKED.fetch_add(1, Ordering::SeqCst) + 1;
     let asked = match want.cache_dir.trim() {
         "" => Ok(None),
         chosen => usable_cache_dir(chosen).map(Some),
@@ -7363,14 +7387,18 @@ fn set_prefs(want: PrefsIn) -> Result<(), String> {
     // platform gives, which is where they were before anybody chose, and the
     // refusal is reported.
     let dir = asked.as_ref().ok().and_then(|d| d.clone());
-    prefs::set(
-        want.clean_joins,
-        want.proxy,
-        want.proxy_width,
-        want.ffmpeg_log,
-        dir,
-        want.audio_fade,
-    );
+    let mut settled = locked(&SETTLED);
+    if *settled < ticket {
+        *settled = ticket;
+        prefs::set(
+            want.clean_joins,
+            want.proxy,
+            want.proxy_width,
+            want.ffmpeg_log,
+            dir,
+            want.audio_fade,
+        );
+    }
     asked.map(|_| ())
 }
 

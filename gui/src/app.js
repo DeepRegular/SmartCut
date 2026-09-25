@@ -152,8 +152,12 @@ function asAsked(saved) {
 /// out of a project, which is the same shape written down.
 function makeClip(found) {
   const { path, name, renamed, stem, home, chapters, dropPids, made, description,
-          channel, channelNumber, programme, after, edited, audioChannels } =
+          channel, channelNumber, programme, after, edited, audioChannels, ran } =
     typeof found === "string" ? { path: found } : found;
+  // A saved row can be a hand's work, and these go to the engine as strings
+  // and numbers of one kind: a `5` where a text belongs failed the disc's
+  // index at the end of an hour's run. Anything else is nobody having said.
+  const text = (v) => (typeof v === "string" ? v : null);
   return {
     // A row's own identity, which its path is not: the same recording can be
     // in the list more than once, cut two different ways. Everything about a
@@ -161,7 +165,7 @@ function makeClip(found) {
     // stopped being the same thing when clips became duplicable.
     id: nextId++,
     path,
-    name: name || nameOf(path),
+    name: text(name) || nameOf(path),
     /// What somebody renamed this row to, or null for the name it arrived
     /// with.
     ///
@@ -170,7 +174,7 @@ function makeClip(found) {
     /// what the row shows, what a cut of it is written as, and -- unless the
     /// output screen has been told otherwise -- what a disc's index calls the
     /// programme.
-    renamed: renamed || null,
+    renamed: text(renamed) || null,
     /// What a cut of it is called and where it goes, when the recording's own
     /// path cannot answer either. Null for an ordinary file.
     stem: typeof stem === "string" && stem ? stem : null,
@@ -179,7 +183,7 @@ function makeClip(found) {
     /// clock. Held here rather than turned into marks on the spot: only the
     /// editor knows where the container's clock begins, and it is the one
     /// that owns marks. Empty for an ordinary file.
-    chapters: Array.isArray(chapters) ? chapters : [],
+    chapters: Array.isArray(chapters) ? chapters.filter((c) => Number.isFinite(c)) : [],
     /// Streams switched off when the disc was read, by PID.
     ///
     /// A PID rather than a stream index because this answer was given before
@@ -193,7 +197,7 @@ function makeClip(found) {
     /// speaks for this row -- otherwise a track switched back *on* in the
     /// editor would be switched off again on the way out by an answer given
     /// before anybody had seen the recording.
-    dropPids: Array.isArray(dropPids) ? dropPids : [],
+    dropPids: Array.isArray(dropPids) ? dropPids.filter((p) => Number.isInteger(p)) : [],
     /// What a disc's index will say about the recording besides its name:
     /// when it was made, as `2026-08-17 01:00:00`, what it was about, and the
     /// channel it came off with the three digits a viewer knows that channel
@@ -204,14 +208,20 @@ function makeClip(found) {
     /// says about itself -- the answer a file arrives with, asked for when it
     /// is needed. An empty string is an answer: leave the field blank on the
     /// disc. See `madeOf`.
-    made: made ?? null,
-    description: description ?? null,
-    channel: channel ?? null,
-    channelNumber: channelNumber ?? null,
+    made: text(made),
+    description: text(description),
+    channel: text(channel),
+    channelNumber:
+      Number.isInteger(channelNumber) && channelNumber >= 0 && channelNumber <= 65535
+        ? channelNumber
+        : null,
+    /// How long the programme ran on air, in seconds, as the disc it came
+    /// off listed it. Null where nothing said; the stream is asked instead.
+    ran: Number.isInteger(ran) && ran >= 0 ? ran : null,
     /// What to call this recording in a disc's index, when the name it
     /// arrived with is not the one wanted. Null until somebody types one,
     /// which is the difference between "no answer yet" and "called nothing".
-    programme: programme === undefined ? null : programme,
+    programme: text(programme),
     /// What happens where this clip gives way to the next one, when the list
     /// is being written as a single file.
     ///
@@ -1538,6 +1548,10 @@ async function restoreFlat(clip) {
     // Unreachable recordings are the index pass's news to break.
     return;
   }
+  // 環境設定 moved while the cache was being read. `forgetFlat` passed this
+  // row over -- it had no answer yet to forget -- so this one, to the old
+  // question, would have stood as the answer to the new one.
+  if (JSON.stringify(flatAsk()) !== JSON.stringify(ask)) return restoreFlat(clip);
   if (!got) return;
   let said = false;
   for (const [which, runs] of [
@@ -3703,6 +3717,10 @@ function seqNo(clip) {
 /// runs. See `startExport`.
 let runOrder = null;
 
+/// Every recording a run must not write over: the list it began with, and
+/// any row added to the list while it goes. See `names_an_input`.
+const runInputs = () => [...new Set([...(runOrder || []), ...clips].map((c) => c.path))];
+
 /// Where a clip will be written, given the settings.
 ///
 /// Named after the recording it came from, in the folder chosen or beside
@@ -3846,8 +3864,7 @@ function outputPath(clip) {
 /// its own: a joined file is the list, and the list already has a name at
 /// the top of it. No subfolder either: one file needs no folder of its own,
 /// so it lands where a single cut would. See `subfolderWanted`.
-function joinedPath() {
-  const list = ready();
+function joinedPath(list = ready()) {
   if (!list.length) return "";
   const { dir, name, ext } = outputBase(list[0]);
   return `${dir}${name}.${ext}`;
@@ -5147,6 +5164,11 @@ async function askFreeFolder(force = false) {
     // a sentence of its own. The plain name, which is what there was before
     // there was a branch.
   }
+  // Asked again since, about another folder or another name: that answer is
+  // the one to keep, and this one landing after it would put the screen back
+  // on the plain name with nothing left to ask again. Not for the run's own
+  // ask, which the run is waiting on.
+  if (!force && folderAsked !== key) return false;
   const moved = freeFolder.dir !== dir || freeFolder.asked !== asked || freeFolder.name !== name;
   freeFolder = { dir, asked, name };
   return moved;
@@ -7016,10 +7038,17 @@ el("run-export").addEventListener("click", () => {
 /// that were not written, and one of them showing an error while the other
 /// eleven said nothing would be eleven rows lying about what happened.
 async function writeJoined(list) {
-  const out = joinedPath();
-  const clash = list.find((c) => c.path === out);
+  // Named after the run's own first row: a walk that landed during the waits
+  // before the run can have put a row above it that is not in this join.
+  const out = joinedPath(list);
+  // The engine refuses to write over a recording of the join itself; the
+  // list's other rows -- one still unread, one that would not open -- are
+  // recordings it does not know about, as they are for a file apiece.
+  const same = list.some((c) => c.path === out);
+  const clash = same || (await invoke("names_an_input", { output: out, inputs: runInputs() }));
   if (clash) {
-    for (const c of list) c.out = { state: "error", progress: 0, note: t("out.sameName") };
+    const why = t(same ? "out.sameName" : "out.overwritesInput");
+    for (const c of list) c.out = { state: "error", progress: 0, note: why };
     renderOutScreen();
     return false;
   }
@@ -7126,6 +7155,21 @@ async function runExport() {
   paintExportButton();
   try {
     await startExport();
+  } catch (e) {
+    // A call that threw rather than said no, somewhere between the pieces of
+    // the run that handle their own failures. What the run had taken is given
+    // back the way a run that ends gives it back, so that the lanes are not
+    // left stopped and the list does not go on reading as being written.
+    jlog(`export: ${e}`);
+    note(String(e));
+    exporting = false;
+    writing = null;
+    runDir = null;
+    runFolder = null;
+    paused = heldBeforeRun && !resumeAfterRun;
+    resumeAfterRun = false;
+    pump();
+    renderOutScreen();
   } finally {
     starting = false;
     runOrder = null;
@@ -7148,6 +7192,13 @@ async function startExport() {
   // makes it, so what the list holds is already what is on screen in there.
   const list = ready();
   if (!list.length) return;
+  // The numbers in the names, held for the run. A row moved or taken out
+  // while the list is being written would otherwise renumber the rows still
+  // to come, and one of them could be given the name a row already written
+  // has -- and be written over it. Taken with `list` rather than after the
+  // waits below: a row taken out while the disc's names were being read left
+  // a row of the run out of this, and it was written as `00_`.
+  runOrder = clips.slice();
   // The last run's sentence goes down before this one has anything to say.
   // It stands after a run ends -- which is what makes it readable at all --
   // and a folder the *previous* run was given a branch number for, left on
@@ -7245,11 +7296,6 @@ async function startExport() {
   }
 
   exporting = true;
-  // The numbers in the names, held for the run. A row moved or taken out
-  // while the list is being written would otherwise renumber the rows still
-  // to come, and one of them could be given the name a row already written
-  // has -- and be written over it.
-  runOrder = clips.slice();
   began = Date.now();
   phaseBegan = began;
   discSteps = [];
@@ -7281,7 +7327,7 @@ async function startExport() {
     }
     // Nor over another row's recording, which the engine does not know is
     // in the list: its turn would come after its file had been cut short.
-    if (await invoke("names_an_input", { output: out, inputs: (runOrder || clips).map((c) => c.path) })) {
+    if (await invoke("names_an_input", { output: out, inputs: runInputs() })) {
       clip.out = { state: "error", progress: 0, note: t("out.overwritesInput") };
       renderOutScreen();
       continue;
@@ -7655,7 +7701,9 @@ async function sharesAsked(doc) {
   const known = new Set(prefs.get("trustedShares"));
   const named = [];
   for (const c of Array.isArray(doc.clips) ? doc.clips : []) {
-    if (c) named.push(c.path, c.home);
+    // And the still a crossing lays over the join, which the run and the
+    // seam window both read.
+    if (c) named.push(c.path, c.home, c.after && c.after.image);
   }
   if (doc.settings && typeof doc.settings === "object") named.push(doc.settings.dir);
   const hosts = [...new Set(named.map(shareHost).filter((h) => h && !known.has(h)))];
@@ -7784,6 +7832,8 @@ function captureProject(settled = outputSettled, forRun = false) {
       description: c.description ?? undefined,
       channel: c.channel ?? undefined,
       channelNumber: c.channelNumber ?? undefined,
+      // And how long the listing said it ran, for the same reason.
+      ran: c.ran ?? undefined,
       programme: c.programme || undefined,
       // What the editor handed back the last time this row was in it: the
       // cuts, the marks, and where the playhead was left. Null for a row
@@ -8662,6 +8712,11 @@ async function lookAtJobs() {
     // The same refusal a project meets when it is opened: a queue is drawn
     // the moment a job is added, and a job is a file from anywhere.
     if (!first || namesAProtocol(first)) continue;
+    // Nor a share nobody here has said yes to: reading one is signing in to
+    // it, and the question `sharesAsked` puts is put when the job runs, which
+    // is after this.
+    const host = shareHost(first);
+    if (host && !new Set(prefs.get("trustedShares")).has(host)) continue;
     try {
       look.poster = (await invoke("clip_glance", { path: first })) || "";
     } catch {
@@ -11062,7 +11117,9 @@ tellBackend(invoke)
   // tool has no list to open and the two screens where one is built come off
   // its bar, so a window that painted them and took them away a tick later
   // would be a window that flickered into being the wrong program.
-  .then(() => settleRole())
+  // Handing on what `tellBackend` answered, which the step after this one
+  // is about: dropped here, the folder that was refused went unsaid.
+  .then((failed) => settleRole().then(() => failed))
   // The one of them that can be refused is the folder for the scratch files,
   // and a folder that was there when it was chosen can be gone by the next
   // start -- an external disk, a share that is not mounted yet. Said on the

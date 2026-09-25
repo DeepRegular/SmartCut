@@ -291,7 +291,9 @@ function seamSpec() {
 /// on it. Called on every change of a setting.
 async function refreshSpan() {
   const spec = seamSpec();
-  if (!spec || !invoke) return;
+  // Worked out against the pair the backend holds, so not while that is
+  // still the join before: `showJoin` asks again once its pair is in.
+  if (!spec || !invoke || !facts) return;
   const run = ++spanRun;
   let got;
   try {
@@ -328,7 +330,10 @@ async function showFrame(t) {
       const want = shotWanted;
       shotWanted = null;
       const spec = seamSpec();
-      if (!spec) break;
+      // No pair in hand yet, or the join before's: `showJoin` asks for its
+      // first picture once the load is in.
+      if (!spec || !facts) break;
+      const run = joinRun;
       const shot = await invoke("cross_shot", {
         seam: spec,
         time: want,
@@ -338,6 +343,10 @@ async function showFrame(t) {
         return null;
       });
       if (!shot || playing) break;
+      // Another join was picked while this was being drawn, and it is a
+      // picture of the join before: composited from that pair, at an instant
+      // of that seam.
+      if (run !== joinRun) continue;
       el("preview").src = shot.url;
       shown = want;
       updateReadouts();
@@ -371,7 +380,7 @@ function setPlaying(on) {
 }
 
 function startPlay() {
-  if (!invoke || playing || !span || span.seconds <= 0) return;
+  if (!invoke || playing || !facts || !span || span.seconds <= 0) return;
   const spec = seamSpec();
   if (!spec) return;
   // From the top again where the playhead is sitting at the end: pressing 再生
@@ -392,6 +401,9 @@ function startPlay() {
     run,
     frames,
   }).catch((e) => {
+    // A run that has since been stopped and followed by another is not the
+    // one on screen, and its failure does not stop that one.
+    if (run !== playRun) return;
     el("note").textContent = tr("editor.playFailed", { e });
     setPlaying(false);
   });
@@ -442,6 +454,9 @@ async function showJoin() {
   paintLive();
   head = 0;
   span = null;
+  // The pair the backend holds is the join before's until the load below is
+  // in; nothing is asked of it for this join until then.
+  facts = null;
   updateReadouts();
   if (!invoke) return;
   el("note").textContent = tr("xw.reading");

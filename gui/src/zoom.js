@@ -237,7 +237,9 @@ window.addEventListener(
   (ev) => {
     if (ev.target && ev.target.tagName === "SELECT") return;
     ev.preventDefault();
-    const dir = Math.sign(ev.deltaY);
+    // Sideways where Shift is held and the webview has made the notch a
+    // horizontal scroll; see `notch` in `main.js`.
+    const dir = Math.sign(ev.deltaY || (ev.shiftKey ? ev.deltaX : 0));
     if (dir && emit) emit("zoom-wheel", { dir, shift: ev.shiftKey });
   },
   { passive: false }

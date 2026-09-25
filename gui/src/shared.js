@@ -291,7 +291,10 @@ export function wireDrops() {
     };
 
     const commit = (i) => {
-      if (items[i] && !off(i)) {
+      // The answer already held raises nothing, as the platform's own popup
+      // raises nothing for it: a shade picked again forgot every row's
+      // detection, and a unit picked again forgot the lengths found under it.
+      if (items[i] && !off(i) && i !== select.selectedIndex) {
         select.value = items[i].dataset.value;
         // What a click on a real option would have raised, and in the order a
         // real one raises them. Both, because both are subscribed to across

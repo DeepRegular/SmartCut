@@ -330,6 +330,25 @@ const DEFAULTS = {
 
 const KEY = (name) => `smartcut.${name}`;
 
+/// The answers a preference that is one of a few words can be. A word outside
+/// its list is from a version that had other words, or from a hand in the
+/// store, and it is not an answer this one can act on: an unknown shade went
+/// to the engine as it was, and an unknown unit left its field showing none.
+const STEP_UNITS = ["frame", "sec", "pct"];
+const RUN_UNITS = ["frame", "sec"];
+const CHOICES = {
+  pageStepUnit: STEP_UNITS,
+  pageStepShiftUnit: STEP_UNITS,
+  pageStepCtrlUnit: STEP_UNITS,
+  pageStepShiftCtrlUnit: STEP_UNITS,
+  blankRunUnit: RUN_UNITS,
+  quietRunUnit: RUN_UNITS,
+  sidecarPriority: ["keyframe", "trim", "cm"],
+  blankShades: ["both", "black", "white"],
+  blankLevelUnit: ["percent", "value"],
+  flatMarkAt: ["after", "last"],
+};
+
 /// Seeded defaults, replacing the ones above for anything nobody has stored.
 const seeded = {};
 
@@ -369,6 +388,10 @@ export function get(name) {
     // something else by this name. The default is a better answer than a
     // number where a string is expected.
     if (typeof v !== typeof fallback && fallback !== null) return fallback;
+    // `typeof` says "object" of a list, of null and of anything else in
+    // braces alike, and the one list here is spread into a `Set`.
+    if (Array.isArray(fallback) && !Array.isArray(v)) return fallback;
+    if (name in CHOICES && !CHOICES[name].includes(v)) return fallback;
     return v;
   } catch {
     // The counter was written as "on"/"off" before any of this existed, and
