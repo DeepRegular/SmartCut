@@ -181,6 +181,18 @@ video pictures in it are coded as frames rather than fields. That is what keeps 
 field sequence whole, and such a segment is only ever the fraction of a second where
 a programme changes from one to the other.
 
+A sequence that is progressive throughout (`progressive_sequence=1`) repeats whole
+frames rather than fields: a picture is shown for two frames or three. Re-encoded
+pictures lost those repeats until the full review before 0.8.7; they are now
+written back the same way, `repeat_first_field` with `top_field_first` 0 for two
+frames and 1 for three.
+
+A range whose start fell inside a three-field picture was also a field long. The
+hold for variable-rate recordings (0.8.0) put that picture at the start, still
+claiming three fields, and stamped the next one two fields later. A picture whose
+own repeats already reach the next one is not a hold; the output now starts with the
+next picture, as it did before 0.8.0.
+
 ### A recorder's own disc codes field pairs (a bug found on real material)
 
 A SONY recorder's BD-RE writes 1440x1080 29.97 H.264 as **PAFF**: every frame is a

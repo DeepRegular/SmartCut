@@ -1256,7 +1256,15 @@ access points and scene changes among them — half way through a frame, a field
 Handed their own instants, a step forward from that frame found the same point still ahead and
 never moved. They reach the editor as the frame they fall in (`weave::on_frame`), and a cut
 placed there still copies from that picture: the planner takes the first entry point within half
-a frame of the bound.
+a frame of the bound. What the detections find — the ends of a commercial block, a stretch of
+black, a silence — are instants of the recording too and fall half way through frames the same
+way, but they never pass through the backend on their way to a mark. The editor puts each mark
+down on the frame it falls in by the same rule (`onFrame` in `main.js`); left where they were,
+a step to the next mark stood still on it, and Insert over one laid a second mark beside it.
+
+The length of a field comes from the MPEG-2 sequence header, not from the container's average
+rate. The same recording remuxed into MP4 states an average of 25.46 fps, and fields paired on
+that would be paired with the wrong partners.
 
 What is written is cut picture by picture as before, and every picture repeats exactly the
 fields the recording did — the copied ones carry their flags, and the re-encoded ones are given

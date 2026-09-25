@@ -137,11 +137,11 @@ deb 以外はすべて FFmpeg を同梱しているので、ほかに用意す�
 
 | プラットフォーム | ファイル | 備考 |
 |---|---|---|
-| **Linux** | `SmartCut_0.8.6_amd64.AppImage` | 実行権限を付けて起動します |
-| **Linux** | `SmartCut-0.8.6-linux-x86_64.tar.gz` | 展開して `./smartcut` を実行します。FUSE を使いたくない場合はこちらです |
-| **Linux (Debian/Ubuntu)** | `smartcut_0.8.6_amd64.deb` | `sudo apt install ./smartcut_0.8.6_amd64.deb`。システムに入っている FFmpeg を使うので 4.8 MB で済みます |
-| **Windows** | `SmartCut_0.8.6_x64-setup.exe` | インストーラ。コマンドライン版の `smartcut-cli.exe` も同じフォルダーに入ります |
-| **Windows** | `smartcut-portable-x64-0.8.6.zip` | 展開して `smartcut.exe` を実行します。コマンドライン版は `smartcut-cli.exe` です |
+| **Linux** | `SmartCut_0.8.7_amd64.AppImage` | 実行権限を付けて起動します |
+| **Linux** | `SmartCut-0.8.7-linux-x86_64.tar.gz` | 展開して `./smartcut` を実行します。FUSE を使いたくない場合はこちらです |
+| **Linux (Debian/Ubuntu)** | `smartcut_0.8.7_amd64.deb` | `sudo apt install ./smartcut_0.8.7_amd64.deb`。システムに入っている FFmpeg を使うので 4.8 MB で済みます |
+| **Windows** | `SmartCut_0.8.7_x64-setup.exe` | インストーラ。コマンドライン版の `smartcut-cli.exe` も同じフォルダーに入ります |
+| **Windows** | `smartcut-portable-x64-0.8.7.zip` | 展開して `smartcut.exe` を実行します。コマンドライン版は `smartcut-cli.exe` です |
 
 **動作条件。** AppImage と tar.gz には glibc 2.39 以降が必要です（Ubuntu 24.04、
 Debian 13、Fedora 40 以降）。deb は FFmpeg 7.1 を使うので、Debian 13 または
