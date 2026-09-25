@@ -208,13 +208,15 @@ fn grabbable(window: &tauri::WebviewWindow, x: i32, y: i32) -> bool {
     if screens.is_empty() {
         return true;
     }
-    let (grip_x, grip_y) = (x + GRIP.0, y + GRIP.1);
+    // Saturating, because the place is read off a file: one edited to the
+    // end of the range is a place that is nowhere, not a panic at startup.
+    let (grip_x, grip_y) = (x.saturating_add(GRIP.0), y.saturating_add(GRIP.1));
     screens.iter().any(|screen| {
         let (at, size) = (screen.position(), screen.size());
         grip_x >= at.x
             && grip_y >= at.y
-            && grip_x < at.x + size.width as i32
-            && grip_y < at.y + size.height as i32
+            && i64::from(grip_x) < i64::from(at.x) + i64::from(size.width)
+            && i64::from(grip_y) < i64::from(at.y) + i64::from(size.height)
     })
 }
 
@@ -347,7 +349,10 @@ pub fn save(app: &tauri::AppHandle) {
     let Ok(text) = serde_json::to_string_pretty(&all) else {
         return;
     };
-    let temp = path.with_extension("json.new");
+    // Named for this process: the list window and the batch tool can leave
+    // at the same moment, and one shared name had each truncating the
+    // other's before the rename.
+    let temp = path.with_extension(format!("json.{}.new", std::process::id()));
     if std::fs::write(&temp, text).is_ok() {
         let _ = std::fs::rename(&temp, &path);
     }

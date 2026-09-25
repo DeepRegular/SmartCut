@@ -1239,10 +1239,14 @@ fn open_now(path: &str, app: &tauri::AppHandle, ticket: u64) -> Result<SourceInf
     // it handed over.
     *locked(&app.state::<OpenPath>().0) = Some(path.to_string());
     *locked(&app.state::<Proxy>().0) = None;
-    *locked(&app.state::<Subs>().0) = None;
     *locked(&app.state::<Held>().0) = held;
     let info = info_of(&src);
     *locked(&app.state::<Opened>().0) = Some(src);
+    // After the recording is in, not before: `subtitle_at` builds its reader
+    // out of whatever `Opened` holds, and one built in between was the last
+    // recording's, kept and answered from for as long as the same track
+    // number was asked for.
+    *locked(&app.state::<Subs>().0) = None;
     Ok(info)
 }
 
@@ -4068,7 +4072,9 @@ fn prune_detections(dir: &std::path::Path, ext: &str, keep: usize) -> std::io::R
     let mut found: Vec<(std::time::SystemTime, std::path::PathBuf)> = Vec::new();
     for entry in std::fs::read_dir(dir)? {
         let path = entry?.path();
-        if path.extension().and_then(|e| e.to_str()) != Some(ext) {
+        // Only what this program named, as `clear_cache` asks: the folder can
+        // be one somebody chose.
+        if path.extension().and_then(|e| e.to_str()) != Some(ext) || !seek_index::ours(&path) {
             continue;
         }
         let when = path

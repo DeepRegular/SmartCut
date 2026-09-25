@@ -1414,7 +1414,9 @@ async function showFrame(t) {
   // A frame short of the end until the last picture is known, which is then
   // the end: a picture that repeats a field can stand in the last frame of
   // all, and a frame short of the container's length left it out of reach.
-  const end = tailSrc === null ? outDur - frame() : lastOut();
+  // A last picture the edit has taken away leaves the end of what is kept
+  // as the end, and that is a frame short of the timeline's length as ever.
+  const end = tailSrc === null || srcToOut(tailSrc) === null ? outDur - frame() : lastOut();
   playhead = outToSrc(clamp(srcToOutSeam(t), 0, Math.max(0, end)));
   updateReadouts();
   draw();
@@ -1867,7 +1869,7 @@ function updateReadouts() {
         a: frameNo(selA),
         // At the end OUT is snapped to the length, which is where the last
         // frame ends rather than a frame: the last one is one before it.
-        b: frameNo(selB >= outDur - 1e-9 ? Math.max(0, outDur - frame()) : selB),
+        b: frameNo(selB >= outDur - 1e-9 ? Math.max(0, Math.min(outDur - frame(), lastOut())) : selB),
         len: fmt(selEnd() - selA),
       })
     : tr("editor.selectionTime", { a: fmt(selA), b: fmt(selB), len: fmt(selEnd() - selA) });
@@ -4275,7 +4277,9 @@ async function refreshPlan() {
 // picture behind -- a stray frame at the end of the output. The two ends
 // therefore snap to the bounds of the timeline.
 const atFirstPicture = (o) => outToSrc(o) <= headTime() + frame() / 2;
-const atLastPicture = (o) => o >= outDur - frame() * 1.5;
+// Where the last picture is known and stands further back than that, OUT on
+// it is at the end all the same: past it there is only sound. See `tailSrc`.
+const atLastPicture = (o) => o >= Math.min(outDur - frame() * 1.5, lastOut() - frame() / 2);
 
 // Marking one end leaves the other where it was: IN..OUT is a range you build
 // up by putting down one end and then the other, and moving one of them is no
@@ -5613,7 +5617,7 @@ function cutSelection(inner) {
   if (!src || selB < selA) return;
   const a = inner ? selA + frame() : atFirstPicture(selA) ? 0 : selA;
   const b = inner
-    ? Math.min(selB, Math.max(0, outDur - frame()))
+    ? Math.min(selB, Math.max(0, Math.min(outDur - frame(), lastOut())))
     : atLastPicture(selB)
       ? outDur
       : selEnd();
