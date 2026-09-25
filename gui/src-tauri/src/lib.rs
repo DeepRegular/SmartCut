@@ -1439,6 +1439,19 @@ fn to_neighbour(points: &[smartcut_core::AccessPoint], at: f64) -> f64 {
     after.into_iter().chain(before).fold(f64::INFINITY, f64::min)
 }
 
+/// The entry point `at` stands for: the nearest one within `slack` of it, if
+/// there is one.
+fn own_point(points: &[smartcut_core::AccessPoint], at: f64, slack: f64) -> Option<f64> {
+    let i = points.partition_point(|p| p.time < at);
+    let after = points.get(i).map(|p| p.time);
+    let before = i.checked_sub(1).map(|j| points[j].time);
+    after
+        .into_iter()
+        .chain(before)
+        .filter(|p| (p - at).abs() <= slack)
+        .min_by(|a, b| (a - at).abs().total_cmp(&(b - at).abs()))
+}
+
 fn thumbs_now(
     times: &[f64],
     width: u32,
@@ -1526,8 +1539,18 @@ fn thumbs_now(
                     times
                         .iter()
                         .map(|&t| {
-                            let tol = (fd * 2.0).min(to_neighbour(&src.points, t) / 2.0);
-                            track.nearest(t).filter(|h| (h.time - t).abs() <= tol).map(|h| Shot {
+                            // Measured from the entry point the time stands for, not
+                            // from the time itself. Under 2:3 pulldown the strip asks
+                            // at the woven frame, which starts a field before the
+                            // picture the entry point is -- and measured from there,
+                            // that entry point was its own nearest neighbour: the
+                            // tolerance came out at half a field, the picture already
+                            // held was turned away, and every redraw on such material
+                            // decoded a handful of cells it had in hand, 0.3 s to 0.9 s
+                            // of the strip standing still during playback.
+                            let at = own_point(&src.points, t, fd * 2.0).unwrap_or(t);
+                            let tol = (fd * 2.0).min(to_neighbour(&src.points, at) / 2.0);
+                            track.nearest(at).filter(|h| (h.time - at).abs() <= tol).map(|h| Shot {
                                 url: shot_url(app, &h.jpeg),
                                 time: weave::on_frame(src, h.time),
                                 kind: "I".into(),
