@@ -99,9 +99,8 @@ const PCR_WRAP: i64 = 1 << 33;
 /// its end, or the recording has -- answers nothing from then on.
 pub struct Reader {
     file: std::io::BufReader<crate::input::Reader>,
-    /// 188 or 192, and where inside that the packet sits. See [`framing`].
+    /// 188 or 192. See [`framing`].
     stride: usize,
-    lead: usize,
     /// The PIDs being carried.
     pids: Vec<u16>,
     /// The PID the recording's clock is on, which is what the packets between
@@ -158,7 +157,6 @@ impl Reader {
         Ok(Self {
             file: std::io::BufReader::with_capacity(1 << 20, file),
             stride,
-            lead: stride - PACKET,
             pids: pids.to_vec(),
             pcr_pid,
             clock: None,
@@ -208,7 +206,10 @@ impl Reader {
                     return Ok(());
                 }
             }
-            let packet = &frame[self.lead..];
+            // The seek landed on a sync byte, so the packet is at the front
+            // of the frame and a disc's four bytes of arrival time are at
+            // the back of it, in front of the next one.
+            let packet = &frame[..PACKET];
             // Alignment is settled once, at the seek. A packet that does not
             // begin with a sync byte after that means the recording is not
             // what it was read as, and guessing a new boundary here would

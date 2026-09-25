@@ -123,7 +123,8 @@ impl Weave {
         // progressive sequence repeats whole frames instead and says so as
         // two or four -- the fields laid out below are then all the same
         // picture's, and come back as that picture again on each frame.
-        let fields = 2 + i64::from(unsafe { (*picture.as_ptr()).repeat_pict }.clamp(0, 4));
+        // VC-1 repeats a progressive frame up to three times, which is six.
+        let fields = 2 + i64::from(unsafe { (*picture.as_ptr()).repeat_pict }.clamp(0, 6));
         let first_top = unsafe {
             (*picture.as_ptr()).flags & ff::ffi::AV_FRAME_FLAG_TOP_FIELD_FIRST != 0
         };
@@ -141,9 +142,15 @@ impl Weave {
             if field.at.rem_euclid(2) == 0 {
                 // A frame begins here. One still open never got its second
                 // field -- the fields stopped alternating -- and is shown as
-                // the picture it came from.
+                // the picture it came from. Unless it is open on this very
+                // field: the picture before claimed a field that this one's
+                // timestamp says is its own, and the frame is this one's.
+                // Shown as the one before, this picture's second field found
+                // that frame already out and it was never shown at all.
                 if let Some(open) = self.open.take() {
-                    self.emit_whole(open, &mut out);
+                    if open.at != field.at {
+                        self.emit_whole(open, &mut out);
+                    }
                 }
                 self.open = Some(field);
                 continue;
@@ -336,6 +343,29 @@ mod tests {
         for (i, (t, _)) in out.iter().enumerate() {
             assert!((t - i as f64 * FD).abs() < 1e-9);
         }
+    }
+
+    #[test]
+    fn a_picture_that_overlaps_a_repeated_field_is_still_shown() {
+        // The first picture says three fields and the second's timestamp
+        // says it begins on the third: the frame there is the second's.
+        let mut w = Weave::with(FD, Some(0.0));
+        let mut out = w.push(0.0, picture(10, 3, true)).unwrap();
+        out.extend(w.push(FD, picture(20, 2, true)).unwrap());
+        out.extend(w.finish());
+        assert_eq!(out.len(), 2);
+        assert_eq!(lines(&out[1].1), vec![20, 20, 20, 20]);
+    }
+
+    #[test]
+    fn a_frame_repeated_three_times_fills_four_frames() {
+        // VC-1's RPTFRM of 3 on a progressive stream.
+        let mut w = Weave::with(FD, Some(0.0));
+        let mut out = w.push(0.0, picture(10, 8, true)).unwrap();
+        out.extend(w.push(4.0 * FD, picture(20, 2, true)).unwrap());
+        out.extend(w.finish());
+        let times: Vec<f64> = out.iter().map(|(t, _)| (t / FD * 100.0).round() / 100.0).collect();
+        assert_eq!(times, vec![0.0, 1.0, 2.0, 3.0, 4.0]);
     }
 
     #[test]

@@ -301,11 +301,16 @@ impl Transrater {
     /// One picture, under the pressure it is given.
     fn one(&mut self, data: &[u8], press: Squeeze) -> Result<Vec<u8>, Error> {
         let mut shape = self.shape;
-        let picture = Picture::read(data, &mut shape)?;
+        let picture = Picture::read(data, &mut shape);
+        // Kept whether or not this picture could be read: the pictures after
+        // it carry no sequence header of their own, and read against the one
+        // before it a 4:2:2 recording is walked as 4:2:0 -- which can come
+        // out as something that parses, and is written back wrong.
+        self.shape = shape;
+        let picture = picture?;
         if shape.chroma_format != 1 {
             return Err(Error::Chroma);
         }
-        self.shape = shape;
         let out = picture.write(&self.quantiser, press, &mut self.scratch);
         if start_codes_differ(data, &out) {
             return Err(Error::WroteAStartCode);

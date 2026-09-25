@@ -3585,9 +3585,11 @@ fn mark_interlacing(frame: &mut ff::frame::Video, video: &crate::VideoInfo) {
 struct Mpeg2Display {
     /// The recording's own `progressive_sequence`, inverted.
     interlaced_sequence: bool,
-    /// Each picture's field order, by the index it went into the encoder
-    /// with. How long it lasts is in `placed` already.
-    top_first: std::collections::HashMap<i64, bool>,
+    /// Each picture's field order, and whether it repeats its first field,
+    /// by the index it went into the encoder with. Kept here rather than
+    /// read back off `placed`, which counts in the timeline's units and not
+    /// in fields.
+    top_first: std::collections::HashMap<i64, (bool, bool)>,
 }
 
 /// What an MPEG-2 segment has to be encoded as: whether any picture it
@@ -3613,13 +3615,26 @@ fn mpeg2_segment_shape(src: &Source, seg: &Segment, tol: f64) -> Result<(bool, O
             }
         })
         .and_then(|x| crate::bitstream::mpeg2_interlaced_sequence(&x));
-    let (floor, _) = stretch_bytes(src, seg, tol);
+    let (floor, wall) = stretch_bytes(src, seg, tol);
     seek_into(&mut ictx, src, seg.seek_from, floor)?;
     crate::input::keep_only(&mut ictx, &[idx]);
     let mut repeats = false;
+    let mut read_at: Option<u64> = None;
     for (stream, packet) in ictx.read_packets() {
+        if packet.position() >= 0 {
+            read_at = Some(packet.position() as u64);
+        }
         if stream.index() != idx {
             continue;
+        }
+        // Only the stretch the segment is read from, as `reencode_segment`
+        // reads it: the pictures either side of a seam can carry times inside
+        // this window, and the clock past one need not climb out of it.
+        if read_at.zip(floor).is_some_and(|(at, f)| at < f.at) {
+            continue;
+        }
+        if read_at.zip(wall).is_some_and(|(at, w)| at >= w) {
+            break;
         }
         let Some(data) = packet.data() else { continue };
         if sequence.is_none() {
@@ -3690,8 +3705,8 @@ fn drain_encoder_shown(
         let packet = match shown {
             Some(m) => {
                 let mut data = packet.data().unwrap_or(&[]).to_vec();
-                let tff = m.top_first.get(&index).copied().unwrap_or(true);
-                crate::bitstream::mpeg2_set_display(&mut data, m.interlaced_sequence, tff, fields == 3);
+                let (tff, rff) = m.top_first.get(&index).copied().unwrap_or((true, false));
+                crate::bitstream::mpeg2_set_display(&mut data, m.interlaced_sequence, tff, rff);
                 let mut out = ff::Packet::copy(&data);
                 out.set_flags(packet.flags());
                 out.set_pts(packet.pts());
@@ -3744,7 +3759,9 @@ fn reencode_segment(
     } else {
         (false, None)
     };
-    let mut encoder = if repeats && src.video.interlaced() {
+    // Frames only when the sequence type can be written back afterwards;
+    // without it the segment would claim a progressive sequence.
+    let mut encoder = if repeats && interlaced_sequence.is_some() && src.video.interlaced() {
         let mut frames = src.video.clone();
         frames.field_order = 1; // AV_FIELD_PROGRESSIVE
         Pictures::open_into(&frames, default_bit_rate(src), &params, opts, ctx.signalling)?
@@ -3827,7 +3844,11 @@ fn reencode_segment(
             let t = $t;
             let a = *anchor.get_or_insert(t);
             let display = display_base + ((t - a) / field).round() as i64;
-            let fields = 2 + unsafe { (*$f.as_ptr()).repeat_pict.max(0) as i64 };
+            // In fields, and then in the timeline's units, which are finer
+            // than a field on a variable-rate recording: see [`Grid`]. The
+            // copy counts its pictures the same way.
+            let shown_for = 2 + unsafe { (*$f.as_ptr()).repeat_pict.max(0) as i64 };
+            let fields = ctx.grid.fields(shown_for);
             placed.insert(fed, (display, fields));
             if let Some(m) = shown.as_mut() {
                 // Before `mark_interlacing`, which states the stream's order
@@ -3836,7 +3857,7 @@ fn reencode_segment(
                 let tff = unsafe {
                     (*$f.as_ptr()).flags & ff::ffi::AV_FRAME_FLAG_TOP_FIELD_FIRST != 0
                 };
-                m.top_first.insert(fed, tff);
+                m.top_first.insert(fed, (tff, shown_for == 3));
             }
             span.fields = span.fields.max(display - display_base + fields);
             span.pictures += 1;
@@ -3855,7 +3876,7 @@ fn reencode_segment(
                 // nothing is finished the moment it is written, so it
                 // goes straight out with the timing worked out above.
                 Pictures::Vc1(enc) => {
-                    let packet = encode_vc1(enc, &$f, fields)?;
+                    let packet = encode_vc1(enc, &$f, shown_for)?;
                     writer.push(Emitted {
                         packet,
                         display,

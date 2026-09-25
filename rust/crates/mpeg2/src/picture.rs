@@ -370,11 +370,19 @@ impl<'a> Picture<'a> {
         let (a, b) = slice.extra;
         sink.copy(self.data, a as usize, (b - a) as usize);
         let pen = Pen { slice, map: &map, press };
+        // The phase of whichever wrote the scale in force: the slice, or the
+        // last macroblock that carried a scale of its own. A macroblock that
+        // carries none is decoded at that scale, so its coefficients have to
+        // be divided down to it and not to the one its own phase would pick.
+        let mut spread = phase(slice.mbs.0);
         for (k, mb) in self.mbs[slice.mbs.0 as usize..slice.mbs.1 as usize]
             .iter()
             .enumerate()
         {
-            self.emit_mb(sink, mb, &pen, slice.mbs.0 + k as u32, scratch);
+            if mb.quant.is_some() {
+                spread = phase(slice.mbs.0 + k as u32);
+            }
+            self.emit_mb(sink, mb, &pen, spread, scratch);
         }
         sink.align();
         for _ in 0..slice.stuffing() {
@@ -387,11 +395,10 @@ impl<'a> Picture<'a> {
         sink: &mut S,
         mb: &Mb,
         pen: &Pen,
-        index: u32,
+        spread: f32,
         scratch: &mut Scratch,
     ) {
         let (slice, map, press) = (pen.slice, pen.map, pen.press);
-        let spread = phase(index);
         let (a, b) = mb.pre;
         sink.copy(self.data, a as usize, (b - a) as usize);
         if let Some(code) = mb.quant {
@@ -1011,7 +1018,8 @@ pub fn first_difference(data: &[u8], shape: &mut Shape) -> Result<Option<String>
                 map: &map,
                 press,
             };
-            picture.emit_mb(&mut sink, mb, &pen, slice.mbs.0 + k as u32, &mut scratch);
+            let spread = phase(slice.mbs.0 + k as u32);
+            picture.emit_mb(&mut sink, mb, &pen, spread, &mut scratch);
             let wrote = sink.position();
             let out = sink.finish();
             let mut a = Reader::new(&out);

@@ -234,9 +234,14 @@ impl Marks {
         };
         for i in 0..n {
             let at = 16 + i * 9;
-            marks
-                .times
-                .push(f64::from_le_bytes(raw[at..at + 8].try_into()?));
+            let time = f64::from_le_bytes(raw[at..at + 8].try_into()?);
+            // Nothing here writes one, so it is a file damaged on disc -- and
+            // the first time is what the proxy's whole clock is shifted by in
+            // [`open_with`], which a time that is not one turns into nothing.
+            if !time.is_finite() {
+                bail!("{} holds a time that is not one", path.display());
+            }
+            marks.times.push(time);
             marks.kinds.push(raw[at + 8]);
         }
         Ok(marks)
@@ -347,8 +352,19 @@ pub fn prune(dir: &Path, keep: usize, budget: u64) -> Result<usize> {
             continue;
         }
         // A proxy still being built is not one of the finished ones, however
-        // old it looks.
+        // old it looks. One nothing has written to for an hour is not being
+        // built: it is what a build left when the program was closed under
+        // it, a gigabyte or two that nothing else ever takes away.
         if path.to_string_lossy().ends_with(".part.mp4") {
+            let idle = path
+                .metadata()
+                .and_then(|m| m.modified())
+                .ok()
+                .and_then(|t| t.elapsed().ok())
+                .is_some_and(|d| d >= std::time::Duration::from_secs(3600));
+            if idle {
+                let _ = std::fs::remove_file(&path);
+            }
             continue;
         }
         let meta = path.metadata();

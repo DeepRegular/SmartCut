@@ -307,10 +307,15 @@ impl SectionReader {
                 }
             }
             self.buf.clear();
-            self.filling = true;
+            // A pointer past the end of the packet says nowhere a section
+            // begins, and what follows on the next packets is the middle of
+            // one: read as the start of a section, a table with no CRC to
+            // check it by would be taken off those bytes.
             let Some(rest) = data.get(1 + pointer..) else {
+                self.filling = false;
                 return;
             };
+            self.filling = true;
             data = rest;
         } else if !self.filling {
             return;
@@ -1776,13 +1781,16 @@ fn began_at(raw: &[u8]) -> Option<Began> {
     let day =
         mjd - 14956 - (yp as f64 * 365.25).trunc() as u32 - (mp as f64 * 30.6001).trunc() as u32;
     let k = u32::from(mp == 14 || mp == 15);
-    Some(Began {
+    let (hour, minute, second) = (d(2)?, d(3)?, d(4)?);
+    // Two decimal digits are not a time of day: 45:70 is as well formed
+    // as BCD as 21:00, and [`Began::parse`] would refuse it on the way back.
+    (hour < 24 && minute < 60 && second < 60).then_some(Began {
         year: (yp + k + 1900) as u16,
         month: (mp - 1 - k * 12) as u8,
         day: day as u8,
-        hour: d(2)?,
-        minute: d(3)?,
-        second: d(4)?,
+        hour,
+        minute,
+        second,
     })
 }
 
@@ -3004,25 +3012,35 @@ pub fn graft(output: &str, on: Option<&(dyn Fn(f64) + Sync)>, g: &Graft) -> Resu
                         _ => None,
                     };
                 }
-                if let Some(reader) = carousel.as_mut() {
-                    if let Some(mut one) = reader.due(now)? {
-                        // Renumbered because the stream is no longer
-                        // continuous: what fell between two kept ranges was
-                        // not written, and a receiver reads a gap in the
-                        // count as packets it missed. The counter advances
-                        // for a packet *with a payload*; one without repeats
-                        // the number the packet before it carried, which is
-                        // what the standard says and what a receiver checks.
-                        let c = cc.entry(pid_of(&one)).or_default();
-                        if one[3] & 0x10 != 0 {
-                            one[3] = (one[3] & 0xF0) | (*c & 0x0F);
-                            *c = c.wrapping_add(1) & 0x0F;
-                        } else {
-                            one[3] = (one[3] & 0xF0) | (c.wrapping_sub(1) & 0x0F);
-                        }
-                        put(&mut dst, arrival, &one)?;
-                        stats.data += 1;
+                // A read that fails part way -- a share that drops the
+                // recording under it -- ends the carrying and not the pass,
+                // for the reason the open above says.
+                let due = match carousel.as_mut().map(|reader| reader.due(now)) {
+                    Some(Ok(one)) => one,
+                    Some(Err(e)) => {
+                        eprintln!("note: the data broadcast could not be read back: {e}");
+                        carousel = None;
+                        None
                     }
+                    None => None,
+                };
+                if let Some(mut one) = due {
+                    // Renumbered because the stream is no longer
+                    // continuous: what fell between two kept ranges was
+                    // not written, and a receiver reads a gap in the
+                    // count as packets it missed. The counter advances
+                    // for a packet *with a payload*; one without repeats
+                    // the number the packet before it carried, which is
+                    // what the standard says and what a receiver checks.
+                    let c = cc.entry(pid_of(&one)).or_default();
+                    if one[3] & 0x10 != 0 {
+                        one[3] = (one[3] & 0xF0) | (*c & 0x0F);
+                        *c = c.wrapping_add(1) & 0x0F;
+                    } else {
+                        one[3] = (one[3] & 0xF0) | (c.wrapping_sub(1) & 0x0F);
+                    }
+                    put(&mut dst, arrival, &one)?;
+                    stats.data += 1;
                 }
             }
 

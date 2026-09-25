@@ -276,7 +276,13 @@ pub fn write(
     let part = PathBuf::from(part);
     match write_to(from, &part, revision, access, label, on) {
         Ok(size) => {
-            std::fs::rename(&part, to).with_context(|| format!("cannot write {}", to.display()))?;
+            // A rename that fails -- `to` is a folder, or cannot be replaced
+            // -- leaves a whole image under the `.part` name, which is the
+            // same gigabytes on the disk and nothing any run will clear up.
+            if let Err(e) = std::fs::rename(&part, to) {
+                let _ = std::fs::remove_file(&part);
+                return Err(e).with_context(|| format!("cannot write {}", to.display()));
+            }
             Ok(size)
         }
         Err(e) => {

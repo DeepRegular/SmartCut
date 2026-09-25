@@ -546,7 +546,9 @@ pub fn picture_at(src: &Source, time: f64) -> Result<(f64, ff::frame::Video)> {
             // wrong side of the gap.
             if woven {
                 if t > time + fd / 4.0 {
-                    hit = tail.take();
+                    // Nothing before it: the walk began past the instant, and
+                    // the first frame is the answer, as it is below.
+                    hit = tail.take().or_else(|| Some((t, frame.clone())));
                     return false;
                 }
                 tail = Some((t, frame.clone()));
@@ -563,7 +565,19 @@ pub fn picture_at(src: &Source, time: f64) -> Result<(f64, ff::frame::Video)> {
             tail = Some((t, frame.clone()));
             true
         })?;
-        if !landed_late(began, time, fd / 2.0) || attempt == 1 {
+        // `began` is the first picture's own instant, and woven, the first
+        // frame is the one that picture's first field is in -- half a frame
+        // before it where the picture begins on a second field. That frame is
+        // the answer for an instant up to a quarter of a frame past its start,
+        // as above. Asked of the picture's instant with half a frame of slack,
+        // an access point named by its frame was a tick over it on every other
+        // one (a field is 1501 or 1502 ticks), and each was decoded twice.
+        let late = if woven {
+            landed_late(began.map(|b| crate::weave::on_frame(src, b)), time, fd / 4.0)
+        } else {
+            landed_late(began, time, fd / 2.0)
+        };
+        if !late || attempt == 1 {
             picture = hit.or(tail);
             break;
         }

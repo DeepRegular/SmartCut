@@ -1127,7 +1127,10 @@ fn split_at_sectors(spec: &str) -> Option<(&str, u64, u64)> {
         return None;
     }
     let (first, last) = range.split_once('-')?;
-    let (first, last) = (first.parse().ok()?, last.parse().ok()?);
+    let (first, last): (u64, u64) = (first.parse().ok()?, last.parse().ok()?);
+    // A number too large to be a byte offset is no sector of any disc, and
+    // multiplied out it would overflow.
+    last.checked_add(1)?.checked_mul(SECTOR)?;
     (first <= last).then_some((base, first, last))
 }
 
@@ -1141,7 +1144,8 @@ pub fn clip_window(spec: &str) -> Option<(&str, u64, u64)> {
         return None;
     }
     let (first, last) = range.split_once('-')?;
-    let (first, last) = (first.parse().ok()?, last.parse().ok()?);
+    let (first, last): (u64, u64) = (first.parse().ok()?, last.parse().ok()?);
+    last.checked_add(1)?.checked_mul(SOURCE_PACKET)?;
     (first <= last).then_some((base, first, last))
 }
 

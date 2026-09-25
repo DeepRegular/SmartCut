@@ -370,6 +370,15 @@ fn run(
     if octx.format().name().contains("adts") && opts.aac == crate::AacVersion::Mpeg2 {
         muxer_opts.set("write_mpeg2", "1");
     }
+    // A RIFF header counts its sizes in 32 bits, and uncompressed sound runs
+    // past four gigabytes inside a film: 5.1 at 24 bits and 48 kHz does in
+    // 83 minutes. The muxer's default is to leave the sizes unwritten there
+    // and say the file is broken. `auto` reserves room for the RF64 sizes
+    // and uses it only where they are needed, so everything shorter is the
+    // plain WAV it always was.
+    if octx.format().name() == "wav" {
+        muxer_opts.set("rf64", "auto");
+    }
     octx.write_header_with(muxer_opts)?;
     let out_tb = f64::from(
         octx.stream(0)

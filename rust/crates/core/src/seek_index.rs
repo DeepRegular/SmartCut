@@ -247,10 +247,19 @@ impl SeekIndex {
             std::process::id(),
             SERIAL.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
         ));
-        std::fs::write(&part, &w.0).with_context(|| format!("cannot write {}", part.display()))?;
-        std::fs::rename(&part, path)
-            .with_context(|| format!("cannot put {} in place", path.display()))?;
-        Ok(())
+        //
+        // Taken away again where it does not make it into place: `prune`
+        // passes over a temporary, so one left by a full disk would stay.
+        let placed = std::fs::write(&part, &w.0)
+            .with_context(|| format!("cannot write {}", part.display()))
+            .and_then(|()| {
+                std::fs::rename(&part, path)
+                    .with_context(|| format!("cannot put {} in place", path.display()))
+            });
+        if placed.is_err() {
+            let _ = std::fs::remove_file(&part);
+        }
+        placed
     }
 
     pub fn load(path: &Path) -> Result<SeekIndex> {
@@ -436,7 +445,8 @@ pub fn prune(dir: &Path, keep: usize, budget: u64) -> Result<usize> {
     let mut found: Vec<(std::time::SystemTime, u64, PathBuf)> = Vec::new();
     for entry in std::fs::read_dir(dir)? {
         let path = entry?.path();
-        if path.extension().and_then(|e| e.to_str()) != Some("scix") {
+        // Only ours: the folder can be one the user chose, with other files in it.
+        if path.extension().and_then(|e| e.to_str()) != Some("scix") || !ours(&path) {
             continue;
         }
         // One still being written is not one of the finished ones.

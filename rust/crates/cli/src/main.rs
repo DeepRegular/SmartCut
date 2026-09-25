@@ -952,6 +952,37 @@ fn main() -> Result<()> {
     if fit.is_some() && sound_only {
         bail!("--fit shrinks the pictures, and --sound-only writes none");
     }
+    // Each of these answers its question and ends the run, in this order, so
+    // anything after the first -- a second of them, or a cut -- was never
+    // done, and the run still ended well. `--proxy` and `--preview` also
+    // take `-o` as their own file: a cut's `-o out.ts` beside one got a proxy
+    // or a JPEG written under the name the cut was meant to have.
+    let stops = [
+        ("--cut-near", cut_near.is_some()),
+        ("--detect-cm", detect_cm),
+        ("--proxy", make_proxy),
+        ("--preview", preview_at.is_some()),
+    ];
+    let mut stopping = stops.iter().filter(|(_, given)| *given).map(|(name, _)| *name);
+    if let Some(first) = stopping.next() {
+        if let Some(second) = stopping.next() {
+            bail!("{first} ends the run before {second} is looked at: give one at a time");
+        }
+        if first == "--cut-near" && scenes {
+            bail!("--cut-near ends the run before --scenes is looked at: give one at a time");
+        }
+        let cutting = !keeps.is_empty()
+            || !cuts.is_empty()
+            || !joined.is_empty()
+            || bdav.is_some()
+            || sound_only;
+        if cutting {
+            bail!("{first} ends the run without writing a cut: run the cut on its own");
+        }
+        if output.is_some() && matches!(first, "--cut-near" | "--detect-cm") {
+            bail!("{first} prints what it finds and writes no file: -o has nothing to name");
+        }
+    }
     // The rest of what only a file with pictures in it has: its tables, its
     // subtitles, its data broadcast and how its pictures are joined.
     if sound_only {
@@ -1090,7 +1121,20 @@ fn main() -> Result<()> {
     // One that cannot be read -- written by another version, or damaged --
     // is written again rather than stopping the run: it is a cache, and the
     // walk it stands in for is still there to be done.
+    //
+    // Nor is one older than the recording. The file carries no word of which
+    // recording it was made from -- the window keys its own by the path, size
+    // and time, and this is a path somebody typed -- so a recording recorded
+    // again under the same name was cut by the old one's byte positions.
+    let modified = |p: &std::path::Path| std::fs::metadata(p).and_then(|m| m.modified()).ok();
+    let recorded = smartcut_core::input::Input::parse(&input)
+        .ok()
+        .and_then(|i| modified(&i.file));
     let held = match &index_file {
+        Some(p) if p.is_file() && recorded.is_some_and(|r| modified(p).is_none_or(|ix| ix < r)) => {
+            eprintln!("note: {} is older than the recording; it is made again", p.display());
+            None
+        }
         Some(p) if p.is_file() => match smartcut_core::SeekIndex::load(p) {
             Ok(held) => Some(held),
             Err(e) => {

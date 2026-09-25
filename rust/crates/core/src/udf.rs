@@ -468,6 +468,12 @@ impl Image {
             2 => 20, // ext_ad
             other => bail!("unknown allocation descriptor type {other}"),
         };
+        // Where the block and the partition sit in one descriptor. An ext_ad
+        // carries a recorded length and an information length in front of
+        // its location, so its lb_addr is eight bytes further in than a
+        // long_ad's -- read at a long_ad's offsets, the recorded length came
+        // back as the block.
+        let (block_at, part_at) = if kind == 2 { (12, 16) } else { (4, 8) };
         // The descriptors can be continued elsewhere -- it takes a very
         // fragmented file, but the format allows it -- so this is a loop over
         // runs of descriptors rather than over one run.
@@ -486,10 +492,10 @@ impl Image {
                 if len == 0 {
                     break;
                 }
-                let block = u32le(&chunk, at + 4) as u64;
+                let block = u32le(&chunk, at + block_at) as u64;
                 let map = match kind {
                     0 => home.clone(),
-                    _ => self.map(u16le(&chunk, at + 8))?.clone(),
+                    _ => self.map(u16le(&chunk, at + part_at))?.clone(),
                 };
                 match raw >> 30 {
                     // Recorded and allocated: the only kind that holds bytes.

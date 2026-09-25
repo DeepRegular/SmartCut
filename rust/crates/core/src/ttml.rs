@@ -90,12 +90,15 @@ pub fn retimed(payload: &[u8], shift: f64, window: (f64, f64)) -> Option<Vec<u8>
     let mut out = payload.to_vec();
     for (name, value) in [("begin", begin), ("end", end)] {
         let hay = &doc[div_at..div_end];
-        let at = hay.find(&format!("{name}=\""))? + name.len() + 2;
+        // The attribute [`cue`] read the time from, found the same way: a
+        // bare search for `end="` also stops inside `xml:end="` or at the
+        // tail of a longer name, and would write the time over that one.
+        let old = attribute(hay, name)?;
+        let at = old.as_ptr() as usize - hay.as_ptr() as usize;
         let text = written_clock(value);
         // Only over a time written the same width: a shorter one would be
         // overwritten past its closing quote and into whatever follows.
-        let old = hay[at..].find('"')?;
-        if old != text.len() {
+        if old.len() != text.len() {
             return None;
         }
         let start = doc_at + div_at + at;

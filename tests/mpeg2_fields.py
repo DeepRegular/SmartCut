@@ -41,15 +41,19 @@ if pics:
 last = None
 pictures = fields = repeats = breaks = 0
 for g in gops:
-    for _, tff, rff, structure in sorted(g):
-        if structure != 3:  # a field picture: its pair is the frame
-            continue
-        first = tff
-        count = 3 if rff else 2
+    # By temporal reference alone: the two fields of a pair share one, and
+    # the order they were coded in is the order they are shown.
+    for _, tff, rff, structure in sorted(g, key=lambda p: p[0]):
+        if structure != 3:  # a field picture: one field, top (1) or bottom (2)
+            first = 1 if structure == 1 else 0
+            count = 1
+        else:
+            first = tff
+            count = 3 if rff else 2
         if last is not None and first == last:
             breaks += 1
-        last = first if count == 3 else 1 - first
-        pictures += 1
+        last = first if count % 2 else 1 - first
+        pictures += structure == 3
         fields += count
         repeats += rff
 print(f"pictures={pictures} fields={fields} repeats={repeats} breaks={breaks} "

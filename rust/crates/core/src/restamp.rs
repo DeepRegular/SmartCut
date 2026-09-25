@@ -226,7 +226,7 @@ fn stamp(ts: &mut [u8], shift: i64) {
                 | ((ts[8] as i64) << 9)
                 | ((ts[9] as i64) << 1)
                 | ((ts[10] as i64) >> 7);
-            let moved = wrap(base + shift);
+            let moved = wrap(base.wrapping_add(shift));
             ts[6] = (moved >> 25) as u8;
             ts[7] = (moved >> 17) as u8;
             ts[8] = (moved >> 9) as u8;
@@ -285,7 +285,7 @@ fn shift_time(at: &mut [u8], shift: i64) {
         | (((at[2] & 0xFE) as i64) << 14)
         | ((at[3] as i64) << 7)
         | ((at[4] & 0xFE) as i64 >> 1);
-    let moved = wrap(v + shift);
+    let moved = wrap(v.wrapping_add(shift));
     at[0] = (at[0] & 0xF0) | (((moved >> 30) as u8) << 1) | 0x01;
     at[1] = (moved >> 22) as u8;
     at[2] = (((moved >> 15) as u8) << 1) | 0x01;
@@ -295,6 +295,11 @@ fn shift_time(at: &mut [u8], shift: i64) {
 
 /// A time that ran off either end of the clock comes back on at the other,
 /// which is what the clock itself does.
+///
+/// Its callers add with `wrapping_add`: a shift comes out of a URL, and one
+/// read as nearly `i64::MAX` would otherwise overflow before it got here.
+/// Two to the sixty-four is a whole number of turns of this clock, so the
+/// wrapped sum lands where the true one would.
 fn wrap(v: i64) -> i64 {
     v.rem_euclid(WRAP)
 }

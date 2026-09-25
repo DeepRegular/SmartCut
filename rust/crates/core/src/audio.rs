@@ -484,10 +484,15 @@ pub(crate) fn conform<'a>(
         channel_layout: frame.channel_layout(),
         rate: frame.rate(),
     };
-    if resampler
-        .as_ref()
-        .is_some_and(|ctx| *ctx.input() != arriving)
-    {
+    // And the shape asked for, which is not always the same either: the
+    // preview's fold is changed from the list while it plays, and a context
+    // built for two channels out handed a frame for one answers "Output
+    // changed" -- which ended the playback thread with the picture playing on.
+    if resampler.as_ref().is_some_and(|ctx| {
+        *ctx.input() != arriving
+            || ctx.output().channel_layout != layout
+            || ctx.output().format != format
+    }) {
         *resampler = None;
     }
     let ctx = match resampler {
@@ -508,6 +513,51 @@ pub(crate) fn conform<'a>(
     // it has to guess at.
     out.set_pts(frame.pts());
     out.set_rate(frame.rate());
+    Ok(out)
+}
+
+/// A frame that arrived at another rate than the track's, brought to the
+/// track's: the same format and channels, `rate` samples a second.
+///
+/// Stateful across frames, as the resampler inside [`Reencoder`] is and for
+/// the same reason -- a context rebuilt per frame drops what it was holding
+/// back at every one. Rebuilt only where what arrives changes.
+fn rerate<'a>(
+    resampler: &mut Option<ff::software::resampling::Context>,
+    out: &'a mut ff::frame::Audio,
+    frame: &ff::frame::Audio,
+    rate: u32,
+) -> Result<&'a ff::frame::Audio> {
+    let arriving = ff::software::resampling::context::Definition {
+        format: frame.format(),
+        channel_layout: frame.channel_layout(),
+        rate: frame.rate(),
+    };
+    if resampler
+        .as_ref()
+        .is_some_and(|ctx| *ctx.input() != arriving || ctx.output().rate != rate)
+    {
+        *resampler = None;
+    }
+    let ctx = match resampler {
+        Some(ctx) => ctx,
+        None => resampler.insert(ff::software::resampling::Context::get(
+            frame.format(),
+            frame.channel_layout(),
+            frame.rate(),
+            frame.format(),
+            frame.channel_layout(),
+            rate,
+        )?),
+    };
+    let held = unsafe { ff::ffi::swr_get_delay(ctx.as_mut_ptr(), i64::from(rate)) };
+    let room = held.max(0) as usize
+        + (frame.samples() as u64 * u64::from(rate) / u64::from(frame.rate().max(1))) as usize
+        + 32;
+    *out = ff::frame::Audio::new(frame.format(), room, frame.channel_layout());
+    ctx.run(frame, out)?;
+    out.set_pts(frame.pts());
+    out.set_rate(rate);
     Ok(out)
 }
 
@@ -537,6 +587,10 @@ pub struct Reencoder {
     /// already the shape the encoder wants.
     resampler: Option<ff::software::resampling::Context>,
     remixed: ff::frame::Audio,
+    /// Built only for a frame that arrives at another rate than the
+    /// recording's: see `take`, and [`rerate`].
+    rerate: Option<ff::software::resampling::Context>,
+    rerated: ff::frame::Audio,
     /// The recording's own rate. The window a range is trimmed against is
     /// counted in the recording's samples, so this is what `take` measures
     /// with, whatever rate the track is written at.
@@ -664,6 +718,8 @@ impl Reencoder {
             channels: channels as usize,
             resampler: None,
             remixed: ff::frame::Audio::empty(),
+            rerate: None,
+            rerated: ff::frame::Audio::empty(),
             sample_rate: audio.sample_rate,
             out_rate,
             resample,
@@ -718,7 +774,17 @@ impl Reencoder {
         // would rebuild itself -- but only when the shape changes, and the
         // shape can be the same one while the recording behind it is not.
         self.resampler = None;
+        self.rerate = None;
         if self.sample_rate != audio.sample_rate {
+            // What is waiting was read at the last recording's rate, and the
+            // resampler built for it is still holding that recording's last
+            // few milliseconds. Both go over to the output's rate now, while
+            // the rate they are counted at is still theirs: left for the next
+            // `drain`, the fade-out held back at the end of the last range was
+            // converted as though it were the next recording's, and came out
+            // at the wrong pitch and the wrong length.
+            self.convert()?;
+            self.flush_resampler()?;
             self.sample_rate = audio.sample_rate;
             self.resample = (self.out_rate != audio.sample_rate)
                 .then(|| {
@@ -798,7 +864,18 @@ impl Reencoder {
             let Some(pts) = frame.pts() else { continue };
             let t = pts as f64 * audio.time_base - start_time;
             let first = (t * self.sample_rate as f64).round() as i64;
-            let n = frame.samples() as i64;
+            // How long the frame lasts, in the recording's samples. Not its
+            // own count where it arrived at another rate -- the programme
+            // before this one, at the head of a broadcast recording -- or
+            // its samples were laid down as though they were the track's,
+            // and that stretch played fast and pulled the rest of the range
+            // ahead of its pictures.
+            let n = match frame.rate() {
+                r if r > 0 && r != self.sample_rate => {
+                    frame.samples() as i64 * i64::from(self.sample_rate) / i64::from(r)
+                }
+                _ => frame.samples() as i64,
+            };
             let lo = window.0.max(first);
             let hi = window.1.min(first + n);
             if hi <= lo {
@@ -820,9 +897,14 @@ impl Reencoder {
                 self.layout,
                 PLANAR_F32,
             )?;
-            // Same rate in and out, so the window still counts in the frame's
-            // own samples; clamped all the same, so a shorter frame than was
-            // asked for cannot index past its buffers.
+            let src = if src.rate() > 0 && src.rate() != self.sample_rate {
+                rerate(&mut self.rerate, &mut self.rerated, src, self.sample_rate)?
+            } else {
+                src
+            };
+            // At the recording's rate now, so the window counts in the
+            // frame's own samples; clamped all the same, so a shorter frame
+            // than was asked for cannot index past its buffers.
             let have = src.samples();
             let a = ((lo - first) as usize).min(have);
             let b = ((hi - first) as usize).min(have);
