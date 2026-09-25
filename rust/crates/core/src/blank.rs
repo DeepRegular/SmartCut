@@ -259,9 +259,14 @@ impl Luma {
     }
 
     /// The sample a level comes to.
+    ///
+    /// The fraction is dropped, with a hair of slack under a whole sample: a
+    /// level typed as a luma value in 環境設定 is carried as the percent it
+    /// comes to, and 17 out of 16..235 comes back as 16.9999... on the way
+    /// here, which is not the 17 that was typed.
     fn level(&self, fraction: f64) -> u32 {
         let (black, white) = self.span();
-        (black + fraction.clamp(0.0, 1.0) * (white - black)) as u32
+        (black + fraction.clamp(0.0, 1.0) * (white - black) + 1e-6) as u32
     }
 
     /// One sample out of the plane's bytes.

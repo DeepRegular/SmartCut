@@ -149,6 +149,9 @@ const CATALOG = {
     "prefs.shades.both": "黒と白",
     "prefs.shades.black": "黒だけ",
     "prefs.shades.white": "白だけ",
+    "prefs.blankLevelUnit": "明るさの単位:",
+    "prefs.levelUnit.percent": "%（黒 0〜白 100）",
+    "prefs.levelUnit.value": "輝度値（8 ビットで 16〜235）",
     "prefs.blankBlackLevel": "黒とみなす明るさ:",
     "prefs.blankWhiteLevel": "白とみなす明るさ:",
     "prefs.blankCoverage": "その明るさが占める割合:",
@@ -156,6 +159,8 @@ const CATALOG = {
       "明るさは、放送の黒を 0%、白を 100% とした目盛りです。0% なら黒そのものの画素だけを黒と数えます。" +
       "割合は、そういう画素が画面のどれだけを占めていればそのフレームを黒（白）と呼ぶかです。" +
       "既定は黒 4%、白 99%、割合 98% です。" +
+      "単位を輝度値にすると、8 ビットの値（黒 16、白 235）で入力できます。既定の 4% は 24、99% は 232 にあたります。黒はその値以下、白はその値以上の画素を数えます。" +
+      "10 ビットの録画でも同じ値で指定します（中では 4 倍して比べます）。" +
       "フェードの終わりが真っ黒まで落ちない放送では、黒を 9〜11% に上げると拾えます。" +
       "局のロゴや焼き込みの字幕が出たままの録画では、割合を 95% ほどまで下げてください。" +
       "割合を上げても区間の数は減るとはかぎりません。" +
@@ -1270,13 +1275,18 @@ const CATALOG = {
     "prefs.shades.both": "Black and white",
     "prefs.shades.black": "Black only",
     "prefs.shades.white": "White only",
+    "prefs.blankLevelUnit": "Levels are given as:",
+    "prefs.levelUnit.percent": "percent (black 0 to white 100)",
+    "prefs.levelUnit.value": "luma value (16 to 235 at 8 bits)",
     "prefs.blankBlackLevel": "Counts as black below:",
     "prefs.blankWhiteLevel": "Counts as white above:",
     "prefs.blankCoverage": "...over this much of the picture:",
     "prefs.blankLevelNote":
       "The two levels run from broadcast black at 0% to white at 100%, so 0% counts only a pixel " +
       "that is black itself. The third is how much of the frame has to be one of them before the " +
-      "frame is called that. 4%, 99% and 98% out of the box. A channel that fades to a very dark " +
+      "frame is called that. 4%, 99% and 98% out of the box. Set the unit to the luma value to type " +
+      "the two levels as eight-bit luma instead, black 16 and white 235: 4% is 24 and 99% is 232, black counting that value and below and white that value and up. A " +
+      "ten-bit recording is given the same numbers and compared at four times them. A channel that fades to a very dark " +
       "grey rather than to black is caught by raising the first to 9 or 11; a recording with a " +
       "station logo or burnt-in text standing in a corner wants the third down around 95. " +
       "Raising the third does not always find fewer stretches: credits on black lower it for as " +

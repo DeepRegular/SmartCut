@@ -53,6 +53,7 @@ pub mod ttml;
 pub mod udf;
 pub mod udfw;
 pub mod vobsub;
+pub mod weave;
 
 pub use aac::Framing;
 pub use adts::{AacVersion, AdtsFormat};

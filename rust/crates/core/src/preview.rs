@@ -527,6 +527,12 @@ pub fn picture_at(src: &Source, time: f64) -> Result<(f64, ff::frame::Video)> {
     crate::init()?;
     let fd = src.video.frame_duration();
     let from = entry_before(&src.points, time);
+    // Woven frames sit exactly a frame apart, so the frame wanted is the one
+    // the instant falls *in*, not the nearer of two: an instant half way
+    // between two of them is where an access point stands when its picture
+    // begins on the second field of a frame, and the nearer-of-two rule sent
+    // it to the frame after -- the one past the point. See [`crate::weave`].
+    let woven = crate::weave::woven(src);
 
     let mut picture: Option<(f64, ff::frame::Video)> = None;
     for (attempt, margin) in [0.0, src.seek_margin].into_iter().enumerate() {
@@ -538,6 +544,14 @@ pub fn picture_at(src: &Source, time: f64) -> Result<(f64, ff::frame::Video)> {
             // pulldown the pictures are 41.7ms apart inside a 29.97 fps
             // stream, so assuming a picture every frame duration picks the
             // wrong side of the gap.
+            if woven {
+                if t > time + fd / 4.0 {
+                    hit = tail.take();
+                    return false;
+                }
+                tail = Some((t, frame.clone()));
+                return true;
+            }
             if t >= time - 1e-6 {
                 let after = (t - time).abs();
                 hit = match tail.take() {
@@ -1183,6 +1197,30 @@ fn walk(
     let mut first = None;
     let mut stopped = false;
     let mut entries = crate::EntryPictures::new(&src.video);
+    // A recording that repeats fields is shown frame by frame, as a screen
+    // shows it, rather than picture by picture. Not for a walk over the entry
+    // pictures alone: they are asked about as pictures, and the fields
+    // between them are not decoded to be woven with. See [`crate::weave`].
+    let mut weave = (!keys && crate::weave::woven(src)).then(|| crate::weave::Weave::new(src));
+    // Hand one decoded picture over, woven or not; false once the visitor
+    // has had enough.
+    let mut offer = |t: f64,
+                     frame: &mut ff::frame::Video,
+                     weave: &mut Option<crate::weave::Weave>|
+     -> Result<bool> {
+        let Some(w) = weave.as_mut() else {
+            return Ok(visit(t, frame));
+        };
+        // Taken rather than copied: the weave holds on to it for the frame
+        // after, and the decoder is handed an empty one to fill next.
+        let picture = std::mem::replace(frame, ff::frame::Video::empty());
+        for (at, shown) in w.push(t, picture)? {
+            if !visit(at, &shown) {
+                return Ok(false);
+            }
+        }
+        Ok(true)
+    };
     'outer: for (stream, packet) in ictx.read_packets() {
         if stream.index() != idx {
             continue;
@@ -1231,7 +1269,7 @@ fn walk(
             if first.is_none() {
                 first = Some(t);
             }
-            if !visit(t, &frame) {
+            if !offer(t, &mut frame, &mut weave)? {
                 stopped = true;
                 break 'outer;
             }
@@ -1253,8 +1291,18 @@ fn walk(
             if first.is_none() {
                 first = Some(t);
             }
-            if !visit(t, &frame) {
+            if !offer(t, &mut frame, &mut weave)? {
+                stopped = true;
                 break;
+            }
+        }
+        if !stopped {
+            if let Some(w) = weave.as_mut() {
+                for (at, shown) in w.finish() {
+                    if !visit(at, &shown) {
+                        break;
+                    }
+                }
             }
         }
     }

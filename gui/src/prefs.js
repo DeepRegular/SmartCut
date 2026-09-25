@@ -256,6 +256,13 @@ const DEFAULTS = {
   blankBlack: 4,
   blankWhite: 99,
   blankCoverage: 98,
+  /// How 環境設定 shows the two levels: `percent` of the way from black to
+  /// white, or `value`, the eight-bit luma itself -- 16 for black and 235 for
+  /// white -- which is the number a waveform or a histogram shows. Only the
+  /// field changes; `blankBlack` and `blankWhite` are stored in percent
+  /// either way, as many decimals as a value needs, so a picture of any depth
+  /// is judged the same. See `levelOf` and `percentOf` in the list window.
+  blankLevelUnit: "percent",
   /// Where the mark at the end of a black or white stretch goes.
   ///
   /// `after` is the first picture that is no longer flat, which is where a

@@ -972,15 +972,28 @@
                    or a scrap of burnt-in text is a percent or two of the
                    frame, and a station that leaves a clock up needs the
                    coverage down before a black frame is called one. -->
+              <!-- The two levels can be typed as the luma value itself, 16
+                   to 235 on an eight-bit picture, which is the number a
+                   waveform monitor or a histogram shows. Held in percent
+                   either way; see `blankLevelUnit`. -->
+              <div class="row">
+                <span data-i18n="prefs.blankLevelUnit">明るさの単位:</span>
+                <span class="drop">
+                  <select id="pref-blank-unit">
+                    <option value="percent" data-i18n="prefs.levelUnit.percent"></option>
+                    <option value="value" data-i18n="prefs.levelUnit.value"></option>
+                  </select>
+                </span>
+              </div>
               <div class="row">
                 <span data-i18n="prefs.blankBlackLevel">黒とみなす明るさ:</span>
                 <input id="pref-blank-black" class="pref-num" type="number" min="0" max="100" step="1" />
-                <span class="dim">%</span>
+                <span class="dim" id="pref-blank-black-unit">%</span>
               </div>
               <div class="row">
                 <span data-i18n="prefs.blankWhiteLevel">白とみなす明るさ:</span>
                 <input id="pref-blank-white" class="pref-num" type="number" min="0" max="100" step="1" />
-                <span class="dim">%</span>
+                <span class="dim" id="pref-blank-white-unit">%</span>
               </div>
               <div class="row">
                 <span data-i18n="prefs.blankCoverage">その明るさが占める割合:</span>

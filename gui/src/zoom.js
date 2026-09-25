@@ -228,6 +228,21 @@ window.addEventListener("keydown", (ev) => {
   }
 });
 
+// The wheel steps through the frames, as it does over the editor: a notch is
+// a frame, with Shift a GOP. The editor owns the playhead, so the notch is
+// handed over and the picture it lands on comes back as a `zoom-frame`.
+// The magnification stays with the menu at the foot.
+window.addEventListener(
+  "wheel",
+  (ev) => {
+    if (ev.target && ev.target.tagName === "SELECT") return;
+    ev.preventDefault();
+    const dir = Math.sign(ev.deltaY);
+    if (dir && emit) emit("zoom-wheel", { dir, shift: ev.shiftKey });
+  },
+  { passive: false }
+);
+
 // The canvas is sized to the window, so every resize is a redraw.
 window.addEventListener("resize", draw);
 

@@ -27,7 +27,7 @@ mod prefs;
 
 use base64::Engine as _;
 use serde::{Deserialize, Serialize};
-use smartcut_core::{index, netpath, plan_on, proxy, seek_index, PlanOptions, SeekIndex, Source};
+use smartcut_core::{index, netpath, plan_on, proxy, seek_index, weave, PlanOptions, SeekIndex, Source};
 use tauri::{Emitter, Manager, State, WebviewUrl, WebviewWindowBuilder};
 
 #[derive(Default)]
@@ -1209,7 +1209,12 @@ fn info_of(src: &Source) -> SourceInfo {
         audio_tracks: audio_tracks_of(&src.audios),
         subtitles: subtitle_tracks_of(&src.captions, &src.graphics, &src.subpictures),
         index_name: src.index_name.to_string(),
-        points: src.points.iter().map(|p| p.time).collect(),
+        // Named by the frame they fall in rather than by their own instant.
+        // Where fields repeat, a picture -- an access point among them -- can
+        // begin on the second field of a frame, half a frame off the grid the
+        // editor steps along; see [`weave::on_frame`]. The planner is handed
+        // that frame's instant back and copies from the same picture.
+        points: src.points.iter().map(|p| weave::on_frame(src, p.time)).collect(),
         unusable_points: src.points.iter().filter(|p| p.open_gop() && !p.droppable).count(),
         // The walk has been over it, so `points` is the answer and this is
         // not asked for.
@@ -1509,7 +1514,7 @@ fn thumbs_now(
                             let tol = (fd * 2.0).min(to_neighbour(&src.points, t) / 2.0);
                             track.nearest(t).filter(|h| (h.time - t).abs() <= tol).map(|h| Shot {
                                 url: shot_url(app, &h.jpeg),
-                                time: h.time,
+                                time: weave::on_frame(src, h.time),
                                 kind: "I".into(),
                             })
                         })
@@ -1591,11 +1596,13 @@ struct PrepareInfo {
     note: String,
 }
 
-fn track_info(track: &smartcut_core::Track, seconds: f64) -> TrackInfo {
+fn track_info(src: &Source, track: &smartcut_core::Track, seconds: f64) -> TrackInfo {
     TrackInfo {
         thumbs: track.thumbs.len(),
         interval: track.interval,
-        scenes: track.scenes.clone(),
+        // By the frame each falls in, as the access points are; see
+        // [`info_of`].
+        scenes: track.scenes.iter().map(|&t| weave::on_frame(src, t)).collect(),
         threshold: track.threshold,
         typical: track.typical,
         seconds,
@@ -1699,7 +1706,7 @@ fn without_proxy(
     // and there is no reason to hold them twice.
     let kept = locked(&app.state::<Held>().0).as_mut().and_then(|ix| ix.track.take());
     if let Some(track) = kept {
-        let info = track_info(&track, began.elapsed().as_secs_f64());
+        let info = track_info(src, &track, began.elapsed().as_secs_f64());
         let index = index_info(app, src, true);
         // The count asked with the lock held; see `hold`.
         let thumbs_state = app.state::<Thumbs>();
@@ -1745,7 +1752,7 @@ fn without_proxy(
         track.thumbs = head.thumbs;
         track.thumbs.extend(tail);
     }
-    let info = track_info(&track, began.elapsed().as_secs_f64());
+    let info = track_info(src, &track, began.elapsed().as_secs_f64());
     let taken = SeekIndex::of(src, Some(&track));
     *thumbs = Some(track);
     drop(thumbs);
@@ -3130,7 +3137,7 @@ fn make_proxy(
                 built.track.thumbs.extend(tail);
             }
         }
-        let psrc = proxy::open_with(&built.path, built.marks.times.first().copied())
+        let psrc = proxy::open_with(&built.path, Some(&built.marks))
             .map_err(|e| e.to_string())?;
         // Old proxies are only worth what the recordings they stand for are;
         // a handful is enough to keep the files worked on lately instant.
@@ -3160,7 +3167,7 @@ fn make_proxy(
         cached,
         seconds: began.elapsed().as_secs_f64(),
     };
-    let tinfo = track_info(&track, info.seconds);
+    let tinfo = track_info(src, &track, info.seconds);
 
     // The access points are the recording's whichever file the pictures came
     // from, and a proxy's thumbnails sit on the same key pictures as the
@@ -3242,7 +3249,7 @@ fn load_cached(
     thumb_opts: &smartcut_core::ThumbOptions,
 ) -> Result<(Source, proxy::Marks, smartcut_core::Track), String> {
     let marks = proxy::Marks::load(&proxy::marks_path(path)).map_err(|e| e.to_string())?;
-    let psrc = proxy::open_with(&path.to_string_lossy(), marks.times.first().copied())
+    let psrc = proxy::open_with(&path.to_string_lossy(), Some(&marks))
         .map_err(|e| e.to_string())?;
     // Kept from being pruned as the least recently used, since it plainly is
     // not: it is being used now.
@@ -3314,6 +3321,9 @@ fn scene_now(from: f64, dir: i32, app: &tauri::AppHandle) -> Result<Option<f64>,
             let Some(coarse) = coarse else { return Ok(None) };
             at = coarse;
             let exact = smartcut_core::thumbs::refine(src, coarse).map_err(|e| e.to_string())?;
+            // The frame it falls in, which is what the editor stands on; the
+            // test below is then between two frames, never half of one.
+            let exact = weave::on_frame(src, exact);
             let moved =
                 if dir >= 0 { exact > from + fd / 2.0 } else { exact < from - fd / 2.0 };
             if moved {

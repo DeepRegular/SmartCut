@@ -10183,7 +10183,8 @@ function paintPrefs() {
   el("pref-cm-keyframes").checked = prefs.get("cmKeyframes") !== false;
   el("pref-cm-inserts").checked = prefs.get("cmInserts") === true;
   el("pref-blank-shades").value = String(prefs.get("blankShades") || "both");
-  for (const [id, name] of BLANK_LEVELS) el(id).value = String(prefs.get(name));
+  el("pref-blank-unit").value = blankUnit();
+  paintBlankLevels();
   el("pref-flat-mark-at").value = String(prefs.get("flatMarkAt") || "after");
   el("pref-blank-keyframes").checked = prefs.get("blankKeyframes") !== false;
   el("pref-quiet-keyframes").checked = prefs.get("quietKeyframes") !== false;
@@ -10499,16 +10500,52 @@ const BLANK_LEVELS = [
   ["pref-blank-coverage", "blankCoverage", 1, 100],
 ];
 
+/// Whether the two levels are being typed as eight-bit luma rather than as
+/// percent. The coverage is a share of the picture and stays in percent.
+const blankUnit = () => (prefs.get("blankLevelUnit") === "value" ? "value" : "percent");
+const LEVEL_UNIT = ["blankBlack", "blankWhite"];
+
+/// Percent of the way from black to white, to the eight-bit value it comes
+/// to, and back. Broadcast black is 16 and white 235, as the engine measures
+/// every depth, and the engine drops the fraction the way this does
+/// (`Luma::level`): 4% is 24 there and here, and 99% is 232.
+const levelOf = (p) => Math.floor(16 + (p * 219) / 100 + 1e-6);
+const percentOf = (v) => ((v - 16) * 100) / 219;
+
+/// Fill the three fields, in the unit each is shown in.
+function paintBlankLevels() {
+  const value = blankUnit() === "value";
+  for (const [id, name] of BLANK_LEVELS) {
+    const p = Number(prefs.get(name));
+    const level = LEVEL_UNIT.includes(name) && value;
+    el(id).value = String(level ? levelOf(p) : Math.round(p * 10) / 10);
+    el(id).min = level ? "16" : name === "blankCoverage" ? "1" : "0";
+    el(id).max = level ? "235" : "100";
+    const unit = el(`${id}-unit`);
+    if (unit) unit.textContent = level ? "" : "%";
+  }
+}
+
+el("pref-blank-unit").addEventListener("change", (ev) => {
+  prefs.set("blankLevelUnit", ev.target.value === "value" ? "value" : "percent");
+  // The same levels, shown the other way: nothing is detected differently,
+  // so the saved detections still answer.
+  paintBlankLevels();
+});
+
 for (const [id, name, lo, hi] of BLANK_LEVELS) {
   el(id).addEventListener("change", (ev) => {
     const typed = Number(ev.target.value);
-    const kept =
-      ev.target.value.trim() !== "" && isFinite(typed)
-        ? Math.min(hi, Math.max(lo, Math.round(typed)))
-        : prefs.get(name);
-    const moved = kept !== prefs.get(name);
+    const level = LEVEL_UNIT.includes(name) && blankUnit() === "value";
+    const ok = ev.target.value.trim() !== "" && isFinite(typed);
+    const kept = !ok
+      ? prefs.get(name)
+      : level
+        ? percentOf(Math.min(235, Math.max(16, Math.round(typed))))
+        : Math.min(hi, Math.max(lo, Math.round(typed)));
+    const moved = Math.abs(kept - Number(prefs.get(name))) > 1e-9;
     prefs.set(name, kept);
-    ev.target.value = String(kept);
+    paintBlankLevels();
     if (moved) forgetBlank();
   });
 }

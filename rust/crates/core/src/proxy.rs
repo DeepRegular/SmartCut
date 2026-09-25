@@ -36,7 +36,7 @@ use crate::{thumbs, Source};
 
 /// Bumped when a change here would make an existing proxy wrong. It goes into
 /// the cache key, so old files are simply never looked at again.
-pub const VERSION: u32 = 2;
+pub const VERSION: u32 = 3;
 
 /// Encoders to try, in order, when none is named. Hardware first: the design
 /// note in `docs/technical/design.md` keeps x264 at arm's length because it is GPL, and
@@ -145,6 +145,12 @@ pub struct Marks {
     pub times: Vec<f64>,
     /// b'I', b'P', b'B' or b'-', one per time.
     pub kinds: Vec<u8>,
+    /// Whether the proxy holds the recording's pictures woven into frames,
+    /// which it does where the recording repeats fields; see
+    /// [`crate::weave`]. A proxy opened on its own has nothing else to say
+    /// so, and the stage asks such a proxy for the frame an instant falls in,
+    /// as it asks the recording -- not for the nearer of two.
+    pub woven: bool,
 }
 
 const MARKS_MAGIC: &[u8; 4] = b"SCPM";
@@ -198,6 +204,7 @@ impl Marks {
             out.extend_from_slice(&t.to_le_bytes());
             out.push(*k);
         }
+        out.push(u8::from(self.woven));
         std::fs::write(path, out).with_context(|| format!("cannot write {}", path.display()))?;
         Ok(())
     }
@@ -222,6 +229,8 @@ impl Marks {
         let mut marks = Marks {
             times: Vec::with_capacity(n),
             kinds: Vec::with_capacity(n),
+            // After the table, and absent from nothing this version wrote.
+            woven: raw.get(16 + n * 9).is_some_and(|&b| b != 0),
         };
         for i in 0..n {
             let at = 16 + i * 9;
@@ -384,14 +393,13 @@ pub fn prune(dir: &Path, keep: usize, budget: u64) -> Result<usize> {
 /// that picture back where it belongs. What the container thought does not
 /// come into it.
 pub fn open(path: &str) -> Result<Source> {
-    let first = Marks::load(&marks_path(Path::new(path)))
-        .ok()
-        .and_then(|m| m.times.first().copied());
-    open_with(path, first)
+    let marks = Marks::load(&marks_path(Path::new(path))).ok();
+    open_with(path, marks.as_ref())
 }
 
 /// As [`open`], for a caller that already holds the marks.
-pub fn open_with(path: &str, first_picture: Option<f64>) -> Result<Source> {
+pub fn open_with(path: &str, marks: Option<&Marks>) -> Result<Source> {
+    let first_picture = marks.and_then(|m| m.times.first().copied());
     // MP4 carries its own sync-sample table, so the index is free; the walk
     // is only there for a proxy some other muxer produced.
     let mut src =
@@ -414,6 +422,20 @@ pub fn open_with(path: &str, first_picture: Option<f64>) -> Result<Source> {
         // `duration` is read as "where the timeline ends", and the timeline
         // no longer starts at zero.
         src.duration += offset;
+    }
+    // Its frames are already woven, one a frame: weaving them again changes
+    // nothing, and it is what makes a stage read off this proxy pick frames
+    // the way one read off the recording does.
+    //
+    // On the recording's frame rate, which the stream states: MP4 works its
+    // average out of the length, which is a hair off it, and frames paired on
+    // that drift off the recording's by a sixtieth of a second every twenty.
+    if marks.is_some_and(|m| m.woven) {
+        src.video.pulldown = true;
+        let base = src.video.base_rate;
+        if base.is_finite() && base > 0.0 && base <= 1000.0 {
+            src.video.frame_rate = base;
+        }
     }
     Ok(src)
 }
@@ -635,8 +657,40 @@ pub fn build(
 
         // Anything but `Ok(true)` means stop reading: the write side has hung
         // up, and its own error is the one worth reporting.
+        // A recording that repeats fields goes into the proxy as frames; see
+        // [`crate::weave`]. The proxy itself is frame for frame, so it needs no
+        // weaving of its own when it is read.
+        let mut weave = crate::weave::woven(src).then(|| crate::weave::Weave::new(src));
+        marks.woven = weave.is_some();
+        let mut entry_at: Option<f64> = None;
+        let send_frame = |at: f64,
+                          shown: std::rc::Rc<ff::frame::Video>,
+                          marks: &mut Marks,
+                          entry_at: &mut Option<f64>,
+                          tx: &std::sync::mpsc::SyncSender<Job>|
+         -> Result<bool> {
+            let frame = std::rc::Rc::try_unwrap(shown).unwrap_or_else(|rc| (*rc).clone());
+            marks.push(at, crate::preview::kind_of(&frame));
+            let entry = entry_at.is_some_and(|e| (e - at).abs() < fd / 4.0);
+            if entry {
+                *entry_at = None;
+            }
+            let ticks = (at / f64::from(tb_in)).round() as i64;
+            Ok(tx.send((frame, ticks, entry)).is_ok())
+        };
         let mut hand_over =
-            |frame: ff::frame::Video, tx: &std::sync::mpsc::SyncSender<Job>| -> Result<bool> {
+            |frame: Option<ff::frame::Video>, tx: &std::sync::mpsc::SyncSender<Job>| -> Result<bool> {
+                // No picture: the decoder is done, and whatever the weave still
+                // holds goes out.
+                let Some(frame) = frame else {
+                    let Some(w) = weave.as_mut() else { return Ok(true) };
+                    for (at, shown) in w.finish() {
+                        if !send_frame(at, shown, &mut marks, &mut entry_at, tx)? {
+                            return Ok(false);
+                        }
+                    }
+                    return Ok(true);
+                };
                 let Some(pts) = frame.pts() else {
                     return Ok(true);
                 };
@@ -647,7 +701,9 @@ pub fn build(
                 if ticks < 0 {
                     return Ok(true);
                 }
-                marks.push(t, crate::preview::kind_of(&frame));
+                if weave.is_none() {
+                    marks.push(t, crate::preview::kind_of(&frame));
+                }
 
                 // Is this one of the recording's access points? The proxy is given
                 // a keyframe exactly there, and the thumbnail track is built from
@@ -678,7 +734,9 @@ pub fn build(
                         .is_some_and(|p| p.time <= t + reach);
                 if entry {
                     next_point += 1;
-                    collector.feed(t, &frame)?;
+                    // By the frame it falls in, the way the editor is told
+                    // about the access points; see [`crate::weave::on_frame`].
+                    collector.feed(crate::weave::on_frame(src, t), &frame)?;
                     if let Some(f) = share.as_mut() {
                         if shared.elapsed() >= thumbs::SHARE_EVERY {
                             shared = std::time::Instant::now();
@@ -687,7 +745,22 @@ pub fn build(
                     }
                 }
 
-                if tx.send((frame, ticks, entry)).is_err() {
+                if let Some(w) = weave.as_mut() {
+                    // The thumbnail and the access point above are the
+                    // picture's own; what goes into the proxy is the frames a
+                    // screen shows, so that scrubbing the proxy looks like
+                    // scrubbing the recording. The keyframe goes on the frame
+                    // the entry picture's first field is in, which is the
+                    // frame the editor names the access point by.
+                    if entry {
+                        entry_at = Some(crate::weave::on_frame(src, t));
+                    }
+                    for (at, shown) in w.push(t, frame)? {
+                        if !send_frame(at, shown, &mut marks, &mut entry_at, tx)? {
+                            return Ok(false);
+                        }
+                    }
+                } else if tx.send((frame, ticks, entry)).is_err() {
                     return Ok(false);
                 }
                 if let Some(f) = progress.as_mut() {
@@ -721,7 +794,7 @@ pub fn build(
                     if decoder.receive_frame(&mut frame).is_err() {
                         break;
                     }
-                    if !hand_over(frame, &tx)? {
+                    if !hand_over(Some(frame), &tx)? {
                         break 'read;
                     }
                 }
@@ -734,10 +807,11 @@ pub fn build(
                     if decoder.receive_frame(&mut frame).is_err() {
                         break;
                     }
-                    if !hand_over(frame, &tx)? {
+                    if !hand_over(Some(frame), &tx)? {
                         break 'read;
                     }
                 }
+                hand_over(None, &tx)?;
             }
         }
 

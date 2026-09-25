@@ -1233,6 +1233,35 @@ is released, that position is re-rendered at full resolution.
 time and says "preparing". Showing what you have beats making people wait on principle, and
 it feels faster.
 
+### Repeated fields are shown as the frames they make (`weave.rs`)
+
+Film and animation go out at 29.97 by `repeat_first_field`: four pictures, two of them shown
+for three fields, fill five frames. The decoder hands over the four pictures. Put on the screen
+as they are, **one frame in five had no picture of its own** — the one-frame filmstrip drew it
+black, a step went straight past it — and the film looked cleaner than the recording is,
+because two of every five frames a television shows are woven from two pictures and comb on a
+moving edge.
+
+So where the walk found pulldown (`VideoInfo::pulldown`), every picture the preview decodes is
+laid out field by field on the recording's clock and read off again two fields at a time
+(`Weave`, inside `preview::walk`). A frame whose two fields come from one picture is that
+picture, untouched; only the mixed frames are built, line by line in every plane. The one-frame
+reel, the stage, playback, the magnifier and the proxy all get the frames. The walks over entry
+pictures alone do not: they are asked about pictures, and nothing between them is decoded to be
+woven with.
+
+**The frames are paired from the first access point**, where the editor's timeline begins, so
+every frame made lands exactly on a frame the counter counts. That puts some pictures —
+access points and scene changes among them — half way through a frame, a field after its start.
+Handed their own instants, a step forward from that frame found the same point still ahead and
+never moved. They reach the editor as the frame they fall in (`weave::on_frame`), and a cut
+placed there still copies from that picture: the planner takes the first entry point within half
+a frame of the bound.
+
+What is written is not changed. A copy carries its pictures with their flags, so the output
+repeats exactly the fields the recording did. An IN on a mixed frame starts the output with the
+picture that begins in it, one field after the frame on screen.
+
 ## Playback
 
 **It plays** (`▶ Play` / `Space`). The pictures come at the stage's own width, capped at
@@ -2529,7 +2558,9 @@ in is a version that comes back wrong.
   picture is two or three fields, so the interval alternates between 33.4 ms and 50.1 ms. Assuming
   29.97 fps and picking "the nearer" grabs the wrong side of the gap. It now actually compares the two
   neighbours and returns the nearer, and the GUI snaps the playhead to the returned picture's real
-  time so that counter and picture cannot disagree.
+  time so that counter and picture cannot disagree. Since 0.8.7 such material is shown as woven
+  frames instead, which sit on the grid; see
+  [repeated fields](#repeated-fields-are-shown-as-the-frames-they-make-weavers).
 - **Which side of a seam a frame belongs to.** An interval is `[a, b)`, so the picture at `b` is the
   first one the cut took. But the output-time to source-time conversion answered a seam with "the end
   of the preceding interval", and **exactly one frame of the material just cut stayed on screen**. The

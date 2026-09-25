@@ -1411,7 +1411,11 @@ const stagePicture = (at) =>
 async function showFrame(t) {
   if (!src) return;
   if (playing && t !== playhead) stopPlay();
-  playhead = outToSrc(clamp(srcToOutSeam(t), 0, Math.max(0, outDur - frame())));
+  // A frame short of the end until the last picture is known, which is then
+  // the end: a picture that repeats a field can stand in the last frame of
+  // all, and a frame short of the container's length left it out of reach.
+  const end = tailSrc === null ? outDur - frame() : lastOut();
+  playhead = outToSrc(clamp(srcToOutSeam(t), 0, Math.max(0, end)));
   updateReadouts();
   draw();
 
@@ -1450,6 +1454,12 @@ async function showFrame(t) {
     // as many words. `pointsArrived` asks again for the frame the pointer is
     // really on, and from there the two agree exactly.
     const exact = walked();
+    // Asked for a frame in the last few and answered with one further back:
+    // that one is the last picture there is. See `tailSrc`.
+    if (exact && tailSrc === null && playhead - shot.time > frame() / 2 &&
+        src.duration - playhead < 3 * frame()) {
+      tailSrc = shot.time;
+    }
     if (exact && srcToOut(shot.time) !== null) playhead = shot.time;
     updateReadouts();
     draw();
@@ -3424,11 +3434,43 @@ let scrubIdle = [];
 const scrubSettled = () =>
   scrubBusy ? new Promise((r) => scrubIdle.push(r)) : Promise.resolve();
 
+/// The last picture the recording really has, in its own seconds, once it is
+/// known; null until then.
+///
+/// The timeline runs to the container's length, and on a transport stream
+/// that is the sound's: a frame or two past the last picture. A step from the
+/// last picture went on to a frame that is not there -- the strip slid across
+/// to an empty cell, the decode came back with the picture it had started
+/// from, and the playhead jumped back to it. Learnt from the stage the first
+/// time it is asked past the end, and asked for outright once the walk is
+/// done; see `learnTail`.
+let tailSrc = null;
+
+/// How far a step may go on the edited timeline: its end, or the last
+/// picture if that comes first.
+function lastOut() {
+  if (tailSrc === null) return outDur;
+  const o = srcToOut(tailSrc);
+  return o === null ? outDur : Math.min(outDur, o);
+}
+
+/// Ask for the picture at the very end of the recording, to learn where the
+/// last one is before anybody steps into the gap after it.
+async function learnTail(path) {
+  if (!src || src.path !== path || tailSrc !== null) return;
+  try {
+    const shot = await invoke("preview", { time: src.duration, width: 320 });
+    if (src && src.path === path && tailSrc === null) tailSrc = shot.time;
+  } catch (e) {
+    jlog(`learnTail: ${e}`);
+  }
+}
+
 function scrubTo(o) {
   // A hand on anything that moves the playhead puts a running 早送り down:
   // two things moving it at once is neither of them.
   if (seekRate) endScroll();
-  o = clamp(o, 0, outDur);
+  o = clamp(o, 0, lastOut());
   playhead = outToSrc(o);
   updateReadouts();
   draw();
@@ -3498,19 +3540,28 @@ window.addEventListener(
     if (!el("tracks-modal").hidden) return;
     if (scrolls(ev.target)) return;
     ev.preventDefault();
-    // A notch is a frame, so the GOP boundaries creep across the window
-    // rather than jumping; Shift hops whole GOPs for covering ground.
-    const dir = Math.sign(ev.deltaY);
-    // Stopped first, as the arrow keys stop it: `scrubTo` moves the playhead
-    // before the picture is asked for, so the picture found nothing to stop
-    // and the playback carried on from where it had been.
-    const from = playOut();
-    if (playing) stopPlay(false);
-    if (ev.shiftKey) scrubTo(srcToOutSeam(stepPoint(dir)));
-    else scrubTo(from + dir * frame());
+    wheelStep(Math.sign(ev.deltaY), ev.shiftKey);
   },
   { passive: false }
 );
+
+/// One notch of the wheel: a frame, or with Shift a whole GOP.
+///
+/// A notch is a frame so that the GOP boundaries creep across the window
+/// rather than jumping; Shift hops whole GOPs for covering ground. Also what
+/// a notch over 拡大表示 does, which hands its wheel over here: somebody
+/// following an edge at eight times its size steps through the frames with
+/// the hand already on that window.
+function wheelStep(dir, shift) {
+  if (!src || !dir) return;
+  // Stopped first, as the arrow keys stop it: `scrubTo` moves the playhead
+  // before the picture is asked for, so the picture found nothing to stop
+  // and the playback carried on from where it had been.
+  const from = playOut();
+  if (playing) stopPlay(false);
+  if (shift) scrubTo(srcToOutSeam(stepPoint(dir)));
+  else scrubTo(from + dir * frame());
+}
 
 // --- playback -----------------------------------------------------------
 //
@@ -5183,6 +5234,7 @@ async function openPath(picked, saved, side, name, chapters, dropPids) {
     const outline = await invoke("open_outline", { path: picked });
     if (overtaken()) return;
     src = outline;
+    tailSrc = null;
     paintSourceInfo();
     paintSubsPicker();
     cuts = saved ? saved.cuts.map((c) => ({ a: c.a, b: c.b })) : [];
@@ -5349,6 +5401,10 @@ async function pointsArrived(exact, picked) {
     for (const c of cuts) if (c.b >= src.duration - 1e-6) c.b = full.duration;
   }
   src = full;
+  tailSrc = null;
+  // A moment after, so that it does not stand in front of the first picture
+  // the stage asks for.
+  setTimeout(() => learnTail(picked), 1500);
   paintSourceInfo();
   paintSubsPicker();
   rebuildTimeline();
@@ -6615,6 +6671,13 @@ if (listen) {
   // And that it has gone, whichever way it went -- the menu, the key, or its
   // own title bar. Reported from the backend, because the page going away is
   // the thing being reported.
+  // A notch over 拡大表示. The same gate as the wheel over this window: a
+  // panel over the timeline is the timeline not listening.
+  hear("zoom-wheel", (ev) => {
+    const said = ev.payload || {};
+    if (!el("tracks-modal").hidden) return;
+    wheelStep(Math.sign(Number(said.dir) || 0), !!said.shift);
+  });
   hear("zoom-closed", () => {
     zoomOn = false;
     zoomShown = null;

@@ -457,6 +457,19 @@ frames, and `Snap to lossless` can take those to zero once it lights up.
 > drag they carry the picture from the lossless point behind them and fill in
 > properly the moment you let go.
 
+> **Material carrying 2:3 pulldown.** Film and animation made at 24 frames a
+> second go out at 29.97 by showing some pictures for three fields rather than
+> two — the RFF flag — so four pictures fill five frames. SmartCut shows those
+> five frames, as a television or a DVD player does, and two of every five are
+> woven from the last field of one picture and the first of the next: a moving
+> edge combs on them, which is how the recording really looks. The output is
+> still cut picture by picture, and what is copied carries its RFF flags as the
+> recording had them. An IN placed on one of the woven frames starts the output
+> with the picture that begins there, a field (a sixtieth of a second) after the
+> frame on screen. Up to 0.8.6 the four pictures were shown as they were, so one
+> frame in five had no picture of its own: the filmstrip drew it black in
+> `1 frame` mode and stepping went straight past it.
+
 **Every number on this screen is on the output's clock.** What you cut does not
 go grey — it disappears. The scrubber shrinks, the filmstrip closes over the
 hole, and the frame counter counts the length that will actually be written.
@@ -468,7 +481,7 @@ hole, and the frame counter counts the length that will actually be written.
 | **Click** the filmstrip | Go to that frame |
 | **Right-drag** the filmstrip | Search back and forth. Right of centre is forwards, left is back, and further out is faster |
 | **Middle-click** the filmstrip | Jump to a scene change: the next one from the right half of the strip, the one before from the left half |
-| **Wheel** | One frame per notch. Hold `Shift` to hop from lossless point to lossless point. Anywhere in the window, not only over the filmstrip; over the marks down the left or over the plan it scrolls those instead |
+| **Wheel** | One frame per notch. Hold `Shift` to hop from lossless point to lossless point. Anywhere in the window, not only over the filmstrip, and over the magnifier too; over the marks down the left or over the plan it scrolls those instead |
 | **Drag** the scrubber | Move the playhead. Grab near the IN or OUT mark and you move that mark instead |
 | **Hover** the scrubber | Shows the frame at that moment in a small picture |
 | `Space` or **▶ Play** | Play from here, picture and sound. Press again to stop. The picture runs at the recording's own frame rate; where the machine cannot decode and draw that many, it shows fewer rather than falling behind the sound |
@@ -539,6 +552,10 @@ the aim with it.
 **The magnified picture is dragged about.** At 8x the window holds a couple of
 hundred of the recording's own pixels, so following an edge across a frame is
 one drag in there rather than a dozen clicks out here.
+
+The wheel over the magnifier steps through the frames as it does over the cut
+editor, a frame a notch and a lossless point with `Shift`, so the comb can be
+followed from frame to frame without the hand going back to the other window.
 
 **What it shows is the recording's own pixels.** The preview has been scaled to
 the width of the stage, and scaling is what takes the comb out of interlaced
@@ -1367,7 +1384,7 @@ effect as you make it.
 | **Also find the short inserts (a channel's own ident)** | Off out of the box. Some subscription channels drop two to nine seconds of their own animated ident into a programme, where the terrestrial broadcast had its commercials; a break that short is not looked for otherwise. What finds one is the sound — an insert is cut in, so the programme's audio stops for it. **A programme's own full-screen caption card takes the corner just as thoroughly**, and some programmes lay one over silence: measured over twenty episodes of one such programme, about a quarter of what came out was a caption card. Only the cut editor's **Detect commercials** asks this; the clip list's own pass does not |
 | **Counts as blank after** | Shorter stretches are left out. The unit is pictures or seconds; 3 s out of the box, which reports the long gaps and not the two-to-four-picture black a broadcast junction is laid on. For those, say 2 and pick pictures |
 | **The blank pass looks for** | Black and white, black alone, or white alone. **Black out of the box**, that being where a junction is laid; the button in the list, the line in the editor's menu and what a row says it found are all named after this answer — *Detect black*, *Black: 1 stretch*. White belongs as often to the programme — a title sequence cuts on a flash — so on some material it is dozens of stretches nobody asked about. A shade that was not looked for was not written down either, so changing this clears what the rows are showing, and detecting again reads the recording |
-| **Counts as black below / Counts as white above / ...over this much of the picture** | What makes a picture a black one or a white one: how dark or how bright a pixel has to be, and how much of the frame has to be that. 4%, 99% and 98% out of the box. The two levels run from broadcast black at 0% to white at 100%, so 0% counts only a pixel that is black itself, and the same numbers mean the same thing on eight-bit and ten-bit material. A channel that fades through a very dark grey rather than to black is caught by raising the first to 9 or 11; a recording with a station logo, burnt-in text or a clock standing in a corner wants the third down around 95. Raising the third finds fewer black pictures but not always fewer stretches: credits on black lower it for as long as a card is up, which cuts a long stretch in two there, and if both halves are long enough the count goes up. Judge a setting by what the stretches it finds are, not by how many there are. Up to 0.8.5 the levels were a share of 0..255, so anything at 6% or under was below broadcast black (16) and found nothing; a level set then is carried over onto the new scale. The outermost 2% of each edge is left out of the judgement whatever these say — broadcast pictures carry a line or two of rubbish down the edges. Changing any of them leaves every saved detection unable to answer, so the rows drop their results and a fresh detection reads the recording again |
+| **Counts as black below / Counts as white above / ...over this much of the picture** | What makes a picture a black one or a white one: how dark or how bright a pixel has to be, and how much of the frame has to be that. 4%, 99% and 98% out of the box. The two levels run from broadcast black at 0% to white at 100%, so 0% counts only a pixel that is black itself, and the same numbers mean the same thing on eight-bit and ten-bit material. Set **Levels are given as** to the luma value to type the two levels as eight-bit luma instead, black 16 and white 235: 4% is 24 and 99% is 232, black counting that value and below and white that value and up. A ten-bit recording takes the same numbers and is compared at four times them. A channel that fades through a very dark grey rather than to black is caught by raising the first to 9 or 11; a recording with a station logo, burnt-in text or a clock standing in a corner wants the third down around 95. Raising the third finds fewer black pictures but not always fewer stretches: credits on black lower it for as long as a card is up, which cuts a long stretch in two there, and if both halves are long enough the count goes up. Judge a setting by what the stretches it finds are, not by how many there are. Up to 0.8.5 the levels were a share of 0..255, so anything at 6% or under was below broadcast black (16) and found nothing; a level set then is carried over onto the new scale. The outermost 2% of each edge is left out of the judgement whatever these say — broadcast pictures carry a line or two of rubbish down the edges. Changing any of them leaves every saved detection unable to answer, so the rows drop their results and a fresh detection reads the recording again |
 | **A blank stretch ends on** | The picture after it (out of the box) or its own last picture. Cut at a stretch's two marks and the first answer takes the black out exactly; other tools call the last black picture the end of the stretch, so a reading held up against one is a frame out every time — pick the other answer to match. The band under the timeline follows it too. Silences are unaffected: the sound comes back on a sample, and there is no picture between the two answers. Marks already down do not move |
 | **Turn a blank detection into keyframes** | On out of the box. Off, the band under the timeline is all that is left. Where a mark file beside the recording was read, what the window opens holding is not marked whatever this says. Either way, `≡` → **Turn the blank stretches into keyframes** puts the marks down afterwards |
 | **Counts as silence after** | The same for the sound, and the same 3 s. A pause in dialogue runs 0.1 to 0.4 s and a junction's silence about a second, so anything much shorter comes back as dozens of stretches |
