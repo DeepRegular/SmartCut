@@ -975,6 +975,7 @@ const CATALOG = {
     "editor.stripHint":
       "クリックで移動／<b>右ドラッグ</b>で前後にサーチ（右へ＝送り・左へ＝戻し）／<b>中クリック</b>で場面の変わり目へ（右半分で次・左半分で前）／ホイールで 1 フレーム送り（Shift で GOP 単位）／Space で再生",
     "editor.stripShow": "1 画面",
+    "strip.auto": "自動",
     "strip.win3": "3 秒",
     "strip.win6": "6 秒",
     "strip.win30": "30 秒",
@@ -2056,6 +2057,7 @@ const CATALOG = {
     "editor.stripHint":
       "Click to move  /  <b>right-drag</b> to search back and forth (right = forwards, left = back)  /  <b>middle-click</b> for a scene change (right half forwards, left half back)  /  wheel steps a frame (Shift for a GOP)  /  Space plays",
     "editor.stripShow": "Window",
+    "strip.auto": "Auto",
     "strip.win3": "3 s",
     "strip.win6": "6 s",
     "strip.win30": "30 s",

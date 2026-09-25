@@ -2290,7 +2290,40 @@ async function runStrip(at) {
 /// recording that comes to.
 function stripView() {
   const v = el("strip-step").value;
-  return v === "frame" ? { span: null } : { span: parseFloat(v.slice(4)) };
+  if (v === "frame") return { span: null };
+  if (v === "auto") return { span: autoSpan() };
+  return { span: parseFloat(v.slice(4)) };
+}
+
+/// `自動`: the window that makes one GOP about one picture wide, which is how
+/// the reference tool scales its strip. Measured off its screenshots, it
+/// shows about 10 s of material with 1 s GOPs and about 5.5 s of material
+/// with 0.5 s GOPs, and in both the pictures sit edge to edge. A fixed 6 s
+/// matches it only on the half-second GOPs; with GOPs twice that long each
+/// cell is twice as wide as its picture, and half the strip is empty ground.
+///
+/// The typical GOP is the median spacing of the access points, so that the
+/// odd short GOP at a scene change or a splice does not pull the scale in.
+/// Before the walk there are no points and the window is the old default.
+/// Rounded to a tenth of a second because `ways` is keyed on the span.
+const AUTO_SPAN = { min: 2, max: 60, fallback: 6 };
+let gopTypical = { pts: null, n: -1, v: 0 };
+
+function autoSpan() {
+  const pts = walked() ? src.points : [];
+  if (gopTypical.pts !== pts || gopTypical.n !== pts.length) {
+    const gaps = [];
+    for (let i = 1; i < pts.length; i++) {
+      const g = pts[i] - pts[i - 1];
+      if (g > 1e-6) gaps.push(g);
+    }
+    gaps.sort((a, b) => a - b);
+    gopTypical = { pts, n: pts.length, v: gaps.length ? gaps[gaps.length >> 1] : 0 };
+  }
+  const w = el("strip").clientWidth;
+  if (!(gopTypical.v > 0) || w <= 0) return AUTO_SPAN.fallback;
+  const span = (w / cellPx()) * gopTypical.v;
+  return Math.round(clamp(span, AUTO_SPAN.min, AUTO_SPAN.max) * 10) / 10;
 }
 
 /// The height the pictures are drawn at -- `.strip img` in the stylesheet has
