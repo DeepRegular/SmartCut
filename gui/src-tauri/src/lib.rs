@@ -4237,7 +4237,10 @@ async fn detect_cm(path: String, inserts: bool, app: tauri::AppHandle) -> Result
         // Written down whichever window asked for it: it is the recording's
         // answer, not the window's, and the list is where it will be wanted
         // next.
-        remember_cm(&app, &path, &res);
+        // Nor one read short by a share that went away: shown, not kept.
+        if !smartcut_core::input::reads_failed() {
+            remember_cm(&app, &path, &res);
+        }
         Ok(res)
     })
     .await
@@ -4309,7 +4312,10 @@ async fn detect_cm_at(path: String, app: tauri::AppHandle) -> Result<CmResult, S
         if stopped() {
             return Err("cancelled".into());
         }
-        remember_cm(&app, &path, &res);
+        // Nor one read short by a share that went away: shown, not kept.
+        if !smartcut_core::input::reads_failed() {
+            remember_cm(&app, &path, &res);
+        }
         Ok(res)
     })
     .await
@@ -4690,22 +4696,25 @@ fn blank_now(
     if smartcut_core::input::reads_stopped() {
         return Err("cancelled".into());
     }
-    remember_flat(
-        app,
-        path,
-        false,
-        &FlatSaved {
-            min_seconds,
-            min_pictures,
-            black,
-            white,
-            black_level: levels.black_level,
-            white_level: levels.white_level,
-            coverage: levels.coverage,
-            threshold_db: 0.0,
-            runs: runs.clone(),
-        },
-    );
+    // Nor one read short by a share that went away: shown, not kept.
+    if !smartcut_core::input::reads_failed() {
+        remember_flat(
+            app,
+            path,
+            false,
+            &FlatSaved {
+                min_seconds,
+                min_pictures,
+                black,
+                white,
+                black_level: levels.black_level,
+                white_level: levels.white_level,
+                coverage: levels.coverage,
+                threshold_db: 0.0,
+                runs: runs.clone(),
+            },
+        );
+    }
     Ok(runs)
 }
 
@@ -4737,22 +4746,25 @@ fn quiet_now(
     if smartcut_core::input::reads_stopped() {
         return Err("cancelled".into());
     }
-    remember_flat(
-        app,
-        path,
-        true,
-        &FlatSaved {
-            min_seconds,
-            min_pictures: 0,
-            black: true,
-            white: true,
-            black_level: level_black(),
-            white_level: level_white(),
-            coverage: level_coverage(),
-            threshold_db,
-            runs: runs.clone(),
-        },
-    );
+    // Nor one read short by a share that went away: shown, not kept.
+    if !smartcut_core::input::reads_failed() {
+        remember_flat(
+            app,
+            path,
+            true,
+            &FlatSaved {
+                min_seconds,
+                min_pictures: 0,
+                black: true,
+                white: true,
+                black_level: level_black(),
+                white_level: level_white(),
+                coverage: level_coverage(),
+                threshold_db,
+                runs: runs.clone(),
+            },
+        );
+    }
     Ok(runs)
 }
 
@@ -5431,6 +5443,13 @@ async fn export(
             .map_err(|e| e.to_string())?;
             return Ok(());
         }
+        // The AAC beside the cut takes the cut's name with `.aac` on it, and
+        // that can be the recording being read (a transport stream saved as
+        // `x.aac`). Asked before the cut, as the cut asks of the output.
+        if audio_es.unwrap_or(false) {
+            let beside = std::path::Path::new(&output).with_extension("aac");
+            src.input.refuse_as_output(&beside.to_string_lossy()).map_err(|e| e.to_string())?;
+        }
         smartcut_core::cut_with_progress(
             &src,
             &plans,
@@ -5698,6 +5717,12 @@ async fn export_joined(
             .map_err(|e| e.to_string())?;
             return Ok(());
         }
+        if audio_es.unwrap_or(false) {
+            let beside = std::path::Path::new(&output).with_extension("aac");
+            for reel in &reels {
+                reel.src.input.refuse_as_output(&beside.to_string_lossy()).map_err(|e| e.to_string())?;
+            }
+        }
         smartcut_core::cut::join_with_progress(
             &reels,
             master,
@@ -5897,17 +5922,25 @@ async fn bdav_image(
         let at = local_path(&dir)?;
         // Beside the folder, under its name -- which a drive or the root has
         // neither of. `E:\.iso` would be inside the very folder it is made of.
-        if at.file_name().is_none() {
+        let Some(name) = at.file_name() else {
             return Err(format!(
                 "{}: an image goes beside the disc's folder, and this has nothing beside it. \
                  Choose a folder for the disc",
                 at.display()
             ));
-        }
+        };
+        // Appended to the folder's name rather than `with_extension`, which
+        // would take a folder called `2026.09` and write `2026.iso` -- and put
+        // in the folder's parent by path rather than by string: `disc/.` has
+        // the name `disc` too, and `disc/..iso` was inside the very folder
+        // the image is made of.
+        let mut file = name.to_os_string();
+        file.push(".iso");
+        let image = at.with_file_name(file);
         // The image is named after the folder and goes beside it, which can be
         // the very image a row of the list was read out of: a disc cut into a
         // folder of the same name had its source replaced by the new one.
-        let image_at = std::path::PathBuf::from(format!("{}.iso", at.display()));
+        let image_at = image.clone();
         for spec in reading.unwrap_or_default() {
             let Ok(input) = smartcut_core::input::Input::parse(&spec) else { continue };
             if smartcut_core::input::same_file(&input.file, &image_at) {
@@ -5924,9 +5957,6 @@ async fn bdav_image(
         // been asked -- an older one, or one where the row was never drawn --
         // gets what a burned disc is.
         let access = smartcut_core::udfw::Access::parse(&access).unwrap_or_default();
-        // Appended rather than `with_extension`, which would take a folder
-        // called `2026.09` and write `2026.iso`.
-        let image = std::path::PathBuf::from(format!("{}.iso", at.display()));
         let reporter = app.clone();
         smartcut_core::udfw::write(
             &at,

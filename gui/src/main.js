@@ -4078,7 +4078,11 @@ function startPlay() {
   // open, and until `open_source` lands that is the recording this window
   // was last on -- its pictures and its sound under this one's name.
   // Said on the status line, so a press here is not simply lost.
-  if (!walked()) {
+  // Nor while another row is on its way in: until its outline lands `src`
+  // is still the row being left, walked and all. `swapping` and not
+  // `opening`, which lasts past the walk through the mark files and the
+  // cache -- a press just after the walk had landed was turned away.
+  if (!walked() || swapping) {
     el("status").textContent = tr("editor.playAfterRead");
     return;
   }
@@ -4307,12 +4311,15 @@ showVolume(prefs.get("volume"), !!prefs.get("muted"), false);
 
 async function toScene(dir, from = playhead) {
   if (!warmed) return;
+  // The recording the scenes were asked of: another row opened at the same
+  // playhead -- both at the head -- was sent to this one's scene change.
+  const gen = openGen;
   try {
     // A scene inside a cut no longer exists; step past it to the next one.
     for (let i = 0; i < 6; i++) {
       const asked = playhead;
       const t = await invoke("scene_search", { from, dir });
-      if (t === null || t === undefined) return;
+      if (t === null || t === undefined || gen !== openGen) return;
       // Moved somewhere else while the search ran: that is where the
       // playhead is wanted now, not where the search was asked from.
       if (playhead !== asked) return;
@@ -5548,6 +5555,16 @@ async function openPath(picked, saved, side, name, chapters, dropPids) {
   // at this recording.
   const gen = ++openGen;
   const overtaken = () => gen !== openGen;
+  // Whatever is moving the playhead is moving it through the row being left.
+  // Playback went on sounding the last recording and putting its pictures
+  // and instants into this one's timeline until the first picture below
+  // happened to stop it -- and not at all where the open failed.
+  if (playing) stopPlay(false);
+  endScroll(false);
+  // The track panel is the last recording's: its boxes switch streams off by
+  // that recording's numbers, and ticked now they would land on this one.
+  el("tracks-modal").hidden = true;
+  const was = src ? src.path : null;
   shownName = name || null;
   sideBase = side || picked.replace(/\.[^./\\]*$/, "");
   // Held for the menu, which can put them down again after they have been
@@ -5604,6 +5621,11 @@ async function openPath(picked, saved, side, name, chapters, dropPids) {
     meterToken++;
     zoomToken++;
     paintSourceInfo();
+    // A track number is only the same track on the same recording; see
+    // `paintSubsPicker`, which keeps one only across a reopen. Another
+    // recording numbers its streams alike more often than not, and kept by
+    // number the track stayed on from row to row.
+    if (was !== picked) subsId = null;
     paintSubsPicker();
     cuts = saved ? saved.cuts.map((c) => ({ a: c.a, b: c.b })) : [];
     past = [];
@@ -6553,16 +6575,27 @@ function renderTracks() {
 }
 
 el("tracks").addEventListener("click", async () => {
-  if (!src) return;
+  // Nor while another row is coming in: `src` and `trackList` are still the
+  // row being left's, and the panel `openPath` has just closed would come
+  // back up with its boxes.
+  if (!src || swapping) return;
   el("tracks-modal").hidden = false;
   if (!trackList) {
+    // Another row sent while this was being read: the list is the last
+    // recording's, and kept as this one's its boxes would switch this one's
+    // streams off by the other's numbers.
+    const gen = openGen;
+    let listed;
     try {
-      trackList = await invoke("tracks", { path: src.path });
+      listed = await invoke("tracks", { path: src.path });
     } catch (e) {
+      if (gen !== openGen) return;
       el("status").textContent = tr("tracks.failed", { e });
       el("tracks-modal").hidden = true;
       return;
     }
+    if (gen !== openGen) return;
+    trackList = listed;
   }
   renderTracks();
 });

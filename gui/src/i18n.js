@@ -160,7 +160,7 @@ const CATALOG = {
     "prefs.blankCoverage": "その明るさが占める割合:",
     "prefs.blankLevelNote":
       "明るさは、放送の黒を 0%、白を 100% とした目盛りです。0% なら黒そのものの画素だけを黒と数えます。" +
-      "割合は、そういう画素が画面のどれだけを占めていればそのフレームを黒（白）と呼ぶかです。" +
+      "割合は、そうした画素が画面の何割を占めればそのフレームを黒（白）と判定するかです。" +
       "既定は黒 4%、白 99%、割合 98% です。" +
       "単位を輝度値にすると、8 ビットの値（黒 16、白 235）で入力できます。既定の 4% は 24、99% は 232 にあたります。黒はその値以下、白はその値以上の画素を数えます。" +
       "10 ビットの録画でも同じ値で指定します（中では 4 倍して比べます）。" +
@@ -177,8 +177,8 @@ const CATALOG = {
       "黒がちょうど無くなります。他のツールは「最後の黒いフレーム」を区間の終わりと" +
       "呼ぶので、数字を突き合わせると 1 フレームずれて見えます。" +
       "そちらに合わせたいときは下を選んでください。" +
-      "無音の区間は変わりません。音が戻るのはサンプル単位なので、" +
-      "2 つの答えのあいだにフレームがありません。" +
+      "無音の区間はこの設定の影響を受けません。音の切れ目はサンプル単位で決まるので、" +
+      "どちらのフレームを選ぶかという違いが生じないからです。" +
       "すでに置いた印は動きません。次に置く印から変わります。",
     "prefs.markAt.after": "黒でなくなったフレーム",
     "prefs.markAt.last": "最後の黒いフレーム",
@@ -532,8 +532,8 @@ const CATALOG = {
     "flat.what.blankWhite": "白の区間",
     "flat.what.quiet": "無音の区間",
     "flat.detectingPct": "{what}を検出中 {pct}%",
-    "flat.found": "{what}を {n} 箇所見つかりました。両端にキーフレームを置いています",
-    "flat.foundUnmarked": "{what}を {n} 箇所見つかりました。キーフレームは置いていません",
+    "flat.found": "{what}が {n} 箇所見つかりました。両端にキーフレームを置いています",
+    "flat.foundUnmarked": "{what}が {n} 箇所見つかりました。キーフレームは置いていません",
     "flat.none": "{what}は見つかりませんでした",
     "flat.cached": "検出済みの {n} 箇所を表示しています",
     "flat.cachedBeside":
@@ -583,7 +583,7 @@ const CATALOG = {
     "outset.crossImageKind": "画像",
     "outset.crossAll": "すべての継ぎ目に適用",
     "outset.crossNone": "すべて解除",
-    "outset.crossNoJoins": "クリップが1本だけなので継ぎ目がありません",
+    "outset.crossNoJoins": "クリップが 1 本だけなので継ぎ目がありません",
     "outset.crossNoneSet": "継ぎ目 {of} か所、効果は設定されていません",
     "outset.crossSet": "継ぎ目 {of} か所のうち {n} か所に設定",
     "outset.crossSetShort": "継ぎ目 {of} か所のうち {n} か所に設定（出力は {secs} 秒短くなります）",
@@ -911,7 +911,7 @@ const CATALOG = {
     // --- 拡大表示 ---------------------------------------------------------
     // --- 継ぎ目の編集 -----------------------------------------------------
     "xw.title": "継ぎ目の編集",
-    "xw.windowTitle": "継ぎ目の編集 - {before} → {after}",
+    "xw.windowTitle": "継ぎ目の編集 — {before} → {after}",
     "xw.loading": "読み込み中…",
     "xw.whichHead": "対象のクリップ",
     "xw.setHead": "継ぎ目の設定",
@@ -1089,7 +1089,7 @@ const CATALOG = {
     "tracks.settledNote":
       "データ放送を残すかどうかは環境設定で決めます。残せるのは .ts のときだけで、既定では残します。",
     "tracks.droppedNote":
-      "これらは選べません。文字スーパーはパケットに時刻を持たず、メニューとテキスト字幕はディスクでしか働かないからです。",
+      "これらは選べません。文字スーパーはパケットに時刻を持たず、メニューとテキスト字幕はディスクの上でしか機能しないからです。",
     "tracks.substreamNote":
       "Blu-ray のロスレス音声には、再生できない機器のための AC-3 が同じ PID に重ねて入っています。1 つの PID に 2 本は書き戻せないので、本体の TrueHD だけを出力し、内側の AC-3 は外します。",
     "tracks.tablesNote":
@@ -2014,7 +2014,7 @@ const CATALOG = {
     // --- the magnifier ----------------------------------------------------
     // --- the seam window ------------------------------------------------
     "xw.title": "Between the clips",
-    "xw.windowTitle": "Between the clips - {before} → {after}",
+    "xw.windowTitle": "Between the clips — {before} → {after}",
     "xw.loading": "Reading…",
     "xw.whichHead": "Which join",
     "xw.setHead": "The transition",

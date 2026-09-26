@@ -615,14 +615,24 @@ if (listen) {
     // A detection landing on the timeline: either the marks this window
     // handed over at `editor-open` (`cmPending`), or one run from inside the
     // editor, which comes back with a note the clip did not have before.
-    const landed = state.cmNote && (clip.cmPending || state.cmNote !== clip.cmPhase);
+    //
+    // Against what the editor said last time rather than against the row
+    // where the row has a detection booked or running: the line under the
+    // name is then the lane's (empty, or a percentage), and every state the
+    // editor sent -- it repeats its note each time -- read as a new
+    // detection, took the booking back and moved what キャンセル returns to.
+    const booked = clip.cmState === "queued" || clip.cmState === "running";
+    const landed =
+      state.cmNote &&
+      (clip.cmPending ||
+        state.cmNote !== (booked ? clip.edit && clip.edit.cmNote : clip.cmPhase));
     // Has somebody done something in there? The editor answers it, having
     // the one thing needed to: what the timeline held when the recording
     // finished arriving. The marks beside the file, a disc's chapters and
     // every detection are not edits, whichever window ran them.
     if (state.touched) clip.edited = true;
     clip.edit = state;
-    if (state.cmNote) {
+    if (state.cmNote && (landed || !booked)) {
       clip.cmPhase = state.cmNote;
       clip.cmState = "done";
       clip.cmPending = false;
@@ -1729,6 +1739,15 @@ function flatAsk() {
   };
 }
 
+/// The half of `flatAsk` one lane's answer depends on, as a string to
+/// compare: the sound is not read again because the shades changed.
+const flatQuestion = (ask, which) =>
+  JSON.stringify(
+    which === "blank"
+      ? [ask.minSeconds, ask.minPictures, ask.black, ask.white, ask.levels]
+      : [ask.quietRun, ask.quietInPictures, ask.thresholdDb]
+  );
+
 /// Read one clip for its flat pictures.
 ///
 /// Every picture is decoded, which is the dearest pass this list makes -- a
@@ -1738,7 +1757,7 @@ function flatAsk() {
 /// the editor reads on the way in.
 async function runBlank(clip) {
   const ask = flatAsk();
-  await runFlatLane(clip, "blank", () =>
+  await runFlatLane(clip, "blank", ask, () =>
     invoke("detect_blank_at", {
       path: clip.path,
       minSeconds: ask.minSeconds,
@@ -1760,7 +1779,7 @@ async function runBlank(clip) {
 async function runQuiet(clip) {
   const ask = flatAsk();
   const fps = clip.info && clip.info.fps > 0 ? clip.info.fps : 30;
-  await runFlatLane(clip, "quiet", () =>
+  await runFlatLane(clip, "quiet", ask, () =>
     invoke("detect_quiet_at", {
       path: clip.path,
       thresholdDb: ask.thresholdDb,
@@ -1774,7 +1793,7 @@ async function runQuiet(clip) {
 /// The same shape twice, so what a row says about the pictures and what it
 /// says about the sound are written by the one piece of code: `blankState` and
 /// `quietState` differ in nothing but which pass they are waiting for.
-async function runFlatLane(clip, which, call) {
+async function runFlatLane(clip, which, ask, call) {
   clip[`${which}State`] = "running";
   clip[`${which}Progress`] = 0;
   clip[`${which}Phase`] = t("phase.detecting");
@@ -1782,16 +1801,27 @@ async function runFlatLane(clip, which, call) {
   paintQueueNote();
   try {
     const runs = await call();
-    clip[`${which}Found`] = runs.length;
-    clip[`${which}State`] = "done";
-    clip[`${which}Source`] = null;
-    clip[`${which}Phase`] = t(`${which}.rowNote`, { n: runs.length });
-    // And onto the timeline now if that window is open on this row, which it
-    // can be: the lanes do not stand aside for the editor, so a detection can
-    // finish while its clip is being cut. That window reads the cache on the
-    // way in and does not look again, so what lands afterwards is handed over
-    // -- as `runCm` hands a commercial detection over.
-    if (clip === editing && emit) emit("flat-found", { id: clip.id, which, runs });
+    // 環境設定 moved while this was reading: the answer is to a question
+    // nobody is asking now, and `forgetFlat` left this row to it. Back in
+    // the queue, where the lane takes it again with the question in force.
+    // Painted below like any other outcome: a lane stopped meanwhile does not
+    // come round for it, and the panel would go on saying it was running.
+    if (flatQuestion(flatAsk(), which) !== flatQuestion(ask, which)) {
+      clip[`${which}State`] = "queued";
+      clip[`${which}Phase`] = "";
+    } else {
+      clip[`${which}Found`] = runs.length;
+      clip[`${which}State`] = "done";
+      clip[`${which}Source`] = null;
+      clip[`${which}Phase`] = t(`${which}.rowNote`, { n: runs.length });
+      // And onto the timeline now if that window is open on this row, which
+      // it can be: the lanes do not stand aside for the editor, so a
+      // detection can finish while its clip is being cut. That window reads
+      // the cache on the way in and does not look again, so what lands
+      // afterwards is handed over -- as `runCm` hands a commercial detection
+      // over.
+      if (clip === editing && emit) emit("flat-found", { id: clip.id, which, runs });
+    }
   } catch (e) {
     if (String(e).includes("cancelled")) {
       clip[`${which}State`] = "queued";
@@ -2896,6 +2926,7 @@ function restoreRemoved() {
     if (asked) {
       for (const which of ["blank", "quiet"]) {
         if (clip[`${which}State`] === "done") forgetFlatRow(clip, which);
+        if (clip[`${which}State`] === "queued") forgetBooked(clip, which);
       }
     }
     if (relang) relocaliseRow(clip);
@@ -3382,10 +3413,7 @@ el("droptarget").addEventListener("scroll", () => {
 function detectFlatSelected(which) {
   const want = selected().filter((c) => c.state !== "error" && c[`${which}State`] !== "running");
   if (!want.length) return;
-  want.forEach((c) => {
-    c[`${which}State`] = "queued";
-    c[`${which}Phase`] = "";
-  });
+  want.forEach((c) => book(c, which));
   resumeLanes();
   paintList();
   pump();
@@ -3409,13 +3437,39 @@ function detectFlatSelected(which) {
 function detectSelected() {
   const want = selected().filter((c) => c.state !== "error" && c.cmState !== "running");
   if (!want.length) return;
-  want.forEach((c) => {
-    c.cmState = "queued";
-    c.cmPhase = "";
-  });
+  want.forEach((c) => book(c, "cm"));
   resumeLanes();
   paintList();
   pump();
+}
+
+/// Reserve one detection on one row, keeping what the row said before so
+/// that `undetectSelected` can put it back. A row already waiting keeps what
+/// it had before its first reservation: a second press, or a pass stopped
+/// and put back in the queue, is still the one booking.
+///
+/// The sentence has to be kept and not only the answer under it: the cut
+/// editor writes its own (`cmSource` null) and never hands over the finding
+/// it was said about, and a failed pass has no answer at all.
+function book(c, which) {
+  if (c[`${which}State`] !== "queued") {
+    c[`${which}Was`] = {
+      state: c[`${which}State`],
+      phase: c[`${which}Phase`],
+      source: c[`${which}Source`],
+    };
+  }
+  c[`${which}State`] = "queued";
+  c[`${which}Phase`] = "";
+}
+
+/// A booked flat detection's earlier answer, withdrawn because the question
+/// it answered has just changed. The booking stands -- it will ask the new
+/// question -- but taking it back must not bring the old answer back.
+function forgetBooked(c, which) {
+  c[`${which}Found`] = null;
+  c[`${which}Source`] = null;
+  c[`${which}Was`] = null;
 }
 
 /// Take back the detections of one kind still waiting on the selected rows,
@@ -3431,19 +3485,35 @@ function undetectSelected(which) {
   const want = selected().filter((c) => c[`${which}State`] === "queued");
   if (!want.length) return;
   want.forEach((c) => {
-    const cached = c[`${which}Source`] === "cache";
-    if (which === "cm" ? c.cm : c[`${which}Found`] != null) {
+    // What `book` kept. Missing only on a row that was never booked from
+    // here, and then the answer the row holds is all there is to go on.
+    const was = c[`${which}Was`] || null;
+    c[`${which}Was`] = null;
+    const known = which === "cm" ? !!c.cm : c[`${which}Found`] != null;
+    const state = was ? was.state : known ? "done" : "none";
+    const source = was ? was.source : c[`${which}Source`];
+    c[`${which}State`] = state;
+    c[`${which}Source`] = source;
+    // Said again from the answer where this window wrote the sentence, so
+    // that it is in the language up now; the editor's sentence and a
+    // failure's are put back as they were.
+    if (state === "done" && known && (which !== "cm" || source)) {
       const note = which === "cm" ? cmNote(c.cm) : t(`${which}.rowNote`, { n: c[`${which}Found`] });
       const again = which === "cm" ? "cm.previous" : "flat.previous";
-      c[`${which}State`] = "done";
-      c[`${which}Phase`] = cached ? t(again, { note }) : note;
+      c[`${which}Phase`] = source === "cache" ? t(again, { note }) : note;
     } else {
-      c[`${which}State`] = "none";
-      c[`${which}Phase`] = "";
+      c[`${which}Phase`] = was ? was.phase : "";
     }
+    // Nothing to go back to -- or an answer withdrawn while this waited,
+    // 環境設定 having changed the question. The cache may hold an answer
+    // to the question as it is now, as it would for a row just added.
+    if (which !== "cm" && state === "none") restoreFlat(c);
   });
   paintList();
   paintQueueNote();
+  // Under 解析を中止 the line said the rest could be taken up again; with the
+  // last of it taken back there is no rest, as `restoreRemoved` says too.
+  if (paused && !exporting && !starting && !running() && !queuedWork()) note(t("list.stoppedAll"));
 }
 
 // --- the edited timeline, without the editor ----------------------------
@@ -7692,8 +7762,9 @@ async function startExport() {
               revision: settings.image,
               access: settings.imageAccess,
               // What the list was read from, which the image must not be
-              // written over. See `bdav_image`.
-              reading: list.map((c) => c.path),
+              // written over. Every row, not only the ones in this run: a
+              // row left out of it can still be the image. See `bdav_image`.
+              reading: clips.map((c) => c.path),
             });
             finishStep("image", "done");
             note(t("out.imageDone", { path }));
@@ -10711,6 +10782,8 @@ function forgetQuiet() {
 
 function forgetFlat(which) {
   for (const c of clips) {
+    const owed = c[`${which}State`];
+    if (owed === "queued" || owed === "running") forgetBooked(c, which);
     if (c[`${which}State`] !== "done") continue;
     forgetFlatRow(c, which);
     paintRow(c);
