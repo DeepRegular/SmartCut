@@ -224,7 +224,8 @@ struct BatchStop {
     /// stopped by a row being taken out from under the pictures pass.
     blank: AtomicU64,
     quiet: AtomicU64,
-    /// The editor's own three detections, stopped when its window goes. They
+    /// The editor's own three detections, stopped when its window goes or
+    /// it is handed another recording (see [`open_source`]). They
     /// read the whole recording -- minutes, over a share -- and until this
     /// went on doing so for a window nobody could see any more.
     editor: AtomicU64,
@@ -931,6 +932,13 @@ static OPEN_TICKET: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64:
 #[tauri::command]
 async fn open_source(path: String, app: tauri::AppHandle) -> Result<SourceInfo, String> {
     let ticket = OPEN_TICKET.fetch_add(1, Ordering::SeqCst) + 1;
+    // The editor's own detections were asked about the recording it had up,
+    // and the window is now on another: the row it was handed is the one its
+    // buttons and its progress line are about. Left running, the last one's
+    // pass went on for minutes on half the machine, painting its percentage
+    // over the new row's button. Stopped as the open is asked for, so that a
+    // detection pressed once this recording is up is not caught by it.
+    app.state::<BatchStop>().editor.fetch_add(1, Ordering::SeqCst);
     off_thread(move || open_now(&path, &app, ticket)).await
 }
 
@@ -1875,7 +1883,12 @@ fn index_info(app: &tauri::AppHandle, src: &Source, cached: bool) -> Option<Inde
 #[tauri::command]
 async fn names_an_input(output: String, inputs: Vec<String>) -> bool {
     tauri::async_runtime::spawn_blocking(move || {
-        let out = std::path::Path::new(&output);
+        // Where `export` will actually write: an output folder typed as a
+        // share (`smb://nas/rec`) is the mount it lands on, and asked as the
+        // string it "did not exist", so a cut over another row's recording
+        // on that share went ahead.
+        let Ok(out) = local_path(&output) else { return false };
+        let out = out.as_path();
         if !out.exists() {
             return false;
         }
@@ -3809,15 +3822,19 @@ async fn clip_poster(
     app: tauri::AppHandle,
 ) -> Result<Option<String>, String> {
     off_thread(move || {
-        let open_here = {
-            let state = app.state::<OpenPath>();
-            let guard = locked(&state.0);
-            guard.as_deref() == Some(path.as_str())
-        };
-        if open_here {
+        {
+            // The path asked with the pictures' lock held. Asked before it, an
+            // open of another recording could land in between -- and the
+            // track then taken was that one's, put on this row.
             let state = app.state::<Thumbs>();
             let guard = locked(&state.0);
-            let url = guard.as_ref().and_then(|t| poster_of(t, &keeps)).map(|t| as_url(&t.jpeg));
+            let open_here =
+                locked(&app.state::<OpenPath>().0).as_deref() == Some(path.as_str());
+            let url = guard
+                .as_ref()
+                .filter(|_| open_here)
+                .and_then(|t| poster_of(t, &keeps))
+                .map(|t| as_url(&t.jpeg));
             if url.is_some() {
                 return Ok(url);
             }
@@ -5795,6 +5812,8 @@ async fn bdav_prepare(dir: String, n: usize) -> Result<Vec<BdavSlot>, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let at = local_path(&dir)?;
         let clips = smartcut_core::bdav::prepare(&at, n).map_err(|e| e.to_string())?;
+        locked(&HANDED_OUT)
+            .extend(clips.iter().map(|clip| smartcut_core::bdav::stream_of(&at, clip)));
         Ok(clips
             .into_iter()
             .map(|clip| BdavSlot {
@@ -5806,6 +5825,14 @@ async fn bdav_prepare(dir: String, n: usize) -> Result<Vec<BdavSlot>, String> {
     .await
     .map_err(|e| e.to_string())?
 }
+
+/// The streams [`bdav_prepare`] has handed out and nobody has finished or
+/// taken back yet. Five digits is what a slot looks like, and it is also what
+/// the recorder's own recordings on the same disc look like: a number that
+/// was never handed out named one of those, and finishing it re-stamped that
+/// stream in place and wrote its index over -- or, where the index failed,
+/// deleted it.
+static HANDED_OUT: Mutex<Vec<std::path::PathBuf>> = Mutex::new(Vec::new());
 
 /// Take back the streams of the recordings a run did not finish.
 ///
@@ -5828,6 +5855,11 @@ async fn bdav_discard(dir: String, clips: Vec<String>) -> Result<usize, String> 
                 continue;
             }
             let path = smartcut_core::bdav::stream_of(&at, &clip);
+            {
+                let mut handed = locked(&HANDED_OUT);
+                let Some(k) = handed.iter().position(|p| *p == path) else { continue };
+                handed.swap_remove(k);
+            }
             // A slot that was never written to is not an error -- the run
             // may have been stopped before it reached that recording -- and
             // not a recording taken back either: it is the empty stream that
@@ -5863,6 +5895,15 @@ async fn bdav_image(
 ) -> Result<String, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let at = local_path(&dir)?;
+        // Beside the folder, under its name -- which a drive or the root has
+        // neither of. `E:\.iso` would be inside the very folder it is made of.
+        if at.file_name().is_none() {
+            return Err(format!(
+                "{}: an image goes beside the disc's folder, and this has nothing beside it. \
+                 Choose a folder for the disc",
+                at.display()
+            ));
+        }
         // The image is named after the folder and goes beside it, which can be
         // the very image a row of the list was read out of: a disc cut into a
         // folder of the same name had its source replaced by the new one.
@@ -5948,6 +5989,11 @@ async fn bdav_finish(
         {
             return Err(format!("{}: not a clip on this disc", bad.clip));
         }
+        let streams: Vec<_> =
+            entries.iter().map(|e| smartcut_core::bdav::stream_of(&at, &e.clip)).collect();
+        if let Some(bad) = streams.iter().find(|p| !locked(&HANDED_OUT).contains(p)) {
+            return Err(format!("{}: not a clip this run was given", bad.display()));
+        }
         let recordings: Vec<smartcut_core::bdav::Recording> = entries
             .into_iter()
             .map(|e| smartcut_core::bdav::Recording {
@@ -5971,6 +6017,7 @@ async fn bdav_finish(
             }),
         )
         .map_err(|e| e.to_string())?;
+        locked(&HANDED_OUT).retain(|p| !streams.contains(p));
         // What the disc actually came to, now that everything on it is
         // written. The screen said what it expected before the run; this is
         // the answer, and the two are not always the same -- a recording whose

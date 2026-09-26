@@ -91,6 +91,12 @@ let markFileKind = null;
 /// they are the one source of marks that cannot be asked for again -- the
 /// disc is not read a second time from in here. Empty for a plain file.
 let discChapters = [];
+/// Whether the disc's chapters are still to be put down on this visit: from
+/// the moment a first visit opens a disc title until the walk has finished
+/// and they are on the timeline. An OK in between used to hand the list an
+/// edit with no marks in it, which the list then took at its word -- and the
+/// row lost the chapters it would have kept had nobody opened it at all.
+let chaptersDue = false;
 let cmBlocks = [];
 /// Where the picture goes flat and where the sound goes quiet: one entry per
 /// stretch, in source time, `kind` being "black", "white" or "quiet".
@@ -1545,6 +1551,9 @@ async function showFrame(t) {
     if (exact && tailSrc === null && playhead - shot.time > behind &&
         src.duration - playhead < 3 * frame()) {
       tailSrc = shot.time;
+      // The frame reel cached before this has cells past the last picture
+      // (`frameCellLive`), and it is reused while the playhead stays in it.
+      stripCache = null;
     }
     if (exact && srcToOut(shot.time) !== null) playhead = shot.time;
     updateReadouts();
@@ -1770,6 +1779,10 @@ const BASELINE = 0.88;
 /// `drawImage`, which the browser smooths, rather than a rectangle per dot
 /// at a size where a dot is less than a pixel.
 function drawGlyph(ctx, glyph, colour, x, y, width, height) {
+  // A cell declared 0 dots across or down has nothing to draw, and
+  // `createImageData` throws on it -- which took the whole caption, and the
+  // corners and the meter redrawn after it on a resize, down with it.
+  if (!glyph.width || !glyph.height) return;
   const bits = atob(glyph.ink);
   const stride = Math.ceil(glyph.width / 8);
   const off = document.createElement("canvas");
@@ -1998,8 +2011,12 @@ const selLast = () =>
 // these are up in its corners.
 
 /// Is the frame on screen this output instant? Compared by picture, as the
-/// counter counts them.
-const onPicture = (o, at) => frameNo(o) === frameNo(at);
+/// counter counts them -- and by the time itself where the counter does not
+/// count (a variable-rate recording), whose pictures come closer together
+/// than the rate says: two neighbours there are one frame number, and the
+/// bracket stood on both.
+const onPicture = (o, at) =>
+  !src || !src.variable ? frameNo(o) === frameNo(at) : Math.abs(o - at) < 0.001;
 
 function paintMarks() {
   const layer = el("marks-layer");
@@ -2027,7 +2044,12 @@ function paintMarks() {
   for (const { kind, open, close } of flatAt(playhead)) {
     put(close && !open ? right : left, kind, flatTag(kind, open, close));
   }
-  if (onPicture(o, selLast())) put(right, "sel", "]");
+  // OUT at the end is the last picture there is. `selLast` answers a frame
+  // short of the length, which is that picture's frame number but not its
+  // instant: on a variable-rate recording whose last picture is shorter than
+  // the rate says, the bracket was never drawn on it.
+  const outPic = src.variable && selB >= outDur - 1e-9 ? lastStop() : selLast();
+  if (onPicture(o, outPic)) put(right, "sel", "]");
   el("marks-l").replaceChildren(...left);
   el("marks-r").replaceChildren(...right);
   layer.hidden = !left.length && !right.length;
@@ -3728,7 +3750,12 @@ async function learnTail(path) {
   if (!src || src.path !== path) return;
   try {
     const shot = await invoke("preview", { time: src.duration, width: 320 });
-    if (src && src.path === path) tailSrc = shot.time;
+    if (src && src.path === path && tailSrc !== shot.time) {
+      tailSrc = shot.time;
+      // Where the cells stop has moved; see `showFrame`.
+      stripCache = null;
+      scheduleStrip();
+    }
   } catch (e) {
     jlog(`learnTail: ${e}`);
   }
@@ -5527,6 +5554,8 @@ async function openPath(picked, saved, side, name, chapters, dropPids) {
   // cleared -- and for the ordinary way in, a few lines below, where they
   // fill a timeline no file beside the recording had anything to say about.
   discChapters = chapters || [];
+  // Owed on a first visit, and on the visit after one that was left early.
+  chaptersDue = (!saved || !!saved.chaptersDue) && discChapters.length > 0;
   el("title").textContent = tr("editor.analysing");
   // The band comes up out of the markup saying 「ファイルを開いてください」,
   // which stops being true here rather than when `src` lands.
@@ -5666,6 +5695,10 @@ async function openPath(picked, saved, side, name, chapters, dropPids) {
     let marks = false;
     if (early) marks = await settle(() => loadMarkFiles());
     if (overtaken()) return;
+    // A file beside the recording has answered for the chapters: said now
+    // rather than after the walk, or an OK during it left the row owing them,
+    // and the next visit put them down on top of the file's marks.
+    if (marks) chaptersDue = false;
     // Everything the row being left had is replaced by now.
     swapping = false;
     await showFrame(saved ? saved.playhead : 0);
@@ -5684,8 +5717,9 @@ async function openPath(picked, saved, side, name, chapters, dropPids) {
     // recording had anything to say about. Left until here either way: they
     // arrive on the stream's own clock and are dropped rather than clamped
     // where they fall outside the material, which is a question for the walk.
-    if (!saved && !marks) await settle(() => applyDiscChapters(discChapters));
+    if (chaptersDue && !marks) await settle(() => applyDiscChapters(discChapters));
     if (overtaken()) return;
+    chaptersDue = false;
     // Whatever the recording came up with -- what was saved for this row, the
     // file beside it, the disc's chapters -- is what leaving compares against.
     // Said again here because a row that arrives with its own edit settles
@@ -6813,6 +6847,7 @@ function captureEdit() {
     // detection the list has not handed over yet arrives at whichever visit
     // it is run before; see `markFileKind`.
     markFileKind,
+    chaptersDue,
     // Whether anything in here was done by the hand rather than arrived with
     // the recording. The list marks its row with it, which is what tells the
     // rows that have been settled from the rows that have only been read; the

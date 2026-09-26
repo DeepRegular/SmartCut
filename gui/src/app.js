@@ -3864,7 +3864,9 @@ function outputBase(clip) {
   // The folder of its own goes under whichever of the two was chosen -- the
   // one that was typed, or the one the recording came out of. A batch left
   // to write beside its inputs is exactly the case that wants it.
-  const dir = `${beneath(outDir() || beside)}/`;
+  // A root comes back from `beneath` with its separator on, and a second one
+  // after it is `//name`, which reads as a network share.
+  const dir = `${beneath(outDir() || beside)}/`.replace(/[/\\]\/$/, "/");
   // The prefix is a name, not a path: a separator typed into it would put
   // the cut in a folder the output screen never mentions.
   const prefix = prefixSafe(settings.prefix);
@@ -5005,16 +5007,25 @@ function madeParse(text) {
 /// by the container's start, dropped where they fall outside the material,
 /// and those just ahead of the first picture moved onto it.
 function marksOf(clip) {
-  if (clip.edit) return clip.edit.keyframes;
+  // An edit left before the disc's chapters were put down (`chaptersDue` in
+  // `main.js`) has not had its say about them yet, and they are still owed.
+  const own = clip.edit ? clip.edit.keyframes : [];
+  if (clip.edit && !clip.edit.chaptersDue) return own;
   const i = clip.info;
-  if (!i || !Number.isFinite(i.start_time) || !clip.chapters || !clip.chapters.length) return [];
+  if (!i || !Number.isFinite(i.start_time) || !clip.chapters || !clip.chapters.length) return own;
   const first = i.first_point || 0;
   const out = clip.chapters
     .map((t) => t - i.start_time)
     .filter((t) => t >= first - 0.5 && t <= i.duration + 1e-6)
-    .map((t) => Math.max(t, first));
+    .map((t) => Math.max(t, first))
+    .concat(own);
   out.sort((a, b) => a - b);
-  return out;
+  // And one mark to a frame, as `addKeyframes` keeps them: two points moved
+  // onto the first picture, or a playlist that marks one instant twice, were
+  // two marks here -- counted twice on the row and written twice into the
+  // `.keyframe`.
+  const half = 0.5 / (i.fps > 0 ? i.fps : 30);
+  return out.filter((t, k) => k === 0 || t - out[k - 1] > half);
 }
 
 /// Where the chapter points of a recording written onto a disc go.
@@ -5026,13 +5037,17 @@ function marksOf(clip) {
 /// boundary is one chapter and not two.
 function chaptersFor(clip) {
   const keeps = keepsOf(clip);
-  const out = keeps.map((k) => k.at);
+  const cuts = keeps.map((k) => k.at).sort((a, b) => a - b);
+  const out = cuts.filter((at, i) => i === 0 || at - cuts[i - 1] > 0.5);
+  // Within half a second of one another is one chapter, and where one of
+  // the two is a range boundary it is the boundary that stays: a mark a
+  // moment ahead of it is the tail of the range before, and a chapter put
+  // there opens on what was cut up to.
   for (const at of marksOf(clip)) {
     const mapped = srcToOut(keeps, at);
-    if (mapped !== null) out.push(mapped);
+    if (mapped !== null && !out.some((o) => Math.abs(o - mapped) <= 0.5)) out.push(mapped);
   }
-  out.sort((a, b) => a - b);
-  return out.filter((at, i) => i === 0 || at - out[i - 1] > 0.5);
+  return out.sort((a, b) => a - b);
 }
 
 /// A name made safe to be a folder's, the way the engine makes one.
@@ -5260,7 +5275,11 @@ function subfolderNow() {
 function beneath(dir) {
   const at = dir.replace(/[/\\]*$/, "");
   const sub = subfolderNow();
-  return sub ? `${at}/${sub}` : at;
+  if (sub) return `${at}/${sub}`;
+  // A drive or the root itself keeps its separator: taken off, `E:\` is `E:`,
+  // which Windows reads as wherever that drive's current folder is, and `/`
+  // is nothing at all -- the process's own folder.
+  return !at || /^[A-Za-z]:$/.test(at) ? dir : at;
 }
 
 /// Where the disc itself is written: the folder that will hold `BDAV`.
@@ -7467,7 +7486,11 @@ async function startExport() {
         const frames = marksOf(clip)
           .map((t) => srcToOut(keeps, t))
           .filter((o) => o !== null)
-          .map((o) => Math.round(o * clip.info.fps));
+          .map((o) => Math.round(o * clip.info.fps))
+          // Two marks more than half a frame apart can still round onto one
+          // frame, and marks either side of a cut can land together in the
+          // output: one line a frame, as `marksOf` keeps them.
+          .filter((f, k, all) => k === 0 || f !== all[k - 1]);
         // A clip with no marks gets no sidecar. The setting is on for the
         // whole list, and most lists have clips nobody put a mark in; an
         // empty `.keyframe` beside them says "there are no marks here", which
@@ -8359,6 +8382,23 @@ async function loadProject(path) {
         cmBlocks: Array.isArray(saved.edit.cmBlocks)
           ? saved.edit.cmBlocks.filter((b) => b && Number.isFinite(b.start) && Number.isFinite(b.end))
           : [],
+        // The flat detections' stretches, which the editor walks for its
+        // corners on every frame: a `null` in the list threw there, and the
+        // picture stopped being drawn.
+        flatRuns: Array.isArray(saved.edit.flatRuns)
+          ? saved.edit.flatRuns.filter(
+              (r) => r && typeof r.kind === "string" && Number.isFinite(r.start) && Number.isFinite(r.end),
+            )
+            // `last` stands in for `end` wherever it is there (`flatEnd`), so
+            // it is held to a number the same way.
+            .map((r) => (r.last == null || Number.isFinite(r.last) ? r : { ...r, last: null }))
+          : [],
+        // And the instants the editor opens on, which it clamps with
+        // `Math.min` and so takes as NaN from anything but a number.
+        playhead: Number.isFinite(saved.edit.playhead) ? saved.edit.playhead : 0,
+        selA: Number.isFinite(saved.edit.selA) ? saved.edit.selA : 0,
+        selB: Number.isFinite(saved.edit.selB) ? saved.edit.selB : Number.MAX_VALUE,
+        activeKey: Number.isFinite(saved.edit.activeKey) ? saved.edit.activeKey : null,
         id: clip.id,
         path: clip.path,
       };
