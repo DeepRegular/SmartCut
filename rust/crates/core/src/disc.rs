@@ -1777,7 +1777,10 @@ fn u16be(b: &[u8], at: usize) -> u16 {
 /// description of the format leaves out: the map for a stream opens with a
 /// four-byte offset to its own fine table, and the coarse table starts after
 /// that.
-fn entry_points(raw: &[u8]) -> Vec<(f64, u64)> {
+///
+/// `clock` says which clock the times are wanted on, which is a question of
+/// what libavformat will be reading: see [`Clock`].
+fn entry_points(raw: &[u8], clock: Clock) -> Vec<(f64, u64)> {
     if raw.len() < 24 || !matches!(&raw[..4], b"HDMV" | b"M2TS") {
         return Vec::new();
     }
@@ -1866,16 +1869,29 @@ fn entry_points(raw: &[u8]) -> Vec<(f64, u64)> {
         // 0.8.4, put that stretch's entry points a day away from its
         // pictures. The first entry point stands in for the first packet:
         // they are a picture's reordering apart, and the minute swallows it.
-        let reference = coarse
-            .first()
-            .map(|&(_, hi, _)| {
-                let v = u32be(raw, fine_at);
-                ((hi << 19) | (((v >> 17) & 0x7FF) as u64) << 9) as i64
-            })
-            .unwrap_or(0)
-            - WRAP_MARGIN;
-        let adds = reference + WRAP_MARGIN < WRAP - WRAP_MARGIN;
-        let unwrap = |pts: i64| -> i64 {
+        //
+        // That is the file read whole as it lies. A stretch opened on its own,
+        // or the stretches once a join has laid them end to end, is not that
+        // file: libavformat's first timestamp is then the stretch's, and a
+        // stretch whose clock starts more than a minute below the first one's
+        // is not a turn later. Taken against the file's first timestamp it
+        // came out a day late -- its entry points and, through the join,
+        // every seam after it. See [`Clock`].
+        let rule = |first: i64, lowers: bool| -> (i64, bool) {
+            let reference = first - WRAP_MARGIN;
+            (reference, !lowers || first < WRAP - WRAP_MARGIN)
+        };
+        let (mut reference, mut adds) = rule(
+            coarse
+                .first()
+                .map(|&(_, hi, _)| {
+                    let v = u32be(raw, fine_at);
+                    ((hi << 19) | (((v >> 17) & 0x7FF) as u64) << 9) as i64
+                })
+                .unwrap_or(0),
+            true,
+        );
+        let unwrap = |pts: i64, reference: i64, adds: bool| -> i64 {
             if adds && pts < reference {
                 pts + WRAP
             } else if !adds && pts >= reference {
@@ -1937,14 +1953,17 @@ fn entry_points(raw: &[u8]) -> Vec<(f64, u64)> {
                 while spn >= seams.get(seam).copied().unwrap_or(u64::MAX) {
                     seam += 1;
                     earlier = i64::MIN;
+                    if clock != Clock::File {
+                        (reference, adds) = rule(pts as i64, clock == Clock::Stretch);
+                    }
                 }
                 let mut turns = 0;
-                while unwrap(pts as i64) < earlier && turns < TURNS {
+                while unwrap(pts as i64, reference, adds) < earlier && turns < TURNS {
                     ceiling += 0x10_0000;
                     pts += 0x10_0000;
                     turns += 1;
                 }
-                let at = unwrap(pts as i64);
+                let at = unwrap(pts as i64, reference, adds);
                 earlier = at;
                 // A source packet is 192 bytes: a transport packet behind the
                 // four that say when it arrived.
@@ -1954,6 +1973,26 @@ fn entry_points(raw: &[u8]) -> Vec<(f64, u64)> {
         return out;
     }
     Vec::new()
+}
+
+/// Which clock a clip's entry points are wanted on: whichever libavformat
+/// will report for what is opened.
+///
+/// The difference is only in how a clock that turns past 2^33 is unwrapped,
+/// and it matters only on a clip of several stretches whose clocks restart.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Clock {
+    /// The file read whole as it lies: one reference, taken from its first
+    /// timestamp, for every stretch in it.
+    File,
+    /// Each stretch opened on its own, as a name that plays one sequence is:
+    /// the reference is that stretch's first timestamp.
+    Stretch,
+    /// Each stretch on its own clock run forwards from where it starts,
+    /// which is what a join lays end to end; the first stretch as the file
+    /// has it, since the join leaves it where it is and libavformat takes
+    /// its reference from there.
+    Joined,
 }
 
 /// Whether the streams of the disc a recording is on are encrypted.
@@ -1982,28 +2021,33 @@ pub fn clip_entry_points(path: &str) -> Option<Vec<(f64, u64)>> {
     let (root, clip) = clip_on_a_disc(path)?;
     let mut vol = Volume::open(Path::new(root)).ok()?;
     let raw = vol.read(&format!("CLIPINF/{clip}.clpi")).ok()?;
-    let mut points = entry_points(&raw);
     // A name that plays one sequence is opened as those bytes alone, so the
     // map has to be cut to them and counted from where they start: a point
     // outside the sequence is not in what the demuxer is reading, and one
     // inside it sits that many bytes earlier than the whole clip would put
     // it.
-    if let Some((_, first, last)) = crate::input::clip_window(path) {
+    let points = if let Some((_, first, last)) = crate::input::clip_window(path) {
+        let mut points = entry_points(&raw, Clock::Stretch);
         let (from, to) = (first * SOURCE_PACKET, (last + 1) * SOURCE_PACKET);
         points.retain(|(_, pos)| *pos >= from && *pos < to);
         for p in points.iter_mut() {
             p.1 -= from;
         }
+        points
     } else if let Some(table) = joined(&raw, vol.bytes(clip) / SOURCE_PACKET) {
         // A clip read whole is read with its clocks joined, so the map has to
         // be on the joined clock too: it is what says where in the file a
         // moment is, and the moments the demuxer reports have moved. The
         // corrections only ever go forwards, so a map that was in order stays
         // in order.
+        let mut points = entry_points(&raw, Clock::Joined);
         for p in points.iter_mut() {
             p.0 += table.seconds_at(p.1);
         }
-    }
+        points
+    } else {
+        entry_points(&raw, Clock::File)
+    };
     (!points.is_empty()).then_some(points)
 }
 
@@ -2143,7 +2187,7 @@ fn joined(raw: &[u8], packets: u64) -> Option<crate::restamp::Restamp> {
     if starts.len() < 2 || !sound(&starts, packets) {
         return None;
     }
-    let points = entry_points(raw);
+    let points = entry_points(raw, Clock::Joined);
     let clip = pace(&points).unwrap_or((0.0, 0.0));
     let mut pieces = Vec::with_capacity(starts.len());
     let mut end = 0.0f64;
@@ -3022,7 +3066,7 @@ mod tests {
             &[(0, 0, 0), (2, 1, 150)],
             &[(0, 0), (90, 100), (0, 150), (90, 190)],
         );
-        let found = entry_points(&raw);
+        let found = entry_points(&raw, Clock::File);
         assert_eq!(found.len(), 4);
         // The fine entry holds bits 19..9 of the timestamp: 90 << 9 is 46080
         // ticks of 90 kHz, which is 0.512s.
@@ -3043,7 +3087,7 @@ mod tests {
             &[(0, 0, 0), (2, 1, 0)],
             &[(0, 0), (90, 100), (0, 7), (90, 9)],
         );
-        let found = entry_points(&raw);
+        let found = entry_points(&raw, Clock::File);
         assert_eq!(found.len(), 4);
         assert_eq!(found[1].1, 100 * 192);
         // Seven packets in would be behind the hundred already given out, so
@@ -3067,7 +3111,7 @@ mod tests {
             &[(0, 4, 0), (2, 4, 200)],
             &[(0, 0), (2000, 100), (100, 200)],
         );
-        let found = entry_points(&raw);
+        let found = entry_points(&raw, Clock::File);
         assert_eq!(found.len(), 3);
         let ticks = |t: f64| (t * 90_000.0).round() as u64;
         assert_eq!(ticks(found[0].0), 4 << 19);
@@ -3088,29 +3132,83 @@ mod tests {
         // Ninety seconds short of the wrap: what comes after it is moved up
         // a turn.
         let raw = clpi_with_ep_map(&[(0, 0x3FF0, 0), (1, 1, 200)], &[(0, 0), (0, 200)]);
-        let found = entry_points(&raw);
+        let found = entry_points(&raw, Clock::File);
         assert_eq!(ticks(found[0].0), 0x3FF0 << 19);
         assert_eq!(ticks(found[1].0), (1 << 19) + (1 << 33));
         // Eleven seconds short of it, inside the minute: libavformat takes
         // the turn off what comes before instead, so the first entry point
         // is below nought and the one after the wrap is left as it reads.
         let raw = clpi_with_ep_map(&[(0, 0x3FFE, 0), (1, 1, 200)], &[(0, 0), (0, 200)]);
-        let found = entry_points(&raw);
+        let found = entry_points(&raw, Clock::File);
         assert_eq!(ticks(found[0].0), (0x3FFE << 19) - (1 << 33));
         assert_eq!(ticks(found[1].0), 1 << 19);
     }
 
+    /// Three stretches of a clip whose later clocks start again below the
+    /// first by more than libavformat's minute: the first presents from 100
+    /// seconds, the second from 5 and the third from 10. A thousand source
+    /// packets to each, and two entry points a second apart in each.
+    fn stretches_starting_low() -> Vec<u8> {
+        // (coarse top, fine) for 100, 101, 5, 6, 10 and 11 seconds.
+        let mut raw = clpi_with_ep_map(
+            &[(0, 17, 0), (2, 0, 0), (4, 1, 0)],
+            &[(170, 0), (345, 500), (878, 1_000), (1_054, 1_500), (733, 2_000), (909, 2_500)],
+        );
+        let at = raw.len() as u32;
+        raw[8..12].copy_from_slice(&at.to_be_bytes());
+        let table = clpi_timed(&[
+            (0, 0, 4_500_000, 4_545_000),
+            (1, 1_000, 225_000, 270_000),
+            (2, 2_000, 450_000, 495_000),
+        ]);
+        raw.extend_from_slice(&table[40..]);
+        raw
+    }
+
+    /// libavformat's reference is the first timestamp of what it opens, and
+    /// what it opens is one stretch, or the stretches already laid end to
+    /// end: never the raw file with its clocks going backwards. Unwrapped
+    /// against the file's first timestamp, the second stretch here was a day
+    /// late, and so was everything the join laid after it.
+    #[test]
+    fn a_stretch_that_starts_low_is_not_a_day_late() {
+        let raw = stretches_starting_low();
+        assert_eq!(sequence_starts(&raw).len(), 3);
+        let table = joined(&raw, 3_000).unwrap();
+        let seams = table.seams();
+        assert_eq!(seams.len(), 2);
+        assert!(seams[0].time > 100.0 && seams[0].time < 110.0, "{seams:?}");
+        assert!(seams[1].time > seams[0].time && seams[1].time < 120.0, "{seams:?}");
+        // On the joined clock the points climb from the first stretch's
+        // clock straight through the seams.
+        let points: Vec<(f64, u64)> = entry_points(&raw, Clock::Joined)
+            .into_iter()
+            .map(|(t, p)| (t + table.seconds_at(p), p))
+            .collect();
+        assert_eq!(points.len(), 6);
+        assert!(points.windows(2).all(|w| w[0].0 < w[1].0), "{points:?}");
+        assert!(points[5].0 < 120.0, "{points:?}");
+        // And a stretch opened on its own is on its own clock.
+        let alone = entry_points(&raw, Clock::Stretch);
+        assert!((alone[2].0 - 5.0).abs() < 0.01, "{alone:?}");
+        assert!((alone[4].0 - 10.0).abs() < 0.01, "{alone:?}");
+        // The file read whole is libavformat's to unwrap, and it does move
+        // them up a turn.
+        let whole = entry_points(&raw, Clock::File);
+        assert!(whole[2].0 > 95_000.0, "{whole:?}");
+    }
+
     #[test]
     fn says_nothing_about_an_entry_point_map_it_cannot_read() {
-        assert!(entry_points(b"not a clpi").is_empty());
-        assert!(entry_points(&[]).is_empty());
+        assert!(entry_points(b"not a clpi", Clock::File).is_empty());
+        assert!(entry_points(&[], Clock::File).is_empty());
         // The stream list on its own: a clip index with no CPI section at all.
-        assert!(entry_points(&clpi()).is_empty());
+        assert!(entry_points(&clpi(), Clock::File).is_empty());
         // A map whose tables run past the end of the file is a map that is
         // not read at all, rather than one read as far as it goes.
         let mut truncated = clpi_with_ep_map(&[(0, 0, 0)], &[(0, 0), (90, 100)]);
         truncated.truncate(truncated.len() - 4);
-        assert!(entry_points(&truncated).is_empty());
+        assert!(entry_points(&truncated, Clock::File).is_empty());
     }
 
     #[test]

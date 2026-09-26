@@ -467,6 +467,10 @@ fn main() -> Result<()> {
     // fade fades is the programme.
     let mut join_fade_out = 0.0f64;
     let mut join_fade_in = 0.0f64;
+    // The first option given that only a join reads, whatever it said:
+    // `--transition-seconds 1` is the default spelled out, and without
+    // `--join` it is ignored all the same.
+    let mut join_only: Option<&'static str> = None;
     let mut allow_open_gop = true;
     let mut clean_join = false;
     let mut output: Option<String> = None;
@@ -570,12 +574,14 @@ fn main() -> Result<()> {
                     - 1;
             }
             "--transition" => {
+                join_only.get_or_insert("--transition");
                 i += 1;
                 let v = args.get(i).context("--transition needs a name")?;
                 crossing = smartcut_core::transition::Crossing::parse(v)
                     .with_context(|| format!("--transition does not know {v:?}"))?;
             }
             "--transition-seconds" => {
+                join_only.get_or_insert("--transition-seconds");
                 i += 1;
                 let v = args.get(i).context("--transition-seconds needs a number")?;
                 crossing_secs = v
@@ -590,6 +596,11 @@ fn main() -> Result<()> {
                     })?;
             }
             "--join-fade-out" | "--join-fade-in" => {
+                join_only.get_or_insert(if args[i] == "--join-fade-out" {
+                    "--join-fade-out"
+                } else {
+                    "--join-fade-in"
+                });
                 let which = args[i].clone();
                 i += 1;
                 let v = args.get(i).with_context(|| format!("{which} needs a length"))?;
@@ -605,11 +616,13 @@ fn main() -> Result<()> {
                 }
             }
             "--transition-image" => {
+                join_only.get_or_insert("--transition-image");
                 i += 1;
                 crossing_image =
                     Some(args.get(i).context("--transition-image needs a file")?.clone());
             }
             "--transition-easing" => {
+                join_only.get_or_insert("--transition-easing");
                 i += 1;
                 let v = args.get(i).context("--transition-easing needs a curve")?;
                 let (curve, mode) = v.split_once(':').unwrap_or((v.as_str(), "in"));
@@ -752,6 +765,12 @@ fn main() -> Result<()> {
                     .get(i)
                     .context("--index needs auto|disc|scan|container")?
                     .clone();
+                // Here rather than where the index is chosen: a run that ends
+                // before then -- a disc listed for want of `--title` -- took
+                // a misspelling and said nothing.
+                if !matches!(index_kind.as_str(), "auto" | "disc" | "scan" | "container") {
+                    bail!("unknown --index {index_kind}; want auto, disc, scan or container");
+                }
             }
             "--seek-index" => {
                 i += 1;
@@ -959,18 +978,8 @@ fn main() -> Result<()> {
     // What happens between recordings, asked of a run that has only one:
     // nothing reads it, and a run that ignores what it was told should say
     // so rather than succeed.
-    if joined.is_empty() {
-        let join_only = [
-            ("--transition", crossing != smartcut_core::transition::Crossing::None),
-            ("--transition-seconds", crossing_secs != 1.0),
-            ("--transition-easing", easing != smartcut_core::transition::Easing::default()),
-            ("--transition-image", crossing_image.is_some()),
-            ("--join-fade-out", join_fade_out > 0.0),
-            ("--join-fade-in", join_fade_in > 0.0),
-        ];
-        if let Some((name, _)) = join_only.iter().find(|(_, given)| *given) {
-            bail!("{name} is about the joins between recordings and needs --join");
-        }
+    if let Some(name) = join_only.filter(|_| joined.is_empty()) {
+        bail!("{name} is about the joins between recordings and needs --join");
     }
     // One past the last recording was taken as the last, without a word.
     if master > joined.len() {
@@ -1003,6 +1012,7 @@ fn main() -> Result<()> {
         ("--preview", preview_at.is_some()),
     ];
     let mut stopping = stops.iter().filter(|(_, given)| *given).map(|(name, _)| *name);
+    let stopping_at = stops.iter().find(|(_, given)| *given).map(|(name, _)| *name);
     if let Some(first) = stopping.next() {
         if let Some(second) = stopping.next() {
             bail!("{first} ends the run before {second} is looked at: give one at a time");
@@ -1020,6 +1030,19 @@ fn main() -> Result<()> {
         }
         if output.is_some() && matches!(first, "--cut-near" | "--detect-cm") {
             bail!("{first} prints what it finds and writes no file: -o has nothing to name");
+        }
+    }
+    // A file that holds sound and nothing else, named for a cut with
+    // pictures in it. The muxer turned the pictures down only once the file
+    // had been created, with "Invalid argument", and a file already under
+    // that name was left truncated to nothing.
+    if !sound_only && stopping_at.is_none() {
+        let sound_file = output.as_deref().and_then(|o| {
+            let ext = std::path::Path::new(o).extension()?.to_str()?.to_ascii_lowercase();
+            ["aac", "ac3", "mp2", "mp3", "dts", "wav"].contains(&ext.as_str()).then_some(ext)
+        });
+        if let Some(ext) = sound_file {
+            bail!("a .{ext} holds sound and no pictures: add --sound-only to write the sound alone");
         }
     }
     // The rest of what only a file with pictures in it has: its tables, its
@@ -1125,6 +1148,25 @@ fn main() -> Result<()> {
             }
             None => {
                 list_disc(&input, &disc);
+                // The list answers a run that asked what is on the disc. One
+                // that asked for a cut, a picture or a look at a recording
+                // got the list and ended well, having written nothing -- and
+                // a script took that for the cut being done.
+                let asked = output.is_some()
+                    || bdav.is_some()
+                    || !keeps.is_empty()
+                    || !cuts.is_empty()
+                    || !joined.is_empty()
+                    || sound_only
+                    || analyze
+                    || scenes
+                    || detect_cm
+                    || make_proxy
+                    || preview_at.is_some()
+                    || cut_near.is_some();
+                if asked {
+                    bail!("{input} is a disc: name the recording to work on with --title N");
+                }
                 return Ok(());
             }
         },
@@ -1932,16 +1974,22 @@ fn main() -> Result<()> {
     // be the very image the recording is being read out of. It would be
     // replaced by one of the new disc once the cut was done.
     if let (Some(at), Some(_)) = (&bdav, iso) {
-        let image = format!("{at}.iso");
+        let image = image_beside(std::path::Path::new(at))?.to_string_lossy().into_owned();
         let reads = std::iter::once(src.input.file.clone()).chain(
             joined
                 .iter()
                 .filter_map(|j| smartcut_core::input::Input::parse(j).ok().map(|i| i.file)),
         );
+        // And the name the image is written under until it is whole
+        // (`udfw::write`), which is created over whatever has that name.
+        let part = format!("{image}.part");
         for file in reads {
-            if smartcut_core::input::same_file(&file, std::path::Path::new(&image)) {
+            if let Some(at) = [&image, &part]
+                .into_iter()
+                .find(|at| smartcut_core::input::same_file(&file, std::path::Path::new(at)))
+            {
                 bail!(
-                    "{image} is the image being read; making the new disc's image there would \
+                    "{at} is the image being read; making the new disc's image there would \
                      replace it. Give --bdav another folder"
                 );
             }
@@ -2431,10 +2479,23 @@ fn main() -> Result<()> {
             p.map_or(0.0, |p| ((p.t_out - p.t_in) / 2.0).max(0.0))
         };
         let mut before = plans.last();
+        // Where the first recording's own pictures end: the end of the
+        // output, or where it gives way to the second. The disc's chapters
+        // are all the first recording's, and one in the stretch a crossing
+        // overlaps is past that point -- a dissolve took the last second of
+        // the first range, and a chapter in that second came out a second
+        // into the recording after it. Nor is a chapter a moment before the
+        // end one: a range's plan runs to a picture past what was asked, and
+        // a mark the disc set just after it was a chapter of nothing.
+        let mut gives_way = at_out;
+        let mut first_join = true;
         for plans in &joined_plans {
             if between.kind.overlaps() {
                 let overlap = between.takes().0.min(half(before)).min(half(plans.first()));
                 at_out = (at_out - overlap).max(0.0);
+            }
+            if std::mem::take(&mut first_join) {
+                gives_way = at_out;
             }
             before = plans.last();
             for plan in plans {
@@ -2449,6 +2510,9 @@ fn main() -> Result<()> {
         marks.sort_by(f64::total_cmp);
         marks.dedup_by(|b, a| *b - *a <= 0.5);
         for c in chapters {
+            if c > gives_way - 0.5 {
+                continue;
+            }
             if !marks.iter().any(|m| (m - c).abs() <= 0.5) {
                 marks.push(c);
             }
@@ -2484,9 +2548,7 @@ fn main() -> Result<()> {
             // `--iso-only` says otherwise: it is what the image was made of,
             // and deleting somebody's disc because they asked for an image of
             // it is not this program's decision to make on its own.
-            // Appended rather than `with_extension`, which would take a
-            // folder called `2026.09` and write `2026.iso`.
-            let image = std::path::PathBuf::from(format!("{}.iso", at.display()));
+            let image = image_beside(&at)?;
             let bytes =
                 smartcut_core::udfw::write(&at, &image, revision, iso_access, &title, None)?;
             println!(
@@ -2601,3 +2663,16 @@ mod tests {
     }
 }
 
+/// The image of a disc folder: beside it, under the folder's name. Appended
+/// to the name rather than `with_extension`, which would take a folder called
+/// `2026.09` and write `2026.iso`, and put beside the folder by path rather
+/// than by string: `out/` and `out/.` are the folder `out` too, and
+/// `out/.iso` was inside the very folder the image is made of.
+fn image_beside(at: &std::path::Path) -> Result<std::path::PathBuf> {
+    let Some(name) = at.file_name() else {
+        bail!("{}: an image goes beside the disc's folder, and this has nothing beside it", at.display());
+    };
+    let mut file = name.to_os_string();
+    file.push(".iso");
+    Ok(at.with_file_name(file))
+}

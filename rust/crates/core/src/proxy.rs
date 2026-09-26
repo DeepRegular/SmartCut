@@ -168,6 +168,12 @@ impl Marks {
     }
 
     fn push(&mut self, time: f64, kind: &str) {
+        // Ascending, which `kind_at` searches on: a recording whose clock
+        // steps back hands over pictures at instants already held, and the
+        // write side passes those over, so the table does too.
+        if self.times.last().is_some_and(|&l| time <= l) {
+            return;
+        }
         self.times.push(time);
         self.kinds
             .push(kind.as_bytes().first().copied().unwrap_or(b'-'));

@@ -823,7 +823,10 @@ pub fn blocks_from_resets(resets: &[f64], duration: f64) -> Vec<Block> {
                     junctions: 1,
                     score: 0.9,
                 })
-            } else if duration - first <= RESET_EDGE {
+            } else if duration >= first && duration - first <= RESET_EDGE {
+                // Only where the end is known to be after the mark: a
+                // container that gives no length says nought, and read as
+                // an end that made a block ending before it began.
                 Some(Block {
                     start: first,
                     end: duration,

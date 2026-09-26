@@ -147,6 +147,11 @@ pub fn copy_into(from: &ff::frame::Video, to: &mut ff::frame::Video) -> Result<(
     if ok < 0 {
         bail!("a picture could not be copied: {}", ff::Error::from(ok));
     }
+    // The samples alone are copied, and [`tint`] reads the range off the
+    // frame it is handed -- which is this fresh one. Left unset, a full-range
+    // picture that is not a YUVJ format (HEVC, every 10-bit one) faded to
+    // studio black, a grey in the range it is written in.
+    to.set_color_range(from.color_range());
     Ok(())
 }
 
@@ -508,6 +513,18 @@ mod tests {
         assert_eq!(sample(&f, 0, 0, 0), 16);
         assert_eq!(sample(&f, 1, 0, 0), 128);
         assert_eq!(sample(&f, 2, 0, 0), 128);
+    }
+
+    /// A full-range picture copied into a fresh frame still fades to its own
+    /// black, which is nought: the cutter tints the copy, not the original.
+    #[test]
+    fn a_copy_keeps_the_range_a_fade_is_read_in() {
+        let mut from = frame([200, 90, 150]);
+        from.set_color_range(ff::util::color::Range::JPEG);
+        let mut out = ff::frame::Video::new(ff::format::Pixel::YUV420P, 16, 8);
+        copy_into(&from, &mut out).unwrap();
+        tint(&mut out, Shade::Black, 1.0).unwrap();
+        assert_eq!(sample(&out, 0, 0, 0), 0);
     }
 
     /// And a fade that has not started leaves every sample where it was.

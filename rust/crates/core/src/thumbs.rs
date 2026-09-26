@@ -828,8 +828,7 @@ pub fn differences_near(src: &Source, at: f64, window: f64) -> Result<Vec<(f64, 
     // Failing that, a transport stream seeks by byte position of its own
     // reckoning and can land a GOP late, so aim early and read forward.
     if crate::index::seek_to_entry(&mut ictx, src, entry).is_none() {
-        let landing = (entry - src.seek_margin).max(0.0);
-        let target = ((landing + src.start_time) * ff::ffi::AV_TIME_BASE as f64) as i64;
+        let target = front_or(src, entry - src.seek_margin);
         let _ = ictx.seek(target, ..target);
     }
     // After the seek, for the reason [`crate::input::keep_only`] gives.
@@ -867,6 +866,21 @@ pub fn differences_near(src: &Source, at: f64, window: f64) -> Result<Vec<(f64, 
         .windows(2)
         .map(|w| (w[1].0, distance(&w[0].1, &w[1].1)))
         .collect())
+}
+
+/// The timestamp a seek aims at to land at or before `landing`, in rebased
+/// seconds.
+///
+/// At or before the first entry point that is the front of the file, as in
+/// `preview::place`: a seek aimed at the container's own start lands *past*
+/// the first entry picture on a transport stream, and what the read then
+/// found was missing the opening pictures.
+fn front_or(src: &Source, landing: f64) -> i64 {
+    if src.points.first().is_none_or(|p| landing <= p.time) {
+        i64::MIN / 2
+    } else {
+        ((landing + src.start_time) * ff::ffi::AV_TIME_BASE as f64) as i64
+    }
 }
 
 /// Which picture of a window the cut is on, or `at` where none of them is.
@@ -925,8 +939,7 @@ pub fn refine(src: &Source, at: f64) -> Result<f64> {
     // otherwise start well before the picture wanted and read forward, since
     // a transport stream's own seeking can land a GOP late.
     if crate::index::seek_to_entry(&mut ictx, src, from).is_none() {
-        let landing = (from - src.seek_margin).max(0.0);
-        let target = ((landing + src.start_time) * ff::ffi::AV_TIME_BASE as f64) as i64;
+        let target = front_or(src, from - src.seek_margin);
         let _ = ictx.seek(target, ..target);
     }
     // After the seek, for the reason [`crate::input::keep_only`] gives.

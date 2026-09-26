@@ -482,27 +482,53 @@ fn write_table(root: &Path, title: &str) -> Result<()> {
     // three of five recordings would have lost two of them.
     // A recorder's virtual playlists -- its edits of a recording -- are in
     // the table as well, in the one order of their numbers.
-    let mut playlists: Vec<String> = numbered(&root.join("PLAYLIST"), "rpls")?
-        .iter()
-        .map(|n| format!("{n}.rpls"))
-        .chain(
-            numbered(&root.join("PLAYLIST"), "vpls")?
-                .iter()
-                .map(|n| format!("{n}.vpls")),
-        )
-        .collect();
-    playlists.sort();
+    let listed = || -> Result<Vec<String>> {
+        let mut playlists: Vec<String> = numbered(&root.join("PLAYLIST"), "rpls")?
+            .iter()
+            .map(|n| format!("{n}.rpls"))
+            .chain(
+                numbered(&root.join("PLAYLIST"), "vpls")?
+                    .iter()
+                    .map(|n| format!("{n}.vpls")),
+            )
+            .collect();
+        playlists.sort();
+        Ok(playlists)
+    };
     // Written aside and moved over: on a disc that already holds a
     // recorder's own recordings, a table cut short by a crash would lose
     // every one of them, not only the ones written here.
+    //
+    // Aside under a name of this run's own. Two runs into one disc is what
+    // `prepare` reserves numbers for, and with one shared name the second
+    // run's write truncated the first's under it and its rename then found
+    // nothing to move: a failed run on a disc that was fine.
+    static RUN: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let table = root.join("info.bdav");
-    let temp = root.join("info.bdav.part");
-    let written = std::fs::write(&temp, info(&playlists, title))
-        .and_then(|()| std::fs::rename(&temp, &table));
-    if written.is_err() {
-        let _ = std::fs::remove_file(&temp);
+    let temp = root.join(format!(
+        "info.bdav.{}.{}.part",
+        std::process::id(),
+        RUN.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    ));
+    // And read again once it is in place. A run that listed the playlists
+    // before the other run's was written, and moved its table over after the
+    // other's, left that recording on the disc and out of the table; the
+    // last run to move a table over sees every playlist written before it,
+    // and writes again until what it moved over is what is there.
+    let mut playlists = listed()?;
+    for _ in 0..8 {
+        let written = std::fs::write(&temp, info(&playlists, title))
+            .and_then(|()| std::fs::rename(&temp, &table));
+        if written.is_err() {
+            let _ = std::fs::remove_file(&temp);
+        }
+        written.with_context(|| format!("writing {}", table.display()))?;
+        let now = listed()?;
+        if now == playlists {
+            break;
+        }
+        playlists = now;
     }
-    written.with_context(|| format!("writing {}", table.display()))?;
     Ok(())
 }
 
@@ -1176,7 +1202,11 @@ fn read_clip(
         pmt_pid: service.as_ref().map_or(0x0100, |s| s.pmt_pid),
         pcr_pid: service.as_ref().map_or(video_pid, |s| s.pcr_pid),
         first_clock: timing.first_clock,
-        start: ticks(0.0),
+        // Down, not to the nearest: a first PTS that is odd at 90 kHz sits
+        // half a playlist tick in, and rounded up the clip began one tick
+        // after its own first picture. The stream's tick halved, as a
+        // recorder counts it.
+        start: ((src.start_time * TICK) + 1e-6).floor().max(0.0) as u32,
         end: ticks(src.duration),
         video_pid,
         network_id: service.as_ref().map_or(0, |s| s.original_network_id),
@@ -2052,5 +2082,33 @@ mod tests {
         assert!(raw[DISC_NAME_AT + 1 + len..TABLE_AT]
             .iter()
             .all(|b| *b == 0));
+    }
+
+    /// Two runs writing the table of one disc at once each finish, and the
+    /// table names every playlist either of them wrote, with nothing left
+    /// aside.
+    #[test]
+    fn two_runs_write_one_table() {
+        let root = std::env::temp_dir().join(format!("bdav-table-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("PLAYLIST")).unwrap();
+        std::thread::scope(|s| {
+            for k in 1..=2 {
+                let root = &root;
+                s.spawn(move || {
+                    for n in 0..20 {
+                        let name = format!("{:05}.rpls", k * 100 + n);
+                        std::fs::write(root.join("PLAYLIST").join(name), b"").unwrap();
+                        write_table(root, "x").unwrap();
+                    }
+                });
+            }
+        });
+        let raw = std::fs::read(root.join("info.bdav")).unwrap();
+        let at = u32::from_be_bytes(raw[8..12].try_into().unwrap()) as usize;
+        assert_eq!(u16::from_be_bytes(raw[at + 4..at + 6].try_into().unwrap()), 40);
+        let left: Vec<_> = std::fs::read_dir(&root).unwrap().flatten().collect();
+        assert_eq!(left.len(), 2, "PLAYLIST and info.bdav, and nothing aside");
+        let _ = std::fs::remove_dir_all(&root);
     }
 }

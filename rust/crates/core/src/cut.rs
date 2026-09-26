@@ -1932,7 +1932,7 @@ fn write_one_track_out(cut: &str, output: &str, aac: AacVersion) -> Result<usize
     let params = ist.parameters();
     let in_tb = ist.time_base();
 
-    let mut octx = ff::format::output(&*crate::input::as_output(output))?;
+    let mut octx = ff::format::output(&*crate::input::as_output(output)).map_err(|e| anyhow!("{output}: {e}"))?;
     {
         let mut ost = octx.add_stream(ff::encoder::find(ff::codec::Id::None))?;
         ost.set_parameters(params);
@@ -6355,9 +6355,9 @@ fn cut_into(
     // and nothing newer and turns down the `avc3` tag a cut with rewritten
     // seams needs.
     let mut octx = if output.to_ascii_lowercase().ends_with(".m4v") {
-        ff::format::output_as(&*crate::input::as_output(output), "mp4")?
+        ff::format::output_as(&*crate::input::as_output(output), "mp4").map_err(|e| anyhow!("{output}: {e}"))?
     } else {
-        ff::format::output(&*crate::input::as_output(output))?
+        ff::format::output(&*crate::input::as_output(output)).map_err(|e| anyhow!("{output}: {e}"))?
     };
     // The lead a disc gives a decoder: how far the first picture is shown
     // after the clock that has to be running to show it arrives.

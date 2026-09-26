@@ -72,7 +72,14 @@ static SERIAL: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(
 /// H.264 recording measured here -- so every entry point in a saved index is
 /// two frames early, and nothing in the file says so: the film strip went on
 /// decoding a GOP per cell however often the recording was opened again.
-pub const VERSION: u32 = 8;
+///
+/// 9: every time is rebased by [`crate::container_start`], a stream's own
+/// start, where before it was libav's figure rounded to the microsecond. An
+/// index written before holds its entry points up to half a microsecond off
+/// the pictures the recording now decodes to, and the tests against a point
+/// with no tolerance (`p.time <= from + 1e-9`) then took the one before it:
+/// a GOP out.
+pub const VERSION: u32 = 9;
 
 const MAGIC: &[u8; 4] = b"SCIX";
 

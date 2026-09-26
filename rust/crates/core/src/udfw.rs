@@ -271,6 +271,23 @@ pub fn write(
     label: &str,
     on: Option<&(dyn Fn(f64) + Sync)>,
 ) -> Result<u64> {
+    // Never inside the folder it is an image of. Both callers name the image
+    // `<folder>.iso`, and a folder given with a separator at the end made
+    // that `<folder>/.iso`: a hidden image in the disc it holds, left there
+    // when the folder is taken away afterwards.
+    let inside = |dir: &Path| {
+        let (Ok(from), Ok(dir)) = (std::fs::canonicalize(from), std::fs::canonicalize(dir)) else {
+            return false;
+        };
+        dir.starts_with(from)
+    };
+    if to.parent().is_some_and(|p| inside(if p.as_os_str().is_empty() { Path::new(".") } else { p })) {
+        bail!(
+            "{}: the image would be inside {}, the folder it is made of",
+            to.display(),
+            from.display()
+        );
+    }
     let mut part = to.as_os_str().to_owned();
     part.push(".part");
     let part = PathBuf::from(part);
@@ -1609,6 +1626,24 @@ mod tests {
         // A read-only image is only as long as what is in it.
         let plan = lay_out(&mut tree, Access::ReadOnly).unwrap();
         assert!(plan.room.is_none() && plan.sectors < 20_000);
+    }
+
+    /// An image is never written into the folder it is an image of: a
+    /// folder named with a separator at the end is `disc/` and `disc/.iso`.
+    #[test]
+    fn an_image_inside_its_own_folder_is_refused() {
+        let at = std::env::temp_dir().join(format!("udfw-inside-{}", std::process::id()));
+        std::fs::create_dir_all(at.join("BDAV")).unwrap();
+        std::fs::write(at.join("BDAV").join("info.bdav"), b"x").unwrap();
+        let image = PathBuf::from(format!("{}/.iso", at.display()));
+        let e = write(&at, &image, Revision::V250, Access::ReadOnly, "x", None).unwrap_err();
+        assert!(e.to_string().contains("inside"), "{e}");
+        assert!(!image.exists());
+        // Beside it, as ever.
+        let beside = PathBuf::from(format!("{}.iso", at.display()));
+        assert!(write(&at, &beside, Revision::V250, Access::ReadOnly, "x", None).is_ok());
+        let _ = std::fs::remove_file(&beside);
+        let _ = std::fs::remove_dir_all(&at);
     }
 
     #[test]

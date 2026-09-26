@@ -2007,7 +2007,12 @@ pub(crate) fn container_start(ictx: &input::Demux) -> f64 {
             let at = st.start_time();
             (at != ff::ffi::AV_NOPTS_VALUE).then(|| at as f64 * f64::from(st.time_base()))
         })
-        .filter(|at| at.is_finite() && (at - rounded).abs() <= 0.5e-6)
+        // Half a microsecond is the most the rounding moves a start, and it
+        // moves one that far exactly: a 48 kHz or 12800 Hz clock can start on
+        // the half, and the sum above lands a hair past it as often as not.
+        // Missed there, a picture came out at -5e-7 as before. Any window
+        // holding the earliest stream gives the same answer.
+        .filter(|at| at.is_finite() && (at - rounded).abs() <= 0.5e-6 + 1e-9)
         .min_by(f64::total_cmp)
         .unwrap_or(rounded)
 }

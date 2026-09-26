@@ -1148,8 +1148,15 @@ fn window_at(
             }
         }
     }
-    let target = ((at - 1.0).max(0.0) + start_time) * ff::ffi::AV_TIME_BASE as f64;
-    let _ = ictx.seek(target as i64, ..target as i64);
+    // The front of the file where that is at or before the start: a seek
+    // aimed at the container's own start lands past the first entry picture
+    // on a transport stream, and the first point was then never found.
+    let target = if at - 1.0 > 0.0 {
+        (((at - 1.0) + start_time) * ff::ffi::AV_TIME_BASE as f64) as i64
+    } else {
+        i64::MIN / 2
+    };
+    let _ = ictx.seek(target, ..target);
     window_from(ictx, video, start_time, at, None)
 }
 

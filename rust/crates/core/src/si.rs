@@ -1003,12 +1003,13 @@ fn read_service_within(
     // than one puts each service in only one of them. Complete once as many
     // have arrived as the last section number says there are.
     let mut sdt_whole: Vec<Vec<u8>> = Vec::new();
-    let sdt_complete =
+    let complete =
         |have: &Vec<Vec<u8>>| have.first().is_some_and(|s| have.len() > usize::from(s[7]));
     // And the network's own table, kept for the same reason: which transport
     // stream in it is this one is settled by the service, which the map has
-    // to arrive before anything knows.
-    let mut nit_whole: Option<Vec<u8>> = None;
+    // to arrive before anything knows. Every section of it too: a network
+    // that describes its streams over several puts this one's in only one.
+    let mut nit_whole: Vec<Vec<u8>> = Vec::new();
     // And, for a recording this program has already cut once, the one table
     // it carries instead of the four: the network it came off and the button
     // it was behind are in there and nowhere else. See below.
@@ -1129,16 +1130,9 @@ fn read_service_within(
                     }
                 });
             }
-            PID_SDT if !sdt_complete(&sdt_whole) => sdt.feed(p, |sec| {
-                // Numbered from the first one taken: a section that says
-                // there are a different number of them is of another version
-                // of the table, and not to be mixed in with this one.
-                if sec[0] == TABLE_SDT_ACTUAL
-                    && sec.len() >= 15
-                    && sdt_whole.first().is_none_or(|s| s[5] == sec[5] && s[7] == sec[7])
-                    && !sdt_whole.iter().any(|s| s[6] == sec[6])
-                {
-                    sdt_whole.push(sec.to_vec());
+            PID_SDT if !complete(&sdt_whole) => sdt.feed(p, |sec| {
+                if sec[0] == TABLE_SDT_ACTUAL && sec.len() >= 15 {
+                    gather(&mut sdt_whole, sec);
                 }
             }),
             PID_SIT if sit_whole.is_none() => sit.feed(p, |sec| {
@@ -1146,9 +1140,9 @@ fn read_service_within(
                     sit_whole = Some(sec.to_vec());
                 }
             }),
-            PID_NIT if nit_whole.is_none() => nit.feed(p, |sec| {
+            PID_NIT if !complete(&nit_whole) => nit.feed(p, |sec| {
                 if sec[0] == TABLE_NIT_ACTUAL && sec.len() >= 16 {
-                    nit_whole = Some(sec.to_vec());
+                    gather(&mut nit_whole, sec);
                 }
             }),
             _ => {}
@@ -1160,7 +1154,7 @@ fn read_service_within(
         if found
             .as_ref()
             .is_some_and(|f| names(f, wanted) == wanted.len())
-            && sdt_complete(&sdt_whole)
+            && complete(&sdt_whole)
         {
             break;
         }
@@ -1200,9 +1194,9 @@ fn read_service_within(
             i += 5 + len;
         }
     }
-    if let Some(sec) = nit_whole {
-        service.ts_information = ts_information(&sec, service.service_id);
-    }
+    service.ts_information = nit_whole
+        .iter()
+        .find_map(|sec| ts_information(sec, service.service_id));
     // And what a partial transport stream says about itself, which is where
     // the two facts above live once a recording has been through this
     // program once. **A cut is read back.** The clip index of a disc is built
@@ -1227,6 +1221,28 @@ fn read_service_within(
         }
     }
     Ok(service)
+}
+
+/// Add one section of a table that runs to several to those already held.
+///
+/// Numbered from the first one taken: a section of another version, or one
+/// that says there are a different number of them, is of a table that has
+/// changed since, and not to be mixed in with this one. The table in force is
+/// the later one, so what was held is let go and the gathering starts again
+/// from it -- a recording that opened on the last section of the old version
+/// would otherwise hold that one alone and turn every section of the new one
+/// away for as far as it was read. A section of the version that is to come
+/// next is not in force yet, and is not taken at all.
+fn gather(have: &mut Vec<Vec<u8>>, sec: &[u8]) {
+    if sec[5] & 0x01 == 0 {
+        return;
+    }
+    if have.first().is_some_and(|s| s[5] != sec[5] || s[7] != sec[7]) {
+        have.clear();
+    }
+    if !have.iter().any(|s| s[6] == sec[6]) {
+        have.push(sec.to_vec());
+    }
 }
 
 /// Rewrite an SDT section so it describes one service instead of a multiplex.
@@ -3382,6 +3398,50 @@ mod tests {
         let sdt = service.sdt.expect("the service's own entry");
         // Written back as the whole of a table of one section.
         assert_eq!((sdt[6], sdt[7]), (0, 0));
+        assert_eq!(service.original_network_id, 0x0004);
+        let _ = std::fs::remove_file(&at);
+    }
+
+    /// A service description whose version changes after the recording has
+    /// taken one section of the old one: the new version is what is read,
+    /// rather than the old section alone and the new ones turned away.
+    #[test]
+    fn a_service_description_that_changes_is_read_as_it_now_is() {
+        let section = |version: u8, number: u8, last: u8, id: u16| {
+            let mut sec = vec![
+                TABLE_SDT_ACTUAL,
+                0xF0,
+                0x00,
+                0x00,
+                0x01,
+                0xC1 | (version << 1),
+                number,
+                last,
+                0x00,
+                0x04,
+                0xFF,
+            ];
+            sec.extend_from_slice(&id.to_be_bytes());
+            sec.extend_from_slice(&[0xFC, 0x80, 0x03, 0x48, 0x01, 0x01]);
+            finish_section(&mut sec);
+            sec
+        };
+        let mut out = Vec::new();
+        let (mut a, mut b, mut c) = (0u8, 0u8, 0u8);
+        packetize(PID_PAT, &pat(1, 0x100), &mut a, &mut out);
+        for _ in 0..4 {
+            packetize(0x100, &pmt(1, 0, &[0x200]), &mut b, &mut out);
+        }
+        // The last of two sections of version 0, about somebody else.
+        packetize(PID_SDT, &section(0, 1, 1, 2), &mut c, &mut out);
+        // And then version 1, one section, with this service in it.
+        packetize(PID_SDT, &section(1, 0, 0, 1), &mut c, &mut out);
+        let at = std::env::temp_dir().join("smartcut-sdt-version.ts");
+        std::fs::write(&at, &out).expect("write the sample");
+        let input = crate::input::Input::plain(&at.to_string_lossy());
+
+        let service = read_service(&input, 0x200, &[0x200]).expect("a map");
+        assert!(service.sdt.is_some());
         assert_eq!(service.original_network_id, 0x0004);
         let _ = std::fs::remove_file(&at);
     }

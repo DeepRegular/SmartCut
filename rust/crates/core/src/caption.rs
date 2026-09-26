@@ -445,26 +445,37 @@ fn read_glyphs(
                 best = Some((matches, ink(pattern, bits, width, height)));
             }
         }
+        // A cell is named in the graphic-left range wherever it was written
+        // from; see [`crate::arib::Drcs`].
+        let cell = crate::arib::Drcs {
+            code: code & 0x7F7F,
+            wide,
+        };
+        // Only a cell the text can write: a character byte, under a final
+        // byte a one-byte set is designated by (0x40 to 0x4F, as
+        // [`crate::arib`] takes them) or beside another character byte. The
+        // rest of the sixteen bits name nothing any statement can reach, and
+        // kept, a stream defining every one of them at the largest size
+        // held half a gigabyte of pictures nothing would ever draw.
+        let (hi, lo) = ((cell.code >> 8) as u8, cell.code as u8);
+        let reachable = (0x21..=0x7E).contains(&lo)
+            && if wide {
+                (0x21..=0x7E).contains(&hi)
+            } else {
+                (0x40..=0x4F).contains(&hi)
+            };
+        if !reachable {
+            continue;
+        }
         if let Some((_, glyph)) = best {
             // What a *later statement* sends replaces this, which is how
             // the material is actually sent: one cell, redefined line by
             // line -- an arrow in this one, a bracket in the next.
-            into.insert(
-                crate::arib::Drcs {
-                    // A cell is named in the graphic-left range wherever it
-                    // was written from; see [`crate::arib::Drcs`].
-                    code: code & 0x7F7F,
-                    wide,
-                },
-                Arc::new(glyph),
-            );
+            into.insert(cell, Arc::new(glyph));
         } else if blank {
             // Redefined as nothing: the picture the cell had before is not
             // what this statement writes there either.
-            into.remove(&crate::arib::Drcs {
-                code: code & 0x7F7F,
-                wide,
-            });
+            into.remove(&cell);
         }
     }
 }

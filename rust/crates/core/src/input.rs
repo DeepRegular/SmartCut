@@ -505,6 +505,7 @@ thread_local! {
     static STOP_READS: std::cell::RefCell<Option<Box<dyn Fn() -> bool>>> =
         const { std::cell::RefCell::new(None) };
     static READS_STOPPED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    static READS_FAILED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
 /// Stop every read on this thread once `stop` says so, until the answer is
@@ -522,6 +523,7 @@ thread_local! {
 pub fn stop_reads_when(stop: impl Fn() -> bool + 'static) -> StopReads {
     STOP_READS.with(|s| *s.borrow_mut() = Some(Box::new(stop)));
     READS_STOPPED.with(|s| s.set(false));
+    READS_FAILED.with(|s| s.set(false));
     StopReads(())
 }
 
@@ -531,6 +533,15 @@ pub fn reads_stopped() -> bool {
     READS_STOPPED.with(|s| s.get())
 }
 
+/// Whether a read on this thread, since [`stop_reads_when`], gave up at
+/// errors the recording kept giving. The pass still answers with what it
+/// read, but that answer is not the recording's and is not to be cached
+/// under the recording's size and time: a share that dropped half way would
+/// have its half answer served until the file changed.
+pub fn reads_failed() -> bool {
+    READS_FAILED.with(|s| s.get())
+}
+
 /// Held for as long as [`stop_reads_when`] is to apply.
 pub struct StopReads(());
 
@@ -538,6 +549,7 @@ impl Drop for StopReads {
     fn drop(&mut self) {
         STOP_READS.with(|s| *s.borrow_mut() = None);
         READS_STOPPED.with(|s| s.set(false));
+        READS_FAILED.with(|s| s.set(false));
     }
 }
 
@@ -607,6 +619,11 @@ impl<'a> Iterator for Packets<'a> {
                     self.failures += if again { 1 } else { EAGAIN_WORTH };
                     if self.failures >= MOST_FAILURES * EAGAIN_WORTH {
                         self.failed = Some(e.to_string());
+                        // Only inside a pass that asks: a thread from a pool
+                        // with no pass on it would keep the mark for the next.
+                        if STOP_READS.with(|s| s.borrow().is_some()) {
+                            READS_FAILED.with(|s| s.set(true));
+                        }
                         crate::note_once(format!(
                             "note: reading stopped at an error the recording kept giving ({e}); \
                              what was read before it is used"
@@ -1292,9 +1309,12 @@ fn dvd_title(spec: &str, base: &str, first: u64, last: u64) -> Result<Input> {
             let whole: u64 = parts.iter().map(|(_, len)| len).sum();
             let range = clamp(want, whole)
                 .ok_or_else(|| anyhow!("{spec}: those sectors are not on this disc"))?;
+            // Each piece as [`as_local`] spells it: `concat` opens every one
+            // as a URL of its own, and a folder given relative whose first
+            // name holds a colon (`12:00/VIDEO_TS/...`) was the protocol `12`.
             let joined: Vec<String> = parts
                 .iter()
-                .map(|(p, _)| p.to_string_lossy().into_owned())
+                .map(|(p, _)| as_local(&p.to_string_lossy()).into_owned())
                 .collect();
             let concat = format!("concat:{}", joined.join("|"));
             // A title that is the whole stream needs no window around the

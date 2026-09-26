@@ -258,7 +258,7 @@ fn run(
     }
     let fades = fade_lengths(pieces, opts);
 
-    let mut octx = ff::format::output(&*crate::input::as_output(output))?;
+    let mut octx = ff::format::output(&*crate::input::as_output(output)).map_err(|e| anyhow!("{output}: {e}"))?;
     // Which way round this container writes samples. `carriage` answers for
     // the containers a cut goes into, where big-endian PCM is what an MP4
     // has a box for; a `.wav` wants them the other way round and says
@@ -565,9 +565,17 @@ fn take_range(
     // decoded up to rather than seeked into: a seek in a transport stream
     // lands where it can rather than where it was asked, and an AAC frame
     // decoded straight after one is missing half its window.
-    let landing = ((range.0 - 0.5).max(0.0) + src.start_time) * f64::from(ff::ffi::AV_TIME_BASE);
-    let target = landing as i64;
-    ictx.seek(target, ..target)?;
+    //
+    // A range that opens at the head is not seeked for at all: the file was
+    // just opened and is standing at its first byte. Any seek lands on a
+    // picture, and a broadcast's sound starts before its first one does --
+    // half a second of it on an off-air recording, which a whole-recording
+    // .wav had as silence and an .aac did not have at all.
+    let landing = (range.0 - 0.5).max(0.0);
+    if landing > 0.0 {
+        let target = ((landing + src.start_time) * f64::from(ff::ffi::AV_TIME_BASE)) as i64;
+        ictx.seek(target, ..target)?;
+    }
     // After the seek, for the reason [`crate::input::keep_only`] gives, and
     // with the pictures, which say when the range is over where the track
     // has nothing in it. See [`crate::input::keep_with_pictures`].

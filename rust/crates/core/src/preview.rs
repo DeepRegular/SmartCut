@@ -948,7 +948,15 @@ impl Glancer {
 
         decoder.flush();
         let want = start + from.max(0.0);
-        let ts = (want * ff::ffi::AV_TIME_BASE as f64) as i64;
+        // A stretch from the very front is read from the front, as `place`
+        // does it: a seek aimed at the container's own start lands past the
+        // first entry picture on a transport stream, and the reel's first
+        // cell came back holding the picture after it.
+        let ts = if want > start + 1e-6 {
+            (want * ff::ffi::AV_TIME_BASE as f64) as i64
+        } else {
+            i64::MIN / 2
+        };
         let _ = ictx.seek(ts, ..ts);
 
         let mut out: Vec<Shot> = Vec::new();

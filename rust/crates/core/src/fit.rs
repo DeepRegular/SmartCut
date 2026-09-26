@@ -237,7 +237,8 @@ fn written_rate(a: &crate::AudioInfo, asked: &SoundAsked) -> f64 {
     if pcm {
         let rate = asked.sample_rate.unwrap_or(a.sample_rate);
         let bits = asked.bits.unwrap_or(a.bits).max(16);
-        let paid = if asked.to_ts { channels + channels % 2 } else { channels };
+        // In u32: the count is the container's, and 65535 is a u16.
+        let paid = u32::from(channels) + if asked.to_ts { u32::from(channels % 2) } else { 0 };
         return f64::from(rate) * f64::from(paid) * f64::from(bits);
     }
     if let Some(b) = asked.bit_rate {
