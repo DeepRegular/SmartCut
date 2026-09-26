@@ -763,24 +763,10 @@ impl Glancer {
                 1.0
             }
         };
-        let (duration, start) = unsafe {
-            let p = ictx.as_ptr();
-            let tb = ff::ffi::AV_TIME_BASE as f64;
-            let d = (*p).duration;
-            let s = (*p).start_time;
-            (
-                if d == ff::ffi::AV_NOPTS_VALUE {
-                    0.0
-                } else {
-                    d as f64 / tb
-                },
-                if s == ff::ffi::AV_NOPTS_VALUE {
-                    0.0
-                } else {
-                    s as f64 / tb
-                },
-            )
-        };
+        // Read before `keep_only` switches the other streams off, as the
+        // walk's own are: the start is the earliest stream's. See
+        // [`crate::container_start`].
+        let (duration, start) = (crate::container_duration(&ictx), crate::container_start(&ictx));
         // One core, because this runs beside the passes that want the rest of
         // them, and because frame threading holds the first pictures back
         // until its pipeline fills -- and the first picture after a seek is

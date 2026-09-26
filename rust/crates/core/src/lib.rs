@@ -1514,24 +1514,7 @@ fn outline_of(path: &str) -> Result<(Outline, input::Demux)> {
     // file's own numbers below, because describing the sound needs them: see
     // [`audio::settled_shape`], which is told where the middle of the
     // recording is.
-    let (duration, start_time) = unsafe {
-        let p = ictx.as_ptr();
-        let tb = ff::ffi::AV_TIME_BASE as f64;
-        let d = (*p).duration;
-        let s = (*p).start_time;
-        (
-            if d == ff::ffi::AV_NOPTS_VALUE {
-                0.0
-            } else {
-                d as f64 / tb
-            },
-            if s == ff::ffi::AV_NOPTS_VALUE {
-                0.0
-            } else {
-                s as f64 / tb
-            },
-        )
-    };
+    let (duration, start_time) = (container_duration(&ictx), container_start(&ictx));
 
     let read_audio = |a: &ff::format::stream::Stream| {
         let p = a.parameters();
@@ -1990,6 +1973,43 @@ fn first_picture(ictx: &mut input::Demux, video: &VideoInfo, start_time: f64) ->
     // which is a keyframe list that reads five marks and shows four. See
     // [`scan_with`].
     head.map(|t| t.max(0.0))
+}
+
+/// How long the container says the recording is, in seconds; nought where
+/// it will not say.
+pub(crate) fn container_duration(ictx: &input::Demux) -> f64 {
+    let d = unsafe { (*ictx.as_ptr()).duration };
+    if d == ff::ffi::AV_NOPTS_VALUE {
+        0.0
+    } else {
+        d as f64 / ff::ffi::AV_TIME_BASE as f64
+    }
+}
+
+/// Where the container's clock starts, in seconds: what every time in the
+/// program is rebased by.
+///
+/// libav says it as its earliest stream's start rounded to the microsecond.
+/// Where that stream's own start is a picture's -- a Blu-ray's clips open on
+/// one -- the rounding put the first picture a fraction of a microsecond
+/// below zero: -4.4e-7 on a 90 kHz clock starting at 76505. The editor took a
+/// picture there for one outside the timeline, and one frame back from the
+/// first frame went forward a GOP. So the stream's own figure, where it is
+/// the one that was rounded.
+pub(crate) fn container_start(ictx: &input::Demux) -> f64 {
+    let s = unsafe { (*ictx.as_ptr()).start_time };
+    if s == ff::ffi::AV_NOPTS_VALUE {
+        return 0.0;
+    }
+    let rounded = s as f64 / ff::ffi::AV_TIME_BASE as f64;
+    ictx.streams()
+        .filter_map(|st| {
+            let at = st.start_time();
+            (at != ff::ffi::AV_NOPTS_VALUE).then(|| at as f64 * f64::from(st.time_base()))
+        })
+        .filter(|at| at.is_finite() && (at - rounded).abs() <= 0.5e-6)
+        .min_by(f64::total_cmp)
+        .unwrap_or(rounded)
 }
 
 /// One of libav's colour enums read as the int it is. The three colour fields

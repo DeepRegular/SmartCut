@@ -929,8 +929,11 @@ pub fn refine_leading(
         });
         if let Some(i) = hit {
             let found = point_at(&window, i, always_droppable);
-            slot.time = found.time;
-            slot.lead_start = found.lead_start;
+            // The same floor [`crate::scan_with`] gives the walk's points: a
+            // read that lands a fraction of a microsecond below zero is the
+            // first picture, not one before the file begins.
+            slot.time = found.time.max(0.0);
+            slot.lead_start = found.lead_start.max(0.0);
             slot.lead_indices = found.lead_indices;
             slot.droppable = found.droppable;
             // A container's seek table already gave a position; keep it
