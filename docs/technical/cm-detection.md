@@ -595,6 +595,66 @@ The survey paid for itself on the way: one recording's silence walk **panicked**
 frame claiming a ninth audio plane, which an `AVFrame` has no pointer for. That is
 fixed, and is not part of what was dropped.
 
+## Tried and dropped: trusting the silences where the logo stays up
+
+A report showed marks landing in the middle of commercial breaks on a BS Nittele
+anime slot, five episodes of one half-hour series. Thumbnails every ten
+seconds gave the truth: two breaks inside the programme, 150 s each, plus the
+usual ones at the head and tail. The detection found the head and the tail, but
+none of the ten inner breaks whole: five came out cut short or split in two, and
+five not at all.
+
+**The cause is the logo.** The channel fills those breaks with its own trailers
+and a teleshopping minute, and keeps its logo up over them because they are its
+own programming. The logo went only for the sponsors' spots. A recording with a
+logo takes its blocks from the logo's absences alone, so a break that is mostly
+trailers is a fragment or nothing, and a mark on a fragment's edge sits in the
+middle of the break.
+
+The silences said where the breaks were every time: a silence at each junction,
+on the 15-second grid, 1.0 to 1.9 s long. They were not used
+for two reasons. In logo mode silence chains are not consulted at all, and on
+their own these chains fail the fill (`min_fill`, 0.6): minute-long trailers put
+five junctions on eleven boundaries, 0.36 to 0.45.
+
+So three rules were added and measured:
+
+- a chain of four or more junctions whose silences are all 0.9 s or longer
+  stands as a break whatever its fill (a pause in dialogue is 0.1 to 0.4 s);
+- a chain that fails whole is retried with its ends trimmed, where the trimmed
+  stretch is all such silences (one episode's break had a programme pause
+  chained on 90 s ahead of it, which halved the fill and lost the break);
+- in logo mode, a chain that stands widens the logo block it meets, or is a
+  block where it meets none, except at either end of the recording.
+
+On the five episodes it worked: nine of the ten inner breaks came out right to
+the second, and the tenth lacked only its last spot.
+
+**On the wider set it did more harm than good.** 44 recordings of the 67 in
+the survey had been compared when it was stopped. Twenty changed, every change
+an addition, and every added stretch was checked against thumbnails. Nine were
+real commercials (trailer blocks on TBS Channel 2 and BS Nittele, a
+teleshopping tail). Sixteen were programme:
+
+- **closing titles, 90 s**, taken into the break after them, four times;
+- **opening titles**, taken into the break before or after, three times;
+- **a minute or more of the story itself**, next to a correct block, six times.
+- **shorter pieces**, a next-episode trailer and the like, three times.
+
+Anime openings and endings are timed by the station as exactly as a spot is,
+90 s to the frame, and the story's own scene changes put a second of silence on
+the grid more often than expected. Structurally the good widenings and the bad
+ones are the same thing: a correct block reaching one or two junctions outward
+across 60, 90 or 120 seconds. One episode's break correctly reached back across
+a two-minute teleshopping spot; another recording's reached back across a
+90-second opening. Silence length, spacing and the logo do not separate them.
+
+The rules were taken back out, and the behaviour is as it was. To solve this the
+detection needs a reading that tells programme from trailer rather than a better
+threshold. The promising one is still matching a recording against other
+episodes of the same series: the opening and ending recur every week in the
+same place, and the breaks' contents do not.
+
 ## Showing the silences themselves (`blank.rs` and `cm.rs`)
 
 The cut editor's `≡` menu has two detections beside this one: **Detect black**

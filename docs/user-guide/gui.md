@@ -129,7 +129,8 @@ Even an 81 GB title of 2 hours 34 is on the list in under a second.
 
 **The chapters the disc set are on the timeline from the start**, because on a
 Japanese recording the chapter marks are frequently the commercial breaks
-themselves.
+themselves. The ones in what is kept go out with the cut even when the cut
+editor was never opened on it.
 
 Cuts are written **beside the disc** unless the output settings say otherwise,
 because there is nowhere to write inside a disc.
@@ -1256,7 +1257,8 @@ on the way onto the disc.
 
 **The chapter points are the cuts.** One at the start of every kept range —
 which is where the commercial breaks were — plus any marks put down in the cut
-editor. On a disc that is the list a viewer actually uses, which is why the
+editor, and for a recording opened off a disc, the disc's own chapters in what
+is kept. On a disc that is the list a viewer actually uses, which is why the
 `.keyframe` sidecar is not offered here: the same list would be written twice,
 and a player only looks at one of the two.
 
