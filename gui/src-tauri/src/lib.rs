@@ -407,6 +407,12 @@ struct ClipInfo {
     /// the output's own clock starts from -- and broadcast recordings often
     /// open most of a second in.
     first_point: f64,
+    /// Where the container's clock begins, for the one time the list holds
+    /// that is not already rebased to it: a disc's chapter points, which a
+    /// row carries on the stream's own clock until the editor puts them down
+    /// as marks. A row nobody opens the editor on still has to hand them to
+    /// its output. See [`SourceInfo::start_time`] and `marksOf` in `app.js`.
+    start_time: f64,
     /// The pictures, where this read produced them. Present only on the
     /// one-read path -- a recording on a share, where reading it twice would
     /// be transferring it twice -- and `None` where the list is to ask for
@@ -2964,6 +2970,7 @@ fn clip_info_of(path: &str, src: &Source, cached: bool, seconds: f64) -> ClipInf
         unusable_points: src.points.iter().filter(|p| p.open_gop() && !p.droppable).count(),
         // Where the material actually begins; nothing before it decodes.
         first_point: src.points.first().map_or(0.0, |p| p.time),
+        start_time: src.start_time,
         pictures: None,
         cached,
         seconds,

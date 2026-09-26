@@ -2391,8 +2391,25 @@ fn main() -> Result<()> {
         let mut marks = Vec::new();
         for plan in &plans {
             marks.push(at_out);
+            // And the chapters of the disc it came off, where they are still
+            // in what is kept. A disc read and written straight back used to
+            // come out with one chapter where it had gone in with a dozen.
+            // Off the stream's clock the way the editor takes them off it
+            // (`applyDiscChapters`), a mark just ahead of the first picture
+            // moved onto it.
+            let first = plans.first().map_or(0.0, |p| p.t_in);
+            for m in was.map_or(&[][..], |e| &e.marks[..]) {
+                let s = was.map_or(0.0, |e| e.start) + m - src.start_time;
+                let s = if s < first && s >= first - 0.5 { first } else { s };
+                if s >= plan.t_in && s < plan.t_out {
+                    marks.push(at_out + (s - plan.t_in));
+                }
+            }
             at_out += plan.t_out - plan.t_in;
         }
+        // A chapter on a range boundary is one chapter, not two.
+        marks.sort_by(f64::total_cmp);
+        marks.dedup_by(|b, a| *b - *a <= 0.5);
         // What to call the disc, when nobody said: the series this
         // recording is an episode of, which is what a run of them written
         // one after another onto the same disc has in common. The channel

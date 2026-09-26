@@ -2157,8 +2157,8 @@ function paintRow(clip) {
   // How many, and no longer what they leave: the line above is the length of
   // what they leave.
   if (cutCount && i) bits.push(t("row.cuts", { n: cutCount }));
-  if (clip.edit && clip.edit.keyframes.length) {
-    bits.push(t("row.keyframes", { n: clip.edit.keyframes.length }));
+  if (marksOf(clip).length) {
+    bits.push(t("row.keyframes", { n: marksOf(clip).length }));
   }
   setLine(li.querySelector(".cm"), bits.join(t("sep")));
 
@@ -4994,6 +4994,29 @@ function madeParse(text) {
   return `${pad(y, 4)}-${pad(mo)}-${pad(d)} ${pad(h)}:${pad(mi)}:${pad(se)}`;
 }
 
+/// The marks a recording has, on the timeline the editor draws.
+///
+/// The editor's, once it has been open on the row. Before that, a recording
+/// off a disc still has the disc's own chapter points: the editor puts them
+/// down as marks on a first visit, and a row written out without one had
+/// nothing at all -- a disc read in and written straight back out lost every
+/// chapter it had, and a file lost its `.keyframe`. So they are put down here
+/// the way `applyDiscChapters` puts them down there: off the stream's clock
+/// by the container's start, dropped where they fall outside the material,
+/// and those just ahead of the first picture moved onto it.
+function marksOf(clip) {
+  if (clip.edit) return clip.edit.keyframes;
+  const i = clip.info;
+  if (!i || !Number.isFinite(i.start_time) || !clip.chapters || !clip.chapters.length) return [];
+  const first = i.first_point || 0;
+  const out = clip.chapters
+    .map((t) => t - i.start_time)
+    .filter((t) => t >= first - 0.5 && t <= i.duration + 1e-6)
+    .map((t) => Math.max(t, first));
+  out.sort((a, b) => a - b);
+  return out;
+}
+
 /// Where the chapter points of a recording written onto a disc go.
 ///
 /// Every kept range begins one. That is where the cuts are, and skipping to
@@ -5004,7 +5027,7 @@ function madeParse(text) {
 function chaptersFor(clip) {
   const keeps = keepsOf(clip);
   const out = keeps.map((k) => k.at);
-  for (const at of clip.edit ? clip.edit.keyframes : []) {
+  for (const at of marksOf(clip)) {
     const mapped = srcToOut(keeps, at);
     if (mapped !== null) out.push(mapped);
   }
@@ -6171,8 +6194,7 @@ function renderOutset() {
     side:
       settings.keyframes
       && !(joining() && ready().length > 1)
-      && clip.edit
-      && clip.edit.keyframes.length
+      && marksOf(clip).length
         ? t("outset.sidecar", {
             path: `${outputPath(clip).replace(/\.[^./\\]*$/, "")}.keyframe`,
           })
@@ -7442,7 +7464,7 @@ async function startExport() {
       if (settings.keyframes && !disc) {
         // Numbered against the file being written, not the recording.
         const keeps = keepsOf(clip);
-        const frames = (clip.edit ? clip.edit.keyframes : [])
+        const frames = marksOf(clip)
           .map((t) => srcToOut(keeps, t))
           .filter((o) => o !== null)
           .map((o) => Math.round(o * clip.info.fps));
