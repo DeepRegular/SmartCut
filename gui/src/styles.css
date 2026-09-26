@@ -425,10 +425,10 @@ main { flex: 1; min-height: 0; display: flex; gap: 0; }
 
    The band's own colour, on the outline rather than the fill: a card is a
    picture with a caption, and a filled tag beside it reads as a button. */
-#keyframes .from { display: flex; gap: 3px; margin-top: 2px; }
+#keyframes .from { display: flex; gap: 3px; margin-top: 2px; flex-wrap: wrap; }
 #keyframes .from span {
   font-size: 9.5px; line-height: 1.5; padding: 0 3px; border-radius: 2px;
-  border: 1px solid currentColor; opacity: 0.85;
+  border: 1px solid currentColor; opacity: 0.85; white-space: nowrap;
 }
 #keyframes .from .black { color: #8fa3c4; }
 #keyframes .from .white { color: #e8e8e8; }
@@ -610,6 +610,32 @@ body.crosswin { padding: 0; }
 .ovl-main { display: flex; gap: 26px; font-size: 21px; font-variant-numeric: tabular-nums; }
 .ovl-sub { display: flex; gap: 18px; font-size: 11px; color: #cfcfcf; justify-content: center; }
 #ovl-kind.key { color: #7ee787; font-weight: 600; }
+
+/* The marks on the picture's top corners. See `paintMarks`. Each on a dark
+   box the picture shows through: the box is what keeps a mark readable over
+   a white frame, and letting the picture through it keeps the logo and the
+   time a broadcast puts in its corners in view. */
+.marks { position: absolute; pointer-events: none; z-index: 2; }
+.marks[hidden] { display: none; }
+.marks-l, .marks-r {
+  position: absolute; top: 8px; display: flex; gap: 4px; align-items: center;
+}
+.marks-l { left: 8px; }
+.marks-r { right: 8px; }
+.marks span {
+  background: rgba(0,0,0,.35); padding: 1px 6px; border-radius: 2px;
+  font-size: 15px; line-height: 1.4; white-space: nowrap;
+  text-shadow: 0 0 2px #000;
+}
+.marks span:empty { display: none; }
+.marks .sel { color: #ffd166; font-weight: 700; }
+.marks .key { color: #7ee787; }
+/* A stretch the frame is inside of, and the brace where it begins or ends,
+   in the colours the bands under the timeline and the cards use. */
+.marks .black, .marks .white, .marks .quiet { font-size: 12px; border: 1px solid currentColor; }
+.marks .black { color: #8fa3c4; }
+.marks .white { color: #e8e8e8; }
+.marks .quiet { color: #6fbf9b; }
 
 /* The subtitle layer, laid over the picture rather than over the stage: the
    stage is black where a 16:9 picture does not reach the edges, and a

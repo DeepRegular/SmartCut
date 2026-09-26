@@ -49,6 +49,9 @@ let sideBase = null;
 let playhead = 0; // source time, always on material that still exists
 let selA = 0; // selection, in output time
 let selB = 0;
+/// Whether the marks in the picture's corners are drawn. Read at open, and
+/// told again by the list window when 環境設定 changes it. See `paintMarks`.
+let marksOn = prefs.get("pictureMarks") !== false;
 let dragging = null;
 /// Where IN and OUT stood when a tab was taken hold of. See the `mouseup`
 /// handler under the scrubber.
@@ -769,19 +772,44 @@ const sameCards = (live) =>
 /// `null` where no detection is standing on it, which is most marks. See the
 /// note in `renderKeyframes`: a card carries no such thing in it, so this is
 /// read off the stretches that are on screen.
+///
+/// Each kind is followed by which end of its stretch the mark stands on --
+/// `{` the start and `}` the end -- because a list of a dozen marks off one
+/// detection is otherwise a dozen cards saying 黒 with nothing to tell the
+/// head of a fade from its foot. Both, on a stretch one picture long.
 function cardTags(t) {
-  const from = flatKindsAt(t);
+  const from = flatAt(t).filter((f) => f.open || f.close);
   if (!from.length) return null;
   const tags = document.createElement("div");
   tags.className = "from";
-  for (const kind of from) {
+  for (const { kind, open, close } of from) {
+    // One box, the kind and which end of it: `黒{` rather than `黒` and `{`
+    // side by side, which the narrow column wrapped between.
     const tag = document.createElement("span");
     tag.className = kind;
-    tag.textContent = tr(`editor.keyframes.from.${kind}`);
-    tag.title = tr(`editor.keyframes.fromTitle.${kind}`);
+    tag.textContent = flatTag(kind, open, close);
+    tag.title = tr(
+      open && close
+        ? `editor.keyframes.edgeBoth.${kind}`
+        : open
+          ? `editor.keyframes.edgeOpen.${kind}`
+          : `editor.keyframes.edgeClose.${kind}`
+    );
     tags.append(tag);
   }
   return tags;
+}
+
+/// A detection's tag, with which end of its stretch this is: `黒{` where the
+/// stretch begins and `}黒` where it ends, the brace on the side the stretch
+/// lies -- read along the timeline, the two ends of one stretch enclose it.
+/// A stretch one picture long is the whole of it at once, `{黒}`.
+function flatTag(kind, open, close) {
+  const name = tr(`editor.keyframes.from.${kind}`);
+  if (open && close) return `{${name}}`;
+  if (open) return `${name}{`;
+  if (close) return `}${name}`;
+  return name;
 }
 
 /// Everything about a card that a render can change while the card itself
@@ -820,6 +848,8 @@ function renderKeyframes(scroll = true) {
   // Runs whenever the marks change, and on a bare selection change too --
   // which `sync` coalesces away.
   sync();
+  // A mark put down or taken off the frame on screen changes its corner.
+  paintMarks();
   const list = el("keyframes");
   const live = liveKeyframes();
   // A cut can take a chosen card away with it, and what is left of the run
@@ -1133,19 +1163,38 @@ function applyFlatRuns(kinds, runs, marks = true) {
 const flatEnd = (r) =>
   prefs.get("flatMarkAt") === "last" && r.last ? r.last : r.end;
 
-/// Which detections have an end standing on this instant, in the order the
-/// lanes are drawn in.
+/// What each detection says about the frame at `t`: whether one of its
+/// stretches begins here (`open`), ends here (`close`, at the end the marks
+/// are put on -- see `flatEnd`), or runs through here (`inside`). Only the
+/// kinds that say something, in the order the lanes are drawn in.
 ///
-/// Both, where both do: a junction is frequently a fade to black *and* a
-/// silence, and the two passes finding the same instant is the strongest
-/// thing either of them says about it. Compared to half a frame, as
-/// everything that asks "is the mark on this picture" is.
-function flatKindsAt(t) {
+/// Every kind that does, where more than one does: a junction is frequently
+/// a fade to black *and* a silence, and the two passes finding the same
+/// instant is the strongest thing either of them says about it. Compared to
+/// half a frame, as everything that asks "is the mark on this picture" is.
+///
+/// Read off the stretches themselves and not off the marks: a detection
+/// whose marks were turned off in 環境設定, or one end of which was deleted
+/// from the list, still found the stretch, and the picture says so.
+function flatAt(t) {
   const half = frame() / 2;
-  const on = (r) => Math.abs(r.start - t) < half || Math.abs(flatEnd(r) - t) < half;
-  return ["black", "white", "quiet"].filter((kind) =>
-    flatRuns.some((r) => r.kind === kind && on(r))
-  );
+  const at = onFrame(t);
+  const out = [];
+  for (const kind of ["black", "white", "quiet"]) {
+    let open = false;
+    let close = false;
+    let inside = false;
+    for (const r of flatRuns) {
+      if (r.kind !== kind) continue;
+      const a = onFrame(r.start);
+      const b = onFrame(flatEnd(r));
+      if (Math.abs(a - at) < half) open = true;
+      if (Math.abs(b - at) < half) close = true;
+      if (at > a - half && at < onFrame(r.end) - half) inside = true;
+    }
+    if (open || close || inside) out.push({ kind, open, close, inside });
+  }
+  return out;
 }
 
 /// Every end of every stretch of these kinds that is still in the recording,
@@ -1863,7 +1912,12 @@ function drawSubs() {
 // has not arrived yet has no size: the first frame of a recording, and any
 // frame whose shape differs from the one before it, are placed when the
 // browser has the image rather than when it was asked for.
-el("preview").addEventListener("load", () => drawSubs());
+el("preview").addEventListener("load", () => {
+  drawSubs();
+  // The first picture of a recording, or one of another shape, moves the
+  // corners the marks stand in.
+  paintMarks();
+});
 
 const subsPicker = el("subs-track");
 if (subsPicker) {
@@ -1904,12 +1958,68 @@ function updateReadouts() {
         a: frameNo(selA),
         // At the end OUT is snapped to the length, which is where the last
         // frame ends rather than a frame: the last one is one before it.
-        b: frameNo(selB >= outDur - 1e-9 ? Math.max(0, Math.min(outDur - frame(), lastOut())) : selB),
+        b: frameNo(selLast()),
         len: fmt(selEnd() - selA),
       })
     : tr("editor.selectionTime", { a: fmt(selA), b: fmt(selB), len: fmt(selEnd() - selA) });
   el("selection").textContent = sel;
   el("ovl-sel").textContent = sel;
+  paintMarks();
+}
+
+/// The picture OUT stands on. At the end OUT is snapped to the length, which
+/// is where the last frame ends rather than a frame: the last one is one
+/// before it.
+const selLast = () =>
+  selB >= outDur - 1e-9 ? Math.max(0, Math.min(outDur - frame(), lastOut())) : selB;
+
+// --- the marks on the picture ---------------------------------------------
+//
+// Whether the frame on screen is where the selection begins or ends, whether
+// a keyframe stands on it, and what the black, white and quiet detections
+// say about it -- on the picture's top corners, the way the reference tools
+// show them. Stepping a frame at a time towards IN, or along a fade, the
+// answer is in the one place the eye already is, rather than in a counter
+// at the foot of the window and a card somewhere down the column.
+//
+// On or off in 環境設定, apart from the counter: the counter is turned off to
+// see the foot of the picture, and these are up in its corners.
+
+/// Is the frame on screen this output instant? Compared by picture, as the
+/// counter counts them.
+const onPicture = (o, at) => frameNo(o) === frameNo(at);
+
+function paintMarks() {
+  const layer = el("marks-layer");
+  if (!layer) return;
+  const box = pictureBox();
+  if (!src || !box || !marksOn) {
+    layer.hidden = true;
+    return;
+  }
+  const o = playOut();
+  const half = frame() / 2;
+  const left = [];
+  const right = [];
+  const put = (list, cls, text) => {
+    const s = document.createElement("span");
+    s.className = cls;
+    s.textContent = text;
+    list.push(s);
+  };
+  if (onPicture(o, selA)) put(left, "sel", "[");
+  if (liveKeyframes().some((k) => Math.abs(srcToOut(k) - o) < half)) put(left, "key", "⚑");
+  for (const { kind, open, close } of flatAt(playhead)) {
+    put(left, kind, flatTag(kind, open, close));
+  }
+  if (onPicture(o, selLast())) put(right, "sel", "]");
+  el("marks-l").replaceChildren(...left);
+  el("marks-r").replaceChildren(...right);
+  layer.style.left = `${box.left}px`;
+  layer.style.top = `${box.top}px`;
+  layer.style.width = `${box.width}px`;
+  layer.style.height = `${box.height}px`;
+  layer.hidden = !left.length && !right.length;
 }
 
 // --- the readouts on the picture ------------------------------------------
@@ -6591,6 +6701,7 @@ window.addEventListener("resize", relayout);
 function relayout() {
   draw();
   drawSubs();
+  paintMarks();
   // The meter is a canvas sized to its box, so a window that changed shape
   // is a meter drawn at the wrong size until it is drawn again.
   paintMeter();
@@ -6889,6 +7000,10 @@ if (listen) {
     const said = ev.payload || {};
     if (typeof said.counter === "boolean") showCounter(said.counter, false);
     if (typeof said.meter === "boolean") showMeter(said.meter);
+    if (typeof said.pictureMarks === "boolean") {
+      marksOn = said.pictureMarks;
+      paintMarks();
+    }
     // The store is shared -- this window reads the shades for itself at the
     // press that needs them -- so what arrives here is only the news that the
     // line in the menu is naming the wrong pass.

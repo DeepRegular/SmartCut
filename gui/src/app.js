@@ -10329,6 +10329,7 @@ function paintPrefs() {
   el("pref-lang").value = preference();
   el("pref-counter").checked = !!prefs.get("counter");
   el("pref-meter").checked = prefs.get("meter") !== false;
+  el("pref-marks").checked = prefs.get("pictureMarks") !== false;
   el("pref-subs").checked = !!prefs.get("subsOn");
   for (const [id, name] of PAGE_STEPS.concat(RUN_LENGTHS)) {
     el(id).value = String(prefs.get(name));
@@ -10452,6 +10453,7 @@ function tellEditorPrefs() {
     emit("prefs-changed", {
       counter: !!prefs.get("counter"),
       meter: prefs.get("meter") !== false,
+      pictureMarks: prefs.get("pictureMarks") !== false,
       subsOn: !!prefs.get("subsOn"),
       // Not for the editor to store -- both windows read the one store -- but
       // to tell it that the line in its menu is now naming the wrong pass.
@@ -10469,6 +10471,10 @@ el("pref-counter").addEventListener("change", (ev) => {
 });
 el("pref-meter").addEventListener("change", (ev) => {
   prefs.set("meter", ev.target.checked);
+  tellEditorPrefs();
+});
+el("pref-marks").addEventListener("change", (ev) => {
+  prefs.set("pictureMarks", ev.target.checked);
   tellEditorPrefs();
 });
 el("pref-subs").addEventListener("change", (ev) => {

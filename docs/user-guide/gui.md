@@ -431,13 +431,32 @@ frames, and `Snap to lossless` can take those to zero once it lights up.
 | Top line | The filename |
 | Info bar | Lossless points, resolution, fps, scan type, audio, codec. **Tracks** and **Detect commercials** on the right; the blank and silence passes are in the `≡` menu at the bottom right |
 | Left column | The **keyframes** — your marks, each with a thumbnail. Click one to jump there; the column stays where it is scrolled to. A mark a detection put down carries `Black`, `White` or `Quiet` under its time |
-| The large picture | The preview. At its foot, in the middle: frame number, timecode, what kind of frame it is, and the current selection. **Counter**, on the bottom line, turns them off |
+| The large picture | The preview. At its foot, in the middle: frame number, timecode, what kind of frame it is, and the current selection. **Counter**, on the bottom line, turns them off. In its top corners, the marks the frame on screen carries (below) |
 | Beside it, on the left | The **audio level meter**: what is being heard while something plays, and the sound under the playhead while nothing does. **Preferences → Windows** turns it off |
 | The band under it | The **filmstrip**: the frames around you, laid out as pictures. The `Window` menu on the right sets how much of the recording the band shows. `Auto`, the default, sizes it from the recording's keyframe spacing so that one GOP is about one picture wide (between 2 and 60 s); a cell is as wide as the stretch it covers. The line down the middle is where you are — except at `Frame by frame`, where a cell is one frame and the frame on screen is boxed in blue instead |
 | The scrubber | **Green is the output itself.** `▼` are keyframes, a dull red line inside the green is a join left by a cut, the fine ticks below are scene changes, and the two rows under those are the blank and the silent stretches. **The playhead is the `◎` and a bright red line running the whole height of the track** — the `◎` sits inside the green and the line is what lines it up against everything drawn above and below it |
 | The button row | **Cut** in the middle, `[ IN` to its left and `OUT ]` to its right, and outwards from there: go to, one frame, lossless point, start and end |
 | The band and lines below | **The export plan**: what will be copied and what will be rebuilt |
 | The bottom line | On the left, what the cut costs, and beside it **Counter** and **Subtitles** — what the preview carries. **OK** and **Cancel** on the right |
+
+The marks in the picture's top corners are there only on a frame they apply to:
+
+| Mark | Where | On |
+|---|---|---|
+| `[` | Top left | The first frame of the selection (IN) |
+| `]` | Top right | The last frame of the selection (OUT) |
+| `⚑` | Top left | A frame with a keyframe on it |
+| `Black` `White` `Quiet` | Top left | A frame inside a stretch a detection found |
+| `Black{`, `}Black` and so on | Top left | The frame a stretch begins on reads `Black{` and the one it ends on `}Black`, the brace on the side the stretch lies. A stretch one frame long is `{Black}` |
+
+The tags come from the stretches themselves, whether or not their ends were
+made into keyframes. Where a stretch ends is what **A blank stretch ends on**
+in Preferences says.
+
+The box behind each mark is see-through, so the picture under it — a station
+logo, a clock in the corner — still shows. Preferences turns them off with **Mark the
+selection's ends, keyframes and blank or quiet stretches over the picture in the
+cut editor**, on out of the box and apart from **Counter**.
 
 > **What a "lossless point" is.** Video is built of **key frames**, which are
 > whole pictures on their own, and frames that hold only the difference from
@@ -638,9 +657,11 @@ What either pass found is saved with the [project](projects.md). Open one
 again and the bands are back without the recording being read a second time.
 
 The marks it does put down are told apart in the keyframe column: under the
-time on the card, a small `Black`, `White` or `Quiet`. A mark carries one only
-where it stands on the end of a stretch, and two where it stands on the end of
-both — a junction is frequently a fade to black and a silence at once.
+time on the card, a small `Black`, `White` or `Quiet`, with a brace on the side
+the stretch lies — `Black{` where it begins, `}Black` where it ends. A mark
+carries one only where it stands on the end of a stretch, and two where it
+stands on the end of both — a junction is frequently a fade to black and a
+silence at once. Deleting the mark at one end leaves the other's tag as it was.
 
 A black stretch at a junction is often only two to four pictures long, which is
 why every picture is decoded to find them. **Out of the box neither pass
@@ -1370,6 +1391,7 @@ effect as you make it.
 |---|---|
 | **Language** | English, Japanese, or follow the system (the default). A change takes effect in both windows at once |
 | **Draw the frame number and clock over the picture in the cut editor** | The box at the foot of the cut editor's picture. The same answer as its **Counter** button |
+| **Mark the selection's ends, keyframes and blank or quiet stretches over the picture in the cut editor** | The marks in the top corners of the cut editor's picture. On out of the box |
 | **Show the audio level meter in the cut editor** | The meter to the left of the cut editor's picture. This is the only place it is switched on and off |
 | **Show the subtitles in the cut editor from the start** | Opens a recording that carries subtitles with the first track already chosen. It can still be switched while cutting |
 

@@ -138,6 +138,14 @@ const DEFAULTS = {
   /// picture, the meter is not something to turn on for the frame in front
   /// of you -- it is on or off for every recording.
   meter: true,
+  /// Whether the cut editor marks the frame on screen in the picture's top
+  /// corners: the ends of the selection, a keyframe standing on it, and the
+  /// black, white and quiet stretches it is in or at the end of.
+  ///
+  /// On, and its own answer rather than the counter's: the counter is turned
+  /// off to see the foot of the picture, where a subtitle is, and the marks
+  /// are up in the corners out of its way.
+  pictureMarks: true,
   /// How far 拡大表示 magnifies, in screen pixels per source pixel.
   ///
   /// Not on the 環境設定 screen: it is the one question that window exists to

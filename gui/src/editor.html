@@ -72,6 +72,17 @@
               <span id="ovl-sel" data-i18n="editor.selectionNone">選択 —</span>
             </div>
           </div>
+          <!-- What the frame on screen is to the edit, on the picture's two
+               top corners, where the reference tools put it: the head of the
+               selection and the keyframes on the left, the end of the
+               selection on the right, and whether a black, white or quiet
+               stretch begins, ends or runs through here beside the mark.
+               Laid on the picture rather than the stage for the reason the
+               subtitle layer gives; `paintMarks` puts it there. -->
+          <div id="marks-layer" class="marks" hidden>
+            <div class="marks-l" id="marks-l"></div>
+            <div class="marks-r" id="marks-r"></div>
+          </div>
           <!-- The subtitles, over the picture and inside it: the layer is
                moved to wherever `object-fit: contain` actually put the
                picture, so a caption sits where the broadcaster put it
