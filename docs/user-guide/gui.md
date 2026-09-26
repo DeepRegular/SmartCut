@@ -311,10 +311,11 @@ Progress appears on the row: `Detecting commercials 84% — Looking for the logo
 Rows whose turn has not come say `Commercial detection queued`, and rows still
 waiting to be read say `Commercial detection after the read`.
 
-**A booking can be taken back** with **Cancel commercial detection** on the
-right-click menu, for every selected row at once; **Cancel blank detection**
-and **Cancel silence detection** do the same for the other two. A row that had been detected
-before goes back to that answer. A pass that has already started is not a
+**A booking can be taken back** from the right-click menu, for every selected
+row at once: **Cancel commercial detection**, **Cancel black detection** and
+**Cancel silence detection**. The middle one is named for what the blank pass
+looks for, as **Detect black** is. A row that had been detected before goes
+back to what that detection found. A pass that has already started is not a
 booking any more; **Stop analysis** is what stops it.
 
 **What a detection has to say is a badge beside the row's state.** Dashed
@@ -323,7 +324,9 @@ booking any more; **Stop analysis** is what stops it.
 one is something the list is scanned for rather than read for.
 
 There is one badge per detection: `Blank booked`, `Detecting blank`, `Blank 6`
-and `No blank` for the pictures, and the same four for the sound. A recording
+and `No blank` for the pictures, and the same four for the sound. The picture
+badges are named after what is being looked for: with the default, black only,
+they read `Black booked`, `Detecting black`, `Black 6` and `No black`. A recording
 that has never been through one of them carries no badge for it at all —
 `No blank` means the pass was made and found nothing, and no badge means it was
 never made.

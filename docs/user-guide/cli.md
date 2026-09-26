@@ -51,9 +51,9 @@ smartcut input.ts --cut 8.0-20.0 --bdav ~/disc  # onto a disc instead of a file
 
 | Option | Meaning |
 |---|---|
-| `-o OUTPUT` (or `--output`) | Output path. **The extension picks the container**. It has to be a file on this machine, and not the recording being read (or a link to it): either is refused before anything is written |
+| `-o OUTPUT` (or `--output`) | Output path. **The extension picks the container**. It has to be a file on this machine, and not the recording being read (or a link to it): either is refused before anything is written. An extension that holds sound alone (`.aac`, `.ac3`, `.mp2`, `.mp3`, `.dts`, `.wav`) is accepted only with `--sound-only` |
 | `--drop-stream INDEX` | Leave one of the recording's streams out of the output. Repeatable. The same thing the cut editor's **Tracks** menu does. The index is a sound, caption or subtitle stream's; one the recording does not have, or the pictures', is an error. A broadcast's sound track with nothing in the ranges kept (a second track the programme before this one had, say) is left out without being asked, and the run says so |
-| `--title N` | Which recording on a disc (a folder or an `.iso`) to open. Part of the programme's name works in place of the number. **Left out, it lists what is on the disc and stops** |
+| `--title N` | Which recording on a disc (a folder or an `.iso`) to open. Part of the programme's name works in place of the number. **Left out, it lists what is on the disc and stops.** If the run also asked for something that needs a recording open (a cut, an output, `--analyze` and the like), the list is followed by an error |
 
 ## Joining several recordings
 

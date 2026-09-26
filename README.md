@@ -145,11 +145,11 @@ install.
 
 | Platform | File | Notes |
 |---|---|---|
-| **Linux** | `SmartCut_0.8.9_amd64.AppImage` | Make it executable and run it |
-| **Linux** | `SmartCut-0.8.9-linux-x86_64.tar.gz` | Unpack and run `./smartcut`. Use this if you would rather not deal with FUSE |
-| **Linux (Debian/Ubuntu)** | `smartcut_0.8.9_amd64.deb` | `sudo apt install ./smartcut_0.8.9_amd64.deb`. Only 4.8 MB, because it uses the FFmpeg already on your system |
-| **Windows** | `SmartCut_0.8.9_x64-setup.exe` | Installer. The command-line tool, `smartcut-cli.exe`, goes into the same folder |
-| **Windows** | `smartcut-portable-x64-0.8.9.zip` | Unzip and run `smartcut.exe`. The command-line tool is `smartcut-cli.exe` |
+| **Linux** | `SmartCut_0.8.10_amd64.AppImage` | Make it executable and run it |
+| **Linux** | `SmartCut-0.8.10-linux-x86_64.tar.gz` | Unpack and run `./smartcut`. Use this if you would rather not deal with FUSE |
+| **Linux (Debian/Ubuntu)** | `smartcut_0.8.10_amd64.deb` | `sudo apt install ./smartcut_0.8.10_amd64.deb`. Only 4.8 MB, because it uses the FFmpeg already on your system |
+| **Windows** | `SmartCut_0.8.10_x64-setup.exe` | Installer. The command-line tool, `smartcut-cli.exe`, goes into the same folder |
+| **Windows** | `smartcut-portable-x64-0.8.10.zip` | Unzip and run `smartcut.exe`. The command-line tool is `smartcut-cli.exe` |
 
 **Requirements.** The AppImage and the tar.gz need glibc 2.39 or newer, which
 means Ubuntu 24.04, Debian 13, Fedora 40 or later. The `.deb` needs FFmpeg 7.1,
@@ -533,13 +533,14 @@ the switch is at the top of each one.
 | | |
 |---|---|
 | **User guide**<br>How to use it | [Using the GUI](docs/user-guide/gui.md) ・ [Commercial detection](docs/user-guide/cm-detection.md) ・ [Working through a batch](docs/user-guide/batch.md) ・ [Projects](docs/user-guide/projects.md) ・ [Using the command line](docs/user-guide/cli.md) |
-| **Technical**<br>What it does inside | [Algorithm](docs/technical/algorithm.md) ・ [Validation](docs/technical/validation.md) ・ [Audio](docs/technical/audio.md) ・ [Broadcast TS](docs/technical/broadcast-ts.md) ・ [Commercial detection internals](docs/technical/cm-detection.md) ・ [Reading a disc](docs/technical/disc.md) ・ [Writing a disc](docs/technical/bdav.md) ・ [Rust core](docs/technical/rust-core.md) ・ [Design notes](docs/technical/design.md) ・ [Building](docs/technical/building.md) ・ [Distribution](docs/technical/distribution.md) |
+| **Technical**<br>What it does inside | [Algorithm](docs/technical/algorithm.md) ・ [Validation](docs/technical/validation.md) ・ [Audio](docs/technical/audio.md) ・ [Broadcast TS](docs/technical/broadcast-ts.md) ・ [Commercial detection internals](docs/technical/cm-detection.md) ・ [Reading a disc](docs/technical/disc.md) ・ [Writing a disc](docs/technical/bdav.md) ・ [Fitting a disc](docs/technical/transrate.md) ・ [Rust core](docs/technical/rust-core.md) ・ [Design notes](docs/technical/design.md) ・ [Building](docs/technical/building.md) ・ [Distribution](docs/technical/distribution.md) |
 
 ## License
 
 [GPL-3.0](LICENSE).
 
 x264 and x265 are GPL, and linking against them makes the whole application GPL.
-Re-encoding can also be switched to a hardware encoder (NVENC, QSV,
-VideoToolbox, AMF). If you intend to distribute commercially, patent licensing
-for H.264 and HEVC needs separate consideration.
+A hardware encoder (NVENC, QSV, VideoToolbox, AMF) is used only for making
+proxies. The seams are always re-encoded in software, because they have to be
+written to the recording's own parameter sets. If you intend to distribute
+commercially, patent licensing for H.264 and HEVC needs separate consideration.

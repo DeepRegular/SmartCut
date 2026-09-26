@@ -137,11 +137,11 @@ deb 以外はすべて FFmpeg を同梱しているので、ほかに用意す�
 
 | プラットフォーム | ファイル | 備考 |
 |---|---|---|
-| **Linux** | `SmartCut_0.8.9_amd64.AppImage` | 実行権限を付けて起動します |
-| **Linux** | `SmartCut-0.8.9-linux-x86_64.tar.gz` | 展開して `./smartcut` を実行します。FUSE を使いたくない場合はこちらです |
-| **Linux (Debian/Ubuntu)** | `smartcut_0.8.9_amd64.deb` | `sudo apt install ./smartcut_0.8.9_amd64.deb`。システムに入っている FFmpeg を使うので 4.8 MB で済みます |
-| **Windows** | `SmartCut_0.8.9_x64-setup.exe` | インストーラ。コマンドライン版の `smartcut-cli.exe` も同じフォルダーに入ります |
-| **Windows** | `smartcut-portable-x64-0.8.9.zip` | 展開して `smartcut.exe` を実行します。コマンドライン版は `smartcut-cli.exe` です |
+| **Linux** | `SmartCut_0.8.10_amd64.AppImage` | 実行権限を付けて起動します |
+| **Linux** | `SmartCut-0.8.10-linux-x86_64.tar.gz` | 展開して `./smartcut` を実行します。FUSE を使いたくない場合はこちらです |
+| **Linux (Debian/Ubuntu)** | `smartcut_0.8.10_amd64.deb` | `sudo apt install ./smartcut_0.8.10_amd64.deb`。システムに入っている FFmpeg を使うので 4.8 MB で済みます |
+| **Windows** | `SmartCut_0.8.10_x64-setup.exe` | インストーラ。コマンドライン版の `smartcut-cli.exe` も同じフォルダーに入ります |
+| **Windows** | `smartcut-portable-x64-0.8.10.zip` | 展開して `smartcut.exe` を実行します。コマンドライン版は `smartcut-cli.exe` です |
 
 **動作条件。** AppImage と tar.gz には glibc 2.39 以降が必要です（Ubuntu 24.04、
 Debian 13、Fedora 40 以降）。deb は FFmpeg 7.1 を使うので、Debian 13 または
@@ -511,6 +511,7 @@ Python 実装を今も残しているのは、この照合のためです。
 [GPL-3.0](LICENSE)。
 
 x264 と x265 が GPL なので、リンクするとアプリケーション全体が GPL になります。
-再エンコードはハードウェアエンコーダ（NVENC / QSV / VideoToolbox / AMF）に
-切り替えることもできます。商用配布を考える場合は、H.264 / HEVC の特許ライセンス
-を別途検討してください。
+ハードウェアエンコーダ（NVENC / QSV / VideoToolbox / AMF）を使うのは、
+プロキシの作成だけです。継ぎ目は元の録画と同じパラメータセットで書くので、
+再エンコードには常にソフトウェアエンコーダを使います。
+商用配布を考える場合は、H.264 / HEVC の特許ライセンスを別途検討してください。

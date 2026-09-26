@@ -41,6 +41,10 @@ encoders are the side that was chosen.
 - The way around that is a **hardware encoder** — NVENC, QSV, VideoToolbox, AMF. Only
   partial GOPs get re-encoded, so the quality compromise is small and the licence
   situation is clean. The prototype can switch between them with `--video-encoder`.
+- **SmartCut itself does not do that for the seams.** A seam has to be written to
+  the recording's own parameter sets, which a hardware encoder gives no control over,
+  so the seams are always re-encoded in software. Hardware encoders are used only for
+  proxies (see [How the encoder is chosen](#how-the-encoder-is-chosen)).
 - The **patent licences** for H.264 and HEVC (MPEG LA, Access Advance) need separate
   consideration for commercial distribution.
 
