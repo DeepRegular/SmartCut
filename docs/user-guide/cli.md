@@ -191,7 +191,7 @@ refused rather than quietly ignored.
 
 | Option | Meaning |
 |---|---|
-| `--subtitles pgs\|beside\|sup` | Where the subtitles a disc draws go. `pgs`, the default, puts them **inside the cut** as the kind a transport stream carries — a Blu-ray's own untouched, a DVD's converted to it. `beside` writes them **next to the cut** as the `.idx` and `.sub` pair every player and subtitle tool reads — a DVD's own untouched, a Blu-ray's read back out of its display sets. `sup` writes those display sets themselves, into a **`.sup` next to the cut** — a Blu-ray's subtitles byte for byte, and what BDSup2Sub and Subtitle Edit read |
+| `--subtitles pgs\|beside\|sup` | Where the subtitles a disc draws go. `pgs`, the default, puts them **inside the cut** as the kind a transport stream carries — a Blu-ray's own untouched, a DVD's converted to it. `beside` writes them **next to the cut** as the `.idx` and `.sub` pair every player and subtitle tool reads — a DVD's own untouched, a Blu-ray's read back out of its display sets. `sup` writes those display sets themselves, into a **`.sup` next to the cut** — a Blu-ray's subtitles byte for byte, and what BDSup2Sub and Subtitle Edit read. `beside` and `sup` are refused with `--bdav`: a file next to the clip does not go onto the disc |
 | `--drop-subpicture ID` | Leave one of a DVD's subtitle streams out, by the id the disc knows it by (`0x20`). Repeatable |
 
 Only a `.ts` or an `.m2ts` can hold subtitles inside it. Asked for an `.mp4`,

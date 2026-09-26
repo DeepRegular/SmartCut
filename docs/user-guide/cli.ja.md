@@ -188,7 +188,7 @@ smartcut a.ts --join b.ts --transition dissolve --transition-seconds 2 \
 
 | オプション | 意味 |
 |---|---|
-| `--subtitles pgs\|beside\|sup` | ディスクの字幕の行き先。既定の `pgs` は**カットの中**へ、TS が運べる種類として格納します（Blu-ray のものは無加工、DVD のものは変換して）。`beside` はカットとは別のファイルへ、プレーヤーも字幕ツールもそのまま読める `.idx` と `.sub` の 2 ファイルとして書きます（DVD のものは無加工、Blu-ray のものはディスプレイセットから読み戻して）。`sup` はそのディスプレイセットそのものを別ファイルの `.sup` に書きます（Blu-ray の字幕はバイト単位でそのまま。BDSup2Sub や Subtitle Edit が読む形式） |
+| `--subtitles pgs\|beside\|sup` | ディスクの字幕の行き先。既定の `pgs` は**カットの中**へ、TS が運べる種類として格納します（Blu-ray のものは無加工、DVD のものは変換して）。`beside` はカットとは別のファイルへ、プレーヤーも字幕ツールもそのまま読める `.idx` と `.sub` の 2 ファイルとして書きます（DVD のものは無加工、Blu-ray のものはディスプレイセットから読み戻して）。`sup` はそのディスプレイセットそのものを別ファイルの `.sup` に書きます（Blu-ray の字幕はバイト単位でそのまま。BDSup2Sub や Subtitle Edit が読む形式）。別ファイルはディスクに入らないので、`beside` と `sup` は `--bdav` と併用できません |
 | `--drop-subpicture ID` | DVD の字幕ストリームを 1 本除きます。ディスク上の id（`0x20`）で指定します。複数指定できます |
 
 字幕を中に入れられるのは `.ts` と `.m2ts` だけです。`.mp4` を指定した場合はその旨を
