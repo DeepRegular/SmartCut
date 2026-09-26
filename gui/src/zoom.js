@@ -48,7 +48,11 @@ let spot = { x: 0.5, y: 0.5 };
 /// How far to magnify. Settled here rather than in 環境設定: it is the one
 /// question this window exists to answer, and the answer changes with what
 /// is being looked at.
-let scale = Number(prefs.get("zoomScale")) || 4;
+/// Only the steps the list offers: a stored value is not to be trusted, and
+/// a negative or tiny one would turn the source rectangle inside out.
+const SCALES = [2, 3, 4, 6, 8];
+const stepOf = (v) => (SCALES.includes(Number(v)) ? Number(v) : 4);
+let scale = stepOf(prefs.get("zoomScale"));
 
 /// Whether the editor has said anything yet. See `announceReady`.
 let answered = false;
@@ -212,7 +216,7 @@ window.addEventListener("mouseup", () => {
 });
 
 el("scale").addEventListener("change", (ev) => {
-  scale = Number(ev.target.value) || 4;
+  scale = stepOf(ev.target.value);
   prefs.set("zoomScale", scale);
   draw();
 });

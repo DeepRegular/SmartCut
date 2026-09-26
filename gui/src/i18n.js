@@ -76,6 +76,8 @@ const CATALOG = {
     "project.quitTitle": "SmartCut を終了",
     "project.quitBody":
       "保存していない作業があります。保存せずに終了しますか？",
+    "project.quitOverBody":
+      "カット編集か継ぎ目の設定のウィンドウが開いています。そこで OK を押していない変更は、終了すると失われます。終了しますか？",
     "project.quitOk": "終了する",
     "project.quitCancel": "キャンセル",
 
@@ -893,6 +895,7 @@ const CATALOG = {
     "editor.title": "カット編集",
     "editor.windowTitle": "カット編集 — {clip}",
     "editor.loading": "読み込み中…",
+    "editor.playAfterRead": "録画の読み込みが終わるまで再生できません",
     "editor.analysing": "解析中…",
     "editor.counterShow": "カウンタ",
     "editor.counterShow.title": "フレーム番号と時刻をプレビュー映像の上に表示する",
@@ -1206,6 +1209,8 @@ const CATALOG = {
     "project.busyWriting": "A project cannot be opened or started while this one is being written. Wait for it to finish, or stop it",
     "project.quitTitle": "Quit SmartCut",
     "project.quitBody": "There is work here that has not been saved. Quit without saving it?",
+    "project.quitOverBody":
+      "The cut editor or the seam window is still open. Changes there that have not been confirmed with OK will be lost. Quit anyway?",
     "project.quitOk": "Quit",
     "project.quitCancel": "Cancel",
 
@@ -1979,6 +1984,7 @@ const CATALOG = {
     "editor.title": "Cut editor",
     "editor.windowTitle": "Cut editor — {clip}",
     "editor.loading": "Loading…",
+    "editor.playAfterRead": "Playback is available once the recording has been read",
     "editor.analysing": "Reading…",
     "editor.counterShow": "Counter",
     "editor.counterShow.title": "Draw the frame number and time over the picture",

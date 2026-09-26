@@ -597,6 +597,7 @@ async function paintHeld(t, img) {
 async function paintGuesses(times, imgs) {
   const want = times.map((_, i) => i).filter((i) => !cardThumbs.has(cardKey(times[i])));
   if (!want.length) return;
+  const gen = openGen;
   let got;
   try {
     got = await invoke("glimpses", { path: src.path, times: want.map((i) => times[i]), width: 200 });
@@ -604,6 +605,8 @@ async function paintGuesses(times, imgs) {
     jlog(`glimpses for the cards: ${e}`);
     return;
   }
+  // Pictures out of the recording before the one now up.
+  if (gen !== openGen) return;
   want.forEach((i, k) => {
     const shot = got[k];
     if (!shot) return;
@@ -1183,6 +1186,7 @@ function toFlatEdge(dir, kinds, from = playhead) {
 async function loadFlatCached(marks) {
   if (!src) return;
   const ask = flatAsk();
+  const gen = openGen;
   let got;
   try {
     got = await invoke("flat_cached", {
@@ -1199,6 +1203,8 @@ async function loadFlatCached(marks) {
     jlog(`flat_cached: ${e}`);
     return;
   }
+  // Stretches found in the recording before the one now up.
+  if (gen !== openGen) return;
   // Not onto a list the recording came up with, for the reason the commercial
   // detection gives in the `editor-open` handler: a `.keyframe` beside a
   // recording is somebody's own answer about where its breaks are, and marks
@@ -1637,6 +1643,15 @@ function clearSubs() {
 /// Ask what is on screen at `t` and draw it.
 async function showSubs(t) {
   if (subsId === null || !src) {
+    clearSubs();
+    return;
+  }
+  // The reader is built out of what the far side has open, which until the
+  // walk lands is the last recording (the same track number put its captions
+  // over this one's picture) or nothing at all (the first open of a session,
+  // where the error below turned the track off). `pointsArrived` shows the
+  // frame again once there is something to read.
+  if (!walked()) {
     clearSubs();
     return;
   }
@@ -2131,7 +2146,9 @@ function meterSilent() {
 function scheduleMeterAt() {
   clearTimeout(meterAsk);
   if (!meterOn || !src || playing) return;
-  if (!src.has_audio) {
+  // Read out of what the far side has open: before the walk lands, the last
+  // recording. See `showSubs`.
+  if (!src.has_audio || !walked()) {
     meterSilent();
     return;
   }
@@ -3293,7 +3310,10 @@ async function paintFast(t) {
 async function paintSharp(t) {
   const token = ++previewToken;
   try {
-    const shot = await invoke("preview", { time: t, width: stageWidth() });
+    // `stagePicture` rather than `preview`: before the walk lands the far side
+    // still has the last recording open, and a scroll then put its pictures
+    // on this one's stage.
+    const shot = await stagePicture(t);
     if (token !== previewToken) return;
     el("preview").src = shot.url;
     shownTime = shot.time;
@@ -3844,6 +3864,14 @@ function loopRange() {
 
 function startPlay() {
   if (!src || playing || outDur <= 0) return;
+  // Not while the walk is reading. Playback plays whatever the far side has
+  // open, and until `open_source` lands that is the recording this window
+  // was last on -- its pictures and its sound under this one's name.
+  // Said on the status line, so a press here is not simply lost.
+  if (!walked()) {
+    el("status").textContent = tr("editor.playAfterRead");
+    return;
+  }
   // 再生 out of a 早送り: the search stops where it got to, and this starts
   // from there. No picture of that instant is asked for -- the first one
   // playback sends is along in a third of a second and is the same picture.
@@ -4120,8 +4148,13 @@ async function prepare() {
   el("prev-scene").disabled = true;
   el("next-scene").disabled = true;
   showWarm(tr("warm.start"));
+  // The recording this pass is for. One that finishes after another row has
+  // been sent is the last recording's, and turning the scene search and the
+  // held pictures on from it answered the new one out of the old one's.
+  const gen = openGen;
   try {
     const r = await invoke("prepare");
+    if (gen !== openGen) return;
     const tk = r.track;
     scenes = tk.scenes;
     interval = tk.interval;
@@ -4172,7 +4205,7 @@ async function prepare() {
   } catch (e) {
     // Opening another file supersedes this one; that is not a failure worth
     // showing, because the second file's own pass is already running.
-    if (String(e).includes("cancelled")) return;
+    if (String(e).includes("cancelled") || gen !== openGen) return;
     showWarm(tr("warm.failed", { e }));
   }
 }
@@ -4426,13 +4459,18 @@ async function loadSidecarKeyframes() {
 /// was read and held nothing -- only the caller that went looking for a file
 /// nobody asked for can treat the two alike.
 async function readKeyframeFile(path) {
+  const gen = openGen;
   let frames;
   try {
     frames = await invoke("read_keyframes", { path });
   } catch (e) {
+    if (gen !== openGen) return null;
     el("status").textContent = tr("keyframes.readFailed", { e });
     return null;
   }
+  // Another row came up while the file was being read: these are marks for
+  // the recording before it. See `openGen`.
+  if (gen !== openGen) return null;
   if (!frames) return 0;
   // Pictures counted from the recording's first, as `markNumbers` writes
   // them -- not positions on the cut. Read as those, a list saved after a
@@ -4521,13 +4559,16 @@ async function loadSidecarCm() {
 /// run is read -- it *is* one -- so the band under the timeline, the marks
 /// and the sentence all land the way they would have minutes ago.
 async function readCmFile(path) {
+  const gen = openGen;
   let body;
   try {
     body = await invoke("read_sidecar", { path });
   } catch (e) {
+    if (gen !== openGen) return null;
     el("status").textContent = tr("cm.readFailed", { e });
     return null;
   }
+  if (gen !== openGen) return null;
   if (body === null || body === undefined) return 0;
   let said;
   try {
@@ -4618,6 +4659,9 @@ async function saveMarks(kind, ask) {
     return;
   }
   let to = markPath(kind);
+  // The name above is this recording's. Another row sent while a question
+  // below is up would otherwise have its marks written under this one's name.
+  const gen = openGen;
   if (ask) {
     if (!dialog) return;
     const picked = await dialog.save({
@@ -4651,6 +4695,7 @@ async function saveMarks(kind, ask) {
       if (!go) return;
     }
   }
+  if (gen !== openGen) return;
   try {
     let n;
     if (kind === "keyframe") {
@@ -4690,12 +4735,15 @@ const leaf = (path) => path.split(/[/\\]/).pop();
 /// finding arrives as the detection it was, band and marks and sentence.
 async function loadMarksFrom(kind) {
   if (!src || !dialog) return;
+  const gen = openGen;
   const picked = await dialog.open({
     multiple: false,
     defaultPath: markPath(kind),
     filters: [markFilter(kind)],
   });
-  if (!picked) return;
+  // Picked for the recording that was up when the picker was: another row
+  // sent meanwhile is not the one it was chosen for.
+  if (!picked || gen !== openGen) return;
   const from = Array.isArray(picked) ? picked[0] : picked;
   if (/\.(keyframe|avs|json)$/i.test(from)) kind = kindOf(from);
   const got =
@@ -4944,7 +4992,8 @@ function pictureFraction(ev) {
 /// showing.
 function scheduleZoom(again = false) {
   clearTimeout(zoomAsk);
-  if (!zoomOn || !src || playing) return;
+  // Not before the walk lands, for the reason `showSubs` gives.
+  if (!zoomOn || !src || playing || !walked()) return;
   if (again) zoomShown = null;
   zoomAsk = setTimeout(async () => {
     const want = playhead;
@@ -5083,13 +5132,17 @@ async function loadSidecarTrim() {
 /// True when it cut, false when there was nothing in it to cut by, `null`
 /// where it could not be read.
 async function readTrimFile(path) {
+  const gen = openGen;
   let body;
   try {
     body = await invoke("read_sidecar", { path });
   } catch (e) {
+    if (gen !== openGen) return null;
     el("status").textContent = tr("trim.readFailed", { e });
     return null;
   }
+  // A cut for the recording before the one now up; see `readKeyframeFile`.
+  if (gen !== openGen) return null;
   if (body === null || body === undefined) return false;
   const out = trimCuts(body);
   if (!out) return false;
@@ -5118,6 +5171,7 @@ async function loadMarkFiles() {
   const kinds = ["keyframe", "trim", "cm"];
   const first = prefs.get("sidecarPriority");
   const order = kinds.includes(first) ? [first, ...kinds.filter((k) => k !== first)] : kinds;
+  const gen = openGen;
   for (const kind of order) {
     const read =
       kind === "trim"
@@ -5125,6 +5179,9 @@ async function loadMarkFiles() {
         : kind === "cm"
           ? (await loadSidecarCm()) > 0
           : (await loadSidecarKeyframes()) > 0;
+    // Overtaken: which file this recording came up with is not the next
+    // row's to be told.
+    if (gen !== openGen) return false;
     if (read) {
       markFileKind = kind;
       return true;
@@ -5311,6 +5368,29 @@ async function openPath(picked, saved, side, name, chapters, dropPids) {
     if (overtaken()) return;
     src = outline;
     tailSrc = null;
+    // Nothing the pass over the last recording made is this one's. Its held
+    // pictures are still what `hover_thumb` answers from until this one's
+    // walk lands -- a drag during the walk put the last recording's pictures
+    // on the stage, the hover box and the cards -- and its scenes are what
+    // `scene_search` still reads. `prepare` sets all of it again at the end.
+    warmed = false;
+    held = false;
+    scenes = [];
+    el("prev-scene").disabled = true;
+    el("next-scene").disabled = true;
+    // The cards' pictures are kept by the mark's time, and a mark at the same
+    // time on this recording is a different picture.
+    cardThumbs.clear();
+    cardGuesses.clear();
+    cardsShown = [];
+    // And anything still on its way about the last recording: a strip's
+    // pictures landing after `forgetGlances` below were kept as this one's,
+    // and a magnifier's picture put `zoomShown` back on the old frame.
+    previewToken++;
+    stripToken++;
+    subsToken++;
+    meterToken++;
+    zoomToken++;
     paintSourceInfo();
     paintSubsPicker();
     cuts = saved ? saved.cuts.map((c) => ({ a: c.a, b: c.b })) : [];
@@ -6464,9 +6544,13 @@ if (listen) {
     el("detect-cm").textContent = tr("editor.detectingPct", { pct: Math.round(done * 100) });
     showCmNote(phase);
   });
+  // Neither of these is about the recording coming up while a row is being
+  // opened: its own pass starts once the open is over, so what arrives in
+  // between is the pass over the recording before it, still winding down.
   hear("prepare-progress", (ev) => {
     const [phase, done] = ev.payload;
-    if (!warmed) showWarm(tr("warm.progress", { phase, pct: Math.round(done * 100) }));
+    if (warmed || opening !== null) return;
+    showWarm(tr("warm.progress", { phase, pct: Math.round(done * 100) }));
   });
   // Pictures from a pass that is still running. Everything that reads held
   // pictures can use them from here on, for the stretch of the recording the
@@ -6479,7 +6563,7 @@ if (listen) {
     // were held pictures is not wrong -- the cells it could not fill were
     // decoded -- so the later batches change nothing on screen and arrive
     // twice a second for the length of the build.
-    if (held) return;
+    if (held || opening !== null) return;
     held = true;
     scheduleStrip();
     renderKeyframes();

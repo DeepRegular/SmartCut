@@ -224,6 +224,10 @@ struct BatchStop {
     /// stopped by a row being taken out from under the pictures pass.
     blank: AtomicU64,
     quiet: AtomicU64,
+    /// The editor's own three detections, stopped when its window goes. They
+    /// read the whole recording -- minutes, over a share -- and until this
+    /// went on doing so for a window nobody could see any more.
+    editor: AtomicU64,
 }
 
 /// One of the recording's sound tracks, as the window needs to know it.
@@ -1227,7 +1231,8 @@ fn info_of(src: &Source) -> SourceInfo {
 /// worker thread; see [`off_thread`].
 fn open_now(path: &str, app: &tauri::AppHandle, ticket: u64) -> Result<SourceInfo, String> {
     let (src, held) = scan_cached(app, path)?;
-    if OPEN_TICKET.load(Ordering::SeqCst) != ticket {
+    let stale = || OPEN_TICKET.load(Ordering::SeqCst) != ticket;
+    if stale() {
         return Err("another recording was opened in the meantime".into());
     }
     let info = info_of(&src);
@@ -1241,6 +1246,13 @@ fn open_now(path: &str, app: &tauri::AppHandle, ticket: u64) -> Result<SourceInf
     {
         let opened = app.state::<Opened>();
         let mut opened = locked(&opened.0);
+        // Asked again under the lock. A later open that finished in between
+        // the question above and this lock -- its index already held -- was
+        // in first, and this one then went in over the top of it: the window
+        // showing the second recording with the first one under it.
+        if stale() {
+            return Err("another recording was opened in the meantime".into());
+        }
         // Anything still building for the file that was open belongs to
         // nothing now; the count going up is what tells it so.
         app.state::<Generation>().0.fetch_add(1, Ordering::SeqCst);
@@ -1847,6 +1859,33 @@ fn index_info(app: &tauri::AppHandle, src: &Source, cached: bool) -> Option<Inde
     })
 }
 
+/// Whether writing `output` would write over one of the list's recordings.
+///
+/// The engine refuses an output that is the recording being cut, but a run
+/// writes a list: a cut into the folder another row's recording is in, under
+/// its name, truncated that recording before its own turn came. Asked of the
+/// files rather than of the strings, which a share's mount, a symbolic link
+/// or the case of a Windows name can make differ for one file.
+#[tauri::command]
+async fn names_an_input(output: String, inputs: Vec<String>) -> bool {
+    tauri::async_runtime::spawn_blocking(move || {
+        let out = std::path::Path::new(&output);
+        if !out.exists() {
+            return false;
+        }
+        inputs.iter().any(|p| {
+            // A title on a disc image is named as the image and where on it.
+            let file = match p.rsplit_once('@') {
+                Some((file, _)) if !std::path::Path::new(p).exists() => file,
+                _ => p.as_str(),
+            };
+            smartcut_core::input::same_file(std::path::Path::new(file), out)
+        })
+    })
+    .await
+    .unwrap_or(true)
+}
+
 /// Whether the recording a row names has gone from the disc.
 ///
 /// A row holds the path it was added with, and nothing tells the list when
@@ -1876,33 +1915,6 @@ fn index_info(app: &tauri::AppHandle, src: &Source, cached: bool) -> Option<Inde
 /// the recording is on, which is a share more often than not, and a share
 /// that has gone to sleep answered it in its own time with the window
 /// stopped until it did.
-/// Whether writing `output` would write over one of the list's recordings.
-///
-/// The engine refuses an output that is the recording being cut, but a run
-/// writes a list: a cut into the folder another row's recording is in, under
-/// its name, truncated that recording before its own turn came. Asked of the
-/// files rather than of the strings, which a share's mount, a symbolic link
-/// or the case of a Windows name can make differ for one file.
-#[tauri::command]
-async fn names_an_input(output: String, inputs: Vec<String>) -> bool {
-    tauri::async_runtime::spawn_blocking(move || {
-        let out = std::path::Path::new(&output);
-        if !out.exists() {
-            return false;
-        }
-        inputs.iter().any(|p| {
-            // A title on a disc image is named as the image and where on it.
-            let file = match p.rsplit_once('@') {
-                Some((file, _)) if !std::path::Path::new(p).exists() => file,
-                _ => p.as_str(),
-            };
-            smartcut_core::input::same_file(std::path::Path::new(file), out)
-        })
-    })
-    .await
-    .unwrap_or(true)
-}
-
 #[tauri::command]
 async fn clip_gone(path: String) -> bool {
     tauri::async_runtime::spawn_blocking(move || clip_gone_now(&path)).await.unwrap_or(false)
@@ -1999,6 +2011,7 @@ async fn open_editor(title: String, app: tauri::AppHandle) -> Result<(), String>
         ) {
             teller.state::<EditorUp>().0.store(false, Ordering::SeqCst);
             teller.state::<Playing>().0.store(0, Ordering::SeqCst);
+            teller.state::<BatchStop>().editor.fetch_add(1, Ordering::SeqCst);
         }
         if matches!(event, tauri::WindowEvent::Destroyed) {
             let _ = teller.emit("editor-closed", ());
@@ -2457,8 +2470,10 @@ async fn cross_play(
             if let Err(e) = smartcut_core::play_audio_across(&parts, &clock, &level, &meter, &fold, stop) {
                 eprintln!("audio playback: {e}");
                 // Otherwise this fails in total silence: a release build has
-                // no console, and the picture half plays on regardless.
-                let _ = audio_app.emit("audio-error", e.to_string());
+                // no console, and the picture half plays on regardless. Its
+                // own name: the cut editor hears `audio-error`, and a seam's
+                // failure is not the editor's to report.
+                let _ = audio_app.emit("cross-audio-error", e.to_string());
             }
         })
     });
@@ -4149,6 +4164,12 @@ async fn cm_cached(path: String, app: tauri::AppHandle) -> Result<Option<CmResul
 async fn detect_cm(path: String, inserts: bool, app: tauri::AppHandle) -> Result<CmResult, String> {
     // Reads the whole audio track, so it belongs off the UI thread -- and
     // runs for minutes, so it belongs behind the rest of the machine as well.
+    //
+    // The window's count taken as the command arrives, not once the pass has
+    // its thread and the recording outlined: a close that landed in those
+    // seconds -- an outline over a share -- was taken for the count to keep,
+    // and the pass read the whole recording for a window that had gone.
+    let mine = app.state::<BatchStop>().editor.load(Ordering::SeqCst);
     off_thread_behind(move || {
         // What the three reading passes need is the recording's streams, and
         // the container names those. So this does not wait for the walk: on a
@@ -4165,6 +4186,7 @@ async fn detect_cm(path: String, inserts: bool, app: tauri::AppHandle) -> Result
             Some(src) => src,
             None => smartcut_core::outline(&path).map_err(|e| e.to_string())?.into_source(),
         };
+        let _reads = stop_reads_on(&app, |s| &s.editor, mine);
         let reporter = app.clone();
         let watcher = app.clone();
         let owned = path.clone();
@@ -4184,6 +4206,10 @@ async fn detect_cm(path: String, inserts: bool, app: tauri::AppHandle) -> Result
                 let _ = reporter.emit("cm-progress", (phase.to_string(), done));
             }),
         )?;
+        // Part of an answer, ended by the window closing: not one to keep.
+        if smartcut_core::input::reads_stopped() {
+            return Err("cancelled".into());
+        }
         // Written down whichever window asked for it: it is the recording's
         // answer, not the window's, and the list is where it will be wanted
         // next.
@@ -4320,8 +4346,11 @@ async fn detect_blank(
     levels: Levels,
     app: tauri::AppHandle,
 ) -> Result<Vec<FlatRun>, String> {
+    // Taken as the command arrives, as [`detect_cm`] does and for its reason.
+    let mine = app.state::<BatchStop>().editor.load(Ordering::SeqCst);
     off_thread_behind(move || {
         let src = flat_source(&app, &path)?;
+        let _reads = stop_reads_on(&app, |s| &s.editor, mine);
         let reporter = app.clone();
         let say = move |done: f64| {
             let _ = reporter.emit("flat-progress", ("blank", done));
@@ -4360,8 +4389,11 @@ async fn detect_silence(
     min_seconds: f64,
     app: tauri::AppHandle,
 ) -> Result<Vec<FlatRun>, String> {
+    // Taken as the command arrives, as [`detect_cm`] does and for its reason.
+    let mine = app.state::<BatchStop>().editor.load(Ordering::SeqCst);
     off_thread_behind(move || {
         let src = flat_source(&app, &path)?;
+        let _reads = stop_reads_on(&app, |s| &s.editor, mine);
         let reporter = app.clone();
         let say = move |done: f64| {
             let _ = reporter.emit("flat-progress", ("quiet", done));
@@ -6888,7 +6920,7 @@ fn batch_write(
     with_queue_lock(&dir, || {
         let mut queue = queue;
         if let Some(known) = known {
-            let now = read_queue(&dir);
+            let now = read_queue(&dir)?;
             for theirs in &now.jobs {
                 match queue.jobs.iter_mut().find(|j| j.path == theirs.path) {
                     Some(mine) => {
@@ -6913,12 +6945,19 @@ fn batch_write(
 /// One that does not is put aside under another name rather than read as an
 /// empty queue and written over: the next job added would otherwise have
 /// been the whole of it.
-fn read_queue(dir: &std::path::Path) -> BatchQueue {
+///
+/// Only a file that is not there is an empty queue. One that is there and
+/// could not be opened this instant -- a scanner holding it on Windows, a
+/// share that stalled -- was read as empty too, and the write that followed
+/// put down the one job being added as the whole of the queue.
+fn read_queue(dir: &std::path::Path) -> Result<BatchQueue, String> {
     let at = dir.join("batch.json");
-    let Ok(body) = std::fs::read_to_string(&at) else {
-        return BatchQueue::default();
+    let body = match std::fs::read_to_string(&at) {
+        Ok(body) => body,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(BatchQueue::default()),
+        Err(e) => return Err(format!("{}: {e}", at.display())),
     };
-    match serde_json::from_str(&body) {
+    Ok(match serde_json::from_str(&body) {
         Ok(queue) => queue,
         Err(e) => {
             let aside = dir.join(format!("batch.json.unreadable-{}", now_secs()));
@@ -6926,16 +6965,17 @@ fn read_queue(dir: &std::path::Path) -> BatchQueue {
             let _ = std::fs::rename(&at, &aside);
             BatchQueue::default()
         }
-    }
+    })
 }
 
 /// Write the queue through a temporary named for this process, so that the
 /// two windows writing at once each rename a whole file of their own.
 fn put_queue(dir: &std::path::Path, queue: &BatchQueue) -> Result<(), String> {
     let body = serde_json::to_string_pretty(queue).map_err(|e| e.to_string())?;
-    let temp = dir.join(format!("batch.json.{}.new", std::process::id()));
-    std::fs::write(&temp, body).map_err(|e| e.to_string())?;
-    std::fs::rename(&temp, dir.join("batch.json")).map_err(|e| e.to_string())
+    // Through [`write_whole`] for its retry: on Windows the rename fails for
+    // as long as something -- a virus scanner, the tool's own poll -- has the
+    // old file open, and a queue write that failed then was a job lost.
+    write_whole(&dir.join("batch.json"), body.as_bytes()).map_err(|e| e.to_string())
 }
 
 /// Run a read-modify-write of the queue with the other process kept out.
@@ -6995,7 +7035,7 @@ fn with_queue_lock<T>(
 fn batch_append(app: tauri::AppHandle, jobs: Vec<BatchJob>) -> Result<BatchQueue, String> {
     let dir = batch_dir(&app)?;
     with_queue_lock(&dir, || {
-        let mut queue = read_queue(&dir);
+        let mut queue = read_queue(&dir)?;
         for job in jobs {
             if queue.jobs.iter().any(|j| j.path == job.path) {
                 continue;
@@ -7027,7 +7067,7 @@ fn batch_touch(app: tauri::AppHandle, path: String, note: Option<String>) -> Res
 }
 
 fn touch_job(dir: &std::path::Path, path: &str, note: Option<String>) -> Result<(), String> {
-    let mut queue = read_queue(dir);
+    let mut queue = read_queue(dir)?;
     let mut found = false;
     for job in queue.jobs.iter_mut() {
         if job.path == path {
@@ -7434,7 +7474,15 @@ fn usable_cache_dir(chosen: &str) -> Result<std::path::PathBuf, String> {
     let dir = std::path::PathBuf::from(chosen);
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
     let probe = dir.join(".smartcut-write-test");
-    std::fs::write(&probe, b"").map_err(|e| e.to_string())?;
+    // Made new rather than written: a link of that name left in the folder
+    // would otherwise be followed and whatever it points at emptied. One left
+    // by a run that died is removed first (the link, not what it names).
+    let _ = std::fs::remove_file(&probe);
+    std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&probe)
+        .map_err(|e| e.to_string())?;
     let _ = std::fs::remove_file(&probe);
     Ok(dir)
 }
@@ -7645,15 +7693,23 @@ pub fn run() {
     // with. See [`prefs`].
     prefs::from_env();
 
-    let argv = Argv(std::env::args().skip(1).filter(|a| !a.starts_with('-')).collect());
+    // `args_os` and not `args`, which panics on a name that is not UTF-8 --
+    // a file on a share mounted with the wrong character set, handed over by
+    // a file manager, and the program did not start at all. Taken lossily:
+    // such a name will not open, and the list says so with the name on it.
+    let args: Vec<String> = std::env::args_os()
+        .skip(1)
+        .map(|a| a.to_string_lossy().into_owned())
+        .collect();
+    let argv = Argv(args.iter().filter(|a| !a.starts_with('-')).cloned().collect());
     // Started as the batch tool rather than as the list window. The same
     // program and the same page; what differs is which screens are on the bar
     // and that nothing about an unsaved list stands in the way of closing it.
     // See the バッチ出力 section.
-    let batch = std::env::args().any(|a| a == "--batch");
+    let batch = args.iter().any(|a| a == "--batch");
     // And started on a job out of the queue, which is the list window again
     // with one button reading differently. See [`queued_job`].
-    let queued = Queued(std::env::args().any(|a| a == QUEUED_FLAG));
+    let queued = Queued(args.iter().any(|a| a == QUEUED_FLAG));
     // The word this window's size is kept under as well as the word the
     // frontend asks for: the tool and the list are one window label and two
     // different windows to size. See [`geometry`].
@@ -7743,9 +7799,22 @@ pub fn run() {
                         // answers by calling `quit`, or by doing nothing --
                         // there is no third thing to wait for, so nothing is
                         // remembered about having asked.
-                        if DIRTY.load(Ordering::Relaxed) {
+                        //
+                        // Asked too while the cut editor or the seam window
+                        // is up. What is set in either of them reaches the
+                        // list only with OK, so it is not in the list's
+                        // answer -- and closing the list alone left them
+                        // running on in a process with nowhere to hand their
+                        // OK to. `quit` closes all of them together.
+                        let open_over = asker.state::<EditorUp>().0.load(Ordering::SeqCst)
+                            || asker.state::<CrossUp>().0.load(Ordering::SeqCst);
+                        let dirty = DIRTY.load(Ordering::Relaxed);
+                        if dirty || open_over {
                             api.prevent_close();
-                            let _ = asker.emit("close-requested", ());
+                            // True when the only reason is the other window:
+                            // the list itself is saved, and saying it is not
+                            // would send somebody to save it for nothing.
+                            let _ = asker.emit("close-requested", !dirty);
                         }
                     }
                 });

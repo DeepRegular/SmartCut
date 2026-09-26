@@ -388,6 +388,10 @@ export function get(name) {
     // something else by this name. The default is a better answer than a
     // number where a string is expected.
     if (typeof v !== typeof fallback && fallback !== null) return fallback;
+    // JSON has no infinity, but it reads `1e999` as one, and no number here
+    // means anything unbounded: 拡大表示 took it as a magnification and every
+    // `Number(x) || default` in the callers lets it through.
+    if (typeof v === "number" && !Number.isFinite(v)) return fallback;
     // `typeof` says "object" of a list, of null and of anything else in
     // braces alike, and the one list here is spread into a `Set`.
     if (Array.isArray(fallback) && !Array.isArray(v)) return fallback;
@@ -480,14 +484,25 @@ export function all() {
 }
 
 /// The six the engine side acts on, in the shape its `set_prefs` wants.
+///
+/// Each number held to what its field on the other side can take. The six
+/// arrive as one struct, and a single one it cannot read -- a width of -1 or
+/// 1280.5 for a `u32`, a stored `1e999` that JSON writes as `null` -- failed
+/// the whole call: none of the six was applied, and the refusal was shown as
+/// if it were the cache folder's.
 export function forBackend() {
+  const whole = (name, hi) => {
+    const n = Number(get(name));
+    return Number.isInteger(n) && n >= 0 ? Math.min(n, hi) : 0;
+  };
+  const fade = Number(get("audioFade"));
   return {
     cleanJoins: !!get("cleanJoins"),
     proxy: !!get("proxy"),
-    proxyWidth: Number(get("proxyWidth")) || 0,
-    ffmpegLog: Number(get("ffmpegLog")) || 0,
+    proxyWidth: whole("proxyWidth", 0xffffffff),
+    ffmpegLog: whole("ffmpegLog", 2),
     cacheDir: String(get("cacheDir") || ""),
-    audioFade: Number(get("audioFade")) || 0,
+    audioFade: isFinite(fade) && fade > 0 ? Math.min(fade, 10) : 0,
   };
 }
 

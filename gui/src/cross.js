@@ -27,7 +27,7 @@ const jlog = (m) => invoke && invoke("log", { msg: String(m) });
 window.addEventListener("error", (e) => jlog(`cross error ${e.message}`));
 window.addEventListener("unhandledrejection", (e) => jlog(`cross reject ${e.reason}`));
 
-import { fmt, noBrowserMenu, noNativeDrag, wireDrops, MENU_MARGIN, MENU_LEAST } from "./shared.js";
+import { fmt, noBrowserMenu, noNativeDrag, wireDrops, inDropMenu, MENU_MARGIN, MENU_LEAST } from "./shared.js";
 import { t as tr, applyStatic, onLangChange, setLang, confirmWithOs } from "./i18n.js";
 import * as prefs from "./prefs.js";
 
@@ -103,7 +103,15 @@ function crossing() {
       fadeIn: 0,
     };
   }
-  return j.after;
+  // The four names are words, whatever a project file said. One read out of
+  // a hand-edited `.scproj` as `"kind": null` or `3` threw in `drawPattern`
+  // and `paintNote` -- `split` and `startsWith` of something that is not a
+  // string -- and the window stopped before it had loaded the join.
+  const a = j.after;
+  for (const [what, none] of [["kind", "none"], ["curve", "none"], ["mode", "in"], ["image", ""]]) {
+    if (typeof a[what] !== "string") a[what] = none;
+  }
+  return a;
 }
 
 // --- what is on screen ---------------------------------------------------
@@ -295,6 +303,7 @@ async function refreshSpan() {
   // still the join before: `showJoin` asks again once its pair is in.
   if (!spec || !invoke || !facts) return;
   const run = ++spanRun;
+  const pair = joinRun;
   let got;
   try {
     got = await invoke("cross_span", { seam: spec });
@@ -303,8 +312,11 @@ async function refreshSpan() {
     return;
   }
   // A slider dragged asks on every step, and the answers need not come back
-  // in order: only the last question's is the setting on screen.
-  if (run !== spanRun) return;
+  // in order: only the last question's is the setting on screen. Nor is an
+  // answer about the join before one: landing after `showJoin` had cleared
+  // the span, it put that join's stretch under this one, and its note over
+  // the line saying this join's recordings could not be read.
+  if (run !== spanRun || pair !== joinRun) return;
   span = got;
   head = clamp(head, 0, span.seconds);
   drawScrub();
@@ -731,8 +743,9 @@ function pairPicker() {
   window.addEventListener("mousedown", (ev) => {
     if (!ev.target.closest(".pairpick")) close();
   });
-  window.addEventListener("wheel", close, true);
-  window.addEventListener("scroll", close, true);
+  // Not the list scrolling itself, though: see `inDropMenu`.
+  window.addEventListener("wheel", (ev) => inDropMenu(ev) || close(), true);
+  window.addEventListener("scroll", (ev) => inDropMenu(ev) || close(), true);
 
   face.addEventListener("keydown", (ev) => {
     const step = (dir) => {
@@ -983,7 +996,11 @@ if (listen) {
     }
   });
 
-  hear("audio-error", (ev) => {
+  hear("cross-audio-error", (ev) => {
+    // Only this window's playback raises it. It arrives while `playing`
+    // still holds -- the backend joins the sound's thread before it says
+    // `cross-play-ended` -- so one from a run already stopped is dropped.
+    if (!playing) return;
     el("note").textContent = tr("editor.audioFailed", { e: ev.payload });
   });
 

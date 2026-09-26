@@ -274,7 +274,13 @@ pub fn watch(window: &tauri::WebviewWindow, role: &str) {
 /// written once, on the way out -- see [`save`]. Dragging an edge is a
 /// hundred of these.
 fn note(window: &tauri::WebviewWindow, role: &str) {
+    // Everything the window is asked, asked before the lock is taken. Off the
+    // event loop's thread -- `watch` runs on the thread that built the editor,
+    // the seam window or 拡大表示 -- each question is a message to that loop
+    // and a wait for its answer, and the loop answering a move of another
+    // window comes here and waits on this lock: both stopped for good.
     let maximized = window.is_maximized().unwrap_or(false);
+    let measured = if maximized { None } else { measure(window) };
     let mut held = locked(&SEEN);
     let mut watched = held
         .get(role)
@@ -292,7 +298,7 @@ fn note(window: &tauri::WebviewWindow, role: &str) {
         }
     } else {
         watched.frame.maximized = false;
-        if let Some(measured) = measure(window) {
+        if let Some(measured) = measured {
             watched.prior = watched.frame;
             watched.frame = measured;
         }

@@ -181,6 +181,17 @@ export function noNativeDrag() {
 export const MENU_MARGIN = 8;
 export const MENU_LEAST = 120;
 
+/// Whether a wheel or a scroll is the dropped list's own.
+///
+/// Both close a list, because either can move what it stands over -- but a
+/// list taller than its room scrolls inside itself, and that scroll reaches
+/// the window's capturing listener like any other. Taken as the page moving,
+/// a list opened on an answer below its fold shut again the moment it
+/// brought that answer into view, and so did an arrow key walked past the
+/// fold and the wheel turned over it.
+export const inDropMenu = (ev) =>
+  ev.target instanceof Element && !!ev.target.closest(".drop-menu");
+
 /// Draw this window's `<select>` popups instead of letting the platform do it.
 ///
 /// A native popup is the platform's to place, and both windows have lists it
@@ -377,9 +388,9 @@ export function wireDrops() {
     if (!ev.target.closest(".drop")) closeDrop();
   });
   window.addEventListener("keydown", (ev) => openDrop && openDrop.onKey(ev), true);
-  window.addEventListener("wheel", closeDrop, true);
+  window.addEventListener("wheel", (ev) => inDropMenu(ev) || closeDrop(), true);
   // And whatever else moves what is under it: a scrollbar dragged, a key that
   // scrolls a panel. The list is a fixed layer now, so a panel that scrolled
   // out from under it would leave it standing over nothing.
-  window.addEventListener("scroll", closeDrop, true);
+  window.addEventListener("scroll", (ev) => inDropMenu(ev) || closeDrop(), true);
 }

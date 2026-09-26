@@ -125,6 +125,23 @@ const NO_CROSSING = {
   fadeIn: 0,
 };
 
+/// A crossing as read from a project file or handed back by the seam window,
+/// held to the shape `NO_CROSSING` has. A hand-edited file can put anything
+/// in these fields, and a number where a name belongs stops the seam window
+/// and the joined export alike.
+const crossingFrom = (after) => {
+  if (!after || typeof after !== "object") return null;
+  const out = { ...NO_CROSSING };
+  for (const k of ["kind", "curve", "mode", "image"]) {
+    if (typeof after[k] === "string") out[k] = after[k];
+  }
+  for (const k of ["seconds", "fadeOut", "fadeIn"]) {
+    const v = after[k];
+    if (typeof v === "number" && Number.isFinite(v) && v >= 0) out[k] = v;
+  }
+  return out;
+};
+
 /// Whether a join carries a setting worth writing down.
 ///
 /// Two things happen at a join and either of them on its own counts: what
@@ -229,7 +246,7 @@ function makeClip(found) {
     /// puts it and the only place it reads in the order the file is written.
     /// Null is what every row starts as and what the list is full of:
     /// nothing between the clips, which is what a join has always been.
-    after: after ? { ...NO_CROSSING, ...after } : null,
+    after: crossingFrom(after),
     /// What the recording itself says about its programme: the name, the
     /// channel and when it went out. Null until asked, `{}` where the
     /// recording says nothing -- which is not the same question.
@@ -708,7 +725,7 @@ if (listen) {
       // cleared: a crossing nobody has said anything about is absent rather
       // than present and switched off, which is what `NO_CROSSING` is the
       // shape of and what `makeClip` starts every row at.
-      clip.after = answer.after ? { ...NO_CROSSING, ...answer.after } : null;
+      clip.after = crossingFrom(answer.after);
       if (JSON.stringify(clip.after || null) !== was) changed = true;
     }
     if (!changed) return;
@@ -840,7 +857,12 @@ let asking = Promise.resolve();
 /// resolves to none of them, which is the same as never having dropped the
 /// disc.
 function chooseFromDisc(disc) {
-  const answered = asking.then(() => askAboutDisc(disc));
+  // A disc still waiting its turn when the list was put down is not asked
+  // about at all: `dropPendingAdds` closes only the chooser that is up, and
+  // the one behind it came up over the other project and its answer was
+  // thrown away by `addPaths`.
+  const gen = listGen;
+  const answered = asking.then(() => (gen === listGen ? askAboutDisc(disc) : []));
   // The queue only sequences; a failure in one dialog is not the next one's
   // business.
   asking = answered.catch(() => {});
@@ -1120,11 +1142,27 @@ el("add-files").addEventListener("click", async () => {
 // window's own events are what carry the paths -- the HTML5 ones never fire
 // with `dragDropEnabled`, which is the default and is what lets a drop
 // anywhere in the window count.
+// Heard for this window only. `listen` on its own hears an event whatever it
+// was sent to, and the cut editor, 拡大表示 and 継ぎ目の編集 take drops as well:
+// a recording dropped on the editor was added to the list behind it, and a
+// project dropped there put the list down and closed the editor on its row.
+const listenHere = (() => {
+  const here = T.webviewWindow && T.webviewWindow.getCurrentWebviewWindow
+    ? T.webviewWindow.getCurrentWebviewWindow()
+    : null;
+  return here ? (name, fn) => here.listen(name, fn) : listen;
+})();
+
 if (listen) {
-  listen("tauri://drag-enter", () => el("droptarget").classList.add("over"));
-  listen("tauri://drag-leave", () => el("droptarget").classList.remove("over"));
-  listen("tauri://drag-drop", (ev) => {
+  listenHere("tauri://drag-enter", () => !isTool() && el("droptarget").classList.add("over"));
+  listenHere("tauri://drag-leave", () => el("droptarget").classList.remove("over"));
+  listenHere("tauri://drag-drop", (ev) => {
     el("droptarget").classList.remove("over");
+    // Not in the batch tool. What it has open is a job out of the queue, and
+    // it has no list screen to come back from: a drop there put the tool on a
+    // screen with no tabs, and one landing while a job's list was being read
+    // was written out as part of that job -- or, a project, in place of it.
+    if (isTool()) return;
     const paths = ev.payload?.paths || [];
     if (!paths.length) return;
     // A project dropped on the window is a project being opened. One at a
@@ -8290,6 +8328,15 @@ async function loadProject(path) {
         keyframes: Array.isArray(saved.edit.keyframes)
           ? saved.edit.keyframes.filter((k) => Number.isFinite(k))
           : [],
+        // The other two lists read without asking: the row's sound tracks
+        // and the editor's timeline both iterate them, and a number there
+        // threw before either was drawn.
+        dropStreams: Array.isArray(saved.edit.dropStreams)
+          ? saved.edit.dropStreams.filter((i) => Number.isInteger(i) && i >= 0)
+          : [],
+        cmBlocks: Array.isArray(saved.edit.cmBlocks)
+          ? saved.edit.cmBlocks.filter((b) => b && Number.isFinite(b.start) && Number.isFinite(b.end))
+          : [],
         id: clip.id,
         path: clip.path,
       };
@@ -8339,8 +8386,11 @@ async function loadProject(path) {
 // doing nothing at all, which is why nothing here is remembered about having
 // been asked.
 if (listen) {
-  listen("close-requested", async () => {
-    const go = await dialog.ask(t("project.quitBody"), {
+  listen("close-requested", async (ev) => {
+    // `true` when the list is saved and it is the cut editor or the seam
+    // window that is still open.
+    const body = ev.payload === true ? "project.quitOverBody" : "project.quitBody";
+    const go = await dialog.ask(t(body), {
       title: t("project.quitTitle"),
       kind: "warning",
       okLabel: t("project.quitOk"),
@@ -8487,10 +8537,16 @@ const lastPicked = () => {
 const sayHere = (text) =>
   screen === "out" ? (el("out-state").textContent = text) : note(text);
 
+/// How many times this window has put the queue down. A read of the file that
+/// was on its way while one of those happened is a read of the queue before
+/// it: see `refreshQueue`.
+let queueSaves = 0;
+
 /// Put the queue down whole. Only ever called where this window owns it: the
 /// tool always, and the list window while no tool is running.
 async function saveQueue() {
   if (!invoke) return;
+  queueSaves += 1;
   try {
     await invoke("batch_write", {
       queue: {
@@ -8540,12 +8596,20 @@ async function saveQueue() {
 /// place can have moved.
 async function refreshQueue() {
   if (!invoke) return;
+  const saves = queueSaves;
   let queue;
   try {
     queue = await invoke("batch_read");
   } catch {
     return;
   }
+  // The rows were changed and written here while the file was being read, so
+  // what came back is the queue from before that. Taken, it put a row just
+  // taken out back into the list, or -- landing after バッチ開始 had marked the
+  // jobs -- swapped the rows the walk holds for copies it never updates, and
+  // a job it had written was saved as still to do. The next poll reads the
+  // file as it now is.
+  if (saves !== queueSaves) return;
   for (const j of (queue && Array.isArray(queue.jobs) ? queue.jobs : [])) {
     if (j && typeof j.path === "string") batchKnown.add(j.path);
   }
@@ -9215,6 +9279,22 @@ async function projectForQueue() {
   return path;
 }
 
+/// A press on バッチに登録 still on its way. A second one in that time -- a
+/// double click -- found no copy made yet (`tempProject` is set only once the
+/// file is written), made a second one under another name, and put the same
+/// list in the queue twice.
+let enlisting = false;
+
+el("enlist-export").addEventListener("click", async () => {
+  if (enlisting) return;
+  enlisting = true;
+  try {
+    await enlistList();
+  } finally {
+    enlisting = false;
+  }
+});
+
 /// バッチに登録: put the list on screen into the queue, and open the tool
 /// over it.
 ///
@@ -9227,7 +9307,7 @@ async function projectForQueue() {
 /// The queue is read back first because this window does not otherwise hold
 /// it: without that, a list already in the queue would be reported as added
 /// even though the backend refused it as a duplicate.
-el("enlist-export").addEventListener("click", async () => {
+async function enlistList() {
   if (!clips.length) {
     sayHere(t("project.nothingToSave"));
     return;
@@ -9249,7 +9329,7 @@ el("enlist-export").addEventListener("click", async () => {
   } catch (e) {
     sayHere(String(e));
   }
-});
+}
 
 /// バッチを上書き: write this list back into the job the window was opened on.
 ///
