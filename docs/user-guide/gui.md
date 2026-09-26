@@ -311,6 +311,12 @@ Progress appears on the row: `Detecting commercials 84% — Looking for the logo
 Rows whose turn has not come say `Commercial detection queued`, and rows still
 waiting to be read say `Commercial detection after the read`.
 
+**A booking can be taken back** with **Cancel commercial detection** on the
+right-click menu, for every selected row at once; **Cancel blank detection**
+and **Cancel silence detection** do the same for the other two. A row that had been detected
+before goes back to that answer. A pass that has already started is not a
+booking any more; **Stop analysis** is what stops it.
+
 **What a detection has to say is a badge beside the row's state.** Dashed
 `CM booked` while it waits, solid `Detecting CM` while the pass runs, and then
 `CM 5` or `No CM`. The three tell apart by shape, so which rows are still owed

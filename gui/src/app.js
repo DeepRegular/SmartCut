@@ -2339,6 +2339,11 @@ function clipActions() {
     // everything but a recording that could not be read; see
     // `detectSelected`.
     detect: picked.some((c) => c.state !== "error" && c.cmState !== "running"),
+    // Only a detection that is still waiting. One the lane has already
+    // started is 解析を中止's to stop.
+    undetect: picked.some((c) => c.cmState === "queued"),
+    undetectBlank: picked.some((c) => c.blankState === "queued"),
+    undetectQuiet: picked.some((c) => c.quietState === "queued"),
     detectBlank: picked.some((c) => c.state !== "error" && c.blankState !== "running"),
     detectQuiet: picked.some((c) => c.state !== "error" && c.quietState !== "running"),
     move: picked.length > 0,
@@ -3123,6 +3128,9 @@ function openRowMenu(x, y) {
   el("row-rename").disabled = !can.rename;
   el("row-duplicate").disabled = !can.duplicate;
   el("row-detect").disabled = !can.detect;
+  el("row-undetect").disabled = !can.undetect;
+  el("row-undetect-blank").disabled = !can.undetectBlank;
+  el("row-undetect-quiet").disabled = !can.undetectQuiet;
   el("row-detect-blank").disabled = !can.detectBlank;
   el("row-detect-quiet").disabled = !can.detectQuiet;
   el("row-up").disabled = !can.move;
@@ -3161,6 +3169,18 @@ el("row-duplicate").addEventListener("click", () => {
 el("row-detect").addEventListener("click", () => {
   closeRowMenu();
   detectSelected();
+});
+el("row-undetect").addEventListener("click", () => {
+  closeRowMenu();
+  undetectSelected("cm");
+});
+el("row-undetect-blank").addEventListener("click", () => {
+  closeRowMenu();
+  undetectSelected("blank");
+});
+el("row-undetect-quiet").addEventListener("click", () => {
+  closeRowMenu();
+  undetectSelected("quiet");
 });
 el("row-detect-blank").addEventListener("click", () => {
   closeRowMenu();
@@ -3396,6 +3416,34 @@ function detectSelected() {
   resumeLanes();
   paintList();
   pump();
+}
+
+/// Take back the detections of one kind still waiting on the selected rows,
+/// `which` being "cm", "blank" or "quiet".
+///
+/// A row goes back to whatever it had before it was reserved: a row that
+/// was detected once and reserved again keeps that answer -- `clip.cm`, or
+/// the count in `blankFound` / `quietFound` -- because reserving only
+/// cleared the line under the name. A detection already running is left
+/// alone: stopping that is 解析を中止, and a pass half way through is not a
+/// reservation.
+function undetectSelected(which) {
+  const want = selected().filter((c) => c[`${which}State`] === "queued");
+  if (!want.length) return;
+  want.forEach((c) => {
+    const cached = c[`${which}Source`] === "cache";
+    if (which === "cm" ? c.cm : c[`${which}Found`] != null) {
+      const note = which === "cm" ? cmNote(c.cm) : t(`${which}.rowNote`, { n: c[`${which}Found`] });
+      const again = which === "cm" ? "cm.previous" : "flat.previous";
+      c[`${which}State`] = "done";
+      c[`${which}Phase`] = cached ? t(again, { note }) : note;
+    } else {
+      c[`${which}State`] = "none";
+      c[`${which}Phase`] = "";
+    }
+  });
+  paintList();
+  paintQueueNote();
 }
 
 // --- the edited timeline, without the editor ----------------------------
@@ -11032,6 +11080,7 @@ function paintBlankLabels() {
   const label = t(blankKey("side.detectBlank"));
   setText(el("detect-blank-selected"), label);
   setText(el("row-detect-blank").querySelector("span"), t(blankKey("rowmenu.detectBlank")));
+  setText(el("row-undetect-blank"), t(blankKey("rowmenu.undetectBlank")));
 }
 
 /// Say everything this window has already said, in the language now in
