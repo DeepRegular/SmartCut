@@ -615,13 +615,11 @@ body.crosswin { padding: 0; }
    box the picture shows through: the box is what keeps a mark readable over
    a white frame, and letting the picture through it keeps the logo and the
    time a broadcast puts in its corners in view. */
-.marks { position: absolute; pointer-events: none; z-index: 2; }
+.marks { position: absolute; inset: 0; pointer-events: none; z-index: 2; }
 .marks[hidden] { display: none; }
 .marks-l, .marks-r {
-  position: absolute; top: 8px; display: flex; gap: 4px; align-items: center;
+  position: absolute; display: flex; gap: 4px; align-items: center;
 }
-.marks-l { left: 8px; }
-.marks-r { right: 8px; }
 .marks span {
   background: rgba(0,0,0,.35); padding: 1px 6px; border-radius: 2px;
   font-size: 15px; line-height: 1.4; white-space: nowrap;

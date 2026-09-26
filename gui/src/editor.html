@@ -77,8 +77,9 @@
                selection and the keyframes on the left, the end of the
                selection on the right, and whether a black, white or quiet
                stretch begins, ends or runs through here beside the mark.
-               Laid on the picture rather than the stage for the reason the
-               subtitle layer gives; `paintMarks` puts it there. -->
+               Over the whole stage: each corner goes in the black beside the
+               picture where it fits and on the picture where it does not,
+               and `placeMarks` measures which. -->
           <div id="marks-layer" class="marks" hidden>
             <div class="marks-l" id="marks-l"></div>
             <div class="marks-r" id="marks-r"></div>
@@ -388,6 +389,13 @@
             <button id="counter-show" class="mini" type="button" aria-pressed="true"
                     data-i18n="editor.counterShow"
                     data-i18n-title="editor.counterShow.title">カウンタ</button>
+            <!-- The marks in the picture's top corners, the same kind of
+                 button and for the same reason. Apart from the counter: that
+                 one is turned off to see the foot of the picture, and these
+                 are up in its corners. See `paintMarks`. -->
+            <button id="marks-show" class="mini" type="button" aria-pressed="true"
+                    data-i18n="editor.marksShow"
+                    data-i18n-title="editor.marksShow.title">インジケータ</button>
             <!-- Which subtitles to draw over the preview, and 表示しない first
                  because that is what a cutting screen is for: the picture
                  under the playhead is what a cut is judged by, and a caption

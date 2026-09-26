@@ -92,7 +92,7 @@ const CATALOG = {
     "prefs.close": "閉じる",
     "prefs.groupView": "表示",
     "prefs.counter": "カット編集で、フレーム番号と時刻を画面に重ねる",
-    "prefs.pictureMarks": "カット編集で、選択範囲・キーフレーム・黒白無音の印を映像の上に表示する",
+    "prefs.pictureMarks": "カット編集で、選択範囲・キーフレーム・黒白無音のインジケータを映像の上に表示する",
     "prefs.meter": "カット編集で、音声レベルメーターを表示する",
     "prefs.subs": "カット編集で、最初から字幕を表示する",
     "prefs.subsNote":
@@ -900,6 +900,8 @@ const CATALOG = {
     "editor.analysing": "解析中…",
     "editor.counterShow": "カウンタ",
     "editor.counterShow.title": "フレーム番号と時刻をプレビュー映像の上に表示する",
+    "editor.marksShow": "インジケータ",
+    "editor.marksShow.title": "選択範囲の端・キーフレーム・黒白無音のインジケータをプレビュー映像の左上と右上に表示する",
 
     // --- 拡大表示 ---------------------------------------------------------
     // --- 継ぎ目の編集 -----------------------------------------------------
@@ -1232,7 +1234,7 @@ const CATALOG = {
     "prefs.close": "Close",
     "prefs.groupView": "Windows",
     "prefs.counter": "Draw the frame number and clock over the picture in the cut editor",
-    "prefs.pictureMarks": "Mark the selection's ends, keyframes and blank or quiet stretches over the picture in the cut editor",
+    "prefs.pictureMarks": "Show the selection, keyframe and blank or quiet stretch indicators over the picture in the cut editor",
     "prefs.meter": "Show the audio level meter in the cut editor",
     "prefs.subs": "Show the subtitles in the cut editor from the start",
     "prefs.subsNote":
@@ -1996,6 +1998,8 @@ const CATALOG = {
     "editor.analysing": "Reading…",
     "editor.counterShow": "Counter",
     "editor.counterShow.title": "Draw the frame number and time over the picture",
+    "editor.marksShow": "Indicators",
+    "editor.marksShow.title": "Show indicators for the selection's ends, keyframes and blank or quiet stretches in the picture's top corners",
 
     // --- the magnifier ----------------------------------------------------
     // --- the seam window ------------------------------------------------

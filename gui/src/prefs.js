@@ -144,7 +144,8 @@ const DEFAULTS = {
   ///
   /// On, and its own answer rather than the counter's: the counter is turned
   /// off to see the foot of the picture, where a subtitle is, and the marks
-  /// are up in the corners out of its way.
+  /// are up in the corners out of its way. The インジケータ button beside the counter's
+  /// in the editor is the same answer.
   pictureMarks: true,
   /// How far 拡大表示 magnifies, in screen pixels per source pixel.
   ///

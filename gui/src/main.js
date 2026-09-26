@@ -1982,8 +1982,10 @@ const selLast = () =>
 // answer is in the one place the eye already is, rather than in a counter
 // at the foot of the window and a card somewhere down the column.
 //
-// On or off in 環境設定, apart from the counter: the counter is turned off to
-// see the foot of the picture, and these are up in its corners.
+// On or off with a button of their own beside the counter's, which writes
+// the answer 環境設定 holds. Their own rather than the counter's: the counter
+// is turned off to see the foot of the picture, where a subtitle is, and
+// these are up in its corners.
 
 /// Is the frame on screen this output instant? Compared by picture, as the
 /// counter counts them.
@@ -2009,17 +2011,44 @@ function paintMarks() {
   };
   if (onPicture(o, selA)) put(left, "sel", "[");
   if (liveKeyframes().some((k) => Math.abs(srcToOut(k) - o) < half)) put(left, "key", "⚑");
+  // The end of a stretch goes on the right with OUT, the way its brace
+  // faces: `}黒 ]` mirrors `[ 黒{`. A stretch one picture long begins here
+  // as well, and stays on the left with the other beginnings.
   for (const { kind, open, close } of flatAt(playhead)) {
-    put(left, kind, flatTag(kind, open, close));
+    put(close && !open ? right : left, kind, flatTag(kind, open, close));
   }
   if (onPicture(o, selLast())) put(right, "sel", "]");
   el("marks-l").replaceChildren(...left);
   el("marks-r").replaceChildren(...right);
-  layer.style.left = `${box.left}px`;
-  layer.style.top = `${box.top}px`;
-  layer.style.width = `${box.width}px`;
-  layer.style.height = `${box.height}px`;
   layer.hidden = !left.length && !right.length;
+  if (layer.hidden) return;
+  placeMarks(el("marks-l"), el("marks-r"), box);
+}
+
+/// Put the two corners where they cover the least.
+///
+/// In the black either side of the picture where there is room for them --
+/// a 4:3 recording, or a 16:9 one in a window wider than it -- level with
+/// its top and against its edge, so they are as near the picture as they
+/// were and cover none of it. Over the picture's own corners where there is
+/// not, which on a broadcast puts the right-hand one over the station logo;
+/// the box is see-through for that reason. Each side is decided alone: the
+/// right one holds `}黒 ]` and can be too wide where the left is not.
+///
+/// Measured after the marks are in, because what fits depends on how many
+/// there are on this frame.
+function placeMarks(l, r, box) {
+  const img = el("preview");
+  const GAP = 8;
+  const top = `${box.top + GAP}px`;
+  const barL = box.left - img.offsetLeft;
+  const barR = img.offsetLeft + img.clientWidth - (box.left + box.width);
+  const lw = l.offsetWidth;
+  const rw = r.offsetWidth;
+  l.style.top = top;
+  r.style.top = top;
+  l.style.left = `${lw + 2 * GAP <= barL ? box.left - GAP - lw : box.left + GAP}px`;
+  r.style.left = `${rw + 2 * GAP <= barR ? box.left + box.width + GAP : box.left + box.width - GAP - rw}px`;
 }
 
 // --- the readouts on the picture ------------------------------------------
@@ -2061,6 +2090,25 @@ if (counterButton) {
   // the stage is what the button is about, and two of them would be one too
   // many things to keep in step.
   counterButton.addEventListener("click", () => showCounter(el("overlay").hidden));
+}
+
+/// The corners' own button, the way `showCounter` is the counter's.
+function showMarks(on, remember = true) {
+  marksOn = on;
+  paintMarks();
+  const button = el("marks-show");
+  if (button) {
+    button.classList.toggle("on", on);
+    button.setAttribute("aria-pressed", on ? "true" : "false");
+  }
+  if (!remember) return;
+  prefs.set("pictureMarks", on);
+}
+
+const marksButton = el("marks-show");
+if (marksButton) {
+  showMarks(marksOn, false);
+  marksButton.addEventListener("click", () => showMarks(!marksOn));
 }
 
 // --- 音声レベル ----------------------------------------------------------
@@ -7000,10 +7048,7 @@ if (listen) {
     const said = ev.payload || {};
     if (typeof said.counter === "boolean") showCounter(said.counter, false);
     if (typeof said.meter === "boolean") showMeter(said.meter);
-    if (typeof said.pictureMarks === "boolean") {
-      marksOn = said.pictureMarks;
-      paintMarks();
-    }
+    if (typeof said.pictureMarks === "boolean") showMarks(said.pictureMarks, false);
     // The store is shared -- this window reads the shades for itself at the
     // press that needs them -- so what arrives here is only the news that the
     // line in the menu is naming the wrong pass.
