@@ -1078,7 +1078,17 @@ function stepPoint(dir) {
 }
 
 const atPoint = (t) => src && src.points.some((p) => Math.abs(p - t) < frame() / 2);
-const nearScene = (t, w) => scenes.some((s) => Math.abs(s - t) <= w);
+/// Whether a scene change is within `w` of source time `t` -- one that is
+/// still in the output. A change a cut took out is not on the timeline being
+/// shown: the last cell before a cut to the end reached across into the
+/// removed stretch and marked the commercial's first picture with ✂.
+///
+/// Asked of the picture rather than the instant: a change is timed by its
+/// picture's own clock, which lands a hair either side of the frame grid the
+/// cuts are placed on -- measured, 60.0599997 against a cut at 60.06 -- so
+/// the picture a cut begins with read as the last one it kept.
+const nearScene = (t, w) =>
+  scenes.some((s) => Math.abs(s - t) <= w && srcToOut(s + frame() / 2) !== null);
 
 // --- flat pictures and quiet sound --------------------------------------
 //
@@ -3238,6 +3248,21 @@ const FRAME_LEAD = 1.0;
 /// after, which is in memory and costs nothing. The caption stays the cell's
 /// own frame, and the real pictures are decoded the moment the hand comes
 /// off.
+/// Whether a frame cell at output time `t` stands for a picture that is in
+/// the output.
+///
+/// A picture is the stretch from its instant to the next, so the last one
+/// begins a frame before the end and the end itself is no picture at all.
+/// Letting a cell stand there asked `outToSrc` for the end of the last kept
+/// range -- which, where a cut runs to the end of the recording, is the first
+/// picture the cut took, and the strip showed it after the last frame. Where
+/// the recording's own last pictures are missing (`lastOut`), the cells stop
+/// at the last one there is, as the counter does.
+function frameCellLive(t) {
+  const half = frame() / 2;
+  return t > -half && t < outDur - half && t <= lastOut() + half;
+}
+
 async function refreshFrameStrip(o) {
   const sp = frame();
   // One picture wide here too, so that changing the menu changes how much of
@@ -3284,7 +3309,7 @@ async function refreshFrameStrip(o) {
     const n = half + lead + half + 1;
     const times = Array.from({ length: n }, (_, i) => o + (i - half) * sp);
     const stand = times.map((t) => {
-      if (t < -1e-9 || t > outDur + 1e-9) return null;
+      if (!frameCellLive(t)) return null;
       const j = gopUnder(t);
       return j < 0 ? null : outToSrc(gops[j]);
     });
@@ -3319,7 +3344,7 @@ async function refreshFrameStrip(o) {
   const n = Math.max(41, 4 * half + 1) + 2 * lead;
   const first = o - (n >> 1) * sp;
   const times = Array.from({ length: n }, (_, i) => first + i * sp);
-  const live = times.map((t) => (t < -1e-9 || t > outDur + 1e-9 ? null : outToSrc(t)));
+  const live = times.map((t) => (frameCellLive(t) ? outToSrc(t) : null));
   const ask = live.filter((t) => t !== null);
   const token = ++stripToken;
   let got;
