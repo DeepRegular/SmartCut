@@ -38,7 +38,10 @@ pub const ALTERNATE: [u8; 64] = [
     38, 46, 54, 62, 39, 47, 55, 63,
 ];
 
-/// What a sequence header means by "no intra matrix of my own".
+/// What a sequence header means by "no intra matrix of my own". Already by
+/// place in the block, row by row, which is how the standard prints it --
+/// not in the zigzag order a transmitted matrix arrives in, so it is used
+/// as it is and not through [`unscan`].
 pub const DEFAULT_INTRA: [u8; 64] = [
     8, 16, 19, 22, 26, 27, 29, 34,
     16, 16, 22, 24, 27, 29, 34, 37,

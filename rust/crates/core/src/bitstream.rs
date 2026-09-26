@@ -132,13 +132,28 @@ pub fn is_reference(
             // would cut away something the rest of the GOP is decoded from.
             None => true,
         },
-        "mpeg2video" | "mpeg4" => {
+        "mpeg1video" | "mpeg2video" => {
             // picture_coding_type sits just past the 10-bit temporal_reference
             // of a picture header: 1=I, 2=P, 3=B. Only B is never referenced.
             let mut i = 0;
             while i + 6 <= data.len() {
                 if data[i] == 0 && data[i + 1] == 0 && data[i + 2] == 1 && data[i + 3] == 0 {
                     return (data[i + 5] >> 3) & 0x07 != 3;
+                }
+                i += 1;
+            }
+            true
+        }
+        "mpeg4" => {
+            // Part 2 has no picture header of the kind above: `00 00 01 00`
+            // is a video object's start code there, and a picture is a VOP
+            // (`00 00 01 B6`) whose first two bits are its type -- 0=I, 1=P,
+            // 2=B, 3=S. Only B is never referenced. The first VOP answers for
+            // the packet, as a packed P+B one is the P's.
+            let mut i = 0;
+            while i + 5 <= data.len() {
+                if data[i] == 0 && data[i + 1] == 0 && data[i + 2] == 1 && data[i + 3] == 0xB6 {
+                    return data[i + 4] >> 6 != 2;
                 }
                 i += 1;
             }
@@ -154,7 +169,7 @@ pub fn is_reference(
             }
             true
         }
-        _ => {
+        "h264" => {
             for nal in nal_payloads(data, framing) {
                 let Some(&b) = nal.first() else { continue };
                 if H264_VCL.contains(&(b & 0x1F)) {
@@ -163,6 +178,10 @@ pub fn is_reference(
             }
             true
         }
+        // Anything else is not framed as H.264 NALs -- a VP9 or AV1 packet
+        // read that way finds a "slice" wherever its bytes happen to spell a
+        // start code -- so it is answered for conservatively.
+        _ => true,
     }
 }
 
@@ -1187,6 +1206,28 @@ mod tests {
             NalFraming::AnnexB,
             None
         ));
+    }
+
+    /// Each codec's pictures are read by their own header. An MPEG-4 Part 2
+    /// B-VOP is not referenced, and its I-VOP carrying a video object start
+    /// code is; an MPEG-1 picture is read like an MPEG-2 one, where the H.264
+    /// rule took its first slice (`00 00 01 01`) for a non-reference NAL; and
+    /// a codec with no NALs is not read as if it had them.
+    #[test]
+    fn each_codec_is_asked_about_its_own_pictures() {
+        let none = NalFraming::AnnexB;
+        let vop = |kind: u8| vec![0, 0, 1, 0xB6, kind << 6, 0x12, 0x34];
+        assert!(is_reference(&vop(0), "mpeg4", none, None));
+        assert!(is_reference(&vop(1), "mpeg4", none, None));
+        assert!(!is_reference(&vop(2), "mpeg4", none, None));
+        let mut keyed = vec![0, 0, 1, 0x00, 0, 0, 1, 0x20, 0x08, 0xC8];
+        keyed.extend(vop(0));
+        assert!(is_reference(&keyed, "mpeg4", none, None));
+        // temporal_reference 0, picture_coding_type 1 (I) then 3 (B)
+        let picture = |kind: u8| vec![0, 0, 1, 0x00, 0x00, kind << 3, 0xFF, 0xF8, 0, 0, 1, 0x01, 0x12];
+        assert!(is_reference(&picture(1), "mpeg1video", none, None));
+        assert!(!is_reference(&picture(3), "mpeg1video", none, None));
+        assert!(is_reference(&[0x82, 0x49, 0x83, 0, 0, 1, 0x01, 0x00], "vp9", none, None));
     }
 }
 

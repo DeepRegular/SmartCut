@@ -620,14 +620,25 @@ pub(crate) fn note_once(line: String) {
 /// carried and reported here rather than printed there.
 pub fn init() -> Result<()> {
     ff::init().map_err(|e| anyhow!("ffmpeg init failed: {e}"))?;
-    let level = match std::env::var("SMARTCUT_FFMPEG_LOG").as_deref() {
-        Ok("2") | Ok("all") => 2,
-        Ok("1") | Ok("on") | Ok("yes") => 1,
-        _ => 0,
-    };
-    set_ffmpeg_log(level);
+    // Only where nothing has chosen a level yet. This runs at the head of
+    // every scan, outline and build, and read afresh each time it put the
+    // level back to what the environment says -- so a window whose 環境設定
+    // had turned the log up was turned back to silence by the next file it
+    // opened.
+    if !LOG_CHOSEN.swap(true, std::sync::atomic::Ordering::Relaxed) {
+        let level = match std::env::var("SMARTCUT_FFMPEG_LOG").as_deref() {
+            Ok("2") | Ok("all") => 2,
+            Ok("1") | Ok("on") | Ok("yes") => 1,
+            _ => 0,
+        };
+        apply_ffmpeg_log(level);
+    }
     Ok(())
 }
+
+/// Whether the log level has been settled, by [`init`] from the environment
+/// or by [`set_ffmpeg_log`].
+static LOG_CHOSEN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 /// How much of that to let through, after the fact.
 ///
@@ -637,6 +648,11 @@ pub fn init() -> Result<()> {
 /// here, so this is the whole of it: nothing has to be told, and the next
 /// line printed is the first one the new setting applies to.
 pub fn set_ffmpeg_log(level: u8) {
+    LOG_CHOSEN.store(true, std::sync::atomic::Ordering::Relaxed);
+    apply_ffmpeg_log(level);
+}
+
+fn apply_ffmpeg_log(level: u8) {
     ff::util::log::set_level(match level {
         0 => ff::util::log::Level::Quiet,
         1 => ff::util::log::Level::Warning,
@@ -769,37 +785,65 @@ pub(crate) struct Luma8<'a> {
     stride: usize,
     /// Two bytes a sample, and how far to shift one to get eight bits.
     wide: Option<(u32, bool)>,
+    /// Bytes from one sample to the next in a row, and to the first: one and
+    /// nought for the planar formats, two and one for packed UYVY.
+    step: usize,
+    offset: usize,
+    /// False for a format that does not lay its luma out in bytes -- a
+    /// bitstream one counts its step in bits, and a row of it is an eighth
+    /// of the width. Read as black rather than read wrongly or past the row.
+    usable: bool,
 }
 
 impl<'a> Luma8<'a> {
     pub(crate) fn of(frame: &'a ff::frame::Video) -> Self {
         let desc = unsafe { ff::ffi::av_pix_fmt_desc_get(frame.format().into()) };
-        let wide = (!desc.is_null())
-            .then(|| unsafe { &*desc })
-            .and_then(|d| {
-                let depth = d.comp[0].depth as u32;
-                let big = d.flags & ff::ffi::AV_PIX_FMT_FLAG_BE as u64 != 0;
-                // `shift` is where the bits sit in their two bytes: nought for
-                // the planar formats, six for P010's high-aligned samples.
-                (depth > 8).then(|| (d.comp[0].shift as u32 + depth - 8, big))
-            });
-        Luma8 { data: frame.data(0), stride: frame.stride(0), wide }
+        let desc = (!desc.is_null()).then(|| unsafe { &*desc });
+        let wide = desc.and_then(|d| {
+            let depth = d.comp[0].depth as u32;
+            let big = d.flags & ff::ffi::AV_PIX_FMT_FLAG_BE as u64 != 0;
+            // `shift` is where the bits sit in their two bytes: nought for
+            // the planar formats, six for P010's high-aligned samples.
+            (depth > 8).then(|| (d.comp[0].shift as u32 + depth - 8, big))
+        });
+        let width = if wide.is_some() { 2 } else { 1 };
+        let (step, offset, usable) = match desc {
+            Some(d) => (
+                d.comp[0].step.max(0) as usize,
+                d.comp[0].offset.max(0) as usize,
+                d.flags & ff::ffi::AV_PIX_FMT_FLAG_BITSTREAM as u64 == 0
+                    && d.comp[0].step.max(0) as usize >= width
+                    && (wide.is_some() || d.comp[0].shift == 0),
+            ),
+            None => (width, 0, true),
+        };
+        Luma8 { data: frame.data(0), stride: frame.stride(0), wide, step, offset, usable }
     }
 
-    /// Whether a sample is a byte, which is what lets a caller copy rows.
+    /// Whether a row is a run of bytes, one a sample, which is what lets a
+    /// caller copy rows.
     pub(crate) fn bytes(&self) -> bool {
-        self.wide.is_none()
+        self.usable && self.wide.is_none() && self.step == 1 && self.offset == 0
     }
 
     #[inline]
     pub(crate) fn at(&self, x: usize, y: usize) -> u8 {
+        if !self.usable {
+            return 0;
+        }
+        let i = y * self.stride + self.offset + x * self.step;
         match self.wide {
-            None => self.data[y * self.stride + x],
+            None => self.data.get(i).copied().unwrap_or(0),
             Some((shift, big)) => {
-                let i = y * self.stride + 2 * x;
-                let pair = [self.data[i], self.data[i + 1]];
+                let (Some(&a), Some(&b)) = (self.data.get(i), self.data.get(i + 1)) else {
+                    return 0;
+                };
+                let pair = [a, b];
                 let v = if big { u16::from_be_bytes(pair) } else { u16::from_le_bytes(pair) };
-                (v >> shift).min(255) as u8
+                // Checked: a float format states a depth of 32, which is a
+                // shift past the sixteen bits read here. Nothing sensible can
+                // be read off one this way, and a shift that wide is a panic.
+                v.checked_shr(shift).unwrap_or(0).min(255) as u8
             }
         }
     }
@@ -1456,7 +1500,10 @@ fn outline_of(path: &str) -> Result<(Outline, input::Demux)> {
         .filter(|r| r.is_finite() && *r > 0.0 && *r <= 1000.0);
     let frame_rate = match (stated, f64::from(stream.avg_frame_rate())) {
         (Some(r), _) => r,
-        (None, r) if r.is_finite() && r > 0.0 => r,
+        // Held to the same ceiling as the other two: the average is the
+        // container's arithmetic, and a Matroska that states a default
+        // duration of a nanosecond comes out at a billion a second.
+        (None, r) if r.is_finite() && r > 0.0 && r <= 1000.0 => r,
         _ if base_rate.is_finite() && base_rate > 0.0 && base_rate <= 1000.0 => base_rate,
         // Neither: the thirty a second `VideoInfo::frame_duration` already
         // assumes, rather than a nought the grid would round to one.

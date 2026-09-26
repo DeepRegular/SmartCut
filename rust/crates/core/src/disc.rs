@@ -972,10 +972,7 @@ impl Volume {
     /// Read one of the small index files, named relative to `BDAV` or `BDMV`.
     fn read(&mut self, rel: &str) -> Result<Vec<u8>> {
         match self {
-            Volume::Dir { dir, .. } => {
-                let path = at_name(dir, rel);
-                std::fs::read(&path).with_context(|| format!("cannot read {}", path.display()))
-            }
+            Volume::Dir { dir, .. } => read_index(&at_name(dir, rel)),
             Volume::Image { image, prefix, .. } => {
                 let want = format!("{prefix}{rel}");
                 let entry = image
@@ -1230,6 +1227,34 @@ fn prefix_of(image: &udf::Image) -> Option<(Shape, String)> {
     None
 }
 
+/// The most an index file on a folder disc is read as: an index, a playlist,
+/// a clip's information. The same limit an image's own files are held to.
+const MAX_INDEX: u64 = 64 << 20;
+
+/// One of a folder disc's index files, whole.
+///
+/// Not `std::fs::read`, which takes whatever is there: a folder is as much
+/// somebody else's as an image is, and a `CLIPINF` entry that is a link to
+/// a device, or a pipe, or a file of forty gigabytes, was a read that never
+/// ended or an allocation of all of it.
+pub(crate) fn read_index(path: &Path) -> Result<Vec<u8>> {
+    use std::io::Read;
+    let cannot = || format!("cannot read {}", path.display());
+    if !std::fs::metadata(path).with_context(cannot)?.is_file() {
+        bail!("{} is not a file", path.display());
+    }
+    let mut out = Vec::new();
+    std::fs::File::open(path)
+        .with_context(cannot)?
+        .take(MAX_INDEX + 1)
+        .read_to_end(&mut out)
+        .with_context(cannot)?;
+    if out.len() as u64 > MAX_INDEX {
+        bail!("{} is larger than an index file is", path.display());
+    }
+    Ok(out)
+}
+
 /// A file inside the disc's directory, found whichever case the disc spells
 /// its directories in.
 fn at_name(dir: &Path, rel: &str) -> PathBuf {
@@ -1449,7 +1474,9 @@ fn play_items(raw: &[u8], at: usize, vol: &mut Volume) -> Result<Vec<Clip>> {
         let codec = &body[5..9];
         if codec != b"M2TS" {
             bail!(
-                "a clip in {name} is {}, which is not a stream this reads",
+                "a clip in {name} is {:?}, which is not a stream this reads",
+                // Quoted and escaped: four bytes of the file, printed to a
+                // terminal, can be a control sequence.
                 String::from_utf8_lossy(codec)
             );
         }
@@ -2655,6 +2682,19 @@ mod tests {
             item(1, 1.0, 2.0, &[]),
         ];
         assert!(whole_clip(&jumbled, Shape::Bdav, &starts, &raw, bytes).is_none());
+    }
+
+    /// An index file on a folder disc is read only when it is a file, and
+    /// only as far as an index file goes.
+    #[cfg(unix)]
+    #[test]
+    fn an_index_that_is_not_a_file_is_not_read() {
+        assert!(read_index(Path::new("/dev/zero")).is_err());
+        assert!(read_index(&std::env::temp_dir()).is_err());
+        let at = std::env::temp_dir().join("smartcut-disc-read-index.clpi");
+        std::fs::write(&at, b"M2TS0100").unwrap();
+        assert_eq!(read_index(&at).unwrap(), b"M2TS0100");
+        let _ = std::fs::remove_file(&at);
     }
 
     /// A disc that carries AACS says so beside `BDAV`, not inside it.

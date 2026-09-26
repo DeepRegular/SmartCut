@@ -1058,18 +1058,22 @@ fn read_service_within(
                     }
                     let pcr_pid = (((sec[8] & 0x1F) as u16) << 8) | sec[9] as u16;
                     let info_len = (((sec[10] & 0x0F) as usize) << 8) | sec[11] as usize;
-                    let Some(info) = sec.get(12..12 + info_len) else {
+                    // Every loop stops short of the CRC: a length that runs
+                    // into it would carry its four bytes into the rebuilt
+                    // map as descriptors.
+                    let end = sec.len() - 4;
+                    let body = &sec[..end];
+                    let Some(info) = body.get(12..12 + info_len) else {
                         return;
                     };
                     let program_info = keep_descriptors(info);
                     let mut streams = Vec::new();
                     let mut i = 12 + info_len;
-                    let end = sec.len() - 4;
                     while i + 5 <= end {
                         let stream_type = sec[i];
                         let pid = (((sec[i + 1] & 0x1F) as u16) << 8) | sec[i + 2] as u16;
                         let len = (((sec[i + 3] & 0x0F) as usize) << 8) | sec[i + 4] as usize;
-                        let Some(desc) = sec.get(i + 5..i + 5 + len) else {
+                        let Some(desc) = body.get(i + 5..i + 5 + len) else {
                             break;
                         };
                         streams.push(ElementaryStream {
@@ -1159,7 +1163,11 @@ fn read_service_within(
         while i + 5 <= end {
             let sid = ((sec[i] as u16) << 8) | sec[i + 1] as u16;
             let len = (((sec[i + 3] & 0x0F) as usize) << 8) | sec[i + 4] as usize;
-            let Some(body) = sec.get(i..i + 5 + len) else {
+            // Not into the CRC. An entry whose loop ran over it was cut
+            // down to a section four bytes longer than the one it came
+            // from, which at the largest a section may be is a length
+            // field that no longer holds its own length.
+            let Some(body) = sec[..end].get(i..i + 5 + len) else {
                 break;
             };
             if sid == service.service_id {
@@ -1406,13 +1414,20 @@ impl Began {
         let mut date = date.split('-');
         let mut clock = clock.split(':');
         let next = |it: &mut std::str::Split<char>| it.next()?.parse::<u16>().ok();
+        // Narrowed with a check rather than a cast: a month of 257 is not
+        // month 1, and the range test below cannot see what a cast threw away.
+        let small = |it: &mut std::str::Split<char>| u8::try_from(next(it)?).ok();
         let began = Began {
             year: next(&mut date)?,
-            month: next(&mut date)? as u8,
-            day: next(&mut date)? as u8,
-            hour: next(&mut clock)? as u8,
-            minute: next(&mut clock)? as u8,
-            second: clock.next().and_then(|s| s.parse().ok()).unwrap_or(0),
+            month: small(&mut date)?,
+            day: small(&mut date)?,
+            hour: small(&mut clock)?,
+            minute: small(&mut clock)?,
+            // Seconds may be left off, but ones that are there must read.
+            second: match clock.next() {
+                Some(s) => s.parse::<u8>().ok()?,
+                None => 0,
+            },
         };
         // A date a field was misread out of is not a date. The year is the
         // one bound worth stating: everything else is bounded by its own
@@ -2762,6 +2777,24 @@ pub fn graft(output: &str, on: Option<&(dyn Fn(f64) + Sync)>, g: &Graft) -> Resu
     // and until it said so, that was a window with nothing moving on it for
     // as long as the cut itself had taken.
     let whole = std::fs::metadata(output).map(|m| m.len().max(1)).unwrap_or(1);
+    // The PIDs carried as bytes, less any this pass or the muxer already
+    // writes something else on. A map is the recording's to say what it
+    // likes in, and one that names a carousel on the PAT's PID, a table's,
+    // or the PID a stream was renumbered onto would have the recording's
+    // packets dealt in among the output's own on the same PID.
+    let carry: Vec<u16> = g
+        .carry
+        .iter()
+        .copied()
+        .filter(|&pid| {
+            pid > PID_SIT
+                && pid != 0x1FFF
+                && pid != out_pmt_pid
+                && pid != pcr_pid
+                && !(bluray && pid == BDAV_PCR_PID)
+                && !g.streams.iter().any(|s| s.pid == pid && s.was != pid)
+        })
+        .collect();
     let mut told = crate::Told::new();
     let mut read: u64 = 0;
     let outcome = (|| -> Result<()> {
@@ -2788,10 +2821,10 @@ pub fn graft(output: &str, on: Option<&(dyn Fn(f64) + Sync)>, g: &Graft) -> Resu
         // rate has to state it for a stream this pass has not finished
         // writing. Measured only where such a table is being written, since
         // it is a read of its own; see [`crate::carousel::rate`].
-        let data_rate = |g: &Graft| match (g.input, g.carry.is_empty()) {
+        let data_rate = |g: &Graft| match (g.input, carry.is_empty()) {
             (Some(input), false) => crate::carousel::rate(
                 input,
-                &g.carry,
+                &carry,
                 g.source_pcr_pid,
                 g.ranges.first().and_then(|r| r.source).map_or(0, |s| s.pos),
             ),
@@ -2868,7 +2901,7 @@ pub fn graft(output: &str, on: Option<&(dyn Fn(f64) + Sync)>, g: &Graft) -> Resu
         // The recording's own data broadcast, read alongside the cut and
         // dealt back into it: one reader per kept range, opened as the clock
         // reaches that range. See [`crate::carousel`].
-        let carrying = g.input.is_some() && !g.carry.is_empty();
+        let carrying = g.input.is_some() && !carry.is_empty();
         let mut carousel: Option<crate::carousel::Reader> = None;
         // Which range the reader in hand was opened for. Nothing is open to
         // begin with, and the first packet written opens the first one.
@@ -3008,7 +3041,7 @@ pub fn graft(output: &str, on: Option<&(dyn Fn(f64) + Sync)>, g: &Graft) -> Resu
                     carousel = match (g.input, g.ranges[range].source) {
                         (Some(input), Some(span)) => crate::carousel::Reader::open(
                             input,
-                            &g.carry,
+                            &carry,
                             g.source_pcr_pid,
                             span,
                             g.ranges[range].start,
@@ -4101,5 +4134,57 @@ mod tests {
         assert_eq!(&moved[3..8], &[0xEE, 0x4A, 0x12, 0x01, 0x00]);
         // Too short to hold a time: nothing to move, and nothing written.
         assert_eq!(advance_time(&[TABLE_TOT, 0x70, 0x00], 1.0), None);
+    }
+
+    /// A section whose last loop claims the four bytes of its own CRC.
+    ///
+    /// Well formed as far as the CRC goes, since the CRC is computed over
+    /// whatever the section says. The service entry and the stream entry
+    /// that run into it are not carried across: kept, the SDT was cut down
+    /// to a section longer than the one it came from, and the map took the
+    /// CRC's bytes into a stream's descriptors.
+    #[test]
+    fn a_loop_that_runs_into_the_crc_is_not_carried() {
+        let into_crc = |mut sec: Vec<u8>, at: usize| {
+            sec.truncate(sec.len() - 4);
+            let len = ((((sec[at] & 0x0F) as usize) << 8) | sec[at + 1] as usize) + 4;
+            sec[at] = (sec[at] & 0xF0) | (len >> 8) as u8;
+            sec[at + 1] = len as u8;
+            finish_section(&mut sec);
+            sec
+        };
+        let (video, map) = (0x200u16, 0x100u16);
+        // One service, its descriptor loop four bytes longer than it is.
+        let sdt = into_crc(sdt_of(&[(1, &service_name())]), 11 + 3);
+        // Two streams, the second with a descriptor loop of four bytes and
+        // none of them there.
+        let pmt = into_crc(pmt(1, 0, &[video, 0x300]), 12 + 5 + 3);
+        let mut out = Vec::new();
+        let (mut a, mut b, mut c) = (0u8, 0u8, 0u8);
+        for _ in 0..4 {
+            packetize(PID_PAT, &pat(1, map), &mut a, &mut out);
+            packetize(map, &pmt, &mut b, &mut out);
+            packetize(PID_SDT, &sdt, &mut c, &mut out);
+        }
+        let at = std::env::temp_dir().join("smartcut-loop-into-crc.ts");
+        std::fs::write(&at, &out).expect("write the sample");
+        let input = crate::input::Input::plain(&at.to_string_lossy());
+        let service = read_service(&input, video, &[]).expect("a map");
+        let _ = std::fs::remove_file(&at);
+        assert_eq!(
+            service.streams.iter().map(|s| s.pid).collect::<Vec<_>>(),
+            vec![video],
+            "the stream whose loop is the CRC is not described"
+        );
+        assert!(service.sdt.is_none(), "nor is the service");
+    }
+
+    #[test]
+    fn a_date_is_not_what_a_cast_left_of_it() {
+        assert!(Began::parse("2026-08-17 01:00:00").is_some());
+        // 257 is 1 once the top byte is thrown away, and 280 is 24.
+        assert_eq!(Began::parse("2026-257-17 01:00"), None);
+        assert_eq!(Began::parse("2026-08-273 01:00"), None);
+        assert_eq!(Began::parse("2026-08-17 257:00"), None);
     }
 }

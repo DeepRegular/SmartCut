@@ -82,8 +82,8 @@ impl Default for Shape {
         Self {
             chroma_format: 1,
             vertical_size: 1080,
-            intra: scan::unscan(&scan::DEFAULT_INTRA),
-            non_intra: scan::unscan(&scan::DEFAULT_NON_INTRA),
+            intra: scan::DEFAULT_INTRA,
+            non_intra: scan::DEFAULT_NON_INTRA,
         }
     }
 }
@@ -232,6 +232,11 @@ impl<'a> Picture<'a> {
     /// Take a picture apart. `shape` is what the sequence header last said; a
     /// packet that carries one of its own updates it.
     pub fn read(data: &'a [u8], shape: &mut Shape) -> Result<Self, Error> {
+        // Every place in the picture is kept as a bit offset in 32 bits.
+        // No coded picture comes near this; a packet that does is not one.
+        if data.len() > (u32::MAX / 8) as usize {
+            return Err(Error::NotAPicture);
+        }
         let t = vlc::tables();
         let mut pic = Picture {
             data,
@@ -910,7 +915,7 @@ fn sequence_header(data: &[u8], at: usize, shape: &mut Shape) -> Result<(), Erro
         }
         shape.intra = scan::unscan(&sent);
     } else {
-        shape.intra = scan::unscan(&scan::DEFAULT_INTRA);
+        shape.intra = scan::DEFAULT_INTRA;
     }
     if r.bit1() {
         for v in sent.iter_mut() {
@@ -918,7 +923,7 @@ fn sequence_header(data: &[u8], at: usize, shape: &mut Shape) -> Result<(), Erro
         }
         shape.non_intra = scan::unscan(&sent);
     } else {
-        shape.non_intra = scan::unscan(&scan::DEFAULT_NON_INTRA);
+        shape.non_intra = scan::DEFAULT_NON_INTRA;
     }
     Ok(())
 }
@@ -1051,4 +1056,184 @@ pub fn first_difference(data: &[u8], shape: &mut Shape) -> Result<Option<String>
         }
     }
     Ok(None)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{rewrite_unchanged, Transrater};
+
+    /// Three pictures (I, B, P) of a synthetic test pattern, 48x32: field
+    /// motion and field DCT, the non-linear scale, the alternate scan and the
+    /// second intra table -- every switch a broadcast turns on.
+    const INTERLACED: &str = concat!(
+        "000001b303002013ffffe018000001b5148200010000000001b80008004000000100000ffff8000001b58ffff31c0000",
+        "000101137ce3a0400309f000c0009801a8023e17fa4ffb0b72ff88ff3f4e08beff412288defecf23fc41247e843c4f4f",
+        "98a0398663e5dcd6ee02001e820038803e0420130072087fee005a2411001040217f88036042ff3007800ffd8113fb80",
+        "1f0053d0217fa7c779fba088009cbb5b37b1148a005bf4a008c10405c02c75f3f978025ff020025803c0032f90059ec2",
+        "b000ec02dc22914103f4c015fc7d001d0055c91b9dc12e22c7986e431f2b76fec00e401c8217de0207e58218058aa089",
+        "f9c00a810c0641080348dc4044fec007608404200d01080304803c12089fd98089ff9c656f3010017001f00330400680",
+        "40049005c2001e7b0be09c2fd801d7f88bf22c5fda7f401ef95f9ef5feff246e001a0bf814248a016fb3b3367bfcd789",
+        "89aa6b7a8081f400063ec0800ac009801c7c80240078ff77fcfd057046c828019f108bc3f9bc11c5f7d0a00720083dfe",
+        "826fdbe28a22bcd15aededfb6d96ab670400a104008104002900600097dbdffc2c107fa4008c01cf02456c73f817edd8",
+        "8ec40970915de0911d8adce5ddf1b29e366cb2c6f9c7fc008b9002b04002cfa7d4019fc19f5c1646f97675c0bf9fb7b1",
+        "1fdc8847e8884711c9148dedf2f70ae7dfa7cc3e9798fcbb9637b9f6404002afb8b007247004624579bbae0884700740",
+        "81f89fffa7d0107f97455dfe5111e0024007800dbe001ef66f5df5a2a8be3b36f38a623713ec60207e08038f9004bfe0",
+        "4002d22fc107bf71600fc01f802604005b006400e001d020814bfe35e00d708f7ba00b40158022fe002c11e7ec244f1f",
+        "39f22847960b72c7cada0200157f3e4103e34103ee8016fd8103f5c01289999f3f5007a00d670004df473c882b7917f6",
+        "f815d3f9fb002fe401a7dde47f98feabee89fa08f6151f5fd66656c0009febec00f08800c88a23a15776639d79ef7736",
+        "e3bafadb49c45740076444f6b9c822003116dbe51dcb6b001d02002ff008402a00d49a00974110013d810bfc00190217",
+        "f880380077f0089fda00f010bfe850217f99185e7ee82200277c6b7501001dc1001b0011002a002ff8f9007c24004600",
+        "5ffdebdc46e39fd09f816205fb7bf1ee23b77b88162373b70be3653c6e6e5cb1b57f001a8035042fb5040fc604300c15",
+        "a089f92009810c06c10803c89c4044fea006e08404800c0108037dc01c7b8227f560227fe7195b111901000bffa2401a",
+        "91400b7dc413f815d7d3ea00d8103ef401fff3f8083fc3a22bffda223c004000d801911801cf668aefa788a2f8ecdde7",
+        "16e58dd20800c208005eefa8020fe09fb00544611f6235f2379e7e8477f531c2797f223e4016003ef7fa88e48dfd00af",
+        "ecff3eb813c76f7618fab18040fce0072201001fc1000c801ffb00170026e3745dfe003800691c00dc01d8915f513779",
+        "f612fa245003fe001f7dbdfda1189deee7389fec00f57e74d72c7b0000000102137cac10c0fc10409813404013ffdc00",
+        "ec137fe9ac6ac10c0fc10409813404013ffdc00ec137fe9ac6f380270012826ff8001e826ffe13c137ff5bb410c25c10",
+        "40b813403010406813408000d8137ff5b741bcab7aa6f2ade8821fcd82780d027ff9027804b71021807027ffe000b00f",
+        "6dd06e8373dba0ddc08602009fff8002c03da410c17013ffa413c03413ffdd80000001000097fffb80000001b5811ff3",
+        "1c0000000101128c491f9a38f5af6565339bb123a9160341603fc68bd43fe38082dc71a770f5688244c4e3778f304380",
+        "72adf7e63f7a166f229044beebea7a8cd80d095331c2ce1ccdb71b240e0b3c71ad95f2f7638f1be03996256e666316e6",
+        "f538df61c406f9c4ab2bf7336526231aac1ca735799ced96ff6848a52c52cdcad95d94b17fd4664f70f23e0a36d4068e",
+        "0f5079ddfb70264b806a1c4e163855a80d71e733b3673f2fe7e71d446c6f3cce70e356147d08037dd89cbd85ade00000",
+        "0102126d9b00000100005ffffbb8000001b58111131c000000010112e6501b3ffe07efffae60400fdc0372744600de01",
+        "9000f0d880785c0c200206ab98c8337ff80b5a063fff805a681d13e00000010212adab",
+    );
+
+    /// The same pattern with everything left at its default, and a bit rate
+    /// rather than a fixed scale, so macroblocks carry scales of their own.
+    const PLAIN: &str = concat!(
+        "000001b303002013ffffe028000001b5148a00010000000001b80008004000000100000ffff8000001b58ffff3418000",
+        "00010113f9c131000b8034007405004e017e19c9a1b8848600acb0d26934b26a4a0c2613084421a1a1a1bd9480c2ba5b",
+        "7ecdbfbb808203e08007200780076007c02800ac00e86019007a015801e8d18007c00784b003f00b5c1100100c12c604",
+        "b0c5d9801e8613485c009002f00b400d80a00e8107fa80a06805fca4068600644300cc339080604d2695d44a00b5b749",
+        "6c4cddb16943ddb00b0062083fbc083fcc007608401a086018083fce0362802a003b0012001d001e80d9c600580076a0",
+        "3208601234200cb5e602001a02001700e800a00342ca0180084b0c0d2c84800ac8605100078007a1a0262c9a4c289894",
+        "0620b726979c373868697896a0ce7fbd404002b040fd0007e01800c0a268060189018001ca002ec4dc4c0d4a12828348",
+        "5cbe03126a4a26908964c2172fa38d420a7eb2694f6e02004005004004100bc3386814006c4bc82d2189dc04200e4a2c",
+        "a0d2bb24a2ca2c06282ca4e024946ecdcef7ce001e80ec01c003221208602148184164d0c21066d8861a1a4d26935230",
+        "a26130984cc59349a1a9e7141884a5b7ecdbdee401a06005a5802301893706805e03002a4201d10806e4c286700c780c",
+        "004c92600ec02a28a4a1c696e8472b92ba7b149ed71001090800e8341000b403102988600c003001000c0035018001f8",
+        "0ec984b480344806601714050032003b2606a4bf80c068c2837935206105e626979ded0103f1c01a014002b00d401d01",
+        "4006e4d2c02f410b006bc980073b00c794948098300af02818921e0d2ca269343430a21314053f4a5823a7645800c001",
+        "d90c980202c865061484fe8dc67fb0c003d00b002de8df200c62b80dc10ffe9980fb04dd8007808005e0074007230050",
+        "007e007031c03100ac00ec964a003c003c7003d00adc1100140c12c604b0c5dd400c81000ec1000d801f8670d01d005c",
+        "4b420b2c985ee03b007e516181a57648606860681540686178d4168ddbee77b50054027041fda041fe3003904200e043",
+        "00e041fe400b0a00a800e400400070007601638c00a800e5406410c0246840196b100302600565801680849b83401e80",
+        "9807605006005002d211433805e9013008124c018801f145251f92cb7415c3392ba7b145f6ba48608006000c002e0289",
+        "0d029831d24201d137b130302034348680c480689c0151311c0a93109e5f1a1a181ad9642465c020020002d018802c01",
+        "d809c3001e14800c300c4b41443003afc061c34a01d1080621a1803b2f8142c6f260d0146014168dc9aa0d7578000001",
+        "0213f95802004301301d0247fe025ffd975956008010c04c074091ff8097ff65d65e72410ffe007608fff89001aa6ed0",
+        "4004b04301721023806803e04b006f7d0bcadeaaf2b7a2081f9a08801a091ff209800b7101403e1c45be85d0b9f742ee",
+        "01d01f0e22d208005c089fe809000c099ff900000001000097fffb80000001b5811ff341800000010112980d1ffe3963",
+        "f8ed000fd8787c003d2701174747f000f805c4184118513dfacf33f33bc00370e5bb8bffbe189a9806dd7c9f9ddc7b8f",
+        "3891fc01fac03e1603dd00724710c17969d000f0f593d66675ec98007203353fc626001e870fee394754cc1afffce170",
+        "1d23103881048fe0700016001ac003d7500bd8d4a201fb1ce389fff11dd97d1035fffb3bb1849c84c00000010212ac00",
+        "7b338000000100005ffffbb8000001b58111134180000001011ab6b0000001021a5b2c",
+    );
+
+    fn bytes(hex: &str) -> Vec<u8> {
+        (0..hex.len())
+            .step_by(2)
+            .map(|i| u8::from_str_radix(&hex[i..i + 2], 16).unwrap())
+            .collect()
+    }
+
+    /// The stream cut at each picture start code, the headers staying with
+    /// the picture they come in front of -- which is how a packet arrives.
+    fn pictures(stream: &[u8]) -> Vec<&[u8]> {
+        let cuts: Vec<usize> = start_codes(stream)
+            .into_iter()
+            .filter(|&(_, code)| code == 0x00)
+            .map(|(at, _)| at)
+            .skip(1)
+            .collect();
+        let mut out = Vec::new();
+        let mut from = 0;
+        for at in cuts {
+            out.push(&stream[from..at]);
+            from = at;
+        }
+        out.push(&stream[from..]);
+        out
+    }
+
+    #[test]
+    fn written_back_unchanged_it_is_the_same_picture() {
+        for stream in [INTERLACED, PLAIN] {
+            let stream = bytes(stream);
+            let mut shape = Shape::default();
+            for picture in pictures(&stream) {
+                let out = rewrite_unchanged(picture, &mut shape).expect("reads");
+                assert_eq!(out, picture);
+            }
+        }
+    }
+
+    #[test]
+    fn the_default_intra_matrix_is_already_by_place() {
+        // Place 8 is the first sample of the second row, which the standard's
+        // default matrix gives 16; the third value it prints, 19, belongs to
+        // place 2. Read as if it were sent in zigzag order the two swap.
+        let stream = bytes(PLAIN);
+        let mut shape = Shape::default();
+        Picture::read(pictures(&stream)[0], &mut shape).expect("reads");
+        assert_eq!(shape.intra, scan::DEFAULT_INTRA);
+        assert_eq!((shape.intra[8], shape.intra[2]), (16, 19));
+        let weights = scan::weights(&shape.intra, false);
+        assert_eq!(&weights[..4], &[8, 16, 16, 19]);
+    }
+
+    #[test]
+    fn a_squeezed_picture_reads_back() {
+        for stream in [INTERLACED, PLAIN] {
+            let stream = bytes(stream);
+            let mut rater = Transrater::default();
+            for picture in pictures(&stream) {
+                let out = rater.picture(picture, 0.5).expect("rewrites");
+                let mut shape = rater.shape;
+                Picture::read(&out, &mut shape).expect("reads back");
+            }
+        }
+    }
+
+    /// Whatever arrives, the walk says no rather than falling over: every
+    /// truncation and every single flipped bit of each picture, read and
+    /// written at three strengths.
+    #[test]
+    fn damaged_pictures_are_declined_not_panicked_on() {
+        let q = Quantiser::default();
+        let presses = [
+            Squeeze::default(),
+            Squeeze { lift: 2.5, thin: 3.0 },
+            Squeeze { lift: 12.0, thin: 1e6 },
+        ];
+        let mut scratch = Scratch::default();
+        let mut try_one = |data: &[u8], shape: Shape| {
+            let mut shape = shape;
+            if let Ok(p) = Picture::read(data, &mut shape) {
+                for press in presses {
+                    let size = p.measure(&q, press, &mut scratch);
+                    assert_eq!(p.write(&q, press, &mut scratch).len(), size);
+                }
+            }
+        };
+        for stream in [INTERLACED, PLAIN] {
+            let stream = bytes(stream);
+            let mut shape = Shape::default();
+            for picture in pictures(&stream) {
+                for len in 0..picture.len() {
+                    try_one(&picture[..len], shape);
+                }
+                let mut data = picture.to_vec();
+                for bit in 0..data.len() * 8 {
+                    data[bit / 8] ^= 0x80 >> (bit % 8);
+                    try_one(&data, shape);
+                    data[bit / 8] ^= 0x80 >> (bit % 8);
+                }
+                Picture::read(picture, &mut shape).expect("reads");
+            }
+        }
+    }
 }

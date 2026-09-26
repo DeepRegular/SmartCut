@@ -571,6 +571,12 @@ struct SegmentCtx<'a> {
     /// subpicture has no ctx of its own because it has no output stream --
     /// see [`Subpictures`].
     offset: f64,
+    /// Whether a DVD's subtitles are taken from this reel at all. Only the
+    /// master's are, for the reason [`Threads::graphics`] gives: a reel
+    /// joined after it had its own read into the master's track, with the
+    /// master's palette and nothing to take them down at the range's end,
+    /// while the run said they were not in the file.
+    subpictures: bool,
     /// Whether this is the opening segment of its keep-range, which is where
     /// the range's audio boundary decision is made.
     first: bool,
@@ -758,6 +764,8 @@ struct AudioTrack {
     /// Frames left out for having no length at all -- neither their own nor
     /// a measured one. See [`Writer::push_audio`].
     no_length: usize,
+    /// Frames the muxer turned away as damaged. See [`Writer::push_audio`].
+    refused: usize,
     /// For an AAC track copied through: whether the master's frames carry an
     /// ADTS header, and which. `Some(None)` is raw AAC, `None` is a track
     /// this does not apply to. A recording joined on can be the other kind
@@ -858,6 +866,10 @@ struct Subpictures {
     /// so. A unit states its own length in two bytes and a picture can be
     /// bigger than that; see [`crate::vobsub::unit`].
     refused: usize,
+    /// A DVD's streams the caller left out. Their packets still arrive --
+    /// the read matches subpictures on what the stream is, not on which --
+    /// and the pair declares any stream it is handed a unit for.
+    dropped: Vec<i32>,
 }
 
 impl Subpictures {
@@ -875,6 +887,9 @@ impl Subpictures {
 
     /// Take one unit, shown at `at` on the output's clock.
     fn take(&mut self, id: i32, at: f64, unit: &[u8]) {
+        if self.dropped.contains(&id) {
+            return;
+        }
         self.side.add(id as u8, at, unit);
         let stops = crate::vobsub::stops_after(unit);
         self.standing.retain(|(other, _, _)| *other != id);
@@ -1239,9 +1254,21 @@ impl Writer {
             let t = &self.audio[track].info;
             crate::track_name(self.on_a_ts, t.pid, t.stream_index)
         };
-        packet
-            .write_interleaved(&mut self.octx)
-            .with_context(|| format!("writing sound on {named} at {out_start:.4}s (pts {pts})"))?;
+        match packet.write_interleaved(&mut self.octx) {
+            // An MP4 or Matroska muxer runs AAC through aac_adtstoasc, which
+            // turns away a frame whose ADTS header is damaged -- one bad
+            // header in an hour of broadcast -- and until this, the whole cut
+            // failed with it. The frame is lost either way; the cut is not.
+            Err(ff::Error::PatchWelcome | ff::Error::InvalidData)
+                if !self.into_ts && self.audio[track].adts.is_some() =>
+            {
+                self.audio[track].refused += 1;
+                return Ok(());
+            }
+            r => r.with_context(|| {
+                format!("writing sound on {named} at {out_start:.4}s (pts {pts})")
+            })?,
+        }
         let t = &mut self.audio[track];
         t.written += 1;
         t.last_out = Some(pts);
@@ -1935,6 +1962,18 @@ fn writing_m2ts(path: &str) -> bool {
         .is_some_and(|e| e.eq_ignore_ascii_case("m2ts"))
 }
 
+/// Whether the output is a clip in a disc's folder, `BDAV/STREAM/00001.m2ts`,
+/// as [`crate::bdav::prepare`] names them.
+fn onto_a_disc(path: &str) -> bool {
+    let p = std::path::Path::new(path);
+    let name = |q: Option<&std::path::Path>| {
+        q.and_then(|q| q.file_name()).and_then(|n| n.to_str()).map(str::to_ascii_uppercase)
+    };
+    writing_m2ts(path)
+        && name(p.parent()).as_deref() == Some("STREAM")
+        && name(p.parent().and_then(|q| q.parent())).as_deref() == Some("BDAV")
+}
+
 /// Whether the output is a transport stream, in either of the two shapes one
 /// is written in.
 ///
@@ -2472,8 +2511,9 @@ fn copy_segment(
     // A recording with no subtitles of this kind is done with them before it
     // begins, which is what keeps the read from waiting on packets that are
     // never coming.
-    let mut sub_done =
-        src.subpictures.is_empty() || (writer.subpictures.is_none() && writer.converted.is_empty());
+    let mut sub_done = !ctx.subpictures
+        || src.subpictures.is_empty()
+        || (writer.subpictures.is_none() && writer.converted.is_empty());
 
     let mut packets = ictx.read_packets();
     for (stream, packet) in packets.by_ref() {
@@ -2610,7 +2650,8 @@ fn copy_segment(
             (true, None) => {
                 let at = display_base + ((t - a) / field).round() as i64;
                 first_field = Some(at);
-                (at, 1)
+                // A field, in the timeline's units, as the second one is.
+                (at, ctx.grid.sub)
             }
             (false, _) => (
                 display_base + ((t - a) / field).round() as i64,
@@ -2809,7 +2850,8 @@ fn encode_vc1(
     // stream says.
     let (rff, rptfrm) = match fields {
         3 => (true, 0),
-        n if n > 3 => (false, ((n - 2) / 2) as u8),
+        // RPTFRM is two bits wide.
+        n if n > 3 => (false, ((n - 2) / 2).min(3) as u8),
         _ => (false, 0),
     };
     let picture = smartcut_vc1::Frame {
@@ -3298,7 +3340,9 @@ fn open_encoder_as(
         // quieten it -- forty-odd lines about an encoder the person running
         // this never asked for. Told here instead, and told nothing when the
         // logging was asked for, so the two stay in step. See [`crate::init`].
-        if std::env::var("SMARTCUT_FFMPEG_LOG").is_err() {
+        // Read from libav's own level rather than the environment: the GUI
+        // sets it from 環境設定 with no variable behind it.
+        if unsafe { ff::ffi::av_log_get_level() } <= ff::ffi::AV_LOG_QUIET {
             x265.push("log-level=none".into());
         }
         // The sequence header now says what the recording's says, so the SEI
@@ -3803,8 +3847,9 @@ fn reencode_segment(
     // A recording with no subtitles of this kind is done with them before it
     // begins, which is what keeps the read from waiting on packets that are
     // never coming.
-    let mut sub_done =
-        src.subpictures.is_empty() || (writer.subpictures.is_none() && writer.converted.is_empty());
+    let mut sub_done = !ctx.subpictures
+        || src.subpictures.is_empty()
+        || (writer.subpictures.is_none() && writer.converted.is_empty());
     let mut anchor: Option<f64> = None;
     let mut span = Span::default();
     // The encoder hands packets back in decode order, labelled only with the
@@ -4891,7 +4936,11 @@ pub(crate) fn plan_audio(
             .bit_rate
             .unwrap_or_else(|| derived_bit_rate(target, channels).max(192_000));
         match downmix {
-            Some((from, to)) if from > 0 => (src_rate * to as usize / from as usize).max(128_000),
+            // Saturating: the rate is the container's word, and a file is
+            // free to state any number there.
+            Some((from, to)) if from > 0 => {
+                (src_rate.saturating_mul(to as usize) / from as usize).max(128_000)
+            }
             _ => src_rate,
         }
     });
@@ -5366,7 +5415,7 @@ fn ranges_with_transitions(
                 // seconds as part of itself; a fade writes them afresh in
                 // place. Either way the range keeps its own `t_out`, which
                 // is what the sound is cut against.
-                let body_end = plan.t_out - take_tail;
+                let mut body_end = plan.t_out - take_tail;
                 let tinted_head = take_head > 0.0 && !head.kind.overlaps();
                 let body_start = if tinted_head { t_in + take_head } else { t_in };
                 let mut segments = Vec::new();
@@ -5401,8 +5450,39 @@ fn ranges_with_transitions(
                             &opts.plan,
                         )
                     };
+                    // The body is planned against its own bounds and can open
+                    // or close up to half a frame either side of them -- on
+                    // the entry point it found rather than the instant it was
+                    // asked for. The fade before it and the transition after
+                    // it are fitted to where it really begins and ends: left
+                    // at the instants asked for, the picture and the frame of
+                    // sound in between were written by both, or by neither.
+                    let fd = reel.src.video.frame_duration();
+                    if tinted_head {
+                        if let (Some(head), Some(first)) =
+                            (segments.last_mut(), body.segments.first())
+                        {
+                            if (first.start - head.end).abs() < fd && first.start > head.start {
+                                head.end = first.start;
+                            }
+                        }
+                    }
                     segments.extend(body.segments);
+                    if take_tail > 0.0 {
+                        if let Some(last) = segments.last() {
+                            if (last.end - body_end).abs() < fd && last.end < plan.t_out {
+                                body_end = last.end;
+                            }
+                        }
+                    }
                 }
+                // Where the range's pictures really begin, for the sound to be
+                // anchored on, as [`crate::plan::plan_range`] reports it.
+                let t_in = if tinted_head {
+                    t_in
+                } else {
+                    segments.first().map_or(t_in, |s| s.start)
+                };
                 if take_tail > 0.0 {
                     segments.push(Segment {
                         kind: SegmentKind::Reencode,
@@ -5608,6 +5688,13 @@ pub fn join_with_progress(
     crate::input::refuse_url_output(output)?;
     for reel in reels {
         reel.src.input.refuse_as_output(output)?;
+        // The still laid over a crossing is read only once that crossing is
+        // written, by which time the output has been created over it.
+        if let Some(image) = reel.after.overlay.as_deref() {
+            if crate::input::same_file(std::path::Path::new(image), std::path::Path::new(output)) {
+                bail!("{output} is the image laid over a crossing; writing there would destroy it");
+            }
+        }
     }
     // An empty file is ours as well: it is how a disc's number is held
     // before the cut is written into it (see `bdav::prepare`).
@@ -5916,9 +6003,24 @@ fn cut_into(
     // carried inside the cut, which only a transport stream can do, or read
     // back and written beside it as the pair a DVD's subtitles travel in,
     // which any output can be given.
-    let inside = opts.subtitles == Subtitles::Pgs;
-    let beside = opts.subtitles == Subtitles::Beside;
-    let sup = opts.subtitles == Subtitles::Sup;
+    //
+    // Not beside a clip on a disc, though. Those files would land in
+    // `BDAV/STREAM` among the clips, where no player looks for them, and go
+    // into the image with the rest; they go into the stream instead.
+    let subtitles = if opts.subtitles != Subtitles::Pgs && onto_a_disc(output) {
+        if !src.subpictures.is_empty() || !src.graphics.is_empty() {
+            eprintln!(
+                "note: subtitles are not written beside a clip on a disc; they are \
+                 carried inside it instead."
+            );
+        }
+        Subtitles::Pgs
+    } else {
+        opts.subtitles
+    };
+    let inside = subtitles == Subtitles::Pgs;
+    let beside = subtitles == Subtitles::Beside;
+    let sup = subtitles == Subtitles::Sup;
     let graphics: Vec<crate::GraphicsInfo> = if to_ts && inside {
         src.graphics
             .iter()
@@ -6708,6 +6810,7 @@ fn cut_into(
             dropped: 0,
             frame_secs: setup.frame_secs.unwrap_or(0.0),
             no_length: 0,
+            refused: 0,
             adts: (setup.mode != AudioMode::Reencode
                 && setup.target == ff::codec::Id::AAC
                 && !matches!(setup.source_framing, Some(crate::aac::Framing::Latm(_))))
@@ -6909,6 +7012,7 @@ fn cut_into(
             ink: (!aside_streams.is_empty()).then(crate::vobsub::Ink::default),
             standing: Vec::new(),
             refused: 0,
+            dropped: opts.drop_subpictures.clone(),
         }
     });
 
@@ -7225,6 +7329,7 @@ fn cut_into(
                 captions: &caption_ctx,
                 graphics: &graphics_ctx,
                 offset: target_start - plan.t_in,
+                subpictures: thread.graphics,
                 first: first_segment,
                 signalling: &signalling,
             };
@@ -7343,6 +7448,11 @@ fn cut_into(
                  track's timestamps could not be measured either",
                 t.no_length
             )
+        } else if t.refused > 0 {
+            format!(
+                ": the container's muxer turned away all {} frame(s) of it as damaged",
+                t.refused
+            )
         } else {
             ", and the kept ranges hold none of it".to_string()
         };
@@ -7422,6 +7532,17 @@ fn cut_into(
              for them, and were left out. The output lays its sound end to end, so a frame of \
              no length would be written where the next one belongs.",
             t.no_length,
+            crate::track_name(writer.on_a_ts, t.info.pid, t.info.stream_index),
+        );
+    }
+    for t in &writer.audio {
+        if t.refused == 0 {
+            continue;
+        }
+        eprintln!(
+            "note: {} frame(s) of the sound on {} have a damaged header the container's muxer \
+             would not take, and were left out.",
+            t.refused,
             crate::track_name(writer.on_a_ts, t.info.pid, t.info.stream_index),
         );
     }

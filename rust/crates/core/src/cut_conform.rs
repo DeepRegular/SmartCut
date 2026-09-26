@@ -161,8 +161,9 @@ fn pictures_afresh(
     let mut audio_done = vec![false; ctx.audio.len()];
     let mut caption_done = vec![false; ctx.captions.len()];
     let mut graphics_done = vec![false; ctx.graphics.len()];
-    let mut sub_done =
-        src.subpictures.is_empty() || (writer.subpictures.is_none() && writer.converted.is_empty());
+    let mut sub_done = !ctx.subpictures
+        || src.subpictures.is_empty()
+        || (writer.subpictures.is_none() && writer.converted.is_empty());
 
     // How many output frames the whole segment comes to, which is what a
     // transition's own progress is counted against. At least one: a

@@ -200,6 +200,15 @@ struct Luma {
     /// Bits per sample, from the format's own descriptor.
     depth: u32,
     big_endian: bool,
+    /// Bytes from one sample to the next along a row, the first one's
+    /// offset into the row, and how far up its bits sit: one, nought and
+    /// nought for the planar formats every decoder here hands over, but two
+    /// and one for a packed UYVY off an uncompressed recording, and a shift
+    /// of six for P010. Read as planar, those gave the chroma, or every
+    /// sample 64 times too large, and never a black picture.
+    step: usize,
+    offset: usize,
+    shift: u32,
 }
 
 impl Luma {
@@ -224,9 +233,22 @@ impl Luma {
         if depth == 0 || depth > 16 {
             return Err(anyhow!("{format:?} carries {depth}-bit luma"));
         }
+        let c = &desc.comp[0];
+        let wide = if depth > 8 { 2 } else { 1 };
+        if desc.flags & (ff::ffi::AV_PIX_FMT_FLAG_BITSTREAM as u64) != 0
+            || (c.step as usize) < wide
+            || c.shift as u32 + depth > 8 * wide as u32
+        {
+            // A bitstream format counts its step in bits, not bytes, and a
+            // row of one is an eighth of the width read here.
+            return Err(anyhow!("{format:?} does not lay its luma out in bytes"));
+        }
         Ok(Self {
             depth,
             big_endian: desc.flags & (ff::ffi::AV_PIX_FMT_FLAG_BE as u64) != 0,
+            step: c.step as usize,
+            offset: c.offset as usize,
+            shift: c.shift as u32,
         })
     }
 
@@ -271,17 +293,18 @@ impl Luma {
 
     /// One sample out of the plane's bytes.
     fn at(&self, row: &[u8], x: usize) -> u32 {
-        if self.depth <= 8 {
-            row[x] as u32
+        let i = self.offset + x * self.step;
+        let v = if self.depth <= 8 {
+            row[i] as u32
         } else {
-            let i = x * 2;
             let (a, b) = (row[i], row[i + 1]);
             if self.big_endian {
                 u16::from_be_bytes([a, b]) as u32
             } else {
                 u16::from_le_bytes([a, b]) as u32
             }
-        }
+        };
+        v >> self.shift
     }
 }
 
@@ -378,11 +401,13 @@ fn runs_from(looks: &[Look], tail: f64, opts: &BlankOptions) -> Vec<Run> {
 
 /// What the decode has seen so far.
 struct Walk {
-    /// Where the luma is, worked out from the first picture that arrives. A
-    /// recording does not change format halfway through, and one that somehow
-    /// did would be read by the first format's rule -- which is the format
-    /// its own pictures were judged by.
-    luma: Option<Luma>,
+    /// Where the luma is, and the format it was worked out from. Worked out
+    /// again whenever a picture arrives in another format: a decoder
+    /// re-initialised mid-stream -- a Main10 stream that goes to Main, or two
+    /// recordings run together -- hands over 8-bit pictures after 10-bit
+    /// ones, and reading those by the 10-bit rule indexed two bytes a sample
+    /// into a row one byte a sample wide, which is a panic past its middle.
+    luma: Option<(ff::format::Pixel, Luma)>,
     looks: Vec<Look>,
     /// The last time taken, so that a picture out of order can be passed over.
     last: f64,
@@ -404,10 +429,11 @@ impl Walk {
             self.gap = t - self.last;
         }
         self.last = t;
-        if self.luma.is_none() {
-            self.luma = Some(Luma::of(frame.format())?);
+        let format = frame.format();
+        if self.luma.as_ref().is_none_or(|(was, _)| *was != format) {
+            self.luma = Some((format, Luma::of(format)?));
         }
-        let luma = self.luma.as_ref().expect("just set");
+        let (_, luma) = self.luma.as_ref().expect("just set");
         self.looks.push(Look {
             time: t,
             shade: look_at(frame, luma, opts),
@@ -679,5 +705,18 @@ mod tests {
         assert_eq!(full.span(), (16.0, 235.0));
         assert_eq!(look_at(&flat(0), &full, &none), Some(Shade::Black));
         assert_eq!(look_at(&flat(255), &full, &none), Some(Shade::White));
+    }
+
+    /// Luma that is not one plane of bytes or of low-aligned words is read
+    /// where it is: a packed UYVY's second byte, and P010's top ten bits.
+    #[test]
+    fn luma_is_read_where_the_format_puts_it() {
+        let uyvy = Luma::of(ff::format::Pixel::UYVY422).unwrap();
+        assert_eq!(uyvy.at(&[128, 16, 128, 235], 0), 16);
+        assert_eq!(uyvy.at(&[128, 16, 128, 235], 1), 235);
+        let p010 = Luma::of(ff::format::Pixel::P010LE).unwrap();
+        assert_eq!(p010.at(&(64u16 << 6).to_le_bytes(), 0), 64);
+        assert!(p010.at(&(64u16 << 6).to_le_bytes(), 0) <= p010.level(0.04));
+        assert!(Luma::of(ff::format::Pixel::MonoBlack).is_err());
     }
 }

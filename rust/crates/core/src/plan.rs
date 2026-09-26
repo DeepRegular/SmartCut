@@ -180,6 +180,17 @@ impl Default for PlanOptions {
 /// its own.
 pub fn reencode_range(points: &[AccessPoint], t_in: f64, t_out: f64) -> RangePlan {
     let t_in = t_in.max(points.first().map_or(0.0, |p| p.time));
+    // Nothing left once the start is where the pictures start -- a range
+    // wholly in front of the first entry point, or one [`plan_range`] had
+    // already found empty. A segment of no length asks the cutter for
+    // pictures that are not there, and it stops the whole run saying so.
+    if t_out <= t_in {
+        return RangePlan {
+            t_in,
+            t_out,
+            segments: Vec::new(),
+        };
+    }
     RangePlan {
         t_in,
         t_out,
@@ -734,6 +745,21 @@ mod tests {
         assert_eq!(plan.segments.last().unwrap().kind, SegmentKind::Copy);
         // And the range is said to end where its pictures do.
         assert_eq!(plan.t_out, plan.segments.last().unwrap().end);
+    }
+
+    /// A range in front of the first entry point has nothing to write afresh
+    /// either, and says so with no segment rather than one of no length.
+    #[test]
+    fn a_range_before_the_pictures_is_not_written_afresh() {
+        let video = video();
+        let fd = video.frame_duration();
+        let mut points = points(40, fd);
+        for p in &mut points {
+            p.time += 0.5;
+            p.lead_start += 0.5;
+        }
+        assert!(reencode_range(&points, 0.0, 0.2).segments.is_empty());
+        assert_eq!(reencode_range(&points, 0.0, 2.0).segments.len(), 1);
     }
 
     /// And the tail is still written where there is a picture in it.

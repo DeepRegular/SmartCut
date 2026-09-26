@@ -239,7 +239,7 @@ fn encoder_rate(codec: &ff::codec::codec::Codec, want: u32) -> u32 {
 /// with the rate it was given; opening one is where that is complained
 /// about, and this is not that place.
 pub fn writable_rate(id: ff::codec::Id, want: u32) -> u32 {
-    ff::encoder::find(id).map_or(want, |codec| encoder_rate(&codec, want))
+    ff::encoder::find(encoder_for(id)).map_or(want, |codec| encoder_rate(&codec, want))
 }
 
 /// Build the encoder that stands in for the recording's own.
@@ -264,7 +264,7 @@ pub fn writable_rate(id: ff::codec::Id, want: u32) -> u32 {
 /// gives the wrapper its own codec id -- `aac_latm` -- which no encoder
 /// answers to. What writes a frame for such a track is the AAC encoder, and
 /// what puts the wrapper back on is [`crate::latm`].
-fn encoder_for(id: ff::codec::Id) -> ff::codec::Id {
+pub(crate) fn encoder_for(id: ff::codec::Id) -> ff::codec::Id {
     match id {
         ff::codec::Id::AAC_LATM => ff::codec::Id::AAC,
         other => other,
@@ -303,6 +303,11 @@ fn open_encoder_as(
     bit_rate: usize,
     quiet: bool,
 ) -> Result<ff::encoder::Audio> {
+    // Every caller, not only the patches: a whole-track re-encode of a 4K
+    // recording's LATM track, and the window asking whether one can be
+    // folded to stereo, both arrived here as `aac_latm` and were told there
+    // was no encoder.
+    let id = encoder_for(id);
     let codec = ff::encoder::find(id).ok_or_else(|| anyhow!("no encoder for {id:?}"))?;
     let mut enc = ff::codec::context::Context::new_with_codec(codec)
         .encoder()
@@ -452,6 +457,44 @@ pub(crate) fn name_layout(frame: &ff::frame::Audio) {
     }
 }
 
+/// Give a decoded frame whose channels are in a custom order a layout that
+/// owns nothing.
+///
+/// ffmpeg-next's `ChannelLayout` is a bitwise copy of the C struct, and a
+/// layout in custom order points at a channel map the frame owns. Handed to
+/// `Audio::new` it is copied into the new frame as it stands, and the two
+/// frames then free one map between them; kept in a resampler's note of what
+/// it was built for, it is read after the decoder has freed it. A MOV whose
+/// channel descriptions are not in libav's order -- front right before front
+/// left -- decodes to such frames, and cutting one aborted on a corrupted
+/// heap.
+///
+/// So the frame's own layout is rewritten before anything copies it: as the
+/// same channels in native order where that is the order they are already
+/// in, and otherwise as the plain layout for the count, which is what a frame
+/// in no stated order gets from [`name_layout`]. The samples are not moved.
+pub(crate) fn unmap_layout(frame: &ff::frame::Audio) {
+    unsafe {
+        let raw = frame.as_ptr() as *mut ff::ffi::AVFrame;
+        if (*raw).ch_layout.order != ff::ffi::AVChannelOrder::AV_CHANNEL_ORDER_CUSTOM {
+            return;
+        }
+        if ff::ffi::av_channel_layout_retype(
+            &mut (*raw).ch_layout,
+            ff::ffi::AVChannelOrder::AV_CHANNEL_ORDER_NATIVE,
+            ff::ffi::AV_CHANNEL_LAYOUT_RETYPE_FLAG_LOSSLESS,
+        ) >= 0
+        {
+            return;
+        }
+        let n = (*raw).ch_layout.nb_channels;
+        ff::ffi::av_channel_layout_uninit(&mut (*raw).ch_layout);
+        if n > 0 {
+            ff::ffi::av_channel_layout_default(&mut (*raw).ch_layout, n);
+        }
+    }
+}
+
 pub(crate) fn conform<'a>(
     resampler: &mut Option<ff::software::resampling::Context>,
     out: &'a mut ff::frame::Audio,
@@ -459,6 +502,7 @@ pub(crate) fn conform<'a>(
     layout: ff::channel_layout::ChannelLayout,
     format: ff::format::Sample,
 ) -> Result<&'a ff::frame::Audio> {
+    unmap_layout(frame);
     // A decoder that names no layout at all is not a frame to rematrix --
     // swresample cannot be told where its channels are, and with the right
     // number of them there is nothing to move anyway.
@@ -818,6 +862,14 @@ impl Reencoder {
         let mut par = ff::codec::Parameters::new();
         unsafe {
             ff::ffi::avcodec_parameters_from_context(par.as_mut_ptr(), self.encoder.as_ptr());
+            // The encoder is AAC's either way, and what leaves here in LATM
+            // framing is a LATM stream. Declared as the encoder's, a
+            // transport stream took the frames for raw AAC and put an ADTS
+            // header in front of each LATM one: a folded 4K recording's
+            // sound came out as nothing a decoder could read.
+            if matches!(self.framing, Some(Framing::Latm(_))) {
+                (*par.as_mut_ptr()).codec_id = ff::codec::Id::AAC_LATM.into();
+            }
         }
         par
     }
@@ -1714,7 +1766,9 @@ fn decode_around(
             // here may move a channel: the layout asked for is the layout
             // that arrived, and the only conversion is one of format. A
             // frame that names no layout falls back to the default for its
-            // count, which is what swresample can be told about.
+            // count, which is what swresample can be told about. A frame in
+            // a custom order is relabelled first: its layout cannot be copied.
+            unmap_layout(&frame);
             let want = if frame.channel_layout().channels() == channels as i32 {
                 frame.channel_layout()
             } else {
@@ -2263,6 +2317,9 @@ impl Fades {
     }
 }
 
+/// The longest fade taken, in seconds. Six times what the windows offer.
+const LONGEST_FADE: f64 = 60.0;
+
 /// What one range's fades come to, from what was asked for and where the
 /// range sits in the output.
 ///
@@ -2278,6 +2335,13 @@ impl Fades {
 /// at both ends of a three second range would leave nothing at full level,
 /// and what came out would be the shape of the fade rather than the sound.
 ///
+/// And held to [`LONGEST_FADE`] whatever the range: every sample a fade
+/// reaches is decoded and held at once around the edge (see
+/// [`decode_around`]), so a project asking for a fade of hours -- the
+/// windows offer ten seconds, a file can say anything -- would read half of
+/// a long range into memory as float, gigabytes of it on a feature-length
+/// 5.1 track.
+///
 /// Worked out in two places -- here for the frames a smart cut rewrites, and
 /// again for a track being re-encoded whole -- so it is one function, and
 /// both are handed the same range list in the same order.
@@ -2290,7 +2354,7 @@ pub fn fades_for(secs: (f64, f64), rate: u32, nth: usize, of: usize, window: (i6
         if !s.is_finite() || s <= 0.0 {
             0
         } else {
-            ((s * rate as f64).round() as i64).min(half)
+            ((s.min(LONGEST_FADE) * rate as f64).round() as i64).min(half)
         }
     };
     Fades {
@@ -2412,6 +2476,32 @@ mod tests {
     }
 
     #[test]
+    fn a_frame_in_a_custom_order_is_left_owning_no_map() {
+        use ff::ffi::AVChannelOrder::{AV_CHANNEL_ORDER_CUSTOM, AV_CHANNEL_ORDER_NATIVE};
+        // Front right before front left is no order libav has a mask for;
+        // front left before front right is stereo, written the long way.
+        for (spec, mask) in [("FR+FL", 0x3u64), ("FL+FR", 0x3)] {
+            let frame = ff::frame::Audio::empty();
+            let name = std::ffi::CString::new(spec).unwrap();
+            unsafe {
+                let raw = frame.as_ptr() as *mut ff::ffi::AVFrame;
+                if spec == "FL+FR" {
+                    ff::ffi::av_channel_layout_custom_init(&mut (*raw).ch_layout, 2);
+                    (*(*raw).ch_layout.u.map.add(0)).id = ff::ffi::AVChannel::AV_CHAN_FRONT_LEFT;
+                    (*(*raw).ch_layout.u.map.add(1)).id = ff::ffi::AVChannel::AV_CHAN_FRONT_RIGHT;
+                } else {
+                    assert_eq!(ff::ffi::av_channel_layout_from_string(&mut (*raw).ch_layout, name.as_ptr()), 0);
+                }
+                assert_eq!((*raw).ch_layout.order, AV_CHANNEL_ORDER_CUSTOM);
+                unmap_layout(&frame);
+                assert_eq!((*raw).ch_layout.order, AV_CHANNEL_ORDER_NATIVE, "{spec}");
+                assert_eq!((*raw).ch_layout.nb_channels, 2);
+                assert_eq!((*raw).ch_layout.u.mask, mask);
+            }
+        }
+    }
+
+    #[test]
     fn finds_the_frame_a_cut_lands_in() {
         let frames: Vec<Decoded> = (0..4).map(|i| decoded(i * 1024, 1024)).collect();
         assert_eq!(straddler(&frames, 1500, true), Some(1));
@@ -2443,6 +2533,12 @@ mod tests {
         assert_eq!(fades_for((1.0, 1.0), 48_000, 0, 1, window), Fades::NONE);
         // Nothing asked for is nothing done.
         assert_eq!(fades_for((0.0, 0.0), 48_000, 1, 3, window), Fades::NONE);
+        // A fade of a day on a range of two is held to LONGEST_FADE, not to
+        // half the range: every sample of it is decoded and held at once.
+        assert_eq!(
+            fades_for((86_400.0, 86_400.0), 48_000, 1, 3, (0, 48_000 * 7_200)),
+            Fades { head: 48_000 * 60, tail: 48_000 * 60 }
+        );
         // Half the range is the most either end may take, so the two never
         // cross: a two second fade on a three second range.
         let short = (0, 48_000 * 3);

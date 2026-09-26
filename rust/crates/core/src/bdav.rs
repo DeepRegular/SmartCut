@@ -294,7 +294,9 @@ pub fn prepare(at: &Path, n: usize) -> Result<Vec<String>> {
     // out. Read and not reserved, two runs into the same folder -- two
     // command lines at once, or one beside the window's export -- were given
     // the same number and wrote over each other's recording.
-    let mut out = Vec::with_capacity(n);
+    // Capped at what a disc can number: `n` comes from the window, and a
+    // capacity taken on its word is an allocation of any size at all.
+    let mut out = Vec::with_capacity(n.min(99_999));
     while out.len() < n {
         if next > 99_999 {
             bail!("{} has no recording numbers left", root.display());

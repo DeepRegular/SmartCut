@@ -634,9 +634,15 @@ fn palette_of(ifo: &[u8], first: Option<u64>) -> Option<crate::vobsub::Palette> 
     let mut fallback = None;
     for i in 0..count {
         let at = 8 + i * 8;
-        let start = u32be(table.get(..at + 8)?, at + 4) as usize;
-        let g = table.get(start..)?;
-        let clut = g.get(0xa4..0xa4 + 64)?;
+        // A table that stops short of the count it states ends the search,
+        // and a chain that points past it is passed over. Neither takes back
+        // the palette an earlier chain already gave.
+        let Some(entry) = table.get(..at + 8) else { break };
+        let start = u32be(entry, at + 4) as usize;
+        let Some(clut) = table.get(start..).and_then(|g| g.get(0xa4..0xa4 + 64)) else {
+            continue;
+        };
+        let g = &table[start..];
         let palette = crate::vobsub::Palette::from_clut(clut);
         fallback.get_or_insert(palette);
         let Some(first) = first else { break };
@@ -846,10 +852,7 @@ impl Volume {
     /// Read one of the small index files, named relative to `VIDEO_TS`.
     fn read(&mut self, rel: &str) -> Result<Vec<u8>> {
         match self {
-            Volume::Dir(dir) => {
-                let path = at_name(dir, rel);
-                std::fs::read(&path).with_context(|| format!("cannot read {}", path.display()))
-            }
+            Volume::Dir(dir) => crate::disc::read_index(&at_name(dir, rel)),
             Volume::Image { image, prefix, .. } => {
                 let want = format!("{prefix}{rel}");
                 let entry = image
@@ -902,11 +905,13 @@ impl Volume {
         let mut before = 0u64;
         for n in 1..=9 {
             let rel = format!("VTS_{vts:02}_{n}.VOB");
+            // The size is whatever the image's own entry says, and two of
+            // those near the top of the range add up to less than either.
             let size = self.size(&rel)?;
-            if want < before + size {
+            if want < before.saturating_add(size) {
                 return self.bytes_at(&rel, want - before, SECTOR as usize);
             }
-            before += size;
+            before = before.saturating_add(size);
         }
         None
     }

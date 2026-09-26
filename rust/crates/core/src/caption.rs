@@ -26,6 +26,7 @@
 //! back rather than being handed noise.
 
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use anyhow::Result;
 use ffmpeg_next as ff;
@@ -392,7 +393,7 @@ fn read_glyphs(
     data: &[u8],
     wide: bool,
     cell: (u16, u16),
-    into: &mut HashMap<crate::arib::Drcs, Glyph>,
+    into: &mut HashMap<crate::arib::Drcs, Arc<Glyph>>,
 ) {
     let Some(&codes) = data.first() else { return };
     let mut i = 1;
@@ -446,7 +447,7 @@ fn read_glyphs(
                     code: code & 0x7F7F,
                     wide,
                 },
-                glyph,
+                Arc::new(glyph),
             );
         }
     }
@@ -500,7 +501,11 @@ pub struct Run {
     /// The picture of one character, where the broadcaster sent one rather
     /// than a code. A run carrying this is that character and nothing else,
     /// and its `text` is empty: see [`Glyph`].
-    pub glyph: Option<Glyph>,
+    ///
+    /// Shared with the definition rather than copied: a statement of two
+    /// bytes a reference can name a glyph of eight kilobytes, and a window
+    /// of such statements held a copy for every one of them.
+    pub glyph: Option<Arc<Glyph>>,
     /// What the broadcaster asked for it to be drawn in, `0xRRGGBB`.
     pub colour: u32,
 }
@@ -629,7 +634,7 @@ pub struct Layout {
     /// they were sent in. Kept for the same reason the format is: a
     /// broadcaster may define a glyph in one statement and write it in a
     /// later one. See [`Layout::glyphs`].
-    glyphs: HashMap<crate::arib::Drcs, Glyph>,
+    glyphs: HashMap<crate::arib::Drcs, Arc<Glyph>>,
 }
 
 impl Default for Layout {
@@ -722,8 +727,8 @@ struct Pen {
 }
 
 /// The most sent pictures one statement draws. A screen holds a few hundred
-/// characters; each picture is copied into its run, and a statement of
-/// nothing but references to one 255-dot glyph was half a gigabyte.
+/// characters; a statement of nothing but references to one glyph is not a
+/// screen, and the rest of it is drawn as what a receiver shows instead.
 const MAX_GLYPHS: usize = 2048;
 
 impl Pen {
@@ -782,7 +787,7 @@ impl Pen {
     ///
     /// `text` is how it is spelled and `glyph` the picture of it, where the
     /// broadcaster sent one instead; a character is one or the other.
-    fn place(&mut self, layout: &Layout, text: &str, full_width: bool, glyph: Option<Glyph>) {
+    fn place(&mut self, layout: &Layout, text: &str, full_width: bool, glyph: Option<Arc<Glyph>>) {
         let (field_w, field_h) = layout.field();
         let (sx, sy) = self.size.scale();
         // Where `ACPS` put the pen, now that the size says how tall the

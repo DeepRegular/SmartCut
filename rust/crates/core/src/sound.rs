@@ -299,10 +299,19 @@ fn run(
     // A container that has no box for the codec says so only as "Invalid
     // argument", once the header is being written. Asked first, so the run
     // can say which codec and which file.
+    //
+    // The codec the stream is declared as, which for a whole-track re-encode
+    // is the encoder's: a 4K recording's LATM is re-encoded to raw AAC, and
+    // asked about as LATM an .m4a was refused for a track it holds.
+    let declared = if setup.mode == AudioMode::Reencode && setup.frame_as.is_none() {
+        crate::audio::encoder_for(setup.target)
+    } else {
+        setup.target
+    };
     let holds = unsafe {
         ff::ffi::avformat_query_codec(
             (*octx.as_ptr()).oformat,
-            setup.target.into(),
+            declared.into(),
             ff::ffi::FF_COMPLIANCE_NORMAL,
         )
     };
@@ -632,8 +641,16 @@ fn write_copied(
     packet.set_dts(Some(pts));
     packet.set_duration((dur / clock.tb).round() as i64);
     packet.set_position(-1);
-    packet.write_interleaved(octx)?;
-    Ok(())
+    match packet.write_interleaved(octx) {
+        // A frame whose ADTS header is damaged, which the MP4 and Matroska
+        // muxers' aac_adtstoasc turns away. One such frame used to fail the
+        // whole output; it is left out and the sound goes on after it.
+        Err(ff::Error::PatchWelcome | ff::Error::InvalidData) => {
+            eprintln!("note: a frame of the sound at {at:.3}s has a damaged header and was left out.");
+            Ok(())
+        }
+        r => Ok(r?),
+    }
 }
 
 /// ...and one the re-encoder made, which carries its own clock.

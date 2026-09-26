@@ -31,7 +31,7 @@
 //! problem and this program has none of it.
 
 use anyhow::{anyhow, bail, Context, Result};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::fs::File;
 use std::io::{Read, Seek, SeekFrom};
 use std::path::Path;
@@ -197,6 +197,9 @@ pub struct Image {
     file: File,
     maps: Vec<Map>,
     files: Vec<Entry>,
+    /// Where each path is in `files`, by its upper case spelling. See
+    /// [`Image::find`].
+    by_path: HashMap<String, usize>,
     /// Allocation descriptors read so far. See [`MAX_DESCRIPTORS`].
     descriptors: usize,
     /// Directory bytes read so far. See [`MAX_DIR_BYTES`].
@@ -216,6 +219,7 @@ impl Image {
             file,
             maps: Vec::new(),
             files: Vec::new(),
+            by_path: HashMap::new(),
             descriptors: 0,
             dir_bytes: 0,
         };
@@ -224,6 +228,11 @@ impl Image {
             .with_context(|| format!("{} is not a UDF image", path.display()))?;
         img.walk(root)?;
         img.files.sort_by(|a, b| a.path.cmp(&b.path));
+        // The first of two spellings of one name keeps it, as it did when
+        // the list was searched in order.
+        for (i, e) in img.files.iter().enumerate() {
+            img.by_path.entry(e.path.to_ascii_uppercase()).or_insert(i);
+        }
         Ok(img)
     }
 
@@ -237,10 +246,14 @@ impl Image {
     /// BDAV names the directory `BDAV` and the file `info.bdav`, and
     /// recorders have shipped `INFO.BDAV` for as long as there have been
     /// recorders.
+    ///
+    /// Looked up rather than searched for. A DVD asks this of every cell of
+    /// every title, ten times a cell, and an image may list twenty thousand
+    /// files: searched in order, an image built for it took minutes to open.
     pub fn find(&self, path: &str) -> Option<&Entry> {
-        self.files
-            .iter()
-            .find(|e| e.path.eq_ignore_ascii_case(path))
+        self.by_path
+            .get(&path.to_ascii_uppercase())
+            .and_then(|&i| self.files.get(i))
     }
 
     /// The whole of a small file. For streams, take [`Entry::contiguous`] and
@@ -534,7 +547,14 @@ impl Image {
                 match raw >> 30 {
                     // Recorded and allocated: the only kind that holds bytes.
                     0 => {
-                        out.extend(byte_runs(&map, block, len)?);
+                        // Charged by the runs it comes to and not only by
+                        // itself: through a metadata file in a thousand
+                        // pieces one short descriptor is a thousand runs,
+                        // and twenty thousand files sharing an entry of two
+                        // hundred of them asked for tens of gigabytes.
+                        let runs = byte_runs(&map, block, len)?;
+                        self.spend(runs.len().saturating_sub(1))?;
+                        out.extend(runs);
                         recorded += len;
                         if out.len() > MAX_EXTENTS {
                             bail!("a file in more than {MAX_EXTENTS} pieces is not one to read");
@@ -645,6 +665,17 @@ impl Image {
 
             for (name, chars, child) in file_ids(&dir) {
                 if chars & (FID_PARENT | FID_DELETED) != 0 {
+                    continue;
+                }
+                // A name is one step of a path. One that is a separator, or
+                // `..`, is a path of its own once joined onto the image's --
+                // which Windows resolves before it asks the disk, and a clip
+                // "inside" the image was a file beside it.
+                if name.is_empty()
+                    || name == "."
+                    || name == ".."
+                    || name.contains(['/', '\\', '\0'])
+                {
                     continue;
                 }
                 let path = if prefix.is_empty() {
@@ -948,6 +979,9 @@ mod tests {
     fn many_files_continued_into_one_block_are_refused() {
         let few = shared_continuation(4, false).expect("a few files open");
         assert_eq!(few.files().len(), 4);
+        // Found by name whichever case it is asked in.
+        assert_eq!(few.find("F00002").map(|e| e.path.as_str()), Some("f00002"));
+        assert!(few.find("f00004").is_none());
         let err = shared_continuation(1000, false).err().expect("refused");
         assert!(format!("{err:#}").contains("more than 4194304 allocation descriptors"), "{err:#}");
     }
@@ -1040,6 +1074,48 @@ mod tests {
                 }
             ]
         );
+    }
+
+    /// One short descriptor through a metadata file in a thousand pieces is
+    /// a thousand runs, and the image's budget counts them. Counted as one,
+    /// twenty entries of two hundred such descriptors came to four and a
+    /// half million runs with nothing said -- and twenty thousand files
+    /// sharing that entry to tens of gigabytes.
+    #[test]
+    fn runs_through_a_metadata_file_count_against_the_budget() {
+        let at = std::env::temp_dir().join("smartcut-udf-metadata-runs.iso");
+        std::fs::write(&at, [0u8; 16]).unwrap();
+        let file = File::open(&at).unwrap();
+        let _ = std::fs::remove_file(&at);
+        let pieces: Vec<Extent> = (0..1024u64)
+            .map(|i| Extent {
+                at: i * 2 * SECTOR,
+                len: SECTOR,
+            })
+            .collect();
+        let meta = Map::Metadata {
+            extents: pieces.into(),
+        };
+        let mut img = Image {
+            file,
+            maps: vec![meta.clone()],
+            files: Vec::new(),
+            by_path: HashMap::new(),
+            descriptors: 0,
+            dir_bytes: 0,
+        };
+        // A file entry of short descriptors, each over the whole metadata
+        // file.
+        let mut fe = vec![0u8; SECTOR as usize];
+        fe[..2].copy_from_slice(&TAG_FILE_ENTRY.to_le_bytes());
+        let n = (SECTOR as usize - 176) / 8;
+        fe[172..176].copy_from_slice(&((n * 8) as u32).to_le_bytes());
+        for k in 0..n {
+            let ad = 176 + k * 8;
+            fe[ad..ad + 4].copy_from_slice(&((1024 * SECTOR) as u32).to_le_bytes());
+        }
+        let refused = (0..20).any(|_| img.file_data(&fe, meta.clone()).is_err());
+        assert!(refused, "{} descriptors spent", img.descriptors);
     }
 
     #[test]

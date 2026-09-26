@@ -380,9 +380,17 @@ fn colour(text: &str) -> Option<u32> {
 /// for a `<p>` is the whole run of spans inside it: enough for [`spans`] to
 /// walk, and nothing that needs a parser to find.
 fn elements<'a>(doc: &'a str, open: &str) -> Vec<(Option<&'a str>, &'a str)> {
+    /// A caption is a paragraph or two, a style per size and colour, a
+    /// region per line. Each element found searches the rest of the
+    /// document for its close, so a document of tens of thousands of
+    /// unclosed `<p ` asked for billions of comparisons, per packet.
+    const MOST: usize = 256;
     let mut out = Vec::new();
     let mut rest = doc;
     while let Some(at) = rest.find(open) {
+        if out.len() >= MOST {
+            break;
+        }
         let after = &rest[at..];
         // `<p` must not match `<pre`: what follows the name is a space or
         // the end of the tag.
@@ -522,6 +530,14 @@ mod tests {
         // Centred in the line the document leaves for it.
         assert_eq!(run.y, 1796 + (240 - 144) / 2);
         assert_eq!(run.colour, 0xFFFF00);
+    }
+
+    /// A document of nothing but unclosed paragraphs is read as far as a
+    /// caption could go, not to its end once per paragraph.
+    #[test]
+    fn unclosed_elements_are_counted() {
+        let doc = "<p region=\"r\">".repeat(50_000);
+        assert_eq!(elements(&doc, "<p").len(), 256);
     }
 
     #[test]

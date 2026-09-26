@@ -89,6 +89,10 @@ const SYNC_WINDOW: usize = 1 << 16;
 /// hours. A step backwards is that and not a recording read out of order.
 const PCR_WRAP: i64 = 1 << 33;
 
+/// How far a range is read for its first clock reference before it is given
+/// up on. Many seconds of any broadcast, which sends one every tenth.
+const NO_CLOCK: usize = 32 << 20;
+
 /// The recording's data-broadcast packets, in the order they were sent, each
 /// with the moment in the finished file it belongs at.
 ///
@@ -195,7 +199,19 @@ impl Reader {
     /// Read forward until a carried packet is in hand, or the range ends.
     fn fill(&mut self) -> Result<()> {
         let mut frame = [0u8; crate::si::M2TS_PACKET];
+        // How far this has read without the clock arriving. A reference goes
+        // out ten times a second; a recording whose map names a clock PID
+        // that carries none would otherwise be read to its end, gigabytes,
+        // once for every kept range, before anything else is written.
+        let mut unclocked = 0usize;
         loop {
+            if self.clock.is_none() {
+                unclocked += self.stride;
+                if unclocked > NO_CLOCK {
+                    self.done = true;
+                    return Ok(());
+                }
+            }
             let frame = &mut frame[..self.stride];
             match read_fully(&mut self.file, frame)? {
                 n if n == frame.len() => {}

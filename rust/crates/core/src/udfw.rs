@@ -562,7 +562,11 @@ fn fill(dir: &Path, parent: usize, tree: &mut Vec<Node>, left_out: &mut Vec<Stri
         // What a run that stopped part way leaves behind: a stream being
         // stamped, an image being written.
         let unfinished = name.ends_with(".ats") || name.ends_with(".part");
-        if (linked && meta.is_dir()) || unfinished {
+        // Neither a file nor a folder -- a pipe, a socket, a device -- has no
+        // length to copy, and opening a pipe to read it waits for a writer
+        // that never comes: the image hung rather than failed.
+        let special = !meta.is_dir() && !meta.is_file();
+        if (linked && meta.is_dir()) || unfinished || special {
             left_out.push(dir.join(&name).to_string_lossy().into_owned());
             continue;
         }

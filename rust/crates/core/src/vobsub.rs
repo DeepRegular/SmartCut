@@ -179,9 +179,24 @@ pub fn stopped_after(spu: &[u8], after: f64) -> Vec<u8> {
 /// used twice for this -- stripping the extension and then setting one
 /// replaces the next dotted part of the name, and `ep.01.mkv` came out as
 /// `ep.idx`, the same name the next episode's subtitles were written to.
+///
+/// `ext` can carry a stream's language, which is whatever the recording's
+/// own tags say -- a Matroska file can say `../../x`. A separator in it
+/// would make this a path rather than a name, and on Windows the `..` after
+/// it is taken off lexically, landing the file outside the output folder;
+/// a colon there is a second stream of some other file. So everything but
+/// what a name is made of becomes `_`.
 pub(crate) fn named_after(cut: &str, ext: &str) -> std::path::PathBuf {
     let path = std::path::Path::new(cut);
     let stem = path.file_stem().map(|s| s.to_os_string()).unwrap_or_default();
+    let ext: String = ext
+        .chars()
+        .map(|c| match c {
+            '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|' => '_',
+            c if c.is_control() => '_',
+            c => c,
+        })
+        .collect();
     let mut name = stem;
     name.push(".");
     name.push(ext);
@@ -1089,6 +1104,18 @@ mod tests {
         assert_eq!(at("/v/ep.01.mkv", "idx"), "/v/ep.01.idx");
         assert_eq!(at("/v/2026.09.24.ts", "eng.sup"), "/v/2026.09.24.eng.sup");
         assert_eq!(at("/v/cut", "sub"), "/v/cut.sub");
+    }
+
+    /// A language a recording's tags supplied cannot take the file out of
+    /// the folder the cut is in.
+    #[test]
+    fn a_tag_with_a_separator_stays_a_name() {
+        for ext in ["../../x.sup", "..\\..\\x.sup", "c:x.sup", "a\nb.sup"] {
+            let at = named_after("/v/cut.ts", ext);
+            assert_eq!(at.parent(), Some(std::path::Path::new("/v")), "{ext}");
+            let name = at.file_name().unwrap().to_string_lossy().into_owned();
+            assert!(!name.contains(['/', '\\', ':', '\n']), "{name}");
+        }
     }
 
     /// A unit that puts a picture up and never says when to take it down,

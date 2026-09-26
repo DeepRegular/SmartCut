@@ -64,7 +64,9 @@ pub const MARGIN: f64 = 0.01;
 /// bytes. The index is a table of entry points, so it grows with the length
 /// rather than with the size.
 fn disc_files(seconds: f64) -> u64 {
-    4_096 + (seconds * 10.0) as u64
+    // Saturating, as in [`estimate_at`]: a length out of the window can be
+    // anything, and the cast alone already stops at `u64::MAX`.
+    ((seconds * 10.0) as u64).saturating_add(4_096)
 }
 
 /// And what the stream is padded out to.
@@ -284,13 +286,15 @@ pub fn estimate_at(rates: Rates, seconds: f64, going: Going) -> Estimate {
     // A file's packets are 188 bytes where a disc's are 192, and everything
     // else about the framing is the same.
     let (framing, sound, extras) = match going {
-        Going::Disc => (FRAMING, SOUND_FRAMING, disc_files(seconds) + PADDING),
+        Going::Disc => (FRAMING, SOUND_FRAMING, disc_files(seconds).saturating_add(PADDING)),
         Going::File => (FRAMING * 188.0 / 192.0, SOUND_FRAMING * 188.0 / 192.0, 0),
     };
     let video_es = video_rate / 8.0 * seconds;
     let audio_es = audio_rate / 8.0 * seconds;
     let video_bytes = (video_es * framing) as u64;
-    let bytes = ((video_es * framing + audio_es * sound) * TABLES) as u64 + extras;
+    // Saturating: a float past the end of a u64 casts to u64::MAX, and the
+    // numbers here come from the window (`disc_room`) as well as from a file.
+    let bytes = (((video_es * framing + audio_es * sound) * TABLES) as u64).saturating_add(extras);
     Estimate {
         seconds,
         bytes,
@@ -363,15 +367,16 @@ pub const FLOOR: f64 = 0.35;
 
 /// Work out what has to come off.
 pub fn fit(estimates: &[Estimate], capacity: u64, margin: f64) -> Fit {
-    let bytes: u64 = estimates.iter().map(|e| e.bytes).sum::<u64>() + DISC_FLOOR;
+    let bytes: u64 = estimates
+        .iter()
+        .fold(DISC_FLOOR, |sum, e| sum.saturating_add(e.bytes));
     // Only the pictures of the recordings that have pictures this can rewrite.
     // A recording in H.264 on the same disc still takes its own room; it
     // simply cannot be asked for any of it back.
     let video_bytes: u64 = estimates
         .iter()
         .filter(|e| e.can_shrink)
-        .map(|e| e.video_bytes)
-        .sum();
+        .fold(0u64, |sum, e| sum.saturating_add(e.video_bytes));
     let usable = (capacity as f64 * (1.0 - margin.clamp(0.0, 0.5))) as u64;
     if bytes <= usable {
         return Fit {

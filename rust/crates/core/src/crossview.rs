@@ -578,7 +578,11 @@ pub fn play(
     crate::init()?;
     let shape = shape_for(seam.before, width);
     let laid = overlay_of(&seam.transition, shape).ok().flatten();
-    let step = 1.0 / fps.max(1.0);
+    // Held to the rates a recording can have (see where `frame_rate` is
+    // worked out). The rate arrives from the window, and a huge one made the
+    // step too small to move `t` at all: the same instant, composited for
+    // ever.
+    let step = 1.0 / if fps.is_finite() { fps.clamp(1.0, 1000.0) } else { 30.0 };
     // Opened where each clip is first wanted rather than at the head of the
     // preview: the clip after the join is not on screen for the first half of
     // it, and a reader that started there would decode that half to drop it.

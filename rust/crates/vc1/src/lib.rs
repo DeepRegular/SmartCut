@@ -154,4 +154,55 @@ mod tests {
         assert!(picture.halfqp);
         assert!(!picture.uniform_quantizer);
     }
+
+    /// Whatever the headers say, reading them and writing against them
+    /// gives an answer or a refusal and never a panic: every truncation and
+    /// every flipped bit of the disc's own pair, each shape that still reads
+    /// used to write a picture of a size that fills no macroblock evenly.
+    #[test]
+    fn damaged_headers_are_refused_not_panicked_on() {
+        let (w, h) = (21usize, 13usize);
+        let (cw, ch) = (w.div_ceil(2), h.div_ceil(2));
+        let luma: Vec<u8> = (0..w * h).map(|i| (i * 37 % 251) as u8).collect();
+        let chroma: Vec<u8> = (0..cw * ch).map(|i| (i * 11 % 256) as u8).collect();
+        let plane = |data, width, height| Plane {
+            data,
+            stride: width,
+            width,
+            height,
+        };
+        let frame = Frame {
+            y: plane(&luma[..], w, h),
+            u: plane(&chroma[..], cw, ch),
+            v: plane(&chroma[..], cw, ch),
+            tff: true,
+            rff: false,
+            rptfrm: 0,
+        };
+        let packet = [0x00, 0x00, 0x01, 0x0d, 0b1011_0100, 0b0010_0010, 0x00, 0x00];
+        let try_one = |data: &[u8]| {
+            if let Some(shape) = Shape::read(data) {
+                let _ = shape.picture(&packet);
+                for step in [0, 3, 8, 9, 31, 255] {
+                    if let Ok(encoder) = Encoder::new(&shape, w as u32, h as u32, step) {
+                        let out = encoder.encode(&frame);
+                        assert!(shape.picture(&out).is_some(), "step {step}");
+                    }
+                }
+            }
+        };
+        for len in 0..EXTRADATA.len() {
+            try_one(&EXTRADATA[..len]);
+        }
+        let mut data = EXTRADATA.to_vec();
+        for bit in 0..data.len() * 8 {
+            data[bit / 8] ^= 0x80 >> (bit % 8);
+            try_one(&data);
+            data[bit / 8] ^= 0x80 >> (bit % 8);
+        }
+        let shape = Shape::read(EXTRADATA).expect("headers");
+        for len in 0..packet.len() {
+            let _ = shape.picture(&packet[..len]);
+        }
+    }
 }

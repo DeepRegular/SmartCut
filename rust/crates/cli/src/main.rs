@@ -182,9 +182,22 @@ fn disc_size(v: &str) -> Result<u64> {
     Ok(n)
 }
 
+/// A name read out of a disc or a broadcast, safe to print.
+///
+/// Those names are the file's, not the user's: a disc's playlist or a
+/// programme listing can carry an escape sequence, and printed as it stood
+/// it was the terminal that obeyed it -- retitling the window, moving the
+/// cursor over the lines above, or worse on a terminal that answers queries.
+/// Every control character is shown as the replacement character instead.
+fn shown(s: &str) -> String {
+    s.chars()
+        .map(|c| if c.is_control() { '\u{FFFD}' } else { c })
+        .collect()
+}
+
 fn list_disc(input: &str, disc: &smartcut_core::disc::Disc) {
     println!("disc  : {input}");
-    println!("        {} -- {}", disc.shape.as_str(), disc.label);
+    println!("        {} -- {}", disc.shape.as_str(), shown(&disc.label));
     println!("        {} recording(s)", disc.entries.len());
     // Said here because the rows below are readable and what they name is
     // not: the index files a recorder writes are in the clear and every
@@ -214,7 +227,7 @@ fn list_disc(input: &str, disc: &smartcut_core::disc::Disc) {
             "{tick}{:3}  {}  {}{marks}",
             i + 1,
             fmt_hms(e.duration),
-            e.label
+            shown(&e.label)
         );
         // Only where there is a choice to make. A clip with one sound track
         // and nothing else is a clip the list has already described.
@@ -226,14 +239,14 @@ fn list_disc(input: &str, disc: &smartcut_core::disc::Disc) {
                 let lang = t
                     .language
                     .as_deref()
-                    .map(|l| format!(" {l}"))
+                    .map(|l| format!(" {}", shown(l)))
                     .unwrap_or_default();
                 let gone = if t.carried {
                     ""
                 } else {
                     " -- a cut cannot carry this"
                 };
-                println!("       0x{:04x}  {}{lang}{gone}", t.pid, t.detail);
+                println!("       0x{:04x}  {}{lang}{gone}", t.pid, shown(&t.detail));
             }
         }
     }
@@ -932,6 +945,10 @@ fn main() -> Result<()> {
     if bdav.is_some() && audio_es {
         bail!("--audio-es writes a file beside the cut, which does not go onto a disc");
     }
+    // The same for subtitles written out beside the clip.
+    if bdav.is_some() && subtitles != smartcut_core::cut::Subtitles::Pgs {
+        bail!("--subtitles beside and sup write files beside the cut, which do not go onto a disc");
+    }
     // The size is worked out from the first recording's ranges before the
     // others are opened, so it would leave them out of the sum and say a
     // join fits that does not. And a cut of sound alone has no pictures to
@@ -1069,7 +1086,7 @@ fn main() -> Result<()> {
         None => input,
         Some(disc) => match pick(&disc.entries, title.as_deref())? {
             Some(entry) => {
-                println!("title : {}", entry.label);
+                println!("title : {}", shown(&entry.label));
                 // What the disc's own playlist says about the recording
                 // beside its name. Worth printing because it is what a cut
                 // of this recording carries onto a disc of its own -- see
@@ -1077,8 +1094,9 @@ fn main() -> Result<()> {
                 // recording is described at all.
                 let mut about: Vec<String> = Vec::new();
                 if let Some(channel) = &entry.channel {
+                    let channel = shown(channel);
                     about.push(match entry.channel_number {
-                        0 => channel.clone(),
+                        0 => channel,
                         n => format!("{channel} ({n})"),
                     });
                 }
@@ -1092,7 +1110,7 @@ fn main() -> Result<()> {
                     // One line of it: a description runs to several hundred
                     // characters and this is a heading, not the programme
                     // guide.
-                    let flat = text.replace('\n', " ");
+                    let flat = shown(&text.replace('\n', " "));
                     let short: String = flat.chars().take(100).collect();
                     let more = if flat.chars().count() > 100 {
                         "…"
@@ -1273,7 +1291,7 @@ fn main() -> Result<()> {
         // cannot see the picture says `jpn 音声解説`, and the language alone
         // would have called those two the same.
         let said = a.said.as_ref().and_then(|s| s.name.as_deref());
-        let lang = match (a.language.as_deref(), said) {
+        let lang = match (a.language.as_deref().map(shown), said.map(shown)) {
             (Some(code), Some(name)) => format!("  {code} {name}"),
             (Some(code), None) => format!("  {code}"),
             (None, Some(name)) => format!("  {name}"),
@@ -1306,7 +1324,7 @@ fn main() -> Result<()> {
         let lang = c
             .language
             .as_deref()
-            .map(|l| format!(" {l}"))
+            .map(|l| format!(" {}", shown(l)))
             .unwrap_or_default();
         let pid = if src.on_a_ts {
             format!(" pid 0x{:04x}", c.pid)
@@ -1330,7 +1348,7 @@ fn main() -> Result<()> {
         let lang = g
             .language
             .as_deref()
-            .map(|l| format!(" {l}"))
+            .map(|l| format!(" {}", shown(l)))
             .unwrap_or_default();
         let pid = if src.on_a_ts {
             format!(" pid 0x{:04x}", g.pid)
@@ -1346,7 +1364,7 @@ fn main() -> Result<()> {
         let lang = s
             .language
             .as_deref()
-            .map(|l| format!(" {l}"))
+            .map(|l| format!(" {}", shown(l)))
             .unwrap_or_default();
         println!("subtitle:{lang} subpicture   [id 0x{:02x}]", s.id);
     }
@@ -1690,6 +1708,20 @@ fn main() -> Result<()> {
         return Ok(());
     }
 
+    // A cut that starts after the last picture removes nothing, and the run
+    // wrote the whole recording without a word about it. Said rather than
+    // refused: unlike a kept range out there, which leaves nothing to write,
+    // this one leaves the rest of the cut as it was asked for -- and the same
+    // `--cut` handed to recordings of different lengths is a script's
+    // ordinary way of trimming a tail.
+    for &(start, end) in cuts.iter().filter(|(start, _)| *start >= src.duration) {
+        eprintln!(
+            "note: cut {}-{} begins after the recording ends at {}, and removes nothing",
+            fmt_hms(start),
+            fmt_hms(end),
+            fmt_hms(src.duration)
+        );
+    }
     let ranges = if !cuts.is_empty() {
         complement(&mut cuts, src.duration)
     } else if !keeps.is_empty() {
@@ -1936,6 +1968,14 @@ fn main() -> Result<()> {
         return Ok(());
     }
     let out = output.unwrap();
+    // The still laid over a crossing is read when the crossing is written,
+    // long after the output file was created: named as `-o`, it was
+    // truncated first and the user's image lost along with the transition.
+    if let Some(image) = &crossing_image {
+        if smartcut_core::input::same_file(std::path::Path::new(image), std::path::Path::new(&out)) {
+            bail!("{out} is the --transition-image; writing there would destroy it");
+        }
+    }
     // What the audio will be, which is not always what was asked for: a
     // downmix has no copy path, and the engine says so and re-encodes.
     let asked = audio_channels.filter(|&c| src.audio.as_ref().is_some_and(|a| a.channels != c));
@@ -2132,6 +2172,19 @@ fn main() -> Result<()> {
             also.duration,
         );
         joined_src.push(also);
+    }
+    // The same courtesy `--drop-stream` gets: an id no recording of the run
+    // carries -- a typo, or a stream of another disc -- dropped nothing, and
+    // the run went ahead as though it had been obeyed.
+    if let Some(id) = drop_subpictures.iter().find(|&&id| {
+        !std::iter::once(&src)
+            .chain(&joined_src)
+            .any(|s| s.subpictures.iter().any(|p| p.id == id))
+    }) {
+        bail!(
+            "--drop-subpicture 0x{id:02x}: {} has no subtitle stream with that id",
+            src.path
+        );
     }
     // The sound and no pictures. Taken here, once every recording of the run
     // is open: what the sound writer wants is the ranges and the joins, both
@@ -2364,7 +2417,7 @@ fn main() -> Result<()> {
             }],
             None,
         )?;
-        println!("wrote {} -- {name}", at.join("BDAV").display());
+        println!("wrote {} -- {}", at.join("BDAV").display(), shown(&name));
         if let Some(revision) = iso {
             // Beside the folder and named after it. The folder stays unless
             // `--iso-only` says otherwise: it is what the image was made of,

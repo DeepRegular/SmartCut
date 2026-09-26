@@ -583,6 +583,9 @@ fn resample<'a>(
     rate: u32,
     layout: ff::channel_layout::ChannelLayout,
 ) -> Result<&'a [f32]> {
+    // See `unmap_layout`: the layout is copied into the resampler's note of
+    // what it was built for, and a custom one is a pointer into this frame.
+    crate::audio::unmap_layout(frame);
     crate::audio::name_layout(frame);
     let arriving = ff::software::resampling::context::Definition {
         format: frame.format(),

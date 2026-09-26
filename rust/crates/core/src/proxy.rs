@@ -38,6 +38,9 @@ use crate::{thumbs, Source};
 /// the cache key, so old files are simply never looked at again.
 pub const VERSION: u32 = 3;
 
+/// Tells one build's half-written proxy from another's; see [`build`].
+static PART_SERIAL: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
 /// Encoders to try, in order, when none is named. Hardware first: the design
 /// note in `docs/technical/design.md` keeps x264 at arm's length because it is GPL, and
 /// `mpeg4` is the fallback that is always there in any libavcodec build.
@@ -618,7 +621,18 @@ pub fn build(
     }
     // Built under another name and renamed at the end: a proxy that was
     // interrupted must not be picked up next time as if it were whole.
-    let part = out_path.with_extension("part.mp4");
+    //
+    // A name of its own, as [`crate::seek_index::SeekIndex::save`] gives its
+    // temporary. The window builds a proxy for every open of a file, and a
+    // build that was superseded -- the same recording opened again -- is
+    // still flushing its last pictures when the next build starts: on one
+    // shared name the two wrote into the same file, and the first then took
+    // it away on its way out, under the build that was still writing it.
+    let part = out_path.with_extension(format!(
+        "{}-{}.part.mp4",
+        std::process::id(),
+        PART_SERIAL.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    ));
     // Both names are written over -- the second one renamed onto the first
     // -- and either can be the recording itself: `--proxy -o` naming the
     // recording replaced it with its own low-resolution copy and said so as
@@ -657,7 +671,10 @@ pub fn build(
         } else {
             gaps.iter().sum::<f64>() / gaps.len() as f64
         };
-        (mean / 2.0).clamp(fd, 1.0)
+        // Not `clamp(fd, 1.0)`: a recording slower than a picture a second
+        // has a frame longer than the ceiling, and `clamp` panics on that.
+        // The frame wins, as it would have had it fitted.
+        (mean / 2.0).min(1.0).max(fd)
     };
     let mut told = -1.0f64;
     let mut shared = std::time::Instant::now();
@@ -710,7 +727,11 @@ pub fn build(
                 let Some(pts) = frame.pts() else {
                     return Ok(true);
                 };
-                let ticks = pts - start_ticks;
+                // Checked: a container's clock can be anything at all, and a
+                // stamp near the end of the range is not a moment either.
+                let Some(ticks) = pts.checked_sub(start_ticks) else {
+                    return Ok(true);
+                };
                 let t = ticks as f64 * f64::from(tb_in);
                 // Pictures before the container's own start belong to no moment
                 // the rest of the app can name.
