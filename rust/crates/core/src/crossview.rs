@@ -297,9 +297,14 @@ pub fn shape_for(src: &Source, width: u32) -> (u32, u32) {
     let sar = src.video.sample_aspect_ratio.max(0.01);
     let native = (f64::from(src.video.width) * sar).round() as u32;
     let w = width.min(native.max(16)).max(16) & !1;
-    let h = ((f64::from(w) * f64::from(src.video.height) / (f64::from(src.video.width) * sar))
+    // Held to a size a frame can be allocated at. A stream whose parameters
+    // never said how wide it is divided by nought here, and the height came
+    // out as `u32::MAX`, which the frame allocation reads as negative and
+    // leaves without planes for the blend to write into.
+    let h = ((f64::from(w) * f64::from(src.video.height)
+        / (f64::from(src.video.width.max(1)) * sar))
         .round() as u32)
-        .max(16)
+        .clamp(16, 8192)
         & !1;
     (w, h)
 }

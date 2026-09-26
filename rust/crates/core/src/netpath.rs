@@ -98,7 +98,25 @@ pub fn parse(input: &str) -> Option<Share> {
     if host.is_empty() || share.is_empty() {
         return None;
     }
-    let rest = parts.map(take).collect::<Vec<_>>().join("/");
+    // Dot segments are resolved here, inside the share, the way Windows
+    // resolves them in a UNC path: `..` stops at the share. Joined onto a
+    // mount point as they stood, they climbed out of it -- to a file beside
+    // the mount, or past a folder mounted on its own into whatever is next
+    // to it -- and an escape decoded out of the URL (`%2F`) is a separator
+    // like any other.
+    let mut rest: Vec<String> = Vec::new();
+    for part in parts.map(take) {
+        for seg in part.split(['/', '\\']) {
+            match seg {
+                "" | "." => {}
+                ".." => {
+                    rest.pop();
+                }
+                seg => rest.push(seg.to_string()),
+            }
+        }
+    }
+    let rest = rest.join("/");
     Some(Share { host, share, rest })
 }
 
@@ -414,6 +432,17 @@ mod tests {
         );
         assert_eq!(parse("smb://nas/rec/100%.ts").unwrap().rest, "100%.ts");
         assert_eq!(parse(r"\\nas\rec\100%20.ts").unwrap().rest, "100%20.ts");
+    }
+
+    /// Nothing named inside a share resolves to somewhere outside it.
+    #[test]
+    fn dot_segments_stay_inside_the_share() {
+        assert_eq!(parse("smb://nas/rec/a/../b.ts").unwrap().rest, "b.ts");
+        assert_eq!(parse(r"\\nas\rec\..\..\etc\x").unwrap().rest, "etc/x");
+        assert_eq!(parse("smb://nas/rec/./%2E%2E/%2Fetc%2Fx").unwrap().rest, "etc/x");
+        let m = mount_line("//nas/rec/Anime /mnt/anime cifs rw 0 0").unwrap();
+        let s = parse("smb://nas/rec/Anime/../Drama/a.ts").unwrap();
+        assert_eq!(inside_folder_mount(&m, &s), None);
     }
 
     #[test]

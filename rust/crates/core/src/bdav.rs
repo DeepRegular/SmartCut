@@ -492,8 +492,17 @@ fn write_table(root: &Path, title: &str) -> Result<()> {
         )
         .collect();
     playlists.sort();
-    std::fs::write(root.join("info.bdav"), info(&playlists, title))
-        .with_context(|| format!("writing {}", root.join("info.bdav").display()))?;
+    // Written aside and moved over: on a disc that already holds a
+    // recorder's own recordings, a table cut short by a crash would lose
+    // every one of them, not only the ones written here.
+    let table = root.join("info.bdav");
+    let temp = root.join("info.bdav.part");
+    let written = std::fs::write(&temp, info(&playlists, title))
+        .and_then(|()| std::fs::rename(&temp, &table));
+    if written.is_err() {
+        let _ = std::fs::remove_file(&temp);
+    }
+    written.with_context(|| format!("writing {}", table.display()))?;
     Ok(())
 }
 
@@ -1560,9 +1569,24 @@ fn rpls(clip_name: &str, clip: &Clip, rec: &Recording) -> Vec<u8> {
     list.extend_from_slice(&(item.len() as u16).to_be_bytes());
     list.extend_from_slice(&item);
 
+    // Only the marks inside the play item, in order and once each. The marks
+    // are placed on the timeline the cut was planned on, and the stream that
+    // was written can come out a little shorter than that plan -- a disc's
+    // own chapter a moment before the end of what was kept then lands past
+    // the play item's out time, which is a mark into nothing. And a mark
+    // ahead of zero is ahead of the in time, not on it.
+    let mut when: Vec<u32> = rec
+        .marks
+        .iter()
+        .filter(|at| at.is_finite())
+        .map(|at| (clip.start as f64 + at * TICK).max(clip.start as f64) as u32)
+        .filter(|t| *t == clip.start || *t < clip.end)
+        .collect();
+    when.sort_unstable();
+    when.dedup();
     let mut marks = Vec::new();
-    marks.extend_from_slice(&(rec.marks.len() as u16).to_be_bytes());
-    for at in &rec.marks {
+    marks.extend_from_slice(&(when.len() as u16).to_be_bytes());
+    for when in when {
         let mut entry = [0u8; MARK];
         // What kind of mark this is, and then the maker who wrote it -- the
         // two bytes a playlist of several clips is read past to reach the
@@ -1578,8 +1602,7 @@ fn rpls(clip_name: &str, clip: &Clip, rec: &Recording) -> Vec<u8> {
         // anything this program can read, so what goes in is what the
         // playable disc has. See [`clpi`].
         entry[..4].copy_from_slice(&[0x05, 0x00, 0x02, 0x12]);
-        let when = clip.start as f64 + at * TICK;
-        entry[6..10].copy_from_slice(&(when.max(0.0) as u32).to_be_bytes());
+        entry[6..10].copy_from_slice(&when.to_be_bytes());
         entry[10..14].copy_from_slice(&[0xFF; 4]);
         marks.extend_from_slice(&entry);
     }
@@ -1828,6 +1851,36 @@ mod tests {
         };
         assert_eq!(mark_at(0), 20842);
         assert_eq!(mark_at(1), 20842 + (12.5 * TICK) as u32);
+    }
+
+    /// Only marks inside the play item go in, in order and once each: the
+    /// clip here is thirty seconds long, and a mark past that or ahead of
+    /// its start is a mark into nothing.
+    #[test]
+    fn a_mark_outside_the_recording_is_left_out() {
+        let rec = Recording {
+            clip: "00001".into(),
+            name: String::new(),
+            made: None,
+            ran: None,
+            description: None,
+            channel: None,
+            channel_number: 0,
+            marks: vec![12.5, 0.0, 30.0, 31.2, -0.2, f64::NAN, 12.5],
+        };
+        let raw = rpls("00001", &clip(), &rec);
+        let marks_at = u32::from_be_bytes(raw[12..16].try_into().unwrap()) as usize;
+        assert_eq!(
+            u16::from_be_bytes(raw[marks_at + 4..marks_at + 6].try_into().unwrap()),
+            2
+        );
+        let mark_at = |i: usize| {
+            let one = marks_at + 6 + i * MARK;
+            u32::from_be_bytes(raw[one + 6..one + 10].try_into().unwrap())
+        };
+        assert_eq!(mark_at(0), 20842);
+        assert_eq!(mark_at(1), 20842 + (12.5 * TICK) as u32);
+        assert_eq!(raw.len(), marks_at + 6 + 2 * MARK);
     }
 
     /// The room a run does not need is dealt out through it, and the two

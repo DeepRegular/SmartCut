@@ -417,9 +417,7 @@ fn aspect(sar: f64) -> String {
 /// still two clips, and comparing the numbers is what decides the question.
 fn pixels(pix_fmt: i32) -> String {
     let name = unsafe {
-        let p = ff::ffi::av_get_pix_fmt_name(std::mem::transmute::<i32, ff::ffi::AVPixelFormat>(
-            pix_fmt,
-        ));
+        let p = named::av_get_pix_fmt_name(pix_fmt);
         if p.is_null() {
             None
         } else {
@@ -455,22 +453,30 @@ fn colour(shape: &PictureShape) -> String {
 }
 
 // libavutil takes these as its own enums; the fields hold the plain
-// integers the container stated. Wrapped rather than transmuted at each
-// call site, which is three casts written once instead of nine.
-unsafe extern "C" fn colour_primaries_name(v: i32) -> *const std::os::raw::c_char {
-    ff::ffi::av_color_primaries_name(std::mem::transmute::<i32, ff::ffi::AVColorPrimaries>(v))
+// integers the container stated -- and a container may state any of them.
+// MPEG-2's sequence display extension is eight bits a field, and libavcodec
+// passes the three colour fields through unchecked, so a recording can carry
+// primaries of 13, which no `AVColorPrimaries` is. A Rust enum holding a
+// value it has no variant for is undefined behaviour, so the names are asked
+// for through declarations that take the int libavutil actually receives (a
+// C enum is passed as one) instead of by transmuting into the bindings'
+// enums. libavutil answers null for a value it has no name for.
+mod named {
+    use std::os::raw::{c_char, c_int};
+
+    extern "C" {
+        pub fn av_get_pix_fmt_name(v: c_int) -> *const c_char;
+        pub fn av_color_primaries_name(v: c_int) -> *const c_char;
+        pub fn av_color_transfer_name(v: c_int) -> *const c_char;
+        pub fn av_color_space_name(v: c_int) -> *const c_char;
+    }
 }
 
-unsafe extern "C" fn colour_transfer_name(v: i32) -> *const std::os::raw::c_char {
-    ff::ffi::av_color_transfer_name(std::mem::transmute::<
-        i32,
-        ff::ffi::AVColorTransferCharacteristic,
-    >(v))
-}
-
-unsafe extern "C" fn colour_space_name(v: i32) -> *const std::os::raw::c_char {
-    ff::ffi::av_color_space_name(std::mem::transmute::<i32, ff::ffi::AVColorSpace>(v))
-}
+use named::{
+    av_color_primaries_name as colour_primaries_name,
+    av_color_space_name as colour_space_name,
+    av_color_transfer_name as colour_transfer_name,
+};
 
 /// Interlaced or not, and which field leads. `None` where the recording does
 /// not say.
@@ -699,5 +705,17 @@ mod tests {
             (found[0].master.as_str(), found[0].theirs.as_str()),
             ("yuv420p", "yuv420p10le")
         );
+    }
+
+    /// Colour fields libavutil has no name for -- a recording is free to
+    /// state them -- are said as the numbers they are.
+    #[test]
+    fn a_colour_with_no_name_is_its_number() {
+        let mut theirs = video();
+        theirs.shape.primaries = 13;
+        theirs.shape.transfer = 200;
+        let found = video_mismatches(&video(), &theirs);
+        let colour = found.iter().find(|m| m.what == What::Colour).expect("colour");
+        assert!(colour.theirs.starts_with("13/200/"), "{}", colour.theirs);
     }
 }

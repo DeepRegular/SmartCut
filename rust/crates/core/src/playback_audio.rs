@@ -1187,10 +1187,12 @@ fn feed_from(
 
 /// A decoded frame in the channels it is heard in. See [`Fold`].
 ///
-/// The frame itself where there is nothing to fold -- the ordinary case --
-/// and where its decoder named no layout, since swresample cannot be told
-/// where the channels of such a frame are. The sample format is kept: the
-/// conversion to the card's is [`resample`]'s.
+/// The frame itself where there is nothing to fold -- the ordinary case. A
+/// frame whose decoder named no layout (PCM in an .mkv) is folded all the
+/// same: `conform` gives it the ordinary layout for its count first, as it
+/// does on the way into the cut, and a preview that left such a frame at six
+/// channels was playing and metering what the output does not hold. The
+/// sample format is kept: the conversion to the card's is [`resample`]'s.
 fn fold_frame<'a>(
     folder: &mut Option<ff::software::resampling::Context>,
     folded: &'a mut ff::frame::Audio,
@@ -1199,7 +1201,7 @@ fn fold_frame<'a>(
 ) -> Result<&'a ff::frame::Audio> {
     let own = frame.channels();
     let to = fold.of(own);
-    if to >= own || frame.channel_layout().is_empty() {
+    if to >= own {
         return Ok(frame);
     }
     let layout = ff::channel_layout::ChannelLayout::default(i32::from(to));

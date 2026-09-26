@@ -516,12 +516,19 @@ fn ts_information(section: &[u8], service_id: u16) -> Option<Vec<u8>> {
         let Some(d) = descriptor(body, 0xCD) else {
             continue;
         };
-        if ts_information_services(d).contains(&service_id) {
+        let named = ts_information_services(d);
+        if named.contains(&service_id) {
             return Some(d.to_vec());
         }
-        only = Some(d.to_vec());
+        // One that names services, and not this one, is another stream's.
+        if service_id == 0 || named.is_empty() {
+            only = Some(d.to_vec());
+        }
     }
-    only.filter(|_| streams_seen == 1)
+    // And one stream in the section settles it only where the section is the
+    // whole table: a network that describes its streams over several
+    // sections can put one of them, somebody else's, in a section alone.
+    only.filter(|_| streams_seen == 1 && section.get(7) == Some(&0))
 }
 
 /// Find one descriptor in a loop, by tag.
@@ -992,7 +999,12 @@ fn read_service_within(
     // The whole multiplex's, as it arrived. Which entry in it is this
     // recording's is not known until its map has been read, so the section
     // is kept whole and cut down afterwards.
-    let mut sdt_whole: Option<Vec<u8>> = None;
+    // Every section of it, since a multiplex whose description runs to more
+    // than one puts each service in only one of them. Complete once as many
+    // have arrived as the last section number says there are.
+    let mut sdt_whole: Vec<Vec<u8>> = Vec::new();
+    let sdt_complete =
+        |have: &Vec<Vec<u8>>| have.first().is_some_and(|s| have.len() > usize::from(s[7]));
     // And the network's own table, kept for the same reason: which transport
     // stream in it is this one is settled by the service, which the map has
     // to arrive before anything knows.
@@ -1117,9 +1129,16 @@ fn read_service_within(
                     }
                 });
             }
-            PID_SDT if sdt_whole.is_none() => sdt.feed(p, |sec| {
-                if sec[0] == TABLE_SDT_ACTUAL && sec.len() >= 15 {
-                    sdt_whole = Some(sec.to_vec());
+            PID_SDT if !sdt_complete(&sdt_whole) => sdt.feed(p, |sec| {
+                // Numbered from the first one taken: a section that says
+                // there are a different number of them is of another version
+                // of the table, and not to be mixed in with this one.
+                if sec[0] == TABLE_SDT_ACTUAL
+                    && sec.len() >= 15
+                    && sdt_whole.first().is_none_or(|s| s[5] == sec[5] && s[7] == sec[7])
+                    && !sdt_whole.iter().any(|s| s[6] == sec[6])
+                {
+                    sdt_whole.push(sec.to_vec());
                 }
             }),
             PID_SIT if sit_whole.is_none() => sit.feed(p, |sec| {
@@ -1141,7 +1160,7 @@ fn read_service_within(
         if found
             .as_ref()
             .is_some_and(|f| names(f, wanted) == wanted.len())
-            && sdt_whole.is_some()
+            && sdt_complete(&sdt_whole)
         {
             break;
         }
@@ -1154,7 +1173,7 @@ fn read_service_within(
     let mut service = found.or(any).ok_or_else(|| {
         anyhow!("{path} carries no program map table; there are no broadcast tables to keep")
     })?;
-    if let Some(sec) = sdt_whole {
+    'sections: for sec in sdt_whole {
         // Keep the one service this recording is of, and drop the rest of
         // the multiplex: the others are not in this file.
         let onid = ((sec[8] as u16) << 8) | sec[9] as u16;
@@ -1176,7 +1195,7 @@ fn read_service_within(
                     .and_then(|d| d.first().copied())
                     .unwrap_or(0);
                 service.sdt = Some(one_service_sdt(&sec, body));
-                break;
+                break 'sections;
             }
             i += 5 + len;
         }
@@ -1214,6 +1233,12 @@ fn read_service_within(
 fn one_service_sdt(sec: &[u8], service: &[u8]) -> Vec<u8> {
     let mut out = Vec::with_capacity(11 + service.len() + 4);
     out.extend_from_slice(&sec[..11]);
+    // One section is now the whole table. A multiplex whose description ran
+    // to several may have handed over section 1 of 2, and written back with
+    // those numbers it would have a receiver waiting for a section 0 that
+    // never comes.
+    out[6] = 0;
+    out[7] = 0;
     out.extend_from_slice(service);
     finish_section(&mut out);
     out
@@ -2565,12 +2590,13 @@ fn advance_time(section: &[u8], seconds: f64) -> Option<Vec<u8>> {
     let mjd = ((time[0] as i64) << 8) | time[1] as i64;
     let bcd = |b: u8| (b >> 4) as i64 * 10 + (b & 0x0F) as i64;
     let of_day = bcd(time[2]) * 3600 + bcd(time[3]) * 60 + bcd(time[4]);
-    let mut total = of_day + seconds.round() as i64;
-    let mut mjd = mjd;
-    while total >= 86_400 {
-        total -= 86_400;
-        mjd += 1;
-    }
+    // Backwards as well as forwards: a join whose master is not its first
+    // clip opens on the master's first range, whose start the clock has not
+    // reached yet, and a table read just after midnight would otherwise be
+    // written with a negative number of seconds in its BCD.
+    let total = of_day + seconds.round() as i64;
+    let mjd = mjd + total.div_euclid(86_400);
+    let total = total.rem_euclid(86_400);
     let to_bcd = |v: i64| ((v / 10) << 4) as u8 | (v % 10) as u8;
     let mut out = section.to_vec();
     out[3] = (mjd >> 8) as u8;
@@ -3313,6 +3339,50 @@ mod tests {
         let plain = read_service(&input, 0x200, &[]).expect("a map");
         assert_eq!(plain.streams.len(), 1);
 
+        let _ = std::fs::remove_file(&at);
+    }
+
+    /// A multiplex whose service description runs to two sections, and whose
+    /// recording opens on the one that does not describe this service.
+    #[test]
+    fn the_service_is_found_in_whichever_section_holds_it() {
+        let section = |number: u8, id: u16| {
+            let mut sec = vec![
+                TABLE_SDT_ACTUAL,
+                0xF0,
+                0x00,
+                0x00,
+                0x01,
+                0xC1,
+                number,
+                0x01, // two sections
+                0x00,
+                0x04,
+                0xFF,
+            ];
+            sec.extend_from_slice(&id.to_be_bytes());
+            sec.extend_from_slice(&[0xFC, 0x80, 0x03, 0x48, 0x01, 0x01]);
+            finish_section(&mut sec);
+            sec
+        };
+        let mut out = Vec::new();
+        let (mut a, mut b, mut c) = (0u8, 0u8, 0u8);
+        packetize(PID_PAT, &pat(1, 0x100), &mut a, &mut out);
+        // Enough packets for the framing to be settled by.
+        for _ in 0..4 {
+            packetize(0x100, &pmt(1, 0, &[0x200]), &mut b, &mut out);
+        }
+        packetize(PID_SDT, &section(1, 2), &mut c, &mut out);
+        packetize(PID_SDT, &section(0, 1), &mut c, &mut out);
+        let at = std::env::temp_dir().join("smartcut-sdt-sections.ts");
+        std::fs::write(&at, &out).expect("write the sample");
+        let input = crate::input::Input::plain(&at.to_string_lossy());
+
+        let service = read_service(&input, 0x200, &[0x200]).expect("a map");
+        let sdt = service.sdt.expect("the service's own entry");
+        // Written back as the whole of a table of one section.
+        assert_eq!((sdt[6], sdt[7]), (0, 0));
+        assert_eq!(service.original_network_id, 0x0004);
         let _ = std::fs::remove_file(&at);
     }
 
@@ -4128,10 +4198,14 @@ mod tests {
             tot(61_000, 9, 0, 0),
         );
         // Two days of it, which is longer than any one recording but is what
-        // the loop rather than a single subtraction is there for.
+        // the day arithmetic rather than a single subtraction is there for.
         let moved = advance_time(&tot(61_000, 12, 0, 0), 2.0 * 86_400.0 + 60.0)
             .expect("a well formed table");
         assert_eq!(&moved[3..8], &[0xEE, 0x4A, 0x12, 0x01, 0x00]);
+        // And back over midnight: a join whose master is not its first clip
+        // is ahead of the master's first range until the clock gets there.
+        let moved = advance_time(&tot(61_000, 0, 0, 5), -10.0).expect("a well formed table");
+        assert_eq!(&moved[3..8], &[0xEE, 0x47, 0x23, 0x59, 0x55]);
         // Too short to hold a time: nothing to move, and nothing written.
         assert_eq!(advance_time(&[TABLE_TOT, 0x70, 0x00], 1.0), None);
     }

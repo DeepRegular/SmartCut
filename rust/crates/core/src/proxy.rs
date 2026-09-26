@@ -534,6 +534,14 @@ fn write_side(
     // shape is worth more there than no proxy at all.
     let mut scaler: Option<(Shape, ff::software::scaling::Context)> = None;
     let mut pictures = 0usize;
+    // The last timestamp handed to the encoder. A recording whose clock
+    // steps back -- two streams spliced where the second begins a couple of
+    // pictures before the first ended -- hands over pictures at instants the
+    // proxy already holds, and the encoder or the MP4 muxer refuses the
+    // first of them with EINVAL, which took the whole build down half way
+    // through. Proxy time is recording time, so a second picture at an
+    // instant already written has nowhere to go: it is passed over.
+    let mut last_pts: Option<i64> = None;
 
     for (frame, ticks, entry) in rx {
         let s = match sink.as_mut() {
@@ -543,6 +551,11 @@ fn write_side(
                 sink.as_mut().unwrap()
             }
         };
+        let pts = rescale(ticks, tb_in, s.tb_enc);
+        if last_pts.is_some_and(|l| pts <= l) {
+            continue;
+        }
+        last_pts = Some(pts);
         let shape = (frame.format(), frame.width(), frame.height());
         if scaler.as_ref().is_none_or(|(was, _)| *was != shape) {
             scaler = Some((
@@ -568,7 +581,7 @@ fn write_side(
         // picture that has not been encoded yet.
         let mut scaled = ff::frame::Video::empty();
         sc.run(&frame, &mut scaled)?;
-        scaled.set_pts(Some(rescale(ticks, tb_in, s.tb_enc)));
+        scaled.set_pts(Some(pts));
         scaled.set_kind(if entry {
             ff::picture::Type::I
         } else {
@@ -951,7 +964,7 @@ fn open_sink(
     let gop = (fps * opts.max_gop).round().clamp(1.0, 600.0) as u32;
 
     let mut octx =
-        ff::format::output(&part).with_context(|| format!("cannot write {}", part.display()))?;
+        ff::format::output(&*crate::input::as_output(&part.to_string_lossy())).with_context(|| format!("cannot write {}", part.display()))?;
 
     // MPEG-4 part 2 states its own time base in the bitstream as a 16-bit
     // `vop_time_increment_resolution`, so a transport stream's 90kHz tick is

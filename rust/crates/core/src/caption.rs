@@ -405,6 +405,7 @@ fn read_glyphs(
         let fonts = head[2];
         i += 3;
         let mut best: Option<(bool, Glyph)> = None;
+        let mut blank = false;
         for _ in 0..fonts {
             let Some(&mode) = data.get(i) else { return };
             i += 1;
@@ -426,6 +427,14 @@ fn read_glyphs(
                 return;
             };
             i += pattern.len();
+            // A font of no dots is no picture. Kept, it reached the window
+            // as a canvas of width or height zero, which the webview refuses
+            // with an exception -- and every run after it on the plane went
+            // undrawn with it.
+            if dots == 0 {
+                blank = true;
+                continue;
+            }
             // A cell may be sent at several sizes. The one that is kept is
             // the one the size of the character cell -- the rest are the
             // same glyph for the sizes a caption asks for with a control
@@ -449,6 +458,13 @@ fn read_glyphs(
                 },
                 Arc::new(glyph),
             );
+        } else if blank {
+            // Redefined as nothing: the picture the cell had before is not
+            // what this statement writes there either.
+            into.remove(&crate::arib::Drcs {
+                code: code & 0x7F7F,
+                wide,
+            });
         }
     }
 }
@@ -1510,6 +1526,24 @@ mod tests {
         layout.glyphs(&group);
         let written = layout.statement(&text);
         assert_eq!(only(&written)[0].advance, 20);
+    }
+
+    /// A glyph of no dots is not a picture: the cell is drawn as one that
+    /// never arrived, rather than handed to a window as an empty canvas.
+    #[test]
+    fn a_glyph_of_no_dots_is_not_kept() {
+        let mut layout = Layout::default();
+        let mut text = statement(5, 0, &[]);
+        text.extend_from_slice(&DRCS_CELL);
+        layout.glyphs(&body(&[drcs_unit(0x4121, 0, 36, |_, _| true), (0x20, text.clone())]));
+        let written = layout.statement(&text);
+        let run = &only(&written)[0];
+        assert!(run.glyph.is_none());
+        assert_eq!(run.text, "〓");
+        // Nor does one redefined as nothing keep the picture it had before.
+        layout.glyphs(&body(&[drcs_unit(0x4121, 36, 36, |_, _| true)]));
+        layout.glyphs(&body(&[drcs_unit(0x4121, 0, 0, |_, _| true)]));
+        assert!(only(&layout.statement(&text))[0].glyph.is_none());
     }
 
     /// A cell written by a statement whose definition was never read.

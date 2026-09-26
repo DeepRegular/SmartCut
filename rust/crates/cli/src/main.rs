@@ -2247,6 +2247,16 @@ fn main() -> Result<()> {
         println!("wrote {out} (sound only)");
         return Ok(());
     }
+    // The AAC beside the cut takes the cut's name with `.aac` on it, and that
+    // name can be a recording being read: a transport stream saved as
+    // `x.aac` and cut to `x.ts` had its sidecar written over it once the cut
+    // was done. Asked before anything is written, as the cut asks of `-o`.
+    if audio_es {
+        let beside = std::path::Path::new(&out).with_extension("aac");
+        for s in std::iter::once(&src).chain(&joined_src) {
+            s.input.refuse_as_output(&beside.to_string_lossy())?;
+        }
+    }
     let joined_plans: Vec<Vec<smartcut_core::RangePlan>> = joined_src
         .iter()
         .map(|s| plan_on(s, &[(0.0, s.duration)], &opts))
@@ -2389,6 +2399,7 @@ fn main() -> Result<()> {
         // cuts are: the one place a viewer would want to skip to.
         let mut at_out = 0.0;
         let mut marks = Vec::new();
+        let mut chapters = Vec::new();
         for plan in &plans {
             marks.push(at_out);
             // And the chapters of the disc it came off, where they are still
@@ -2402,14 +2413,47 @@ fn main() -> Result<()> {
                 let s = was.map_or(0.0, |e| e.start) + m - src.start_time;
                 let s = if s < first && s >= first - 0.5 { first } else { s };
                 if s >= plan.t_in && s < plan.t_out {
-                    marks.push(at_out + (s - plan.t_in));
+                    chapters.push(at_out + (s - plan.t_in));
                 }
             }
-            at_out += plan.t_out - plan.t_in;
+            // No further than the recording goes: a range asked for past its
+            // end is planned as asked, and the next recording of a join
+            // begins where the pictures stopped.
+            let t_out = if src.duration > 0.0 { plan.t_out.min(src.duration) } else { plan.t_out };
+            at_out += (t_out - plan.t_in).max(0.0);
         }
-        // A chapter on a range boundary is one chapter, not two.
+        // And one where each recording of a `--join` begins, which is a cut
+        // as much as any range boundary is. Left out, everything after the
+        // first recording was one long chapter. A crossing that has both
+        // clips up at once takes its length out of the join, held to half
+        // of the shorter range beside it the way the cut holds it.
+        let half = |p: Option<&smartcut_core::RangePlan>| {
+            p.map_or(0.0, |p| ((p.t_out - p.t_in) / 2.0).max(0.0))
+        };
+        let mut before = plans.last();
+        for plans in &joined_plans {
+            if between.kind.overlaps() {
+                let overlap = between.takes().0.min(half(before)).min(half(plans.first()));
+                at_out = (at_out - overlap).max(0.0);
+            }
+            before = plans.last();
+            for plan in plans {
+                marks.push(at_out);
+                at_out += plan.t_out - plan.t_in;
+            }
+        }
+        // A chapter on a range boundary is one chapter, not two -- and the
+        // one kept is the boundary. A disc's mark a moment ahead of where a
+        // range begins is the tail of the range before; kept in place of the
+        // boundary, the chapter opened on what was cut up to.
         marks.sort_by(f64::total_cmp);
         marks.dedup_by(|b, a| *b - *a <= 0.5);
+        for c in chapters {
+            if !marks.iter().any(|m| (m - c).abs() <= 0.5) {
+                marks.push(c);
+            }
+        }
+        marks.sort_by(f64::total_cmp);
         // What to call the disc, when nobody said: the series this
         // recording is an episode of, which is what a run of them written
         // one after another onto the same disc has in common. The channel

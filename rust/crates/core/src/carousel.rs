@@ -131,6 +131,8 @@ pub struct Reader {
     held: Option<(f64, [u8; PACKET])>,
     /// Set once there is nothing more to hand over.
     done: bool,
+    /// Bytes read since the last clock reference. See [`NO_CLOCK`].
+    unclocked: usize,
 }
 
 impl Reader {
@@ -172,6 +174,7 @@ impl Reader {
             length: span.length,
             held: None,
             done: false,
+            unclocked: 0,
         })
     }
 
@@ -199,18 +202,19 @@ impl Reader {
     /// Read forward until a carried packet is in hand, or the range ends.
     fn fill(&mut self) -> Result<()> {
         let mut frame = [0u8; crate::si::M2TS_PACKET];
-        // How far this has read without the clock arriving. A reference goes
-        // out ten times a second; a recording whose map names a clock PID
-        // that carries none would otherwise be read to its end, gigabytes,
-        // once for every kept range, before anything else is written.
-        let mut unclocked = 0usize;
         loop {
-            if self.clock.is_none() {
-                unclocked += self.stride;
-                if unclocked > NO_CLOCK {
-                    self.done = true;
-                    return Ok(());
-                }
+            // How far this has read without the clock arriving. A reference
+            // goes out ten times a second; a recording whose map names a
+            // clock PID that carries none would otherwise be read to its end,
+            // gigabytes, once for every kept range, before anything else is
+            // written. And the same once the clock has been seen and then
+            // stops: the clock held at its last reading, every carried packet
+            // to the end of the recording would come due at once and be
+            // dealt into the cut one per packet written.
+            self.unclocked += self.stride;
+            if self.unclocked > NO_CLOCK {
+                self.done = true;
+                return Ok(());
             }
             let frame = &mut frame[..self.stride];
             match read_fully(&mut self.file, frame)? {
@@ -241,6 +245,7 @@ impl Reader {
                         self.wraps += 1;
                     }
                     self.last = Some(ticks);
+                    self.unclocked = 0;
                     let seconds = (ticks + self.wraps * PCR_WRAP) as f64 / 90_000.0;
                     self.clock = Some(seconds);
                     // The first reference is what the range's own start is

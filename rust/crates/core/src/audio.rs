@@ -409,31 +409,6 @@ type Pcm = Vec<Vec<f32>>;
 /// What the encoder is fed and what the buffers below hold.
 const PLANAR_F32: ff::format::Sample = ff::format::Sample::F32(ff::format::sample::Type::Planar);
 
-/// A frame in the shape it is wanted in: the given sample format, with the
-/// channels the output is to have.
-///
-/// The frame is handed straight back when it is already that, which is the
-/// ordinary case -- an AAC recording re-encoded to its own channel count.
-/// Otherwise swresample does the work: the rematrixing coefficients for 5.1
-/// into stereo are libav's own, so what comes out is what a player downmixing
-/// the recording would have produced.
-///
-/// In and out at the same rate, which is what makes this a per-frame
-/// operation: swresample returns a frame's samples one for one and holds
-/// nothing back between frames, so the sample window the caller trims
-/// against still means what it meant on the source's own clock.
-///
-/// **The shape converted from is the frame's, and it is asked again of every
-/// frame.** A broadcast recording hands over more than one: a tuner told to
-/// start early opens on the end of the programme before, and a bulletin read
-/// in mono ahead of a documentary in stereo is an ordinary evening's
-/// television -- see [`settled_shape`]. Where the output's layout is neither
-/// of those, both of them have to be converted, and swresample will not take
-/// a frame that is not the shape its context was built for: it answers
-/// "Input changed", which arrived here as a cut that failed outright at the
-/// instant the programme began. A fresh context at the change costs one
-/// allocation. The same fact the playback side answers in
-/// [`crate::playback_audio`].
 /// Give a decoded frame whose channels are in no stated order the ordinary
 /// layout for its count.
 ///
@@ -495,6 +470,31 @@ pub(crate) fn unmap_layout(frame: &ff::frame::Audio) {
     }
 }
 
+/// A frame in the shape it is wanted in: the given sample format, with the
+/// channels the output is to have.
+///
+/// The frame is handed straight back when it is already that, which is the
+/// ordinary case -- an AAC recording re-encoded to its own channel count.
+/// Otherwise swresample does the work: the rematrixing coefficients for 5.1
+/// into stereo are libav's own, so what comes out is what a player downmixing
+/// the recording would have produced.
+///
+/// In and out at the same rate, which is what makes this a per-frame
+/// operation: swresample returns a frame's samples one for one and holds
+/// nothing back between frames, so the sample window the caller trims
+/// against still means what it meant on the source's own clock.
+///
+/// **The shape converted from is the frame's, and it is asked again of every
+/// frame.** A broadcast recording hands over more than one: a tuner told to
+/// start early opens on the end of the programme before, and a bulletin read
+/// in mono ahead of a documentary in stereo is an ordinary evening's
+/// television -- see [`settled_shape`]. Where the output's layout is neither
+/// of those, both of them have to be converted, and swresample will not take
+/// a frame that is not the shape its context was built for: it answers
+/// "Input changed", which arrived here as a cut that failed outright at the
+/// instant the programme began. A fresh context at the change costs one
+/// allocation. The same fact the playback side answers in
+/// [`crate::playback_audio`].
 pub(crate) fn conform<'a>(
     resampler: &mut Option<ff::software::resampling::Context>,
     out: &'a mut ff::frame::Audio,
@@ -609,13 +609,35 @@ fn rerate<'a>(
 fn take_samples(frame: &ff::frame::Audio, channels: usize, into: &mut Pcm, range: (usize, usize)) {
     let (a, b) = range;
     for (ch, buf) in into.iter_mut().enumerate().take(channels) {
-        let plane = if frame.is_planar() { ch } else { 0 };
-        let data: &[f32] = frame.plane(plane);
         if frame.is_planar() {
-            buf.extend_from_slice(&data[a..b]);
+            buf.extend_from_slice(&channel(frame, ch)[a..b]);
         } else {
+            let data: &[f32] = frame.plane(0);
             buf.extend((a..b).map(|i| data[i * channels + ch]));
         }
+    }
+}
+
+/// One channel of a planar float frame, whatever its count.
+///
+/// Not ffmpeg-next's `plane`, which reads the frame's `data` -- eight
+/// pointers, and a frame with more channels than that keeps the rest in
+/// `extended_data` alone. A ten channel PCM track in an .mkv panicked on the
+/// ninth, at the first boundary a smart cut decoded.
+fn channel(frame: &ff::frame::Audio, ch: usize) -> &[f32] {
+    assert!(ch < frame.planes() && frame.format() == PLANAR_F32);
+    unsafe {
+        let data = *(*frame.as_ptr()).extended_data.add(ch);
+        std::slice::from_raw_parts(data as *const f32, frame.samples())
+    }
+}
+
+/// ...and to be written into.
+fn channel_mut(frame: &mut ff::frame::Audio, ch: usize) -> &mut [f32] {
+    assert!(ch < frame.planes() && frame.format() == PLANAR_F32);
+    unsafe {
+        let data = *(*frame.as_mut_ptr()).extended_data.add(ch);
+        std::slice::from_raw_parts_mut(data as *mut f32, frame.samples())
     }
 }
 
@@ -1071,7 +1093,7 @@ impl Reencoder {
         input.set_rate(self.sample_rate);
         for ch in 0..self.channels {
             let taken = std::mem::take(&mut self.pending[ch]);
-            input.plane_mut::<f32>(ch)[..n].copy_from_slice(&taken);
+            channel_mut(&mut input, ch)[..n].copy_from_slice(&taken);
         }
         // Room for everything the resampler is still holding as well as
         // everything it is about to be handed. Asked for less it keeps the
@@ -1124,7 +1146,7 @@ impl Reencoder {
             frame.set_rate(self.out_rate);
             for ch in 0..self.channels {
                 let taken: Vec<f32> = self.ready[ch].drain(..self.frame_size).collect();
-                frame.plane_mut::<f32>(ch)[..self.frame_size].copy_from_slice(&taken);
+                channel_mut(&mut frame, ch)[..self.frame_size].copy_from_slice(&taken);
             }
             frame.set_pts(Some(self.fed));
             self.fed += self.frame_size as i64;
@@ -2119,7 +2141,7 @@ fn patch_run(
         let mut frame = ff::frame::Audio::new(PLANAR_F32, n, enc_layout);
         frame.set_rate(audio.sample_rate);
         for (ch, buf) in fed.iter().enumerate().take(channels) {
-            frame.plane_mut::<f32>(ch)[..n].copy_from_slice(&buf[at..at + n]);
+            channel_mut(&mut frame, ch)[..n].copy_from_slice(&buf[at..at + n]);
         }
         frame.set_pts(Some(at as i64));
         at += n;

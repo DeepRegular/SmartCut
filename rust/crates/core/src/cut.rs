@@ -372,6 +372,12 @@ impl CutOptions {
 /// arrived three seconds later is not going to.
 const TRAIL: f64 = 3.0;
 
+/// The furthest past its anchor a copied picture is placed, in seconds:
+/// about three years. A tick is at most 1/2^31 of a second (see
+/// [`Grid::of_rate`]), so a position this far out is still ten times short
+/// of what an `i64` of ticks holds, with room for the ranges before it.
+const FAR: f64 = 1e8;
+
 /// One packet on its way out, before timestamps are assigned.
 struct Emitted {
     packet: ff::Packet,
@@ -548,7 +554,8 @@ fn held_to_the_end(span: Span, anchor: Option<f64>, seg: &Segment, src: &Source,
         seg.end
     };
     Span {
-        fields: span.fields.max(((until - a) / field).round() as i64),
+        // Held to [`FAR`] for the reason the copy's own placing is.
+        fields: span.fields.max(((until - a).min(FAR) / field).round() as i64),
         ..span
     }
 }
@@ -954,10 +961,18 @@ fn sup_tag(languages: &[Option<String>], k: usize, id: i32) -> Option<String> {
         return None;
     }
     let mine = languages.get(k).and_then(|l| l.as_deref());
+    // The same when written: `eng` and `ENG` are one file where names fold
+    // case, and `a/b` and `a:b` are both `a_b` once [`crate::vobsub::named_after`]
+    // has made them a name. Two streams under one name, the second
+    // overwrites the first.
+    let written = |l: &str| {
+        crate::vobsub::named_after("x", l).to_string_lossy().to_lowercase()
+    };
     let alone = mine.is_some_and(|l| {
+        let l = written(l);
         languages
             .iter()
-            .filter(|other| other.as_deref() == Some(l))
+            .filter(|other| other.as_deref().is_some_and(|o| written(o) == l))
             .count()
             == 1
     });
@@ -1415,7 +1430,16 @@ impl Writer {
         let set = std::mem::take(&mut aside.building);
         let at = aside.at.take().unwrap_or(0.0);
         let id = aside.id;
-        let drawn = aside.reader.read(&set)?;
+        // One set the decoder turns away costs that subtitle, not the cut
+        // (as `take_subpicture` does for a DVD's units): it reads as a set
+        // that draws nothing.
+        let drawn = match aside.reader.read(&set) {
+            Ok(drawn) => drawn,
+            Err(e) => {
+                eprintln!("note: a subtitle at {at:.3}s could not be read: {e}");
+                None
+            }
+        };
         let pending = aside.pending.take();
         let Some(subs) = self.subpictures.as_mut() else {
             return Ok(());
@@ -1908,7 +1932,7 @@ fn write_one_track_out(cut: &str, output: &str, aac: AacVersion) -> Result<usize
     let params = ist.parameters();
     let in_tb = ist.time_base();
 
-    let mut octx = ff::format::output(&output)?;
+    let mut octx = ff::format::output(&*crate::input::as_output(output))?;
     {
         let mut ost = octx.add_stream(ff::encoder::find(ff::codec::Id::None))?;
         ost.set_parameters(params);
@@ -2396,8 +2420,10 @@ fn read_graphics_before(
     // Seeked first, and only where there is somewhere to seek to. See
     // [`read_subpictures_before`], where both halves of that were learnt.
     let from = until - crate::pgs::LOOKBACK - src.seek_margin;
-    if from > 0.0 {
-        seek_to(&mut ictx, src, until - crate::pgs::LOOKBACK)?;
+    // Nor is failing to look back a reason to fail the cut here: what it
+    // costs is the subtitle up at the opening.
+    if from > 0.0 && seek_to(&mut ictx, src, until - crate::pgs::LOOKBACK).is_err() {
+        return Ok(Vec::new());
     }
     // The graphics, and the pictures as the clock: a track with no display
     // set after the range begins -- forced subtitles only, or a range past
@@ -2629,6 +2655,15 @@ fn copy_segment(
             continue;
         }
         let data = packet.data().unwrap_or(&[]);
+        // Where this picture lands, counted from the anchor. A copy to the
+        // end of the file has nothing past the anchor to stop it, so a
+        // timestamp that leaps years ahead -- a crafted Matroska file can
+        // say anything in 64 bits -- saturated the cast, and the sums and
+        // the tick conversion after it overflowed. Held to a bound no
+        // recording reaches, the arithmetic stays whole; the damage is then
+        // one picture far out, and the ones after it share its place and are
+        // left out as any misplaced picture is.
+        let slot = ((t - a).min(FAR) / field).round() as i64;
         // Two field pictures are one frame between them, and the timeline
         // counts in fields, so a pair takes two places on it and lasts a
         // field each. The second field is placed after the first rather than
@@ -2648,13 +2683,13 @@ fn copy_segment(
         ) {
             (true, Some(first)) => (first + ctx.grid.sub, ctx.grid.sub),
             (true, None) => {
-                let at = display_base + ((t - a) / field).round() as i64;
+                let at = display_base + slot;
                 first_field = Some(at);
                 // A field, in the timeline's units, as the second one is.
                 (at, ctx.grid.sub)
             }
             (false, _) => (
-                display_base + ((t - a) / field).round() as i64,
+                display_base + slot,
                 ctx.grid.fields(crate::bitstream::display_fields(
                     data,
                     &src.video.codec,
@@ -2966,12 +3001,9 @@ fn signalling_of(src: &Source, opts: &CutOptions) -> Signalling {
     // of this; PQ and HLG are the two transfers that do. A Dolby Vision
     // recording states no transfer at all -- its RPU carries the colour --
     // so the record it declares is the other way in.
-    let resolved = unsafe { (*params.as_ptr()).color_trc };
-    let hdr = matches!(
-        resolved,
-        ff::ffi::AVColorTransferCharacteristic::AVCOL_TRC_SMPTE2084
-            | ff::ffi::AVColorTransferCharacteristic::AVCOL_TRC_ARIB_STD_B67
-    );
+    let resolved = unsafe { crate::raw_enum(std::ptr::addr_of!((*params.as_ptr()).color_trc)) };
+    let hdr = resolved == ff::ffi::AVColorTransferCharacteristic::AVCOL_TRC_SMPTE2084 as i32
+        || resolved == ff::ffi::AVColorTransferCharacteristic::AVCOL_TRC_ARIB_STD_B67 as i32;
     if !hdr && !out.has_dovi {
         // **Before the way out, not after it.** What the recording's own
         // sequence header states about its rate is wanted for every
@@ -3179,21 +3211,28 @@ fn open_encoder_as(
         let p = params.as_ptr();
         let e = enc.as_mut_ptr();
         // codecpar carries the pixel format as a plain int
-        (*e).pix_fmt = std::mem::transmute::<i32, ff::ffi::AVPixelFormat>((*p).format);
+        crate::set_raw_enum(std::ptr::addr_of_mut!((*e).pix_fmt), (*p).format);
         (*e).sample_aspect_ratio = (*p).sample_aspect_ratio;
-        (*e).color_primaries = (*p).color_primaries;
+        crate::set_raw_enum(
+            std::ptr::addr_of_mut!((*e).color_primaries),
+            crate::raw_enum(std::ptr::addr_of!((*p).color_primaries)),
+        );
         // What the recording writes, not what a decoder worked out from it.
         // A broadcast carrying HLG the backward-compatible way writes 14 and
         // says 18 in an SEI beside it; write 18 here and the pictures
         // spliced in describe themselves differently from the copied ones on
         // either side. See [`crate::bitstream::coded_transfer`].
-        (*e).color_trc = match signalling.coded_transfer {
-            Some(coded) => {
-                std::mem::transmute::<u32, ff::ffi::AVColorTransferCharacteristic>(u32::from(coded))
-            }
-            None => (*p).color_trc,
-        };
-        (*e).colorspace = (*p).color_space;
+        crate::set_raw_enum(
+            std::ptr::addr_of_mut!((*e).color_trc),
+            match signalling.coded_transfer {
+                Some(coded) => i32::from(coded),
+                None => crate::raw_enum(std::ptr::addr_of!((*p).color_trc)),
+            },
+        );
+        crate::set_raw_enum(
+            std::ptr::addr_of_mut!((*e).colorspace),
+            crate::raw_enum(std::ptr::addr_of!((*p).color_space)),
+        );
         (*e).color_range = (*p).color_range;
         (*e).profile = (*p).profile;
         // **A level is not one number across codecs, and two of these count
@@ -3349,8 +3388,9 @@ fn open_encoder_as(
         // that says what the pictures really are has to go back beside it --
         // otherwise the transfer is written twice and neither says HLG.
         if let Some(coded) = signalling.coded_transfer {
-            let resolved = unsafe { (*params.as_ptr()).color_trc } as u32;
-            if u32::from(coded) != resolved {
+            let resolved =
+                unsafe { crate::raw_enum(std::ptr::addr_of!((*params.as_ptr()).color_trc)) };
+            if i32::from(coded) != resolved {
                 x265.push(format!("atc-sei={resolved}"));
             }
         }
@@ -3902,7 +3942,11 @@ fn reencode_segment(
         ($f:expr, $t:expr) => {{
             let t = $t;
             let a = *anchor.get_or_insert(t);
-            let display = display_base + ((t - a) / field).round() as i64;
+            // Held to [`FAR`], as the copy's are: a range asked for to the
+            // end of a file whose container claims years ends where the
+            // pictures do, and a picture stamped out there came to a
+            // position no tick count holds.
+            let display = display_base + ((t - a).min(FAR) / field).round() as i64;
             // In fields, and then in the timeline's units, which are finer
             // than a field on a variable-rate recording: see [`Grid`]. The
             // copy counts its pictures the same way.
@@ -4609,7 +4653,9 @@ fn assumed_frame(probe: &mut ff::format::context::Input, info: &crate::AudioInfo
     if times.len() < 32 || times.windows(2).any(|pair| pair[1] < pair[0]) {
         return None;
     }
-    let span = (times[times.len() - 1] - times[0]) as f64 * info.time_base;
+    // In floating point: the stamps are the container's, and two a file is
+    // free to write at either end of an `i64` overflow a subtraction of it.
+    let span = (times[times.len() - 1] as f64 - times[0] as f64) * info.time_base;
     let each = span / (times.len() - 1) as f64;
     (each > 0.0).then_some(each)
 }
@@ -6309,9 +6355,9 @@ fn cut_into(
     // and nothing newer and turns down the `avc3` tag a cut with rewritten
     // seams needs.
     let mut octx = if output.to_ascii_lowercase().ends_with(".m4v") {
-        ff::format::output_as(&output, "mp4")?
+        ff::format::output_as(&*crate::input::as_output(output), "mp4")?
     } else {
-        ff::format::output(&output)?
+        ff::format::output(&*crate::input::as_output(output))?
     };
     // The lead a disc gives a decoder: how far the first picture is shown
     // after the clock that has to be running to show it arrives.
@@ -7283,7 +7329,14 @@ fn cut_into(
                 if let Some(subs) = writer.subpictures.as_mut() {
                     subs.take(id, target_start, &unit);
                 }
-                convert_subpicture(id, target_start, &unit, true, &mut writer)?;
+                // As inside a segment (see `take_subpicture`): one unit the
+                // decoder turns away costs that subtitle, not the cut.
+                if let Err(e) = convert_subpicture(id, target_start, &unit, true, &mut writer) {
+                    eprintln!(
+                        "note: a subtitle on screen at {:.3}s could not be converted: {e}",
+                        plan.t_in
+                    );
+                }
             }
         }
         // What the recording had on screen at the instant this range opens
@@ -7567,6 +7620,15 @@ fn cut_into(
     // The display sets that travelled beside the cut rather than into it,
     // written now that the cut is closed. Said out loud, as the pair below
     // is: a file nobody asked for by name is a file worth naming.
+    // A file beside the cut is named after it, and a recording can carry
+    // that name: a transport stream saved as `x.sub` or `x.sup` is still
+    // one. The cut itself is refused over any reel's input (see
+    // `join_with_progress`); the files beside it are passed over the same way.
+    let reads = |at: &std::path::Path| {
+        reels
+            .iter()
+            .any(|reel| reel.src.input.refuse_as_output(&at.to_string_lossy()).is_err())
+    };
     for track in &writer.graphics {
         let Some(Aside::Sup(sup)) = &track.aside else {
             continue;
@@ -7583,6 +7645,15 @@ fn cut_into(
             eprintln!(
                 "note: the kept ranges hold none of the subtitles on {name}. Nothing was \
                  written beside the cut for it."
+            );
+            continue;
+        }
+        let at = sup.named_after(output);
+        if reads(&at) {
+            eprintln!(
+                "note: the subtitles on {name} were not written beside the cut: {} is a \
+                 recording being read.",
+                at.display()
             );
             continue;
         }
@@ -7620,6 +7691,16 @@ fn cut_into(
             eprintln!(
                 "note: this recording declares subtitles the disc draws, and the kept \
                  ranges hold none of them. Nothing was written beside the cut."
+            );
+        } else if let Some(at) = ["idx", "sub"]
+            .into_iter()
+            .map(|ext| crate::vobsub::named_after(output, ext))
+            .find(|at| reads(at))
+        {
+            eprintln!(
+                "note: the subtitles were not written beside the cut: {} is a recording \
+                 being read.",
+                at.display()
             );
         } else {
             match subs.side.write(output) {

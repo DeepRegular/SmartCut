@@ -231,16 +231,20 @@ fn run(
     //
     // Framed differently counts as well: a broadcast's ADTS frames and an
     // MP4's raw ones are the same AAC, and one stream cannot hold both.
-    let framing = |src: &Source| {
-        (info.codec == "aac").then(|| crate::aac::of_source(src).map(|f| f.as_str()))
+    //
+    // The tracks being written, not the recordings' first ones: with that
+    // one dropped, the framing compared was a track that is not in the file.
+    let framing = |src: &Source, track: &AudioInfo| {
+        (info.codec == "aac")
+            .then(|| crate::aac::of_track(src, track.stream_index).map(|f| f.as_str()))
     };
-    let shape_framing = framing(shape.src);
+    let shape_framing = framing(shape.src, &info);
     let unlike = pieces.iter().enumerate().filter(|&(n, _)| n != master).any(|(n, p)| {
         track_for(pieces, master, n, opts).is_ok_and(|t| {
             t.codec != info.codec
                 || t.sample_rate != info.sample_rate
                 || t.channels != info.channels
-                || framing(p.src) != shape_framing
+                || framing(p.src, t) != shape_framing
         })
     });
     if unlike && setup.mode != AudioMode::Reencode {
@@ -254,7 +258,7 @@ fn run(
     }
     let fades = fade_lengths(pieces, opts);
 
-    let mut octx = ff::format::output(&output)?;
+    let mut octx = ff::format::output(&*crate::input::as_output(output))?;
     // Which way round this container writes samples. `carriage` answers for
     // the containers a cut goes into, where big-endian PCM is what an MP4
     // has a box for; a `.wav` wants them the other way round and says
@@ -505,6 +509,20 @@ fn run(
         let clock = Clock { tb: out_tb, rate: out_rate, frame_secs: setup.frame_secs };
         for (packet, pts) in out {
             written = write_encoded(&mut octx, packet, pts, clock)?.max(written);
+        }
+    }
+    // AIFF counts its chunk sizes in 32 bits as RIFF does, and has no RF64 to
+    // fall back on: past four gigabytes libavformat writes the sizes wrapped
+    // and says nothing, and what is left is a file every reader takes to be a
+    // few hundred megabytes long. Refused rather than written that way.
+    if octx.format().name() == "aiff" {
+        const SEEK_CUR: std::os::raw::c_int = 1;
+        let size = unsafe { ff::ffi::avio_seek((*octx.as_ptr()).pb, 0, SEEK_CUR) };
+        if size > i64::from(u32::MAX) {
+            return Err(anyhow!(
+                "{output} would be over 4 GB, which an AIFF file cannot state. Name it .wav \
+                 (written as RF64 where it needs to be) or .caf instead"
+            ));
         }
     }
     octx.write_trailer()?;

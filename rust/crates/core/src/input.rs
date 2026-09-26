@@ -162,6 +162,16 @@ impl Input {
         if path.is_file() {
             return Ok(joined(Input::plain(spec)));
         }
+        // `file:` and a file is that file to libavformat, and has to be the
+        // same file here: under the name as written, nothing on disk answered
+        // to it, and an output naming the recording itself passed
+        // [`Input::refuse_as_output`] and was created over it.
+        if let Some(rest) = spec.strip_prefix("file:").filter(|r| Path::new(r).is_file()) {
+            return Ok(Input {
+                file: PathBuf::from(rest),
+                ..Input::plain(spec)
+            });
+        }
         // A name that says which sectors it plays is a DVD title, and nothing
         // else in this program produces one. Asked after the file test, so
         // that a real file whose name ends that way is still a file.
@@ -778,7 +788,7 @@ pub fn open_local(path: &str) -> Result<ff::format::context::Input> {
     no_nul(path)?;
     let mut opts = ff::Dictionary::new();
     opts.set("protocol_whitelist", LOCAL_PROTOCOLS);
-    Ok(ff::format::input_with_dictionary(&path, opts)?)
+    Ok(ff::format::input_with_dictionary(&*as_local(path), opts)?)
 }
 
 /// A name with a NUL in it cannot be handed to libavformat, and ffmpeg-next
@@ -788,6 +798,52 @@ fn no_nul(name: &str) -> Result<()> {
         bail!("that name has a NUL character in it and cannot be opened");
     }
     Ok(())
+}
+
+/// The name libavformat is to be handed for `url`: `file:` in front of a file
+/// on disk that it would otherwise read as a protocol.
+///
+/// libavformat takes whatever stands before the first colon for a protocol
+/// wherever that is all letters, digits and `+-.`, so a recording named
+/// `12:00.ts` and given relative, as a command line gives it, was opened as
+/// the protocol `12` and refused with "Protocol not found". Everything else --
+/// an absolute path, a drive letter, a URL this module wrote -- is handed on
+/// as it stands.
+fn as_local(url: &str) -> std::borrow::Cow<'_, str> {
+    if Path::new(url).is_file() {
+        if let Ok(name) = CString::new(url) {
+            let protocol = unsafe { ff::ffi::avio_find_protocol_name(name.as_ptr()) };
+            let file = !protocol.is_null()
+                && unsafe { std::ffi::CStr::from_ptr(protocol) }.to_bytes() == b"file";
+            // A file whose own name begins `file:` is read as the protocol
+            // too, which takes the prefix off and opens a different file.
+            if !file || url.starts_with("file:") {
+                return format!("file:{url}").into();
+            }
+        }
+    }
+    url.into()
+}
+
+/// The name to hand the muxer for an output that has passed
+/// [`refuse_url_output`]: [`as_local`]'s other half. `13:00.ts` names no
+/// protocol anyone has, which is why it passed, and is then opened as one
+/// anyway -- "Protocol not found", after the whole cut has been worked out.
+///
+/// A name that begins `file:` is written under that name too, as every other
+/// part of this program -- the check against overwriting the recording, the
+/// files written beside the output -- takes it: handed on as it stands, the
+/// muxer took the prefix off and wrote `-o file:rec.ts` over `rec.ts`, the
+/// recording being read, which the check had passed as a different file.
+pub fn as_output(output: &str) -> std::borrow::Cow<'_, str> {
+    let named = CString::new(output)
+        .map(|name| unsafe { ff::ffi::avio_find_protocol_name(name.as_ptr()) })
+        .map_or(true, |p| !p.is_null());
+    if (!named && output.contains(':')) || output.starts_with("file:") {
+        format!("file:{output}").into()
+    } else {
+        output.into()
+    }
 }
 
 /// Refuse an output that is not a file on this machine.
@@ -833,7 +889,7 @@ fn open_with(url: &str, generate_pts: bool, all_maps: bool, deep_probe: bool) ->
     if generate_pts {
         opts.set("fflags", "+genpts");
     }
-    Ok(Demux::plain(ff::format::input_with_dictionary(&url, opts)?))
+    Ok(Demux::plain(ff::format::input_with_dictionary(&*as_local(url), opts)?))
 }
 
 /// The seams in a recording, timed on the clock the demuxer will report.
@@ -1039,7 +1095,7 @@ fn restamped(
 ) -> Result<Demux> {
     unsafe {
         let mut below: *mut ff::ffi::AVIOContext = ptr::null_mut();
-        let name = CString::new(under).context("that name cannot be opened")?;
+        let name = CString::new(&*as_local(under)).context("that name cannot be opened")?;
         let mut opts: *mut ff::ffi::AVDictionary = ptr::null_mut();
         set(&mut opts, "protocol_whitelist", LOCAL_PROTOCOLS);
         let err = ff::ffi::avio_open2(
@@ -1383,6 +1439,26 @@ pub fn same_file(a: &Path, b: &Path) -> bool {
 mod tests {
     use super::*;
     use std::io::Write;
+
+    #[test]
+    fn an_output_is_written_under_the_name_it_is_given() {
+        assert_eq!(as_output("/a/rec.ts"), "/a/rec.ts");
+        assert_eq!(as_output("13:00.ts"), "file:13:00.ts");
+        // Not `rec.ts`, which is what the muxer makes of it as it stands.
+        assert_eq!(as_output("file:rec.ts"), "file:file:rec.ts");
+        assert!(refuse_url_output("http://host/x.ts").is_err());
+    }
+
+    #[test]
+    fn a_file_url_is_the_file_it_names() {
+        let dir = std::env::temp_dir().join("smartcut-input-file-url");
+        let _ = std::fs::create_dir_all(&dir);
+        let path = dir.join("rec.ts");
+        File::create(&path).unwrap().write_all(b"0123456789").unwrap();
+        let input = Input::parse(&format!("file:{}", path.display())).unwrap();
+        assert!(input.refuse_as_output(&path.to_string_lossy()).is_err());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     #[test]
     fn an_ordinary_path_is_left_alone() {

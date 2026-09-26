@@ -266,6 +266,12 @@ impl Encoder {
                 self.macroblock(&mut w, &mut state, frame, mb_x, mb_y);
             }
         }
+        // The flushing bits every BDU ends with (SMPTE 421M Annex E): a one,
+        // then zeroes to the byte. The recording's own headers end that way
+        // -- the entry point above is a whole 0x80 of it -- and without it a
+        // picture whose last macroblock ended in zeroes had a last byte of
+        // 0x00, which the start code after it then reads as its own.
+        w.bit1(true);
         let mut out = Vec::with_capacity(w.position() / 8 + 64);
         out.extend_from_slice(&self.shape.sequence_bdu);
         out.extend_from_slice(&self.shape.entry_bdu);

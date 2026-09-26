@@ -1466,9 +1466,9 @@ fn outline_of(path: &str) -> Result<(Outline, input::Demux)> {
             // decoded to know what shape the pictures are.
             PictureShape {
                 pix_fmt: (*p).format,
-                primaries: (*p).color_primaries as i32,
-                transfer: (*p).color_trc as i32,
-                matrix: (*p).color_space as i32,
+                primaries: raw_enum(std::ptr::addr_of!((*p).color_primaries)),
+                transfer: raw_enum(std::ptr::addr_of!((*p).color_trc)),
+                matrix: raw_enum(std::ptr::addr_of!((*p).color_space)),
             },
             extra,
         )
@@ -1990,6 +1990,27 @@ fn first_picture(ictx: &mut input::Demux, video: &VideoInfo, start_time: f64) ->
     // which is a keyframe list that reads five marks and shows four. See
     // [`scan_with`].
     head.map(|t| t.max(0.0))
+}
+
+/// One of libav's colour enums read as the int it is. The three colour fields
+/// come from the stream as it was written -- an MPEG-2 sequence display
+/// extension's 8-bit values are stored unchecked -- and a Rust enum holding a
+/// value it has no variant for is undefined behaviour, even just to copy.
+///
+/// # Safety
+/// `field` must point to a readable C enum field, which is an `int`.
+pub(crate) unsafe fn raw_enum<T>(field: *const T) -> i32 {
+    debug_assert_eq!(std::mem::size_of::<T>(), 4);
+    unsafe { field.cast::<i32>().read() }
+}
+
+/// [`raw_enum`]'s other half: set one of those fields to an int as it is.
+///
+/// # Safety
+/// `field` must point to a writable C enum field, which is an `int`.
+pub(crate) unsafe fn set_raw_enum<T>(field: *mut T, value: i32) {
+    debug_assert_eq!(std::mem::size_of::<T>(), 4);
+    unsafe { field.cast::<i32>().write(value) }
 }
 
 #[cfg(test)]

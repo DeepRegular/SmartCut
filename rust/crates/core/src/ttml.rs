@@ -178,6 +178,8 @@ pub fn written(payload: &[u8]) -> Option<Written> {
     let plane = tag_at(doc, "<tt")
         .and_then(|t| attribute(t, "tts:extent"))
         .and_then(pixels)
+        // A plane of no size is one the window divides by.
+        .filter(|&(w, h)| w > 0 && h > 0)
         .unwrap_or(SCREEN);
     let mut runs = Vec::new();
     for p in elements(doc, "<p") {
@@ -202,7 +204,7 @@ pub fn written(payload: &[u8]) -> Option<Written> {
                 .map(|names| style_of(names, &styles))
                 .unwrap_or_default();
             let text = unescape(text);
-            let count = text.chars().count() as u16;
+            let count = u16::try_from(text.chars().count()).unwrap_or(u16::MAX);
             if count == 0 {
                 continue;
             }
@@ -409,11 +411,18 @@ fn elements<'a>(doc: &'a str, open: &str) -> Vec<(Option<&'a str>, &'a str)> {
     out
 }
 
-/// Where an element's body ends: at its own closing tag, or at the end of
-/// what is left.
+/// Where an element's body ends: at its own closing tag, or at the next
+/// element of the same name, or at the end of what is left.
+///
+/// Not past the next one: none of the elements read here nests in itself,
+/// and an unclosed `<p>` whose body ran to the end of the document took in
+/// every paragraph after it. [`written`] lays out every span of every body,
+/// so 256 unclosed paragraphs over a document of spans was each span laid
+/// out 256 times -- millions of runs out of one packet of a crafted stream.
 fn close_of(body: &str, open: &str) -> usize {
     let close = format!("</{}>", &open[1..]);
-    body.find(&close).unwrap_or(body.len())
+    let next = body.find(open).unwrap_or(body.len());
+    body[..next].find(&close).unwrap_or(next)
 }
 
 /// The runs inside a `<p>`: each `<span>` with its text, and `(None, "")`
@@ -538,6 +547,22 @@ mod tests {
     fn unclosed_elements_are_counted() {
         let doc = "<p region=\"r\">".repeat(50_000);
         assert_eq!(elements(&doc, "<p").len(), 256);
+    }
+
+    /// And an unclosed paragraph ends where the next begins, so a span is
+    /// laid out once rather than once for every paragraph in front of it.
+    #[test]
+    fn an_unclosed_paragraph_does_not_take_in_the_next() {
+        let doc = String::from_utf8(packet("00:00:01.000", "00:00:02.000", "x")[12..].to_vec())
+            .unwrap()
+            .replace(
+                "</p>",
+                &"<p region=\"r10\"><span style=\"normalSize1\">y</span>".repeat(300),
+            );
+        let mut p = vec![0u8; 12];
+        p.extend_from_slice(doc.as_bytes());
+        let runs = &written(&p).unwrap().pages[0].runs;
+        assert_eq!(runs.len(), 256);
     }
 
     #[test]

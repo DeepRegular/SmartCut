@@ -114,10 +114,14 @@ pub fn framing(
 
 /// As [`framing`], for a recording that is not open.
 pub fn of_source(src: &crate::Source) -> Option<Framing> {
-    let audio = src.audio.as_ref()?;
+    of_track(src, src.audio.as_ref()?.stream_index)
+}
+
+/// As [`of_source`], for one of the recording's tracks rather than its first.
+pub fn of_track(src: &crate::Source, stream_index: usize) -> Option<Framing> {
     let mut ictx = crate::input::demux(&src.input.url).ok()?;
     // This track, with the pictures, so the bounded read below is bounded. See
     // [`crate::input::keep_with_pictures`].
-    crate::input::keep_with_pictures(&mut ictx, &[audio.stream_index]);
-    framing(&mut ictx, audio.stream_index)
+    crate::input::keep_with_pictures(&mut ictx, &[stream_index]);
+    framing(&mut ictx, stream_index)
 }

@@ -430,12 +430,17 @@ impl Sup {
     /// `cut_title.eng.sup` -- or the number it sits on where the disc says
     /// nothing or says the same thing twice.
     pub fn write(&self, beside: &str) -> Result<String> {
-        let at = match &self.tag {
-            None => crate::vobsub::named_after(beside, "sup"),
-            Some(tag) => crate::vobsub::named_after(beside, &format!("{tag}.sup")),
-        };
+        let at = self.named_after(beside);
         std::fs::File::create(&at)?.write_all(&self.out)?;
         Ok(at.to_string_lossy().into_owned())
+    }
+
+    /// Where [`Sup::write`] puts it.
+    pub fn named_after(&self, beside: &str) -> std::path::PathBuf {
+        match &self.tag {
+            None => crate::vobsub::named_after(beside, "sup"),
+            Some(tag) => crate::vobsub::named_after(beside, &format!("{tag}.sup")),
+        }
     }
 }
 

@@ -900,9 +900,12 @@ pub(crate) fn filename(name: &str) -> String {
 
 /// A disc, whichever of its two shapes it arrived in and whichever dialect
 /// wrote it.
+///
+/// Each carries how many bytes of index it has read so far; see
+/// [`MAX_INDEX_TOTAL`].
 enum Volume {
     /// A directory, and the path of the `BDAV` or `BDMV` directory inside it.
-    Dir { shape: Shape, dir: PathBuf },
+    Dir { shape: Shape, dir: PathBuf, spent: u64 },
     /// An image, the path it was opened from, and the prefix that directory
     /// sits at inside it.
     Image {
@@ -910,6 +913,7 @@ enum Volume {
         image: Box<udf::Image>,
         path: PathBuf,
         prefix: String,
+        spent: u64,
     },
 }
 
@@ -918,7 +922,7 @@ impl Volume {
         if at.is_dir() {
             let (shape, dir) = disc_dir(at)
                 .ok_or_else(|| anyhow!("{}: no BDMV or BDAV directory here", at.display()))?;
-            return Ok(Volume::Dir { shape, dir });
+            return Ok(Volume::Dir { shape, dir, spent: 0 });
         }
         let image = udf::Image::open(at)?;
         let (shape, prefix) = prefix_of(&image)
@@ -928,6 +932,7 @@ impl Volume {
             image: Box::new(image),
             path: at.to_path_buf(),
             prefix,
+            spent: 0,
         })
     }
 
@@ -971,17 +976,24 @@ impl Volume {
 
     /// Read one of the small index files, named relative to `BDAV` or `BDMV`.
     fn read(&mut self, rel: &str) -> Result<Vec<u8>> {
-        match self {
-            Volume::Dir { dir, .. } => read_index(&at_name(dir, rel)),
+        let (Volume::Dir { spent, .. } | Volume::Image { spent, .. }) = self;
+        if *spent > MAX_INDEX_TOTAL {
+            bail!("this disc's index files come to more than {MAX_INDEX_TOTAL} bytes");
+        }
+        let raw = match self {
+            Volume::Dir { dir, .. } => read_index(&at_name(dir, rel))?,
             Volume::Image { image, prefix, .. } => {
                 let want = format!("{prefix}{rel}");
                 let entry = image
                     .find(&want)
                     .ok_or_else(|| anyhow!("{want} is not on this image"))?
                     .clone();
-                image.read(&entry)
+                image.read(&entry)?
             }
-        }
+        };
+        let (Volume::Dir { spent, .. } | Volume::Image { spent, .. }) = self;
+        *spent += raw.len() as u64;
+        Ok(raw)
     }
 
     /// What to hand [`crate::input`] for one clip's stream.
@@ -1230,6 +1242,16 @@ fn prefix_of(image: &udf::Image) -> Option<(Shape, String)> {
 /// The most an index file on a folder disc is read as: an index, a playlist,
 /// a clip's information. The same limit an image's own files are held to.
 const MAX_INDEX: u64 = 64 << 20;
+
+/// How many bytes of index one opened disc reads in all.
+///
+/// [`MAX_INDEX`] is per file, and a playlist is allowed a thousand items: one
+/// that alternates between two clips whose indexes are sixty-four megabytes
+/// each is sixty-four gigabytes of reading for one row of the list, and
+/// every playlist on the disc may be that one again. A real disc reads a few
+/// hundred megabytes at the very most, its clip indexes re-read for every
+/// playlist that plays them included.
+const MAX_INDEX_TOTAL: u64 = 4 << 30;
 
 /// One of a folder disc's index files, whole.
 ///

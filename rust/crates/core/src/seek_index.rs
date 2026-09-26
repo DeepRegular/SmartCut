@@ -328,11 +328,18 @@ impl SeekIndex {
             for _ in 0..n {
                 scenes.push(r.f64()?);
             }
+            // As with the entry points above: never written, so damage.
+            if scenes.iter().any(|s| !s.is_finite()) {
+                bail!("{} holds a scene change that is not at a time", path.display());
+            }
             let n = r.u64()? as usize;
             let n = r.fits(n, THUMB)?;
             let mut list = Vec::with_capacity(n);
             for _ in 0..n {
                 let time = r.f64()?;
+                if !time.is_finite() {
+                    bail!("{} holds a thumbnail that is not at a time", path.display());
+                }
                 let jpeg = r.bytes()?.to_vec();
                 list.push(thumbs::Thumb { time, jpeg });
             }
