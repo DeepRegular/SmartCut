@@ -937,7 +937,9 @@ impl Reencoder {
         while self.decoder.receive_frame(&mut frame).is_ok() {
             let Some(pts) = frame.pts() else { continue };
             let t = pts as f64 * audio.time_base - start_time;
-            let first = (t * self.sample_rate as f64).round() as i64;
+            // Held well inside i64: a crafted time stamp saturates the cast,
+            // and the frame's length added to it then overflowed.
+            let first = ((t * self.sample_rate as f64).round() as i64).clamp(i64::MIN / 4, i64::MAX / 4);
             // How long the frame lasts, in the recording's samples. Not its
             // own count where it arrived at another rate -- the programme
             // before this one, at the head of a broadcast recording -- or
@@ -1786,7 +1788,8 @@ fn decode_around(
         while decoder.receive_frame(&mut frame).is_ok() {
             let Some(pts) = frame.pts() else { continue };
             let t = pts as f64 * audio.time_base - src.start_time;
-            let first = (t * rate).round() as i64;
+            // Held inside i64, as in `Reencoder::take`.
+            let first = ((t * rate).round() as i64).clamp(i64::MIN / 4, i64::MAX / 4);
             // These frames go back among the recording's own, so nothing
             // here may move a channel: the layout asked for is the layout
             // that arrived, and the only conversion is one of format. A

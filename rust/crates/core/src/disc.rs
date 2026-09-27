@@ -423,7 +423,22 @@ pub fn listing_of(path: &str) -> Option<crate::si::Listed> {
     // by its window, and the name of the clip alone would give both cuts the
     // first one's programme. The clip's name where no title opens the path
     // as given -- a clip opened whole, from its folder.
-    let exact = titles.iter().position(|t| said(t) && t.clips.iter().any(|c| c.path == path));
+    //
+    // A title's items name the clip whole (the window is put on in
+    // [`rows_of`]), so the window is matched by the sequence it opens at.
+    let stc = crate::input::clip_window(path).and_then(|(_, first, _)| {
+        let mut vol = Volume::open(Path::new(root)).ok()?;
+        let raw = vol.read(&format!("CLIPINF/{clip}.clpi")).ok()?;
+        sequence_starts(&raw).iter().find(|s| s.at == first).map(|s| s.id)
+    });
+    let exact = stc.and_then(|stc| {
+        titles.iter().position(|t| {
+            said(t)
+                && t.clips
+                    .iter()
+                    .any(|c| c.stc == stc && c.name.eq_ignore_ascii_case(clip))
+        })
+    });
     let named = || {
         titles
             .iter()
@@ -2820,6 +2835,46 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
     }
 
+    /// Two playlists that each play one sequence of the same clip: a name
+    /// that opens the second sequence is the second programme's.
+    #[test]
+    fn a_windowed_name_is_listed_by_its_own_playlist() {
+        let root = std::env::temp_dir().join("smartcut-disc-listing-window");
+        let _ = std::fs::remove_dir_all(&root);
+        for dir in ["PLAYLIST", "CLIPINF", "STREAM"] {
+            std::fs::create_dir_all(root.join("BDAV").join(dir)).unwrap();
+        }
+        let raw = clpi_timed(&[(0, 0, 450_000, 900_000), (1, 1_000, 225_000, 270_000)]);
+        std::fs::write(root.join("BDAV/CLIPINF/00001.clpi"), raw).unwrap();
+        let rpls = |stc: u8, name: &str| {
+            let list_at = 400usize;
+            let mut raw = vec![0u8; list_at];
+            raw[..8].copy_from_slice(b"PLST0100");
+            raw[8..12].copy_from_slice(&(list_at as u32).to_be_bytes());
+            raw[12..16].copy_from_slice(&u32::MAX.to_be_bytes());
+            let text = crate::arib::encode(name);
+            raw[88] = text.len() as u8;
+            raw[89..89 + text.len()].copy_from_slice(&text);
+            raw.extend_from_slice(&[0, 0, 0, 0, 0, 0, 0, 1, 0, 0]);
+            let mut body = b"00001M2TS\0\0".to_vec();
+            body.push(stc);
+            body.extend_from_slice(&0u32.to_be_bytes());
+            body.extend_from_slice(&900_000u32.to_be_bytes());
+            raw.extend_from_slice(&(body.len() as u16).to_be_bytes());
+            raw.extend_from_slice(&body);
+            raw
+        };
+        std::fs::write(root.join("BDAV/PLAYLIST/01001.rpls"), rpls(0, "一")).unwrap();
+        std::fs::write(root.join("BDAV/PLAYLIST/01002.rpls"), rpls(1, "二")).unwrap();
+        let clip = root.join("BDAV/STREAM/00001.m2ts");
+        let clip = clip.to_string_lossy();
+        let name = |p: &str| listing_of(p).and_then(|l| l.name);
+        assert_eq!(name(&clip).as_deref(), Some("一"));
+        assert_eq!(name(&format!("{clip}@0-999")).as_deref(), Some("一"));
+        assert_eq!(name(&format!("{clip}@1000-1999")).as_deref(), Some("二"));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
     /// A disc that carries AACS says so beside `BDAV`, not inside it.
     #[test]
     fn a_disc_that_encrypts_its_streams_is_known_by_its_directory() {
@@ -3432,7 +3487,7 @@ mod tests {
         let channel = "ＮＨＫ　ＢＳ".as_bytes();
         raw[67] = channel.len() as u8;
         raw[68..68 + channel.len()].copy_from_slice(channel);
-        let name = "🆞シャーロック".as_bytes();
+        let name = "🆞ドラマ".as_bytes();
         raw[88] = name.len() as u8;
         raw[89..89 + name.len()].copy_from_slice(name);
 
@@ -3440,7 +3495,7 @@ mod tests {
         // One line, so the ideographic space between the two halves of the
         // channel's name arrives as an ordinary one.
         assert_eq!(said.channel.as_deref(), Some("ＮＨＫ ＢＳ"));
-        assert_eq!(said.name.as_deref(), Some("🆞シャーロック"));
+        assert_eq!(said.name.as_deref(), Some("🆞ドラマ"));
     }
 
     /// Which encoding a name is in is asked of the bytes as well as of the

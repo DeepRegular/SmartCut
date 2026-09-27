@@ -492,7 +492,7 @@ type Job = (ff::frame::Video, i64, bool);
 
 /// What a scaler is built for: how a picture is laid out, and how big it is.
 /// See [`write_side`], where a picture that stops matching one gets another.
-type Shape = (ff::format::Pixel, u32, u32);
+type Shape = (ff::format::Pixel, u32, u32, bool);
 
 /// Take the encoder's packets as they come and mux them.
 fn drain(s: &mut Sink) -> Result<()> {
@@ -538,7 +538,7 @@ fn write_side(
     // stretches it where the two do not share an aspect. A proxy stands in
     // for the recording while a cut is being placed, and one of the wrong
     // shape is worth more there than no proxy at all.
-    let mut scaler: Option<(Shape, ff::software::scaling::Context)> = None;
+    let mut scaler: Option<(Shape, crate::blend::Scaler)> = None;
     let mut pictures = 0usize;
     // The last timestamp handed to the encoder. A recording whose clock
     // steps back -- two streams spliced where the second begins a couple of
@@ -562,17 +562,18 @@ fn write_side(
             continue;
         }
         last_pts = Some(pts);
-        let shape = (frame.format(), frame.width(), frame.height());
+        // The range with the shape: a full-range picture in a plain format --
+        // HEVC or 10-bit tagged pc -- went into the proxy with its samples as
+        // they were, and the proxy, which says no range, was read back as
+        // studio and stretched a second time in every still taken off it.
+        let full = crate::blend::full_range_frame(&frame);
+        let shape = (frame.format(), frame.width(), frame.height(), full);
         if scaler.as_ref().is_none_or(|(was, _)| *was != shape) {
             scaler = Some((
                 shape,
-                ff::software::scaling::Context::get(
-                    frame.format(),
-                    frame.width(),
-                    frame.height(),
-                    ff::format::Pixel::YUV420P,
-                    s.width,
-                    s.height,
+                crate::blend::Scaler::with_flags(
+                    (frame.width(), frame.height(), frame.format(), full),
+                    (s.width, s.height, ff::format::Pixel::YUV420P, false),
                     // Averaging is what takes the comb out of interlaced
                     // material: at this reduction a field pair blends rather
                     // than combs, and the proxy needs no deinterlacer of its
@@ -585,7 +586,7 @@ fn write_side(
         // A fresh picture every time: the encoder keeps a reference to what it
         // is handed, so scaling into the same buffer again would rewrite a
         // picture that has not been encoded yet.
-        let mut scaled = ff::frame::Video::empty();
+        let mut scaled = ff::frame::Video::new(ff::format::Pixel::YUV420P, s.width, s.height);
         sc.run(&frame, &mut scaled)?;
         scaled.set_pts(Some(pts));
         scaled.set_kind(if entry {

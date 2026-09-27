@@ -1793,7 +1793,26 @@ fn sdt_from_sit(sit: &[u8], service: &Service) -> Option<Vec<u8>> {
     if id != service.service_id {
         return None;
     }
-    Some(sdt_naming(service, descriptor(described, 0x48)?))
+    let named = descriptor(described, 0x48)?;
+    // libavformat's own name for a service nobody named, which a partial
+    // stream written before its muxer stopped being asked for one carries in
+    // its selection table: taken as the service's name, the channel the
+    // disc's index gives was never put in its place.
+    if muxer_default_naming(named) {
+        return None;
+    }
+    Some(sdt_naming(service, named))
+}
+
+/// Whether the body of a service descriptor is libavformat's default: the
+/// provider "FFmpeg" and a service "ServiceNN".
+fn muxer_default_naming(named: &[u8]) -> bool {
+    let Some(&plen) = named.get(1) else { return false };
+    let plen = plen as usize;
+    let Some(provider) = named.get(2..2 + plen) else { return false };
+    let Some(&nlen) = named.get(2 + plen) else { return false };
+    let Some(name) = named.get(3 + plen..3 + plen + nlen as usize) else { return false };
+    provider == b"FFmpeg" && name.starts_with(b"Service")
 }
 
 /// A service description of the one service, carrying `named` -- the body of
@@ -1913,9 +1932,13 @@ fn broadcast_time(at: &Began) -> Option<[u8; 5]> {
 /// since an event is a time before it is anything else.
 fn event_from_listing(listed: &Listed, service: &Service) -> Option<Vec<u8>> {
     let start = broadcast_time(listed.began.as_ref()?)?;
-    let ran = listed.ran.unwrap_or(0).min(99 * 3600 + 59 * 60 + 59);
     let bcd = |v: u32| (((v / 10) << 4) | (v % 10)) as u8;
-    let duration = [bcd(ran / 3600), bcd(ran / 60 % 60), bcd(ran % 60)];
+    // A length the index does not give is written as not known -- all ones
+    // -- rather than as nought, which says the programme on now has ended.
+    let duration = listed.ran.map_or([0xFF; 3], |ran| {
+        let ran = ran.min(99 * 3600 + 59 * 60 + 59);
+        [bcd(ran / 3600), bcd(ran / 60 % 60), bcd(ran % 60)]
+    });
     let onid = service.original_network_id;
     let name = written_text(listed.name.as_deref().unwrap_or(""), 96, onid);
     // Three of language, a length each, and the name: what is left of the
@@ -3628,6 +3651,12 @@ pub fn graft(output: &str, on: Option<&(dyn Fn(f64) + Sync)>, g: &Graft) -> Resu
                     put(&mut dst, arrival, &one)?;
                     sent += 1;
                 }
+                continue;
+            }
+            // Only the map is being corrected: the muxer's own tables name
+            // a stream of its own numbering, and the recording's event and
+            // clock written beside them would describe a different one.
+            if g.tables == Tables::Muxer {
                 continue;
             }
             let snap = &g.ranges[range].snapshot;

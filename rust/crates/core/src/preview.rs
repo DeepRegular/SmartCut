@@ -1062,16 +1062,16 @@ pub(crate) fn encode_jpeg(picture: &ff::frame::Video, sar: f64, width: u32) -> R
         as u32)
         .max(16) & !1;
 
-    let mut scaler = ff::software::scaling::Context::get(
-        picture.format(),
-        picture.width(),
-        picture.height(),
-        ff::format::Pixel::YUVJ420P,
-        out_w,
-        out_h,
+    // Told the picture's range rather than left to read it off the format:
+    // a full-range picture in a plain one -- HEVC or 10-bit tagged pc -- was
+    // taken for studio and stretched a second time, its blacks crushed and
+    // its whites blown in every still the editor and the strip showed.
+    let mut scaler = crate::blend::Scaler::with_flags(
+        (picture.width(), picture.height(), picture.format(), crate::blend::full_range_frame(picture)),
+        (out_w, out_h, ff::format::Pixel::YUVJ420P, true),
         ff::software::scaling::Flags::AREA,
     )?;
-    let mut scaled = ff::frame::Video::empty();
+    let mut scaled = ff::frame::Video::new(ff::format::Pixel::YUVJ420P, out_w, out_h);
     scaler.run(picture, &mut scaled)?;
 
     let codec =

@@ -352,6 +352,22 @@ pub fn remove_disc(at: &Path) -> Result<()> {
             stranded.len()
         );
     }
+    // Nor while it holds a stream with no clip index: a number another run
+    // reserved and is still cutting into (see `prepare`), which the image
+    // has as the empty or half-written file it was when the image was made.
+    // Two command lines into one disc, one of them `--iso-only`, deleted the
+    // other's recording out from under it.
+    let indexed = numbered(&root.join("CLIPINF"), "clpi")?;
+    if let Some(open) = numbered(&root.join("STREAM"), "m2ts")?
+        .into_iter()
+        .find(|s| indexed.binary_search(s).is_err())
+    {
+        bail!(
+            "{} is kept: recording {open} in it has no index yet -- another run may still be \
+             writing it",
+            root.display()
+        );
+    }
     std::fs::remove_dir_all(&root).with_context(|| format!("removing {}", root.display()))?;
     // `remove_dir` and not `remove_dir_all`: it removes an empty folder and
     // refuses anything else, which is the rule here rather than a check
@@ -2101,6 +2117,20 @@ mod tests {
         assert!(remove_disc(&at).is_err());
         assert!(root(&at).join("PLAYLIST").join(".notes").exists());
         std::fs::remove_file(root(&at).join("PLAYLIST").join(".notes")).unwrap();
+        assert!(remove_disc(&at).is_ok());
+        assert!(!at.exists());
+    }
+
+    /// A disc another run has a number reserved on is kept: that stream is
+    /// not finished, and the image does not hold it whole.
+    #[test]
+    fn a_disc_with_a_reserved_stream_is_kept() {
+        let at = std::env::temp_dir().join(format!("bdav-reserved-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&at);
+        let clip = prepare(&at, 1).unwrap().remove(0);
+        assert!(remove_disc(&at).is_err());
+        assert!(stream_of(&at, &clip).exists());
+        std::fs::write(root(&at).join("CLIPINF").join(format!("{clip}.clpi")), b"x").unwrap();
         assert!(remove_disc(&at).is_ok());
         assert!(!at.exists());
     }

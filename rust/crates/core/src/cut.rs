@@ -2604,9 +2604,16 @@ fn copy_segment(
         }
         // Pictures from the stretches either side of this one are not this
         // segment's to copy, whatever their times say. See `floor`/`wall`.
-        if read_at.zip(floor).is_some_and(|(at, f)| at < f.at)
-            || read_at.zip(wall).is_some_and(|(at, w)| at >= w)
-        {
+        if read_at.zip(floor).is_some_and(|(at, f)| at < f.at) {
+            continue;
+        }
+        // Past the wall there is no picture of this segment left to come, so
+        // the pictures are done, as [`reencode_segment`] says at the same
+        // place. Only skipped, the copy whose terminating access point is the
+        // next stretch's first -- a copy that runs right up to the seam --
+        // never met it, and read the rest of the clip to its end for nothing.
+        if read_at.zip(wall).is_some_and(|(at, w)| at >= w) {
+            video_done = true;
             continue;
         }
         let Some(pts) = packet.pts() else { continue };
@@ -6514,6 +6521,20 @@ fn cut_into(
             // off with them.
             if signalling.has_dovi && !signalling.dovi {
                 drop_dovi(ost.parameters().as_mut_ptr());
+            }
+            // An `hvcC` from a muxer older than the standard says version 0.
+            // libavcodec reads it as the version-1 record it is laid out as,
+            // but the MP4 muxer takes it for neither that nor start codes and
+            // writes an empty box: a file that says "wrote" and that nothing
+            // can open. The version said as 1, the layout being the same.
+            let par = ost.parameters().as_mut_ptr();
+            if src.video.codec == "hevc"
+                && !(*par).extradata.is_null()
+                && (*par).extradata_size >= 23
+                && *(*par).extradata == 0
+                && matches!(src.video.framing, NalFraming::Length(_))
+            {
+                *(*par).extradata = 1;
             }
             // `avc3`/`hev1` say the parameter sets may live in the samples,
             // which is what lets copied and re-encoded pictures carry

@@ -165,11 +165,7 @@ pub fn tint(frame: &mut ff::frame::Video, shade: Shade, mix: f64) -> Result<()> 
     }
     // A full-range picture's black is nought and its white full scale; the
     // studio levels in it are a dark grey and a light one.
-    let full = frame.color_range() == ff::util::color::Range::JPEG
-        || matches!(
-            frame.format(),
-            ff::format::Pixel::YUVJ420P | ff::format::Pixel::YUVJ422P | ff::format::Pixel::YUVJ444P
-        );
+    let full = full_range_frame(frame);
     let (luma, chroma) = shade.yuv_in(shape.depth, full);
     let (width, height) = (frame.width(), frame.height());
     let scaled = (mix * 4096.0).round() as u32;
@@ -419,7 +415,15 @@ impl Scaler {
         // seam, so what it costs is paid for the length of the reel, and the
         // cheaper filters show on the kind of material that gets joined -- a
         // clip scaled up from standard definition to fit a high one.
-        let flags = ff::software::scaling::Flags::BICUBIC;
+        Scaler::with_flags(from, to, ff::software::scaling::Flags::BICUBIC)
+    }
+
+    /// As [`Self::new`], with the filter chosen by the caller.
+    pub(crate) fn with_flags(
+        from: (u32, u32, ff::format::Pixel, bool),
+        to: (u32, u32, ff::format::Pixel, bool),
+        flags: ff::software::scaling::Flags,
+    ) -> Result<Scaler> {
         // The ordinary scaler only where the range it reads off each format
         // is the true one. Two full-range sides are not enough: a YUVJ clip
         // going to a full-range master in a plain format was squeezed to
@@ -731,6 +735,53 @@ mod tests {
                 assert_eq!(sample(&out, 0, 0, 0), 200, "{side:?} {moving} at 1");
                 assert_eq!(sample(&out, 0, 15, 7), 200, "{side:?} {moving} at 1");
             }
+        }
+    }
+
+    fn scaled(
+        from: &ff::frame::Video,
+        full_in: bool,
+        to: ff::format::Pixel,
+        full: bool,
+    ) -> ff::frame::Video {
+        let mut out = ff::frame::Video::new(to, 16, 8);
+        Scaler::new((16, 8, from.format(), full_in), (16, 8, to, full))
+            .unwrap()
+            .run(from, &mut out)
+            .unwrap();
+        out
+    }
+
+    /// The scaler converts the levels wherever the two ranges differ, and
+    /// leaves them alone where they agree -- the same size and format
+    /// included, which the ordinary scaler copies as they are.
+    #[test]
+    fn the_scaler_converts_between_ranges() {
+        use ff::format::Pixel::{RGB24, YUV420P, YUVJ420P};
+        let mut full_black = frame([0, 128, 128]);
+        full_black.set_color_range(ff::util::color::Range::JPEG);
+        assert_eq!(sample(&scaled(&full_black, true, YUV420P, false), 0, 0, 0), 16);
+        assert_eq!(sample(&scaled(&full_black, true, YUV420P, true), 0, 0, 0), 0);
+        assert_eq!(sample(&scaled(&full_black, true, YUVJ420P, true), 0, 0, 0), 0);
+        let studio_black = frame([16, 128, 128]);
+        assert_eq!(sample(&scaled(&studio_black, false, YUV420P, true), 0, 0, 0), 0);
+        assert_eq!(sample(&scaled(&studio_black, false, YUVJ420P, true), 0, 0, 0), 0);
+        let mut j = ff::frame::Video::new(YUVJ420P, 16, 8);
+        for nth in 0..3 {
+            let v = if nth == 0 { 0 } else { 128 };
+            j.data_mut(nth).iter_mut().for_each(|b| *b = v);
+        }
+        assert_eq!(sample(&scaled(&j, true, YUV420P, true), 0, 0, 0), 0);
+        assert_eq!(sample(&scaled(&j, true, YUV420P, false), 0, 0, 0), 16);
+        // An RGB image, which is what an overlay usually is, however its
+        // decoder labelled the range.
+        let mut rgb = ff::frame::Video::new(RGB24, 16, 8);
+        rgb.data_mut(0).iter_mut().for_each(|b| *b = 0);
+        for tag in [ff::util::color::Range::Unspecified, ff::util::color::Range::JPEG] {
+            rgb.set_color_range(tag);
+            let full_in = full_range_frame(&rgb);
+            assert_eq!(sample(&scaled(&rgb, full_in, YUV420P, false), 0, 0, 0), 16, "{tag:?}");
+            assert_eq!(sample(&scaled(&rgb, full_in, YUV420P, true), 0, 0, 0), 0, "{tag:?}");
         }
     }
 

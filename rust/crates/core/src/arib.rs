@@ -1125,9 +1125,9 @@ mod tests {
     /// cell for is spelled out rather than lost.
     #[test]
     fn a_4k_name_keeps_its_markers() {
-        let name = "\u{1F19E}シャーロック\u{1F214}\u{1F211}";
+        let name = "\u{1F19E}ドラマ\u{1F214}\u{1F211}";
         // `🈔` is also a symbol of a row of its own, and goes there.
-        assert_eq!(decode(&encode(name)), "[4K]シャーロック\u{1F214}[字]");
+        assert_eq!(decode(&encode(name)), "[4K]ドラマ\u{1F214}[字]");
         // Cut short, the word goes whole or not at all.
         let short = encode_within(name, 4);
         assert!(!decode(&short).contains("[4"), "{:?}", decode(&short));

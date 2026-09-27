@@ -201,7 +201,9 @@ pub struct Reader {
     /// clock a window is read against.
     video: usize,
     ictx: Option<crate::input::Demux>,
-    /// The stretch [`Reader::events`] covers. Empty until the first read.
+    /// The stretch [`Reader::events`] answers for, which starts a little
+    /// after where the read did; see [`Reader::fill`]. Empty until the first
+    /// read.
     window: Option<(f64, f64)>,
     events: Vec<Event>,
 }
@@ -485,7 +487,12 @@ impl Reader {
         // the recording said them.
         events.sort_by(|a, b| a.at.partial_cmp(&b.at).unwrap_or(std::cmp::Ordering::Equal));
         self.events = events;
-        self.window = Some((from, to));
+        // Answered from here only where some of the lookback is still behind
+        // the instant: an instant a second after `from` has a second of it,
+        // and a subtitle that went up before `from` and is still standing
+        // was answered as nothing. Stepping back past this reads again.
+        let near = if from > 0.0 { from + LOOKBACK / 3.0 } else { from };
+        self.window = Some((near, to));
         Ok(())
     }
 

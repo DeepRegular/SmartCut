@@ -792,7 +792,14 @@ fn main() -> Result<()> {
             }
             "--seek-index" => {
                 i += 1;
-                seek_index = Some(args.get(i).context("--seek-index needs a path")?.clone());
+                let v = args.get(i).context("--seek-index needs a path")?;
+                // An empty name -- a script's variable that came out empty --
+                // walked the whole recording and then failed to write a file
+                // called nothing, with only "No such file or directory".
+                if v.is_empty() {
+                    bail!("--seek-index needs a path");
+                }
+                seek_index = Some(v.clone());
             }
             "--drop-stream" => {
                 i += 1;
@@ -862,7 +869,13 @@ fn main() -> Result<()> {
             "--analyze" => analyze = true,
             "-o" | "--output" => {
                 i += 1;
-                output = Some(args.get(i).context("-o needs a path")?.clone());
+                let v = args.get(i).context("-o needs a path")?;
+                // As `--seek-index`: an empty name was carried through the
+                // whole open and plan to a muxer that said ": Invalid argument".
+                if v.is_empty() {
+                    bail!("-o needs a path");
+                }
+                output = Some(v.clone());
             }
             // Onto a disc rather than into a file. The name of the file is
             // the disc's to decide -- a recording on one is `00001.m2ts` --
@@ -1285,18 +1298,25 @@ fn main() -> Result<()> {
     // track still leaves the expensive half behind. The `--scenes` path
     // writes it again with the track once it has one.
     let writing = index_file.filter(|_| held.is_none() && !as_proxy);
+    // A walk that stopped at read errors -- a share that went away half way
+    // -- hands over the entry points of what it read, and the run goes on
+    // with those. Said whether or not an index was asked to be kept: a cut
+    // planned on half a recording's entry points is worth a word, and it
+    // used to be given only beside `--seek-index`.
+    if !src.read_whole {
+        eprintln!(
+            "note: the recording was not read to its end, so only what was read is indexed{}",
+            if writing.is_some() { " and no seek index is written" } else { "" }
+        );
+    }
     if let Some(p) = &writing {
         src.input.refuse_as_output(&p.to_string_lossy())?;
         // Not for a walk that stopped at read errors -- half an index kept
-        // is half a recording on every later open. Said, not fatal: the run
-        // itself goes on with what was read. Any other failure to write the
-        // file that was asked for still ends the run, as it always did.
+        // is half a recording on every later open. Said above, not fatal.
+        // Any other failure to write the file that was asked for still ends
+        // the run, as it always did.
         if src.read_whole {
             smartcut_core::SeekIndex::of(&src, None).save(p)?;
-        } else {
-            eprintln!(
-                "note: the recording was not read to its end, so no seek index is written"
-            );
         }
     }
     let v = &src.video;

@@ -59,7 +59,6 @@ struct Rescale {
     ctx: crate::blend::Scaler,
 }
 
-
 /// Write one range of a reel that does not match the master.
 ///
 /// The whole range: a clip being written afresh has no copied pictures for a

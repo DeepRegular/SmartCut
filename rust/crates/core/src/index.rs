@@ -1030,7 +1030,8 @@ fn stretch_points(
     let mut out = Vec::new();
     let mut last = f64::NEG_INFINITY;
     let mut read_at = lo;
-    for (s, p) in ictx.read_packets() {
+    let mut reading = ictx.read_packets();
+    for (s, p) in reading.by_ref() {
         if p.position() >= 0 {
             read_at = p.position() as u64;
         }
@@ -1054,6 +1055,15 @@ fn stretch_points(
             });
         }
     }
+    // A stretch whose reading stopped at errors -- a share that went away --
+    // is not mended: its fresh points would be the half that was read, and
+    // an index is kept with them (the map's source says it was read whole),
+    // after which the check above finds the stretch agreeing with itself
+    // and never reads it again. Left unmended, the next open asks again.
+    if reading.finished().is_err() {
+        return (Vec::new(), None);
+    }
+    drop(reading);
     // The last picture's own instant, not the end of the time it occupies.
     // A range that ends at the latter asks for one more picture than the
     // stretch has, and a re-encode of one picture that is not there is the

@@ -538,6 +538,13 @@ impl<'a> Picture<'a> {
         }
         let header_to = r.position() as u32;
         let quant = r.u(5) as u8;
+        // Code zero is forbidden. Written back it would come out as code one,
+        // which is a picture this was never asked to change coming back as
+        // something else -- and a walk that meets one has most likely lost
+        // its place anyway.
+        if quant == 0 {
+            return Err(Error::BadCode);
+        }
         let extra = r.position() as u32;
         if r.peek(1) == 1 {
             // intra_slice_flag, intra_slice, seven reserved bits, and then as
@@ -627,6 +634,9 @@ impl<'a> Picture<'a> {
 
         let quant = (flags & flags::QUANT != 0).then(|| r.u(5) as u8);
         if let Some(code) = quant {
+            if code == 0 {
+                return Err(Error::BadCode); // forbidden, as in the slice header
+            }
             *q = code;
         }
 

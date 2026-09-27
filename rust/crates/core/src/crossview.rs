@@ -317,8 +317,8 @@ pub fn shape_for(src: &Source, width: u32) -> (u32, u32) {
 /// built for the first shape refuses the second. The cutter keeps one of
 /// these for the same reason.
 struct Rescale {
-    was: (u32, u32, ff::format::Pixel),
-    ctx: ff::software::scaling::Context,
+    was: (u32, u32, ff::format::Pixel, bool),
+    ctx: crate::blend::Scaler,
 }
 
 fn reshape(
@@ -326,20 +326,25 @@ fn reshape(
     (w, h): (u32, u32),
     rescale: &mut Option<Rescale>,
 ) -> Result<ff::frame::Video> {
-    let have = (frame.width(), frame.height(), frame.format());
-    if have == (w, h, SHAPE) {
+    // Every picture brought to studio levels, whatever range it was in. The
+    // two clips at a seam can be in different ranges -- that is one of the
+    // reasons a clip is written afresh -- and a dissolve or a wipe mixes
+    // their samples as they stand: one full and one studio came out of the
+    // blend as neither. The output brings both to the master's range before
+    // it blends; the preview brings both to one range for the same reason,
+    // and studio is the one the rest of the preview reads a `yuv420p`
+    // picture in.
+    let full = crate::blend::full_range_frame(frame);
+    let have = (frame.width(), frame.height(), frame.format(), full);
+    if have == (w, h, SHAPE, false) {
         return Ok(frame.clone());
     }
     if rescale.as_ref().is_none_or(|r| r.was != have) {
         *rescale = Some(Rescale {
             was: have,
-            ctx: ff::software::scaling::Context::get(
-                have.2,
-                have.0,
-                have.1,
-                SHAPE,
-                w,
-                h,
+            ctx: crate::blend::Scaler::with_flags(
+                have,
+                (w, h, SHAPE, false),
                 // A preview is thrown away the instant after it is looked at,
                 // and at playback it is one of thirty a second: the cutter's
                 // bicubic buys a quality nobody sees here and costs time that
@@ -348,20 +353,13 @@ fn reshape(
             )?,
         });
     }
-    let mut out = ff::frame::Video::empty();
+    let mut out = ff::frame::Video::new(SHAPE, w, h);
     rescale
         .as_mut()
         .expect("just set")
         .ctx
         .run(frame, &mut out)?;
-    // The range the samples are still in. The scaler converts a range only
-    // for the YUVJ formats, which it brings down to studio levels; any other
-    // full-range picture comes out full-range and saying nothing, and a fade
-    // over it read it as studio-range and went down to a grey. See
-    // [`crate::blend::copy_into`], which carries the range to the blend.
-    if !crate::blend::full_by_format(have.2) {
-        out.set_color_range(frame.color_range());
-    }
+    out.set_color_range(ff::util::color::Range::MPEG);
     Ok(out)
 }
 
@@ -425,12 +423,12 @@ fn compose(
 /// nothing: the seam is still worth looking at, so the reason is handed back
 /// and the caller decides.
 ///
-/// In the range of the clip before the seam, which is the one the preview's
-/// pictures are measured against; the output lays it in the master's.
-fn overlay_of(transition: &Transition, shape: (u32, u32), full: bool) -> Result<Option<Laid>> {
+/// At studio levels, which is what [`reshape`] brings every picture of the
+/// preview to; the output lays it in the master's range.
+fn overlay_of(transition: &Transition, shape: (u32, u32)) -> Result<Option<Laid>> {
     match transition.overlay.as_deref() {
         None => Ok(None),
-        Some(path) => crate::blend::read_laid(path, shape.0, shape.1, SHAPE, full).map(Some),
+        Some(path) => crate::blend::read_laid(path, shape.0, shape.1, SHAPE, false).map(Some),
     }
 }
 
@@ -443,7 +441,7 @@ pub fn shot(seam: &Seam, window: &Window, t: f64, width: u32) -> Result<Vec<u8>>
     crate::init()?;
     let shape = shape_for(seam.before, width);
     let look = window.look(t);
-    let laid = overlay_of(&seam.transition, shape, seam.before.video.shape.full_range()).ok().flatten();
+    let laid = overlay_of(&seam.transition, shape).ok().flatten();
     let mut near_scale = None;
     let mut far_scale = None;
     let near = look
@@ -593,7 +591,7 @@ pub fn play(
 ) -> Result<()> {
     crate::init()?;
     let shape = shape_for(seam.before, width);
-    let laid = overlay_of(&seam.transition, shape, seam.before.video.shape.full_range()).ok().flatten();
+    let laid = overlay_of(&seam.transition, shape).ok().flatten();
     // Held to the rates a recording can have (see where `frame_rate` is
     // worked out). The rate arrives from the window, and a huge one made the
     // step too small to move `t` at all: the same instant, composited for
@@ -842,5 +840,29 @@ mod tests {
             (alpha - Easing::parse("quadratic", "in").at(0.5)).abs() < 1e-9,
             "halfway through a quadratic ease-in is {alpha}"
         );
+    }
+
+    /// Both clips at a seam come into the preview at studio levels: a
+    /// full-range picture already the preview's size and format is still
+    /// converted, and a studio one is left as it is.
+    #[test]
+    fn the_preview_is_at_studio_levels() {
+        crate::init().unwrap();
+        let picture = |luma: u8, full: bool| {
+            let mut f = ff::frame::Video::new(SHAPE, 16, 8);
+            for nth in 0..3 {
+                let v = if nth == 0 { luma } else { 128 };
+                f.data_mut(nth).iter_mut().for_each(|b| *b = v);
+            }
+            if full {
+                f.set_color_range(ff::util::color::Range::JPEG);
+            }
+            f
+        };
+        let mut rescale = None;
+        let out = reshape(&picture(0, true), (16, 8), &mut rescale).unwrap();
+        assert_eq!(out.data(0)[0], 16);
+        let out = reshape(&picture(16, false), (16, 8), &mut rescale).unwrap();
+        assert_eq!(out.data(0)[0], 16);
     }
 }

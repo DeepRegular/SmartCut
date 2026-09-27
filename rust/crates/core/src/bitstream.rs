@@ -22,10 +22,26 @@ pub fn framing_from_extradata(codec: &str, extradata: &[u8]) -> NalFraming {
         _ => return NalFraming::AnnexB,
     };
     match extradata.get(offset) {
-        // an avcC/hvcC always starts with configurationVersion 1; anything
-        // else (or a start code) means the stream is already Annex-B
-        Some(b) if extradata.first() == Some(&1) => NalFraming::Length((b & 0x03) as usize + 1),
+        // an avcC/hvcC starts with configurationVersion 1; anything else (or
+        // a start code) means the stream is already Annex-B
+        Some(b) if is_configuration_record(codec, extradata) => {
+            NalFraming::Length((b & 0x03) as usize + 1)
+        }
         _ => NalFraming::AnnexB,
+    }
+}
+
+/// Whether extradata is an `avcC` / `hvcC` rather than Annex-B parameter
+/// sets.
+///
+/// An `hvcC` written before its standard settled carries configurationVersion
+/// 0, and libavcodec still reads it as one -- by the same test as here: not a
+/// start code. Taken for Annex-B, every length-prefixed picture of such a
+/// file is searched for start codes it does not have.
+fn is_configuration_record(codec: &str, extradata: &[u8]) -> bool {
+    match (codec, extradata) {
+        ("hevc", [a, b, c, ..]) => *a != 0 || *b != 0 || *c > 1,
+        _ => extradata.first() == Some(&1),
     }
 }
 
@@ -265,7 +281,7 @@ pub fn parameter_sets(codec: &str, extradata: &[u8]) -> Vec<Vec<u8>> {
             }
         }
         "hevc" => {
-            if extradata.len() < 23 || extradata[0] != 1 {
+            if extradata.len() < 23 || !is_configuration_record(codec, extradata) {
                 return out;
             }
             let mut i = 22;
