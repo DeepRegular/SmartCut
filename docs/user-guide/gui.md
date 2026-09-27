@@ -323,7 +323,9 @@ same question read again is the same answer minutes later, so **Detect
 commercials** on the row's menu and down the side is greyed once every selected
 row has an answer, and with a mix selected only the rows still without one are
 booked. The blank and silence passes work the same way, and a row detected from
-inside the cut editor counts as detected.
+inside the cut editor counts as detected, with one exception: a commercial pass
+the editor ran with short inserts included is not the list's question (the
+list's pass never looks for them), so that row is still offered it here.
 
 **What a detection has to say is a badge beside the row's state.** Dashed
 `CM booked` while it waits, solid `Detecting CM` while the pass runs, and then
@@ -1512,6 +1514,10 @@ How many files and how many bytes there are shows by kind, and **Delete all**
 removes them. Nothing there is worth keeping: it is what another pass would
 build again, never a cut or a project. Only files SmartCut named itself are
 removed, so a folder of your own chosen as the cache keeps everything else in it.
+
+The black/white and silence findings are kept in this cache and nowhere else, so
+once it is emptied the clip list offers those two detections again on rows where
+they had been greyed as done.
 
 ### Logging
 
