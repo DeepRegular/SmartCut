@@ -3273,7 +3273,9 @@ async function refreshStrip(at) {
     // not this cell's picture at all. Emptied wholesale rather than by age,
     // for the reason `fillByGlance`'s `room` gives.
     exact.forEach((a, k) => {
-      if (!decoded[k]) return;
+      // A cell divided out of a GOP that a cut ends can be answered with the
+      // picture after it, as a frame cell can; see `pictureKept`.
+      if (!decoded[k] || !pictureKept(decoded[k].time)) return;
       held[a.i] = decoded[k].url;
       if (reelShots.size > GLANCE_KEEP) reelShots.clear();
       reelShots.set(key(a.time), decoded[k].url);
@@ -3331,6 +3333,22 @@ const FRAME_LEAD = 1.0;
 function frameCellLive(t) {
   const half = frame() / 2;
   return t > -half && t < outDur - half && t <= lastOut() + half;
+}
+
+/// Whether a picture the engine answered a cell with is one the output has.
+///
+/// `frameCellLive` asks about the cell's instant, and that is not enough
+/// where the pictures are not evenly spaced. A picture carrying a repeated
+/// field is held for a frame and a half, and when it is the last one before a
+/// cut the cell after it lands half a frame short of the cut -- inside the
+/// output by a tick or outside it by a tick, since the 90 kHz clock cannot
+/// hold half of 3003. Inside, the picture nearest that instant is the first
+/// one the cut took, and the strip showed it after the last frame. So the
+/// picture that came back is judged too, a quarter of a frame into it for the
+/// reason `nearScene` gives.
+function pictureKept(t) {
+  if (tailSrc !== null && t > tailSrc + frame() / 4) return false;
+  return srcToOut(t + frame() / 4) !== null;
 }
 
 async function refreshFrameStrip(o) {
@@ -3429,7 +3447,7 @@ async function refreshFrameStrip(o) {
   const shots = live.map((t, i) => {
     if (t === null) return { url: null, time: null, at: times[i] };
     const g = got[k++];
-    return { url: g ? g.url : null, time: t, at: times[i] };
+    return { url: g && pictureKept(g.time) ? g.url : null, time: t, at: times[i] };
   });
   stripCache = { first, shots };
   put(shots, n >> 1);
