@@ -391,6 +391,147 @@ pub fn over(frame: &mut ff::frame::Video, laid: &Laid, opacity: f64) -> Result<(
     Ok(())
 }
 
+/// A scaler, told the two ranges where they differ.
+///
+/// The scaler reads a range off the format alone -- full for the YUVJ ones,
+/// studio for everything else -- and a picture already the size and format
+/// it is going to is copied as it is, levels and all. So a full-range clip
+/// in a plain format, joined to a studio-range master, went out with its
+/// black at nought where the master's is sixteen. The ranges have to be
+/// given before the scaler is built, for it to choose a path that converts
+/// them rather than the copy: libswscale's own options, set on a context
+/// made by hand, which is what `-vf scale=in_range=..:out_range=..` does.
+/// Where they agree, the ordinary scaler.
+pub(crate) enum Scaler {
+    Plain(ff::software::scaling::Context),
+    Ranged(*mut ff::ffi::SwsContext),
+}
+
+// A context is only ever used by the one thread that made it.
+unsafe impl Send for Scaler {}
+
+impl Scaler {
+    pub(crate) fn new(
+        from: (u32, u32, ff::format::Pixel, bool),
+        to: (u32, u32, ff::format::Pixel, bool),
+    ) -> Result<Scaler> {
+        // Bicubic: this is the whole of a clip rather than the second at a
+        // seam, so what it costs is paid for the length of the reel, and the
+        // cheaper filters show on the kind of material that gets joined -- a
+        // clip scaled up from standard definition to fit a high one.
+        let flags = ff::software::scaling::Flags::BICUBIC;
+        // The ordinary scaler only where the range it reads off each format
+        // is the true one. Two full-range sides are not enough: a YUVJ clip
+        // going to a full-range master in a plain format was squeezed to
+        // studio levels, and a full-range plain clip going to a YUVJ master
+        // stretched from them.
+        if from.3 == full_by_format(from.2) && to.3 == full_by_format(to.2) {
+            return Ok(Scaler::Plain(ff::software::scaling::Context::get(
+                from.2, from.0, from.1, to.2, to.0, to.1, flags,
+            )?));
+        }
+        unsafe {
+            let c = ff::ffi::sws_alloc_context();
+            if c.is_null() {
+                bail!("no memory for a scaler");
+            }
+            let set = |name: &str, v: i64| {
+                let name = std::ffi::CString::new(name).expect("no NUL in an option name");
+                ff::ffi::av_opt_set_int(c.cast(), name.as_ptr(), v, 0)
+            };
+            let fmt = |p: ff::format::Pixel| ff::ffi::AVPixelFormat::from(p) as i64;
+            let failed = [
+                set("srcw", i64::from(from.0)),
+                set("srch", i64::from(from.1)),
+                set("src_format", fmt(from.2)),
+                set("dstw", i64::from(to.0)),
+                set("dsth", i64::from(to.1)),
+                set("dst_format", fmt(to.2)),
+                set("sws_flags", i64::from(flags.bits())),
+                set("src_range", i64::from(from.3)),
+                set("dst_range", i64::from(to.3)),
+            ]
+            .iter()
+            .any(|&r| r < 0);
+            if failed || ff::ffi::sws_init_context(c, std::ptr::null_mut(), std::ptr::null_mut()) < 0 {
+                ff::ffi::sws_freeContext(c);
+                bail!(
+                    "cannot convert {:?} {}x{} to {:?} {}x{} between ranges",
+                    from.2, from.0, from.1, to.2, to.0, to.1
+                );
+            }
+            // And the levels themselves said again, now it is built, the way
+            // `vf_scale` says them: unity gain, no brightness, the matrices
+            // it chose, and the two ranges. libswscale 7.1 has them so after
+            // `sws_init_context` already (measured); this keeps it so on a
+            // build that does not. A flat grey out of a join onto a black
+            // master is not this: that master's few kilobits a second are
+            // what the clip is encoded at.
+            let mut inv: *mut i32 = std::ptr::null_mut();
+            let mut table: *mut i32 = std::ptr::null_mut();
+            let (mut src_range, mut dst_range) = (0, 0);
+            let (mut brightness, mut contrast, mut saturation) = (0, 0, 0);
+            if ff::ffi::sws_getColorspaceDetails(
+                c,
+                &mut inv,
+                &mut src_range,
+                &mut table,
+                &mut dst_range,
+                &mut brightness,
+                &mut contrast,
+                &mut saturation,
+            ) >= 0
+            {
+                ff::ffi::sws_setColorspaceDetails(
+                    c,
+                    inv,
+                    i32::from(from.3),
+                    table,
+                    i32::from(to.3),
+                    0,
+                    1 << 16,
+                    1 << 16,
+                );
+            }
+            Ok(Scaler::Ranged(c))
+        }
+    }
+
+    pub(crate) fn run(&mut self, frame: &ff::frame::Video, out: &mut ff::frame::Video) -> Result<()> {
+        match self {
+            Scaler::Plain(ctx) => ctx.run(frame, out)?,
+            Scaler::Ranged(c) => unsafe {
+                let r = ff::ffi::sws_scale_frame(*c, out.as_mut_ptr(), frame.as_ptr());
+                if r < 0 {
+                    return Err(ff::Error::from(r).into());
+                }
+            },
+        }
+        Ok(())
+    }
+}
+
+impl Drop for Scaler {
+    fn drop(&mut self) {
+        if let Scaler::Ranged(c) = *self {
+            unsafe { ff::ffi::sws_freeContext(c) };
+        }
+    }
+}
+
+/// Whether a pixel format is full range by definition: the YUVJ ones, which
+/// say so in their name and nowhere else.
+pub(crate) fn full_by_format(p: ff::format::Pixel) -> bool {
+    use ff::format::Pixel::{YUVJ411P, YUVJ420P, YUVJ422P, YUVJ440P, YUVJ444P};
+    matches!(p, YUVJ420P | YUVJ422P | YUVJ444P | YUVJ440P | YUVJ411P)
+}
+
+/// Whether a decoded picture's samples are full range: said so, or implied
+/// by its format.
+pub(crate) fn full_range_frame(frame: &ff::frame::Video) -> bool {
+    frame.color_range() == ff::util::color::Range::JPEG || full_by_format(frame.format())
+}
+
 /// Read a still image and bring it to the shape the frames are in.
 ///
 /// Read through libavcodec, like everything else here: a PNG, a JPEG, a BMP
@@ -407,7 +548,13 @@ pub fn over(frame: &mut ff::frame::Video, laid: &Laid, opacity: f64) -> Result<(
 /// the window that *sets* one reads the same image to show it: an overlay
 /// that looked one way in the preview and another in the output would be
 /// worse than no preview at all. See [`crate::crossview`].
-pub fn read_laid(path: &str, width: u32, height: u32, want: ff::format::Pixel) -> Result<Laid> {
+pub fn read_laid(
+    path: &str,
+    width: u32,
+    height: u32,
+    want: ff::format::Pixel,
+    full: bool,
+) -> Result<Laid> {
     let mut ictx = crate::input::open_local(path)
         .map_err(|e| anyhow::anyhow!("the image over the transition, {path}: {e}"))?;
     let stream = ictx
@@ -443,14 +590,12 @@ pub fn read_laid(path: &str, width: u32, height: u32, want: ff::format::Pixel) -
     // an image with an alpha channel answers it itself: what is transparent
     // is where the programme shows through.
     let mut colour = ff::frame::Video::new(want, w, h);
-    ff::software::scaling::Context::get(
-        frame.format(),
-        frame.width(),
-        frame.height(),
-        want,
-        w,
-        h,
-        ff::software::scaling::Flags::BICUBIC,
+    // Into the range of the pictures it is laid over, `full`: read off the
+    // format alone, an image over a full-range picture in a plain format
+    // went in at studio levels, its black a grey. See [`Scaler`].
+    Scaler::new(
+        (frame.width(), frame.height(), frame.format(), full_range_frame(&frame)),
+        (w, h, want, full),
     )?
     .run(&frame, &mut colour)?;
 

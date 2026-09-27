@@ -296,9 +296,14 @@ pub fn prepare(at: &Path, n: usize) -> Result<Vec<String>> {
     // the same number and wrote over each other's recording.
     // Capped at what a disc can number: `n` comes from the window, and a
     // capacity taken on its word is an allocation of any size at all.
-    let mut out = Vec::with_capacity(n.min(99_999));
+    let mut out: Vec<String> = Vec::with_capacity(n.min(99_999));
     while out.len() < n {
         if next > 99_999 {
+            // Given back, as a failure below gives them back: kept, they were
+            // empty streams nothing names, and numbers the next run counts past.
+            for clip in &out {
+                let _ = std::fs::remove_file(stream_of(at, clip));
+            }
             bail!("{} has no recording numbers left", root.display());
         }
         let clip = format!("{next:05}");
@@ -2082,6 +2087,22 @@ mod tests {
         assert!(raw[DISC_NAME_AT + 1 + len..TABLE_AT]
             .iter()
             .all(|b| *b == 0));
+    }
+
+    /// A disc holding a dot-file is kept: no image carries one, and taking
+    /// the folder away took it too.
+    #[test]
+    fn a_disc_with_a_hidden_file_is_kept() {
+        let at = std::env::temp_dir().join(format!("bdav-hidden-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&at);
+        std::fs::create_dir_all(root(&at).join("PLAYLIST")).unwrap();
+        std::fs::write(root(&at).join("info.bdav"), b"x").unwrap();
+        std::fs::write(root(&at).join("PLAYLIST").join(".notes"), b"x").unwrap();
+        assert!(remove_disc(&at).is_err());
+        assert!(root(&at).join("PLAYLIST").join(".notes").exists());
+        std::fs::remove_file(root(&at).join("PLAYLIST").join(".notes")).unwrap();
+        assert!(remove_disc(&at).is_ok());
+        assert!(!at.exists());
     }
 
     /// Two runs writing the table of one disc at once each finish, and the

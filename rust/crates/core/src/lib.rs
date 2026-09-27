@@ -246,6 +246,31 @@ pub struct PictureShape {
     pub primaries: i32,
     pub transfer: i32,
     pub matrix: i32,
+    /// `AVColorRange`: 0 unspecified, 1 studio (16..235), 2 full (0..255).
+    pub range: i32,
+}
+
+impl PictureShape {
+    /// Whether the samples run over the full range rather than studio
+    /// levels: said so outright, or implied by one of the YUVJ formats,
+    /// which are full range by definition and say nothing. Unspecified is
+    /// studio, which is what every broadcast is and what a decoder assumes.
+    pub fn full_range(&self) -> bool {
+        use ff::ffi::AVPixelFormat::{
+            AV_PIX_FMT_YUVJ411P, AV_PIX_FMT_YUVJ420P, AV_PIX_FMT_YUVJ422P, AV_PIX_FMT_YUVJ440P,
+            AV_PIX_FMT_YUVJ444P,
+        };
+        self.range == ff::ffi::AVColorRange::AVCOL_RANGE_JPEG as i32
+            || [
+                AV_PIX_FMT_YUVJ420P,
+                AV_PIX_FMT_YUVJ422P,
+                AV_PIX_FMT_YUVJ444P,
+                AV_PIX_FMT_YUVJ440P,
+                AV_PIX_FMT_YUVJ411P,
+            ]
+            .iter()
+            .any(|f| *f as i32 == self.pix_fmt)
+    }
 }
 
 /// Field orders that mean "interlaced" (AV_FIELD_TT/BB/TB/BT).
@@ -529,6 +554,10 @@ pub struct Source {
     pub leading_known: bool,
     /// Which strategy produced the index, for reporting.
     pub index_name: &'static str,
+    /// Whether the index came of a read that reached the end of the
+    /// recording. See [`index::Index::whole`]: one that did not is used for
+    /// this open and never written down as the recording's.
+    pub read_whole: bool,
     /// How far before a target to seek. MPEG-TS seeking is byte-position
     /// based and only approximately honours timestamps, so it can land past
     /// the picture that was asked for -- and in decode order an I picture
@@ -1258,6 +1287,7 @@ fn assemble(
         points,
         leading_known: idx.leading_known,
         index_name,
+        read_whole: idx.whole,
     };
     // A recording on a disc has its languages written beside it and nowhere
     // in it. Done here, once, so that a cut carries them however the
@@ -1347,6 +1377,7 @@ impl Outline {
             // about leading pictures must refine before it believes any.
             leading_known: false,
             index_name: "no index",
+            read_whole: true,
             // The floor `scan` would clamp to. There are no gaps to take a
             // mean of, and this is only ever used as a "read from a little
             // earlier" margin.
@@ -1469,6 +1500,7 @@ fn outline_of(path: &str) -> Result<(Outline, input::Demux)> {
                 primaries: raw_enum(std::ptr::addr_of!((*p).color_primaries)),
                 transfer: raw_enum(std::ptr::addr_of!((*p).color_trc)),
                 matrix: raw_enum(std::ptr::addr_of!((*p).color_space)),
+                range: raw_enum(std::ptr::addr_of!((*p).color_range)),
             },
             extra,
         )

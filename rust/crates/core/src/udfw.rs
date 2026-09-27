@@ -452,6 +452,11 @@ pub fn left_out(from: &Path) -> Result<Vec<String>> {
 /// out of one is worse than an image that was not made: nothing downstream
 /// will ever say which file, or that there was one.
 fn say_what_was_left_out(from: &Path, left_out: &[String]) {
+    // Dot-files are left out of every image by design, and not worth a note.
+    let left_out: Vec<&String> = left_out
+        .iter()
+        .filter(|p| !Path::new(p).file_name().is_some_and(|n| n.to_string_lossy().starts_with('.')))
+        .collect();
     if left_out.is_empty() {
         return;
     }
@@ -561,10 +566,12 @@ fn fill(dir: &Path, parent: usize, tree: &mut Vec<Node>, left_out: &mut Vec<Stri
         // recordings has: the files on one are `00001.m2ts` and `info.bdav`.
         // A dot-file is not on one either. Both are noted rather than simply
         // skipped -- see `left_out`.
+        // A dot-file is collected all the same, and only the note leaves it
+        // unsaid: `bdav::remove_disc` asks this what the image lacks before it
+        // takes the folder away, and a dot-file left off that list was in
+        // neither the image nor the folder afterwards.
         if name.starts_with('.') || !name.is_ascii() || name.len() > 200 {
-            if !name.starts_with('.') {
-                left_out.push(dir.join(&name).to_string_lossy().into_owned());
-            }
+            left_out.push(dir.join(&name).to_string_lossy().into_owned());
             continue;
         }
         // A link is followed to a file, for its real length -- the entry's

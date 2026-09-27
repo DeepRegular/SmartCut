@@ -315,7 +315,15 @@ impl Reader {
                 self.ictx.insert(c)
             }
         };
-        let target = ((from + self.start_time) * ff::ffi::AV_TIME_BASE as f64) as i64;
+        // A window from the very front is read from the front, as
+        // `cut::seek_to` does it: aimed at the container's own start, a
+        // transport stream's seek lands past its first entry point, and a
+        // subtitle up in the opening second of the recording was not there.
+        let target = if from > 0.0 {
+            ((from + self.start_time) * ff::ffi::AV_TIME_BASE as f64) as i64
+        } else {
+            i64::MIN / 2
+        };
         let _ = ictx.seek(target, ..target);
 
         let mut events: Vec<Event> = Vec::new();

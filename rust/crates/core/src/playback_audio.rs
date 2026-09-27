@@ -667,6 +667,17 @@ fn card_layout(channels: u16) -> ff::channel_layout::ChannelLayout {
 /// the sound track turning up, before the track is taken not to be there.
 const PAST: f64 = 5.0;
 
+/// The timestamp a seek aims at to land at or before `landing`, in rebased
+/// seconds: the front of the file where that is the start of the recording.
+/// See `front_or` in [`crate::thumbs`] and `place` in [`crate::preview`].
+fn front_of(src: &Source, landing: f64) -> i64 {
+    if landing > 0.0 {
+        ((landing + src.start_time) * ff::ffi::AV_TIME_BASE as f64) as i64
+    } else {
+        i64::MIN / 2
+    }
+}
+
 /// Put interleaved samples in libav's order into the card's. See
 /// [`card_order`].
 fn to_card_order(samples: &mut [f32], channels: u16) {
@@ -1121,8 +1132,13 @@ fn feed_from(
         // container's seek is only approximate, and landing late would lose
         // the beginning of the range outright, where landing early just
         // means a moment more gets decoded and trimmed away below.
+        //
+        // A range from the front is read from the file's front, as the
+        // picture side's `place` reads it: a seek aimed at the container's
+        // own start lands on a picture, and a broadcast's sound starts before
+        // its first one -- the head of a preview from nought played silence.
         let landing = (start - src.seek_margin).max(0.0);
-        let target = ((landing + src.start_time) * ff::ffi::AV_TIME_BASE as f64) as i64;
+        let target = front_of(src, landing);
         let _ = ictx.seek(target, ..target);
         decoder.flush();
 
@@ -1289,7 +1305,7 @@ pub fn peaks_at(src: &Source, time: f64, window: f64, fold: &Fold) -> Result<Vec
     // meter the wrong instant, and landing early only costs a few frames of
     // decoding that are then passed over.
     let landing = (time - src.seek_margin).max(0.0);
-    let target = ((landing + src.start_time) * ff::ffi::AV_TIME_BASE as f64) as i64;
+    let target = front_of(src, landing);
     let _ = ictx.seek(target, ..target);
     decoder.flush();
 

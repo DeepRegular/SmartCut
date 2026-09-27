@@ -53,9 +53,12 @@ pub(super) struct Shaped<'a> {
 /// the second. See [`crate::proxy`], where the same thing is done for the
 /// same reason.
 struct Rescale {
-    was: (u32, u32, ff::format::Pixel),
-    ctx: ff::software::scaling::Context,
+    /// Size and format of what it was built for, and whether that was full
+    /// range: a range to convert is as much a reason to rebuild as a size.
+    was: (u32, u32, ff::format::Pixel, bool),
+    ctx: crate::blend::Scaler,
 }
+
 
 /// Write one range of a reel that does not match the master.
 ///
@@ -426,26 +429,22 @@ fn reshape(
         std::mem::transmute::<i32, ff::ffi::AVPixelFormat>(into.video.shape.pix_fmt)
     };
     let want = ff::format::Pixel::from(want_pix);
-    let have = (frame.width(), frame.height(), frame.format());
-    if have == (into.video.width, into.video.height, want) {
+    // Whether the samples are full range, the picture's and the master's.
+    // A clip on the other side from the master is converted on the way
+    // through: `conform` calls that a colour difference, and the reel is
+    // written afresh for it rather than copied with its black read wrong.
+    let full_in = crate::blend::full_range_frame(frame);
+    let full_out = into.video.shape.full_range();
+    let have = (frame.width(), frame.height(), frame.format(), full_in);
+    if have == (into.video.width, into.video.height, want, full_out) {
         return Ok(frame.clone());
     }
     if rescale.as_ref().is_none_or(|r| r.was != have) {
         *rescale = Some(Rescale {
             was: have,
-            ctx: ff::software::scaling::Context::get(
-                have.2,
-                have.0,
-                have.1,
-                want,
-                into.video.width,
-                into.video.height,
-                // Bicubic: this is the whole of a clip rather than the
-                // second at a seam, so what it costs is paid for the length
-                // of the reel, and the cheaper filters show on the kind of
-                // material that gets joined -- a clip scaled up from
-                // standard definition to fit a high one.
-                ff::software::scaling::Flags::BICUBIC,
+            ctx: crate::blend::Scaler::new(
+                (have.0, have.1, have.2, full_in),
+                (into.video.width, into.video.height, want, full_out),
             )?,
         });
     }
@@ -462,6 +461,12 @@ fn reshape(
         let o = out.as_mut_ptr();
         let f = frame.as_ptr();
         (*o).sample_aspect_ratio = (*f).sample_aspect_ratio;
+        // The range these samples are written out as, which is the master's:
+        // the encoder is opened against its parameters. Left at nothing, a
+        // fade over a scaled clip in a full-range master read the picture as
+        // studio-range and went down to a grey, the fault
+        // [`crate::blend::copy_into`] carries the range across for.
+        (*o).color_range = (*into.params.as_ptr()).color_range;
     }
     Ok(out)
 }
@@ -644,5 +649,11 @@ fn read_overlay(path: &str, into: &Shaped) -> Result<crate::blend::Laid> {
             into.video.shape.pix_fmt,
         ))
     };
-    crate::blend::read_laid(path, into.video.width, into.video.height, want)
+    crate::blend::read_laid(
+        path,
+        into.video.width,
+        into.video.height,
+        want,
+        into.video.shape.full_range(),
+    )
 }

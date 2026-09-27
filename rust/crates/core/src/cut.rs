@@ -3558,15 +3558,22 @@ fn frame_rate_parts(fps: f64) -> (i64, i64) {
 /// material it was wrong by a factor of five or six: a 27 Mbit/s Blu-ray was
 /// re-encoded at 4.5, and 70 Mbit/s of UHD at 15.9. Where the count is there,
 /// it is the answer.
+///
+/// Never under a fiftieth of a bit a pixel, though. A recording whose pictures
+/// hardly move -- a black card, a still -- weighs a few kilobits a second, and
+/// a clip joined onto one as its master was written at that and came out a
+/// flat grey. Nothing broadcast is anywhere near the floor: a 1080i channel
+/// runs at thirty times it.
 fn default_bit_rate(src: &Source) -> usize {
     let v = &src.video;
+    let px = v.width as f64 * v.height as f64 * v.frame_rate.max(1.0);
+    let floor = (px * 0.02) as usize;
     if let Some(measured) = v.bit_rate.filter(|r| r.is_finite() && *r > 0.0) {
-        return (measured * 1.2) as usize;
+        return ((measured * 1.2) as usize).max(floor);
     }
     if let Some(rest) = pictures_less_the_sound(src) {
-        return (rest * 1.2) as usize;
+        return ((rest * 1.2) as usize).max(floor);
     }
-    let px = v.width as f64 * v.height as f64 * v.frame_rate.max(1.0);
     (px * 0.08) as usize
 }
 
@@ -5122,6 +5129,22 @@ fn graft_tables(
     on: Option<&(dyn Fn(f64) + Sync)>,
     tables: crate::si::Tables,
 ) -> Result<crate::si::Stats> {
+    // A recorder's disc names its recording in its own index and not in the
+    // stream; where the stream said nothing, the index is what the tables
+    // written here say instead. Not where only the map is being corrected.
+    let listed = (tables != crate::si::Tables::Muxer)
+        .then(|| crate::disc::listing_of(&src.path))
+        .flatten();
+    let renamed;
+    let service = match &listed {
+        Some(l) if service.sdt.is_none() => {
+            let mut s = service.clone();
+            s.name_from_listing(l);
+            renamed = s;
+            &renamed
+        }
+        _ => service,
+    };
     // A disc's own stream says once, on the pictures, that the stream types
     // in its map are Blu-ray's. A recorder writes it; a broadcast has no
     // reason to, so where the cut is a disc's it is added here. The same two
@@ -5242,8 +5265,9 @@ fn graft_tables(
                 .iter()
                 .rfind(|p| p.time <= plan.t_in + 1e-6 && p.pos >= 0);
             let pos = anchor.map_or(0, |p| p.pos);
-            let snapshot =
+            let mut snapshot =
                 crate::si::snapshot_at(&src.input, pos, service.service_id).unwrap_or_default();
+            snapshot.from_partial(service, listed.as_ref());
             // Where this range sits in the recording, for the streams read
             // out of it directly. Only where the index knows the byte: the
             // alternative is reading from the head of the file to find a
@@ -5261,10 +5285,21 @@ fn graft_tables(
             }
         })
         .collect();
-    if !data.is_empty() && ranges.iter().any(|r| r.source.is_none()) {
+    // The guide is read the same way, wherever the broadcast's own tables go
+    // in and there is present/following to say it is a broadcast at all; see
+    // `crate::si::graft`.
+    let guide = tables == crate::si::Tables::Broadcast
+        && !writing_m2ts(output)
+        && ranges.iter().any(|r| r.snapshot.heard_events());
+    if (!data.is_empty() || guide) && ranges.iter().any(|r| r.source.is_none()) {
+        let what = match (data.is_empty(), guide) {
+            (false, true) => "the data broadcast and the programme guide are",
+            (false, false) => "the data broadcast is",
+            _ => "the programme guide is",
+        };
         eprintln!(
-            "note: the index does not know which byte every kept range opens on, so the data \
-             broadcast is carried only for those it does know."
+            "note: the index does not know which byte every kept range opens on, so {what} \
+             carried only for those it does know."
         );
     }
 
@@ -5277,7 +5312,10 @@ fn graft_tables(
             pcr_pid: pids.video(video_pid) as u16,
             ranges,
             tables,
-            input: (!data.is_empty()).then_some(&src.input),
+            // Always: the programme guide is read out of it as well as the
+            // data broadcast, and whether there is a guide to read is the
+            // graft's to say. See [`crate::si::Graft::input`].
+            input: Some(&src.input),
             carry: data.to_vec(),
             // The recording's own clock, which is not always on its
             // pictures: a satellite service in the sample keeps it on a PID
@@ -7814,7 +7852,7 @@ fn cut_into(
                 eprintln!(
                     "  tables: {} list, {} map, {} service, {} event, {} clock, \
                      {} selection; {} clock references given a PID of their own; \
-                     {} data broadcast packets carried",
+                     {} data broadcast packets and {} guide sections carried",
                     stats.pat,
                     stats.pmt,
                     stats.sdt,
@@ -7822,7 +7860,8 @@ fn cut_into(
                     stats.tot,
                     stats.sit,
                     stats.pcr,
-                    stats.data
+                    stats.data,
+                    stats.schedule
                 );
             }
             Ok(_) => {}

@@ -354,6 +354,14 @@ fn reshape(
         .expect("just set")
         .ctx
         .run(frame, &mut out)?;
+    // The range the samples are still in. The scaler converts a range only
+    // for the YUVJ formats, which it brings down to studio levels; any other
+    // full-range picture comes out full-range and saying nothing, and a fade
+    // over it read it as studio-range and went down to a grey. See
+    // [`crate::blend::copy_into`], which carries the range to the blend.
+    if !crate::blend::full_by_format(have.2) {
+        out.set_color_range(frame.color_range());
+    }
     Ok(out)
 }
 
@@ -416,10 +424,13 @@ fn compose(
 /// it once per run. An image that will not open is not a reason to show
 /// nothing: the seam is still worth looking at, so the reason is handed back
 /// and the caller decides.
-fn overlay_of(transition: &Transition, shape: (u32, u32)) -> Result<Option<Laid>> {
+///
+/// In the range of the clip before the seam, which is the one the preview's
+/// pictures are measured against; the output lays it in the master's.
+fn overlay_of(transition: &Transition, shape: (u32, u32), full: bool) -> Result<Option<Laid>> {
     match transition.overlay.as_deref() {
         None => Ok(None),
-        Some(path) => crate::blend::read_laid(path, shape.0, shape.1, SHAPE).map(Some),
+        Some(path) => crate::blend::read_laid(path, shape.0, shape.1, SHAPE, full).map(Some),
     }
 }
 
@@ -432,7 +443,7 @@ pub fn shot(seam: &Seam, window: &Window, t: f64, width: u32) -> Result<Vec<u8>>
     crate::init()?;
     let shape = shape_for(seam.before, width);
     let look = window.look(t);
-    let laid = overlay_of(&seam.transition, shape).ok().flatten();
+    let laid = overlay_of(&seam.transition, shape, seam.before.video.shape.full_range()).ok().flatten();
     let mut near_scale = None;
     let mut far_scale = None;
     let near = look
@@ -582,7 +593,7 @@ pub fn play(
 ) -> Result<()> {
     crate::init()?;
     let shape = shape_for(seam.before, width);
-    let laid = overlay_of(&seam.transition, shape).ok().flatten();
+    let laid = overlay_of(&seam.transition, shape, seam.before.video.shape.full_range()).ok().flatten();
     // Held to the rates a recording can have (see where `frame_rate` is
     // worked out). The rate arrives from the window, and a huge one made the
     // step too small to move `t` at all: the same instant, composited for

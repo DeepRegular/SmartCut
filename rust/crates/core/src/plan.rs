@@ -536,6 +536,12 @@ fn past_the_seam(
             }
             match points.iter().find(|p| p.time >= a - eps) {
                 Some(p) if p.time > a && p.time < b => (p.time, b),
+                // The whole of the range is in that window: a range ended
+                // within a GOP of the seam. Nothing in it can be written, and
+                // left as it was it asked the cutter for those pictures and
+                // stopped the run. Of no length, it plans to nothing, as a
+                // range shorter than a picture does.
+                Some(p) if p.time > a && p.time >= b => (b, b),
                 _ => (a, b),
             }
         })
@@ -859,6 +865,15 @@ mod tests {
             past_the_seam(&[(0.0, seam), (seam, 20.0)], &joins, &points, &video),
             vec![(0.0, seam), (points[4].time, 20.0)]
         );
+        // A range that ends before the stretch's first entry point keeps
+        // nothing, and plans to no segment rather than to pictures that are
+        // not there.
+        let short = past_the_seam(&[(seam, seam + 0.2)], &joins, &points, &video);
+        assert_eq!(short, vec![(seam + 0.2, seam + 0.2)]);
+        let (a, b) = short[0];
+        assert!(plan_range(&video, 300.0, &points, a, b, &PlanOptions::default())
+            .segments
+            .is_empty());
         // A range that begins anywhere else is left where the caller put it,
         // seam or no seam.
         assert_eq!(

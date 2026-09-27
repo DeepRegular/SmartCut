@@ -406,6 +406,42 @@ pub fn titles(at: &Path) -> Result<(Shape, Vec<Title>)> {
     Ok((shape, out))
 }
 
+/// What a disc's own index says the recording in `path` was, for a clip on a
+/// recorder's disc.
+///
+/// A recorder writes the programme into the playlist and not into the stream
+/// (see [`crate::si::Listed`]), so a cut of one into a `.ts` had nothing to
+/// name its service or its programme with. Asked of the first playlist that
+/// plays this clip and has anything to say; `None` off a disc, on a pressed
+/// one -- whose playlists name nothing -- and where the index cannot be read.
+pub fn listing_of(path: &str) -> Option<crate::si::Listed> {
+    let (root, clip) = clip_on_a_disc(path)?;
+    let (_, titles) = titles(Path::new(root)).ok()?;
+    let said = |t: &Title| t.name.is_some() || t.channel.is_some();
+    // The title that opens this very path first: a recorder that divided a
+    // recording plays one clip from two playlists, each a stretch of it named
+    // by its window, and the name of the clip alone would give both cuts the
+    // first one's programme. The clip's name where no title opens the path
+    // as given -- a clip opened whole, from its folder.
+    let exact = titles.iter().position(|t| said(t) && t.clips.iter().any(|c| c.path == path));
+    let named = || {
+        titles
+            .iter()
+            .position(|t| said(t) && t.clips.iter().any(|c| c.name.eq_ignore_ascii_case(clip)))
+    };
+    let at = exact.or_else(named)?;
+    titles
+        .into_iter()
+        .nth(at)
+        .map(|t| crate::si::Listed {
+            channel: t.channel,
+            name: t.name,
+            description: t.description,
+            began: t.made,
+            ran: t.ran,
+        })
+}
+
 /// Everything on a disc that can be opened, once and not once per playlist.
 ///
 /// A Blu-ray and a DVD arrive by the same door -- a folder, or an `.iso` --
@@ -2074,8 +2110,10 @@ pub fn clip_presentation_start(path: &str) -> Option<f64> {
     let raw = vol.read(&format!("CLIPINF/{clip}.clpi")).ok()?;
     let starts = sequence_starts(&raw);
     // A name that plays one sequence is opened as those bytes alone, and the
-    // sequence it plays is the one whose packets it begins at.
-    let wanted = crate::input::clip_window(path).map(|(_, first, _)| first * SOURCE_PACKET);
+    // sequence it plays is the one whose packets it begins at. Both count
+    // source packets: taken as bytes, only the first sequence ever matched,
+    // and a later one's subtitles were timed from nought.
+    let wanted = crate::input::clip_window(path).map(|(_, first, _)| first);
     match wanted {
         Some(at) => starts.iter().find(|s| s.at == at),
         None => starts.first(),
@@ -2761,6 +2799,25 @@ mod tests {
         std::fs::write(&at, b"M2TS0100").unwrap();
         assert_eq!(read_index(&at).unwrap(), b"M2TS0100");
         let _ = std::fs::remove_file(&at);
+    }
+
+    /// A name that plays one sequence of a clip presents from that
+    /// sequence's start: the window counts source packets, as the table does.
+    #[test]
+    fn a_windowed_name_presents_from_its_own_sequence() {
+        let root = std::env::temp_dir().join("smartcut-disc-presentation-start");
+        let _ = std::fs::remove_dir_all(&root);
+        for dir in ["PLAYLIST", "CLIPINF", "STREAM"] {
+            std::fs::create_dir_all(root.join("BDAV").join(dir)).unwrap();
+        }
+        let raw = clpi_timed(&[(0, 0, 450_000, 900_000), (1, 1_000, 225_000, 270_000)]);
+        std::fs::write(root.join("BDAV/CLIPINF/00001.clpi"), raw).unwrap();
+        let clip = root.join("BDAV/STREAM/00001.m2ts");
+        let clip = clip.to_string_lossy();
+        assert_eq!(clip_presentation_start(&clip), Some(10.0));
+        assert_eq!(clip_presentation_start(&format!("{clip}@0-999")), Some(10.0));
+        assert_eq!(clip_presentation_start(&format!("{clip}@1000-1999")), Some(5.0));
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     /// A disc that carries AACS says so beside `BDAV`, not inside it.

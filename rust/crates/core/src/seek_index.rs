@@ -130,6 +130,9 @@ pub struct SeekIndex {
     /// track failed to build, or was never asked for, still saves the pass
     /// over its packets next time.
     pub track: Option<thumbs::Track>,
+    /// Whether the pass behind this read the recording to its end. Not
+    /// written to the file: one that did not is never written at all.
+    whole: bool,
 }
 
 /// A held index drops straight into [`crate::scan_with`] in place of the
@@ -154,6 +157,7 @@ impl index::IndexSource for SeekIndex {
             variable: self.variable,
             bit_rate: self.bit_rate,
             end: self.end,
+            whole: true,
         })
     }
 }
@@ -172,10 +176,19 @@ impl SeekIndex {
             // keep.
             end: Some(src.duration),
             track: track.map(clone_track),
+            whole: src.read_whole,
         }
     }
 
     pub fn save(&self, path: &Path) -> Result<()> {
+        // A walk that stopped at errors the recording kept giving -- a share
+        // that went away half way -- holds the entry points of the half it
+        // read. Kept under the recording's size and time, that half was what
+        // every later open was handed, until the file itself changed: the
+        // rest of the recording had no entry point, and no length past it.
+        if !self.whole {
+            bail!("the recording was not read to its end, so what was read is not kept");
+        }
         let mut w = Writer(Vec::with_capacity(16 + self.points.len() * 40));
         w.0.extend_from_slice(MAGIC);
         w.u32(VERSION);
@@ -374,6 +387,7 @@ impl SeekIndex {
             // put it there. Zero is how "not measured" is written, a rate of
             // nothing being no rate at all.
             bit_rate: r.f64().ok().filter(|r| r.is_finite() && *r > 0.0),
+            whole: true,
         })
     }
 }

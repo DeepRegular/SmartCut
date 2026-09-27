@@ -938,8 +938,32 @@ pub fn encode_within(text: &str, limit: usize) -> Vec<u8> {
                         Some(b) => (Some(Writing::Alnum), [b, 0], n),
                         None => match wide(c) {
                             Some(pair) => (Some(Writing::Kanji), pair, n),
-                            None => match additional_cell(c) {
+                            None => match additional_cell(c).or_else(|| marker_glyph_cell(c)) {
                                 Some(pair) => (Some(Writing::Symbols), pair, n),
+                                // A boxed word the eight-unit code has no cell
+                                // for, written as the word in brackets -- the
+                                // way a listing spells the ones it does have --
+                                // rather than lost.
+                                None if squared_word(c).is_some() => {
+                                    // Every word is ASCII, so it is the
+                                    // alphanumeric set and nothing else: the
+                                    // shift into it where that is not what is
+                                    // invoked, then the word, whole or not at
+                                    // all, like any character.
+                                    let word = squared_word(c).expect("just checked");
+                                    let mut piece = Vec::with_capacity(word.len() + 2);
+                                    if mode != Some(Writing::Alnum) {
+                                        piece.extend_from_slice(&[0x0E, 0x89]);
+                                    }
+                                    piece.extend_from_slice(word.as_bytes());
+                                    if out.len() + piece.len() > limit {
+                                        break;
+                                    }
+                                    out.extend_from_slice(&piece);
+                                    mode = Some(Writing::Alnum);
+                                    at += n;
+                                    continue;
+                                }
                                 // No set has it. What a receiver shows for a
                                 // character it cannot draw is written
                                 // instead, so the name keeps its shape and
@@ -989,6 +1013,49 @@ pub fn encode_within(text: &str, limit: usize) -> Vec<u8> {
         }
     }
     out
+}
+
+/// The cell of row 90 a boxed marker's own glyph is, for a name that arrived
+/// carrying the glyph rather than the word -- a 4K recorder's disc writes its
+/// names in UTF-8, `🈑` and all. [`additional_cell`] passes these cells over
+/// for the reason it gives; this is asked only when nothing else has the
+/// character.
+fn marker_glyph_cell(c: char) -> Option<[u8; 2]> {
+    let row = ADDITIONAL.iter().find(|(hi, _)| *hi == 0x7A)?.1;
+    row.chars()
+        .enumerate()
+        .map(|(cell, in_row)| (0x21 + cell as u8, in_row))
+        .find(|(lo, in_row)| {
+            *in_row == c && (MARKERS_AT..MARKERS_AT + MARKERS.len() as u8).contains(lo)
+        })
+        .map(|(lo, _)| [0x7A, lo])
+}
+
+/// A boxed word that came into Unicode for the 4K and 8K services, which
+/// name themselves in UTF-8 and have no eight-unit code to spell these in:
+/// spelled out in brackets, as a listing spells the markers the code does
+/// have.
+fn squared_word(c: char) -> Option<&'static str> {
+    Some(match c {
+        '\u{1F19B}' => "[3D]",
+        '\u{1F19D}' => "[2K]",
+        '\u{1F19E}' => "[4K]",
+        '\u{1F19F}' => "[8K]",
+        '\u{1F1A0}' => "[5.1]",
+        '\u{1F1A1}' => "[7.1]",
+        '\u{1F1A2}' => "[22.2]",
+        '\u{1F1A3}' => "[60P]",
+        '\u{1F1A4}' => "[120P]",
+        '\u{1F1A5}' => "[d]",
+        '\u{1F1A6}' => "[HC]",
+        '\u{1F1A7}' => "[HDR]",
+        '\u{1F1A8}' => "[Hi-Res]",
+        '\u{1F1A9}' => "[Lossless]",
+        '\u{1F1AA}' => "[SHV]",
+        '\u{1F1AB}' => "[UHD]",
+        '\u{1F1AC}' => "[VOD]",
+        _ => return None,
+    })
 }
 
 /// The alphanumeric set's byte for a character, when it has one.
@@ -1052,6 +1119,19 @@ fn widen(c: char) -> char {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A 4K recorder's name arrives in UTF-8 with the glyphs in it: the
+    /// markers go back into their cells, and a boxed word the code has no
+    /// cell for is spelled out rather than lost.
+    #[test]
+    fn a_4k_name_keeps_its_markers() {
+        let name = "\u{1F19E}シャーロック\u{1F214}\u{1F211}";
+        // `🈔` is also a symbol of a row of its own, and goes there.
+        assert_eq!(decode(&encode(name)), "[4K]シャーロック\u{1F214}[字]");
+        // Cut short, the word goes whole or not at all.
+        let short = encode_within(name, 4);
+        assert!(!decode(&short).contains("[4"), "{:?}", decode(&short));
+    }
 
     #[test]
     fn reads_the_name_a_disc_carries() {

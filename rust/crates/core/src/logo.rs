@@ -438,6 +438,15 @@ pub fn detect_with(
 ) -> Result<Logo> {
     crate::init()?;
     let (w, h) = (src.video.width as usize, src.video.height as usize);
+    // The size is the container's word, taken before a picture is decoded,
+    // and four corners of sums and templates are laid out against it: a
+    // stream claiming sixteen thousand pixels a side was most of a gigabyte
+    // of them before the first picture said otherwise. Nothing broadcast is
+    // bigger than 8K.
+    const LARGEST: usize = 8192;
+    if w > LARGEST || h > LARGEST {
+        return Err(anyhow!("frame too large to look for a logo: {w}x{h}"));
+    }
     let (cw, ch) = ((w / 4) & !1, (h / 5) & !1);
     if cw < 16 || ch < 16 {
         return Err(anyhow!("frame too small to look for a logo"));

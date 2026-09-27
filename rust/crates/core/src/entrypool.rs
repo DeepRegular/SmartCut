@@ -76,8 +76,13 @@ pub fn width(cores: usize, video: &VideoInfo) -> usize {
     // Three planes' worth, which is a 10-bit picture exactly and an 8-bit one
     // with room to spare -- and the reading the figures above were measured
     // against.
-    let picture = (video.width as usize * video.height as usize * 3).max(1);
-    let room = (BUDGET / (picture * DEEP)).max(1);
+    // Saturating: the size is the container's word where no decoder opened,
+    // and a negative one read as unsigned overflows the product.
+    let picture = (video.width as usize)
+        .saturating_mul(video.height as usize)
+        .saturating_mul(3)
+        .max(1);
+    let room = (BUDGET / picture.saturating_mul(DEEP)).max(1);
     cores.min(room).max(1)
 }
 

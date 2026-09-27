@@ -1726,6 +1726,9 @@ fn decode_around(
     let channels = audio.channels as usize;
     let rate = audio.sample_rate as f64;
     let mut frames: Vec<Decoded> = Vec::new();
+    // The samples `frames` holds, kept as it changes rather than summed over
+    // it at every frame. See the bound below.
+    let mut held = 0i64;
     let mut frame = ff::frame::Audio::empty();
     let mut past = 0usize;
     // What comes out of the decoder is planar float for everything a
@@ -1803,6 +1806,7 @@ fn decode_around(
             let n = floats.samples();
             let mut pcm: Pcm = vec![Vec::with_capacity(n); channels];
             take_samples(floats, channels, &mut pcm, (0, n));
+            held += pcm.first().map_or(0, Vec::len) as i64;
             frames.push(Decoded {
                 pts,
                 first,
@@ -1821,7 +1825,21 @@ fn decode_around(
             let size = frames[0].len() as i64;
             let from = edge - reach - KEEP as i64 * size;
             while frames.len() > 1 && frames[0].first + frames[0].len() as i64 <= from {
+                held -= frames[0].len() as i64;
                 frames.remove(0);
+            }
+            // A clock that does not move keeps every frame: none of them ends
+            // before `from`, and none of them is ever far enough past the
+            // edge to stop on. A track whose timestamps repeat, in a file
+            // with no pictures to give up by, was decoded whole into memory
+            // as float. Twenty seconds past what the edge can want is a track
+            // that is not going to get there.
+            let wanted = 2 * reach + 2 * KEEP as i64 * size + 20 * audio.sample_rate as i64;
+            // Counted in samples held, not in frames times the first one's
+            // length: a first frame of a sample or none made that product
+            // small whatever was behind it, and the bound never came.
+            if held > wanted {
+                ended = true;
             }
         }
         if ended {

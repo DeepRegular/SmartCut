@@ -79,11 +79,15 @@ const TABLE_NIT_ACTUAL: u8 = 0x40;
 /// Service description for services in *this* transport stream.
 const TABLE_SDT_ACTUAL: u8 = 0x42;
 /// Event information, present and following, for this transport stream.
-/// The schedule tables (0x50..0x6F) describe the days around the recording
-/// and are deliberately left behind: they are large, they are about
-/// programmes that are not in this file, and nothing reads them off a
-/// recording.
+/// What a player shows as the programme it is playing. The recorded
+/// service's own schedule (0x50..0x5F) is carried across too, for its guide;
+/// the other streams' (0x60..0x6F) is left behind. See [`is_own_schedule`].
 const TABLE_EIT_PF_ACTUAL: u8 = 0x4E;
+/// The first and last table ids of the programme guide for the stream a
+/// recording is of: eight days of what is coming up, in the basic tables and
+/// the extended ones. See [`is_own_schedule`].
+const TABLE_EIT_SCHEDULE_FIRST: u8 = 0x50;
+const TABLE_EIT_SCHEDULE_LAST: u8 = 0x5F;
 /// Selection information: everything a partial transport stream says about
 /// itself, in the one table that replaces the rest.
 const TABLE_SIT: u8 = 0x7F;
@@ -1219,6 +1223,19 @@ fn read_service_within(
                 .and_then(|loop_bytes| descriptor(loop_bytes, 0xCD))
                 .map(<[u8]>::to_vec);
         }
+        // The service description a partial stream went without, made of the
+        // service descriptor its own table carries. Written back as the
+        // station's name in a `.ts`, where it was the muxer's `Service01`,
+        // and read back into the table of another partial stream.
+        if service.sdt.is_none() {
+            if let Some(made) = sdt_from_sit(&sec, &service) {
+                service.service_type = sit_service(&sec)
+                    .and_then(|(_, described)| descriptor(described, 0x48))
+                    .and_then(|d| d.first().copied())
+                    .unwrap_or(service.service_type);
+                service.sdt = Some(made);
+            }
+        }
     }
     Ok(service)
 }
@@ -1281,11 +1298,57 @@ pub struct Snapshot {
     pub tot: Option<Vec<u8>>,
     /// Whether a bare time and date table was seen instead of the offset one.
     pub tdt: Option<Vec<u8>>,
+    /// A partial transport stream's own table, for a recording that has no
+    /// others: a recorder's disc, or a cut this program wrote as one. See
+    /// [`Snapshot::from_partial`].
+    pub sit: Option<Vec<u8>>,
+    /// Set where `eit` was worked out of `sit` rather than read off the air.
+    pub made_from_sit: bool,
 }
 
 impl Snapshot {
     pub fn is_empty(&self) -> bool {
         self.eit.is_empty() && self.tot.is_none() && self.tdt.is_none()
+    }
+
+    /// Whether the recording itself sent present-and-following here, which
+    /// is what says it is a broadcast with a guide to carry at all.
+    pub fn heard_events(&self) -> bool {
+        !self.eit.is_empty() && !self.made_from_sit
+    }
+
+    /// Stand in for the tables a partial transport stream went without.
+    ///
+    /// A recorder's disc -- and a `.m2ts` this program wrote -- says in one
+    /// selection information table what a broadcast says in four: the
+    /// service, the programme on, when it went out, what it was about. Cut
+    /// into a `.ts`, where players read the four and nothing reads the one,
+    /// all of that was lost: the muxer's `Service01` went out as the
+    /// station's name and no programme at all. Cut into another partial
+    /// stream it was lost as well, since that table is rebuilt out of the
+    /// four. So the present event is put back together here, out of the
+    /// table's own event time and the event's own descriptors, and the clock
+    /// out of the time the table carries where it carries one. What the
+    /// recording did send is never replaced.
+    ///
+    /// A recorder's own disc puts none of it in that table -- only what the
+    /// stream is made of -- and the programme in its index instead. `listed`
+    /// is that index's account, and stands in where the table has nothing.
+    pub fn from_partial(&mut self, service: &Service, listed: Option<&Listed>) {
+        if !self.eit.is_empty() {
+            return;
+        }
+        let sit = self.sit.as_deref();
+        let made = sit
+            .and_then(|sit| event_from_sit(sit, service))
+            .or_else(|| listed.and_then(|l| event_from_listing(l, service)));
+        if let Some(sec) = made {
+            self.eit.push(sec);
+            self.made_from_sit = true;
+        }
+        if self.tot.is_none() && self.tdt.is_none() {
+            self.tdt = sit.and_then(clock_from_sit);
+        }
     }
 }
 
@@ -1324,10 +1387,14 @@ pub fn snapshot_at(input: &crate::input::Input, pos: i64, service_id: u16) -> Re
 
     let mut eit = SectionReader::default();
     let mut tdt = SectionReader::default();
+    let mut sit = SectionReader::default();
     let mut out = Snapshot::default();
     // Present and following is two sections, numbered 0 and 1. Both are
     // wanted and either may be absent.
     let mut seen: HashSet<u8> = HashSet::new();
+    // Whether anything at all went by on the event PID. A broadcast sends
+    // the guide there many times a second; a partial stream sends nothing.
+    let mut eit_pid_heard = false;
 
     let mut at = base;
     while at + PACKET <= buf.len() {
@@ -1340,7 +1407,9 @@ pub fn snapshot_at(input: &crate::input::Input, pos: i64, service_id: u16) -> Re
             }
             continue;
         }
-        match pid_of(p) {
+        let pid = pid_of(p);
+        eit_pid_heard |= pid == PID_EIT;
+        match pid {
             PID_EIT => eit.feed(p, |sec| {
                 if sec[0] != TABLE_EIT_PF_ACTUAL || sec.len() < 18 {
                     return;
@@ -1361,9 +1430,32 @@ pub fn snapshot_at(input: &crate::input::Input, pos: i64, service_id: u16) -> Re
                 TABLE_TDT if out.tdt.is_none() => out.tdt = Some(sec.to_vec()),
                 _ => {}
             }),
+            // The one table of a partial stream, for its service. A partial
+            // stream carries a single service; the check is for a file that
+            // carries one of these beside a broadcast's own tables.
+            PID_SIT if out.sit.is_none() => sit.feed(p, |sec| {
+                if sec[0] == TABLE_SIT
+                    && sec.len() >= 14
+                    && sit_service(sec).is_some_and(|(id, _)| id == service_id)
+                {
+                    out.sit = Some(sec.to_vec());
+                }
+            }),
             _ => {}
         }
         if out.eit.len() >= 2 && out.tot.is_some() {
+            break;
+        }
+        // A partial stream sends its table once a second and nothing else:
+        // once it is in hand and a second's worth has gone by without event
+        // information, there is none to wait for. Not where the event PID
+        // carries anything at all: at a 4K rate that many packets is under
+        // a second, and present-and-following goes out every two.
+        if out.sit.is_some()
+            && out.eit.is_empty()
+            && !eit_pid_heard
+            && at >= base + stride * 20_000
+        {
             break;
         }
     }
@@ -1690,6 +1782,280 @@ pub fn programme(input: &crate::input::Input, service_id: u16) -> Result<Program
     Ok(out)
 }
 
+/// A service description of one service, made of a partial stream's table.
+///
+/// Only the service descriptor goes in: the rest of that table's service
+/// loop is the programme's, and goes into the event made beside it (see
+/// [`event_from_sit`]). The event flag says present-and-following is sent,
+/// because it is -- this pass writes it.
+fn sdt_from_sit(sit: &[u8], service: &Service) -> Option<Vec<u8>> {
+    let (id, described) = sit_service(sit)?;
+    if id != service.service_id {
+        return None;
+    }
+    Some(sdt_naming(service, descriptor(described, 0x48)?))
+}
+
+/// A service description of the one service, carrying `named` -- the body of
+/// a service descriptor -- and nothing else.
+fn sdt_naming(service: &Service, named: &[u8]) -> Vec<u8> {
+    let id = service.service_id;
+    let mut sec = vec![
+        TABLE_SDT_ACTUAL,
+        0xF0,
+        0x00,
+        (service.transport_stream_id >> 8) as u8,
+        service.transport_stream_id as u8,
+        0xC1, // version 0, current
+        0x00,
+        0x00,
+    ];
+    sec.extend_from_slice(&service.original_network_id.to_be_bytes());
+    sec.push(0xFF);
+    sec.extend_from_slice(&id.to_be_bytes());
+    sec.push(0xFD); // reserved and user bits, no schedule, present-and-following
+    let len = 2 + named.len();
+    sec.push(0x80 | ((len >> 8) as u8 & 0x0F)); // running, no scrambling
+    sec.push(len as u8);
+    sec.push(0x48);
+    sec.push(named.len() as u8);
+    sec.extend_from_slice(named);
+    finish_section(&mut sec);
+    sec
+}
+
+/// What a disc's own index says a recording was.
+///
+/// A recorder writes the programme into its playlist -- the name, what the
+/// listing said, the channel, when it went out and for how long -- and into
+/// the stream only what it is made of: the stream's own table there names
+/// no service and no event. For a recording opened off such a disc, this is
+/// the only account of it there is. See [`crate::disc::listing_of`].
+#[derive(Debug, Clone, Default)]
+pub struct Listed {
+    pub channel: Option<String>,
+    pub name: Option<String>,
+    pub description: Option<String>,
+    pub began: Option<Began>,
+    pub ran: Option<u32>,
+}
+
+impl Service {
+    /// Name the service after the channel a disc's index gives, where the
+    /// stream named it nothing. See [`Listed`].
+    pub fn name_from_listing(&mut self, listed: &Listed) {
+        if self.sdt.is_some() {
+            return;
+        }
+        let Some(channel) = listed.channel.as_deref().filter(|c| !c.trim().is_empty()) else {
+            return;
+        };
+        if self.service_type == 0 {
+            self.service_type = 0x01; // digital television
+        }
+        let name = written_text(channel, 64, self.original_network_id);
+        // Type, an empty provider, and the name.
+        let mut named = vec![self.service_type, 0x00, name.len() as u8];
+        named.extend_from_slice(&name);
+        self.sdt = Some(sdt_naming(self, &named));
+    }
+}
+
+/// Text for a table this pass makes up, written the way the network writes
+/// its own: ARIB's eight-unit code on a Japanese network, and on any other --
+/// the 4K satellite service among them, whose recordings name themselves in
+/// UTF-8 -- DVB's UTF-8, behind the byte that says so. Read back either way
+/// by [`crate::text::decode`]; within `limit` bytes, cut at a whole character.
+fn written_text(text: &str, limit: usize, onid: u16) -> Vec<u8> {
+    if crate::text::Written::of_network(onid) == crate::text::Written::Arib {
+        return crate::arib::encode_within(text, limit);
+    }
+    if text.is_empty() || limit < 2 {
+        return Vec::new();
+    }
+    let mut end = text.len().min(limit - 1);
+    while !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    let mut out = vec![0x15];
+    out.extend_from_slice(&text.as_bytes()[..end]);
+    out
+}
+
+/// Modified Julian day and binary-coded decimal time, as a broadcast writes a
+/// moment. The inverse of what [`programme`] reads.
+fn broadcast_time(at: &Began) -> Option<[u8; 5]> {
+    // Nor before 1900-03-01, where the reader stops as well: the year below
+    // runs under nought for January and February of 1900.
+    if !(1900..2100).contains(&at.year)
+        || !(1..=12).contains(&at.month)
+        || !(1..=31).contains(&at.day)
+        || (at.year == 1900 && at.month <= 2)
+    {
+        return None;
+    }
+    if at.hour > 23 || at.minute > 59 || at.second > 59 {
+        return None;
+    }
+    let early = u32::from(at.month <= 2);
+    let y = u32::from(at.year) - 1900 - early;
+    let m = u32::from(at.month) + 1 + early * 12;
+    let mjd = 14956 + u32::from(at.day) + (f64::from(y) * 365.25) as u32 + (f64::from(m) * 30.6001) as u32;
+    let bcd = |v: u8| ((v / 10) << 4) | (v % 10);
+    let mjd = u16::try_from(mjd).ok()?;
+    let [hi, lo] = mjd.to_be_bytes();
+    Some([hi, lo, bcd(at.hour), bcd(at.minute), bcd(at.second)])
+}
+
+/// The present event a disc's index describes, as the section a broadcast
+/// sends: when it went out, for how long, its name and what the listing said
+/// in a short event descriptor. Only where the index says when it began,
+/// since an event is a time before it is anything else.
+fn event_from_listing(listed: &Listed, service: &Service) -> Option<Vec<u8>> {
+    let start = broadcast_time(listed.began.as_ref()?)?;
+    let ran = listed.ran.unwrap_or(0).min(99 * 3600 + 59 * 60 + 59);
+    let bcd = |v: u32| (((v / 10) << 4) | (v % 10)) as u8;
+    let duration = [bcd(ran / 3600), bcd(ran / 60 % 60), bcd(ran % 60)];
+    let onid = service.original_network_id;
+    let name = written_text(listed.name.as_deref().unwrap_or(""), 96, onid);
+    // Three of language, a length each, and the name: what is left of the
+    // descriptor's 255 is the listing's sentence.
+    let text = written_text(
+        listed.description.as_deref().unwrap_or(""),
+        255 - 3 - 2 - name.len(),
+        onid,
+    );
+    let mut short = vec![0x4D, (3 + 1 + name.len() + 1 + text.len()) as u8];
+    short.extend_from_slice(b"jpn");
+    short.push(name.len() as u8);
+    short.extend_from_slice(&name);
+    short.push(text.len() as u8);
+    short.extend_from_slice(&text);
+    let id = service.service_id;
+    let folded = start.iter().fold(0u16, |h, &b| h.rotate_left(5) ^ u16::from(b)).max(1);
+    let mut sec = vec![
+        TABLE_EIT_PF_ACTUAL,
+        0xF0,
+        0x00,
+        (id >> 8) as u8,
+        id as u8,
+        0xC1,
+        0x00,
+        0x00,
+    ];
+    sec.extend_from_slice(&service.transport_stream_id.to_be_bytes());
+    sec.extend_from_slice(&service.original_network_id.to_be_bytes());
+    sec.push(0x00);
+    sec.push(TABLE_EIT_PF_ACTUAL);
+    sec.extend_from_slice(&folded.to_be_bytes());
+    sec.extend_from_slice(&start);
+    sec.extend_from_slice(&duration);
+    sec.push(0x80 | ((short.len() >> 8) as u8 & 0x0F));
+    sec.push(short.len() as u8);
+    sec.extend_from_slice(&short);
+    finish_section(&mut sec);
+    Some(sec)
+}
+
+/// The present event of a partial stream, as the section a broadcast sends.
+///
+/// The table's time descriptor says when the programme went out and for how
+/// long; every other descriptor in its service loop but the service's own is
+/// the event's, and goes into the event as it came. It names no event id --
+/// a partial stream has no guide for one to key into -- so the event group
+/// descriptor's is taken where the table has one, and otherwise one is made
+/// of the start time, which is the same for every range of one programme.
+fn event_from_sit(sit: &[u8], service: &Service) -> Option<Vec<u8>> {
+    let (id, described) = sit_service(sit)?;
+    if id != service.service_id {
+        return None;
+    }
+    let time = descriptor(described, 0xC3)?;
+    let version = *time.first()?;
+    let start = time.get(1..6)?;
+    let duration = time.get(6..9)?;
+    let mut events = Vec::new();
+    let mut i = 0;
+    while i + 2 <= described.len() {
+        let len = 2 + described[i + 1] as usize;
+        let one = described.get(i..i + len)?;
+        if !matches!(one[0], 0xC3 | 0x48) {
+            events.extend_from_slice(one);
+        }
+        i += len;
+    }
+    let event_id = descriptor(described, 0xD6)
+        .and_then(|group| {
+            // Only the counted pairs: a relay's group goes on with entries
+            // of eight bytes for other networks' events.
+            let count = usize::from(*group.first()? & 0x0F);
+            group
+                .get(1..)?
+                .chunks_exact(4)
+                .take(count)
+                .find(|pair| u16::from_be_bytes([pair[0], pair[1]]) == id)
+                .map(|pair| u16::from_be_bytes([pair[2], pair[3]]))
+        })
+        .unwrap_or_else(|| {
+            let folded = start.iter().fold(0u16, |h, &b| h.rotate_left(5) ^ u16::from(b));
+            folded.max(1)
+        });
+    let mut sec = vec![
+        TABLE_EIT_PF_ACTUAL,
+        0xF0,
+        0x00,
+        (id >> 8) as u8,
+        id as u8,
+        0xC1 | ((version & 0x1F) << 1),
+        0x00, // present
+        0x00, // and no following: a partial stream names none
+    ];
+    sec.extend_from_slice(&service.transport_stream_id.to_be_bytes());
+    sec.extend_from_slice(&service.original_network_id.to_be_bytes());
+    sec.push(0x00); // segment last section
+    sec.push(TABLE_EIT_PF_ACTUAL);
+    sec.extend_from_slice(&event_id.to_be_bytes());
+    sec.extend_from_slice(start);
+    sec.extend_from_slice(duration);
+    // A section has a ceiling, as the table it came out of has; what does not
+    // fit is dropped whole descriptors at a time, from the end.
+    let room = SECTION_MAX - sec.len() - 2 - 4;
+    let mut kept = 0usize;
+    let mut j = 0;
+    while j + 2 <= events.len() {
+        let len = 2 + events[j + 1] as usize;
+        if kept + len > room {
+            break;
+        }
+        kept += len;
+        j += len;
+    }
+    sec.push(0x80 | ((kept >> 8) as u8 & 0x0F)); // running
+    sec.push(kept as u8);
+    sec.extend_from_slice(&events[..kept]);
+    finish_section(&mut sec);
+    Some(sec)
+}
+
+/// The clock a partial stream's table carries, as a time and date table.
+///
+/// Only where the table says what time it is at this point: the flag is the
+/// last of the time descriptor's three, and the time follows it. A table
+/// that does not -- this program's own, and some recorders' -- gives no
+/// clock, which is what the stream had.
+fn clock_from_sit(sit: &[u8]) -> Option<Vec<u8>> {
+    let (_, described) = sit_service(sit)?;
+    let time = descriptor(described, 0xC3)?;
+    let flags = *time.get(12)?;
+    if flags & 0x01 == 0 {
+        return None;
+    }
+    let now = time.get(13..18)?;
+    let mut sec = vec![TABLE_TDT, 0x70, 0x05];
+    sec.extend_from_slice(now);
+    Some(sec)
+}
+
 /// The one service a partial transport stream's own table describes: which
 /// it is, and what it says about itself.
 ///
@@ -2005,12 +2371,14 @@ pub struct Graft<'a> {
     pub ranges: Vec<GraftRange>,
     /// Which account of itself the output is to carry.
     pub tables: Tables,
-    /// The recording, for the streams this pass carries across itself.
+    /// The recording, for what this pass carries across itself.
     ///
     /// A data broadcast cannot be muxed -- libavformat delivers no packets
     /// for a stream of sections -- so its bytes are read out of the recording
-    /// here and dealt back into the output as it is written. `None`, or an
-    /// empty `carry`, and nothing extra is read. See [`crate::carousel`].
+    /// here and dealt back into the output as it is written. The programme
+    /// guide comes the same way, where the broadcast's own tables are being
+    /// written: see [`is_own_schedule`]. `None` and nothing extra is read.
+    /// See [`crate::carousel`].
     pub input: Option<&'a crate::input::Input>,
     /// Which of the recording's PIDs are carried that way.
     pub carry: Vec<u16>,
@@ -2040,6 +2408,29 @@ pub struct Stats {
     /// Packets of the data broadcast carried across from the recording. See
     /// [`crate::carousel`].
     pub data: usize,
+    /// Sections of the programme guide carried across. See
+    /// [`is_own_schedule`].
+    pub schedule: usize,
+}
+
+/// Whether a section is the programme guide of the service being written.
+///
+/// What a player's 番組表 is drawn from: the days ahead, sent round a few
+/// sections at a time, so that a full turn of them takes minutes rather than
+/// the two seconds present-and-following does. No window read at the head of
+/// a range holds all of it, so it is not read that way. It is carried across
+/// section by section as it was sent during the material kept, which is what
+/// the recording itself gives a player that is played through.
+///
+/// The recorded service's own and nobody else's. A multiplex sends the guide
+/// of every service on it, and a satellite one the guide of every service on
+/// the network; the service description written beside it names one service,
+/// and a guide for services the file does not say it has is a guide to
+/// nothing that is in it.
+fn is_own_schedule(sec: &[u8], service_id: u16) -> bool {
+    sec.len() >= 18
+        && (TABLE_EIT_SCHEDULE_FIRST..=TABLE_EIT_SCHEDULE_LAST).contains(&sec[0])
+        && u16::from_be_bytes([sec[3], sec[4]]) == service_id
 }
 
 /// How often each table is repeated through the output.
@@ -2943,8 +3334,38 @@ pub fn graft(output: &str, on: Option<&(dyn Fn(f64) + Sync)>, g: &Graft) -> Resu
         // The recording's own data broadcast, read alongside the cut and
         // dealt back into it: one reader per kept range, opened as the clock
         // reaches that range. See [`crate::carousel`].
-        let carrying = g.input.is_some() && !carry.is_empty();
+        // And the programme guide, read by the same reader so the recording
+        // is read once for both: its sections share PID 0x12 with the
+        // present-and-following this pass writes itself, so they are put
+        // back together here and written whole. Only where the broadcast's
+        // own tables are going in -- a partial stream has no guide, and a
+        // recording with no tables of its own has none to give.
+        //
+        // Which is judged by whether present-and-following was found
+        // anywhere: a map alone is not a broadcast's tables. A Blu-ray's
+        // clip, a disc a recorder wrote, a stream some other tool made --
+        // each has a map and no event information at all, and reading for a
+        // guide in one reads every kept byte of it a second time, a whole
+        // film of it, and finds nothing. Nor into Blu-ray's own framing,
+        // asked for broadcast tables or not: a disc's stream has nowhere for
+        // a guide any more than for the carousel (see
+        // `cut::can_carry_data_broadcast`), and a recorder dubbing to disc
+        // drops both.
+        let guide = g.tables == Tables::Broadcast
+            && !bluray
+            && g.ranges.iter().any(|r| r.snapshot.heard_events());
+        let reading_pids: Vec<u16> = carry.iter().copied().chain(guide.then_some(PID_EIT)).collect();
+        // What a failed read loses, named as what was being read: a recording
+        // with no carousel is only losing its guide.
+        let reading_what = match (carry.is_empty(), guide) {
+            (false, true) => "the data broadcast and the programme guide",
+            (false, false) => "the data broadcast",
+            _ => "the programme guide",
+        };
+        let carrying = g.input.is_some() && !reading_pids.is_empty();
         let mut carousel: Option<crate::carousel::Reader> = None;
+        let mut guide_sections = SectionReader::default();
+        let mut guide_found: Vec<Vec<u8>> = Vec::new();
         // Which range the reader in hand was opened for. Nothing is open to
         // begin with, and the first packet written opens the first one.
         let mut reading = usize::MAX;
@@ -3080,10 +3501,13 @@ pub fn graft(output: &str, on: Option<&(dyn Fn(f64) + Sync)>, g: &Graft) -> Resu
             if carrying {
                 if reading != range {
                     reading = range;
+                    // A section begun at the far end of the range before is
+                    // of material that was not kept.
+                    guide_sections = SectionReader::default();
                     carousel = match (g.input, g.ranges[range].source) {
                         (Some(input), Some(span)) => crate::carousel::Reader::open(
                             input,
-                            &carry,
+                            &reading_pids,
                             g.source_pcr_pid,
                             span,
                             g.ranges[range].start,
@@ -3092,7 +3516,7 @@ pub fn graft(output: &str, on: Option<&(dyn Fn(f64) + Sync)>, g: &Graft) -> Resu
                         // a stream nothing but a receiver reads. Say what was
                         // lost and carry on writing the file.
                         .map_err(|e| {
-                            eprintln!("note: the data broadcast could not be read back: {e}");
+                            eprintln!("note: {reading_what} could not be read back: {e}");
                         })
                         .ok(),
                         _ => None,
@@ -3101,16 +3525,49 @@ pub fn graft(output: &str, on: Option<&(dyn Fn(f64) + Sync)>, g: &Graft) -> Resu
                 // A read that fails part way -- a share that drops the
                 // recording under it -- ends the carrying and not the pass,
                 // for the reason the open above says.
-                let due = match carousel.as_mut().map(|reader| reader.due(now)) {
-                    Some(Ok(one)) => one,
-                    Some(Err(e)) => {
-                        eprintln!("note: the data broadcast could not be read back: {e}");
-                        carousel = None;
-                        None
+                //
+                // A packet of the guide does not use up the turn: most of
+                // them are other services' and write nothing, and a data
+                // broadcast packet kept waiting behind them would come out
+                // later than it did before the guide was read at all -- and,
+                // at the end of a range, not at all. So the guide is read
+                // through to the next data broadcast packet due, and that
+                // one packet goes out as it always did.
+                loop {
+                    let due = match carousel.as_mut().map(|reader| reader.due(now)) {
+                        Some(Ok(one)) => one,
+                        Some(Err(e)) => {
+                            eprintln!("note: {reading_what} could not be read back: {e}");
+                            carousel = None;
+                            None
+                        }
+                        None => None,
+                    };
+                    let Some(mut one) = due else { break };
+                    // A packet of the guide is not written as it came: it
+                    // shares a PID with sections this pass writes, and a
+                    // section of somebody else's guide may be half of it.
+                    // What goes out is each whole section of this service's,
+                    // when its last packet is due.
+                    if pid_of(&one) == PID_EIT {
+                        guide_found.clear();
+                        let sid = g.service.service_id;
+                        guide_sections.feed(&one, |sec| {
+                            if is_own_schedule(sec, sid) {
+                                guide_found.push(sec.to_vec());
+                            }
+                        });
+                        if !guide_found.is_empty() {
+                            let c = cc.entry(PID_EIT).or_default();
+                            scratch.clear();
+                            for sec in &guide_found {
+                                packetize(PID_EIT, sec, c, &mut scratch);
+                            }
+                            put(&mut dst, arrival, &scratch)?;
+                            stats.schedule += guide_found.len();
+                        }
+                        continue;
                     }
-                    None => None,
-                };
-                if let Some(mut one) = due {
                     // Renumbered because the stream is no longer
                     // continuous: what fell between two kept ranges was
                     // not written, and a receiver reads a gap in the
@@ -3127,6 +3584,7 @@ pub fn graft(output: &str, on: Option<&(dyn Fn(f64) + Sync)>, g: &Graft) -> Resu
                     }
                     put(&mut dst, arrival, &one)?;
                     stats.data += 1;
+                    break;
                 }
             }
 
@@ -4021,8 +4479,7 @@ mod tests {
     fn snapshot_of(section: Vec<u8>) -> Snapshot {
         Snapshot {
             eit: vec![section],
-            tot: None,
-            tdt: None,
+            ..Default::default()
         }
     }
 
@@ -4320,5 +4777,86 @@ mod tests {
         assert_eq!(Began::parse("2026-257-17 01:00"), None);
         assert_eq!(Began::parse("2026-08-273 01:00"), None);
         assert_eq!(Began::parse("2026-08-17 257:00"), None);
+    }
+
+    /// A moment written for a made-up event reads back as itself, every day
+    /// the five bytes can hold -- the turns of the year and February
+    /// included -- and a date before the arithmetic's own start is refused
+    /// rather than wrapped.
+    #[test]
+    fn a_made_up_start_time_reads_back_as_itself() {
+        for mjd in 15079u16..0xFFFF {
+            let [hi, lo] = mjd.to_be_bytes();
+            let raw = [hi, lo, 0x23, 0x59, 0x07];
+            let at = began_at(&raw).expect("a date");
+            assert_eq!(broadcast_time(&at), Some(raw), "{at:?}");
+        }
+        let early = Began { year: 1900, month: 2, day: 28, hour: 0, minute: 0, second: 0 };
+        assert_eq!(broadcast_time(&early), None);
+        let past = Began { year: 2038, month: 4, day: 23, hour: 0, minute: 0, second: 0 };
+        assert_eq!(broadcast_time(&past), None);
+        let odd = Began { year: 2026, month: 1, day: 32, hour: 0, minute: 0, second: 0 };
+        assert_eq!(broadcast_time(&odd), None);
+    }
+
+    /// The event made of a disc's listing keeps its short event descriptor
+    /// within the 255 bytes its length can say, however long the listing.
+    #[test]
+    fn a_long_listing_still_fits_its_descriptor() {
+        let long = "\u{3042}".repeat(400);
+        for onid in [0x0004u16, 0x000B] {
+            let mut service = recording(None);
+            service.original_network_id = onid;
+            let listed = Listed {
+                channel: Some(long.clone()),
+                name: Some(long.clone()),
+                description: Some("x".repeat(600)),
+                began: Some(Began { year: 2026, month: 9, day: 27, hour: 21, minute: 0, second: 0 }),
+                ran: Some(3600),
+            };
+            let sec = event_from_listing(&listed, &service).expect("an event");
+            let loop_len = (((sec[24] & 0x0F) as usize) << 8) | sec[25] as usize;
+            assert_eq!(26 + loop_len + 4, sec.len());
+            assert_eq!(sec[27] as usize + 2, loop_len);
+            service.name_from_listing(&listed);
+            let sdt = service.sdt.expect("a service description");
+            assert_eq!(section_length(&sdt), sdt.len());
+        }
+    }
+
+    /// Whatever a partial stream's table holds, making an event of it does
+    /// not panic.
+    #[test]
+    fn a_broken_selection_table_makes_no_event_and_no_panic() {
+        let service = recording(None);
+        let mut seed = 0x1234_5678u32;
+        for n in 0..20_000usize {
+            let len = 14 + n % 60;
+            let mut sec: Vec<u8> = (0..len)
+                .map(|_| {
+                    seed ^= seed << 13;
+                    seed ^= seed >> 17;
+                    seed ^= seed << 5;
+                    seed as u8
+                })
+                .collect();
+            sec[0] = TABLE_SIT;
+            // Mostly a short transmission loop and this service, so that
+            // the service loop is reached.
+            sec[8] &= 0xF0;
+            sec[9] %= 4;
+            let at = 10 + sec[9] as usize;
+            if at + 4 <= sec.len() {
+                sec[at] = 0x00;
+                sec[at + 1] = 0xB5;
+            }
+            let _ = event_from_sit(&sec, &service);
+            let _ = clock_from_sit(&sec);
+            let _ = sdt_from_sit(&sec, &service);
+        }
+    }
+
+    fn section_length(sec: &[u8]) -> usize {
+        ((((sec[1] & 0x0F) as usize) << 8) | sec[2] as usize) + 3
     }
 }

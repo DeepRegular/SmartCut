@@ -341,9 +341,13 @@ fn same_colour(master: &PictureShape, clip: &PictureShape) -> bool {
     // matrix, which is a claim like any other.
     const UNSPECIFIED: i32 = 2;
     let same = |m: i32, c: i32| m == c || m == UNSPECIFIED || c == UNSPECIFIED;
+    // And the range, which is part of what the numbers mean: a full-range
+    // clip copied beside a studio-range master has its black read as a dark
+    // grey and its white clipped, and nothing in the file says otherwise.
     same(master.primaries, clip.primaries)
         && same(master.transfer, clip.transfer)
         && same(master.matrix, clip.matrix)
+        && master.full_range() == clip.full_range()
 }
 
 fn sound_mismatches(master: &[AudioInfo], clip: &[AudioInfo]) -> Vec<Mismatch> {
@@ -445,10 +449,11 @@ fn colour(shape: &PictureShape) -> String {
             .unwrap_or_else(|_| v.to_string())
     };
     format!(
-        "{}/{}/{}",
+        "{}/{}/{}{}",
         name(colour_primaries_name, shape.primaries),
         name(colour_transfer_name, shape.transfer),
         name(colour_space_name, shape.matrix),
+        if shape.full_range() { " full range" } else { "" },
     )
 }
 
@@ -529,6 +534,7 @@ mod tests {
                 primaries: ff::ffi::AVColorPrimaries::AVCOL_PRI_BT709 as i32,
                 transfer: ff::ffi::AVColorTransferCharacteristic::AVCOL_TRC_BT709 as i32,
                 matrix: ff::ffi::AVColorSpace::AVCOL_SPC_BT709 as i32,
+                range: 0,
             },
             pulldown: false,
             variable_rate: false,

@@ -43,6 +43,13 @@ pub struct Index {
     /// with eight seconds for an hour. A pass that read every packet has the
     /// better answer and this is where it says so.
     pub end: Option<f64>,
+    /// Whether what this was made from was read to its end. Always so for
+    /// the tables, which are read whole or not at all; not so for a walk
+    /// whose reading stopped at errors the recording kept giving -- a share
+    /// that went away half way -- or was stopped. Such an index is still
+    /// used for this open, as what was read, but it is not the recording's
+    /// and is not to be kept as it: see [`crate::SeekIndex::save`].
+    pub whole: bool,
 }
 
 /// How far through a source is, as a fraction, told to whoever is waiting.
@@ -167,7 +174,8 @@ pub fn walk(
     // What is offered is throttled where it is decided, in [`crate::Told`].
     let mut told = crate::Told::new();
     let mut seen: u64 = 0;
-    for (s, p) in ictx.read_packets() {
+    let mut reading = ictx.read_packets();
+    for (s, p) in reading.by_ref() {
         seen += 1;
         if seen.is_multiple_of(256) {
             // Asked on the same count as the progress, but not behind it: a
@@ -217,6 +225,8 @@ pub fn walk(
             pos: p.position() as i64,
         });
     }
+    let whole = reading.finished().is_ok();
+    drop(reading);
 
     // The last picture to be shown, which is not the last to arrive.
     let end = packets
@@ -245,6 +255,7 @@ pub fn walk(
         variable: Some(varies(&shown, video.frame_duration())),
         bit_rate,
         end,
+        whole,
     })
 }
 
@@ -413,6 +424,7 @@ impl IndexSource for DiscIndex {
             variable: None,
             bit_rate,
             end,
+            whole: true,
         })
     }
 }
@@ -513,6 +525,7 @@ impl IndexSource for ContainerIndex {
             variable: None,
             bit_rate: None,
             end: None,
+            whole: true,
         })
     }
 }

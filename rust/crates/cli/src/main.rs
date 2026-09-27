@@ -121,6 +121,11 @@ fn pick<'a>(
     want: Option<&str>,
 ) -> Result<Option<&'a smartcut_core::disc::Entry>> {
     let Some(want) = want else { return Ok(None) };
+    // Every name contains the empty one, so `--title ""` -- a script's
+    // variable that came out empty -- opened the first recording on the disc.
+    if want.trim().is_empty() {
+        bail!("--title needs a number or a name, and was given nothing");
+    }
     if let Ok(n) = want.parse::<usize>() {
         return match entries.get(n.wrapping_sub(1)).filter(|_| n >= 1) {
             Some(e) => Ok(Some(e)),
@@ -445,7 +450,20 @@ fn help() -> String {
 }
 
 fn main() -> Result<()> {
-    let args: Vec<String> = std::env::args().skip(1).collect();
+    // `env::args` panics on an argument that is not valid Unicode -- a
+    // recording on a share whose name was written in Shift_JIS or Latin-1 --
+    // and the run died with a panic instead of saying which argument.
+    let args: Vec<String> = std::env::args_os()
+        .skip(1)
+        .map(|a| {
+            a.into_string().map_err(|a| {
+                anyhow::anyhow!(
+                    "{:?} is not valid UTF-8, which is all a name given here can be: rename it",
+                    a.to_string_lossy()
+                )
+            })
+        })
+        .collect::<Result<_>>()?;
     let mut input = None;
     let mut keeps: Vec<(f64, f64)> = Vec::new();
     let mut cuts: Vec<(f64, f64)> = Vec::new();
@@ -1269,7 +1287,17 @@ fn main() -> Result<()> {
     let writing = index_file.filter(|_| held.is_none() && !as_proxy);
     if let Some(p) = &writing {
         src.input.refuse_as_output(&p.to_string_lossy())?;
-        smartcut_core::SeekIndex::of(&src, None).save(p)?;
+        // Not for a walk that stopped at read errors -- half an index kept
+        // is half a recording on every later open. Said, not fatal: the run
+        // itself goes on with what was read. Any other failure to write the
+        // file that was asked for still ends the run, as it always did.
+        if src.read_whole {
+            smartcut_core::SeekIndex::of(&src, None).save(p)?;
+        } else {
+            eprintln!(
+                "note: the recording was not read to its end, so no seek index is written"
+            );
+        }
     }
     let v = &src.video;
     println!("input : {}", src.path);
@@ -1530,12 +1558,16 @@ fn main() -> Result<()> {
         );
         if let Some(p) = &writing {
             src.input.refuse_as_output(&p.to_string_lossy())?;
-            smartcut_core::SeekIndex::of(&src, Some(track)).save(p)?;
-            println!(
-                "シーク用インデックス : {} ({:.1} MB)",
-                p.display(),
-                std::fs::metadata(p).map(|m| m.len()).unwrap_or(0) as f64 / 1e6
-            );
+            // As above: an index of half the recording is not kept, and was
+            // said so when the recording was opened.
+            if src.read_whole {
+                smartcut_core::SeekIndex::of(&src, Some(track)).save(p)?;
+                println!(
+                    "シーク用インデックス : {} ({:.1} MB)",
+                    p.display(),
+                    std::fs::metadata(p).map(|m| m.len()).unwrap_or(0) as f64 / 1e6
+                );
+            }
         }
         if let Ok(path) = std::env::var("SMARTCUT_SCENES_OUT") {
             let dump: String = track.scenes.iter().map(|t| format!("{t:.3}\n")).collect();

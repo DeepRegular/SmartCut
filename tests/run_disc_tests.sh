@@ -163,9 +163,25 @@ match "BDAV: a cut from inside the image is the same" \
 match "BDMV: a cut from inside the image is the same" \
   "$OUT/mv-iso.ts" "$OUT/mv-folder.ts" "$OUT/mv-iso.log"
 # The two discs hold the same stream under different indexes, so a cut of it
-# is the same bytes whichever half of the specification described it.
+# is the same pictures and sound whichever half of the specification
+# described it. Compared packet by packet rather than byte for byte: a
+# recorder's index names its programme and a pressed disc's names nothing,
+# and since 0.8.11 the first is written into the cut's own tables.
+packets() { # <cut> -> a file of every packet's hash, or nothing
+  ffmpeg -v error -i "$1" -map 0:v -map 0:a -c copy -f framemd5 - 2>/dev/null \
+    | grep -v '^#' > "$1.packets"
+  # Two cuts that both failed are two empty lists, and those match.
+  [ -s "$1.packets" ] && echo "$1.packets"
+}
 match "the dialect the disc was written in changes nothing" \
-  "$OUT/mv-iso.ts" "$OUT/av-iso.ts" "$OUT/mv-iso.log"
+  "$(packets "$OUT/mv-iso.ts")" "$(packets "$OUT/av-iso.ts")" "$OUT/mv-iso.log"
+# ...and what the recorder's index says is what the cut says about itself:
+# the programme on it an event. The service is named after the channel only
+# where the stream named it nothing, and these fixtures carry the muxer's
+# own service description -- which is kept, not replaced by the index's.
+tables() { python3 tests/broadcast.py "$1" 2>/dev/null; }
+has "BDAV: a service the stream named keeps it" "536572766963653031" "$(tables "$OUT/av-iso.ts")"
+has "BDAV: the index names the programme on it" "eit.0="             "$(tables "$OUT/av-iso.ts")"
 
 # What language a track is in is written beside a Blu-ray's streams and never
 # in them, so a cut that did not go and read the index came out with two sound
