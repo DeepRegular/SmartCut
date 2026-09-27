@@ -70,6 +70,8 @@ So they are put back afterwards, by one pass over the finished file:
   name arrives in ARIB's own character encoding without this program having to
   understand a byte of it,
 - **EIT present/following and TOT are injected** on the PIDs they belong on,
+- **the service's own programme guide is carried across** as it was sent (see
+  [below](#carrying-the-programme-guide)),
 - and every continuity counter is renumbered.
 
 Where an injected section goes is decided by the output's own clock. Each kept range
@@ -333,6 +335,73 @@ One thing does not survive, and cannot. A carousel that is synchronised to the
 programme — an event message timed against the stream — is timed against a stream that
 has had pieces taken out of it. The pages load; a page that was to turn at a particular
 moment no longer has that moment.
+
+## Carrying the programme guide
+
+> Since 0.8.11, in every `.ts` that carries the broadcast's own tables.
+
+Present/following says what is on now and what comes next. A player's 番組表 — the
+week-ahead grid — is drawn from the other half of PID 0x12: the EIT schedule tables,
+0x50–0x5F for the stream a recording is of. Up to 0.8.10 a cut carried none of it, and
+TVTest opened on one showed an empty grid over a file whose programme name it showed
+perfectly well.
+
+The schedule is not a snapshot. A station sends it round a few sections at a time, and
+a full turn takes minutes: on a satellite recording a new section was still arriving
+eighty seconds in. The window each kept range is read with for present/following holds
+a fraction of it. So it is carried the way the data broadcast is — read out of the
+recording alongside the cut, by the same reader in the same pass, and dealt back in at
+the moment it was sent. A cut of any real length holds several turns, which is what the
+recording itself gives a player that is played through.
+
+What differs is the PID. The carousel has PIDs of its own; the guide shares 0x12 with
+the present/following this pass writes, and a packet of it may be half of a section of
+somebody else's. So its packets are put back together into sections, and a section goes
+out whole, on the pass's own continuity count, when its last packet is due.
+
+Only the recorded service's own. A terrestrial multiplex sends the guide of every
+service on it; a satellite one sends every service on the network, forty-seven of them
+in the sample (0x60–0x6F, and present/following for the others in 0x4F). The SDT
+written beside them names one service, and a guide to services the file does not say
+it has is a guide to nothing that is in it.
+
+A partial stream carries none: it has no PID 0x12 at all, and its one table describes
+the programme it is a recording of. Nor does Blu-ray's own framing, `--tables
+broadcast` or not: a disc's stream has nowhere for a guide, as it has nowhere for
+the carousel.
+
+## Cutting a partial stream
+
+> Since 0.8.11.
+
+Some inputs are partial streams themselves: a recorder's disc, or an `.m2ts` this
+program wrote. They carry one selection information table and no SDT or EIT. Up to
+0.8.10 a `.ts` cut of one went out with the muxer's `Service01` as the station and
+no programme at all; an `.m2ts` cut lost the same, because its table is rebuilt out
+of the four a broadcast sends.
+
+So the missing tables are made out of the one there is.
+
+| Made | Out of |
+|---|---|
+| SDT | The service descriptor (0x48) in the table's service loop; the network from its network identification descriptor |
+| EIT present | The start and length in the partial transport stream time descriptor (0xC3); every other descriptor in the service loop — name, genre, components — goes into the event as it came |
+| TDT | Only where the 0xC3 carries a JST time |
+
+A partial stream names no event id. The event group descriptor's (0xD6) is used
+where there is one, and otherwise one is made of the start time, the same for every
+range of one programme.
+
+A recorder's own disc does not put the programme in the stream at all: its table
+carries component descriptors and nothing else, and the name, the listing, the
+channel, the time and the length are in the disc's index. For a recording opened
+off such a disc, the SDT and EIT are made from that (`disc::listing_of`). Text is
+written the way the network writes its own: ARIB's eight-unit code on a Japanese
+network, and DVB's UTF-8 on any other — the 4K satellite service among them, whose
+recordings name themselves in UTF-8.
+
+Either way, what the recording did send is used and never replaced, and an event
+made up here is not taken as a sign that there is a guide to read.
 
 ## Written as a partial transport stream (`--tables partial`, and every `.m2ts`)
 

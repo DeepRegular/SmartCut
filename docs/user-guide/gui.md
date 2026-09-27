@@ -318,6 +318,13 @@ looks for, as **Detect black** is. A row that had been detected before goes
 back to what that detection found. A pass that has already started is not a
 booking any more; **Stop analysis** is what stops it.
 
+**A row that has been detected is not offered the same detection again.** The
+same question read again is the same answer minutes later, so **Detect
+commercials** on the row's menu and down the side is greyed once every selected
+row has an answer, and with a mix selected only the rows still without one are
+booked. The blank and silence passes work the same way, and a row detected from
+inside the cut editor counts as detected.
+
 **What a detection has to say is a badge beside the row's state.** Dashed
 `CM booked` while it waits, solid `Detecting CM` while the pass runs, and then
 `CM 5` or `No CM`. The three tell apart by shape, so which rows are still owed
@@ -363,6 +370,9 @@ Black out of the box, so *Detect black*; *Detect white* or *Detect blank* where
 Preferences says white alone or both. The row's own menu, the cut editor's
 `≡` menu and what a row says it found all follow it, so nothing ever reports
 "none" about a shade it never looked for.
+
+As with the commercials, a row that has an answer greys the button for it;
+changing what the pass is told to look for in Preferences offers it again.
 
 **Changing that answer clears what the rows are showing.** `Black: 3 stretches`
 is an answer to the question that has just been withdrawn, so it is forgotten
@@ -642,8 +652,13 @@ subtitles go into the output is answered by **Tracks** and by the output setting
 at the bottom right, read the recording that is open. The first is named after
 **The blank pass looks for** in Preferences, as the list's button is. If the
 list has already been over it, what was found is on the timeline when the
-window opens; the lines read it again. They are two passes: running one leaves
-what the other found where it is.
+window opens. They are two passes: running one leaves what the other found where
+it is.
+
+Once the recording has been detected, here or from the list, the line is greyed,
+and so is **Detect commercials** in the info bar. Changing what the pass is told
+to look for in Preferences offers it again; for the commercials, that is **Also
+find the short inserts**.
 
 Each stretch is drawn as a band under the timeline — blue-grey for black and
 white, green for silence — in its own row under the scene changes, which are
@@ -819,6 +834,10 @@ way and it becomes `3 ranges, 2 cuts`.
 **Only three lines of the breakdown are visible at once.** More cuts mean more
 lines, and the rest are read by scrolling. When there is more below, a slim bar
 appears down the right-hand edge and the bottom line sinks into shadow.
+
+A cut clears the selection. IN and OUT are no longer drawn on the picture or the
+timeline, the readout says `Selection —`, and a second `Del` takes nothing.
+Mark IN or OUT again for the next range.
 
 `Ctrl+Del` is the same cut moved one picture in at each end: **the two frames
 the marks are on stay, and everything between them goes.** With IN on 2392 and

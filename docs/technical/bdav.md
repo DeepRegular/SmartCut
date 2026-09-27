@@ -415,6 +415,14 @@ output at all. The half width of the alphanumerics and the normal width of the
 kanji go in as a recorder writes them, because that is what makes a name read
 on a television the way it read on air.
 
+A 4K recording names itself in UTF-8, boxed markers and all, as the Unicode
+glyphs (`🈑` and the like). One the eight-unit code has a cell for goes into that
+cell; up to 0.8.10 the listing markers of row 90 were written as 〓 when they
+arrived as glyphs rather than as the bracketed word. The ones that came into
+Unicode for the 4K and 8K services — `🆞` and its neighbours — have no cell at
+all, and are spelled in brackets, `[4K]`, the way a listing spells the markers
+the code does have.
+
 The field is a length byte and 255 bytes at most, which a Japanese title
 reaches at about 85 characters. What does not fit is cut at a character, never
 inside one: half a JIS pair is a different character rather than a shorter

@@ -130,6 +130,35 @@ is not — and a recording whose description disagrees with its content cannot b
 told from one that says nothing, so there was never an answer there to lose.
 The rule is `conform::stated` and `conform::same_colour`.
 
+### The range is part of the colour
+
+> Since 0.8.11.
+
+Beside the three colour fields, the range the samples run over is compared:
+full, or studio levels 16..235. A `yuvj` pixel format is full range by
+definition; any other is full only where `color_range` says pc, and unstated is
+studio, which is what every broadcast is and what a decoder assumes.
+
+Up to 0.8.10 a clip in the master's pixel format was copied whatever its range —
+a ten-bit full-range clip joined to a ten-bit studio master, say. Its black went
+out at nought and was read against the master's declaration, where black is 64:
+crushed blacks, clipped whites. A difference in range is now a reason to write
+the clip afresh.
+
+And swscale is made to convert it on the way, which it does not do of its own
+accord. It reads a range off the pixel format alone — full for `yuvj`, studio
+for everything else — and a picture already the size and format it is going to
+is copied, levels and all. So where the ranges differ the context is built by
+hand with `src_range` and `dst_range` set before it is initialised, which is what
+`-vf scale=in_range=..:out_range=..` does. So is one where the ranges agree but
+a format misstates one of them — a `yuvj` clip into a full-range master in a
+plain format such as `yuv420p10le` pc. The still laid over a transition is
+brought into the master's range the same way. See `blend::Scaler`.
+
+Measured: full-range black (0) joined into an eight-bit studio master came out
+at 16, and at 64 into a ten-bit one; the other way, a studio test pattern at
+40..888 spread to 0..965 in a full-range master.
+
 ### What actually differs, measured
 
 A month of broadcast: 1186 recordings off 32 channels, read with `conformdiag
