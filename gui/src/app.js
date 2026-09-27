@@ -280,6 +280,13 @@ function makeClip(found) {
     /// (`null`), whose sentence arrived already written. Only the first two
     /// can be written again in another language -- see `relocalise`.
     cmSource: null,
+    /// Whether the finding behind a "done" row was asked to look for the
+    /// short inserts too. This window's lane never is; the editor is when
+    /// 環境設定 says so, and that is a different question. Null where nobody
+    /// knows -- a sentence the editor brought back from a `.cm.json` beside
+    /// the recording, or from an edit saved before this was kept. See
+    /// `alreadyDetected`.
+    cmInserts: false,
     cmProgress: 0,
     /// Blocks found by the list that the timeline has not been shown yet.
     /// Applied on the next visit to the editor, which is the only place that
@@ -477,6 +484,9 @@ async function edit(clip) {
     clip.state = "error";
     clip.error = t("list.gone", { path: clip.path });
     clip.phase = "";
+    // As when the walk cannot read it: a detection booked on the row would
+    // otherwise wait for good for a lane that no longer takes it.
+    dropBookings(clip);
     paintRow(clip);
     paintButtons();
     note(t("list.goneNote", { clip: clipLabel(clip) }));
@@ -586,6 +596,17 @@ function tellEditor() {
     // then on -- see `makeClip`.
     dropPids: editing.dropPids,
     saved: editing.edit,
+    // What the row has been detected with, so that window greys what would
+    // only be asked again. Null where the row has no answer; see
+    // `alreadyDetected` in both windows.
+    detected: {
+      cm:
+        editing.cmState === "done" && typeof editing.cmInserts === "boolean"
+          ? editing.cmInserts
+          : null,
+      blank: alreadyDetected(editing, "blank") ? prefs.flatAsked("blank") : null,
+      quiet: alreadyDetected(editing, "quiet") ? prefs.flatAsked("quiet") : null,
+    },
     // Blocks a batch detection found that the timeline has not been shown
     // yet. Only the editor can turn them into marks -- it is the one that
     // knows where the material begins.
@@ -632,11 +653,40 @@ if (listen) {
     // every detection are not edits, whichever window ran them.
     if (state.touched) clip.edited = true;
     clip.edit = state;
+    const known = state.detectedWith || {};
     if (state.cmNote && (landed || !booked)) {
+      const had = clip.cmState === "done";
       clip.cmPhase = state.cmNote;
       clip.cmState = "done";
       clip.cmPending = false;
       clip.cmSource = null;
+      // What the finding on the timeline was asked. Only the editor knows
+      // for one it ran; for the list's own it says what it was told.
+      // Where it cannot say -- the sentence came off a `.cm.json` beside the
+      // recording, or out of an edit saved before this was kept -- the row
+      // does not know what was asked either, and a row that had no answer
+      // before must not take this one as the lane's: it would grey the
+      // lane's detection here while the editor's own stayed live. Nor one
+      // that had: a finding that has just landed from in there and whose
+      // question the editor cannot say (a read a share cut short) is what
+      // the timeline holds now, not the answer the row had before.
+      if (typeof known.cm === "boolean") clip.cmInserts = known.cm;
+      else if (!had || landed) clip.cmInserts = null;
+    }
+    // A flat detection run in there, to the settings in force, is the row's
+    // answer as much as one the lane made: the row says so, and does not
+    // offer the same pass again. Not over a booking, which is the newer
+    // question, nor over an answer the row already has.
+    for (const which of ["blank", "quiet"]) {
+      const owed = clip[`${which}State`];
+      if (known[which] !== prefs.flatAsked(which) || (owed !== "none" && owed !== "error")) continue;
+      const kinds = which === "blank" ? ["black", "white"] : ["quiet"];
+      const n = (state.flatRuns || []).filter((r) => kinds.includes(r.kind)).length;
+      clip[`${which}Found`] = n;
+      clip[`${which}State`] = "done";
+      clip[`${which}Source`] = null;
+      clip[`${which}Short`] = false;
+      clip[`${which}Phase`] = t(`${which}.rowNote`, { n });
     }
     // **A detection is not an edit, so キャンセル does not undo it.** It is
     // minutes of reading the recording, asked for by its own button and out
@@ -648,6 +698,9 @@ if (listen) {
     // handed over and would not be offered again.
     if (landed && clip === editing) before = JSON.parse(JSON.stringify(state));
     paintRow(clip);
+    // The detect buttons down the side are about the selection, which this
+    // row may be in.
+    paintButtons();
     // And the line over the list, whose length is the rows' cut lengths.
     paintTotals();
     // The row's picture is about the cuts as much as the line under the name
@@ -1452,6 +1505,11 @@ async function runIndex(clip) {
     if (clip.cmState === "queued") pumpLane("cm");
     if (clip.blankState === "queued") pumpLane("blank");
     if (clip.quietState === "queued") pumpLane("quiet");
+    // The sound's half of the cache, which a minimum typed in pictures could
+    // not be asked for until now; see `restoreFlat`.
+    if (prefs.get("quietRunUnit") === "frame" && clip.quietState === "none") {
+      restoreFlat(clip, "quiet");
+    }
   } catch (e) {
     if (String(e).includes("cancelled")) {
       // Put back, not failed: 中止 means "not now", and the pass left
@@ -1461,21 +1519,7 @@ async function runIndex(clip) {
     } else {
       clip.state = "error";
       clip.error = String(e);
-      // A detection reserved on a recording that cannot be read is not work
-      // waiting to happen: the walk it was waiting for is never coming, and
-      // a row left saying 解析後に CM 検出 would wait for it for good.
-      if (clip.cmState === "queued") {
-        clip.cmState = "none";
-        clip.cmPhase = "";
-      }
-      if (clip.blankState === "queued") {
-        clip.blankState = "none";
-        clip.blankPhase = "";
-      }
-      if (clip.quietState === "queued") {
-        clip.quietState = "none";
-        clip.quietPhase = "";
-      }
+      dropBookings(clip);
     }
   }
   paintRow(clip);
@@ -1483,6 +1527,19 @@ async function runIndex(clip) {
   paintButtons();
   paintQueueNote();
   if (clip.selected) paintProps();
+}
+
+/// A detection reserved on a recording that cannot be read is not work
+/// waiting to happen: the lanes take only rows that are ready, so the walk it
+/// was waiting for is never coming, and a row left saying 解析後に CM 検出
+/// would wait for it for good -- and keep 解析を再開 offering work there is
+/// none of.
+function dropBookings(clip) {
+  for (const which of ["cm", "blank", "quiet"]) {
+    if (clip[`${which}State`] !== "queued") continue;
+    clip[`${which}State`] = "none";
+    clip[`${which}Phase`] = "";
+  }
 }
 
 /// What a clip's cuts are, for telling whether they moved while a pass that
@@ -1573,13 +1630,20 @@ async function runPictures(clip) {
 /// minimum than the one in force now does not answer and is not counted --
 /// the row would be claiming an answer to a question nobody asked. See
 /// `flat_answers` on the Rust side.
-async function restoreFlat(clip) {
+///
+/// `only` is "blank" or "quiet" to take one half and leave the other alone.
+async function restoreFlat(clip, only = null) {
   if (!invoke) return;
   const ask = flatAsk();
   // Before the walk there is no frame rate to convert with, and 30 is what
   // the rest of this window falls back to. It only matters where somebody has
-  // typed the silence minimum in pictures, which is not the default.
-  const fps = clip.info && clip.info.fps > 0 ? clip.info.fps : 30;
+  // typed the silence minimum in pictures, which is not the default -- and
+  // there the sound's half is not taken until the walk has the rate: asked
+  // at 30 of a 59.94 recording it is an answer to twice the minimum, and a
+  // row holding it greys the pass that would answer the real question, here
+  // and in the editor alike. The walk asks again (`runIndex`).
+  const guessed = !(clip.info && clip.info.fps > 0);
+  const fps = guessed ? 30 : clip.info.fps;
   let got;
   try {
     got = await invoke("flat_cached", {
@@ -1599,13 +1663,15 @@ async function restoreFlat(clip) {
   // 環境設定 moved while the cache was being read. `forgetFlat` passed this
   // row over -- it had no answer yet to forget -- so this one, to the old
   // question, would have stood as the answer to the new one.
-  if (JSON.stringify(flatAsk()) !== JSON.stringify(ask)) return restoreFlat(clip);
+  if (JSON.stringify(flatAsk()) !== JSON.stringify(ask)) return restoreFlat(clip, only);
   if (!got) return;
   let said = false;
   for (const [which, runs] of [
     ["blank", got.blank],
     ["quiet", got.quiet],
   ]) {
+    if (only && which !== only) continue;
+    if (which === "quiet" && ask.quietInPictures && guessed) continue;
     // A pass asked for or running in this window is the newer answer, and a
     // booked one must not be un-booked by what the cache used to hold.
     if (!runs || clip[`${which}State`] === "queued" || clip[`${which}State`] === "running") {
@@ -1614,6 +1680,7 @@ async function restoreFlat(clip) {
     clip[`${which}Found`] = runs.length;
     clip[`${which}State`] = "done";
     clip[`${which}Source`] = "cache";
+    clip[`${which}Short`] = false;
     // Said as a detection that has already happened rather than as one that
     // just did, as a restored commercial detection is.
     clip[`${which}Phase`] = t("flat.previous", {
@@ -1657,6 +1724,7 @@ async function restoreCm(clip, pending = null) {
   if (!res || clip.cmState !== "none") return;
   clip.cm = res;
   clip.cmState = "done";
+  clip.cmInserts = !!res.inserts;
   // Said as a detection that has already happened rather than as one that
   // just did: the difference matters to someone looking at a list they left
   // open overnight and wondering what it has been doing.
@@ -1678,6 +1746,9 @@ async function runCm(clip) {
     const res = await invoke("detect_cm_at", { path: clip.path });
     clip.cm = res;
     clip.cmState = "done";
+    // Null for a read a share cut short: shown, but not an answer that greys
+    // the pass. See `alreadyDetected`.
+    clip.cmInserts = res.partial ? null : !!res.inserts;
     clip.cmPhase = cmNote(res);
     clip.cmSource = "run";
     // The marks themselves need to know where the material starts, which is
@@ -1800,7 +1871,8 @@ async function runFlatLane(clip, which, ask, call) {
   paintRow(clip);
   paintQueueNote();
   try {
-    const runs = await call();
+    const found = await call();
+    const runs = found.runs;
     // 環境設定 moved while this was reading: the answer is to a question
     // nobody is asking now, and `forgetFlat` left this row to it. Back in
     // the queue, where the lane takes it again with the question in force.
@@ -1814,13 +1886,18 @@ async function runFlatLane(clip, which, ask, call) {
       clip[`${which}State`] = "done";
       clip[`${which}Source`] = null;
       clip[`${which}Phase`] = t(`${which}.rowNote`, { n: runs.length });
+      // Read short by a share that went away: shown, but not the answer that
+      // greys the pass. See `alreadyDetected`.
+      clip[`${which}Short`] = !!found.partial;
       // And onto the timeline now if that window is open on this row, which
       // it can be: the lanes do not stand aside for the editor, so a
       // detection can finish while its clip is being cut. That window reads
       // the cache on the way in and does not look again, so what lands
       // afterwards is handed over -- as `runCm` hands a commercial detection
       // over.
-      if (clip === editing && emit) emit("flat-found", { id: clip.id, which, runs });
+      if (clip === editing && emit) {
+        emit("flat-found", { id: clip.id, which, runs, partial: !!found.partial });
+      }
     }
   } catch (e) {
     if (String(e).includes("cancelled")) {
@@ -2349,6 +2426,28 @@ function paintDetectBadge(span, state, found, which) {
   }
 }
 
+/// Whether a row already holds the answer a detection of this kind would give
+/// it now. `which` is "cm", "blank" or "quiet".
+///
+/// A pass is minutes of reading the recording, and asked the same question
+/// twice it comes back with the same answer. So a row that has one is not
+/// offered another, on the menu, down the side or under Ctrl+D. What the
+/// question is: for the flat passes, 環境設定 -- changing it withdraws every
+/// row's answer (`forgetFlat`), so "done" is always an answer to the settings
+/// in force. For the commercials, only whether the short inserts were looked
+/// for, which this lane never does.
+function alreadyDetected(c, which) {
+  if (c[`${which}State`] !== "done") return false;
+  if (which !== "cm") return !c[`${which}Short`];
+  return c.cmInserts === false;
+}
+
+/// Whether a detection of this kind can be booked on a row: one that could
+/// be read, is not already being detected, and has no answer to the same
+/// question already.
+const detectable = (c, which) =>
+  c.state !== "error" && c[`${which}State`] !== "running" && !alreadyDetected(c, which);
+
 /// What the clip commands could do to what is chosen right now.
 ///
 /// One answer for the two places that ask -- the buttons down the side and
@@ -2368,14 +2467,14 @@ function clipActions() {
     // Anything the detection lane could take now or later, which is
     // everything but a recording that could not be read; see
     // `detectSelected`.
-    detect: picked.some((c) => c.state !== "error" && c.cmState !== "running"),
+    detect: picked.some((c) => detectable(c, "cm")),
     // Only a detection that is still waiting. One the lane has already
     // started is 解析を中止's to stop.
     undetect: picked.some((c) => c.cmState === "queued"),
     undetectBlank: picked.some((c) => c.blankState === "queued"),
     undetectQuiet: picked.some((c) => c.quietState === "queued"),
-    detectBlank: picked.some((c) => c.state !== "error" && c.blankState !== "running"),
-    detectQuiet: picked.some((c) => c.state !== "error" && c.quietState !== "running"),
+    detectBlank: picked.some((c) => detectable(c, "blank")),
+    detectQuiet: picked.some((c) => detectable(c, "quiet")),
     move: picked.length > 0,
     remove: picked.length > 0,
   };
@@ -3411,7 +3510,7 @@ el("droptarget").addEventListener("scroll", () => {
 /// two presses, which is the point of their being two buttons: the pictures
 /// take a minute a recording and the sound does not.
 function detectFlatSelected(which) {
-  const want = selected().filter((c) => c.state !== "error" && c[`${which}State`] !== "running");
+  const want = selected().filter((c) => detectable(c, which));
   if (!want.length) return;
   want.forEach((c) => book(c, which));
   resumeLanes();
@@ -3435,7 +3534,7 @@ function detectFlatSelected(which) {
 /// sixteen were dropped without a word, so the thing 全選択 → Ctrl+D is for
 /// only worked if you waited for the whole list to be read first.
 function detectSelected() {
-  const want = selected().filter((c) => c.state !== "error" && c.cmState !== "running");
+  const want = selected().filter((c) => detectable(c, "cm"));
   if (!want.length) return;
   want.forEach((c) => book(c, "cm"));
   resumeLanes();
@@ -10754,6 +10853,9 @@ el("pref-cm-keyframes").addEventListener("change", (ev) => {
 // out of the cache being asked with the shades in it.
 el("pref-cm-inserts").addEventListener("change", (ev) => {
   prefs.set("cmInserts", ev.target.checked);
+  // Part of what the editor's 検出 asks, so its button may no longer be
+  // asking something already answered.
+  tellEditorPrefs();
 });
 el("pref-flat-mark-at").addEventListener("change", (ev) => {
   prefs.set("flatMarkAt", ev.target.value);

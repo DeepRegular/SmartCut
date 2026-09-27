@@ -49,6 +49,12 @@ let sideBase = null;
 let playhead = 0; // source time, always on material that still exists
 let selA = 0; // selection, in output time
 let selB = 0;
+/// Whether the selection was taken out by the last ✂ and nothing has been
+/// marked since. IN and OUT are still somewhere -- collapsed onto the join --
+/// but they no longer select anything, so the picture and the timeline stop
+/// showing them and Del has nothing to take. Putting either end down again
+/// is a new selection.
+let selGone = false;
 /// Whether the marks in the picture's corners are drawn. Read at open, and
 /// told again by the list window when 環境設定 changes it. See `paintMarks`.
 let marksOn = prefs.get("pictureMarks") !== false;
@@ -126,6 +132,18 @@ let cmSummary = "";
 /// Null where the blocks arrived without it, which is a project file written
 /// by a version that did not carry it. The sentence is then all there is.
 let cmFinding = null;
+/// What this recording has already been detected with, one entry a
+/// detection: for the commercials whether the short inserts were looked for,
+/// and for the two flat passes the question `prefs.flatAsked` puts. Null
+/// where no detection is known. Compared with 環境設定 as it stands whenever a
+/// line that asks for one is drawn, so a detection made under settings since
+/// changed is simply not the same question, and asking again is offered.
+///
+/// From the list (`editor-open` says what the row holds), from a detection
+/// run in here, from the cache on the way in, and from the row's own edit.
+let detectedWith = { cm: null, blank: null, quiet: null };
+/// A commercial detection running from here. See `paintDetectCm`.
+let cmBusy = false;
 let scenes = [];
 let warmed = false;
 /// Whether there are held pictures to read -- which happens well before
@@ -347,6 +365,7 @@ const snapshot = () => ({
   activeKey,
   selA,
   selB,
+  selGone,
   playhead,
 });
 
@@ -543,6 +562,7 @@ function afterCutsChanged(back = null) {
   playhead = outToSrc(clamp(back ? srcToOutSeam(back.playhead) : before, 0, outDur));
   selA = clamp(back ? back.selA : selA, 0, outDur);
   selB = clamp(back ? back.selB : selB, selA, outDur);
+  if (back) selGone = !!back.selGone;
   stripCache = null;
   renderKeyframes();
   updateReadouts();
@@ -1251,6 +1271,7 @@ function toFlatEdge(dir, kinds, from = playhead) {
 async function loadFlatCached(marks) {
   if (!src) return;
   const ask = flatAsk();
+  const questions = { blank: prefs.flatAsked("blank"), quiet: prefs.flatAsked("quiet") };
   const gen = openGen;
   let got;
   try {
@@ -1287,6 +1308,12 @@ async function loadFlatCached(marks) {
   const have = new Set(flatRuns.map((r) => r.kind));
   const blank = have.has("black") || have.has("white") ? null : got && got.blank;
   const quiet = have.has("quiet") ? null : got && got.quiet;
+  // An answer in the cache is a detection already made under these settings
+  // -- where it is the one put up. Stretches the row brought back answer the
+  // question they were made under, and greying the line over them left the
+  // cache's answer to the question in force out of reach of this window.
+  if (blank) detectedWith.blank = questions.blank;
+  if (quiet) detectedWith.quiet = questions.quiet;
   if (blank) applyFlatRuns(["black", "white"], blank, put && flatMarks("blank"));
   if (quiet) applyFlatRuns(["quiet"], quiet, put && flatMarks("quiet"));
   // Everything the band now holds, whichever of the two it came from: the
@@ -1396,10 +1423,12 @@ function draw() {
 
   const x1 = timeToX(selA, w);
   const x2 = timeToX(selB, w);
-  ctx.fillStyle = "rgba(20,184,212,.42)";
-  ctx.fillRect(x1, TOP + 1, Math.max(2, x2 - x1), HGT - 2);
-  ctx.fillStyle = "#14b8d4";
-  ctx.fillRect(x1, TOP + 1, Math.max(2, x2 - x1), 3);
+  if (!selGone) {
+    ctx.fillStyle = "rgba(20,184,212,.42)";
+    ctx.fillRect(x1, TOP + 1, Math.max(2, x2 - x1), HGT - 2);
+    ctx.fillStyle = "#14b8d4";
+    ctx.fillRect(x1, TOP + 1, Math.max(2, x2 - x1), 3);
+  }
 
   // seams: where a cut closed up. The material is gone, so all that is left
   // to show is the join.
@@ -1423,8 +1452,10 @@ function draw() {
     ctx.fill();
     ctx.fillRect(Math.round(x) - (left ? 0 : 2), TOP + HGT + 1, 2, 10);
   };
-  tab(x1, true);
-  tab(x2, false);
+  if (!selGone) {
+    tab(x1, true);
+    tab(x2, false);
+  }
 
   const px = timeToX(playOut(), w);
   ctx.beginPath();
@@ -1976,7 +2007,9 @@ function updateReadouts() {
     ? tr("editor.counter", { at: frameNo(o), all: outFrames(), t: fmt(o) })
     : fmt(o);
   // OUT is part of the selection, so its own picture counts towards the length
-  const sel = counted
+  const sel = selGone
+    ? tr("editor.selectionNone")
+    : counted
     ? tr("editor.selection", {
         a: frameNo(selA),
         // At the end OUT is snapped to the length, which is where the last
@@ -2036,7 +2069,7 @@ function paintMarks() {
     s.textContent = text;
     list.push(s);
   };
-  if (onPicture(o, selA)) put(left, "sel", "[");
+  if (!selGone && onPicture(o, selA)) put(left, "sel", "[");
   if (liveKeyframes().some((k) => Math.abs(srcToOut(k) - o) < half)) put(left, "key", "⚑");
   // The end of a stretch goes on the right with OUT, the way its brace
   // faces: `}黒 ]` mirrors `[ 黒{`. A stretch one picture long begins here
@@ -2049,7 +2082,7 @@ function paintMarks() {
   // instant: on a variable-rate recording whose last picture is shorter than
   // the rate says, the bracket was never drawn on it.
   const outPic = src.variable && selB >= outDur - 1e-9 ? lastStop() : selLast();
-  if (onPicture(o, outPic)) put(right, "sel", "]");
+  if (!selGone && onPicture(o, outPic)) put(right, "sel", "]");
   el("marks-l").replaceChildren(...left);
   el("marks-r").replaceChildren(...right);
   layer.hidden = !left.length && !right.length;
@@ -3422,7 +3455,7 @@ function renderStrip(shots, unit, win) {
       return;
     }
     const classes = [];
-    if (s.at >= selA && s.at < selB) classes.push("inside");
+    if (!selGone && s.at >= selA && s.at < selB) classes.push("inside");
     // Worth flagging only in frame mode, or on a reel whose cells are not
     // all access points: every cell of a GOP-divided strip is one, so marking
     // them all says nothing.
@@ -4619,9 +4652,12 @@ function setIn(o, mark = true) {
   // Both ends on one frame is a selection of that frame, not a crossing:
   // counted as one, I then O on the same frame selected from the start, and
   // the next Del took everything up to it.
-  const b = selB < a ? outDur : selB;
-  if (a === selA && b === selB) return;
+  // With nothing selected -- the last ✂ took it -- the other end is the
+  // edge of the timeline, not the join the old one collapsed onto.
+  const b = selGone || selB < a ? outDur : selB;
+  if (a === selA && b === selB && !selGone) return;
   if (mark) remember();
+  selGone = false;
   selA = a;
   selB = b;
   updateReadouts();
@@ -4635,9 +4671,10 @@ const selEnd = () => (selB >= outDur - 1e-9 ? outDur : Math.min(selB + frame(), 
 
 function setOut(o, mark = true) {
   const b = atLastPicture(o) ? outDur : clamp(o, 0, outDur);
-  const a = b < selA ? 0 : selA;
-  if (a === selA && b === selB) return;
+  const a = selGone || b < selA ? 0 : selA;
+  if (a === selA && b === selB && !selGone) return;
   if (mark) remember();
+  selGone = false;
   selA = a;
   selB = b;
   updateReadouts();
@@ -5093,9 +5130,9 @@ function showMore(on) {
     // back when it is done. Asked of `flatBusy` rather than of the button,
     // because a line greyed while the window was still opening would have
     // stayed that way for the rest of the session.
-    for (const id of ["detect-blank", "detect-silence"]) {
-      el(id).disabled = !src || flatBusy.has(id);
-    }
+    // And where this recording has been detected already under the
+    // settings as they stand; see `alreadyDetected`.
+    paintDetectFlat();
   }
   moreMenu().hidden = !on;
   el("more").setAttribute("aria-expanded", String(!!on));
@@ -5544,7 +5581,7 @@ function paintSourceInfo() {
 /// Counts opens, so that one overtaken by the next can tell. See `openPath`.
 let openGen = 0;
 
-async function openPath(picked, saved, side, name, chapters, dropPids) {
+async function openPath(picked, saved, side, name, chapters, dropPids, detected) {
   jlog(`openPath ${picked}`);
   if (!picked) return;
   // A second row can be sent while this one is still coming up. Everything
@@ -5642,6 +5679,13 @@ async function openPath(picked, saved, side, name, chapters, dropPids) {
     flatRuns = saved && Array.isArray(saved.flatRuns) ? saved.flatRuns : [];
     cmSummary = saved ? saved.cmNote || "" : "";
     cmFinding = saved ? saved.cmFinding || null : null;
+    detectedWith = { cm: null, blank: null, quiet: null };
+    takeDetected(saved && saved.detectedWith);
+    // And what the list knows, now rather than once the walk is over: until
+    // then the button was still painted for the row being left, and the
+    // keys asked this row's question without the list's half of the answer.
+    takeListDetected(detected);
+    paintDetectCm();
     // A row that has been in here before brings back what it opened with the
     // first time: the file beside the recording is read on a first visit
     // only, and a detection can arrive at any visit after it.
@@ -5695,6 +5739,7 @@ async function openPath(picked, saved, side, name, chapters, dropPids) {
     // Opened whole: nothing is cut yet, so the selection is the recording.
     selA = saved ? Math.min(saved.selA, outDur) : 0;
     selB = saved ? Math.min(saved.selB, outDur) : outDur;
+    selGone = !!(saved && saved.selGone);
     el("status").textContent = "";
     // What the row arrived with, said now as well as once the open is over.
     // The timeline is reported to the list while the walk is still reading
@@ -5723,6 +5768,7 @@ async function openPath(picked, saved, side, name, chapters, dropPids) {
     if (marks) chaptersDue = false;
     // Everything the row being left had is replaced by now.
     swapping = false;
+    paintDetectCm();
     await showFrame(saved ? saved.playhead : 0);
     if (overtaken()) return;
     schedulePlan();
@@ -5843,7 +5889,9 @@ track.addEventListener("mousedown", (ev) => {
   if (playing) stopPlay();
   const w = track.clientWidth;
   const x = ev.offsetX;
-  const near = (t) => Math.abs(timeToX(t, w) - x) < 8;
+  // No tabs are drawn for a selection a cut took away, so none can be taken
+  // hold of: a press on the join is a seek like anywhere else.
+  const near = (t) => !selGone && Math.abs(timeToX(t, w) - x) < 8;
   dragging = near(selA) ? "in" : near(selB) ? "out" : "seek";
   // Where the selection stood before the hand closed on the tab, so that the
   // whole drag is one step in the history rather than one per pointer event.
@@ -5971,7 +6019,8 @@ el("strip-step").addEventListener("change", (ev) => {
 });
 
 el("snap").addEventListener("click", () => {
-  if (!src || outDur <= 0) return;
+  // Nothing selected is nothing to put on a point.
+  if (!src || outDur <= 0 || selGone) return;
   // Access points are places in the recording, so the round trip through
   // source time is the whole job.
   //
@@ -6021,7 +6070,10 @@ el("snap").addEventListener("click", () => {
 /// on it. Read as an end to cut up to, it would take the very frame the mark
 /// is sitting on. The start of the last picture is what the mark meant.
 function cutSelection(inner) {
-  if (!src || selB < selA) return;
+  // A second Del straight after the first. The selection went with the
+  // material; what IN and OUT were collapsed onto is the join, and taking
+  // that would take the frames after it, which nobody chose.
+  if (!src || selB < selA || selGone) return;
   const a = inner ? selA + frame() : atFirstPicture(selA) ? 0 : selA;
   const b = inner
     ? Math.min(selB, Math.max(0, Math.min(outDur - frame(), lastOut())))
@@ -6034,19 +6086,23 @@ function cutSelection(inner) {
   applyCuts(cuts.concat(outRangeToSrc(a, b)));
   // The material that was selected is gone and the timeline has closed over
   // it. Collapse the selection onto the join.
+  // Not marked on the picture or the timeline any more: left standing on
+  // the join, `[` and `]` read as a new selection nobody had made.
   const at = clamp(inner ? a : selA, 0, outDur);
   selA = at;
   selB = clamp(at + frame(), 0, outDur);
+  selGone = true;
   seekOut(at);
 }
 
 el("cut-range").addEventListener("click", () => cutSelection(false));
 el("cut-outside").addEventListener("click", () => {
-  if (!src || selB < selA) return;
+  if (!src || selB < selA || selGone) return;
   const keep = outRangeToSrc(selA, selB);
   applyCuts(cuts.concat(outRangeToSrc(0, selA)).concat(outRangeToSrc(selEnd(), outDur)));
   selA = 0;
   selB = outDur;
+  selGone = false;
   seekOut(0);
   jlog(`cut outside, kept ${JSON.stringify(keep)}`);
 });
@@ -6071,6 +6127,7 @@ el("clear-all").addEventListener("click", () => {
   rebuildTimeline();
   selA = 0;
   selB = outDur;
+  selGone = false;
   renderKeyframes();
   updateReadouts();
   draw();
@@ -6204,11 +6261,13 @@ window.addEventListener("keydown", (ev) => {
   // the hand happens to be.
   if ((ev.ctrlKey || ev.metaKey) && (ev.key === "b" || ev.key === "B")) {
     ev.preventDefault();
+    paintDetectFlat();
     el("detect-blank").click();
     return;
   }
   if ((ev.ctrlKey || ev.metaKey) && (ev.key === "q" || ev.key === "Q")) {
     ev.preventDefault();
+    paintDetectFlat();
     el("detect-silence").click();
     return;
   }
@@ -6610,8 +6669,12 @@ el("tracks-modal").addEventListener("mousedown", (ev) => {
 });
 
 el("detect-cm").addEventListener("click", async () => {
-  if (!src) return;
+  // Nor while another row is coming in: `src` is still the row being left,
+  // and its answer would land on the new one.
+  if (!src || swapping || cmBusy || alreadyDetected("cm")) return;
+  cmBusy = true;
   el("detect-cm").disabled = true;
+  const inserts = prefs.get("cmInserts") === true;
   showCmNote(tr("editor.detecting"));
   // The recording this was asked of. The window can be handed another row
   // while the pass runs, and its answer is not that row's.
@@ -6623,9 +6686,14 @@ el("detect-cm").addEventListener("click", async () => {
       // subscription channel drops into a programme. Asked here rather than
       // stored with the detection: it is a question about this recording,
       // and the list's own lane never asks it.
-      inserts: prefs.get("cmInserts") === true,
+      inserts,
     });
     if (editId !== asked) return;
+    // What the timeline now holds is this pass's answer, whatever was known
+    // before: a read a share cut short is shown and is nobody's answer, so
+    // it leaves the button live rather than greyed for an earlier finding
+    // it has just replaced.
+    detectedWith.cm = res.partial ? null : inserts;
     cmSummary = cmNote(res);
     cmFinding = { logo_found: !!res.logo_found, resets: res.resets || 0 };
     showCmNote(cmSummary);
@@ -6643,10 +6711,71 @@ el("detect-cm").addEventListener("click", async () => {
   } catch (e) {
     if (editId === asked) showCmNote(tr("cm.failed", { e }));
   } finally {
-    el("detect-cm").disabled = false;
+    cmBusy = false;
+    paintDetectCm();
     el("detect-cm").textContent = tr("editor.detectCm");
   }
 });
+
+/// Take what another place knows this recording was detected with: the
+/// list's row, or the edit it handed back. Only what it knows -- a null
+/// there is "not known", not "not detected", and does not wipe out an
+/// answer this window has.
+function takeDetected(known) {
+  if (!known || typeof known !== "object") return;
+  if (typeof known.cm === "boolean") detectedWith.cm = known.cm;
+  for (const which of ["blank", "quiet"]) {
+    if (typeof known[which] === "string") detectedWith[which] = known[which];
+  }
+}
+
+/// The same for what the list says, which is about the row and not about
+/// the timeline: a flat pass the list has answered under 環境設定 as they
+/// stand is not this window's answer where the timeline holds stretches the
+/// row brought back from another question -- the lane's answer never reaches
+/// the row's edit, so greyed there the line left it unreachable.
+function takeListDetected(known) {
+  if (!known || typeof known !== "object") return;
+  const keep = { ...known };
+  for (const which of ["blank", "quiet"]) {
+    const kinds = flatKinds(which);
+    const own = flatRuns.some((r) => kinds.includes(r.kind));
+    if (own && detectedWith[which] !== known[which]) keep[which] = null;
+  }
+  takeDetected(keep);
+}
+
+/// Whether a detection of this kind would be asking what has already been
+/// answered for this recording. `which` is "cm", "blank" or "quiet".
+///
+/// Greyed rather than run again: a pass is minutes of reading the recording
+/// and comes back with the answer that is already on the timeline. Changing
+/// the settings it is asked under is how to ask again.
+function alreadyDetected(which) {
+  const now = which === "cm" ? prefs.get("cmInserts") === true : prefs.flatAsked(which);
+  return detectedWith[which] !== null && detectedWith[which] === now;
+}
+
+/// The two flat lines in the ≡ menu, greyed as `paintDetectCm` greys the
+/// button. Drawn as the menu opens and again at the key that presses one:
+/// the greying outlives the menu, and a line greyed for the row before, or
+/// for 環境設定 as it stood then, swallowed Ctrl+B and Ctrl+Q -- `click` on
+/// a disabled button does nothing.
+function paintDetectFlat() {
+  for (const [id, which] of [
+    ["detect-blank", "blank"],
+    ["detect-silence", "quiet"],
+  ]) {
+    el(id).disabled = !src || flatBusy.has(id) || alreadyDetected(which);
+  }
+}
+
+/// The button, greyed while its pass runs, with nothing open, and where the
+/// answer is already in. Called wherever any of the three changes, and on
+/// every change in 環境設定: the inserts setting is part of the question.
+function paintDetectCm() {
+  el("detect-cm").disabled = !src || swapping || cmBusy || alreadyDetected("cm");
+}
 
 /// What a finished pass has to say for itself, wherever it was started.
 ///
@@ -6667,13 +6796,16 @@ function flatSaid(which, n) {
 
 /// One of the two detections, on the menu line that asks for it.
 ///
-/// The pass is read again rather than taken from the cache: the line is how
-/// somebody says "look again", and whatever was saved was already put up when
-/// the window opened. Marks it puts down are the detection's answer and not
+/// Only where this recording has no answer yet to the question 環境設定 puts
+/// now (see `alreadyDetected`): whatever was saved was already put up when
+/// the window opened, and the same question read again is the same answer a
+/// minute later. Marks it puts down are the detection's answer and not
 /// something anybody did in here, so they are settled rather than left
 /// standing as an unsaved change -- as a commercial detection's are.
 async function runFlat(id, label, which, kinds, call) {
-  if (!src || flatBusy.has(id)) return;
+  // The keys reach here without the menu, whose greying is drawn only as it
+  // opens, so the question is asked again.
+  if (!src || swapping || flatBusy.has(id) || alreadyDetected(which)) return;
   const btn = el(id);
   // The line is in the ≡ menu, and a pass that runs for a minute must not
   // hold it open over the timeline it is about.
@@ -6683,9 +6815,16 @@ async function runFlat(id, label, which, kinds, call) {
   el("status").textContent = tr("flat.detecting");
   // As with the commercial detection: an answer for the row that was open.
   const asked = editId;
+  // The question as it was put, which is what the answer is to: 環境設定 can
+  // move while the pass runs.
+  const question = prefs.flatAsked(which);
   try {
-    const runs = await call();
+    const found = await call();
+    const runs = found.runs;
     if (editId !== asked) return;
+    // Not for a read a share cut short: that is shown, and asking again is
+    // how to get the rest of it -- nor the answer it replaces on the timeline.
+    detectedWith[which] = found.partial ? null : question;
     const was = touched();
     applyFlatRuns(kinds, runs, flatMarks(which));
     settleUnlessTouched(was);
@@ -6870,6 +7009,9 @@ function captureEdit() {
     // the recording on a later visit can still say it. Not part of the edit
     // in any other sense; see `cmFinding`.
     cmFinding,
+    // And what each detection was asked, so the list can grey what this
+    // window has already answered, and a later visit here can too.
+    detectedWith: { ...detectedWith },
     // The two flat detections' stretches, which the project file carries for
     // the reason `flatRuns` gives. Not work in the sense the cuts and the
     // marks are -- nobody chose them, and leaving without them is not losing
@@ -6896,6 +7038,7 @@ function captureEdit() {
     playhead,
     selA,
     selB,
+    selGone,
   };
 }
 
@@ -7023,7 +7166,7 @@ if (listen) {
       editId = id;
       editedWhileArriving = false;
       try {
-        await openPath(path, saved, side, name, chapters, dropPids);
+        await openPath(path, saved, side, name, chapters, dropPids, ev.payload.detected);
       } catch (e) {
         // `openPath` has put the reason on the status line already. The row
         // is let go of here so that being sent it again is another attempt
@@ -7040,6 +7183,12 @@ if (listen) {
       }
       if (editId !== id) return;
     }
+    // What the row has already been detected with, as the list knows it.
+    // Added to what this window knows rather than put in its place: the list
+    // sends this again when a detection of its own lands, and says nothing
+    // about the ones run in here.
+    takeListDetected(ev.payload.detected);
+    paintDetectCm();
     // Blocks the list found on its own, which only this window can turn into
     // marks: it is the one that knows where the material begins. Applied
     // whether or not the recording was already up -- a detection run from the
@@ -7079,6 +7228,12 @@ if (listen) {
           ? { logo_found: !!cm.logo_found, resets: cm.resets }
           : null;
       cmSummary = cm.note || "";
+      // The row's finding is what the timeline holds now, so what it was
+      // asked is what the row says -- nothing where the row cannot say (a
+      // read a share cut short), rather than what an answer it replaced was.
+      const told = ev.payload.detected;
+      detectedWith.cm = told && typeof told.cm === "boolean" ? told.cm : null;
+      paintDetectCm();
       // Only the file is worth saying out loud. Marks held back by 環境設定
       // are held back by an answer somebody has already given, and the band
       // arriving without them is that answer being kept.
@@ -7122,6 +7277,11 @@ if (listen) {
     const said = ev.payload || {};
     if (said.id !== editId || !Array.isArray(said.runs)) return;
     const which = said.which === "quiet" ? "quiet" : "blank";
+    // The lane hands over only an answer to the question in force; one to
+    // an older question goes back in its queue instead.
+    // A partial one replaces the stretches all the same, so what they were
+    // detected with is no longer known.
+    detectedWith[which] = said.partial ? null : prefs.flatAsked(which);
     const was = touched();
     applyFlatRuns(flatKinds(which), said.runs, flatMarks(which));
     settleUnlessTouched(was);
@@ -7139,6 +7299,8 @@ if (listen) {
   // one it has.
   hear("prefs-changed", (ev) => {
     const said = ev.payload || {};
+    // Whatever changed may have been part of what the button asks.
+    paintDetectCm();
     if (typeof said.counter === "boolean") showCounter(said.counter, false);
     if (typeof said.meter === "boolean") showMeter(said.meter);
     if (typeof said.pictureMarks === "boolean") showMarks(said.pictureMarks, false);
@@ -7203,6 +7365,7 @@ applyStatic();
 // and are therefore written from here rather than by `applyStatic`.
 el("detect-cm").textContent = tr("editor.detectCm");
 paintDetectLabels();
+paintDetectCm();
 el("play").textContent = tr("t.play");
 renderKeyframes();
 draw();

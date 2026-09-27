@@ -500,6 +500,21 @@ struct CmResult {
     /// from them and neither the audio nor the logo was read.
     resets: usize,
     blocks: Vec<BlockInfo>,
+    /// Whether the pass was asked to look for the short inserts as well,
+    /// which is the one thing about a detection that can be asked
+    /// differently. Kept so both windows can tell a detection already made
+    /// from one that would answer another question, and grey the first. A
+    /// finding cached before this was recorded reads as not asked, which is
+    /// what the list's own lane always asks. See
+    /// [`smartcut_core::DetectOptions::find_inserts`].
+    #[serde(default)]
+    inserts: bool,
+    /// Whether the read stopped short -- a share that went away part way.
+    /// What was read is shown, and not kept (see [`remember_cm`]'s callers);
+    /// said so that neither window takes it as the recording's answer and
+    /// greys the button that would ask again. Never true in the cache.
+    #[serde(default)]
+    partial: bool,
 }
 
 #[derive(Serialize)]
@@ -1241,10 +1256,25 @@ fn info_of(src: &Source) -> SourceInfo {
     }
 }
 
+/// The [`Generation`] of an open whose walk gave up part way, or 0.
+///
+/// Its access points end where the reading did. They are what the editor
+/// has, and they are not the recording's: written into the seek index, which
+/// is keyed by the file's size and time and not by whether it was read to
+/// the end, every later open -- and the list -- took the recording to end
+/// there until the file changed. [`prepare`] asks this before it writes.
+static SHORT_OPEN: AtomicU64 = AtomicU64::new(0);
+
 /// Reading a recording's index is a pass over the file, so it runs on a
 /// worker thread; see [`off_thread`].
 fn open_now(path: &str, app: &tauri::AppHandle, ticket: u64) -> Result<SourceInfo, String> {
+    // Asked for nothing but the mark a read leaves when it gives up: a walk
+    // cut short by a share that went away is shown, and must not be written
+    // down as the recording's index. See [`SHORT_OPEN`].
+    let reads = smartcut_core::input::stop_reads_when(|| false);
     let (src, held) = scan_cached(app, path)?;
+    let short = smartcut_core::input::reads_failed();
+    drop(reads);
     let stale = || OPEN_TICKET.load(Ordering::SeqCst) != ticket;
     if stale() {
         return Err("another recording was opened in the meantime".into());
@@ -1269,7 +1299,8 @@ fn open_now(path: &str, app: &tauri::AppHandle, ticket: u64) -> Result<SourceInf
         }
         // Anything still building for the file that was open belongs to
         // nothing now; the count going up is what tells it so.
-        app.state::<Generation>().0.fetch_add(1, Ordering::SeqCst);
+        let now = app.state::<Generation>().0.fetch_add(1, Ordering::SeqCst) + 1;
+        SHORT_OPEN.store(if short { now } else { 0 }, Ordering::SeqCst);
         *locked(&app.state::<Thumbs>().0) = None;
         // Named by what was asked for rather than by what came back: this is
         // compared against a path the list window holds, and that is the
@@ -1705,6 +1736,9 @@ async fn prepare(app: tauri::AppHandle) -> Result<PrepareInfo, String> {
     // between them are the longest thing that happens on opening a file, and
     // the one nobody is watching a frame at a time. See [`off_thread_behind`].
     off_thread_behind(move || {
+        // Stops nothing: it is here for the mark a read leaves when it gives
+        // up, which [`remember_index`] asks. The pass has its own stop.
+        let mut reads = smartcut_core::input::stop_reads_when(|| false);
         let thumb_opts = smartcut_core::ThumbOptions::default();
         let mut note = String::new();
         if proxy_wanted() {
@@ -1729,6 +1763,13 @@ async fn prepare(app: tauri::AppHandle) -> Result<PrepareInfo, String> {
                     }
                     eprintln!("proxy: {why}");
                     note = why;
+                    // The pass below reads the recording again, and whether
+                    // that read failed is its own question: a proxy build a
+                    // share cut short left the mark up, and the full read
+                    // after it went uncached. Dropped before it is made
+                    // again, since dropping it is what clears the mark.
+                    drop(reads);
+                    reads = smartcut_core::input::stop_reads_when(|| false);
                     // What the failed build handed out while it ran is the
                     // head of a track that will not be finished. Left, the
                     // pass below put its own pictures after those, the same
@@ -1742,7 +1783,10 @@ async fn prepare(app: tauri::AppHandle) -> Result<PrepareInfo, String> {
                 }
             }
         }
-        without_proxy(&app, &src, &thumb_opts, generation, note)
+        let answer = without_proxy(&app, &src, &thumb_opts, generation, note);
+        // Held to here: the mark is what `remember_index` asks, inside.
+        drop(reads);
+        answer
     })
     .await
 }
@@ -1768,7 +1812,20 @@ fn without_proxy(
     // The index read when the file was opened carries the track it was built
     // with. Taken rather than borrowed: the pictures are tens of megabytes
     // and there is no reason to hold them twice.
-    let kept = locked(&app.state::<Held>().0).as_mut().and_then(|ix| ix.track.take());
+    //
+    // Only while this is still the recording that is open, asked with the
+    // lock held: `open_now` moves the count on before it puts the next
+    // recording's index in here, so a pass for the last recording that came
+    // late took the new one's track, threw it away as cancelled, and the new
+    // recording's own pass found nothing and decoded every key picture again.
+    let kept = {
+        let state = app.state::<Held>();
+        let mut held = locked(&state.0);
+        if current() != generation {
+            return Err("cancelled".to_string());
+        }
+        held.as_mut().and_then(|ix| ix.track.take())
+    };
     if let Some(track) = kept {
         let info = track_info(src, &track, began.elapsed().as_secs_f64());
         let index = index_info(app, src, true);
@@ -1808,6 +1865,12 @@ fn without_proxy(
     // this one's written down as its index. See `hold`.
     let thumbs_state = app.state::<Thumbs>();
     let mut thumbs = locked(&thumbs_state.0);
+    // Whether this open's walk gave up part way, asked before the count:
+    // `open_now` moves the count on and only then the mark, so a mark read
+    // with the count found still this pass's is this pass's own. Asked once
+    // the lock was let go, an open landing in between had cleared it and a
+    // short index was written after all.
+    let short = SHORT_OPEN.load(Ordering::SeqCst) == generation;
     if current() != generation {
         return Err("cancelled".to_string());
     }
@@ -1820,7 +1883,7 @@ fn without_proxy(
     let taken = SeekIndex::of(src, Some(&track));
     *thumbs = Some(track);
     drop(thumbs);
-    let index = remember_index(app, src, taken);
+    let index = (!short).then(|| remember_index(app, src, taken)).flatten();
     Ok(PrepareInfo { proxy: None, index, track: info, note })
 }
 
@@ -1840,7 +1903,19 @@ fn remember(
 /// pictures' lock and is written after it. Writing tens of megabytes held
 /// that lock, and the pointer over the seek bar waits on it -- the window
 /// stopped until the file was down.
+///
+/// Not where a read on this thread gave up at errors the recording kept
+/// giving -- a share that went away part way. What was read is shown, as the
+/// detections show theirs, but it is not the recording's index: kept under
+/// the file's size and time, it answered every later open with a recording
+/// that ended where the share did. See
+/// [`smartcut_core::input::reads_failed`], which only a thread under
+/// [`smartcut_core::input::stop_reads_when`] can answer.
 fn remember_index(app: &tauri::AppHandle, src: &Source, index: SeekIndex) -> Option<IndexInfo> {
+    if smartcut_core::input::reads_failed() {
+        eprintln!("index: {} was not read to the end; not kept", src.path);
+        return None;
+    }
     let dir = index_dir(app).ok()?;
     let file = seek_index::cache_path(&dir, &src.path).ok()?;
     if let Err(e) = index.save(&file) {
@@ -3253,6 +3328,8 @@ fn make_proxy(
     // index's, so these are cleared after this, never before it.
     let thumbs_state = app.state::<Thumbs>();
     let mut thumbs = locked(&thumbs_state.0);
+    // Before the count; see `without_proxy`.
+    let short = SHORT_OPEN.load(Ordering::SeqCst) == generation;
     if app.state::<Generation>().0.load(Ordering::SeqCst) != generation {
         return Ok(None);
     }
@@ -3264,7 +3341,7 @@ fn make_proxy(
     *thumbs = Some(track);
     *locked(&app.state::<Proxy>().0) = Some(Proxied { src: psrc, marks });
     drop(thumbs);
-    let index = remember_index(app, src, taken);
+    let index = (!short).then(|| remember_index(app, src, taken)).flatten();
     Ok(Some(PrepareInfo { proxy: Some(info), index, track: tinfo, note: String::new() }))
 }
 
@@ -3978,6 +4055,8 @@ fn detect_now(
     }
 
     Ok(CmResult {
+        inserts,
+        partial: false,
         logo_found: logo.is_some(),
         resets: resets.as_ref().map_or(0, |r| r.len()),
         blocks: blocks
@@ -4238,7 +4317,9 @@ async fn detect_cm(path: String, inserts: bool, app: tauri::AppHandle) -> Result
         // answer, not the window's, and the list is where it will be wanted
         // next.
         // Nor one read short by a share that went away: shown, not kept.
-        if !smartcut_core::input::reads_failed() {
+        let mut res = res;
+        res.partial = smartcut_core::input::reads_failed();
+        if !res.partial {
             remember_cm(&app, &path, &res);
         }
         Ok(res)
@@ -4313,7 +4394,9 @@ async fn detect_cm_at(path: String, app: tauri::AppHandle) -> Result<CmResult, S
             return Err("cancelled".into());
         }
         // Nor one read short by a share that went away: shown, not kept.
-        if !smartcut_core::input::reads_failed() {
+        let mut res = res;
+        res.partial = smartcut_core::input::reads_failed();
+        if !res.partial {
             remember_cm(&app, &path, &res);
         }
         Ok(res)
@@ -4349,6 +4432,25 @@ struct FlatRun {
     pictures: usize,
 }
 
+/// What one flat pass found, and whether it read the whole recording.
+///
+/// `partial` is the flat half of [`CmResult::partial`]: a read a share cut
+/// short is shown and not kept, and neither window may take it as the answer
+/// that greys the pass.
+#[derive(Serialize)]
+struct FlatPass {
+    runs: Vec<FlatRun>,
+    partial: bool,
+}
+
+impl FlatPass {
+    /// A pass that has just run, on the thread that ran it: whether its read
+    /// failed is that thread's to say.
+    fn read(runs: Vec<FlatRun>) -> Self {
+        FlatPass { runs, partial: smartcut_core::input::reads_failed() }
+    }
+}
+
 /// Where the picture goes flat, against the recording the editor has open.
 ///
 /// Read afresh every time it is asked for, unlike [`flat_cached`]: the button
@@ -4375,7 +4477,7 @@ async fn detect_blank(
     white: bool,
     levels: Levels,
     app: tauri::AppHandle,
-) -> Result<Vec<FlatRun>, String> {
+) -> Result<FlatPass, String> {
     // Taken as the command arrives, as [`detect_cm`] does and for its reason.
     let mine = app.state::<BatchStop>().editor.load(Ordering::SeqCst);
     off_thread_behind(move || {
@@ -4397,6 +4499,7 @@ async fn detect_blank(
             asked_for_threads(),
             say,
         )
+        .map(FlatPass::read)
     })
     .await
 }
@@ -4418,7 +4521,7 @@ async fn detect_silence(
     threshold_db: f64,
     min_seconds: f64,
     app: tauri::AppHandle,
-) -> Result<Vec<FlatRun>, String> {
+) -> Result<FlatPass, String> {
     // Taken as the command arrives, as [`detect_cm`] does and for its reason.
     let mine = app.state::<BatchStop>().editor.load(Ordering::SeqCst);
     off_thread_behind(move || {
@@ -4428,7 +4531,7 @@ async fn detect_silence(
         let say = move |done: f64| {
             let _ = reporter.emit("flat-progress", ("quiet", done));
         };
-        quiet_now(&app, &src, &path, min_seconds, threshold_db, say)
+        quiet_now(&app, &src, &path, min_seconds, threshold_db, say).map(FlatPass::read)
     })
     .await
 }
@@ -4838,7 +4941,7 @@ async fn detect_blank_at(
     white: bool,
     levels: Levels,
     app: tauri::AppHandle,
-) -> Result<Vec<FlatRun>, String> {
+) -> Result<FlatPass, String> {
     off_thread_behind(move || {
         let mine = app.state::<BatchStop>().blank.load(Ordering::SeqCst);
         let _reads = stop_reads_on(&app, |s| &s.blank, mine);
@@ -4855,12 +4958,10 @@ async fn detect_blank_at(
                 Some((black, white)),
                 Some(levels),
             ) {
-                return Ok(flat_keep(
-                    &saved.runs,
-                    min_seconds,
-                    min_pictures,
-                    Some((black, white)),
-                ));
+                return Ok(FlatPass {
+                    runs: flat_keep(&saved.runs, min_seconds, min_pictures, Some((black, white))),
+                    partial: false,
+                });
             }
         }
         let src = flat_source(&app, &path)?;
@@ -4884,7 +4985,7 @@ async fn detect_blank_at(
         if stopped() {
             return Err("cancelled".into());
         }
-        Ok(runs)
+        Ok(FlatPass::read(runs))
     })
     .await
 }
@@ -4905,7 +5006,7 @@ async fn detect_quiet_at(
     threshold_db: f64,
     min_seconds: f64,
     app: tauri::AppHandle,
-) -> Result<Vec<FlatRun>, String> {
+) -> Result<FlatPass, String> {
     off_thread_behind(move || {
         let mine = app.state::<BatchStop>().quiet.load(Ordering::SeqCst);
         let _reads = stop_reads_on(&app, |s| &s.quiet, mine);
@@ -4915,7 +5016,10 @@ async fn detect_quiet_at(
         }
         if let Some(saved) = saved_flat(&app, &path, true) {
             if flat_answers(&saved, min_seconds, 0, Some(threshold_db), None, None) {
-                return Ok(flat_keep(&saved.runs, min_seconds, 0, None));
+                return Ok(FlatPass {
+                    runs: flat_keep(&saved.runs, min_seconds, 0, None),
+                    partial: false,
+                });
             }
         }
         let src = flat_source(&app, &path)?;
@@ -4931,7 +5035,7 @@ async fn detect_quiet_at(
         if stopped() {
             return Err("cancelled".into());
         }
-        Ok(runs)
+        Ok(FlatPass::read(runs))
     })
     .await
 }
@@ -5941,9 +6045,17 @@ async fn bdav_image(
         // the very image a row of the list was read out of: a disc cut into a
         // folder of the same name had its source replaced by the new one.
         let image_at = image.clone();
+        // And the name it is written under first: `udfw::write` creates
+        // `<image>.part` and renames it into place, and a recording that is
+        // that file (or a link to it) is emptied by the create.
+        let mut part = image_at.clone().into_os_string();
+        part.push(".part");
+        let part = std::path::PathBuf::from(part);
         for spec in reading.unwrap_or_default() {
             let Ok(input) = smartcut_core::input::Input::parse(&spec) else { continue };
-            if smartcut_core::input::same_file(&input.file, &image_at) {
+            if smartcut_core::input::same_file(&input.file, &image_at)
+                || smartcut_core::input::same_file(&input.file, &part)
+            {
                 return Err(format!(
                     "{} is the image the list was read from; making the new one there would \
                      replace it. Choose another folder",
@@ -5988,6 +6100,24 @@ async fn bdav_image(
 async fn bdav_drop(dir: String) -> Result<String, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let at = local_path(&dir)?;
+        // Only a disc there is an image of, written since the disc last
+        // changed: the folder is the disc until then, and the one call that
+        // deletes a folder the page names is not left to the page's word
+        // that the image came first. Named as `bdav_image` names it.
+        let image = at.file_name().map(|name| {
+            let mut file = name.to_os_string();
+            file.push(".iso");
+            at.with_file_name(file)
+        });
+        let changed = |p: &std::path::Path| std::fs::metadata(p).and_then(|m| m.modified()).ok();
+        let imaged = match (image.as_deref().and_then(changed), changed(&at.join("BDAV").join("info.bdav"))) {
+            (Some(made), Some(disc)) => made >= disc,
+            (Some(_), None) => true,
+            _ => false,
+        };
+        if !imaged {
+            return Err(format!("{} is kept: there is no image of it beside it", at.display()));
+        }
         smartcut_core::bdav::remove_disc(&at).map_err(|e| e.to_string())?;
         Ok(at.to_string_lossy().into_owned())
     })

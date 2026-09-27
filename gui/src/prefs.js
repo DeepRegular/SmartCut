@@ -485,6 +485,23 @@ export function blankLevels() {
   };
 }
 
+/// What one of the two flat detections is being asked in 環境設定 now, as a
+/// string to compare with the one a detection was made under.
+///
+/// Read off the settings themselves rather than off either window's
+/// `flatAsk`: the two windows turn a length in frames into different things
+/// (the editor knows its recording's rate, the list does not), and what has
+/// to agree is only whether the question is the same one. `which` is
+/// "blank" or "quiet"; the sound is not a different question because the
+/// shades changed.
+export function flatAsked(which) {
+  return JSON.stringify(
+    which === "blank"
+      ? [get("blankRunUnit"), get("blankRun"), get("blankShades"), blankLevels()]
+      : [get("quietRunUnit"), get("quietRun"), get("quietLevel")]
+  );
+}
+
 /// Everything, for handing to whatever wants the lot.
 export function all() {
   const out = {};
