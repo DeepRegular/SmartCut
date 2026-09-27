@@ -1186,6 +1186,14 @@ fn scan_cached_reporting(
     // saved, which on a half-hour recording is the whole of the wait between
     // choosing a file and being able to move the pointer.
     let mut held = held_index(app, path);
+    // Weighed before a byte is read when the file is to be walked: see
+    // [`WEIGHED`]. Not for an index picked up from the cache, which was
+    // weighed when it was written.
+    if held.is_none() {
+        if let Some(w) = weigh(path) {
+            locked(&WEIGHED).insert(path.to_string(), w);
+        }
+    }
     let mut src = match &held {
         Some(ix) => smartcut_core::scan_reporting(path, ix, on),
         // Ask whoever already knows. A recording on a disc has an index
@@ -1254,6 +1262,19 @@ fn info_of(src: &Source) -> SourceInfo {
         head: None,
         start_time: src.start_time,
     }
+}
+
+/// A recording's size and modification time when a walk of it began, by the
+/// path it was opened as. [`remember_index`] refuses to keep an index of a
+/// file that has changed since.
+static WEIGHED: Mutex<std::collections::BTreeMap<String, (u64, u128)>> =
+    Mutex::new(std::collections::BTreeMap::new());
+
+fn weigh(path: &str) -> Option<(u64, u128)> {
+    let file = smartcut_core::input::Input::parse(path).ok()?.file;
+    let meta = std::fs::metadata(file).ok()?;
+    let at = meta.modified().ok()?.duration_since(std::time::UNIX_EPOCH).ok()?;
+    Some((meta.len(), at.as_nanos()))
 }
 
 /// The [`Generation`] of an open whose walk gave up part way, or 0.
@@ -1914,6 +1935,16 @@ fn remember(
 fn remember_index(app: &tauri::AppHandle, src: &Source, index: SeekIndex) -> Option<IndexInfo> {
     if smartcut_core::input::reads_failed() {
         eprintln!("index: {} was not read to the end; not kept", src.path);
+        return None;
+    }
+    // The cache is keyed by the size and time the file has now; the index
+    // is of the file as the walk found it. Different, and the recording was
+    // still being written -- a recorder's file opened over a share -- and an
+    // index of its first half was kept under the finished file's key, every
+    // later open taking the recording to end where the walk had.
+    let then = locked(&WEIGHED).remove(&src.path);
+    if then.is_some_and(|w| weigh(&src.path) != Some(w)) {
+        eprintln!("index: {} changed while it was read; not kept", src.path);
         return None;
     }
     let dir = index_dir(app).ok()?;
@@ -3107,6 +3138,10 @@ fn merged_clip_now(
         threads: background_threads(app),
         ..Default::default()
     };
+    // A walk as much as the one in `scan_cached_reporting`: see [`WEIGHED`].
+    if let Some(w) = weigh(path) {
+        locked(&WEIGHED).insert(path.to_string(), w);
+    }
     let (src, track) = smartcut_core::scan_with_pictures(path, &opts, Some(on), Some(stopped))
         // A pass that was asked to stop does not come back with what it had.
         // Said in the one word the list watches for, because a stop is not a
@@ -7411,7 +7446,20 @@ fn open_batch_tool(app: tauri::AppHandle) -> Result<bool, String> {
         let beat = format!("{} {}", child.id(), now_secs() + 60);
         let _ = std::fs::write(dir.join("batch.beat"), beat);
     }
+    reap(child);
     Ok(true)
+}
+
+/// Wait for a program this one started, on a thread of its own, so that it
+/// is gone from the process table once it ends.
+///
+/// A `Child` dropped is not waited for, and on Unix a child nobody waits for
+/// stays behind as a zombie for as long as this process runs: one per folder
+/// shown, one per batch tool or project window that has since been closed.
+fn reap(mut child: std::process::Child) {
+    std::thread::spawn(move || {
+        let _ = child.wait();
+    });
 }
 
 /// Put this window in the middle of the screen.
@@ -7452,7 +7500,7 @@ fn open_project_window(path: String, queued: bool) -> Result<(), String> {
     if queued {
         run.arg(QUEUED_FLAG);
     }
-    run.spawn().map(|_| ()).map_err(|e| e.to_string())
+    run.spawn().map(reap).map_err(|e| e.to_string())
 }
 
 /// How a window is told that the project on its command line is a queued job.
@@ -7510,7 +7558,7 @@ fn show_folder_now(path: &str) -> Result<(), String> {
     std::process::Command::new(opener)
         .arg(dir)
         .spawn()
-        .map(|_| ())
+        .map(reap)
         .map_err(|e| format!("{opener}: {e}"))
 }
 
@@ -7572,7 +7620,7 @@ fn after_batch(what: String) -> Result<(), String> {
     std::process::Command::new(program)
         .args(args)
         .spawn()
-        .map(|_| ())
+        .map(reap)
         .map_err(|e| format!("{program}: {e}"))
 }
 

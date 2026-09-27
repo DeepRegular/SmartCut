@@ -454,7 +454,14 @@ const HISTORY_DEPTH = 100;
 /// step per event is a history nobody can walk back. The drag hands in where
 /// the selection was when the hand closed on it. See the pointer handlers.
 function remember(state = snapshot()) {
-  if (settling) return;
+  // A settle spans the reads it waits on -- a mark file or the cache over a
+  // share, seconds of them -- and a Del pressed in that wait is somebody's
+  // edit, not the recording's own marks: said nothing for, it had no undo
+  // step and was counted as what the row arrived with, so Escape threw it
+  // away without asking. What a settle puts down itself runs from the answer
+  // to a read, never inside an input event.
+  const byHand = !!(window.event && window.event.isTrusted);
+  if (settling && !byHand) return;
   // An edit made while the row is still coming up -- a cut placed during the
   // walk, which is allowed -- is somebody's work, and the arrival that ends
   // after it must not count it as what the row arrived with.
@@ -464,7 +471,7 @@ function remember(state = snapshot()) {
   // marked as edited and asking before Escape for the rest of the session.
   // The edit follows this call in the same handler, so it is done by the
   // time a microtask runs.
-  if (opening !== null) {
+  if (opening !== null || settling) {
     const before = editSignature();
     queueMicrotask(() => {
       if (editSignature() !== before) editedWhileArriving = true;
@@ -1314,6 +1321,14 @@ async function loadFlatCached(marks) {
   // cache's answer to the question in force out of reach of this window.
   if (blank) detectedWith.blank = questions.blank;
   if (quiet) detectedWith.quiet = questions.quiet;
+  // And a half nothing here answers -- no stretches on the timeline, none in
+  // the cache -- is not one this window can show, whatever the list said:
+  // its answer lives in the cache, which 環境設定 can have emptied since, and
+  // greyed over an empty band the line and its key were out of reach.
+  for (const which of ["blank", "quiet"]) {
+    const own = flatKinds(which).some((k) => have.has(k));
+    if (!own && !(got && got[which])) detectedWith[which] = null;
+  }
   if (blank) applyFlatRuns(["black", "white"], blank, put && flatMarks("blank"));
   if (quiet) applyFlatRuns(["quiet"], quiet, put && flatMarks("quiet"));
   // Everything the band now holds, whichever of the two it came from: the
@@ -5769,6 +5784,7 @@ async function openPath(picked, saved, side, name, chapters, dropPids, detected)
     // Everything the row being left had is replaced by now.
     swapping = false;
     paintDetectCm();
+    paintDetectFlat();
     await showFrame(saved ? saved.playhead : 0);
     if (overtaken()) return;
     schedulePlan();
@@ -6734,13 +6750,19 @@ function takeDetected(known) {
 /// stand is not this window's answer where the timeline holds stretches the
 /// row brought back from another question -- the lane's answer never reaches
 /// the row's edit, so greyed there the line left it unreachable.
+///
+/// Nor, with no stretches on the timeline, once the row has arrived: the
+/// list's flat answers live in the cache, and the cache read on the way in
+/// (`loadFlatCached`) has settled by then whether this window can show one.
+/// Taken again from a later `editor-open`, a claim the cache no longer backs
+/// -- emptied in 環境設定 -- greyed the line over an empty band.
 function takeListDetected(known) {
   if (!known || typeof known !== "object") return;
   const keep = { ...known };
   for (const which of ["blank", "quiet"]) {
     const kinds = flatKinds(which);
     const own = flatRuns.some((r) => kinds.includes(r.kind));
-    if (own && detectedWith[which] !== known[which]) keep[which] = null;
+    if (own ? detectedWith[which] !== known[which] : opening === null) keep[which] = null;
   }
   takeDetected(keep);
 }
@@ -6766,7 +6788,7 @@ function paintDetectFlat() {
     ["detect-blank", "blank"],
     ["detect-silence", "quiet"],
   ]) {
-    el(id).disabled = !src || flatBusy.has(id) || alreadyDetected(which);
+    el(id).disabled = !src || swapping || flatBusy.has(id) || alreadyDetected(which);
   }
 }
 
@@ -6833,7 +6855,9 @@ async function runFlat(id, label, which, kinds, call) {
     if (editId === asked) el("status").textContent = tr("flat.failed", { e });
   } finally {
     flatBusy.delete(id);
-    btn.disabled = false;
+    // Greyed again where the pass has just answered the question in force:
+    // left live, a menu opened while it ran offered a line that did nothing.
+    paintDetectFlat();
     detectLabel(id).textContent = tr(typeof label === "function" ? label() : label);
   }
 }
@@ -7163,6 +7187,8 @@ if (listen) {
       }
       opening = id;
       swapping = true;
+      paintDetectCm();
+      paintDetectFlat();
       editId = id;
       editedWhileArriving = false;
       try {
@@ -7179,6 +7205,8 @@ if (listen) {
         if (opening === id) {
           opening = null;
           swapping = false;
+          paintDetectCm();
+          paintDetectFlat();
         }
       }
       if (editId !== id) return;

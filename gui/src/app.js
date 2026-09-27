@@ -2554,10 +2554,14 @@ function paintProps() {
     .join(", ");
   const n = copyNo(c);
   const tracks = keptAudio(c);
+  // The slot character out of everything the recording can name: a file
+  // called with it split the text at the name, and every control after it
+  // then stood on the line of the track before the one it sets.
+  const plain = (s) => String(s).replaceAll(SOUND_SLOT, "\uFFFD");
   fillProps(box, t("props.body", {
-    name: clipName(c),
+    name: plain(clipName(c)),
     copy: n ? t("props.copyOf", { n }) : "",
-    path: c.path,
+    path: plain(c.path),
     codec: i.codec,
     w: i.width,
     h: i.height,
@@ -2591,14 +2595,14 @@ function paintProps() {
     unusable:
       walked && i.unusable_points ? t("props.unusable", { n: i.unusable_points }) : "",
     scenes: c.scenes === null ? pending : c.scenes,
-    index: walked ? i.index_name : pending,
-    cm: c.cmPhase ? t("props.cm", { note: c.cmPhase }) : "",
+    index: walked ? plain(i.index_name) : pending,
+    cm: c.cmPhase ? t("props.cm", { note: plain(c.cmPhase) }) : "",
     // A line each, and only where there is something to say: a row that has
     // never been asked for either of them says nothing about them, as it
     // says nothing about commercials.
     flat:
-      (c.blankPhase ? t(blankKey("props.blank"), { note: c.blankPhase }) : "") +
-      (c.quietPhase ? t("props.quiet", { note: c.quietPhase }) : ""),
+      (c.blankPhase ? t(blankKey("props.blank"), { note: plain(c.blankPhase) }) : "") +
+      (c.quietPhase ? t("props.quiet", { note: plain(c.quietPhase) }) : ""),
   }));
 }
 
@@ -10886,6 +10890,11 @@ function forgetFlat(which) {
   for (const c of clips) {
     const owed = c[`${which}State`];
     if (owed === "queued" || owed === "running") forgetBooked(c, which);
+    // A row with no answer may have one now: settings put back to what they
+    // were a change ago are a question the cache has answered, and a row
+    // left saying nothing offered the pass again while the editor, reading
+    // the same cache, greyed it.
+    if (owed === "none") restoreFlat(c, which);
     if (c[`${which}State`] !== "done") continue;
     forgetFlatRow(c, which);
     paintRow(c);
@@ -11174,6 +11183,11 @@ el("pref-cache-clear").addEventListener("click", async () => {
   } catch (e) {
     note(t("prefs.cacheClearFailed", { e: String(e) }));
   }
+  // The black/white and silence answers of a row live in that cache and
+  // nowhere else the editor reads them from: kept "done" here, the list
+  // greyed a pass whose stretches the editor could no longer show.
+  forgetBlank();
+  forgetQuiet();
   paintCacheUse();
 });
 
