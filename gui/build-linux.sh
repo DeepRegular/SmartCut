@@ -1,12 +1,19 @@
 #!/usr/bin/env bash
-# Build the Linux app on the dev VM (see DEVENV.md).
-#   ./build-linux.sh   -> portable tar.gz + .deb
+# Build the Linux app (see docs/technical/distribution.md).
+#   ./build-linux.sh portable   -> AppImage + portable tar.gz  (Ubuntu 22.04 root)
+#   ./build-linux.sh deb        -> .deb                         (the Debian 13 dev VM)
+#   ./build-linux.sh            -> both, from one machine
 #
-# Two packagings of one build, answering different questions.
+# The two halves are built on different systems on purpose. What the AppImage
+# and the tar.gz carry decides nothing about glibc: that comes from the system
+# they were built on, and the AppImage catalog requires the oldest Ubuntu LTS
+# still supported. So they are built in an Ubuntu 22.04 root against an
+# FFmpeg 7.1 built there. The .deb is the opposite case: it is meant to use
+# the system's own FFmpeg 7.1, which only Debian 13 and later have.
 #
 # The tar.gz is self-contained: it carries the AppDir that linuxdeploy fills
 # for the AppImage, so FFmpeg and WebKitGTK travel with it and it runs
-# wherever the AppImage runs — glibc 2.39+ — without FUSE and without being
+# wherever the AppImage runs — glibc 2.35+ — without FUSE and without being
 # installed. The .deb carries the two binaries alone and lets apt resolve the
 # libraries, which is what a Debian package is supposed to do; that ties it to
 # FFmpeg 7.1 (Debian 13 / Ubuntu 25.04 or newer).
@@ -17,6 +24,14 @@
 # and a package name are lowercase, whatever the program's name is.
 set -euo pipefail
 cd "$(dirname "$0")"
+
+case "${1:-all}" in
+  portable) BUNDLES=appimage ;;
+  deb)      BUNDLES=deb ;;
+  all)      BUNDLES=deb,appimage ;;
+  *)        echo "usage: $0 [portable|deb]" >&2; exit 2 ;;
+esac
+want() { [[ ,$BUNDLES, == *,$1,* ]]; }
 
 conf() { sed -n "s/^  \"$1\": \"\(.*\)\",\$/\1/p" src-tauri/tauri.conf.json; }
 VERSION=$(conf version)
@@ -38,13 +53,36 @@ CLI_BIN=../rust/target/release/smartcut
 GUI_BIN=$OUT/bundle/deb/${PRODUCT}_${VERSION}_amd64/data/usr/bin/smartcut
 
 # ------------------------------------------------------------------ build
+# Tauri saves the tools it downloads with mode 0770, and one of them -- the
+# AppRun it hands linuxdeploy -- goes into the AppImage as AppRun.wrapped,
+# mode and all. squashfs stores it owned by root, so a user who mounts the
+# image without the AppImage runtime (firejail --appimage, which is how the
+# AppImage catalog tests it) cannot execute the app. The runtime's own FUSE
+# mount presents every file as the caller's and hid this. Tauri downloads a
+# tool only when it is missing, so fixing the cached copy is enough; a fresh
+# cache is caught by the check after the build.
+TAURI_CACHE=${XDG_CACHE_HOME:-$HOME/.cache}/tauri
+chmod -f go+rx "$TAURI_CACHE"/AppRun-* || true
+
 cargo build --release --manifest-path ../rust/Cargo.toml -p smartcut-cli
 # NO_STRIP is explained in docs/technical/distribution.md. The AppImage run is also what
 # produces the AppDir, which is the payload the tar.gz wants; the deb run is
 # here for its correctly stamped binary, not for the package it makes.
-(cd src-tauri && NO_STRIP=1 cargo tauri build --bundles deb,appimage)
+(cd src-tauri && NO_STRIP=1 cargo tauri build --bundles $BUNDLES)
 
 rm -rf "$STAGE"
+mkdir -p "$STAGE"
+
+if want appimage; then
+# Anything its owner may run, everyone must be able to run: see above.
+LOCKED=$(find "$APPDIR" -type f -perm -u+x ! -perm -o+rx)
+if [ -n "$LOCKED" ]; then
+  echo "error: only the owner can run these (Tauri's download cache was fresh;" >&2
+  echo "       it is fixed now, so run this script again):" >&2
+  echo "$LOCKED" >&2
+  chmod -f go+rx "$TAURI_CACHE"/AppRun-* || true
+  exit 1
+fi
 
 # ----------------------------------------------------------------- tar.gz
 TREE=$STAGE/$NAME
@@ -80,8 +118,8 @@ SmartCut $VERSION — portable Linux build (x86_64)
     ./smartcut-cli [FILE] --cut 5-10 -o out.ts    コマンドライン版
 
 FFmpeg も WebKitGTK も app/ の中に入っているので、入れるものは何もない。
-展開した場所からそのまま動く（必要なのは glibc 2.39 以上 = Ubuntu 24.04 /
-Debian 13 / Fedora 40 以降）。
+展開した場所からそのまま動く（必要なのは glibc 2.35 以上 = Ubuntu 22.04 /
+Debian 12 / Fedora 36 以降）。
 
 app/ の中身は AppImage 版と同じ一式で、ここでは FUSE を要らなくするために
 展開した形で置いてある。ディレクトリごと移動するのは構わないが、2 つの起動
@@ -119,6 +157,10 @@ done
 # -9 rather than the default 6: a minute of processor for another 0.9 MB,
 # paid once here and saved by everyone who downloads it.
 tar -C "$STAGE" --owner=0 --group=0 -I 'gzip -9' -cf "$STAGE/$NAME.tar.gz" "$NAME"
+fi
+
+want deb || { echo; echo "appimage: $PWD/$OUT/bundle/appimage/${PRODUCT}_${VERSION}_amd64.AppImage"
+               echo "tarball:  $PWD/$STAGE/$NAME.tar.gz"; exit 0; }
 
 # -------------------------------------------------------------------- deb
 ROOT=$STAGE/deb
@@ -205,5 +247,5 @@ dpkg-deb --root-owner-group --build "$ROOT" "$STAGE/smartcut_${VERSION}_amd64.de
 rm -rf "$ROOT"
 
 echo
-echo "tarball: $PWD/$STAGE/$NAME.tar.gz"
+want appimage && echo "tarball: $PWD/$STAGE/$NAME.tar.gz"
 echo "deb:     $PWD/$STAGE/smartcut_${VERSION}_amd64.deb"

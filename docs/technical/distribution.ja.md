@@ -5,25 +5,79 @@
 ## AppImage
 
 ```bash
-cargo install tauri-cli --version ^2 --locked   # 初回のみ
-cd gui/src-tauri && NO_STRIP=1 cargo tauri build --bundles appimage
-# -> target/release/bundle/appimage/SmartCut_0.8.11_amd64.AppImage
+gui/jammy/setup.sh /path/to/root          # 初回のみ（22.04 の root と FFmpeg）
+JAMMY=/path/to/root gui/jammy/build.sh    # AppImage と tar.gz
+# -> <root>/build/smartcut/gui/src-tauri/target/release/bundle/appimage/
 ```
 
-成果物は 186.2 MB で、共有ライブラリ 716 個をすべて同梱している。WebKitGTK 4.1 も、
+成果物は 176.2 MB で、共有ライブラリ 633 個を同梱している。WebKitGTK 4.1 も、
 `libavcodec` / `libavformat` / `libavutil` / `libavfilter` / `libswscale` /
 `libswresample` も入っているので、**動かす側に ffmpeg を入れる必要はない**。
-SmartCut はシステムの FFmpeg 7.1 に動的リンクしているので、配布できるかどうかは
-これを同梱できるかで決まった。ライブラリは linuxdeploy が `ldd` を辿って集める。
+ライブラリは linuxdeploy が `ldd` を辿って集める。
 
 | 条件 | 値 |
 |---|---|
-| 必要な glibc | 2.39 以上（Ubuntu 24.04 / Debian 13 / Fedora 40 以降） |
+| 必要な glibc | 2.35 以上（Ubuntu 22.04 / Debian 12 / Fedora 36 以降） |
 | FUSE | 必要（または `--appimage-extract-and-run`） |
 | ALSA | `libasound.so.2`（同梱しない。後述） |
-| ビルド環境 | Debian 13、glibc 2.41 |
+| ビルド環境 | Ubuntu 22.04、glibc 2.35。FFmpeg 7.1.5 はソースからビルド |
 
-AppImage の仕組み上 glibc だけは同梱できないので、glibc のバージョンが下限になる。
+AppImage の仕組み上 glibc だけは同梱できない。そのため、ビルドしたシステムの glibc
+がそのまま動作条件の下限になる。0.8.11 までは Debian 13 の開発用 VM でビルドして
+いたので、下限は 2.39 だった。
+
+### Ubuntu 22.04 でビルドする
+
+[AppImage のカタログ](https://appimage.github.io)は、サポート期間内でいちばん古い
+Ubuntu LTS で動くことを掲載の条件にしており、テストも 22.04 で行う。そこで 0.8.12
+からは、AppImage と tar.gz を Ubuntu 22.04 の root の中でビルドしている。
+`gui/jammy/setup.sh` はこの root を管理者権限なしで作る。ユーザー名前空間
+（`unshare --map-auto`）の中なら apt も dpkg もそのまま動くので、ホストには何も
+インストールしない。
+
+22.04 には FFmpeg 7.1 が無く、エンコーダも古い（SVT-AV1 は 0.9、x265 は 3.5）。
+そこで FFmpeg 7.1.5 と、SmartCut が FFmpeg 経由で使う外部ライブラリをすべて
+ソースからビルドする。版は **Debian 13 に入っているものに揃えた**。
+
+| ライブラリ | 版 | 用途 |
+|---|---|---|
+| x264 | 0.164（31e19f9） | H.264 の再エンコードとプロキシ |
+| x265 | 4.1 | HEVC の再エンコード |
+| SVT-AV1 / rav1e / libaom | 2.3.0 / 0.7.1 / 3.12.1 | AV1 の再エンコード。この順に試す |
+| libvpx | 1.15.0 | VP9 の再エンコード |
+| dav1d | 1.5.1 | AV1 のデコード。FFmpeg 内蔵の AV1 デコーダはハードウェア支援が前提 |
+| libvpl、nv-codec-headers | 2.14.0、12.2.72.0 | QSV と NVENC のプロキシ |
+| libopus、libmp3lame、libvorbis | 22.04 のもの | 音声を同じコーデックのまま再エンコードするとき |
+
+FFmpeg 内蔵のコーデック・コンテナ・プロトコルは 1 つも削っていない。SmartCut は
+デコーダを入力から、マルチプレクサを出力の拡張子から選ぶので、一覧を絞ると開けない
+ファイルが出てくる。VAAPI・VDPAU・OpenCL・Vulkan は外した。どれも使っておらず、
+それぞれ別のライブラリを引き込むからである。
+
+`.deb` はシステムの FFmpeg 7.1 にリンクするので、これまでどおり Debian 13 の VM で
+ビルドする。2 つは `build-linux.sh portable` と `build-linux.sh deb` で分けて作る。
+
+**出力は Debian 13 版と一致する。** 8 本の録画（MPEG-2、TS と MP4 の H.264、HEVC、
+AV1、VP9、BDAV 2 本）から 10 通りのカットを作り（うち 2 つはコンテナを変える）、
+同じ VM の上で 0.8.11 の Debian 版と 0.8.12 の tar.gz を比べた。6 本はバイト単位で
+一致し、1 本はパケット単位で一致した（MKV はセグメント UID を毎回乱数で書く）。
+HEVC・AV1・VP9 の 3 本は約 1,000 パケットのうち 4〜5 個が違うが、デコードした
+映像は完全に一致する（両者の PSNR が無限大）。違うのは、エンコーダがストリームに
+書き込むコンパイラ名である。なお、マシンが違えば再エンコード部分は一致しない。
+x264 や x265 の出力はスレッド数で変わるためである。
+
+### AppRun.wrapped が 0770 だった
+
+0.8.11 までの AppImage では、中の `AppRun.wrapped` が 0770 になっていた。Tauri は
+ダウンロードしたツールをこの権限で保存し、linuxdeploy は渡された AppRun を権限ごと
+複製する。squashfs の中ではファイルの所有者が root なので、AppImage のランタイムを
+使わずにイメージをマウントすると（カタログのテストが使う `firejail --appimage` が
+これにあたる）、一般ユーザーはアプリを起動できない。ランタイム自身の FUSE マウント
+では全ファイルが起動した人の所有に見えるので、気付かなかった。
+
+いまは `build-linux.sh` がキャッシュの権限を直し、所有者しか実行できないファイルが
+AppDir に残っていればそこで止まる。0.8.11 の AppImage と tar.gz は、2026-09-28 に
+この修正を入れて作り直したものに差し替えた。違いは権限だけである。
 
 ### なぜ `NO_STRIP=1` を付けるのか
 
@@ -48,7 +102,7 @@ libasound2 はデスクトップ Linux ならまず入っているし、ALSA を
 展開して確認できる。
 
 ```bash
-./SmartCut_0.8.11_amd64.AppImage --appimage-extract >/dev/null
+./SmartCut_0.8.12_amd64.AppImage --appimage-extract >/dev/null
 ldd squashfs-root/usr/bin/smartcut | grep -E 'asound|jack|pulse'
 # libasound.so.2 / libjack.so.0 -> /lib/x86_64-linux-gnu/...   (システム側)
 # libpulse.so.0                 -> squashfs-root/usr/bin/../lib/...  (同梱)
@@ -67,15 +121,22 @@ AppImage 自体で動作を確認している。素材を開く、走査する�
 41 個、720x480、29.97 fps、音声あり）、サムネイル 41 枚を走査し、`Space` で
 再生した。再生は 4 秒で 117 フレーム進み、ALSA 関係のエラーも panic も出なかった。
 
+0.8.12 の AppImage は、何も入っていない Ubuntu 22.04 の root に、カタログのテストが
+入れるパッケージだけを足して起動した（Xvfb、icewm、libasound2、libjack0、Mesa、
+CJK フォント。bubblewrap も GTK も無い）。BDAV のクリップを編集画面で開き、
+サムネイル・シーン点・レベルメーターまで表示された。カタログの `check-libc.sh` の
+結果は `GLIBC_2.35` と静的ランタイムで、`appdir-lint.sh` にも致命的な指摘は無い。
+
 ## tar.gz と deb
 
 ```bash
-./gui/build-linux.sh
-# -> gui/src-tauri/target/release/bundle/linux/SmartCut-0.8.11-linux-x86_64.tar.gz
-# -> gui/src-tauri/target/release/bundle/linux/smartcut_0.8.11_amd64.deb
+JAMMY=/path/to/root gui/jammy/build.sh   # tar.gz（AppImage と同時。Ubuntu 22.04 の root）
+./gui/build-linux.sh deb                 # deb（Debian 13 の VM）
+# -> gui/src-tauri/target/release/bundle/linux/SmartCut-0.8.12-linux-x86_64.tar.gz
+# -> gui/src-tauri/target/release/bundle/linux/smartcut_0.8.12_amd64.deb
 ```
 
-同じビルドを 2 通りに詰めたものである。どちらも GUI を `smartcut`、コマンド
+別々のシステムでビルドしたものを、2 通りに詰めている。どちらも GUI を `smartcut`、コマンド
 ライン版を `smartcut-cli` という名前でインストールする。プログラム名は SmartCut
 で、コマンドとして打つのは `smartcut` である。
 
@@ -83,20 +144,20 @@ cargo のクレート名は `gui` なので、放っておくと Tauri はその
 インストールしてしまう。1 つのアプリが占有してよい名前ではない。`tauri.conf.json` の
 `mainBinaryName` で `smartcut` に固定してある（0.2.0 以降。それ以前は Windows 用
 だけに設定されていた）。一方 Tauri が書き出すバンドル*ファイル*の名前は
-`productName` に従うので、`SmartCut_0.8.11_amd64.deb` になる。deb のパッケージ名
+`productName` に従うので、`SmartCut_0.8.12_amd64.deb` になる。deb のパッケージ名
 `smartcut` と食い違うのはこのためである。`build-linux.sh` は両方を
 `tauri.conf.json` から読む。
 
 | 成果物 | サイズ | FFmpeg | 必要条件 |
 |---|---|---|---|
-| `SmartCut-0.8.11-linux-x86_64.tar.gz` | 202.4 MB | 同梱 | glibc 2.39 以上。FUSE 不要 |
-| `smartcut_0.8.11_amd64.deb` | 4.8 MB | システムのものを使用 | FFmpeg 7.1（Debian 13 / Ubuntu 25.04 以降） |
+| `SmartCut-0.8.12-linux-x86_64.tar.gz` | 191.1 MB | 同梱 | glibc 2.35 以上。FUSE 不要 |
+| `smartcut_0.8.12_amd64.deb` | 4.8 MB | システムのものを使用 | FFmpeg 7.1（Debian 13 / Ubuntu 25.04 以降） |
 
 tar.gz の中身は、AppImage と同じ AppDir を展開したものである。linuxdeploy が
-`ldd` を辿って集めた 716 個のライブラリがそのまま `app/` にある。`./smartcut` は
+`ldd` を辿って集めた 633 個のライブラリがそのまま `app/` にある。`./smartcut` は
 AppRun を呼ぶ 4 行のスクリプトで、`./smartcut-cli` は `LD_LIBRARY_PATH` を
 `app/usr/lib` に向けて CLI を呼ぶ。AppImage が動く環境ならどこでも動き、FUSE は
-不要である。gzip なので、squashfs+zstd の AppImage より 16 MB 大きい。
+不要である。gzip なので、squashfs+zstd の AppImage より 15 MB 大きい。
 
 ### 同じライブラリが 3 つ入っていた
 
@@ -160,7 +221,7 @@ Linux の開発 VM から `x86_64-pc-windows-msvc` へクロスビルドして�
 
 ```bash
 ./gui/build-windows.sh
-# -> gui/src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis/SmartCut_0.8.11_x64-setup.exe
+# -> gui/src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis/SmartCut_0.8.12_x64-setup.exe
 # -> gui/src-tauri/target/x86_64-pc-windows-msvc/release/bundle/portable/smartcut-portable-x64.zip
 ```
 
