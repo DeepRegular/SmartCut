@@ -985,6 +985,7 @@ const CATALOG = {
     "editor.selectionTime": "選択 {a} - {b} : {len}",
     "editor.selectionNone": "選択 —",
     "editor.counter": "{at} / {all}   {t}",
+    "editor.jump.title": "クリックするか J（Ctrl+J）で、フレーム番号か時刻（00:01:23.45）を入力して移動します",
     "editor.frameKind": "{kind} フレーム",
     "editor.frameKindPoint": "{kind} フレーム — 無劣化点",
     "editor.frameKindNear": "{kind} フレーム — 近くのフレーム（解析中）",
@@ -2084,6 +2085,7 @@ const CATALOG = {
     "editor.selectionTime": "Selection {a} - {b} : {len}",
     "editor.selectionNone": "Selection —",
     "editor.counter": "{at} / {all}   {t}",
+    "editor.jump.title": "Click, or press J (Ctrl+J), to type a frame number or a time (00:01:23.45) to go to",
     "editor.frameKind": "{kind} frame",
     "editor.frameKindPoint": "{kind} frame — lossless point",
     "editor.frameKindNear": "{kind} frame — nearest picture, still reading",
@@ -2318,9 +2320,13 @@ function fromNavigator() {
   return null;
 }
 
-/// Japanese unless something says otherwise: it is the language the program
-/// was written in, and every string is guaranteed to exist in it.
-let lang = preference() === "auto" ? fromNavigator() || "ja" : preference();
+/// Japanese where the machine is set to it, and English everywhere else --
+/// a machine set to German, and one set to no language at all (the "C"
+/// locale a test runner or a container starts in), which came up in Japanese
+/// and put a Japanese screenshot on the AppImage catalogue.
+const FALLBACK = "en";
+
+let lang = preference() === "auto" ? fromNavigator() || FALLBACK : preference();
 
 export const currentLang = () => lang;
 
@@ -2391,7 +2397,7 @@ export const onLangChange = (fn) => listeners.push(fn);
 /// says whether this is the user's choice or merely this window catching up
 /// with it.
 export function setLang(which, remember = true) {
-  const next = which === "auto" ? fromNavigator() || "ja" : which;
+  const next = which === "auto" ? fromNavigator() || FALLBACK : which;
   if (remember) {
     try {
       localStorage.setItem(PREF_KEY, which);

@@ -781,10 +781,23 @@ function dropKeyframes(times, scroll = true) {
   // Nothing was on the list: not something that was done, and not a step.
   if (next.length === keyframes.length) return;
   remember();
+  // Where the cursor goes, the way the reference tool moves it: onto the card
+  // that moves up into the place of the first one taken, or the last card
+  // where nothing is left below. So a Del held over the column takes the
+  // cards one after another, and the one the cursor was on is never left
+  // standing for a mark that has gone. Only where the cursor was on one of
+  // them: a ✕ on some other card leaves it where it is.
+  const was = liveKeyframes();
+  const hit = was.findIndex((t) => doomed.has(t));
+  const lostCursor = times.some((t) => isActive(t) || isPicked(t));
   keyframes = next;
-  if (times.some((t) => isActive(t))) activeKey = null;
   pickedKeys = pickedKeys.filter((t) => !doomed.has(t));
-  renderKeyframes(scroll);
+  if (lostCursor) {
+    const live = liveKeyframes();
+    activeKey = live.length && hit >= 0 ? live[Math.min(hit, live.length - 1)] : null;
+    pickedKeys = [];
+  }
+  renderKeyframes(scroll || lostCursor);
   draw();
   scheduleStrip();
 }
@@ -797,6 +810,8 @@ function dropKeyframes(times, scroll = true) {
 /// the note on `renderKeyframes`.
 let cardsShown = [];
 let cardImgs = [];
+/// Width over height of the pictures on the cards, once one has come in.
+let cardAspect = 0;
 const sameCards = (live) =>
   live.length === cardsShown.length && live.every((t, i) => t === cardsShown[i]);
 
@@ -932,6 +947,14 @@ function renderKeyframes(scroll = true) {
     const li = document.createElement("li");
     const img = document.createElement("img");
     img.alt = "";
+    // As tall as the pictures already are before this one arrives. A card
+    // whose picture has not landed was two pixels tall, a column built again
+    // after a Del was a fraction of its height, and the scroll position put
+    // back below was cut to fit it: the column came back at the top.
+    if (cardAspect) img.style.aspectRatio = `auto ${cardAspect}`;
+    img.addEventListener("load", () => {
+      if (img.naturalWidth && img.naturalHeight) cardAspect = img.naturalWidth / img.naturalHeight;
+    });
     // Whatever was already standing in for this mark, before anything is
     // asked for: a render that finds a different set of marks builds its
     // cards from nothing, and the walk landing is one of those.
@@ -2006,6 +2029,77 @@ if (subsPicker) {
 
 const seekOut = (o) => showFrame(outToSrc(clamp(o, 0, outDur)));
 
+// --- going to a frame by number ---------------------------------------------
+//
+// The counter under the buttons turns into a box: a press on it, J, or Ctrl+J,
+// which is the key the reference tools use. The number is the counter's own,
+// counted on the edited timeline, so the number read off the counter is the
+// number that goes back in. A time does as well, written the way the counter
+// writes one -- and it is the only thing that does on a variable-rate
+// recording, where the counter shows no frame number; see `updateReadouts`.
+
+/// What was typed, as an instant on the edited timeline; null for anything
+/// that is neither a frame number nor a time.
+function parseJump(text) {
+  const s = text.trim().replace(/[０-９：．]/g, (c) =>
+    String.fromCharCode(c.charCodeAt(0) - 0xfee0),
+  );
+  if (/^\d+$/.test(s)) {
+    if (src && src.variable) return null;
+    return Number(s) * frame();
+  }
+  const m = /^(?:(?:(\d+):)?(\d+):)?(\d+(?:\.\d*)?)$/.exec(s);
+  if (!m || !/[:.]/.test(s)) return null;
+  return Number(m[1] || 0) * 3600 + Number(m[2] || 0) * 60 + Number(m[3]);
+}
+
+function openJump() {
+  const box = el("counter-jump");
+  if (!src || !box) return;
+  if (playing) stopPlay();
+  const o = playOut();
+  box.value = src.variable ? fmt(o) : String(frameNo(o));
+  box.classList.remove("bad");
+  el("counter").hidden = true;
+  box.hidden = false;
+  box.focus();
+  box.select();
+}
+
+function closeJump() {
+  const box = el("counter-jump");
+  if (!box || box.hidden) return;
+  box.hidden = true;
+  el("counter").hidden = false;
+  // Back to the window, whose keys the box was holding.
+  if (document.activeElement === box) box.blur();
+}
+
+const jumpBox = el("counter-jump");
+if (jumpBox) {
+  el("counter").addEventListener("click", openJump);
+  jumpBox.addEventListener("keydown", (ev) => {
+    if (ev.key === "Escape") {
+      ev.preventDefault();
+      closeJump();
+    } else if (ev.key === "Enter") {
+      ev.preventDefault();
+      const o = parseJump(jumpBox.value);
+      if (o === null || !src) {
+        jumpBox.classList.add("bad");
+        return;
+      }
+      closeJump();
+      // Past the end is the last picture, the way End is.
+      scrubTo(Math.min(o, lastStop()));
+    }
+    // The window's own keys stay out of a box being typed in.
+    ev.stopPropagation();
+  });
+  jumpBox.addEventListener("input", () => jumpBox.classList.remove("bad"));
+  jumpBox.addEventListener("blur", closeJump);
+}
+
 function updateReadouts() {
   const o = playOut();
   // **A frame number is a coordinate only where the frames are evenly
@@ -2110,25 +2204,52 @@ function paintMarks() {
 /// In the black either side of the picture where there is room for them --
 /// a 4:3 recording, or a 16:9 one in a window wider than it -- level with
 /// its top and against its edge, so they are as near the picture as they
-/// were and cover none of it. Over the picture's own corners where there is
-/// not, which on a broadcast puts the right-hand one over the station logo;
-/// the box is see-through for that reason. Each side is decided alone: the
-/// right one holds `}黒 ]` and can be too wide where the left is not.
+/// were and cover none of it. Where there is no room either side but there
+/// is black above -- a 16:9 recording in a window narrower than it, which is
+/// the editor at half a 1080p screen -- in that, just over the picture's
+/// corners. The sides come first because they keep the marks level with the
+/// top of the picture, where the eye already is.
+///
+/// Over the picture's own corners where there is neither, which on a
+/// broadcast puts the right-hand one over the station logo; the box is
+/// see-through for that reason. Each side is decided alone: the right one
+/// holds `}黒 ]` and can be too wide where the left is not.
 ///
 /// Measured after the marks are in, because what fits depends on how many
 /// there are on this frame.
 function placeMarks(l, r, box) {
   const img = el("preview");
   const GAP = 8;
-  const top = `${box.top + GAP}px`;
   const barL = box.left - img.offsetLeft;
   const barR = img.offsetLeft + img.clientWidth - (box.left + box.width);
-  const lw = l.offsetWidth;
-  const rw = r.offsetWidth;
-  l.style.top = top;
-  r.style.top = top;
-  l.style.left = `${lw + 2 * GAP <= barL ? box.left - GAP - lw : box.left + GAP}px`;
-  r.style.left = `${rw + 2 * GAP <= barR ? box.left + box.width + GAP : box.left + box.width - GAP - rw}px`;
+  const barT = box.top - img.offsetTop;
+  const place = (node, bar, beside, above, inside) => {
+    const w = node.offsetWidth;
+    const h = node.offsetHeight;
+    let left = inside(w);
+    let top = box.top + GAP;
+    if (w + 2 * GAP <= bar) left = beside(w);
+    else if (h + 2 * GAP <= barT) {
+      left = above(w);
+      top = box.top - GAP - h;
+    }
+    node.style.left = `${left}px`;
+    node.style.top = `${top}px`;
+  };
+  place(
+    l,
+    barL,
+    (w) => box.left - GAP - w,
+    () => box.left,
+    () => box.left + GAP,
+  );
+  place(
+    r,
+    barR,
+    () => box.left + box.width + GAP,
+    (w) => box.left + box.width - w,
+    (w) => box.left + box.width - GAP - w,
+  );
 }
 
 // --- the readouts on the picture ------------------------------------------
@@ -6282,6 +6403,13 @@ window.addEventListener("keydown", (ev) => {
   if (ev.key === " ") {
     ev.preventDefault();
     playing ? stopPlay() : startPlay();
+    return;
+  }
+  // Go to a frame by number: J, and Ctrl+J as the reference tools have it.
+  // See `openJump`.
+  if ((ev.key === "j" || ev.key === "J") && !ev.altKey && !ev.shiftKey) {
+    ev.preventDefault();
+    openJump();
     return;
   }
   if ((ev.ctrlKey || ev.metaKey) && (ev.key === "d" || ev.key === "D")) {

@@ -2264,9 +2264,8 @@ function paintRow(clip) {
   // How many, and no longer what they leave: the line above is the length of
   // what they leave.
   if (cutCount && i) bits.push(t("row.cuts", { n: cutCount }));
-  if (marksOf(clip).length) {
-    bits.push(t("row.keyframes", { n: marksOf(clip).length }));
-  }
+  const marks = liveMarksOf(clip).length;
+  if (marks) bits.push(t("row.keyframes", { n: marks }));
   setLine(li.querySelector(".cm"), bits.join(t("sep")));
 
   // Being edited is worth saying over anything else the row could say: it
@@ -3695,6 +3694,37 @@ function srcToOut(keeps, s) {
     if (s >= k.a - 1e-9 && s < k.b - 1e-9) return k.at + (s - k.a);
   }
   return null;
+}
+
+/// The marks that are still there once the cuts are made, as instants in the
+/// output: the ones the editor lists and counts (`liveKeyframes` in
+/// `main.js`), and the ones a `.keyframe` beside the output holds.
+///
+/// Not `marksOf`, which is every mark ever put down. A cut takes the marks
+/// inside it away, and the two either side of it -- the head of a commercial
+/// break and the return to the programme, which is what a detection puts
+/// down -- land on the one join: the list counted both where the editor
+/// counted one, a mark more per break.
+///
+/// The end of the recording is the one place a range is closed, as it is in
+/// the editor: a mark on the last instant is still on a picture.
+function liveMarksOf(clip) {
+  const marks = marksOf(clip);
+  const facts = factsOf(clip);
+  if (!marks.length || !facts) return [];
+  const keeps = keepsOf(clip);
+  const last = keeps[keeps.length - 1];
+  const out = [];
+  for (const t of marks) {
+    let o = srcToOut(keeps, t);
+    if (o === null && last && last.b >= facts.duration - 1e-6 && Math.abs(t - last.b) <= 1e-9) {
+      o = last.at + (last.b - last.a);
+    }
+    if (o !== null) out.push(o);
+  }
+  // Two marks on the one picture are one mark, and the later one stays.
+  const fps = clip.info && clip.info.fps > 0 ? clip.info.fps : 30;
+  return out.filter((o, k) => k === out.length - 1 || out[k + 1] - o > 0.5 / fps);
 }
 
 // --- output settings ----------------------------------------------------
@@ -6434,7 +6464,7 @@ function renderOutset() {
     side:
       settings.keyframes
       && !(joining() && ready().length > 1)
-      && marksOf(clip).length
+      && liveMarksOf(clip).length
         ? t("outset.sidecar", {
             path: `${outputPath(clip).replace(/\.[^./\\]*$/, "")}.keyframe`,
           })
@@ -7703,10 +7733,7 @@ async function startExport() {
       // same list written twice, in the one place nothing reads.
       if (settings.keyframes && !disc) {
         // Numbered against the file being written, not the recording.
-        const keeps = keepsOf(clip);
-        const frames = marksOf(clip)
-          .map((t) => srcToOut(keeps, t))
-          .filter((o) => o !== null)
+        const frames = liveMarksOf(clip)
           .map((o) => Math.round(o * clip.info.fps))
           // Two marks more than half a frame apart can still round onto one
           // frame, and marks either side of a cut can land together in the

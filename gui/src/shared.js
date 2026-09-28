@@ -148,6 +148,24 @@ export const esc = (t) =>
 /// already the search drag's, which is what wanted this first.
 export function noBrowserMenu() {
   window.addEventListener("contextmenu", (ev) => ev.preventDefault());
+  window.addEventListener("keydown", noBrowserKey, true);
+}
+
+/// The browser's own keys, for the same reason as its menu. WebView2 answers
+/// them unless the page does: Ctrl+J put up a downloads panel over the cut
+/// editor (J is its jump to a frame), Ctrl+P a print dialog, Ctrl+F a find
+/// bar, and Ctrl+R or F5 reloaded the window with the edit in it.
+///
+/// Only the default is taken. The windows' own handlers still see the key,
+/// so one that means something here -- Ctrl+J in the editor -- still works.
+const BROWSER_CTRL_KEYS = new Set(["j", "p", "f", "g", "r", "u"]);
+const BROWSER_KEYS = new Set(["F3", "F5", "F7"]);
+
+function noBrowserKey(ev) {
+  const held = (ev.ctrlKey || ev.metaKey) && !ev.altKey;
+  if ((held && BROWSER_CTRL_KEYS.has(ev.key.toLowerCase())) || BROWSER_KEYS.has(ev.key)) {
+    ev.preventDefault();
+  }
 }
 
 /// Take native drag and drop away from the webview.

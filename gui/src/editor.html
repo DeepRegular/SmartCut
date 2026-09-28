@@ -346,7 +346,14 @@
         </div>
 
         <div class="statusbar">
-          <span class="counter" id="counter">— / —</span>
+          <!-- The counter is also where a frame number is typed in: a press
+               on it, J or Ctrl+J (the reference tools' key) swaps it for the
+               box beside it, filled with where the playhead is. See
+               `openJump`. -->
+          <span class="counter" id="counter" data-i18n-title="editor.jump.title">— / —</span>
+          <input id="counter-jump" class="counter-jump" type="text" hidden
+                 inputmode="numeric" autocomplete="off" spellcheck="false"
+                 data-i18n-title="editor.jump.title" />
           <span class="dim" id="selection" data-i18n="editor.selectionNone">選択 —</span>
           <span class="spacer"></span>
           <span class="dim" id="cm-note"></span>

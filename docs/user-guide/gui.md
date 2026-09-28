@@ -458,6 +458,7 @@ frames, and `Snap to lossless` can take those to zero once it lights up.
 | The band under it | The **filmstrip**: the frames around you, laid out as pictures. The `Window` menu on the right sets how much of the recording the band shows. `Auto`, the default, sizes it from the recording's keyframe spacing so that one GOP is about one picture wide (between 2 and 60 s); a cell is as wide as the stretch it covers. The line down the middle is where you are — except at `Frame by frame`, where a cell is one frame and the frame on screen is boxed in blue instead |
 | The scrubber | **Green is the output itself.** `▼` are keyframes, a dull red line inside the green is a join left by a cut, the fine ticks below are scene changes, and the two rows under those are the blank and the silent stretches. **The playhead is the `◎` and a bright red line running the whole height of the track** — the `◎` sits inside the green and the line is what lines it up against everything drawn above and below it |
 | The button row | **Cut** in the middle, `[ IN` to its left and `OUT ]` to its right, and outwards from there: go to, one frame, lossless point, start and end |
+| The line under it | The frame you are on, how many there are, the time, and the selection. Click the frame number, or press `J` (`Ctrl+J`), to type a frame number or a time (`00:01:23.45`) and go there with `Enter` |
 | The band and lines below | **The export plan**: what will be copied and what will be rebuilt |
 | The bottom line | On the left, what the cut costs, and beside it **Counter**, **Indicators** and **Subtitles** — what the preview carries. **OK** and **Cancel** on the right |
 
@@ -478,7 +479,9 @@ in Preferences says.
 
 Where there is black either side of the picture with room for them — a 4:3
 recording, or a window wider than the picture — the indicators go there, level
-with the top of the picture. Where there is not, they sit on its corners, and the
+with the top of the picture. Where there is not but there is black above it — a
+window taller than the picture — they go just above its corners. Where there is
+neither, they sit on its corners, and the
 box behind each is see-through, so a station logo or a clock in the corner still
 shows. **Indicators** on the bottom line turns them off — the same answer as
 **Show the selection, keyframe and blank or quiet stretch indicators over the
@@ -718,7 +721,9 @@ three seconds for either pass out of the box, and -50 dB for the sound.
 - In that column, `Ctrl`-click gathers marks one at a time and `Shift`-click
   gathers a run of them. `Del` then removes the lot in one go, and `Ctrl+Z`
   puts them all back. Click the empty space below the cards to let the
-  selection go.
+  selection go. The column stays where it was scrolled to, and the card that
+  moves up into the gap (the last card, where nothing was below) is picked
+  out, so `Del` again takes the marks one after another.
 - A **cut** is the edit. Set IN and OUT, press `✂ Cut`, and that range leaves
   the output.
 
@@ -1426,7 +1431,7 @@ effect as you make it.
 
 | Setting | What it does |
 |---|---|
-| **Language** | English, Japanese, or follow the system (the default). A change takes effect in both windows at once |
+| **Language** | English, Japanese, or follow the system (the default), which is Japanese on a system set to Japanese and English on any other. A change takes effect in both windows at once |
 | **Draw the frame number and clock over the picture in the cut editor** | The box at the foot of the cut editor's picture. The same answer as its **Counter** button |
 | **Show the selection, keyframe and blank or quiet stretch indicators over the picture in the cut editor** | The indicators in the top corners of the cut editor's picture. On out of the box. The same answer as its **Indicators** button |
 | **Show the audio level meter in the cut editor** | The meter to the left of the cut editor's picture. This is the only place it is switched on and off |
@@ -1575,6 +1580,7 @@ can quote it straight into a bug report.
 | `Alt+Shift+↑` `Alt+Shift+↓` | Previous / next end of a silent stretch |
 | `Ctrl+←` `Ctrl+→` | Previous / next keyframe |
 | `Home` / `End` | To the first / last frame |
+| `J` / `Ctrl+J` | Type a frame number or a time to go to |
 | `I` or `[` / `O` or `]` | Start / end the selection here |
 | `K` | Mark this frame as a keyframe |
 | `Insert` | Put a keyframe on this frame, or take away the one on it |
