@@ -763,6 +763,8 @@ body.crosswin { padding: 0; }
 /* --- scrubber --------------------------------------------------------- */
 .track-wrap { background: var(--panel); border: 1px solid var(--line); padding: 3px 8px 1px; position: relative; }
 #track { width: 100%; display: block; cursor: pointer; }
+/* Below the tabs the canvas is only read -- see `HIT_H`. */
+#track.idle { cursor: default; }
 .hover {
   position: absolute; bottom: 86px; pointer-events: none; z-index: 5;
   background: #0b0b0b; border: 1px solid var(--sel);
@@ -1326,6 +1328,26 @@ input[type="number"]::-webkit-outer-spin-button {
    sound's -- as the reference tool writes it: underlined words that open a
    list, not a box in among the text. Dimmed with the rest of the panel when
    several rows are chosen, which is the text's colour and not the control's. */
+/* The dark scrollbar everywhere else that scrolls, for the reason the clip
+   list has one (see `.cliplist-wrap`): left alone these fell back to the
+   desktop's own, which is light, and the quick properties under the list
+   stood out as the one light bar on the main screen. `height` for the two
+   that also scroll sideways -- a long path in the properties, a long line in
+   the format. */
+.props-body::-webkit-scrollbar, .modal-body::-webkit-scrollbar, .disc-list::-webkit-scrollbar,
+.side::-webkit-scrollbar, .outset-body::-webkit-scrollbar, .format::-webkit-scrollbar,
+#out-list::-webkit-scrollbar { width: 9px; height: 9px; }
+.props-body::-webkit-scrollbar-track, .modal-body::-webkit-scrollbar-track, .disc-list::-webkit-scrollbar-track,
+.side::-webkit-scrollbar-track, .outset-body::-webkit-scrollbar-track, .format::-webkit-scrollbar-track,
+#out-list::-webkit-scrollbar-track { background: var(--sunken); }
+.props-body::-webkit-scrollbar-thumb, .modal-body::-webkit-scrollbar-thumb, .disc-list::-webkit-scrollbar-thumb,
+.side::-webkit-scrollbar-thumb, .outset-body::-webkit-scrollbar-thumb, .format::-webkit-scrollbar-thumb,
+#out-list::-webkit-scrollbar-thumb { background: #5c5c5c; border-radius: 4px; }
+.props-body::-webkit-scrollbar-thumb:hover, .modal-body::-webkit-scrollbar-thumb:hover,
+.disc-list::-webkit-scrollbar-thumb:hover, .side::-webkit-scrollbar-thumb:hover,
+.outset-body::-webkit-scrollbar-thumb:hover, .format::-webkit-scrollbar-thumb:hover,
+#out-list::-webkit-scrollbar-thumb:hover { background: #757575; }
+.props-body::-webkit-scrollbar-corner, .format::-webkit-scrollbar-corner { background: var(--sunken); }
 .props-body .sound-drop { vertical-align: baseline; }
 .props-body .sound-drop > select {
   width: auto; padding: 0; border: 0; border-radius: 0;

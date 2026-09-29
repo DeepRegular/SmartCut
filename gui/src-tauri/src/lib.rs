@@ -7904,6 +7904,33 @@ fn versions() -> Versions {
     }
 }
 
+/// Only the title bar moves a window.
+///
+/// GTK lets a theme say that a press on a widget which does not take it
+/// herself starts a move of the whole window -- `-GtkWidget-window-dragging`,
+/// meant for toolbars and menu bars. Some themes set it on everything, and so
+/// can a line in `~/.config/gtk-3.0/gtk.css`; under one of those, WebKitGTK
+/// hands the press up to the window and a drag almost anywhere in the page --
+/// the clip list, a panel, the empty space beside a button -- moved the
+/// window instead. Every press in these windows is the page's, so the
+/// property is turned off everywhere, at a priority above the user's own
+/// stylesheet (which is where a theme's would otherwise win).
+#[cfg(target_os = "linux")]
+fn no_window_dragging() {
+    use gtk::prelude::*;
+    let css = gtk::CssProvider::new();
+    if css.load_from_data(b"* { -GtkWidget-window-dragging: false; }").is_err() {
+        return;
+    }
+    if let Some(screen) = gtk::gdk::Screen::default() {
+        gtk::StyleContext::add_provider_for_screen(
+            &screen,
+            &css,
+            gtk::STYLE_PROVIDER_PRIORITY_USER + 1,
+        );
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     // WebKitGTK's compositor draws nothing on a machine without a GPU: the
@@ -8027,6 +8054,8 @@ pub fn run() {
         // here, so `setup` is the first moment there is one to attach
         // anything to.
         .setup(move |app| {
+            #[cfg(target_os = "linux")]
+            no_window_dragging();
             // What the three windows were last left at, before there is a
             // window on screen to put it on. See [`geometry`].
             geometry::load(app.handle());

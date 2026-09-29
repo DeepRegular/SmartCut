@@ -29,7 +29,7 @@ const dialog = T.dialog;
 const jlog = (m) => invoke && invoke("log", { msg: String(m) });
 jlog("main.js start");
 
-import { fmt, chLabel, cmNote, blankKey, noBrowserMenu, noNativeDrag } from "./shared.js";
+import { fmt, chLabel, cmNote, blankKey, noBrowserMenu, noNativeDrag, notch } from "./shared.js";
 import { t as tr, applyStatic, setLang, onLangChange, confirmWithOs } from "./i18n.js";
 import * as prefs from "./prefs.js";
 
@@ -4106,12 +4106,6 @@ window.addEventListener(
   { passive: false }
 );
 
-/// Which way a notch went. With Shift held a webview can report the notch
-/// as sideways -- WebView2 on Windows does, turning Shift+wheel into a
-/// horizontal scroll -- and read off `deltaY` alone the GOP hop was a notch
-/// that did nothing.
-const notch = (ev) => ev.deltaY || (ev.shiftKey ? ev.deltaX : 0);
-
 /// One notch of the wheel: a frame, or with Shift a whole GOP.
 ///
 /// A notch is a frame so that the GOP boundaries creep across the window
@@ -4704,7 +4698,12 @@ function hideHover() {
 }
 
 track.addEventListener("mousemove", (ev) => {
+  track.classList.toggle("idle", !onScrubber(ev));
   if (!src || dragging || outDur <= 0) return;
+  if (!onScrubber(ev)) {
+    hideHover();
+    return;
+  }
   const w = track.clientWidth;
   const o = xToTime(ev.offsetX, w);
   const box = el("hover");
@@ -6153,9 +6152,30 @@ async function pointsArrived(exact, picked) {
 
 // --- scrubber pointer ---------------------------------------------------
 
+/// How far down the canvas a press is a press on the scrubber: the keyframe
+/// ticks along the top, the trough, and the IN and OUT tabs hanging under it.
+///
+/// The canvas is taller than that -- the scene changes, the two detections'
+/// rows and the two times along the bottom are drawn on it too -- and the
+/// whole of it used to seek. A press meant for the transport buttons just
+/// under it, landing a few pixels short on the times, moved the playhead.
+/// Those rows are read, not handled, so they take nothing, and the pointer
+/// over them is not the hand that says they would.
+const HIT_H = TOP + HGT + 11;
+const onScrubber = (ev) => ev.offsetY < HIT_H;
+
+/// Whether playback was running when the press on the scrubber began, and so
+/// is to carry on from wherever the press let go. Held rather than stopped:
+/// the drag shows the pictures it passes over, which playback would fight
+/// for the stage, and letting go picks the run up again -- a nudge of the
+/// scrubber while watching is a question about where to watch from, not a
+/// request to stop.
+let playAfterDrag = false;
+
 track.addEventListener("mousedown", (ev) => {
-  if (!src || ev.button !== 0 || outDur <= 0) return;
-  if (playing) stopPlay();
+  if (!src || ev.button !== 0 || outDur <= 0 || !onScrubber(ev)) return;
+  playAfterDrag = playing;
+  if (playing) stopPlay(false);
   const w = track.clientWidth;
   const x = ev.offsetX;
   // No tabs are drawn for a selection a cut took away, so none can be taken
@@ -6182,7 +6202,17 @@ window.addEventListener("mousemove", (ev) => {
   }
 });
 window.addEventListener("mouseup", () => {
-  if (dragging === "seek") showFrame(playhead);
+  if (dragging && playAfterDrag) {
+    // The still the press asked for is not wanted: playback's own first
+    // picture is along in a moment, and a still landing after it would be
+    // read as the playhead moved by hand and stop the run again.
+    previewToken++;
+    playAfterDrag = false;
+    startPlay();
+    // Turned away -- ループ with nothing left to loop, a row on its way in --
+    // and the stage is owed the picture after all.
+    if (!playing) showFrame(playhead);
+  } else if (dragging === "seek") showFrame(playhead);
   // The step for the drag, put down now that it is over and only if it moved
   // anything: a tab taken hold of and let go where it was is not an edit.
   if (dragFrom && (dragFrom.selA !== selA || dragFrom.selB !== selB)) {

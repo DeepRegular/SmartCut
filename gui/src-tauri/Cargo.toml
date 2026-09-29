@@ -18,3 +18,8 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 base64 = "0.22"
 smartcut-core = { path = "../../rust/crates/core" }
+
+# Already in the build through tauri; named here for the one thing done to
+# GTK directly -- see `no_window_dragging`.
+[target.'cfg(target_os = "linux")'.dependencies]
+gtk = "0.18"

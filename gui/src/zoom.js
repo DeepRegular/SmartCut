@@ -27,7 +27,7 @@ const jlog = (m) => invoke && invoke("log", { msg: String(m) });
 window.addEventListener("error", (e) => jlog(`zoom error ${e.message}`));
 window.addEventListener("unhandledrejection", (e) => jlog(`zoom reject ${e.reason}`));
 
-import { fmt, noBrowserMenu, noNativeDrag } from "./shared.js";
+import { fmt, noBrowserMenu, noNativeDrag, notch } from "./shared.js";
 import { t as tr, applyStatic, setLang, onLangChange, confirmWithOs } from "./i18n.js";
 import * as prefs from "./prefs.js";
 
@@ -241,9 +241,8 @@ window.addEventListener(
   (ev) => {
     if (ev.target && ev.target.tagName === "SELECT") return;
     ev.preventDefault();
-    // Sideways where Shift is held and the webview has made the notch a
-    // horizontal scroll; see `notch` in `main.js`.
-    const dir = Math.sign(ev.deltaY || (ev.shiftKey ? ev.deltaX : 0));
+    // Sideways as well as up and down; see `notch`.
+    const dir = Math.sign(notch(ev));
     if (dir && emit) emit("zoom-wheel", { dir, shift: ev.shiftKey });
   },
   { passive: false }

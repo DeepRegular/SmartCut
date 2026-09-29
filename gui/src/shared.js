@@ -192,6 +192,18 @@ export function noNativeDrag() {
   window.addEventListener("dragstart", (ev) => ev.preventDefault());
 }
 
+/// Which way a notch went, along whichever axis it mostly went.
+///
+/// Sideways counts as much as up and down. A touchpad's two-finger swipe
+/// across a timeline is the natural gesture for it and arrives as `deltaX`
+/// alone, which read off `deltaY` was a swipe that did nothing; and with
+/// Shift held a webview can report a wheel notch as sideways too -- WebView2
+/// on Windows does -- which was the GOP hop doing nothing. Right is later,
+/// the way down is. The larger of the two decides, so the drift a swipe
+/// picks up on the other axis does not turn it round.
+export const notch = (ev) =>
+  Math.abs(ev.deltaX) > Math.abs(ev.deltaY) ? ev.deltaX : ev.deltaY;
+
 /// How much of the window a dropped list leaves between itself and the edge,
 /// and the least it is worth drawing in: below that it scrolls, and a list
 /// that scrolls is still a list. Exported because the seam window places a
