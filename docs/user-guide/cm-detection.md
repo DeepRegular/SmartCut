@@ -4,7 +4,8 @@
 
 SmartCut can find the commercial breaks in a recording for you. Select clips in
 the list and press `Ctrl+D`, or use the **Detect commercials** button on the
-right. The cut editor has the same button in its info bar.
+right. In the cut editor it is **Detect commercials** in the `≡` menu at the
+bottom right, or `Ctrl+D`.
 
 ## Detection places marks — that is all
 

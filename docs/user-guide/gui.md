@@ -451,16 +451,16 @@ frames, and `Snap to lossless` can take those to zero once it lights up.
 | Where | What |
 |---|---|
 | Top line | The filename |
-| Info bar | Lossless points, resolution, fps, scan type, audio, codec. **Tracks** and **Detect commercials** on the right; the blank and silence passes are in the `≡` menu at the bottom right |
+| Info bar | Lossless points, resolution, fps, scan type, audio, codec. **Tracks** on the right; the three detections are in the `≡` menu at the bottom right |
 | Left column | The **keyframes** — your marks, each with a thumbnail. Click one to jump there; the column stays where it is scrolled to. A mark a detection put down carries `Black`, `White` or `Quiet` under its time |
 | The large picture | The preview. At its foot, in the middle: frame number, timecode, what kind of frame it is, and the current selection. **Counter**, on the bottom line, turns them off. In its top corners, indicators for the frame on screen (below), which **Indicators** turns off |
 | Beside it, on the left | The **audio level meter**: what is being heard while something plays, and the sound under the playhead while nothing does. **Preferences → Windows** turns it off |
-| The band under it | The **filmstrip**: the frames around you, laid out as pictures. The `Window` menu on the right sets how much of the recording the band shows. `Auto`, the default, sizes it from the recording's keyframe spacing so that one GOP is about one picture wide (between 2 and 60 s); a cell is as wide as the stretch it covers. The line down the middle is where you are — except at `Frame by frame`, where a cell is one frame and the frame on screen is boxed in blue instead. Hover over the strip for how it is worked |
+| The band under it | The **filmstrip**: the frames around you, laid out as pictures. The `Window` menu on the right sets how much of the recording the band shows. `Auto`, the default, sizes it from the recording's keyframe spacing so that one GOP is about one picture wide (between 2 and 60 s); a cell is as wide as the stretch it covers. The line down the middle is where you are — except at `Frame by frame`, where a cell is one frame and the frame on screen is boxed in blue instead. Hover over the `?` at the left of the line under it for how it is worked |
 | The scrubber | **Green is the output itself.** `▼` are keyframes, a dull red line inside the green is a join left by a cut, the fine ticks below are scene changes, and the two rows under those are the blank and the silent stretches. **The playhead is the `◎` and a bright red line running the whole height of the track** — the `◎` sits inside the green and the line is what lines it up against everything drawn above and below it |
 | The button row | **Cut** in the middle, `[ IN` to its left and `OUT ]` to its right, and outwards from there: go to, one frame, lossless point, start and end |
 | The playback row | Rewind, play, fast forward, loop and the volume. To their left, the frame you are on, how many there are, the time, and the selection; at the far right, what commercial detection found. Click the frame number on this row (not the one over the picture), or press `J` (`Ctrl+J`), to type a frame number or a time (`00:01:23.45`) and go there with `Enter`. `Esc` closes the box without going anywhere |
 | The band and lines below | **The export plan**: what will be copied and what will be rebuilt. `▸ Segments` at its right unfolds it segment by segment |
-| The bottom line | On the left, what the cut costs, and beside it **Counter**, **Indicators** and **Subtitles** — what the preview carries. **OK** and **Cancel** on the right |
+| The bottom line | On the left, what the cut costs, and beside it **Counter**, **Indicators** and **Subtitles** — what the preview carries — then whatever the window has to say: a file it read, how far a detection has got. **OK** and **Cancel** on the right |
 
 The indicators in the picture's top corners are there only on a frame they apply to:
 
@@ -641,7 +641,7 @@ commercial break, are not things the picture alone will tell you.
 - The frame number and time stay at the **foot** of the picture whether subtitles are
   showing or not. They share that corner with a caption, and they are drawn over it, so
   where the playhead is never goes missing. Where the caption is the one you want to
-  see whole, turn **Counter** off beside it — the line under the film strip still
+  see whole, turn **Counter** off beside it — the playback row still
   says where you are, and the answer is remembered for the next clip.
 - Playback keeps up with them.
 - **A recording that carries no subtitles has no picker.** The bottom line then holds
@@ -661,7 +661,7 @@ window opens. They are two passes: running one leaves what the other found where
 it is.
 
 Once the recording has been detected, here or from the list, the line is greyed,
-and so is **Detect commercials** in the info bar. Changing what the pass is told
+and so is **Detect commercials** (`Ctrl+D`) in the same menu. Changing what the pass is told
 to look for in Preferences offers it again; for the commercials, that is **Also
 find the short inserts**.
 

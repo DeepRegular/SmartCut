@@ -1379,15 +1379,19 @@ async function loadFlatCached(marks) {
 // --- scrubber -----------------------------------------------------------
 
 const TOP = 14;
-const HGT = 32;
+/// The trough. 22 rather than the 32 it was: the ◎ is 14 across and fits,
+/// and the ten pixels went to the picture -- this row is read for where
+/// things are along it, not for how tall it is.
+const HGT = 22;
 const MID = TOP + HGT / 2;
 /// Tall enough for the two rows under the scene changes: the picture's flat
 /// stretches, and the sound's quiet ones.
-const TRACK_H = 98;
-/// Where those two rows sit, and where the scene changes sit above them.
-const SCENE_Y = 62;
-const BLANK_Y = 69;
-const QUIET_Y = 76;
+const TRACK_H = 80;
+/// Where those two rows sit, and where the scene changes sit above them:
+/// under the IN and OUT handles, which hang ten pixels below the trough.
+const SCENE_Y = 50;
+const BLANK_Y = 57;
+const QUIET_Y = 64;
 
 /// Which row each kind of stretch is drawn in, and in what colour.
 ///
@@ -1527,13 +1531,13 @@ function draw() {
   // Stopping short of the two times written along the bottom, which are the
   // ends of the recording and not part of the scale.
   ctx.fillStyle = "#ff4646";
-  ctx.fillRect(Math.round(px), 0, 1, TRACK_H - 12);
+  ctx.fillRect(Math.round(px), 0, 1, TRACK_H - 11);
 
   ctx.fillStyle = "#8a8a8a";
   ctx.font = "10px system-ui";
-  ctx.fillText(fmt(0), 2, 95);
+  ctx.fillText(fmt(0), 2, TRACK_H - 2);
   const end = fmt(outDur);
-  ctx.fillText(end, w - ctx.measureText(end).width - 2, 95);
+  ctx.fillText(end, w - ctx.measureText(end).width - 2, TRACK_H - 2);
 }
 
 // --- picture ------------------------------------------------------------
@@ -2198,6 +2202,8 @@ function updateReadouts() {
       })
     : tr("editor.selectionTime", { a: fmt(selA), b: fmt(selB), len: fmt(selEnd() - selA) });
   el("selection").textContent = sel;
+  // Cut short on a narrow window; see `.readout`.
+  el("selection").title = sel;
   el("ovl-sel").textContent = sel;
   paintMarks();
 }
@@ -4750,6 +4756,22 @@ function planSettled() {
   el("plan-panel").classList.remove("stale");
 }
 
+/// A recording is on its way in and `src` is not it yet: from the top of
+/// `openPath` to the outline landing (or failing). The first open of a window
+/// has no `opening` -- that is the list switching rows -- and anything that
+/// asked for a plan meanwhile (the marks read from beside the recording) was
+/// answered 「ファイルを開いてください」 over a window reading a file.
+let inbound = false;
+
+/// The band while a recording is being read: no plan yet, and saying so.
+function paintPlanReading() {
+  el("plan-text").textContent = tr("plan.reading");
+  el("segments").innerHTML = "";
+  el("copied-bar").style.width = "0%";
+  el("copied-bar").parentElement.classList.add("unknown");
+  el("smart-badge").textContent = "—";
+}
+
 async function refreshPlan() {
   // Whichever question this call asks, it is now the only one whose answer
   // this panel will take.
@@ -4765,13 +4787,9 @@ async function refreshPlan() {
   // recording's. Either way the band read 「ファイルを開いてください」 over a
   // window that was reading a file. Only the genuinely empty editor asks for
   // one.
-  if (opening || (src && !walked())) {
+  if (opening || inbound || (src && !walked())) {
     planSettled();
-    el("plan-text").textContent = tr("plan.reading");
-    el("segments").innerHTML = "";
-    el("copied-bar").style.width = "0%";
-    el("copied-bar").parentElement.classList.add("unknown");
-    el("smart-badge").textContent = "—";
+    paintPlanReading();
     return;
   }
   el("copied-bar").parentElement.classList.remove("unknown");
@@ -5357,6 +5375,7 @@ function showMore(on) {
     // And where this recording has been detected already under the
     // settings as they stand; see `alreadyDetected`.
     paintDetectFlat();
+    paintDetectCm();
   }
   moreMenu().hidden = !on;
   el("more").setAttribute("aria-expanded", String(!!on));
@@ -5836,8 +5855,15 @@ async function openPath(picked, saved, side, name, chapters, dropPids, detected)
   chaptersDue = (!saved || !!saved.chaptersDue) && discChapters.length > 0;
   el("title").textContent = tr("editor.analysing");
   // The band comes up out of the markup saying 「ファイルを開いてください」,
-  // which stops being true here rather than when `src` lands.
-  schedulePlan();
+  // which stops being true here rather than when `src` lands. Drawn now
+  // rather than scheduled: on a first open `src` is still null when the
+  // timer fires, which answers 「ファイルを開いてください」 again, and a busy
+  // machine put the next redraw off until the read was over.
+  inbound = true;
+  clearTimeout(planTimer);
+  planRun++;
+  planSettled();
+  paintPlanReading();
   try {
     // The container's own answer first, which costs one open. It has
     // everything this window draws with except where the access points are --
@@ -5857,6 +5883,7 @@ async function openPath(picked, saved, side, name, chapters, dropPids, detected)
     const outline = await invoke("open_outline", { path: picked });
     if (overtaken()) return;
     src = outline;
+    inbound = false;
     tailSrc = null;
     // Nothing the pass over the last recording made is this one's. Its held
     // pictures are still what `hover_thumb` answers from until this one's
@@ -6037,6 +6064,9 @@ async function openPath(picked, saved, side, name, chapters, dropPids, detected)
     if (overtaken()) return;
     el("title").textContent = "";
     el("status").textContent = tr("editor.openFailed", { e });
+    // Nothing is being read any more; the band says what is open, if anything.
+    inbound = false;
+    schedulePlan();
     throw e;
   }
 }
@@ -6061,6 +6091,13 @@ async function pointsArrived(exact, picked) {
     // opened it, so this is rare -- a file removed under the window, a disc
     // ejected -- but it is not a window to go on cutting in.
     el("status").textContent = tr("editor.openFailed", { e });
+    // And the band stops saying it is reading.
+    if (src && src.path === picked) {
+      clearTimeout(planTimer);
+      planRun++;
+      planSettled();
+      el("plan-text").textContent = tr("plan.failed", { e });
+    }
     throw e;
   }
   if (!src || src.path !== picked) return;
@@ -6436,8 +6473,14 @@ window.addEventListener("keydown", (ev) => {
     if (ev.key === "Escape") {
       ev.preventDefault();
       showMore(false);
+      return;
     }
-    return;
+    // Except the three detections, whose keys are written on their lines in
+    // this very menu: pressed while reading them, they are the menu's own
+    // answer. The menu goes, and the key goes on to the handler below.
+    const held = (ev.ctrlKey || ev.metaKey) && !ev.altKey;
+    if (!(held && ["d", "b", "q"].includes(ev.key.toLowerCase()))) return;
+    showMore(false);
   }
   if (!el("tracks-modal").hidden) {
     if (ev.key === "Escape") el("tracks-modal").hidden = true;
@@ -6484,6 +6527,7 @@ window.addEventListener("keydown", (ev) => {
   }
   if ((ev.ctrlKey || ev.metaKey) && (ev.key === "d" || ev.key === "D")) {
     ev.preventDefault();
+    paintDetectCm();
     el("detect-cm").click();
     return;
   }
@@ -6900,10 +6944,17 @@ el("tracks-modal").addEventListener("mousedown", (ev) => {
   if (ev.target === el("tracks-modal")) el("tracks-modal").hidden = true;
 });
 
+/// The last count the commercial pass put on the status line, to take down
+/// when it is over.
+let cmCounting = null;
+
 el("detect-cm").addEventListener("click", async () => {
   // Nor while another row is coming in: `src` is still the row being left,
   // and its answer would land on the new one.
   if (!src || swapping || cmBusy || alreadyDetected("cm")) return;
+  // A line in the ≡ menu, like the other two, and the pass runs for a
+  // minute: the menu does not stay open over the timeline it is about.
+  showMore(false);
   cmBusy = true;
   el("detect-cm").disabled = true;
   const inserts = prefs.get("cmInserts") === true;
@@ -6945,7 +6996,11 @@ el("detect-cm").addEventListener("click", async () => {
   } finally {
     cmBusy = false;
     paintDetectCm();
-    el("detect-cm").textContent = tr("editor.detectCm");
+    detectLabel("detect-cm").textContent = tr("editor.detectCm");
+    // The count is over; the note on the playback row says what it found.
+    // Left alone if something else has been said since.
+    if (el("status").textContent === cmCounting) el("status").textContent = "";
+    cmCounting = null;
   }
 });
 
@@ -7085,7 +7140,7 @@ async function runFlat(id, label, which, kinds, call) {
 /// greyed and the other one ready.
 const flatBusy = new Set();
 
-/// Where one of the two detections writes its word: the span inside the menu
+/// Where one of the three detections writes its word: the span inside the menu
 /// line, so that the shortcut beside it is left standing while a pass counts
 /// itself up.
 const detectLabel = (id) => el(id).querySelector(".menu-label") || el(id);
@@ -7169,9 +7224,24 @@ if (listen) {
     });
   });
   hear("cm-progress", (ev) => {
+    // A tick that arrives after the pass has answered -- the event and the
+    // answer come back on different channels -- would put the count back
+    // up for good.
+    if (!cmBusy) return;
     const [phase, done] = ev.payload;
-    el("detect-cm").textContent = tr("editor.detectingPct", { pct: Math.round(done * 100) });
+    const pct = Math.round(done * 100);
+    detectLabel("detect-cm").textContent = tr("editor.detectingPct", { pct });
     showCmNote(phase);
+    // And on the status line, as the flat passes do: the line that counts
+    // itself up is in a menu that is shut while the pass runs.
+    // Only over its own last count or an empty line: the other two passes
+    // and a failed read say things on this line too, and a count ticking
+    // over them took their answer away.
+    const line = el("status").textContent;
+    if (line === "" || line === cmCounting) {
+      cmCounting = tr("cm.detectingPct", { pct });
+      el("status").textContent = cmCounting;
+    }
   });
   // Neither of these is about the recording coming up while a row is being
   // opened: its own pass starts once the open is over, so what arrives in
@@ -7200,6 +7270,19 @@ if (listen) {
 }
 
 window.addEventListener("resize", relayout);
+// And when the stage alone changes size: the plan's segments folded or
+// opened, or the playback row going onto a second line. The subtitles, the
+// indicators and the meter are sized in pixels and were left at the old box.
+if (typeof ResizeObserver === "function") {
+  let stageWas = "";
+  new ResizeObserver((entries) => {
+    const r = entries[0].contentRect;
+    const now = `${Math.round(r.width)}x${Math.round(r.height)}`;
+    if (now === stageWas) return;
+    stageWas = now;
+    relayout();
+  }).observe(document.querySelector(".stage"));
+}
 
 // --- talking to the list window ------------------------------------------
 //
@@ -7584,7 +7667,7 @@ if (listen) {
 /// not own: the detection's summary came over the wire already written, and
 /// re-wording it here would mean holding what it was made of.
 onLangChange(() => {
-  el("detect-cm").textContent = tr("editor.detectCm");
+  detectLabel("detect-cm").textContent = tr("editor.detectCm");
   paintDetectLabels();
   // The label carries a count when something is left out, so `applyStatic`
   // has just written the plain word over it.
@@ -7600,8 +7683,13 @@ onLangChange(() => {
     cardsShown = [];
     renderKeyframes();
     showFrame(playhead);
-    schedulePlan();
   }
+  // Whatever state it is in -- nothing open, a recording on its way in, a
+  // plan -- the band is written again in the language now in force. It is
+  // not `applyStatic`'s: that wrote 「ファイルを開いてください」 back over a
+  // band that had just said it was reading, when the language was settled a
+  // moment after the window opened.
+  schedulePlan();
 });
 
 noBrowserMenu();
@@ -7609,9 +7697,12 @@ noNativeDrag();
 applyStatic();
 // The two labels that say what would happen rather than what the button is,
 // and are therefore written from here rather than by `applyStatic`.
-el("detect-cm").textContent = tr("editor.detectCm");
+detectLabel("detect-cm").textContent = tr("editor.detectCm");
 paintDetectLabels();
 paintDetectCm();
+// The plan's band is written from here too, in the language in force: the
+// markup's words are only there for the moment before this runs.
+schedulePlan();
 el("play").textContent = tr("t.play");
 renderKeyframes();
 draw();

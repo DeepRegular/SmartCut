@@ -20,14 +20,6 @@
       <span class="spacer"></span>
       <button id="tracks" class="mini wide" data-i18n="tracks.button"
               data-i18n-title="tracks.button.title">トラック</button>
-      <!-- Commercial detection, which is the one of the three that is asked
-           for on nearly every recording. Its label counts the pass up while
-           it runs, so it is `main.js` that writes it and not `applyStatic`.
-           The black/white and the silence passes are in the ≡ menu: they are
-           asked for on some material and not on most, and a row of three
-           detections across the top read as three things to do before
-           cutting. -->
-      <button id="detect-cm" class="mini wide" data-i18n-title="editor.detectCm.title">CM を検出</button>
     </div>
 
     <main>
@@ -98,14 +90,15 @@
         </div>
 
         <div class="strip-wrap">
-          <!-- How the strip is worked, in its tooltip rather than on a line
-               under it: two lines of help text were two lines taken off the
-               picture on a 1080p screen, every time, for something read once. -->
-          <div id="strip" class="strip" data-i18n-title="editor.stripHint">
+          <div id="strip" class="strip">
             <div id="reel" class="reel"></div>
             <div id="playline" class="playline" hidden></div>
           </div>
           <div class="strip-foot">
+            <!-- How the strip is worked, as this ?'s tooltip rather than two
+                 lines of text under the strip: those were two lines taken off
+                 the picture on a 1080p screen, for something read once. -->
+            <span class="hint" data-i18n-title="editor.stripHint">?</span>
             <span class="spacer"></span>
             <span id="warm" class="warm"></span>
             <label class="opt"><span data-i18n="editor.stripShow">1 画面</span>
@@ -122,7 +115,7 @@
         </div>
 
         <div class="track-wrap">
-          <canvas id="track" height="84"></canvas>
+          <canvas id="track" height="80"></canvas>
           <div id="hover" class="hover" hidden>
             <img id="hover-img" alt="" />
             <div class="hover-foot"><span id="hover-time">--:--:--.--</span><span id="hover-kind"></span></div>
@@ -189,13 +182,17 @@
             <button id="more" class="tool more" aria-haspopup="true" aria-expanded="false"
                     data-i18n-title="editor.more.title">≡</button>
             <div id="more-menu" class="menu up end" hidden>
-              <!-- The two detections that are not on the bar above. They are
-                   separate lines because they are separate passes: the
+              <!-- The three detections. They are separate lines because they
+                   are separate passes: the
                    pictures are a minute on half an hour of broadcast and the
                    sound is seconds, so somebody after the silences alone
                    should not wait for the pictures. Their labels count a pass
                    up while it runs, which is why the word is in a span of its
                    own and `main.js` writes that rather than the line. -->
+              <button class="menu-item" id="detect-cm" data-i18n-title="editor.detectCm.title">
+                <span class="menu-label">CM を検出</span>
+                <span class="menu-key">Ctrl+D</span>
+              </button>
               <button class="menu-item" id="detect-blank" data-i18n-title="editor.detectBlank.title">
                 <span class="menu-label">黒白を検出</span>
                 <span class="menu-key">Ctrl+B</span>
@@ -370,7 +367,7 @@
             <!-- The summary, and the button that unfolds the segments under
                  it. Folded out of the box; see `planOpen` in prefs.js. -->
             <div class="plan-head">
-              <div class="plan-text" id="plan-text" data-i18n="plan.openFile">ファイルを開いてください</div>
+              <div class="plan-text" id="plan-text">ファイルを開いてください</div>
               <button id="plan-fold" class="mini" type="button" aria-expanded="false"
                       data-i18n-title="plan.fold.title"></button>
             </div>
@@ -423,8 +420,10 @@
             <label class="opt" id="subs-pick" hidden><span data-i18n="subs.label">字幕</span>
               <select id="subs-track"></select>
             </label>
+            <!-- The one line the window says things on -- what a read found,
+                 why playback waited, what a detection came to. It takes the
+                 rest of the row, up to the two buttons. -->
             <span class="dim" id="status"></span>
-            <span class="spacer"></span>
             <button id="editor-ok" class="primary wide" data-i18n="editor.ok">OK</button>
             <button id="editor-cancel" class="secondary" data-i18n="editor.cancel">キャンセル</button>
           </div>
