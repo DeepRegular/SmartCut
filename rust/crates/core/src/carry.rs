@@ -75,7 +75,12 @@ const TS_AUDIO: &[&str] = &[
 /// What an MP4 refuses. VP9 and AV1 are written; TrueHD is written on this
 /// program's own insistence, which it says out loud (see `outside` in
 /// [`crate::cut`]).
-const MP4_REFUSES: &[&str] = &["vp8"];
+///
+/// A 4K broadcast's LATM AAC is the one a recording of this program's own
+/// kind runs into: the muxer has no tag for it and the cut stopped with
+/// "Invalid argument" after planning. Bare MLP and 8-bit PCM are turned away
+/// the same way, "Could not find tag", whatever the compliance level.
+const MP4_REFUSES: &[&str] = &["vp8", "aac_latm", "mlp", "pcm_u8"];
 
 /// What a QuickTime file refuses. It takes the MP4 family's pictures except
 /// the three WebM carries, and its sound stops at the lossless ones: "vp9
@@ -179,6 +184,7 @@ mod tests {
         assert!(!holds("mp4", "vp8"));
         assert!(holds("mp4", "vp9"));
         assert!(holds("mp4", "truehd"));
+        assert!(!holds("mp4", "aac_latm") && holds("mov", "aac_latm"));
         assert!(!holds("mov", "vp9"));
         assert!(!holds("mov", "opus"));
         assert!(holds("mov", "ac3"));

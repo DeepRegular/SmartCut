@@ -121,17 +121,15 @@ impl Default for DetectOptions {
 /// them are.
 fn loud_bounds(frame: &ff::frame::Audio, floor: f64) -> Option<(usize, usize)> {
     use ff::format::sample::Sample;
-    // A frame can claim more planes than an `AVFrame` has pointers to hold:
+    // A frame can hold more planes than an `AVFrame` has `data` pointers:
     // eight is all there are, and a corrupt header in an off-air recording is
-    // enough to ask for a ninth. Reading it is a panic rather than an error,
-    // and it took the whole detection down on one recording in a survey of
-    // thirty-five. What the loudest channel is does not change for looking at
-    // the first eight.
-    let planes = if frame.is_planar() {
-        frame.planes().min(8)
-    } else {
-        1
-    };
+    // enough to ask for a ninth. Read through `plane` that is a panic rather
+    // than an error, and it took the whole detection down on one recording in
+    // a survey of thirty-five. Every channel is read through `extended_data`
+    // instead (see [`channel`]): stopping at the eighth left the rest of a
+    // 22.2 track unheard, and a stretch where only those were loud was called
+    // silent.
+    let planes = if frame.is_planar() { frame.planes() } else { 1 };
     // Nothing to read. `planes` is nought where the frame carries no buffer
     // at all, and asking one for its bytes is a panic rather than an error.
     if frame.planes() == 0 {
@@ -154,21 +152,26 @@ fn loud_bounds(frame: &ff::frame::Audio, floor: f64) -> Option<(usize, usize)> {
     };
     if frame.is_planar() {
         for p in 0..planes {
-            // `plane` rather than `data`: an `AVFrame` sets `linesize` for
-            // the first plane alone, so the second channel of a planar frame
-            // reads as no bytes at all.
+            // Counted in samples rather than read off `data`: an `AVFrame`
+            // sets `linesize` for the first plane alone, so the second
+            // channel of a planar frame reads as no bytes at all.
             take(match frame.format() {
-                Sample::F32(_) => over(frame.plane::<f32>(p).iter().map(|v| v.abs() as f64), floor),
-                Sample::F64(_) => over(frame.plane::<f64>(p).iter().map(|v| v.abs()), floor),
+                Sample::F32(_) => over(channel::<f32>(frame, p).iter().map(|v| v.abs() as f64), floor),
+                Sample::F64(_) => over(channel::<f64>(frame, p).iter().map(|v| v.abs()), floor),
                 Sample::I16(_) => over(
-                    frame.plane::<i16>(p).iter().map(|v| v.unsigned_abs() as f64 / 32768.0),
+                    channel::<i16>(frame, p).iter().map(|v| v.unsigned_abs() as f64 / 32768.0),
                     floor,
                 ),
                 Sample::I32(_) => over(
-                    frame
-                        .plane::<i32>(p)
+                    channel::<i32>(frame, p)
                         .iter()
                         .map(|v| v.unsigned_abs() as f64 / 2147483648.0),
+                    floor,
+                ),
+                // Unsigned, with silence at the middle of the scale. Left to
+                // the arm below, a quiet 8-bit PCM track was never silent.
+                Sample::U8(_) => over(
+                    channel::<u8>(frame, p).iter().map(|&v| (v as f64 - 128.0).abs() / 128.0),
                     floor,
                 ),
                 // An unknown layout is never called silent, so the whole
@@ -187,6 +190,7 @@ fn loud_bounds(frame: &ff::frame::Audio, floor: f64) -> Option<(usize, usize)> {
             Sample::F64(_) => (8, 1.0),
             Sample::I16(_) => (2, 32768.0),
             Sample::I32(_) => (4, 2147483648.0),
+            Sample::U8(_) => (1, 128.0),
             _ => return Some((0, frame.samples().saturating_sub(1))),
         };
         let bytes = frame.data(0);
@@ -198,6 +202,7 @@ fn loud_bounds(frame: &ff::frame::Audio, floor: f64) -> Option<(usize, usize)> {
                 Sample::I16(_) => {
                     i16::from_ne_bytes(c.try_into().expect("width")).unsigned_abs() as f64
                 }
+                Sample::U8(_) => (c[0] as f64 - 128.0).abs(),
                 _ => i32::from_ne_bytes(c.try_into().expect("width")).unsigned_abs() as f64,
             }
         };
@@ -207,6 +212,26 @@ fn loud_bounds(frame: &ff::frame::Audio, floor: f64) -> Option<(usize, usize)> {
         ));
     }
     Some((first?, last?))
+}
+
+/// Channel `p` of a planar frame, `samples()` of them, whatever the count.
+///
+/// As `audio::channel` does it: past the eighth, a channel is in
+/// `extended_data` alone. `T` has to be the frame's own sample type, which
+/// the one caller matches on before asking.
+fn channel<T>(frame: &ff::frame::Audio, p: usize) -> &[T] {
+    assert!(frame.is_planar() && p < frame.planes());
+    // SAFETY: a planar frame holds one `extended_data` pointer per channel,
+    // each to `samples()` samples of its format, for as long as the frame is
+    // borrowed. `planes()` is the channel count and is nought where there is
+    // no buffer.
+    unsafe {
+        let data = *(*frame.as_ptr()).extended_data.add(p);
+        if data.is_null() {
+            return &[];
+        }
+        std::slice::from_raw_parts(data as *const T, frame.samples())
+    }
 }
 
 /// The first and last of a run of levels that reach `floor`.
@@ -850,12 +875,18 @@ mod tests {
         let layout = ff::channel_layout::ChannelLayout::default(channels);
         let mut frame =
             ff::frame::Audio::new(ff::format::Sample::F32(ff::format::sample::Type::Planar), samples, layout);
+        // Through `extended_data`, which is where a channel past the eighth
+        // is kept.
+        let mut channel = |p: usize| unsafe {
+            let data = *(*frame.as_mut_ptr()).extended_data.add(p);
+            std::slice::from_raw_parts_mut(data as *mut f32, samples)
+        };
         // A fresh frame's buffer is whatever was in the allocation.
-        for p in 0..frame.planes() {
-            frame.plane_mut::<f32>(p).fill(0.0);
+        for p in 0..channels as usize {
+            channel(p).fill(0.0);
         }
         for &(ch, at) in loud {
-            frame.plane_mut::<f32>(ch)[at] = 1.0;
+            channel(ch)[at] = 1.0;
         }
         frame
     }
@@ -891,6 +922,30 @@ mod tests {
         // Either channel alone answers for the frame: a stretch is silent
         // when all of them are.
         assert_eq!(loud_bounds(&planar(1024, 2, &[(1, 5)]), 0.003), Some((5, 5)));
+    }
+
+    /// A channel past the eighth is heard too. A 22.2 track is 24 planes, and
+    /// the last sixteen of them were never read.
+    #[test]
+    fn every_channel_of_a_wide_track_is_read() {
+        assert_eq!(loud_bounds(&planar(1024, 24, &[]), 0.003), None);
+        assert_eq!(loud_bounds(&planar(1024, 24, &[(20, 700)]), 0.003), Some((700, 700)));
+        assert_eq!(
+            loud_bounds(&planar(1024, 10, &[(9, 50), (2, 600)]), 0.003),
+            Some((50, 600))
+        );
+    }
+
+    /// Unsigned 8-bit is silent at 128, not at nought.
+    #[test]
+    fn unsigned_bytes_are_silent_in_the_middle() {
+        let layout = ff::channel_layout::ChannelLayout::default(2);
+        let mut frame =
+            ff::frame::Audio::new(ff::format::Sample::U8(ff::format::sample::Type::Packed), 256, layout);
+        frame.data_mut(0).fill(128);
+        assert_eq!(loud_bounds(&frame, 0.003), None);
+        frame.data_mut(0)[2 * 40 + 1] = 250;
+        assert_eq!(loud_bounds(&frame, 0.003), Some((40, 40)));
     }
 
     /// Under the level is not loud, however many samples of it there are.

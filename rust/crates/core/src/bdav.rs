@@ -368,6 +368,34 @@ pub fn remove_disc(at: &Path) -> Result<()> {
             root.display()
         );
     }
+    // Nor while the image beside it does not hold the disc as it is now.
+    // The two checks above see a run that is still writing; they do not see
+    // one that finished while the image was being copied. That run's stream
+    // went into the image at the length it had when the copy began, its
+    // playlist not at all, and by the time the image was done everything on
+    // the disc had its index -- so the folder went, and with it the only
+    // whole copy of the other run's recording. Every file is looked for in
+    // the image at the length it has now, which is what "the image holds all
+    // of it" means. Both callers write the image beside the folder under the
+    // folder's name.
+    let image = at
+        .file_name()
+        .map(|name| {
+            let mut file = name.to_os_string();
+            file.push(".iso");
+            at.with_file_name(file)
+        })
+        .with_context(|| format!("{} has no image beside it", at.display()))?;
+    let held = crate::udf::Image::open(&image)
+        .with_context(|| format!("{} is kept: its image could not be read", root.display()))?;
+    if let Some(changed) = not_in_image(&root, "BDAV", &held)? {
+        bail!(
+            "{} is kept: {changed} in it is not in {} as it is now -- another run may have \
+             written to the disc while the image was being made",
+            root.display(),
+            image.display()
+        );
+    }
     std::fs::remove_dir_all(&root).with_context(|| format!("removing {}", root.display()))?;
     // `remove_dir` and not `remove_dir_all`: it removes an empty folder and
     // refuses anything else, which is the rule here rather than a check
@@ -375,6 +403,26 @@ pub fn remove_disc(at: &Path) -> Result<()> {
     // that is not a failure -- the disc it held is gone either way.
     let _ = std::fs::remove_dir(at);
     Ok(())
+}
+
+/// The first file under `dir` that `image` does not hold at `under`, at the
+/// length it has on the disk. A folder reached through a link, or anything
+/// that is not a file, is what [`crate::udfw::left_out`] already answers for.
+fn not_in_image(dir: &Path, under: &str, image: &crate::udf::Image) -> Result<Option<String>> {
+    for e in std::fs::read_dir(dir).with_context(|| format!("reading {}", dir.display()))? {
+        let e = e?;
+        let path = format!("{under}/{}", e.file_name().to_string_lossy());
+        let meta = std::fs::metadata(e.path())
+            .with_context(|| format!("reading {}", e.path().display()))?;
+        if meta.is_dir() {
+            if let Some(found) = not_in_image(&e.path(), &path, image)? {
+                return Ok(Some(found));
+            }
+        } else if image.find(&path).is_none_or(|held| held.size != meta.len()) {
+            return Ok(Some(path));
+        }
+    }
+    Ok(None)
 }
 
 /// The five-digit stems of the files of one kind a disc directory holds.
@@ -868,9 +916,13 @@ fn survey(path: &Path, told: &mut dyn FnMut(u64)) -> Result<(u32, Vec<(u32, i64)
         if let Some(pcr) = pcr_of(p) {
             let mut now = pcr as i64 + wrap;
             // The clock is 33 bits and wraps every twenty-six hours, and a cut
-            // is not that long, so a step backwards is the wrap and nothing
-            // else.
-            if now < was {
+            // is not that long, so a step backwards by most of the clock is
+            // the wrap and nothing else. A step back by a moment is not: read
+            // as a wrap, the run in front of it was dealt twenty-six hours of
+            // room and its packets' arrival times scattered over the whole
+            // 30-bit field. Left as it is, [`Schedule`] moves the references
+            // before it earlier, as it moves any that crowd the rate.
+            if now < was - (1i64 << 32) * 300 {
                 wrap += (1i64 << 33) * 300;
                 now += (1i64 << 33) * 300;
             }
@@ -2114,11 +2166,53 @@ mod tests {
         std::fs::create_dir_all(root(&at).join("PLAYLIST")).unwrap();
         std::fs::write(root(&at).join("info.bdav"), b"x").unwrap();
         std::fs::write(root(&at).join("PLAYLIST").join(".notes"), b"x").unwrap();
+        let image = imaged(&at);
         assert!(remove_disc(&at).is_err());
         assert!(root(&at).join("PLAYLIST").join(".notes").exists());
         std::fs::remove_file(root(&at).join("PLAYLIST").join(".notes")).unwrap();
         assert!(remove_disc(&at).is_ok());
         assert!(!at.exists());
+        let _ = std::fs::remove_file(image);
+    }
+
+    /// Write the image a disc is taken away for, where both callers put it.
+    fn imaged(at: &Path) -> PathBuf {
+        let image = PathBuf::from(format!("{}.iso", at.display()));
+        crate::udfw::write(
+            at,
+            &image,
+            crate::udfw::Revision::V250,
+            crate::udfw::Access::ReadOnly,
+            "x",
+            None,
+        )
+        .unwrap();
+        image
+    }
+
+    /// A disc is kept when something on it changed after its image was made:
+    /// a run that finished while the image was being copied is in the image
+    /// only as far as it had got, and taking the folder took the rest.
+    #[test]
+    fn a_disc_that_changed_after_its_image_is_kept() {
+        let at = std::env::temp_dir().join(format!("bdav-changed-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&at);
+        std::fs::create_dir_all(root(&at).join("PLAYLIST")).unwrap();
+        std::fs::write(root(&at).join("info.bdav"), b"x").unwrap();
+        // No image at all.
+        assert!(remove_disc(&at).is_err());
+        let image = imaged(&at);
+        // A file that grew, and a file that was not there.
+        std::fs::write(root(&at).join("info.bdav"), b"xy").unwrap();
+        assert!(remove_disc(&at).is_err());
+        std::fs::write(root(&at).join("info.bdav"), b"x").unwrap();
+        std::fs::write(root(&at).join("PLAYLIST").join("00002.rpls"), b"x").unwrap();
+        assert!(remove_disc(&at).is_err());
+        assert!(root(&at).join("PLAYLIST").join("00002.rpls").exists());
+        std::fs::remove_file(root(&at).join("PLAYLIST").join("00002.rpls")).unwrap();
+        assert!(remove_disc(&at).is_ok());
+        assert!(!at.exists());
+        let _ = std::fs::remove_file(image);
     }
 
     /// A disc another run has a number reserved on is kept: that stream is
@@ -2131,8 +2225,10 @@ mod tests {
         assert!(remove_disc(&at).is_err());
         assert!(stream_of(&at, &clip).exists());
         std::fs::write(root(&at).join("CLIPINF").join(format!("{clip}.clpi")), b"x").unwrap();
+        let image = imaged(&at);
         assert!(remove_disc(&at).is_ok());
         assert!(!at.exists());
+        let _ = std::fs::remove_file(image);
     }
 
     /// Two runs writing the table of one disc at once each finish, and the

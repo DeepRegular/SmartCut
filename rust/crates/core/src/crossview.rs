@@ -534,6 +534,17 @@ impl Reader {
                 }
             }
         }
+        // Nothing on screen yet: the instant asked for is in front of the
+        // clip's first picture, which is where a range kept from the head of
+        // a recording begins -- its first entry point, read off an index
+        // whose rounding need not be the decoder's. Left at nothing, the
+        // clip after a plain cut or a fade had no picture at its first
+        // instant, and with the clip before already gone the preview took
+        // that for the end of the material and stopped at the join. The
+        // first picture stands in, as the cut places it at the range's start.
+        if self.held.is_none() {
+            return Ok(self.ahead.as_ref().map(|(_, f)| f));
+        }
         Ok(self.held.as_ref())
     }
 

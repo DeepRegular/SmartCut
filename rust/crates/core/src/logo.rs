@@ -417,9 +417,25 @@ fn template_reach(src: &Source) -> Reach {
     {
         return Reach::Whole;
     }
+    // Spread over the length only where the runs stay inside the index: a
+    // length is the container's word where it is longer than the index, and
+    // every run placed past the last entry point is placed *on* it. A
+    // recording whose container claimed twice its length had half the runs
+    // read the same last few seconds, and the template was mostly whatever
+    // the recording ended on. Such a recording is spread over its entry
+    // points instead; every other one keeps the runs it always had.
+    let last = src.points.iter().map(|p| p.time).fold(f64::NEG_INFINITY, f64::max);
+    let reach = (TEMPLATE_STRETCHES - 1) as f64 / TEMPLATE_STRETCHES as f64;
+    let span = if src.duration * reach < last {
+        src.duration
+    } else if last > 0.0 && last.is_finite() {
+        last
+    } else {
+        return Reach::Whole;
+    };
     let each = TEMPLATE_PICTURES.div_ceil(TEMPLATE_STRETCHES);
     let from = (0..TEMPLATE_STRETCHES)
-        .map(|k| src.duration * k as f64 / TEMPLATE_STRETCHES as f64)
+        .map(|k| span * k as f64 / TEMPLATE_STRETCHES as f64)
         .collect();
     Reach::Stretches { from, each }
 }

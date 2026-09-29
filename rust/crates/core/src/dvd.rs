@@ -611,12 +611,20 @@ pub fn subtitles_of(spec: &str) -> Option<Subtitles> {
 ///
 /// The disc is whatever the path says before `VIDEO_TS`, which is a
 /// directory on one and an image on the other; [`Volume::open`] takes either.
+/// A folder of a disc's files under a name of its own -- which
+/// [`Volume::open`] takes as well -- is the disc itself, and without it such
+/// a disc's titles came out with no subtitles at all.
 fn title_set_of(base: &str) -> Option<(&str, usize)> {
     // One separator, for a folder disc on Windows (`D:\disc\VIDEO_TS\...`).
     let upper = base.to_ascii_uppercase().replace('\\', "/");
-    let at = upper.rfind("/VIDEO_TS/")?;
-    let file = &upper[at + "/VIDEO_TS/".len()..];
-    let number = file.strip_prefix("VTS_")?.get(..2)?.parse().ok()?;
+    let (at, file) = match upper.rfind("/VIDEO_TS/") {
+        Some(at) => (at, at + "/VIDEO_TS/".len()),
+        None => {
+            let at = upper.rfind('/')?;
+            (at, at + 1)
+        }
+    };
+    let number = upper[file..].strip_prefix("VTS_")?.get(..2)?.parse().ok()?;
     Some((&base[..at], number))
 }
 
@@ -839,12 +847,17 @@ impl Volume {
                 .ok_or_else(|| anyhow!("{}: no VIDEO_TS directory here", at.display()))?;
             return Ok(Volume::Dir(dir));
         }
-        let image = udf::Image::open(at)?;
-        let prefix = prefix_of(&image)
+        // A title's name on an image whose `VIDEO_TS` is in a folder of it
+        // names that folder as a path through the image. See
+        // [`crate::disc::inside_image`].
+        let (file, under) = crate::disc::inside_image(at)
+            .unwrap_or_else(|| (at.to_path_buf(), String::new()));
+        let image = udf::Image::open(&file)?;
+        let prefix = prefix_of(&image, &under)
             .ok_or_else(|| anyhow!("{}: no VIDEO_TS directory on this image", at.display()))?;
         Ok(Volume::Image {
             image: Box::new(image),
-            path: at.to_path_buf(),
+            path: file,
             prefix,
         })
     }
@@ -1007,10 +1020,17 @@ fn video_ts(at: &Path) -> Option<PathBuf> {
 /// Where inside an image the `VIDEO_TS` directory sits, or `None` when there
 /// is none -- which is how an `.iso` that is a Blu-ray is told from one that
 /// is a DVD.
-fn prefix_of(image: &udf::Image) -> Option<String> {
+///
+/// `under` is the folder of the image the disc is known to be in, with its
+/// trailing slash, or empty for wherever the image holds one.
+fn prefix_of(image: &udf::Image, under: &str) -> Option<String> {
+    let under = under.to_ascii_uppercase();
     image.files().iter().find_map(|e| {
         let upper = e.path.to_ascii_uppercase();
         let at = upper.rfind("VIDEO_TS/VIDEO_TS.IFO")?;
+        if !under.is_empty() && upper[..at] != under {
+            return None;
+        }
         Some(e.path[..at + "VIDEO_TS/".len()].to_string())
     })
 }
@@ -1092,6 +1112,24 @@ mod tests {
         ifo[..12].copy_from_slice(b"DVDVIDEO-VTS");
         ifo[0xcc..0xd0].copy_from_slice(&2u32.to_be_bytes());
         assert!(palette_of(&ifo, None).is_none());
+    }
+
+    #[test]
+    fn a_title_names_its_disc_and_its_title_set() {
+        assert_eq!(
+            title_set_of("/rec/D.iso/VIDEO_TS/VTS_02_1.VOB"),
+            Some(("/rec/D.iso", 2))
+        );
+        assert_eq!(
+            title_set_of(r"D:\rec\disc\video_ts\vts_03_1.vob"),
+            Some((r"D:\rec\disc", 3))
+        );
+        // The disc's files in a folder of somebody's own naming.
+        assert_eq!(
+            title_set_of("/rec/My disc/VTS_01_1.VOB"),
+            Some(("/rec/My disc", 1))
+        );
+        assert_eq!(title_set_of("/rec/programme.vob"), None);
     }
 
     #[test]

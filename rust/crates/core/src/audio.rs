@@ -1143,12 +1143,19 @@ impl Reencoder {
     /// Hand the encoder every full frame that has accumulated.
     pub fn drain(&mut self, out: &mut Vec<(ff::Packet, i64)>) -> Result<()> {
         self.convert()?;
-        while self.ready[0].len() >= self.frame_size {
-            let mut frame = ff::frame::Audio::new(PLANAR_F32, self.frame_size, self.layout);
+        // Read through by position and taken off the front once at the end.
+        // Drained a frame at a time, every frame moved the whole of what was
+        // behind it: a stretch of silence laid down in one go -- a joined
+        // recording with no sound, a long dropout -- is millions of samples,
+        // and framing it cost the square of that.
+        let size = self.frame_size;
+        let whole = self.ready[0].len() / size.max(1);
+        for k in 0..whole {
+            let at = k * size;
+            let mut frame = ff::frame::Audio::new(PLANAR_F32, size, self.layout);
             frame.set_rate(self.out_rate);
             for ch in 0..self.channels {
-                let taken: Vec<f32> = self.ready[ch].drain(..self.frame_size).collect();
-                channel_mut(&mut frame, ch)[..self.frame_size].copy_from_slice(&taken);
+                channel_mut(&mut frame, ch)[..size].copy_from_slice(&self.ready[ch][at..at + size]);
             }
             frame.set_pts(Some(self.fed));
             self.fed += self.frame_size as i64;
@@ -1161,6 +1168,9 @@ impl Reencoder {
             )?;
             self.encoder.send_frame(feed)?;
             self.collect(out)?;
+        }
+        for ch in 0..self.channels {
+            self.ready[ch].drain(..whole * size);
         }
         Ok(())
     }

@@ -804,6 +804,12 @@ pub fn sequence_header<'a>(codec: &str, data: &'a [u8], framing: NalFraming) -> 
 ///
 /// `None` where the header cannot be read, or says nothing about colour.
 pub fn coded_transfer(sps: &[u8]) -> Option<u8> {
+    // The caller may hand over every parameter set an `hvcC` carries, VPS
+    // and SEI included; read as a sequence header, one of those can come out
+    // as a transfer it never stated.
+    if (sps.first()? >> 1) & 0x3F != 33 {
+        return None;
+    }
     let mut b = Bits::new(sps.get(2..)?); // past the two-byte NAL header
     b.skip(4)?; // sps_video_parameter_set_id
     let max_sub = b.u(3)? as usize;
@@ -1066,6 +1072,10 @@ mod tests {
             "420101022000000300b00000030000030099a001e020021c4db18869242942f016a121c136ca0000\
              07d20001d4c0c24820dc0002b4be00015a5f7cf1e3d0",
         );
+        // Another kind of NAL is not read as one, however well its bits
+        // would parse: an `hvcC` hands its VPS and SEI over alongside.
+        truncated[0] = 0x40;
+        assert_eq!(coded_transfer(&truncated), None);
         while truncated.pop().is_some() {
             // every prefix of a real one, none of which may hang
             let _ = coded_transfer(&truncated);

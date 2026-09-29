@@ -901,13 +901,24 @@ pub fn build(
     }
     // The marks go down first: `ready` asks for both, so the proxy only
     // counts as finished once the thing beside it is already there.
-    marks.save(&marks_path(&out_path))?;
+    //
     // Windows will not rename onto an existing file, and one can be sitting
     // there: a proxy whose marks never got written is not `ready`, so it gets
     // built again over the top of itself.
-    let _ = std::fs::remove_file(&out_path);
-    std::fs::rename(&part, &out_path)
-        .with_context(|| format!("cannot put the proxy at {}", out_path.display()))?;
+    //
+    // The temporary is taken away where it does not make it into place, as
+    // [`crate::seek_index::SeekIndex::save`] takes its own: it is the whole
+    // proxy, a gigabyte or two, and `prune` only reaches it an hour later and
+    // only when another proxy is built.
+    let placed = marks.save(&marks_path(&out_path)).and_then(|()| {
+        let _ = std::fs::remove_file(&out_path);
+        std::fs::rename(&part, &out_path)
+            .with_context(|| format!("cannot put the proxy at {}", out_path.display()))
+    });
+    if placed.is_err() {
+        let _ = std::fs::remove_file(&part);
+    }
+    placed?;
 
     Ok(Built {
         path: out.to_string(),

@@ -1183,6 +1183,13 @@ impl Writer {
         let at = ((pts as f64 / rate.max(1) as f64) / tb).round() as i64;
         packet.set_pts(Some(at));
         packet.set_dts(Some(at));
+        // And the length, which the encoder counts in samples as well. Left
+        // as it came, Matroska's milliseconds took the last frame of a
+        // re-encoded track for a thousand of them, and the track outran the
+        // pictures by a second.
+        if packet.duration() > 0 {
+            packet.set_duration(((packet.duration() as f64 / rate.max(1) as f64) / tb).round() as i64);
+        }
         packet.set_position(-1);
         packet.write_interleaved(&mut self.octx)?;
         self.audio[track].written += 1;
@@ -2124,7 +2131,10 @@ fn ts_layout(ictx: &ff::format::context::Input, video_index: usize) -> Option<Ts
             Some(p) => ((*p).pmt_pid, (*p).id),
             None => (0, 0),
         };
-        if !(0x0010..=PID_MAX).contains(&pmt_pid) {
+        // The muxer's own range for the map, which is the streams' range: a
+        // map on 0x0010-0x001F is a PID it will not take, and handed one it
+        // stops the cut with "Numerical result out of range".
+        if !(PID_MIN..=PID_MAX).contains(&pmt_pid) {
             pmt_pid = 0;
         }
         // The muxer hands out PIDs in a run from `first_pid`; a PMT sitting
@@ -5790,11 +5800,20 @@ pub fn join_with_progress(
     // An empty file is ours as well: it is how a disc's number is held
     // before the cut is written into it (see `bdav::prepare`).
     let ours = std::fs::metadata(output).map_or(true, |m| m.len() == 0);
-    let done = cut_into(reels, master.min(reels.len().saturating_sub(1)), output, opts, progress);
-    if done.is_err() && ours {
+    // A panic on the way is a failed cut as much as an error is, and leaves
+    // the same half-written file behind -- so it is let through only once
+    // that file is gone. By then the output context has been dropped on the
+    // way out, which is what lets Windows remove it.
+    let done = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        cut_into(reels, master.min(reels.len().saturating_sub(1)), output, opts, progress)
+    }));
+    if !matches!(done, Ok(Ok(()))) && ours {
         let _ = std::fs::remove_file(output);
     }
-    done
+    match done {
+        Ok(done) => done,
+        Err(panic) => std::panic::resume_unwind(panic),
+    }
 }
 
 /// Which of a cut's two passes a report is about.
@@ -6223,7 +6242,17 @@ fn cut_into(
             return Err(refuse(&src.video.codec, "pictures"));
         }
         for setup in &setups {
-            let codec = crate::carry::name_of(setup.target);
+            // What the stream is declared as, which for a whole-track
+            // re-encode written unframed is the encoder's codec rather than
+            // the recording's: a 4K recording's LATM goes out as raw AAC,
+            // which an MP4 holds and LATM it does not. See where the stream
+            // is declared, below, and the same rule in [`crate::sound`].
+            let declared = if setup.mode == AudioMode::Reencode && setup.frame_as.is_none() {
+                crate::audio::encoder_for(setup.target)
+            } else {
+                setup.target
+            };
+            let codec = crate::carry::name_of(declared);
             if !crate::carry::holds(family, &codec) {
                 return Err(refuse(&codec, "sound"));
             }
@@ -6425,13 +6454,22 @@ fn cut_into(
         let name = octx.format().name().to_string();
         name.contains("mp4") || name.contains("mov")
     };
+    // And the rest of the family that muxer writes -- 3GP, the PSP's and the
+    // iPod's, Smooth Streaming, F4V -- which keep lengths and count time the
+    // same way. Only an MP4 or a QuickTime file takes the `avc3` tag below;
+    // the others list `avc1` alone and refuse the header over anything else.
+    // Taken for a container of start codes, a `.3gp` of an MP4 had every
+    // copied picture written in start codes under the recording's `avcC`,
+    // and decoded to nothing.
+    let iso = mp4ish
+        || matches!(octx.format().name(), "3gp" | "3g2" | "psp" | "ipod" | "ismv" | "f4v");
     // The timescale worked out above, which is the MP4 family's own option
     // and nobody else's: Matroska counts in milliseconds and has nothing to
     // set. Asked of the muxer rather than of the file name, and asked here
     // rather than with the rest, because an option the muxer does not
     // recognise is one that comes back out of `write_header_with` below --
     // where a `.mkv` was leaving this one behind on every cut.
-    if mp4ish {
+    if iso {
         muxer_opts.set("video_track_timescale", &timescale);
     }
     // TrueHD in an MP4 is a box libavformat will write but will not vouch
@@ -6464,9 +6502,11 @@ fn cut_into(
     // that says lengths, which a decoder reads as a NAL one byte long followed
     // by garbage. A cut of H.264 from one Matroska file into another decoded
     // to nothing but its re-encoded fringes.
-    let lengths = mp4ish || {
+    // FLV as well: its `AVCDecoderConfigurationRecord` is the same record,
+    // and its muxer converts start codes only where that is written in them.
+    let lengths = iso || {
         let format = octx.format();
-        format.name().contains("matroska") || format.name().contains("webm")
+        format.name().contains("matroska") || format.name().contains("webm") || format.name() == "flv"
     };
     // Only containers that keep lengths need the reframing dance; Annex-B
     // containers already carry parameter sets in-band, and their muxers
@@ -6550,6 +6590,28 @@ fn cut_into(
                 _ => 0,
             };
             set_pid(&mut ost, to_ts, pids.video(video_pid));
+            // Where the copied pictures go out in start codes -- see
+            // `unframe` -- into a container that keeps the record it is
+            // given, an AVI or a program stream, that record has to say start
+            // codes too. The recording's own `avcC` says lengths, and a
+            // decoder believing it read every copied picture of an MP4 cut
+            // into an AVI as garbage. A transport stream keeps no record, so
+            // is left as it was.
+            if let (Some(u), false) = (&unframe, to_ts) {
+                let annexb = prepend_parameter_sets_annexb(&[], &u.sets);
+                let par = ost.parameters().as_mut_ptr();
+                ff::ffi::av_freep(std::ptr::addr_of_mut!((*par).extradata).cast());
+                (*par).extradata_size = 0;
+                if !annexb.is_empty() {
+                    let room = annexb.len() + ff::ffi::AV_INPUT_BUFFER_PADDING_SIZE as usize;
+                    let buf = ff::ffi::av_mallocz(room) as *mut u8;
+                    if !buf.is_null() {
+                        std::ptr::copy_nonoverlapping(annexb.as_ptr(), buf, annexb.len());
+                        (*par).extradata = buf;
+                        (*par).extradata_size = annexb.len() as i32;
+                    }
+                }
+            }
         }
     }
     // A fade needs sound this program is writing. A track copied through is
@@ -7432,10 +7494,19 @@ fn cut_into(
         }
         for (n, seg) in plan.segments.iter().enumerate() {
             let first_segment = n == 0;
+            // A stretch written in the master's shape -- a reel that does not
+            // match it, or a transition -- comes out of an encoder opened for
+            // the master's codec, so it is framed the way the master's own
+            // pictures are. The reel's framing describes its own codec, and
+            // is nothing at all where that is not H.264 or HEVC: an MPEG-2
+            // clip joined onto an H.264 master in a `.mkv` had the encoder's
+            // start codes written raw into a track that counts lengths.
+            let afresh = seg.kind == SegmentKind::Reencode
+                && (seg.retouch.is_some() || fits[reel_no].video);
             let ctx = SegmentCtx {
                 display_base,
                 grid,
-                reframe: reframe_here,
+                reframe: if afresh { reframe.as_ref() } else { reframe_here },
                 unframe: unframe_here,
                 audio: &audio_ctx,
                 captions: &caption_ctx,

@@ -512,11 +512,21 @@ pub fn carry_disc_languages(src: &mut crate::Source) {
     }
 }
 
-/// Split `<disc>/BDMV/STREAM/00014.m2ts` into the disc and `00014`.
+/// Split `<disc>/BDMV/STREAM/00014.m2ts` into the disc's own directory,
+/// `<disc>/BDMV`, and `00014`.
 ///
 /// The shape is the same on both dialects and is the only thing being asked
 /// for: which disc, and which clip on it. Anything else is not on a disc as
 /// far as this is concerned.
+///
+/// The directory the clip is in and not the folder above it, because that is
+/// the disc the clip belongs to: a folder holding both a `BDMV` and a `BDAV`
+/// opens as its `BDMV`, and a clip of its `BDAV` was given the other disc's
+/// clip index. And the directory need not be called either: a disc copied
+/// under somebody's own name (`Anime 2026-08-17/STREAM/00001.m2ts`) is still
+/// a disc -- [`Volume::open`] reads its dialect off its playlists -- and
+/// taken for a broadcast it lost its languages, its listing, its entry
+/// points and the join of its clocks.
 pub fn clip_on_a_disc(path: &str) -> Option<(&str, &str)> {
     // A name that plays one sequence of a clip still names the clip, and the
     // index beside it is the clip's.
@@ -530,13 +540,31 @@ pub fn clip_on_a_disc(path: &str) -> Option<(&str, &str)> {
         .chars()
         .map(|c| if c == '\\' { '/' } else { c.to_ascii_uppercase() })
         .collect();
-    let (at, marker) = ["/BDMV/STREAM/", "/BDAV/STREAM/"]
-        .iter()
-        .find_map(|marker| plain.find(marker).map(|at| (at, marker.len())))?;
-    let (root, rest) = (&path[..at], &path[at + marker..]);
+    let at = plain.rfind("/STREAM/")?;
+    let (root, rest) = (&path[..at], &path[at + "/STREAM/".len()..]);
     let clip = rest.get(..rest.len().checked_sub(".m2ts".len())?)?;
     let named = rest[clip.len()..].eq_ignore_ascii_case(".m2ts");
-    (named && !clip.is_empty() && !clip.contains(['/', '\\'])).then_some((root, clip))
+    if !named || clip.is_empty() || clip.contains(['/', '\\']) {
+        return None;
+    }
+    let dialect = plain[..at].ends_with("/BDMV") || plain[..at].ends_with("/BDAV");
+    // A directory of any other name is asked whether it is a disc's: what a
+    // disc calls a clip, and a folder of playlists beside the clips. Asked
+    // only of a name shaped like a clip, so everything else still costs
+    // nothing. A path through an image cannot be looked at from here and
+    // is taken on its shape -- but only one that does go through an image:
+    // a URL, or a folder that is not there, is not a disc.
+    let disc = dialect || {
+        let dir = Path::new(root);
+        clip.len() == 5
+            && clip.bytes().all(|b| b.is_ascii_digit())
+            && if dir.is_dir() {
+                ["PLAYLIST", "playlist"].iter().any(|n| dir.join(n).is_dir())
+            } else {
+                inside_image(dir).is_some()
+            }
+    };
+    disc.then_some((root, clip))
 }
 
 pub fn carry_languages(src: &mut crate::Source, tracks: &[Track]) {
@@ -638,6 +666,9 @@ fn read_bluray(at: &Path) -> Result<Disc> {
     // twenty-four. Keyed on the part of the clip a playlist plays and not on
     // the clip alone: a recorder can write two programmes into one stream and
     // two playlists that each name half of it, and those are two recordings.
+    // By what is opened rather than by the clip: the times of a row that
+    // plays one sequence are on that sequence's own clock, and two sequences
+    // of one clip can state the same ones.
     //
     // Each key remembers the row it made and how many clips its playlist
     // played, because the marks are worth taking from the shortest playlist
@@ -659,7 +690,7 @@ fn read_bluray(at: &Path) -> Result<Disc> {
         let rows = rows_of(&title.clips, shape, &mut vol);
         let many = rows.len();
         for (i, c) in rows.iter().enumerate() {
-            let key = (c.clip.clone(), ticks(c.start), ticks(c.end));
+            let key = (c.path.clone(), ticks(c.start), ticks(c.end));
             if let Some((row, from)) = seen.get_mut(&key) {
                 if many < *from && !c.marks.is_empty() {
                     entries[*row].marks = c.marks.clone();
@@ -701,7 +732,13 @@ fn read_bluray(at: &Path) -> Result<Disc> {
                 description: title.description.clone(),
                 channel: title.channel.clone(),
                 channel_number: title.channel_number,
-                bytes: vol.bytes(&c.clip),
+                // A row that plays one sequence of a clip is those packets of
+                // it, and two programmes a recorder wrote into one clip are
+                // not each the size of both.
+                bytes: crate::input::clip_window(&c.path).map_or_else(
+                    || vol.bytes(&c.clip),
+                    |(_, first, last)| (last + 1 - first) * SOURCE_PACKET,
+                ),
                 tracks: match clip_tracks.get(&c.clip) {
                     Some(t) => t.clone(),
                     None => {
@@ -975,13 +1012,20 @@ impl Volume {
                 .ok_or_else(|| anyhow!("{}: no BDMV or BDAV directory here", at.display()))?;
             return Ok(Volume::Dir { shape, dir, spent: 0 });
         }
-        let image = udf::Image::open(at)?;
-        let (shape, prefix) = prefix_of(&image)
+        // A disc in a folder of an image arrives here as a path through it --
+        // `x.iso/DISC`, the part in front of `BDAV/STREAM` of a clip's name --
+        // and that path is neither a directory nor a file. Opened as given,
+        // every question asked of such a clip's disc (its languages, its
+        // listing, its entry points, the join of its clocks) came back empty.
+        let (file, under) =
+            inside_image(at).unwrap_or_else(|| (at.to_path_buf(), String::new()));
+        let image = udf::Image::open(&file)?;
+        let (shape, prefix) = prefix_of(&image, &under)
             .ok_or_else(|| anyhow!("{}: no BDMV or BDAV directory on this image", at.display()))?;
         Ok(Volume::Image {
             shape,
             image: Box::new(image),
-            path: at.to_path_buf(),
+            path: file,
             prefix,
             spent: 0,
         })
@@ -1249,16 +1293,25 @@ fn dialect_of(dir: &Path) -> Option<Shape> {
 /// The case a disc spells its directories in is its own business, and so is
 /// whether it puts them at the root -- a burner asked for a subdirectory
 /// obliges.
-fn prefix_of(image: &udf::Image) -> Option<(Shape, String)> {
+///
+/// `under` is the folder of the image the disc is known to be in, with its
+/// trailing slash, or empty for wherever the image holds one.
+fn prefix_of(image: &udf::Image, under: &str) -> Option<(Shape, String)> {
+    let under = under.to_ascii_uppercase();
+    // Where the directory has to start to be the one asked for.
+    let placed = |at: usize| under.is_empty() || at == under.len();
     for shape in [Shape::Bdmv, Shape::Bdav] {
         let want = format!("{}/PLAYLIST/", shape.root());
         let ext = shape.ext().to_ascii_uppercase();
         let found = image.files().iter().find_map(|e| {
             let upper = e.path.to_ascii_uppercase();
-            if !upper.ends_with(&ext) {
+            if !upper.ends_with(&ext) || !upper.starts_with(&under) {
                 return None;
             }
-            let at = upper.find(&want)?;
+            let at = upper[under.len()..].find(&want)? + under.len();
+            if !placed(at) {
+                return None;
+            }
             // A pressed disc keeps a second copy of its whole index under
             // `BACKUP`, for a player whose read of the first one failed.
             // Reading it here would be reading the disc twice.
@@ -1277,15 +1330,40 @@ fn prefix_of(image: &udf::Image) -> Option<(Shape, String)> {
         let ext = shape.ext().to_ascii_uppercase();
         let found = image.files().iter().find_map(|e| {
             let upper = e.path.to_ascii_uppercase();
-            if !upper.ends_with(&ext) {
+            if !upper.ends_with(&ext) || !upper.starts_with(&under) {
                 return None;
             }
-            let at = upper.find("PLAYLIST/")?;
-            (!upper[..at].contains("BACKUP/")).then(|| e.path[..at].to_string())
+            let at = upper[under.len()..].find("PLAYLIST/")? + under.len();
+            (placed(at) && !upper[..at].contains("BACKUP/")).then(|| e.path[..at].to_string())
         });
         if let Some(prefix) = found {
             return Some((shape, prefix));
         }
+    }
+    None
+}
+
+/// The image a path runs through, and the folder of it the path names, with
+/// a trailing slash: `x.iso/DISC` is `x.iso` and `DISC/`.
+///
+/// `None` for a path that is there to be opened as it is, and for one that
+/// runs through no file at all.
+pub(crate) fn inside_image(at: &Path) -> Option<(PathBuf, String)> {
+    if at.exists() {
+        return None;
+    }
+    let mut inside: Vec<String> = Vec::new();
+    let mut here = at;
+    while let Some(parent) = here.parent() {
+        inside.push(here.file_name()?.to_string_lossy().into_owned());
+        if parent.as_os_str().is_empty() {
+            return None;
+        }
+        if parent.is_file() {
+            inside.reverse();
+            return Some((parent.to_path_buf(), format!("{}/", inside.join("/"))));
+        }
+        here = parent;
     }
     None
 }
@@ -2336,11 +2414,15 @@ pub fn clip_restamp(path: &str) -> Option<crate::restamp::Restamp> {
     // recorder writes `BDAV`. Asked of the name so that a pressed disc pays
     // nothing at all: no image opened, no index read.
     let (root, clip) = clip_on_a_disc(path)?;
-    let dialect = path.get(root.len() + 1..root.len() + 5);
-    if !dialect.is_some_and(|d| d.eq_ignore_ascii_case("BDAV")) {
+    let named = root.to_ascii_uppercase().replace('\\', "/");
+    if named == "BDMV" || named.ends_with("/BDMV") {
         return None;
     }
+    // A directory under a name of its own is asked what it is.
     let mut vol = Volume::open(Path::new(root)).ok()?;
+    if vol.shape() != Shape::Bdav {
+        return None;
+    }
     let raw = vol.read(&format!("CLIPINF/{clip}.clpi")).ok()?;
     joined(&raw, vol.bytes(clip) / SOURCE_PACKET)
 }
@@ -2904,11 +2986,11 @@ mod tests {
     fn a_windowed_name_is_still_a_clip_on_a_disc() {
         assert_eq!(
             clip_on_a_disc("/d/BDAV/STREAM/00001.m2ts@8960-4605951"),
-            Some(("/d", "00001"))
+            Some(("/d/BDAV", "00001"))
         );
         assert_eq!(
             clip_on_a_disc("/d/BDAV/STREAM/00001.m2ts"),
-            Some(("/d", "00001"))
+            Some(("/d/BDAV", "00001"))
         );
     }
 
@@ -3327,11 +3409,11 @@ mod tests {
     fn names_the_clip_a_path_on_a_disc_points_at() {
         assert_eq!(
             clip_on_a_disc("/rec/Anime.iso/BDMV/STREAM/00014.m2ts"),
-            Some(("/rec/Anime.iso", "00014"))
+            Some(("/rec/Anime.iso/BDMV", "00014"))
         );
         assert_eq!(
             clip_on_a_disc("/rec/copied/BDAV/STREAM/00001.m2ts"),
-            Some(("/rec/copied", "00001"))
+            Some(("/rec/copied/BDAV", "00001"))
         );
         // Anything that is not a clip on a disc is not one.
         assert_eq!(clip_on_a_disc("/rec/programme.ts"), None);
@@ -3340,12 +3422,52 @@ mod tests {
         // Windows: the folder as named, the rest as the volume joined it.
         assert_eq!(
             clip_on_a_disc(r"D:\rec\disc\BDAV\STREAM/00001.m2ts"),
-            Some((r"D:\rec\disc", "00001"))
+            Some((r"D:\rec\disc\BDAV", "00001"))
         );
         assert_eq!(
             clip_on_a_disc(r"D:\rec\disc\bdmv\stream\00014.M2TS"),
-            Some((r"D:\rec\disc", "00014"))
+            Some((r"D:\rec\disc\bdmv", "00014"))
         );
+        // A folder that is not called either is not a disc on its name alone,
+        // nor on its shape where it is neither a folder nor inside an image.
+        assert_eq!(clip_on_a_disc("/no/such/place/STREAM/00001.m2ts"), None);
+        assert_eq!(clip_on_a_disc("http://h/x/STREAM/00001.m2ts"), None);
+        assert_eq!(clip_on_a_disc("/no/such/place/STREAM/clip.m2ts"), None);
+    }
+
+    /// A disc copied under a name of its own, and a folder holding a disc of
+    /// each dialect: the clip's disc is the directory the clip is in.
+    #[test]
+    fn a_clip_belongs_to_the_directory_it_is_in() {
+        let root = std::env::temp_dir().join("smartcut-disc-own-name");
+        let _ = std::fs::remove_dir_all(&root);
+        let clpi = |pid: u16| clip_index(b"M2TS0100", &[(pid, vec![0x0F, 0x31, b'j', b'p', b'n'])]);
+        for (dir, list) in [
+            ("Anime 2026-08-17", "00001.rpls"),
+            ("both/BDAV", "00001.rpls"),
+            ("both/BDMV", "00001.mpls"),
+        ] {
+            for sub in ["PLAYLIST", "CLIPINF", "STREAM"] {
+                std::fs::create_dir_all(root.join(dir).join(sub)).unwrap();
+            }
+            std::fs::write(root.join(dir).join("PLAYLIST").join(list), []).unwrap();
+        }
+        std::fs::write(root.join("Anime 2026-08-17/CLIPINF/00001.clpi"), clpi(0x1100)).unwrap();
+        std::fs::write(root.join("both/BDAV/CLIPINF/00001.clpi"), clpi(0x1101)).unwrap();
+        std::fs::write(root.join("both/BDMV/CLIPINF/00001.clpi"), clpi(0x1102)).unwrap();
+        let pids = |clip: &str| -> Vec<i32> {
+            let (root, clip) = clip_on_a_disc(clip).expect("a clip on a disc");
+            let mut vol = Volume::open(Path::new(root)).unwrap();
+            vol.tracks(clip).iter().map(|t| t.pid).collect()
+        };
+        let at = |rel: &str| root.join(rel).to_string_lossy().into_owned();
+        assert_eq!(pids(&at("Anime 2026-08-17/STREAM/00001.m2ts")), vec![0x1100]);
+        assert_eq!(pids(&at("both/BDAV/STREAM/00001.m2ts")), vec![0x1101]);
+        assert_eq!(pids(&at("both/BDMV/STREAM/00001.m2ts")), vec![0x1102]);
+        // A folder of that shape with no playlists beside it is not a disc.
+        std::fs::create_dir_all(root.join("camera/STREAM")).unwrap();
+        assert_eq!(clip_on_a_disc(&at("camera/STREAM/00001.m2ts")), None);
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     /// A recorder's clip index, holding these streams: the header, the

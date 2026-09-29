@@ -334,8 +334,8 @@ const HELP: &[(&str, &[(&str, &str)])] = &[
             ("--audio-es", "Also write the AAC beside the output, as a bare stream"),
             (
                 "--sound-only",
-                "Write one sound track and no pictures: .aac, .ac3, .mp2, .mp3, \
-                 .dts, .m4a or .wav",
+                "Write one sound track and no pictures: .aac, .ac3, .eac3, .mp2, \
+                 .mp3, .dts, .m4a, .mka or .wav",
             ),
         ],
     ),
@@ -1087,6 +1087,10 @@ fn main() -> Result<()> {
             (vc1_quant.is_some(), "--vc1-quant"),
             (clean_join, "--clean-joins"),
             (!allow_open_gop, "--no-open-gop"),
+            // A still laid over the pictures of a crossing, of which there
+            // are none. The transition's length and kind still shape the
+            // sound; the image was read by nothing and the run ended well.
+            (crossing_image.is_some(), "--transition-image"),
         ];
         if let Some((_, name)) = moot.iter().find(|(given, _)| *given) {
             bail!("--sound-only writes the sound alone: {name} has nothing to act on");
@@ -1118,6 +1122,19 @@ fn main() -> Result<()> {
     let input = smartcut_core::netpath::resolve(&input)?
         .to_string_lossy()
         .into_owned();
+    // And so may the places written to. Taken as they stood, `-o
+    // '\\nas\rec\cut.ts'` wrote a file of that name into the folder the run
+    // stood in and said "wrote", and `smb://nas/rec/cut.ts` failed with "No
+    // such file or directory" for a share that was mounted all along.
+    let written_to = |at: Option<String>| -> Result<Option<String>> {
+        at.map(|at| {
+            smartcut_core::netpath::resolve(&at).map(|p| p.to_string_lossy().into_owned())
+        })
+        .transpose()
+    };
+    let mut output = written_to(output)?;
+    let bdav = written_to(bdav)?;
+    let seek_index = written_to(seek_index)?;
     // A disc holds several recordings and is opened by naming one of them.
     // Without a name it is a question rather than a job: say what is on it.
     // The chapter points the disc's index carried, on the clip's own clock.
@@ -1846,6 +1863,18 @@ fn main() -> Result<()> {
             fmt_hms(src.duration)
         );
     }
+    // Planned as asked on its own, a range past the end is only a copy that
+    // stops where the packets do. Followed by another recording it is more:
+    // a crossing and the sound's fade are laid over the range's last
+    // seconds, and those were seconds after the recording had ended --
+    // `--keep 60-99999 --join b.ts --transition dissolve` stopped with "no
+    // pictures decoded between 99998.000 and 99999.000". The next recording
+    // takes over where this one's pictures stop, so that is where it ends.
+    let ranges: Vec<(f64, f64)> = if joined.is_empty() || src.duration <= 0.0 {
+        ranges
+    } else {
+        ranges.into_iter().map(|(a, b)| (a, b.min(src.duration))).collect()
+    };
 
     // A precomputed index knows where the entry points are but not what
     // hangs off them, so measure that for the ones this cut will use.

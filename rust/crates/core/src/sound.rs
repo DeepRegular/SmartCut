@@ -307,18 +307,64 @@ fn run(
     // The codec the stream is declared as, which for a whole-track re-encode
     // is the encoder's: a 4K recording's LATM is re-encoded to raw AAC, and
     // asked about as LATM an .m4a was refused for a track it holds.
-    let declared = if setup.mode == AudioMode::Reencode && setup.frame_as.is_none() {
+    let mut declared = if setup.mode == AudioMode::Reencode && setup.frame_as.is_none() {
         crate::audio::encoder_for(setup.target)
     } else {
         setup.target
     };
-    let holds = unsafe {
+    let query = |id: ff::codec::Id| unsafe {
         ff::ffi::avformat_query_codec(
             (*octx.as_ptr()).oformat,
-            declared.into(),
+            id.into(),
             ff::ffi::FF_COMPLIANCE_NORMAL,
         )
     };
+    let mut holds = query(declared);
+    // LATM is a framing and has no file of its own that anything plays:
+    // a 4K recording's sound asked for as `.aac`, `.m4a` or `.mp4` -- the
+    // names the window gives it -- was refused with advice to name the file
+    // `.aac`, which is what it was already called. Where the container
+    // holds plain AAC the track is re-encoded into it, as a join of unlike
+    // tracks is above, and said.
+    if holds == 0
+        && setup.target == ff::codec::Id::AAC_LATM
+        && declared != ff::codec::Id::AAC
+        && query(ff::codec::Id::AAC) != 0
+    {
+        setup.mode = AudioMode::Reencode;
+        setup.frame_as = None;
+        declared = ff::codec::Id::AAC;
+        holds = 1;
+        crate::note_once(format!(
+            "note: {output} cannot hold LATM-framed AAC as it stands, so the whole track is \
+             re-encoded as plain AAC. A .mka keeps the recording's own frames."
+        ));
+    }
+    // And the one container that does not answer: a transport stream takes
+    // any codec and declares the ones it has no type for as private data, so
+    // linear PCM written into a `.ts` came out as `bin_data` that nothing
+    // plays -- and was reported as written. The picture writer asks
+    // [`crate::carry`] for the same reason.
+    let family = crate::carry::family(output);
+    if family == "ts" && !crate::carry::holds(family, &crate::carry::name_of(declared)) {
+        return Err(anyhow!(
+            "{output} cannot carry {:?} sound: a transport stream would declare it as private \
+             data, which no player reads. Name the file for the codec, or .wav or .mka",
+            declared
+        ));
+    }
+    // TrueHD has a box in an MP4 that the muxer writes only when told the
+    // file may be outside the standard, and then only from one of the
+    // stream's own sync points. The picture writer does both (see `outside`
+    // and `need_sync` in [`crate::cut`]); this one does neither, and the
+    // run ended on the muxer's "Experimental feature" (a .mov on "truehd
+    // only supported in MP4").
+    if declared == ff::codec::Id::TRUEHD && matches!(family, "mp4" | "mov") {
+        return Err(anyhow!(
+            "{output}: TrueHD sound on its own goes into a .mka (or a bare .thd), not an MP4 \
+             or a QuickTime file"
+        ));
+    }
     if holds == 0 {
         return Err(anyhow!(
             "{output} cannot hold {:?} sound. Name the file for that codec (.mp2, .ac3, \
@@ -695,6 +741,14 @@ fn write_encoded(
     packet.set_stream(0);
     packet.set_pts(Some(pts));
     packet.set_dts(Some(pts));
+    // The length as well, which the encoder also counts in samples. Left
+    // so, a Matroska file -- counting in milliseconds -- took its last frame
+    // of 1024 samples to last 1.024 s, and stated the track a second longer
+    // than it is.
+    if packet.duration() > 0 {
+        let secs = packet.duration() as f64 / clock.rate.max(1.0);
+        packet.set_duration((secs / clock.tb).round() as i64);
+    }
     packet.set_position(-1);
     packet.write_interleaved(octx)?;
     Ok(seconds)

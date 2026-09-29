@@ -330,7 +330,9 @@ const TABLES: f64 = 1.007;
 fn file_rate(src: &Source) -> f64 {
     let bytes = match &src.input.range {
         Some(r) => r.len,
-        None => std::fs::metadata(&src.path).map(|m| m.len()).unwrap_or(0),
+        // The file on disk rather than the name the recording is known by:
+        // the two differ for a `file:` name, whose metadata is nothing.
+        None => std::fs::metadata(&src.input.file).map(|m| m.len()).unwrap_or(0),
     };
     if src.duration <= 0.0 || bytes == 0 {
         return 0.0;
