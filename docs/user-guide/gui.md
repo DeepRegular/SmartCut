@@ -814,6 +814,9 @@ the same two keys under the hand that is already on the bracket keys.
 Stepping that one frame off is what `Ctrl+Del` below saves you: mark the two
 frames you want to *keep* and it takes out what lies between them.
 
+- **Nothing is selected when a recording opens**; the readout says
+  `Selection —`. `I` on its own selects from there to the end, and `O` on its
+  own from the start to there.
 - **IN to OUT includes the OUT frame.** Select five frames and five frames go.
 - **Setting one end leaves the other alone**, because you place IN and OUT one
   at a time as you close in. Only when the two cross does the one you just
@@ -850,6 +853,9 @@ A cut clears the selection. IN and OUT are no longer drawn on the picture or the
 timeline, the readout says `Selection —`, and a second `Del` takes nothing.
 Mark IN or OUT again for the next range.
 
+A selection of everything that is left cannot be cut: there would be nothing to
+write. The status line says so and nothing is taken out.
+
 `Ctrl+Del` is the same cut moved one picture in at each end: **the two frames
 the marks are on stay, and everything between them goes.** With IN on 2392 and
 OUT on 5990 it takes out 2393 to 5989. Mark the last frame of the programme and
@@ -868,7 +874,7 @@ there.
 | **Snap to lossless** | Move both ends of the selection to the nearest lossless point. OUT is the last frame the selection takes, so it goes one frame before the point, and the programme comes back on the point itself. **Press it and the re-encoding goes to zero** |
 | **↺ Undo** | Step back to before the last edit (a hundred deep, `Ctrl+Z`) |
 | **↻ Redo** | Put the edit back (`Ctrl+Y`) |
-| **Clear all** | Remove every cut and every keyframe. Undo takes it back |
+| **Clear all** | Remove every cut and every keyframe, and leave nothing selected, as when the recording opened. Undo takes it back |
 
 **Undo brings the selection back with the cut.** Cut, look at the join, decide
 it was three frames out: one press of Undo and the range you cut by is still

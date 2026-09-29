@@ -4028,7 +4028,10 @@ function scrubTo(o) {
   // A hand on anything that moves the playhead puts a running 早送り down:
   // two things moving it at once is neither of them.
   if (seekRate) endScroll();
-  o = clamp(o, 0, lastOut());
+  // The same end `showFrame` stops at. `lastOut` is the length of the
+  // timeline wherever a cut has taken the recording's last picture away, and
+  // a step there slid the strip a frame on before the picture pulled it back.
+  o = clamp(o, 0, lastStop());
   playhead = outToSrc(o);
   updateReadouts();
   draw();
@@ -5987,10 +5990,14 @@ async function openPath(picked, saved, side, name, chapters, dropPids, detected)
     paintHistory();
     showCmNote(cmSummary);
     renderKeyframes();
-    // Opened whole: nothing is cut yet, so the selection is the recording.
+    // Opened with nothing selected. The whole recording used to be, and the
+    // one thing a selection of all of it is good for is a Del that leaves
+    // nothing to write -- which `cutSelection` refuses. A row saved with the
+    // whole of it selected, by a version that opened that way, comes back
+    // the same as a fresh one.
     selA = saved ? Math.min(saved.selA, outDur) : 0;
     selB = saved ? Math.min(saved.selB, outDur) : outDur;
-    selGone = !!(saved && saved.selGone);
+    selGone = !saved || !!saved.selGone || (selA <= 0 && selB >= outDur - 1e-9);
     el("status").textContent = "";
     // What the row arrived with, said now as well as once the open is over.
     // The timeline is reported to the list while the walk is still reading
@@ -6345,6 +6352,12 @@ function cutSelection(inner) {
   // A selection with nothing inside it -- two frames, or one. Taking the
   // inside out of that is taking nothing out.
   if (b - a < frame() / 2) return;
+  // All of what is left. There would be nothing to write, and nobody means
+  // it: the likeliest way here is IN and OUT run out to the two ends.
+  if (a <= 0 && b >= outDur - 1e-9) {
+    el("status").textContent = tr("editor.cutAll");
+    return;
+  }
   applyCuts(cuts.concat(outRangeToSrc(a, b)));
   // The material that was selected is gone and the timeline has closed over
   // it. Collapse the selection onto the join.
@@ -6362,9 +6375,11 @@ el("cut-outside").addEventListener("click", () => {
   if (!src || selB < selA || selGone) return;
   const keep = outRangeToSrc(selA, selB);
   applyCuts(cuts.concat(outRangeToSrc(0, selA)).concat(outRangeToSrc(selEnd(), outDur)));
+  // What is left is what was selected, and a selection of all of it is one
+  // Del short of nothing; see `cutSelection`.
   selA = 0;
   selB = outDur;
-  selGone = false;
+  selGone = true;
   seekOut(0);
   jlog(`cut outside, kept ${JSON.stringify(keep)}`);
 });
@@ -6374,7 +6389,7 @@ el("clear-all").addEventListener("click", () => {
   if (!src) return;
   // Nothing to clear is not a step: taken as one, it emptied the redo list
   // and left 取消 with a press that did nothing.
-  if (!cuts.length && !keyframes.length && selA === 0 && selB === outDur) return;
+  if (!cuts.length && !keyframes.length && selGone) return;
   // Not through `applyCuts`, so it stops playback itself: it puts the whole
   // recording back, which is a bigger move under a running playback than any
   // single cut.
@@ -6387,9 +6402,10 @@ el("clear-all").addEventListener("click", () => {
   activeKey = null;
   pickedKeys = [];
   rebuildTimeline();
+  // Back to how the window opened: nothing selected.
   selA = 0;
   selB = outDur;
-  selGone = false;
+  selGone = true;
   renderKeyframes();
   updateReadouts();
   draw();

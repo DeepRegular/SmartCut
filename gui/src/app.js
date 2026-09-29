@@ -8657,6 +8657,9 @@ async function loadProject(path) {
         playhead: Number.isFinite(saved.edit.playhead) ? saved.edit.playhead : 0,
         selA: Number.isFinite(saved.edit.selA) ? saved.edit.selA : 0,
         selB: Number.isFinite(saved.edit.selB) ? saved.edit.selB : Number.MAX_VALUE,
+        // Nothing selected, as a cut leaves it. Dropped, a row saved straight
+        // after a cut came back with the frame on the join selected.
+        selGone: saved.edit.selGone === true,
         activeKey: Number.isFinite(saved.edit.activeKey) ? saved.edit.activeKey : null,
         id: clip.id,
         path: clip.path,
