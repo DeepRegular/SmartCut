@@ -2264,7 +2264,9 @@ function paintRow(clip) {
   // How many, and no longer what they leave: the line above is the length of
   // what they leave.
   if (cutCount && i) bits.push(t("row.cuts", { n: cutCount }));
-  const marks = liveMarksOf(clip).length;
+  // Every mark there is until the recording has been read far enough to
+  // say where the cuts leave them, rather than no count at all.
+  const marks = factsOf(clip) ? liveMarksOf(clip).length : marksOf(clip).length;
   if (marks) bits.push(t("row.keyframes", { n: marks }));
   setLine(li.querySelector(".cm"), bits.join(t("sep")));
 
@@ -3709,7 +3711,9 @@ function srcToOut(keeps, s) {
 /// The end of the recording is the one place a range is closed, as it is in
 /// the editor: a mark on the last instant is still on a picture.
 function liveMarksOf(clip) {
-  const marks = marksOf(clip);
+  // Sorted here rather than trusted: a project file written by hand, or by
+  // an older build, holds them in whatever order it was given.
+  const marks = marksOf(clip).slice().sort((a, b) => a - b);
   const facts = factsOf(clip);
   if (!marks.length || !facts) return [];
   const keeps = keepsOf(clip);
@@ -7733,8 +7737,14 @@ async function startExport() {
       // same list written twice, in the one place nothing reads.
       if (settings.keyframes && !disc) {
         // Numbered against the file being written, not the recording.
+        // A mark on the very end of the recording rounds onto the frame
+        // after the last one, which is not in the file: it is the last one.
+        const lastFrame = Math.max(
+          0,
+          Math.round(keepsOf(clip).reduce((n, k) => n + (k.b - k.a), 0) * clip.info.fps) - 1,
+        );
         const frames = liveMarksOf(clip)
-          .map((o) => Math.round(o * clip.info.fps))
+          .map((o) => Math.min(Math.round(o * clip.info.fps), lastFrame))
           // Two marks more than half a frame apart can still round onto one
           // frame, and marks either side of a cut can land together in the
           // output: one line a frame, as `marksOf` keeps them.

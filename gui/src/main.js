@@ -775,7 +775,7 @@ function chosenKeys() {
 /// One step in the history for the whole handful: a Del over a run of chosen
 /// cards is one thing somebody did, and 取消 puts all of them back at once.
 /// The ✕ on a card comes through here as well, as a handful of one.
-function dropKeyframes(times, scroll = true) {
+function dropKeyframes(times, scroll = true, follow = false) {
   const doomed = new Set(times);
   const next = keyframes.filter((t) => !doomed.has(t));
   // Nothing was on the list: not something that was done, and not a step.
@@ -785,19 +785,28 @@ function dropKeyframes(times, scroll = true) {
   // that moves up into the place of the first one taken, or the last card
   // where nothing is left below. So a Del held over the column takes the
   // cards one after another, and the one the cursor was on is never left
-  // standing for a mark that has gone. Only where the cursor was on one of
-  // them: a ✕ on some other card leaves it where it is.
+  // standing for a mark that has gone. Only for a Del or a ✕ in the column,
+  // and only where the cursor was on one of the marks taken: a ✕ on some
+  // other card leaves it where it is, and Insert on the timeline is not
+  // about the column at all.
   const was = liveKeyframes();
   const hit = was.findIndex((t) => doomed.has(t));
-  const lostCursor = times.some((t) => isActive(t) || isPicked(t));
+  const lostCursor = follow && times.some((t) => isActive(t) || isPicked(t));
   keyframes = next;
   pickedKeys = pickedKeys.filter((t) => !doomed.has(t));
-  if (lostCursor) {
+  // A ✕ on one card of a handful gathered with Ctrl leaves the rest of the
+  // handful chosen, for the Del that takes them next.
+  if (lostCursor && !pickedKeys.length) {
     const live = liveKeyframes();
     activeKey = live.length && hit >= 0 ? live[Math.min(hit, live.length - 1)] : null;
     pickedKeys = [];
+  } else if (times.some((t) => isActive(t))) {
+    activeKey = null;
   }
-  renderKeyframes(scroll || lostCursor);
+  // Not scrolled to the card the cursor moved onto: the column stays where
+  // it was, which is the point. After a run taken with Shift, that card can
+  // be above the fold, and scrolling to it moved the column after all.
+  renderKeyframes(scroll);
   draw();
   scheduleStrip();
 }
@@ -975,7 +984,7 @@ function renderKeyframes(scroll = true) {
     kill.title = tr("editor.keyframes.kill");
     kill.addEventListener("click", (ev) => {
       ev.stopPropagation();
-      dropKeyframes([t], false);
+      dropKeyframes([t], false, true);
     });
     li.append(img, box, kill);
     // The time under the number, and the tags under that: everything about a
@@ -2041,21 +2050,35 @@ const seekOut = (o) => showFrame(outToSrc(clamp(o, 0, outDur)));
 /// What was typed, as an instant on the edited timeline; null for anything
 /// that is neither a frame number nor a time.
 function parseJump(text) {
-  const s = text.trim().replace(/[０-９：．]/g, (c) =>
-    String.fromCharCode(c.charCodeAt(0) - 0xfee0),
-  );
+  // Typed with the input method on: full-width digits, and the 。 it puts
+  // in for a full stop.
+  const s = text
+    .trim()
+    .replace(/[０-９：．]/g, (c) => String.fromCharCode(c.charCodeAt(0) - 0xfee0))
+    .replace(/[。｡]/g, ".");
   if (/^\d+$/.test(s)) {
     if (src && src.variable) return null;
     return Number(s) * frame();
   }
   const m = /^(?:(?:(\d+):)?(\d+):)?(\d+(?:\.\d*)?)$/.exec(s);
   if (!m || !/[:.]/.test(s)) return null;
-  return Number(m[1] || 0) * 3600 + Number(m[2] || 0) * 60 + Number(m[3]);
+  const t = Number(m[1] || 0) * 3600 + Number(m[2] || 0) * 60 + Number(m[3]);
+  if (src && src.variable) return t;
+  // The first picture at or after it. The counter prints a picture's time cut
+  // down to the hundredth, so the time read off it is up to a hundredth
+  // early -- more than half a picture at 59.94 -- and taken as it stands it
+  // went back to the picture before the one it was read off.
+  return Math.ceil(t * src.fps - 1e-6) / src.fps;
 }
+
+/// Where the keyboard was before the box took it, to be handed back: over
+/// the column of marks, the Del after a jump is about the marks.
+let jumpFrom = null;
 
 function openJump() {
   const box = el("counter-jump");
-  if (!src || !box) return;
+  if (!src || !box || !box.hidden) return;
+  jumpFrom = document.activeElement;
   if (playing) stopPlay();
   const o = playOut();
   box.value = src.variable ? fmt(o) : String(frameNo(o));
@@ -2071,15 +2094,32 @@ function closeJump() {
   if (!box || box.hidden) return;
   box.hidden = true;
   el("counter").hidden = false;
-  // Back to the window, whose keys the box was holding.
-  if (document.activeElement === box) box.blur();
+  // Back to wherever the keyboard was, or to the window.
+  const back = jumpFrom;
+  jumpFrom = null;
+  if (document.activeElement === box) {
+    if (back && back !== box && back !== document.body && back.isConnected) {
+      back.focus({ preventScroll: true });
+    } else {
+      box.blur();
+    }
+  }
 }
 
 const jumpBox = el("counter-jump");
 if (jumpBox) {
   el("counter").addEventListener("click", openJump);
   jumpBox.addEventListener("keydown", (ev) => {
-    if (ev.key === "Escape") {
+    // The input method's own keys: Enter settles what is being converted
+    // and Esc throws it away, and neither is about the box.
+    if (ev.isComposing || ev.keyCode === 229) {
+      ev.stopPropagation();
+      return;
+    }
+    // J held down opens the box once, and the rest of the repeat is not typing.
+    if (ev.repeat && (ev.key === "j" || ev.key === "J")) {
+      ev.preventDefault();
+    } else if (ev.key === "Escape") {
       ev.preventDefault();
       closeJump();
     } else if (ev.key === "Enter") {
@@ -6465,7 +6505,7 @@ window.addEventListener("keydown", (ev) => {
   if (ev.key === "Delete" && !ev.ctrlKey && !ev.metaKey && !ev.altKey && !ev.shiftKey) {
     if (keysHaveKeyboard()) {
       ev.preventDefault();
-      dropKeyframes(chosenKeys(), false);
+      dropKeyframes(chosenKeys(), false, true);
       return;
     }
   }
@@ -7309,6 +7349,8 @@ if (listen) {
   });
   hear("editor-open", async (ev) => {
     const { id, path, name, side, saved, cm, chapters, dropPids } = ev.payload;
+    // A frame number typed for the last recording is not one for this one.
+    closeJump();
     // The list has spoken, so this window stops asking; see `announceReady`.
     answered = true;
     // The list sends this twice for a window it had to build; the second is

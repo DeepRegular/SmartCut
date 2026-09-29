@@ -985,7 +985,7 @@ const CATALOG = {
     "editor.selectionTime": "選択 {a} - {b} : {len}",
     "editor.selectionNone": "選択 —",
     "editor.counter": "{at} / {all}   {t}",
-    "editor.jump.title": "クリックするか J（Ctrl+J）で、フレーム番号か時刻（00:01:23.45）を入力して移動します",
+    "editor.jump.title": "クリックするか J（Ctrl+J）を押すと、フレーム番号か時刻（00:01:23.45）を入力して移動できます",
     "editor.frameKind": "{kind} フレーム",
     "editor.frameKindPoint": "{kind} フレーム — 無劣化点",
     "editor.frameKindNear": "{kind} フレーム — 近くのフレーム（解析中）",

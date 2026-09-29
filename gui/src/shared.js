@@ -163,7 +163,8 @@ const BROWSER_KEYS = new Set(["F3", "F5", "F7"]);
 
 function noBrowserKey(ev) {
   const held = (ev.ctrlKey || ev.metaKey) && !ev.altKey;
-  if ((held && BROWSER_CTRL_KEYS.has(ev.key.toLowerCase())) || BROWSER_KEYS.has(ev.key)) {
+  const key = typeof ev.key === "string" ? ev.key : "";
+  if ((held && BROWSER_CTRL_KEYS.has(key.toLowerCase())) || BROWSER_KEYS.has(key)) {
     ev.preventDefault();
   }
 }
