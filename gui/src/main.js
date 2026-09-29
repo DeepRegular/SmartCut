@@ -4764,6 +4764,11 @@ function planSettled() {
 /// asked for a plan meanwhile (the marks read from beside the recording) was
 /// answered 「ファイルを開いてください」 over a window reading a file.
 let inbound = false;
+/// Why the walk of the recording that is up failed, while it is the one up.
+/// A plan asked for after that -- an undo, clear-all, the language changing --
+/// finds the recording unwalked, and without this put 「読み込み中」 back over
+/// the failure for good.
+let walkFailed = null;
 
 /// The band while a recording is being read: no plan yet, and saying so.
 function paintPlanReading() {
@@ -4789,6 +4794,11 @@ async function refreshPlan() {
   // recording's. Either way the band read 「ファイルを開いてください」 over a
   // window that was reading a file. Only the genuinely empty editor asks for
   // one.
+  if (walkFailed && src && !walked() && !opening && !inbound) {
+    planSettled();
+    el("plan-text").textContent = tr("plan.failed", { e: walkFailed });
+    return;
+  }
   if (opening || inbound || (src && !walked())) {
     planSettled();
     paintPlanReading();
@@ -5837,6 +5847,7 @@ async function openPath(picked, saved, side, name, chapters, dropPids, detected)
   // at this recording.
   const gen = ++openGen;
   const overtaken = () => gen !== openGen;
+  walkFailed = null;
   // Whatever is moving the playhead is moving it through the row being left.
   // Playback went on sounding the last recording and putting its pictures
   // and instants into this one's timeline until the first picture below
@@ -6071,8 +6082,19 @@ async function openPath(picked, saved, side, name, chapters, dropPids, detected)
     el("title").textContent = "";
     el("status").textContent = tr("editor.openFailed", { e });
     // Nothing is being read any more; the band says what is open, if anything.
+    // Not by asking for a plan where this recording is up and was never
+    // walked -- the walk is what failed, usually (`pointsArrived`) -- since
+    // that plan finds `src` unwalked and puts 「読み込み中」 back for good.
     inbound = false;
-    schedulePlan();
+    if (src && src.path === picked && !walked()) {
+      walkFailed = e;
+      clearTimeout(planTimer);
+      planRun++;
+      planSettled();
+      el("plan-text").textContent = tr("plan.failed", { e });
+    } else {
+      schedulePlan();
+    }
     throw e;
   }
 }
@@ -6099,6 +6121,7 @@ async function pointsArrived(exact, picked) {
     el("status").textContent = tr("editor.openFailed", { e });
     // And the band stops saying it is reading.
     if (src && src.path === picked) {
+      walkFailed = e;
       clearTimeout(planTimer);
       planRun++;
       planSettled();
@@ -6195,13 +6218,15 @@ window.addEventListener("mousemove", (ev) => {
   if (dragging === "in") setIn(o, false);
   else if (dragging === "out") setOut(o, false);
   else {
-    playhead = outToSrc(o);
+    // Held to the last frame there is, as the keys and the wheel are: past it
+    // the strip showed a frame a cut had taken away until the button came up.
+    playhead = outToSrc(Math.min(o, lastStop()));
     updateReadouts();
     draw();
     paintFast(playhead);
   }
 });
-window.addEventListener("mouseup", () => {
+function endDrag() {
   if (dragging && playAfterDrag) {
     // The still the press asked for is not wanted: playback's own first
     // picture is along in a moment, and a still landing after it would be
@@ -6220,6 +6245,18 @@ window.addEventListener("mouseup", () => {
   }
   dragFrom = null;
   dragging = null;
+}
+window.addEventListener("mouseup", endDrag);
+// A window that loses the pointer part way through a drag -- a native
+// dialog coming up over it, Esc's "drop the changes?" among them -- never
+// hears the button come up. Left as it was, the playhead went on following
+// the pointer with no button held, and the next click anywhere started a run
+// the drag had held. The drag ends where it stood, and a run it held stays
+// stopped: whatever took the window away is what the user is looking at now.
+window.addEventListener("blur", () => {
+  if (!dragging) return;
+  playAfterDrag = false;
+  endDrag();
 });
 
 // --- transport ----------------------------------------------------------

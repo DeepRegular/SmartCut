@@ -111,6 +111,16 @@ function crossing() {
   for (const [what, none] of [["kind", "none"], ["curve", "none"], ["mode", "in"], ["image", ""]]) {
     if (typeof a[what] !== "string") a[what] = none;
   }
+  // And a name the engine reads is the name its control shows. The engine
+  // takes `fade`, `inout` and `outin` as other spellings and anything else as
+  // its default (see `Crossing::parse`, `Easing::parse`); left as they were,
+  // the list above showed なし or nothing over a fade that the preview played,
+  // and the rows under it stayed live for a kind that is no crossing.
+  const ALIAS = new Map([["fade", "fade-black"], ["", "none"], ["inout", "in-out"], ["outin", "out-in"]]);
+  for (const [what, id, none] of [["kind", "x-kind", "none"], ["curve", "x-curve", "none"], ["mode", "x-mode", "in"]]) {
+    const name = ALIAS.get(a[what]) ?? a[what];
+    a[what] = [...el(id).options].some((o) => o.value === name) ? name : none;
+  }
   return a;
 }
 

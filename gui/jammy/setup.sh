@@ -17,6 +17,12 @@ cd "$ROOT"
 BASE=ubuntu-base-22.04.5-base-amd64.tar.gz
 BASE_SHA=242cd8898b33ea806ef5f13b1076ed7c76f9f989d18384452f7166692438ff1a
 if [ ! -e etc/os-release ]; then
+  # A folder that is not a root yet has to be empty: the base is unpacked
+  # over whatever is there, and a wrong argument ($HOME) had files replaced.
+  if [ -n "$(ls -A)" ]; then
+    echo "error: $ROOT is not empty and not an Ubuntu root; give an empty or new folder" >&2
+    exit 1
+  fi
   curl -fsSLo "../$BASE" "https://cdimage.ubuntu.com/ubuntu-base/releases/22.04/release/$BASE"
   echo "$BASE_SHA  ../$BASE" | sha256sum -c
   unshare --map-auto --map-root-user tar -xzf "../$BASE" -C . --numeric-owner

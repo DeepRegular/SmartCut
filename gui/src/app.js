@@ -4062,8 +4062,10 @@ const streamOf = (p) => p.replace(/@\d+-\d+$/, "");
 /// The codec's own name, because an audio file is its codec: a broadcast's
 /// sound is AAC and goes into the ADTS a `.aac` means, AC-3 into a `.ac3`,
 /// and linear PCM into a `.wav`, which is the one container everything
-/// opens. A codec with no file of its own goes into an `.m4a`, which has a
-/// box for most of them.
+/// opens. A codec with no file of its own goes into an `.mka`, which holds
+/// every one of them: the `.m4a` this used to be takes AAC and ALAC and
+/// turned TrueHD, FLAC, Opus and Vorbis away. A 4K broadcast's LATM is a
+/// framing of AAC, so it is a `.aac` (the run rewrites it as plain AAC).
 ///
 /// Read off the setting where one was chosen, and off the recording where it
 /// was left at 入力と同じ. `null` where neither answers, which is a list
@@ -4077,8 +4079,10 @@ function soundExt(clip) {
   return (
     {
       aac: "aac",
+      aac_latm: "aac",
       ac3: "ac3",
-      eac3: "ac3",
+      // The raw AC-3 muxer turns E-AC-3 away; its own `.eac3` takes it.
+      eac3: "eac3",
       lpcm: "wav",
       pcm_s16le: "wav",
       pcm_s24le: "wav",
@@ -4087,7 +4091,7 @@ function soundExt(clip) {
       mp2: "mp2",
       mp3: "mp3",
       dts: "dts",
-    }[codec] || "m4a"
+    }[codec] || "mka"
   );
 }
 
@@ -4725,7 +4729,17 @@ function writableContainers() {
       .map((o) => o.value)
       .filter((v) => v && v !== "sound"),
     video: once(facts.map((i) => lower(i.codec))),
-    audio: once(list.flatMap((c) => keptAudio(c).map((a) => lower(a.codec)))),
+    // A whole track re-encoded goes out as the encoder's codec: a 4K
+    // broadcast's LATM is written as plain AAC, which an MP4 holds, and the
+    // engine declares it so (see `encoder_for` in the cut).
+    audio: once(
+      list.flatMap((c) =>
+        keptAudio(c).map((a) => {
+          const codec = lower(a.codec);
+          return codec === "aac_latm" && reencodingAudio() ? "aac" : codec;
+        })
+      )
+    ),
     // What the sound will be written as, which is what the cut is sent.
     asked: audioCodecOut() || "",
   };
@@ -7754,8 +7768,15 @@ async function startExport() {
         // empty `.keyframe` beside them says "there are no marks here", which
         // is exactly what no file at all already says, and it is one more
         // file to notice and delete.
-        if (frames.length) {
-          const side = out.replace(/\.[^./\\]*$/, "") + ".keyframe";
+        const side = out.replace(/\.[^./\\]*$/, "") + ".keyframe";
+        // Not over the list a recording of this run was opened with: with no
+        // prefix and no number, `録画.m2ts` is cut to `録画.ts` beside it, and
+        // its `録画.keyframe` -- somebody's marks, numbered against the
+        // recording -- was written over with the cut's.
+        const theirs = clips.map((c) => `${sidecarBase(c)}.keyframe`);
+        if (frames.length && (await invoke("names_an_input", { output: side, inputs: theirs }))) {
+          jlog(`keyframes: ${side} is a recording's own list, not written`);
+        } else if (frames.length) {
           const n = await invoke("write_keyframes", { path: side, frames, fps: clip.info.fps });
           extra = t("out.doneKeyframes", { n });
         }

@@ -16,7 +16,8 @@ P=/opt/ff
 J=${J:-8}
 export PKG_CONFIG_PATH=$P/lib/pkgconfig
 cd /build/src/work
-rm -rf ffmpeg-7.1.5 && tar xf ../ffmpeg-7.1.5.tar.xz && cd ffmpeg-7.1.5
+# `;` rather than `&&`, so that set -e stops at a failed make.
+rm -rf ffmpeg-7.1.5; tar xf ../ffmpeg-7.1.5.tar.xz; cd ffmpeg-7.1.5
 ./configure --prefix=$P --libdir=$P/lib \
   --enable-gpl --enable-shared --disable-static --disable-doc \
   --extra-cflags="-I$P/include" --extra-ldflags="-L$P/lib" \
@@ -26,7 +27,7 @@ rm -rf ffmpeg-7.1.5 && tar xf ../ffmpeg-7.1.5.tar.xz && cd ffmpeg-7.1.5
   --enable-nvenc --enable-ffnvcodec --enable-libvpl \
   --disable-vaapi --disable-vdpau --disable-xlib --disable-libxcb --disable-sdl2 \
   --disable-libdrm --disable-opencl --disable-vulkan --disable-cuda-llvm
-make -j$J && make install
+make -j$J; make install
 echo; echo "ffmpeg done"
 $P/bin/ffmpeg -hide_banner -version | head -1
 for l in $P/lib/libav*.so.?? $P/lib/libsw*.so.?; do echo "== $(basename $l)"; readelf -d $l | awk -F'[][]' '/NEEDED/{printf "%s ", $2}'; echo; done

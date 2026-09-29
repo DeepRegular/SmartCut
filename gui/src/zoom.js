@@ -135,21 +135,25 @@ if (listen) {
     answered = true;
     const said = ev.payload || {};
     if (!said.url) return;
-    at = typeof said.time === "number" ? said.time : null;
+    const time = typeof said.time === "number" ? said.time : null;
     const next = new Image();
     const run = ++asked;
     // Pictures load at their own pace, and stepping through frames asks for
     // the next before the last has arrived: a large frame landing after a
     // small later one put the older picture up under the newer time.
+    //
+    // The time goes up with its picture, not with the asking: set on the way
+    // in, the line named a frame the canvas did not yet show, and went on
+    // naming it under the old picture where that one failed to load.
     next.onload = () => {
       if (run < shown) return;
       shown = run;
       pic = next;
+      at = time;
       draw();
     };
     next.onerror = () => jlog(`zoom: ${said.url} did not load`);
     next.src = said.url;
-    paintFoot();
   });
 
   // Where the editor's picture was clicked. Fractions rather than pixels:

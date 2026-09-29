@@ -21,7 +21,8 @@
 // of it is not to be trusted on every platform; it only ever confirms.
 
 /// The languages there are. Japanese first: it is what the program was
-/// written in, and what every fallback lands on.
+/// written in, and what a line missing from the other catalogue falls back
+/// to (see `t`). A machine set to neither comes up in English: `FALLBACK`.
 export const LANGS = ["ja", "en"];
 
 const CATALOG = {
@@ -999,9 +1000,9 @@ const CATALOG = {
       "ホイール：1 フレームずつ送る（Shift を押しながらで GOP 単位）\n" +
       "Space：再生",
     "editor.stripShow": "1 画面",
-    "plan.fold.open": "▾ 区間",
-    "plan.fold.closed": "▸ 区間",
-    "plan.fold.title": "コピーする区間と再エンコードする区間の一覧を表示する／隠す",
+    "plan.fold.open": "▾ 詳細",
+    "plan.fold.closed": "▸ 詳細",
+    "plan.fold.title": "コピーする部分と再エンコードする部分の一覧を表示する／隠す",
     "strip.auto": "自動",
     "strip.win3": "3 秒",
     "strip.win6": "6 秒",

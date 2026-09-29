@@ -923,11 +923,20 @@ body.crosswin { padding: 0; }
   flex: 1 1 0; display: flex; align-items: center; gap: 16px;
   min-width: 17em; padding: 0 10px; font-variant-numeric: tabular-nums;
 }
-/* The left one grows from what it holds, the right one from nothing: the
-   note on the right is empty on most recordings, and an equal share for it
-   was the selection cut down to 「選択 0 -…」 at the window's default width.
-   The buttons sit a little right of centre for it, which is the price. */
-.player > .readout:not(.readout-r) { flex-basis: auto; }
+/* The left one starts from a width of its own, the right one from nothing:
+   the note on the right is empty on most recordings, and an equal share for
+   it was the selection cut down to 「選択 0 -…」 at the window's default
+   width. The buttons sit a little right of centre for it, which is the price.
+   A width and not `auto`: `auto` is what it holds, which is the selection
+   pushing the row onto two lines again -- a window 1130 wide broke with a
+   selection timed in hours and came back to one line without it. 30em holds
+   the counter and a selection counted in frames. And it takes the larger
+   share of what is left over, by half again: split evenly, the default width
+   (1240) cut short a selection in six-digit frames -- any two-hour broadcast
+   -- by a few letters, and three shares to one left the note on the right
+   cut to 「ロゴ+無音: 2 ブロ…」 even in a window 1560 wide. At 1.5 that
+   window shows both whole, and 1240 the Japanese selection whole. */
+.player > .readout:not(.readout-r) { flex-basis: 30em; flex-grow: 1.5; }
 .player > .readout > * { flex: none; white-space: nowrap; }
 .player > .readout > #selection { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 .player > .readout-r { justify-content: flex-end; min-width: 0; }
@@ -1040,6 +1049,10 @@ body.crosswin { padding: 0; }
    neither is readable folded -- while the status was written to be cut short
    and ends in an ellipsis when it is. */
 .export > * { flex: none; }
+/* Except the gap that puts the seam window's two buttons in the corner: the
+   rule above is as specific as `.spacer` and later, and left alone it made
+   the gap nothing and OK and キャンセル sat at the left. */
+.export > .spacer { flex: 1; }
 .export .badge, .export .mini { white-space: nowrap; }
 .export #status {
   flex: 1 1000 auto; min-width: 0;
@@ -1324,10 +1337,6 @@ input[type="number"]::-webkit-outer-spin-button {
   background: var(--sunken); border: 1px solid var(--line);
   white-space: pre-wrap; font-variant-numeric: tabular-nums; font-size: 11.5px;
 }
-/* The one control in this panel, written into the line it answers -- the
-   sound's -- as the reference tool writes it: underlined words that open a
-   list, not a box in among the text. Dimmed with the rest of the panel when
-   several rows are chosen, which is the text's colour and not the control's. */
 /* The dark scrollbar everywhere else that scrolls, for the reason the clip
    list has one (see `.cliplist-wrap`): left alone these fell back to the
    desktop's own, which is light, and the quick properties under the list
@@ -1348,6 +1357,10 @@ input[type="number"]::-webkit-outer-spin-button {
 .outset-body::-webkit-scrollbar-thumb:hover, .format::-webkit-scrollbar-thumb:hover,
 #out-list::-webkit-scrollbar-thumb:hover { background: #757575; }
 .props-body::-webkit-scrollbar-corner, .format::-webkit-scrollbar-corner { background: var(--sunken); }
+/* The one control in this panel, written into the line it answers -- the
+   sound's -- as the reference tool writes it: underlined words that open a
+   list, not a box in among the text. Dimmed with the rest of the panel when
+   several rows are chosen, which is the text's colour and not the control's. */
 .props-body .sound-drop { vertical-align: baseline; }
 .props-body .sound-drop > select {
   width: auto; padding: 0; border: 0; border-radius: 0;

@@ -4035,7 +4035,7 @@ fn detect_now(
     // broadcaster shows one; when it is missing, the silences stand alone.
     let logo = if resets.is_none() {
         let reporter = say.clone();
-        smartcut_core::logo::detect_with(
+        Some(smartcut_core::logo::detect_with(
             src,
             &smartcut_core::logo::LogoOptions {
                 // The logo half spreads its decoding over the cores it is
@@ -4051,11 +4051,24 @@ fn detect_now(
                     SOUND_SHARE + f * (1.0 - SOUND_SHARE),
                 )
             })),
-        )
-        .ok()
+        ))
     } else {
         None
     };
+    // No logo is an answer; a pass that could not read the recording is not
+    // one. The pass opens the file again for itself, and a failed open -- a
+    // share gone for a moment -- does not count as a failed read, so taken
+    // for "no logo" it was kept as the recording's answer of silences alone.
+    let unsure = match &logo {
+        Some(Err(e)) => {
+            let said = e.to_string();
+            e.downcast_ref::<smartcut_core::logo::NoLogo>().is_none()
+                && !said.starts_with("frame too")
+                && !said.contains("not enough to find a logo")
+        }
+        _ => false,
+    };
+    let logo = logo.and_then(|l| l.ok());
     (*say)(tr!("まとめています", "Putting it together"), 1.0);
     // What a boundary is put on the frame with, and what a junction is asked
     // about before a break's start is snapped to it.
@@ -4091,7 +4104,12 @@ fn detect_now(
 
     Ok(CmResult {
         inserts,
-        partial: false,
+        // Shown, not kept, like a read cut short: a logo pass that failed,
+        // or boundaries left at their estimates because no pictures were to
+        // hand yet -- the editor still walking the recording, or on another
+        // one by the end of the pass. Kept, the list served those estimates
+        // for as long as the file stayed the same.
+        partial: unsure || pictures.is_none(),
         logo_found: logo.is_some(),
         resets: resets.as_ref().map_or(0, |r| r.len()),
         blocks: blocks
@@ -4353,7 +4371,7 @@ async fn detect_cm(path: String, inserts: bool, app: tauri::AppHandle) -> Result
         // next.
         // Nor one read short by a share that went away: shown, not kept.
         let mut res = res;
-        res.partial = smartcut_core::input::reads_failed();
+        res.partial |= smartcut_core::input::reads_failed();
         if !res.partial {
             remember_cm(&app, &path, &res);
         }
@@ -4430,7 +4448,7 @@ async fn detect_cm_at(path: String, app: tauri::AppHandle) -> Result<CmResult, S
         }
         // Nor one read short by a share that went away: shown, not kept.
         let mut res = res;
-        res.partial = smartcut_core::input::reads_failed();
+        res.partial |= smartcut_core::input::reads_failed();
         if !res.partial {
             remember_cm(&app, &path, &res);
         }
