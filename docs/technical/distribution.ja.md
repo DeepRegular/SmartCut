@@ -54,8 +54,8 @@ FFmpeg 内蔵のコーデック・コンテナ・プロトコルは 1 つも削�
 ファイルが出てくる。VAAPI・VDPAU・OpenCL・Vulkan は外した。どれも使っておらず、
 それぞれ別のライブラリを引き込むからである。
 
-`.deb` はシステムの FFmpeg 7.1 にリンクするので、これまでどおり Debian 13 の VM で
-ビルドする。2 つは `build-linux.sh portable` と `build-linux.sh deb` で分けて作る。
+0.8.14 からは `.deb` も同じ root でビルドし、ここで作った FFmpeg を同梱する（後述）。
+`build-linux.sh` を引数なしで実行すると、AppImage・tar.gz・deb の 3 つができる。
 
 **出力は Debian 13 版と一致する。** 8 本の録画（MPEG-2、TS と MP4 の H.264、HEVC、
 AV1、VP9、BDAV 2 本）から 10 通りのカットを作り（うち 2 つはコンテナを変える）、
@@ -130,13 +130,12 @@ CJK フォント。bubblewrap も GTK も無い）。BDAV のクリップを編�
 ## tar.gz と deb
 
 ```bash
-JAMMY=/path/to/root gui/jammy/build.sh   # tar.gz（AppImage と同時。Ubuntu 22.04 の root）
-./gui/build-linux.sh deb                 # deb（Debian 13 の VM）
+JAMMY=/path/to/root gui/jammy/build.sh   # AppImage・tar.gz・deb（Ubuntu 22.04 の root）
 # -> gui/src-tauri/target/release/bundle/linux/SmartCut-0.8.14-linux-x86_64.tar.gz
 # -> gui/src-tauri/target/release/bundle/linux/smartcut_0.8.14_amd64.deb
 ```
 
-別々のシステムでビルドしたものを、2 通りに詰めている。どちらも GUI を `smartcut`、コマンド
+同じビルドを 2 通りに詰めている。どちらも GUI を `smartcut`、コマンド
 ライン版を `smartcut-cli` という名前でインストールする。プログラム名は SmartCut
 で、コマンドとして打つのは `smartcut` である。
 
@@ -151,7 +150,7 @@ cargo のクレート名は `gui` なので、放っておくと Tauri はその
 | 成果物 | サイズ | FFmpeg | 必要条件 |
 |---|---|---|---|
 | `SmartCut-0.8.14-linux-x86_64.tar.gz` | 191.1 MB | 同梱 | glibc 2.35 以上。FUSE 不要 |
-| `smartcut_0.8.14_amd64.deb` | 4.8 MB | システムのものを使用 | FFmpeg 7.1（Debian 13 / Ubuntu 25.04 以降） |
+| `smartcut_0.8.14_amd64.deb` | 26.8 MB | 同梱（`/usr/lib/smartcut`） | Ubuntu 22.04 以降、Debian 13 以降 |
 
 tar.gz の中身は、AppImage と同じ AppDir を展開したものである。linuxdeploy が
 `ldd` を辿って集めた 633 個のライブラリがそのまま `app/` にある。`./smartcut` は
@@ -179,20 +178,39 @@ linuxdeploy は `ldd` が挙げた名前をそのまま複製する。`libfoo.so
 である。zstd や xz にすればさらに 40〜55 MB 小さくなるが（実測で `zstd -19` が
 163 MB、`xz -9` が 146 MB）、展開に必要なものが増えるので gzip のままにしてある。
 
-deb のほうは何も同梱していない。依存関係は両方のバイナリを `dpkg-shlibdeps` に
-かけて生成しているので、libav* が列挙される。
+deb は FFmpeg とエンコーダーだけを同梱し、ほかはシステムのものを使う。0.8.13 までの
+deb はシステムの FFmpeg 7.1 にリンクしていたので、Debian 13 と Ubuntu 25.04 以降にしか
+入らなかった。Ubuntu 22.04 と 24.04 には FFmpeg 7.1 が無い。
+
+同梱するのは、2 つのバイナリが `/opt/ff` から実際に読み込むライブラリ 16 本
+（libav* 8 本と x264・x265・SVT-AV1・rav1e・aom・libvpx・dav1d・libvpl）である。
+`ldd` でたどって SONAME の名前で `/usr/lib/smartcut` に置き、バイナリには
+RUNPATH `/usr/lib/smartcut` を、ライブラリには `$ORIGIN` を付ける。ほかのパッケージと
+ぶつからない場所なので、システムに別の FFmpeg が入っていても影響しない。
+
+依存関係は、2 つのバイナリと同梱のライブラリを 22.04 の `dpkg-shlibdeps` にかけて
+生成する。版の下限が 22.04 のものになるので、それより新しいシステムならどこでも満たせる。
+Ubuntu 24.04 と Debian 13 で名前が変わったもの（`libasound2t64` など）も、新しい
+パッケージが古い名前を `Provides` しているので解決できる。
 
 ```
-Depends: libasound2t64 (>= 1.0.29), libavcodec61 (>= 7:7.1.5), libavdevice61 (>= 7:7.1.5),
- libavformat61 (>= 7:7.1.5), libavutil59 (>= 7:7.1.5), libc6 (>= 2.39), libcairo2 (>= 1.10.0),
- libdbus-1-3 (>= 1.10), libgcc-s1 (>= 4.2), libgdk-pixbuf-2.0-0 (>= 2.36.9),
- libglib2.0-0t64 (>= 2.66.0), libgtk-3-0t64 (>= 3.21.5), libjavascriptcoregtk-4.1-0,
- libsoup-3.0-0 (>= 3.0.3), libswresample5 (>= 7:7.1.5), libswscale8 (>= 7:7.1.5),
- libwebkit2gtk-4.1-0 (>= 2.41.90)
+Depends: libaom3 (>= 3.2.0), libasound2 (>= 1.0.29), libbz2-1.0, libc6 (>= 2.35),
+ libcairo2 (>= 1.10.0), libdbus-1-3 (>= 1.9.14), libgcc-s1 (>= 4.2),
+ libgdk-pixbuf-2.0-0 (>= 2.36.9), libglib2.0-0 (>= 2.65.1), libgtk-3-0 (>= 3.21.5),
+ libjavascriptcoregtk-4.1-0, liblzma5 (>= 5.1.1alpha+20120614), libmp3lame0 (>= 3.100),
+ libopus0 (>= 1.1), libsoup-3.0-0 (>= 3.0.3), libstdc++6 (>= 11), libvorbis0a (>= 1.1.2),
+ libvorbisenc2 (>= 1.1.2), libwebkit2gtk-4.1-0 (>= 2.41.90), zlib1g (>= 1:1.2.0.2)
 ```
+
+`libaom3` は、同梱の `libaom.so.3` と同じ名前のライブラリを 22.04 が持っているために
+入る。実行時に読むのは同梱のほうで、どのシステムにもあるパッケージなので残した。
+同梱のライブラリにはパッケージが無いので、`dpkg-shlibdeps` には
+`--ignore-missing-info` を付ける。そのままでは抜けに気付けないので、`build-linux.sh` は
+2 つのバイナリと同梱のライブラリが直接読み込むライブラリ（`NEEDED`）を 1 つずつ調べ、
+同梱も依存関係の指定もされていないものがあればビルドを止める。
 
 Tauri が生成する deb の依存関係は `libwebkit2gtk-4.1-0, libgtk-3-0` の 2 つだけで、
-**FFmpeg がまったく現れない**。それだけでも自前で作り直す理由になる。ほかに
+FFmpeg も音声コーデックも現れない。それだけでも自前で作り直す理由になる。ほかに
 追加しているのは、`.desktop` ファイル（`Exec=smartcut %f`、
 `StartupWMClass=smartcut`、MPEG-2 TS と MP4 の MimeType）、32/128/256 の hicolor
 アイコン、`copyright`、`changelog.Debian.gz` である。
@@ -202,18 +220,17 @@ Tauri は詰める直前にバンドル種別をバイナリへ刻印する（`U
 残らない。そのためバイナリはバンドルごとに別の場所から取っている。deb 用は Tauri の
 deb から、tar.gz 用は AppDir からである。
 
-### 確認したこと（Debian 13 の開発 VM）
+### 確認したこと
 
-- `smartcut-cli` の出力が、**deb と tar.gz で md5 まで一致する**
-  （`mpeg2.ts --cut 5-10`、無劣化コピー 99.7%）。`ldd` で別のライブラリを使っている
-  ことも確認済みである。tar.gz 版は `app/usr/lib/libavcodec.so.61`、deb 版は
-  `/lib/x86_64-linux-gnu/libavcodec.so.61` を使う。
-- どちらの GUI も実機で起動し、`mpeg2.ts` を開ける（無劣化点 41 個、プロキシ
-  852x478、サムネイル 41 枚）。deb 版はタスクバーに `gui` ではなく `smartcut` と
-  出る。
-- `apt-get -s install ./smartcut_0.1.1_amd64.deb` が依存関係を解決する。
-  `desktop-file-validate` は警告なし、`md5sums` の 8 項目もすべて一致する。
-- VM の sudo にパスワードが必要なので、実際の `dpkg -i` だけは試していない。
+- 何も入っていない Ubuntu 22.04（ubuntu-base 22.04.5）に
+  `apt install ./smartcut_0.8.14_amd64.deb` で入る。依存関係はすべて解決し、
+  2 つのバイナリとも読めないライブラリは無い。
+  `smartcut-cli` は `/usr/lib/smartcut/libavcodec.so.61` を使う。
+- そこで切り出した結果（放送録画の 30 秒）が、tar.gz 版の `smartcut-cli` と md5 まで
+  一致する。
+- Debian 13 の開発 VM でも `apt-get -s install` が依存関係を解決する。
+- VM の sudo にパスワードが必要なので、Debian 13 への実際のインストールは試していない。
+  Ubuntu 24.04 では試していない。
 
 ## Windows
 

@@ -531,9 +531,9 @@ hole, and the frame counter counts the length that will actually be written.
 | **Click** the filmstrip | Go to that frame |
 | **Right-drag** the filmstrip | Search back and forth. Right of centre is forwards, left is back, and further out is faster |
 | **Middle-click** the filmstrip | Jump to a scene change: the next one from the right half of the strip, the one before from the left half |
-| **Wheel** | One frame per notch. Hold `Shift` to hop from lossless point to lossless point. Anywhere in the window, not only over the filmstrip, and over the magnifier too; over the marks down the left or over the plan it scrolls those instead |
-| **Drag** the scrubber | Move the playhead. Grab near the IN or OUT mark and you move that mark instead |
-| **Hover** the scrubber | Shows the frame at that moment in a small picture |
+| **Wheel** | One frame per notch. Hold `Shift` to hop from lossless point to lossless point. A touchpad's sideways swipe steps the same way, right being later. Anywhere in the window, not only over the filmstrip, and over the magnifier too; over the marks down the left or over the plan it scrolls those instead |
+| **Drag** the scrubber | Move the playhead. Grab near the IN or OUT mark and you move that mark instead. A drag during playback carries on playing from where it lets go. Only the scrubber down to the foot of the IN and OUT tabs answers; the scene changes, the detection rows and the times under it are there to be read |
+| **Hover** the scrubber | Shows the frame at that moment in a small picture (down to the foot of the IN and OUT tabs) |
 | `Space` or **▶ Play** | Play from here, picture and sound. Press again to stop. The picture runs at the recording's own frame rate; where the machine cannot decode and draw that many, it shows fewer rather than falling behind the sound |
 | **◀◀** **▶▶** | Rewind and fast forward. Each press doubles the speed, 2 to 16, and once more stops it; the button says which speed it is running at. No sound |
 | `←` `→` | Back and forward one frame. Hold to repeat |
@@ -549,7 +549,7 @@ hole, and the frame counter counts the length that will actually be written.
 ### Listening to a seam over and over
 
 The playback row sits under the cutting one: rewind, play, fast forward and
-**Loop** in the middle, with the **volume** to the right of them.
+**Loop** a little right of the middle, with the **volume** to the right of them.
 
 With **Loop** down, playback that reaches the end of the selection goes back to
 where it started and plays again. What repeats is the **selection**: it starts at
@@ -870,7 +870,7 @@ there.
 
 | Button | |
 |---|---|
-| **Cut outside** | Drop everything **outside** the selection. One press for lifting a single stretch out |
+| **Cut outside** | Drop everything **outside** the selection. One press for lifting a single stretch out. Nothing is selected afterwards |
 | **Snap to lossless** | Move both ends of the selection to the nearest lossless point. OUT is the last frame the selection takes, so it goes one frame before the point, and the programme comes back on the point itself. **Press it and the re-encoding goes to zero** |
 | **↺ Undo** | Step back to before the last edit (a hundred deep, `Ctrl+Z`) |
 | **↻ Redo** | Put the edit back (`Ctrl+Y`) |
@@ -1188,9 +1188,11 @@ rather than a video run with the sound extracted afterwards: two recordings
 of eleven minutes take under a second, where writing the video takes four.
 
 The extension follows **what the sound is**: `.aac` for a broadcast's own,
-`.ac3` for AC-3 and E-AC-3, `.mp2`, `.mp3` and `.dts` for those, `.wav` for
-linear PCM (a disc's own, or **Audio codec** set to it), and `.m4a` for
-anything with no file of its own.
+`.ac3` for AC-3, `.eac3` for E-AC-3, `.mp2`, `.mp3` and `.dts` for those,
+`.wav` for linear PCM (a disc's own, or **Audio codec** set to it), and
+`.mka` for anything with no file of its own, such as TrueHD or FLAC. A 4K
+broadcast's LATM-framed AAC has no file of its own either and is written as
+plain AAC in an `.aac`, which re-encodes the whole track.
 
 The audio settings work as they always do. Left at smart rendering, only the
 frames a boundary falls inside are rebuilt and the rest are the recording's

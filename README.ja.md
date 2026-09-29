@@ -133,19 +133,19 @@ CM 自動検出で決めた 5 区間・22 分の書き出しでは、**40589 フ
 
 ビルド済みのファイルは
 [Releases ページ](https://github.com/DeepRegular/SmartCut/releases)にあります。
-deb 以外はすべて FFmpeg を同梱しているので、ほかに用意するものはありません。
+どれも FFmpeg を同梱しているので、ほかに用意するものはありません。
 
 | プラットフォーム | ファイル | 備考 |
 |---|---|---|
 | **Linux** | `SmartCut_0.8.14_amd64.AppImage` | 実行権限を付けて起動します |
 | **Linux** | `SmartCut-0.8.14-linux-x86_64.tar.gz` | 展開して `./smartcut` を実行します。FUSE を使いたくない場合はこちらです |
-| **Linux (Debian/Ubuntu)** | `smartcut_0.8.14_amd64.deb` | `sudo apt install ./smartcut_0.8.14_amd64.deb`。システムに入っている FFmpeg を使うので 4.8 MB で済みます |
+| **Linux (Debian/Ubuntu)** | `smartcut_0.8.14_amd64.deb` | `sudo apt install ./smartcut_0.8.14_amd64.deb`。GTK や WebKitGTK はシステムのものを使うので 26.8 MB で済みます |
 | **Windows** | `SmartCut_0.8.14_x64-setup.exe` | インストーラ。コマンドライン版の `smartcut-cli.exe` も同じフォルダーに入ります |
 | **Windows** | `smartcut-portable-x64-0.8.14.zip` | 展開して `smartcut.exe` を実行します。コマンドライン版は `smartcut-cli.exe` です |
 
 **動作条件。** AppImage と tar.gz には glibc 2.35 以降が必要です（Ubuntu 22.04、
-Debian 12、Fedora 36 以降）。deb は FFmpeg 7.1 を使うので、Debian 13 または
-Ubuntu 25.04 以降が必要です。deb では GUI が `smartcut`、コマンドライン版が
+Debian 12、Fedora 36 以降）。deb は Ubuntu 22.04 以降と Debian 13 以降で
+使えます。deb では GUI が `smartcut`、コマンドライン版が
 `smartcut-cli` としてインストールされます。Windows 版でもコマンドライン版は
 `smartcut-cli.exe` という名前です。Windows 版は x64 のみで、WebView2
 ランタイムが必要です（Windows 11 には標準で入っており、Windows 10 でもほとんどの
@@ -407,10 +407,10 @@ VC-1 だけは事情が違います。2010 年頃までにプレスされた Blu
 | VC-1 の Blu-ray（1920x1080i アニメ）、キーフレームの間から間まで 10 秒 | 308/308 フレーム、映像の 90% がバイト一致、残りは 48 dB で書き直し |
 | VC-1 の Blu-ray（1920x1080p 実写・強いグレイン）、同じく 10 秒 | 246/246 フレーム、90% がバイト一致、残りは 45 dB でグレインも残存 |
 
-**GUI では書き出す前に結果が分かります。** タイムラインの下にある書き出しの計画には、
-エンジンが実際に実行する計画がそのまま表示されます。どれだけをコピーし、何フレームを
-作り直すかが分かり、区間ごとの内訳も開いて確かめられます。「映像 完全無劣化」と
-出ていれば、1 フレームも再エンコードしません。
+**GUI では書き出す前に結果が分かります。** タイムラインの下の書き出しの計画には、
+エンジンが実際に行う処理がそのまま表示されます。どれだけコピーし、何フレーム作り直すかが
+分かります。「▸ 詳細」を押せば、コピーと再エンコードの一覧も確かめられます。
+「映像 完全無劣化」と出ていれば、1 フレームも再エンコードしません。
 
 **四捨五入で「100%」にすることはありません。** 40000 フレーム中 2 フレームを
 作り直した場合、四捨五入すれば 100.0% になります。しかしスマートレンダラーが
