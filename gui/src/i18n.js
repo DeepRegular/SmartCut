@@ -991,8 +991,15 @@ const CATALOG = {
     "editor.frameKindNear": "{kind} フレーム — 近くのフレーム（解析中）",
     "editor.previewFailed": "プレビュー失敗: {e}",
     "editor.stripHint":
-      "クリックで移動／<b>右ドラッグ</b>で前後にサーチ（右へ＝送り・左へ＝戻し）／<b>中クリック</b>で場面の変わり目へ（右半分で次・左半分で前）／ホイールで 1 フレーム送り（Shift で GOP 単位）／Space で再生",
+      "クリック：そのフレームへ移動\n" +
+      "右ドラッグ：前後にサーチ（右へ動かすと送り、左へ動かすと戻し）\n" +
+      "中クリック：場面の変わり目へ（右半分で次、左半分で前）\n" +
+      "ホイール：1 フレームずつ送る（Shift を押しながらで GOP 単位）\n" +
+      "Space：再生",
     "editor.stripShow": "1 画面",
+    "plan.fold.open": "▾ 区間",
+    "plan.fold.closed": "▸ 区間",
+    "plan.fold.title": "コピーする区間と再エンコードする区間の一覧を表示する／隠す",
     "strip.auto": "自動",
     "strip.win3": "3 秒",
     "strip.win6": "6 秒",
@@ -2091,8 +2098,15 @@ const CATALOG = {
     "editor.frameKindNear": "{kind} frame — nearest picture, still reading",
     "editor.previewFailed": "Preview failed: {e}",
     "editor.stripHint":
-      "Click to move  /  <b>right-drag</b> to search back and forth (right = forwards, left = back)  /  <b>middle-click</b> for a scene change (right half forwards, left half back)  /  wheel steps a frame (Shift for a GOP)  /  Space plays",
+      "Click: go to that frame\n" +
+      "Right-drag: search back and forth (right = forwards, left = back)\n" +
+      "Middle-click: a scene change (right half forwards, left half back)\n" +
+      "Wheel: a frame at a time (a GOP with Shift)\n" +
+      "Space: play",
     "editor.stripShow": "Window",
+    "plan.fold.open": "▾ Segments",
+    "plan.fold.closed": "▸ Segments",
+    "plan.fold.title": "Show or hide the list of copied and re-encoded segments",
     "strip.auto": "Auto",
     "strip.win3": "3 s",
     "strip.win6": "6 s",

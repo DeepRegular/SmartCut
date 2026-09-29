@@ -898,21 +898,25 @@ body.crosswin { padding: 0; }
    dragged past a digit. */
 .vnum { font-size: 11px; min-width: 4ch; text-align: right; font-variant-numeric: tabular-nums; }
 
-.statusbar {
-  display: flex; align-items: center; gap: 16px;
-  background: var(--sunken); border: 1px solid var(--line); padding: 4px 10px;
-  font-variant-numeric: tabular-nums;
+/* The readouts either side of the playback buttons: where the playhead is
+   and what is chosen on the left, the detection's note on the right. They
+   used to be a row of their own under this one, which was a line taken off
+   the picture. The two sides share what the buttons leave equally, so the
+   buttons stay in the middle of the window; where the row is too narrow for
+   all of it, the readouts go onto a line of their own rather than fold.
+
+   None of them may fold -- the frame number broke across its slash -- and
+   the detection note is the one that gives way: the number and the
+   selection are what the cut is being made against, while the note is a
+   summary already said in the row it came from, and it keeps the whole of
+   itself in its tooltip. */
+.player > .readout {
+  flex: 1 1 0; display: flex; align-items: center; gap: 16px;
+  min-width: max-content; padding: 0 10px; font-variant-numeric: tabular-nums;
 }
-/* Three readouts on one line, and at the window's narrowest they want more
-   room than the line has. Left alone, every one of them folds in two -- the
-   frame number breaks across the slash -- and the bar grows a second line
-   anyway. So none of them may fold, and the detection note is the one that
-   gives way: the number and the selection are what the cut is being made
-   against, while the note is a summary that was already said in the row it
-   came from, and it keeps the whole of itself in its tooltip. */
-.statusbar > * { flex: none; white-space: nowrap; }
-.statusbar .spacer { flex: 1; }
-.statusbar #cm-note { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.player > .readout > * { flex: none; white-space: nowrap; }
+.player > .readout-r { justify-content: flex-end; min-width: 0; }
+.player > .readout-r #cm-note { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 .counter { font-size: 15px; }
 /* A press on the counter types a frame number in; see `openJump`. The box
    takes the counter's place and its size, so the row does not move. */
@@ -939,7 +943,12 @@ body.crosswin { padding: 0; }
    ground goes neutral until there is a plan to show. */
 .bar.unknown { background: var(--line); }
 .bar span { display: block; height: 100%; width: 0; background: var(--copy); }
-.plan-text { margin-top: 5px; font-variant-numeric: tabular-nums; }
+.plan-head { display: flex; align-items: center; gap: 10px; margin-top: 5px; }
+.plan-text { flex: 1 1 auto; min-width: 0; font-variant-numeric: tabular-nums; }
+.plan-head .mini { flex: none; }
+/* Folded, which is how it starts: the summary above says what the cut
+   costs, and the segments are there for the one who wants them. */
+.segbox[hidden] { display: none; }
 /* Everything else in this window is the editor's own arithmetic and lands
    the instant a cut is made; what the cut *costs* has to be asked of the
    engine, and on a long recording that answer takes a few seconds. The panel

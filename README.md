@@ -433,9 +433,9 @@ broadcast recordings:
 | A Blu-ray in VC-1 (1920x1080i animation), 10s between key frames | 308/308 frames, 90% of the video byte-identical, the rest rewritten at 48 dB |
 | A Blu-ray in VC-1 (1920x1080p film, heavy grain), same 10s | 246/246 frames, 90% byte-identical, the rest at 45 dB with the grain intact |
 
-**The GUI shows you the result before you commit to it.** The status line under
-the timeline is the plan the engine will actually carry out: which ranges are
-copied, which are rebuilt, and how many frames that is. If it says "Video
+**The GUI shows you the result before you commit to it.** The plan under the
+timeline is the one the engine will actually carry out: how much is copied, how
+many frames are rebuilt, and, unfolded, which ranges each of those is. If it says "Video
 completely lossless", not one frame will be re-encoded.
 
 **"100%" is never rounded up.** Two rebuilt frames out of 40000 rounds to 100.0%

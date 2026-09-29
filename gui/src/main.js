@@ -2038,6 +2038,36 @@ if (subsPicker) {
 
 const seekOut = (o) => showFrame(outToSrc(clamp(o, 0, outDur)));
 
+// --- the plan's segments, folded or open --------------------------------
+//
+// The summary line says what the cut costs; the segments under it are for
+// whoever wants the detail, and three lines of them were three lines taken
+// off the picture on a 1080p screen. Folded out of the box, and the answer
+// is kept: somebody who opens them wants them open on the next clip too.
+
+function showPlanOpen(open) {
+  const box = el("segments").parentElement;
+  const button = el("plan-fold");
+  box.hidden = !open;
+  button.textContent = tr(open ? "plan.fold.open" : "plan.fold.closed");
+  button.setAttribute("aria-expanded", open ? "true" : "false");
+}
+
+const planFold = el("plan-fold");
+if (planFold) {
+  showPlanOpen(!!prefs.get("planOpen"));
+  planFold.addEventListener("click", () => {
+    const open = el("segments").parentElement.hidden;
+    prefs.set("planOpen", open);
+    showPlanOpen(open);
+    // The shadow that says there is more is measured against a box that
+    // was not there while it was folded.
+    const list = el("segments");
+    list.parentElement.classList.toggle("more", list.scrollHeight > list.clientHeight + 1);
+  });
+  onLangChange(() => showPlanOpen(!el("segments").parentElement.hidden));
+}
+
 // --- going to a frame by number ---------------------------------------------
 //
 // The counter under the buttons turns into a box: a press on it, J, or Ctrl+J,
@@ -5689,7 +5719,7 @@ function keptAudio() {
 
 /// The note under the timeline. It is the one thing in that bar allowed to be
 /// cut short when the window is narrow, so it carries the whole of itself in
-/// its tooltip -- see `.statusbar #cm-note`.
+/// its tooltip -- see `.readout-r #cm-note`.
 function showCmNote(text) {
   const e = el("cm-note");
   e.textContent = text;

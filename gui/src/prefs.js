@@ -147,6 +147,11 @@ const DEFAULTS = {
   /// are up in the corners out of its way. The インジケータ button beside the counter's
   /// in the editor is the same answer.
   pictureMarks: true,
+  /// Whether the cut editor shows the plan's segments line by line under its
+  /// one-line summary. Folded: the summary says what a cut costs, and the
+  /// three lines of the list were three lines taken off the picture on a
+  /// 1080p screen. Opened and closed from the plan itself.
+  planOpen: false,
   /// How far 拡大表示 magnifies, in screen pixels per source pixel.
   ///
   /// Not on the 環境設定 screen: it is the one question that window exists to

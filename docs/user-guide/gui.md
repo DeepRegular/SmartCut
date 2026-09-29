@@ -455,11 +455,11 @@ frames, and `Snap to lossless` can take those to zero once it lights up.
 | Left column | The **keyframes** — your marks, each with a thumbnail. Click one to jump there; the column stays where it is scrolled to. A mark a detection put down carries `Black`, `White` or `Quiet` under its time |
 | The large picture | The preview. At its foot, in the middle: frame number, timecode, what kind of frame it is, and the current selection. **Counter**, on the bottom line, turns them off. In its top corners, indicators for the frame on screen (below), which **Indicators** turns off |
 | Beside it, on the left | The **audio level meter**: what is being heard while something plays, and the sound under the playhead while nothing does. **Preferences → Windows** turns it off |
-| The band under it | The **filmstrip**: the frames around you, laid out as pictures. The `Window` menu on the right sets how much of the recording the band shows. `Auto`, the default, sizes it from the recording's keyframe spacing so that one GOP is about one picture wide (between 2 and 60 s); a cell is as wide as the stretch it covers. The line down the middle is where you are — except at `Frame by frame`, where a cell is one frame and the frame on screen is boxed in blue instead |
+| The band under it | The **filmstrip**: the frames around you, laid out as pictures. The `Window` menu on the right sets how much of the recording the band shows. `Auto`, the default, sizes it from the recording's keyframe spacing so that one GOP is about one picture wide (between 2 and 60 s); a cell is as wide as the stretch it covers. The line down the middle is where you are — except at `Frame by frame`, where a cell is one frame and the frame on screen is boxed in blue instead. Hover over the strip for how it is worked |
 | The scrubber | **Green is the output itself.** `▼` are keyframes, a dull red line inside the green is a join left by a cut, the fine ticks below are scene changes, and the two rows under those are the blank and the silent stretches. **The playhead is the `◎` and a bright red line running the whole height of the track** — the `◎` sits inside the green and the line is what lines it up against everything drawn above and below it |
 | The button row | **Cut** in the middle, `[ IN` to its left and `OUT ]` to its right, and outwards from there: go to, one frame, lossless point, start and end |
-| The line under the playback buttons | The frame you are on, how many there are, the time, and the selection. Click the frame number on this line (not the one over the picture), or press `J` (`Ctrl+J`), to type a frame number or a time (`00:01:23.45`) and go there with `Enter`. `Esc` closes the box without going anywhere |
-| The band and lines below | **The export plan**: what will be copied and what will be rebuilt |
+| The playback row | Rewind, play, fast forward, loop and the volume. To their left, the frame you are on, how many there are, the time, and the selection; at the far right, what commercial detection found. Click the frame number on this row (not the one over the picture), or press `J` (`Ctrl+J`), to type a frame number or a time (`00:01:23.45`) and go there with `Enter`. `Esc` closes the box without going anywhere |
+| The band and lines below | **The export plan**: what will be copied and what will be rebuilt. `▸ Segments` at its right unfolds it segment by segment |
 | The bottom line | On the left, what the cut costs, and beside it **Counter**, **Indicators** and **Subtitles** — what the preview carries. **OK** and **Cancel** on the right |
 
 The indicators in the picture's top corners are there only on a frame they apply to:
@@ -549,7 +549,7 @@ hole, and the frame counter counts the length that will actually be written.
 ### Listening to a seam over and over
 
 The playback row sits under the cutting one: rewind, play, fast forward and
-**Loop**, with the **volume** to the right of them.
+**Loop** in the middle, with the **volume** to the right of them.
 
 With **Loop** down, playback that reaches the end of the selection goes back to
 where it started and plays again. What repeats is the **selection**: it starts at
@@ -819,7 +819,7 @@ frames you want to *keep* and it takes out what lies between them.
   at a time as you close in. Only when the two cross does the one you just
   placed win, and the other retreats to the end of the timeline.
 - **IN and OUT on the same frame select that one frame.**
-- The selection is shown under the preview and on the status line, as
+- The selection is shown under the preview and on the playback row, as
   `Selection 1800 - 3599 : 00:01:00.06`.
 
 ### Making the cut
@@ -838,6 +838,9 @@ copy 00:02:00.11 → 00:03:45.00 (3143 frames)
 **If the badge at the bottom left reads `Video completely lossless`, not one
 frame of this output will be rebuilt.** Cut the second commercial block the same
 way and it becomes `3 ranges, 2 cuts`.
+
+The breakdown, segment by segment, starts folded: `▸ Segments` at the right of
+the plan opens it, and it stays open for the next clip until it is folded again.
 
 **Only three lines of the breakdown are visible at once.** More cuts mean more
 lines, and the rest are read by scrolling. When there is more below, a slim bar
