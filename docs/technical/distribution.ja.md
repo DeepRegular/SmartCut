@@ -102,7 +102,7 @@ libasound2 はデスクトップ Linux ならまず入っているし、ALSA を
 展開して確認できる。
 
 ```bash
-./SmartCut_0.8.12_amd64.AppImage --appimage-extract >/dev/null
+./SmartCut_0.8.13_amd64.AppImage --appimage-extract >/dev/null
 ldd squashfs-root/usr/bin/smartcut | grep -E 'asound|jack|pulse'
 # libasound.so.2 / libjack.so.0 -> /lib/x86_64-linux-gnu/...   (システム側)
 # libpulse.so.0                 -> squashfs-root/usr/bin/../lib/...  (同梱)
@@ -132,8 +132,8 @@ CJK フォント。bubblewrap も GTK も無い）。BDAV のクリップを編�
 ```bash
 JAMMY=/path/to/root gui/jammy/build.sh   # tar.gz（AppImage と同時。Ubuntu 22.04 の root）
 ./gui/build-linux.sh deb                 # deb（Debian 13 の VM）
-# -> gui/src-tauri/target/release/bundle/linux/SmartCut-0.8.12-linux-x86_64.tar.gz
-# -> gui/src-tauri/target/release/bundle/linux/smartcut_0.8.12_amd64.deb
+# -> gui/src-tauri/target/release/bundle/linux/SmartCut-0.8.13-linux-x86_64.tar.gz
+# -> gui/src-tauri/target/release/bundle/linux/smartcut_0.8.13_amd64.deb
 ```
 
 別々のシステムでビルドしたものを、2 通りに詰めている。どちらも GUI を `smartcut`、コマンド
@@ -144,14 +144,14 @@ cargo のクレート名は `gui` なので、放っておくと Tauri はその
 インストールしてしまう。1 つのアプリが占有してよい名前ではない。`tauri.conf.json` の
 `mainBinaryName` で `smartcut` に固定してある（0.2.0 以降。それ以前は Windows 用
 だけに設定されていた）。一方 Tauri が書き出すバンドル*ファイル*の名前は
-`productName` に従うので、`SmartCut_0.8.12_amd64.deb` になる。deb のパッケージ名
+`productName` に従うので、`SmartCut_0.8.13_amd64.deb` になる。deb のパッケージ名
 `smartcut` と食い違うのはこのためである。`build-linux.sh` は両方を
 `tauri.conf.json` から読む。
 
 | 成果物 | サイズ | FFmpeg | 必要条件 |
 |---|---|---|---|
-| `SmartCut-0.8.12-linux-x86_64.tar.gz` | 191.1 MB | 同梱 | glibc 2.35 以上。FUSE 不要 |
-| `smartcut_0.8.12_amd64.deb` | 4.8 MB | システムのものを使用 | FFmpeg 7.1（Debian 13 / Ubuntu 25.04 以降） |
+| `SmartCut-0.8.13-linux-x86_64.tar.gz` | 191.1 MB | 同梱 | glibc 2.35 以上。FUSE 不要 |
+| `smartcut_0.8.13_amd64.deb` | 4.8 MB | システムのものを使用 | FFmpeg 7.1（Debian 13 / Ubuntu 25.04 以降） |
 
 tar.gz の中身は、AppImage と同じ AppDir を展開したものである。linuxdeploy が
 `ldd` を辿って集めた 633 個のライブラリがそのまま `app/` にある。`./smartcut` は
@@ -221,7 +221,7 @@ Linux の開発 VM から `x86_64-pc-windows-msvc` へクロスビルドして�
 
 ```bash
 ./gui/build-windows.sh
-# -> gui/src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis/SmartCut_0.8.12_x64-setup.exe
+# -> gui/src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis/SmartCut_0.8.13_x64-setup.exe
 # -> gui/src-tauri/target/x86_64-pc-windows-msvc/release/bundle/portable/smartcut-portable-x64.zip
 ```
 
