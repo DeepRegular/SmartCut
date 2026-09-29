@@ -458,7 +458,7 @@ frames, and `Snap to lossless` can take those to zero once it lights up.
 | The band under it | The **filmstrip**: the frames around you, laid out as pictures. The `Window` menu on the right sets how much of the recording the band shows. `Auto`, the default, sizes it from the recording's keyframe spacing so that one GOP is about one picture wide (between 2 and 60 s); a cell is as wide as the stretch it covers. The line down the middle is where you are — except at `Frame by frame`, where a cell is one frame and the frame on screen is boxed in blue instead |
 | The scrubber | **Green is the output itself.** `▼` are keyframes, a dull red line inside the green is a join left by a cut, the fine ticks below are scene changes, and the two rows under those are the blank and the silent stretches. **The playhead is the `◎` and a bright red line running the whole height of the track** — the `◎` sits inside the green and the line is what lines it up against everything drawn above and below it |
 | The button row | **Cut** in the middle, `[ IN` to its left and `OUT ]` to its right, and outwards from there: go to, one frame, lossless point, start and end |
-| The line under it | The frame you are on, how many there are, the time, and the selection. Click the frame number, or press `J` (`Ctrl+J`), to type a frame number or a time (`00:01:23.45`) and go there with `Enter` |
+| The line under the playback buttons | The frame you are on, how many there are, the time, and the selection. Click the frame number on this line (not the one over the picture), or press `J` (`Ctrl+J`), to type a frame number or a time (`00:01:23.45`) and go there with `Enter`. `Esc` closes the box without going anywhere |
 | The band and lines below | **The export plan**: what will be copied and what will be rebuilt |
 | The bottom line | On the left, what the cut costs, and beside it **Counter**, **Indicators** and **Subtitles** — what the preview carries. **OK** and **Cancel** on the right |
 
@@ -722,8 +722,9 @@ three seconds for either pass out of the box, and -50 dB for the sound.
   gathers a run of them. `Del` then removes the lot in one go, and `Ctrl+Z`
   puts them all back. Click the empty space below the cards to let the
   selection go. The column stays where it was scrolled to, and the card that
-  moves up into the gap (the last card, where nothing was below) is picked
-  out, so `Del` again takes the marks one after another.
+  moves up into the gap (below the whole run, for a handful; the new last
+  card, where nothing was below) is picked out, so `Del` again takes the
+  marks one after another.
 - A **cut** is the edit. Set IN and OUT, press `✂ Cut`, and that range leaves
   the output.
 
