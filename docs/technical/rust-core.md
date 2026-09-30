@@ -72,11 +72,17 @@ resort behind that.
 A decoder hands its pictures back in picture-order-count order, and the counts on the
 two sides of a seam were written by different encoders —
 [pitfall 10](algorithm.md#10-the-picture-order-counts-either-side-of-a-splice-are-not-one-anothers)
-has the whole of it. `--clean-joins` spends up to two seconds more re-encoding to
-reach an IDR, which is the entry point that settles it, and is off unless asked for
-because what it costs is exactness.
+has the whole of it. Where a copy opens on an I that is not an IDR and its count
+would derive below pictures already shown, `cut::poc_seam::carry_on` moves the
+head's `pic_order_cnt_lsb` along (widening the field where it is too narrow), and
+`Writer::hold`, `seal` and `release` keep every write to the muxer back until the
+copy's first picture has said whether that is needed, so the mux order is the one it
+would have been. A cut that needs no renumbering is byte-identical to one made
+without it.
 
-Two pieces of the core came out of that. `bitstream::starts_a_sequence` says whether
+`--clean-joins` remains as an option: it spends up to two seconds more re-encoding to
+reach an IDR, which restarts the sequence, and is off unless asked for because what
+it costs is exactness. Two pieces of the core came out of that. `bitstream::starts_a_sequence` says whether
 a key packet opens a coded video sequence — an IDR NAL for H.264, type 19 or 20 for
 HEVC, and `true` for everything that reorders nothing, so MPEG-2 and VC-1 never move.
 And planning gained an entry point that has the recording in hand, **`plan_on`**,

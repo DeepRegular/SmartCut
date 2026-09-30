@@ -203,23 +203,55 @@ opens a coded video sequence of its own and counts from nought; the copied `body
 spliced on after it carries the counts the recording gave it.
 
 Where the copied segment begins on an **IDR** that settles itself: the sequence
-restarts and the decoder empties what it was holding. But a pressed Blu-ray mostly
-puts the other kind of entry point there — an I picture with a recovery point, which
-restarts nothing — and where the head's last count lands above the copied picture's,
-the two come out of the decoder the wrong way round: one picture of the outgoing
-scene handed back a frame *after* the incoming one. On one disc, a set of twelve cuts
-had five such pictures.
+restarts and the decoder empties what it was holding. But the discs one authoring
+tool writes, and a recorder's own, put the other kind of entry point there — an I
+picture with a recovery point, which restarts nothing. A slice states only the low
+bits of its count, `pic_order_cnt_lsb`, and the decoder derives the rest from the
+reference picture before it, so the copied I is read against the last low bits the
+*head* wrote. Where it derives lower than pictures already shown, libavcodec takes
+the copy's first pictures for ones it has put out and drops them: 7 of 714 on an
+authored disc, 15 of 1379 on a recorder's disc coded as field pairs, and a run of
+twelve cuts that decoded 698 of its 718. The copy itself was never wrong — the same
+pictures decoded from the recording from that same I come out bit for bit.
 
-**Nothing is decoded wrongly.** The pictures after a recovery point decode exactly,
-checked against the recording itself; only the order one of them comes out in is
-wrong. `--clean-joins` spends a little more re-encoding to reach an IDR instead,
-which on that disc took the five to two — the two being joins with no IDR within
-reach. What it costs is exactness: the stretch between the two entry points stops
-being copied and becomes a re-encode, measured at 51 dB against a decode of the same
-pictures with their own references. That is a good re-encode and it is still not the
-recording, so this is off unless it is asked for.
+**So the head is renumbered, and only where it has to be.** `cut::poc_seam` reads the
+head's slices and the copy's first one and derives what the copy's I would be shown
+at. Where that is not after the head, every slice of the head has its
+`pic_order_cnt_lsb` moved along by one amount, chosen so that the I lands past the
+head's last reference picture by `2 × max_num_ref_frames` of the copy's sequence.
+That margin is for the frames libavcodec invents to fill the `frame_num` gap at the
+seam: left above the I, they sort into the lists its B pictures are predicted from,
+and on the recorder's disc two apart still left 2 of 718 copied frames wrong. The
+differences between the head's own pictures stay what they were, and the copy is
+not touched.
 
-How far it is worth reaching is the other half. `examples/idrdiag.rs` walks a
+The field is sometimes too narrow to say it. x264 writes as few bits of order as its
+own pictures need: on the recorder's disc, where the head is MBAFF, four against the
+recording's eight; there the head's SPS widens
+`log2_max_pic_order_cnt_lsb` by 8 and every head slice's field grows by a byte. A
+whole byte, because an arithmetic-coded slice starts its data on a byte boundary, and
+moving everything after the field by exactly one byte keeps that boundary without
+the rest of the header having to be read.
+
+A range's re-encoded tail followed by the next range's copy of the same recording is
+the same seam and is handled the same way. The decision needs the copy's first
+picture, so the writer holds every write to the muxer — sound included — from the
+start of the head until that picture arrives, and lets them go in the order they
+were made; a cut that needs no renumbering is byte-identical to one made without any
+of this. An earlier attempt (2026-09-09) rewrote the head's counts unconditionally,
+made things worse, and was dropped; this one acts only where the reversal is derived,
+and was measured never to lower a decoded count. Not covered: the seam between two
+reels of a join with no transition, and HEVC, whose CRA entry points have not been
+tried.
+
+**`--clean-joins` remains as an option.** It spends a little more re-encoding to
+reach an IDR instead, which restarts the sequence. What it costs is exactness: the
+stretch between the two entry points stops being copied and becomes a re-encode,
+measured at 51 dB against a decode of the same pictures with their own references.
+That is a good re-encode and it is still not the recording, so this is off unless it
+is asked for.
+
+How far it is worth reaching is the other half of that option. `examples/idrdiag.rs` walks a
 recording and prints the wait for a clean entry point from each of its own, and the
 four H.264 discs to hand disagree completely: two wait a second or three at the
 median, and one holds a **single** IDR across a twenty-six minute title, where the

@@ -111,8 +111,8 @@ There are two exceptions, both cases where a `*` would be wrong:
 ## Autosave and recovery
 
 While there are changes that have not been saved, the list is written into
-SmartCut's own data folder about three seconds after each change — the same
-`.scproj` a save writes, but never over the project's own file. Saving, or
+SmartCut's own data folder about three seconds after each change — everything a
+save would write, but never over the project's own file. Saving, or
 closing the window normally, removes it.
 
 If SmartCut crashes, or the machine loses its power, that copy is left behind,
@@ -123,6 +123,11 @@ and the next time SmartCut is started on nothing it asks about it under
 |---|---|
 | `Yes` | The list, its cuts and marks and its output settings come back as they were. A list that belonged to a project opens under that project's name, with a `*` in the title until it is saved |
 | `No` | The copy is deleted |
+
+A copy that could not be put back after a `Yes` — one naming a network share
+that was then not let in, say — is kept and offered again at the next start. A
+copy written by a newer version of SmartCut, which this one cannot open, is
+left where it is without asking.
 
 Each window leaves a copy of its own. One start offers the newest of them; the
 rest are offered at the starts after it. A start on files or on a project

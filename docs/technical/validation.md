@@ -219,6 +219,25 @@ for seven field pairs in half a minute — libavcodec's MPEG-2 parser joins each
 into one packet, so it is seven frames, not fourteen half-frames, and it comes out
 exactly as it did.
 
+### The copy after a re-encoded head lost pictures (resolved)
+
+A re-encoded H.264 head opens on x264's own IDR and counts from nought. The copy after
+it, on an authored disc and on a recorder's own, opens on an I with a recovery point
+that restarts nothing, so its count is derived from the head's last one. Where that
+came out below pictures already shown, libavcodec dropped the copy's first pictures:
+7 of 714 on the authored disc, 15 of 1379 on the recorder's (PAFF 1080i), and a
+twelve-cut run decoded 698 of its 718. The pictures themselves were right.
+
+Now the head's `pic_order_cnt_lsb` is moved along only where that reversal is
+derived, far enough to clear the frames libavcodec invents for the `frame_num` gap,
+and the field is widened where x264 wrote it narrower than the recording. The
+twelve-cut run now decodes all 718, and on the recorder's disc every copied frame
+matches the recording bit for bit. An earlier
+rewrite that did this unconditionally made things worse and was dropped; this one
+was measured never to lower a decoded count, and a cut that needs no renumbering is
+byte-identical to what was written before. See
+[pitfall 10](algorithm.md#10-the-picture-order-counts-either-side-of-a-splice-are-not-one-anothers).
+
 ### The planner's phase problem (resolved)
 
 Interval boundaries used to be snapped to an ideal grid, `round(t*fps)/fps`. That
@@ -274,23 +293,16 @@ These only surfaced on real material:
   bitstream and hiding them with an edit list, which the elementary-stream
   concatenation approach cannot express. It is a non-issue on material with regular
   IDRs, which covers most broadcast H.264.
-- **A copy spliced onto an entry point that is not an IDR can hand back one picture
-  out of order** (see [pitfall 10](algorithm.md#10-the-picture-order-counts-either-side-of-a-splice-are-not-one-anothers)).
-  Nothing is decoded wrongly — the pictures after a recovery point were checked
-  against the recording itself — but the counts the two sides of the seam are ordered
-  by were written by different encoders, so one picture of the outgoing scene can be
-  handed back after the incoming one. On the disc it was found on, twelve cuts
-  produced five such pictures; `--clean-joins` took that to two by reaching for an
-  IDR instead, and the two are joins with no IDR within two seconds. It is off by
-  default because it costs exactness: the stretch it re-encodes measures 51 dB
-  against a copy of the same pictures, which is bit-exact. Material that reorders
-  nothing — MPEG-2, VC-1 — is unaffected. **A recorder's own disc cannot be helped
-  at all**: `idrdiag` counts *one* IDR among the 1786 entry points of a
-  fifteen-minute recording on one, so the median wait for a clean join is 446
-  seconds and the two-second reach never finds anything. On a forty-second cut of
-  it, libavcodec withholds the eighteen frames of the copy whose counts fall below
-  the head's last — the pictures are there and decode exactly, and a decoder that
-  does not reorder on output shows them.
+- **A seam between two reels of a join with no transition is not renumbered**
+  (see [pitfall 10](algorithm.md#10-the-picture-order-counts-either-side-of-a-splice-are-not-one-anothers)).
+  Within one recording, a re-encoded head followed by a copy that opens on a
+  non-IDR I has its picture order counts moved along where they would run backwards,
+  so libavcodec no longer drops the copy's first pictures. Where one reel's copy meets
+  the next reel's with nothing re-encoded between them, nothing is rewritten. HEVC,
+  whose CRA entry points could meet the same thing, has not been tried.
+  `--clean-joins` is still there for reaching an IDR instead; on a recorder's own disc
+  it finds nothing, since `idrdiag` counts *one* IDR among the 1786 entry points of a
+  fifteen-minute recording on one.
 - **The Python leading-picture reference test samples one place in the file** and
   applies the result to the whole thing, assuming the encoder does not change its mind
   partway. The Rust implementation does not need this, since `nal_ref_idc` can be read
