@@ -37,7 +37,8 @@ at a time: it needs a moment where you can say "this one is finished". That
 moment is the **OK** button.
 
 The batch tool has no tab, because it is about a queue of lists rather than
-about this one; it is opened from the `Batch tool…` item on the menu. Its
+about this one; it is opened from the **Batch tool** button under **Add files**
+on the input screen, or the `Batch tool…` item on the menu. Its
 own process, because a queue lined up at midnight has to go on being written
 after the window it was lined up in is closed.
 
@@ -201,8 +202,11 @@ quick properties at the foot of the screen either way.
 | `Ctrl+Z` / **Undo remove** | Put removed rows back where they were, with their cuts, marks and detections. **Remove all** comes back too. The last 20 removals are kept; opening a project or starting a new one forgets them. A row whose file has been added to the list again since stays out |
 | `↑` `↓` | Move the selection. Hold `Shift` to extend it |
 | **Drag a row** | Reorder. `Esc` cancels |
+| `Ctrl+↑` `Ctrl+↓` | Move the selected rows up / down, as **Move up** and **Move down** do |
 | **Click where there is no row** | Clear the selection |
+| **Double-click where there is no row** | Add files, as **Add files** does |
 | **Right-click** | The commands for that row, as a menu |
+| `Ctrl+I` / **Media info** on the right-click menu | What the file holds (see [What is in the file](#what-is-in-the-file)) |
 | **⧉ Duplicate clip** | Put the same recording in the list twice. Cuts and marks come with it |
 
 **What you add arrives selected**, and whatever was selected before is not. Drop
@@ -252,6 +256,8 @@ or take the row out and add the file again.
 
 **Quick properties**, along the bottom, describes whichever single clip is
 selected. With several selected, it says how many and shows the Audio line.
+Drag its top edge to make it taller or shorter; the height is kept for the
+next session, and a double-click on the edge puts it back.
 
 The **Audio:** line in quick properties gives the codec and sample rate and
 then, underlined, **what that row's sound will be written as** — say
@@ -294,6 +300,23 @@ greyed while the output settings copy the sound outright.
 
 A joined run takes **the master clip's answer**: a file declares its sound
 once.
+
+### What is in the file
+
+**Media info** on a row's right-click menu, or `Ctrl+I` with the row selected,
+lists what the recording's file holds.
+
+![Media info](../images/usage-mediainfo.png)
+
+| Section | What it gives |
+|---|---|
+| General | Container, file size, duration, bit rate, start time, the broadcast's service name and the like |
+| Video | Codec, profile, level, resolution, aspect ratios, frame rate, scan, colour and the like |
+| Audio | Codec, sample rate, channels, language and the like |
+| Subtitles and data | Codec, language, flags and the like |
+
+Codec and format names are given as FFmpeg writes them. **Copy as text** puts
+the lot on the clipboard, ready to paste into a bug report.
 
 ### Detecting commercials
 
@@ -941,6 +964,26 @@ program deciding what the recording is for.
 This choice is a fact about *this clip*, so it travels back with the edit and is
 saved in the project.
 
+### Choosing the thumbnail
+
+A file manager or a player shows a picture for each file, and left to itself
+picks one: often the first frame, which on a broadcast recording is black or
+the end of whatever came before. **Use this frame as the thumbnail** in the `≡`
+menu (or `P`) sets the picture at the playhead instead. **Go to the thumbnail
+frame** finds it again and **Clear the thumbnail** takes it off.
+
+- It is written into **`.mp4`, `.m4v` and `.mkv`** as the file's cover — the
+  `covr` image of an MP4, an attachment named `cover.jpg` in Matroska. A
+  `.webm`, a `.ts`, a `.m2ts` and a disc have no place for one, and FFmpeg
+  writes no `covr` into a `.mov`; those are written as before.
+- Any frame of the recording will do, including one that is cut out.
+- An interlaced recording gives its cover from one field, so there is no comb.
+- Joining clips into one file, the first clip that has a thumbnail gives it.
+- It is part of the edit and is saved in the project; the quick properties
+  show it as a `Thumbnail:` line, at its time in the output (`✂` if a cut
+  takes that frame).
+- `Ctrl+Z` does not take it back: **Clear the thumbnail** does.
+
 ### Finishing with a recording
 
 - **OK** — take the cuts and marks back to the list and close.
@@ -1576,6 +1619,8 @@ can quote it straight into a bug report.
 | `Delete` / `Backspace` | Remove from the list |
 | `Ctrl+Z` | Put back what was removed from the list |
 | `↑` `↓` (`Shift` to extend) | Move the selection |
+| `Ctrl+↑` `Ctrl+↓` | Move the selected rows up / down (in the batch tool, the selected jobs) |
+| `Ctrl+I` | Media info for the selected clip |
 
 ### Cut editor
 
@@ -1595,6 +1640,7 @@ can quote it straight into a bug report.
 | `J` / `Ctrl+J` | Type a frame number or a time to go to |
 | `I` or `[` / `O` or `]` | Start / end the selection here |
 | `K` | Mark this frame as a keyframe |
+| `P` | Use this frame as the output file's thumbnail |
 | `Insert` | Put a keyframe on this frame, or take away the one on it |
 | `Del` | Cut the selection — or, with the keyboard in the column of marks, remove the marks chosen there |
 | `Ctrl+Del` | Cut the inside of the selection, keeping the two marked frames |
