@@ -1025,6 +1025,7 @@ What is set on either tab stays there when you switch.
 | **Write the list as one file** | In the **Output format** panel above. Off, the run writes one file per row, which is what it has always done. On, the whole list becomes a single output, in the order the rows are in, named after the first row. See [Joining the list into one file](#joining-the-list-into-one-file) |
 | **Master clip** | Under the box, and only while it is ticked. Which row the joined file takes its shape from: its frame size, its rate, its codec, its sound tracks. Where rows do not match it, a line for each says which row and what differs |
 | **Between the clips** | In the **Output format** panel above, and only while the list is being joined. `Transition…` opens a window of its own. See [Transitions between the clips](#transitions-between-the-clips) |
+| **Preset** | Keep the output settings under a name and bring them back by picking it → [Presets](#presets) |
 | **Output folder** | Empty means alongside the input. Use `Browse`, or type a path (an SMB path is fine) |
 | **Subfolder** | A folder of that name under the output folder, which is where the run writes. Offered where there is more than one file, and not for a join, which is one file. The name is filled in the first time you look: the disc's name, or the project's, or else today's date. Emptied, the run writes straight into the folder above. **A folder of that name already there gets a branch number** — `night`, then `night-2`, `night-3` — so a second run never lands on the first one's files. The field keeps the name you gave; `already there → night-2` beside it says where the run will actually write |
 | **Filename prefix** | `cut_` by default, in front of the name. What it starts as is a [preference](#output-settings) |
@@ -1038,6 +1039,7 @@ What is set on either tab stays there when you switch.
 | **Audio bitrate** | For frames that are rebuilt. `Leave it to the engine` is the safe answer |
 | **A disc's subtitles** | Shown only for a recording off a disc. `Inside the cut (PGS)` by default — one file, with its subtitles in it — or beside the cut: `.idx / .sub`, the pair every player and subtitle tool reads, or `.sup`, the display sets themselves. **The line says which destination leaves them untouched**, and that is a different one for a DVD than for a Blu-ray. Written to a disc, they always go inside the cut, whatever this says |
 | **Write the keyframes to a separate .keyframe file** | Puts a `.keyframe` file next to the video, under the same name |
+| **Check each file against the recording once it is written** | Reads every file back as soon as it is written and lines it up against its recording, frame by frame. Off by default → [Checking what was written](#checking-what-was-written) |
 
 A `.keyframe` file is **frame numbers and nothing else, with no header**, counted
 on the clock of the file that was written. If a `.keyframe` file sits next to a
@@ -1045,6 +1047,28 @@ video under the same name, SmartCut loads it when that video is opened.
 
 This setting is about the export. The cut editor can write the same file beside
 the *recording*, and that one is counted on the recording's clock.
+
+### Presets
+
+Output settings you use again and again can be kept under a name — "TS as it
+is", "MP4 for the phone", "AC-3 to 2ch AAC" — and brought back in one pick.
+
+| To | Do this |
+|---|---|
+| Save one | Set the screen up, type a name in the box on the right and press `Save`. A name already taken asks before it is replaced |
+| Use one | Pick it from the list on the left. The settings on screen are replaced there and then |
+| Delete one | Pick it from the list and press `Delete` |
+
+The output folder is not part of a preset. Where a night's files go is a
+question about that night, so picking a preset leaves the folder alone.
+Everything else goes in, including which of the two tabs — file or BDAV — is
+chosen.
+
+While the settings on screen are exactly a preset's, the list shows its name;
+change anything and it goes back to `(choose a preset)`.
+
+Presets are kept with the preferences, so every project can use them. What a
+project keeps is the settings a preset put in force, not the preset.
 
 ### The three audio modes
 
@@ -1409,6 +1433,62 @@ wants after saying stop, so it does not run — and without an index, a written
 stream is one no programme points at, skipped by the next run's numbering and
 carried into any image made of the disc afterwards.
 
+### Checking what was written
+
+With **Check each file against the recording once it is written** on in the
+output settings, every file is decoded from end to end as soon as it is
+written, and lined up against the ranges of the recording it was cut from, one
+frame at a time. Four things are checked:
+
+| Check | Passes when |
+|---|---|
+| Frame count | The file holds as many frames as the kept ranges do |
+| Lossless copies | Every frame the plan copied is the recording's own, bit for bit |
+| Re-encoded frames | Every re-encoded frame is recognisably the frame at that place in the recording (luma PSNR of 25 dB or more) |
+| Decode errors | No more frames fail to decode than failed in the recording |
+
+Each sound track is also measured against the pictures. One that runs more
+than half a second long or short is mentioned — the row says
+`(see the sound)` — but it does not fail the check: a broadcast track that
+starts part way through a programme is common and not a fault.
+
+The row says `Done / checked` when all is well; hover over it for the
+figures. A file that fails is marked as an error on its row, with what did not
+match. The file itself is left where it was written.
+
+The check takes about as long as the writing did, since both the recording and
+the file are decoded, which is why it is off unless asked for. `Stop` during a
+check ends it at once, and the row is left as written but not checked.
+
+Where a file cannot be lined up frame for frame, what can be checked is:
+
+| When | What is checked |
+|---|---|
+| The pictures were written smaller to fit a disc | The frame count and decode errors. A rewritten frame is never the original |
+| Clips are joined with a transition between them | Decode errors and the length of the sound. A transition's frames belong to neither recording |
+| A joined clip was rewritten to the master clip's format | Decode errors and the length of the sound |
+| Only the sound is written | That the sound runs as long as the kept ranges |
+
+### The run log
+
+Every run is written down as a plain text file: the output settings, each
+clip's kept ranges and where it went, what became of it, what the check found,
+and what the engine said along the way. With the FFmpeg log turned on in the
+preferences, FFmpeg's own lines go in too.
+
+Once a run is over, `Open the run log` appears under `Start`, and opens that
+run's file. Earlier ones are in the folder `Open the run log folder` opens,
+under **Logging** in the preferences, named for when the run started:
+`run-20260930-202022.log`. The newest 100 are kept.
+
+| System | Where the logs are |
+|---|---|
+| Linux | `~/.local/share/dev.smartcut.app/logs/runs/` |
+| Windows | `%LOCALAPPDATA%\dev.smartcut.app\logs\runs\` |
+
+Read one when a run did not do what you expected, and attach it to a bug
+report. Jobs run by the batch tool leave one file each.
+
 ### The picture here is the frame that gets re-encoded
 
 ![The frames that get re-encoded](../images/usage-export-reencode.png)
@@ -1470,6 +1550,10 @@ that writes queued projects out one after another (see
 A `.scproj` file is a few hundred bytes to a few kilobytes, and it opens on another
 machine.
 See [Projects](projects.md).
+
+Changes that have not been saved are written somewhere safe a few seconds after
+they are made, so a crash does not take them with it: the next start offers them
+back under **Recover work** ([Autosave and recovery](projects.md#autosave-and-recovery)).
 
 ## Preferences
 
@@ -1581,10 +1665,13 @@ they had been greyed as done.
 
 ### Logging
 
-**FFmpeg log** lets FFmpeg's own messages through to standard error. Silent by
-default: almost none of them are faults, and this program says what it needs to
-say in its own words. Turn it on to quote them in a bug report. It is the same
-setting as the `SMARTCUT_FFMPEG_LOG` environment variable.
+**FFmpeg log** lets FFmpeg's own messages through to standard error and into
+the [run log](#the-run-log). Silent by default: almost none of them are faults,
+and this program says what it needs to say in its own words. Turn it on to quote
+them in a bug report. It is the same setting as the `SMARTCUT_FFMPEG_LOG`
+environment variable.
+
+**Open the run log folder** shows the folder the run logs are kept in.
 
 The proxy and the FFmpeg log can also be set from the environment (see
 [Building](../technical/building.md)). The environment is the value each of
@@ -1671,6 +1758,7 @@ can quote it straight into a bug report.
 | **Captions are missing from the output** | Captions can only be kept when writing a `.ts`. Check the container in the output settings |
 | **The editor's picture is coarse or slow to appear** | It is still being read. Once the reading finishes the preview is frame-accurate, and once the thumbnails are built the filmstrip fills completely ([Usable from the moment it opens](#usable-from-the-moment-it-opens)). The index is built once only |
 | **I want zero re-encoding** | Select the range and press `Snap to lossless`. If that still does not reach zero, this material cannot put the cut points on key frames |
+| **A run failed, or what it wrote looks wrong** | Press `Open the run log` on the output screen and read what that run said. Attach the file to a bug report ([The run log](#the-run-log)) |
 | **An unsupported codec or layout** | See [known limitations](../technical/validation.md#known-limitations) |
 
 ---

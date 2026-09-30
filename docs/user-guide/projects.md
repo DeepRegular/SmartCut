@@ -108,6 +108,28 @@ There are two exceptions, both cases where a `*` would be wrong:
 - **A list you passed on the command line.** You did not build that list; the
   same command would produce it again. So until you touch it, there is no `*`.
 
+## Autosave and recovery
+
+While there are changes that have not been saved, the list is written into
+SmartCut's own data folder about three seconds after each change — the same
+`.scproj` a save writes, but never over the project's own file. Saving, or
+closing the window normally, removes it.
+
+If SmartCut crashes, or the machine loses its power, that copy is left behind,
+and the next time SmartCut is started on nothing it asks about it under
+**Recover work**:
+
+| Answer | What happens |
+|---|---|
+| `Yes` | The list, its cuts and marks and its output settings come back as they were. A list that belonged to a project opens under that project's name, with a `*` in the title until it is saved |
+| `No` | The copy is deleted |
+
+Each window leaves a copy of its own. One start offers the newest of them; the
+rest are offered at the starts after it. A start on files or on a project
+offers nothing, and the copies wait for the next start.
+
+The batch tool keeps no copy: its jobs are files on disc already.
+
 ## When a recording has moved
 
 A recording named in the project may have been moved to another folder, or
