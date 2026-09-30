@@ -228,6 +228,10 @@ const CATALOG = {
       "リモコンの d ボタンで見られるページを、カットした出力にも残します。" +
       "残せるのは .ts で出力するときだけです。ディスクにも MP4 にも入れる場所がありません。" +
       "データ放送は録画の 1〜20% を占めるので、外せばその分だけ小さくなります。",
+    "prefs.verify": "出力後にベリファイする",
+    "prefs.verifyNote":
+      "書き出したファイルを読み直し、元の録画とフレームごとに突き合わせます。" +
+      "ベリファイには書き出しとほぼ同じだけ時間がかかります。結果は一覧の行に表示されます。",
     "prefs.keepOutput": "出力設定を次回の起動に引き継ぐ",
     "prefs.keepOutputNote":
       "保存先・ファイル名・コンテナ・音声の扱いを保存し、次回の起動と新規作成時に復元します。" +
@@ -704,16 +708,16 @@ const CATALOG = {
     "outset.audioBits": "量子化ビット数:",
     "outset.audioBitrate": "音声ビットレート:",
     "outset.keyframeSidecar": "キーフレーム情報を別ファイル (.keyframe) で出力する",
-    "outset.verify": "出力後にベリファイする",
     "outset.preset": "プリセット:",
-    "outset.presetName": "プリセット名",
-    "outset.presetSave": "保存",
+    "outset.presetName": "名前:",
+    "outset.presetWhat": "出力先フォルダー・サブフォルダー・ディスクタイトル・基準クリップ以外の、この画面の設定を保存します。",
+    "outset.presetOk": "保存",
+    "outset.presetSave": "保存…",
     "outset.presetDelete": "削除",
     "outset.presetPick": "（プリセットを選択）",
-    "outset.presetNone": "（保存したプリセットはありません）",
+    "outset.presetNone": "（なし）",
     "outset.presetTitle": "プリセット",
     "outset.presetApplied": "プリセット「{name}」を適用しました",
-    "outset.presetNeedsName": "プリセットの名前を入力してください",
     "outset.presetReplace": "プリセット「{name}」はすでにあります。いまの設定で上書きしますか？",
     "outset.presetSaved": "プリセット「{name}」を保存しました（出力先フォルダーは含みません）",
     "outset.presetDropAsk": "プリセット「{name}」を削除しますか？",
@@ -938,7 +942,7 @@ const CATALOG = {
     "out.verifyMind": "（注意: {what}）",
     "out.verifySoundShort": "音声 #{i} が映像より {secs} 秒短い",
     "out.verifySoundLong": "音声 #{i} が映像より {secs} 秒長い",
-    "out.verifyCount": "ベリファイで不一致: {got} フレームあります（{want} フレームのはずです）",
+    "out.verifyCount": "ベリファイで不一致: フレームが {got} 枚あります（{want} 枚のはずです）",
     "out.verifyUnlike": "ベリファイで不一致: 元の録画と違うフレームが {n} 枚あります（最初は {at}）",
     "out.verifyCopies":
       "ベリファイで不一致: 無劣化でコピーしたはずの {planned} フレームのうち {n} フレームが元の録画と違います",
@@ -959,7 +963,7 @@ const CATALOG = {
     "recover.body":
       "前回、保存していない作業を残したまま SmartCut が終了しました。\n\n" +
       "{name}（クリップ {n} 本、{when} の時点）\n\n" +
-      "復元しますか？「いいえ」を選ぶと、この作業は破棄されます。",
+      "復元しない場合は、この作業を破棄します。復元しますか？",
     "recover.done": "前回の作業を復元しました（クリップ {n} 本）。保存するまでタイトルに * が付きます",
 
     // --- バッチ出力 --------------------------------------------------------
@@ -1507,6 +1511,10 @@ const CATALOG = {
       "Carries the pages behind the d button into the cut. Only a .ts that keeps the broadcast's own " +
       "tables can hold one; a disc's framing and an MP4 have nowhere to put it. A carousel is between a " +
       "hundredth and a fifth of what a multiplex spends, so clearing this is what makes the file smaller.",
+    "prefs.verify": "Check each file against the recording once it is written",
+    "prefs.verifyNote":
+      "Reads each written file back and compares it with the recording frame by frame. " +
+      "The check takes about as long as the writing did. What it finds is shown on the list's row.",
     "prefs.keepOutput": "Carry the output settings over to the next start",
     "prefs.keepOutputNote":
       "Remembers the folder, the file name, the container and what is done to the audio, and puts them " +
@@ -1965,16 +1973,16 @@ const CATALOG = {
     "outset.audioBits": "Bit depth:",
     "outset.audioBitrate": "Audio bitrate:",
     "outset.keyframeSidecar": "Write the keyframes to a separate .keyframe file",
-    "outset.verify": "Check each file against the recording once it is written",
     "outset.preset": "Preset:",
-    "outset.presetName": "Preset name",
-    "outset.presetSave": "Save",
+    "outset.presetName": "Name:",
+    "outset.presetWhat": "Saves every setting on this screen except the output folder, the subfolder, the disc title and the master clip.",
+    "outset.presetOk": "Save",
+    "outset.presetSave": "Save…",
     "outset.presetDelete": "Delete",
     "outset.presetPick": "(choose a preset)",
-    "outset.presetNone": "(no saved presets)",
+    "outset.presetNone": "(none)",
     "outset.presetTitle": "Presets",
     "outset.presetApplied": "Preset \"{name}\" applied",
-    "outset.presetNeedsName": "Type a name for the preset",
     "outset.presetReplace": "There is already a preset called \"{name}\". Replace it with the settings on screen?",
     "outset.presetSaved": "Preset \"{name}\" saved (the output folder is not part of it)",
     "outset.presetDropAsk": "Delete the preset \"{name}\"?",
@@ -2164,19 +2172,19 @@ const CATALOG = {
     "out.writingCrossings": "Writing \"{name}\": {n} crossing{n?s} written afresh, {secs}s of it…",
     "out.summary": "{done} of {all} written{failed}{aborted}   elapsed {elapsed}",
     "out.summaryFailed": "   {n} failed",
-    "out.openLog": "Open the run log",
+    "out.openLog": "Open run log",
     "out.verifying": "Checking \"{name}\" against the recording, frame by frame…",
     "out.verifyPct": "Checking {pct}%",
     "out.verifyOk": " / checked",
     "out.verifyOkMind": " / checked (see the sound)",
-    "out.verifyOkSame": "Checked: {n} frames, {same} of them bit for bit the recording's own",
-    "out.verifyOkCount": "Checked: {n} frames",
+    "out.verifyOkSame": "Checked: {n} frame{n?s}, {same} of them bit for bit the recording's own",
+    "out.verifyOkCount": "Checked: {n} frame{n?s}",
     "out.verifyOkSound": "Checked: {secs}s of sound",
     "out.verifyMind": " (note: {what})",
     "out.verifySoundShort": "sound #{i} is {secs}s shorter than the pictures",
     "out.verifySoundLong": "sound #{i} is {secs}s longer than the pictures",
-    "out.verifyCount": "Check failed: {got} frames written, {want} expected",
-    "out.verifyUnlike": "Check failed: {n} frame{n?s} do not match the recording (first at {at})",
+    "out.verifyCount": "Check failed: {got} frame{got?s} written, {want} expected",
+    "out.verifyUnlike": "Check failed: {n} frame{n?s} unlike the recording (first at {at})",
     "out.verifyCopies": "Check failed: {n} of the {planned} frames meant to be copied differ from the recording",
     "out.verifyNoPictures": "Check failed: not one picture could be decoded",
     "out.verifyDamaged": "Check failed: {n} frame{n?s} decoded with errors",
@@ -2195,7 +2203,7 @@ const CATALOG = {
     "recover.body":
       "SmartCut last closed with work that had not been saved.\n\n" +
       "{name} ({n} clip{n?s}, as of {when})\n\n" +
-      "Recover it? Choosing No discards it.",
+      "Recover it? If not, it is discarded.",
     "recover.done": "Recovered the unsaved work ({n} clip{n?s}). The title keeps its * until it is saved",
     "out.summaryAborted": "   (stopped)",
 

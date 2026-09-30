@@ -114,6 +114,11 @@ const DEFAULTS = {
   /// On, like the engine's own answer: a cut is meant to be the recording,
   /// shorter, and what is behind the d button was in the recording.
   dataBroadcast: true,
+  /// Whether each file is read back and checked against its recording once
+  /// it is written. Off: it is a second decode of everything written, which
+  /// on an evening's recordings is most of the time the writing took again.
+  /// See `verifyWritten` in `app.js`.
+  verify: false,
   /// Whether the cut editor draws the subtitles over the picture from the
   /// moment a recording opens, rather than waiting to be asked each time.
   subsOn: false,

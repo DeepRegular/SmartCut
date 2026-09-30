@@ -5735,6 +5735,11 @@ async fn export(
 struct CheckClip {
     path: String,
     ranges: Vec<(f64, f64)>,
+    /// The transition that follows this clip in a join, as `export_joined`
+    /// was given it: a file of sound alone is shorter by each crossing that
+    /// overlaps two clips' sound.
+    #[serde(default)]
+    after: Option<Crossing>,
 }
 
 /// What reading a written file back found. See `smartcut_core::verify`.
@@ -5743,6 +5748,8 @@ struct CheckClip {
 struct Checked {
     passed: bool,
     pictures_ok: bool,
+    /// Pictures were to be checked and the file has no video at all.
+    pictures_lost: bool,
     pictures: bool,
     compared: bool,
     produced: usize,
@@ -5802,6 +5809,11 @@ async fn verify_output(
         let mut sources = Vec::with_capacity(clips.len());
         let mut plans = Vec::with_capacity(clips.len());
         for c in &clips {
+            // Between recordings as well as inside the read: a join of a
+            // dozen discs spends seconds on each before a picture is read.
+            if app.state::<VerifyStop>().0.load(Ordering::SeqCst) {
+                return Err("stopped".to_string());
+            }
             let mut src = scan_cached(&app, &c.path)?.0;
             // The plan the export wrote by, worked out the way `export` works
             // it out: where each range really begins and ends, and which of
@@ -5835,9 +5847,14 @@ async fn verify_output(
         let reporter = app.clone();
         let whose = clips.first().map(|c| c.path.clone()).unwrap_or_default();
         let stop = app.state::<VerifyStop>();
-        let report = smartcut_core::verify::check(
+        let after: Vec<smartcut_core::transition::Transition> = clips
+            .iter()
+            .map(|c| c.after.clone().map(Crossing::into_transition).unwrap_or_default())
+            .collect();
+        let report = smartcut_core::verify::check_crossed(
             &output,
             &pieces,
+            &after,
             compare,
             Some(Box::new(move |f| {
                 let _ = reporter.emit("verify-progress", (whose.clone(), f));
@@ -5851,6 +5868,7 @@ async fn verify_output(
         Ok(Checked {
             passed: report.passed(),
             pictures_ok: report.pictures_ok(),
+            pictures_lost: report.pictures_lost,
             pictures: report.pictures,
             compared: report.compared,
             produced: report.produced,

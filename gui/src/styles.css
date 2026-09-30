@@ -1865,3 +1865,15 @@ input[type="number"]::-webkit-outer-spin-button {
 .mi-body td:first-child { width: 13em; color: var(--dim); padding-left: 0; }
 .mi-body td:last-child { word-break: break-all; }
 .mi-note { margin-right: auto; align-self: center; }
+
+/* The name a preset is saved under: the box is there for this one field. */
+#preset-ask-name {
+  flex: 1;
+  min-width: 22em;
+}
+
+/* The panel's last line: the sidecar box, and the presets pushed to the
+   right. The box's own top margin is the column layout's, not this row's. */
+.foot-row > .opts { margin-top: 0; }
+.preset-group { display: inline-flex; align-items: center; gap: 8px; }
+.preset-group .drop { width: 18em; }

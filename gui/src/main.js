@@ -406,6 +406,10 @@ let editId = null;
 let answered = false;
 /// The row being loaded, if one is. See the `editor-open` handler.
 let opening = null;
+/// A second `editor-open` for the row in `opening`, when it carries a CM
+/// finding the first did not: the list sends one when a detection lands on
+/// the row being opened. Taken up once the open is done. See `editor-open`.
+let lateOpen = null;
 /// Whether the row coming up has yet to replace the one before it: its cuts,
 /// marks and settings. Shorter than `opening`, which lasts through the walk
 /// -- and a cut placed during the walk, which is allowed, has to be sent.
@@ -4396,6 +4400,9 @@ function startPlay() {
   //
   // not awaited: it resolves when playback ends, and `play-ended` says so
   invoke("play", { ranges, keeps: outputRanges(), from, width, fps, run, frames }).catch((e) => {
+    // A run already left behind -- ループ coming round stops one and starts
+    // the next -- failing late is not the playback now running failing.
+    if (run !== playRun) return;
     el("status").textContent = tr("editor.playFailed", { e });
     setPlaying(false);
   });
@@ -5623,10 +5630,14 @@ function trimCuts(body) {
     const b = end < 0 ? a - end - 1 : end;
     if (b >= a) kept.push({ a: at(a), b: at(b + 1) });
   }
-  if (!kept.length) return null;
+  // Only the ranges that start inside this recording. A line written for a
+  // longer one -- or for the whole recording, read against a cut of it --
+  // keeps nothing here, and read as it stands it cut every picture there is.
+  const inside = kept.filter((k) => k.a < src.duration - frame() / 2);
+  if (!inside.length) return null;
   const out = [];
   let pos = head;
-  for (const k of normalise(kept)) {
+  for (const k of normalise(inside)) {
     if (k.a > pos + frame() / 2) out.push({ a: pos, b: k.a });
     pos = Math.max(pos, k.b);
   }
@@ -5935,10 +5946,14 @@ async function openPath(picked, saved, side, name, chapters, dropPids, detected)
     // number the track stayed on from row to row.
     if (was !== picked) subsId = null;
     paintSubsPicker();
-    cuts = saved ? saved.cuts.map((c) => ({ a: c.a, b: c.b })) : [];
+    // In order and apart, as every edit made in here leaves them: a project
+    // file written by hand can hold them any way round, and `rebuildTimeline`
+    // walks them in order -- a cut listed after a later one was left out of
+    // the timeline while the list, which normalises, wrote it out.
+    cuts = saved ? normalise(saved.cuts) : [];
     past = [];
     undone = [];
-    keyframes = saved ? saved.keyframes.slice() : [];
+    keyframes = saved ? saved.keyframes.slice().sort((x, y) => x - y) : [];
     activeKey = saved ? saved.activeKey : null;
     pickedKeys = [];
     cmBlocks = saved ? saved.cmBlocks || [] : [];
@@ -7577,12 +7592,17 @@ async function askCancelEdit() {
   }
   if (asking) return;
   asking = true;
+  // The row the question is about. The list can send another one while it is
+  // up -- it is a window of its own and still takes a double-click -- and the
+  // row being left has had its edit sent on under its own id by then: a yes
+  // here dropped nothing of it, and cancelled the row that had just arrived.
+  const about = editId;
   try {
     const go = await dialog.ask(tr("editor.dropBody"), {
       title: tr("editor.dropTitle"),
       kind: "warning",
     });
-    if (!go) return;
+    if (!go || editId !== about) return;
   } finally {
     asking = false;
   }
@@ -7599,7 +7619,8 @@ if (listen) {
     if (!playing) scheduleMeterAt();
   });
   hear("editor-open", async (ev) => {
-    const { id, path, name, side, saved, cm, chapters, dropPids } = ev.payload;
+    const { id, path, name, side, saved, chapters, dropPids } = ev.payload;
+    let { cm } = ev.payload;
     // A frame number typed for the last recording is not one for this one.
     closeJump();
     // The list has spoken, so this window stops asking; see `announceReady`.
@@ -7607,7 +7628,14 @@ if (listen) {
     // The list sends this twice for a window it had to build; the second is
     // the one that usually lands, but both can. Opening the same row twice
     // over would throw away whatever the first open had got to.
-    if (opening === id) return;
+    if (opening === id) {
+      // But not a finding. The list sends the row again when a CM detection
+      // lands on it while this window is still bringing it up, and says so
+      // only this once: dropped here, the band and the marks stayed away
+      // until the row was opened again.
+      if (cm) lateOpen = ev.payload;
+      return;
+    }
     // Whether this open is what put the recording up, which decides whether
     // the blocks below are part of it arriving or something done to it.
     const arriving = editId !== id;
@@ -7625,6 +7653,7 @@ if (listen) {
         if (state && emit) emit("editor-state", state);
       }
       opening = id;
+      lateOpen = null;
       swapping = true;
       paintDetectCm();
       paintDetectFlat();
@@ -7649,6 +7678,11 @@ if (listen) {
         }
       }
       if (editId !== id) return;
+      if (lateOpen && lateOpen.id === id) {
+        ev = { payload: lateOpen };
+        cm = lateOpen.cm;
+        lateOpen = null;
+      }
     }
     // What the row has already been detected with, as the list knows it.
     // Added to what this window knows rather than put in its place: the list

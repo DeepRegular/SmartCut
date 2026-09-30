@@ -27,20 +27,23 @@ fn dir(app: &tauri::AppHandle) -> Result<PathBuf, String> {
     Ok(dir)
 }
 
-/// Clear away all but the newest [`KEEP`] of them.
-fn prune(dir: &Path) {
+/// Clear away all but the newest [`KEEP`] of them, `open` -- the one this
+/// run has just opened -- being one of those whatever its time says: a clock
+/// set back, or older logs stamped by one that ran ahead, left it the oldest,
+/// and it was deleted under the run writing into it.
+fn prune(dir: &Path, open: &Path) {
     let Ok(entries) = std::fs::read_dir(dir) else { return };
     let mut logs: Vec<(std::time::SystemTime, PathBuf)> = entries
         .flatten()
         .map(|e| e.path())
-        .filter(|p| p.extension().is_some_and(|x| x == "log"))
+        .filter(|p| p.extension().is_some_and(|x| x == "log") && p != open)
         .filter_map(|p| Some((std::fs::metadata(&p).ok()?.modified().ok()?, p)))
         .collect();
-    if logs.len() <= KEEP {
+    if logs.len() < KEEP {
         return;
     }
     logs.sort_by_key(|l| std::cmp::Reverse(l.0));
-    for (_, p) in logs.into_iter().skip(KEEP) {
+    for (_, p) in logs.into_iter().skip(KEEP - 1) {
         let _ = std::fs::remove_file(p);
     }
 }
@@ -54,7 +57,6 @@ fn prune(dir: &Path) {
 #[tauri::command(async)]
 pub fn run_log_open(app: tauri::AppHandle, stamp: String, head: Vec<String>) -> Result<String, String> {
     let dir = dir(&app)?;
-    prune(&dir);
     let stem: String = stamp
         .chars()
         .filter(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_'))
@@ -68,6 +70,9 @@ pub fn run_log_open(app: tauri::AppHandle, stamp: String, head: Vec<String>) -> 
         at = dir.join(format!("{stem}-{n}.log"));
     }
     smartcut_core::log::open(&at).map_err(|e| format!("{}: {e}", at.display()))?;
+    // Once the new one is there, so that it is one of the hundred rather than
+    // the hundred and first.
+    prune(&dir, &at);
     let libav = smartcut_core::libav();
     smartcut_core::log::write_only(&format!(
         "SmartCut {}  ({} {}; libavformat {}, libavcodec {}, libavutil {})",

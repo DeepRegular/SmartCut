@@ -3950,11 +3950,6 @@ const settings = {
   /// has anywhere to put.
   audioBits: "",
   keyframes: false,
-  /// Whether each file is read back and checked against its recording once
-  /// it is written. Off: it is a second decode of everything written, which
-  /// on an evening's recordings is most of the time the writing took again.
-  /// See `verifyWritten`.
-  verify: false,
   // Where the subtitles a disc draws go. See `outset.subtitles`.
   subtitles: "pgs",
   /// Which disc the list is going onto, in bytes and as a string -- which is
@@ -4004,10 +3999,11 @@ const SETTING_DEFAULTS = { ...settings };
 ///
 /// A project saved with its own answer is not one of those moments:
 /// `loadProject` writes what the file says over all three.
-function applyNameDefaults() {
-  settings.prefix = String(prefs.get("outPrefix") ?? SETTING_DEFAULTS.prefix);
-  settings.number = !!prefs.get("outNumber");
-  settings.digits = String(Number(prefs.get("outDigits")) || 2);
+function applyNameDefaults(into = settings) {
+  into.prefix = String(prefs.get("outPrefix") ?? SETTING_DEFAULTS.prefix);
+  into.number = !!prefs.get("outNumber");
+  into.digits = String(Number(prefs.get("outDigits")) || 2);
+  return into;
 }
 
 /// Which of them are worth carrying from one session to the next.
@@ -4338,6 +4334,13 @@ function bindSetting(id, key, kind = "value") {
 /// Put `settings` back on screen, for when something other than the screen
 /// has changed them.
 function showSettings() {
+  // The one list whose options follow the others: built for the codec now
+  // in force before anything is read back off it. Built for the one before,
+  // a rate the new codec offers and the old did not -- 640 kbps AC-3 over a
+  // list drawn for LPCM, which has none -- came back as おまかせ, so a
+  // preset or a project put in force a different file depending on what
+  // was on screen when it was picked.
+  fillBitrates();
   for (const [input, key, kind] of settingInputs) {
     // A setting nobody has settled yet is left alone. It has no value to
     // show and none to read back: the screen decides one when it draws, and
@@ -4380,7 +4383,6 @@ bindSetting("out-audio-rate", "audioRate");
 bindSetting("out-audio-bits", "audioBits");
 bindSetting("out-subtitles", "subtitles");
 bindSetting("out-keyframes", "keyframes", "checked");
-bindSetting("out-verify", "verify", "checked");
 
 // --- プリセット ---------------------------------------------------------------
 //
@@ -4405,12 +4407,42 @@ function presets() {
     : [];
 }
 
-/// The preset the settings in force are, if they are one.
-function presetInForce() {
-  const now = JSON.stringify(PRESET_KEYS.map((k) => settings[k]));
-  return presets().find(
-    (p) => JSON.stringify(PRESET_KEYS.map((k) => (k in p.settings ? p.settings[k] : settings[k]))) === now,
-  );
+/// What picking `p` puts in force, setting by setting.
+///
+/// Where the preset is silent -- one saved by a version that had fewer
+/// things to settle -- or holds a value of a kind the control cannot, the
+/// standing answer, as `loadProject` has it: never whatever the preset
+/// picked before this one left there, or the same preset would write a
+/// different file depending on what was picked first. Of the kind the
+/// control holds because the store outlives a version, and a setting that
+/// has since changed shape is not an answer the screen can show.
+function presetValues(p) {
+  const standing = applyNameDefaults({ ...SETTING_DEFAULTS });
+  const out = {};
+  for (const key of PRESET_KEYS) {
+    const value = p.settings[key];
+    const want = SETTING_DEFAULTS[key];
+    const fits = key in p.settings &&
+      (want === null ? value === null || typeof value === "string" : typeof value === typeof want);
+    out[key] = fits ? value : standing[key];
+  }
+  return out;
+}
+
+/// The preset last picked or saved on this screen, by name; `null` until
+/// one is. The list shows nothing until then, whatever the settings happen
+/// to match: a preset is something somebody chose, and a new list whose
+/// defaults equal one that was saved from defaults has not chosen it.
+let presetPicked = null;
+/// The name last picked or saved, kept after the settings move away from it:
+/// what the save box starts from, so saving a changed preset over itself is
+/// Enter.
+let presetNamed = "";
+
+/// Whether the settings in force are what picking `p` puts in force.
+function presetHolds(p) {
+  const v = presetValues(p);
+  return JSON.stringify(PRESET_KEYS.map((k) => v[k])) === JSON.stringify(PRESET_KEYS.map((k) => settings[k]));
 }
 
 function paintPresets() {
@@ -4419,27 +4451,27 @@ function paintPresets() {
   select.innerHTML =
     `<option value="">${esc(all.length ? t("outset.presetPick") : t("outset.presetNone"))}</option>` +
     all.map((p) => `<option value="${esc(p.name)}">${esc(p.name)}</option>`).join("");
-  select.value = presetInForce()?.name ?? "";
+  // The one picked, while the settings are still what it put in force.
+  const picked = presets().find((p) => p.name === presetPicked);
+  const shown = picked && presetHolds(picked) ? picked.name : "";
+  if (!shown) presetPicked = null;
+  select.value = shown;
   el("preset-delete").disabled = !select.value;
 }
 
 el("out-preset").addEventListener("change", () => {
   const p = presets().find((x) => x.name === el("out-preset").value);
-  if (!p) return;
-  for (const key of PRESET_KEYS) {
-    if (!(key in p.settings)) continue;
-    const value = p.settings[key];
-    const want = SETTING_DEFAULTS[key];
-    // Of the kind the control holds, as `loadProject` has it: the store
-    // outlives a version, and a setting that has since changed shape is
-    // better left as it is than put into a control that cannot hold it.
-    if (want === null ? value !== null && typeof value !== "string" : typeof value !== typeof want) continue;
-    settings[key] = value;
+  if (!p) {
+    presetPicked = null;
+    paintPresets();
+    return;
   }
+  presetPicked = p.name;
+  presetNamed = p.name;
+  Object.assign(settings, presetValues(p));
   settings.prefix = prefixSafe(settings.prefix);
   const offered = [...el("out-container").options].map((o) => o.value);
   if (!offered.includes(settings.container)) settings.container = SETTING_DEFAULTS.container;
-  el("out-preset-name").value = p.name;
   settleOutput();
   showSettings();
   touch();
@@ -4447,13 +4479,54 @@ el("out-preset").addEventListener("change", () => {
   note(t("outset.presetApplied", { name: p.name }));
 });
 
+/// The name to save the settings on screen under, asked in a box of its own;
+/// `null` when the box is closed without one. See `presetNamed`.
+function askPresetName() {
+  const box = el("preset-ask");
+  const field = el("preset-ask-name");
+  field.value = presets().some((p) => p.name === presetNamed) ? presetNamed : "";
+  box.hidden = false;
+  field.focus();
+  field.select();
+  return new Promise((resolve) => {
+    let pressedOut = false;
+    const done = (answer) => {
+      box.hidden = true;
+      box.removeEventListener("mousedown", down);
+      box.removeEventListener("click", click);
+      field.removeEventListener("keydown", key);
+      el("preset-ask-ok").removeEventListener("click", ok);
+      el("preset-ask-cancel").removeEventListener("click", cancel);
+      resolve(answer);
+    };
+    const ok = () => {
+      const name = field.value.trim();
+      if (!name) {
+        field.focus();
+        return;
+      }
+      done(name);
+    };
+    const cancel = () => done(null);
+    // Closed from the ground only by a press that began there, as the
+    // media info box is: a selection dragged out of the field ends outside.
+    const down = (ev) => { pressedOut = ev.target === box; };
+    const click = (ev) => { if (ev.target === box && pressedOut) cancel(); };
+    const key = (ev) => {
+      if (ev.key === "Enter" && !ev.isComposing) { ev.preventDefault(); ok(); }
+      else if (ev.key === "Escape") { ev.preventDefault(); ev.stopPropagation(); cancel(); }
+    };
+    box.addEventListener("mousedown", down);
+    box.addEventListener("click", click);
+    field.addEventListener("keydown", key);
+    el("preset-ask-ok").addEventListener("click", ok);
+    el("preset-ask-cancel").addEventListener("click", cancel);
+  });
+}
+
 el("preset-save").addEventListener("click", async () => {
-  const name = el("out-preset-name").value.trim();
-  if (!name) {
-    note(t("outset.presetNeedsName"));
-    el("out-preset-name").focus();
-    return;
-  }
+  const name = await askPresetName();
+  if (!name) return;
   const all = presets();
   const at = all.findIndex((p) => p.name === name);
   if (at >= 0 && !(await dialog.ask(t("outset.presetReplace", { name }), { title: t("outset.presetTitle"), kind: "warning" }))) {
@@ -4464,6 +4537,8 @@ el("preset-save").addEventListener("click", async () => {
   if (at >= 0) all[at] = { name, settings: kept };
   else all.push({ name, settings: kept });
   prefs.set("outputPresets", all);
+  presetPicked = name;
+  presetNamed = name;
   paintPresets();
   note(t("outset.presetSaved", { name }));
 });
@@ -4475,7 +4550,6 @@ el("preset-delete").addEventListener("click", async () => {
     return;
   }
   prefs.set("outputPresets", presets().filter((p) => p.name !== name));
-  if (el("out-preset-name").value.trim() === name) el("out-preset-name").value = "";
   paintPresets();
   note(t("outset.presetDropped", { name }));
 });
@@ -7661,7 +7735,9 @@ async function openRunLog(list, share) {
   const head = [
     `${t("log.started")}: ${d.toLocaleString()}`,
     `${t("log.project")}: ${projectPath || t("project.untitled")}`,
-    `${t("log.settings")}: ${JSON.stringify({ ...asked, subfolder: runFolder })}`,
+    // With the check, which is 環境設定's now rather than one of these, and
+    // is still part of what the run was asked to do.
+    `${t("log.settings")}: ${JSON.stringify({ ...asked, subfolder: runFolder, verify: prefs.get("verify") === true })}`,
   ];
   if (share !== null) head.push(`${t("log.share")}: ${sharePct(share)}%`);
   head.push(`${t("log.clips")}: ${list.length}`);
@@ -7749,7 +7825,13 @@ async function verifyWritten(row, out, list, share) {
   try {
     const r = await invoke("verify_output", {
       output: out,
-      clips: list.map((c) => ({ path: c.path, ranges: rangesOf(c) })),
+      // With what follows each clip, as `export_joined` was sent it: the
+      // last clip's is not. See `CheckClip`.
+      clips: list.map((c, i) => ({
+        path: c.path,
+        ranges: rangesOf(c),
+        after: list.length > 1 && i < list.length - 1 ? c.after ?? null : null,
+      })),
       compare: compareFor(list, share),
     });
     const said = verdict(r);
@@ -7775,7 +7857,9 @@ function verdict(r) {
     .join(t("sep"));
   if (!r.picturesOk) {
     let why;
-    if (r.compared && r.produced !== r.expected) {
+    if (r.picturesLost) {
+      why = t("out.verifyNoPictures");
+    } else if (r.compared && r.produced !== r.expected) {
       why = t("out.verifyCount", { got: r.produced, want: r.expected });
     } else if (!r.copiesOk) {
       why = t("out.verifyCopies", { n: r.copyMisses, planned: r.plannedCopy });
@@ -7907,7 +7991,7 @@ async function writeJoined(list) {
     followWrite(1);
     let extra = "";
     let detail = "";
-    if (settings.verify && !abort) {
+    if (prefs.get("verify") === true && !abort) {
       const v = await verifyWritten(list[0], out, list, share);
       if (v.failed) {
         for (const c of list) c.out = { state: "error", progress: 0, note: v.note };
@@ -8228,10 +8312,14 @@ async function startExport() {
       // Read back, where that was asked for, before the row says 完了: a file
       // that does not match what was asked for is not done.
       let detail = "";
-      if (settings.verify && !abort) {
+      if (prefs.get("verify") === true && !abort) {
         const v = await verifyWritten(clip, out, [clip], share);
         if (v.failed) {
-          clip.out = { state: "error", progress: 0, note: v.note };
+          // Still indexed on a disc, as a file that failed the check is
+          // still kept: the stream is written whole, and a disc pass that
+          // took it back would throw a recording away over what may be a
+          // false alarm, where the same finding on a file only says so.
+          clip.out = { state: "error", progress: 0, note: v.note, kept: disc };
           writing = null;
           renderOutScreen();
           paintOutProgress(done / list.length);
@@ -8259,7 +8347,7 @@ async function startExport() {
   // is minutes of work nobody asked for once they have said stop.
   if (disc) {
     const pairs = list.map((clip, i) => ({ clip, slot: slots[i] }));
-    const wrote = abort ? [] : pairs.filter(({ clip }) => clip.out.state === "done");
+    const wrote = abort ? [] : pairs.filter(({ clip }) => clip.out.state === "done" || clip.out.kept);
     // Which leaves streams no playlist will ever name: gigabytes of a
     // recording the disc does not know it has, skipped by the next run's
     // numbering and carried into any image made of the disc afterwards.
@@ -8741,7 +8829,13 @@ function shapeOf() {
       description: c.description,
       channel: c.channel,
       channelNumber: c.channelNumber,
-      edit: c.edit,
+      // Less what a visit leaves behind without doing anything: `touched`
+      // is per visit (true when something was changed, false on a later
+      // visit that only looked), and where the playhead and the selection
+      // were is not work -- `editSignature` in the editor says the same.
+      // Compared whole, opening a saved row and pressing OK put a `*` up,
+      // asked on close, and wrote a recovery copy of a project unchanged.
+      edit: c.edit && { ...c.edit, touched: undefined, playhead: undefined, selA: undefined, selB: undefined, selGone: undefined },
       edited: c.edited,
       audioChannels: c.audioChannels,
       after: c.after,
@@ -8855,7 +8949,11 @@ function keepSafe(unsaved) {
   if (keepSafeTimer) return;
   keepSafeTimer = setTimeout(() => {
     keepSafeTimer = null;
-    if (!dirty()) return;
+    // Nor over the last copy with an empty list: 全削除 leaves the `*` up
+    // because Ctrl+Z can still put the rows back, and a copy written now
+    // would be the one thing a crash left of them -- a list of nothing,
+    // which `offerRecovery` throws away without asking.
+    if (!dirty() || !clips.length) return;
     const shape = shapeOf();
     if (shape === keptShape) return;
     keptShape = shape;
@@ -8882,14 +8980,22 @@ async function offerRecovery() {
     jlog(`recovery: ${e}`);
     return;
   }
-  const newest = found && found[0];
-  if (!newest) return;
-  let kept;
-  try {
-    kept = JSON.parse(newest.body);
-  } catch {
-    kept = null;
+  let newest = null;
+  let kept = null;
+  for (const o of Array.isArray(found) ? found : []) {
+    try {
+      kept = JSON.parse(o.body);
+    } catch {
+      kept = null;
+    }
+    const d = kept && kept.doc;
+    // Left where it is: work a later version put down, which this one
+    // cannot open (`loadProject` refuses it) and must not throw away either.
+    if (d && typeof d.smartcut === "number" && d.smartcut > PROJECT_VERSION) continue;
+    newest = o;
+    break;
   }
+  if (!newest) return;
   const doc = kept && kept.doc;
   const n = doc && Array.isArray(doc.clips) ? doc.clips.length : 0;
   if (!n) {
@@ -8902,13 +9008,34 @@ async function offerRecovery() {
     t("recover.body", { when, n, name: project ? nameOf(project) : t("project.untitled") }),
     { title: t("recover.title"), kind: "warning" },
   );
-  if (yes && (await loadProject(project || "", doc))) {
+  if (yes && !(await loadProject(project || "", doc))) {
+    // Asked for and not put back -- a share it names that was not let in,
+    // a file it could not read: kept for the next start rather than thrown
+    // away on an answer that was "yes". `loadProject` has said why.
+    return;
+  }
+  if (yes) {
     // The file on disc, if there is one, is not what is on screen: the `*`
     // stays up until the work is saved over it.
     projectPath = project;
     savedShape = "";
     retitleMain();
     note(t("recover.done", { n }));
+    // This window's own copy before the old one goes, rather than at the
+    // first change: until then the work restored would be in memory only,
+    // and a crash in those seconds would lose what the offer just saved.
+    // If it cannot be written, the old copy stays, held by nobody once this
+    // window closes, and is offered again.
+    try {
+      keptShape = shapeOf();
+      await invoke("recovery_put", {
+        body: JSON.stringify({ recovered: 1, project: projectPath, doc: captureProject() }),
+      });
+    } catch (e) {
+      keptShape = "";
+      jlog(`recovery: ${e}`);
+      return;
+    }
   }
   invoke("recovery_forget", { id: newest.id }).catch(() => {});
 }
@@ -9038,6 +9165,7 @@ async function newProject() {
   // starts where the last one left off rather than at the program's idea of
   // a first run.
   for (const key of Object.keys(SETTING_DEFAULTS)) settings[key] = SETTING_DEFAULTS[key];
+  presetPicked = null;
   applyNameDefaults();
   restoreOutput();
   // And nobody has answered for this list's output, whatever is in force.
@@ -9121,6 +9249,7 @@ async function loadProject(path, given = null) {
   // person as about the work: somebody who writes `編集_` in front of every
   // file writes it in front of a project that never said.
   for (const key of Object.keys(SETTING_DEFAULTS)) settings[key] = SETTING_DEFAULTS[key];
+  presetPicked = null;
   applyNameDefaults();
   if (said) {
     // Key by key rather than wholesale, so that a file cannot put anything in
@@ -11255,6 +11384,7 @@ function paintPrefs() {
   el("pref-number").checked = !!prefs.get("outNumber");
   el("pref-digits").value = String(Number(prefs.get("outDigits")) || 2);
   el("pref-data-broadcast").checked = prefs.get("dataBroadcast") !== false;
+  el("pref-verify").checked = prefs.get("verify") === true;
   el("pref-keep-output").checked = !!prefs.get("keepOutput");
   el("pref-clean-joins").checked = !!prefs.get("cleanJoins");
   el("pref-proxy").checked = !!prefs.get("proxy");
@@ -11682,6 +11812,15 @@ el("pref-data-broadcast").addEventListener("change", (ev) => {
   prefs.set("dataBroadcast", ev.target.checked);
 });
 
+// Whether each file is read back once it is written. Here rather than among
+// the output settings: it is not an answer about what a list becomes but
+// about how far this machine's written files are to be trusted, and a check
+// that had to be ticked again on every list would be one left unticked.
+// The next run reads it from here. See `verifyWritten`.
+el("pref-verify").addEventListener("change", (ev) => {
+  prefs.set("verify", ev.target.checked);
+});
+
 el("pref-keep-output").addEventListener("change", (ev) => {
   prefs.set("keepOutput", ev.target.checked);
   // Turning it on settles what is to be carried at the moment it is turned
@@ -11692,6 +11831,7 @@ el("pref-keep-output").addEventListener("change", (ev) => {
 
 el("pref-forget-output").addEventListener("click", () => {
   for (const key of Object.keys(SETTING_DEFAULTS)) settings[key] = SETTING_DEFAULTS[key];
+  presetPicked = null;
   // The program's defaults for everything except what a cut is named, where
   // 環境設定 is the default: it is on this very panel, and a button that put
   // `cut_` back over the answer two rows above it would be arguing.

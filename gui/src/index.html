@@ -457,18 +457,6 @@
 
         <div class="panel">
           <div class="panel-head" id="outset-file-head" data-i18n="outset.fileHead">ファイル設定</div>
-          <!-- Named sets of everything on this screen but the folder, kept in
-               環境設定's store so that every project can use them. Picking
-               one puts it in force; the list shows the one in force, or
-               nothing once a control has been changed away from it. See
-               `presets`. -->
-          <div class="row" id="row-preset">
-            <span data-i18n="outset.preset">プリセット:</span>
-            <span class="drop"><select id="out-preset"></select></span>
-            <input id="out-preset-name" type="text" data-i18n-ph="outset.presetName" />
-            <button id="preset-save" class="mini" data-i18n="outset.presetSave">保存</button>
-            <button id="preset-delete" class="mini" data-i18n="outset.presetDelete">削除</button>
-          </div>
           <!-- The rows that only mean something for one of the two shapes
                are on screen only for that one. A disc names its own files, so
                a prefix and a container have nothing to choose there, and its
@@ -664,15 +652,26 @@
               </select>
             </span>
           </div>
-          <div class="opts" id="row-keyframes">
-            <label class="opt"><input id="out-keyframes" type="checkbox" />
-              <span data-i18n="outset.keyframeSidecar">キーフレーム情報を別ファイル (.keyframe) で出力する</span></label>
-          </div>
-          <!-- On both tabs: a disc's streams are files like any other, and
-               reading them back is the same check. -->
-          <div class="opts" id="row-verify">
-            <label class="opt"><input id="out-verify" type="checkbox" />
-              <span data-i18n="outset.verify">出力後にベリファイする</span></label>
+          <!-- The last line of the panel: the sidecar box on the left, which
+               a disc has no use for, and the presets on the right, which are
+               about the whole screen and so are there on both tabs. -->
+          <div class="row foot-row">
+            <div class="opts" id="row-keyframes">
+              <label class="opt"><input id="out-keyframes" type="checkbox" />
+                <span data-i18n="outset.keyframeSidecar">キーフレーム情報を別ファイル (.keyframe) で出力する</span></label>
+            </div>
+            <span class="grow"></span>
+            <!-- Named sets of everything on this screen but the folder, kept in
+                 環境設定's store so that every project can use them. Picking
+                 one puts it in force; the list shows the one last picked or
+                 saved, or nothing once a control has been changed away from
+                 it. See `presetPicked`. -->
+            <span class="preset-group" id="row-preset">
+              <span data-i18n="outset.preset">プリセット:</span>
+              <span class="drop"><select id="out-preset"></select></span>
+              <button id="preset-save" class="mini" data-i18n="outset.presetSave">保存…</button>
+              <button id="preset-delete" class="mini" data-i18n="outset.presetDelete">削除</button>
+            </span>
           </div>
         </div>
       </div>
@@ -1106,6 +1105,14 @@
               <label class="opt"><input id="pref-data-broadcast" type="checkbox" />
                 <span data-i18n="prefs.dataBroadcast">データ放送も残す（.ts のみ）</span></label>
               <p class="dim" data-i18n="prefs.dataBroadcastNote"></p>
+              <!-- Whether each file is read back once it is written. A standing
+                   answer about this machine rather than about one list, so
+                   it is here and not on the output settings screen. On both
+                   kinds of output: a disc's streams are files like any
+                   other, and reading them back is the same check. -->
+              <label class="opt"><input id="pref-verify" type="checkbox" />
+                <span data-i18n="prefs.verify">出力後にベリファイする</span></label>
+              <p class="dim" data-i18n="prefs.verifyNote"></p>
               <label class="opt"><input id="pref-keep-output" type="checkbox" />
                 <span data-i18n="prefs.keepOutput">出力設定を次回の起動に引き継ぐ</span></label>
               <p class="dim" data-i18n="prefs.keepOutputNote"></p>
@@ -1248,6 +1255,26 @@
           <span class="dim mi-note" id="mediainfo-note"></span>
           <button id="mediainfo-copy" data-i18n="mi.copy">テキストをコピー</button>
           <button id="mediainfo-close" class="primary" data-i18n="about.close">閉じる</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- The name a preset is saved under. Asked only when it is saved, so the
+         row on the output settings screen is the list and two buttons. -->
+    <div id="preset-ask" class="modal" hidden>
+      <div class="modal-box" role="dialog" aria-modal="true" aria-labelledby="preset-ask-title">
+        <div class="modal-head" id="preset-ask-title" data-i18n="outset.presetTitle">プリセット</div>
+        <div class="modal-body">
+          <div class="row">
+            <span data-i18n="outset.presetName">名前:</span>
+            <input id="preset-ask-name" type="text" class="grow" maxlength="80" />
+          </div>
+          <p class="dim" data-i18n="outset.presetWhat"></p>
+        </div>
+        <div class="modal-foot">
+          <span class="grow"></span>
+          <button id="preset-ask-cancel" class="mini" data-i18n="disc.cancel">キャンセル</button>
+          <button id="preset-ask-ok" class="primary" data-i18n="outset.presetOk">保存</button>
         </div>
       </div>
     </div>
