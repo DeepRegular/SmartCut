@@ -761,7 +761,7 @@ fn mark_scenes(diffs: &[(f64, f64)], duration: f64, opts: &ThumbOptions) -> (Vec
     }
     if std::env::var_os("SMARTCUT_DEBUG_SCENES").is_some() {
         let q = |p: f64| sorted[((sorted.len() - 1) as f64 * p) as usize];
-        eprintln!(
+        crate::say!(
             "diffs n={} p50={:.4} p75={:.4} p90={:.4} p95={:.4} p99={:.4} max={:.4}",
             sorted.len(),
             q(0.50),
@@ -895,7 +895,7 @@ fn cut_from(seen: &[(f64, f64)], at: f64, floor: f64) -> f64 {
     let show = std::env::var_os("SMARTCUT_DEBUG_CUT").is_some();
     for &(t, d) in seen {
         if show && d >= floor / 3.0 {
-            eprintln!(
+            crate::say!(
                 "    {:9.3}  差 {:.3}{}",
                 t,
                 d,

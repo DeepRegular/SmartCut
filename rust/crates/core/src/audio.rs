@@ -1618,7 +1618,7 @@ pub fn boundary_patches(
     // that bring its packets back onto the recording's own grid, so AC-3's
     // 256 samples and MP2's 481 are answered rather than refused.
     if carried_whole(params.id()) {
-        eprintln!(
+        crate::say!(
             "note: {:?} is lossless sound and is carried through byte for byte -- no encoder \
              here writes it without losing what makes it lossless, so a re-encoded frame \
              would be worse than the one it replaced. The cut's boundaries land on whole \
@@ -1646,7 +1646,7 @@ pub fn boundary_patches(
     ) {
         Ok(e) => e,
         Err(e) => {
-            eprintln!(
+            crate::say!(
                 "note: {:?} audio cannot be re-encoded here ({e}), so it was copied, \
                  boundaries and all.",
                 params.id()

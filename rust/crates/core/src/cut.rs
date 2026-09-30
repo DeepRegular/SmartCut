@@ -1463,7 +1463,7 @@ impl Writer {
         let drawn = match aside.reader.read(&set) {
             Ok(drawn) => drawn,
             Err(e) => {
-                eprintln!("note: a subtitle at {at:.3}s could not be read: {e}");
+                crate::say!("note: a subtitle at {at:.3}s could not be read: {e}");
                 None
             }
         };
@@ -2296,7 +2296,7 @@ fn take_subpicture(
         subs.take(id, t + offset, data);
     }
     if let Err(e) = convert_subpicture(id, t + offset, data, false, writer) {
-        eprintln!("note: a subtitle at {:.3}s could not be converted: {e}", t);
+        crate::say!("note: a subtitle at {:.3}s could not be converted: {e}", t);
     }
     false
 }
@@ -3147,7 +3147,7 @@ fn signalling_of(src: &Source, opts: &CutOptions) -> Signalling {
             out.side.retain(|(kind, _)| {
                 *kind != ff::ffi::AVFrameSideDataType::AV_FRAME_DATA_DOVI_METADATA
             });
-            eprintln!(
+            crate::say!(
                 "note: this recording is Dolby Vision, and the encoder here will not write it \
                  ({e}). The pictures rewritten at each seam carry no RPU, so the Dolby Vision \
                  metadata stops where they begin; the copied pictures keep theirs. Where the \
@@ -4213,7 +4213,7 @@ fn reencode_segment(
         );
     }
     if damaged > 0 {
-        eprintln!(
+        crate::say!(
             "note: {damaged} packet(s) between {:.3}s and {:.3}s are damaged and could not be \
              decoded, so the pictures they carried are missing from the {} written there. \
              What the cut copies is untouched by this.",
@@ -4805,7 +4805,7 @@ pub(crate) fn plan_audio(
         Vec::new()
     };
     if lossless && (!declined.is_empty() || opts.audio_mode == AudioMode::Reencode) {
-        eprintln!(
+        crate::say!(
             "note: {source_id:?}{named} is lossless sound and every encoder here would take \
              that away from it, so it is carried through as it is{}. Its boundaries land on \
              whole frames.",
@@ -4837,7 +4837,7 @@ pub(crate) fn plan_audio(
     };
     let sample_rate = crate::audio::writable_rate(target, asked_rate);
     if sample_rate != asked_rate {
-        eprintln!(
+        crate::say!(
             "note: {asked_rate} Hz was asked for{named} and {target:?} is not written at that \
              rate, so the track is written at {sample_rate} Hz, which is the nearest it can be."
         );
@@ -4856,7 +4856,7 @@ pub(crate) fn plan_audio(
         (!lossless && !asked_for && bits != source_bits).then_some((source_bits, bits))
     } else {
         if let Some(b) = opts.audio_bits.filter(|_| !lossless) {
-            eprintln!(
+            crate::say!(
                 "note: {b} bit samples were asked for{named} and {target:?} does not carry \
                  samples but a description of them, so there is nowhere in it to put a width. \
                  The setting is left aside; --audio-bitrate is what decides the size of a \
@@ -4878,7 +4878,7 @@ pub(crate) fn plan_audio(
         });
     let mode = match rebuild {
         Some(what) if opts.audio_mode != AudioMode::Reencode => {
-            eprintln!(
+            crate::say!(
                 "note: {what}{named}, which no frame of the recording's own can be copied \
                  through, so the whole track is re-encoded rather than {}.",
                 opts.audio_mode.as_str(),
@@ -4900,7 +4900,7 @@ pub(crate) fn plan_audio(
         // on frames that have to be built.
         (true, true) => {
             if opts.audio_mode != AudioMode::Reencode {
-                eprintln!(
+                crate::say!(
                     "note: {target:?} was asked for{named} and the recording carries \
                      {source_id:?}, which no frame of can be copied through, so the whole \
                      track is re-encoded rather than {}.",
@@ -4925,7 +4925,7 @@ pub(crate) fn plan_audio(
             } else {
                 ""
             };
-            eprintln!(
+            crate::say!(
                 "note: {source_id:?}{named} is written as {target:?}, which is the box this \
                  container has for linear PCM. The samples are the recording's own; what \
                  changes is what is written around them.{keep}"
@@ -4943,7 +4943,7 @@ pub(crate) fn plan_audio(
         (Some(want), Some(crate::aac::Framing::Adts(f)))
             if f.mpeg2 != want && mode != AudioMode::Reencode =>
         {
-            eprintln!(
+            crate::say!(
                 "note: --aac {} was asked for, but this recording carries MPEG-{} AAC{} and \
                  its own frames are copied unchanged. Writing the few frames this cut \
                  encodes as MPEG-{} would leave the audio two kinds of AAC at once, so the \
@@ -5058,7 +5058,7 @@ pub(crate) fn plan_audio(
         && !lossless
         && !crate::audio::opens_at(target, sample_rate, channels, bit_rate);
     let bit_rate = if refused && crate::audio::opens_at(target, sample_rate, channels, ordinary) {
-        eprintln!(
+        crate::say!(
             "note: {bit_rate} bit/s was asked for{named} and {target:?} is not written at that \
              rate with {channels} channels at {sample_rate} Hz, so the track is written at \
              {ordinary} bit/s, which is what it is ordinarily carried at."
@@ -5334,7 +5334,7 @@ fn graft_tables(
             (false, false) => "the data broadcast is",
             _ => "the programme guide is",
         };
-        eprintln!(
+        crate::say!(
             "note: the index does not know which byte every kept range opens on, so {what} \
              carried only for those it does know."
         );
@@ -6112,7 +6112,7 @@ fn cut_into(
         Vec::new()
     };
     if !to_ts && !src.captions.is_empty() {
-        eprintln!(
+        crate::say!(
             "note: this recording carries {} caption stream(s), which only a transport \
              stream can hold. Write a .ts to keep them.",
             src.captions.len(),
@@ -6139,7 +6139,7 @@ fn cut_into(
     // into the image with the rest; they go into the stream instead.
     let subtitles = if opts.subtitles != Subtitles::Pgs && onto_a_disc(output) {
         if !src.subpictures.is_empty() || !src.graphics.is_empty() {
-            eprintln!(
+            crate::say!(
                 "note: subtitles are not written beside a clip on a disc; they are \
                  carried inside it instead."
             );
@@ -6170,13 +6170,13 @@ fn cut_into(
         Vec::new()
     };
     if inside && !to_ts && !src.subpictures.is_empty() {
-        eprintln!(
+        crate::say!(
             "note: the subtitles a DVD draws can only be converted into a transport \
              stream, which this output is not. They are written beside the cut instead."
         );
     }
     if !to_ts && inside && !src.graphics.is_empty() {
-        eprintln!(
+        crate::say!(
             "note: this recording carries {} subtitle stream(s) drawn the way a disc draws \
              them, which only a transport stream can hold. Write a .ts or a .m2ts to keep \
              them, or ask for them beside the cut -- as an .idx and .sub pair, or as a \
@@ -6314,7 +6314,7 @@ fn cut_into(
         && !asked_for_data
         && src.dropped.iter().any(|d| d.what == "data")
     {
-        eprintln!(
+        crate::say!(
             "note: a data broadcast can only be carried into a plain .ts that keeps the \
              broadcast's own tables -- it is written by the pass that puts those back, and \
              nothing else can write it. It is left out of this one."
@@ -6333,7 +6333,7 @@ fn cut_into(
     let tables = match wants_tables.then(|| crate::si::read_service(&src.input, ours, &carried)) {
         Some(Ok(t)) => Some(t),
         Some(Err(e)) => {
-            eprintln!("note: {e}. The streams are kept; the broadcast's own tables are not.");
+            crate::say!("note: {e}. The streams are kept; the broadcast's own tables are not.");
             None
         }
         None => None,
@@ -6359,7 +6359,7 @@ fn cut_into(
     // all raises no question, and a run taking the default is told what was
     // left behind by the listing, which says `not carried` beside it.
     if opts.data_broadcast == Some(true) && data.is_empty() && !maybe_data.is_empty() {
-        eprintln!(
+        crate::say!(
             "note: the map this recording opens on does not name its data broadcast as one -- \
              a station takes it out of the map between programmes, and a recording that \
              begins before one starts can open on a map without it. Nothing is carried."
@@ -6504,7 +6504,7 @@ fn cut_into(
         unsafe {
             (*octx.as_mut_ptr()).strict_std_compliance = ff::ffi::FF_COMPLIANCE_EXPERIMENTAL;
         }
-        eprintln!(
+        crate::say!(
             "note: TrueHD in an MP4 is outside the standard, not every player will find it, \
              and the track has to open on one of the stream's own sync points -- so its \
              sound starts up to a sync interval after the pictures, which is about 13 ms in \
@@ -7020,7 +7020,7 @@ fn cut_into(
         for (n, per_track) in patches_by_reel.iter().enumerate() {
             for (setup, p) in setups.iter().zip(per_track) {
                 if setup.mode == AudioMode::Smart {
-                    eprintln!(
+                    crate::say!(
                         "  reel {n} audio 0x{:04x}: {} frame(s) prepared for the boundaries",
                         setup.info.pid,
                         p.len()
@@ -7425,7 +7425,7 @@ fn cut_into(
                     (plan.t_out * info.sample_rate as f64).round() as i64,
                 );
                 if std::env::var("SMARTCUT_DEBUG").is_ok() {
-                    eprintln!(
+                    crate::say!(
                         "  range t_in={:.4} target_start={:.4} track=0x{:04x} end={:?} \
                          drift={:+.4}",
                         plan.t_in,
@@ -7533,7 +7533,7 @@ fn cut_into(
                 // As inside a segment (see `take_subpicture`): one unit the
                 // decoder turns away costs that subtitle, not the cut.
                 if let Err(e) = convert_subpicture(id, target_start, &unit, true, &mut writer) {
-                    eprintln!(
+                    crate::say!(
                         "note: a subtitle on screen at {:.3}s could not be converted: {e}",
                         plan.t_in
                     );
@@ -7728,7 +7728,7 @@ fn cut_into(
         // Two things hand pictures over in an order the output timeline cannot
         // take, and which one it was is known here: a recording read as
         // several stretches joined says so, and nothing else does.
-        eprintln!(
+        crate::say!(
             "note: {} picture(s) could not be placed on the output timeline -- {} -- and were \
              left out of the {} written.",
             writer.skipped,
@@ -7745,7 +7745,7 @@ fn cut_into(
 
     if std::env::var("SMARTCUT_DEBUG").is_ok() {
         for t in &writer.graphics {
-            eprintln!(
+            crate::say!(
                 "  graphics on {}: {} packet(s) carried, {} written to open and close the \
                  kept ranges",
                 crate::track_name(writer.on_a_ts, t.pid, t.in_index),
@@ -7774,7 +7774,7 @@ fn cut_into(
                  out is the second account of them.",
             )
         };
-        eprintln!(
+        crate::say!(
             "note: {} frame(s) of the sound on {} do not follow the frame before them -- {why} \
              -- and were left out. {cost}",
             t.dropped,
@@ -7790,7 +7790,7 @@ fn cut_into(
         if t.no_length == 0 {
             continue;
         }
-        eprintln!(
+        crate::say!(
             "note: {} frame(s) of the sound on {} carry no length and none could be worked out \
              for them, and were left out. The output lays its sound end to end, so a frame of \
              no length would be written where the next one belongs.",
@@ -7802,7 +7802,7 @@ fn cut_into(
         if t.refused == 0 {
             continue;
         }
-        eprintln!(
+        crate::say!(
             "note: {} frame(s) of the sound on {} have a damaged header the container's muxer \
              would not take, and were left out.",
             t.refused,
@@ -7818,7 +7818,7 @@ fn cut_into(
         } else {
             "written into the cut"
         };
-        eprintln!(
+        crate::say!(
             "note: {} subtitle(s) the disc draws were {into} as the kind a transport \
              stream carries, on {}. The pixels and the colours are the disc's; what \
              changed is how they are spelled.",
@@ -7852,7 +7852,7 @@ fn cut_into(
             track.in_index,
         );
         if sup.is_empty() {
-            eprintln!(
+            crate::say!(
                 "note: the kept ranges hold none of the subtitles on {name}. Nothing was \
                  written beside the cut for it."
             );
@@ -7860,7 +7860,7 @@ fn cut_into(
         }
         let at = sup.named_after(output);
         if reads(&at) {
-            eprintln!(
+            crate::say!(
                 "note: the subtitles on {name} were not written beside the cut: {} is a \
                  recording being read.",
                 at.display()
@@ -7868,14 +7868,14 @@ fn cut_into(
             continue;
         }
         match sup.write(output) {
-            Ok(at) => eprintln!(
+            Ok(at) => crate::say!(
                 "note: the subtitles on {name} are beside the cut, not in it, as asked. \
                  {at} carries {} segment(s), on the cut's own clock.",
                 sup.count(),
             ),
             // A cut that came out right is not worth failing over the files
             // beside it.
-            Err(e) => eprintln!("note: the subtitles could not be written beside {output}: {e}"),
+            Err(e) => crate::say!("note: the subtitles could not be written beside {output}: {e}"),
         }
     }
 
@@ -7890,7 +7890,7 @@ fn cut_into(
             subs.side.recolour(ink.palette());
         }
         if subs.refused > 0 {
-            eprintln!(
+            crate::say!(
                 "note: {} subtitle(s) were too big to be written as the kind a DVD draws -- \
                  a unit states its own length in two bytes -- and are not in the pair \
                  beside the cut.",
@@ -7898,7 +7898,7 @@ fn cut_into(
             );
         }
         if subs.side.is_empty() {
-            eprintln!(
+            crate::say!(
                 "note: this recording declares subtitles the disc draws, and the kept \
                  ranges hold none of them. Nothing was written beside the cut."
             );
@@ -7907,7 +7907,7 @@ fn cut_into(
             .map(|ext| crate::vobsub::named_after(output, ext))
             .find(|at| reads(at))
         {
-            eprintln!(
+            crate::say!(
                 "note: the subtitles were not written beside the cut: {} is a recording \
                  being read.",
                 at.display()
@@ -7929,7 +7929,7 @@ fn cut_into(
                         "the subtitles are beside the cut, not in it -- a transport stream has \
                          no place for the kind a DVD draws"
                     };
-                    eprintln!(
+                    crate::say!(
                         "note: {why}. {idx} and {sub} carry {}. A player opening the cut \
                          finds them by name.",
                         counts.join(", "),
@@ -7938,7 +7938,7 @@ fn cut_into(
                 // A cut that came out right is not worth failing over the
                 // files beside it.
                 Err(e) => {
-                    eprintln!("note: the subtitles could not be written beside {output}: {e}")
+                    crate::say!("note: the subtitles could not be written beside {output}: {e}")
                 }
             }
         }
@@ -7984,7 +7984,7 @@ fn cut_into(
             Ok(service) => Some(service),
             Err(e) if pcm => bail!("{output} cannot be read back to name its sound: {e}"),
             Err(e) => {
-                eprintln!("note: {output} cannot be read back to name its tracks: {e}");
+                crate::say!("note: {output} cannot be read back to name its tracks: {e}");
                 None
             }
         }
@@ -8021,7 +8021,7 @@ fn cut_into(
             },
         ) {
             Ok(stats) if std::env::var("SMARTCUT_DEBUG").is_ok() => {
-                eprintln!(
+                crate::say!(
                     "  tables: {} list, {} map, {} service, {} event, {} clock, \
                      {} selection; {} clock references given a PID of their own; \
                      {} data broadcast packets and {} guide sections carried",
@@ -8042,7 +8042,7 @@ fn cut_into(
             }
             // A cut that came out right is not worth failing over a table.
             // Say what was lost and leave the file alone.
-            Err(e) => eprintln!(
+            Err(e) => crate::say!(
                 "note: the cut is written, but the broadcast's own tables could not be put \
                  back: {e}"
             ),

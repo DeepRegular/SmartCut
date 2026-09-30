@@ -1,6 +1,21 @@
 use anyhow::{bail, Context, Result};
 use smartcut_core::{index, plan_on, CutOptions, PlanOptions};
 
+/// `println!`, and into the run's log where `--log` opened one. What the run
+/// prints on standard output is most of what it has to say -- the plan, the
+/// tracks, what was written -- and a log without it is a log of the notes.
+macro_rules! tell {
+    () => {{
+        println!();
+        smartcut_core::log::write_only("");
+    }};
+    ($($arg:tt)*) => {{
+        let line = format!($($arg)*);
+        println!("{line}");
+        smartcut_core::log::write_only(&line);
+    }};
+}
+
 /// HH:MM:SS.mmm.
 ///
 /// Rounded to milliseconds once, and every field read back out of that
@@ -201,17 +216,17 @@ fn shown(s: &str) -> String {
 }
 
 fn list_disc(input: &str, disc: &smartcut_core::disc::Disc) {
-    println!("disc  : {input}");
-    println!("        {} -- {}", disc.shape.as_str(), shown(&disc.label));
-    println!("        {} recording(s)", disc.entries.len());
+    tell!("disc  : {input}");
+    tell!("        {} -- {}", disc.shape.as_str(), shown(&disc.label));
+    tell!("        {} recording(s)", disc.entries.len());
     // Said here because the rows below are readable and what they name is
     // not: the index files a recorder writes are in the clear and every
     // stream beside them is encrypted, so a disc like this lists itself
     // perfectly and opens nothing.
     if disc.protected {
-        println!("        AACS -- the streams are encrypted; only the index is readable");
+        tell!("        AACS -- the streams are encrypted; only the index is readable");
     }
-    println!();
+    tell!();
     // What a pressed disc mostly holds is not the film, so the ones worth a
     // look are pointed at rather than left to be found by their length. A
     // disc of recordings is all worth a look, and a column of stars beside
@@ -228,7 +243,7 @@ fn list_disc(input: &str, disc: &smartcut_core::disc::Disc) {
             (true, false) => " ",
             (false, _) => "",
         };
-        println!(
+        tell!(
             "{tick}{:3}  {}  {}{marks}",
             i + 1,
             fmt_hms(e.duration),
@@ -251,11 +266,35 @@ fn list_disc(input: &str, disc: &smartcut_core::disc::Disc) {
                 } else {
                     " -- a cut cannot carry this"
                 };
-                println!("       0x{:04x}  {}{lang}{gone}", t.pid, shown(&t.detail));
+                tell!("       0x{:04x}  {}{lang}{gone}", t.pid, shown(&t.detail));
             }
         }
     }
-    println!("\nname one with --title N to open it");
+    tell!("\nname one with --title N to open it");
+}
+
+/// Read the written cut back and say what came of it. A cut that does not
+/// match ends the run in an error, so a script can tell.
+fn check_output(
+    out: &str,
+    pieces: &[smartcut_core::verify::Piece],
+    compare: smartcut_core::verify::Compare,
+) -> Result<()> {
+    let never = std::sync::atomic::AtomicBool::new(false);
+    let report = smartcut_core::verify::check(out, pieces, compare, None, &never)
+        .with_context(|| format!("cannot read {out} back to check it"))?;
+    for line in report.lines() {
+        smartcut_core::say!("verify: {line}");
+    }
+    if !report.pictures_ok() {
+        bail!("verify: {out} does not match what was asked for");
+    }
+    if !report.sound_off().is_empty() {
+        smartcut_core::say!("verify: the sound does not run as long as the pictures; check it");
+    } else {
+        smartcut_core::say!("verify: OK");
+    }
+    Ok(())
 }
 
 /// How to call this, for a run with no recording named. `--help` puts the
@@ -297,6 +336,11 @@ const HELP: &[(&str, &[(&str, &str)])] = &[
             ),
             ("--drop-stream INDEX", "Leave one of the recording's streams out. Repeatable"),
             ("--title N|NAME", "Which recording on a disc. Left out, the disc's recordings are listed"),
+            (
+                "--verify",
+                "Read the output back and check it against the recording, frame by frame",
+            ),
+            ("--log FILE", "Also write what the run says into FILE"),
         ],
     ),
     (
@@ -563,6 +607,11 @@ fn main() -> Result<()> {
     let mut given_number: Option<u16> = None;
     let mut about: Option<String> = None;
     let mut given_made: Option<smartcut_core::si::Began> = None;
+    // Whether the finished file is read back and lined up against the
+    // recording. See `smartcut_core::verify`.
+    let mut verify = false;
+    // A file to write down what the run says, as well as saying it.
+    let mut log_to: Option<String> = None;
 
     let mut i = 0;
     while i < args.len() {
@@ -878,6 +927,15 @@ fn main() -> Result<()> {
             "--proxy" => make_proxy = true,
             "--as-proxy" => as_proxy = true,
             "--analyze" => analyze = true,
+            "--verify" => verify = true,
+            "--log" => {
+                i += 1;
+                let v = args.get(i).context("--log needs a path")?;
+                if v.is_empty() {
+                    bail!("--log needs a path");
+                }
+                log_to = Some(v.clone());
+            }
             "-o" | "--output" => {
                 i += 1;
                 let v = args.get(i).context("-o needs a path")?;
@@ -1053,6 +1111,15 @@ fn main() -> Result<()> {
         ("--proxy", make_proxy),
         ("--preview", preview_at.is_some()),
     ];
+    // A check of a cut, asked of a run that writes none.
+    if verify {
+        if let Some(name) = stops.iter().find(|(_, given)| *given).map(|(name, _)| *name) {
+            bail!("--verify reads a cut back, and {name} writes none");
+        }
+        if analyze {
+            bail!("--verify reads a cut back, and --analyze writes none");
+        }
+    }
     let mut stopping = stops.iter().filter(|(_, given)| *given).map(|(name, _)| *name);
     let stopping_at = stops.iter().find(|(_, given)| *given).map(|(name, _)| *name);
     if let Some(first) = stopping.next() {
@@ -1129,6 +1196,22 @@ fn main() -> Result<()> {
         bail!("--sound-only writes an audio file, which does not go onto a disc: use -o");
     }
     let Some(input) = input else { bail!(usage()) };
+    // Opened before anything is read, so that what the recording's open
+    // says is in it too. The command line heads it: the one line that says
+    // what the run was asked to do.
+    if let Some(at) = &log_to {
+        smartcut_core::log::open(std::path::Path::new(at))
+            .with_context(|| format!("cannot write the log {at}"))?;
+        smartcut_core::log::write_only(&format!(
+            "# smartcut {} -- {}",
+            smartcut_core::VERSION,
+            std::env::args_os()
+                .skip(1)
+                .map(|a| a.to_string_lossy().into_owned())
+                .collect::<Vec<_>>()
+                .join(" ")
+        ));
+    }
     // A share the machine has already mounted may be named the way it is
     // written down -- `smb://nas/rec/a.ts` or `\\nas\rec\a.ts` -- rather than
     // by the mount point it happens to have been given.
@@ -1170,7 +1253,7 @@ fn main() -> Result<()> {
         None => input,
         Some(disc) => match pick(&disc.entries, title.as_deref())? {
             Some(entry) => {
-                println!("title : {}", shown(&entry.label));
+                tell!("title : {}", shown(&entry.label));
                 // What the disc's own playlist says about the recording
                 // beside its name. Worth printing because it is what a cut
                 // of this recording carries onto a disc of its own -- see
@@ -1188,7 +1271,7 @@ fn main() -> Result<()> {
                     about.push(made.to_string());
                 }
                 if !about.is_empty() {
-                    println!("        {}", about.join("  "));
+                    tell!("        {}", about.join("  "));
                 }
                 if let Some(text) = &entry.description {
                     // One line of it: a description runs to several hundred
@@ -1201,7 +1284,7 @@ fn main() -> Result<()> {
                     } else {
                         ""
                     };
-                    println!("        {short}{more}");
+                    tell!("        {short}{more}");
                 }
                 chapters = entry.marks.iter().map(|m| entry.start + m).collect();
                 off_a_disc = Some(entry.clone());
@@ -1293,13 +1376,13 @@ fn main() -> Result<()> {
         .and_then(|i| modified(&i.file));
     let held = match &index_file {
         Some(p) if p.is_file() && recorded.is_some_and(|r| modified(p).is_none_or(|ix| ix < r)) => {
-            eprintln!("note: {} is older than the recording; it is made again", p.display());
+            smartcut_core::say!("note: {} is older than the recording; it is made again", p.display());
             None
         }
         Some(p) if p.is_file() => match smartcut_core::SeekIndex::load(p) {
             Ok(held) => Some(held),
             Err(e) => {
-                eprintln!("note: {e}; it is made again");
+                smartcut_core::say!("note: {e}; it is made again");
                 None
             }
         },
@@ -1334,7 +1417,7 @@ fn main() -> Result<()> {
     // planned on half a recording's entry points is worth a word, and it
     // used to be given only beside `--seek-index`.
     if !src.read_whole {
-        eprintln!(
+        smartcut_core::say!(
             "note: the recording was not read to its end, so only what was read is indexed{}",
             if writing.is_some() { " and no seek index is written" } else { "" }
         );
@@ -1350,8 +1433,8 @@ fn main() -> Result<()> {
         }
     }
     let v = &src.video;
-    println!("input : {}", src.path);
-    println!(
+    tell!("input : {}", src.path);
+    tell!(
         "        {} {}x{} {:.3}fps{}  has_b_frames={}  dur={:.3}s  start={:.3}s",
         v.codec,
         v.width,
@@ -1381,7 +1464,7 @@ fn main() -> Result<()> {
             .map(|t| format!("{t:.3}"))
             .collect();
         let more = if chapters.len() > 8 { ", ..." } else { "" };
-        println!("marks : {} [{}{more}]", chapters.len(), shown.join(", "));
+        tell!("marks : {} [{}{more}]", chapters.len(), shown.join(", "));
     }
 
     // Which AAC the recording carries is the thing to know before a cut
@@ -1426,7 +1509,7 @@ fn main() -> Result<()> {
         } else {
             String::new()
         };
-        println!(
+        tell!(
             "audio{}: {} {}Hz {}{lang}{}{main}   [stream {}{pid}]",
             if src.audios.len() > 1 {
                 format!(" {}", n + 1)
@@ -1462,7 +1545,7 @@ fn main() -> Result<()> {
             smartcut_core::TextFormat::Arib => "ARIB STD-B24",
             smartcut_core::TextFormat::Ttml => "ARIB-TTML",
         };
-        println!("{what}:{lang} {form}   [stream {}{pid}]", c.stream_index);
+        tell!("{what}:{lang} {form}   [stream {}{pid}]", c.stream_index);
     }
     for g in &src.graphics {
         let lang = g
@@ -1475,7 +1558,7 @@ fn main() -> Result<()> {
         } else {
             String::new()
         };
-        println!("subtitle:{lang} PGS   [stream {}{pid}]", g.stream_index);
+        tell!("subtitle:{lang} PGS   [stream {}{pid}]", g.stream_index);
     }
     // Named by the id the disc gives them, which is all they have: see
     // `smartcut_core::SubpictureInfo`. Said to be beside the cut rather than
@@ -1486,7 +1569,7 @@ fn main() -> Result<()> {
             .as_deref()
             .map(|l| format!(" {}", shown(l)))
             .unwrap_or_default();
-        println!("subtitle:{lang} subpicture   [id 0x{:02x}]", s.id);
+        tell!("subtitle:{lang} subpicture   [id 0x{:02x}]", s.id);
     }
     // The data broadcast, unless it has been turned down or the cut is
     // being written in a shape that cannot hold one -- a disc's stream, an
@@ -1508,7 +1591,7 @@ fn main() -> Result<()> {
         };
     if data_travels {
         for d in src.dropped.iter().filter(|d| d.what == "data") {
-            println!(
+            tell!(
                 "data   : carousel   [{}]",
                 smartcut_core::track_name(src.on_a_ts, d.pid, d.stream_index)
             );
@@ -1521,7 +1604,7 @@ fn main() -> Result<()> {
         .iter()
         .filter(|d| !(data_travels && d.what == "data"))
     {
-        println!(
+        tell!(
             "        not carried: {} on {}",
             d.describe(),
             smartcut_core::track_name(src.on_a_ts, d.pid, d.stream_index)
@@ -1563,7 +1646,7 @@ fn main() -> Result<()> {
             open - droppable
         )
     };
-    println!(
+    tell!(
         "        {} access points, mean GOP {mean_gop:.3}s, {note}  [{}]",
         src.points.len(),
         src.index_name
@@ -1572,7 +1655,7 @@ fn main() -> Result<()> {
     if let Some(at) = cut_near {
         for w in [0.5, 1.0, 2.0] {
             let t = smartcut_core::thumbs::cut_near(&src, at, w, 0.08)?;
-            println!("  ±{w:.1}s の窓: {}  ({:+.3}s)", fmt_hms(t), t - at);
+            tell!("  ±{w:.1}s の窓: {}  ({:+.3}s)", fmt_hms(t), t - at);
         }
         return Ok(());
     }
@@ -1591,7 +1674,7 @@ fn main() -> Result<()> {
             }
         };
         let bytes: usize = track.thumbs.iter().map(|t| t.jpeg.len()).sum();
-        println!(
+        tell!(
             "\nサムネイル : {} 枚 ({:.2}s 間隔, 幅 {}px, {:.1} MB) — {:.2}s で{how}",
             track.thumbs.len(),
             track.interval,
@@ -1599,7 +1682,7 @@ fn main() -> Result<()> {
             bytes as f64 / 1e6,
             began.elapsed().as_secs_f64()
         );
-        println!(
+        tell!(
             "シーン    : {} 箇所（しきい値 {:.4}、素材の中央値 {:.4}、平均間隔 {:.1}s）",
             track.scenes.len(),
             track.threshold,
@@ -1612,7 +1695,7 @@ fn main() -> Result<()> {
             // said so when the recording was opened.
             if src.read_whole {
                 smartcut_core::SeekIndex::of(&src, Some(track)).save(p)?;
-                println!(
+                tell!(
                     "シーク用インデックス : {} ({:.1} MB)",
                     p.display(),
                     std::fs::metadata(p).map(|m| m.len()).unwrap_or(0) as f64 / 1e6
@@ -1634,7 +1717,7 @@ fn main() -> Result<()> {
         {
             let began = std::time::Instant::now();
             let exact = smartcut_core::thumbs::refine(&src, *t)?;
-            println!(
+            tell!(
                 "   {}  →  精密化 {}  ({:.0}ms)",
                 fmt_hms(*t),
                 fmt_hms(exact),
@@ -1667,18 +1750,18 @@ fn main() -> Result<()> {
             // every junction rather than only the places its programme stops
             // and starts; see `cm_marks_every_junction`.
             Ok(r) if smartcut_core::cm_marks_every_junction(&r) => {
-                println!("\n字幕リセット : {} 箇所", r.len());
+                tell!("\n字幕リセット : {} 箇所", r.len());
                 Some(r)
             }
             Ok(r) => {
-                println!(
+                tell!(
                     "\n字幕リセット : {} 箇所 — 継ぎ目ごとには打たれていないので、ロゴと無音で判定します",
                     r.len()
                 );
                 None
             }
             Err(e) => {
-                println!("\n字幕リセット : ありません（{e}）");
+                tell!("\n字幕リセット : ありません（{e}）");
                 None
             }
         };
@@ -1688,7 +1771,7 @@ fn main() -> Result<()> {
             match smartcut_core::logo::detect(&src, &Default::default()) {
                 Ok(l) => Some(l),
                 Err(e) => {
-                    println!("\nロゴ      : 見つかりません（{e}）— 無音のみで判定します");
+                    tell!("\nロゴ      : 見つかりません（{e}）— 無音のみで判定します");
                     None
                 }
             }
@@ -1696,14 +1779,14 @@ fn main() -> Result<()> {
             None
         };
         if let Some(l) = &logo {
-            println!(
+            tell!(
                 "\nロゴ      : {:?} 隅 (強さ {:.1}) — 不在 {} 区間",
                 l.corner,
                 l.strength,
                 l.absent.len()
             );
             for (a, b) in &l.absent {
-                println!("   {}  →  {}   ({:6.1}s)", fmt_hms(*a), fmt_hms(*b), b - a);
+                tell!("   {}  →  {}   ({:6.1}s)", fmt_hms(*a), fmt_hms(*b), b - a);
             }
         }
         let cands = smartcut_core::cm_candidates(&silences, &opts);
@@ -1738,9 +1821,9 @@ fn main() -> Result<()> {
         // what would be marked there.
         let mut blocks = blocks;
         smartcut_core::cm_refine_boundaries(&src, &mut blocks, 0.5, 0.08);
-        println!("\nCM ブロック : {} 個{how}", blocks.len());
+        tell!("\nCM ブロック : {} 個{how}", blocks.len());
         for b in &blocks {
-            println!(
+            tell!(
                 "   {}  →  {}   ({:6.1}s, 継ぎ目 {} 箇所, score {:.2})",
                 fmt_hms(b.start),
                 fmt_hms(b.end),
@@ -1750,16 +1833,16 @@ fn main() -> Result<()> {
             );
         }
         if let Some(r) = &resets {
-            println!("\n継ぎ目 : 字幕リセット {} 箇所", r.len());
+            tell!("\n継ぎ目 : 字幕リセット {} 箇所", r.len());
             for t in r {
-                println!("   {:9.3}  ({})", t, fmt_hms(*t));
+                tell!("   {:9.3}  ({})", t, fmt_hms(*t));
             }
             return Ok(());
         }
-        println!("\nCM 境界候補 : {} 個の無音から", silences.len());
-        println!("   score  run   silence   time");
+        tell!("\nCM 境界候補 : {} 個の無音から", silences.len());
+        tell!("   score  run   silence   time");
         for c in cands.iter().filter(|c| c.score >= 0.4).take(40) {
-            println!(
+            tell!(
                 "   {:.2}   {:>3}   {:5.2}s   {:9.3}  ({})",
                 c.score,
                 c.run,
@@ -1797,8 +1880,8 @@ fn main() -> Result<()> {
             None,
             None,
         )?;
-        eprintln!();
-        println!(
+        smartcut_core::log::line("");
+        tell!(
             "\nwrote {} ({:.1} MB)  {}x{}  {}  {} pictures  {} thumbs  {} scenes  {:.1}s",
             built.path,
             built.bytes as f64 / 1e6,
@@ -1822,7 +1905,7 @@ fn main() -> Result<()> {
         // The time reported back is the picture actually decoded, not the one
         // asked for: a transport stream seek can land late, and saying so is
         // what makes the miss testable.
-        println!(
+        tell!(
             "\nwrote {path} ({} bytes)  asked {:.3}s  got {:.3}s  {} picture",
             shot.jpeg.len(),
             at,
@@ -1839,7 +1922,7 @@ fn main() -> Result<()> {
     // `--cut` handed to recordings of different lengths is a script's
     // ordinary way of trimming a tail.
     for &(start, end) in cuts.iter().filter(|(start, _)| *start >= src.duration) {
-        eprintln!(
+        smartcut_core::say!(
             "note: cut {}-{} begins after the recording ends at {}, and removes nothing",
             fmt_hms(start),
             fmt_hms(end),
@@ -1904,7 +1987,7 @@ fn main() -> Result<()> {
 
     if std::env::var("SMARTCUT_DEBUG").is_ok() {
         for p in src.points.iter().take(6) {
-            eprintln!(
+            smartcut_core::say!(
                 "  point t={:.4} lead_start={:.4} open={} droppable={}",
                 p.time,
                 p.lead_start,
@@ -1948,11 +2031,11 @@ fn main() -> Result<()> {
         .sum::<f64>()
         + 0.0;
     let total = copied + enc;
-    println!("\nplan  : {} range(s), {total:.3}s output", plans.len());
+    tell!("\nplan  : {} range(s), {total:.3}s output", plans.len());
     for p in &plans {
-        println!("  keep {:.3} -> {:.3}", said(p.t_in), said(p.t_out));
+        tell!("  keep {:.3} -> {:.3}", said(p.t_in), said(p.t_out));
         for s in &p.segments {
-            println!(
+            tell!(
                 "    {:>8}  {:8.3} -> {:8.3}  ({:6.3}s, {} frames)",
                 s.kind.as_str(),
                 said(s.start),
@@ -1963,7 +2046,7 @@ fn main() -> Result<()> {
         }
     }
     if total > 0.0 {
-        println!(
+        tell!(
             "        copied {copied:.3}s ({:.1}%), re-encoded {enc:.3}s ({:.1}%)",
             100.0 * copied / total,
             100.0 * enc / total
@@ -2022,14 +2105,14 @@ fn main() -> Result<()> {
                 estimate.bytes = estimate.bytes.max((whole.bytes as f64 * share) as u64);
             }
             let f = smartcut_core::fit::fit(&[estimate], capacity, smartcut_core::fit::MARGIN);
-            println!(
+            tell!(
                 "fit   : {} MB onto {} MB usable of {} MB",
                 f.bytes / 1_000_000,
                 f.usable / 1_000_000,
                 f.capacity / 1_000_000
             );
             if f.fits {
-                println!("        it fits as it is");
+                tell!("        it fits as it is");
                 video_share
             } else if !f.reachable && f.video_bytes == 0 {
                 bail!(
@@ -2045,7 +2128,7 @@ fn main() -> Result<()> {
                     smartcut_core::fit::FLOOR * 100.0
                 );
             } else {
-                println!(
+                tell!(
                     "        the pictures will be written at {:.1}% of their own size",
                     f.share * 100.0
                 );
@@ -2099,14 +2182,14 @@ fn main() -> Result<()> {
             let clip = smartcut_core::bdav::prepare(&at, 1)?.remove(0);
             let stream = smartcut_core::bdav::stream_of(&at, &clip);
             slot = Slot(Some(stream.clone()));
-            println!("\ndisc  : {} -- recording {clip}", at.display());
+            tell!("\ndisc  : {} -- recording {clip}", at.display());
             output = Some(stream.to_string_lossy().into_owned());
             Some((at, clip))
         }
         None => None,
     };
     if output.is_none() {
-        eprintln!("\n(no -o given; nothing written)");
+        smartcut_core::say!("\n(no -o given; nothing written)");
         return Ok(());
     }
     let out = output.unwrap();
@@ -2134,13 +2217,13 @@ fn main() -> Result<()> {
     // and because the step it writes at is the one setting that changes what
     // comes out of it.
     if matches!(src.video.codec.as_str(), "vc1" | "wmv3") {
-        println!(
+        tell!(
             "\nvideo :  partial GOPs written as VC-1 intra pictures at quantizer {} \
              (this program's own encoder; libavcodec has none)",
             vc1_quant.unwrap_or(smartcut_core::cut::VC1_DEFAULT_QUANT),
         );
     }
-    println!(
+    tell!(
         "\nrender:  audio {}{}{}{}{}{}",
         if asked.is_some() || resampled.is_some() || requantised.is_some() || recoded {
             "reencode"
@@ -2251,7 +2334,7 @@ fn main() -> Result<()> {
     } else {
         ""
     };
-    println!(
+    tell!(
         "         {kept_audio} of {} sound track(s), {kept_caps} of {} caption \
          stream(s){graphics}{subpictures}{data}{}",
         src.audios.len(),
@@ -2304,7 +2387,7 @@ fn main() -> Result<()> {
                 &whole,
             )?;
         }
-        println!(
+        tell!(
             "join  : {}  {} {}x{} {:.3}fps  dur={:.3}s",
             also.path,
             also.video.codec,
@@ -2386,7 +2469,14 @@ fn main() -> Result<()> {
                 ..Default::default()
             },
         )?;
-        println!("wrote {out} (sound only)");
+        tell!("wrote {out} (sound only)");
+        if verify {
+            let mut pieces = vec![smartcut_core::verify::Piece { src: &src, ranges: &ranges, plans: &[] }];
+            for (s, r) in joined_src.iter().zip(&whole) {
+                pieces.push(smartcut_core::verify::Piece { src: s, ranges: r, plans: &[] });
+            }
+            check_output(&out, &pieces, smartcut_core::verify::Compare::Nothing)?;
+        }
         return Ok(());
     }
     // The AAC beside the cut takes the cut's name with `.aac` on it, and that
@@ -2412,7 +2502,7 @@ fn main() -> Result<()> {
             if matches!(ext.as_str(), "mp4" | "m4v" | "mkv") {
                 // As a `--cut` past the end: said, and the last picture taken.
                 if t > src.duration {
-                    eprintln!(
+                    smartcut_core::say!(
                         "note: --poster {} is past the end of the recording ({}): the last \
                          picture is taken",
                         fmt_hms(t),
@@ -2423,7 +2513,7 @@ fn main() -> Result<()> {
                 Some(smartcut_core::poster_at(&src, at).context("cannot take the cover picture")?)
             } else {
                 let what = if ext.is_empty() { "this output".to_string() } else { format!("a .{ext}") };
-                eprintln!("note: --poster is ignored: {what} has no place for a cover picture");
+                smartcut_core::say!("note: --poster is ignored: {what} has no place for a cover picture");
                 None
             }
         }
@@ -2460,14 +2550,14 @@ fn main() -> Result<()> {
         last.after = Default::default();
     }
     if between.happens() && reels.len() > 1 {
-        println!(
+        tell!(
             "        {} between the clips, {:.2}s",
             between.kind.as_str(),
             between.seconds,
         );
     }
     if reels.len() > 1 {
-        println!(
+        tell!(
             "        {} recording(s) into one file, shaped like {}",
             reels.len(),
             reels[master.min(reels.len() - 1)].src.path,
@@ -2500,6 +2590,24 @@ fn main() -> Result<()> {
     );
     written?;
     slot.keep();
+    if verify {
+        let whole: Vec<Vec<(f64, f64)>> =
+            joined_src.iter().map(|s| vec![(0.0, s.duration)]).collect();
+        let mut pieces = vec![smartcut_core::verify::Piece { src: &src, ranges: &ranges, plans: &plans }];
+        for ((s, r), p) in joined_src.iter().zip(&whole).zip(&joined_plans) {
+            pieces.push(smartcut_core::verify::Piece { src: s, ranges: r, plans: p });
+        }
+        // A crossing's pictures belong to neither clip, so a join with one
+        // is read for damage and length only. See `smartcut_core::verify`.
+        let compare = if between.happens() && reels.len() > 1 {
+            smartcut_core::verify::Compare::Nothing
+        } else if video_share.is_some() {
+            smartcut_core::verify::Compare::Count
+        } else {
+            smartcut_core::verify::Compare::Pictures
+        };
+        check_output(&out, &pieces, compare)?;
+    }
     // The sidecar exists for the ARIB workflow, where what is wanted beside
     // the video is an AAC elementary stream. A cut written in another codec
     // has no AAC in it to put there, and a `.aac` holding AC-3 would be worse
@@ -2518,7 +2626,7 @@ fn main() -> Result<()> {
     if audio_es && es_is_aac {
         let beside = std::path::Path::new(&out).with_extension("aac");
         let n = smartcut_core::write_audio_es(&out, &beside.to_string_lossy(), aac)?;
-        println!("wrote {} ({n} packets)", beside.display());
+        tell!("wrote {} ({n} packets)", beside.display());
     } else if audio_es {
         // Named by what it actually is, not by the setting: "source" tells
         // nobody why the sidecar was declined.
@@ -2530,7 +2638,7 @@ fn main() -> Result<()> {
                 .unwrap_or_else(|| "nothing".into()),
             other => other.as_str().to_string(),
         };
-        eprintln!(
+        smartcut_core::say!(
             "note: --audio-es writes the sound out as an AAC elementary stream, and this cut's \
              sound is {is}. No sidecar was written.",
         );
@@ -2667,7 +2775,7 @@ fn main() -> Result<()> {
             }],
             None,
         )?;
-        println!("wrote {} -- {}", at.join("BDAV").display(), shown(&name));
+        tell!("wrote {} -- {}", at.join("BDAV").display(), shown(&name));
         if let Some(revision) = iso {
             // Beside the folder and named after it. The folder stays unless
             // `--iso-only` says otherwise: it is what the image was made of,
@@ -2676,7 +2784,7 @@ fn main() -> Result<()> {
             let image = image_beside(&at)?;
             let bytes =
                 smartcut_core::udfw::write(&at, &image, revision, iso_access, &title, None)?;
-            println!(
+            tell!(
                 "wrote {} ({:.1} MB, UDF {}, {})",
                 image.display(),
                 bytes as f64 / 1e6,
@@ -2688,12 +2796,12 @@ fn main() -> Result<()> {
             // there is an image is the disc lost.
             if iso_only {
                 smartcut_core::bdav::remove_disc(&at)?;
-                println!("removed {}", at.display());
+                tell!("removed {}", at.display());
             }
         }
         return Ok(());
     }
-    println!("wrote {out}");
+    tell!("wrote {out}");
     Ok(())
 }
 

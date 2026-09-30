@@ -32,6 +32,7 @@ pub mod fit;
 pub mod index;
 pub mod input;
 pub mod latm;
+pub mod log;
 pub mod logo;
 pub mod mediainfo;
 pub mod netpath;
@@ -53,6 +54,7 @@ pub mod transition;
 pub mod ttml;
 pub mod udf;
 pub mod udfw;
+pub mod verify;
 pub mod vobsub;
 pub mod weave;
 
@@ -629,7 +631,7 @@ pub(crate) fn note_once(line: String) {
         .lock()
         .map_or(true, |mut said| said.insert(line.clone()));
     if fresh {
-        eprintln!("{line}");
+        crate::log::line(&line);
     }
 }
 
@@ -651,6 +653,9 @@ pub(crate) fn note_once(line: String) {
 /// carried and reported here rather than printed there.
 pub fn init() -> Result<()> {
     ff::init().map_err(|e| anyhow!("ffmpeg init failed: {e}"))?;
+    // So that what libav says reaches a run's log as well as the terminal.
+    // See [`log`].
+    log::install_libav();
     // Only where nothing has chosen a level yet. This runs at the head of
     // every scan, outline and build, and read afresh each time it put the
     // level back to what the environment says -- so a window whose 環境設定
@@ -1230,7 +1235,7 @@ fn assemble(
             }
             // Nothing here is worth failing an open over: the map is what
             // it was, and a cut that lands in a bad stretch says so itself.
-            Err(e) => eprintln!("note: could not check this recording's entry-point map: {e}"),
+            Err(e) => crate::say!("note: could not check this recording's entry-point map: {e}"),
         }
     }
 
@@ -1594,7 +1599,7 @@ fn outline_of(path: &str) -> Result<(Outline, input::Demux)> {
         .filter(|a| {
             let described = a.sample_rate > 0 && a.channels > 0;
             if !described {
-                eprintln!(
+                crate::say!(
                     "note: the sound on {} is named by this recording's map but never \
                      appears in it, so there is nothing to describe it with. It is left \
                      out; the rest of the recording is unaffected.",

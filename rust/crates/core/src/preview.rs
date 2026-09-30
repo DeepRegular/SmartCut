@@ -1391,6 +1391,59 @@ fn walk(
     Ok(first)
 }
 
+/// Every coded picture presented in `[from, to)`, in presentation order.
+///
+/// For [`crate::verify`], which lines a cut up against what it was cut
+/// from. Pictures and not woven frames: a cut carries a recording's pictures
+/// as they were coded, repeat flags and all, and the output is decoded the
+/// same way, so the two sides count the same things.
+///
+/// Begins at the access point before `from`, as everything that reads a
+/// stretch does, and starts again a margin earlier where the landing was
+/// late -- found out on the first picture, before any has been handed on,
+/// so nothing is handed on twice. `visit` returns false to stop.
+pub(crate) fn pictures_in(
+    src: &Source,
+    from: f64,
+    to: f64,
+    mut visit: impl FnMut(f64, &ff::frame::Video) -> bool,
+) -> Result<()> {
+    crate::init()?;
+    let fd = src.video.frame_duration();
+    let entry = entry_before(&src.points, from);
+    // The same slack the reference check in the test suite allows: enough to
+    // absorb a timestamp's rounding and no more, because real streams put
+    // their pictures at an arbitrary phase rather than on multiples of a
+    // frame.
+    let eps = 1e-4;
+    for (attempt, margin) in [0.0, src.seek_margin].into_iter().enumerate() {
+        let mut late = false;
+        let mut seen = false;
+        walk(src, entry, margin, false, false, Cores::All, |t, frame| {
+            if !seen {
+                seen = true;
+                // Only a walk that has not yet handed anything on can be
+                // started again.
+                if attempt == 0 && landed_late(Some(t), entry, fd / 2.0) {
+                    late = true;
+                    return false;
+                }
+            }
+            if t >= to - eps {
+                return false;
+            }
+            if t >= from - eps {
+                return visit(t, frame);
+            }
+            true
+        })?;
+        if !late {
+            break;
+        }
+    }
+    Ok(())
+}
+
 /// Did decoding begin late enough to have missed the picture wanted?
 fn landed_late(first: Option<f64>, wanted: f64, slack: f64) -> bool {
     !matches!(first, Some(f) if f <= wanted + slack)

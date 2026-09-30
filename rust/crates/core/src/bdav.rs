@@ -804,7 +804,7 @@ pub fn stamp(path: &Path, on: Option<&(dyn Fn(f64) + Sync)>) -> Result<Timing> {
         );
     }
     if moved > MOVE_BUDGET {
-        eprintln!(
+        crate::say!(
             "note: the stream is faster than a Blu-ray recording is written in places; \
              its clock was moved up to {:.2} s to fit 48 Mbit/s",
             moved as f64 / 27e6

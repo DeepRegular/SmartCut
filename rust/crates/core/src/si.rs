@@ -3542,7 +3542,7 @@ pub fn graft(output: &str, on: Option<&(dyn Fn(f64) + Sync)>, g: &Graft) -> Resu
                         // a stream nothing but a receiver reads. Say what was
                         // lost and carry on writing the file.
                         .map_err(|e| {
-                            eprintln!("note: {reading_what} could not be read back: {e}");
+                            crate::say!("note: {reading_what} could not be read back: {e}");
                         })
                         .ok(),
                         _ => None,
@@ -3563,7 +3563,7 @@ pub fn graft(output: &str, on: Option<&(dyn Fn(f64) + Sync)>, g: &Graft) -> Resu
                     let due = match carousel.as_mut().map(|reader| reader.due(now)) {
                         Some(Ok(one)) => one,
                         Some(Err(e)) => {
-                            eprintln!("note: {reading_what} could not be read back: {e}");
+                            crate::say!("note: {reading_what} could not be read back: {e}");
                             carousel = None;
                             None
                         }

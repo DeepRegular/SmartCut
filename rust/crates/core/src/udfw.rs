@@ -474,7 +474,7 @@ fn say_what_was_left_out(from: &Path, left_out: &[String]) {
         })
         .chain((left_out.len() > 4).then(|| "...".to_string()))
         .collect();
-    eprintln!(
+    crate::say!(
         "note: {} file(s) under {} are not named the way a disc names its files -- a UDF volume \
          written here carries plain ASCII names of 200 characters or fewer -- and are not in \
          the image: {}",

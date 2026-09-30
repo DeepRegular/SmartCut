@@ -300,7 +300,7 @@ impl Tally {
     fn say(&self, rate: u32) {
         if self.drops + self.waits > 0 {
             let ms = |n: usize| n as f64 * 1000.0 / rate as f64;
-            eprintln!(
+            crate::say!(
                 "audio sync: {:.0} ms dropped in {}, {:.0} ms waited in {}",
                 ms(self.dropped),
                 self.drops,
@@ -760,7 +760,7 @@ fn build_stream(
             drop(q);
             was = want;
         },
-        |e| eprintln!("audio output error: {e}"),
+        |e| crate::say!("audio output error: {e}"),
         None,
     )
 }
@@ -889,7 +889,7 @@ fn open_output(
     for device in named {
         if let Some(out) = open_on(&device, want, ring, volume, levels, start, &mut why) {
             let name = device.name().unwrap_or_default();
-            eprintln!("audio output: default would not open, playing through {name}");
+            crate::say!("audio output: default would not open, playing through {name}");
             return Ok(out);
         }
     }
@@ -1027,7 +1027,7 @@ pub fn play_audio_across(
     let out = open_output(want, &ring, volume, levels, start)?;
     let (rate, channels) = (out.sample_rate, out.channels);
     if (rate, channels) != want {
-        eprintln!(
+        crate::say!(
             "audio output: {}Hz/{}ch source played at {rate}Hz/{channels}ch",
             want.0, want.1
         );

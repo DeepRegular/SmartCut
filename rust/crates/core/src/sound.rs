@@ -718,7 +718,7 @@ fn write_copied(
         // muxers' aac_adtstoasc turns away. One such frame used to fail the
         // whole output; it is left out and the sound goes on after it.
         Err(ff::Error::PatchWelcome | ff::Error::InvalidData) => {
-            eprintln!("note: a frame of the sound at {at:.3}s has a damaged header and was left out.");
+            crate::say!("note: a frame of the sound at {at:.3}s has a damaged header and was left out.");
             Ok(())
         }
         r => Ok(r?),

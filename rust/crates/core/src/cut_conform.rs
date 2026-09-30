@@ -425,7 +425,7 @@ fn pictures_afresh(
         );
     }
     if damaged > 0 {
-        eprintln!(
+        crate::say!(
             "note: {damaged} packet(s) between {:.3}s and {:.3}s of {} are damaged and could \
              not be decoded, so the pictures they carried are missing from the {} written \
              there.",

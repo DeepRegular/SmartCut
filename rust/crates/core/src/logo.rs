@@ -705,7 +705,7 @@ pub fn detect_with(
         let present: usize = scores[k].iter().filter(|&&s| s >= present_t).count();
         let frac = present as f64 / scores[k].len().max(1) as f64;
         if std::env::var("SMARTCUT_DEBUG").is_ok() {
-            eprintln!(
+            crate::say!(
                 "  corner {:?}: strength {:8.1}  present {:.3}  transitions {}  intervals {}",
                 cands[k].corner,
                 cands[k].strength,
