@@ -749,14 +749,20 @@ struct Pen {
     /// When the page being written went up.
     page_at: f32,
     pages: Vec<Page>,
-    /// How many sent pictures of characters the statement has drawn.
-    glyphs: usize,
+    /// How many dots of sent pictures of characters the statement has drawn.
+    glyph_dots: usize,
 }
 
-/// The most sent pictures one statement draws. A screen holds a few hundred
+/// The most sent pictures one statement draws, in dots: 2048 of the 36-dot
+/// cells every broadcast measured here sends. A screen holds a few hundred
 /// characters; a statement of nothing but references to one glyph is not a
 /// screen, and the rest of it is drawn as what a receiver shows instead.
-const MAX_GLYPHS: usize = 2048;
+///
+/// Dots rather than glyphs, because every glyph drawn goes to the window as
+/// its own copy of the dots and is drawn there a dot at a time: 2048 glyphs
+/// of 255 by 255 was twenty megabytes of text per frame of the preview, and
+/// a window that stopped answering.
+const MAX_GLYPH_DOTS: usize = 2048 * 36 * 36;
 
 impl Pen {
     fn new(layout: &Layout) -> Pen {
@@ -771,7 +777,7 @@ impl Pen {
             clock: 0.0,
             page_at: 0.0,
             pages: Vec::new(),
-            glyphs: 0,
+            glyph_dots: 0,
         }
     }
 
@@ -891,12 +897,13 @@ impl Pen {
             // middle of a recording, which is what scrubbing a timeline
             // does -- what is left is what a receiver without it shows.
             crate::arib::Step::Glyph(drcs) => {
-                let glyph = if self.glyphs < MAX_GLYPHS {
-                    layout.glyphs.get(&drcs).cloned()
-                } else {
-                    None
-                };
-                self.glyphs += usize::from(glyph.is_some());
+                let dots = |g: &Glyph| usize::from(g.width) * usize::from(g.height);
+                let glyph = layout
+                    .glyphs
+                    .get(&drcs)
+                    .filter(|g| self.glyph_dots + dots(g) <= MAX_GLYPH_DOTS)
+                    .cloned();
+                self.glyph_dots += glyph.as_deref().map_or(0, dots);
                 let text = match glyph {
                     Some(_) => String::new(),
                     None => crate::arib::UNKNOWN.to_string(),
@@ -1573,6 +1580,27 @@ mod tests {
         assert_eq!(run.text, "〓");
         assert!(run.glyph.is_none());
         assert_eq!(run.advance, 40);
+    }
+
+    /// A statement drawing one enormous glyph over and over draws as many
+    /// dots as a screen of ordinary ones, and the rest as what a receiver
+    /// shows without the picture.
+    #[test]
+    fn the_dots_one_statement_draws_are_counted() {
+        let mut layout = Layout::default();
+        let mut text = statement(5, 0, &[]);
+        text.extend_from_slice(&DRCS_CELL);
+        text.extend(std::iter::repeat_n(0x21, 199));
+        layout.glyphs(&body(&[drcs_unit(0x4121, 255, 255, |_, _| true)]));
+        let runs: Vec<Run> = layout
+            .statement(&text)
+            .pages
+            .into_iter()
+            .flat_map(|p| p.runs)
+            .collect();
+        let drawn = runs.iter().filter(|r| r.glyph.is_some()).count();
+        assert_eq!(drawn, MAX_GLYPH_DOTS / (255 * 255));
+        assert!(runs.iter().any(|r| r.text.contains('〓')));
     }
 
     /// The 33-bit clock starting again under a recording, and what is not

@@ -973,6 +973,59 @@ pub fn refine_leading(
 /// notices.
 const STRETCH_SLACK: f64 = 1.0;
 
+/// How far a stretch's last entry point may stand from the seam after it
+/// before the pictures are read to see where they really end. See
+/// [`mend_stretches`].
+///
+/// Wide, as [`STRETCH_SLACK`] is: across the twenty recorder clips measured
+/// here, a stretch the table describes has its last entry point up to 3.2 s
+/// short of its seam, and the one it does not describe 8.8 s. Below this the
+/// seam stands as it always has.
+const TAIL_SLACK: f64 = 5.0;
+
+/// How much of a stretch's end is read for its last picture: a couple of
+/// seconds at a recorder's rate, which is more than any reorder reaches.
+const TAIL_BYTES: u64 = 8 << 20;
+
+/// Where the pictures of the stretch `lo..hi` end: the last picture's own
+/// instant, as [`stretch_points`] gives it, read off the stretch's tail.
+fn stretch_end(
+    ictx: &mut ff::format::context::Input,
+    video: &VideoInfo,
+    start_time: f64,
+    lo: u64,
+    hi: u64,
+) -> Option<f64> {
+    let from = hi.saturating_sub(TAIL_BYTES).max(lo);
+    unsafe {
+        if ff::ffi::av_seek_frame(ictx.as_mut_ptr(), -1, from as i64, ff::ffi::AVSEEK_FLAG_BYTE) < 0 {
+            return None;
+        }
+    }
+    let mut last = f64::NEG_INFINITY;
+    let mut read_at = from;
+    let mut reading = ictx.read_packets();
+    for (s, p) in reading.by_ref() {
+        if p.position() >= 0 {
+            read_at = p.position() as u64;
+        }
+        if read_at >= hi {
+            break;
+        }
+        if s.index() != video.stream_index || read_at < from {
+            continue;
+        }
+        if let Some(pts) = p.pts() {
+            last = last.max(pts as f64 * video.time_base - start_time);
+        }
+    }
+    // As in [`stretch_points`]: half a read is not where the stretch ends.
+    if reading.finished().is_err() {
+        return None;
+    }
+    last.is_finite().then_some(last)
+}
+
 /// The first key picture at or after `byte`, on the clock the points are on.
 ///
 /// Placed by byte rather than by time on purpose: the question being asked is
@@ -1128,6 +1181,29 @@ pub fn mend_stretches(
             .find(|p| p.pos >= 0 && (p.pos as u64) >= at && (p.pos as u64) < hi)
             .map(|p| p.time);
         if claimed.is_some_and(|t| (t - first).abs() <= STRETCH_SLACK) {
+            // **A stretch mended once is kept mended, and its seam is not.**
+            // The fresh points go into the seek index and agree with the
+            // stream from then on, so the next open passes over the stretch
+            // above -- and the pulled-back seam below, which nothing keeps,
+            // went back to the span the table gives it: the whole-title cut
+            // of the recorder clip that needed mending planned the 8.8 s
+            // re-encode of nothing again on every open after the first. So a
+            // stretch whose last entry point stands well short of its seam
+            // has its last picture read off its tail, which is a few
+            // megabytes rather than the stretch.
+            if let Some(next) = joins.get(i + 1) {
+                let last = points
+                    .iter()
+                    .filter(|p| p.pos >= 0 && (p.pos as u64) >= at && (p.pos as u64) < hi)
+                    .map(|p| p.time)
+                    .fold(f64::NEG_INFINITY, f64::max);
+                if last.is_finite() && next.ends - last > TAIL_SLACK {
+                    if let Some(end) = stretch_end(&mut ictx, video, start_time, at, hi) {
+                        let next = &mut joins[i + 1];
+                        next.ends = next.ends.min(end);
+                    }
+                }
+            }
             continue;
         }
         let (fresh, end) = stretch_points(&mut ictx, video, start_time, at, hi);

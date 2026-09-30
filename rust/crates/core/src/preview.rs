@@ -243,7 +243,7 @@ fn collect_run(
     for (attempt, margin) in [0.0, src.seek_margin].into_iter().enumerate() {
         let mut slots = Slots::new(wanted, window);
         let mut failed = None;
-        let began = walk(src, from, margin, false, Cores::One, |t, frame| {
+        let began = walk(src, from, margin, false, true, Cores::One, |t, frame| {
             if t > last + fd {
                 return false;
             }
@@ -464,7 +464,7 @@ pub fn play_from(
     let mut stopped = false;
     for (attempt, margin) in [0.0, src.seek_margin].into_iter().enumerate() {
         let mut began_late = true;
-        let first = walk(src, entry, margin, false, Cores::All, |t, frame| {
+        let first = walk(src, entry, margin, false, true, Cores::All, |t, frame| {
             if t >= until - 1e-6 {
                 stopped = true;
                 return false;
@@ -524,6 +524,13 @@ pub fn shot_at(src: &Source, time: f64, width: u32) -> Result<Shot> {
 /// of one side and a JPEG of the other cannot be blended into a picture
 /// neither of them is.
 pub fn picture_at(src: &Source, time: f64) -> Result<(f64, ff::frame::Video)> {
+    picture_in(src, time, crate::weave::woven(src))
+}
+
+/// As [`picture_at`], saying whether a recording that repeats fields is to be
+/// woven into the frames a screen shows (see [`crate::weave`]) or answered
+/// with the coded picture nearest `time`.
+fn picture_in(src: &Source, time: f64, woven: bool) -> Result<(f64, ff::frame::Video)> {
     crate::init()?;
     let fd = src.video.frame_duration();
     let from = entry_before(&src.points, time);
@@ -532,13 +539,11 @@ pub fn picture_at(src: &Source, time: f64) -> Result<(f64, ff::frame::Video)> {
     // between two of them is where an access point stands when its picture
     // begins on the second field of a frame, and the nearer-of-two rule sent
     // it to the frame after -- the one past the point. See [`crate::weave`].
-    let woven = crate::weave::woven(src);
-
     let mut picture: Option<(f64, ff::frame::Video)> = None;
     for (attempt, margin) in [0.0, src.seek_margin].into_iter().enumerate() {
         let mut hit: Option<(f64, ff::frame::Video)> = None;
         let mut tail: Option<(f64, ff::frame::Video)> = None;
-        let began = walk(src, from, margin, false, Cores::One, |t, frame| {
+        let began = walk(src, from, margin, false, woven, Cores::One, |t, frame| {
             // The wanted picture is whichever of the two straddling `time` is
             // nearer -- not "the first one at or after it". Under 2:3
             // pulldown the pictures are 41.7ms apart inside a 29.97 fps
@@ -1045,6 +1050,18 @@ fn entry_before(points: &[AccessPoint], time: f64) -> f64 {
 /// Taken as a number rather than off a [`Source`], because a picture can be
 /// wanted before there is one; see [`glance`].
 pub(crate) fn encode_jpeg(picture: &ff::frame::Video, sar: f64, width: u32) -> Result<Vec<u8>> {
+    encode_jpeg_sized(picture, sar, width).map(|(jpeg, _, _)| jpeg)
+}
+
+/// As [`encode_jpeg`], with the size the JPEG came out at.
+fn encode_jpeg_sized(picture: &ff::frame::Video, sar: f64, width: u32) -> Result<(Vec<u8>, u32, u32)> {
+    let native = (picture.width() as f64 * sar.max(0.01)).round() as u32;
+    encode_jpeg_within(picture, sar, width.min(native))
+}
+
+/// `encode_jpeg_sized` with the width already settled by the caller: a field
+/// stands for a frame twice its height, and is worth the frame's width.
+fn encode_jpeg_within(picture: &ff::frame::Video, sar: f64, width: u32) -> Result<(Vec<u8>, u32, u32)> {
     let sar = sar.max(0.01);
     // What the picture is worth, in square pixels. Not its coded width: 1440
     // samples across shown at 16:9 needs 1920 to keep all 1080 of its lines,
@@ -1054,8 +1071,7 @@ pub(crate) fn encode_jpeg(picture: &ff::frame::Video, sar: f64, width: u32) -> R
     // a bigger JPEG out of the same samples. It is the proxy that this
     // usually measures, and a proxy is square-pixel: its width *is* the
     // ceiling on everything the timeline shows.
-    let native = (picture.width() as f64 * sar).round() as u32;
-    let out_w = width.min(native).max(16) & !1;
+    let out_w = width.max(16) & !1;
     // Downscaling far enough also takes the comb out of interlaced material,
     // so a preview needs no deinterlacer of its own.
     let out_h = (((out_w as f64 * picture.height() as f64) / (picture.width() as f64 * sar)).round()
@@ -1101,7 +1117,61 @@ pub(crate) fn encode_jpeg(picture: &ff::frame::Video, sar: f64, width: u32) -> R
     if out.is_empty() {
         return Err(anyhow!("the JPEG encoder produced nothing"));
     }
-    Ok(out)
+    Ok((out, out_w, out_h))
+}
+
+/// The widest a cover is made. A file manager shows it a few hundred pixels
+/// across; this is room for a player that shows it whole.
+const POSTER_WIDTH: u32 = 1920;
+
+/// The picture shown at `time`, as a cover for the file a cut writes. See
+/// [`crate::cut::Poster`].
+///
+/// Full size rather than a preview's, and from one field where the picture
+/// is interlaced: a still is looked at, and two fields a sixtieth of a
+/// second apart woven into one are a comb along everything that moved.
+///
+/// Not woven where the recording repeats fields: two of every five frames
+/// woven out of 2:3 pulldown are fields of two different pictures -- a comb
+/// just the same, on a frame that does not say it is interlaced. The coded
+/// picture nearest `time` is a whole one.
+pub fn poster_at(src: &Source, time: f64) -> Result<crate::cut::Poster> {
+    let (_, picture) = picture_in(src, time, false)?;
+    let sar = src.video.sample_aspect_ratio.max(0.01);
+    let (jpeg, width, height) = if picture.is_interlaced() && picture.height() >= 32 {
+        // Half the lines, each standing for two: twice as tall a pixel. Sized
+        // as the frame it stands for (1080i gives 1920x1080, not 960x540):
+        // the field has every sample across, only the lines are halved.
+        let native = (picture.width() as f64 * sar).round() as u32;
+        encode_jpeg_within(&top_field(&picture), sar / 2.0, POSTER_WIDTH.min(native))?
+    } else {
+        encode_jpeg_sized(&picture, sar, POSTER_WIDTH)?
+    };
+    Ok(crate::cut::Poster { jpeg, width, height })
+}
+
+/// The picture's top field: its even lines, in every plane.
+fn top_field(picture: &ff::frame::Video) -> ff::frame::Video {
+    let mut field = ff::frame::Video::new(picture.format(), picture.width(), picture.height() / 2);
+    field.set_color_range(picture.color_range());
+    field.set_color_space(picture.color_space());
+    field.set_color_primaries(picture.color_primaries());
+    field.set_color_transfer_characteristic(picture.color_transfer_characteristic());
+    for plane in 0..picture.planes().min(field.planes()) {
+        let (from, to) = (picture.stride(plane), field.stride(plane));
+        let (rows, have) = (field.plane_height(plane) as usize, picture.plane_height(plane) as usize);
+        let n = from.min(to);
+        let src = picture.data(plane);
+        let dst = field.data_mut(plane);
+        for y in 0..rows {
+            let line = 2 * y;
+            if line >= have || (line + 1) * from > src.len() || (y + 1) * to > dst.len() {
+                break;
+            }
+            dst[y * to..y * to + n].copy_from_slice(&src[line * from..line * from + n]);
+        }
+    }
+    field
 }
 
 /// Put a freshly opened demuxer at the access point `from`.
@@ -1172,12 +1242,15 @@ enum Cores {
 ///
 /// `keys` hands over only the pictures that open a GOP, skipping everything
 /// between them unparsed -- for callers that are asking about entry points
-/// and nothing else. `visit` returns false to stop.
+/// and nothing else. `frames` weaves a recording that repeats fields into
+/// the frames a screen shows; see [`crate::weave`]. `visit` returns false to
+/// stop.
 fn walk(
     src: &Source,
     from: f64,
     margin: f64,
     keys: bool,
+    frames: bool,
     cores: Cores,
     mut visit: impl FnMut(f64, &ff::frame::Video) -> bool,
 ) -> Result<Option<f64>> {
@@ -1209,7 +1282,8 @@ fn walk(
     // shows it, rather than picture by picture. Not for a walk over the entry
     // pictures alone: they are asked about as pictures, and the fields
     // between them are not decoded to be woven with. See [`crate::weave`].
-    let mut weave = (!keys && crate::weave::woven(src)).then(|| crate::weave::Weave::new(src));
+    let mut weave =
+        (frames && !keys && crate::weave::woven(src)).then(|| crate::weave::Weave::new(src));
     // Hand one decoded picture over, woven or not; false once the visitor
     // has had enough.
     let mut offer = |t: f64,

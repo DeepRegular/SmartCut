@@ -1164,6 +1164,11 @@ fn feed_from(
             let mut past_end = false;
             while decoder.receive_frame(&mut frame).is_ok() {
                 let Some(pts) = frame.pts() else { continue };
+                // Resampled for the card, such a frame is hundreds of
+                // megabytes. See `crate::audio::implausible_rate`.
+                if crate::audio::implausible_rate(frame.rate(), rate) {
+                    continue;
+                }
                 let t = pts as f64 * in_tb - src.start_time;
                 if t >= b {
                     past_end = true;
@@ -1329,6 +1334,9 @@ pub fn peaks_at(src: &Source, time: f64, window: f64, fold: &Fold) -> Result<Vec
         }
         while decoder.receive_frame(&mut frame).is_ok() {
             let Some(pts) = frame.pts() else { continue };
+            if crate::audio::implausible_rate(frame.rate(), audio.sample_rate) {
+                continue;
+            }
             let t = pts as f64 * audio.time_base - src.start_time;
             let dur = frame.samples() as f64 / audio.sample_rate.max(1) as f64;
             if t >= end {

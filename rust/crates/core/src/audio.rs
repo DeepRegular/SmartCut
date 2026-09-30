@@ -560,6 +560,24 @@ pub(crate) fn conform<'a>(
     Ok(out)
 }
 
+/// Whether a decoded frame says it runs at a rate no sound is sampled at.
+///
+/// A frame can state its own rate -- FLAC's header can name any rate in
+/// hertz, frame by frame -- and a decoder hands it over as stated. Brought to
+/// the track's rate, or to the sound card's, a frame of 4096 samples at 10 Hz
+/// is twenty million samples a channel, allocated at once: three such frames
+/// in a crafted .mkv took a cut to 830 MB, and a 65535 sample block of eight
+/// channels is past what the machine has. Nothing recorded runs under a
+/// kilohertz, so such a frame is passed over as a hole in the track.
+///
+/// Nor at a small fraction of the rate it is brought to, `to`: the track's
+/// own rate is what its header says, and a FLAC track declared at 655350 Hz
+/// with frames of 1 kHz multiplied each by 655 all the same -- over a
+/// gigabyte a frame. Eight kilohertz played on a card at 192 is 24 times.
+pub(crate) fn implausible_rate(rate: u32, to: u32) -> bool {
+    rate > 0 && (rate < 1000 || u64::from(to) > 64 * u64::from(rate))
+}
+
 /// A frame that arrived at another rate than the track's, brought to the
 /// track's: the same format and channels, `rate` samples a second.
 ///
@@ -936,6 +954,12 @@ impl Reencoder {
         let mut frame = ff::frame::Audio::empty();
         while self.decoder.receive_frame(&mut frame).is_ok() {
             let Some(pts) = frame.pts() else { continue };
+            // Left as a hole, which the next frame fills with silence. See
+            // [`implausible_rate`]: brought to the track's rate, one such
+            // frame was hundreds of megabytes a channel.
+            if implausible_rate(frame.rate(), self.sample_rate) {
+                continue;
+            }
             let t = pts as f64 * audio.time_base - start_time;
             // Held well inside i64: a crafted time stamp saturates the cast,
             // and the frame's length added to it then overflowed.
@@ -1214,6 +1238,21 @@ impl Reencoder {
             let Some(pts) = at_sample(&packet).map(|p| p - self.lead).filter(|&p| p >= 0) else {
                 continue;
             };
+            // Nothing to write, and nothing that can be: FLAC's encoder ends
+            // on a packet of no bytes that only restates its STREAMINFO, and
+            // ffmpeg-next refuses to write an empty packet with "Invalid
+            // data found when processing input" -- which was the whole of
+            // every FLAC track re-encoded, failed at its last packet. What it
+            // restates goes with the frame before it, which is not written
+            // yet: it arrives in the same flush, and the muxer reads it off
+            // whichever packet carries it (the total length and the checksum
+            // a .flac states in its header).
+            if packet.size() == 0 {
+                if let Some((last, _)) = out.last_mut() {
+                    carry_extradata(&packet, last);
+                }
+                continue;
+            }
             let packet = match &self.framing {
                 Some(f) => {
                     let mut framed = ff::Packet::copy(&f.wrap(packet.data().unwrap_or(&[])));
@@ -1223,6 +1262,23 @@ impl Reencoder {
                 None => packet,
             };
             out.push((packet, pts));
+        }
+    }
+}
+
+/// Put `from`'s restated stream header, where it has one, on `onto`.
+fn carry_extradata(from: &ff::Packet, onto: &mut ff::Packet) {
+    use ff::ffi::AVPacketSideDataType::AV_PKT_DATA_NEW_EXTRADATA;
+    use ff::packet::{Mut, Ref};
+    unsafe {
+        let mut size = 0usize;
+        let data = ff::ffi::av_packet_get_side_data(from.as_ptr(), AV_PKT_DATA_NEW_EXTRADATA, &mut size);
+        if data.is_null() || size == 0 {
+            return;
+        }
+        let dst = ff::ffi::av_packet_new_side_data(onto.as_mut_ptr(), AV_PKT_DATA_NEW_EXTRADATA, size);
+        if !dst.is_null() {
+            std::ptr::copy_nonoverlapping(data, dst, size);
         }
     }
 }

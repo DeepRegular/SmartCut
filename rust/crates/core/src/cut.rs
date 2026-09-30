@@ -343,6 +343,26 @@ pub struct CutOptions {
     /// it would lose what makes it lossless stays carried whole. The cut says
     /// so rather than fading nothing quietly.
     pub audio_fade: f64,
+    /// A picture to carry as the file's cover: what a file manager or a
+    /// player shows for it in place of a frame it picks for itself. Only
+    /// where the container has somewhere to put one -- MP4 as its `covr`,
+    /// Matroska as an attachment named `cover.jpg` -- and left out everywhere
+    /// else, QuickTime included: its muxer writes `covr` only in an MP4's
+    /// metadata and drops the picture without a word. See [`Poster`].
+    pub poster: Option<Poster>,
+}
+
+/// A cover picture: a JPEG, and its size.
+#[derive(Debug, Clone)]
+pub struct Poster {
+    pub jpeg: Vec<u8>,
+    pub width: u32,
+    pub height: u32,
+}
+
+/// Whether `format` (a muxer's name) has a place for a [`Poster`].
+pub fn carries_poster(format: &str) -> bool {
+    matches!(format, "mp4" | "matroska")
 }
 
 impl CutOptions {
@@ -6804,6 +6824,57 @@ fn cut_into(
         }
     }
 
+    // The cover, last of the streams so that none of the numbers above
+    // moves. Matroska keeps it as a file attached to the file, which no
+    // packet is written for; MP4 as a picture stream the muxer writes into
+    // the header as `covr`, which has its one packet written straight after
+    // the header. That stream still counts as interleaved and never has a
+    // second packet, so from then on the muxer lets packets go only once it
+    // holds `max_interleave_delta` (ten seconds) of them: the same order,
+    // and ten seconds more of the recording in memory.
+    let poster_stream = match &opts.poster {
+        Some(poster) if carries_poster(octx.format().name()) => {
+            let matroska = octx.format().name() == "matroska";
+            let mut ost = octx.add_stream(ff::encoder::find(ff::codec::Id::None))?;
+            ost.set_time_base(ff::Rational::new(1, 90_000));
+            let index = ost.index();
+            unsafe {
+                let st = ost.as_mut_ptr();
+                let p = (*st).codecpar;
+                (*p).codec_id = ff::ffi::AVCodecID::AV_CODEC_ID_MJPEG;
+                (*p).width = poster.width as i32;
+                (*p).height = poster.height as i32;
+                (*p).codec_tag = 0;
+                if matroska {
+                    (*p).codec_type = ff::ffi::AVMediaType::AVMEDIA_TYPE_ATTACHMENT;
+                    // The muxer writes the extradata as the attachment's bytes.
+                    let n = poster.jpeg.len();
+                    let buf = ff::ffi::av_mallocz(n + ff::ffi::AV_INPUT_BUFFER_PADDING_SIZE as usize)
+                        as *mut u8;
+                    if buf.is_null() {
+                        return Err(anyhow!("out of memory for the cover picture"));
+                    }
+                    std::ptr::copy_nonoverlapping(poster.jpeg.as_ptr(), buf, n);
+                    (*p).extradata = buf;
+                    (*p).extradata_size = n as i32;
+                } else {
+                    (*p).codec_type = ff::ffi::AVMediaType::AVMEDIA_TYPE_VIDEO;
+                    (*st).disposition = ff::ffi::AV_DISPOSITION_ATTACHED_PIC as _;
+                }
+            }
+            let mut meta = ff::Dictionary::new();
+            if matroska {
+                meta.set("filename", "cover.jpg");
+                meta.set("mimetype", "image/jpeg");
+            } else {
+                meta.set("title", "Cover");
+            }
+            ost.set_metadata(meta);
+            (!matroska).then_some(index)
+        }
+        _ => None,
+    };
+
     {
         // Scoped: the leftovers borrow the context, and everything below
         // needs it back. Anything still in here is an option this muxer did
@@ -6814,6 +6885,15 @@ fn cut_into(
             "muxer ignored an option: {:?}",
             left.iter().map(|(k, _)| k.to_string()).collect::<Vec<_>>()
         );
+    }
+
+    if let (Some(index), Some(poster)) = (poster_stream, &opts.poster) {
+        let mut packet = ff::Packet::copy(&poster.jpeg);
+        packet.set_stream(index);
+        packet.set_pts(Some(0));
+        packet.set_dts(Some(0));
+        packet.set_flags(ff::packet::Flags::KEY);
+        packet.write_interleaved(&mut octx)?;
     }
 
     // write_header is free to replace the stream's time base with whatever the

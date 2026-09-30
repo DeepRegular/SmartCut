@@ -1327,7 +1327,12 @@ fn audio_coding(codec: &str) -> u8 {
         "dts" => 0x82,
         "truehd" | "mlp" => 0x83,
         "pcm_bluray" => 0x80,
-        "mp2" | "mp3" => 0x04,
+        // Layer I is what `carry::disc_holds_audio` also lets onto a disc,
+        // and without an arm of its own it was declared AAC.
+        "mp1" | "mp2" | "mp3" => 0x04,
+        // LATM is not ADTS: a player told 0x0F looks for a sync word the
+        // frames do not have. 0x11 is what a 4K recorder's disc says.
+        "aac_latm" => 0x11,
         _ => 0x0F,
     }
 }

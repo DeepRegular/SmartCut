@@ -33,6 +33,7 @@ pub mod index;
 pub mod input;
 pub mod latm;
 pub mod logo;
+pub mod mediainfo;
 pub mod netpath;
 pub mod nice;
 pub mod pgs;
@@ -71,7 +72,7 @@ pub use cm::{
 };
 pub use cut::{
     can_carry_data_broadcast, cut, cut_with_progress, tables_for, writable_sound, write_audio_es,
-    AudioCodec, AudioMode, CutOptions, SoundAsIs, SoundChoices,
+    carries_poster, AudioCodec, AudioMode, CutOptions, Poster, SoundAsIs, SoundChoices,
 };
 pub use index::{ContainerIndex, DiscIndex, IndexSource, PacketScan};
 pub use plan::{
@@ -79,7 +80,8 @@ pub use plan::{
 };
 pub use playback_audio::{peaks_at, play_audio, play_audio_across, Fold, Heard, Levels, Start, Volume};
 pub use preview::{
-    frame_at, glance, glance_at, glance_run, glance_sweep, play_from, shot_at, shots_at, Pace, Shot,
+    frame_at, glance, glance_at, glance_run, glance_sweep, play_from, poster_at, shot_at, shots_at,
+    Pace, Shot,
 };
 pub use proxy::{Marks, ProxyOptions};
 pub use seek_index::SeekIndex;
@@ -1565,7 +1567,7 @@ fn outline_of(path: &str) -> Result<(Outline, input::Demux)> {
         AudioInfo {
             stream_index: a.index(),
             pid: a.id(),
-            language: a.metadata().get("language").map(str::to_string),
+            language: tag(&a.metadata(), "language"),
             codec: format!("{:?}", p.id()).to_lowercase(),
             sample_rate,
             channels,
@@ -1761,7 +1763,7 @@ fn outline_of(path: &str) -> Result<(Outline, input::Demux)> {
             Some(CaptionInfo {
                 stream_index: s.index(),
                 pid: s.id(),
-                language: s.metadata().get("language").map(str::to_string),
+                language: tag(&s.metadata(), "language"),
                 time_base: f64::from(s.time_base()),
                 kind,
                 format,
@@ -1788,7 +1790,7 @@ fn outline_of(path: &str) -> Result<(Outline, input::Demux)> {
         .map(|s| GraphicsInfo {
             stream_index: s.index(),
             pid: s.id(),
-            language: s.metadata().get("language").map(str::to_string),
+            language: tag(&s.metadata(), "language"),
             time_base: f64::from(s.time_base()),
         })
         .collect();
@@ -2059,6 +2061,22 @@ pub(crate) fn container_start(ictx: &input::Demux) -> f64 {
 pub(crate) unsafe fn raw_enum<T>(field: *const T) -> i32 {
     debug_assert_eq!(std::mem::size_of::<T>(), 4);
     unsafe { field.cast::<i32>().read() }
+}
+
+/// A tag's value as text. Not `DictionaryRef::get`, which hands the bytes
+/// back as a `str` without checking them: a tag holds whatever the file
+/// wrote -- an ISO 639 descriptor's three bytes are copied as they are, an
+/// AVI's title is in the writer's own code page -- and a `str` that is not
+/// UTF-8 is undefined behaviour the moment it is looked at.
+pub(crate) fn tag(dict: &ff::DictionaryRef, key: &str) -> Option<String> {
+    let key = std::ffi::CString::new(key).ok()?;
+    unsafe {
+        let e = ff::ffi::av_dict_get(dict.as_ptr(), key.as_ptr(), std::ptr::null(), 0);
+        if e.is_null() || (*e).value.is_null() {
+            return None;
+        }
+        Some(String::from_utf8_lossy(std::ffi::CStr::from_ptr((*e).value).to_bytes()).into_owned())
+    }
 }
 
 /// [`raw_enum`]'s other half: set one of those fields to an int as it is.

@@ -327,6 +327,15 @@ fn look_at(frame: &ff::frame::Video, luma: &Luma, opts: &BlankOptions) -> Option
     let data = frame.data(0);
     let cols = GRID_X.min(iw);
     let rows = GRID_Y.min(ih);
+    // The furthest sample a row is read at has to be inside the row. A format
+    // whose luma step is wider than its share of the row -- packed 4:1:1,
+    // which a raw AVI can declare, puts four bytes a sample in a row one and
+    // a half bytes a pixel wide -- indexed past it, which is a panic.
+    let x_last = x0 + (cols - 1) * iw / cols;
+    let wide = if luma.depth > 8 { 2 } else { 1 };
+    if luma.offset + x_last * luma.step + wide > stride {
+        return None;
+    }
     let mut seen = 0usize;
     let mut black = 0usize;
     let mut white = 0usize;
@@ -718,5 +727,18 @@ mod tests {
         assert_eq!(p010.at(&(64u16 << 6).to_le_bytes(), 0), 64);
         assert!(p010.at(&(64u16 << 6).to_le_bytes(), 0) <= p010.level(0.04));
         assert!(Luma::of(ff::format::Pixel::MonoBlack).is_err());
+    }
+
+    /// A format whose luma step runs past its own row is not judged rather
+    /// than read out of bounds.
+    #[test]
+    fn a_luma_step_wider_than_the_row_is_not_read() {
+        let format = ff::format::Pixel::UYYVYY411;
+        let luma = Luma::of(format).unwrap();
+        let mut frame = ff::frame::Video::new(format, 64, 64);
+        frame.data_mut(0).fill(16);
+        // ...which it would be: the last column sampled lies past the row.
+        assert!(luma.offset + 62 * luma.step >= frame.stride(0));
+        assert_eq!(look_at(&frame, &luma, &BlankOptions::default()), None);
     }
 }

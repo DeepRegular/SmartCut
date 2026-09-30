@@ -2163,7 +2163,10 @@ pub fn clip_entry_points(path: &str) -> Option<Vec<(f64, u64)>> {
             p.1 -= from;
         }
         points
-    } else if let Some(table) = joined(&raw, vol.bytes(clip) / SOURCE_PACKET) {
+    } else if let Some(table) = joins_clocks(root, &vol)
+        .then(|| joined(&raw, vol.bytes(clip) / SOURCE_PACKET))
+        .flatten()
+    {
         // A clip read whole is read with its clocks joined, so the map has to
         // be on the joined clock too: it is what says where in the file a
         // moment is, and the moments the demuxer reports have moved. The
@@ -2414,17 +2417,35 @@ pub fn clip_restamp(path: &str) -> Option<crate::restamp::Restamp> {
     // recorder writes `BDAV`. Asked of the name so that a pressed disc pays
     // nothing at all: no image opened, no index read.
     let (root, clip) = clip_on_a_disc(path)?;
-    let named = root.to_ascii_uppercase().replace('\\', "/");
-    if named == "BDMV" || named.ends_with("/BDMV") {
+    if named_bdmv(root) {
         return None;
     }
     // A directory under a name of its own is asked what it is.
     let mut vol = Volume::open(Path::new(root)).ok()?;
-    if vol.shape() != Shape::Bdav {
+    if !joins_clocks(root, &vol) {
         return None;
     }
     let raw = vol.read(&format!("CLIPINF/{clip}.clpi")).ok()?;
     joined(&raw, vol.bytes(clip) / SOURCE_PACKET)
+}
+
+/// Whether a clip read whole off this disc is read with its clocks joined:
+/// a recorder's are, and nothing else is.
+///
+/// One test for both sides of it. [`clip_restamp`] decides what the demuxer
+/// reports and [`clip_entry_points`] puts the disc's map on a clock, and the
+/// two have to be the same clock: a pressed disc's clip holding two sequences,
+/// opened whole, was read unjoined and indexed joined, and every entry point
+/// past its first seam was placed where the demuxer's pictures are not.
+fn joins_clocks(root: &str, vol: &Volume) -> bool {
+    vol.shape() == Shape::Bdav && !named_bdmv(root)
+}
+
+/// Whether the disc's directory is called `BDMV`, which settles the dialect
+/// before anything is opened.
+fn named_bdmv(root: &str) -> bool {
+    let named = root.to_ascii_uppercase().replace('\\', "/");
+    named == "BDMV" || named.ends_with("/BDMV")
 }
 
 /// The part of a clip a play item plays, named the way it will be opened.
@@ -3390,6 +3411,27 @@ mod tests {
         // them up a turn.
         let whole = entry_points(&raw, Clock::File);
         assert!(whole[2].0 > 95_000.0, "{whole:?}");
+    }
+
+    /// A pressed disc's clip of several sequences is read unjoined -- see
+    /// [`clip_restamp`] -- so its map has to come back on the file's clock and
+    /// not on the joined one.
+    #[test]
+    fn a_pressed_disc_s_clip_is_indexed_on_the_clock_it_is_read_on() {
+        let root = std::env::temp_dir().join("smartcut-disc-bdmv-clock");
+        let _ = std::fs::remove_dir_all(&root);
+        for dir in ["PLAYLIST", "CLIPINF", "STREAM"] {
+            std::fs::create_dir_all(root.join("BDMV").join(dir)).unwrap();
+        }
+        std::fs::write(root.join("BDMV/PLAYLIST/00001.mpls"), []).unwrap();
+        let raw = stretches_starting_low();
+        std::fs::write(root.join("BDMV/CLIPINF/00001.clpi"), &raw).unwrap();
+        std::fs::write(root.join("BDMV/STREAM/00001.m2ts"), vec![0u8; 3_000 * 192]).unwrap();
+        let clip = root.join("BDMV/STREAM/00001.m2ts");
+        let clip = clip.to_string_lossy();
+        assert!(clip_restamp(&clip).is_none());
+        assert_eq!(clip_entry_points(&clip), Some(entry_points(&raw, Clock::File)));
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]

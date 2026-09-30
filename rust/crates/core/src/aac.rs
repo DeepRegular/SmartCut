@@ -82,6 +82,16 @@ pub fn framing(
     ictx: &mut ffmpeg_next::format::context::Input,
     audio_index: usize,
 ) -> Option<Framing> {
+    // Only AAC is framed either way. Another codec's frames can pass for
+    // ADTS: a FLAC frame opens on 0xFFF8, which is the sync word and the
+    // zero layer bits, and a FLAC track re-encoded to AAC into a transport
+    // stream went out under headers built from FLAC's block size and rate
+    // bits -- read back as the LTP profile. Raw PCM can do the same by
+    // chance.
+    let id = ictx.stream(audio_index)?.parameters().id();
+    if !matches!(id, ffmpeg_next::codec::Id::AAC | ffmpeg_next::codec::Id::AAC_LATM) {
+        return None;
+    }
     let mut seen = 0;
     // Where the reading began, on whichever stream spoke first. Thirty
     // seconds past it with no frame of the track is a track that is not

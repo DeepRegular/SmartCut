@@ -333,6 +333,11 @@ const HELP: &[(&str, &[(&str, &str)])] = &[
             ("--audio-fade S", "Fade the sound into and out of every seam (0-10)"),
             ("--audio-es", "Also write the AAC beside the output, as a bare stream"),
             (
+                "--poster TIME",
+                "Carry the picture at TIME (seconds or 1:23:45.6) into the recording as \
+                 the file's cover (.mp4, .m4v and .mkv)",
+            ),
+            (
                 "--sound-only",
                 "Write one sound track and no pictures: .aac, .ac3, .eac3, .mp2, \
                  .mp3, .dts, .m4a, .mka or .wav",
@@ -519,6 +524,7 @@ fn main() -> Result<()> {
     let mut audio_bit_rate: Option<usize> = None;
     let mut vc1_quant: Option<u8> = None;
     let mut audio_fade = 0.0f64;
+    let mut poster_at: Option<f64> = None;
     let mut audio_sample_rate: Option<u32> = None;
     let mut audio_bits: Option<u8> = None;
     // Everything the recording carries is written unless it is named here.
@@ -709,6 +715,11 @@ fn main() -> Result<()> {
                     .ok()
                     .filter(|s| (0.0..=10.0).contains(s))
                     .with_context(|| format!("--audio-fade wants 0..10 seconds, got {v:?}"))?;
+            }
+            "--poster" => {
+                i += 1;
+                // A time as every other one here is written, 1:02:03 too.
+                poster_at = Some(parse_time(args.get(i).context("--poster needs a time")?)?);
             }
             "--vc1-quant" => {
                 i += 1;
@@ -1091,6 +1102,8 @@ fn main() -> Result<()> {
             // are none. The transition's length and kind still shape the
             // sound; the image was read by nothing and the run ended well.
             (crossing_image.is_some(), "--transition-image"),
+            // A cover for a file of pictures; the sound writer never saw it.
+            (poster_at.is_some(), "--poster"),
         ];
         if let Some((_, name)) = moot.iter().find(|(given, _)| *given) {
             bail!("--sound-only writes the sound alone: {name} has nothing to act on");
@@ -2386,6 +2399,36 @@ fn main() -> Result<()> {
             s.input.refuse_as_output(&beside.to_string_lossy())?;
         }
     }
+    // Only where the container has a place for one; said rather than
+    // dropped without a word, as the other options this output cannot use.
+    let poster = match poster_at {
+        Some(t) => {
+            let ext = std::path::Path::new(&out)
+                .extension()
+                .map(|e| e.to_string_lossy().to_ascii_lowercase())
+                .unwrap_or_default();
+            // Not .mov: libavformat's QuickTime muxer drops a cover
+            // picture without a word, and the file came out as without one.
+            if matches!(ext.as_str(), "mp4" | "m4v" | "mkv") {
+                // As a `--cut` past the end: said, and the last picture taken.
+                if t > src.duration {
+                    eprintln!(
+                        "note: --poster {} is past the end of the recording ({}): the last \
+                         picture is taken",
+                        fmt_hms(t),
+                        fmt_hms(src.duration)
+                    );
+                }
+                let at = t.min(src.duration).max(0.0);
+                Some(smartcut_core::poster_at(&src, at).context("cannot take the cover picture")?)
+            } else {
+                let what = if ext.is_empty() { "this output".to_string() } else { format!("a .{ext}") };
+                eprintln!("note: --poster is ignored: {what} has no place for a cover picture");
+                None
+            }
+        }
+        None => None,
+    };
     let joined_plans: Vec<Vec<smartcut_core::RangePlan>> = joined_src
         .iter()
         .map(|s| plan_on(s, &[(0.0, s.duration)], &opts))
@@ -2450,6 +2493,7 @@ fn main() -> Result<()> {
             vc1_quant,
             video_share,
             audio_fade,
+            poster,
             plan: opts.clone(),
             ..Default::default()
         },

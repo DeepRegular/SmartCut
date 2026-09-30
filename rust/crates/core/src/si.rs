@@ -1425,9 +1425,12 @@ pub fn snapshot_at(input: &crate::input::Input, pos: i64, service_id: u16) -> Re
                     out.eit.push(sec.to_vec());
                 }
             }),
+            // Only one that holds a time: a table too short for one is not
+            // written back (see [`advance_time`]), and taken as the first it
+            // would have stood in the way of every whole one after it.
             PID_TDT => tdt.feed(p, |sec| match sec[0] {
-                TABLE_TOT if out.tot.is_none() => out.tot = Some(sec.to_vec()),
-                TABLE_TDT if out.tdt.is_none() => out.tdt = Some(sec.to_vec()),
+                TABLE_TOT if out.tot.is_none() && sec.len() >= 14 => out.tot = Some(sec.to_vec()),
+                TABLE_TDT if out.tdt.is_none() && sec.len() >= 8 => out.tdt = Some(sec.to_vec()),
                 _ => {}
             }),
             // The one table of a partial stream, for its service. A partial

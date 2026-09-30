@@ -154,6 +154,21 @@ fn pictures_afresh(
     let field = ctx.grid.unit();
     let step = into.video.frame_duration();
     let per_frame = ((step / field).round() as i64).max(1);
+    // The clip's own field order, where its lines reach the output as they
+    // are: an interlaced clip of the master's height is scaled across only,
+    // so its two fields are still its two fields -- and stated in the
+    // master's order, a bottom-first clip joined onto a top-first master
+    // showed every pair of fields in reverse, the motion stepping back
+    // between each two. Each picture states its own order, as a copied one
+    // does (see [`crate::conform::What::costs_pictures`]). A clip scaled in
+    // height has had its fields mixed by the scaler and is left in the
+    // master's order, and so is a crossing, which has two clips in it.
+    let own_order = (into.video.interlaced()
+        && src.video.interlaced()
+        && src.video.height == into.video.height
+        && src.video.top_field_first() != into.video.top_field_first()
+        && !matches!(retouch, Some(crate::plan::Retouch::Cross { .. })))
+    .then(|| src.video.top_field_first());
 
     seek_into(&mut ictx, src, seg.seek_from, None)?;
     // After the seek, for the reason [`crate::input::keep_only`] gives.
@@ -270,6 +285,16 @@ fn pictures_afresh(
                     fed += 1;
                     picture.set_kind(ff::picture::Type::None);
                     mark_interlacing(picture, into.video);
+                    if let Some(top_first) = own_order {
+                        unsafe {
+                            let f = picture.as_mut_ptr();
+                            if top_first {
+                                (*f).flags |= ff::ffi::AV_FRAME_FLAG_TOP_FIELD_FIRST;
+                            } else {
+                                (*f).flags &= !ff::ffi::AV_FRAME_FLAG_TOP_FIELD_FIRST;
+                            }
+                        }
+                    }
                     match &mut encoder {
                         Pictures::Libav(enc) => {
                             enc.send_frame(picture)?;
