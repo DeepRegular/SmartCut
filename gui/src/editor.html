@@ -283,6 +283,20 @@
                 <span data-i18n="editor.clearKeys">キーフレームをすべて消す</span>
               </button>
               <div class="menu-sep"></div>
+              <!-- The picture the written file shows as its cover, in .mp4
+                   and .mkv. See `poster` in main.js. -->
+              <button class="menu-item" id="poster-set">
+                <span data-i18n="poster.setItem">このフレームをサムネイルに設定</span>
+                <span class="menu-key">P</span>
+              </button>
+              <button class="menu-item" id="poster-go">
+                <span data-i18n="poster.goItem">サムネイルのフレームへ移動</span>
+                <span class="menu-key" id="poster-at"></span>
+              </button>
+              <button class="menu-item" id="poster-clear">
+                <span data-i18n="poster.clearItem">サムネイルの設定を解除</span>
+              </button>
+              <div class="menu-sep"></div>
               <!-- 拡大表示, in a window of its own. Here rather than as a
                    button on the transport: it is opened once and left open,
                    and the rows below the picture are for the cutting. The

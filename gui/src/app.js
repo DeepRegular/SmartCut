@@ -1186,7 +1186,8 @@ window.addEventListener("keydown", (ev) => {
   if (ev.key === "Escape" && chooser) closeChooser(false);
 });
 
-el("add-files").addEventListener("click", async () => {
+/// ファイルを追加: the picker, and whatever is picked put on the list.
+async function pickFiles() {
   const picked = await dialog.open({
     multiple: true,
     filters: [
@@ -1199,7 +1200,8 @@ el("add-files").addEventListener("click", async () => {
   });
   if (!picked) return;
   await addPaths(Array.isArray(picked) ? picked : [picked]);
-});
+}
+el("add-files").addEventListener("click", pickFiles);
 
 // Dropping files. Tauri intercepts the drag before the page sees it, so the
 // window's own events are what carry the paths -- the HTML5 ones never fire
@@ -2604,6 +2606,7 @@ function paintProps() {
     flat:
       (c.blankPhase ? t(blankKey("props.blank"), { note: plain(c.blankPhase) }) : "") +
       (c.quietPhase ? t("props.quiet", { note: plain(c.quietPhase) }) : ""),
+    poster: coverAt(c) === null ? "" : t("props.poster", { t: coverLabel(c) }),
   }));
 }
 
@@ -2635,6 +2638,82 @@ function fillProps(box, text) {
     fitToAnswer(choice.querySelector("select"));
   });
 }
+
+// --- the quick properties' height -----------------------------------------
+//
+// Dragged by its top edge, and kept from one session to the next: how much of
+// the window the panel is worth depends on what is being looked at, and on
+// how many tracks the recordings in this list have, rather than on anything
+// this window could work out for itself. Double-click the edge for the height
+// it came with.
+
+const PROPS_HEIGHT = "smartcut.propsHeight";
+const propsGrip = el("props-grip");
+
+/// Held between a few lines and most of the window -- the list above it has
+/// to stay somewhere to click.
+function setPropsHeight(px) {
+  const most = Math.max(60, Math.round(window.innerHeight * 0.6));
+  const h = clamp(Math.round(px), 40, most);
+  el("props").style.height = `${h}px`;
+  return h;
+}
+
+/// The height asked for -- kept or dragged to -- which a window made shorter
+/// may hold the panel under for a while. Null for the height it came with.
+let propsWant = null;
+
+try {
+  const kept = Number(localStorage.getItem(PROPS_HEIGHT));
+  if (Number.isFinite(kept) && kept > 0) {
+    propsWant = kept;
+    setPropsHeight(kept);
+  }
+} catch {
+  // No storage: the height it came with.
+}
+
+let propsDrag = null;
+propsGrip.addEventListener("pointerdown", (ev) => {
+  if (ev.button !== 0) return;
+  ev.preventDefault();
+  propsGrip.setPointerCapture(ev.pointerId);
+  propsGrip.classList.add("held");
+  propsDrag = { y: ev.clientY, h: parseFloat(getComputedStyle(el("props")).height) };
+});
+propsGrip.addEventListener("pointermove", (ev) => {
+  if (!propsDrag) return;
+  propsWant = setPropsHeight(propsDrag.h + (propsDrag.y - ev.clientY));
+});
+const dropGrip = () => {
+  if (!propsDrag) return;
+  propsDrag = null;
+  propsGrip.classList.remove("held");
+  try {
+    if (propsWant) localStorage.setItem(PROPS_HEIGHT, String(propsWant));
+  } catch {
+    // Kept for this session only.
+  }
+};
+propsGrip.addEventListener("pointerup", dropGrip);
+propsGrip.addEventListener("pointercancel", dropGrip);
+propsGrip.addEventListener("lostpointercapture", dropGrip);
+propsGrip.addEventListener("dblclick", () => {
+  propsWant = null;
+  el("props").style.height = "";
+  try {
+    localStorage.removeItem(PROPS_HEIGHT);
+  } catch {
+    // Nothing kept to forget.
+  }
+});
+// A window made shorter keeps the panel inside what it now allows, and one
+// made taller again gives back the height that was asked for -- clamping what
+// was on screen instead left the panel at its smallest for the rest of the
+// session after the window had once been made short.
+window.addEventListener("resize", () => {
+  if (propsWant) setPropsHeight(propsWant);
+});
 
 /// Size a `<select>` to the words it is showing rather than to its longest
 /// choice, which is what a select is otherwise as wide as -- a gap after
@@ -2804,6 +2883,33 @@ el("droptarget").addEventListener("mousedown", (ev) => {
   clips.forEach((c) => (c.selected = false));
   anchor = -1;
   paintList();
+});
+
+// And a double click there is ファイルを追加: the place files are dropped is
+// the place they are asked for. Not on a row, which it opens, and not on the
+// scrollbar, whose presses land on the list as well -- two quick presses on
+// its arrows are not a request for the picker.
+//
+// Both presses on the empty part, too. The count of a double click is the
+// platform's, by time and place, not by what was under it: the × on the last
+// row, pressed twice (the way a run of rows is deleted, see the row's own
+// `dblclick`), takes the row out with the first press and leaves the second
+// on the empty list -- and that was the picker coming up over a list somebody
+// was emptying. Counted in the capture phase, ahead of anything a row does.
+let emptyPresses = 0;
+el("droptarget").addEventListener(
+  "mousedown",
+  (ev) => {
+    emptyPresses = ev.button === 0 && !ev.target.closest(".clip") ? emptyPresses + 1 : 0;
+  },
+  true
+);
+el("droptarget").addEventListener("dblclick", (ev) => {
+  if (ev.button !== 0 || ev.target.closest(".clip") || isTool() || emptyPresses < 2) return;
+  const wrap = el("droptarget");
+  const box = wrap.getBoundingClientRect();
+  if (ev.clientX - box.left >= wrap.clientWidth || ev.clientY - box.top >= wrap.clientHeight) return;
+  pickFiles();
 });
 
 /// Put a second row on the same recording, carrying everything already known
@@ -3115,6 +3221,21 @@ function move(dir) {
   renderList();
 }
 
+/// The instant the editor set as a clip's cover, or null. Not `posterOf`,
+/// which is the row's own picture in the list.
+const coverAt = (clip) =>
+  clip.edit && Number.isFinite(clip.edit.poster) ? clip.edit.poster : null;
+
+/// The cover's instant as the editor shows it: in the output, after the
+/// cuts, or ✂ when a cut has taken that picture (it is still carried).
+function coverLabel(clip) {
+  const at = coverAt(clip);
+  const keeps = keepsOf(clip);
+  if (!keeps.length) return fmt(at);
+  const o = srcToOut(keeps, at);
+  return o === null ? "✂" : fmt(o);
+}
+
 /// Keep the Shift-click and arrow-key anchor on the row it was on, after the
 /// rows have been moved about under it.
 function followAnchor(row) {
@@ -3270,6 +3391,7 @@ function openRowMenu(x, y) {
   el("row-detect-quiet").disabled = !can.detectQuiet;
   el("row-up").disabled = !can.move;
   el("row-down").disabled = !can.move;
+  el("row-info").disabled = selected().length !== 1;
   el("row-remove").disabled = !can.remove;
   // The one in the corner is a menu too, and two menus standing at once is
   // one of them left over from a click that was meant for something else.
@@ -3336,6 +3458,11 @@ el("row-down").addEventListener("click", () => {
 el("row-remove").addEventListener("click", () => {
   closeRowMenu();
   remove(selected());
+});
+el("row-info").addEventListener("click", () => {
+  closeRowMenu();
+  const one = selected();
+  if (one.length === 1) showMediaInfo(one[0]);
 });
 
 // A press anywhere else shuts it -- `mousedown` rather than `click`, because
@@ -7461,6 +7588,7 @@ async function writeJoined(list) {
         // of the file, which is a thing to ask for rather than to inherit
         // from 一括適用.
         after: c === list[list.length - 1] ? null : c.after,
+        poster: coverAt(c),
       })),
       master: Math.max(0, list.indexOf(master)),
       output: out,
@@ -7740,6 +7868,9 @@ async function startExport() {
         // the run; null where the list fits as it is, which is every run
         // that is not going onto a disc.
         videoShare: share,
+        // The picture the editor set as the file's cover, if it did. Only
+        // .mp4 and .mkv have a place for it; see `poster_for`.
+        poster: coverAt(clip),
       });
       // The head is past everything now, so the stage catches up with it: the
       // frame left standing is the last one the encoder made, rather than
@@ -8659,6 +8790,8 @@ async function loadProject(path) {
         dropStreams: Array.isArray(saved.edit.dropStreams)
           ? saved.edit.dropStreams.filter((i) => Number.isInteger(i) && i >= 0)
           : [],
+        // The cover's instant: a number of seconds or nothing.
+        poster: Number.isFinite(saved.edit.poster) && saved.edit.poster >= 0 ? saved.edit.poster : null,
         cmBlocks: Array.isArray(saved.edit.cmBlocks)
           ? saved.edit.cmBlocks.filter((b) => b && Number.isFinite(b.start) && Number.isFinite(b.end))
           : [],
@@ -8963,6 +9096,8 @@ async function refreshQueue() {
   // a run rather than about a job -- and a poll that dropped them would empty
   // the bars two seconds after the queue finished.
   const watched = new Map(batchJobs.map((j) => [j.path, j]));
+  // The anchor is a place, and the rows under it are about to be new ones.
+  const anchorPath = batchJobs[batchAnchor]?.path;
   batchJobs = (queue && Array.isArray(queue.jobs) ? queue.jobs : [])
     .filter((j) => j && typeof j.path === "string" && j.path)
     .map((j) => {
@@ -8990,6 +9125,8 @@ async function refreshQueue() {
       };
     });
   batchAfter = queue && ["sleep", "shutdown"].includes(queue.after) ? queue.after : "nothing";
+  // Kept on the job it was on, where a row above it has come or gone.
+  if (anchorPath) batchAnchor = batchJobs.findIndex((j) => j.path === anchorPath);
   // A row that has left the queue -- written out of it by the tool, taken out
   // of it in the other window -- takes its pick with it.
   for (const path of [...batchPicked]) {
@@ -9724,6 +9861,10 @@ async function touchQueuedJob(path) {
 /// they were sent to, in the order they were in.
 async function moveBatch(by) {
   if (batchRunning || !batchPicked.size) return;
+  // The Shift-click and arrow-key anchor stays on the job it was on, as the
+  // clip list's does -- see `followAnchor`. Moved with Ctrl+↑ a few times, it
+  // was left on the place instead, and Shift+↓ then picked from a stranger.
+  const anchored = batchJobs[batchAnchor];
   if (Math.abs(by) === 1) {
     const order = by < 0
       ? batchJobs.map((_, i) => i)
@@ -9742,6 +9883,7 @@ async function moveBatch(by) {
     const rest = batchJobs.filter((j) => !batchPicked.has(j.path));
     batchJobs = by < 0 ? [...held, ...rest] : [...rest, ...held];
   }
+  if (anchored) batchAnchor = batchJobs.indexOf(anchored);
   await saveQueue();
   renderBatch();
 }
@@ -9933,7 +10075,10 @@ async function endJobDrag() {
   clearJobDrag();
   if (!held.length) return;
   const was = batchJobs;
+  // The anchor with the job it was on, as `moveBatch` keeps it.
+  const anchored = batchJobs[batchAnchor];
   batchJobs = [...rest.slice(0, above), ...held, ...rest.slice(above)];
+  if (anchored) batchAnchor = batchJobs.indexOf(anchored);
   // Put down where they were picked up: nothing to write, and nothing to
   // repaint that the drag's own classes have not already taken off.
   if (batchJobs.every((j, i) => j === was[i])) {
@@ -10062,7 +10207,10 @@ el("batch-clear-done").addEventListener("click", async () => {
   showBatchMenu(false);
   const gone = batchJobs.filter((j) => j.state === "done");
   if (!gone.length) return;
+  const anchored = batchJobs[batchAnchor];
   batchJobs = batchJobs.filter((j) => j.state !== "done");
+  // The anchor with its job, as the row's × keeps it.
+  batchAnchor = anchored ? batchJobs.indexOf(anchored) : -1;
   for (const path of [...batchPicked]) {
     if (!batchJobs.some((j) => j.path === path)) batchPicked.delete(path);
   }
@@ -10181,7 +10329,9 @@ el("batch-list").addEventListener("click", async (ev) => {
   ev.stopPropagation();
   const job = batchJobs[Number(at.dataset.kill)];
   if (!job) return;
+  const anchored = batchJobs[batchAnchor];
   batchJobs = batchJobs.filter((j) => j !== job);
+  batchAnchor = anchored ? batchJobs.indexOf(anchored) : -1;
   batchPicked.delete(job.path);
   await saveQueue();
   renderBatch();
@@ -10525,6 +10675,7 @@ async function settleRole() {
   // the queue already. Nor another tool to open, being one.
   el("enlist-export").hidden = true;
   el("menu-batch").hidden = true;
+  el("open-batch").hidden = true;
   // Nor is there a project to save: what the tool opens it opens to write
   // out, and 保存 over the file it was handed is not something a queue should
   // be able to do on its own. The rules that group them go with them, or the
@@ -10734,14 +10885,24 @@ el("menu-batch").addEventListener("click", () => {
   showMenu(false);
   openBatchTool();
 });
+el("open-batch").addEventListener("click", () => {
+  showMenu(false);
+  openBatchTool();
+});
 el("menu-prefs").addEventListener("click", () => {
   showMenu(false);
   showPrefs(true);
 });
 el("prefs-close").addEventListener("click", () => showPrefs(false));
-// The dark ground behind the panel, but not the panel itself.
+// The dark ground behind the panel, but not the panel itself -- and a press
+// that began on the ground too: text selected in one of the fields, the
+// pointer let go past the panel's edge, is a click on the ground as well.
+let prefsPressedOut = false;
+prefsPanel.addEventListener("mousedown", (ev) => {
+  prefsPressedOut = ev.target === prefsPanel;
+});
 prefsPanel.addEventListener("click", (ev) => {
-  if (ev.target === prefsPanel) showPrefs(false);
+  if (ev.target === prefsPanel && prefsPressedOut) showPrefs(false);
 });
 window.addEventListener("keydown", (ev) => {
   if (ev.key === "Escape" && !prefsPanel.hidden) showPrefs(false);
@@ -11312,11 +11473,152 @@ el("menu-quit").addEventListener("click", () => {
   if (invoke) invoke("close_main");
 });
 el("about-close").addEventListener("click", () => showAbout(false));
+// Only a press that began on the ground, as with 環境設定.
+let aboutPressedOut = false;
+about.addEventListener("mousedown", (ev) => {
+  aboutPressedOut = ev.target === about;
+});
 about.addEventListener("click", (ev) => {
-  if (ev.target === about) showAbout(false);
+  if (ev.target === about && aboutPressedOut) showAbout(false);
 });
 window.addEventListener("keydown", (ev) => {
   if (ev.key === "Escape" && !about.hidden) showAbout(false);
+});
+
+// --- メディア情報 ----------------------------------------------------------
+//
+// What a recording is, as the reader that cuts it reads it: the container and
+// every stream, including the ones the cut drops. Quick properties says what
+// the cut will make of the clip; this says what the file itself states, and is
+// what somebody reaches for another tool to find out.
+
+const mediaPanel = el("mediainfo");
+/// The clip on show and what the backend said about it; `null` while asking.
+let mediaShown = null;
+/// Which asking is current: a second clip asked for before the first answer
+/// came back is the one to show.
+let mediaAsk = 0;
+
+async function showMediaInfo(clip) {
+  const ask = ++mediaAsk;
+  // The answer goes into this asking's own record: written through
+  // `mediaShown` after the window had been closed and opened on another
+  // clip, the first clip's facts were left in the second's -- and shown
+  // under its name if the second read then failed.
+  const shown = { clip, info: null, error: null };
+  mediaShown = shown;
+  mediaPanel.hidden = false;
+  paintMediaInfo();
+  try {
+    shown.info = await invoke("media_info", { path: clip.path });
+  } catch (e) {
+    if (ask !== mediaAsk) return;
+    shown.error = String(e);
+  }
+  if (ask !== mediaAsk || mediaPanel.hidden) return;
+  paintMediaInfo();
+}
+
+function closeMediaInfo() {
+  mediaPanel.hidden = true;
+  mediaShown = null;
+  mediaAsk++;
+}
+
+/// The sections as [heading, [[label, value]…]], which both the table and
+/// the copied text are made from.
+function mediaSections() {
+  const { clip, info } = mediaShown;
+  // Three of them are words to translate rather than names to show as they are.
+  const said = (f) =>
+    f.key === "scan" || f.key === "range"
+      ? t(`mi.${f.key}.${f.value}`)
+      : f.key === "flags"
+        ? f.value.split(",").map((w) => t(`mi.flag.${w}`)).join(", ")
+        : f.value;
+  const lines = (facts) => facts.map((f) => [t(`mi.${f.key}`), said(f)]);
+  return [
+    [t("mi.general"), [[t("mi.path"), clip.path], ...lines(info.general)]],
+    ...info.streams.map((st) => [
+      t("mi.stream", { n: st.index, kind: t(`mi.kind.${st.kind}`) }),
+      lines(st.facts),
+    ]),
+  ];
+}
+
+function paintMediaInfo() {
+  if (!mediaShown) return;
+  const { clip, info, error } = mediaShown;
+  el("mediainfo-title").textContent = t("mi.titleOf", { name: clipName(clip) });
+  el("mediainfo-note").textContent = "";
+  const body = el("mediainfo-body");
+  el("mediainfo-copy").disabled = !info;
+  if (!info) {
+    const p = document.createElement("p");
+    p.className = "dim";
+    p.textContent = error ? t("mi.error", { error }) : t("mi.reading");
+    body.replaceChildren(p);
+    return;
+  }
+  const parts = [];
+  for (const [head, rows] of mediaSections()) {
+    const h = document.createElement("h3");
+    h.textContent = head;
+    const table = document.createElement("table");
+    for (const [label, value] of rows) {
+      const tr = table.insertRow();
+      tr.insertCell().textContent = label;
+      tr.insertCell().textContent = value;
+    }
+    parts.push(h, table);
+  }
+  body.replaceChildren(...parts);
+  body.scrollTop = 0;
+}
+onLangChange(paintMediaInfo);
+
+/// The same, as text to paste into a report or a forum post.
+async function copyMediaInfo() {
+  if (!mediaShown?.info) return;
+  const text = [t("mi.titleOf", { name: clipName(mediaShown.clip) })]
+    .concat(
+      mediaSections().map(
+        ([head, rows]) => `\n[${head}]\n` + rows.map(([l, v]) => `${l}: ${v}`).join("\n"),
+      ),
+    )
+    .join("\n");
+  const note = el("mediainfo-note");
+  try {
+    await navigator.clipboard.writeText(text);
+    note.textContent = t("mi.copied");
+  } catch (e) {
+    // The webview may keep the clipboard from the page. The text is
+    // selectable, so leave it selected for Ctrl+C.
+    jlog(`clipboard ${e}`);
+    const range = document.createRange();
+    range.selectNodeContents(el("mediainfo-body"));
+    const sel = window.getSelection();
+    sel.removeAllRanges();
+    sel.addRange(range);
+    note.textContent = t("mi.selected");
+  }
+}
+
+el("mediainfo-copy").addEventListener("click", copyMediaInfo);
+el("mediainfo-close").addEventListener("click", closeMediaInfo);
+// Only a press that began on the ground as well. A selection dragged out past
+// the edge of the box ends on the ground, and the click that follows it is
+// dealt to what the two ends have in common -- the ground -- which closed the
+// window on somebody selecting a line to copy out of it.
+let mediaPressedOut = false;
+mediaPanel.addEventListener("mousedown", (ev) => {
+  mediaPressedOut = ev.target === mediaPanel;
+});
+mediaPanel.addEventListener("click", (ev) => {
+  if (ev.target === mediaPanel && mediaPressedOut) closeMediaInfo();
+});
+window.addEventListener("keydown", (ev) => {
+  if (ev.key === "Escape" && !mediaPanel.hidden) closeMediaInfo();
 });
 
 /// The name of the pictures pass, wherever this window offers it: the button
@@ -11415,6 +11717,20 @@ window.addEventListener("keydown", (ev) => {
     pickAllJobs();
     return;
   }
+  // 上に移動 and 下に移動, the keys the clip list moves its rows with. Only
+  // while the queue stands still, as the menu's items are.
+  if ((ev.ctrlKey || ev.metaKey) && !ev.shiftKey && !ev.altKey &&
+      (ev.key === "ArrowUp" || ev.key === "ArrowDown")) {
+    ev.preventDefault();
+    // Nor under a held drag, which would land by the order it picked up.
+    if (batchRunning || !batchPicked.size || jobDrag) return;
+    const up = ev.key === "ArrowUp";
+    moveBatch(up ? -1 : 1).then(() => {
+      const at = up ? firstPicked() : lastPicked();
+      el("batch-list").children[at]?.scrollIntoView({ block: "nearest" });
+    });
+    return;
+  }
   if (ev.ctrlKey || ev.metaKey || ev.altKey) return;
   if (ev.key === "Delete" || ev.key === "Backspace") {
     ev.preventDefault();
@@ -11453,7 +11769,7 @@ window.addEventListener("keydown", (ev) => {
   // would be the list listening anyway. The disc's chooser is one of them,
   // and it holds the keyboard on a button, which the check for a field
   // below lets through.
-  if (!prefsPanel.hidden || !about.hidden || chooser) return;
+  if (!prefsPanel.hidden || !about.hidden || !mediaPanel.hidden || chooser) return;
   if (ev.target.tagName === "INPUT" || ev.target.tagName === "SELECT") return;
   const key = ev.key.toLowerCase();
   if ((ev.ctrlKey || ev.metaKey) && key === "a") {
@@ -11482,6 +11798,25 @@ window.addEventListener("keydown", (ev) => {
   if ((ev.ctrlKey || ev.metaKey) && key === "q") {
     ev.preventDefault();
     detectFlatSelected("quiet");
+    return;
+  }
+  // 上に移動 and 下に移動. Ctrl because the arrows alone move the selection,
+  // and this moves what is selected.
+  if ((ev.ctrlKey || ev.metaKey) && !ev.shiftKey && !ev.altKey &&
+      (ev.key === "ArrowUp" || ev.key === "ArrowDown")) {
+    ev.preventDefault();
+    // Nor under a held drag, as in the batch tool's queue: it lands by the
+    // place it last worked out, in the order it picked up.
+    if (!clipActions().move || drag) return;
+    move(ev.key === "ArrowUp" ? -1 : 1);
+    const lead = ev.key === "ArrowUp" ? clips.find((c) => c.selected) : clips.findLast((c) => c.selected);
+    lead?.row?.scrollIntoView({ block: "nearest" });
+    return;
+  }
+  if ((ev.ctrlKey || ev.metaKey) && !ev.shiftKey && key === "i") {
+    ev.preventDefault();
+    const one = selected();
+    if (one.length === 1) showMediaInfo(one[0]);
     return;
   }
   if (ev.ctrlKey || ev.metaKey || ev.altKey) return;

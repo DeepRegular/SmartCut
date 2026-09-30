@@ -174,6 +174,12 @@
         <aside class="side">
           <div class="side-head" data-i18n="side.fileInput">ファイル入力</div>
           <button id="add-files" class="side-btn hot" data-i18n="side.addFiles">＋　ファイルを追加</button>
+          <!-- The tool again, as a button rather than only as an item under
+               the name: for most people it is opened every session, and a
+               menu is a second press for something that common. Up here with
+               the files rather than at the foot of the column, where a tall
+               quick properties panel scrolls it out of sight. -->
+          <button id="open-batch" class="side-btn" data-i18n="side.batchTool">バッチ出力ツール</button>
 
           <div class="side-head" data-i18n="side.clipEdit">クリップ編集</div>
           <button id="edit-clip" class="side-btn" data-i18n="side.editClip" disabled>✂　カット編集</button>
@@ -211,6 +217,10 @@
       </div>
 
       <div class="props">
+        <!-- The panel's top edge, dragged to make it taller or shorter.
+             Double-click puts it back to the height it came with. -->
+        <div id="props-grip" class="props-grip" role="separator" aria-orientation="horizontal"
+             data-i18n-title="props.grip"></div>
         <div class="props-head" data-i18n="props.head">クイックプロパティ</div>
         <div id="props" class="props-body dim"></div>
       </div>
@@ -1202,6 +1212,21 @@
          on this side would be a copy that can disagree with the build it is
          claiming to describe -- which is the one thing an About box must not
          do, since what it is for is being quoted in a bug report. -->
+    <!-- メディア情報: one clip's container and every stream in it, as
+         libavformat reads them. Selectable, like the about box, because
+         what it is for is being compared and quoted. -->
+    <div id="mediainfo" class="modal" hidden>
+      <div class="modal-box wide" role="dialog" aria-modal="true" aria-labelledby="mediainfo-title">
+        <div class="modal-head" id="mediainfo-title">メディア情報</div>
+        <div class="modal-body mi-body" id="mediainfo-body"></div>
+        <div class="modal-foot">
+          <span class="dim mi-note" id="mediainfo-note"></span>
+          <button id="mediainfo-copy" data-i18n="mi.copy">テキストをコピー</button>
+          <button id="mediainfo-close" class="primary" data-i18n="about.close">閉じる</button>
+        </div>
+      </div>
+    </div>
+
     <div id="about" class="modal" hidden>
       <div class="modal-box" role="dialog" aria-modal="true" aria-labelledby="about-title">
         <div class="modal-head" id="about-title" data-i18n="about.title">バージョン情報</div>
@@ -1254,8 +1279,14 @@
          outside the screens for the same reason. -->
     <div id="job-menu" class="menu at-pointer" hidden>
       <button class="menu-item" id="job-top" data-i18n="jobmenu.toTop">先頭へ移動</button>
-      <button class="menu-item" id="job-up" data-i18n="rowmenu.moveUp">上に移動</button>
-      <button class="menu-item" id="job-down" data-i18n="rowmenu.moveDown">下に移動</button>
+      <button class="menu-item" id="job-up">
+        <span data-i18n="rowmenu.moveUp">上に移動</span>
+        <span class="menu-key">Ctrl+↑</span>
+      </button>
+      <button class="menu-item" id="job-down">
+        <span data-i18n="rowmenu.moveDown">下に移動</span>
+        <span class="menu-key">Ctrl+↓</span>
+      </button>
       <button class="menu-item" id="job-bottom" data-i18n="jobmenu.toBottom">末尾へ移動</button>
       <div class="menu-sep"></div>
       <!-- The one thing a queue could not do at all: a job that has been
@@ -1308,8 +1339,21 @@
         無音 検出予約を取り消す
       </button>
       <div class="menu-sep"></div>
-      <button class="menu-item" id="row-up" data-i18n="rowmenu.moveUp">上に移動</button>
-      <button class="menu-item" id="row-down" data-i18n="rowmenu.moveDown">下に移動</button>
+      <button class="menu-item" id="row-up">
+        <span data-i18n="rowmenu.moveUp">上に移動</span>
+        <span class="menu-key">Ctrl+↑</span>
+      </button>
+      <button class="menu-item" id="row-down">
+        <span data-i18n="rowmenu.moveDown">下に移動</span>
+        <span class="menu-key">Ctrl+↓</span>
+      </button>
+      <div class="menu-sep"></div>
+      <!-- What the file is, as the reader that opens it reads it: every
+           stream, not only the ones the cut keeps. See `showMediaInfo`. -->
+      <button class="menu-item" id="row-info">
+        <span data-i18n="rowmenu.mediaInfo">メディア情報</span>
+        <span class="menu-key">Ctrl+I</span>
+      </button>
       <div class="menu-sep"></div>
       <button class="menu-item" id="row-remove">
         <span data-i18n="rowmenu.remove">クリップ削除</span>

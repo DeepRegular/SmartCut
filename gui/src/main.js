@@ -395,7 +395,7 @@ async function settle(fn) {
 /// can only look at -- where the playhead is and what is selected are not
 /// work, and leaving with them somewhere else is not losing anything.
 function editSignature() {
-  return JSON.stringify([cuts.map((c) => [c.a, c.b]), keyframes, dropStreams]);
+  return JSON.stringify([cuts.map((c) => [c.a, c.b]), keyframes, dropStreams, poster]);
 }
 
 /// Which row of the list is being cut. Not the path: the same recording can
@@ -5379,6 +5379,13 @@ function showMore(on) {
       detectLabel(`${which}-keys`).textContent = tr("editor.flatKeys", { what: flatWhat(which) });
     }
     el("clear-keys").disabled = !src || !keyframes.length;
+    el("poster-set").disabled = !src;
+    el("poster-go").disabled = !src || poster === null;
+    el("poster-clear").disabled = poster === null;
+    // On the timeline's own clock, like every other time in this window; a
+    // picture a cut has since taken is still the cover, and says so.
+    el("poster-at").textContent =
+      poster === null ? "" : srcToOut(poster) === null ? "✂" : fmt(srcToOut(poster));
     // Greyed with nothing open, and while the pass this line asks for is
     // already running: `runFlat` writes the percentage into it and hands it
     // back when it is done. Asked of `flatBusy` rather than of the button,
@@ -5955,6 +5962,7 @@ async function openPath(picked, saved, side, name, chapters, dropPids, detected)
     // only, and a detection can arrive at any visit after it.
     markFileKind = saved ? saved.markFileKind || null : null;
     dropStreams = saved ? (saved.dropStreams || []).slice() : [];
+    poster = saved && Number.isFinite(saved.poster) ? saved.poster : null;
     trackList = null;
     // A first visit to a recording that came off a disc starts from the
     // answer given when the disc was read. That answer is in PIDs, because it
@@ -6498,7 +6506,7 @@ let arrowSince = 0;
 /// that under a running playback is neither. These are about the recording
 /// instead -- a mark, an end of the selection -- and they are pressed
 /// *because* something is playing.
-const QUIET = ["i", "o", "[", "]", "k", "z", "Insert"];
+const QUIET = ["i", "o", "[", "]", "k", "p", "z", "Insert"];
 
 function arrowDue(ev) {
   const now = Date.now();
@@ -6829,6 +6837,7 @@ window.addEventListener("keydown", (ev) => {
   if (key === "i" || key === "[") setIn(playOut());
   if (key === "o" || key === "]") setOut(playOut());
   if (key === "k") addKeyframes([playhead], playhead);
+  if (key === "p" && src) setPoster(playhead);
   if (key === "s") toScene(ev.shiftKey ? -1 : 1);
 });
 
@@ -6847,6 +6856,50 @@ window.addEventListener("keydown", (ev) => {
 
 /// Source stream indices switched off. Empty is the ordinary case.
 let dropStreams = [];
+
+// --- サムネイル ------------------------------------------------------------
+//
+// The picture a file manager or a player shows for the file this clip is
+// written to, in place of one it picks for itself: an instant in the
+// recording, in source time, or null for none. Carried into .mp4 and .mkv as
+// their cover (see `smartcut_core::cut::Poster`); the other containers have
+// nowhere to put one and write as they always have.
+//
+// Any picture of the recording, including one the cut takes out: a cover is
+// what the file is, not a frame of it.
+let poster = null;
+
+function setPoster(at) {
+  poster = at;
+  // Set while the row is still arriving, it is somebody's choice all the
+  // same, and the arrival must not count it as what the row came with; see
+  // `remember`, which does this for the edits that go into the history --
+  // and, like it, whether or not the swap is done: `openPath` awaits the
+  // track list and the mark files after it has put the arriving row's cover
+  // in place, and a P in that wait is on the new row. One pressed before it
+  // is replaced, and only makes Escape ask.
+  if (opening !== null || settling) editedWhileArriving = true;
+  el("status").textContent =
+    at === null ? tr("poster.cleared") : tr("poster.set", { t: fmt(srcToOutSeam(at)) });
+  sync();
+}
+
+el("poster-set").addEventListener("click", () => {
+  showMore(false);
+  if (src) setPoster(playhead);
+});
+el("poster-go").addEventListener("click", () => {
+  showMore(false);
+  if (!src || poster === null) return;
+  // A move like any other, and `scrubTo` leaves a running playback running:
+  // its next picture put the playhead straight back.
+  if (playing) stopPlay();
+  scrubTo(srcToOutSeam(poster));
+});
+el("poster-clear").addEventListener("click", () => {
+  showMore(false);
+  if (poster !== null) setPoster(null);
+});
 /// What the backend last said this recording carries, or null before it has
 /// been asked. Kept so reopening the menu does not ask again.
 let trackList = null;
@@ -7441,6 +7494,8 @@ function captureEdit() {
     // recording can be in the list twice, one copy with the dub and one
     // without, and the output settings are one answer for the whole list.
     dropStreams: dropStreams.slice(),
+    // The cover's instant, or null. See `poster`.
+    poster,
     playhead,
     selA,
     selB,

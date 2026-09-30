@@ -82,6 +82,7 @@ button.brand {
   color: var(--dim); cursor: pointer;
 }
 button.brand:hover, button.brand.open { background: #3a3a3a; border-color: #5c5c5c; color: var(--text); }
+
 .menu {
   position: absolute; top: calc(100% + 4px); right: 0; z-index: 20;
   min-width: 180px; padding: 4px;
@@ -1087,6 +1088,9 @@ body.crosswin { padding: 0; }
 .opt { color: var(--dim); display: flex; align-items: center; gap: 5px; white-space: nowrap; }
 /* The display above is what a bare `hidden` would otherwise lose against. */
 .opt[hidden] { display: none; }
+/* A preference is a sentence, and the pane is a fixed width: the English of
+   the longest ran out past the edge and put a scroll bar under the pane. */
+.pref-pane .opt { white-space: normal; }
 /* A checkbox standing in a settings row takes the column the lists and the
    fields are in, and the browser's own margin on the box would leave it a
    few pixels to the right of every one of them. */
@@ -1315,20 +1319,42 @@ input[type="number"]::-webkit-outer-spin-button {
 
 .side {
   width: 208px; flex: none; background: #1e1e1e; padding: 0 6px 8px;
-  display: flex; flex-direction: column; gap: 3px; overflow-y: auto;
+  display: flex; flex-direction: column; gap: 2px; overflow-y: auto;
+  /* Never sideways. The group headings reach out over the padding to the
+     edges, and once the column is short enough to scroll, the vertical bar
+     takes its width out of the same box and those few pixels became a
+     horizontal bar under the buttons. */
+  overflow-x: hidden;
 }
 .side-head {
   background: #313131; color: var(--dim); font-size: 11px;
   padding: 2px 6px; margin: 8px -6px 3px;
 }
+/* Sixteen of these and three headings have to stand in a 760-high window
+   beside a quick properties panel of its own height: at 7px and a 3px gap
+   the last of them (削除を元に戻す) went under the edge once the batch tool
+   had a button here too. */
 .side-btn {
   background: #333; color: var(--text); border: 1px solid #4a4a4a; border-radius: 2px;
-  padding: 7px 10px; text-align: left; cursor: pointer; font-size: 12px;
+  padding: 6px 10px; text-align: left; cursor: pointer; font-size: 12px;
 }
 .side-btn:hover:not(:disabled) { background: #3d3d3d; }
 .side-btn.hot { background: #3d4a52; border-color: #56707c; }
 
-.props { flex: none; border-top: 1px solid #000; background: #1e1e1e; }
+.props { flex: none; border-top: 1px solid #000; background: #1e1e1e; position: relative; }
+/* The top edge, to drag. Thin enough to sit on the rule it replaces, and
+   marked in the middle with two short lines so that it reads as something to
+   take hold of rather than as the border. */
+.props-grip {
+  height: 7px; margin-top: -1px; cursor: ns-resize;
+  display: flex; align-items: center; justify-content: center;
+}
+.props-grip::before {
+  content: ""; width: 38px; height: 3px;
+  border-top: 1px solid #6a6a6a; border-bottom: 1px solid #6a6a6a;
+}
+.props-grip:hover, .props-grip.held { background: #2c3a42; }
+.props-grip:hover::before, .props-grip.held::before { border-color: var(--sel); }
 .props-head {
   padding: 4px 10px; border-bottom: 2px solid var(--sel); display: inline-block;
 }
@@ -1816,3 +1842,26 @@ input[type="number"]::-webkit-outer-spin-button {
 /* Hung under the button it is about, left edges level -- the mirror of the
    one in the other corner, which hangs off a button at the right. */
 .dropgroup .menu { top: calc(100% + 4px); left: 0; right: auto; min-width: 200px; }
+
+/* --- メディア情報 ------------------------------------------------------
+   A table per section: the container, then each stream. Selectable, because
+   every line is something to compare or to quote. */
+/* The floor gives way on a short window: the body is the part that scrolls,
+   and a fixed 160 pushed 閉じる off the bottom of a window under 260 tall.
+   The title carries the clip's name, which may be one unbroken run of
+   letters and underscores wider than the box. */
+.mi-body { user-select: text; -webkit-user-select: text; min-height: min(160px, 30vh); }
+#mediainfo-title { overflow-wrap: anywhere; }
+.mi-body h3 { margin: 6px 0 2px; font-size: 12px; color: var(--accent); font-weight: 600; }
+.mi-body h3:first-child { margin-top: 0; }
+/* Fixed, so that every section's values start at the same place: a table
+   sizes its columns to what is in it, and the stream with the longest label
+   stood out as a step. */
+.mi-body table {
+  border-collapse: collapse; width: 100%; table-layout: fixed;
+  font-variant-numeric: tabular-nums;
+}
+.mi-body td { padding: 2px 8px; vertical-align: top; border-bottom: 1px solid #2c2c2c; }
+.mi-body td:first-child { width: 13em; color: var(--dim); padding-left: 0; }
+.mi-body td:last-child { word-break: break-all; }
+.mi-note { margin-right: auto; align-self: center; }

@@ -310,12 +310,15 @@ const CATALOG = {
     "input.totalPending": "（未解析 {n} 本を除く）",
     "input.dropHint.title": "クリップ（映像ファイル）を追加してください",
     "input.dropHint.body":
-      "「ファイルを追加」で選ぶか、ここへドラッグ＆ドロップしてください。<br />読み込んだ順にシーク用インデックスを作ります。",
+      "「ファイルを追加」で選ぶか、ここへドラッグ＆ドロップしてください。<br />" +
+      "一覧の何もないところをダブルクリックしても選べます。<br />" +
+      "読み込んだ順にシーク用インデックスを作ります。",
     "input.dropHint.keys":
-      "ダブルクリックで編集　／　ドラッグで並べ替え　／　F2 名前を変更　／　Ctrl+A 全選択　／　" +
+      "ダブルクリックで編集　／　ドラッグか Ctrl+↑↓ で並べ替え　／　F2 名前を変更　／　Ctrl+A 全選択　／　" +
       "Ctrl+D 選択した動画の CM 検出　／　Delete 削除",
     "side.fileInput": "ファイル入力",
     "side.addFiles": "＋　ファイルを追加",
+    "side.batchTool": "バッチ出力ツール",
     "side.clipEdit": "クリップ編集",
     "side.editClip": "✂　カット編集",
     "side.duplicate": "⧉　クリップを複製",
@@ -361,8 +364,74 @@ const CATALOG = {
     "rowmenu.undetectQuiet": "無音 検出予約を取り消す",
     "rowmenu.moveUp": "上に移動",
     "rowmenu.moveDown": "下に移動",
+    "rowmenu.mediaInfo": "メディア情報",
     "rowmenu.remove": "クリップ削除",
     "props.head": "クイックプロパティ",
+    "props.grip": "ドラッグで高さを変えられます。ダブルクリックで元の高さに戻ります",
+
+    // --- メディア情報 ------------------------------------------------------
+    //
+    // 値はコーデック名やフォーマット名など、FFmpeg の表記のまま出します。
+    // 訳すのは項目名と、走査方式・輝度レンジ・フラグの 3 つだけです。
+    "mi.titleOf": "メディア情報 — {name}",
+    "mi.reading": "読み込み中…",
+    "mi.error": "読み込めませんでした: {error}",
+    "mi.copy": "テキストをコピー",
+    "mi.copied": "コピーしました",
+    "mi.selected": "全体を選択しました。Ctrl+C でコピーしてください",
+    "mi.general": "全般",
+    "mi.stream": "ストリーム #{n}（{kind}）",
+    "mi.kind.video": "映像",
+    "mi.kind.audio": "音声",
+    "mi.kind.subtitle": "字幕",
+    "mi.kind.data": "データ",
+    "mi.kind.attachment": "添付",
+    "mi.path": "ファイル",
+    "mi.format": "コンテナ",
+    "mi.size": "ファイルサイズ",
+    "mi.duration": "長さ",
+    "mi.bitrate": "ビットレート",
+    "mi.start": "開始時刻",
+    "mi.programs": "番組数",
+    "mi.chapters": "チャプター数",
+    "mi.title": "タイトル",
+    "mi.encoder": "エンコーダー",
+    "mi.created": "作成日時",
+    "mi.service": "サービス名",
+    "mi.codec": "コーデック",
+    "mi.profile": "プロファイル",
+    "mi.level": "レベル",
+    "mi.resolution": "解像度",
+    "mi.sar": "画素アスペクト比 (SAR)",
+    "mi.dar": "画面アスペクト比 (DAR)",
+    "mi.pixels": "画素形式",
+    "mi.depth": "ビット深度",
+    "mi.scan": "走査方式",
+    "mi.fps": "フレームレート",
+    "mi.fpsBase": "基準フレームレート",
+    "mi.colour": "色情報",
+    "mi.range": "輝度レンジ",
+    "mi.range.tv": "リミテッド (tv)",
+    "mi.range.pc": "フル (pc)",
+    "mi.frames": "フレーム数",
+    "mi.sampleRate": "サンプリング周波数",
+    "mi.channels": "チャンネル",
+    "mi.sampleFormat": "サンプル形式",
+    "mi.language": "言語",
+    "mi.name": "名前",
+    "mi.id": "ID (PID)",
+    "mi.flags": "フラグ",
+    "mi.scan.progressive": "プログレッシブ",
+    "mi.scan.tt": "インターレース（トップフィールドが先）",
+    "mi.scan.bb": "インターレース（ボトムフィールドが先）",
+    "mi.scan.tb": "インターレース（トップを先に符号化し、ボトムを先に表示）",
+    "mi.scan.bt": "インターレース（ボトムを先に符号化し、トップを先に表示）",
+    "mi.flag.default": "既定",
+    "mi.flag.forced": "強制",
+    "mi.flag.hearing": "聴覚障害者向け",
+    "mi.flag.visual": "視覚障害者向け",
+    "mi.flag.comment": "解説",
+    "mi.flag.cover": "カバー画像",
     "props.none": "クリップが選択されていません",
     "props.many": "クリップ {n} 本を選択中",
     "props.queued": "{name}\n解析待ちです",
@@ -370,8 +439,10 @@ const CATALOG = {
     "props.body":
       "クリップ名:　{name}{copy}\n{path}\n映像:　{codec}, {w}x{h}, {fps} fps, {flags}\n" +
       "{audio}\n長さ:　{len} ({frames} フレーム){cut}　無劣化点 {points} 個{unusable}" +
-      "\nシーン {scenes} 箇所　インデックス {index}{cm}{flat}",
+      "\nシーン {scenes} 箇所　インデックス {index}{cm}{flat}{poster}",
     "props.copyOf": "（同じ録画の {n} 本目）",
+    // 編集画面でサムネイルを設定した行だけに出ます。
+    "props.poster": "\nサムネイル:　{t}（.mp4・.mkv に埋め込みます）",
     // 「長さ」の行に続けて入ります。カットが入っていない行では空です。
     "props.cut": "　カット後 {len}",
     // 音声の行。トラックが 2 本以上あるときは番号付きで 1 本 1 行になります。
@@ -663,15 +734,15 @@ const CATALOG = {
     "outset.format":
       "映像:　{codec}, {w}x{h}, {fps} fps, {scan}\n{audio}\n" +
       "区間:　{keeps} 区間 / 出力 {kept}（元 {dur}、カット {cuts} 箇所）\n出力先:　{out}{side}",
-    // 同じ 3 行に、ディスクの索引へ書かれるものを足したもの。ファイル名の
-    // 代わりに、この録画がディスクのどこに入るかを言う。
+    // 同じ 3 行に、ディスクの索引へ書かれるものを足したものです。ファイル名の
+    // 代わりに、この録画がディスクのどこに入るかを示します。
     "outset.formatBdav":
       "映像:　{codec}, {w}x{h}, {fps} fps, {scan}\n{audio}\n" +
       "区間:　{keeps} 区間 / 出力 {kept}（元 {dur}、カット {cuts} 箇所）\n" +
       "チャプター:　{marks} 個\nディスク:　{out}",
-    // 索引の欄が空のまま書かれるときに、その欄が見せるもの。録画が何も
-    // 言わなかったときも、消したときも同じ結果になる——どちらもディスクには
-    // 何も入らない。番号だけ短いのは、欄が 3 桁分しかないからです。
+    // 索引の欄が空のまま書かれるときに、その欄に表示するものです。録画に
+    // 情報が無かったときも、消したときも同じで、どちらもディスクには何も
+    // 入りません。番号だけ短いのは、欄が 3 桁分しかないからです。
     "outset.fieldBlank": "（記入なし）",
     "outset.tabFile": "ファイル出力",
     "outset.tabBdav": "BDAV 出力",
@@ -680,9 +751,9 @@ const CATALOG = {
     "outset.subfolderNone": "（作らずに、上のフォルダーへ直接出力）",
     "outset.discTitle": "ディスクタイトル:",
     "out.discSize": "出力サイズは {used} です（{disc} のディスクに収まります）",
-    // 「これ以上小さくできませんでした」と言ってよいのは、実際に小さく
-    // しようとしたときだけである。トランスコードを指示されていない実行が
-    // 同じことを表示すると、指示すれば入ったかもしれない、という事実が消える。
+    // 「これ以上小さくできませんでした」と表示するのは、実際に小さく
+    // しようとしたときだけです。トランスコードを指示されていない実行で
+    // 同じことを表示すると、指示すれば収まったかもしれないことが伝わりません。
     "out.discTooBig": "出力サイズは {used} で、{disc} のディスクの容量を {over} 超えています。映像をこれ以上小さくできませんでした",
     "out.discOver": "出力サイズは {used} で、{disc} のディスクの容量を {over} 超えています。「トランスコードする」を有効にすると、映像を書き直して収まることがあります",
     "out.shrinking": "ディスクに収めるため、映像を元の {share}% のサイズに書き直します",
@@ -720,8 +791,8 @@ const CATALOG = {
     "outset.numberNone": "（なし）",
     "outset.made": "記録日時:",
     "outset.about": "番組内容:",
-    // 欄の残り。ARIB のバイト数で、UTF-8 でも文字数でもない——プレイリストが
-    // 数えるのがこれだから。
+    // 欄の残り。プレイリストが数えるのは ARIB のバイト数なので、UTF-8 の
+    // バイト数でも文字数でもありません。
     "outset.bytes": "{n}/{room}",
     "outset.madeBad": "YYYY-MM-DD HH:MM:SS",
     "outset.discPath": "{dir}/BDAV",
@@ -1165,6 +1236,12 @@ const CATALOG = {
     // ≡ メニューの 2 行。{what} には「黒白の区間」「無音の区間」が入ります。
     "editor.flatKeys": "{what}をキーフレームにする",
     "editor.clearKeys": "キーフレームをすべて消す",
+    // 出力ファイルのサムネイル（カバー画像）。.mp4 と .mkv に埋め込みます。
+    "poster.setItem": "このフレームをサムネイルに設定",
+    "poster.goItem": "サムネイルのフレームへ移動",
+    "poster.clearItem": "サムネイルの設定を解除",
+    "poster.set": "{t} のフレームをサムネイルにしました。.mp4 と .mkv に埋め込みます",
+    "poster.cleared": "サムネイルの設定を解除しました",
     "marks.kind.keyframe": "キーフレーム情報",
     "marks.kind.trim": "AviSynth スクリプト",
     "marks.kind.cm": "CM 検出結果",
@@ -1461,12 +1538,14 @@ const CATALOG = {
     "input.totalPending": " ({n} not yet read)",
     "input.dropHint.title": "Add clips — the recordings you want to cut",
     "input.dropHint.body":
-      "Pick them with “Add files”, or drag and drop them here.<br />Seek indexes are built in the order they arrive.",
+      "Pick them with “Add files”, drag and drop them here, or double-click an empty part of the list." +
+      "<br />Seek indexes are built in the order they arrive.",
     "input.dropHint.keys":
-      "Double-click to edit  /  drag to reorder  /  F2 rename  /  Ctrl+A select all  /  " +
+      "Double-click to edit  /  drag or Ctrl+↑↓ to reorder  /  F2 rename  /  Ctrl+A select all  /  " +
       "Ctrl+D detect commercials  /  Delete to remove",
     "side.fileInput": "Files",
     "side.addFiles": "＋　Add files",
+    "side.batchTool": "Batch tool",
     "side.clipEdit": "Clip",
     "side.editClip": "✂　Cut editor",
     "side.duplicate": "⧉　Duplicate clip",
@@ -1504,8 +1583,71 @@ const CATALOG = {
     "rowmenu.undetectQuiet": "Cancel silence detection",
     "rowmenu.moveUp": "Move up",
     "rowmenu.moveDown": "Move down",
+    "rowmenu.mediaInfo": "Media info",
     "rowmenu.remove": "Remove clip",
     "props.head": "Quick properties",
+    "props.grip": "Drag to change the height. Double-click for the height it started at",
+
+    // --- media info ---------------------------------------------------------
+    "mi.titleOf": "Media info — {name}",
+    "mi.reading": "Reading…",
+    "mi.error": "Could not read it: {error}",
+    "mi.copy": "Copy as text",
+    "mi.copied": "Copied",
+    "mi.selected": "Everything is selected: press Ctrl+C to copy it",
+    "mi.general": "General",
+    "mi.stream": "Stream #{n} ({kind})",
+    "mi.kind.video": "video",
+    "mi.kind.audio": "audio",
+    "mi.kind.subtitle": "subtitle",
+    "mi.kind.data": "data",
+    "mi.kind.attachment": "attachment",
+    "mi.path": "File",
+    "mi.format": "Container",
+    "mi.size": "File size",
+    "mi.duration": "Duration",
+    "mi.bitrate": "Bit rate",
+    "mi.start": "Start time",
+    "mi.programs": "Programs",
+    "mi.chapters": "Chapters",
+    "mi.title": "Title",
+    "mi.encoder": "Encoder",
+    "mi.created": "Created",
+    "mi.service": "Service",
+    "mi.codec": "Codec",
+    "mi.profile": "Profile",
+    "mi.level": "Level",
+    "mi.resolution": "Resolution",
+    "mi.sar": "Sample aspect (SAR)",
+    "mi.dar": "Display aspect (DAR)",
+    "mi.pixels": "Pixel format",
+    "mi.depth": "Bit depth",
+    "mi.scan": "Scan",
+    "mi.fps": "Frame rate",
+    "mi.fpsBase": "Base frame rate",
+    "mi.colour": "Colour",
+    "mi.range": "Range",
+    "mi.range.tv": "limited (tv)",
+    "mi.range.pc": "full (pc)",
+    "mi.frames": "Frames",
+    "mi.sampleRate": "Sample rate",
+    "mi.channels": "Channels",
+    "mi.sampleFormat": "Sample format",
+    "mi.language": "Language",
+    "mi.name": "Name",
+    "mi.id": "ID (PID)",
+    "mi.flags": "Flags",
+    "mi.scan.progressive": "progressive",
+    "mi.scan.tt": "interlaced, top field first",
+    "mi.scan.bb": "interlaced, bottom field first",
+    "mi.scan.tb": "interlaced, top coded first, bottom shown first",
+    "mi.scan.bt": "interlaced, bottom coded first, top shown first",
+    "mi.flag.default": "default",
+    "mi.flag.forced": "forced",
+    "mi.flag.hearing": "hearing impaired",
+    "mi.flag.visual": "visually impaired",
+    "mi.flag.comment": "commentary",
+    "mi.flag.cover": "cover art",
     "props.none": "No clip selected",
     "props.many": "{n} clip{n?s} selected",
     "props.queued": "{name}\nWaiting to be read",
@@ -1513,8 +1655,9 @@ const CATALOG = {
     "props.body":
       "Clip:  {name}{copy}\n{path}\nVideo:  {codec}, {w}x{h}, {fps} fps, {flags}\n" +
       "{audio}\nLength:  {len} ({frames} frame{frames?s}){cut}   {points} lossless points{unusable}" +
-      "\n{scenes} scenes   index {index}{cm}{flat}",
+      "\n{scenes} scenes   index {index}{cm}{flat}{poster}",
     "props.copyOf": " (copy {n} of this recording)",
+    "props.poster": "\nThumbnail:  {t} (carried as the cover of .mp4 and .mkv)",
     // Follows the length. Empty on a row nothing has been cut out of.
     "props.cut": "   {len} after cutting",
     "props.audio": "Audio:  {audio}",
@@ -2273,6 +2416,11 @@ const CATALOG = {
     "editor.cmKeys": "Turn the detection into keyframes",
     "editor.flatKeys": "Turn the {what} stretches into keyframes",
     "editor.clearKeys": "Remove every keyframe",
+    "poster.setItem": "Use this frame as the thumbnail",
+    "poster.goItem": "Go to the thumbnail frame",
+    "poster.clearItem": "Clear the thumbnail",
+    "poster.set": "The frame at {t} is the thumbnail. It is carried into .mp4 and .mkv as their cover",
+    "poster.cleared": "The thumbnail is cleared",
     "marks.kind.keyframe": "Keyframe list",
     "marks.kind.trim": "AviSynth script",
     "marks.kind.cm": "Saved detection",

@@ -3865,6 +3865,83 @@ async fn tracks(path: String) -> Result<Vec<StreamInfo>, String> {
     .await
 }
 
+/// The cover a cut carries, made from the picture at `at` in `src`.
+///
+/// `None` where nothing was set, and where the output has no place for one:
+/// only MP4 and Matroska carry a cover, and the picture is not decoded for a
+/// file that would drop it. A picture that cannot be had is not worth the cut
+/// it would have gone into -- it is said in the log and the file is written
+/// without one, as it would have been before there were covers.
+fn poster_for(
+    src: &smartcut_core::Source,
+    output: &str,
+    at: Option<f64>,
+) -> Option<smartcut_core::cut::Poster> {
+    let at = at.filter(|t| t.is_finite())?;
+    if !poster_fits(output) {
+        return None;
+    }
+    match smartcut_core::poster_at(src, at.clamp(0.0, src.duration.max(0.0))) {
+        Ok(p) => Some(p),
+        Err(e) => {
+            eprintln!("poster: {}: {e}", src.path);
+            None
+        }
+    }
+}
+
+/// Whether a file of this name can carry a cover: the extensions the engine
+/// writes as MP4 or Matroska. Not `.mov`: the QuickTime muxer writes `covr`
+/// only in MP4 mode and drops the picture without a word.
+fn poster_fits(output: &str) -> bool {
+    let ext = std::path::Path::new(output)
+        .extension()
+        .map(|e| e.to_string_lossy().to_ascii_lowercase())
+        .unwrap_or_default();
+    matches!(ext.as_str(), "mp4" | "m4v" | "mkv")
+}
+
+/// One line of メディア情報: which fact, for the window to name, and what it is.
+#[derive(Serialize)]
+struct MediaFact {
+    key: &'static str,
+    value: String,
+}
+
+#[derive(Serialize)]
+struct MediaStream {
+    kind: &'static str,
+    index: usize,
+    facts: Vec<MediaFact>,
+}
+
+#[derive(Serialize)]
+struct MediaReport {
+    general: Vec<MediaFact>,
+    streams: Vec<MediaStream>,
+}
+
+/// メディア情報: what the container states about a recording, stream by
+/// stream. See `smartcut_core::mediainfo`.
+#[tauri::command]
+async fn media_info(path: String) -> Result<MediaReport, String> {
+    off_thread(move || {
+        let facts = |v: Vec<smartcut_core::mediainfo::Fact>| {
+            v.into_iter().map(|f| MediaFact { key: f.key, value: f.value }).collect()
+        };
+        let info = smartcut_core::mediainfo::media_info(&path).map_err(|e| e.to_string())?;
+        Ok(MediaReport {
+            general: facts(info.general),
+            streams: info
+                .streams
+                .into_iter()
+                .map(|s| MediaStream { kind: s.kind, index: s.index, facts: facts(s.facts) })
+                .collect(),
+        })
+    })
+    .await
+}
+
 /// Pictures out of a clip of the list, at the instants asked for.
 ///
 /// One open for the lot: the seek index makes opening cheap but not free,
@@ -5469,6 +5546,9 @@ async fn export(
     // the run has to fit a disc. One number for the whole list, worked out
     // once before the run starts; see `smartcut_core::fit`.
     video_share: Option<f64>,
+    // The instant in the recording whose picture is the file's cover, where
+    // the editor set one. See `poster_for`.
+    poster: Option<f64>,
 ) -> Result<(), String> {
     // Cutting is minutes of I/O on a broadcast recording; keeping it off the
     // UI thread is what lets the progress bar move at all.
@@ -5519,6 +5599,7 @@ async fn export(
             build_plan(&src, &ranges)
         };
         let reporter = app.clone();
+        let poster = if sound_only { None } else { poster_for(&src, &output, poster) };
         // Tagged with the recording it belongs to: the output screen runs
         // through a list, and an untagged fraction would move whichever row
         // happened to be on screen.
@@ -5580,6 +5661,7 @@ async fn export(
             // decides, and the output screen is already the longest screen
             // in the program.
             audio_fade: prefs::audio_fade(),
+            poster,
             ..Default::default()
         };
         if sound_only {
@@ -5662,6 +5744,9 @@ struct JoinClip {
     /// The transition that follows this clip, as the screen holds it. See
     /// [`smartcut_core::transition`].
     after: Option<Crossing>,
+    /// This clip's cover, where the editor set one. The joined file takes
+    /// the first clip's that has one.
+    poster: Option<f64>,
 }
 
 /// A transition as the window states one.
@@ -5793,6 +5878,14 @@ async fn export_joined(
         // below: the tracks the output declares are the master's, and a
         // stream index means nothing outside the file it came from.
         let master = master.min(clips.len() - 1);
+        let poster = if sound_only {
+            None
+        } else {
+            clips
+                .iter()
+                .zip(&sources)
+                .find_map(|(c, src)| c.poster.and_then(|at| poster_for(src, &output, Some(at))))
+        };
         let by_index = clips[master].drop_streams.clone();
         let by_pid = clips[master].drop_pids.clone();
         let ranges: Vec<Vec<(f64, f64)>> = clips.iter().map(|c| c.ranges.clone()).collect();
@@ -5841,6 +5934,7 @@ async fn export_joined(
             data_broadcast,
             video_share,
             audio_fade: prefs::audio_fade(),
+            poster,
             // The planner's own settings, because a transition is planned
             // inside the engine and what is left of the range it takes from
             // has to be planned again the way this window plans one. See
@@ -8181,6 +8275,7 @@ pub fn run() {
             clip_plan,
             join_fit,
             tracks,
+            media_info,
             clip_thumbs,
             clip_poster,
             clip_glance,
