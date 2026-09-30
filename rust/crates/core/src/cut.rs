@@ -674,6 +674,8 @@ struct Writer {
     expected: i64,
     /// Where the pictures are being written back smaller. See [`Shrink`].
     shrink: Option<Shrink>,
+    /// A re-encoded head waiting for the copy after it. See [`poc_seam`].
+    held: Option<Held>,
 }
 
 /// Writing the pictures back smaller, so that a run fits where it has to.
@@ -1087,6 +1089,124 @@ impl Writer {
     /// decode-order sum overtakes the presentation time it is supposed to
     /// precede. The muxer rejects that outright -- `pts < dts`.
     fn push(&mut self, e: Emitted) -> Result<()> {
+        if let Some(held) = self.held.as_mut() {
+            if !held.sealed {
+                held.pictures += 1;
+            } else {
+                let held = self.held.take().expect("held");
+                self.release(held, Some(&e))?;
+            }
+        }
+        self.queue(e)
+    }
+
+    /// Hold back everything written from here until [`Writer::seal`] and
+    /// the first picture after it. See [`poc_seam`].
+    fn hold(&mut self, head: NalFraming, copy: NalFraming) -> Result<()> {
+        if let Some(held) = self.held.take() {
+            self.release(held, None)?;
+        }
+        self.held = Some(Held {
+            written: Vec::new(),
+            pictures: 0,
+            bytes: 0,
+            sealed: false,
+            skipped: self.skipped,
+            head,
+            copy,
+        });
+        Ok(())
+    }
+
+    /// The segment being held has written all it will.
+    fn seal(&mut self) {
+        if let Some(held) = self.held.as_mut() {
+            held.sealed = true;
+        }
+    }
+
+    /// Hand a packet to the muxer, or put it by while a head is held.
+    /// `sound` names the track whose frame this is where the muxer may turn
+    /// it away without that stopping the cut; see [`Writer::push_audio`].
+    ///
+    /// The inner answer is the muxer's about this packet; the outer one is
+    /// about what was held before it, let go here because there was too
+    /// much of it.
+    fn write(
+        &mut self,
+        packet: ff::Packet,
+        sound: Option<usize>,
+    ) -> Result<std::result::Result<(), ff::Error>> {
+        if let Some(held) = self.held.as_mut() {
+            if held.bytes + packet.size() <= HELD_AT_MOST {
+                held.bytes += packet.size();
+                held.written.push((packet, sound));
+                return Ok(Ok(()));
+            }
+            let held = self.held.take().expect("held");
+            self.release(held, None)?;
+        }
+        Ok(packet.write_interleaved(&mut self.octx))
+    }
+
+    /// Let a held head go, renumbered to carry on into `next` where it has
+    /// to be and can be, and exactly as it was encoded otherwise.
+    ///
+    /// **Everything is held, not only the head.** The muxer interleaves by
+    /// what it has been handed so far, and a head held back while the sound
+    /// beside it went on being written came out in a different order --
+    /// seventeen seconds of a recorder's disc, where the muxer gives up
+    /// waiting after ten. Held together and let go in the order they were
+    /// written, the file is the one that would have been written anyway,
+    /// byte for byte, wherever nothing had to be renumbered.
+    fn release(&mut self, mut held: Held, next: Option<&Emitted>) -> Result<()> {
+        // A picture left out in the meantime (see `emit_one`) leaves the
+        // last `pictures` of the stream not the head's; it goes as it is.
+        let counted = self.skipped == held.skipped;
+        if let Some(next) = next.filter(|_| counted).and_then(|n| n.packet.data()) {
+            // The head is the last pictures to have come in: the ones the
+            // muxer would already have had, then the ones still waiting to
+            // be given their decode times.
+            let mut head: Vec<&mut ff::Packet> = held
+                .written
+                .iter_mut()
+                .filter(|(p, _)| p.stream() == 0)
+                .map(|(p, _)| p)
+                .chain(self.pending.iter_mut().map(|e| &mut e.packet))
+                .collect();
+            let from = head.len().saturating_sub(held.pictures);
+            let head = &mut head[from..];
+            let data: Vec<&[u8]> = head.iter().map(|p| p.data().unwrap_or(&[])).collect();
+            if let Some(data) = poc_seam::carry_on(&data, held.head, next, held.copy) {
+                for (packet, data) in head.iter_mut().zip(data) {
+                    let mut out = ff::Packet::copy(&data);
+                    out.set_flags(packet.flags());
+                    out.set_stream(packet.stream());
+                    out.set_pts(packet.pts());
+                    out.set_dts(packet.dts());
+                    out.set_duration(packet.duration());
+                    out.set_position(packet.position());
+                    **packet = out;
+                }
+            }
+        }
+        for (packet, sound) in held.written {
+            match packet.write_interleaved(&mut self.octx) {
+                // As where the frame was first written; see `push_audio`.
+                Err(ff::Error::PatchWelcome | ff::Error::InvalidData) if sound.is_some() => {
+                    // Counted as written when it was put by; it was not.
+                    if let Some(t) = sound.and_then(|k| self.audio.get_mut(k)) {
+                        t.refused += 1;
+                        t.written = t.written.saturating_sub(1);
+                    }
+                }
+                r => r.context("writing what was held back at a seam")?,
+            }
+        }
+        Ok(())
+    }
+
+    fn queue(&mut self, e: Emitted) -> Result<()> {
         self.seen.push(std::cmp::Reverse(e.display));
         self.pending.push_back(e);
         // **The queue is measured in halves of a frame, not in pictures.**
@@ -1168,15 +1288,13 @@ impl Writer {
         // what makes that answerable -- and on a recording with holes in it
         // the answer is usually the holes.
         let (pts, dts) = (e.packet.pts().unwrap_or(0), e.packet.dts().unwrap_or(0));
-        e.packet
-            .write_interleaved(&mut self.octx)
-            .with_context(|| {
-                format!(
-                    "writing picture {} of the output (display {}, pts {pts}, dts {dts})",
-                    self.written + 1,
-                    e.display
-                )
-            })?;
+        let (written, display) = (self.written, e.display);
+        self.write(e.packet, None)?.with_context(|| {
+            format!(
+                "writing picture {} of the output (display {display}, pts {pts}, dts {dts})",
+                written + 1,
+            )
+        })?;
         self.written += 1;
         if e.fields < 2 * self.sub {
             self.halves += 1;
@@ -1211,12 +1329,15 @@ impl Writer {
             packet.set_duration(((packet.duration() as f64 / rate.max(1) as f64) / tb).round() as i64);
         }
         packet.set_position(-1);
-        packet.write_interleaved(&mut self.octx)?;
+        self.write(packet, None)??;
         self.audio[track].written += 1;
         Ok(())
     }
 
     fn flush(&mut self) -> Result<()> {
+        if let Some(held) = self.held.take() {
+            self.release(held, None)?;
+        }
         while !self.pending.is_empty() {
             self.emit_one()?;
         }
@@ -1296,7 +1417,8 @@ impl Writer {
             let t = &self.audio[track].info;
             crate::track_name(self.on_a_ts, t.pid, t.stream_index)
         };
-        match packet.write_interleaved(&mut self.octx) {
+        let tolerated = (!self.into_ts && self.audio[track].adts.is_some()).then_some(track);
+        match self.write(packet, tolerated)? {
             // An MP4 or Matroska muxer runs AAC through aac_adtstoasc, which
             // turns away a frame whose ADTS header is damaged -- one bad
             // header in an hour of broadcast -- and until this, the whole cut
@@ -1343,7 +1465,7 @@ impl Writer {
         packet.set_dts(Some(pts));
         packet.set_duration(0);
         packet.set_position(-1);
-        packet.write_interleaved(&mut self.octx)?;
+        self.write(packet, None)??;
         let t = &mut self.captions[track];
         t.written += 1;
         t.last_out = Some(pts);
@@ -1393,7 +1515,7 @@ impl Writer {
         packet.set_dts(Some(dts));
         packet.set_duration(0);
         packet.set_position(-1);
-        packet.write_interleaved(&mut self.octx)?;
+        self.write(packet, None)??;
         let t = &mut self.graphics[track];
         t.last_out = Some(dts);
         if mended {
@@ -1491,6 +1613,603 @@ impl Writer {
             aside.pending = Some((at, unit));
         }
         Ok(())
+    }
+}
+
+/// A re-encoded head held back until the copy after it shows where its
+/// picture order has to end. See [`poc_seam`].
+struct Held {
+    /// Every packet written since the hold began, in the order it was
+    /// written, with the sound track it belongs to where the muxer may turn
+    /// it away. See [`Writer::write`].
+    written: Vec<(ff::Packet, Option<usize>)>,
+    /// How many pictures the head is.
+    pictures: usize,
+    /// What the packets come to, against [`HELD_AT_MOST`].
+    bytes: usize,
+    /// The segment that made them has finished, so the next picture pushed
+    /// is the copy's first.
+    sealed: bool,
+    /// [`Writer::skipped`] when the hold began.
+    skipped: i64,
+    /// How the NALs of each side are framed on their way out.
+    head: NalFraming,
+    copy: NalFraming,
+}
+
+/// More than this and a head is let go as it is. A head runs to the next
+/// entry point a copy can start on, which on a recorder's own disc was
+/// measured at 21 seconds of 1440x1080 -- some tens of megabytes. This is
+/// only there so that a recording with no entry points to speak of cannot
+/// have minutes of pictures sit in memory.
+const HELD_AT_MOST: usize = 256 << 20;
+
+/// **A re-encoded head has to hand the copy a picture order it can follow.**
+///
+/// An H.264 picture states only the low bits of where it is shown, and the
+/// decoder works out the rest from the reference picture before it. The
+/// head this program writes opens on its own IDR and counts up from nought;
+/// the copy after it opens on the recording's I picture -- which, on the
+/// discs one authoring tool writes and on a recorder's own, is not an IDR,
+/// so nothing resets -- and that picture's low bits are read against the
+/// last ones the *head* wrote. Where they came out lower, the decoder took
+/// the copy's first pictures for ones already shown, and libavcodec does not
+/// show a picture twice: it drops it. Measured on two such discs: 714
+/// pictures written, 707 decoded, the seven just after the seam missing
+/// (`--verify` found them), while the same pictures decoded from the
+/// recording from that same I came out bit for bit. On a recorder's disc
+/// coded as field pairs it was 15 of 1379. The copy is right; only the
+/// order the head leaves behind is not.
+///
+/// So the head's pictures are all moved along by one amount, chosen so that
+/// the copy's first picture lands just after the last of them. The pictures
+/// themselves are untouched: only the one field in each slice header that
+/// holds the order changes, every difference between two of the head's
+/// pictures stays what it was -- and those differences are all the decoding
+/// of the head uses -- and the copy is not touched at all. Where the order
+/// already carries on, which is every recording whose entry points are IDRs
+/// and many whose are not, nothing is rewritten and the bytes are what they
+/// were.
+///
+/// **Sometimes the field is too narrow to say it.** x264 writes as few bits
+/// of order as its own pictures need -- four, on the recorder's disc, where
+/// the recording writes eight -- and the copy's first picture is read
+/// against the head's last low bits by the recording's rules: 232 against
+/// anything under 16 is always taken as a step back. There the field is
+/// widened by a whole byte, in the head's sequence header and in every one
+/// of its slices. A byte, because then everything after the field moves by
+/// exactly one byte: an arithmetic-coded slice starts its pictures on a byte
+/// boundary, and that boundary stays where the header left it without the
+/// rest of the header having to be read.
+///
+/// Every answer here is `None` where anything could not be read or is not
+/// the simple case -- a picture-order scheme other than the one written out,
+/// a slice whose escaping does not come back the same, a field that would
+/// grow past sixteen bits -- and `None` means the head goes out exactly as
+/// encoded.
+mod poc_seam {
+    use crate::bitstream::NalFraming;
+    use std::collections::HashMap;
+
+    /// What a sequence header says about the fields in front of
+    /// `pic_order_cnt_lsb`, and where its own width is written.
+    #[derive(Clone, Copy)]
+    struct Sps {
+        frame_num_bits: usize,
+        /// `None` unless `pic_order_cnt_type` is 0, the only scheme that
+        /// writes the order into each slice.
+        lsb_bits: Option<usize>,
+        /// Bit position of `log2_max_pic_order_cnt_lsb_minus4`, and how many
+        /// bits it takes.
+        lsb_width_at: (usize, usize),
+        frame_mbs_only: bool,
+        separate_colour_planes: bool,
+        /// `max_num_ref_frames`.
+        refs: i64,
+    }
+
+    #[derive(Default)]
+    struct Sets {
+        sps: HashMap<u32, Sps>,
+        /// Picture parameter set to the sequence it names, and whether a
+        /// frame's slices say how far its bottom field is from its top.
+        pps: HashMap<u32, (u32, bool)>,
+    }
+
+    /// Where a slice's order field is, and what it says.
+    struct Slice {
+        idr: bool,
+        reference: bool,
+        first: bool,
+        /// Bit position of `pic_order_cnt_lsb` in the unescaped payload.
+        at: usize,
+        bits: usize,
+        lsb: i64,
+        /// How far the bottom field of a frame is shown after its top;
+        /// nothing for a field picture.
+        bottom: i64,
+        /// `max_num_ref_frames` of the sequence it belongs to.
+        refs: i64,
+    }
+
+    enum Unit {
+        Sps(Sps),
+        Slice(Slice),
+    }
+
+    struct Bits<'a> {
+        data: &'a [u8],
+        pos: usize,
+    }
+
+    impl Bits<'_> {
+        fn u(&mut self, n: usize) -> Option<u32> {
+            if n > 32 {
+                return None;
+            }
+            let mut v = 0u32;
+            for _ in 0..n {
+                let byte = *self.data.get(self.pos >> 3)?;
+                v = (v << 1) | u32::from((byte >> (7 - (self.pos & 7))) & 1);
+                self.pos += 1;
+            }
+            Some(v)
+        }
+
+        fn ue(&mut self) -> Option<u32> {
+            let mut zeros = 0;
+            while self.u(1)? == 0 {
+                zeros += 1;
+                if zeros > 31 {
+                    return None;
+                }
+            }
+            ((1u32 << zeros) - 1).checked_add(self.u(zeros)?)
+        }
+
+        fn se(&mut self) -> Option<i32> {
+            let k = self.ue()?;
+            Some(if k % 2 == 1 { k.div_ceil(2) as i32 } else { -((k / 2) as i32) })
+        }
+    }
+
+    /// Bits written one after another, most significant first.
+    #[derive(Default)]
+    struct Out {
+        data: Vec<u8>,
+        bits: usize,
+    }
+
+    impl Out {
+        fn put(&mut self, n: usize, v: u64) {
+            for k in (0..n).rev() {
+                if self.bits.is_multiple_of(8) {
+                    self.data.push(0);
+                }
+                if (v >> k) & 1 == 1 {
+                    *self.data.last_mut().expect("pushed") |= 0x80 >> (self.bits % 8);
+                }
+                self.bits += 1;
+            }
+        }
+
+        /// `from..to` of `src`, counted in bits.
+        fn copy(&mut self, src: &[u8], from: usize, to: usize) {
+            let mut pos = from;
+            while pos < to {
+                // Whole bytes where both sides are on a boundary, which is
+                // all of a slice's pictures once its header is past.
+                if pos.is_multiple_of(8) && self.bits.is_multiple_of(8) && to - pos >= 8 {
+                    let bytes = (to - pos) / 8;
+                    self.data.extend_from_slice(&src[pos / 8..pos / 8 + bytes]);
+                    self.bits += bytes * 8;
+                    pos += bytes * 8;
+                    continue;
+                }
+                self.put(1, u64::from((src[pos >> 3] >> (7 - (pos & 7))) & 1));
+                pos += 1;
+            }
+        }
+
+        fn ue(&mut self, v: u32) {
+            let n = 64 - (u64::from(v) + 1).leading_zeros() as usize;
+            self.put(n - 1, 0);
+            self.put(n, u64::from(v) + 1);
+        }
+    }
+
+    fn unescape(nal: &[u8]) -> Vec<u8> {
+        let mut out = Vec::with_capacity(nal.len());
+        let mut zeros = 0;
+        for &b in nal {
+            if zeros >= 2 && b == 3 {
+                zeros = 0;
+                continue;
+            }
+            out.push(b);
+            zeros = if b == 0 { zeros + 1 } else { 0 };
+        }
+        out
+    }
+
+    fn escape(rbsp: &[u8]) -> Vec<u8> {
+        let mut out = Vec::with_capacity(rbsp.len() + rbsp.len() / 64);
+        let mut zeros = 0;
+        for &b in rbsp {
+            if zeros >= 2 && b <= 3 {
+                out.push(3);
+                zeros = 0;
+            }
+            out.push(b);
+            zeros = if b == 0 { zeros + 1 } else { 0 };
+        }
+        out
+    }
+
+    /// Each NAL of a packet as (start, end) byte offsets of its payload.
+    fn nals(data: &[u8], framing: NalFraming) -> Option<Vec<(usize, usize)>> {
+        let mut out = Vec::new();
+        match framing {
+            NalFraming::Length(n) => {
+                if n == 0 || n > 4 {
+                    return None;
+                }
+                let mut i = 0;
+                while i < data.len() {
+                    let len = data.get(i..i + n)?.iter().fold(0usize, |a, &b| (a << 8) | b as usize);
+                    i += n;
+                    let end = i.checked_add(len).filter(|&e| e <= data.len())?;
+                    out.push((i, end));
+                    i = end;
+                }
+            }
+            NalFraming::AnnexB => {
+                let mut starts = Vec::new();
+                let mut i = 0;
+                while i + 3 <= data.len() {
+                    if data[i] == 0 && data[i + 1] == 0 && data[i + 2] == 1 {
+                        starts.push(i + 3);
+                        i += 3;
+                    } else {
+                        i += 1;
+                    }
+                }
+                for (k, &s) in starts.iter().enumerate() {
+                    let mut end = starts.get(k + 1).map_or(data.len(), |&n| n - 3);
+                    // Trailing zeros belong to the next start code, or are
+                    // padding; a NAL does not end in one.
+                    while end > s && data[end - 1] == 0 {
+                        end -= 1;
+                    }
+                    out.push((s, end));
+                }
+            }
+        }
+        Some(out)
+    }
+
+    fn read_sps(rbsp: &[u8]) -> Option<(u32, Sps)> {
+        let mut b = Bits { data: rbsp, pos: 8 };
+        let profile = b.u(8)?;
+        b.u(16)?; // constraint flags, reserved, level_idc
+        let id = b.ue()?;
+        let mut separate_colour_planes = false;
+        if [100, 110, 122, 244, 44, 83, 86, 118, 128, 134, 135, 138, 139].contains(&profile) {
+            let chroma = b.ue()?;
+            if chroma == 3 {
+                separate_colour_planes = b.u(1)? == 1;
+            }
+            b.ue()?; // bit_depth_luma_minus8
+            b.ue()?; // bit_depth_chroma_minus8
+            b.u(1)?; // qpprime_y_zero_transform_bypass_flag
+            if b.u(1)? == 1 {
+                for i in 0..if chroma == 3 { 12 } else { 8 } {
+                    if b.u(1)? == 0 {
+                        continue;
+                    }
+                    let (mut last, mut next) = (8i64, 8i64);
+                    for _ in 0..if i < 6 { 16 } else { 64 } {
+                        if next != 0 {
+                            next = (last + i64::from(b.se()?) + 256).rem_euclid(256);
+                        }
+                        if next != 0 {
+                            last = next;
+                        }
+                    }
+                }
+            }
+        }
+        let frame_num_bits = b.ue()? as usize + 4;
+        let (lsb_bits, lsb_width_at) = match b.ue()? {
+            0 => {
+                let at = b.pos;
+                let bits = b.ue()? as usize + 4;
+                (Some(bits), (at, b.pos - at))
+            }
+            _ => (None, (0, 0)),
+        };
+        if frame_num_bits > 16 || lsb_bits.is_some_and(|n| n > 16) {
+            return None;
+        }
+        let mut sps = Sps {
+            frame_num_bits,
+            lsb_bits,
+            lsb_width_at,
+            frame_mbs_only: true,
+            separate_colour_planes,
+            refs: 0,
+        };
+        if lsb_bits.is_some() {
+            sps.refs = i64::from(b.ue()?);
+            b.u(1)?; // gaps_in_frame_num_value_allowed_flag
+            b.ue()?; // pic_width_in_mbs_minus1
+            b.ue()?; // pic_height_in_map_units_minus1
+            sps.frame_mbs_only = b.u(1)? == 1;
+        }
+        Some((id, sps))
+    }
+
+    fn read_pps(rbsp: &[u8]) -> Option<(u32, (u32, bool))> {
+        let mut b = Bits { data: rbsp, pos: 8 };
+        let (id, sps) = (b.ue()?, b.ue()?);
+        b.u(1)?; // entropy_coding_mode_flag
+        Some((id, (sps, b.u(1)? == 1)))
+    }
+
+    fn read_slice(rbsp: &[u8], sets: &Sets) -> Option<Slice> {
+        let header = *rbsp.first()?;
+        let idr = header & 0x1F == 5;
+        let mut b = Bits { data: rbsp, pos: 8 };
+        let first = b.ue()? == 0;
+        b.ue()?; // slice_type
+        let (sps, bottom_stated) = *sets.pps.get(&b.ue()?)?;
+        let sps = sets.sps.get(&sps)?;
+        let bits = sps.lsb_bits?;
+        if sps.separate_colour_planes {
+            b.u(2)?;
+        }
+        b.u(sps.frame_num_bits)?;
+        let field = !sps.frame_mbs_only && b.u(1)? == 1;
+        if field {
+            b.u(1)?; // bottom_field_flag
+        }
+        if idr {
+            b.ue()?; // idr_pic_id
+        }
+        let at = b.pos;
+        let lsb = i64::from(b.u(bits)?);
+        let bottom = if bottom_stated && !field { i64::from(b.se()?) } else { 0 };
+        Some(Slice {
+            idr,
+            reference: header & 0x60 != 0,
+            first,
+            at,
+            bits,
+            lsb,
+            bottom,
+            refs: sps.refs,
+        })
+    }
+
+    /// Read a packet's parameter sets into `sets`, and hand back each NAL
+    /// this has to do with.
+    fn walk(data: &[u8], framing: NalFraming, sets: &mut Sets) -> Option<Vec<((usize, usize), Unit)>> {
+        let mut units = Vec::new();
+        for (s, e) in nals(data, framing)? {
+            let nal = &data[s..e];
+            match nal.first().map(|b| b & 0x1F) {
+                Some(7) => {
+                    let (id, sps) = read_sps(&unescape(nal))?;
+                    sets.sps.insert(id, sps);
+                    units.push(((s, e), Unit::Sps(sps)));
+                }
+                Some(8) => {
+                    let (id, pps) = read_pps(&unescape(nal))?;
+                    sets.pps.insert(id, pps);
+                }
+                Some(1 | 5) => units.push(((s, e), Unit::Slice(read_slice(&unescape(nal), sets)?))),
+                _ => {}
+            }
+        }
+        Some(units)
+    }
+
+    /// The order a picture of `lsb` is given after a reference picture
+    /// whose order was `prev` and whose own low bits were `prev_lsb`, in a
+    /// sequence that writes `bits` of them. H.264 8.2.1.1.
+    fn follows(prev: i64, prev_lsb: i64, lsb: i64, bits: usize) -> i64 {
+        let max = 1i64 << bits;
+        let msb = prev - prev_lsb;
+        let msb = if lsb < prev_lsb && prev_lsb - lsb >= max / 2 {
+            msb + max
+        } else if lsb > prev_lsb && lsb - prev_lsb > max / 2 {
+            msb - max
+        } else {
+            msb
+        };
+        msb + lsb
+    }
+
+    /// The last bit set in a payload, which is the stop bit that ends it.
+    fn stop_bit(rbsp: &[u8]) -> Option<usize> {
+        let byte = rbsp.iter().rposition(|&b| b != 0)?;
+        Some(byte * 8 + 7 - rbsp[byte].trailing_zeros() as usize)
+    }
+
+    /// The head's packets rewritten so that `copy`, the first packet after
+    /// them, is shown after every one of them. `None` where nothing has to
+    /// change, or where it cannot be done safely.
+    pub(super) fn carry_on(
+        head: &[&[u8]],
+        head_framing: NalFraming,
+        copy: &[u8],
+        copy_framing: NalFraming,
+    ) -> Option<Vec<Vec<u8>>> {
+        // The head, in decode order: where each picture is shown, the
+        // largest of those, and the last reference picture, which is what
+        // the copy's first picture is read against.
+        let mut sets = Sets::default();
+        let mut units = Vec::with_capacity(head.len());
+        // Where each of the head's slices is shown, alongside it.
+        let mut orders = Vec::with_capacity(head.len());
+        let mut bits = None;
+        // The smallest and largest order an IDR of the head was given, which
+        // bound how far the whole head may be moved: an IDR's order is its
+        // low bits and nothing else, so it has to stay within what the field
+        // holds.
+        let mut idrs: Option<(i64, i64)> = None;
+        let mut prev: Option<(i64, i64)> = None;
+        // Where the last reference picture is, as a frame: the earlier of
+        // its two fields.
+        let mut last_ref = 0;
+        let mut order = 0;
+        let mut top = i64::MIN;
+        for data in head {
+            let here = walk(data, head_framing, &mut sets)?;
+            let mut shown = Vec::with_capacity(here.len());
+            for (_, unit) in &here {
+                let Unit::Slice(s) = unit else {
+                    shown.push(0);
+                    continue;
+                };
+                if *bits.get_or_insert(s.bits) != s.bits {
+                    return None;
+                }
+                if s.first {
+                    order = if s.idr {
+                        // The encoder may start again at a change of
+                        // scene; what was before that is shown before it,
+                        // whatever order it had.
+                        idrs = Some(idrs.map_or((s.lsb, s.lsb), |(lo, hi)| {
+                            (lo.min(s.lsb), hi.max(s.lsb))
+                        }));
+                        top = i64::MIN;
+                        s.lsb
+                    } else {
+                        let (p, pl) = prev?;
+                        follows(p, pl, s.lsb, s.bits)
+                    };
+                    top = top.max(order).max(order + s.bottom);
+                    if s.reference {
+                        prev = Some((order, s.lsb));
+                        last_ref = order.min(order + s.bottom);
+                    }
+                }
+                shown.push(order);
+            }
+            units.push(here);
+            orders.push(shown);
+        }
+        let (bits, (idr_lo, idr_hi), (last, _)) = (bits?, idrs?, prev?);
+
+        // The copy's first picture, read against that.
+        let mut copy_sets = Sets::default();
+        let first = walk(copy, copy_framing, &mut copy_sets)?;
+        let s = first.iter().find_map(|(_, u)| match u {
+            Unit::Slice(s) if s.first => Some(s),
+            _ => None,
+        })?;
+        if s.idr {
+            return None; // it starts afresh by itself
+        }
+        let shown_at = |shift: i64, bits: usize| {
+            let l = last + shift;
+            follows(l, l.rem_euclid(1 << bits), s.lsb, s.bits) - (top + shift)
+        };
+        if shown_at(0, bits) > 0 {
+            return None; // already in order
+        }
+        // The IDR may be given any order the field holds; every other
+        // picture of the head moves with it. Two apart is what one frame
+        // is. The field as it is if that will do, a byte wider if not.
+        //
+        // **And clear of the pictures libavcodec makes up.** The copy's
+        // frame_num does not follow the head's, and for that gap the decoder
+        // invents up to `max_num_ref_frames` of the copy's sequence, each
+        // shown two after the one before, starting from the head's last
+        // reference picture. Left above the copy's first picture, they sort
+        // into the lists its B pictures are predicted from: on the
+        // recorder's disc coded as field pairs, two apart put one in front
+        // of the copy's first P and the two B frames after the I came out
+        // wrong (`--verify`: 2 of 718 copied frames differ); six apart,
+        // they were the recording's to the bit. Kept clear where the field
+        // allows it; two apart otherwise, which is still every picture.
+        let invented = 2 * s.refs.clamp(0, 16);
+        let settle = |bits: usize| {
+            let fits = |k: i64, clear: bool| {
+                let at = shown_at(k, bits);
+                at >= 2 && (!clear || at + top - last_ref > invented)
+            };
+            let best = |clear: bool| {
+                (-idr_lo..(1i64 << bits) - idr_hi)
+                    .filter(|&k| fits(k, clear))
+                    .min_by_key(|&k| shown_at(k, bits))
+            };
+            best(true).or_else(|| best(false))
+        };
+        let (shift, wider) = match settle(bits) {
+            Some(k) => (k, 0),
+            None if bits + 8 <= 16 => (settle(bits + 8)?, 8),
+            None => return None,
+        };
+
+        let mut out = Vec::with_capacity(head.len());
+        for ((data, here), shown) in head.iter().zip(&units).zip(&orders) {
+            let mut packet = Vec::with_capacity(data.len() + here.len());
+            let mut from = 0;
+            for (((s, e), unit), &order) in here.iter().zip(shown) {
+                let nal = &data[*s..*e];
+                let rbsp = unescape(nal);
+                // Put back exactly as it came, or not touched at all: the
+                // escaping is written from the payload again, so it has to be
+                // the escaping the encoder wrote.
+                if escape(&rbsp) != nal {
+                    return None;
+                }
+                let mut w = Out::default();
+                match unit {
+                    // Only where the field is being widened.
+                    Unit::Sps(_) if wider == 0 => continue,
+                    Unit::Sps(sps) => {
+                        let (at, len) = sps.lsb_width_at;
+                        let end = stop_bit(&rbsp)?;
+                        w.copy(&rbsp, 0, at);
+                        w.ue((sps.lsb_bits? + wider - 4) as u32);
+                        w.copy(&rbsp, at + len, end);
+                        w.put(1, 1);
+                        while !w.bits.is_multiple_of(8) {
+                            w.put(1, 0);
+                        }
+                    }
+                    Unit::Slice(slice) => {
+                        let width = slice.bits + wider;
+                        w.copy(&rbsp, 0, slice.at);
+                        w.put(width, (order + shift).rem_euclid(1 << width) as u64);
+                        w.copy(&rbsp, slice.at + slice.bits, rbsp.len() * 8);
+                    }
+                }
+                let nal = escape(&w.data);
+                match head_framing {
+                    NalFraming::AnnexB => {
+                        packet.extend_from_slice(&data[from..*s]);
+                    }
+                    NalFraming::Length(n) => {
+                        packet.extend_from_slice(&data[from..*s - n]);
+                        if nal.len() >> (8 * n) != 0 {
+                            return None;
+                        }
+                        for k in (0..n).rev() {
+                            packet.push((nal.len() >> (8 * k)) as u8);
+                        }
+                    }
+                }
+                packet.extend_from_slice(&nal);
+                from = *e;
+            }
+            packet.extend_from_slice(&data[from..]);
+            out.push(packet);
+        }
+        Some(out)
     }
 }
 
@@ -7304,6 +8023,7 @@ fn cut_into(
             .map(|s| s.frames as i64)
             .sum(),
         shrink: shrink_for(src, opts),
+        held: None,
     };
 
     // What a reel that does not match is written into: the master's own
@@ -7376,7 +8096,7 @@ fn cut_into(
         }
         // What this reel is written as: the plan it was given where it
         // matches the master, and one segment per range where it does not.
-        for plan in &reel_plans[reel_no] {
+        for (plan_no, plan) in reel_plans[reel_no].iter().enumerate() {
         // Every range after the first drops a decoder that is already reading
         // into a stream from somewhere else. A TrueHD frame is read against
         // the last major sync seen, so one joined anywhere else is read
@@ -7603,6 +8323,31 @@ fn cut_into(
             // A transition's pictures are in neither recording, so its
             // stretch goes through the path that makes pictures rather than
             // the one that splices them -- whatever shape the reel is.
+            // A head written for an H.264 copy that follows it waits for
+            // that copy's first picture, which is what says whether the
+            // head's picture order has to be moved along. See [`poc_seam`].
+            // A range's re-encoded tail is a head the same way to the next
+            // range of this recording, where that one opens on a copy.
+            let after = match plan.segments.get(n + 1) {
+                Some(next) => Some(next),
+                None => reel_plans[reel_no].get(plan_no + 1).and_then(|p| p.segments.first()),
+            };
+            let holding = seg.kind == SegmentKind::Reencode
+                && !fits[reel_no].video
+                && rsrc.video.codec == "h264"
+                && after.is_some_and(|s| s.kind == SegmentKind::Copy);
+            if holding {
+                let head = match ctx.reframe {
+                    Some(r) => NalFraming::Length(r.nal_length),
+                    None => NalFraming::AnnexB,
+                };
+                let copy = match (reframe_here, unframe_here) {
+                    (Some(r), _) => NalFraming::Length(r.nal_length),
+                    (None, Some(_)) => NalFraming::AnnexB,
+                    (None, None) => rsrc.video.framing,
+                };
+                writer.hold(head, copy)?;
+            }
             let span = match (seg.kind, &seg.retouch, fits[reel_no].video) {
                 (SegmentKind::Copy, _, _) => copy_segment(rsrc, seg, &ctx, &mut writer)?,
                 (SegmentKind::Reencode, Some(retouch), _) => {
@@ -7637,6 +8382,9 @@ fn cut_into(
                     reencode_segment(rsrc, seg, &ctx, opts, &mut writer)?
                 }
             };
+            if holding {
+                writer.seal();
+            }
             display_base += span.fields;
             pictures += span.pictures;
         }
@@ -8386,5 +9134,169 @@ mod tests {
         assert!(!can_carry_data_broadcast("cut.mp4", None));
         // And nothing carries it where the pass that writes it does not run.
         assert!(!can_carry_data_broadcast("cut.ts", Some(Tables::Muxer)));
+    }
+
+    /// Just enough of an H.264 stream for [`poc_seam`]: headers, and a few
+    /// bytes standing in for the pictures.
+    struct Nal(Vec<u8>, u32, usize);
+
+    impl Nal {
+        fn new(header: u8) -> Self {
+            Nal(vec![header], 0, 0)
+        }
+        fn u(mut self, n: usize, v: u32) -> Self {
+            for k in (0..n).rev() {
+                self.1 = (self.1 << 1) | ((v >> k) & 1);
+                self.2 += 1;
+                if self.2 == 8 {
+                    self.0.push(self.1 as u8);
+                    (self.1, self.2) = (0, 0);
+                }
+            }
+            self
+        }
+        fn ue(self, v: u32) -> Self {
+            let n = 32 - (v + 1).leading_zeros() as usize;
+            self.u(n - 1, 0).u(n, v + 1)
+        }
+        fn done(mut self) -> Vec<u8> {
+            self = self.u(1, 1);
+            while self.2 != 0 {
+                self = self.u(1, 0);
+            }
+            self.0
+        }
+    }
+
+    fn sps_pps() -> Vec<u8> {
+        sets_with(6)
+    }
+
+    /// Baseline, four bits of frame_num, `bits` of picture order.
+    fn sets_with(bits: u32) -> Vec<u8> {
+        let sps = Nal::new(0x67).u(8, 66).u(16, 40).ue(0).ue(0).ue(0).ue(bits - 4).ue(4).u(1, 0);
+        let sps = sps.ue(119).ue(67).u(1, 1).u(1, 1).u(1, 0).u(1, 0).done();
+        let pps = Nal::new(0x68).ue(0).ue(0).done();
+        [&[0, 0, 0, 1][..], &sps, &[0, 0, 0, 1], &pps].concat()
+    }
+
+    fn picture(idr: bool, reference: bool, frame_num: u32, lsb: u32) -> Vec<u8> {
+        picture_with(6, idr, reference, frame_num, lsb)
+    }
+
+    fn picture_with(bits: usize, idr: bool, reference: bool, frame_num: u32, lsb: u32) -> Vec<u8> {
+        let header = if idr { 0x65 } else if reference { 0x41 } else { 0x01 };
+        let slice = Nal::new(header).ue(0).ue(if idr { 7 } else { 5 }).ue(0).u(4, frame_num);
+        let slice = if idr { slice.ue(0) } else { slice };
+        // Zeros after the header, so that the escaping is exercised.
+        let slice = slice.u(bits, lsb).u(24, 0).u(8, 0x80).done();
+        let mut out = vec![0, 0, 0, 1];
+        let mut zeros = 0;
+        for b in slice {
+            if zeros >= 2 && b <= 3 {
+                out.push(3);
+                zeros = 0;
+            }
+            out.push(b);
+            zeros = if b == 0 { zeros + 1 } else { 0 };
+        }
+        out
+    }
+
+    fn lsb_of(packet: &[u8]) -> u32 {
+        // Every slice here is written the same way up to the order field.
+        let at = packet.windows(4).rposition(|w| w == [0, 0, 0, 1]).unwrap() + 4;
+        let idr = packet[at] & 0x1F == 5;
+        let bits: Vec<u8> = packet[at + 1..at + 4]
+            .iter()
+            .flat_map(|b| (0..8).rev().map(move |k| (b >> k) & 1))
+            .collect();
+        // first_mb 0 (1 bit), slice_type 7 or 5 (7 bits or 5 bits), pps 0
+        // (1 bit), frame_num (4), idr_pic_id 0 (1 bit, IDR only).
+        let from = if idr { 1 + 7 + 1 + 4 + 1 } else { 1 + 5 + 1 + 4 };
+        bits[from..from + 6].iter().fold(0, |a, &b| (a << 1) | u32::from(b))
+    }
+
+    /// A head whose last pictures are shown after where the copy's first
+    /// one lands is moved along until the copy comes after all of it; one
+    /// that is already in order, or a copy that opens on an IDR, is left as
+    /// it is.
+    #[test]
+    fn a_head_hands_the_copy_an_order_it_can_follow() {
+        let head = [
+            [sps_pps(), picture(true, true, 0, 0)].concat(),
+            picture(false, true, 1, 6),
+            picture(false, false, 2, 2),
+            picture(false, false, 2, 4),
+        ];
+        let head: Vec<&[u8]> = head.iter().map(|p| p.as_slice()).collect();
+        let copy = |idr: bool, lsb: u32| [sps_pps(), picture(idr, true, 6, lsb)].concat();
+        let annexb = NalFraming::AnnexB;
+        let moved = poc_seam::carry_on(&head, annexb, &copy(false, 2), annexb).unwrap();
+        // The copy's I at 2 against a head shown up to 6: the head goes 51
+        // along, so that its last picture is at 57 and the copy's at 66 --
+        // more than the eight the copy's four reference frames take when the
+        // decoder makes up the ones its frame_num skips.
+        let lsbs: Vec<u32> = moved.iter().map(|p| lsb_of(p)).collect();
+        assert_eq!(lsbs, [51, 57, 53, 55]);
+        let again: Vec<&[u8]> = moved.iter().map(|p| p.as_slice()).collect();
+        assert!(poc_seam::carry_on(&again, annexb, &copy(false, 2), annexb).is_none());
+        assert!(poc_seam::carry_on(&head, annexb, &copy(false, 10), annexb).is_none());
+        assert!(poc_seam::carry_on(&head, annexb, &copy(true, 0), annexb).is_none());
+        // And the same stream counted in lengths, as an MP4 carries it.
+        let framed = |p: &[u8]| crate::bitstream::annexb_to_length(p, 4).unwrap();
+        let long: Vec<Vec<u8>> = head.iter().map(|p| framed(p)).collect();
+        let long: Vec<&[u8]> = long.iter().map(|p| p.as_slice()).collect();
+        let lengths = NalFraming::Length(4);
+        let moved_long =
+            poc_seam::carry_on(&long, lengths, &framed(&copy(false, 2)), lengths).unwrap();
+        for (a, b) in moved.iter().zip(&moved_long) {
+            assert_eq!(&framed(a), b);
+        }
+    }
+
+    /// Where the head's field is too narrow for the copy's order to be
+    /// read as coming after it -- the recorder's disc writes eight bits and
+    /// x264 six -- the field is widened by a byte, and the head then hands
+    /// over an order the copy follows.
+    #[test]
+    fn a_narrow_order_field_is_widened() {
+        let head = [
+            [sps_pps(), picture(true, true, 0, 0)].concat(),
+            picture(false, true, 1, 6),
+            picture(false, false, 2, 2),
+            picture(false, false, 2, 4),
+        ];
+        let head: Vec<&[u8]> = head.iter().map(|p| p.as_slice()).collect();
+        let copy = [sets_with(8), picture_with(8, false, true, 200, 232)].concat();
+        let annexb = NalFraming::AnnexB;
+        let moved = poc_seam::carry_on(&head, annexb, &copy, annexb).unwrap();
+        // One byte more in each slice, and in the sequence header's ue(v)
+        // however long it came out. Counted without the escaping, which
+        // depends on the value written.
+        let unescaped = |p: &[u8]| {
+            let mut zeros = 0;
+            p.iter()
+                .filter(|&&b| {
+                    let escape = zeros >= 2 && b == 3;
+                    zeros = if escape { 0 } else if b == 0 { zeros + 1 } else { 0 };
+                    !escape
+                })
+                .count()
+        };
+        for (a, b) in head.iter().zip(&moved).skip(1) {
+            assert_eq!(unescaped(b), unescaped(a) + 1);
+        }
+        let again: Vec<&[u8]> = moved.iter().map(|p| p.as_slice()).collect();
+        assert!(poc_seam::carry_on(&again, annexb, &copy, annexb).is_none());
+        // Counted in lengths, each length says the NAL it now is.
+        let framed = |p: &[u8]| crate::bitstream::annexb_to_length(p, 4).unwrap();
+        let long: Vec<Vec<u8>> = head.iter().map(|p| framed(p)).collect();
+        let long: Vec<&[u8]> = long.iter().map(|p| p.as_slice()).collect();
+        let lengths = NalFraming::Length(4);
+        let moved_long = poc_seam::carry_on(&long, lengths, &framed(&copy), lengths).unwrap();
+        for (a, b) in moved.iter().zip(&moved_long) {
+            assert_eq!(&framed(a), b);
+        }
     }
 }

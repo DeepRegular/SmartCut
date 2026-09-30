@@ -531,10 +531,18 @@ fn past_the_seam(
     ranges
         .iter()
         .map(|&(a, b)| {
-            if !joins.iter().any(|&j| (a - j).abs() <= eps) {
+            // The seam of the stretch this range begins in. Not only a range
+            // that begins on the seam: one that begins a few frames past it,
+            // still in front of the stretch's first entry point, has nothing
+            // there to write either. The decoder drops those pictures, the
+            // head's first picture is the entry point's, and the range's
+            // sound and captions -- anchored where it was asked to begin --
+            // ran that much behind its pictures to the end of the range
+            // (0.17 s, measured on a recorder's disc).
+            let Some(j) = joins.iter().copied().filter(|&j| j - eps <= a).reduce(f64::max) else {
                 return (a, b);
-            }
-            match points.iter().find(|p| p.time >= a - eps) {
+            };
+            match points.iter().find(|p| p.time >= j - eps) {
                 Some(p) if p.time > a && p.time < b => (p.time, b),
                 // The whole of the range is in that window: a range ended
                 // within a GOP of the seam. Nothing in it can be written, and
@@ -874,6 +882,17 @@ mod tests {
         assert!(plan_range(&video, 300.0, &points, a, b, &PlanOptions::default())
             .segments
             .is_empty());
+        // So does one that begins a few frames past the seam, still in
+        // front of that entry point: nothing there can be written either.
+        assert_eq!(
+            past_the_seam(&[(seam + 0.1, 20.0)], &joins, &points, &video),
+            vec![(points[4].time, 20.0)]
+        );
+        // ...but not one that begins past the entry point.
+        assert_eq!(
+            past_the_seam(&[(points[4].time + 0.2, 20.0)], &joins, &points, &video),
+            vec![(points[4].time + 0.2, 20.0)]
+        );
         // A range that begins anywhere else is left where the caller put it,
         // seam or no seam.
         assert_eq!(

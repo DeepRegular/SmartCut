@@ -670,11 +670,15 @@ impl Image {
                 // A name is one step of a path. One that is a separator, or
                 // `..`, is a path of its own once joined onto the image's --
                 // which Windows resolves before it asks the disk, and a clip
-                // "inside" the image was a file beside it.
+                // "inside" the image was a file beside it. And one holding a
+                // control character is no name a disc gives a file: it
+                // becomes part of the path a recording is opened and printed
+                // by, and printed, an escape sequence is the terminal's to
+                // act on.
                 if name.is_empty()
                     || name == "."
                     || name == ".."
-                    || name.contains(['/', '\\', '\0'])
+                    || name.chars().any(|c| c == '/' || c == '\\' || c.is_control())
                 {
                     continue;
                 }

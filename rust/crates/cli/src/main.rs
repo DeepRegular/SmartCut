@@ -280,8 +280,19 @@ fn check_output(
     pieces: &[smartcut_core::verify::Piece],
     compare: smartcut_core::verify::Compare,
 ) -> Result<()> {
+    check_output_crossed(out, pieces, &[], compare)
+}
+
+/// [`check_output`], for a file of sound alone joined with transitions:
+/// `after[n]` is what follows piece `n`. See `verify::check_crossed`.
+fn check_output_crossed(
+    out: &str,
+    pieces: &[smartcut_core::verify::Piece],
+    after: &[smartcut_core::transition::Transition],
+    compare: smartcut_core::verify::Compare,
+) -> Result<()> {
     let never = std::sync::atomic::AtomicBool::new(false);
-    let report = smartcut_core::verify::check(out, pieces, compare, None, &never)
+    let report = smartcut_core::verify::check_crossed(out, pieces, after, compare, None, &never)
         .with_context(|| format!("cannot read {out} back to check it"))?;
     for line in report.lines() {
         smartcut_core::say!("verify: {line}");
@@ -499,6 +510,17 @@ fn help() -> String {
 }
 
 fn main() -> Result<()> {
+    let run = run();
+    // What ended the run goes where everything else it said went: printed
+    // on its way out by the runtime, it reached the terminal and not the
+    // log, and a log of a run that failed did not say why.
+    if let Err(e) = &run {
+        smartcut_core::log::write_only(&format!("Error: {e:?}"));
+    }
+    run
+}
+
+fn run() -> Result<()> {
     // `env::args` panics on an argument that is not valid Unicode -- a
     // recording on a share whose name was written in Shift_JIS or Latin-1 --
     // and the run died with a panic instead of saying which argument.
@@ -1196,22 +1218,6 @@ fn main() -> Result<()> {
         bail!("--sound-only writes an audio file, which does not go onto a disc: use -o");
     }
     let Some(input) = input else { bail!(usage()) };
-    // Opened before anything is read, so that what the recording's open
-    // says is in it too. The command line heads it: the one line that says
-    // what the run was asked to do.
-    if let Some(at) = &log_to {
-        smartcut_core::log::open(std::path::Path::new(at))
-            .with_context(|| format!("cannot write the log {at}"))?;
-        smartcut_core::log::write_only(&format!(
-            "# smartcut {} -- {}",
-            smartcut_core::VERSION,
-            std::env::args_os()
-                .skip(1)
-                .map(|a| a.to_string_lossy().into_owned())
-                .collect::<Vec<_>>()
-                .join(" ")
-        ));
-    }
     // A share the machine has already mounted may be named the way it is
     // written down -- `smb://nas/rec/a.ts` or `\\nas\rec\a.ts` -- rather than
     // by the mount point it happens to have been given.
@@ -1231,6 +1237,68 @@ fn main() -> Result<()> {
     let mut output = written_to(output)?;
     let bdav = written_to(bdav)?;
     let seek_index = written_to(seek_index)?;
+    // The index is written as soon as the recording is open and the cut over
+    // it afterwards, so the run ended well with the index gone -- and the
+    // next run with the same line stopped at a seek index that was a cut.
+    if let (Some(o), Some(s)) = (&output, &seek_index) {
+        if one_place(o, s) {
+            bail!("-o and --seek-index both name {o}: give the index a file of its own");
+        }
+    }
+    // Opened before anything is read, so that what the recording's open
+    // says is in it too. The command line heads it: the one line that says
+    // what the run was asked to do.
+    if let Some(at) = written_to(log_to)? {
+        let log = std::path::Path::new(&at);
+        // Opened to be added to, so named as the recording it wrote the run
+        // onto the end of it -- and named as the cut or anything else the
+        // run writes, it was truncated under the log, or the log's lines went
+        // on into the cut. Asked once the log exists, so that a cut not yet
+        // written under the same name is still the same file.
+        let mut taken: Vec<std::path::PathBuf> = std::iter::once(&input)
+            .chain(&joined)
+            .flat_map(|at| {
+                let at = smartcut_core::netpath::resolve(at).unwrap_or_else(|_| at.into());
+                match smartcut_core::input::Input::parse(&at.to_string_lossy()) {
+                    Ok(i) => std::iter::once(i.file).chain(i.parts).collect::<Vec<_>>(),
+                    Err(_) => vec![at],
+                }
+            })
+            .collect();
+        taken.extend(
+            [output.as_ref(), seek_index.as_ref(), crossing_image.as_ref()]
+                .into_iter()
+                .flatten()
+                .map(std::path::PathBuf::from),
+        );
+        if let Some(out) = output.as_ref().filter(|_| audio_es) {
+            taken.push(std::path::Path::new(out).with_extension("aac"));
+        }
+        if let (Some(at), Some(_)) = (&bdav, iso) {
+            taken.extend(image_beside(std::path::Path::new(at)));
+        }
+        let existed = log.exists();
+        smartcut_core::log::open(log).with_context(|| format!("cannot write the log {at}"))?;
+        if let Some(clash) = taken.iter().find(|t| smartcut_core::input::same_file(log, t)) {
+            smartcut_core::log::close();
+            if !existed {
+                let _ = std::fs::remove_file(log);
+            }
+            bail!(
+                "--log {at} is {}, which this run reads or writes: name another file",
+                clash.display()
+            );
+        }
+        smartcut_core::log::write_only(&format!(
+            "# smartcut {} -- {}",
+            smartcut_core::VERSION,
+            std::env::args_os()
+                .skip(1)
+                .map(|a| a.to_string_lossy().into_owned())
+                .collect::<Vec<_>>()
+                .join(" ")
+        ));
+    }
     // A disc holds several recordings and is opened by naming one of them.
     // Without a name it is a question rather than a job: say what is on it.
     // The chapter points the disc's index carried, on the clip's own clock.
@@ -2471,11 +2539,14 @@ fn main() -> Result<()> {
         )?;
         tell!("wrote {out} (sound only)");
         if verify {
+            // What follows each piece, as the writer was given it: a crossing
+            // that overlaps two pieces' sound makes the file that much shorter.
+            let after: Vec<_> = pieces.iter().map(|p| p.after.clone()).collect();
             let mut pieces = vec![smartcut_core::verify::Piece { src: &src, ranges: &ranges, plans: &[] }];
             for (s, r) in joined_src.iter().zip(&whole) {
                 pieces.push(smartcut_core::verify::Piece { src: s, ranges: r, plans: &[] });
             }
-            check_output(&out, &pieces, smartcut_core::verify::Compare::Nothing)?;
+            check_output_crossed(&out, &pieces, &after, smartcut_core::verify::Compare::Nothing)?;
         }
         return Ok(());
     }
@@ -2590,7 +2661,14 @@ fn main() -> Result<()> {
     );
     written?;
     slot.keep();
-    if verify {
+    // Read back once the output is whole, which for a disc is once its index
+    // is written: a check that stopped the run before that left the
+    // recording on the disc under a number no index named, and every later
+    // `--iso-only` into that disc refused to take the folder away.
+    let check_cut = || -> Result<()> {
+        if !verify {
+            return Ok(());
+        }
         let whole: Vec<Vec<(f64, f64)>> =
             joined_src.iter().map(|s| vec![(0.0, s.duration)]).collect();
         let mut pieces = vec![smartcut_core::verify::Piece { src: &src, ranges: &ranges, plans: &plans }];
@@ -2606,7 +2684,10 @@ fn main() -> Result<()> {
         } else {
             smartcut_core::verify::Compare::Pictures
         };
-        check_output(&out, &pieces, compare)?;
+        check_output(&out, &pieces, compare)
+    };
+    if onto.is_none() {
+        check_cut()?;
     }
     // The sidecar exists for the ARIB workflow, where what is wanted beside
     // the video is an AAC elementary stream. A cut written in another codec
@@ -2776,6 +2857,7 @@ fn main() -> Result<()> {
             None,
         )?;
         tell!("wrote {} -- {}", at.join("BDAV").display(), shown(&name));
+        check_cut()?;
         if let Some(revision) = iso {
             // Beside the folder and named after it. The folder stays unless
             // `--iso-only` says otherwise: it is what the image was made of,
@@ -2901,6 +2983,30 @@ mod tests {
 /// `2026.09` and write `2026.iso`, and put beside the folder by path rather
 /// than by string: `out/` and `out/.` are the folder `out` too, and
 /// `out/.iso` was inside the very folder the image is made of.
+/// Whether two paths name one file, including one neither run has written
+/// yet. Neither there, [`smartcut_core::input::same_file`] cannot say, and
+/// `-o cut.ts --seek-index ./cut.ts` went through as two files; so each is
+/// also read as the folder it is in, resolved, and the name in it.
+fn one_place(a: &str, b: &str) -> bool {
+    use std::path::{Path, PathBuf};
+    let (a, b) = (Path::new(a), Path::new(b));
+    if a == b || smartcut_core::input::same_file(a, b) {
+        return true;
+    }
+    let at = |p: &Path| -> Option<PathBuf> {
+        let dir = p.parent().filter(|d| !d.as_os_str().is_empty()).unwrap_or(Path::new("."));
+        Some(std::fs::canonicalize(dir).ok()?.join(p.file_name()?))
+    };
+    match (at(a), at(b)) {
+        // Windows does not tell `Cut.ts` from `cut.ts`.
+        (Some(x), Some(y)) if cfg!(windows) => {
+            x.to_string_lossy().to_lowercase() == y.to_string_lossy().to_lowercase()
+        }
+        (Some(x), Some(y)) => x == y,
+        _ => false,
+    }
+}
+
 fn image_beside(at: &std::path::Path) -> Result<std::path::PathBuf> {
     let Some(name) = at.file_name() else {
         bail!("{}: an image goes beside the disc's folder, and this has nothing beside it", at.display());

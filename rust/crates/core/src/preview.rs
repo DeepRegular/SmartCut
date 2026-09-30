@@ -1228,6 +1228,9 @@ fn place(ictx: &mut crate::input::Demux, src: &Source, from: f64, margin: f64) -
 enum Cores {
     One,
     All,
+    /// Every core that gives the same pictures every time: see
+    /// [`steady_decoder`].
+    Steady,
 }
 
 /// Decode forward from an access point, handing each picture to `visit`.
@@ -1272,6 +1275,7 @@ fn walk(
             .decoder()
             .video()?,
         Cores::All => crate::video_decoder(params)?,
+        Cores::Steady => steady_decoder(params)?,
     };
 
     let mut frame = ff::frame::Video::empty();
@@ -1402,24 +1406,52 @@ fn walk(
 /// stretch does, and starts again a margin earlier where the landing was
 /// late -- found out on the first picture, before any has been handed on,
 /// so nothing is handed on twice. `visit` returns false to stop.
+///
+/// `head` is where the re-encode that opens the range ends, when one does.
+/// The picture already up at `from` is handed on too where the cut writes
+/// it: see below.
 pub(crate) fn pictures_in(
     src: &Source,
     from: f64,
     to: f64,
+    head: Option<f64>,
     mut visit: impl FnMut(f64, &ff::frame::Video) -> bool,
 ) -> Result<()> {
     crate::init()?;
     let fd = src.video.frame_duration();
     let entry = entry_before(&src.points, from);
-    // The same slack the reference check in the test suite allows: enough to
-    // absorb a timestamp's rounding and no more, because real streams put
+    // The same slack the re-encode in `cut` allows at a range's ends: enough
+    // to absorb a timestamp's rounding and no more, because real streams put
     // their pictures at an arbitrary phase rather than on multiples of a
-    // frame.
-    let eps = 1e-4;
+    // frame. Not a slack of its own: a picture 0.06 ms short of a range's end
+    // -- a phone's recording, an end set at 133.220 -- was one the cut wrote
+    // and a fixed 0.1 ms here left out, and the count was one over.
+    let eps = fd * 1e-3;
+    // **The picture already up when the range opens.** The re-encode in
+    // `cut` writes it at the range's start where nothing of the range's own
+    // begins within a frame of it -- unless its own repeat carries it to the
+    // next picture -- and always where nothing at all begins inside the
+    // opening re-encode. On a recording that mixes pictures shown for three
+    // fields with ones shown for two, a range lands inside one of those
+    // often enough; left out here, every pair after it was one out.
+    // `next` is the first picture at or after `from`, if there is one.
+    let up_too = |was: f64, held: &ff::frame::Video, next: Option<f64>| {
+        let Some(t) = next else { return head.is_some() };
+        if head.is_some_and(|end| t >= end - eps) {
+            return true;
+        }
+        let shown_for = 2 + unsafe { (*held.as_ptr()).repeat_pict.max(0) };
+        let own_end = was + f64::from(shown_for) * fd / 2.0;
+        t - from >= fd && own_end < t - fd / 4.0
+    };
     for (attempt, margin) in [0.0, src.seek_margin].into_iter().enumerate() {
         let mut late = false;
         let mut seen = false;
-        walk(src, entry, margin, false, false, Cores::All, |t, frame| {
+        // The last picture before `from`, until the first one after it.
+        let mut before: Option<(f64, ff::frame::Video)> = None;
+        let mut opened = false;
+        let mut going = true;
+        walk(src, entry, margin, false, false, Cores::Steady, |t, frame| {
             if !seen {
                 seen = true;
                 // Only a walk that has not yet handed anything on can be
@@ -1429,19 +1461,68 @@ pub(crate) fn pictures_in(
                     return false;
                 }
             }
+            if t < from - eps {
+                before = Some((t, frame.clone()));
+                return true;
+            }
+            if !opened {
+                opened = true;
+                if let Some((was, held)) = before.take() {
+                    if up_too(was, &held, Some(t)) && !visit(was, &held) {
+                        going = false;
+                        return false;
+                    }
+                }
+            }
             if t >= to - eps {
                 return false;
             }
-            if t >= from - eps {
-                return visit(t, frame);
-            }
-            true
+            going = visit(t, frame);
+            going
         })?;
-        if !late {
-            break;
+        if late {
+            continue;
         }
+        // The file ended before anything began in the range.
+        if !opened && going {
+            if let Some((was, held)) = before.take() {
+                if up_too(was, &held, None) {
+                    visit(was, &held);
+                }
+            }
+        }
+        break;
     }
     Ok(())
+}
+
+/// A decoder whose pictures are the same every time it is run.
+///
+/// For [`crate::verify`], which holds two decodes of the same bits to being
+/// the same. Threaded, the codecs that conceal damage -- MPEG-2, H.264, VC-1
+/// -- conceal it differently from run to run, frame threads and slice threads
+/// alike, and a picture after the damage that nothing flags came out
+/// different on one side: the same damaged cut checked five times failed
+/// two or three times, and on one thread never. So those decode on one
+/// thread (an MPEG-2 broadcast still checks at about 300 pictures a second a
+/// side). The codecs without concealment keep every core.
+pub(crate) fn steady_decoder(params: ff::codec::Parameters) -> Result<ff::decoder::Video> {
+    let conceals = matches!(
+        params.id(),
+        ff::codec::Id::MPEG1VIDEO
+            | ff::codec::Id::MPEG2VIDEO
+            | ff::codec::Id::H264
+            | ff::codec::Id::VC1
+            | ff::codec::Id::WMV3
+            | ff::codec::Id::MPEG4
+            | ff::codec::Id::H263
+    );
+    let mut ctx = ff::codec::context::Context::from_parameters(params)?;
+    unsafe {
+        let c = ctx.as_mut_ptr();
+        (*c).thread_count = if conceals { 1 } else { 0 };
+    }
+    Ok(ctx.decoder().video()?)
 }
 
 /// Did decoding begin late enough to have missed the picture wanted?

@@ -25,7 +25,13 @@ use std::io::Write;
 use std::sync::Mutex;
 
 /// The file a run is being written down in, if one is.
-static SINK: Mutex<Option<std::fs::File>> = Mutex::new(None);
+static SINK: Mutex<Option<Sink>> = Mutex::new(None);
+
+struct Sink {
+    file: std::fs::File,
+    /// The lines [`write_once`] has put in this file.
+    once: std::collections::HashSet<String>,
+}
 
 /// Print a line of the engine's, and write it down if a run is being logged.
 ///
@@ -42,14 +48,33 @@ pub fn line(text: &str) {
 /// as well would be printing them twice to a terminal nobody has open.
 pub fn write_only(text: &str) {
     let Ok(mut sink) = SINK.lock() else { return };
-    if let Some(file) = sink.as_mut() {
-        // Each line whole, with its own newline, so that two threads saying
-        // something at once leave two lines rather than one interleaved one.
-        let mut buf = String::with_capacity(text.len() + 1);
-        buf.push_str(text.trim_end_matches(['\r', '\n']));
-        buf.push('\n');
-        let _ = file.write_all(buf.as_bytes());
+    if let Some(sink) = sink.as_mut() {
+        put(&mut sink.file, text);
     }
+}
+
+/// Write a line into the open log unless this log already has it.
+///
+/// For a note the engine says once a process (see `note_once`): the window
+/// is one process for many runs, and a note said at an earlier run -- or
+/// when the recording was first added to the list -- belongs in each run's
+/// log all the same.
+pub fn write_once(text: &str) {
+    let Ok(mut sink) = SINK.lock() else { return };
+    if let Some(sink) = sink.as_mut() {
+        if sink.once.insert(text.to_string()) {
+            put(&mut sink.file, text);
+        }
+    }
+}
+
+fn put(file: &mut std::fs::File, text: &str) {
+    // Each line whole, with its own newline, so that two threads saying
+    // something at once leave two lines rather than one interleaved one.
+    let mut buf = String::with_capacity(text.len() + 1);
+    buf.push_str(text.trim_end_matches(['\r', '\n']));
+    buf.push('\n');
+    let _ = file.write_all(buf.as_bytes());
 }
 
 /// Start writing lines down in `path`, in place of any file that was open.
@@ -63,7 +88,7 @@ pub fn open(path: &std::path::Path) -> std::io::Result<()> {
     }
     let file = std::fs::OpenOptions::new().create(true).append(true).open(path)?;
     if let Ok(mut sink) = SINK.lock() {
-        *sink = Some(file);
+        *sink = Some(Sink { file, once: Default::default() });
     }
     Ok(())
 }
@@ -71,8 +96,8 @@ pub fn open(path: &std::path::Path) -> std::io::Result<()> {
 /// Stop writing lines down. The file is flushed and closed.
 pub fn close() {
     if let Ok(mut sink) = SINK.lock() {
-        if let Some(mut file) = sink.take() {
-            let _ = file.flush();
+        if let Some(mut sink) = sink.take() {
+            let _ = sink.file.flush();
         }
     }
 }
@@ -128,9 +153,15 @@ unsafe extern "C" fn libav_line(
     vl: VaList,
 ) {
     use std::sync::atomic::{AtomicI32, Ordering};
+    // A colour tint may ride in the second byte, as libav's default knows.
+    let level = if level >= 0 { level & 0xff } else { level };
     if level > ffmpeg_next::ffi::av_log_get_level() {
         return;
     }
+    // One line at a time, as libav's default holds its own lock: the prefix
+    // flag below is shared, and a decoder's threads log at once.
+    static ONE: Mutex<()> = Mutex::new(());
+    let _one = ONE.lock().unwrap_or_else(|e| e.into_inner());
     // Whether the next piece begins a line and should carry the `[h264 @ …]`
     // prefix. libav's own default keeps the same one flag for every thread.
     static PREFIX: AtomicI32 = AtomicI32::new(1);
@@ -149,13 +180,26 @@ unsafe extern "C" fn libav_line(
     if n <= 0 {
         return;
     }
+    // What libav's default does before printing: a control character is
+    // made a `?`. The text can be the file's own -- a tag, a name, a URL --
+    // and an escape sequence in it is not to reach the terminal or the log.
+    for c in buf.iter_mut().take_while(|c| **c != 0) {
+        let b = *c as u8;
+        if b < 0x08 || (0x0e..0x20).contains(&b) {
+            *c = b'?' as std::ffi::c_char;
+        }
+    }
     let text = std::ffi::CStr::from_ptr(buf.as_ptr()).to_string_lossy();
     // libav writes a line in pieces and ends it with its own newline. The
     // terminal is given the pieces as they come, as libav's default gave them;
     // the file is given whole lines, which is what one line a piece would not
     // have been.
-    eprint!("{text}");
-    let _ = std::io::stderr().flush();
+    // Not `eprint!`, which panics when standard error has gone (a closed
+    // pipe) -- and a panic here, inside a C callback, aborts the process.
+    // libav's own `fprintf` shrugged that off, and so does this.
+    let mut err = std::io::stderr();
+    let _ = err.write_all(text.as_bytes());
+    let _ = err.flush();
     if is_open() {
         PARTIAL.with(|partial| {
             let mut partial = partial.borrow_mut();

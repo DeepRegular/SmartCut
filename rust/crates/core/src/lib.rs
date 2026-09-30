@@ -631,8 +631,11 @@ pub(crate) fn note_once(line: String) {
         .lock()
         .map_or(true, |mut said| said.insert(line.clone()));
     if fresh {
-        crate::log::line(&line);
+        eprintln!("{line}");
     }
+    // Into each run's log once, whether or not the terminal has had it: the
+    // window is one process for many runs.
+    crate::log::write_once(&line);
 }
 
 /// Start libav, and stop it talking over the top of this program.
