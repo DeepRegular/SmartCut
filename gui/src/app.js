@@ -1355,9 +1355,19 @@ let starting = false;
 /// what 中止 did. Shown when no lane has anything to report.
 let sticky = "";
 
+/// The file the run under way is being written down in, or the last run's
+/// once it is over -- which is what 実行ログを開く opens. "" before the first
+/// run, and where the file could not be made. See `runlog.rs`.
+let runLog = "";
+/// Whether that file is still being written to.
+let runLogging = false;
+
 function note(text) {
   sticky = text;
   paintQueueNote();
+  // What a run says goes into its log as well: the folder it branched to,
+  // the disc it could not index, what the image came to. See `runLogLine`.
+  if (text && runLog) runLogLine(text);
 }
 
 /// One line, three lanes. Composed from what is running rather than written
@@ -3940,6 +3950,11 @@ const settings = {
   /// has anywhere to put.
   audioBits: "",
   keyframes: false,
+  /// Whether each file is read back and checked against its recording once
+  /// it is written. Off: it is a second decode of everything written, which
+  /// on an evening's recordings is most of the time the writing took again.
+  /// See `verifyWritten`.
+  verify: false,
   // Where the subtitles a disc draws go. See `outset.subtitles`.
   subtitles: "pgs",
   /// Which disc the list is going onto, in bytes and as a string -- which is
@@ -4365,6 +4380,105 @@ bindSetting("out-audio-rate", "audioRate");
 bindSetting("out-audio-bits", "audioBits");
 bindSetting("out-subtitles", "subtitles");
 bindSetting("out-keyframes", "keyframes", "checked");
+bindSetting("out-verify", "verify", "checked");
+
+// --- プリセット ---------------------------------------------------------------
+//
+// A set of output settings kept under a name -- "TS そのまま", "スマホ用 MP4",
+// "AC-3 を AAC 2ch に" -- and put in force by picking it. Kept in 環境設定's
+// store rather than in a project, because a preset is a standing answer that
+// every project can use; what a project holds is the answer it was given,
+// which a preset picked on it becomes.
+//
+// Everything on this screen goes in but the folder. Where a night's files
+// land is a question about that night, and a preset that moved them would
+// be one nobody could use for two lists.
+
+/// The settings a preset holds.
+const PRESET_KEYS = KEPT_SETTINGS.filter((key) => key !== "dir");
+
+/// The presets, oldest first, less anything the store holds that is not one.
+function presets() {
+  const list = prefs.get("outputPresets");
+  return Array.isArray(list)
+    ? list.filter((p) => p && typeof p.name === "string" && p.name && p.settings && typeof p.settings === "object")
+    : [];
+}
+
+/// The preset the settings in force are, if they are one.
+function presetInForce() {
+  const now = JSON.stringify(PRESET_KEYS.map((k) => settings[k]));
+  return presets().find(
+    (p) => JSON.stringify(PRESET_KEYS.map((k) => (k in p.settings ? p.settings[k] : settings[k]))) === now,
+  );
+}
+
+function paintPresets() {
+  const select = el("out-preset");
+  const all = presets();
+  select.innerHTML =
+    `<option value="">${esc(all.length ? t("outset.presetPick") : t("outset.presetNone"))}</option>` +
+    all.map((p) => `<option value="${esc(p.name)}">${esc(p.name)}</option>`).join("");
+  select.value = presetInForce()?.name ?? "";
+  el("preset-delete").disabled = !select.value;
+}
+
+el("out-preset").addEventListener("change", () => {
+  const p = presets().find((x) => x.name === el("out-preset").value);
+  if (!p) return;
+  for (const key of PRESET_KEYS) {
+    if (!(key in p.settings)) continue;
+    const value = p.settings[key];
+    const want = SETTING_DEFAULTS[key];
+    // Of the kind the control holds, as `loadProject` has it: the store
+    // outlives a version, and a setting that has since changed shape is
+    // better left as it is than put into a control that cannot hold it.
+    if (want === null ? value !== null && typeof value !== "string" : typeof value !== typeof want) continue;
+    settings[key] = value;
+  }
+  settings.prefix = prefixSafe(settings.prefix);
+  const offered = [...el("out-container").options].map((o) => o.value);
+  if (!offered.includes(settings.container)) settings.container = SETTING_DEFAULTS.container;
+  el("out-preset-name").value = p.name;
+  settleOutput();
+  showSettings();
+  touch();
+  tellFold();
+  note(t("outset.presetApplied", { name: p.name }));
+});
+
+el("preset-save").addEventListener("click", async () => {
+  const name = el("out-preset-name").value.trim();
+  if (!name) {
+    note(t("outset.presetNeedsName"));
+    el("out-preset-name").focus();
+    return;
+  }
+  const all = presets();
+  const at = all.findIndex((p) => p.name === name);
+  if (at >= 0 && !(await dialog.ask(t("outset.presetReplace", { name }), { title: t("outset.presetTitle"), kind: "warning" }))) {
+    return;
+  }
+  const kept = {};
+  for (const key of PRESET_KEYS) kept[key] = settings[key];
+  if (at >= 0) all[at] = { name, settings: kept };
+  else all.push({ name, settings: kept });
+  prefs.set("outputPresets", all);
+  paintPresets();
+  note(t("outset.presetSaved", { name }));
+});
+
+el("preset-delete").addEventListener("click", async () => {
+  const name = el("out-preset").value;
+  if (!name) return;
+  if (!(await dialog.ask(t("outset.presetDropAsk", { name }), { title: t("outset.presetTitle"), kind: "warning" }))) {
+    return;
+  }
+  prefs.set("outputPresets", presets().filter((p) => p.name !== name));
+  if (el("out-preset-name").value.trim() === name) el("out-preset-name").value = "";
+  paintPresets();
+  note(t("outset.presetDropped", { name }));
+});
 bindSetting("out-join", "joinAll", "checked");
 
 // --- drop-downs that open upward -----------------------------------------
@@ -6511,6 +6625,7 @@ function paintMasterWhy(odd) {
 }
 
 function renderOutset() {
+  paintPresets();
   lockAudioDetail();
   lockUnwritable();
   lockContainer();
@@ -7297,7 +7412,7 @@ function renderOutScreen() {
         <span class="nm">${esc(s.name)}</span>
         <span class="len dim">${s.len}</span>
         <span class="pbar"><span></span></span>
-        <span class="note dim">${esc(s.out.note || "")}</span>
+        <span class="note dim" title="${esc(s.out.detail || s.out.note || "")}">${esc(s.out.note || "")}</span>
       </li>`
     )
     .join("");
@@ -7502,9 +7617,188 @@ el("run-export").addEventListener("click", () => {
     return;
   }
   abort = true;
+  // A check under way stops at once: it writes nothing, so there is nothing
+  // for it to finish first.
+  invoke("stop_verify").catch(() => {});
   el("out-state").textContent = t("out.aborting");
   paintExportButton();
 });
+
+// --- 実行ログ ---------------------------------------------------------------
+//
+// One file a run, in the program's log folder: what the run was asked to do,
+// what became of each recording, and what the engine and libav said while
+// it happened. The screen shows the same run while it goes and forgets it
+// when the next one starts; the file is what is left to read afterwards,
+// and what goes with a bug report. See `runlog.rs`.
+
+/// The time of day in front of each of the window's own lines.
+function logClock() {
+  const d = new Date();
+  const two = (n) => String(n).padStart(2, "0");
+  return `${two(d.getHours())}:${two(d.getMinutes())}:${two(d.getSeconds())}`;
+}
+
+/// Write lines of the window's into the run's log, each with the time.
+function runLogLine(...lines) {
+  if (!runLogging || !invoke) return;
+  const at = logClock();
+  invoke("run_log_line", { lines: lines.map((l) => `${at}  ${l}`) }).catch(() => {});
+}
+
+/// Start the file for a run, headed with what it was asked to do.
+async function openRunLog(list, share) {
+  if (!invoke) return;
+  const d = new Date();
+  const two = (n) => String(n).padStart(2, "0");
+  const stamp =
+    `${d.getFullYear()}${two(d.getMonth() + 1)}${two(d.getDate())}-` +
+    `${two(d.getHours())}${two(d.getMinutes())}${two(d.getSeconds())}`;
+  // The settings as the run has them, less what is about the rows rather
+  // than the run: the folder of its own is named below with the rest of
+  // where things go.
+  const { master, ...asked } = settings;
+  const head = [
+    `${t("log.started")}: ${d.toLocaleString()}`,
+    `${t("log.project")}: ${projectPath || t("project.untitled")}`,
+    `${t("log.settings")}: ${JSON.stringify({ ...asked, subfolder: runFolder })}`,
+  ];
+  if (share !== null) head.push(`${t("log.share")}: ${sharePct(share)}%`);
+  head.push(`${t("log.clips")}: ${list.length}`);
+  list.forEach((c, i) => {
+    const kept = rangesOf(c)
+      .map(([a, b]) => `${fmt(a)}-${fmt(b)}`)
+      .join(", ");
+    head.push(`  ${i + 1}. ${c.path}`, `     ${t("log.kept")}: ${kept || "-"}`);
+  });
+  try {
+    runLog = await invoke("run_log_open", { stamp, head });
+    runLogging = true;
+  } catch (e) {
+    // A log that cannot be written is not a reason to stop a run that can.
+    jlog(`run log: ${e}`);
+    runLog = "";
+    runLogging = false;
+  }
+  paintLogButton();
+}
+
+/// The run is over; the file stays for 実行ログを開く.
+function closeRunLog() {
+  if (!runLogging) return;
+  runLogging = false;
+  invoke("run_log_close").catch(() => {});
+  paintLogButton();
+}
+
+function paintLogButton() {
+  el("open-log").hidden = !runLog;
+}
+
+el("open-log").addEventListener("click", () => {
+  if (!runLog) return;
+  invoke("open_log", { path: runLog }).catch((e) => note(String(e)));
+});
+
+// --- 出力後の検証 -------------------------------------------------------------
+//
+// With 出力後に検証する on, each file is read back as soon as it is written
+// and lined up against the recording it was cut from: as many pictures as
+// were asked for, the copied ones the same bit for bit, the re-encoded ones
+// the same pictures, nothing the decoder had to paper over, and sound that
+// runs as long as the pictures. See `smartcut_core::verify`.
+
+/// The row the check under way is about, for its progress reports.
+let checking = null;
+
+if (listen) {
+  listen("verify-progress", (ev) => {
+    const [path, f] = ev.payload;
+    if (!checking || checking.path !== path) return;
+    const was = Math.round(checking.out.progress * 100);
+    checking.out.progress = f;
+    if (Math.round(f * 100) === was) return;
+    checking.out.note = t("out.verifyPct", { pct: Math.round(f * 100) });
+    renderOutScreen();
+  });
+}
+
+/// How closely a file can be lined up against its recordings.
+///
+/// A crossing's pictures belong to neither clip, so a join that has one is
+/// read for damage and length only; pictures written back smaller to fit a
+/// disc are counted but not compared, since none of them is the recording's
+/// any more; and sound alone has no pictures to line up.
+function compareFor(list, share) {
+  if (soundOnly()) return "none";
+  if (list.length > 1 && list.slice(0, -1).some((c) => c.after && c.after.kind !== "none")) return "none";
+  return share !== null ? "count" : "pictures";
+}
+
+/// Read `out` back and check it. Answers what the row should say, and
+/// whether the file failed the check.
+///
+/// `row` is the row whose bar the check moves: the clip, or the first clip
+/// of a join.
+async function verifyWritten(row, out, list, share) {
+  checking = row;
+  row.out = { state: "running", progress: 0, note: t("out.verifyPct", { pct: 0 }) };
+  el("out-state").textContent = t("out.verifying", { name: nameOf(out) });
+  renderOutScreen();
+  runLogLine(t("out.verifying", { name: out }));
+  try {
+    const r = await invoke("verify_output", {
+      output: out,
+      clips: list.map((c) => ({ path: c.path, ranges: rangesOf(c) })),
+      compare: compareFor(list, share),
+    });
+    const said = verdict(r);
+    runLogLine(said.detail);
+    return said;
+  } catch (e) {
+    // Stopped, or the file could not be read back. Neither says the file is
+    // wrong, so the row keeps its 完了 and says it was not checked.
+    const why = abort ? t("out.verifyStopped") : t("out.verifyFailed", { e: String(e) });
+    runLogLine(why);
+    return { failed: false, note: t("out.verifySkipped", { why }), detail: why };
+  } finally {
+    checking = null;
+  }
+}
+
+/// What the check found: `note` as the row puts it, after its 完了 or in
+/// place of it, and `detail` in full, for the row's tooltip and the log.
+function verdict(r) {
+  const secs = (d) => Math.abs(d).toFixed(1);
+  const sound = r.soundOff
+    .map(([i, d]) => t(d < 0 ? "out.verifySoundShort" : "out.verifySoundLong", { i, secs: secs(d) }))
+    .join(t("sep"));
+  if (!r.picturesOk) {
+    let why;
+    if (r.compared && r.produced !== r.expected) {
+      why = t("out.verifyCount", { got: r.produced, want: r.expected });
+    } else if (!r.copiesOk) {
+      why = t("out.verifyCopies", { n: r.copyMisses, planned: r.plannedCopy });
+    } else if (r.unlike > 0) {
+      why = t("out.verifyUnlike", { n: r.unlike, at: fmt(r.firstUnlike || 0) });
+    } else if (r.pictures && r.produced === 0) {
+      why = t("out.verifyNoPictures");
+    } else {
+      why = t("out.verifyDamaged", { n: r.damaged });
+    }
+    const said = sound ? `${why}${t("sep")}${sound}` : why;
+    return { failed: true, note: said, detail: said };
+  }
+  let ok;
+  if (!r.pictures) ok = t("out.verifyOkSound", { secs: r.seconds.toFixed(1) });
+  else if (r.compared && r.identical > 0) ok = t("out.verifyOkSame", { n: r.produced, same: r.identical });
+  else ok = t("out.verifyOkCount", { n: r.produced });
+  return {
+    failed: false,
+    note: t(sound ? "out.verifyOkMind" : "out.verifyOk"),
+    detail: sound ? `${ok}${t("out.verifyMind", { what: sound })}` : ok,
+  };
+}
 
 /// Write the whole list as one file.
 ///
@@ -7611,11 +7905,24 @@ async function writeJoined(list) {
       videoShare: share,
     });
     followWrite(1);
-    for (const c of list) c.out = { state: "done", progress: 1, note: t("out.done", { extra: "" }) };
+    let extra = "";
+    let detail = "";
+    if (settings.verify && !abort) {
+      const v = await verifyWritten(list[0], out, list, share);
+      if (v.failed) {
+        for (const c of list) c.out = { state: "error", progress: 0, note: v.note };
+        return false;
+      }
+      extra = v.note;
+      detail = v.detail;
+    }
+    for (const c of list) c.out = { state: "done", progress: 1, note: t("out.done", { extra }), detail };
+    runLogLine(`${t("log.wrote")}: ${out}`);
     note(t("out.joined", { n: list.length, name: nameOf(out) }));
     return true;
   } catch (e) {
     for (const c of list) c.out = { state: "error", progress: 0, note: String(e) };
+    runLogLine(`${t("log.failed")}: ${out}: ${e}`);
     return false;
   } finally {
     writing = null;
@@ -7638,6 +7945,7 @@ async function runExport() {
     // left stopped and the list does not go on reading as being written.
     jlog(`export: ${e}`);
     note(String(e));
+    closeRunLog();
     exporting = false;
     writing = null;
     runDir = null;
@@ -7775,6 +8083,7 @@ async function startExport() {
   began = Date.now();
   phaseBegan = began;
   discSteps = [];
+  await openRunLog(list, share);
   heldAfterRun = false;
   list.forEach((c) => (c.out = { state: "waiting", progress: 0, note: t("out.waiting") }));
   paintButtons();
@@ -7798,6 +8107,7 @@ async function startExport() {
     const out = disc ? slots[i].path : outputPath(clip);
     if (out === clip.path) {
       clip.out = { state: "error", progress: 0, note: t("out.sameName") };
+      runLogLine(`${t("log.failed")}: ${clip.path}: ${clip.out.note}`);
       renderOutScreen();
       continue;
     }
@@ -7805,6 +8115,7 @@ async function startExport() {
     // in the list: its turn would come after its file had been cut short.
     if (await invoke("names_an_input", { output: out, inputs: runInputs() })) {
       clip.out = { state: "error", progress: 0, note: t("out.overwritesInput") };
+      runLogLine(`${t("log.failed")}: ${clip.path}: ${clip.out.note}`);
       renderOutScreen();
       continue;
     }
@@ -7815,6 +8126,7 @@ async function startExport() {
     // run that looked like it was going to write something.
     if (!rangesOf(clip).length) {
       clip.out = { state: "error", progress: 0, note: t("out.allCut") };
+      runLogLine(`${t("log.failed")}: ${clip.path}: ${clip.out.note}`);
       renderOutScreen();
       continue;
     }
@@ -7824,6 +8136,7 @@ async function startExport() {
     writingName = nameOf(out);
     clip.out = { state: "running", progress: 0, note: "0%" };
     el("out-state").textContent = t("out.writing", { name: writingName });
+    runLogLine(`[${i + 1}/${list.length}] ${clip.path}`, `  -> ${out}`);
     renderOutScreen();
     // Before the cut starts, not during: the plan and the frames are reads of
     // the same recording the cut is about to stream off the disc.
@@ -7912,10 +8225,27 @@ async function startExport() {
           extra = t("out.doneKeyframes", { n });
         }
       }
-      clip.out = { state: "done", progress: 1, note: t("out.done", { extra }) };
+      // Read back, where that was asked for, before the row says 完了: a file
+      // that does not match what was asked for is not done.
+      let detail = "";
+      if (settings.verify && !abort) {
+        const v = await verifyWritten(clip, out, [clip], share);
+        if (v.failed) {
+          clip.out = { state: "error", progress: 0, note: v.note };
+          writing = null;
+          renderOutScreen();
+          paintOutProgress(done / list.length);
+          continue;
+        }
+        extra += v.note;
+        detail = v.detail;
+      }
+      clip.out = { state: "done", progress: 1, note: t("out.done", { extra }), detail };
+      runLogLine(`  ${t("log.wrote")}: ${out}`);
       done++;
     } catch (e) {
       clip.out = { state: "error", progress: 0, note: String(e) };
+      runLogLine(`  ${t("log.failed")}: ${e}`);
     }
     writing = null;
     renderOutScreen();
@@ -8110,6 +8440,8 @@ async function startExport() {
     aborted: abort && list.some((c) => c.out.state !== "done") ? t("out.summaryAborted") : "",
     elapsed: clock((Date.now() - began) / 1000),
   });
+  runLogLine(el("out-state").textContent);
+  closeRunLog();
   paintOutProgress(1);
   // Back to what they were before the run: a list somebody had stopped
   // reading stays stopped, unless they asked for it during the run.
@@ -8485,6 +8817,100 @@ function retitleMain() {
     shownDirty = unsaved;
     invoke("set_dirty", { dirty: unsaved });
   }
+  keepSafe(unsaved);
+}
+
+// --- 自動保存 -----------------------------------------------------------------
+//
+// Work that is not on disc is written somewhere it can be found again, a few
+// seconds after it changes: the same project a save would write, into the
+// program's own folder rather than over the project's file. A window that
+// crashes, or a machine that loses its power, leaves it there, and the next
+// start offers it back. Saving, or closing the window normally, takes it
+// away. See `recovery.rs`.
+
+/// How long after a change the copy is written. Long enough that a drag
+/// across the timeline is one write rather than fifty.
+const KEEP_SAFE_AFTER = 3000;
+let keepSafeTimer = null;
+/// The shape last written, so that a repaint that changed nothing writes
+/// nothing; "" for none written, or taken away since.
+let keptShape = "";
+
+function keepSafe(unsaved) {
+  // The batch tool's jobs are files already, and a queue it did not finish
+  // is a queue still on disc.
+  if (!invoke || isTool()) return;
+  if (!unsaved) {
+    clearTimeout(keepSafeTimer);
+    keepSafeTimer = null;
+    if (keptShape) {
+      keptShape = "";
+      invoke("recovery_drop").catch(() => {});
+    }
+    return;
+  }
+  // Not put off again by the next change: a list being worked on steadily
+  // would otherwise never be written at all.
+  if (keepSafeTimer) return;
+  keepSafeTimer = setTimeout(() => {
+    keepSafeTimer = null;
+    if (!dirty()) return;
+    const shape = shapeOf();
+    if (shape === keptShape) return;
+    keptShape = shape;
+    const body = JSON.stringify({ recovered: 1, project: projectPath, doc: captureProject() });
+    invoke("recovery_put", { body }).catch((e) => {
+      keptShape = "";
+      jlog(`autosave: ${e}`);
+    });
+  }, KEEP_SAFE_AFTER);
+}
+
+/// Offer back what a window that is gone left unsaved. At startup, in a
+/// window that opened on nothing: one that was handed files or a project has
+/// its work already.
+///
+/// The newest is offered. Any others stay where they are, held by nobody
+/// once this window closes, and are offered at the next start.
+async function offerRecovery() {
+  if (!invoke || isTool()) return;
+  let found;
+  try {
+    found = await invoke("recovery_orphans");
+  } catch (e) {
+    jlog(`recovery: ${e}`);
+    return;
+  }
+  const newest = found && found[0];
+  if (!newest) return;
+  let kept;
+  try {
+    kept = JSON.parse(newest.body);
+  } catch {
+    kept = null;
+  }
+  const doc = kept && kept.doc;
+  const n = doc && Array.isArray(doc.clips) ? doc.clips.length : 0;
+  if (!n) {
+    invoke("recovery_forget", { id: newest.id }).catch(() => {});
+    return;
+  }
+  const project = typeof kept.project === "string" ? kept.project : "";
+  const when = new Date(newest.saved).toLocaleString();
+  const yes = await dialog.ask(
+    t("recover.body", { when, n, name: project ? nameOf(project) : t("project.untitled") }),
+    { title: t("recover.title"), kind: "warning" },
+  );
+  if (yes && (await loadProject(project || "", doc))) {
+    // The file on disc, if there is one, is not what is on screen: the `*`
+    // stays up until the work is saved over it.
+    projectPath = project;
+    savedShape = "";
+    retitleMain();
+    note(t("recover.done", { n }));
+  }
+  invoke("recovery_forget", { id: newest.id }).catch(() => {});
 }
 
 /// Say that something that goes into a project may have changed.
@@ -8650,13 +9076,15 @@ async function openProject() {
 /// to it, in the row itself, where it can be looked at next to the ones that
 /// were fine. Refusing the whole project over one moved file would be the
 /// worse trade -- the other nineteen rows are still exactly right.
-async function loadProject(path) {
-  let doc;
-  try {
-    doc = JSON.parse(await invoke("read_project", { path }));
-  } catch (e) {
-    note(t("project.cannotOpen", { name: nameOf(path), e }));
-    return false;
+async function loadProject(path, given = null) {
+  let doc = given;
+  if (!doc) {
+    try {
+      doc = JSON.parse(await invoke("read_project", { path }));
+    } catch (e) {
+      note(t("project.cannotOpen", { name: nameOf(path), e }));
+      return false;
+    }
   }
   // A number this program has never heard of is a file from a later one, and
   // what it would lose on the way in is exactly the part it does not
@@ -10302,6 +10730,7 @@ el("batch-stop-all").addEventListener("click", () => {
   // And the job under the head. Stopping the queue and letting the disc it
   // is halfway through finish would be a stop nobody asked for.
   abort = true;
+  invoke("stop_verify").catch(() => {});
   // Said on the row it is about. The one being written takes a moment to
   // stop -- it finishes the recording in hand -- and a row that went on
   // saying what it was writing would look like one that had not been told.
@@ -10355,6 +10784,7 @@ el("batch-list").addEventListener("click", (ev) => {
   job.note = t(running ? "batch.stopping" : "batch.jobStopped");
   if (running) {
     abort = true;
+    invoke("stop_verify").catch(() => {});
     if (exporting) el("out-state").textContent = t("out.aborting");
   }
   renderBatch();
@@ -11317,6 +11747,14 @@ el("pref-ffmpeg-log").addEventListener("change", async (ev) => {
   await pushPrefs();
 });
 
+el("pref-logs-open").addEventListener("click", async () => {
+  try {
+    await invoke("show_folder", { path: await invoke("logs_folder") });
+  } catch (e) {
+    note(String(e));
+  }
+});
+
 /// Where the backend would put the scratch files if nobody chose. Asked once
 /// at startup and shown as the field's placeholder, so that "既定" is a place
 /// with a name rather than an empty box.
@@ -11910,7 +12348,10 @@ tellBackend(invoke)
   .then((failed) => (failed ? note(t("prefs.cacheDirFailed", { e: failed })) : null))
   .then(() => invoke("initial_paths"))
   .then(async (paths) => {
-    if (!paths || !paths.length) return;
+    if (!paths || !paths.length) {
+      await offerRecovery();
+      return;
+    }
     // Launched on files, from a file manager or the command line. They go
     // into the list like any others; a single one goes straight on into the
     // editor, which is what happened before there was a list. Several do

@@ -34,6 +34,11 @@ const DEFAULTS = {
   /// One is added when recordings are added from it, or when a project that
   /// names it is opened after asking. See `sharesAsked` in `app.js`.
   trustedShares: [],
+  /// The output settings kept under a name, oldest first: `{ name, settings }`
+  /// each. Put in force from the output settings screen, where they are made
+  /// and removed too; see `presets` in `app.js`. Here rather than in a
+  /// project because every project can use them.
+  outputPresets: [],
   /// Whether the output settings are put back the way they were left at the
   /// next start. Off, because the settings screen decides what a recording
   /// becomes and a program that quietly remembers yesterday's answer is one

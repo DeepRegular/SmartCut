@@ -283,8 +283,13 @@ const CATALOG = {
     "prefs.ffmpegLog.warn": "警告のみ",
     "prefs.ffmpegLog.all": "すべて",
     "prefs.ffmpegLogNote":
-      "FFmpeg 自身のメッセージを標準エラーに出力します。そのほとんどは不具合ではありません。" +
+      "FFmpeg 自身のメッセージを標準エラーと実行ログに出力します。そのほとんどは不具合ではありません。" +
       "不具合を報告するときにだけ使ってください。",
+    "prefs.logsOpen": "実行ログのフォルダーを開く",
+    "prefs.logsNote":
+      "出力するたびに、その回の設定、クリップごとの結果、エンジンのメッセージを" +
+      "テキストファイルに記録します。新しいものから 100 回分を残します。" +
+      "出力がうまくいかなかったときや、不具合を報告するときに使ってください。",
 
     // --- バージョン情報 ----------------------------------------------------
     "about.title": "バージョン情報",
@@ -699,6 +704,20 @@ const CATALOG = {
     "outset.audioBits": "量子化ビット数:",
     "outset.audioBitrate": "音声ビットレート:",
     "outset.keyframeSidecar": "キーフレーム情報を別ファイル (.keyframe) で出力する",
+    "outset.verify": "出力後に元の録画と照合する",
+    "outset.preset": "プリセット:",
+    "outset.presetName": "プリセット名",
+    "outset.presetSave": "保存",
+    "outset.presetDelete": "削除",
+    "outset.presetPick": "（プリセットを選択）",
+    "outset.presetNone": "（保存したプリセットはありません）",
+    "outset.presetTitle": "プリセット",
+    "outset.presetApplied": "プリセット「{name}」を適用しました",
+    "outset.presetNeedsName": "プリセットの名前を入力してください",
+    "outset.presetReplace": "プリセット「{name}」はすでにあります。いまの設定で上書きしますか？",
+    "outset.presetSaved": "プリセット「{name}」を保存しました（出力先フォルダーは含みません）",
+    "outset.presetDropAsk": "プリセット「{name}」を削除しますか？",
+    "outset.presetDropped": "プリセット「{name}」を削除しました",
     "container.same": "入力と同じ",
     "container.ts": "MPEG-2 トランスポート (.ts)",
     "audio.smart": "スマートレンダリング（既定）",
@@ -908,6 +927,40 @@ const CATALOG = {
     "out.summary": "{done} / {all} 本を出力しました{failed}{aborted}　経過 {elapsed}",
     "out.summaryFailed": "　失敗 {n} 本",
     "out.summaryAborted": "　（中止されました）",
+    "out.openLog": "実行ログを開く",
+    "out.verifying": "\"{name}\" を照合中: 元の録画と 1 フレームずつ比べています…",
+    "out.verifyPct": "照合 {pct}%",
+    "out.verifyOk": " / 照合 OK",
+    "out.verifyOkMind": " / 照合 OK（音声に注意）",
+    "out.verifyOkSame": "照合 OK: {n} フレーム。うち {same} フレームは元の録画とビット単位で同じです",
+    "out.verifyOkCount": "照合 OK: {n} フレーム",
+    "out.verifyOkSound": "照合 OK: 音声 {secs} 秒",
+    "out.verifyMind": "（注意: {what}）",
+    "out.verifySoundShort": "音声 #{i} が映像より {secs} 秒短い",
+    "out.verifySoundLong": "音声 #{i} が映像より {secs} 秒長い",
+    "out.verifyCount": "照合で不一致: {got} フレームあります（{want} フレームのはずです）",
+    "out.verifyUnlike": "照合で不一致: 元の録画と違うフレームが {n} 枚あります（最初は {at}）",
+    "out.verifyCopies":
+      "照合で不一致: 無劣化でコピーしたはずの {planned} フレームのうち {n} フレームが元の録画と違います",
+    "out.verifyNoPictures": "照合で不一致: 映像を 1 フレームも復号できません",
+    "out.verifyDamaged": "照合で不一致: 復号エラーのフレームが {n} 枚あります",
+    "out.verifySkipped": " / {why}",
+    "out.verifyStopped": "照合は中止しました",
+    "out.verifyFailed": "照合できませんでした: {e}",
+    "log.started": "開始",
+    "log.project": "プロジェクト",
+    "log.settings": "出力設定",
+    "log.share": "映像の書き直し",
+    "log.clips": "クリップ",
+    "log.kept": "残す範囲",
+    "log.wrote": "出力",
+    "log.failed": "失敗",
+    "recover.title": "作業の復元",
+    "recover.body":
+      "前回、保存していない作業を残したまま SmartCut が終了しました。\n\n" +
+      "{name}（クリップ {n} 本、{when} の時点）\n\n" +
+      "復元しますか？「いいえ」を選ぶと、この作業は破棄されます。",
+    "recover.done": "前回の作業を復元しました（クリップ {n} 本）。保存するまでタイトルに * が付きます",
 
     // --- バッチ出力 --------------------------------------------------------
     "batch.counts":
@@ -1511,8 +1564,13 @@ const CATALOG = {
     "prefs.ffmpegLog.warn": "Warnings only",
     "prefs.ffmpegLog.all": "Everything",
     "prefs.ffmpegLogNote":
-      "Lets FFmpeg's own messages through to standard error. Almost none of them are faults; " +
-      "turn this on to quote them in a bug report.",
+      "Lets FFmpeg's own messages through to standard error and the run log. Almost none of " +
+      "them are faults; turn this on to quote them in a bug report.",
+    "prefs.logsOpen": "Open the run log folder",
+    "prefs.logsNote":
+      "Every run is written down as a text file: its settings, what became of each clip, and " +
+      "what the engine said. The newest 100 are kept. Read one when a run went wrong, and " +
+      "attach it to a bug report.",
 
     // --- about -----------------------------------------------------------
     "about.title": "About SmartCut",
@@ -1907,6 +1965,20 @@ const CATALOG = {
     "outset.audioBits": "Bit depth:",
     "outset.audioBitrate": "Audio bitrate:",
     "outset.keyframeSidecar": "Write the keyframes to a separate .keyframe file",
+    "outset.verify": "Check each file against the recording once it is written",
+    "outset.preset": "Preset:",
+    "outset.presetName": "Preset name",
+    "outset.presetSave": "Save",
+    "outset.presetDelete": "Delete",
+    "outset.presetPick": "(choose a preset)",
+    "outset.presetNone": "(no saved presets)",
+    "outset.presetTitle": "Presets",
+    "outset.presetApplied": "Preset \"{name}\" applied",
+    "outset.presetNeedsName": "Type a name for the preset",
+    "outset.presetReplace": "There is already a preset called \"{name}\". Replace it with the settings on screen?",
+    "outset.presetSaved": "Preset \"{name}\" saved (the output folder is not part of it)",
+    "outset.presetDropAsk": "Delete the preset \"{name}\"?",
+    "outset.presetDropped": "Preset \"{name}\" deleted",
     "container.same": "Same as the input",
     "container.ts": "MPEG-2 transport (.ts)",
     "audio.smart": "Smart rendering (default)",
@@ -2092,6 +2164,39 @@ const CATALOG = {
     "out.writingCrossings": "Writing \"{name}\": {n} crossing{n?s} written afresh, {secs}s of it…",
     "out.summary": "{done} of {all} written{failed}{aborted}   elapsed {elapsed}",
     "out.summaryFailed": "   {n} failed",
+    "out.openLog": "Open the run log",
+    "out.verifying": "Checking \"{name}\" against the recording, frame by frame…",
+    "out.verifyPct": "Checking {pct}%",
+    "out.verifyOk": " / checked",
+    "out.verifyOkMind": " / checked (see the sound)",
+    "out.verifyOkSame": "Checked: {n} frames, {same} of them bit for bit the recording's own",
+    "out.verifyOkCount": "Checked: {n} frames",
+    "out.verifyOkSound": "Checked: {secs}s of sound",
+    "out.verifyMind": " (note: {what})",
+    "out.verifySoundShort": "sound #{i} is {secs}s shorter than the pictures",
+    "out.verifySoundLong": "sound #{i} is {secs}s longer than the pictures",
+    "out.verifyCount": "Check failed: {got} frames written, {want} expected",
+    "out.verifyUnlike": "Check failed: {n} frame{n?s} do not match the recording (first at {at})",
+    "out.verifyCopies": "Check failed: {n} of the {planned} frames meant to be copied differ from the recording",
+    "out.verifyNoPictures": "Check failed: not one picture could be decoded",
+    "out.verifyDamaged": "Check failed: {n} frame{n?s} decoded with errors",
+    "out.verifySkipped": " / {why}",
+    "out.verifyStopped": "check stopped",
+    "out.verifyFailed": "could not be checked: {e}",
+    "log.started": "Started",
+    "log.project": "Project",
+    "log.settings": "Output settings",
+    "log.share": "Pictures written at",
+    "log.clips": "Clips",
+    "log.kept": "Kept",
+    "log.wrote": "Wrote",
+    "log.failed": "Failed",
+    "recover.title": "Recover work",
+    "recover.body":
+      "SmartCut last closed with work that had not been saved.\n\n" +
+      "{name} ({n} clip{n?s}, as of {when})\n\n" +
+      "Recover it? Choosing No discards it.",
+    "recover.done": "Recovered the unsaved work ({n} clip{n?s}). The title keeps its * until it is saved",
     "out.summaryAborted": "   (stopped)",
 
     // --- batch export ----------------------------------------------------

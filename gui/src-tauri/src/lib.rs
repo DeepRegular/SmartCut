@@ -24,6 +24,8 @@ use std::sync::Mutex;
 mod lang;
 mod geometry;
 mod prefs;
+mod recovery;
+mod runlog;
 
 use base64::Engine as _;
 use serde::{Deserialize, Serialize};
@@ -5728,6 +5730,149 @@ async fn export(
     .map_err(|e| e.to_string())?
 }
 
+/// One recording of a file that is being read back, and what of it was kept.
+#[derive(Deserialize)]
+struct CheckClip {
+    path: String,
+    ranges: Vec<(f64, f64)>,
+}
+
+/// What reading a written file back found. See `smartcut_core::verify`.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct Checked {
+    passed: bool,
+    pictures_ok: bool,
+    pictures: bool,
+    compared: bool,
+    produced: usize,
+    expected: usize,
+    identical: usize,
+    reencoded: usize,
+    /// How many pictures the plan copied, how many of those did not come
+    /// back bit for bit, and whether that is within an edge's slack.
+    planned_copy: Option<usize>,
+    copy_misses: usize,
+    copies_ok: bool,
+    worst_db: Option<f64>,
+    unlike: usize,
+    first_unlike: Option<f64>,
+    damaged: usize,
+    damaged_in_source: usize,
+    seconds: f64,
+    /// The sound tracks that do not run as long as the pictures: the
+    /// output's stream index, and by how much (positive for longer).
+    sound_off: Vec<(usize, f64)>,
+}
+
+/// Whether the check under way has been told to stop.
+#[derive(Default)]
+struct VerifyStop(AtomicBool);
+
+#[tauri::command]
+fn stop_verify(stop: State<VerifyStop>) {
+    stop.0.store(true, Ordering::SeqCst);
+}
+
+/// Read a file this window has just written back, and check it against the
+/// recordings it was cut from.
+///
+/// `compare` is `pictures`, `count` or `none`; see
+/// `smartcut_core::verify::Compare`. The window knows which: a join that
+/// crosses by a transition cannot be lined up at all, and a run that wrote
+/// every picture back smaller can be counted but not compared.
+///
+/// What it found also goes into the run's log, in the engine's own words,
+/// beside the window's account of it.
+#[tauri::command]
+async fn verify_output(
+    app: tauri::AppHandle,
+    output: String,
+    clips: Vec<CheckClip>,
+    compare: String,
+) -> Result<Checked, String> {
+    app.state::<VerifyStop>().0.store(false, Ordering::SeqCst);
+    tauri::async_runtime::spawn_blocking(move || {
+        let output = local_path(&output)?.to_string_lossy().into_owned();
+        let compare = match compare.as_str() {
+            "pictures" => smartcut_core::verify::Compare::Pictures,
+            "count" => smartcut_core::verify::Compare::Count,
+            _ => smartcut_core::verify::Compare::Nothing,
+        };
+        let mut sources = Vec::with_capacity(clips.len());
+        let mut plans = Vec::with_capacity(clips.len());
+        for c in &clips {
+            let mut src = scan_cached(&app, &c.path)?.0;
+            // The plan the export wrote by, worked out the way `export` works
+            // it out: where each range really begins and ends, and which of
+            // its pictures are held to coming back bit for bit. Only where
+            // the pictures are lined up at all.
+            let plan = if compare != smartcut_core::verify::Compare::Nothing {
+                if !src.leading_known {
+                    index::refine_leading(
+                        &src.input.url.clone(),
+                        &src.video.clone(),
+                        src.start_time,
+                        src.byte_seekable,
+                        &mut src.points,
+                        &c.ranges,
+                    )
+                    .map_err(|e| e.to_string())?;
+                }
+                build_plan(&src, &c.ranges)
+            } else {
+                Vec::new()
+            };
+            sources.push(src);
+            plans.push(plan);
+        }
+        let pieces: Vec<smartcut_core::verify::Piece> = sources
+            .iter()
+            .zip(&clips)
+            .zip(&plans)
+            .map(|((src, c), plans)| smartcut_core::verify::Piece { src, ranges: &c.ranges, plans })
+            .collect();
+        let reporter = app.clone();
+        let whose = clips.first().map(|c| c.path.clone()).unwrap_or_default();
+        let stop = app.state::<VerifyStop>();
+        let report = smartcut_core::verify::check(
+            &output,
+            &pieces,
+            compare,
+            Some(Box::new(move |f| {
+                let _ = reporter.emit("verify-progress", (whose.clone(), f));
+            })),
+            &stop.0,
+        )
+        .map_err(|e| e.to_string())?;
+        for line in report.lines() {
+            smartcut_core::log::write_only(&format!("  verify: {line}"));
+        }
+        Ok(Checked {
+            passed: report.passed(),
+            pictures_ok: report.pictures_ok(),
+            pictures: report.pictures,
+            compared: report.compared,
+            produced: report.produced,
+            expected: report.expected,
+            identical: report.identical,
+            reencoded: report.reencoded,
+            planned_copy: report.planned_copy,
+            copy_misses: report.copy_misses,
+            copies_ok: report.copies_came_back(),
+            worst_db: report.worst_db,
+            unlike: report.unlike,
+            first_unlike: report.first_unlike,
+            damaged: report.damaged,
+            damaged_in_source: report.damaged_in_source,
+            seconds: report.seconds,
+            sound_off: report.sound_off(),
+        })
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
 /// One clip of a list being written into a single file.
 ///
 /// What the window sends per clip, which is everything about it that is not
@@ -8158,6 +8303,8 @@ pub fn run() {
         .manage(Crossed::default())
         .manage(Subs::default())
         .manage(BatchStop::default())
+        .manage(VerifyStop::default())
+        .manage(recovery::Recovery::default())
         .manage(Shots::default())
         .manage(argv)
         .manage(queued)
@@ -8256,6 +8403,17 @@ pub fn run() {
             subtitle_at,
             export,
             export_joined,
+            verify_output,
+            stop_verify,
+            runlog::run_log_open,
+            runlog::run_log_line,
+            runlog::run_log_close,
+            runlog::logs_folder,
+            runlog::open_log,
+            recovery::recovery_put,
+            recovery::recovery_drop,
+            recovery::recovery_orphans,
+            recovery::recovery_forget,
             programme,
             series_title,
             bdav_prepare,
@@ -8336,6 +8494,10 @@ pub fn run() {
             // `exit` asks the loop to leave, it does not walk out of it.
             if let tauri::RunEvent::Exit = event {
                 geometry::save(app);
+                // A window that closes normally has either saved its work or
+                // been told to throw it away; either way its copy goes.
+                recovery::on_exit(app);
+                smartcut_core::log::close();
                 // And the tool takes its name off the door as it goes, so
                 // that the list window knows at once. See `batch_gone`.
                 if batch {

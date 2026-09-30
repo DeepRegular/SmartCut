@@ -457,6 +457,18 @@
 
         <div class="panel">
           <div class="panel-head" id="outset-file-head" data-i18n="outset.fileHead">ファイル設定</div>
+          <!-- Named sets of everything on this screen but the folder, kept in
+               環境設定's store so that every project can use them. Picking
+               one puts it in force; the list shows the one in force, or
+               nothing once a control has been changed away from it. See
+               `presets`. -->
+          <div class="row" id="row-preset">
+            <span data-i18n="outset.preset">プリセット:</span>
+            <span class="drop"><select id="out-preset"></select></span>
+            <input id="out-preset-name" type="text" data-i18n-ph="outset.presetName" />
+            <button id="preset-save" class="mini" data-i18n="outset.presetSave">保存</button>
+            <button id="preset-delete" class="mini" data-i18n="outset.presetDelete">削除</button>
+          </div>
           <!-- The rows that only mean something for one of the two shapes
                are on screen only for that one. A disc names its own files, so
                a prefix and a container have nothing to choose there, and its
@@ -656,6 +668,12 @@
             <label class="opt"><input id="out-keyframes" type="checkbox" />
               <span data-i18n="outset.keyframeSidecar">キーフレーム情報を別ファイル (.keyframe) で出力する</span></label>
           </div>
+          <!-- On both tabs: a disc's streams are files like any other, and
+               reading them back is the same check. -->
+          <div class="opts" id="row-verify">
+            <label class="opt"><input id="out-verify" type="checkbox" />
+              <span data-i18n="outset.verify">出力後に元の録画と照合する</span></label>
+          </div>
         </div>
       </div>
     </section>
@@ -716,6 +734,8 @@
                job out of the queue is バッチを上書き. `paintEnlistButton`
                writes it. -->
           <button id="enlist-export" class="mini">バッチに登録</button>
+          <!-- The last run's log, once there is one. See `openRunLog`. -->
+          <button id="open-log" class="mini" data-i18n="out.openLog" hidden>実行ログを開く</button>
         </div>
         <div class="out-status">
           <div class="row"><span class="lbl" data-i18n="out.stateLbl">状況:</span>
@@ -1160,6 +1180,11 @@
                 </span>
               </div>
               <p class="dim" data-i18n="prefs.ffmpegLogNote"></p>
+              <!-- Where each run's own log is. See `runlog.rs`. -->
+              <div class="row">
+                <button id="pref-logs-open" class="mini" data-i18n="prefs.logsOpen">実行ログのフォルダーを開く</button>
+              </div>
+              <p class="dim" data-i18n="prefs.logsNote"></p>
             </section>
           </div>
         </div>
