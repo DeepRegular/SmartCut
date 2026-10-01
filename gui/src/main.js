@@ -1427,7 +1427,7 @@ const WAVE_Y = TOP + HGT + 12;
 const WAVE_H = 28;
 
 /// Whether the band is wanted at all. 表示 in the editor answers it.
-const waveWanted = () => prefs.get("waveform") !== false;
+const waveWanted = () => prefs.get("waveform") === true;
 
 /// The outline of the recording on screen, once it has been read:
 /// `{ path, step, floor, peak, rms }`, the two levels a byte per bucket.
@@ -1437,6 +1437,9 @@ let waveReading = null;
 /// Bumped whenever what is held is let go, so that an answer to an earlier
 /// question is not taken.
 let waveGen = 0;
+/// Whether the pictures pass for the recording on screen is over, which is
+/// when the waveform is asked for. See `prepare`.
+let prepared = false;
 /// The columns as last worked out, and what they were worked out for. The
 /// track is redrawn on every pointer move and every frame of playback, and
 /// the band is the one thing on it that costs more than a few rectangles.
@@ -1455,6 +1458,7 @@ const trackH = () => (waveShown() ? TRACK_BASE_H + WAVE_H + 3 : TRACK_BASE_H);
 const laneShift = () => (waveShown() ? WAVE_H + 3 : 0);
 
 function forgetWave() {
+  prepared = false;
   wave = null;
   waveReading = null;
   waveCols = null;
@@ -1558,10 +1562,14 @@ function drawWave(w) {
   ctx.fillStyle = "rgba(255,255,255,.04)";
   ctx.fillRect(0, WAVE_Y, w, WAVE_H);
   if (!wave || wave.path !== src.path) {
-    if (waveReading && waveReading.path === src.path) {
+    const reading = waveReading && waveReading.path === src.path;
+    if (reading || !prepared) {
       ctx.fillStyle = "#8a8a8a";
       ctx.font = "10px system-ui";
-      ctx.fillText(tr("editor.waveReading", { pct: Math.round(waveReading.done * 100) }), 4, mid + 3);
+      const say = reading
+        ? tr("editor.waveReading", { pct: Math.round(waveReading.done * 100) })
+        : tr("editor.waveWaiting");
+      ctx.fillText(say, 4, mid + 3);
     }
     return;
   }
@@ -2610,10 +2618,14 @@ function showWave(on, remember = true) {
     button.classList.toggle("on", on);
     button.setAttribute("aria-pressed", on ? "true" : "false");
   }
-  if (!remember) return;
-  prefs.set("waveform", on);
+  if (remember) {
+    prefs.set("waveform", on);
+    // The backend outlines the sound in the pictures pass only while this
+    // is on. See `wave_wanted`.
+    prefs.tellBackend(invoke);
+  }
   draw();
-  if (on && walked()) askWave();
+  if (on && prepared) askWave();
 }
 
 const waveButton = el("wave-show");
@@ -4894,6 +4906,7 @@ function showWarm(text) {
 /// When an index from an earlier session is found there is nothing to do at
 /// all and this returns at once.
 async function prepare() {
+  prepared = false;
   warmed = false;
   held = false;
   // Until this says otherwise the recording is answering for its own
@@ -4968,6 +4981,8 @@ async function prepare() {
     // showing, because the second file's own pass is already running.
     if (String(e).includes("cancelled") || gen !== openGen) return;
     showWarm(tr("warm.failed", { e }));
+  } finally {
+    if (gen === openGen) prepared = true;
   }
 }
 
@@ -6528,8 +6543,14 @@ async function openPath(picked, saved, side, name, chapters, dropPids, detected)
     await settle(() => loadFlatCached(!saved));
     if (overtaken()) return;
     settleMark();
-    prepare();
-    askWave();
+    // The waveform once the pictures pass is over, not beside it: that pass
+    // reads every packet and outlines the sound on the way past, so what is
+    // asked for then is nearly always already kept. Asked beside it, the
+    // outline was a second read of the whole recording.
+    const waveGen0 = openGen;
+    prepare().then(() => {
+      if (waveGen0 === openGen) askWave();
+    });
     // Asked again now that the open is over. Everything above schedules the
     // plan while this window is still `opening`, and a plan asked for then is
     // answered with 「読み込み中」 and nothing else -- which is the honest
@@ -8283,6 +8304,7 @@ if (listen) {
     if (typeof said.counter === "boolean") showCounter(said.counter, false);
     if (typeof said.meter === "boolean") showMeter(said.meter);
     if (typeof said.pictureMarks === "boolean") showMarks(said.pictureMarks, false);
+    if (typeof said.waveform === "boolean") showWave(said.waveform, false);
     // The store is shared -- this window reads the shades for itself at the
     // press that needs them -- so what arrives here is only the news that the
     // line in the menu is naming the wrong pass.

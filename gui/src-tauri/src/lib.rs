@@ -1865,7 +1865,10 @@ fn without_proxy(
     let reporter = app.clone();
     let sharer = app.clone();
     let watcher = app.clone();
-    let mut track = smartcut_core::thumbs::build_with(
+    // The sound outlined on the way past, where nothing has outlined it yet:
+    // the editor's waveform is then waiting for nothing but this pass.
+    let sound = wave_wanted(app, &src.path);
+    let (mut track, wave) = smartcut_core::thumbs::build_with_sound(
         src,
         thumb_opts,
         Some(Box::new(move |f| {
@@ -1875,6 +1878,7 @@ fn without_proxy(
         Some(Box::new(move || {
             watcher.state::<Generation>().0.load(Ordering::SeqCst) != generation
         })),
+        sound,
     )
     // Superseded reads as cancelled, not as a failure: the file this pass
     // was for is not the one on screen any more, and the one that is has a
@@ -1896,6 +1900,9 @@ fn without_proxy(
     let short = SHORT_OPEN.load(Ordering::SeqCst) == generation;
     if current() != generation {
         return Err("cancelled".to_string());
+    }
+    if let Some(wave) = &wave {
+        remember_wave(app, &src.path, &wave_out(wave));
     }
     if let Some(head) = thumbs.take() {
         let tail = std::mem::take(&mut track.thumbs);
@@ -3229,7 +3236,10 @@ fn clip_pictures_now(
     let reporter = app.clone();
     let owned = path.to_string();
     let watcher = app.clone();
-    let track = smartcut_core::thumbs::build_with(
+    // The sound outlined on the way past, so the editor opened on this row
+    // later has its waveform without a read of its own.
+    let sound = wave_wanted(app, path);
+    let (track, wave) = smartcut_core::thumbs::build_with_sound(
         &src,
         &smartcut_core::ThumbOptions { threads: background_threads(app), ..Default::default() },
         Some(Box::new(move |f| {
@@ -3245,6 +3255,7 @@ fn clip_pictures_now(
         Some(Box::new(move || {
             watcher.state::<BatchStop>().pics.load(Ordering::SeqCst) != mine
         })),
+        sound,
     )
     // A pass that was asked to stop does not come back with what it had; it
     // gives up where it stands and says so. Said in the one word the list
@@ -3257,6 +3268,9 @@ fn clip_pictures_now(
     // it.
     if stopped() {
         return Err("cancelled".into());
+    }
+    if let Some(wave) = &wave {
+        remember_wave(app, path, &wave_out(wave));
     }
     remember(app, &src, Some(&track));
     Ok(answer(&track, false))
@@ -4684,33 +4698,77 @@ struct WaveOut {
 /// 1: as first written.
 const WAVE_VERSION: u32 = 1;
 
-/// The outline of the recording the editor has open, out of the cache where a
-/// window has already read it.
+/// Where this recording's outline is kept: beside its flat detections.
+fn wave_path(app: &tauri::AppHandle, path: &str) -> Result<std::path::PathBuf, String> {
+    detection_path(app, path, "flat", "wavj", WAVE_VERSION)
+}
+
+/// The outline an earlier read kept for this recording, if the file is still
+/// the one it was made from. Unreadable is deleted, as elsewhere.
+fn saved_wave(app: &tauri::AppHandle, path: &str) -> Option<WaveOut> {
+    let file = wave_path(app, path).ok()?;
+    let raw = std::fs::read(&file).ok()?;
+    match serde_json::from_slice::<WaveOut>(&raw) {
+        Ok(saved) => {
+            seek_index::touch(&file);
+            Some(saved)
+        }
+        Err(e) => {
+            eprintln!("wave: discarding {}: {e}", file.display());
+            let _ = std::fs::remove_file(&file);
+            None
+        }
+    }
+}
+
+/// Whether a read going past this recording's sound should outline it: the
+/// waveform is switched on in 環境設定 and none is kept yet. Costs a `stat`.
+fn wave_wanted(app: &tauri::AppHandle, path: &str) -> bool {
+    prefs::waveform() && wave_path(app, path).map(|f| !f.exists()).unwrap_or(false)
+}
+
+fn wave_out(wave: &smartcut_core::wave::Wave) -> WaveOut {
+    let b64 = base64::engine::general_purpose::STANDARD;
+    WaveOut {
+        step: wave.step,
+        floor_db: smartcut_core::wave::FLOOR_DB,
+        peak: b64.encode(&wave.peak),
+        rms: b64.encode(&wave.rms),
+    }
+}
+
+/// Keep an outline, unless the read it came out of was cut short by a share
+/// that went away: shown, not kept. A failure to write is not worth stopping
+/// for, as with a detection.
+fn remember_wave(app: &tauri::AppHandle, path: &str, out: &WaveOut) {
+    if smartcut_core::input::reads_failed() {
+        return;
+    }
+    let Ok(file) = wave_path(app, path) else { return };
+    let Ok(json) = serde_json::to_vec(out) else { return };
+    if let Err(e) = write_whole(&file, &json) {
+        eprintln!("wave: cannot write {}: {e}", file.display());
+    } else if let Some(dir) = file.parent() {
+        let _ = prune_detections(dir, "wavj", 1000);
+    }
+}
+
+/// The outline of the recording the editor has open.
 ///
-/// Read once per recording and kept beside the flat detections: it is a pass
-/// over the whole of the sound -- seconds off a local disc, a minute a half
-/// hour over a share -- and nothing that can be set changes the answer.
-/// Stopped with the editor's own detections when the window goes or is handed
-/// another recording.
+/// Nearly always out of the cache: the pictures pass reads every packet of
+/// the recording, and outlines the sound on the way past (see
+/// [`smartcut_core::thumbs::build_with_sound`]). A read of its own only for
+/// what that pass did not go over -- a recording whose pictures were kept by
+/// an earlier version, or whose pictures came off a proxy. Stopped with the
+/// editor's own detections when the window goes or is handed another
+/// recording.
 #[tauri::command]
 async fn read_wave(path: String, app: tauri::AppHandle) -> Result<WaveOut, String> {
     // Taken as the command arrives, as [`detect_cm`] does and for its reason.
     let mine = app.state::<BatchStop>().editor.load(Ordering::SeqCst);
     off_thread_behind(move || {
-        let file = detection_path(&app, &path, "flat", "wavj", WAVE_VERSION).ok();
-        if let Some(file) = &file {
-            if let Ok(raw) = std::fs::read(file) {
-                match serde_json::from_slice::<WaveOut>(&raw) {
-                    Ok(saved) => {
-                        seek_index::touch(file);
-                        return Ok(saved);
-                    }
-                    Err(e) => {
-                        eprintln!("wave: discarding {}: {e}", file.display());
-                        let _ = std::fs::remove_file(file);
-                    }
-                }
-            }
+        if let Some(saved) = saved_wave(&app, &path) {
+            return Ok(saved);
         }
         let src = flat_source(&app, &path)?;
         if src.audio.is_none() {
@@ -4727,23 +4785,8 @@ async fn read_wave(path: String, app: tauri::AppHandle) -> Result<WaveOut, Strin
         if smartcut_core::input::reads_stopped() {
             return Err("cancelled".into());
         }
-        let b64 = base64::engine::general_purpose::STANDARD;
-        let out = WaveOut {
-            step: wave.step,
-            floor_db: smartcut_core::wave::FLOOR_DB,
-            peak: b64.encode(&wave.peak),
-            rms: b64.encode(&wave.rms),
-        };
-        // Read short by a share that went away: shown, not kept.
-        if !smartcut_core::input::reads_failed() {
-            if let (Some(file), Ok(json)) = (&file, serde_json::to_vec(&out)) {
-                if let Err(e) = write_whole(file, &json) {
-                    eprintln!("wave: cannot write {}: {e}", file.display());
-                } else if let Some(dir) = file.parent() {
-                    let _ = prune_detections(dir, "wavj", 1000);
-                }
-            }
-        }
+        let out = wave_out(&wave);
+        remember_wave(&app, &path, &out);
         Ok(out)
     })
     .await
@@ -8219,6 +8262,9 @@ struct PrefsIn {
     cache_dir: String,
     /// Seconds. `0` for none, which is the default.
     audio_fade: f64,
+    /// Whether the editor draws the waveform, and so whether the pictures
+    /// pass outlines the sound. See [`wave_wanted`].
+    waveform: bool,
 }
 
 /// What is in force, for the panel to paint itself from.
@@ -8276,6 +8322,7 @@ fn set_prefs(want: PrefsIn) -> Result<(), String> {
             want.ffmpeg_log,
             dir,
             want.audio_fade,
+            want.waveform,
         );
     }
     asked.map(|_| ())
@@ -8877,6 +8924,7 @@ mod tests {
             ffmpeg_log: 0,
             cache_dir: dir.to_string(),
             audio_fade: 0.0,
+            waveform: false,
         };
         // A folder that is not there yet is made rather than refused: what
         // the picker hands back is a place, not a place already in use.

@@ -162,14 +162,14 @@ const DEFAULTS = {
   /// are up in the corners out of its way. The インジケータ button beside the counter's
   /// in the editor is the same answer.
   pictureMarks: true,
-  /// Whether the cut editor draws the sound's outline along the bottom of
-  /// its timeline.
+  /// Whether the cut editor draws the sound's outline under its timeline,
+  /// and so whether the pictures pass outlines the sound on its way past.
   ///
-  /// On. The quiet a break is laid on is visible in it before anything has
-  /// been detected, and the read it costs is the sound alone, once per
-  /// recording, kept with the detections. The 音声波形 line of the editor's
-  /// 表示 menu is the same answer.
-  waveform: true,
+  /// Off. It is a row taken off the picture and a decode of the sound on
+  /// every recording read, for something most cuts are placed without. The
+  /// box in 環境設定 and the 音声波形 line of the editor's 表示 menu are the
+  /// same answer; the backend is told it, so that off costs nothing.
+  waveform: false,
   /// Whether the cut editor shows the plan's segments line by line under its
   /// one-line summary. Folded: the summary says what a cut costs, and the
   /// three lines of the list were three lines taken off the picture on a
@@ -562,6 +562,7 @@ export function forBackend() {
     ffmpegLog: whole("ffmpegLog", 2),
     cacheDir: String(get("cacheDir") || ""),
     audioFade: isFinite(fade) && fade > 0 ? Math.min(fade, 10) : 0,
+    waveform: get("waveform") === true,
   };
 }
 

@@ -608,16 +608,43 @@ pub fn build(
 pub fn build_with(
     src: &Source,
     opts: &ThumbOptions,
+    progress: Option<Box<dyn FnMut(f64) + Send>>,
+    share: Option<Box<dyn FnMut(Batch) + Send>>,
+    stop: Option<Box<dyn Fn() -> bool + Send>>,
+) -> Result<Track> {
+    build_with_sound(src, opts, progress, share, stop, false).map(|(track, _)| track)
+}
+
+/// As [`build_with`], and where `sound` is asked for, the outline of the
+/// main audio track out of the same read (see [`crate::wave::WaveBuilder`]).
+///
+/// None where the recording has no sound to outline, or where the decoder
+/// for it could not be opened: the pictures are what this pass is for, and
+/// the outline can still be read on its own later.
+pub fn build_with_sound(
+    src: &Source,
+    opts: &ThumbOptions,
     mut progress: Option<Box<dyn FnMut(f64) + Send>>,
     mut share: Option<Box<dyn FnMut(Batch) + Send>>,
     stop: Option<Box<dyn Fn() -> bool + Send>>,
-) -> Result<Track> {
+    sound: bool,
+) -> Result<(Track, Option<crate::wave::Wave>)> {
     crate::init()?;
     let mut ictx = crate::input::demux(&src.input.url)?;
     let idx = src.video.stream_index;
+    let mut wave = if sound && src.audio.is_some() {
+        crate::wave::WaveBuilder::new(src, &ictx).ok()
+    } else {
+        None
+    };
     // The pass reads the pictures and nothing else, and a stream left on
     // costs the pictures on some recordings. See [`crate::input::keep_only`].
-    crate::input::keep_only(&mut ictx, &[idx]);
+    // The sound, where it is being outlined, is the one exception: it is
+    // what saves the outline a read of its own.
+    match &wave {
+        Some(w) => crate::input::keep_only(&mut ictx, &[idx, w.stream_index]),
+        None => crate::input::keep_only(&mut ictx, &[idx]),
+    }
     let params = ictx
         .stream(idx)
         .ok_or_else(|| anyhow!("video stream vanished"))?
@@ -681,6 +708,11 @@ pub fn build_with(
             }
         }
         if stream.index() != idx {
+            if let Some(w) = wave.as_mut() {
+                if stream.index() == w.stream_index {
+                    w.feed(&packet);
+                }
+            }
             continue;
         }
         // Non-key packets are not merely discarded but never handed over:
@@ -738,7 +770,7 @@ pub fn build_with(
         f(1.0);
     }
 
-    Ok(collector.finish(src.duration))
+    Ok((collector.finish(src.duration), wave.map(|w| w.finish())))
 }
 
 /// Turn the per-key-picture differences into a list of scene starts.

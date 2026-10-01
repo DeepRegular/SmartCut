@@ -32,6 +32,9 @@ static CACHE_DIR: RwLock<Option<PathBuf>> = RwLock::new(None);
 /// milliseconds. Whole milliseconds because that is finer than anybody sets
 /// a fade and it fits an atomic; the engine is told it in seconds.
 static AUDIO_FADE_MS: AtomicU32 = AtomicU32::new(0);
+/// Whether the cut editor draws the waveform. Off, as the frontend's own
+/// default is.
+static WAVEFORM: AtomicBool = AtomicBool::new(false);
 
 /// How long a plan may spend tidying the start of a range, in seconds.
 ///
@@ -97,6 +100,11 @@ pub fn clean_join() -> Option<f64> {
     CLEAN_JOINS.load(Ordering::Relaxed).then_some(JOIN_BUDGET)
 }
 
+/// Whether the pictures pass is to outline the sound for the waveform.
+pub fn waveform() -> bool {
+    WAVEFORM.load(Ordering::Relaxed)
+}
+
 pub fn ffmpeg_log() -> u8 {
     FFMPEG_LOG.load(Ordering::Relaxed)
 }
@@ -126,7 +134,7 @@ pub fn cache_dir() -> Option<PathBuf> {
     CACHE_DIR.read().ok().and_then(|held| held.clone())
 }
 
-/// Settle the six the frontend owns. The folder has already been checked by
+/// Settle the seven the frontend owns. The folder has already been checked by
 /// the caller -- see `set_prefs` -- so what arrives here is a folder that
 /// exists and can be written to, or nothing at all.
 pub fn set(
@@ -136,7 +144,9 @@ pub fn set(
     ffmpeg_log: u8,
     dir: Option<PathBuf>,
     audio_fade: f64,
+    waveform: bool,
 ) {
+    WAVEFORM.store(waveform, Ordering::Relaxed);
     CLEAN_JOINS.store(clean_joins, Ordering::Relaxed);
     PROXY.store(proxy, Ordering::Relaxed);
     PROXY_WIDTH.store(proxy_width, Ordering::Relaxed);

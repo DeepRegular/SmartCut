@@ -95,6 +95,10 @@ const CATALOG = {
     "prefs.counter": "カット編集で、フレーム番号と時刻を画面に重ねる",
     "prefs.pictureMarks": "カット編集で、選択範囲・キーフレーム・黒白無音のインジケータを映像の上に表示する",
     "prefs.meter": "カット編集で、音声レベルメーターを表示する",
+    "prefs.wave": "カット編集で、タイムラインの下に音声波形を表示する",
+    "prefs.waveNote":
+      "オンのあいだは、サムネイルを作るときに音声も読んで波形を作ります。" +
+      "カット編集の「表示」メニューの「音声波形」と同じ設定です。",
     "prefs.subs": "カット編集で、最初から字幕を表示する",
     "prefs.subsNote":
       "字幕のある録画でのみ有効です。編集中に切り替えられます。",
@@ -1049,6 +1053,7 @@ const CATALOG = {
     "editor.waveShow.title":
       "タイムラインの下に音声の波形を表示する。無音の箇所は下端に緑の印が付く（しきい値は無音検出と同じ）",
     "editor.waveReading": "音声波形を読み込み中… {pct}%",
+    "editor.waveWaiting": "音声波形はサムネイルの作成と一緒に作ります…",
     "editor.view": "表示",
     "editor.view.title": "プレビュー映像に重ねて表示するもの（カウンタ・インジケータ・字幕）を選びます",
 
@@ -1284,25 +1289,15 @@ const CATALOG = {
       " / 再エンコード {reencoded}s",
     "plan.lossless": "映像 完全無劣化",
     "plan.reencoded": "再エンコード {n} フレーム",
-    "plan.help.title": "無劣化コピーの割合の読み方",
-    "plan.help.head": "「無劣化コピー」の割合の読み方",
+    "plan.help.title": "無劣化コピーの割合について",
+    "plan.help.head": "無劣化コピーの割合（映像のみ）",
     "plan.help.body":
-      "出力する映像の長さのうち、元の録画からそのままコピーする部分の割合です。" +
-      "コピーした部分は元の録画とバイト単位で同じなので、画質は少しも変わりません。\n\n" +
-      "再エンコードするのは継ぎ目のまわりだけです。映像は無劣化点（I フレームなど、そこから再生を始められるフレーム）でしか切り離せません。" +
-      "カット位置が無劣化点に乗っていないときは、カット位置と最寄りの無劣化点のあいだのフレームを作り直します。" +
-      "継ぎ目 1 つにつき、最大で GOP 2 つ分ほどです（放送の MPEG-2 ならおよそ 1 秒）。\n\n" +
-      "100% には切り上げません。4 万フレームのうち 2 フレームを再エンコードすると、ふつうに計算すれば 100.0% ですが、表示は 99.9% になります。" +
-      "正確な数は「再エンコード ○ フレーム」の表示で確かめてください。" +
-      "「映像 完全無劣化」と出るのは、再エンコードが 1 フレームもないときだけです。\n\n" +
-      "割合を上げるには、選択の両端を無劣化点へ寄せます（「無劣化点へ吸着」、または Shift+↑↓ で無劣化点へ移動）。" +
-      "そのぶん、カット位置は数フレーム動きます。\n\n" +
-      "これは映像だけの数字です。音声は出力設定に従って別に扱います。",
-    "plan.help.now":
-      "この計画では、出力 {total} のうち {copied} 秒（{pct}）をコピーし、{places} 箇所で合わせて {n} フレームを再エンコードします。",
-    "plan.help.nowTime":
-      "この計画では、出力 {total} のうち {copied} 秒（{pct}）をコピーし、{places} 箇所で合わせて {t} 秒を再エンコードします。",
-    "plan.help.nowLossless": "この計画では、出力 {total} の映像をすべてコピーします。再エンコードはありません。",
+      "元の録画からそのままコピーする部分の割合です。この部分の画質は変わりません。\n\n" +
+      "再エンコードするのは、無劣化点から外れた継ぎ目のまわりだけです。「無劣化点へ吸着」で端を寄せれば無くせます。\n\n" +
+      "100% には切り上げません。正確な数は「再エンコード ○ フレーム」で確かめてください。",
+    "plan.help.now": "この計画: {places} 箇所で {n} フレームを再エンコード",
+    "plan.help.nowTime": "この計画: {places} 箇所で {t} 秒を再エンコード",
+    "plan.help.nowLossless": "この計画: 再エンコードなし",
     "plan.reencodedTime": "再エンコード {t} 秒",
     "plan.segCopy": "コピー　　",
     "plan.segEncode": "再エンコード",
@@ -1420,6 +1415,10 @@ const CATALOG = {
     "prefs.counter": "Draw the frame number and clock over the picture in the cut editor",
     "prefs.pictureMarks": "Show the selection, keyframe and blank or quiet stretch indicators over the picture in the cut editor",
     "prefs.meter": "Show the audio level meter in the cut editor",
+    "prefs.wave": "Show the waveform under the cut editor's timeline",
+    "prefs.waveNote":
+      "While this is on, the sound is read along with the thumbnails to make it. " +
+      "The same setting as Waveform in the cut editor's View menu.",
     "prefs.subs": "Show the subtitles in the cut editor from the start",
     "prefs.subsNote":
       "Only for recordings that carry any. It can still be turned off while cutting.",
@@ -2324,6 +2323,7 @@ const CATALOG = {
     "editor.waveShow.title":
       "Show the sound's waveform under the timeline. Quiet stretches get a green mark along its foot, at the silence detection's level",
     "editor.waveReading": "Reading the waveform… {pct}%",
+    "editor.waveWaiting": "The waveform is made along with the thumbnails…",
     "editor.view": "View",
     "editor.view.title": "Choose what is drawn over the picture: the counter, the indicators and the subtitles",
 
@@ -2555,26 +2555,15 @@ const CATALOG = {
       " / re-encoded {reencoded}s",
     "plan.lossless": "Video completely lossless",
     "plan.reencoded": "{n} frame{n?s} re-encoded",
-    "plan.help.title": "What the lossless percentage means",
-    "plan.help.head": "Reading the \"copied losslessly\" percentage",
+    "plan.help.title": "About the lossless percentage",
+    "plan.help.head": "The lossless percentage (video only)",
     "plan.help.body":
-      "It is the share of the output's video that is copied straight out of the recording. " +
-      "Those parts are byte-for-byte the recording's own, so their picture is untouched.\n\n" +
-      "Only the pictures around each join are re-encoded. Video can only be split at a lossless point " +
-      "(an I-frame or another picture decoding can start from), so a cut that falls between two of them " +
-      "has the frames between it and the nearest one rebuilt. That comes to roughly two GOPs per join at most " +
-      "(about a second on broadcast MPEG-2).\n\n" +
-      "100% is never rounded up. Two re-encoded frames out of 40,000 is 100.0% in ordinary arithmetic; " +
-      "this shows 99.9%, and the \"frames re-encoded\" figure gives the exact count. " +
-      "\"Video completely lossless\" means not one frame is re-encoded.\n\n" +
-      "To raise it, move the ends of the selection onto lossless points (Snap to lossless, or Shift+↑↓ " +
-      "to step between them). The cut then moves by those frames.\n\n" +
-      "The figure is about the video alone. The sound is handled separately, as the output settings say.",
-    "plan.help.now":
-      "This plan copies {copied}s of the {total} output ({pct}) and re-encodes {n} frame{n?s} in {places} place{places?s}.",
-    "plan.help.nowTime":
-      "This plan copies {copied}s of the {total} output ({pct}) and re-encodes {t}s in {places} place{places?s}.",
-    "plan.help.nowLossless": "This plan copies all {total} of the output's video. Nothing is re-encoded.",
+      "How much is copied straight out of the recording. Those parts are untouched.\n\n" +
+      "Only the frames around a join that misses a lossless point are re-encoded. Snap to lossless removes them.\n\n" +
+      "It is never rounded up to 100%; the \"frames re-encoded\" figure gives the exact count.",
+    "plan.help.now": "This plan: {n} frame{n?s} re-encoded in {places} place{places?s}",
+    "plan.help.nowTime": "This plan: {t}s re-encoded in {places} place{places?s}",
+    "plan.help.nowLossless": "This plan: nothing re-encoded",
     "plan.reencodedTime": "{t} s re-encoded",
     "plan.segCopy": "copy      ",
     "plan.segEncode": "re-encode ",

@@ -49,7 +49,12 @@ pub fn level_byte(v: f64) -> u8 {
     (((db + FLOOR_DB) / FLOOR_DB) * 255.0).round().clamp(0.0, 255.0) as u8
 }
 
-/// Read the main audio track and outline it.
+/// Read the main audio track and outline it, as a pass of its own.
+///
+/// For a recording whose outline was not made on the way past: one opened
+/// before this was written, or one whose pictures were already kept. Where
+/// the pictures are read, [`WaveBuilder`] rides along with them instead and
+/// this read never happens; see [`crate::thumbs::build_with_sound`].
 pub fn read_wave(src: &Source, mut progress: Option<Box<dyn FnMut(f64) + Send>>) -> Result<Wave> {
     crate::init()?;
     let audio = src
@@ -59,75 +64,133 @@ pub fn read_wave(src: &Source, mut progress: Option<Box<dyn FnMut(f64) + Send>>)
     let mut ictx = crate::input::demux(&src.input.url)?;
     // The sound and nothing else: see [`crate::input::keep_only`].
     crate::input::keep_only(&mut ictx, &[audio.stream_index]);
-    let params = ictx
-        .stream(audio.stream_index)
-        .ok_or_else(|| anyhow!("audio stream vanished"))?
-        .parameters();
-    let mut decoder = ff::codec::context::Context::from_parameters(params)?
-        .decoder()
-        .audio()?;
-
-    let declared = audio.sample_rate.max(1) as f64;
-    let mut frame = ff::frame::Audio::empty();
-    let mut levels: Vec<f32> = Vec::new();
-    let mut peak: Vec<f32> = Vec::new();
-    let mut energy: Vec<(f64, u32)> = Vec::new();
+    let mut builder = WaveBuilder::new(src, &ictx)?;
     let mut told = -1.0;
-
     for (stream, packet) in ictx.read_packets() {
         if stream.index() != audio.stream_index {
             continue;
         }
-        if decoder.send_packet(&packet).is_err() {
-            continue;
-        }
-        while decoder.receive_frame(&mut frame).is_ok() {
-            let Some(pts) = frame.pts() else { continue };
-            let t = pts as f64 * audio.time_base - src.start_time;
-            // The frame's own rate, as [`crate::cm`] counts at and for its
-            // reason: HE-AAC declares half the rate it decodes to.
-            let rate = match frame.rate() {
-                0 => declared,
-                own => f64::from(own),
-            };
-            if !sample_levels(&frame, &mut levels) {
-                continue;
-            }
-            for (n, &v) in levels.iter().enumerate() {
-                let at = t + n as f64 / rate;
-                if at < 0.0 {
-                    continue;
-                }
-                let b = (at / STEP) as usize;
-                if b >= peak.len() {
-                    peak.resize(b + 1, 0.0);
-                    energy.resize(b + 1, (0.0, 0));
-                }
-                peak[b] = peak[b].max(v);
-                let e = &mut energy[b];
-                e.0 += f64::from(v) * f64::from(v);
-                e.1 += 1;
-            }
-            if let Some(f) = progress.as_mut() {
-                let done = (t / src.duration.max(1e-9)).clamp(0.0, 1.0);
-                if done - told >= 0.02 {
-                    told = done;
-                    f(done);
-                }
+        builder.feed(&packet);
+        if let Some(f) = progress.as_mut() {
+            let done = (builder.reached / src.duration.max(1e-9)).clamp(0.0, 1.0);
+            if done - told >= 0.02 {
+                told = done;
+                f(done);
             }
         }
     }
     if let Some(f) = progress.as_mut() {
         f(1.0);
     }
-    Ok(Wave {
-        step: STEP,
-        peak: peak.iter().map(|&v| level_byte(f64::from(v))).collect(),
-        rms: energy
-            .iter()
-            .map(|&(sum, n)| level_byte(if n == 0 { 0.0 } else { (sum / f64::from(n)).sqrt() }))
-            .collect(),
-    })
+    Ok(builder.finish())
+}
+
+/// The outline, made a packet at a time by whichever read is going past the
+/// sound anyway.
+///
+/// The pictures pass reads every packet of the recording to find the entry
+/// pictures, and the sound is a few tens of megabytes of the gigabytes it
+/// goes past; decoding it there costs a second or two of one core and saves
+/// [`read_wave`]'s whole read, which over a share is a minute a half hour.
+pub struct WaveBuilder {
+    /// The stream it wants. The read has to keep it switched on.
+    pub stream_index: usize,
+    decoder: ff::decoder::Audio,
+    time_base: f64,
+    start_time: f64,
+    declared: f64,
+    frame: ff::frame::Audio,
+    levels: Vec<f32>,
+    peak: Vec<f32>,
+    energy: Vec<(f64, u32)>,
+    /// How far into the recording the sound has been read, in seconds.
+    pub reached: f64,
+}
+
+impl WaveBuilder {
+    /// For `src`'s main audio track, out of the demuxer the read has open.
+    pub fn new(src: &Source, ictx: &crate::input::Demux) -> Result<Self> {
+        let audio = src
+            .audio
+            .as_ref()
+            .ok_or_else(|| anyhow!("{} has no audio", src.path))?;
+        let params = ictx
+            .stream(audio.stream_index)
+            .ok_or_else(|| anyhow!("audio stream vanished"))?
+            .parameters();
+        let decoder = ff::codec::context::Context::from_parameters(params)?
+            .decoder()
+            .audio()?;
+        Ok(Self {
+            stream_index: audio.stream_index,
+            decoder,
+            time_base: audio.time_base,
+            start_time: src.start_time,
+            declared: audio.sample_rate.max(1) as f64,
+            frame: ff::frame::Audio::empty(),
+            levels: Vec::new(),
+            peak: Vec::new(),
+            energy: Vec::new(),
+            reached: 0.0,
+        })
+    }
+
+    /// One packet of the stream. One the decoder will not take is passed
+    /// over: a few dropped milliseconds of an outline are not worth failing
+    /// the read that carries it.
+    pub fn feed(&mut self, packet: &ff::Packet) {
+        if self.decoder.send_packet(packet).is_err() {
+            return;
+        }
+        self.drain();
+    }
+
+    fn drain(&mut self) {
+        while self.decoder.receive_frame(&mut self.frame).is_ok() {
+            let Some(pts) = self.frame.pts() else { continue };
+            let t = pts as f64 * self.time_base - self.start_time;
+            // The frame's own rate, as [`crate::cm`] counts at and for its
+            // reason: HE-AAC declares half the rate it decodes to.
+            let rate = match self.frame.rate() {
+                0 => self.declared,
+                own => f64::from(own),
+            };
+            if !sample_levels(&self.frame, &mut self.levels) {
+                continue;
+            }
+            for (n, &v) in self.levels.iter().enumerate() {
+                let at = t + n as f64 / rate;
+                if at < 0.0 {
+                    continue;
+                }
+                let b = (at / STEP) as usize;
+                if b >= self.peak.len() {
+                    self.peak.resize(b + 1, 0.0);
+                    self.energy.resize(b + 1, (0.0, 0));
+                }
+                self.peak[b] = self.peak[b].max(v);
+                let e = &mut self.energy[b];
+                e.0 += f64::from(v) * f64::from(v);
+                e.1 += 1;
+            }
+            self.reached = self.reached.max(t);
+        }
+    }
+
+    /// What it came to, once the read is over.
+    pub fn finish(mut self) -> Wave {
+        let _ = self.decoder.send_eof();
+        self.drain();
+        Wave {
+            step: STEP,
+            peak: self.peak.iter().map(|&v| level_byte(f64::from(v))).collect(),
+            rms: self
+                .energy
+                .iter()
+                .map(|&(sum, n)| level_byte(if n == 0 { 0.0 } else { (sum / f64::from(n)).sqrt() }))
+                .collect(),
+        }
+    }
 }
 
 /// The loudest channel of each sample of `frame`, 0..=1, into `out`.
