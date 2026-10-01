@@ -244,7 +244,7 @@ Linux の開発 VM から `x86_64-pc-windows-msvc` へクロスビルドして�
 
 | 成果物 | サイズ | 内容 |
 |---|---|---|
-| NSIS インストーラ | 55.0 MB | インストール後 176.4 MB（GUI の exe、CLI の exe、FFmpeg の DLL 8 個） |
+| NSIS インストーラ | 55.5 MB | インストール後 178.3 MB（GUI の exe、CLI の exe、FFmpeg の DLL 8 個） |
 | ポータブル zip | 68.8 MB | 同じ一式。GUI は `smartcut.exe`、コマンドライン版は `smartcut-cli.exe` を実行する |
 
 **コマンドライン版は、Linux のパッケージと同じ `smartcut-cli` という名前で

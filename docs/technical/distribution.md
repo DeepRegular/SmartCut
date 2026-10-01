@@ -240,7 +240,7 @@ Cross-built from the Linux development VM to `x86_64-pc-windows-msvc`.
 
 | Artifact | Size | Contents |
 |---|---|---|
-| NSIS installer | 55.0 MB | 176.4 MB installed (the GUI's exe, the CLI's exe and 8 FFmpeg DLLs) |
+| NSIS installer | 55.5 MB | 178.3 MB installed (the GUI's exe, the CLI's exe and 8 FFmpeg DLLs) |
 | Portable zip | 68.8 MB | The same set. Unzip and run `smartcut.exe` for the GUI, `smartcut-cli.exe` for the command line |
 
 **The command-line tool ships under the name the Linux packages give it.** Its cargo

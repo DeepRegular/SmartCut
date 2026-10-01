@@ -182,10 +182,10 @@ preparation is no slower for it.
 
 Each row shows the filename; the length in frames, the time range, the
 resolution, the frame rate and the codec; and under those, how many keyframes
-and cuts you have put down, then what commercial detection found. The keyframe
-count comes first, so it stands in the same place on a row nothing was detected
-on. On the right, `Smart` means smart rendering
-applies to this material, and `CM 2` means two commercial blocks were found.
+and cuts you have put down, then what the commercial, blank and silence
+detections found. The keyframe count comes first, so it stands in the same
+place on a row nothing was detected on. On the right, `Smart` means smart
+rendering applies to this material, and `CM 2` means two commercial blocks were found.
 
 **The length is the length after cutting.** On a row with cuts in it, what was
 recorded follows on the same line under `before cutting`. The total across the
@@ -476,7 +476,7 @@ frames, and `Snap to lossless` can take those to zero once it lights up.
 | Where | What |
 |---|---|
 | Top line | The recording's whole path. Where the folders will not fit, they are cut short with `…` and the filename is kept whole; hover over it for the rest. A renamed row, or a programme on a disc, has its name in front |
-| Info bar | Lossless points, resolution, fps, scan type, audio, codec. **Tracks** on the right; the three detections are in the `≡` menu at the bottom right |
+| Info bar | Lossless points, resolution, fps, scan type, audio, codec. **Tracks** on the right; the three detections are in the `≡` menu at the end of the edit buttons |
 | Left column | The **keyframes** — your marks, each with a thumbnail. Click one to jump there; the column stays where it is scrolled to. A mark a detection put down carries `Black`, `White` or `Quiet` under its time |
 | The large picture | The preview. At its foot, in the middle: frame number, timecode, what kind of frame it is, and the current selection. In its top corners, indicators for the frame on screen (below). The **View** menu on the bottom line turns either off |
 | Beside it, on the left | The **audio level meter**: what is being heard while something plays, and the sound under the playhead while nothing does. **Preferences → Windows** turns it off |
@@ -678,7 +678,7 @@ subtitles go into the output is answered by **Tracks** and by the output setting
 ### Finding blank pictures and silence
 
 **Detect black** (`Ctrl+B`) and **Detect silence** (`Ctrl+Q`), in the `≡` menu
-at the bottom right, read the recording that is open. The first is named after
+at the end of the edit buttons, read the recording that is open. The first is named after
 **The blank pass looks for** in Preferences, as the list's button is. If the
 list has already been over it, what was found is on the timeline when the
 window opens. They are two passes: running one leaves what the other found where
@@ -760,7 +760,7 @@ opened off a **disc** — from the chapters the recorder itself set.
 
 ![The ≡ menu, open](../images/usage-marks.png)
 
-**≡**, at the right-hand end of the transport row, holds everything to do with
+**≡**, at the end of the edit buttons (**Cut outside** to clear all), holds everything to do with
 the marks.
 
 | Line | What it does |
