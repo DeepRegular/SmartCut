@@ -102,7 +102,7 @@ libasound2 はデスクトップ Linux ならまず入っているし、ALSA を
 展開して確認できる。
 
 ```bash
-./SmartCut_0.8.18_amd64.AppImage --appimage-extract >/dev/null
+./SmartCut_0.8.19_amd64.AppImage --appimage-extract >/dev/null
 ldd squashfs-root/usr/bin/smartcut | grep -E 'asound|jack|pulse'
 # libasound.so.2 / libjack.so.0 -> /lib/x86_64-linux-gnu/...   (システム側)
 # libpulse.so.0                 -> squashfs-root/usr/bin/../lib/...  (同梱)
@@ -131,8 +131,8 @@ CJK フォント。bubblewrap も GTK も無い）。BDAV のクリップを編�
 
 ```bash
 JAMMY=/path/to/root gui/jammy/build.sh   # AppImage・tar.gz・deb（Ubuntu 22.04 の root）
-# -> gui/src-tauri/target/release/bundle/linux/SmartCut-0.8.18-linux-x86_64.tar.gz
-# -> gui/src-tauri/target/release/bundle/linux/smartcut_0.8.18_amd64.deb
+# -> gui/src-tauri/target/release/bundle/linux/SmartCut-0.8.19-linux-x86_64.tar.gz
+# -> gui/src-tauri/target/release/bundle/linux/smartcut_0.8.19_amd64.deb
 ```
 
 同じビルドを 2 通りに詰めている。どちらも GUI を `smartcut`、コマンド
@@ -143,14 +143,14 @@ cargo のクレート名は `gui` なので、放っておくと Tauri はその
 インストールしてしまう。1 つのアプリが占有してよい名前ではない。`tauri.conf.json` の
 `mainBinaryName` で `smartcut` に固定してある（0.2.0 以降。それ以前は Windows 用
 だけに設定されていた）。一方 Tauri が書き出すバンドル*ファイル*の名前は
-`productName` に従うので、`SmartCut_0.8.18_amd64.deb` になる。deb のパッケージ名
+`productName` に従うので、`SmartCut_0.8.19_amd64.deb` になる。deb のパッケージ名
 `smartcut` と食い違うのはこのためである。`build-linux.sh` は両方を
 `tauri.conf.json` から読む。
 
 | 成果物 | サイズ | FFmpeg | 必要条件 |
 |---|---|---|---|
-| `SmartCut-0.8.18-linux-x86_64.tar.gz` | 191.4 MB | 同梱 | glibc 2.35 以上。FUSE 不要 |
-| `smartcut_0.8.18_amd64.deb` | 28.3 MB | 同梱（`/usr/lib/smartcut`） | Ubuntu 22.04 以降、Debian 13 以降 |
+| `SmartCut-0.8.19-linux-x86_64.tar.gz` | 191.4 MB | 同梱 | glibc 2.35 以上。FUSE 不要 |
+| `smartcut_0.8.19_amd64.deb` | 28.3 MB | 同梱（`/usr/lib/smartcut`） | Ubuntu 22.04 以降、Debian 13 以降 |
 
 tar.gz の中身は、AppImage と同じ AppDir を展開したものである。linuxdeploy が
 `ldd` を辿って集めた 633 個のライブラリがそのまま `app/` にある。`./smartcut` は
@@ -223,7 +223,7 @@ deb から、tar.gz 用は AppDir からである。
 ### 確認したこと
 
 - 何も入っていない Ubuntu 22.04（ubuntu-base 22.04.5）に
-  `apt install ./smartcut_0.8.18_amd64.deb` で入る。依存関係はすべて解決し、
+  `apt install ./smartcut_0.8.19_amd64.deb` で入る。依存関係はすべて解決し、
   2 つのバイナリとも読めないライブラリは無い。
   `smartcut-cli` は `/usr/lib/smartcut/libavcodec.so.61` を使う。
 - そこで切り出した結果（放送録画の 30 秒）が、tar.gz 版の `smartcut-cli` と md5 まで
@@ -238,7 +238,7 @@ Linux の開発 VM から `x86_64-pc-windows-msvc` へクロスビルドして�
 
 ```bash
 ./gui/build-windows.sh
-# -> gui/src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis/SmartCut_0.8.18_x64-setup.exe
+# -> gui/src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis/SmartCut_0.8.19_x64-setup.exe
 # -> gui/src-tauri/target/x86_64-pc-windows-msvc/release/bundle/portable/smartcut-portable-x64.zip
 ```
 
