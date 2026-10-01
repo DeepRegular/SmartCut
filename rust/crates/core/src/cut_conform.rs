@@ -177,7 +177,9 @@ fn pictures_afresh(
 
     let mut audio_done = vec![false; ctx.audio.len()];
     let mut caption_done = vec![false; ctx.captions.len()];
-    let mut graphics_done = vec![false; ctx.graphics.len()];
+    // A track with no stream to read (a DVD's subtitles being converted) is
+    // done before it begins, as in [`reencode_segment`].
+    let mut graphics_done = graphics_read(ctx);
     let mut sub_done = !ctx.subpictures
         || src.subpictures.is_empty()
         || (writer.subpictures.is_none() && writer.converted.is_empty());

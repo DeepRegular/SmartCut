@@ -2139,7 +2139,20 @@ fn event_description(loop_bytes: &[u8], written: crate::text::Written) -> Option
         }
     }
 
-    let mut items: Vec<(String, String)> = Vec::new();
+    // Held as the bytes until the run is over. **An item continued into the
+    // next descriptor is continued at the byte, not at the character**: the
+    // broadcaster fills each descriptor to its length and carries on in the
+    // next, and on every station sampled that cuts a kanji pair in half
+    // (`0F 4B | 6B`) or leaves the set a locking shift invoked behind
+    // (`1B 7C | A2 EB`, katakana read as hiragana). Decoded a piece at a
+    // time, each piece starts again from the state a name starts in, and the
+    // cast list comes out with a geta mark or a run of the wrong kana at
+    // every join. A field with a DVB selector in front is the exception:
+    // each piece of that carries its own, and is read on its own as before.
+    let selector = |b: &[u8]| {
+        written == crate::text::Written::Dvb || b.first().is_some_and(|c| (0x10..=0x15).contains(c))
+    };
+    let mut items: Vec<(&[u8], Vec<&[u8]>)> = Vec::new();
     for d in every_descriptor(loop_bytes, 0x4E) {
         // The number this descriptor is of the run, the language, and then
         // how many bytes of items follow.
@@ -2158,19 +2171,22 @@ fn event_description(loop_bytes: &[u8], written: crate::text::Written) -> Option
             ) else {
                 break;
             };
-            let (name, text) = (
-                crate::text::decode(name, written),
-                crate::text::decode(text, written),
-            );
             match (name.is_empty(), items.last_mut()) {
-                (true, Some(last)) => last.1.push_str(&text),
-                _ => items.push((name, text)),
+                (true, Some(last)) => last.1.push(text),
+                _ => items.push((name, vec![text])),
             }
             // The two length bytes, the name, and the text.
             at += 2 + name_len as usize + text_len as usize;
         }
     }
-    for (name, text) in items {
+    for (name, pieces) in items {
+        let name = crate::text::decode(name, written);
+        let text = match pieces.first() {
+            Some(first) if selector(first) => {
+                pieces.iter().map(|piece| crate::text::decode(piece, written)).collect()
+            }
+            _ => crate::text::decode(&pieces.concat(), written),
+        };
         if !out.is_empty() {
             out.push('\n');
         }
@@ -4624,6 +4640,48 @@ mod tests {
         assert_eq!(&tags[..2], &[0xC3, 0x48]);
         assert!(tags[2..].iter().all(|&t| t == 0x4E));
         assert!(tags.len() < 42, "something had to go");
+    }
+
+    /// An item carried on into the next extended event descriptor is carried
+    /// on at the byte: the shapes measured off the air, a kanji pair cut in
+    /// half and a locking shift left in force across the join.
+    #[test]
+    fn an_item_split_across_descriptors_is_read_as_one() {
+        let extended = |number: u8, items: &[(&[u8], &[u8])]| {
+            let mut body = Vec::new();
+            for (name, text) in items {
+                body.push(name.len() as u8);
+                body.extend_from_slice(name);
+                body.push(text.len() as u8);
+                body.extend_from_slice(text);
+            }
+            let mut d = vec![0x4E, 0, number << 4 | 1, b'j', b'p', b'n', body.len() as u8];
+            d.extend_from_slice(&body);
+            d.push(0); // no text outside the items
+            d[1] = (d.len() - 2) as u8;
+            d
+        };
+        let cast = crate::arib::encode("出演");
+        let whole = crate::arib::encode("山田太郎");
+        // Cut after the first byte of the second kanji: LS0 and the size,
+        // one pair, and half of the next.
+        let (head, rest) = whole.split_at(5);
+        let loop_bytes =
+            [extended(0, &[(&cast, head)]), extended(1, &[(b"", rest)])].concat();
+        let written = crate::text::Written::Arib;
+        assert_eq!(
+            event_description(&loop_bytes, written).as_deref(),
+            Some("【出演】山田太郎")
+        );
+        // Katakana invoked over the right half by the first piece and still
+        // in force in the second, which on its own reads as hiragana.
+        let shifted: &[u8] = &[0x1B, 0x7C, 0xA2]; // LS3R, ア
+        let loop_bytes =
+            [extended(0, &[(&cast, shifted)]), extended(1, &[(b"", &[0xA4])])].concat();
+        assert_eq!(
+            event_description(&loop_bytes, written).as_deref(),
+            Some("【出演】アイ")
+        );
     }
 
     #[test]

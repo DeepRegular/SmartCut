@@ -99,6 +99,11 @@ pub struct WaveBuilder {
     time_base: f64,
     start_time: f64,
     declared: f64,
+    /// The most buckets the outline is given: the recording's length and a
+    /// little over. Nothing past it is drawn, and a timestamp that jumps
+    /// days or years ahead -- a crafted file's, or a clock that restarted --
+    /// would otherwise ask for a vector that size.
+    most: usize,
     frame: ff::frame::Audio,
     levels: Vec<f32>,
     peak: Vec<f32>,
@@ -127,6 +132,7 @@ impl WaveBuilder {
             time_base: audio.time_base,
             start_time: src.start_time,
             declared: audio.sample_rate.max(1) as f64,
+            most: most_buckets(src.duration),
             frame: ff::frame::Audio::empty(),
             levels: Vec::new(),
             peak: Vec::new(),
@@ -164,6 +170,9 @@ impl WaveBuilder {
                     continue;
                 }
                 let b = (at / STEP) as usize;
+                if b >= self.most {
+                    continue;
+                }
                 if b >= self.peak.len() {
                     self.peak.resize(b + 1, 0.0);
                     self.energy.resize(b + 1, (0.0, 0));
@@ -191,6 +200,13 @@ impl WaveBuilder {
                 .collect(),
         }
     }
+}
+
+/// How many buckets a recording `duration` seconds long can need: up to a
+/// minute past its end, and a day where its length is not known.
+fn most_buckets(duration: f64) -> usize {
+    let span = if duration.is_finite() && duration > 0.0 { duration.min(86_400.0 * 7.0) + 60.0 } else { 86_400.0 };
+    (span / STEP).ceil() as usize
 }
 
 /// The loudest channel of each sample of `frame`, 0..=1, into `out`.
@@ -281,5 +297,16 @@ mod tests {
         assert_eq!(level_byte(1e-6), 0);
         // -40 dB is half way up.
         assert_eq!(level_byte(0.01), 128);
+    }
+
+    #[test]
+    fn the_outline_stops_a_little_past_the_end() {
+        // A minute past an hour, at twenty buckets a second.
+        let near = |got: usize, want: usize| assert!(got.abs_diff(want) <= 1, "{got} for {want}");
+        near(most_buckets(3600.0), 3660 * 20);
+        // Not known, or not a number: a day.
+        near(most_buckets(0.0), 86_400 * 20);
+        near(most_buckets(f64::NAN), 86_400 * 20);
+        near(most_buckets(f64::INFINITY), 86_400 * 20);
     }
 }

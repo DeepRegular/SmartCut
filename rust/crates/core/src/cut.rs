@@ -2316,8 +2316,11 @@ fn take_audio(
         // and the decoder's last was the end of the previous range: the
         // opening frame of every range came out mixed with sound the cut
         // had taken away, a click at each seam.
+        // A packet with no duration to go by is taken too, as
+        // `sound::take_range` takes it: left out, the one the range opens in
+        // went missing, a whole frame of sound.
         let claimed = if first_segment {
-            t + 2.0 * dur > audio.range_in && t < seg.end
+            (dur <= 0.0 || t + 2.0 * dur > audio.range_in) && t < seg.end
         } else {
             t >= seg.start && t < seg.end
         };
@@ -2699,12 +2702,6 @@ fn graphics_read(ctx: &SegmentCtx) -> Vec<bool> {
     ctx.graphics.iter().map(|g| g.in_index == usize::MAX).collect()
 }
 
-/// Seek so that the next read is safely *before* `time` (rebased seconds).
-///
-/// The margin matters: MPEG-TS seeking is byte-position based and only
-/// approximates timestamps, so asking for exactly the target can land past
-/// it. Reading a few extra GOPs forward is cheap; overshooting is not
-/// recoverable.
 /// Write the audio of a finished cut out on its own, as an elementary stream.
 ///
 /// The chain a broadcast recording usually goes down -- index, encode the
@@ -3033,6 +3030,12 @@ fn seek_into(
     seek_to(ictx, src, time)
 }
 
+/// Seek so that the next read is safely *before* `time` (rebased seconds).
+///
+/// The margin matters: MPEG-TS seeking is byte-position based and only
+/// approximates timestamps, so asking for exactly the target can land past
+/// it. Reading a few extra GOPs forward is cheap; overshooting is not
+/// recoverable.
 fn seek_to(ictx: &mut ff::format::context::Input, src: &Source, time: f64) -> Result<()> {
     let landing = (time - src.seek_margin).max(0.0);
     // Asking for the beginning has to mean the beginning. Aiming at the

@@ -208,7 +208,15 @@ unsafe extern "C" fn libav_line(
             *c = b'?' as std::ffi::c_char;
         }
     }
-    let text = std::ffi::CStr::from_ptr(buf.as_ptr()).to_string_lossy();
+    let mut text = std::ffi::CStr::from_ptr(buf.as_ptr()).to_string_lossy();
+    // A piece longer than the buffer comes back cut short, and its newline
+    // with it -- a warning naming a long path does. The flag above was set
+    // from the whole piece, so it still says whether that piece ended the
+    // line. Without the newline the next line ran on into this one, on the
+    // terminal and in the file.
+    if n as usize >= buf.len() && prefix != 0 && !text.ends_with('\n') {
+        text.to_mut().push('\n');
+    }
     // libav writes a line in pieces and ends it with its own newline. The
     // terminal is given the pieces as they come, as libav's default gave them;
     // the file is given whole lines, which is what one line a piece would not

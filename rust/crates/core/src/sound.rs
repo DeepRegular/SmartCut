@@ -689,7 +689,12 @@ fn take_range(
             // begins and ends, which is inside the frames at both of them.
             // From the frame before the one the range opens in: the decoder
             // needs it to decode that one whole, and the window drops it.
-            if t + 2.0 * dur > range.0 {
+            // A frame of no stated length is taken whatever its time: its
+            // length unknown, the one the range opens in looked like one
+            // that ends where it begins, and the opening of every range was
+            // left out -- a whole second of WavPack in a short .mkv. The
+            // window trims what is early.
+            if dur <= 0.0 || t + 2.0 * dur > range.0 {
                 re.take(&packet, track, src.start_time, win, ramp, None)?;
                 let mut out = Vec::new();
                 re.drain(&mut out)?;

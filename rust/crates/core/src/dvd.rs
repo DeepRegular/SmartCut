@@ -145,10 +145,13 @@ pub fn read(at: &Path) -> Result<Disc> {
     // more than once -- this one holds a title of nineteen cells and another
     // of the same nineteen less the last, which between them are two things
     // and not three -- and a row is a stretch of stream, so the second
-    // mention of one is not a row.
-    let mut seen: Vec<(u64, u64)> = Vec::new();
+    // mention of one is not a row. Keyed on the title set as well: sectors
+    // are counted from the start of each set's own stream, so the first
+    // title of every set begins at sector 0, and two sets of the same size
+    // -- a warning screen in two languages -- are two rows and not one.
+    let mut seen: Vec<(usize, u64, u64)> = Vec::new();
     for t in titles {
-        let key = (t.first_sector, t.last_sector);
+        let key = (t.vts, t.first_sector, t.last_sector);
         if seen.contains(&key) {
             continue;
         }

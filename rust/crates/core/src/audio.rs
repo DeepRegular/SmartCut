@@ -727,9 +727,10 @@ pub struct Reencoder {
     /// Whether the encoder has a frame length of its own. LPCM has none: it
     /// writes back whatever it is handed, whole frames or not.
     fixed: bool,
-    /// Whether the last frame may be short of the rest. FLAC's may, and a
-    /// lossless track padded up to a whole block ended in up to 4096 samples
-    /// of silence the recording never had: a `.flac` up to 0.09 s too long.
+    /// Whether the last frame may be short of the rest. A lossless encoder's
+    /// may (FLAC's, ALAC's), and a lossless track padded up to a whole block
+    /// ended in up to 4096 samples of silence the recording never had: a
+    /// `.flac` up to 0.09 s too long.
     short_last: bool,
     /// How the encoder wants its channels arranged, which is not always the
     /// arrangement libav hands back as the default for that many. See
@@ -767,7 +768,17 @@ impl Reencoder {
         let frame_size = frame_size_of(&encoder);
         let enc_format = encoder.format();
         let fixed = encoder.frame_size() > 0;
-        let short_last = target == ff::codec::Id::FLAC;
+        // Every lossless encoder that takes a short last frame, not FLAC's
+        // alone: ALAC frames 4096 samples at a time, and a re-encoded .mov
+        // ended in up to 85 ms of silence the recording never had.
+        let short_last = unsafe {
+            let codec = (*encoder.as_ptr()).codec;
+            let desc = ff::ffi::avcodec_descriptor_get(target.into());
+            !codec.is_null()
+                && (*codec).capabilities & ff::ffi::AV_CODEC_CAP_SMALL_LAST_FRAME as i32 != 0
+                && !desc.is_null()
+                && (*desc).props & ff::ffi::AV_CODEC_PROP_LOSSLESS != 0
+        };
         let layout = encoder.channel_layout();
         // What the encoder settled on, which is the rate asked for wherever
         // the codec has it and the nearest it does have otherwise.

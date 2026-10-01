@@ -400,8 +400,8 @@ const HELP: &[(&str, &[(&str, &str)])] = &[
             ),
             (
                 "--no-chapters",
-                "Leave the chapter list out of an .mp4, .m4v, .mov or .mkv (otherwise one \
-                 where each kept range begins, and the recording's own)",
+                "Leave the chapter list out of an .mp4, .m4v, .mov, .mkv or .webm (otherwise \
+                 one where each kept range begins, and the recording's own)",
             ),
             (
                 "--sound-only",
@@ -1204,6 +1204,7 @@ fn run() -> Result<()> {
             || fit.is_some()
             || video_share.is_some()
             || poster_at.is_some()
+            || !chapters_wanted
             || audio_es;
         if cutting {
             bail!("{first} ends the run without writing a cut: run the cut on its own");
@@ -1588,8 +1589,18 @@ fn run() -> Result<()> {
     // Where the recorder set its chapters, in the recording's own seconds --
     // which is what the editor draws them at, and what `--cut` would take.
     // A file's own chapter list where it did not come off a disc.
+    // Only those inside the recording, as the editor and the cut take them:
+    // a list a file carries can name times it never reaches.
     if chapters.is_empty() {
-        chapters = src.chapters.clone();
+        chapters = src
+            .chapters
+            .iter()
+            .copied()
+            .filter(|c| {
+                let t = c - src.start_time;
+                t >= -0.5 && (src.duration <= 0.0 || t <= src.duration)
+            })
+            .collect();
     }
     if !chapters.is_empty() {
         let shown: Vec<String> = chapters
@@ -2747,7 +2758,24 @@ fn run() -> Result<()> {
     let mut marks = Vec::new();
     let mut chapters = Vec::new();
     for plan in &plans {
-        marks.push(at_out);
+        // Not where the planner split a range at a seam the recorder left
+        // (`plan_on`): nobody cut there, and the editor puts no chapter
+        // there either. A split is a plan that starts on or past a seam
+        // lying inside a range asked for, as `at_the_seams` cuts it (its
+        // `SLIVER` is 0.1 s). Not told by how far the plan starts after the
+        // range: a range that begins on a seam is moved on to the first
+        // entry point past it (`past_the_seam`), which on a recorder's
+        // stream is half a second or more, and it is still where a cut is.
+        let half_frame = src.video.frame_duration() / 2.0;
+        let split = ranges.iter().any(|&(a, b)| {
+            plan.t_in < b
+                && src.joins.iter().any(|j| {
+                    j.time > a + 0.1 && j.time < b - 0.1 && plan.t_in >= j.time - half_frame
+                })
+        });
+        if !split {
+            marks.push(at_out);
+        }
         // And the chapters it came with, where they are still in what is
         // kept. A disc read and written straight back used to
         // come out with one chapter where it had gone in with a dozen.

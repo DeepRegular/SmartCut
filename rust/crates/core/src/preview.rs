@@ -8,6 +8,7 @@ use ffmpeg_next as ff;
 use crate::input::ReadPackets;
 
 use crate::{AccessPoint, Source};
+use std::rc::Rc;
 
 /// A decoded picture, with what the cutter cares about knowing about it.
 pub struct Shot {
@@ -1053,16 +1054,29 @@ pub(crate) fn encode_jpeg(picture: &ff::frame::Video, sar: f64, width: u32) -> R
     encode_jpeg_sized(picture, sar, width).map(|(jpeg, _, _)| jpeg)
 }
 
+/// A pixel aspect ratio a picture can be drawn at. The container's is taken
+/// as it says, and a crafted one of 1:1000 made every still a thousand times
+/// its height -- hundreds of megabytes a picture, a strip's worth at once. No
+/// recording has a pixel more than a few times wider than it is tall, nor a
+/// field of one.
+fn credible_sar(sar: f64) -> f64 {
+    if sar.is_finite() {
+        sar.clamp(0.125, 8.0)
+    } else {
+        1.0
+    }
+}
+
 /// As [`encode_jpeg`], with the size the JPEG came out at.
 fn encode_jpeg_sized(picture: &ff::frame::Video, sar: f64, width: u32) -> Result<(Vec<u8>, u32, u32)> {
-    let native = (picture.width() as f64 * sar.max(0.01)).round() as u32;
+    let native = (picture.width() as f64 * credible_sar(sar)).round() as u32;
     encode_jpeg_within(picture, sar, width.min(native))
 }
 
 /// `encode_jpeg_sized` with the width already settled by the caller: a field
 /// stands for a frame twice its height, and is worth the frame's width.
 fn encode_jpeg_within(picture: &ff::frame::Video, sar: f64, width: u32) -> Result<(Vec<u8>, u32, u32)> {
-    let sar = sar.max(0.01);
+    let sar = credible_sar(sar);
     // What the picture is worth, in square pixels. Not its coded width: 1440
     // samples across shown at 16:9 needs 1920 to keep all 1080 of its lines,
     // and stopping at 1440 would throw a quarter of them away. Past that
@@ -1205,8 +1219,12 @@ pub fn save_still(src: &Source, time: f64, path: &std::path::Path) -> Result<(u3
         "bmp" => (ff::codec::Id::BMP, ff::format::Pixel::BGR24),
         _ => return Err(anyhow!("a frame is saved as .png, .jpg or .bmp, not {}", path.display())),
     };
-    let (_, picture) = picture_at(src, time)?;
-    let sar = src.video.sample_aspect_ratio.max(0.01);
+    // A whole coded picture, not the woven frame, where the recording repeats
+    // fields: two frames in five of 2:3 pulldown are woven from two pictures,
+    // a comb on a frame that does not say it is interlaced, and was saved as
+    // one. See [`still_picture`].
+    let picture = still_picture(src, time)?;
+    let sar = credible_sar(src.video.sample_aspect_ratio);
     // Every sample across, and as many lines as that width shows. Settled
     // on the frame, before a field is taken out of it: the field has every
     // sample across too, and stands for a frame twice its height. Not held
@@ -1243,6 +1261,92 @@ pub fn save_still(src: &Source, time: f64, path: &std::path::Path) -> Result<(u3
     let bytes = encode_still(&image, codec)?;
     std::fs::write(path, bytes).map_err(|e| anyhow!("cannot write {}: {e}", path.display()))?;
     Ok((width, height))
+}
+
+/// The picture [`save_still`] saves for the frame shown at `time`.
+///
+/// Where the recording repeats fields, the frame the editor shows (see
+/// [`crate::weave`]) can be the last field of one coded picture and the first
+/// of the next. The still is then the picture that frame's top field comes
+/// from -- the field an interlaced picture is saved from -- whole: every
+/// line of it a line of the same instant, and half of them the lines on the
+/// screen. The coded picture *nearest* the instant was the other one wherever
+/// the frame begins on a top field, and between the two the pick turned on a
+/// tick of the 90 kHz clock, a field being 1501.5 of them. Laid out field by
+/// field as the weave lays them out, from the same first access point.
+///
+/// Every other recording: the picture at `time`, as the editor shows it.
+fn still_picture(src: &Source, time: f64) -> Result<ff::frame::Video> {
+    if !crate::weave::woven(src) {
+        return picture_in(src, time, false).map(|(_, p)| p);
+    }
+    let fd = src.video.frame_duration();
+    let field = fd / 2.0;
+    // Where the frame shown at `time` begins, which is the frame
+    // `picture_in` answers for it woven.
+    let shown = crate::weave::on_frame(src, time);
+    let from = entry_before(&src.points, shown);
+    // Counted in fields from `head`, as the weave counts them. Bounded well
+    // inside i64, as there.
+    let slot = |t: f64, head: f64| {
+        const FAR: f64 = (1i64 << 52) as f64;
+        ((t - head) / field).round().clamp(-FAR, FAR) as i64
+    };
+    for (attempt, margin) in [0.0, src.seek_margin].into_iter().enumerate() {
+        let mut head = src.points.first().map(|p| p.time);
+        // The frame's two fields, by the picture each is taken from and
+        // whether it is that picture's top field.
+        let mut slots: [Option<(Rc<ff::frame::Video>, bool)>; 2] = [None, None];
+        let began = walk(src, from, margin, false, false, Cores::One, |t, frame| {
+            let head = *head.get_or_insert(t);
+            let first = slot(shown, head);
+            let at = slot(t, head);
+            if at > first + 1 {
+                return false;
+            }
+            let (fields, top_first) = unsafe {
+                let f = &*frame.as_ptr();
+                (
+                    2 + i64::from(f.repeat_pict.clamp(0, 6)),
+                    f.flags & ff::ffi::AV_FRAME_FLAG_TOP_FIELD_FIRST != 0,
+                )
+            };
+            let mut picture: Option<Rc<ff::frame::Video>> = None;
+            for i in 0..fields {
+                let slot = at + i - first;
+                if slot == 0 || slot == 1 {
+                    let p = picture.get_or_insert_with(|| Rc::new(frame.clone())).clone();
+                    slots[slot as usize] = Some((p, top_first ^ (i % 2 == 1)));
+                }
+            }
+            true
+        })?;
+        // A walk that began past the frame's first field -- the seek landed
+        // late, or an open GOP's leading pictures did not decode -- has only
+        // its second, which is not the one wanted. Again from further back.
+        let late = match (began, head) {
+            (Some(b), Some(h)) => slot(b, h) > slot(shown, h),
+            _ => true,
+        };
+        if late && attempt == 0 {
+            continue;
+        }
+        let picked = match slots {
+            // Two pictures, a field of each: the top one.
+            [Some((a, a_top)), Some((b, b_top))] if !Rc::ptr_eq(&a, &b) && a_top != b_top => {
+                Some(if a_top { a } else { b })
+            }
+            // One picture, or fields that stopped alternating, which the
+            // weave shows as the first.
+            [Some((a, _)), _] | [None, Some((a, _))] => Some(a),
+            [None, None] => None,
+        };
+        if let Some(p) = picked {
+            return Ok(Rc::try_unwrap(p).unwrap_or_else(|p| (*p).clone()));
+        }
+    }
+    // Nothing landed on that frame: as the editor would answer, unwoven.
+    picture_in(src, time, false).map(|(_, p)| p)
 }
 
 /// `picture` as RGB at `width` x `height`, through the matrix it was made
@@ -1706,4 +1810,21 @@ pub(crate) fn steady_decoder(params: ff::codec::Parameters) -> Result<ff::decode
 /// Did decoding begin late enough to have missed the picture wanted?
 fn landed_late(first: Option<f64>, wanted: f64, slack: f64) -> bool {
     !matches!(first, Some(f) if f <= wanted + slack)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_pixel_aspect_ratio_is_held_to_one_a_picture_can_have() {
+        // Every real one passes through, a field's halved one included.
+        for sar in [1.0, 4.0 / 3.0, 8.0 / 9.0, 32.0 / 27.0, 8.0 / 9.0 / 2.0] {
+            assert_eq!(credible_sar(sar), sar);
+        }
+        // A crafted 1:65535 asked for a still 65535 times its height.
+        assert_eq!(credible_sar(1.0 / 65535.0), 0.125);
+        assert_eq!(credible_sar(65535.0), 8.0);
+        assert_eq!(credible_sar(f64::NAN), 1.0);
+    }
 }

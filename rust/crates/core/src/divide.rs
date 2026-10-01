@@ -139,7 +139,7 @@ pub fn divide(
         let lo = prev + frame / 2.0;
         if on_points {
             let near = if ceiling {
-                clean.iter().copied().rfind(|&c| c > lo && c <= t + 1e-9)
+                clean.iter().copied().rfind(|&c| c > lo && c <= t + 1e-9 && c >= t - reach)
             } else {
                 clean
                     .iter()
@@ -203,11 +203,18 @@ pub fn divide(
             }
             // One at a time from the last: a part that came out short on a
             // point is followed by one measured from where it really ended.
+            // Short by half a part at most, as near enough is for the other
+            // two rules: the last point before the size could be a stray one
+            // just past the previous division, behind a GOP longer than the
+            // part, and taking it made a part a frame long.
             let mut prev = 0.0;
             while prev + len <= last {
-                let Some(c) = place(prev + len, true, 0.0, prev) else { break };
+                let Some(c) = place(prev + len, true, len / 2.0, prev) else { break };
                 prev = c.0;
                 cuts.push(c);
+            }
+            if cuts.len() >= MOST_PARTS {
+                bail!("parts of that size would be more than {MOST_PARTS}");
             }
         }
     }
@@ -343,6 +350,17 @@ mod tests {
         let d = divide(&keeps, &[0.0], Rule::Every(20.0), true, FD, 0.0, 0.0).unwrap();
         assert_eq!(d.at.len(), 2);
         assert_eq!(d.off_point, 2);
+    }
+
+    #[test]
+    fn a_size_does_not_take_a_stray_point_behind_a_long_gop() {
+        // A megabyte a second, 10 MB parts, a point a second in and then
+        // none for a minute: the first part is not one second long, it is
+        // ten, off a point.
+        let keeps = [(0.0, 60.0)];
+        let d = divide(&keeps, &[0.0, 1.0], Rule::Size(10_000_000), true, FD, 0.0, 1e6).unwrap();
+        assert_eq!(d.at.len(), 5);
+        assert!(d.lengths.iter().all(|&l| l > 5.0 && l <= 10.0 + FD), "{:?}", d.lengths);
     }
 
     #[test]

@@ -25,6 +25,10 @@
 /// The instants the tracks of a cue sheet start at, in seconds from the
 /// start of its file: in order, one to an instant.
 pub fn track_starts(sheet: &[u8]) -> Vec<f64> {
+    // A UTF-8 byte order mark, which would make the first line's keyword
+    // another word: a sheet that opens on its `FILE` would count none, and
+    // read the tracks of its second file as places in the first.
+    let sheet = sheet.strip_prefix(b"\xEF\xBB\xBF").unwrap_or(sheet);
     let mut starts = Vec::new();
     let mut files = 0;
     // The current track's `00` and `01`, settled when the next one opens.
@@ -107,6 +111,14 @@ mod tests {
         sheet.extend_from_slice(&[0x83, 0x65, 0x83, 0x58, 0x83, 0x67]);
         sheet.extend_from_slice(b"\"\nINDEX 01 00:00:00\ntrack 2 audio\nindex 00 01:00:00\nFILE \"b.flac\" WAVE\nTRACK 3 AUDIO\nINDEX 01 00:30:00\n");
         assert_eq!(track_starts(&sheet), vec![0.0, 60.0]);
+    }
+
+    /// A byte order mark in front of the first `FILE` still makes it the
+    /// first.
+    #[test]
+    fn a_byte_order_mark_hides_no_file() {
+        let sheet = b"\xEF\xBB\xBFFILE \"a.wav\" WAVE\nTRACK 01 AUDIO\nINDEX 01 00:00:00\nTRACK 02 AUDIO\nINDEX 01 02:00:00\nFILE \"b.wav\" WAVE\nTRACK 03 AUDIO\nINDEX 01 01:00:00\n";
+        assert_eq!(track_starts(sheet), vec![0.0, 120.0]);
     }
 
     /// Not a sheet at all, or a time that cannot be one.

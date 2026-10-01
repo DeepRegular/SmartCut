@@ -1703,6 +1703,11 @@ fn rpls(clip_name: &str, clip: &Clip, rec: &Recording) -> Vec<u8> {
         .collect();
     when.sort_unstable();
     when.dedup();
+    // No more than the sixteen bits that count them can say. A file's own
+    // chapter list is read into these now as well as a disc's, and a list
+    // longer than that went out counted modulo 65536 with every mark written
+    // behind the count.
+    when.truncate(usize::from(u16::MAX));
     let mut marks = Vec::new();
     marks.extend_from_slice(&(when.len() as u16).to_be_bytes());
     for when in when {
@@ -2000,6 +2005,27 @@ mod tests {
         assert_eq!(mark_at(0), 20842);
         assert_eq!(mark_at(1), 20842 + (12.5 * TICK) as u32);
         assert_eq!(raw.len(), marks_at + 6 + 2 * MARK);
+    }
+
+    /// More marks than the count can say are cut down to what it can, so the
+    /// count and the list behind it agree.
+    #[test]
+    fn the_mark_count_does_not_wrap() {
+        let rec = Recording {
+            clip: "00001".into(),
+            name: String::new(),
+            made: None,
+            ran: None,
+            description: None,
+            channel: None,
+            channel_number: 0,
+            marks: (0..70_000).map(|k| f64::from(k) * 0.0004).collect(),
+        };
+        let raw = rpls("00001", &clip(), &rec);
+        let marks_at = u32::from_be_bytes(raw[12..16].try_into().unwrap()) as usize;
+        let n = u16::from_be_bytes(raw[marks_at + 4..marks_at + 6].try_into().unwrap());
+        assert_eq!(n, u16::MAX);
+        assert_eq!(raw.len(), marks_at + 6 + usize::from(n) * MARK);
     }
 
     /// The room a run does not need is dealt out through it, and the two

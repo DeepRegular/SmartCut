@@ -1436,6 +1436,9 @@ pub fn outline_with_head(path: &str) -> Result<Outline> {
     Ok(o)
 }
 
+/// The most chapters a container's own list is read for. See [`outline_of`].
+const MAX_CHAPTERS: usize = 10_000;
+
 /// As [`outline`], handing back the demuxer it opened along with it.
 ///
 /// [`scan_reporting`] wants both: the answer, and the open file to walk. An
@@ -1477,6 +1480,10 @@ fn outline_of(path: &str) -> Result<(Outline, input::Demux)> {
         .collect();
     chapters.sort_by(f64::total_cmp);
     chapters.dedup();
+    // Held to a number no recording has a use for. Each one is a mark, and a
+    // mark a card on the editor's line: a crafted file with a hundred
+    // thousand of them froze the editor on its first visit.
+    chapters.truncate(MAX_CHAPTERS);
     // Whether a stream's id is a PID. See [`one_track_per_pid`].
     let on_a_ts = ictx
         .format()
@@ -1869,6 +1876,13 @@ fn outline_of(path: &str) -> Result<(Outline, input::Demux)> {
             // the crawl beside them. What is left here is the `bin_data`
             // the map had nothing to say about.
             if captions.iter().any(|c| c.stream_index == s.index()) {
+                return None;
+            }
+            // Nor an MP4's chapter track: libavformat reads it into the
+            // file's chapters (see `chapters` above) and switches the text
+            // track off itself. Every .mp4 cut written with chapters has
+            // one, and reopened it said its chapters were left behind.
+            if p.medium() == ff::media::Type::Data && s.discard() == ff::Discard::All {
                 return None;
             }
             match (p.medium(), p.id()) {
