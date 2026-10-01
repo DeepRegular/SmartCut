@@ -935,7 +935,10 @@ body.crosswin { padding: 0; }
   font-variant-numeric: tabular-nums;
 }
 .readout-at > *, .readout-cm > * { flex: none; white-space: nowrap; }
-.readout-at { flex: 0 1 auto; }
+/* `min-width: 0` or it never gives anything up: its own minimum is the
+   whole of what it holds, and the selection ran on past the panel's edge
+   instead of being cut short. */
+.readout-at { flex: 0 1 auto; min-width: 0; }
 .readout-cm { flex: 0 1000 auto; min-width: 0; padding-left: 16px; }
 .readout-at > #selection { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 .readout-cm > #cm-note { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
@@ -979,9 +982,12 @@ body.crosswin { padding: 0; }
    engine, and on a long recording that answer takes a few seconds. The panel
    fades while it is out of date, rather than showing the previous cut's
    numbers as though they were this one's. */
-.output .panel,
+.output .panel > *,
 .output .badge { transition: opacity 0.15s ease; }
-.output.stale .panel,
+/* The panel's contents and not the panel: the counter, the selection and the
+   detection's note stand in it too, and they are the editor's own arithmetic,
+   up to date the instant a cut is made. */
+.output.stale .panel > :not(.readout-stack),
 .output.stale .badge { opacity: 0.4; }
 /* Fixed, not max-height: the editor above must not shuffle up and down as
    the plan gains and loses segments. Three lines of it, which is what an

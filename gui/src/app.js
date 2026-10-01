@@ -135,9 +135,13 @@ const crossingFrom = (after) => {
   for (const k of ["kind", "curve", "mode", "image"]) {
     if (typeof after[k] === "string") out[k] = after[k];
   }
+  // Held to what the seam window's controls can say: past them, a project
+  // written by hand previewed and wrote a fade of fifty seconds under a field
+  // that read ten.
+  const most = { seconds: 30, fadeOut: 10, fadeIn: 10 };
   for (const k of ["seconds", "fadeOut", "fadeIn"]) {
     const v = after[k];
-    if (typeof v === "number" && Number.isFinite(v) && v >= 0) out[k] = v;
+    if (typeof v === "number" && Number.isFinite(v) && v >= 0) out[k] = Math.min(v, most[k]);
   }
   return out;
 };
@@ -8983,7 +8987,11 @@ function keepSafe(unsaved) {
     keptShape = shape;
     const body = JSON.stringify({ recovered: 1, project: projectPath, doc: captureProject() });
     keptInOrder(() => invoke("recovery_put", { body })).catch((e) => {
-      keptShape = "";
+      // Not "": an earlier write may still be on disc, and "" is what tells
+      // a save there is nothing to take away -- a crash after that save
+      // offered the older work back. Never equal to a shape, so the next
+      // change writes again.
+      keptShape = "?";
       jlog(`autosave: ${e}`);
     });
   }, KEEP_SAFE_AFTER);
@@ -10334,6 +10342,14 @@ async function projectForQueue() {
     }
   }
   if (!(await putProject(path, true, true))) return "";
+  // Written over a copy the queue may already hold: the tool keeps what its
+  // card shows about a project until it hears the file has changed, and a
+  // list registered again after more editing went on showing the recordings
+  // it had the first time. See `touchQueuedJob`; nothing where it is not in
+  // the queue.
+  if (path === tempProject) {
+    await invoke("batch_touch", { path, note: t("batch.clips", { n: clips.length }) }).catch(() => {});
+  }
   // Kept, so that a list registered twice is written to the one file and
   // refused as the duplicate it is, rather than piling up copies of itself.
   tempProject = path;

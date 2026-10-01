@@ -398,6 +398,7 @@ function showPlayFrame(run, buf) {
 function setPlaying(on) {
   playing = on;
   el("play").textContent = tr(on ? "t.stop" : "t.play");
+  el("play").title = tr(on ? "t.stop.title" : "t.play.title");
   el("play").classList.toggle("on", on);
 }
 

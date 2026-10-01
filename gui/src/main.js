@@ -1751,6 +1751,21 @@ function paintSubsPicker() {
   tickSubs();
 }
 
+/// Write the picker's lines again in the language now in force.
+///
+/// Only the words: `paintSubsPicker` would also decide again which track is
+/// up, and with 環境設定 saying to start with them up it put the first track
+/// back over a 表示しない the person had just chosen.
+function relabelSubs() {
+  const tracks = (src && src.subtitles) || [];
+  for (const b of el("subs-track").children) {
+    const id = b.dataset.track;
+    const track = tracks.find((t) => String(t.id) === id);
+    const label = id === "" ? tr("subs.off") : track ? subsLabel(track, tracks) : null;
+    if (label !== null && b.firstElementChild) b.firstElementChild.textContent = label;
+  }
+}
+
 /// Put the tick on the line for the track that is up.
 function tickSubs() {
   const want = subsId === null ? "" : String(subsId);
@@ -2220,7 +2235,7 @@ function updateReadouts() {
       })
     : tr("editor.selectionTime", { a: fmt(selA), b: fmt(selB), len: fmt(selEnd() - selA) });
   el("selection").textContent = sel;
-  // Cut short on a narrow window; see `.edit-row`.
+  // Cut short on a narrow window; see `.readout-stack`.
   el("selection").title = sel;
   el("ovl-sel").textContent = sel;
   paintMarks();
@@ -5888,11 +5903,6 @@ function showCmNote(text) {
   e.title = text;
 }
 
-/// The recording's name in the title bar of the window's own header, and its
-/// shape on the line under it.
-///
-/// Its own function because it is said twice: once when the recording is
-/// opened, and again if the language changes while it is up.
 /// Switch off what the walk has not made possible yet, and on again when it
 /// has.
 ///
@@ -5919,6 +5929,11 @@ function paintReadiness() {
   for (const id of ["play", "loop", "rewind", "fast-fwd", "snap"]) el(id).disabled = !yet;
 }
 
+/// The recording's name in the title bar of the window's own header, and its
+/// shape on the line under it.
+///
+/// Its own function because it is said twice: once when the recording is
+/// opened, and again if the language changes while it is up.
 function paintSourceInfo() {
   if (!src) return;
   paintReadiness();
@@ -5989,7 +6004,10 @@ async function openPath(picked, saved, side, name, chapters, dropPids, detected)
   // that recording's numbers, and ticked now they would land on this one.
   el("tracks-modal").hidden = true;
   const was = src ? src.path : null;
-  shownName = name || null;
+  // Given to the title with the recording it names, below: put there now,
+  // a language switch during the open wrote this row's name in front of the
+  // last recording's path.
+  const named = name || null;
   sideBase = side || picked.replace(/\.[^./\\]*$/, "");
   // Held for the menu, which can put them down again after they have been
   // cleared -- and for the ordinary way in, a few lines below, where they
@@ -6028,6 +6046,7 @@ async function openPath(picked, saved, side, name, chapters, dropPids, detected)
     const outline = await invoke("open_outline", { path: picked });
     if (overtaken()) return;
     src = outline;
+    shownName = named;
     inbound = false;
     tailSrc = null;
     // Nothing the pass over the last recording made is this one's. Its held
@@ -7986,6 +8005,7 @@ onLangChange(() => {
   paintPlay();
   showVolume(el("volume").value, muted(), false);
   paintSourceInfo();
+  relabelSubs();
   if (src) {
     updateReadouts();
     // From nothing, so that what is written on a card in the other language
