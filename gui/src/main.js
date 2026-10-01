@@ -2410,18 +2410,16 @@ if (marksButton) {
 //
 // The edits (外側をカット to ≡) stand at the end of the row of ways of moving
 // where the window is wide enough for both, and on a row of their own under
-// it where it is not, with the counter beside them. See `.edit-row`.
+// it, centred, where it is not. See `.edit-row`.
 
 /// Whether everything is on the one row, as last arranged.
 let oneRow = null;
 
-/// Put the edits, the counter and the note where this width has room for
-/// them.
+/// Put the edits where this width has room for them.
 ///
-/// Measured from the buttons and never from the readouts: the groups are the
-/// same width wherever they stand, so the answer does not change by being
-/// acted on, and a long selection does not move anything from one row to the
-/// other.
+/// Measured from the groups' own widths, which are the same wherever they
+/// stand, so the answer does not change by being acted on, and a row of its
+/// own is a whole line rather than whatever the wrapping left.
 function arrangeRows() {
   const row = document.querySelector(".transport");
   const groups = [...row.querySelectorAll(":scope > .tgroup, #edit-row > .tgroup")];
@@ -2431,11 +2429,6 @@ function arrangeRows() {
   if (one === oneRow) return;
   oneRow = one;
   document.querySelector(".editor").classList.toggle("one-row", one);
-  // The counter and the note go to a row of their own under them in the
-  // first case, the edit row having gone.
-  const at = el("readouts");
-  if (one) el("player").prepend(at);
-  else el("edit-row").prepend(at);
 }
 
 if (typeof ResizeObserver === "function") {
@@ -7284,7 +7277,7 @@ el("detect-cm").addEventListener("click", async () => {
     cmBusy = false;
     paintDetectCm();
     detectLabel("detect-cm").textContent = tr("editor.detectCm");
-    // The count is over; the note under the counter says what it found.
+    // The count is over; the note beside the counter says what it found.
     // Left alone if something else has been said since.
     if (el("status").textContent === cmCounting) el("status").textContent = "";
     cmCounting = null;

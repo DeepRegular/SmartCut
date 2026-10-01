@@ -915,62 +915,30 @@ body.crosswin { padding: 0; }
    dragged past a digit. */
 .vnum { font-size: 11px; min-width: 4ch; text-align: right; font-variant-numeric: tabular-nums; }
 
-/* The edit row under the ways of moving: where the playhead is and what is
-   chosen on the left, the edits and ≡ at the right. A line of its own when
-   the edits will not fit at the end of the row above, and no box at all when
-   they will -- `display: contents` hands the edits back to that row, and
-   `arrangeRows` takes the counter down to a row of its own. Which of the two
-   is decided by the width of the buttons alone, so a selection timed in
-   hours never moves the edits from one line to the other: with the counter
-   able to push them about, a selection pushed a row onto a line of its own
-   and taking it away brought it back, and the picture grew and shrank with
-   every IN and OUT.
-
-   The readout takes what the buttons leave. Nothing folds -- the frame number
-   broke across its slash -- so the selection is what gives way, cut short
-   with an ellipsis and whole in its tooltip; and below the counter's own
-   width the buttons go to the next line instead. */
+/* The edits, on a line of their own under the ways of moving and centred
+   under it, as that row is, when they will not fit at the end of it; and no
+   box at all when they will -- `display: contents` hands them back to it.
+   Which of the two is `arrangeRows`'s to say, from the buttons' widths. */
 .edit-row {
-  flex: 1 1 100%; display: flex; align-items: center; justify-content: flex-end;
+  flex: 1 1 100%; display: flex; align-items: center; justify-content: center;
   flex-wrap: wrap; row-gap: 4px; column-gap: 12px;
 }
 .one-row .edit-row { display: contents; }
+/* The counter, the selection and the detection's note, one line right above
+   the plan's. Nothing in the counter folds -- the frame number broke across
+   its slash -- so the note gives way first, then the selection, each cut
+   short with an ellipsis and whole in its tooltip (and the note in the clip
+   list too). */
+.readout-stack { display: flex; align-items: center; min-width: 0; margin-top: 5px; }
 .readout-at, .readout-cm {
   display: flex; align-items: center; gap: 16px;
-  padding: 0 10px; font-variant-numeric: tabular-nums;
+  font-variant-numeric: tabular-nums;
 }
 .readout-at > *, .readout-cm > * { flex: none; white-space: nowrap; }
+.readout-at { flex: 0 1 auto; }
+.readout-cm { flex: 0 1000 auto; min-width: 0; padding-left: 16px; }
 .readout-at > #selection { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 .readout-cm > #cm-note { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
-/* The counter and the selection over the detection's note, two lines in the
-   height of the edit row's buttons. The note is the line that gives way: it
-   is cut short to the width the buttons leave, and is whole in its tooltip
-   and in the clip list. Lines set close, or the two do not fit in the
-   buttons' height and the row grows by a line's worth under the picture. */
-.readout-stack { display: flex; flex-direction: column; justify-content: center; min-width: 0; }
-.readout-stack > * { line-height: 1.15; }
-/* Its own text is no measure of how wide it may be: asked for its content's
-   width, the note's line made the column as wide as a long note, and the
-   edits beside it went down to another line at a width of 960. */
-.readout-stack > .readout-cm { min-width: 0; contain: inline-size; }
-.edit-row > .readout-stack { flex: 1 1 0; min-width: auto; }
-/* Two lines in one row's height want a smaller counter than a line to
-   itself: at its own 15px the two lines touched. Two points down, the note a
-   point down too, and a little air between them. */
-.edit-row > .readout-stack { gap: 2px; }
-.edit-row > .readout-stack > * { line-height: 1.25; }
-.edit-row > .readout-stack .counter,
-.edit-row > .readout-stack .counter-jump { font-size: 13px; }
-.edit-row > .readout-stack > .readout-cm { font-size: 10px; }
-/* The counter's own row, for when the edits have gone up to the end of the
-   row above: the counter, the selection and the note, one beside the next,
-   and the note giving way first. Not there at all while the edit row is. */
-#player { justify-content: flex-start; }
-.editor:not(.one-row) #player { display: none; }
-.one-row #player > .readout-stack { flex: 1 1 auto; flex-direction: row; justify-content: flex-start; align-items: center; }
-.one-row .readout-stack > .readout-cm { contain: none; }
-.one-row .readout-stack > .readout-at { flex: 0 1 auto; padding-right: 0; }
-.one-row .readout-stack > .readout-cm { flex: 0 1000 auto; }
 .counter { font-size: 15px; }
 /* A press on the counter types a frame number in; see `openJump`. The box
    takes the counter's place and its size, so the row does not move. */
@@ -999,6 +967,9 @@ body.crosswin { padding: 0; }
 .bar span { display: block; height: 100%; width: 0; background: var(--copy); }
 .plan-head { display: flex; align-items: center; gap: 10px; margin-top: 5px; }
 .plan-text { flex: 1 1 auto; min-width: 0; font-variant-numeric: tabular-nums; }
+/* Right under the counter's line, close: the two are read as one block, and
+   the gap under the band is already the one that sets the panel apart. */
+.readout-stack + .plan-head { margin-top: 0; }
 .plan-head .mini { flex: none; }
 /* Folded, which is how it starts: the summary above says what the cut
    costs, and the segments are there for the one who wants them. */

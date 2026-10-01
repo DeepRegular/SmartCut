@@ -483,14 +483,9 @@ frames, and `Snap to lossless` can take those to zero once it lights up.
 | The band under it | The **filmstrip**: the frames around you, laid out as pictures. The `Window` menu on the right sets how much of the recording the band shows. `Auto`, the default, sizes it from the recording's keyframe spacing so that one GOP is about one picture wide (between 2 and 60 s); a cell is as wide as the stretch it covers. The line down the middle is where you are — except at `Frame by frame`, where a cell is one frame and the frame on screen is boxed in blue instead. Hover over the `?` at the left of the line under it for how it is worked |
 | The scrubber | **Green is the output itself.** `▼` are keyframes, a dull red line inside the green is a join left by a cut, the fine ticks below are scene changes, and the two rows under those are the blank and the silent stretches. **The playhead is the `◎` and a bright red line running the whole height of the track** — the `◎` sits inside the green and the line is what lines it up against everything drawn above and below it |
 | The button row | **Cut** in the middle, `[ IN` to its left and `OUT ]` to its right, and outwards from there: go to, one frame, lossless point, start and end |
-| The edit row | **Cut outside**, **Snap to lossless**, undo, redo, clear all and the `≡` menu on the right. On the left, the frame you are on, how many there are, the time, and the selection, with what commercial detection found on a line under them, cut short with `…` where it will not fit; hover over it, or read it in the clip list. Click the frame number on this row (not the one over the picture), or press `J` (`Ctrl+J`), to type a frame number or a time (`00:01:23.45`) and go there with `Enter`. `Esc` closes the box without going anywhere |
-| The band and lines below | **The export plan**: what will be copied and what will be rebuilt. `▸ Segments` at its right unfolds it segment by segment |
+| The edit row | **Cut outside**, **Snap to lossless**, undo, redo, clear all and the `≡` menu. At the end of the button row where they fit there, and centred on this row where they do not |
+| The band and lines below | **The export plan**. On the line right under the band: the frame you are on, how many there are, the time, the selection, and what commercial detection found. Where they will not fit, the detection and then the selection are cut short with `…`; hover over either for the whole of it (the detection is in the clip list too). Click the frame number on this line (not the one over the picture), or press `J` (`Ctrl+J`), to type a frame number or a time (`00:01:23.45`) and go there with `Enter`. `Esc` closes the box without going anywhere. The line under that is what will be copied and what will be rebuilt; `▸ Segments` at its right unfolds it segment by segment |
 | The bottom line | On the left, what the cut costs, and beside it **View** — a menu of what the preview carries: the counter, the indicators and the subtitles — then the playback buttons (`◀◀` rewind, `▶` play, `▶▶` fast forward, `⟲` loop) and the volume, then whatever the window has to say: a file it read, how far a detection has got. **OK** and **Cancel** on the right |
-
-On a window wide enough for the edit row's buttons to fit at the end of the
-button row, that is where they go, and there is no edit row: the frame number,
-the selection and what commercial detection found stand side by side on the
-line under the button row.
 
 The indicators in the picture's top corners are there only on a frame they apply to:
 
@@ -671,7 +666,7 @@ commercial break, are not things the picture alone will tell you.
 - The frame number and time stay at the **foot** of the picture whether subtitles are
   showing or not. They share that corner with a caption, and they are drawn over it, so
   where the playhead is never goes missing. Where the caption is the one you want to
-  see whole, turn **Counter** off in the same menu — the line under the button row still
+  see whole, turn **Counter** off in the same menu — the line under the plan's band still
   says where you are, and the answer is remembered for the next clip.
 - Playback keeps up with them.
 - **A recording that carries no subtitles has no subtitles in the menu**, only
@@ -851,7 +846,7 @@ frames you want to *keep* and it takes out what lies between them.
   at a time as you close in. Only when the two cross does the one you just
   placed win, and the other retreats to the end of the timeline.
 - **IN and OUT on the same frame select that one frame.**
-- The selection is shown under the preview and on the line under the button row, as
+- The selection is shown under the preview and on the line under the plan's band, as
   `Selection 1800 - 3599 : 00:01:00.06`.
 
 ### Making the cut
