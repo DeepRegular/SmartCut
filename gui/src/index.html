@@ -186,7 +186,7 @@
           <button id="duplicate-clip" class="side-btn" data-i18n="side.duplicate" disabled>⧉　クリップを複製</button>
           <!-- One row made into several: equal parts, a part every so long,
                or every so many bytes. See `askDivide`. -->
-          <button id="divide-clip" class="side-btn" data-i18n="side.divide" disabled>⫼　クリップを分割…</button>
+          <button id="divide-clip" class="side-btn" data-i18n="side.divide" disabled>÷　クリップを分割…</button>
           <!-- What the row is called, which is not always what the file it
                came off is called: a list that is about to be twelve episodes
                is a list whose useful names are 第1話 … 第12話. Typed in the row
@@ -1291,9 +1291,9 @@
             <span data-i18n="divide.how">分割の方法:</span>
             <span class="drop">
               <select id="divide-rule">
-                <option value="parts" data-i18n="divide.byParts">本数で等分</option>
-                <option value="every" data-i18n="divide.byEvery">長さごと</option>
-                <option value="size" data-i18n="divide.bySize">サイズごと</option>
+                <option value="parts" data-i18n="divide.byParts">本数を指定して等分</option>
+                <option value="every" data-i18n="divide.byEvery">一定の長さごと</option>
+                <option value="size" data-i18n="divide.bySize">一定のサイズごと</option>
               </select>
             </span>
           </div>
@@ -1308,7 +1308,7 @@
             <span id="divide-unit-text"></span>
           </div>
           <label class="opt"><input id="divide-points" type="checkbox" />
-            <span data-i18n="divide.onPoints">分割位置をキーフレームに合わせる</span></label>
+            <span data-i18n="divide.onPoints">分割位置を無劣化点に合わせる</span></label>
           <p class="dim divide-preview" id="divide-preview"></p>
         </div>
         <div class="modal-foot">

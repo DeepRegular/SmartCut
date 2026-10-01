@@ -3118,12 +3118,18 @@ async function paintDivide(rows) {
   try {
     found = await divideAll(rows, asked);
   } catch (e) {
-    if (token === divideToken) line.textContent = t("divide.failed", { why: String(e) });
+    if (token !== divideToken) return undefined;
+    line.textContent = t("divide.failed", { why: String(e) });
     return null;
   }
-  if (token !== divideToken) return null;
-  const parts = found.reduce((n, [, d]) => n + d.at.length + 1, 0);
+  // `undefined` for an answer a later question has overtaken: it says
+  // nothing about what the box holds now, and must not clear the answer
+  // that does (the button was left enabled with nothing behind it).
+  if (token !== divideToken) return undefined;
   const splitting = found.filter(([, d]) => d.at.length > 0);
+  // The rows that divide, as `divideRows` counts them: one left whole is
+  // not a part.
+  const parts = splitting.reduce((n, [, d]) => n + d.at.length + 1, 0);
   if (!splitting.length) {
     line.textContent = t("divide.nothing");
     return null;
@@ -3172,7 +3178,8 @@ function askDivide(rows) {
     clearTimeout(timer);
     el("divide-ok").disabled = true;
     timer = setTimeout(async () => {
-      latest = await paintDivide(rows);
+      const found = await paintDivide(rows);
+      if (found !== undefined) latest = found;
     }, now ? 0 : 200);
   };
   repaint(true);
@@ -3230,7 +3237,8 @@ function askDivide(rows) {
     if (ev.target === box && pressedOut) cancel();
   };
   const key = (ev) => {
-    if (ev.key === "Enter" && !ev.isComposing && ev.target.tagName !== "SELECT") {
+    // Not on a button, whose own press Enter is: on キャンセル it divided.
+    if (ev.key === "Enter" && !ev.isComposing && !["SELECT", "BUTTON"].includes(ev.target.tagName)) {
       ev.preventDefault();
       ok();
     } else if (ev.key === "Escape") {
@@ -3330,7 +3338,7 @@ function divideRows(found) {
 /// Parts deleted since are simply not there to take out; a part the editor
 /// is open on is the one thing that stops it, since that window holds the
 /// part's cuts and would hand them back when it closes.
-function undivide(taken) {
+async function undivide(taken) {
   const all = taken.divided.flatMap((m) => [m.clip, ...m.rows]);
   if (editing && all.includes(editing)) {
     removed.push(taken);
@@ -3344,6 +3352,10 @@ function undivide(taken) {
     return;
   }
   const gone = new Set(taken.divided.flatMap((m) => m.rows));
+  // A part being read or detected has a pass behind it that would go on
+  // with nothing listed against it, holding its lane: stopped as `remove`
+  // stops one.
+  const stops = lanesOn(clips.filter((c) => gone.has(c)));
   clips = clips.filter((c) => !gone.has(c));
   for (const m of taken.divided) {
     m.clip.edit = m.edit;
@@ -3357,6 +3369,8 @@ function undivide(taken) {
   renderList();
   back.forEach((c) => refreshPoster(c));
   note(t("list.undivided", { n: back.length }));
+  paintQueueNote();
+  for (const lane of stops) await invoke("stop_batch", { lane });
   pump();
 }
 
@@ -3379,6 +3393,18 @@ function selectAll() {
 let removed = [];
 const REMOVED_KEPT = 20;
 
+/// The lanes that have a pass running on one of `rows`.
+const lanesOn = (rows) =>
+  [
+    ["walk", (c) => c.state === "indexing"],
+    ["pics", (c) => c.pics === "running"],
+    ["cm", (c) => c.cmState === "running"],
+    ["blank", (c) => c.blankState === "running"],
+    ["quiet", (c) => c.quietState === "running"],
+  ]
+    .filter(([, on]) => rows.some(on))
+    .map(([lane]) => lane);
+
 async function remove(doomed, { undoable = true } = {}) {
   const gone = new Set(doomed.map((c) => c.id));
   // Which passes to stop and whether the editor goes, settled now, before the
@@ -3386,15 +3412,7 @@ async function remove(doomed, { undoable = true } = {}) {
   // had already put the rows back as 待ち: the pass behind them was never
   // stopped and went on reading under a row that said it was waiting, and
   // the editor was closed on a row that was back in the list.
-  const stops = [
-    ["walk", (c) => c.state === "indexing"],
-    ["pics", (c) => c.pics === "running"],
-    ["cm", (c) => c.cmState === "running"],
-    ["blank", (c) => c.blankState === "running"],
-    ["quiet", (c) => c.quietState === "running"],
-  ]
-    .filter(([, on]) => doomed.some(on))
-    .map(([lane]) => lane);
+  const stops = lanesOn(doomed);
   const leaving = editing && gone.has(editing.id) ? editing : null;
   let taken = null;
   if (undoable) {
@@ -9805,6 +9823,12 @@ async function loadProject(path, given = null) {
         keyframes: Array.isArray(saved.edit.keyframes)
           ? saved.edit.keyframes.filter((k) => Number.isFinite(k))
           : [],
+        // What a division cut away from a part not yet opened, which the
+        // editor and a second division put through `normalise`: a `null` in
+        // it threw there, and the part could not be opened.
+        partCuts: Array.isArray(saved.edit.partCuts)
+          ? saved.edit.partCuts.filter((r) => r && Number.isFinite(r.a) && Number.isFinite(r.b))
+          : undefined,
         // The other two lists read without asking: the row's sound tracks
         // and the editor's timeline both iterate them, and a number there
         // threw before either was drawn.

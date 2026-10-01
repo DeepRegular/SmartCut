@@ -5269,6 +5269,8 @@ async function refreshPlan() {
   } catch (e) {
     if (run !== planRun) return;
     el("plan-text").textContent = tr("plan.failed", { e });
+    // The last plan's stretches are not this edit's.
+    paintPlanBar(null);
   } finally {
     if (run === planRun) planSettled();
   }
@@ -5803,7 +5805,9 @@ const moreMenu = () => el("more-menu");
 /// and go is a menu that has to be read from the top every time.
 function showMore(on) {
   if (on) {
-    const files = ["load-keyframe", "load-trim", "load-cm", "save-as-keyframe", "save-as-trim"];
+    const files = [
+      "load-keyframe", "load-trim", "load-cm", "load-cue", "save-as-keyframe", "save-as-trim",
+    ];
     for (const id of files) el(id).disabled = !src;
     // Nothing to write where nothing has been detected, and the line says so
     // rather than writing a file with an empty list in it.
@@ -6399,6 +6403,8 @@ async function openPath(picked, saved, side, name, chapters, dropPids, detected)
   planRun++;
   planSettled();
   paintPlanReading();
+  // Its last line is the plan of the recording being left.
+  showPlanHelp(false);
   try {
     // The container's own answer first, which costs one open. It has
     // everything this window draws with except where the access points are --
@@ -6688,6 +6694,9 @@ async function pointsArrived(exact, picked) {
   // to the old end, which left the frames beyond it in the cut.
   if (full.duration > src.duration + 1e-6) {
     for (const c of cuts) if (c.b >= src.duration - 1e-6) c.b = full.duration;
+    // And what a part of a divided row cuts away, which a Trim line read
+    // below is merged with: left at the old end, it gave the tail back.
+    for (const c of partCuts) if (c.b >= src.duration - 1e-6) c.b = full.duration;
     // The same cut, not an edit -- for the reason `openPath` gives above.
     settleMark();
   }
@@ -7530,9 +7539,26 @@ async function saveStill() {
     if (!picked || gen !== openGen) return;
     // A name typed without one of the three extensions is saved as the type
     // the dialog opened on.
-    const to = isStillExt(stillExt(picked)) ? picked : `${picked}.${ext}`;
+    const appended = !isStillExt(stillExt(picked));
+    const to = appended ? `${picked}.${ext}` : picked;
     el("status").textContent = tr("still.saving");
-    const [w, h] = await invoke("save_frame", { path, time: at, output: to });
+    let size;
+    try {
+      size = await invoke("save_frame", { path, time: at, output: to, fresh: appended });
+    } catch (e) {
+      // The dialog asked about the name as typed, not the one with the
+      // extension added: one already there is asked about here.
+      if (String(e) !== "\u0000exists") throw e;
+      el("status").textContent = "";
+      const go = await dialog.ask(tr("marks.overwriteBody", { file: leaf(to) }), {
+        title: tr("marks.overwriteTitle"),
+        kind: "warning",
+      });
+      if (!go || gen !== openGen) return;
+      el("status").textContent = tr("still.saving");
+      size = await invoke("save_frame", { path, time: at, output: to, fresh: false });
+    }
+    const [w, h] = size;
     try {
       localStorage.setItem(STILL_EXT, stillExt(to));
       localStorage.setItem(STILL_DIR, to.slice(0, to.length - leaf(to).length).replace(/[/\\]$/, ""));

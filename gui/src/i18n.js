@@ -243,8 +243,8 @@ const CATALOG = {
       "ベリファイには書き出しとほぼ同じだけ時間がかかります。結果は一覧の行に表示されます。",
     "prefs.notifyDone": "出力が終わったらデスクトップに通知する",
     "prefs.notifyDoneNote":
-      "一覧の出力と、バッチツールのキュー全体が終わったときに通知します。" +
-      "SmartCut のウィンドウを見ているあいだは通知しません。",
+      "一覧の出力と、バッチ出力ツールのキュー全体が終わったときに通知します。" +
+      "SmartCut のウィンドウが前面にあるあいだは通知しません。",
     "prefs.keepOutput": "出力設定を次回の起動に引き継ぐ",
     "prefs.keepOutputNote":
       "保存先・ファイル名・コンテナ・音声の扱いを保存し、次回の起動と新規作成時に復元します。" +
@@ -396,13 +396,13 @@ const CATALOG = {
     "divide.badEvery": "1 秒以上の長さを 00:10:00 や 600 の形で入力してください",
     "divide.badSize": "0 より大きい数を入力してください",
     "divide.failed": "分割位置を求められませんでした: {why}",
-    "divide.nothing": "カット後の長さが 1 本分に満たないので、分割されません",
+    "divide.nothing": "カット後の長さが 1 本分に収まるので、分割できません",
     "divide.into": "{n} 本に分割します。",
     "divide.part": "{n}:　{len}{size}",
     "divide.about": "　約 {size}",
     "divide.intoMany": "{m} 本のクリップを分割して、合計 {n} 本にします。",
     "divide.offPoint":
-      "無劣化点から外れた分割位置が {n} か所あります。そこでは前後の数フレームを再エンコードします。",
+      "無劣化点から外れた分割位置が {n} か所あります。その前後の GOP は再エンコードします。",
     "rowmenu.detect": "CM を検出",
     "rowmenu.undetect": "CM 検出予約を取り消す",
     "rowmenu.detectBlank": "黒白を検出",
@@ -1087,9 +1087,9 @@ const CATALOG = {
     "editor.waveShow.title":
       "タイムラインの下に音声の波形を表示する。無音の箇所は下端に緑の印が付く（しきい値は無音検出と同じ）",
     "editor.waveReading": "音声波形を読み込み中… {pct}%",
-    "editor.waveWaiting": "音声波形はサムネイルの作成と一緒に作ります…",
+    "editor.waveWaiting": "音声波形はサムネイルと一緒に作ります…",
     "editor.view": "表示",
-    "editor.view.title": "プレビュー映像に重ねて表示するもの（カウンタ・インジケータ・字幕）を選びます",
+    "editor.view.title": "画面に表示するもの（カウンタ・インジケータ・音声波形・字幕）を選びます",
 
     // --- 拡大表示 ---------------------------------------------------------
     // --- 継ぎ目の編集 -----------------------------------------------------
@@ -1342,7 +1342,7 @@ const CATALOG = {
     "cue.readFailed": "CUE シートを読み込めません: {e}",
     "keyframes.chapters": "チャプター {n} 個をキーフレームにしました",
     "editor.more.title":
-      "印の読み書き、ディスクのチャプター、キーフレームの全消去。" +
+      "印の読み書き、チャプター、キーフレームの全消去。" +
       "キーフレーム情報（.keyframe）は印の位置だけ、AviSynth スクリプト（.trim.avs）は残る区間そのもの、" +
       "CM 検出結果（.cm.json）は検出した直後の帯と印です。" +
       "Ctrl+H・Ctrl+Shift+H・Ctrl+Alt+H なら、録画と同じ名前で、画面を出さずに保存します。",
@@ -1365,7 +1365,7 @@ const CATALOG = {
     "poster.clearItem": "サムネイルの設定を解除",
     "poster.set": "{t} のフレームをサムネイルにしました。.mp4 と .mkv に埋め込みます",
     "poster.cleared": "サムネイルの設定を解除しました",
-    // 表示中のフレームを画像ファイルで保存します。録画の大きさのまま書き出します。
+    // 表示中のフレームを画像ファイルで保存します。録画から読み直し、表示どおりの大きさで書き出します。
     "still.saveItem": "このフレームを画像で保存…",
     "still.saving": "フレームを画像で保存しています…",
     "still.saved": "{file} を保存しました（{w}×{h}）",
@@ -1744,12 +1744,12 @@ const CATALOG = {
     "divide.badSize": "A number above 0",
     "divide.failed": "Could not work out where to divide: {why}",
     "divide.nothing": "What is left after the cuts is no longer than one part, so nothing is divided",
-    "divide.into": "Divided into {n} parts.",
+    "divide.into": "Divides into {n} parts.",
     "divide.part": "{n}:  {len}{size}",
     "divide.about": "  about {size}",
     "divide.intoMany": "{m} clips divided into {n} parts in all.",
     "divide.offPoint":
-      "{n} division{n?s} could not be put on a lossless point, and a few frames either side of each are re-encoded.",
+      "{n} division{n?s} could not be put on a lossless point, and the GOP either side of each is re-encoded.",
     "rowmenu.detect": "Detect commercials",
     "rowmenu.undetect": "Cancel commercial detection",
     "rowmenu.detectBlank": "Detect blank",
@@ -2650,7 +2650,7 @@ const CATALOG = {
     "cue.readFailed": "Cannot read the CUE sheet: {e}",
     "keyframes.chapters": "Turned {n} chapter{n?s} into keyframes",
     "editor.more.title":
-      "The mark files, the disc's chapters, and clearing the marks. A keyframe list (.keyframe) " +
+      "The mark files, the chapters, and clearing the marks. A keyframe list (.keyframe) " +
       "is the marks alone, an AviSynth script (.trim.avs) is the ranges that survive, a saved " +
       "detection (.cm.json) is what a detection made of the recording. Ctrl+H, Ctrl+Shift+H and " +
       "Ctrl+Alt+H write all three beside the recording with nothing to answer.",

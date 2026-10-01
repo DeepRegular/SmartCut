@@ -550,12 +550,12 @@ export function all() {
   return out;
 }
 
-/// The six the engine side acts on, in the shape its `set_prefs` wants.
+/// The seven the engine side acts on, in the shape its `set_prefs` wants.
 ///
-/// Each number held to what its field on the other side can take. The six
+/// Each number held to what its field on the other side can take. The seven
 /// arrive as one struct, and a single one it cannot read -- a width of -1 or
 /// 1280.5 for a `u32`, a stored `1e999` that JSON writes as `null` -- failed
-/// the whole call: none of the six was applied, and the refusal was shown as
+/// the whole call: none of the seven was applied, and the refusal was shown as
 /// if it were the cache folder's.
 export function forBackend() {
   const whole = (name, hi) => {

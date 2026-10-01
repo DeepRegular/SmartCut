@@ -1911,9 +1911,6 @@ fn without_proxy(
     if current() != generation {
         return Err("cancelled".to_string());
     }
-    if let Some(wave) = &wave {
-        remember_wave(app, &src.path, &wave_out(wave));
-    }
     if let Some(head) = thumbs.take() {
         let tail = std::mem::take(&mut track.thumbs);
         track.thumbs = head.thumbs;
@@ -1923,6 +1920,12 @@ fn without_proxy(
     let taken = SeekIndex::of(src, Some(&track));
     *thumbs = Some(track);
     drop(thumbs);
+    // Written once the pictures' lock is let go, as the index is: the list
+    // window asks under it for every row it draws, and the write prunes a
+    // folder of up to a thousand outlines.
+    if let Some(wave) = &wave {
+        remember_wave(app, &src.path, &wave_out(wave));
+    }
     let index = (!short).then(|| remember_index(app, src, taken)).flatten();
     Ok(PrepareInfo { proxy: None, index, track: info, note })
 }
@@ -4114,6 +4117,9 @@ async fn divide_clip(
     .await
 }
 
+/// What `save_frame` answers when a name it was told is new is already taken.
+const STILL_EXISTS: &str = "\u{0}exists";
+
 /// Save the frame at `time` (source time) of `path` as an image at `output`:
 /// PNG, JPEG or BMP by its extension. Answers the size it was saved at.
 ///
@@ -4125,11 +4131,25 @@ async fn save_frame(
     path: String,
     time: f64,
     output: String,
+    fresh: Option<bool>,
     app: tauri::AppHandle,
 ) -> Result<(u32, u32), String> {
     off_thread(move || {
-        let open_here = locked(&app.state::<OpenPath>().0).as_deref() == Some(path.as_str());
-        let held = if open_here { locked(&app.state::<Opened>().0).clone() } else { None };
+        // A name the dialog never saw -- the extension added after it asked
+        // about overwriting -- is not written over without asking again.
+        if fresh.unwrap_or(false) && std::path::Path::new(&output).exists() {
+            return Err(STILL_EXISTS.to_string());
+        }
+        // The path asked with the recording's lock held, as `clip_poster`
+        // asks it under the pictures': asked before it, an open of another
+        // recording landing in between handed over that one, and its frame
+        // was saved under this one's name.
+        let held = {
+            let state = app.state::<Opened>();
+            let opened = locked(&state.0);
+            let open_here = locked(&app.state::<OpenPath>().0).as_deref() == Some(path.as_str());
+            if open_here { opened.clone() } else { None }
+        };
         let src = match held {
             Some(src) => src,
             None => scan_cached(&app, &path)?.0,
@@ -4795,7 +4815,15 @@ fn wave_path(app: &tauri::AppHandle, path: &str) -> Result<std::path::PathBuf, S
 fn saved_wave(app: &tauri::AppHandle, path: &str) -> Option<WaveOut> {
     let file = wave_path(app, path).ok()?;
     let raw = std::fs::read(&file).ok()?;
-    match serde_json::from_slice::<WaveOut>(&raw) {
+    // A bucket width the window divides by, and a floor it scales by: a file
+    // that says nought or nothing for either is not an outline.
+    let sane = |w: &WaveOut| {
+        w.step.is_finite() && w.step > 0.0 && w.floor_db.is_finite() && w.floor_db > 0.0
+    };
+    match serde_json::from_slice::<WaveOut>(&raw)
+        .map_err(|e| e.to_string())
+        .and_then(|w| if sane(&w) { Ok(w) } else { Err("not an outline".to_string()) })
+    {
         Ok(saved) => {
             seek_index::touch(&file);
             Some(saved)
@@ -8190,7 +8218,12 @@ fn show_folder_now(path: &str) -> Result<(), String> {
 #[tauri::command]
 fn notify_done(window: tauri::WebviewWindow, title: String, body: String, app: tauri::AppHandle) {
     use tauri_plugin_notification::NotificationExt;
-    let watched = window.is_focused().unwrap_or(false) && !window.is_minimized().unwrap_or(false);
+    // Any of this program's windows, not only the one that ran it: the batch
+    // tool's queue ends while somebody is cutting the next recording in the
+    // editor, who is looking at SmartCut all the same.
+    let watched = app.webview_windows().values().any(|w| {
+        w.is_focused().unwrap_or(false) && !w.is_minimized().unwrap_or(false)
+    });
     if watched {
         return;
     }
