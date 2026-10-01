@@ -1174,6 +1174,184 @@ fn top_field(picture: &ff::frame::Video) -> ff::frame::Video {
     field
 }
 
+/// The image formats a frame can be saved in, by the extension of the name
+/// it is saved under.
+pub const STILL_EXTENSIONS: [&str; 4] = ["png", "jpg", "jpeg", "bmp"];
+
+/// Save the picture shown at `time` as an image file, PNG, JPEG or BMP by
+/// the extension of `path`. Answers the size it was written at.
+///
+/// The frame the editor stands on, at the size the recording is shown at:
+/// every sample across, in square pixels, so 1440x1080 at 16:9 is saved
+/// 1920x1080 and a DVD's 720x480 at 16:9 is 853x480. An interlaced picture
+/// is saved from its top field, as a cover is (see [`poster_at`]) and for the
+/// same reason: two fields a sixtieth of a second apart woven into one still
+/// are a comb along everything that moved.
+///
+/// The colours are converted with the matrix the recording says it was made
+/// with -- or the one its size implies where it says nothing -- and not with
+/// the BT.601 one a JPEG decoder assumes: an HD picture saved without that
+/// comes out with its reds orange and its greens yellow. Nothing more than
+/// that is done to them. A PQ or HLG recording is saved as its samples, which
+/// on an SDR screen look as flat as they do in the editor.
+pub fn save_still(src: &Source, time: f64, path: &std::path::Path) -> Result<(u32, u32)> {
+    let ext = path
+        .extension()
+        .map(|e| e.to_string_lossy().to_ascii_lowercase())
+        .unwrap_or_default();
+    let (codec, format) = match ext.as_str() {
+        "png" => (ff::codec::Id::PNG, ff::format::Pixel::RGB24),
+        "jpg" | "jpeg" => (ff::codec::Id::MJPEG, ff::format::Pixel::YUVJ444P),
+        "bmp" => (ff::codec::Id::BMP, ff::format::Pixel::BGR24),
+        _ => return Err(anyhow!("a frame is saved as .png, .jpg or .bmp, not {}", path.display())),
+    };
+    let (_, picture) = picture_at(src, time)?;
+    let sar = src.video.sample_aspect_ratio.max(0.01);
+    // Every sample across, and as many lines as that width shows. Settled
+    // on the frame, before a field is taken out of it: the field has every
+    // sample across too, and stands for a frame twice its height. Not held
+    // to even numbers, as a video frame is: nothing here is subsampled, and
+    // a 16:9 DVD rounded down to 852 came out 478 lines tall.
+    let width = ((picture.width() as f64 * sar.max(1.0)).round() as u32).max(16);
+    let (picture, sar) = if picture.is_interlaced() && picture.height() >= 32 {
+        (top_field(&picture), sar / 2.0)
+    } else {
+        (picture, sar)
+    };
+    let height = (((width as f64 * picture.height() as f64) / (picture.width() as f64 * sar)).round()
+        as u32)
+        .max(16);
+    let rgb = to_rgb(&picture, width, height)?;
+    let image = if format == ff::format::Pixel::RGB24 {
+        rgb
+    } else {
+        // From RGB, which is the one step that knows the matrix; RGB to a
+        // JPEG's YUV is BT.601 full range, which is what a JPEG is read as.
+        let mut out = ff::frame::Video::new(format, width, height);
+        let mut scaler = ff::software::scaling::Context::get(
+            ff::format::Pixel::RGB24,
+            width,
+            height,
+            format,
+            width,
+            height,
+            ff::software::scaling::Flags::POINT,
+        )?;
+        scaler.run(&rgb, &mut out)?;
+        out
+    };
+    let bytes = encode_still(&image, codec)?;
+    std::fs::write(path, bytes).map_err(|e| anyhow!("cannot write {}: {e}", path.display()))?;
+    Ok((width, height))
+}
+
+/// `picture` as RGB at `width` x `height`, through the matrix it was made
+/// with.
+fn to_rgb(picture: &ff::frame::Video, width: u32, height: u32) -> Result<ff::frame::Video> {
+    use ff::ffi;
+    let full = crate::blend::full_range_frame(picture);
+    // What the picture says it is, or by its size where it says nothing: HD
+    // and up is BT.709, anything smaller BT.601.
+    let space = match picture.color_space() {
+        ff::color::Space::BT709 => ffi::SWS_CS_ITU709,
+        ff::color::Space::BT2020NCL | ff::color::Space::BT2020CL => ffi::SWS_CS_BT2020,
+        ff::color::Space::FCC => ffi::SWS_CS_FCC,
+        ff::color::Space::SMPTE240M => ffi::SWS_CS_SMPTE240M,
+        ff::color::Space::BT470BG | ff::color::Space::SMPTE170M => ffi::SWS_CS_ITU601,
+        _ if picture.height() >= 720 => ffi::SWS_CS_ITU709,
+        _ => ffi::SWS_CS_ITU601,
+    };
+    let mut out = ff::frame::Video::new(ff::format::Pixel::RGB24, width, height);
+    unsafe {
+        let c = ffi::sws_getContext(
+            picture.width() as i32,
+            picture.height() as i32,
+            ffi::AVPixelFormat::from(picture.format()),
+            width as i32,
+            height as i32,
+            ffi::AVPixelFormat::AV_PIX_FMT_RGB24,
+            (ff::software::scaling::Flags::LANCZOS
+                | ff::software::scaling::Flags::FULL_CHR_H_INT
+                | ff::software::scaling::Flags::ACCURATE_RND)
+                .bits(),
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+            std::ptr::null(),
+        );
+        if c.is_null() {
+            return Err(anyhow!(
+                "cannot convert {:?} {}x{} to RGB",
+                picture.format(),
+                picture.width(),
+                picture.height()
+            ));
+        }
+        ffi::sws_setColorspaceDetails(
+            c,
+            ffi::sws_getCoefficients(space),
+            i32::from(full),
+            ffi::sws_getCoefficients(ffi::SWS_CS_DEFAULT),
+            1,
+            0,
+            1 << 16,
+            1 << 16,
+        );
+        let r = ffi::sws_scale(
+            c,
+            (*picture.as_ptr()).data.as_ptr() as *const *const u8,
+            (*picture.as_ptr()).linesize.as_ptr(),
+            0,
+            picture.height() as i32,
+            (*out.as_mut_ptr()).data.as_ptr(),
+            (*out.as_mut_ptr()).linesize.as_ptr(),
+        );
+        ffi::sws_freeContext(c);
+        if r <= 0 {
+            return Err(anyhow!("the picture could not be converted to RGB"));
+        }
+    }
+    Ok(out)
+}
+
+/// One picture through an image encoder.
+fn encode_still(picture: &ff::frame::Video, id: ff::codec::Id) -> Result<Vec<u8>> {
+    let codec = ff::encoder::find(id).ok_or_else(|| anyhow!("no {id:?} encoder"))?;
+    let mut enc = ff::codec::context::Context::new_with_codec(codec)
+        .encoder()
+        .video()?;
+    enc.set_width(picture.width());
+    enc.set_height(picture.height());
+    enc.set_format(picture.format());
+    enc.set_time_base(ff::Rational::new(1, 25));
+    let jpeg = id == ff::codec::Id::MJPEG;
+    if jpeg {
+        // As good as a JPEG gets before it is only bigger.
+        unsafe {
+            (*enc.as_mut_ptr()).flags |= ff::ffi::AV_CODEC_FLAG_QSCALE as i32;
+            (*enc.as_mut_ptr()).global_quality = ff::ffi::FF_QP2LAMBDA * 2;
+        }
+        enc.set_color_range(ff::color::Range::JPEG);
+    }
+    let mut enc = enc.open_as(codec)?;
+    let mut frame = picture.clone();
+    if jpeg {
+        frame.set_color_range(ff::color::Range::JPEG);
+    }
+    frame.set_pts(Some(0));
+    enc.send_frame(&frame)?;
+    enc.send_eof()?;
+    let mut packet = ff::Packet::empty();
+    let mut out = Vec::new();
+    while enc.receive_packet(&mut packet).is_ok() {
+        out.extend_from_slice(packet.data().unwrap_or(&[]));
+        packet = ff::Packet::empty();
+    }
+    if out.is_empty() {
+        return Err(anyhow!("the {id:?} encoder produced nothing"));
+    }
+    Ok(out)
+}
+
 /// Put a freshly opened demuxer at the access point `from`.
 ///
 /// Shared by everything that reads a stretch of a recording rather than the

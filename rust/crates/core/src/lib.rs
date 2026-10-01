@@ -27,6 +27,7 @@ pub mod crossview;
 pub mod cue;
 pub mod cut;
 pub mod disc;
+pub mod divide;
 pub mod dvd;
 pub mod entrypool;
 pub mod fit;
@@ -84,8 +85,8 @@ pub use plan::{
 };
 pub use playback_audio::{peaks_at, play_audio, play_audio_across, Fold, Heard, Levels, Start, Volume};
 pub use preview::{
-    frame_at, glance, glance_at, glance_run, glance_sweep, play_from, poster_at, shot_at, shots_at,
-    Pace, Shot,
+    frame_at, glance, glance_at, glance_run, glance_sweep, play_from, poster_at, save_still, shot_at,
+    shots_at, Pace, Shot, STILL_EXTENSIONS,
 };
 pub use proxy::{Marks, ProxyOptions};
 pub use seek_index::SeekIndex;

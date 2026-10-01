@@ -201,7 +201,7 @@ quick properties at the foot of the screen either way.
 | `Ctrl+D` | Detect commercials in the selection |
 | `Ctrl+B` / `Ctrl+Q` | Detect blank / silent stretches in the selection |
 | `Delete` / `Backspace` | Remove it from the list (**the file itself is not touched**) |
-| `Ctrl+Z` / **Undo remove** | Put removed rows back where they were, with their cuts, marks and detections. **Remove all** comes back too. The last 20 removals are kept; opening a project or starting a new one forgets them. A row whose file has been added to the list again since stays out |
+| `Ctrl+Z` / **Undo remove** | Put removed rows back where they were, with their cuts, marks and detections. **Remove all** comes back too. The last 20 removals are kept; opening a project or starting a new one forgets them. A row whose file has been added to the list again since stays out. After a **Divide clip** the button reads **Undo divide**, and makes the parts one row again |
 | `↑` `↓` | Move the selection. Hold `Shift` to extend it |
 | **Drag a row** | Reorder. `Esc` cancels |
 | `Ctrl+↑` `Ctrl+↓` | Move the selected rows up / down, as **Move up** and **Move down** do |
@@ -210,6 +210,7 @@ quick properties at the foot of the screen either way.
 | **Right-click** | The commands for that row, as a menu |
 | `Ctrl+I` / **Media info** on the right-click menu | What the file holds (see [What is in the file](#what-is-in-the-file)) |
 | **⧉ Duplicate clip** | Put the same recording in the list twice. Cuts and marks come with it |
+| **÷ Divide clip…** | Make the row into equal parts, a part every so long, or every so many bytes; see [Dividing a clip into parts](batch.md#dividing-a-clip-into-parts) |
 
 **What you add arrives selected**, and whatever was selected before is not. Drop
 three recordings onto a list of twenty and you can detect, reorder or rename
@@ -1002,6 +1003,23 @@ frame** finds it again and **Clear the thumbnail** takes it off.
   takes that frame).
 - `Ctrl+Z` does not take it back: **Clear the thumbnail** does.
 
+### Saving a frame as a picture
+
+**Save this frame as an image…** in the `≡` menu (or `Shift+P`) writes the
+frame at the playhead to a file of its own: PNG, JPEG or BMP, as the name you
+give it ends.
+
+- It is decoded again out of the recording, never the proxy, at the size the
+  recording is shown at: every sample across, in square pixels. 1440×1080 at
+  16:9 is saved as 1920×1080, and a 16:9 DVD as 853×480.
+- An interlaced recording is saved from one field, as the thumbnail is, so
+  there is no comb.
+- The colours go through the matrix the recording declares (BT.709 for HD).
+  HDR is saved as it is coded, not tone-mapped, and looks as flat as it does in
+  the editor.
+- The name offered is the recording's, with the frame's time in the recording.
+  The folder and the type are the ones used last.
+
 ### Finishing with a recording
 
 - **OK** — take the cuts and marks back to the list and close.
@@ -1778,6 +1796,7 @@ can quote it straight into a bug report.
 | `I` or `[` / `O` or `]` | Start / end the selection here |
 | `K` | Mark this frame as a keyframe |
 | `P` | Use this frame as the output file's thumbnail |
+| `Shift+P` | Save this frame as an image |
 | `Insert` | Put a keyframe on this frame, or take away the one on it |
 | `Del` | Cut the selection — or, with the keyboard in the column of marks, remove the marks chosen there |
 | `Ctrl+Del` | Cut the inside of the selection, keeping the two marked frames |

@@ -4065,6 +4065,82 @@ async fn clip_poster(
     .await
 }
 
+/// Where a clip of the list divides into parts. See [`smartcut_core::divide`].
+#[derive(Serialize)]
+struct DivisionInfo {
+    /// The instant each part after the first begins, in source time.
+    at: Vec<f64>,
+    /// How long each part runs in the output.
+    lengths: Vec<f64>,
+    /// What each part weighs, near enough, in bytes.
+    sizes: Vec<f64>,
+    /// How many of `at` are not on an access point.
+    off_point: usize,
+}
+
+/// Divide a clip of the list into parts: `rule` is `parts` (`value` is how
+/// many), `every` (seconds) or `size` (bytes). `ranges` is what survives its
+/// cuts, as [`clip_plan`] takes it.
+///
+/// Read off the clip's index, so nothing is decoded and the answer comes back
+/// as fast as the dialog asks -- which is on every key pressed in it.
+#[tauri::command]
+async fn divide_clip(
+    path: String,
+    ranges: Vec<(f64, f64)>,
+    rule: String,
+    value: f64,
+    on_points: bool,
+    app: tauri::AppHandle,
+) -> Result<DivisionInfo, String> {
+    use smartcut_core::divide::{self, Rule};
+    off_thread(move || {
+        let (src, _) = scan_cached(&app, &path)?;
+        let rule = match rule.as_str() {
+            "parts" if value.is_finite() && value >= 0.0 => Rule::Parts(value.round() as usize),
+            "every" => Rule::Every(value),
+            "size" if value.is_finite() && value >= 0.0 => Rule::Size(value.round() as u64),
+            _ => return Err(format!("no such way to divide: {rule} {value}")),
+        };
+        let d = divide::divide_source(&src, &ranges, rule, on_points).map_err(|e| e.to_string())?;
+        let rate = divide::weight(&src).unwrap_or(0.0);
+        Ok(DivisionInfo {
+            sizes: d.lengths.iter().map(|l| l * rate).collect(),
+            at: d.at,
+            lengths: d.lengths,
+            off_point: d.off_point,
+        })
+    })
+    .await
+}
+
+/// Save the frame at `time` (source time) of `path` as an image at `output`:
+/// PNG, JPEG or BMP by its extension. Answers the size it was saved at.
+///
+/// Out of the recording, never the proxy: a proxy is a re-encode at a
+/// fraction of the size, and a still is wanted at the size it was recorded.
+/// The open recording where `path` is it, so the index is not read again.
+#[tauri::command]
+async fn save_frame(
+    path: String,
+    time: f64,
+    output: String,
+    app: tauri::AppHandle,
+) -> Result<(u32, u32), String> {
+    off_thread(move || {
+        let open_here = locked(&app.state::<OpenPath>().0).as_deref() == Some(path.as_str());
+        let held = if open_here { locked(&app.state::<Opened>().0).clone() } else { None };
+        let src = match held {
+            Some(src) => src,
+            None => scan_cached(&app, &path)?.0,
+        };
+        src.input.refuse_as_output(&output).map_err(|e| e.to_string())?;
+        let at = if time.is_finite() { time.clamp(0.0, src.duration.max(0.0)) } else { 0.0 };
+        smartcut_core::save_still(&src, at, std::path::Path::new(&output)).map_err(|e| e.to_string())
+    })
+    .await
+}
+
 /// Where a long pass reports the phase it is in and how far through it is.
 ///
 /// Shared rather than borrowed because each of the three passes wants its own
@@ -8824,6 +8900,8 @@ pub fn run() {
             media_info,
             clip_thumbs,
             clip_poster,
+            divide_clip,
+            save_frame,
             clip_glance,
             clip_gone,
             names_an_input,

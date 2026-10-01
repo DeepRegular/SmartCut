@@ -51,5 +51,39 @@ check "pulldown mid file"   "$MEDIA/full_atx.ts"      600.500 0.026
 check "pulldown late"       "$MEDIA/full_atx.ts"     1500.125 0.026
 check "short ts mid file"   "$MEDIA/terrestrial_nhke.ts" 200.750
 
+# --still: the frame at the size it is shown at, in square pixels, as the
+# type the name asks for. 1440 samples at 16:9 are 1920 across, a 16:9 DVD's
+# 720 are 853 and keep their 480 lines, and a 4:3 DVD keeps its 720 and is
+# 540 lines tall.
+still() {
+  local name=$1 src=$2 at=$3 ext=$4 want=$5
+  if [ ! -f "$src" ]; then printf "  SKIP  %-26s %s\n" "$name" "no $src"; return; fi
+  rm -f "$OUT/s.$ext"
+  "$BIN" "$src" --still "$at" -o "$OUT/s.$ext" >/dev/null 2>&1
+  local got
+  got=$(file -b "$OUT/s.$ext" 2>/dev/null | grep -oE "[0-9]+ ?x ?[0-9]+" | head -1 | tr -d " ")
+  local kind
+  kind=$(file -b "$OUT/s.$ext" 2>/dev/null | cut -d" " -f1)
+  if [ "$got" = "$want" ] && case "$ext" in png) [ "$kind" = PNG ];; jpg) [ "$kind" = JPEG ];; bmp) [ "$kind" = PC ];; esac; then
+    printf "  ok    %-26s %s %s\n" "$name" "$kind" "$got"
+    pass=$((pass+1))
+  else
+    printf "  FAIL  %-26s wanted %s %s, got %s %s\n" "$name" "$ext" "$want" "${kind:-nothing}" "${got:-?}"
+    fail=$((fail+1))
+  fi
+}
+
+echo "still frames"
+still "hd 4:3 samples as png"   "$MEDIA/full_ntv.ts"     900.250 png 1920x1080
+still "sd 16:9 as jpeg"         "$MEDIA/sd169.ts"         10.000 jpg 853x480
+still "sd 4:3 as bmp"           "$MEDIA/sd43.ts"          10.000 bmp 720x540
+if [ -f "$MEDIA/full_ntv.ts" ]; then
+  if "$BIN" "$MEDIA/full_ntv.ts" --still 10 -o "$OUT/s.gif" >/dev/null 2>&1; then
+    printf "  FAIL  %-26s a .gif was taken\n" "other types refused"; fail=$((fail+1))
+  else
+    printf "  ok    %-26s\n" "other types refused"; pass=$((pass+1))
+  fi
+fi
+
 echo "=== $pass passed, $fail failed ==="
 [ "$fail" -eq 0 ]

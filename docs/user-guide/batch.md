@@ -104,6 +104,38 @@ Without the numbers the second one would overwrite the first, and the program
 would report two exports while leaving one file. Delete one of them and the
 other goes back to its unnumbered name.
 
+### Dividing a clip into parts
+
+**÷ Divide clip…** (also on the right-click menu) makes one row into several:
+a number of equal parts, a part every so long, or a part every so many bytes.
+Each part is a row of its own, the same recording with everything but its part
+cut away, so it is written, renamed, opened in the editor and deleted like any
+other row, and gets `_1`, `_2` the way duplicates do.
+
+| | |
+|---|---|
+| **Into equal parts** | 2 to 999 parts of the same length |
+| **Every so long** | `00:10:00`, `10:00` or `600`. The last part is whatever is left |
+| **Every so many bytes** | In MiB or GiB. The last part is whatever is left. A part's size is reckoned from the pictures as the index counted them and the sound, with 5% for the container, so it comes out at or a little under the size asked for |
+
+- **What is divided is what the cuts leave.** A clip with its commercials cut is
+  divided by its programme, not by the file.
+- **Divide on lossless points** (on by default) moves each division to the
+  nearest place a copy can start: within half a part either way, and for a size
+  always before it. Nothing is re-encoded there but the one or two leading
+  pictures of an open GOP. Turned off, a division falls on the exact frame and a
+  GOP either side of it is re-encoded. The box says how many divisions could not
+  be put on a lossless point.
+- The box lists each part's length, and its size, before anything changes.
+  Choose several rows and each is divided the same way.
+- **Undo divide** (or `Ctrl+Z`) makes the parts one row again, with the edit it
+  had.
+- A row can be divided once it has been read through, but not while it is open
+  in the editor or while the list is being written.
+- A row the editor has not opened yet still gets what a first visit brings: the
+  `.keyframe` beside the recording, and a disc's chapters and track choice, are
+  taken when each part is first opened.
+
 ## 5. Export the list
 
 The output tab writes the list **from the top down**. Each row shows its

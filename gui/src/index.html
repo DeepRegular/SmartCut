@@ -184,6 +184,9 @@
           <div class="side-head" data-i18n="side.clipEdit">クリップ編集</div>
           <button id="edit-clip" class="side-btn" data-i18n="side.editClip" disabled>✂　カット編集</button>
           <button id="duplicate-clip" class="side-btn" data-i18n="side.duplicate" disabled>⧉　クリップを複製</button>
+          <!-- One row made into several: equal parts, a part every so long,
+               or every so many bytes. See `askDivide`. -->
+          <button id="divide-clip" class="side-btn" data-i18n="side.divide" disabled>⫼　クリップを分割…</button>
           <!-- What the row is called, which is not always what the file it
                came off is called: a list that is about to be twelve episodes
                is a list whose useful names are 第1話 … 第12話. Typed in the row
@@ -210,9 +213,11 @@
           <button id="select-all" class="side-btn" data-i18n="side.selectAll" disabled>全選択</button>
           <button id="remove-clip" class="side-btn" data-i18n="side.removeClip" disabled>クリップ削除</button>
           <button id="remove-all" class="side-btn" data-i18n="side.removeAll" disabled>全削除</button>
-          <!-- Only the removals: a row taken out by mistake is a row's cuts
-               lost, which nothing else on this side can cost. -->
-          <button id="undo-remove" class="side-btn" data-i18n="side.undoRemove" disabled>削除を元に戻す</button>
+          <!-- The removals, and the divisions, which are one row made into
+               several and would otherwise be undone a row at a time. Its
+               label says which is next, so `paintButtons` writes it and no
+               `data-i18n` may. -->
+          <button id="undo-remove" class="side-btn" disabled>削除を元に戻す</button>
         </aside>
       </div>
 
@@ -1274,6 +1279,46 @@
       </div>
     </div>
 
+    <!-- How to divide the rows chosen. The line under the fields says what
+         pressing 分割 would do, worked out by the engine as it is typed. See
+         `askDivide`. -->
+    <div id="divide" class="modal" hidden>
+      <div class="modal-box" role="dialog" aria-modal="true" aria-labelledby="divide-title">
+        <div class="modal-head" id="divide-title" data-i18n="divide.title">クリップを分割</div>
+        <div class="modal-body divide-body">
+          <p class="dim" id="divide-what"></p>
+          <div class="row">
+            <span data-i18n="divide.how">分割の方法:</span>
+            <span class="drop">
+              <select id="divide-rule">
+                <option value="parts" data-i18n="divide.byParts">本数で等分</option>
+                <option value="every" data-i18n="divide.byEvery">長さごと</option>
+                <option value="size" data-i18n="divide.bySize">サイズごと</option>
+              </select>
+            </span>
+          </div>
+          <div class="row">
+            <input id="divide-value" class="pref-num" type="text" spellcheck="false" />
+            <span class="drop" id="divide-unit-box" hidden>
+              <select id="divide-unit">
+                <option value="MiB">MiB</option>
+                <option value="GiB">GiB</option>
+              </select>
+            </span>
+            <span id="divide-unit-text"></span>
+          </div>
+          <label class="opt"><input id="divide-points" type="checkbox" />
+            <span data-i18n="divide.onPoints">分割位置をキーフレームに合わせる</span></label>
+          <p class="dim divide-preview" id="divide-preview"></p>
+        </div>
+        <div class="modal-foot">
+          <span class="grow"></span>
+          <button id="divide-cancel" class="mini" data-i18n="disc.cancel">キャンセル</button>
+          <button id="divide-ok" class="primary" data-i18n="divide.ok">分割</button>
+        </div>
+      </div>
+    </div>
+
     <!-- The name a preset is saved under. Asked only when it is saved, so the
          row on the output settings screen is the list and two buttons. -->
     <div id="preset-ask" class="modal" hidden>
@@ -1382,6 +1427,9 @@
       </button>
       <button class="menu-item" id="row-duplicate" data-i18n="rowmenu.duplicate">
         クリップを複製
+      </button>
+      <button class="menu-item" id="row-divide" data-i18n="rowmenu.divide">
+        クリップを分割…
       </button>
       <button class="menu-item" id="row-detect">
         <span data-i18n="rowmenu.detect">CM を検出</span>

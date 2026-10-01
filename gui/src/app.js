@@ -2114,6 +2114,12 @@ const posterOf = (clip) => clip.poster || clip.glance || null;
 /// DVD, which is a number no row should keep once something better exists.
 const factsOf = (clip) => clip.info || clip.outline || null;
 
+/// Whether the editor has had its say about a row: its edit is the answer
+/// about the tracks from then on. Not a part of a divided row that has not
+/// been in there yet, whose edit is its cuts and nothing more -- what was
+/// switched off when the disc was read still holds for it. See `divideRows`.
+const opened = (clip) => !!clip.edit && !clip.edit.fresh;
+
 /// Give the rows that were just added everything that can be had cheaply:
 /// what the container says about each recording, and a picture out of it.
 ///
@@ -2495,6 +2501,9 @@ function clipActions() {
     // list's own answer and does not wait on a pass over the recording.
     rename: picked.length === 1,
     duplicate: picked.length > 0,
+    // Rows that have been read through, while nothing is being written; see
+    // `divisible`.
+    divide: !exporting && !starting && picked.some(divisible),
     // Anything the detection lane could take now or later, which is
     // everything but a recording that could not be read; see
     // `detectSelected`.
@@ -2517,6 +2526,7 @@ function paintButtons() {
   el("edit-clip").disabled = !can.edit;
   el("rename-clip").disabled = !can.rename;
   el("duplicate-clip").disabled = !can.duplicate;
+  el("divide-clip").disabled = !can.divide;
   el("detect-selected").disabled = !can.detect;
   el("detect-blank-selected").disabled = !can.detectBlank;
   el("detect-quiet-selected").disabled = !can.detectQuiet;
@@ -2531,6 +2541,9 @@ function paintButtons() {
   el("remove-clip").disabled = !can.remove;
   el("remove-all").disabled = clips.length === 0;
   el("undo-remove").disabled = removed.length === 0;
+  // What it would put back: the last removal, or the last division.
+  const last = removed[removed.length - 1];
+  el("undo-remove").textContent = t(last && last.divided ? "side.undoDivide" : "side.undoRemove");
   paintExportButton();
   paintEnlistButton();
   // The queue drives this screen, so what it can do changes with it.
@@ -2957,33 +2970,7 @@ el("droptarget").addEventListener("dblclick", (ev) => {
 function duplicate(sources) {
   const made = [];
   for (const src of sources) {
-    const copy = {
-      ...src,
-      id: nextId++,
-      // A pass in flight belongs to the row it was started on. The copy has
-      // none, so it takes its place in the queue rather than inheriting a
-      // state that nothing is ever going to finish.
-      state: src.state === "indexing" ? "queued" : src.state,
-      pics: src.pics === "running" ? "queued" : src.pics,
-      cmState: src.cmState === "running" ? "queued" : src.cmState,
-      // And the two flat detections, which were copied as they stood: a
-      // copy left "running" was taken by no lane, finished by nothing, and
-      // taking it out of the list stopped the original's pass.
-      blankState: src.blankState === "running" ? "queued" : src.blankState,
-      quietState: src.quietState === "running" ? "queued" : src.quietState,
-      edit: src.edit ? JSON.parse(JSON.stringify(src.edit)) : null,
-      cm: src.cm ? JSON.parse(JSON.stringify(src.cm)) : null,
-      out: { state: "idle", progress: 0, note: "" },
-      // Worked out against this row's own cuts when the output screen asks.
-      reencode: null,
-      row: null,
-      selected: false,
-      // Made here rather than added: see `restoreRemoved`, which keeps a
-      // removed row out only where its recording was added to the list again.
-      duplicated: true,
-    };
-    // The saved edit names the row it was taken from; this is a different row.
-    if (copy.edit) copy.edit.id = copy.id;
+    const copy = copyRow(src);
     // Beside the one it came from, not at the end: a duplicate is read as
     // "this one again", and a list that puts it three screens away is a list
     // you have to go looking in.
@@ -2998,6 +2985,378 @@ function duplicate(sources) {
   renderList();
   made[0].row.scrollIntoView({ block: "nearest" });
   // Only a clip that was never read has anything left to do.
+  pump();
+}
+
+/// A new row on the recording `src` is on, carrying everything known about
+/// it; see `duplicate`. Not yet in the list.
+function copyRow(src) {
+  const copy = {
+    ...src,
+    id: nextId++,
+    // A pass in flight belongs to the row it was started on. The copy has
+    // none, so it takes its place in the queue rather than inheriting a
+    // state that nothing is ever going to finish.
+    state: src.state === "indexing" ? "queued" : src.state,
+    pics: src.pics === "running" ? "queued" : src.pics,
+    cmState: src.cmState === "running" ? "queued" : src.cmState,
+    // And the two flat detections, which were copied as they stood: a
+    // copy left "running" was taken by no lane, finished by nothing, and
+    // taking it out of the list stopped the original's pass.
+    blankState: src.blankState === "running" ? "queued" : src.blankState,
+    quietState: src.quietState === "running" ? "queued" : src.quietState,
+    edit: src.edit ? JSON.parse(JSON.stringify(src.edit)) : null,
+    cm: src.cm ? JSON.parse(JSON.stringify(src.cm)) : null,
+    out: { state: "idle", progress: 0, note: "" },
+    // Worked out against this row's own cuts when the output screen asks.
+    reencode: null,
+    row: null,
+    selected: false,
+    // Made here rather than added: see `restoreRemoved`, which keeps a
+    // removed row out only where its recording was added to the list again.
+    duplicated: true,
+  };
+  // The saved edit names the row it was taken from; this is a different row.
+  if (copy.edit) copy.edit.id = copy.id;
+  return copy;
+}
+
+// --- クリップを分割 ----------------------------------------------------------
+//
+// One row made into several, each the same recording with everything but its
+// own part cut away: a number of equal parts, one every so long, or one every
+// so many bytes. Rows rather than a setting on the output screen, because a
+// part is then a row like any other -- it is written under the row's name
+// with `_1`, `_2` behind it as a duplicate is (see `outputPath`), it can be
+// opened and its ends moved, and a part not wanted is a row deleted.
+//
+// Where the divisions fall is the engine's to say, off the row's access
+// points: see `smartcut_core::divide`.
+
+/// Whether a row can be divided now. Read through, because the divisions are
+/// put on its access points and only the walk finds those; and not the one
+/// the editor is open on, whose cuts are that window's until it closes.
+const divisible = (c) => c.state === "ready" && c !== editing;
+
+/// The last way a row was divided, so that a folder of recordings is
+/// divided alike without the box being filled in each time.
+const DIVIDE_KEY = "smartcut.divide";
+function divideSaved() {
+  const d = { rule: "parts", parts: "2", every: "00:10:00", size: "1", unit: "GiB", onPoints: true };
+  try {
+    return { ...d, ...JSON.parse(localStorage.getItem(DIVIDE_KEY) || "{}") };
+  } catch {
+    return d;
+  }
+}
+
+/// `1:30`, `90`, `1:00:00.5` -- as many seconds, or NaN.
+function readSpan(text) {
+  const parts = String(text).trim().split(":");
+  if (parts.length > 3 || parts.some((p) => !/^\d+(\.\d+)?$/.test(p.trim()))) return NaN;
+  return parts.reduce((n, p) => n * 60 + Number(p), 0);
+}
+
+/// What the box asks for, as the engine takes it, or `{ why }` saying what is
+/// wrong with it.
+function divideAsked() {
+  const rule = el("divide-rule").value;
+  const text = el("divide-value").value;
+  const onPoints = el("divide-points").checked;
+  if (rule === "parts") {
+    const n = Number(text);
+    if (!Number.isInteger(n) || n < 2 || n > 999) return { why: t("divide.badParts") };
+    return { rule, value: n, onPoints };
+  }
+  if (rule === "every") {
+    const secs = readSpan(text);
+    if (!(secs >= 1)) return { why: t("divide.badEvery") };
+    return { rule, value: secs, onPoints };
+  }
+  const n = Number(text);
+  const unit = el("divide-unit").value === "MiB" ? 2 ** 20 : 2 ** 30;
+  if (!(n > 0)) return { why: t("divide.badSize") };
+  return { rule, value: Math.round(n * unit), onPoints };
+}
+
+/// Ask the engine where each row divides, for what the box says now.
+/// `[clip, division]` for every row that divides into more than one part.
+async function divideAll(rows, asked) {
+  const out = [];
+  for (const clip of rows) {
+    const d = await invoke("divide_clip", {
+      path: clip.path,
+      ranges: rangesOf(clip),
+      rule: asked.rule,
+      value: asked.value,
+      onPoints: asked.onPoints,
+    });
+    out.push([clip, d]);
+  }
+  return out;
+}
+
+/// Bumped by every question put to the engine from the box, so an answer
+/// that arrives after a later one has been asked is not shown over it.
+let divideToken = 0;
+
+/// Say under the fields what pressing 分割 would do.
+async function paintDivide(rows) {
+  const line = el("divide-preview");
+  const go = el("divide-ok");
+  const rule = el("divide-rule").value;
+  el("divide-unit-box").hidden = rule !== "size";
+  el("divide-unit-text").textContent = rule === "parts" ? t("divide.partsUnit") : t("divide.eachUnit");
+  const asked = divideAsked();
+  const token = ++divideToken;
+  go.disabled = true;
+  if (asked.why) {
+    line.textContent = asked.why;
+    return null;
+  }
+  let found;
+  try {
+    found = await divideAll(rows, asked);
+  } catch (e) {
+    if (token === divideToken) line.textContent = t("divide.failed", { why: String(e) });
+    return null;
+  }
+  if (token !== divideToken) return null;
+  const parts = found.reduce((n, [, d]) => n + d.at.length + 1, 0);
+  const splitting = found.filter(([, d]) => d.at.length > 0);
+  if (!splitting.length) {
+    line.textContent = t("divide.nothing");
+    return null;
+  }
+  const off = found.reduce((n, [, d]) => n + d.off_point, 0);
+  const lines = [];
+  if (rows.length === 1) {
+    const [, d] = found[0];
+    lines.push(t("divide.into", { n: d.lengths.length }));
+    const shown = d.lengths.slice(0, 8).map((l, i) => {
+      const sz = d.sizes[i] > 0 ? t("divide.about", { size: size(d.sizes[i]) }) : "";
+      return t("divide.part", { n: i + 1, len: clock(l), size: sz });
+    });
+    if (d.lengths.length > 8) shown.push("…");
+    lines.push(shown.join("\n"));
+  } else {
+    lines.push(t("divide.intoMany", { m: splitting.length, n: parts }));
+  }
+  if (off) lines.push(t("divide.offPoint", { n: off }));
+  line.textContent = lines.join("\n");
+  go.disabled = false;
+  return found;
+}
+
+/// Put the box up for `rows` and divide them if it is answered.
+function askDivide(rows) {
+  const box = el("divide");
+  const saved = divideSaved();
+  const rule = el("divide-rule");
+  const field = el("divide-value");
+  // Each way of dividing keeps its own number, so switching between them and
+  // back does not lose what was typed.
+  const typed = { parts: saved.parts, every: saved.every, size: saved.size };
+  rule.value = ["parts", "every", "size"].includes(saved.rule) ? saved.rule : "parts";
+  field.value = typed[rule.value];
+  el("divide-unit").value = saved.unit === "MiB" ? "MiB" : "GiB";
+  el("divide-points").checked = saved.onPoints !== false;
+  el("divide-what").textContent =
+    rows.length === 1 ? clipLabel(rows[0]) : t("divide.clips", { n: rows.length });
+  box.hidden = false;
+  field.focus();
+  field.select();
+  let latest = null;
+  let timer = null;
+  const repaint = (now) => {
+    clearTimeout(timer);
+    el("divide-ok").disabled = true;
+    timer = setTimeout(async () => {
+      latest = await paintDivide(rows);
+    }, now ? 0 : 200);
+  };
+  repaint(true);
+  let pressedOut = false;
+  const done = () => {
+    clearTimeout(timer);
+    divideToken++;
+    box.hidden = true;
+    box.removeEventListener("mousedown", down);
+    box.removeEventListener("click", click);
+    box.removeEventListener("keydown", key);
+    rule.removeEventListener("change", ruled);
+    field.removeEventListener("input", typedIn);
+    el("divide-unit").removeEventListener("change", changed);
+    el("divide-points").removeEventListener("change", changed);
+    el("divide-ok").removeEventListener("click", ok);
+    el("divide-cancel").removeEventListener("click", cancel);
+  };
+  const ok = () => {
+    if (!latest || el("divide-ok").disabled) return;
+    typed[rule.value] = field.value;
+    try {
+      localStorage.setItem(
+        DIVIDE_KEY,
+        JSON.stringify({
+          rule: rule.value,
+          ...typed,
+          unit: el("divide-unit").value,
+          onPoints: el("divide-points").checked,
+        })
+      );
+    } catch {
+      // Remembered or not, the rows are divided.
+    }
+    const found = latest;
+    done();
+    divideRows(found);
+  };
+  const cancel = () => done();
+  const ruled = () => {
+    field.value = typed[rule.value];
+    repaint(true);
+  };
+  const typedIn = () => {
+    typed[rule.value] = field.value;
+    repaint(false);
+  };
+  const changed = () => repaint(true);
+  // Closed from the ground only by a press that began there, as the other
+  // boxes on this screen are.
+  const down = (ev) => {
+    pressedOut = ev.target === box;
+  };
+  const click = (ev) => {
+    if (ev.target === box && pressedOut) cancel();
+  };
+  const key = (ev) => {
+    if (ev.key === "Enter" && !ev.isComposing && ev.target.tagName !== "SELECT") {
+      ev.preventDefault();
+      ok();
+    } else if (ev.key === "Escape") {
+      ev.preventDefault();
+      ev.stopPropagation();
+      cancel();
+    }
+  };
+  box.addEventListener("mousedown", down);
+  box.addEventListener("click", click);
+  box.addEventListener("keydown", key);
+  rule.addEventListener("change", ruled);
+  field.addEventListener("input", typedIn);
+  el("divide-unit").addEventListener("change", changed);
+  el("divide-points").addEventListener("change", changed);
+  el("divide-ok").addEventListener("click", ok);
+  el("divide-cancel").addEventListener("click", cancel);
+}
+
+/// Make each row of `found` into its parts: the row itself is the first, and
+/// the rest go in behind it.
+///
+/// A part is its row's cuts and the rest of the recording cut away besides.
+/// A row the editor has been open on keeps the rest of its edit -- its marks,
+/// its tracks, its cover -- in every part. One it has not is given its cuts
+/// and nothing else, marked as not yet visited (`fresh`), so that its first
+/// visit still reads the files beside the recording and still takes the
+/// disc's tracks and chapters; see `openPath` in main.js. What was cut away
+/// to make the part is kept beside them (`partCuts`), because a Trim line
+/// read on that visit replaces the cuts and the part has to stay a part.
+///
+/// Undone in one go by 分割を元に戻す: see `restoreRemoved`.
+function divideRows(found) {
+  const made = [];
+  let parts = 0;
+  for (const [clip, d] of found) {
+    if (!d.at.length || !clips.includes(clip) || !divisible(clip)) continue;
+    const facts = factsOf(clip);
+    if (!facts) continue;
+    const dur = facts.duration;
+    const was = clip.edit ? JSON.parse(JSON.stringify(clip.edit)) : null;
+    const had = was ? normalise(was.cuts) : [];
+    const fresh = !opened(clip);
+    const owed = was && was.fresh && Array.isArray(was.partCuts) ? was.partCuts : [];
+    const rows = [clip];
+    for (let k = 1; k <= d.at.length; k++) rows.push(copyRow(clip));
+    rows.forEach((row, k) => {
+      const away = [];
+      if (k > 0) away.push({ a: 0, b: d.at[k - 1] });
+      if (k < d.at.length) away.push({ a: d.at[k], b: Math.max(dur, d.at[k]) });
+      const cuts = normalise(had.concat(away));
+      if (fresh) {
+        row.edit = {
+          id: row.id,
+          cuts,
+          keyframes: [],
+          chaptersDue: true,
+          fresh: true,
+          partCuts: normalise(owed.concat(away)),
+        };
+      } else {
+        row.edit = {
+          ...JSON.parse(JSON.stringify(was)),
+          id: row.id,
+          cuts,
+          // Opened at the start of the part, nothing selected: the instants
+          // saved were the whole recording's.
+          playhead: 0,
+          selA: 0,
+          selB: 0,
+          selGone: true,
+        };
+      }
+      row.reencode = null;
+      row.posterSig = null;
+    });
+    clips.splice(clips.indexOf(clip) + 1, 0, ...rows.slice(1));
+    made.push({ clip, edit: was, rows: rows.slice(1), reencode: clip.reencode });
+    parts += rows.length;
+  }
+  if (!made.length) return;
+  removed.push({ divided: made });
+  if (removed.length > REMOVED_KEPT) removed.shift();
+  clips.forEach((c) => (c.selected = false));
+  for (const m of made) [m.clip, ...m.rows].forEach((c) => (c.selected = true));
+  anchor = clips.indexOf(made[0].clip);
+  renderList();
+  made[0].clip.row.scrollIntoView({ block: "nearest" });
+  for (const m of made) [m.clip, ...m.rows].forEach((c) => refreshPoster(c));
+  note(t("list.divided", { m: made.length, n: parts }));
+  pump();
+}
+
+/// Put a division back: the parts after the first go, and the first gets
+/// the edit it had before.
+///
+/// Parts deleted since are simply not there to take out; a part the editor
+/// is open on is the one thing that stops it, since that window holds the
+/// part's cuts and would hand them back when it closes.
+function undivide(taken) {
+  const all = taken.divided.flatMap((m) => [m.clip, ...m.rows]);
+  if (editing && all.includes(editing)) {
+    removed.push(taken);
+    note(t("list.undivideEditing"));
+    return;
+  }
+  // Nor while a run is writing them: the run took the parts as they stood.
+  if (exporting || starting) {
+    removed.push(taken);
+    note(t("list.undivideBusy"));
+    return;
+  }
+  const gone = new Set(taken.divided.flatMap((m) => m.rows));
+  clips = clips.filter((c) => !gone.has(c));
+  for (const m of taken.divided) {
+    m.clip.edit = m.edit;
+    m.clip.reencode = m.reencode;
+    m.clip.posterSig = null;
+  }
+  clips.forEach((c) => (c.selected = false));
+  const back = taken.divided.map((m) => m.clip).filter((c) => clips.includes(c));
+  back.forEach((c) => (c.selected = true));
+  anchor = back.length ? clips.indexOf(back[0]) : -1;
+  renderList();
+  back.forEach((c) => refreshPoster(c));
+  note(t("list.undivided", { n: back.length }));
   pump();
 }
 
@@ -3145,6 +3504,10 @@ async function remove(doomed, { undoable = true } = {}) {
 function restoreRemoved() {
   const taken = removed.pop();
   if (!taken) return;
+  if (taken.divided) {
+    undivide(taken);
+    return;
+  }
   const back = (state) => (state === "running" ? "queued" : state);
   const wasEmpty = !clips.length;
   const again = (clip) =>
@@ -3218,6 +3581,10 @@ el("remove-clip").addEventListener("click", () => remove(selected()));
 el("remove-all").addEventListener("click", () => remove(clips.slice()));
 el("edit-clip").addEventListener("click", () => selected()[0] && edit(selected()[0]));
 el("duplicate-clip").addEventListener("click", () => duplicate(selected()));
+el("divide-clip").addEventListener("click", () => {
+  const rows = selected().filter(divisible);
+  if (rows.length && clipActions().divide) askDivide(rows);
+});
 el("detect-selected").addEventListener("click", () => detectSelected());
 el("detect-blank-selected").addEventListener("click", () => detectFlatSelected("blank"));
 el("detect-quiet-selected").addEventListener("click", () => detectFlatSelected("quiet"));
@@ -3411,6 +3778,7 @@ function openRowMenu(x, y) {
   el("row-edit").disabled = !can.edit;
   el("row-rename").disabled = !can.rename;
   el("row-duplicate").disabled = !can.duplicate;
+  el("row-divide").disabled = !can.divide;
   el("row-detect").disabled = !can.detect;
   el("row-undetect").disabled = !can.undetect;
   el("row-undetect-blank").disabled = !can.undetectBlank;
@@ -3450,6 +3818,11 @@ el("row-rename").addEventListener("click", () => {
 el("row-duplicate").addEventListener("click", () => {
   closeRowMenu();
   duplicate(selected());
+});
+el("row-divide").addEventListener("click", () => {
+  closeRowMenu();
+  const rows = selected().filter(divisible);
+  if (rows.length && clipActions().divide) askDivide(rows);
 });
 el("row-detect").addEventListener("click", () => {
   closeRowMenu();
@@ -4715,7 +5088,7 @@ function keptAudio(clip) {
       },
     ];
   }
-  const dropped = clip.edit ? clip.edit.dropStreams || [] : null;
+  const dropped = opened(clip) ? clip.edit.dropStreams || [] : null;
   return dropped
     ? tracks.filter((a) => !dropped.includes(a.index))
     : tracks.filter((a) => !(clip.dropPids || []).includes(a.pid));
@@ -8025,8 +8398,8 @@ async function writeJoined(list) {
   const sent = list.map((c) => ({
     path: c.path,
     ranges: rangesOf(c),
-    dropStreams: c.edit ? c.edit.dropStreams || [] : [],
-    dropPids: c.edit ? [] : c.dropPids,
+    dropStreams: opened(c) ? c.edit.dropStreams || [] : [],
+    dropPids: opened(c) ? [] : c.dropPids,
     // The last row has nothing to give way to, so whatever it carries is
     // not sent: the engine would read it as a fade to black at the end
     // of the file, which is a thing to ask for rather than to inherit
@@ -8327,12 +8700,12 @@ async function startExport() {
         // and not per list: the audio settings above are one answer for the
         // whole run, but which of a recording's own streams are wanted is a
         // fact about that recording.
-        dropStreams: clip.edit ? clip.edit.dropStreams || [] : [],
+        dropStreams: opened(clip) ? clip.edit.dropStreams || [] : [],
         // And what the chooser switched off when the disc was read, for a row
         // nobody has opened the editor on. Only then: once there is an edit,
         // the track menu's answer is the answer, and sending both would let a
         // track switched back on in the editor be switched off again here.
-        dropPids: clip.edit ? [] : clip.dropPids,
+        dropPids: opened(clip) ? [] : clip.dropPids,
         subtitles: settings.subtitles,
         // A standing answer rather than one of this project's: the box is
         // in 環境設定. See `prefs.dataBroadcast`.
@@ -12494,6 +12867,7 @@ window.addEventListener("keydown", (ev) => {
   // and it holds the keyboard on a button, which the check for a field
   // below lets through.
   if (!prefsPanel.hidden || !about.hidden || !mediaPanel.hidden || chooser) return;
+  if (!el("divide").hidden) return;
   if (ev.target.tagName === "INPUT" || ev.target.tagName === "SELECT") return;
   const key = ev.key.toLowerCase();
   if ((ev.ctrlKey || ev.metaKey) && key === "a") {

@@ -1946,3 +1946,15 @@ input[type="number"]::-webkit-outer-spin-button {
 .foot-row > .opts { margin-top: 0; }
 .preset-group { display: inline-flex; align-items: center; gap: 8px; }
 .preset-group .drop { width: 18em; }
+
+/* クリップを分割. The line under the fields lists the parts, one to a line,
+   and is given room for a few of them so the box does not jump as it is
+   typed into. */
+.divide-body { width: 460px; max-width: 100%; box-sizing: border-box; }
+.divide-body #divide-value { width: 120px; flex: none; }
+.divide-body #divide-unit { min-width: 0; }
+.divide-body .drop[hidden] { display: none; }
+.divide-preview {
+  white-space: pre-wrap; overflow-wrap: anywhere; font-variant-numeric: tabular-nums;
+  height: 12.8em; overflow-y: auto;
+}

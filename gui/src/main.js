@@ -5823,6 +5823,7 @@ function showMore(on) {
     el("poster-set").disabled = !src;
     el("poster-go").disabled = !src || poster === null;
     el("poster-clear").disabled = poster === null;
+    el("still-save").disabled = !src;
     // On the timeline's own clock, like every other time in this window; a
     // picture a cut has since taken is still the cover, and says so.
     el("poster-at").textContent =
@@ -6138,7 +6139,8 @@ async function readTrimFile(path) {
   if (!out) return false;
   // An empty list is a Trim line that keeps the whole recording. Nothing to
   // do, and still an answer: the file was there and it has been read.
-  if (out.length) applyCuts(out);
+  // On a part of a divided row, the rest of the recording stays cut away.
+  if (out.length) applyCuts(partCuts.length ? normalise(out.concat(partCuts)) : out);
   el("status").textContent = tr("trim.read", { n: out.length, file: leaf(path) });
   return true;
 }
@@ -6349,6 +6351,11 @@ let openGen = 0;
 
 async function openPath(picked, saved, side, name, chapters, dropPids, detected) {
   jlog(`openPath ${picked}`);
+  // A part of a divided row that has not been in here yet arrives with its
+  // cuts and nothing else, and everything a first visit does is still owed:
+  // the files beside the recording, the disc's tracks. See `divideRows` in
+  // app.js.
+  const first = !saved || !!saved.fresh;
   if (!picked) return;
   // A second row can be sent while this one is still coming up. Everything
   // below the first wait writes the window's state, so an open that has been
@@ -6483,6 +6490,7 @@ async function openPath(picked, saved, side, name, chapters, dropPids, detected)
     markFileKind = saved ? saved.markFileKind || null : null;
     dropStreams = saved ? (saved.dropStreams || []).slice() : [];
     poster = saved && Number.isFinite(saved.poster) ? saved.poster : null;
+    partCuts = saved && saved.fresh && Array.isArray(saved.partCuts) ? saved.partCuts : [];
     trackList = null;
     // A first visit to a recording that came off a disc starts from the
     // answer given when the disc was read. That answer is in PIDs, because it
@@ -6494,7 +6502,7 @@ async function openPath(picked, saved, side, name, chapters, dropPids, detected)
     // as a TrueHD track with an AC-3 track folded into it, both on the one
     // PID and both handed over separately, so switching that track off has to
     // switch off both halves of it.
-    if (!saved && dropPids && dropPids.length) {
+    if (first && dropPids && dropPids.length) {
       try {
         const listed = await invoke("tracks", { path: picked });
         if (overtaken()) return;
@@ -6535,9 +6543,9 @@ async function openPath(picked, saved, side, name, chapters, dropPids, detected)
     // nothing to write -- which `cutSelection` refuses. A row saved with the
     // whole of it selected, by a version that opened that way, comes back
     // the same as a fresh one.
-    selA = saved ? Math.min(saved.selA, outDur) : 0;
-    selB = saved ? Math.min(saved.selB, outDur) : outDur;
-    selGone = !saved || !!saved.selGone || (selA <= 0 && selB >= outDur - 1e-9);
+    selA = !first ? Math.min(saved.selA, outDur) : 0;
+    selB = !first ? Math.min(saved.selB, outDur) : outDur;
+    selGone = first || !!saved.selGone || (selA <= 0 && selB >= outDur - 1e-9);
     el("status").textContent = "";
     // What the row arrived with, said now as well as once the open is over.
     // The timeline is reported to the list while the walk is still reading
@@ -6556,7 +6564,7 @@ async function openPath(picked, saved, side, name, chapters, dropPids, detected)
     // A recording whose opening held no picture to find is the case the head
     // is unknown for. Its marks would land the second or so early that the
     // clock's own zero puts them, so that one waits for the walk after all.
-    const early = !saved && src.points.length === 0 && src.head !== null;
+    const early = first && src.points.length === 0 && src.head !== null;
     let marks = false;
     if (early) marks = await settle(() => loadMarkFiles());
     if (overtaken()) return;
@@ -6568,7 +6576,7 @@ async function openPath(picked, saved, side, name, chapters, dropPids, detected)
     swapping = false;
     paintDetectCm();
     paintDetectFlat();
-    await showFrame(saved ? saved.playhead : 0);
+    await showFrame(!first ? saved.playhead : 0);
     if (overtaken()) return;
     schedulePlan();
     // And now the walk, which has been running behind all of the above.
@@ -6578,7 +6586,7 @@ async function openPath(picked, saved, side, name, chapters, dropPids, detected)
     // find.
     await pointsArrived(exact, picked);
     if (overtaken()) return;
-    if (!saved && !early) marks = await settle(() => loadMarkFiles());
+    if (first && !early) marks = await settle(() => loadMarkFiles());
     if (overtaken()) return;
     // The disc's own chapters, which fill a timeline no file beside the
     // recording had anything to say about. Left until here either way: they
@@ -6594,7 +6602,7 @@ async function openPath(picked, saved, side, name, chapters, dropPids, detected)
     // What the clip list's lane has already found, if it has been over this
     // recording. Marks only on a first visit: a row coming back brings its
     // own marks with it, and putting these down again would undo a Del.
-    await settle(() => loadFlatCached(!saved));
+    await settle(() => loadFlatCached(first));
     if (overtaken()) return;
     settleMark();
     // The waveform once the pictures pass is over, not beside it: that pass
@@ -7390,7 +7398,11 @@ window.addEventListener("keydown", (ev) => {
   if (key === "i" || key === "[") setIn(playOut());
   if (key === "o" || key === "]") setOut(playOut());
   if (key === "k") addKeyframes([playhead], playhead);
-  if (key === "p" && src) setPoster(playhead);
+  // Shift+P saves the frame as a picture file; P alone makes it the cover.
+  if (key === "p" && src) {
+    if (ev.shiftKey) saveStill();
+    else setPoster(playhead);
+  }
   if (key === "s") toScene(ev.shiftKey ? -1 : 1);
 });
 
@@ -7409,6 +7421,11 @@ window.addEventListener("keydown", (ev) => {
 
 /// Source stream indices switched off. Empty is the ordinary case.
 let dropStreams = [];
+
+/// What a part of a divided row cuts away of the rest of the recording, on
+/// its first visit. A Trim line beside the recording replaces the cuts, and
+/// these go back on top of it. See `divideRows` in app.js.
+let partCuts = [];
 
 // --- サムネイル ------------------------------------------------------------
 //
@@ -7452,6 +7469,87 @@ el("poster-go").addEventListener("click", () => {
 el("poster-clear").addEventListener("click", () => {
   showMore(false);
   if (poster !== null) setPoster(null);
+});
+
+// --- フレームを画像で保存 ----------------------------------------------------
+//
+// The frame on the stage, written out as a picture file at the size it was
+// recorded at. Decoded again out of the recording rather than taken off the
+// stage, whose picture is the size of the window and may be the proxy's: see
+// `save_still` in the engine.
+
+/// The format and the folder the last frame went to, so that somebody saving
+/// a run of them picks neither again. Per machine, like the window's size.
+const STILL_EXT = "smartcut.stillExt";
+const STILL_DIR = "smartcut.stillDir";
+const STILL_FILTERS = [
+  { name: "PNG", extensions: ["png"] },
+  { name: "JPEG", extensions: ["jpg", "jpeg"] },
+  { name: "BMP", extensions: ["bmp"] },
+];
+const stillExt = (p) => ((p.match(/\.([^./\\]+)$/) || [])[1] || "").toLowerCase();
+const isStillExt = (x) => STILL_FILTERS.some((f) => f.extensions.includes(x));
+
+let savingStill = false;
+
+async function saveStill() {
+  if (!src || !dialog || savingStill) return;
+  if (playing) stopPlay();
+  const at = playhead;
+  const gen = openGen;
+  const path = src.path;
+  let ext = "png";
+  let dir = null;
+  try {
+    ext = localStorage.getItem(STILL_EXT) || "png";
+    dir = localStorage.getItem(STILL_DIR);
+  } catch {
+    // A first frame saved, or storage that cannot be had: beside the
+    // recording, as PNG.
+  }
+  if (!isStillExt(ext)) ext = "png";
+  // Under the recording's name and the frame's instant in the recording --
+  // not on the counter, which starts again at nothing on every part of a
+  // divided row, so that the first frame of each was offered the one name.
+  // Where the marks go rather than where the recording is: a clip read out
+  // of a disc image has no folder of its own to write into.
+  const base = markPath("keyframe").replace(/\.keyframe$/, "");
+  const sep = base.includes("\\") && !base.includes("/") ? "\\" : "/";
+  const stem = leaf(base);
+  const stamp = fmt(at).replace(/:/g, "-");
+  const folder = dir || base.slice(0, base.length - stem.length).replace(/[/\\]$/, "");
+  savingStill = true;
+  try {
+    const picked = await dialog.save({
+      defaultPath: `${folder}${sep}${stem}_${stamp}.${ext}`,
+      // The one used last first: it is the type the dialog opens on.
+      filters: STILL_FILTERS.slice().sort(
+        (a, b) => b.extensions.includes(ext) - a.extensions.includes(ext)
+      ),
+    });
+    if (!picked || gen !== openGen) return;
+    // A name typed without one of the three extensions is saved as the type
+    // the dialog opened on.
+    const to = isStillExt(stillExt(picked)) ? picked : `${picked}.${ext}`;
+    el("status").textContent = tr("still.saving");
+    const [w, h] = await invoke("save_frame", { path, time: at, output: to });
+    try {
+      localStorage.setItem(STILL_EXT, stillExt(to));
+      localStorage.setItem(STILL_DIR, to.slice(0, to.length - leaf(to).length).replace(/[/\\]$/, ""));
+    } catch {
+      // Remembered or not, the file is written.
+    }
+    if (gen === openGen) el("status").textContent = tr("still.saved", { file: leaf(to), w, h });
+  } catch (e) {
+    if (gen === openGen) el("status").textContent = tr("still.failed", { why: String(e) });
+  } finally {
+    savingStill = false;
+  }
+}
+
+el("still-save").addEventListener("click", () => {
+  showMore(false);
+  saveStill();
 });
 /// What the backend last said this recording carries, or null before it has
 /// been asked. Kept so reopening the menu does not ask again.

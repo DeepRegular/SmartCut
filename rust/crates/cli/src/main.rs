@@ -452,6 +452,11 @@ const HELP: &[(&str, &[(&str, &str)])] = &[
             ("--inserts", "And report a channel's own few-second idents"),
             ("--scenes", "List the scene changes"),
             ("--preview TIME", "Save the picture at TIME as a JPEG (or -o)"),
+            (
+                "--still TIME",
+                "Save the frame at TIME at the size it was recorded, as the PNG, JPEG or \
+                 BMP -o names (still.png when it names none)",
+            ),
             ("--cut-near TIME", "Where the nearest picture change to TIME is"),
         ],
     ),
@@ -585,6 +590,7 @@ fn run() -> Result<()> {
     let mut index_kind = "auto".to_string();
     let mut seek_index: Option<String> = None;
     let mut preview_at: Option<f64> = None;
+    let mut still_at: Option<f64> = None;
     let mut make_proxy = false;
     // Which recording on a disc. Nothing else takes one.
     let mut title: Option<String> = None;
@@ -884,6 +890,10 @@ fn run() -> Result<()> {
                 i += 1;
                 preview_at = Some(parse_time(args.get(i).context("--preview needs a time")?)?);
             }
+            "--still" => {
+                i += 1;
+                still_at = Some(parse_time(args.get(i).context("--still needs a time")?)?);
+            }
             "--index" => {
                 i += 1;
                 index_kind = args
@@ -1158,6 +1168,7 @@ fn run() -> Result<()> {
         ("--detect-cm", detect_cm),
         ("--proxy", make_proxy),
         ("--preview", preview_at.is_some()),
+        ("--still", still_at.is_some()),
     ];
     // A check of a cut, asked of a run that writes none.
     if verify {
@@ -1323,6 +1334,9 @@ fn run() -> Result<()> {
             if preview_at.is_some() {
                 taken.push("preview.jpg".into());
             }
+            if still_at.is_some() {
+                taken.push("still.png".into());
+            }
             if make_proxy {
                 taken.push(std::path::Path::new(&input).with_extension("proxy.mp4"));
             }
@@ -1428,6 +1442,7 @@ fn run() -> Result<()> {
                     || detect_cm
                     || make_proxy
                     || preview_at.is_some()
+                    || still_at.is_some()
                     || cut_near.is_some();
                 if asked {
                     bail!("{input} is a disc: name the recording to work on with --title N");
@@ -2041,6 +2056,24 @@ fn run() -> Result<()> {
             shot.time,
             shot.kind
         );
+        return Ok(());
+    }
+
+    if let Some(at) = still_at {
+        let path = output.clone().unwrap_or_else(|| "still.png".into());
+        let ext = std::path::Path::new(&path)
+            .extension()
+            .map(|e| e.to_string_lossy().to_ascii_lowercase())
+            .unwrap_or_default();
+        if !smartcut_core::STILL_EXTENSIONS.contains(&ext.as_str()) {
+            bail!("--still writes a .png, .jpg or .bmp, not {path}");
+        }
+        src.input.refuse_as_output(&path)?;
+        if at > src.duration {
+            bail!("--still {} is past the end of the recording ({})", fmt_hms(at), fmt_hms(src.duration));
+        }
+        let (w, h) = smartcut_core::save_still(&src, at.max(0.0), std::path::Path::new(&path))?;
+        tell!("\nwrote {path} ({w}x{h})  at {:.3}s", at.max(0.0));
         return Ok(());
     }
 
