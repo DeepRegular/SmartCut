@@ -16,6 +16,13 @@
   --encode: #f0a020;
   --cm: #b06030;
   --keep: #2f7d5a;
+  /* The sound's outline under the cut editor's timeline: the loudest of
+     each column behind, its RMS in front. The window's own blue, the one the
+     selection, the plan's bar and the ? are drawn in, rather than a blue of
+     the band's own beside it; the peaks are the same blue taken most of the
+     way down to the panel. Read by `drawWave`. */
+  --wave-peak: #0f5966;
+  --wave: var(--sel);
 }
 * { box-sizing: border-box; }
 /* The window is not a document, so nothing in it is selectable -- except the
@@ -961,19 +968,52 @@ body.crosswin { padding: 0; }
 /* --- output ----------------------------------------------------------- */
 .output { flex: none; display: flex; flex-direction: column; gap: 5px; }
 .panel { background: var(--panel); border: 1px solid var(--line); padding: 6px 10px; }
-.bar { height: 13px; background: var(--encode); border-radius: 2px; overflow: hidden; }
-/* The ground is the re-encode colour and the bar over it is the copy, so an
-   empty bar reads as "all of this is being re-encoded". While the recording
-   is still being read that is not what is being said -- nothing is -- so the
-   ground goes neutral until there is a plan to show. */
+/* The output along the same scale as the scrubber: the copy colour, with
+   the stretches that are re-encoded laid over it where they fall. It was a
+   share drawn from the left -- the percentage on the line below said again,
+   with the re-encode always at the right-hand end whichever seam it came
+   from.
+
+   Two pixels wider each side than the panel's padding leaves it, so its
+   ends are the trough's: the scrubber's box is padded 8px and this one 10. */
+.bar {
+  position: relative; height: 13px; margin: 0 -2px;
+  background: var(--copy); border-radius: 2px; overflow: hidden;
+}
+/* No plan: being read, nothing kept, nothing open. Neither colour would be
+   true, so neither is shown. */
 .bar.unknown { background: var(--line); }
-.bar span { display: block; height: 100%; width: 0; background: var(--copy); }
+.bar.unknown .redo { display: none; }
+/* At least two pixels, which is what makes one seam's few frames out of two
+   hours visible at all. */
+.bar .redo {
+  position: absolute; top: 0; bottom: 0; min-width: 2px;
+  background: var(--encode);
+}
 .plan-head { display: flex; align-items: center; gap: 10px; margin-top: 5px; }
 .plan-text { flex: 1 1 auto; min-width: 0; font-variant-numeric: tabular-nums; }
 /* Right under the counter's line, close: the two are read as one block, and
    the gap under the band is already the one that sets the panel apart. */
 .readout-stack + .plan-head { margin-top: 0; }
+.plan-head { position: relative; }
 .plan-head .mini { flex: none; }
+/* The ? beside the summary, round like the strip's, and lit in the copy
+   colour until it has been opened once. */
+.plan-head .help { width: 20px; padding: 0; border-radius: 50%; }
+.plan-head .help.fresh { border-color: var(--copy); color: var(--copy); }
+/* What the percentage means. Over the panel and opening upwards, the panel
+   being the foot of the window, as the menus beside it do. */
+.plan-help {
+  position: absolute; left: 0; bottom: calc(100% + 6px); z-index: 20;
+  width: min(560px, calc(100vw - 40px)); padding: 8px 12px;
+  background: var(--panel); border: 1px solid #000;
+  box-shadow: 0 6px 18px rgba(0, 0, 0, .6);
+  font-size: 12px; line-height: 1.55;
+}
+.plan-help[hidden] { display: none; }
+.plan-help h3 { margin: 0 0 4px; font-size: 13px; }
+.plan-help p { margin: 6px 0 0; }
+.plan-help .now { color: var(--copy); }
 /* Folded, which is how it starts: the summary above says what the cut
    costs, and the segments are there for the one who wants them. */
 .segbox[hidden] { display: none; }

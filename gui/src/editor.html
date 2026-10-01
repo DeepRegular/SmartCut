@@ -318,7 +318,12 @@
 
         <footer class="output" id="plan-panel">
           <div class="panel">
-            <div class="bar"><span id="copied-bar"></span></div>
+            <!-- What is copied and what is re-encoded, where it falls along
+                 the output: the copy colour throughout, and the re-encode
+                 colour over each stretch rebuilt. Lined up with the scrubber
+                 above it, so a seam's red line has its cost right under it.
+                 See `paintPlanBar`. -->
+            <div class="bar unknown" id="plan-bar"></div>
             <!-- Where the playhead is, what is chosen, and what the
                  detection found, on the line right above what the output
                  comes to: all four are read off together, and down here
@@ -346,6 +351,14 @@
                  it. Folded out of the box; see `planOpen` in prefs.js. -->
             <div class="plan-head">
               <div class="plan-text" id="plan-text">ファイルを開いてください</div>
+              <!-- What the percentage means, put up over the panel on a
+                   press. Lit until it has been opened once: the number
+                   is read on the first cut, and the reason it is never
+                   rounded up to 100% is not something to guess. See
+                   `showPlanHelp`. -->
+              <button id="plan-help-btn" class="mini help" type="button" aria-expanded="false"
+                      data-i18n-title="plan.help.title">?</button>
+              <div id="plan-help" class="plan-help" role="dialog" hidden></div>
               <button id="plan-fold" class="mini" type="button" aria-expanded="false"
                       data-i18n-title="plan.fold.title"></button>
             </div>
@@ -394,6 +407,14 @@
                 <button class="menu-item" id="marks-show" type="button" aria-pressed="true"
                         data-i18n-title="editor.marksShow.title">
                   <span data-i18n="editor.marksShow">インジケータ</span>
+                  <span class="menu-key"><span class="tick">✓</span></span>
+                </button>
+                <!-- The sound's outline along the bottom of the timeline. Off
+                     takes its 31 pixels back for the picture. See
+                     `drawWave`. -->
+                <button class="menu-item" id="wave-show" type="button" aria-pressed="true"
+                        data-i18n-title="editor.waveShow.title">
+                  <span data-i18n="editor.waveShow">音声波形</span>
                   <span class="menu-key"><span class="tick">✓</span></span>
                 </button>
                 <!-- Which subtitles to draw, and 表示しない first because

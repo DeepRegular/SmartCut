@@ -232,6 +232,10 @@ const CATALOG = {
     "prefs.verifyNote":
       "書き出したファイルを読み直し、元の録画とフレームごとに突き合わせます。" +
       "ベリファイには書き出しとほぼ同じだけ時間がかかります。結果は一覧の行に表示されます。",
+    "prefs.notifyDone": "出力が終わったらデスクトップに通知する",
+    "prefs.notifyDoneNote":
+      "一覧の出力と、バッチツールのキュー全体が終わったときに通知します。" +
+      "SmartCut のウィンドウを見ているあいだは通知しません。",
     "prefs.keepOutput": "出力設定を次回の起動に引き継ぐ",
     "prefs.keepOutputNote":
       "保存先・ファイル名・コンテナ・音声の扱いを保存し、次回の起動と新規作成時に復元します。" +
@@ -931,6 +935,10 @@ const CATALOG = {
     "out.summary": "{done} / {all} 本を出力しました{failed}{aborted}　経過 {elapsed}",
     "out.summaryFailed": "　失敗 {n} 本",
     "out.summaryAborted": "　（中止されました）",
+    "notify.outTitle": "SmartCut: 出力が終わりました",
+    "notify.batchTitle": "SmartCut: バッチ出力が終わりました",
+    "notify.batchBody": "{all} 件のジョブのうち {done} 件が完了しました{failed}",
+    "notify.failed": "（失敗 {n} 件）",
     "out.openLog": "実行ログを開く",
     "out.verifying": "\"{name}\" をベリファイ中: 元の録画と 1 フレームずつ比べています…",
     "out.verifyPct": "ベリファイ {pct}%",
@@ -1037,6 +1045,10 @@ const CATALOG = {
     "editor.counterShow.title": "フレーム番号と時刻をプレビュー映像の上に表示する",
     "editor.marksShow": "インジケータ",
     "editor.marksShow.title": "選択範囲の端・キーフレーム・黒白無音のインジケータをプレビュー映像の左上と右上に表示する",
+    "editor.waveShow": "音声波形",
+    "editor.waveShow.title":
+      "タイムラインの下に音声の波形を表示する。無音の箇所は下端に緑の印が付く（しきい値は無音検出と同じ）",
+    "editor.waveReading": "音声波形を読み込み中… {pct}%",
     "editor.view": "表示",
     "editor.view.title": "プレビュー映像に重ねて表示するもの（カウンタ・インジケータ・字幕）を選びます",
 
@@ -1272,6 +1284,25 @@ const CATALOG = {
       " / 再エンコード {reencoded}s",
     "plan.lossless": "映像 完全無劣化",
     "plan.reencoded": "再エンコード {n} フレーム",
+    "plan.help.title": "無劣化コピーの割合の読み方",
+    "plan.help.head": "「無劣化コピー」の割合の読み方",
+    "plan.help.body":
+      "出力する映像の長さのうち、元の録画からそのままコピーする部分の割合です。" +
+      "コピーした部分は元の録画とバイト単位で同じなので、画質は少しも変わりません。\n\n" +
+      "再エンコードするのは継ぎ目のまわりだけです。映像は無劣化点（I フレームなど、そこから再生を始められるフレーム）でしか切り離せません。" +
+      "カット位置が無劣化点に乗っていないときは、カット位置と最寄りの無劣化点のあいだのフレームを作り直します。" +
+      "継ぎ目 1 つにつき、最大で GOP 2 つ分ほどです（放送の MPEG-2 ならおよそ 1 秒）。\n\n" +
+      "100% には切り上げません。4 万フレームのうち 2 フレームを再エンコードすると、ふつうに計算すれば 100.0% ですが、表示は 99.9% になります。" +
+      "正確な数は「再エンコード ○ フレーム」の表示で確かめてください。" +
+      "「映像 完全無劣化」と出るのは、再エンコードが 1 フレームもないときだけです。\n\n" +
+      "割合を上げるには、選択の両端を無劣化点へ寄せます（「無劣化点へ吸着」、または Shift+↑↓ で無劣化点へ移動）。" +
+      "そのぶん、カット位置は数フレーム動きます。\n\n" +
+      "これは映像だけの数字です。音声は出力設定に従って別に扱います。",
+    "plan.help.now":
+      "この計画では、出力 {total} のうち {copied} 秒（{pct}）をコピーし、{places} 箇所で合わせて {n} フレームを再エンコードします。",
+    "plan.help.nowTime":
+      "この計画では、出力 {total} のうち {copied} 秒（{pct}）をコピーし、{places} 箇所で合わせて {t} 秒を再エンコードします。",
+    "plan.help.nowLossless": "この計画では、出力 {total} の映像をすべてコピーします。再エンコードはありません。",
     "plan.reencodedTime": "再エンコード {t} 秒",
     "plan.segCopy": "コピー　　",
     "plan.segEncode": "再エンコード",
@@ -1518,6 +1549,10 @@ const CATALOG = {
     "prefs.verifyNote":
       "Reads each written file back and compares it with the recording frame by frame. " +
       "The check takes about as long as the writing did. What it finds is shown on the list's row.",
+    "prefs.notifyDone": "Notify the desktop when an export finishes",
+    "prefs.notifyDoneNote":
+      "When the list's export ends, and when the batch tool's whole queue does. " +
+      "Nothing is sent while the SmartCut window is the one in front.",
     "prefs.keepOutput": "Carry the output settings over to the next start",
     "prefs.keepOutputNote":
       "Remembers the folder, the file name, the container and what is done to the audio, and puts them " +
@@ -2209,6 +2244,10 @@ const CATALOG = {
       "Recover it? If not, it is discarded.",
     "recover.done": "Recovered the unsaved work ({n} clip{n?s}). The title keeps its * until it is saved",
     "out.summaryAborted": "   (stopped)",
+    "notify.outTitle": "SmartCut: export finished",
+    "notify.batchTitle": "SmartCut: batch finished",
+    "notify.batchBody": "{done} of {all} job{all?s} done{failed}",
+    "notify.failed": ", {n} failed",
 
     // --- batch export ----------------------------------------------------
     "batch.counts":
@@ -2281,6 +2320,10 @@ const CATALOG = {
     "editor.counterShow.title": "Draw the frame number and time over the picture",
     "editor.marksShow": "Indicators",
     "editor.marksShow.title": "Show indicators for the selection's ends, keyframes and blank or quiet stretches in the picture's top corners",
+    "editor.waveShow": "Waveform",
+    "editor.waveShow.title":
+      "Show the sound's waveform under the timeline. Quiet stretches get a green mark along its foot, at the silence detection's level",
+    "editor.waveReading": "Reading the waveform… {pct}%",
     "editor.view": "View",
     "editor.view.title": "Choose what is drawn over the picture: the counter, the indicators and the subtitles",
 
@@ -2512,6 +2555,26 @@ const CATALOG = {
       " / re-encoded {reencoded}s",
     "plan.lossless": "Video completely lossless",
     "plan.reencoded": "{n} frame{n?s} re-encoded",
+    "plan.help.title": "What the lossless percentage means",
+    "plan.help.head": "Reading the \"copied losslessly\" percentage",
+    "plan.help.body":
+      "It is the share of the output's video that is copied straight out of the recording. " +
+      "Those parts are byte-for-byte the recording's own, so their picture is untouched.\n\n" +
+      "Only the pictures around each join are re-encoded. Video can only be split at a lossless point " +
+      "(an I-frame or another picture decoding can start from), so a cut that falls between two of them " +
+      "has the frames between it and the nearest one rebuilt. That comes to roughly two GOPs per join at most " +
+      "(about a second on broadcast MPEG-2).\n\n" +
+      "100% is never rounded up. Two re-encoded frames out of 40,000 is 100.0% in ordinary arithmetic; " +
+      "this shows 99.9%, and the \"frames re-encoded\" figure gives the exact count. " +
+      "\"Video completely lossless\" means not one frame is re-encoded.\n\n" +
+      "To raise it, move the ends of the selection onto lossless points (Snap to lossless, or Shift+↑↓ " +
+      "to step between them). The cut then moves by those frames.\n\n" +
+      "The figure is about the video alone. The sound is handled separately, as the output settings say.",
+    "plan.help.now":
+      "This plan copies {copied}s of the {total} output ({pct}) and re-encodes {n} frame{n?s} in {places} place{places?s}.",
+    "plan.help.nowTime":
+      "This plan copies {copied}s of the {total} output ({pct}) and re-encodes {t}s in {places} place{places?s}.",
+    "plan.help.nowLossless": "This plan copies all {total} of the output's video. Nothing is re-encoded.",
     "plan.reencodedTime": "{t} s re-encoded",
     "plan.segCopy": "copy      ",
     "plan.segEncode": "re-encode ",

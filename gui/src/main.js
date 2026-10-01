@@ -1389,8 +1389,9 @@ const TOP = 14;
 const HGT = 22;
 const MID = TOP + HGT / 2;
 /// Tall enough for the two rows under the scene changes: the picture's flat
-/// stretches, and the sound's quiet ones.
-const TRACK_H = 80;
+/// stretches, and the sound's quiet ones -- and, where the sound's outline is
+/// drawn, for that under them. See `trackH`.
+const TRACK_BASE_H = 80;
 /// Where those two rows sit, and where the scene changes sit above them:
 /// under the IN and OUT handles, which hang ten pixels below the trough.
 const SCENE_Y = 50;
@@ -1410,11 +1411,187 @@ const FLAT_LANES = {
   quiet: { colour: "#6fbf9b", y: QUIET_Y },
 };
 
+// --- the sound's outline ------------------------------------------------
+//
+// Under the trough, the whole of the sound along the edited timeline: what a break's silences look like before anything has been
+// detected, which is what it is wanted for. Read once per recording and kept
+// by the backend (`read_wave`); asked for once the walk is in, so that on a
+// share it is not a second read of the file competing with the first.
+
+/// Where the band sits, and how tall it is: right under the IN and OUT tabs,
+/// against the trough it is read along. Below the three rows of stretches it
+/// stood a row of empty lanes away from the trough on most recordings, and
+/// what it is for is lining a silence up against the timeline. The rows move
+/// down under it instead; see `laneShift`.
+const WAVE_Y = TOP + HGT + 12;
+const WAVE_H = 28;
+
+/// Whether the band is wanted at all. 表示 in the editor answers it.
+const waveWanted = () => prefs.get("waveform") !== false;
+
+/// The outline of the recording on screen, once it has been read:
+/// `{ path, step, floor, peak, rms }`, the two levels a byte per bucket.
+let wave = null;
+/// How far the read has got, while it is going: `{ path, done }`.
+let waveReading = null;
+/// Bumped whenever what is held is let go, so that an answer to an earlier
+/// question is not taken.
+let waveGen = 0;
+/// The columns as last worked out, and what they were worked out for. The
+/// track is redrawn on every pointer move and every frame of playback, and
+/// the band is the one thing on it that costs more than a few rectangles.
+let waveCols = null;
+
+/// Whether this recording gets the band: wanted, and something to draw.
+const waveShown = () => waveWanted() && !!src && !!src.has_audio;
+
+/// How tall the track is. Grown by the band where there is one, and from the
+/// moment the recording opens rather than when its outline arrives, so that
+/// nothing jumps when it does.
+const trackH = () => (waveShown() ? TRACK_BASE_H + WAVE_H + 3 : TRACK_BASE_H);
+
+/// How far the scene changes and the two detections' rows are pushed down to
+/// make room for the band above them.
+const laneShift = () => (waveShown() ? WAVE_H + 3 : 0);
+
+function forgetWave() {
+  wave = null;
+  waveReading = null;
+  waveCols = null;
+  waveGen++;
+}
+
+/// Read the outline of the recording on screen, if it is wanted and not held.
+async function askWave() {
+  if (!waveShown() || (wave && wave.path === src.path)) return;
+  if (waveReading && waveReading.path === src.path) return;
+  const gen = ++waveGen;
+  const path = src.path;
+  waveReading = { path, done: 0 };
+  draw();
+  try {
+    const got = await invoke("read_wave", { path });
+    if (gen !== waveGen) return;
+    const bytes = (b64) => Uint8Array.from(atob(b64), (c) => c.charCodeAt(0));
+    wave = { path, step: got.step, floor: got.floor_db, peak: bytes(got.peak), rms: bytes(got.rms) };
+    waveCols = null;
+  } catch (e) {
+    // Stopped because the window moved on, or a recording that cannot be
+    // read for its sound: either way there is nothing to draw, and the
+    // reason is not worth a line of the status bar.
+    if (gen === waveGen) jlog(`wave: ${e}`);
+  } finally {
+    if (gen === waveGen) {
+      waveReading = null;
+      draw();
+    }
+  }
+}
+
+/// A byte of the outline as a height, 0..1. Drawn over the top 60 dB rather
+/// than the 80 a byte can say: broadcast sound sits in the top twenty, and
+/// spread over eighty it all reads as one flat band.
+const waveHeight = (b) => clamp((b / 255) * wave.floor - wave.floor + 60, 0, 60) / 60;
+
+/// What each column of the band holds: the loudest peak, the loudest RMS,
+/// and whether any bucket in it was quiet. Worked out along the edited
+/// timeline, so a cut closes the band over its hole the way it closes the
+/// trough.
+function waveColumns(w) {
+  const key = `${w}|${outDur}|${keeps.map((k) => `${k.a},${k.b},${k.at}`).join(";")}|${waveGen}|${prefs.get("quietLevel")}`;
+  if (waveCols && waveCols.key === key) return waveCols;
+  const n = Math.max(0, Math.ceil(w));
+  const peak = new Float32Array(n);
+  const rms = new Float32Array(n);
+  const quiet = new Uint8Array(n);
+  const level = Number(prefs.get("quietLevel"));
+  const db = Number.isFinite(level) ? level : -50;
+  // The quiet detection's own level, as a byte: a column holding a bucket
+  // under it holds a stretch the detection would call quiet.
+  const under = ((db + wave.floor) / wave.floor) * 255;
+  const last = wave.peak.length - 1;
+  for (const k of keeps) {
+    const x0 = Math.max(0, Math.floor(timeToX(k.at, w)));
+    const x1 = Math.min(n, Math.ceil(timeToX(k.at + (k.b - k.a), w)));
+    for (let x = x0; x < x1; x++) {
+      const a = k.a + Math.max(0, xToTime(x, w) - k.at);
+      const b = k.a + Math.min(k.b - k.a, xToTime(x + 1, w) - k.at);
+      if (b <= a) continue;
+      const i0 = Math.floor(a / wave.step);
+      const i1 = Math.min(last, Math.max(i0, Math.ceil(b / wave.step) - 1));
+      let p = peak[x];
+      let r = rms[x];
+      let q = quiet[x];
+      for (let i = i0; i <= i1; i++) {
+        const pv = wave.peak[i];
+        if (pv > p) p = pv;
+        if (wave.rms[i] > r) r = wave.rms[i];
+        if (pv < under) q = 1;
+      }
+      peak[x] = p;
+      rms[x] = r;
+      quiet[x] = q;
+    }
+  }
+  waveCols = { key, peak, rms, quiet };
+  return waveCols;
+}
+
+/// The band's two colours, out of the stylesheet's palette (`--wave-peak` and
+/// `--wave`) rather than written in here, so the band changes with it. Read
+/// once: nothing changes the palette while the window is up.
+let waveInk = null;
+function waveColours() {
+  if (!waveInk) {
+    const css = getComputedStyle(document.documentElement);
+    const pick = (name, or) => css.getPropertyValue(name).trim() || or;
+    waveInk = { peak: pick("--wave-peak", "#0f5966"), rms: pick("--wave", "#14b8d4") };
+  }
+  return waveInk;
+}
+
+/// The band: peaks behind, RMS in front, mirrored about the middle, and a
+/// mark along its foot wherever the sound went quiet.
+function drawWave(w) {
+  const mid = WAVE_Y + WAVE_H / 2;
+  const half = WAVE_H / 2;
+  ctx.fillStyle = "rgba(255,255,255,.04)";
+  ctx.fillRect(0, WAVE_Y, w, WAVE_H);
+  if (!wave || wave.path !== src.path) {
+    if (waveReading && waveReading.path === src.path) {
+      ctx.fillStyle = "#8a8a8a";
+      ctx.font = "10px system-ui";
+      ctx.fillText(tr("editor.waveReading", { pct: Math.round(waveReading.done * 100) }), 4, mid + 3);
+    }
+    return;
+  }
+  const cols = waveColumns(w);
+  const ink = waveColours();
+  ctx.fillStyle = ink.peak;
+  for (let x = 0; x < cols.peak.length; x++) {
+    const h = Math.round(waveHeight(cols.peak[x]) * half);
+    if (h > 0) ctx.fillRect(x, mid - h, 1, 2 * h);
+  }
+  ctx.fillStyle = ink.rms;
+  for (let x = 0; x < cols.rms.length; x++) {
+    const h = Math.round(waveHeight(cols.rms[x]) * half);
+    if (h > 0) ctx.fillRect(x, mid - h, 1, 2 * h);
+  }
+  // Two hours across a thousand pixels is seven seconds a column, and the
+  // loudest of seven seconds hides the half second of quiet a junction is.
+  // So a column that holds one says so on its own, in the quiet row's
+  // colour, along the foot of the band.
+  ctx.fillStyle = FLAT_LANES.quiet.colour;
+  for (let x = 0; x < cols.quiet.length; x++) {
+    if (cols.quiet[x]) ctx.fillRect(x, WAVE_Y + WAVE_H - 3, 1, 3);
+  }
+}
+
 function layout() {
   const ratio = window.devicePixelRatio || 1;
   const w = track.clientWidth;
   track.width = w * ratio;
-  track.height = TRACK_H * ratio;
+  track.height = trackH() * ratio;
   ctx.setTransform(ratio, 0, 0, ratio, 0, 0);
   return w;
 }
@@ -1434,8 +1611,11 @@ function arrowDown(x, y, size) {
 
 function draw() {
   const w = layout();
-  ctx.clearRect(0, 0, w, TRACK_H);
+  const height = trackH();
+  ctx.clearRect(0, 0, w, height);
   if (!src || outDur <= 0) return;
+  if (waveShown()) drawWave(w);
+  const shift = laneShift();
 
   // Scene changes first, as a fine row under everything: useful to have, but
   // there are hundreds of them and they must not shout over the selection.
@@ -1447,7 +1627,7 @@ function draw() {
     const x = Math.round(timeToX(o, w));
     if (x === lastX) continue;
     lastX = x;
-    ctx.fillRect(x, SCENE_Y, 1, 5);
+    ctx.fillRect(x, SCENE_Y + shift, 1, 5);
   }
 
   // What the two detections found, a row each. Bands rather than ticks,
@@ -1460,7 +1640,7 @@ function draw() {
     ctx.fillStyle = lane.colour;
     for (const [a, e] of srcRangeToOut(r.start, flatEnd(r))) {
       const x = timeToX(a, w);
-      ctx.fillRect(x, lane.y, Math.max(1, timeToX(e, w) - x), 5);
+      ctx.fillRect(x, lane.y + shift, Math.max(1, timeToX(e, w) - x), 5);
     }
   }
 
@@ -1535,13 +1715,13 @@ function draw() {
   // Stopping short of the two times written along the bottom, which are the
   // ends of the recording and not part of the scale.
   ctx.fillStyle = "#ff4646";
-  ctx.fillRect(Math.round(px), 0, 1, TRACK_H - 11);
+  ctx.fillRect(Math.round(px), 0, 1, height - 11);
 
   ctx.fillStyle = "#8a8a8a";
   ctx.font = "10px system-ui";
-  ctx.fillText(fmt(0), 2, TRACK_H - 2);
+  ctx.fillText(fmt(0), 2, height - 2);
   const end = fmt(outDur);
-  ctx.fillText(end, w - ctx.measureText(end).width - 2, TRACK_H - 2);
+  ctx.fillText(end, w - ctx.measureText(end).width - 2, height - 2);
 }
 
 // --- picture ------------------------------------------------------------
@@ -2419,6 +2599,27 @@ const marksButton = el("marks-show");
 if (marksButton) {
   showMarks(marksOn, false);
   marksButton.addEventListener("click", () => showMarks(!marksOn));
+}
+
+/// The sound's outline under the timeline, the way `showMarks` is the
+/// corners'. Turned on, it is read if it has not been; turned off, a read
+/// already going is left to finish and be kept.
+function showWave(on, remember = true) {
+  const button = el("wave-show");
+  if (button) {
+    button.classList.toggle("on", on);
+    button.setAttribute("aria-pressed", on ? "true" : "false");
+  }
+  if (!remember) return;
+  prefs.set("waveform", on);
+  draw();
+  if (on && walked()) askWave();
+}
+
+const waveButton = el("wave-show");
+if (waveButton) {
+  showWave(waveWanted(), false);
+  waveButton.addEventListener("click", () => showWave(!waveWanted()));
 }
 
 // --- the rows under the timeline ------------------------------------------
@@ -4834,6 +5035,68 @@ function pctText(pct, redone) {
 /// does not blink.
 let planRun = 0;
 let planFade = null;
+/// What the last plan came to, for the ? beside it. Null while there is none.
+let lastPlan = null;
+
+/// What the percentage means, put up over the panel by the ? beside it.
+///
+/// The number is the one this window is judged by, and two things about it
+/// are not what they look like: it is the video alone, and it is never
+/// rounded up to 100%. Both were in the README and nowhere a person cutting
+/// would see them. Written out afresh on every opening, with a last line
+/// about the plan on screen, so the explanation is about this cut rather
+/// than about cuts in general.
+function showPlanHelp(on) {
+  const box = el("plan-help");
+  const button = el("plan-help-btn");
+  if (!box || !button) return;
+  box.hidden = !on;
+  button.setAttribute("aria-expanded", String(!!on));
+  if (!on) return;
+  if (!prefs.get("planHelpSeen")) {
+    prefs.set("planHelpSeen", true);
+    button.classList.remove("fresh");
+  }
+  box.textContent = "";
+  const head = document.createElement("h3");
+  head.textContent = tr("plan.help.head");
+  box.append(head);
+  for (const line of tr("plan.help.body").split("\n\n")) {
+    const para = document.createElement("p");
+    para.textContent = line;
+    box.append(para);
+  }
+  if (lastPlan) {
+    const now = document.createElement("p");
+    now.className = "now";
+    now.textContent =
+      lastPlan.redone === 0
+        ? tr("plan.help.nowLossless", { total: fmt(lastPlan.total) })
+        : tr(lastPlan.counted ? "plan.help.now" : "plan.help.nowTime", {
+            total: fmt(lastPlan.total),
+            copied: lastPlan.copied.toFixed(2),
+            pct: lastPlan.pct,
+            places: lastPlan.places,
+            n: lastPlan.redone,
+            t: lastPlan.reencoded.toFixed(2),
+          });
+    box.append(now);
+  }
+}
+
+{
+  const button = el("plan-help-btn");
+  if (button) {
+    button.classList.toggle("fresh", !prefs.get("planHelpSeen"));
+    button.addEventListener("click", (ev) => {
+      ev.stopPropagation();
+      showPlanHelp(el("plan-help").hidden);
+    });
+    // Read, and selected to be copied: a press inside it is not a press
+    // anywhere else.
+    el("plan-help").addEventListener("click", (ev) => ev.stopPropagation());
+  }
+}
 
 function planSettled() {
   clearTimeout(planFade);
@@ -4857,15 +5120,44 @@ let walkFailed = null;
 function paintPlanReading() {
   el("plan-text").textContent = tr("plan.reading");
   el("segments").innerHTML = "";
-  el("copied-bar").style.width = "0%";
-  el("copied-bar").parentElement.classList.add("unknown");
+  paintPlanBar(null);
   el("smart-badge").textContent = "—";
+}
+
+/// The bar over the plan: where along the output the re-encoded stretches
+/// fall, on the scale the scrubber above it is drawn to. `segments` are the
+/// plan's, in source time; null is no plan, which is grey.
+///
+/// Each stretch is placed where its first picture lands in the output and is
+/// as long as it is: a re-encode never runs across a seam, it is the head or
+/// the tail of one range. Its tooltip is the line the unfolded list has for
+/// it.
+function paintPlanBar(segments) {
+  const bar = el("plan-bar");
+  bar.textContent = "";
+  bar.classList.toggle("unknown", !segments);
+  if (!segments || outDur <= 0) return;
+  const counted = !src || !src.variable;
+  for (const s of segments) {
+    if (s.kind === "copy") continue;
+    const at = srcToOutSeam(s.start);
+    const len = Math.max(0, s.end - s.start);
+    const span = document.createElement("span");
+    span.className = "redo";
+    span.style.left = `${(100 * at) / outDur}%`;
+    span.style.width = `${(100 * len) / outDur}%`;
+    span.title =
+      `${tr("plan.segEncode").trim()} ${fmt(s.start)} → ${fmt(s.end)}` +
+      (counted ? `  (${tr("out.ovlNote", { n: s.frames })})` : "");
+    bar.append(span);
+  }
 }
 
 async function refreshPlan() {
   // Whichever question this call asks, it is now the only one whose answer
   // this panel will take.
   const run = ++planRun;
+  lastPlan = null;
   // What a plan says is which stretches copy and which are re-encoded, and
   // that is a question about where the access points are. Until the walk has
   // found them there is no answer to give, and asking for one would only get
@@ -4887,13 +5179,12 @@ async function refreshPlan() {
     paintPlanReading();
     return;
   }
-  el("copied-bar").parentElement.classList.remove("unknown");
   const ranges = outputRanges();
   if (!src || !ranges.length) {
     planSettled();
     el("plan-text").textContent = tr(src ? "plan.allCut" : "plan.openFile");
     el("segments").innerHTML = "";
-    el("copied-bar").style.width = "0%";
+    paintPlanBar(null);
     el("smart-badge").textContent = "—";
     return;
   }
@@ -4906,10 +5197,19 @@ async function refreshPlan() {
     // answer is the one this panel is waiting for.
     if (run !== planRun) return;
     const pct = p.total > 0 ? (100 * p.copied) / p.total : 0;
-    el("copied-bar").style.width = `${pct}%`;
+    paintPlanBar(p.segments);
     const redone = p.segments
       .filter((g) => g.kind !== "copy")
       .reduce((n, g) => n + g.frames, 0);
+    lastPlan = {
+      total: p.total,
+      copied: p.copied,
+      pct: pctText(pct, redone),
+      redone,
+      reencoded: p.reencoded,
+      places: p.segments.filter((g) => g.kind !== "copy").length,
+      counted: !src || !src.variable,
+    };
     el("plan-text").textContent = tr("plan.text", {
       total: fmt(p.total),
       ranges: ranges.length,
@@ -5697,10 +5997,13 @@ el("zoom-toggle").addEventListener("click", () => {
 window.addEventListener("click", () => {
   showMore(false);
   showView(false);
+  showPlanHelp(false);
 });
-window.addEventListener("wheel", () => {
+window.addEventListener("wheel", (ev) => {
   showMore(false);
   showView(false);
+  // Not the wheel over the explanation itself, which may be scrolled.
+  if (!el("plan-help").contains(ev.target)) showPlanHelp(false);
 }, true);
 
 /// The cuts a Trim line describes, as source ranges taken out.
@@ -6146,6 +6449,8 @@ async function openPath(picked, saved, side, name, chapters, dropPids, detected)
     // Another recording: what the meter and the magnifier are holding is
     // about the one before it.
     meterSilent();
+    // And so is the sound's outline. Asked for again once the walk is in.
+    forgetWave();
     zoomShown = null;
     hideHover();
     // What the line under the strip says is about a recording that has been
@@ -6224,6 +6529,7 @@ async function openPath(picked, saved, side, name, chapters, dropPids, detected)
     if (overtaken()) return;
     settleMark();
     prepare();
+    askWave();
     // Asked again now that the open is over. Everything above schedules the
     // plan while this window is still `opening`, and a plan asked for then is
     // answered with 「読み込み中」 and nothing else -- which is the honest
@@ -6714,6 +7020,15 @@ window.addEventListener("keydown", (ev) => {
   // space would start playback behind it, and the arrow keys would step the
   // playhead nobody can see. The save menu is a panel like any other, and
   // Escape there puts the menu away rather than the window.
+  // The explanation of the percentage likewise: any key puts it away, and
+  // Escape does nothing else -- it is not leaving the window.
+  if (!el("plan-help").hidden) {
+    showPlanHelp(false);
+    if (ev.key === "Escape") {
+      ev.preventDefault();
+      return;
+    }
+  }
   if (!viewMenu().hidden) {
     // Nothing on it has a key of its own, so every key puts it away, and
     // Escape does nothing else.
@@ -7508,6 +7823,12 @@ if (listen) {
   });
   // Which of the two is running is in the payload: they are separate passes
   // on separate buttons, and either can be the one somebody pressed.
+  hear("wave-progress", (ev) => {
+    const [path, done] = ev.payload;
+    if (!waveReading || waveReading.path !== path) return;
+    waveReading.done = done;
+    draw();
+  });
   hear("flat-progress", (ev) => {
     const [what, done] = ev.payload;
     const id = what === "quiet" ? "detect-silence" : "detect-blank";

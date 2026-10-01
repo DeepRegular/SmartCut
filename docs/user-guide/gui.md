@@ -481,11 +481,11 @@ frames, and `Snap to lossless` can take those to zero once it lights up.
 | The large picture | The preview. At its foot, in the middle: frame number, timecode, what kind of frame it is, and the current selection. In its top corners, indicators for the frame on screen (below). The **View** menu on the bottom line turns either off |
 | Beside it, on the left | The **audio level meter**: what is being heard while something plays, and the sound under the playhead while nothing does. **Preferences → Windows** turns it off |
 | The band under it | The **filmstrip**: the frames around you, laid out as pictures. The `Window` menu on the right sets how much of the recording the band shows. `Auto`, the default, sizes it from the recording's keyframe spacing so that one GOP is about one picture wide (between 2 and 60 s); a cell is as wide as the stretch it covers. The line down the middle is where you are — except at `Frame by frame`, where a cell is one frame and the frame on screen is boxed in blue instead. Hover over the `?` at the left of the line under it for how it is worked |
-| The scrubber | **Green is the output itself.** `▼` are keyframes, a dull red line inside the green is a join left by a cut, the fine ticks below are scene changes, and the two rows under those are the blank and the silent stretches. **The playhead is the `◎` and a bright red line running the whole height of the track** — the `◎` sits inside the green and the line is what lines it up against everything drawn above and below it |
+| The scrubber | **Green is the output itself.** `▼` are keyframes, a dull red line inside the green is a join left by a cut, the fine ticks below are scene changes, and the two rows under those are the blank and the silent stretches. **The playhead is the `◎` and a bright red line running the whole height of the track** — the `◎` sits inside the green and the line is what lines it up against everything drawn above and below it. At the foot is the **waveform**: anywhere quieter than the silence detection's level gets a green mark along its bottom edge, so the quiet at a commercial junction shows before anything has been detected. The sound is read once per recording and kept in the cache; **View** turns it off |
 | The button row | **Cut** in the middle, `[ IN` to its left and `OUT ]` to its right, and outwards from there: go to, one frame, lossless point, start and end |
 | The edit row | **Cut outside**, **Snap to lossless**, undo, redo, clear all and the `≡` menu. At the end of the button row where they fit there, and centred on this row where they do not |
-| The band and lines below | **The export plan**. On the line right under the band: the frame you are on, how many there are, the time, the selection, and what commercial detection found. Where they will not fit, the detection and then the selection are cut short with `…`; hover over either for the whole of it (the detection is in the clip list too). Click the frame number on this line (not the one over the picture), or press `J` (`Ctrl+J`), to type a frame number or a time (`00:01:23.45`) and go there with `Enter`. `Esc` closes the box without going anywhere. The line under that is what will be copied and what will be rebuilt; `▸ Segments` at its right unfolds it segment by segment |
-| The bottom line | On the left, what the cut costs, and beside it **View** — a menu of what the preview carries: the counter, the indicators and the subtitles — then the playback buttons (`◀◀` rewind, `▶` play, `▶▶` fast forward, `⟲` loop) and the volume, then whatever the window has to say: a file it read, how far a detection has got. **OK** and **Cancel** on the right |
+| The band and lines below | **The export plan**. The band is the output on the scrubber's scale: cyan is copied, orange is re-encoded, and each orange stretch sits right under the red line of the join it belongs to, so a join that costs nothing has none. Hover over one for its times and frame count. On the line right under the band: the frame you are on, how many there are, the time, the selection, and what commercial detection found. Where they will not fit, the detection and then the selection are cut short with `…`; hover over either for the whole of it (the detection is in the clip list too). Click the frame number on this line (not the one over the picture), or press `J` (`Ctrl+J`), to type a frame number or a time (`00:01:23.45`) and go there with `Enter`. `Esc` closes the box without going anywhere. The line under that is what will be copied and what will be rebuilt; `▸ Segments` at its right unfolds it segment by segment, and the `?` beside that explains the lossless percentage and breaks down the plan on screen |
+| The bottom line | On the left, what the cut costs, and beside it **View** — a menu of what is shown: the counter, the indicators, the waveform and the subtitles — then the playback buttons (`◀◀` rewind, `▶` play, `▶▶` fast forward, `⟲` loop) and the volume, then whatever the window has to say: a file it read, how far a detection has got. **OK** and **Cancel** on the right |
 
 The indicators in the picture's top corners are there only on a frame they apply to:
 
@@ -865,6 +865,10 @@ copy 00:02:00.11 → 00:03:45.00 (3143 frames)
 **If the badge at the bottom left reads `Video completely lossless`, not one
 frame of this output will be rebuilt.** Cut the second commercial block the same
 way and it becomes `3 ranges, 2 cuts`.
+
+The percentage is never rounded up to 100%. Two rebuilt frames out of 40,000 read
+99.9%, not 100.0%, and the badge gives the exact count. The `?` at the right of
+the plan says as much, with the numbers of the plan on screen.
 
 The breakdown, segment by segment, starts folded: `▸ Segments` at the right of
 the plan opens it, and it stays open for the next clip until it is folded again.
@@ -1627,6 +1631,11 @@ back once it is written and lines it up against its recording, frame by frame.
 Off by default. It too is only here, and neither a project nor a preset keeps
 it: whether to check is not a question that changes from one list to the next.
 See [Checking what was written](#checking-what-was-written).
+
+**Notify the desktop when an export finishes** puts up a desktop notification
+when the list's export ends, and when the batch tool's whole queue does. Nothing
+is sent while the SmartCut window is the one in front, or for a queue that was
+stopped. On by default.
 
 **Carry the output settings over to the next start** remembers them and puts
 them back at the next start and on **New project**: the folder, the file name

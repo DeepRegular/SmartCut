@@ -8549,6 +8549,9 @@ async function startExport() {
   });
   runLogLine(el("out-state").textContent);
   closeRunLog();
+  // The batch tool runs a list per job and says so once, at the end of the
+  // queue. See `runBatch`.
+  if (!batchRunning) tellDone(t("notify.outTitle"), el("out-state").textContent);
   paintOutProgress(1);
   // Back to what they were before the run: a list somebody had stopped
   // reading stays stopped, unless they asked for it during the run.
@@ -11040,8 +11043,29 @@ async function runBatch() {
   renderBatch();
   await saveQueue();
   // The machine is only put down over a queue that ran to the end. A queue
-  // somebody stopped is a queue somebody is standing at.
-  if (!batchStopped) startAfter();
+  // somebody stopped is a queue somebody is standing at -- and is not told
+  // on the desktop that it has stopped, either.
+  if (!batchStopped) {
+    const count = (state) => batchJobs.filter((j) => j.state === state).length;
+    const bad = count("error");
+    tellDone(
+      t("notify.batchTitle"),
+      t("notify.batchBody", {
+        done: count("done"),
+        all: batchJobs.length,
+        failed: bad ? t("notify.failed", { n: bad }) : "",
+      })
+    );
+    startAfter();
+  }
+}
+
+/// Say on the desktop that a run is over. The backend leaves it unsaid where
+/// this window is the one being looked at; see `notify_done`. Off in
+/// 環境設定 for whoever would rather not be told.
+function tellDone(title, body) {
+  if (prefs.get("notifyDone") === false) return;
+  invoke("notify_done", { title, body }).catch((e) => jlog(`notify: ${e}`));
 }
 
 /// The walk itself, one job after another. Split from the press above so
@@ -11430,6 +11454,7 @@ function paintPrefs() {
   el("pref-digits").value = String(Number(prefs.get("outDigits")) || 2);
   el("pref-data-broadcast").checked = prefs.get("dataBroadcast") !== false;
   el("pref-verify").checked = prefs.get("verify") === true;
+  el("pref-notify-done").checked = prefs.get("notifyDone") !== false;
   el("pref-keep-output").checked = !!prefs.get("keepOutput");
   el("pref-clean-joins").checked = !!prefs.get("cleanJoins");
   el("pref-proxy").checked = !!prefs.get("proxy");
@@ -11864,6 +11889,10 @@ el("pref-data-broadcast").addEventListener("change", (ev) => {
 // The next run reads it from here. See `verifyWritten`.
 el("pref-verify").addEventListener("change", (ev) => {
   prefs.set("verify", ev.target.checked);
+});
+
+el("pref-notify-done").addEventListener("change", (ev) => {
+  prefs.set("notifyDone", ev.target.checked);
 });
 
 el("pref-keep-output").addEventListener("change", (ev) => {

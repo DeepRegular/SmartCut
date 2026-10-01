@@ -56,6 +56,7 @@ pub mod udf;
 pub mod udfw;
 pub mod verify;
 pub mod vobsub;
+pub mod wave;
 pub mod weave;
 
 pub use aac::Framing;

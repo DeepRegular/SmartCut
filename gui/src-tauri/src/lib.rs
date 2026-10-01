@@ -4668,6 +4668,87 @@ async fn detect_silence(
     .await
 }
 
+/// The sound's outline under the editor's timeline, as the window draws it:
+/// one byte per bucket for the peak and one for the RMS, base64 because this
+/// goes across as JSON and a two-hour recording is 144,000 buckets. See
+/// [`smartcut_core::wave`].
+#[derive(Serialize, Deserialize)]
+struct WaveOut {
+    step: f64,
+    floor_db: f64,
+    peak: String,
+    rms: String,
+}
+
+/// Bumped when [`WaveOut`] stops meaning what it used to.
+/// 1: as first written.
+const WAVE_VERSION: u32 = 1;
+
+/// The outline of the recording the editor has open, out of the cache where a
+/// window has already read it.
+///
+/// Read once per recording and kept beside the flat detections: it is a pass
+/// over the whole of the sound -- seconds off a local disc, a minute a half
+/// hour over a share -- and nothing that can be set changes the answer.
+/// Stopped with the editor's own detections when the window goes or is handed
+/// another recording.
+#[tauri::command]
+async fn read_wave(path: String, app: tauri::AppHandle) -> Result<WaveOut, String> {
+    // Taken as the command arrives, as [`detect_cm`] does and for its reason.
+    let mine = app.state::<BatchStop>().editor.load(Ordering::SeqCst);
+    off_thread_behind(move || {
+        let file = detection_path(&app, &path, "flat", "wavj", WAVE_VERSION).ok();
+        if let Some(file) = &file {
+            if let Ok(raw) = std::fs::read(file) {
+                match serde_json::from_slice::<WaveOut>(&raw) {
+                    Ok(saved) => {
+                        seek_index::touch(file);
+                        return Ok(saved);
+                    }
+                    Err(e) => {
+                        eprintln!("wave: discarding {}: {e}", file.display());
+                        let _ = std::fs::remove_file(file);
+                    }
+                }
+            }
+        }
+        let src = flat_source(&app, &path)?;
+        if src.audio.is_none() {
+            return Err(tr!("音声がありません", "no audio").to_string());
+        }
+        let _reads = stop_reads_on(&app, |s| &s.editor, mine);
+        let reporter = app.clone();
+        let owned = path.clone();
+        let say = move |done: f64| {
+            let _ = reporter.emit("wave-progress", (owned.clone(), done));
+        };
+        let wave =
+            smartcut_core::wave::read_wave(&src, Some(Box::new(say))).map_err(|e| e.to_string())?;
+        if smartcut_core::input::reads_stopped() {
+            return Err("cancelled".into());
+        }
+        let b64 = base64::engine::general_purpose::STANDARD;
+        let out = WaveOut {
+            step: wave.step,
+            floor_db: smartcut_core::wave::FLOOR_DB,
+            peak: b64.encode(&wave.peak),
+            rms: b64.encode(&wave.rms),
+        };
+        // Read short by a share that went away: shown, not kept.
+        if !smartcut_core::input::reads_failed() {
+            if let (Some(file), Ok(json)) = (&file, serde_json::to_vec(&out)) {
+                if let Err(e) = write_whole(file, &json) {
+                    eprintln!("wave: cannot write {}: {e}", file.display());
+                } else if let Some(dir) = file.parent() {
+                    let _ = prune_detections(dir, "wavj", 1000);
+                }
+            }
+        }
+        Ok(out)
+    })
+    .await
+}
+
 /// Bumped when the pictures pass stops meaning what it used to, as
 /// [`CM_VERSION`] is.
 /// 1: as first written.
@@ -7937,6 +8018,31 @@ fn show_folder_now(path: &str) -> Result<(), String> {
         .map_err(|e| format!("{opener}: {e}"))
 }
 
+/// Say on the desktop that a run has finished: the list's 出力 or the batch
+/// tool's queue.
+///
+/// Only where the window that ran it is not the one being looked at. A run
+/// somebody is watching ends on the screen in front of them, and a toast over
+/// that is the same sentence twice; the ones worth telling are the hour-long
+/// runs left going behind something else. The taskbar entry is asked to
+/// flag itself as well, which is what a desktop with no notification daemon
+/// still has.
+///
+/// A failure is written to the log and nothing more: the run is over and
+/// written whether or not the desktop heard about it.
+#[tauri::command]
+fn notify_done(window: tauri::WebviewWindow, title: String, body: String, app: tauri::AppHandle) {
+    use tauri_plugin_notification::NotificationExt;
+    let watched = window.is_focused().unwrap_or(false) && !window.is_minimized().unwrap_or(false);
+    if watched {
+        return;
+    }
+    if let Err(e) = app.notification().builder().title(title).body(body).show() {
+        eprintln!("notify: {e}");
+    }
+    let _ = window.request_user_attention(Some(tauri::UserAttentionType::Informational));
+}
+
 /// A yes-or-no question, over the window that asks it. `None` is "ask the
 /// dialog plugin": everywhere but Linux it already does this.
 ///
@@ -8479,6 +8585,7 @@ pub fn run() {
                 .expect("a response of bytes")
         })
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_notification::init())
         .manage(Opened::default())
         .manage(Proxy::default())
         .manage(Generation::default())
@@ -8575,6 +8682,7 @@ pub fn run() {
             detect_cm,
             detect_blank,
             detect_silence,
+            read_wave,
             detect_blank_at,
             detect_quiet_at,
             flat_cached,
@@ -8598,6 +8706,7 @@ pub fn run() {
             verify_output,
             stop_verify,
             ask_over,
+            notify_done,
             runlog::run_log_open,
             runlog::run_log_line,
             runlog::run_log_close,

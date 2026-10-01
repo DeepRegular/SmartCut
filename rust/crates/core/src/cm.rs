@@ -219,7 +219,7 @@ fn loud_bounds(frame: &ff::frame::Audio, floor: f64) -> Option<(usize, usize)> {
 /// As `audio::channel` does it: past the eighth, a channel is in
 /// `extended_data` alone. `T` has to be the frame's own sample type, which
 /// the one caller matches on before asking.
-fn channel<T>(frame: &ff::frame::Audio, p: usize) -> &[T] {
+pub(crate) fn channel<T>(frame: &ff::frame::Audio, p: usize) -> &[T] {
     assert!(frame.is_planar() && p < frame.planes());
     // SAFETY: a planar frame holds one `extended_data` pointer per channel,
     // each to `samples()` samples of its format, for as long as the frame is

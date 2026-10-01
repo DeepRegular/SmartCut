@@ -119,6 +119,11 @@ const DEFAULTS = {
   /// on an evening's recordings is most of the time the writing took again.
   /// See `verifyWritten` in `app.js`.
   verify: false,
+  /// Whether the end of a run -- the list's 出力, or the batch tool's whole
+  /// queue -- is told on the desktop. On: it is said only where the window
+  /// is not the one being looked at, so the run it is for is one somebody
+  /// went off to do something else during.
+  notifyDone: true,
   /// Whether the cut editor draws the subtitles over the picture from the
   /// moment a recording opens, rather than waiting to be asked each time.
   subsOn: false,
@@ -157,11 +162,24 @@ const DEFAULTS = {
   /// are up in the corners out of its way. The インジケータ button beside the counter's
   /// in the editor is the same answer.
   pictureMarks: true,
+  /// Whether the cut editor draws the sound's outline along the bottom of
+  /// its timeline.
+  ///
+  /// On. The quiet a break is laid on is visible in it before anything has
+  /// been detected, and the read it costs is the sound alone, once per
+  /// recording, kept with the detections. The 音声波形 line of the editor's
+  /// 表示 menu is the same answer.
+  waveform: true,
   /// Whether the cut editor shows the plan's segments line by line under its
   /// one-line summary. Folded: the summary says what a cut costs, and the
   /// three lines of the list were three lines taken off the picture on a
   /// 1080p screen. Opened and closed from the plan itself.
   planOpen: false,
+  /// Whether the ? beside the plan's summary has been opened. Until it has,
+  /// it is lit, so the explanation of the percentage is found by whoever is
+  /// reading the percentage for the first time. Not on the 環境設定 screen:
+  /// there is nothing to set.
+  planHelpSeen: false,
   /// How far 拡大表示 magnifies, in screen pixels per source pixel.
   ///
   /// Not on the 環境設定 screen: it is the one question that window exists to
