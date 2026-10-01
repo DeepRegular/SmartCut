@@ -95,8 +95,11 @@ cp "$CLI_BIN" "$TREE/app/usr/bin/smartcut-cli"
 cat > "$TREE/smartcut" <<'EOF'
 #!/bin/sh
 # The GUI. AppRun is linuxdeploy's: it points GTK, GDK and the loader at the
-# bundled copies before exec'ing the app.
+# bundled copies before exec'ing the app. APPDIR is what the AppImage runtime
+# would have set: AppRun's GStreamer hook reads it before its GTK hook works
+# it out, and without it pointed the plugin paths at /usr/lib.
 HERE=$(dirname "$(readlink -f "$0")")
+export APPDIR="$HERE/app"
 exec "$HERE/app/AppRun" "$@"
 EOF
 

@@ -7737,6 +7737,94 @@ fn reap(mut child: std::process::Child) {
     });
 }
 
+/// What `GTK_IM_MODULE` was before [`run`] set it, when it did. `None`
+/// inside is "it was not set".
+static IM_BEFORE: std::sync::OnceLock<Option<std::ffi::OsString>> = std::sync::OnceLock::new();
+
+/// A program of the desktop's rather than this one's -- the file manager, the
+/// text editor, `systemctl` -- to be started as the desktop would start it.
+///
+/// Out of the AppImage or the tar.gz this process runs with the bundle's
+/// launcher's environment: `LD_LIBRARY_PATH`, `QT_PLUGIN_PATH`, `PATH` and the
+/// rest pointed into the bundle first. A child inherits all of it, so the
+/// desktop's own programs loaded Ubuntu 22.04's libraries in place of their
+/// own: on KDE `xdg-open` hands the file to `kde-open`, which died on the
+/// bundled GLib before it opened anything, and 実行ログを開く and every
+/// フォルダーを開く did nothing at all. So whatever points into the bundle is
+/// taken back out, and what the bundle's hooks set outright is unset.
+///
+/// Not for starting this program again: that one wants the bundle.
+fn desktop_command(program: &str) -> std::process::Command {
+    let mut run = std::process::Command::new(program);
+    // Set here for this window's sake, and wrong for anybody else's: a GTK
+    // file manager started with it could not use the IME at all.
+    if let Some(before) = IM_BEFORE.get() {
+        match before {
+            Some(v) => run.env("GTK_IM_MODULE", v),
+            None => run.env_remove("GTK_IM_MODULE"),
+        };
+    }
+    let Some(root) = std::env::var_os("APPDIR").filter(|r| !r.is_empty()) else {
+        return run;
+    };
+    let root = std::path::PathBuf::from(root);
+    // AppRun works from inside the bundle, and a child would too: in an
+    // AppImage that is a mount that goes away when this program ends, from
+    // under the editor still showing the log. Where this was started from,
+    // as the AppImage runtime says it, or home.
+    let start = std::env::var_os("OWD")
+        .or_else(|| std::env::var_os("HOME"))
+        .map(std::path::PathBuf::from)
+        .filter(|d| d.is_dir() && !d.starts_with(&root));
+    if let Some(dir) = &start {
+        run.current_dir(dir).env("PWD", dir);
+    }
+    for (key, value) in std::env::vars_os() {
+        if key == "PWD" && start.is_some() {
+            continue;
+        }
+        // The bundle's hooks set these rather than adding to them, so there
+        // is nothing of the desktop's left in them to go back to. The
+        // GStreamer ones are not always under `APPDIR`: in the tar.gz that
+        // hook runs before `APPDIR` is set, and they come out as `/usr/lib/...`
+        // paths that are nobody's.
+        let outright = key.to_str().is_some_and(|k| {
+            matches!(
+                k,
+                "APPDIR"
+                    | "APPIMAGE"
+                    | "ARGV0"
+                    | "OWD"
+                    | "GTK_THEME"
+                    | "GDK_BACKEND"
+                    | "GTK_DATA_PREFIX"
+                    | "GTK_EXE_PREFIX"
+                    | "GST_REGISTRY_REUSE_PLUGIN_SCANNER"
+                    | "GST_PLUGIN_PATH_1_0"
+                    | "GST_PLUGIN_SCANNER_1_0"
+                    | "GST_PTP_HELPER_1_0"
+            )
+        });
+        if outright {
+            run.env_remove(&key);
+            continue;
+        }
+        let parts: Vec<std::path::PathBuf> = std::env::split_paths(&value).collect();
+        if !parts.iter().any(|p| p.starts_with(&root)) {
+            continue;
+        }
+        let kept: Vec<_> = parts
+            .into_iter()
+            .filter(|p| !p.as_os_str().is_empty() && !p.starts_with(&root))
+            .collect();
+        match std::env::join_paths(&kept) {
+            Ok(v) if !kept.is_empty() => run.env(&key, v),
+            _ => run.env_remove(&key),
+        };
+    }
+    run
+}
+
 /// Put this window in the middle of the screen.
 ///
 /// The tool asks once it is up rather than being placed as it is built: a
@@ -7830,7 +7918,7 @@ fn show_folder_now(path: &str) -> Result<(), String> {
     } else {
         "xdg-open"
     };
-    std::process::Command::new(opener)
+    desktop_command(opener)
         .arg(dir)
         .spawn()
         .map(reap)
@@ -7892,7 +7980,7 @@ fn after_batch(what: String) -> Result<(), String> {
             false => ("systemctl", &["poweroff"]),
         }
     };
-    std::process::Command::new(program)
+    desktop_command(program)
         .args(args)
         .spawn()
         .map(reap)
@@ -8241,6 +8329,7 @@ pub fn run() {
     // already, and an explicit choice is left alone.
     let im = std::env::var("GTK_IM_MODULE").unwrap_or_default();
     if im.is_empty() || im == "xim" {
+        let _ = IM_BEFORE.set(std::env::var_os("GTK_IM_MODULE"));
         std::env::set_var("GTK_IM_MODULE", "gtk-im-context-simple");
     }
 

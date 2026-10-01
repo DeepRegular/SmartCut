@@ -129,7 +129,7 @@ pub fn open_log(app: tauri::AppHandle, path: String) -> Result<(), String> {
     } else {
         "xdg-open"
     };
-    std::process::Command::new(opener)
+    crate::desktop_command(opener)
         .arg(at)
         .spawn()
         .map(crate::reap)
