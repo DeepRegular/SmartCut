@@ -1037,6 +1037,8 @@ const CATALOG = {
     "editor.counterShow.title": "フレーム番号と時刻をプレビュー映像の上に表示する",
     "editor.marksShow": "インジケータ",
     "editor.marksShow.title": "選択範囲の端・キーフレーム・黒白無音のインジケータをプレビュー映像の左上と右上に表示する",
+    "editor.view": "表示",
+    "editor.view.title": "プレビュー映像に重ねて表示するもの（カウンタ・インジケータ・字幕）を選びます",
 
     // --- 拡大表示 ---------------------------------------------------------
     // --- 継ぎ目の編集 -----------------------------------------------------
@@ -1146,6 +1148,7 @@ const CATALOG = {
     "t.play": "▶ 再生",
     "t.stop": "■ 停止",
     "t.play.title": "ここから再生 (Space)",
+    "t.stop.title": "停止 (Space)",
     "t.rewind": "巻き戻し。押すたびに 2→4→8→16 倍、もう一度で止まります",
     "t.fastFwd": "早送り。押すたびに 2→4→8→16 倍、もう一度で止まります",
     "t.loop": "⟲ ループ",
@@ -2278,6 +2281,8 @@ const CATALOG = {
     "editor.counterShow.title": "Draw the frame number and time over the picture",
     "editor.marksShow": "Indicators",
     "editor.marksShow.title": "Show indicators for the selection's ends, keyframes and blank or quiet stretches in the picture's top corners",
+    "editor.view": "View",
+    "editor.view.title": "Choose what is drawn over the picture: the counter, the indicators and the subtitles",
 
     // --- the magnifier ----------------------------------------------------
     // --- the seam window ------------------------------------------------
@@ -2383,6 +2388,7 @@ const CATALOG = {
     "t.play": "▶ Play",
     "t.stop": "■ Stop",
     "t.play.title": "Play from here (Space)",
+    "t.stop.title": "Stop (Space)",
     "t.rewind": "Rewind ─ each press doubles it, 2 to 16, and once more stops",
     "t.fastFwd": "Fast forward ─ each press doubles it, 2 to 16, and once more stops",
     "t.loop": "⟲ Loop",

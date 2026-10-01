@@ -2239,10 +2239,24 @@ function paintRow(clip) {
         : clip.path
   );
 
-  // Two things worth saying about a clip below its name: what the detection
-  // found, and how much of it the edit takes out. Both are about the clip and
+  // Two things worth saying about a clip below its name: what the edit has
+  // put down on it, and what the detection found. Both are about the clip and
   // neither is about the file, which is what the line above is for.
+  //
+  // The edit's counts first. They are short and they are what is looked for
+  // once the marks are down, and in front they stand at the same place on
+  // every row -- after a detection's note, a long one pushed them past the
+  // ellipsis on a narrow window, and a row with no detection had them where
+  // the others had the note.
   const bits = [];
+  // Every mark there is until the recording has been read far enough to
+  // say where the cuts leave them, rather than no count at all.
+  const marks = factsOf(clip) ? liveMarksOf(clip).length : marksOf(clip).length;
+  if (marks) bits.push(t("row.keyframes", { n: marks }));
+  const cutCount = clip.edit ? clip.edit.cuts.length : 0;
+  // How many, and no longer what they leave: the line above is the length of
+  // what they leave.
+  if (cutCount && i) bits.push(t("row.cuts", { n: cutCount }));
   if (clip.cmState === "running") {
     bits.push(
       t("row.cmRunning", { pct: Math.round(clip.cmProgress * 100), phase: clip.cmPhase })
@@ -2272,14 +2286,6 @@ function paintRow(clip) {
       bits.push(t(flatKey(which, `row.${which}Note`), { note: clip[`${which}Phase`] }));
     }
   }
-  const cutCount = clip.edit ? clip.edit.cuts.length : 0;
-  // How many, and no longer what they leave: the line above is the length of
-  // what they leave.
-  if (cutCount && i) bits.push(t("row.cuts", { n: cutCount }));
-  // Every mark there is until the recording has been read far enough to
-  // say where the cuts leave them, rather than no count at all.
-  const marks = factsOf(clip) ? liveMarksOf(clip).length : marksOf(clip).length;
-  if (marks) bits.push(t("row.keyframes", { n: marks }));
   setLine(li.querySelector(".cm"), bits.join(t("sep")));
 
   // Being edited is worth saying over anything else the row could say: it

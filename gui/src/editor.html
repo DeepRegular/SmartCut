@@ -153,6 +153,41 @@
             <button id="go-end" data-i18n-title="t.goEnd">▶|</button>
           </div>
 
+          <!-- The edits, and where the playhead is, on a line of their own
+               under the ways of moving -- where the window is too narrow for
+               the edits to stand at the end of the row above. There they
+               wrapped onto a second line anyway, centred, with the width
+               either side of them empty, while the counter and the
+               detection's note shared the playback row below and pushed it
+               onto two lines of its own on a window half a screen wide. So
+               the counter comes up to the left of them.
+
+               Where the edits do fit at the end of the row above, they go
+               there, and the counter goes to a row of its own under it (see
+               `#player`). Which of the two it is, is the width of the
+               buttons alone and not of anything they say; see
+               `arrangeRows`.
+
+               The counter is also where a frame number is typed in: a press
+               on it, J or Ctrl+J (the reference tools' key) swaps it for the
+               box beside it, filled with where the playhead is. See
+               `openJump`. -->
+          <div class="edit-row" id="edit-row">
+          <!-- The counter and the selection, and what the detection found.
+               Two lines in the edit row's one -- the note under the counter,
+               where the row has no width to spare beside it -- and one line
+               when they have a row of their own under the edits, the note
+               beside the selection. -->
+          <div class="readout-stack" id="readouts">
+            <div class="readout readout-at" id="readout-at">
+              <span class="counter" id="counter" data-i18n-title="editor.jump.title">— / —</span>
+              <input id="counter-jump" class="counter-jump" type="text" hidden
+                     inputmode="numeric" autocomplete="off" spellcheck="false"
+                     data-i18n-title="editor.jump.title" />
+              <span class="dim" id="selection" data-i18n="editor.selectionNone">選択 —</span>
+            </div>
+            <div class="readout-cm" id="readout-cm"><span class="dim" id="cm-note"></span></div>
+          </div>
           <div class="tgroup">
             <button id="cut-outside" class="tool" data-i18n="t.cutOutside" data-i18n-title="t.cutOutside.title">外側をカット</button>
             <button id="snap" class="tool" data-i18n="t.snap" data-i18n-title="t.snap.title">無劣化点へ吸着</button>
@@ -308,72 +343,13 @@
               </button>
             </div>
           </div>
+          </div>
         </div>
 
-        <!-- The playback controls, on a row of their own under the cutting
-             ones: the ways of moving while the picture runs, then the sound.
-
-             Separate from the row above because they are a separate question.
-             That row is where a cut is placed -- every button in it moves the
-             playhead a measured distance or marks it -- and this one is about
-             watching what the cut came to. 再生 stood in the middle group and
-             was the one button in it that was not part of the symmetry around
-             ✂: with it moved here, that group is five buttons either side of
-             the cut, which is what it was drawn as.
-
-             The stepping buttons the reference tool repeats on this row are
-             not repeated here. They are two along in the row above, doing
-             exactly what they would do here, and a window with two of the
-             same button is a window that has to say why. -->
-        <div class="player">
-          <!-- Where the playhead is and what is chosen, on the playback row's
-               left, and the detection's note on its right: on a row of their
-               own they were a line taken off the picture, and this row had
-               room either side of its buttons.
-
-               The counter is also where a frame number is typed in: a press
-               on it, J or Ctrl+J (the reference tools' key) swaps it for the
-               box beside it, filled with where the playhead is. See
-               `openJump`. -->
-          <div class="readout">
-            <span class="counter" id="counter" data-i18n-title="editor.jump.title">— / —</span>
-            <input id="counter-jump" class="counter-jump" type="text" hidden
-                   inputmode="numeric" autocomplete="off" spellcheck="false"
-                   data-i18n-title="editor.jump.title" />
-            <span class="dim" id="selection" data-i18n="editor.selectionNone">選択 —</span>
-          </div>
-          <div class="tgroup">
-            <button id="rewind" class="seek" data-i18n-title="t.rewind">◀◀</button>
-            <!-- The play button's label swaps to ■ 停止 while it is playing,
-                 so `setPlaying` writes it. -->
-            <button id="play" class="play" data-i18n-title="t.play.title">▶ 再生</button>
-            <button id="fast-fwd" class="seek" data-i18n-title="t.fastFwd">▶▶</button>
-            <!-- A mode rather than an action: it stays down while it holds,
-                 and what it changes is what 再生 does next. -->
-            <button id="loop" class="tool" type="button" aria-pressed="false"
-                    data-i18n="t.loop" data-i18n-title="t.loop.title">⟲ ループ</button>
-          </div>
-
-          <!-- The level the preview is listened to at, which is nothing to do
-               with the level that gets written: the output carries the
-               recording's own sound whatever this says.
-
-               ♪ with a line through it rather than a loudspeaker: the glyphs
-               for one are emoji, and an emoji in a row of ◀ ▶ ⚑ ✂ is a
-               picture in a row of marks. -->
-          <div class="vol tgroup">
-            <button id="mute" type="button" aria-pressed="false"
-                    data-i18n-title="t.mute">♪</button>
-            <!-- How much of it is filled says the level, which is the one
-                 thing a slider is for. The share is written onto the element
-                 as `--at` by `showVolume`; the stylesheet draws the bar out
-                 of it. -->
-            <input id="volume" class="vslider" type="range" min="0" max="100" step="1"
-                   value="100" data-i18n-title="t.volume" data-i18n-aria="t.volume.aria" />
-            <span id="vol-num" class="dim vnum">100%</span>
-          </div>
-          <div class="readout readout-r"><span class="dim" id="cm-note"></span></div>
-        </div>
+        <!-- Where the playhead is, when the edits have gone up to the end
+             of the row above and left no edit row to stand in. Empty and out
+             of the way otherwise; see `arrangeRows`. -->
+        <div class="player" id="player"></div>
 
         <footer class="output" id="plan-panel">
           <div class="panel">
@@ -398,42 +374,98 @@
                what say which way you left it. -->
           <div class="export">
             <span class="badge" id="smart-badge">—</span>
-            <!-- What the preview carries, beside what the cut costs. Both are
-                 answers about the picture you are looking at rather than
-                 about the file, and this corner is where the eye already is
-                 while a cut is being placed -- the info bar above is a long
-                 way from the picture, and these two were being reached for
-                 while looking at it.
+            <!-- What the preview carries, beside what the cut costs: the
+                 counter on the picture, the marks in its corners, and which
+                 subtitles to draw over it. Answers about the picture you are
+                 looking at rather than about the file, so they are here,
+                 where the eye already is while a cut is being placed.
 
-                 The frame number and the time, on the picture or off it: they
-                 stand at the foot of the picture and so does a subtitle, and
-                 a stage has no third place to put either, so which of the two
-                 may be in the way is the person's to say.
+                 One button with a menu rather than a button each: they are
+                 set once and left, and three of them across this row took
+                 the room the status line needs on a window half a screen
+                 wide. The menu opens upwards, this row being the foot of the
+                 window. Each line carries the tick for its own answer, the
+                 way 拡大表示 does on ≡. -->
+            <div class="viewgroup">
+              <button id="view" class="mini" type="button" aria-haspopup="true" aria-expanded="false"
+                      data-i18n-title="editor.view.title"><span data-i18n="editor.view">表示</span> ▴</button>
+              <div id="view-menu" class="menu up" hidden>
+                <!-- The frame number and the time, on the picture or off it:
+                     they stand at the foot of the picture and so does a
+                     subtitle, and which of the two may be in the way is the
+                     person's to say. -->
+                <button class="menu-item" id="counter-show" type="button" aria-pressed="true"
+                        data-i18n-title="editor.counterShow.title">
+                  <span data-i18n="editor.counterShow">カウンタ</span>
+                  <span class="menu-key"><span class="tick">✓</span></span>
+                </button>
+                <!-- The marks in the picture's top corners. Apart from the
+                     counter: that one is turned off to see the foot of the
+                     picture, and these are up in its corners. See
+                     `paintMarks`. -->
+                <button class="menu-item" id="marks-show" type="button" aria-pressed="true"
+                        data-i18n-title="editor.marksShow.title">
+                  <span data-i18n="editor.marksShow">インジケータ</span>
+                  <span class="menu-key"><span class="tick">✓</span></span>
+                </button>
+                <!-- Which subtitles to draw, and 表示しない first because
+                     that is what a cutting screen is for: the picture under
+                     the playhead is what a cut is judged by. Away on a
+                     recording that carries none; `paintSubsPicker` writes
+                     the lines. See `subs.rs`. -->
+                <div id="subs-pick" hidden>
+                  <div class="menu-sep"></div>
+                  <div class="menu-head" data-i18n="subs.label">字幕</div>
+                  <div id="subs-track"></div>
+                </div>
+              </div>
+            </div>
+            <!-- The playback controls, down here beside 表示 rather than on a
+                 row of their own: a row for four buttons and the sound was a
+                 row taken off the picture. Marks rather than words, and flat
+                 until they are pointed at or lit, so the four take the room
+                 of one worded button and do not read as part of the cutting.
 
-                 A button that stays down rather than a box to tick: what it
-                 turns on is a thing you are looking straight at, so it is
-                 pressed while looking at the picture and the picture is the
-                 answer. `aria-pressed` is the state, and `.on` is that state
-                 made visible. -->
-            <button id="counter-show" class="mini" type="button" aria-pressed="true"
-                    data-i18n="editor.counterShow"
-                    data-i18n-title="editor.counterShow.title">カウンタ</button>
-            <!-- The marks in the picture's top corners, the same kind of
-                 button and for the same reason. Apart from the counter: that
-                 one is turned off to see the foot of the picture, and these
-                 are up in its corners. See `paintMarks`. -->
-            <button id="marks-show" class="mini" type="button" aria-pressed="true"
-                    data-i18n="editor.marksShow"
-                    data-i18n-title="editor.marksShow.title">インジケータ</button>
-            <!-- Which subtitles to draw over the preview, and 表示しない first
-                 because that is what a cutting screen is for: the picture
-                 under the playhead is what a cut is judged by, and a caption
-                 over it is something to turn on when the cut is near a line.
-                 Empty and out of the way on a recording that carries none.
-                 See `subs.rs`. -->
-            <label class="opt" id="subs-pick" hidden><span data-i18n="subs.label">字幕</span>
-              <select id="subs-track"></select>
-            </label>
+                 Separate from the rows above because they are a separate
+                 question. Those rows are where a cut is placed -- every
+                 button in them moves the playhead a measured distance or
+                 marks it -- and these are about watching what the cut came
+                 to. 再生 once stood in the middle group and was the one button
+                 in it that was not part of the symmetry around ✂.
+
+                 The stepping buttons the reference tool repeats beside its
+                 playback are not repeated here. They are in the row above,
+                 doing exactly what they would do here, and a window with two
+                 of the same button is a window that has to say why. -->
+            <div class="tgroup flat" id="playback">
+              <button id="rewind" class="seek" data-i18n-title="t.rewind">◀◀</button>
+              <!-- ▶ swaps to ■ while it is playing, so `paintPlay` writes
+                   it. -->
+              <button id="play" class="play" data-i18n-title="t.play.title">▶</button>
+              <button id="fast-fwd" class="seek" data-i18n-title="t.fastFwd">▶▶</button>
+              <!-- A mode rather than an action: it stays lit while it holds,
+                   and what it changes is what ▶ does next. -->
+              <button id="loop" class="tool" type="button" aria-pressed="false"
+                      data-i18n-title="t.loop.title">⟲</button>
+            </div>
+            <!-- The level the preview is listened to at, which is nothing to
+                 do with the level that gets written: the output carries the
+                 recording's own sound whatever this says.
+
+                 ♪ with a line through it rather than a loudspeaker: the
+                 glyphs for one are emoji, and an emoji in a row of ◀ ▶ ⚑ ✂
+                 is a picture in a row of marks.
+
+                 How much of the bar is filled says the level, which is the
+                 one thing a slider is for; the number is in its tooltip.
+                 The share is written onto the element as `--at` by
+                 `showVolume`, and the stylesheet draws the bar out of it. -->
+            <div class="vol tgroup flat">
+              <button id="mute" type="button" aria-pressed="false"
+                      data-i18n-title="t.mute">♪</button>
+              <input id="volume" class="vslider" type="range" min="0" max="100" step="1"
+                     value="100" data-i18n-aria="t.volume.aria" />
+            </div>
             <!-- The one line the window says things on -- what a read found,
                  why playback waited, what a detection came to. It takes the
                  rest of the row, up to the two buttons. -->

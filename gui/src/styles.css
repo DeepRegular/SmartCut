@@ -66,6 +66,14 @@ body {
    nowhere else to go from here but OK. */
 .tab.still { cursor: default; }
 .title { color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* The editor's header, holding the recording's whole path; see `paintTitle`.
+   The folders give way before the file's name does: both are cut short with
+   an ellipsis, and the folders a thousand times sooner. */
+.title.path { display: flex; min-width: 0; }
+.title.path > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.title-name { flex: 0 1 auto; }
+.title-dir { flex: 0 1000 auto; }
+.title-name + .title-dir { margin-left: 12px; }
 .brand { margin-left: auto; color: var(--dim); font-weight: 600; letter-spacing: .04em; }
 
 /* The program's name, where it is a button. It keeps the plain look the
@@ -828,6 +836,10 @@ body.crosswin { padding: 0; }
 .transport .more.open { background: #3d3d3d; border-color: #5c5c5c; }
 
 /* --- playback --------------------------------------------------------- */
+/* The seam window's playback row. The cut editor's playback controls are in
+   its footer, flat (see `.export .flat` below); what follows was written for
+   the row they used to have, and the seam window's row is that row's
+   copy. */
 /* One cluster, centred under the picture the way the row above it is: the
    ways of moving while it plays, then the sound, a gap apart and no more,
    with the readouts either side of it (below). It breaks when the window is
@@ -903,45 +915,62 @@ body.crosswin { padding: 0; }
    dragged past a digit. */
 .vnum { font-size: 11px; min-width: 4ch; text-align: right; font-variant-numeric: tabular-nums; }
 
-/* The readouts either side of the playback buttons: where the playhead is
-   and what is chosen on the left, the detection's note on the right. They
-   used to be a row of their own under this one, which was a line taken off
-   the picture. The two sides share what the buttons leave equally, so the
-   buttons stay near the middle of the window.
+/* The edit row under the ways of moving: where the playhead is and what is
+   chosen on the left, the edits and ≡ at the right. A line of its own when
+   the edits will not fit at the end of the row above, and no box at all when
+   they will -- `display: contents` hands the edits back to that row, and
+   `arrangeRows` takes the counter down to a row of its own. Which of the two
+   is decided by the width of the buttons alone, so a selection timed in
+   hours never moves the edits from one line to the other: with the counter
+   able to push them about, a selection pushed a row onto a line of its own
+   and taking it away brought it back, and the picture grew and shrank with
+   every IN and OUT.
 
-   The left side asks for a fixed width -- room for the counter, or the box
-   that stands in for it -- and not for whatever it holds. Asking for its
-   contents, a selection timed in hours pushed the row onto two lines and
-   taking it away brought it back to one, and the picture above grew and
-   shrank with every IN and OUT. So whether the row breaks is the window's
-   width alone, and the selection is cut short with an ellipsis where it
-   does not fit.
-
-   Nothing folds -- the frame number broke across its slash -- and the
-   detection note gives way first: it is a summary already said in the row it
-   came from, and it keeps the whole of itself in its tooltip. */
-.player > .readout {
-  flex: 1 1 0; display: flex; align-items: center; gap: 16px;
-  min-width: 17em; padding: 0 10px; font-variant-numeric: tabular-nums;
+   The readout takes what the buttons leave. Nothing folds -- the frame number
+   broke across its slash -- so the selection is what gives way, cut short
+   with an ellipsis and whole in its tooltip; and below the counter's own
+   width the buttons go to the next line instead. */
+.edit-row {
+  flex: 1 1 100%; display: flex; align-items: center; justify-content: flex-end;
+  flex-wrap: wrap; row-gap: 4px; column-gap: 12px;
 }
-/* The left one starts from a width of its own, the right one from nothing:
-   the note on the right is empty on most recordings, and an equal share for
-   it was the selection cut down to 「選択 0 -…」 at the window's default
-   width. The buttons sit a little right of centre for it, which is the price.
-   A width and not `auto`: `auto` is what it holds, which is the selection
-   pushing the row onto two lines again -- a window 1130 wide broke with a
-   selection timed in hours and came back to one line without it. 30em holds
-   the counter and a selection counted in frames. And it takes the larger
-   share of what is left over, by half again: split evenly, the default width
-   (1240) cut short a selection in six-digit frames -- any two-hour broadcast
-   -- by a few letters, and three shares to one left the note on the right
-   cut to 「ロゴ+無音: 2 ブロ…」 even in a window 1560 wide. At 1.5 that
-   window shows both whole, and 1240 the Japanese selection whole. */
-.player > .readout:not(.readout-r) { flex-basis: 30em; flex-grow: 1.5; }
-.player > .readout > * { flex: none; white-space: nowrap; }
-.player > .readout > #selection { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
-.player > .readout-r { justify-content: flex-end; min-width: 0; }
-.player > .readout-r #cm-note { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.one-row .edit-row { display: contents; }
+.readout-at, .readout-cm {
+  display: flex; align-items: center; gap: 16px;
+  padding: 0 10px; font-variant-numeric: tabular-nums;
+}
+.readout-at > *, .readout-cm > * { flex: none; white-space: nowrap; }
+.readout-at > #selection { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.readout-cm > #cm-note { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+/* The counter and the selection over the detection's note, two lines in the
+   height of the edit row's buttons. The note is the line that gives way: it
+   is cut short to the width the buttons leave, and is whole in its tooltip
+   and in the clip list. Lines set close, or the two do not fit in the
+   buttons' height and the row grows by a line's worth under the picture. */
+.readout-stack { display: flex; flex-direction: column; justify-content: center; min-width: 0; }
+.readout-stack > * { line-height: 1.15; }
+/* Its own text is no measure of how wide it may be: asked for its content's
+   width, the note's line made the column as wide as a long note, and the
+   edits beside it went down to another line at a width of 960. */
+.readout-stack > .readout-cm { min-width: 0; contain: inline-size; }
+.edit-row > .readout-stack { flex: 1 1 0; min-width: auto; }
+/* Two lines in one row's height want a smaller counter than a line to
+   itself: at its own 15px the two lines touched. Two points down, the note a
+   point down too, and a little air between them. */
+.edit-row > .readout-stack { gap: 2px; }
+.edit-row > .readout-stack > * { line-height: 1.25; }
+.edit-row > .readout-stack .counter,
+.edit-row > .readout-stack .counter-jump { font-size: 13px; }
+.edit-row > .readout-stack > .readout-cm { font-size: 10px; }
+/* The counter's own row, for when the edits have gone up to the end of the
+   row above: the counter, the selection and the note, one beside the next,
+   and the note giving way first. Not there at all while the edit row is. */
+#player { justify-content: flex-start; }
+.editor:not(.one-row) #player { display: none; }
+.one-row #player > .readout-stack { flex: 1 1 auto; flex-direction: row; justify-content: flex-start; align-items: center; }
+.one-row .readout-stack > .readout-cm { contain: none; }
+.one-row .readout-stack > .readout-at { flex: 0 1 auto; padding-right: 0; }
+.one-row .readout-stack > .readout-cm { flex: 0 1000 auto; }
 .counter { font-size: 15px; }
 /* A press on the counter types a frame number in; see `openJump`. The box
    takes the counter's place and its size, so the row does not move. */
@@ -1059,15 +1088,10 @@ body.crosswin { padding: 0; }
   flex: 1 1000 auto; min-width: 0;
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
-/* Once the status has nothing left to give -- a long badge, the subtitle
-   picker out, and the window at its narrowest -- the shortfall has to land
-   somewhere, and something cut short says more than two buttons pushed off
-   the edge of the window. The weights are the order it is taken in: the
-   status, which was written to be cut; then the picker, which a list always
-   clips and whose answer is a track number either way; and the badge last,
-   because the count in it is what the panel above was read for. */
-.export .opt { flex: 0 10 auto; min-width: 0; }
-.export .opt select { min-width: 0; }
+/* Once the status has nothing left to give -- a long badge and the window at
+   its narrowest -- the shortfall has to land somewhere, and something cut
+   short says more than two buttons pushed off the edge of the window. The
+   status goes first, being written to be cut, and the badge after it. */
 .export .badge { flex: 0 1 auto; overflow: hidden; text-overflow: ellipsis; }
 .export .primary {
   background: var(--accent); color: #201400; border: 1px solid var(--accent);
@@ -1079,6 +1103,34 @@ body.crosswin { padding: 0; }
 }
 .export .secondary:hover { background: #3d3d3d; }
 .export .primary.wide, .export .secondary { min-width: 118px; }
+/* 表示 and the menu it opens upwards. The group is what the menu is placed
+   against; lit while the menu is up, the way ≡ is. */
+.viewgroup { position: relative; }
+.viewgroup > .mini.open { background: #3d3d3d; border-color: #5c5c5c; }
+/* The playback controls beside it: marks without a box until they are
+   pointed at, so the four of them and the sound read as one quiet group
+   rather than as more of the cutting. Lit when they hold -- a run of fast
+   play, the loop, the sound off -- in the colours the transport lights
+   things with, and 再生's red while it plays. */
+.export .tgroup { flex-wrap: nowrap; gap: 0; }
+.export .flat > button {
+  background: none; border-color: transparent;
+  height: 28px; min-width: 30px; padding: 0 6px; font-size: 13px;
+}
+.export .flat > button:not(.on):hover:not(:disabled) { background: #3a3a3a; border-color: #4a4a4a; }
+.export .flat > button:disabled { color: var(--dim); cursor: default; }
+.export .flat > .on { background: #2c5f7a; border-color: #3a7fa0; }
+.export .flat > .play.on { background: #7a3a2c; border-color: #a04a3a; }
+/* The speed a run of fast play is at, small in the button's top corner: put
+   beside the mark it made the button grow, and ▶ and the badge moved under
+   the pointer at every press. */
+.export .flat > .seek { position: relative; min-width: 36px; }
+.export .flat > .seek[data-speed]::after {
+  content: attr(data-speed); position: absolute; top: 0; right: 2px;
+  font-size: 9px; line-height: 1;
+}
+.export .vol { gap: 4px; }
+.export .vslider { width: 72px; }
 .badge {
   background: #0f3d47; color: #7fe3f5; border: 1px solid #1d6b7c;
   padding: 2px 8px; border-radius: 2px; font-size: 11px; font-weight: 600;

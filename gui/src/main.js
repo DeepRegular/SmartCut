@@ -1699,46 +1699,76 @@ let subsWanted = null;
 
 /// Fill the picker from what the recording carries, and put it away where
 /// it carries nothing.
+///
+/// The picker is the lower half of the 表示 menu: a line for 表示しない and
+/// one for each track, with the tick on whichever is up.
 function paintSubsPicker() {
   const pick = el("subs-pick");
-  const sel = el("subs-track");
-  if (!pick || !sel) return;
+  const list = el("subs-track");
+  if (!pick || !list) return;
   const tracks = (src && src.subtitles) || [];
   pick.hidden = tracks.length === 0;
   if (!tracks.length) {
     subsId = null;
-    sel.innerHTML = "";
+    list.innerHTML = "";
     clearSubs();
     return;
   }
   // Rebuilt rather than patched: this is drawn once per recording, and the
   // answer it is holding belongs to the recording before it.
-  sel.innerHTML = "";
-  const off = document.createElement("option");
-  off.value = "";
-  off.textContent = tr("subs.off");
-  sel.appendChild(off);
-  for (const t of tracks) {
-    const o = document.createElement("option");
-    o.value = String(t.id);
-    o.textContent = subsLabel(t, tracks);
-    sel.appendChild(o);
-  }
+  list.innerHTML = "";
+  const line = (id, label) => {
+    const b = document.createElement("button");
+    b.type = "button";
+    b.className = "menu-item sub";
+    b.dataset.track = id === null ? "" : String(id);
+    const name = document.createElement("span");
+    name.textContent = label;
+    const key = document.createElement("span");
+    key.className = "menu-key";
+    const tick = document.createElement("span");
+    tick.className = "tick";
+    tick.textContent = "✓";
+    key.appendChild(tick);
+    b.append(name, key);
+    b.addEventListener("click", () => pickSubs(id));
+    list.appendChild(b);
+  };
+  line(null, tr("subs.off"));
+  for (const t of tracks) line(t.id, subsLabel(t, tracks));
   // Kept across a reopen of the same recording, and only then: the editor is
   // opened on one clip at a time and remembering the language between two of
   // them would be remembering a track number that means something else.
   const still = tracks.some((t) => t.id === subsId);
   subsId = still ? subsId : null;
-  sel.value = still ? String(subsId) : "";
   if (!still) clearSubs();
   // Unless 環境設定 says to start with them up, in which case the first track
   // is the one put up: which of several a recording carries is a question
   // only the person cutting can answer, and the first is the one the
   // recording itself leads with. Nothing is drawn from here -- the next
   // frame the stage shows draws it, which is a frame away.
-  if (!still && tracks.length && prefs.get("subsOn")) {
-    subsId = tracks[0].id;
-    sel.value = String(subsId);
+  if (!still && tracks.length && prefs.get("subsOn")) subsId = tracks[0].id;
+  tickSubs();
+}
+
+/// Put the tick on the line for the track that is up.
+function tickSubs() {
+  const want = subsId === null ? "" : String(subsId);
+  for (const b of el("subs-track").children) b.classList.toggle("on", b.dataset.track === want);
+}
+
+/// A line of the picker chosen.
+function pickSubs(id) {
+  subsId = id;
+  tickSubs();
+  // And anything still on its way for the track that was on: landing after
+  // this, it drew that track's subtitle back over a picker that says none
+  // or names another one.
+  subsToken += 1;
+  if (subsId === null) {
+    clearSubs();
+  } else {
+    showSubs(shownTime >= 0 ? shownTime : playhead);
   }
 }
 
@@ -1827,7 +1857,7 @@ async function showSubs(t) {
     el("status").textContent = tr("subs.failed", { e });
     subsId = null;
     subsWanted = null;
-    el("subs-track").value = "";
+    tickSubs();
     clearSubs();
   } finally {
     subsBusy = false;
@@ -2028,22 +2058,6 @@ el("preview").addEventListener("load", () => {
   paintMarks();
 });
 
-const subsPicker = el("subs-track");
-if (subsPicker) {
-  subsPicker.addEventListener("change", () => {
-    subsId = subsPicker.value === "" ? null : Number(subsPicker.value);
-    // And anything still on its way for the track that was on: landing after
-    // this, it drew that track's subtitle back over a picker that says none
-    // or names another one.
-    subsToken += 1;
-    if (subsId === null) {
-      clearSubs();
-    } else {
-      showSubs(shownTime >= 0 ? shownTime : playhead);
-    }
-  });
-}
-
 const seekOut = (o) => showFrame(outToSrc(clamp(o, 0, outDur)));
 
 // --- the plan's segments, folded or open --------------------------------
@@ -2206,7 +2220,7 @@ function updateReadouts() {
       })
     : tr("editor.selectionTime", { a: fmt(selA), b: fmt(selB), len: fmt(selEnd() - selA) });
   el("selection").textContent = sel;
-  // Cut short on a narrow window; see `.readout`.
+  // Cut short on a narrow window; see `.edit-row`.
   el("selection").title = sel;
   el("ovl-sel").textContent = sel;
   paintMarks();
@@ -2391,6 +2405,48 @@ if (marksButton) {
   showMarks(marksOn, false);
   marksButton.addEventListener("click", () => showMarks(!marksOn));
 }
+
+// --- the rows under the timeline ------------------------------------------
+//
+// The edits (外側をカット to ≡) stand at the end of the row of ways of moving
+// where the window is wide enough for both, and on a row of their own under
+// it where it is not, with the counter beside them. See `.edit-row`.
+
+/// Whether everything is on the one row, as last arranged.
+let oneRow = null;
+
+/// Put the edits, the counter and the note where this width has room for
+/// them.
+///
+/// Measured from the buttons and never from the readouts: the groups are the
+/// same width wherever they stand, so the answer does not change by being
+/// acted on, and a long selection does not move anything from one row to the
+/// other.
+function arrangeRows() {
+  const row = document.querySelector(".transport");
+  const groups = [...row.querySelectorAll(":scope > .tgroup, #edit-row > .tgroup")];
+  const gap = parseFloat(getComputedStyle(row).columnGap) || 0;
+  const need = groups.reduce((n, g) => n + g.getBoundingClientRect().width, 0) + gap * (groups.length - 1);
+  const one = Math.ceil(need) <= row.clientWidth;
+  if (one === oneRow) return;
+  oneRow = one;
+  document.querySelector(".editor").classList.toggle("one-row", one);
+  // The counter and the note go to a row of their own under them in the
+  // first case, the edit row having gone.
+  const at = el("readouts");
+  if (one) el("player").prepend(at);
+  else el("edit-row").prepend(at);
+}
+
+if (typeof ResizeObserver === "function") {
+  // The row for the width there is, and each group for a label that changed
+  // its width -- the language, or a font that arrived late.
+  const watch = new ResizeObserver(() => arrangeRows());
+  const row = document.querySelector(".transport");
+  watch.observe(row);
+  for (const g of row.querySelectorAll(":scope > .tgroup, #edit-row > .tgroup")) watch.observe(g);
+}
+arrangeRows();
 
 // --- 音声レベル ----------------------------------------------------------
 //
@@ -4265,9 +4321,16 @@ function showPlayFrame(run, buf) {
   anchorPlay(srcToOutSeam(t));
 }
 
+/// The play button's mark and its tooltip, which change places with 停止's
+/// while something plays. Marks and not words: see `#playback`.
+function paintPlay() {
+  el("play").textContent = playing ? "■" : "▶";
+  el("play").title = tr(playing ? "t.stop.title" : "t.play.title");
+}
+
 function setPlaying(on) {
   playing = on;
-  el("play").textContent = tr(on ? "t.stop" : "t.play");
+  paintPlay();
   el("play").classList.toggle("on", on);
   // The meter follows the sound card while a run lasts, and goes back to
   // reading the frame under the playhead when it ends -- which is where the
@@ -4471,7 +4534,11 @@ function paintSeek() {
   ]) {
     const on = seekRate !== 0 && Math.sign(seekRate) === dir;
     el(id).classList.toggle("on", on);
-    el(id).textContent = on ? `${glyph} ${Math.abs(seekRate)}×` : glyph;
+    el(id).textContent = glyph;
+    // Over the button's corner rather than beside the mark, so the button
+    // does not grow as it is stepped up; see `.export .flat > .seek`.
+    if (on) el(id).dataset.speed = `${Math.abs(seekRate)}×`;
+    else delete el(id).dataset.speed;
   }
 }
 
@@ -4551,7 +4618,8 @@ function showVolume(at, silent, remember = true) {
   // How far along the bar is filled. The stylesheet draws it; this is the
   // one number it needs, and a slider cannot say it for itself.
   el("volume").style.setProperty("--at", `${at}%`);
-  el("vol-num").textContent = `${at}%`;
+  // The number, which the bar has no room to carry beside it.
+  el("volume").title = `${tr("t.volume")} (${at}%)`;
   el("mute").classList.toggle("muted", silent);
   el("mute").setAttribute("aria-pressed", silent ? "true" : "false");
   // Not awaited and nothing to report: the level is a convenience, and an
@@ -5410,7 +5478,23 @@ function showMore(on) {
 
 el("more").addEventListener("click", (ev) => {
   ev.stopPropagation();
+  showView(false);
   showMore(moreMenu().hidden);
+});
+
+/// The 表示 menu at the foot of the window, put up or away. Nothing on it
+/// needs working out as it opens: each line keeps its own tick as it is
+/// answered.
+const viewMenu = () => el("view-menu");
+function showView(on) {
+  viewMenu().hidden = !on;
+  el("view").setAttribute("aria-expanded", String(!!on));
+  el("view").classList.toggle("open", !!on);
+}
+el("view").addEventListener("click", (ev) => {
+  ev.stopPropagation();
+  showMore(false);
+  showView(viewMenu().hidden);
 });
 el("load-keyframe").addEventListener("click", () => {
   showMore(false);
@@ -5602,8 +5686,14 @@ el("zoom-toggle").addEventListener("click", () => {
 });
 // Anywhere else, and it is gone -- including the wheel, which moves the
 // playhead under a menu that would otherwise stay put over it.
-window.addEventListener("click", () => showMore(false));
-window.addEventListener("wheel", () => showMore(false), true);
+window.addEventListener("click", () => {
+  showMore(false);
+  showView(false);
+});
+window.addEventListener("wheel", () => {
+  showMore(false);
+  showView(false);
+}, true);
 
 /// The cuts a Trim line describes, as source ranges taken out.
 ///
@@ -5766,9 +5856,39 @@ function keptAudio() {
   return tracks.find((a) => !dropStreams.includes(a.index)) || null;
 }
 
+/// The recording's whole path in the window's header, with the name the list
+/// gives the row in front of it where that is not simply the file's name --
+/// a disc's programme, or a row somebody renamed. Nowhere else in this
+/// window says which folder the recording is in, and the title bar above
+/// keeps the short name for the task bar.
+///
+/// The folders are cut short before the file's name is: where the header is
+/// too narrow for both, `…` stands at the end of the folders and the name is
+/// left whole. The whole path is in the tooltip either way.
+function paintTitle() {
+  const box = el("title");
+  const path = src.path;
+  const cut = Math.max(path.lastIndexOf("/"), path.lastIndexOf("\\")) + 1;
+  const file = path.slice(cut);
+  const part = (text, cls) => {
+    const e = document.createElement("span");
+    e.className = cls;
+    e.textContent = text;
+    return e;
+  };
+  box.replaceChildren();
+  box.classList.add("path");
+  box.title = path;
+  if (shownName && shownName !== file) {
+    box.append(part(shownName, "title-name"), part(path, "title-dir dim"));
+  } else {
+    box.append(part(path.slice(0, cut), "title-dir"), part(file, "title-name"));
+  }
+}
+
 /// The note under the timeline. It is the one thing in that bar allowed to be
 /// cut short when the window is narrow, so it carries the whole of itself in
-/// its tooltip -- see `.readout-r #cm-note`.
+/// its tooltip -- see `.readout-stack`.
 function showCmNote(text) {
   const e = el("cm-note");
   e.textContent = text;
@@ -5820,7 +5940,7 @@ function paintSourceInfo() {
   // writing, so a bilingual programme with its dub left out still has a
   // level worth setting.
   for (const id of ["mute", "volume"]) el(id).disabled = !src.has_audio;
-  el("title").textContent = shownName || src.path.split(/[/\\]/).pop();
+  paintTitle();
   el("info").textContent = tr("editor.info", {
     // A dash rather than zero while the walk is still counting them: "無劣化
     //点: 0" about a recording with three thousand of them is worse than
@@ -5885,6 +6005,7 @@ async function openPath(picked, saved, side, name, chapters, dropPids, detected)
   // Owed on a first visit, and on the visit after one that was left early.
   chaptersDue = (!saved || !!saved.chaptersDue) && discChapters.length > 0;
   el("title").textContent = tr("editor.analysing");
+  el("title").removeAttribute("title");
   // The band comes up out of the markup saying 「ファイルを開いてください」,
   // which stops being true here rather than when `src` lands. Drawn now
   // rather than scheduled: on a first open `src` is still null when the
@@ -6103,6 +6224,7 @@ async function openPath(picked, saved, side, name, chapters, dropPids, detected)
   } catch (e) {
     if (overtaken()) return;
     el("title").textContent = "";
+    el("title").removeAttribute("title");
     el("status").textContent = tr("editor.openFailed", { e });
     // Nothing is being read any more; the band says what is open, if anything.
     // Not by asking for a plan where this recording is up and was never
@@ -6580,6 +6702,15 @@ window.addEventListener("keydown", (ev) => {
   // space would start playback behind it, and the arrow keys would step the
   // playhead nobody can see. The save menu is a panel like any other, and
   // Escape there puts the menu away rather than the window.
+  if (!viewMenu().hidden) {
+    // Nothing on it has a key of its own, so every key puts it away, and
+    // Escape does nothing else.
+    showView(false);
+    if (ev.key === "Escape") {
+      ev.preventDefault();
+      return;
+    }
+  }
   if (!moreMenu().hidden) {
     if (ev.key === "Escape") {
       ev.preventDefault();
@@ -6597,7 +6728,7 @@ window.addEventListener("keydown", (ev) => {
     if (ev.key === "Escape") el("tracks-modal").hidden = true;
     return;
   }
-  // The volume slider and the two pickers keep the keyboard after they are
+  // The volume slider and the strip's picker keep the keyboard after they are
   // used, and nothing in here types into them: holding on to it, they took
   // every shortcut in the window -- Esc, Space, I and O -- and the arrows
   // turned the volume. They hand it back at the first key instead.
@@ -7153,7 +7284,7 @@ el("detect-cm").addEventListener("click", async () => {
     cmBusy = false;
     paintDetectCm();
     detectLabel("detect-cm").textContent = tr("editor.detectCm");
-    // The count is over; the note on the playback row says what it found.
+    // The count is over; the note under the counter says what it found.
     // Left alone if something else has been said since.
     if (el("status").textContent === cmCounting) el("status").textContent = "";
     cmCounting = null;
@@ -7427,7 +7558,7 @@ if (listen) {
 
 window.addEventListener("resize", relayout);
 // And when the stage alone changes size: the plan's segments folded or
-// opened, or the playback row going onto a second line. The subtitles, the
+// opened, or the edits moving between rows. The subtitles, the
 // indicators and the meter are sized in pixels and were left at the old box.
 if (typeof ResizeObserver === "function") {
   let stageWas = "";
@@ -7859,7 +7990,8 @@ onLangChange(() => {
   // has just written the plain word over it.
   paintTrackButton();
   if (!el("tracks-modal").hidden) renderTracks();
-  el("play").textContent = tr(playing ? "t.stop" : "t.play");
+  paintPlay();
+  showVolume(el("volume").value, muted(), false);
   paintSourceInfo();
   if (src) {
     updateReadouts();
@@ -7889,7 +8021,7 @@ paintDetectCm();
 // The plan's band is written from here too, in the language in force: the
 // markup's words are only there for the moment before this runs.
 schedulePlan();
-el("play").textContent = tr("t.play");
+paintPlay();
 renderKeyframes();
 draw();
 jlog("editor wired");

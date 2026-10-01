@@ -181,8 +181,10 @@ preparation is no slower for it.
 ![The input screen with four clips](../images/usage-list.png)
 
 Each row shows the filename; the length in frames, the time range, the
-resolution, the frame rate and the codec; and then whatever commercial detection
-and your own cuts have to say. On the right, `Smart` means smart rendering
+resolution, the frame rate and the codec; and under those, how many keyframes
+and cuts you have put down, then what commercial detection found. The keyframe
+count comes first, so it stands in the same place on a row nothing was detected
+on. On the right, `Smart` means smart rendering
 applies to this material, and `CM 2` means two commercial blocks were found.
 
 **The length is the length after cutting.** On a row with cuts in it, what was
@@ -473,17 +475,22 @@ frames, and `Snap to lossless` can take those to zero once it lights up.
 
 | Where | What |
 |---|---|
-| Top line | The filename |
+| Top line | The recording's whole path. Where the folders will not fit, they are cut short with `…` and the filename is kept whole; hover over it for the rest. A renamed row, or a programme on a disc, has its name in front |
 | Info bar | Lossless points, resolution, fps, scan type, audio, codec. **Tracks** on the right; the three detections are in the `≡` menu at the bottom right |
 | Left column | The **keyframes** — your marks, each with a thumbnail. Click one to jump there; the column stays where it is scrolled to. A mark a detection put down carries `Black`, `White` or `Quiet` under its time |
-| The large picture | The preview. At its foot, in the middle: frame number, timecode, what kind of frame it is, and the current selection. **Counter**, on the bottom line, turns them off. In its top corners, indicators for the frame on screen (below), which **Indicators** turns off |
+| The large picture | The preview. At its foot, in the middle: frame number, timecode, what kind of frame it is, and the current selection. In its top corners, indicators for the frame on screen (below). The **View** menu on the bottom line turns either off |
 | Beside it, on the left | The **audio level meter**: what is being heard while something plays, and the sound under the playhead while nothing does. **Preferences → Windows** turns it off |
 | The band under it | The **filmstrip**: the frames around you, laid out as pictures. The `Window` menu on the right sets how much of the recording the band shows. `Auto`, the default, sizes it from the recording's keyframe spacing so that one GOP is about one picture wide (between 2 and 60 s); a cell is as wide as the stretch it covers. The line down the middle is where you are — except at `Frame by frame`, where a cell is one frame and the frame on screen is boxed in blue instead. Hover over the `?` at the left of the line under it for how it is worked |
 | The scrubber | **Green is the output itself.** `▼` are keyframes, a dull red line inside the green is a join left by a cut, the fine ticks below are scene changes, and the two rows under those are the blank and the silent stretches. **The playhead is the `◎` and a bright red line running the whole height of the track** — the `◎` sits inside the green and the line is what lines it up against everything drawn above and below it |
 | The button row | **Cut** in the middle, `[ IN` to its left and `OUT ]` to its right, and outwards from there: go to, one frame, lossless point, start and end |
-| The playback row | Rewind, play, fast forward, loop and the volume. To their left, the frame you are on, how many there are, the time, and the selection; at the far right, what commercial detection found. Click the frame number on this row (not the one over the picture), or press `J` (`Ctrl+J`), to type a frame number or a time (`00:01:23.45`) and go there with `Enter`. `Esc` closes the box without going anywhere |
+| The edit row | **Cut outside**, **Snap to lossless**, undo, redo, clear all and the `≡` menu on the right. On the left, the frame you are on, how many there are, the time, and the selection, with what commercial detection found on a line under them, cut short with `…` where it will not fit; hover over it, or read it in the clip list. Click the frame number on this row (not the one over the picture), or press `J` (`Ctrl+J`), to type a frame number or a time (`00:01:23.45`) and go there with `Enter`. `Esc` closes the box without going anywhere |
 | The band and lines below | **The export plan**: what will be copied and what will be rebuilt. `▸ Segments` at its right unfolds it segment by segment |
-| The bottom line | On the left, what the cut costs, and beside it **Counter**, **Indicators** and **Subtitles** — what the preview carries — then whatever the window has to say: a file it read, how far a detection has got. **OK** and **Cancel** on the right |
+| The bottom line | On the left, what the cut costs, and beside it **View** — a menu of what the preview carries: the counter, the indicators and the subtitles — then the playback buttons (`◀◀` rewind, `▶` play, `▶▶` fast forward, `⟲` loop) and the volume, then whatever the window has to say: a file it read, how far a detection has got. **OK** and **Cancel** on the right |
+
+On a window wide enough for the edit row's buttons to fit at the end of the
+button row, that is where they go, and there is no edit row: the frame number,
+the selection and what commercial detection found stand side by side on the
+line under the button row.
 
 The indicators in the picture's top corners are there only on a frame they apply to:
 
@@ -506,7 +513,7 @@ with the top of the picture. Where there is not but there is black above it — 
 window taller than the picture — they go just above its corners. Where there is
 neither, they sit on its corners, and the
 box behind each is see-through, so a station logo or a clock in the corner still
-shows. **Indicators** on the bottom line turns them off — the same answer as
+shows. **Indicators** in the **View** menu turns them off — the same answer as
 **Show the selection, keyframe and blank or quiet stretch indicators over the
 picture in the cut editor** in Preferences, on out of the box, and apart from
 **Counter**.
@@ -557,8 +564,8 @@ hole, and the frame counter counts the length that will actually be written.
 | **Wheel** | One frame per notch. Hold `Shift` to hop from lossless point to lossless point. A touchpad's sideways swipe steps the same way, right being later. Anywhere in the window, not only over the filmstrip, and over the magnifier too; over the marks down the left or over the plan it scrolls those instead |
 | **Drag** the scrubber | Move the playhead. Grab near the IN or OUT mark and you move that mark instead. A drag during playback carries on playing from where it lets go. Only the scrubber down to the foot of the IN and OUT tabs answers; the scene changes, the detection rows and the times under it are there to be read |
 | **Hover** the scrubber | Shows the frame at that moment in a small picture (down to the foot of the IN and OUT tabs) |
-| `Space` or **▶ Play** | Play from here, picture and sound. Press again to stop. The picture runs at the recording's own frame rate; where the machine cannot decode and draw that many, it shows fewer rather than falling behind the sound |
-| **◀◀** **▶▶** | Rewind and fast forward. Each press doubles the speed, 2 to 16, and once more stops it; the button says which speed it is running at. No sound |
+| `Space` or **▶** | Play from here, picture and sound. Press again to stop. The picture runs at the recording's own frame rate; where the machine cannot decode and draw that many, it shows fewer rather than falling behind the sound |
+| **◀◀** **▶▶** | Rewind and fast forward. Each press doubles the speed, 2 to 16, and once more stops it; the speed it is running at is in the button's top corner. No sound |
 | `←` `→` | Back and forward one frame. Hold to repeat |
 | `Shift+←` `Shift+→` | One second |
 | `PageUp` `PageDown` | Back and forward by however far the [preferences](#cut-editor) say. A key whose unit is **%** carries a speed rather than an amount, and scrolls for as long as it is held. `Shift`, `Ctrl` and `Shift+Ctrl` each carry their own answer |
@@ -571,10 +578,10 @@ hole, and the frame counter counts the length that will actually be written.
 
 ### Listening to a seam over and over
 
-The playback row sits under the cutting one: rewind, play, fast forward and
-**Loop** a little right of the middle, with the **volume** to the right of them.
+The playback buttons are on the bottom line, to the right of **View**: rewind,
+play, fast forward and **Loop** (`⟲`), with the **volume** to the right of them.
 
-With **Loop** down, playback that reaches the end of the selection goes back to
+With **Loop** lit, playback that reaches the end of the selection goes back to
 where it started and plays again. What repeats is the **selection**: it starts at
 the playhead where that stands inside it, and at the IN mark where it does not.
 On a recording with nothing marked the selection is the whole of it.
@@ -646,7 +653,7 @@ catches up when playback stops. The window closes with the cut editor.
 
 ![The preview with the subtitles drawn over it](../images/usage-subs.png)
 
-**Subtitles** sits on the bottom line, beside what the cut costs. It is off to begin
+The subtitles are chosen in the lower half of the **View** menu on the bottom line. They are off to begin
 with; choose a track and it is drawn over the preview. **It is there to place a cut by.** Whether a
 seam lands in the middle of a line, and how far a subtitle runs either side of a
 commercial break, are not things the picture alone will tell you.
@@ -664,12 +671,11 @@ commercial break, are not things the picture alone will tell you.
 - The frame number and time stay at the **foot** of the picture whether subtitles are
   showing or not. They share that corner with a caption, and they are drawn over it, so
   where the playhead is never goes missing. Where the caption is the one you want to
-  see whole, turn **Counter** off beside it — the playback row still
+  see whole, turn **Counter** off in the same menu — the line under the button row still
   says where you are, and the answer is remembered for the next clip.
 - Playback keeps up with them.
-- **A recording that carries no subtitles has no picker.** The bottom line then holds
-  **Counter** and **Indicators** and nothing else — which is what the screenshots elsewhere on this page
-  show, since the practice recording has none.
+- **A recording that carries no subtitles has no subtitles in the menu**, only
+  **Counter** and **Indicators**.
 
 None of this changes what is written. This chooses what is **on screen**; which
 subtitles go into the output is answered by **Tracks** and by the output settings.
@@ -845,7 +851,7 @@ frames you want to *keep* and it takes out what lies between them.
   at a time as you close in. Only when the two cross does the one you just
   placed win, and the other retreats to the end of the timeline.
 - **IN and OUT on the same frame select that one frame.**
-- The selection is shown under the preview and on the playback row, as
+- The selection is shown under the preview and on the line under the button row, as
   `Selection 1800 - 3599 : 00:01:00.06`.
 
 ### Making the cut
@@ -1581,8 +1587,8 @@ effect as you make it.
 | Setting | What it does |
 |---|---|
 | **Language** | English, Japanese, or follow the system (the default), which is Japanese on a system set to Japanese and English on any other. A change takes effect in both windows at once |
-| **Draw the frame number and clock over the picture in the cut editor** | The box at the foot of the cut editor's picture. The same answer as its **Counter** button |
-| **Show the selection, keyframe and blank or quiet stretch indicators over the picture in the cut editor** | The indicators in the top corners of the cut editor's picture. On out of the box. The same answer as its **Indicators** button |
+| **Draw the frame number and clock over the picture in the cut editor** | The box at the foot of the cut editor's picture. The same answer as **Counter** in its **View** menu |
+| **Show the selection, keyframe and blank or quiet stretch indicators over the picture in the cut editor** | The indicators in the top corners of the cut editor's picture. On out of the box. The same answer as **Indicators** in its **View** menu |
 | **Show the audio level meter in the cut editor** | The meter to the left of the cut editor's picture. This is the only place it is switched on and off |
 | **Show the subtitles in the cut editor from the start** | Opens a recording that carries subtitles with the first track already chosen. It can still be switched while cutting |
 
