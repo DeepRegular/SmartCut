@@ -232,6 +232,11 @@ const CATALOG = {
       "リモコンの d ボタンで見られるページを、カットした出力にも残します。" +
       "残せるのは .ts で出力するときだけです。ディスクにも MP4 にも入れる場所がありません。" +
       "データ放送は録画の 1〜20% を占めるので、外せばその分だけ小さくなります。",
+    "prefs.chapters": "MP4・MKV にチャプターを書く",
+    "prefs.chaptersNote":
+      "残した区間の始まりごとにチャプターを打ちます。編集画面で打ったキーフレームのうち、" +
+      "カットのあとに残ったものもチャプターになります。対象は .mp4・.m4v・.mov・.mkv・.webm です。" +
+      "BDAV に書き出すときは、この設定に関係なくプレイリストにチャプターが入ります。",
     "prefs.verify": "出力後にベリファイする",
     "prefs.verifyNote":
       "書き出したファイルを読み直し、元の録画とフレームごとに突き合わせます。" +
@@ -1304,6 +1309,8 @@ const CATALOG = {
     "plan.failed": "計画できません: {e}",
     "keyframes.readFailed": "キーフレームを読み込めません: {e}",
     "keyframes.read": "キーフレーム {n} 個を {file} から読み込みました",
+    "cue.read": "{file} のトラックの開始位置 {n} か所をキーフレームにしました",
+    "cue.readFailed": "CUE シートを読み込めません: {e}",
     "keyframes.chapters": "ディスクのチャプター {n} 個をキーフレームにしました",
     "editor.more.title":
       "印の読み書き、ディスクのチャプター、キーフレームの全消去。" +
@@ -1316,6 +1323,7 @@ const CATALOG = {
     "marks.load.keyframe": "キーフレーム情報を読み込む",
     "marks.load.trim": "AviSynth Trim からカットを読み込む",
     "marks.load.cm": "CM 検出結果を読み込む",
+    "marks.load.cue": "CUE シートからキーフレームを読み込む",
     "marks.readNone": "{file} には読み込めるものがありませんでした",
     "editor.chapterKeys": "ディスクのチャプターをキーフレームにする",
     "editor.cmKeys": "CM 検出結果をキーフレームにする",
@@ -1331,6 +1339,7 @@ const CATALOG = {
     "marks.kind.keyframe": "キーフレーム情報",
     "marks.kind.trim": "AviSynth スクリプト",
     "marks.kind.cm": "CM 検出結果",
+    "marks.kind.cue": "CUE シート",
     "marks.saved": "キーフレーム {n} 個を {file} に保存しました",
     "marks.saveFailed": "保存できません: {e}",
     "marks.overwriteTitle": "上書きの確認",
@@ -1544,6 +1553,11 @@ const CATALOG = {
       "Carries the pages behind the d button into the cut. Only a .ts that keeps the broadcast's own " +
       "tables can hold one; a disc's framing and an MP4 have nowhere to put it. A carousel is between a " +
       "hundredth and a fifth of what a multiplex spends, so clearing this is what makes the file smaller.",
+    "prefs.chapters": "Write chapters into MP4 and MKV",
+    "prefs.chaptersNote":
+      "Puts a chapter where each kept range begins, and one on every keyframe set in the cut editor " +
+      "that survives the cut. For .mp4, .m4v, .mov, .mkv and .webm. A disc of recordings gets its " +
+      "chapters in its playlist whatever this says.",
     "prefs.verify": "Check each file against the recording once it is written",
     "prefs.verifyNote":
       "Reads each written file back and compares it with the recording frame by frame. " +
@@ -2570,6 +2584,8 @@ const CATALOG = {
     "plan.failed": "Cannot plan: {e}",
     "keyframes.readFailed": "Cannot read the keyframes: {e}",
     "keyframes.read": "Read {n} keyframe{n?s} from {file}",
+    "cue.read": "Marked the start of {n} track{n?s} from {file}",
+    "cue.readFailed": "Cannot read the CUE sheet: {e}",
     "keyframes.chapters": "Read {n} chapter{n?s} off the disc as keyframes",
     "editor.more.title":
       "The mark files, the disc's chapters, and clearing the marks. A keyframe list (.keyframe) " +
@@ -2582,6 +2598,7 @@ const CATALOG = {
     "marks.load.keyframe": "Read a keyframe list…",
     "marks.load.trim": "Read cuts from an AviSynth Trim…",
     "marks.load.cm": "Read a saved detection…",
+    "marks.load.cue": "Read keyframes from a CUE sheet…",
     "marks.readNone": "Nothing to read in {file}",
     "editor.chapterKeys": "Turn the disc's chapters into keyframes",
     "editor.cmKeys": "Turn the detection into keyframes",
@@ -2595,6 +2612,7 @@ const CATALOG = {
     "marks.kind.keyframe": "Keyframe list",
     "marks.kind.trim": "AviSynth script",
     "marks.kind.cm": "Saved detection",
+    "marks.kind.cue": "CUE sheet",
     "marks.saved": "Saved {n} keyframe{n?s} to {file}",
     "marks.saveFailed": "Cannot save: {e}",
     "marks.overwriteTitle": "Already there",

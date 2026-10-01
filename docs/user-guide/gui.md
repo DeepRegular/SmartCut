@@ -768,6 +768,7 @@ the marks.
 | **Read a keyframe list…** | Reads a `.keyframe` from wherever it is (`Ctrl+L`) |
 | **Read cuts from an AviSynth Trim…** | Reads a `Trim` line (`Ctrl+Shift+L`). It arrives as cuts, not as marks |
 | **Read a saved detection…** | Reads a detection saved earlier (`Ctrl+Alt+O`). The band and the marks come back as they were |
+| **Read keyframes from a CUE sheet…** | Puts a mark where each track of a `.cue` begins. Marks, not cuts |
 | **Save the keyframe list…** | Writes the marks beside the recording (`Ctrl+H`) |
 | **Save the cuts as an AviSynth Trim…** | Writes the surviving ranges as `Trim` calls (`Ctrl+Shift+H`) |
 | **Save the detection…** | Writes the detection now on screen (`Ctrl+Alt+H`). Greyed where nothing has been detected |
@@ -790,6 +791,15 @@ path already in it.
 Typing `.keyframe`, `.avs` or `.json` over the name in the picker overrides the
 line that was picked, and a file being read is taken for what its own extension
 says it is.
+
+**A CUE sheet is read and never written.** It is how other tools hand over the
+places they divide a file at — LosslessCut exports its segments as one, and a CD
+ripper writes one beside a disc image. Each track's `INDEX 01` becomes a mark,
+counted from the recording's first picture the way a keyframe list is (a track
+with only an `INDEX 00` starts there). The timeline stays whole: a sheet says
+where the tracks begin, not which of them to keep. Only the tracks under the
+sheet's first `FILE` line are read, because the times start again under each
+one. A sheet saved in Shift_JIS reads the same as one in UTF-8.
 
 `Ctrl+H`, `Ctrl+Shift+H` and `Ctrl+Alt+H` write all three straight to those names
 with no picker. They ask before writing over a file that is already there; a
@@ -1626,6 +1636,15 @@ is meant to be the recording, shorter. Clear it for the runs where size matters
 more than the pages — a carousel is between a hundredth and a fifth of the file
 depending on the station. Unlike the three above it is only here: it is a
 standing answer, not something a project carries.
+
+**Write chapters into MP4 and MKV** gives an `.mp4`, `.m4v`, `.mov`, `.mkv`
+or `.webm` a chapter list: one chapter where each kept range begins, and one on
+every keyframe that survives the cut — the same points a disc's playlist gets
+(see [Writing a BDAV disc](#writing-a-bdav-disc)). Joined files get one where
+each clip begins as well. **On** to begin with. A cut that keeps one range and
+has no marks in it gets no chapter list at all, since a single chapter covering
+the whole file tells a player nothing. A disc gets its chapters whatever this
+says, and a `.ts` has nowhere to put them. Only here, like the box above.
 
 **Check each file against the recording once it is written** reads every file
 back once it is written and lines it up against its recording, frame by frame.

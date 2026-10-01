@@ -5675,6 +5675,10 @@ async fn export(
     // The instant in the recording whose picture is the file's cover, where
     // the editor set one. See `poster_for`.
     poster: Option<f64>,
+    // Chapter points, in seconds from the start of the cut. Written only
+    // where the container keeps a chapter list; see
+    // [`smartcut_core::CutOptions::chapters`].
+    chapters: Option<Vec<f64>>,
 ) -> Result<(), String> {
     // Cutting is minutes of I/O on a broadcast recording; keeping it off the
     // UI thread is what lets the progress bar move at all.
@@ -5788,6 +5792,7 @@ async fn export(
             // in the program.
             audio_fade: prefs::audio_fade(),
             poster,
+            chapters: chapters.unwrap_or_default(),
             ..Default::default()
         };
         if sound_only {
@@ -6115,6 +6120,7 @@ async fn export_joined(
     subtitles: Option<String>,
     data_broadcast: Option<bool>,
     video_share: Option<f64>,
+    chapters: Option<Vec<f64>>,
 ) -> Result<(), String> {
     tauri::async_runtime::spawn_blocking(move || {
         if clips.is_empty() {
@@ -6222,6 +6228,7 @@ async fn export_joined(
             video_share,
             audio_fade: prefs::audio_fade(),
             poster,
+            chapters: chapters.unwrap_or_default(),
             // The planner's own settings, because a transition is planned
             // inside the engine and what is left of the range it takes from
             // has to be planned again the way this window plans one. See
@@ -7241,6 +7248,26 @@ fn read_mark_file(path: &str) -> std::io::Result<String> {
         ));
     }
     std::fs::read_to_string(path)
+}
+
+/// Read a CUE sheet for where its tracks start, in seconds from the start of
+/// its file. See [`smartcut_core::cue`].
+///
+/// Bytes rather than [`read_mark_file`]'s text: a sheet written on a Japanese
+/// machine is Shift_JIS, and its titles would make the whole file unreadable
+/// as UTF-8 when only the numbers in it are wanted. Picked out of a file
+/// picker, so a missing one is an error.
+#[tauri::command]
+async fn read_cue(path: String) -> Result<Vec<f64>, String> {
+    off_thread(move || {
+        let meta = std::fs::metadata(&path).map_err(|e| e.to_string())?;
+        if !meta.is_file() || meta.len() > 64 << 20 {
+            return Err(tr!("マークのファイルとして読めません", "not readable as a mark file").to_string());
+        }
+        let body = std::fs::read(&path).map_err(|e| e.to_string())?;
+        Ok(smartcut_core::cue::track_starts(&body))
+    })
+    .await
 }
 
 fn read_keyframes_now(path: &str) -> Result<Option<Vec<u32>>, String> {
@@ -8743,6 +8770,7 @@ pub fn run() {
             read_keyframes,
             write_sidecar,
             read_sidecar,
+            read_cue,
             play,
             stop_play,
             set_volume,

@@ -5393,6 +5393,37 @@ async function readKeyframeFile(path) {
   return times.length;
 }
 
+/// A CUE sheet's track starts, onto the marks.
+///
+/// The places another tool divided the recording at -- LosslessCut writes its
+/// segments as one, and so does a ripper beside the image of a disc. Marks
+/// and not cuts: a sheet says where the tracks begin, not which of them are
+/// wanted, so it is read the way a keyframe list is and the timeline stays
+/// whole. Seconds from the start of the file, which is the first picture --
+/// the same clock a keyframe list counts on.
+///
+/// How many it put down, or `null` where the file could not be read.
+async function readCueFile(path) {
+  const gen = openGen;
+  let starts;
+  try {
+    starts = await invoke("read_cue", { path });
+  } catch (e) {
+    if (gen !== openGen) return null;
+    el("status").textContent = tr("cue.readFailed", { e });
+    return null;
+  }
+  // For the recording before the one now up; see `openGen`.
+  if (gen !== openGen) return null;
+  const times = (starts || [])
+    .map((t) => headTime() + t)
+    .filter((t) => t <= src.duration + 1e-6);
+  if (!times.length) return 0;
+  addKeyframes(times);
+  el("status").textContent = tr("cue.read", { n: times.length, file: leaf(path) });
+  return times.length;
+}
+
 // --- mark files ---------------------------------------------------------
 //
 // What was found in a recording, written down beside it: the places worth
@@ -5420,6 +5451,9 @@ function markPath(kind) {
   const base = sideBase || (src ? src.path.replace(/\.[^./\\]*$/, "") : "");
   if (kind === "keyframe") return `${base}.keyframe`;
   if (kind === "cm") return `${base}.cm.json`;
+  // Read and never written, and named the way a ripper names one: the
+  // recording's name with its extension swapped.
+  if (kind === "cue") return `${base}.cue`;
   const ext = src ? (src.path.match(/\.[^./\\]*$/) || [""])[0] : "";
   return `${base}${ext}.trim.avs`;
 }
@@ -5537,12 +5571,18 @@ function cmBody() {
 /// Which shape a name asks for. The extension, which is what somebody typing
 /// one by hand means by typing it.
 const kindOf = (path) =>
-  /\.avs$/i.test(path) ? "trim" : /\.json$/i.test(path) ? "cm" : "keyframe";
+  /\.avs$/i.test(path)
+    ? "trim"
+    : /\.json$/i.test(path)
+      ? "cm"
+      : /\.cue$/i.test(path)
+        ? "cue"
+        : "keyframe";
 
 /// What the picker calls a shape, and the extension it writes it with.
 const markFilter = (kind) => ({
   name: tr(`marks.kind.${kind}`),
-  extensions: kind === "keyframe" ? ["keyframe"] : kind === "cm" ? ["json"] : ["avs"],
+  extensions: { keyframe: ["keyframe"], cm: ["json"], cue: ["cue"] }[kind] || ["avs"],
 });
 
 /// Write the marks beside the recording.
@@ -5651,13 +5691,15 @@ async function loadMarksFrom(kind) {
   // sent meanwhile is not the one it was chosen for.
   if (!picked || gen !== openGen) return;
   const from = Array.isArray(picked) ? picked[0] : picked;
-  if (/\.(keyframe|avs|json)$/i.test(from)) kind = kindOf(from);
+  if (/\.(keyframe|avs|json|cue)$/i.test(from)) kind = kindOf(from);
   const got =
     kind === "keyframe"
       ? await readKeyframeFile(from)
       : kind === "cm"
         ? await readCmFile(from)
-        : await readTrimFile(from);
+        : kind === "cue"
+          ? await readCueFile(from)
+          : await readTrimFile(from);
   // Nothing in it, as against unreadable: the reader has said its piece about
   // the second, and a picker that answers a deliberate choice with silence
   // looks like a program that did not hear the click.
@@ -5838,6 +5880,10 @@ el("save-as-trim").addEventListener("click", () => {
 el("load-cm").addEventListener("click", () => {
   showMore(false);
   loadMarksFrom("cm");
+});
+el("load-cue").addEventListener("click", () => {
+  showMore(false);
+  loadMarksFrom("cue");
 });
 el("save-as-cm").addEventListener("click", () => {
   showMore(false);

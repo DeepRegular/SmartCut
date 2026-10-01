@@ -114,6 +114,14 @@ const DEFAULTS = {
   /// On, like the engine's own answer: a cut is meant to be the recording,
   /// shorter, and what is behind the d button was in the recording.
   dataBroadcast: true,
+  /// Whether an MP4 or a Matroska file is written with a chapter list: one
+  /// point where each kept range begins, and the marks that survive the cut.
+  /// The same points a disc's playlist gets, which gets them whatever this
+  /// says -- a recorder looks for them there, and nowhere else.
+  ///
+  /// On: a chapter at each cut is where a viewer would want to skip to, and
+  /// a player that does not show chapters plays the file the same.
+  chapters: true,
   /// Whether each file is read back and checked against its recording once
   /// it is written. Off: it is a second decode of everything written, which
   /// on an evening's recordings is most of the time the writing took again.

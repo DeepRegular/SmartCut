@@ -399,6 +399,11 @@ const HELP: &[(&str, &[(&str, &str)])] = &[
                  the file's cover (.mp4, .m4v and .mkv)",
             ),
             (
+                "--no-chapters",
+                "Leave the chapter list out of an .mp4, .m4v, .mov or .mkv (otherwise one \
+                 where each kept range begins, and the disc's own)",
+            ),
+            (
                 "--sound-only",
                 "Write one sound track and no pictures: .aac, .ac3, .eac3, .mp2, \
                  .mp3, .dts, .m4a, .mka or .wav",
@@ -622,6 +627,11 @@ fn run() -> Result<()> {
     // is between a hundredth and a fifth of what a multiplex spends. See
     // `smartcut_core::carousel`.
     let mut data_broadcast: Option<bool> = None;
+    // Whether an MP4 or a Matroska file gets a chapter list: one where each
+    // kept range begins, and the disc's own where it came off one. A disc's
+    // playlist gets its chapters whatever this says -- it is where a
+    // recorder looks for them, and the reason a recording was put on one.
+    let mut chapters_wanted = true;
     // What the output has to fit, and what that comes to for the pictures.
     // See `smartcut_core::fit` and `CutOptions::video_share`.
     let mut fit: Option<u64> = None;
@@ -961,6 +971,7 @@ fn run() -> Result<()> {
             }
             "--data-broadcast" => data_broadcast = Some(true),
             "--no-data-broadcast" => data_broadcast = Some(false),
+            "--no-chapters" => chapters_wanted = false,
             "--proxy" => make_proxy = true,
             "--as-proxy" => as_proxy = true,
             "--analyze" => analyze = true,
@@ -1222,6 +1233,9 @@ fn run() -> Result<()> {
             (crossing_image.is_some(), "--transition-image"),
             // A cover for a file of pictures; the sound writer never saw it.
             (poster_at.is_some(), "--poster"),
+            // A chapter list is the file's, and the sound writer writes
+            // none: there was nothing for this to leave out.
+            (!chapters_wanted, "--no-chapters"),
         ];
         if let Some((_, name)) = moot.iter().find(|(given, _)| *given) {
             bail!("--sound-only writes the sound alone: {name} has nothing to act on");
@@ -2677,6 +2691,86 @@ fn run() -> Result<()> {
             reels[master.min(reels.len() - 1)].src.path,
         );
     }
+    // A chapter point where each kept range begins, and on every chapter the
+    // disc it came off set that is still in what is kept: a disc's playlist
+    // carries them, and so does an MP4 or a Matroska file. Worked out before
+    // the cut because the second kind is written into the file's header.
+    let was = off_a_disc.as_ref();
+    // Where each kept range begins is where the cuts are: the one place a
+    // viewer would want to skip to.
+    let mut at_out = 0.0;
+    let mut marks = Vec::new();
+    let mut chapters = Vec::new();
+    for plan in &plans {
+        marks.push(at_out);
+        // And the chapters of the disc it came off, where they are still
+        // in what is kept. A disc read and written straight back used to
+        // come out with one chapter where it had gone in with a dozen.
+        // Off the stream's clock the way the editor takes them off it
+        // (`applyDiscChapters`), a mark just ahead of the first picture
+        // moved onto it.
+        let first = plans.first().map_or(0.0, |p| p.t_in);
+        for m in was.map_or(&[][..], |e| &e.marks[..]) {
+            let s = was.map_or(0.0, |e| e.start) + m - src.start_time;
+            let s = if s < first && s >= first - 0.5 { first } else { s };
+            if s >= plan.t_in && s < plan.t_out {
+                chapters.push(at_out + (s - plan.t_in));
+            }
+        }
+        // No further than the recording goes: a range asked for past its
+        // end is planned as asked, and the next recording of a join
+        // begins where the pictures stopped.
+        let t_out = if src.duration > 0.0 { plan.t_out.min(src.duration) } else { plan.t_out };
+        at_out += (t_out - plan.t_in).max(0.0);
+    }
+    // And one where each recording of a `--join` begins, which is a cut
+    // as much as any range boundary is. Left out, everything after the
+    // first recording was one long chapter. A crossing that has both
+    // clips up at once takes its length out of the join, held to half
+    // of the shorter range beside it the way the cut holds it.
+    let half = |p: Option<&smartcut_core::RangePlan>| {
+        p.map_or(0.0, |p| ((p.t_out - p.t_in) / 2.0).max(0.0))
+    };
+    let mut before = plans.last();
+    // Where the first recording's own pictures end: the end of the
+    // output, or where it gives way to the second. The disc's chapters
+    // are all the first recording's, and one in the stretch a crossing
+    // overlaps is past that point -- a dissolve took the last second of
+    // the first range, and a chapter in that second came out a second
+    // into the recording after it. Nor is a chapter a moment before the
+    // end one: a range's plan runs to a picture past what was asked, and
+    // a mark the disc set just after it was a chapter of nothing.
+    let mut gives_way = at_out;
+    let mut first_join = true;
+    for plans in &joined_plans {
+        if between.kind.overlaps() {
+            let overlap = between.takes().0.min(half(before)).min(half(plans.first()));
+            at_out = (at_out - overlap).max(0.0);
+        }
+        if std::mem::take(&mut first_join) {
+            gives_way = at_out;
+        }
+        before = plans.last();
+        for plan in plans {
+            marks.push(at_out);
+            at_out += plan.t_out - plan.t_in;
+        }
+    }
+    // A chapter on a range boundary is one chapter, not two -- and the
+    // one kept is the boundary. A disc's mark a moment ahead of where a
+    // range begins is the tail of the range before; kept in place of the
+    // boundary, the chapter opened on what was cut up to.
+    marks.sort_by(f64::total_cmp);
+    marks.dedup_by(|b, a| *b - *a <= 0.5);
+    for c in chapters {
+        if c > gives_way - 0.5 {
+            continue;
+        }
+        if !marks.iter().any(|m| (m - c).abs() <= 0.5) {
+            marks.push(c);
+        }
+    }
+    marks.sort_by(f64::total_cmp);
     let written = smartcut_core::cut::join(
         &reels,
         master,
@@ -2698,6 +2792,7 @@ fn run() -> Result<()> {
             video_share,
             audio_fade,
             poster,
+            chapters: if chapters_wanted { marks.clone() } else { Vec::new() },
             plan: opts.clone(),
             ..Default::default()
         },
@@ -2775,7 +2870,6 @@ fn run() -> Result<()> {
         // programme and not the channel should still take the channel from
         // the stream.
         let said = smartcut_core::si::programme(&src.input, 0).unwrap_or_default();
-        let was = off_a_disc.as_ref();
         let name = programme
             .or_else(|| was.map(|e| e.label.clone()))
             .or_else(|| said.name.clone())
@@ -2800,81 +2894,6 @@ fn run() -> Result<()> {
         let channel_number = given_number
             .or_else(|| was.map(|e| e.channel_number).filter(|n| *n > 0))
             .unwrap_or(said.channel_number);
-        // A chapter point where each kept range begins, which is where the
-        // cuts are: the one place a viewer would want to skip to.
-        let mut at_out = 0.0;
-        let mut marks = Vec::new();
-        let mut chapters = Vec::new();
-        for plan in &plans {
-            marks.push(at_out);
-            // And the chapters of the disc it came off, where they are still
-            // in what is kept. A disc read and written straight back used to
-            // come out with one chapter where it had gone in with a dozen.
-            // Off the stream's clock the way the editor takes them off it
-            // (`applyDiscChapters`), a mark just ahead of the first picture
-            // moved onto it.
-            let first = plans.first().map_or(0.0, |p| p.t_in);
-            for m in was.map_or(&[][..], |e| &e.marks[..]) {
-                let s = was.map_or(0.0, |e| e.start) + m - src.start_time;
-                let s = if s < first && s >= first - 0.5 { first } else { s };
-                if s >= plan.t_in && s < plan.t_out {
-                    chapters.push(at_out + (s - plan.t_in));
-                }
-            }
-            // No further than the recording goes: a range asked for past its
-            // end is planned as asked, and the next recording of a join
-            // begins where the pictures stopped.
-            let t_out = if src.duration > 0.0 { plan.t_out.min(src.duration) } else { plan.t_out };
-            at_out += (t_out - plan.t_in).max(0.0);
-        }
-        // And one where each recording of a `--join` begins, which is a cut
-        // as much as any range boundary is. Left out, everything after the
-        // first recording was one long chapter. A crossing that has both
-        // clips up at once takes its length out of the join, held to half
-        // of the shorter range beside it the way the cut holds it.
-        let half = |p: Option<&smartcut_core::RangePlan>| {
-            p.map_or(0.0, |p| ((p.t_out - p.t_in) / 2.0).max(0.0))
-        };
-        let mut before = plans.last();
-        // Where the first recording's own pictures end: the end of the
-        // output, or where it gives way to the second. The disc's chapters
-        // are all the first recording's, and one in the stretch a crossing
-        // overlaps is past that point -- a dissolve took the last second of
-        // the first range, and a chapter in that second came out a second
-        // into the recording after it. Nor is a chapter a moment before the
-        // end one: a range's plan runs to a picture past what was asked, and
-        // a mark the disc set just after it was a chapter of nothing.
-        let mut gives_way = at_out;
-        let mut first_join = true;
-        for plans in &joined_plans {
-            if between.kind.overlaps() {
-                let overlap = between.takes().0.min(half(before)).min(half(plans.first()));
-                at_out = (at_out - overlap).max(0.0);
-            }
-            if std::mem::take(&mut first_join) {
-                gives_way = at_out;
-            }
-            before = plans.last();
-            for plan in plans {
-                marks.push(at_out);
-                at_out += plan.t_out - plan.t_in;
-            }
-        }
-        // A chapter on a range boundary is one chapter, not two -- and the
-        // one kept is the boundary. A disc's mark a moment ahead of where a
-        // range begins is the tail of the range before; kept in place of the
-        // boundary, the chapter opened on what was cut up to.
-        marks.sort_by(f64::total_cmp);
-        marks.dedup_by(|b, a| *b - *a <= 0.5);
-        for c in chapters {
-            if c > gives_way - 0.5 {
-                continue;
-            }
-            if !marks.iter().any(|m| (m - c).abs() <= 0.5) {
-                marks.push(c);
-            }
-        }
-        marks.sort_by(f64::total_cmp);
         // What to call the disc, when nobody said: the series this
         // recording is an episode of, which is what a run of them written
         // one after another onto the same disc has in common. The channel

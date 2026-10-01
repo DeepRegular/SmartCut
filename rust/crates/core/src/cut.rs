@@ -350,6 +350,19 @@ pub struct CutOptions {
     /// else, QuickTime included: its muxer writes `covr` only in an MP4's
     /// metadata and drops the picture without a word. See [`Poster`].
     pub poster: Option<Poster>,
+    /// Chapter points, in seconds from the start of the output.
+    ///
+    /// Written only where the container has a chapter list of its own --
+    /// MP4 and QuickTime, Matroska and WebM; see [`carries_chapters`]. A
+    /// transport stream has nowhere to put one, and a disc's chapters go in
+    /// its playlist ([`crate::bdav`]), not in the stream.
+    ///
+    /// The caller decides where they are, because the caller knows what the
+    /// points mean: the window and the command line both put one where each
+    /// kept range begins and one on every mark that survives the cut. A list
+    /// that comes to no more than the start of the file says nothing a
+    /// player does not already know, and is left out.
+    pub chapters: Vec<f64>,
 }
 
 /// A cover picture: a JPEG, and its size.
@@ -363,6 +376,44 @@ pub struct Poster {
 /// Whether `format` (a muxer's name) has a place for a [`Poster`].
 pub fn carries_poster(format: &str) -> bool {
     matches!(format, "mp4" | "matroska")
+}
+
+/// Whether `format` (a muxer's name) has a place for chapter points.
+pub fn carries_chapters(format: &str) -> bool {
+    matches!(format, "mp4" | "mov" | "matroska" | "webm")
+}
+
+/// The chapter points worth writing: in order, one to an instant, none past
+/// `length`, and none at all where what is left is the start of the file
+/// alone.
+///
+/// Within half a second of one another is one chapter, the same rule the
+/// disc's playlist is written by. Which of two such points stays is the
+/// callers' to settle (a range boundary over a mark a moment ahead of it);
+/// what reaches here is already that list, and this only holds it to the
+/// rule. Nor is one kept within half a second of the end: a chapter of
+/// nothing is a skip that lands on the last frame.
+fn chapter_points(asked: &[f64], length: f64) -> Vec<f64> {
+    let mut points: Vec<f64> = asked
+        .iter()
+        .copied()
+        .filter(|t| t.is_finite() && *t >= -0.5 && (length <= 0.0 || *t < length - 0.5))
+        .map(|t| t.max(0.0))
+        .collect();
+    points.sort_by(f64::total_cmp);
+    points.dedup_by(|b, a| *b - *a <= 0.5);
+    // The first chapter opens the file: a player shows nothing as the
+    // current chapter until it reaches one. A point within half a second of
+    // the start is moved onto it, and one further in gets one put before it.
+    match points.first_mut() {
+        Some(first) if *first <= 0.5 => *first = 0.0,
+        Some(_) => points.insert(0, 0.0),
+        None => return points,
+    }
+    if points.len() < 2 {
+        points.clear();
+    }
+    points
 }
 
 impl CutOptions {
@@ -7611,6 +7662,41 @@ fn cut_into(
         _ => None,
     };
 
+    // The chapter list, before the header: Matroska writes it into the
+    // header, and the MP4 muxer counts the text track it keeps them in
+    // among its tracks from the start. In milliseconds, which is what
+    // Matroska counts in and finer than anybody skips to.
+    //
+    // How long the file runs is the kept ranges end to end, which a
+    // crossing between two reels makes a little shorter than this -- a
+    // last chapter that ends a moment past the last frame is a chapter that
+    // ends with the file.
+    if carries_chapters(octx.format().name()) && !opts.chapters.is_empty() {
+        // No further than each recording goes: a range asked for past its
+        // end is planned as asked.
+        let length: f64 = reels
+            .iter()
+            .zip(&reel_plans)
+            .flat_map(|(r, plans)| plans.iter().map(move |p| (r.src.duration, p)))
+            .map(|(whole, p)| {
+                let t_out = if whole > 0.0 { p.t_out.min(whole) } else { p.t_out };
+                (t_out - p.t_in).max(0.0)
+            })
+            .sum();
+        let points = chapter_points(&opts.chapters, length);
+        let ms = |t: f64| (t * 1000.0).round() as i64;
+        for (n, at) in points.iter().enumerate() {
+            let end = points.get(n + 1).copied().unwrap_or(length.max(*at));
+            octx.add_chapter(
+                n as i64 + 1,
+                ff::Rational::new(1, 1000),
+                ms(*at),
+                ms(end).max(ms(*at)),
+                format!("Chapter {:02}", n + 1),
+            )?;
+        }
+    }
+
     {
         // Scoped: the leftovers borrow the context, and everything below
         // needs it back. Anything still in here is an option this muxer did
@@ -8840,6 +8926,18 @@ fn cut_into(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// What reaches the muxer as chapters: one at the start, two within half
+    /// a second one, none in the last half second,
+    /// and nothing at all where the start would be the only one.
+    #[test]
+    fn chapter_points_are_held_to_the_rule() {
+        assert_eq!(chapter_points(&[0.3, 10.0, 10.2, 59.8, f64::NAN], 60.0), vec![0.0, 10.0]);
+        assert_eq!(chapter_points(&[30.0, 5.0], 60.0), vec![0.0, 5.0, 30.0]);
+        assert!(chapter_points(&[0.0], 60.0).is_empty());
+        assert!(chapter_points(&[0.0, 59.9], 60.0).is_empty());
+        assert!(chapter_points(&[], 60.0).is_empty());
+    }
 
     /// Two streams of a recording that has no PIDs of its own -- a Matroska
     /// file, where libavformat leaves every stream's id at nought -- have to

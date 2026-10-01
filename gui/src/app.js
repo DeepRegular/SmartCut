@@ -5622,7 +5622,8 @@ function marksOf(clip) {
   return out.filter((t, k) => k === 0 || t - out[k - 1] > half);
 }
 
-/// Where the chapter points of a recording written onto a disc go.
+/// Where the chapter points of a recording go, written onto a disc or into a
+/// file that has a chapter list.
 ///
 /// Every kept range begins one. That is where the cuts are, and skipping to
 /// the far side of a commercial break is the whole of what a chapter point on
@@ -5642,6 +5643,50 @@ function chaptersFor(clip) {
     if (mapped !== null && !out.some((o) => Math.abs(o - mapped) <= 0.5)) out.push(mapped);
   }
   return out.sort((a, b) => a - b);
+}
+
+/// Where the chapter points of a file go: the disc's rule, where the
+/// container has a chapter list of its own and 環境設定 has not said no.
+///
+/// Only an MP4 or a Matroska file -- the engine checks the container again,
+/// and a `.ts` has nowhere to put them.
+const fileChapters = (out) =>
+  prefs.get("chapters") !== false && /\.(mp4|m4v|mov|mkv|webm)$/i.test(out);
+
+/// The chapter points of several clips written into one file.
+///
+/// Each clip's own, moved along by everything written before it, and one
+/// where each clip begins: a join is a cut as much as a range boundary is.
+/// A crossing that has both clips up at once takes its length out of the
+/// output, held to half the shorter range beside it the way the engine holds
+/// it, and a clip's own point inside the stretch the next one overlaps is
+/// left out -- it would land in the clip after. See `CutOptions::chapters`.
+function joinedChapters(list) {
+  const out = [];
+  let at = 0;
+  list.forEach((c, n) => {
+    const keeps = keepsOf(c);
+    const length = keeps.reduce((s, k) => s + (k.b - k.a), 0);
+    let ends = at + length;
+    const next = list[n + 1];
+    let overlap = 0;
+    if (next && c.after && OVERLAPPING.includes(c.after.kind)) {
+      const half = (k) => (k ? Math.max(0, (k.b - k.a) / 2) : 0);
+      const theirs = keepsOf(next);
+      overlap = Math.min(
+        Math.min(30, Math.max(0, Number(c.after.seconds) || 0)),
+        half(keeps[keeps.length - 1]),
+        half(theirs[0])
+      );
+      ends -= overlap;
+    }
+    for (const p of chaptersFor(c)) {
+      const t = at + p;
+      if (!next || t < ends - 0.5) out.push(t);
+    }
+    at = ends;
+  });
+  return out;
 }
 
 /// A name made safe to be a folder's, the way the engine makes one.
@@ -8003,6 +8048,7 @@ async function writeJoined(list) {
       subtitles: settings.subtitles,
       dataBroadcast: prefs.get("dataBroadcast") !== false,
       videoShare: share,
+      chapters: fileChapters(out) ? joinedChapters(list) : [],
     });
     followWrite(1);
     let extra = "";
@@ -8290,6 +8336,9 @@ async function startExport() {
         // The picture the editor set as the file's cover, if it did. Only
         // .mp4 and .mkv have a place for it; see `poster_for`.
         poster: coverAt(clip),
+        // Where a player can skip to: the disc's rule, written into the
+        // file's own chapter list. A disc gets them in its playlist instead.
+        chapters: !disc && fileChapters(out) ? chaptersFor(clip) : [],
       });
       // The head is past everything now, so the stage catches up with it: the
       // frame left standing is the last one the encoder made, rather than
@@ -11454,6 +11503,7 @@ function paintPrefs() {
   el("pref-number").checked = !!prefs.get("outNumber");
   el("pref-digits").value = String(Number(prefs.get("outDigits")) || 2);
   el("pref-data-broadcast").checked = prefs.get("dataBroadcast") !== false;
+  el("pref-chapters").checked = prefs.get("chapters") !== false;
   el("pref-verify").checked = prefs.get("verify") === true;
   el("pref-notify-done").checked = prefs.get("notifyDone") !== false;
   el("pref-keep-output").checked = !!prefs.get("keepOutput");
@@ -11889,6 +11939,11 @@ el("pref-digits").addEventListener("change", (ev) => {
 // reads it from here. See `prefs.dataBroadcast`.
 el("pref-data-broadcast").addEventListener("change", (ev) => {
   prefs.set("dataBroadcast", ev.target.checked);
+});
+
+// The same: read by the next run. See `prefs.chapters`.
+el("pref-chapters").addEventListener("change", (ev) => {
+  prefs.set("chapters", ev.target.checked);
 });
 
 // Whether each file is read back once it is written. Here rather than among

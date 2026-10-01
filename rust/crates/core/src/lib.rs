@@ -24,6 +24,7 @@ pub mod caption;
 pub mod cm;
 pub mod conform;
 pub mod crossview;
+pub mod cue;
 pub mod cut;
 pub mod disc;
 pub mod dvd;
@@ -75,7 +76,7 @@ pub use cm::{
 };
 pub use cut::{
     can_carry_data_broadcast, cut, cut_with_progress, tables_for, writable_sound, write_audio_es,
-    carries_poster, AudioCodec, AudioMode, CutOptions, Poster, SoundAsIs, SoundChoices,
+    carries_chapters, carries_poster, AudioCodec, AudioMode, CutOptions, Poster, SoundAsIs, SoundChoices,
 };
 pub use index::{ContainerIndex, DiscIndex, IndexSource, PacketScan};
 pub use plan::{
