@@ -2637,6 +2637,17 @@ fn segment_streams(ictx: &crate::input::Demux, ctx: &SegmentCtx, ist: usize) -> 
     keep
 }
 
+/// Which of a segment's graphics tracks the read starts out done with.
+///
+/// A DVD's subtitles converted on their way into the cut are written on a
+/// graphics track that no stream of the recording feeds -- its packets come
+/// in as subpictures (see [`convert_subpicture`]) -- so nothing would ever
+/// say that track had run past the segment, and every segment read on to
+/// [`TRAIL`] waiting for it.
+fn graphics_read(ctx: &SegmentCtx) -> Vec<bool> {
+    ctx.graphics.iter().map(|g| g.in_index == usize::MAX).collect()
+}
+
 /// Seek so that the next read is safely *before* `time` (rebased seconds).
 ///
 /// The margin matters: MPEG-TS seeking is byte-position based and only
@@ -3288,7 +3299,7 @@ fn copy_segment(
     // in step, and stopping on either would truncate the other.
     let mut audio_done = vec![false; ctx.audio.len()];
     let mut caption_done = vec![false; ctx.captions.len()];
-    let mut graphics_done = vec![false; ctx.graphics.len()];
+    let mut graphics_done = graphics_read(ctx);
     // A recording with no subtitles of this kind is done with them before it
     // begins, which is what keeps the read from waiting on packets that are
     // never coming.
@@ -4652,7 +4663,7 @@ fn reencode_segment(
     let mut frame = ff::frame::Video::empty();
     let mut audio_done = vec![false; ctx.audio.len()];
     let mut caption_done = vec![false; ctx.captions.len()];
-    let mut graphics_done = vec![false; ctx.graphics.len()];
+    let mut graphics_done = graphics_read(ctx);
     // A recording with no subtitles of this kind is done with them before it
     // begins, which is what keeps the read from waiting on packets that are
     // never coming.
@@ -6381,22 +6392,6 @@ fn seek_back(points: &[crate::AccessPoint], target: f64) -> f64 {
     }
 }
 
-/// One recording's contribution to an output, and its own kept ranges.
-///
-/// **A cut of one recording is a join of one reel**, which is how this
-/// arrived: the ranges of a single file were already being laid end to end
-/// on one output timeline, each anchored to the instant its own pictures
-/// start, so that an error at one seam cannot reach the next. Ranges from
-/// *different* files ask nothing more of that machinery than ranges from the
-/// same one -- every segment opens the file it reads for itself, and always
-/// did.
-///
-/// What is new is everything the output has only one of. A stream is
-/// declared before the first packet is written and cannot be taken back, so
-/// one reel is the master and the file is its shape: its size, its rate, its
-/// codec, its sound tracks, its tables. Every other reel either matches the
-/// master and is copied, or does not and is written afresh. See
-/// [`crate::conform`], which is where that is decided.
 /// Whether a sound track has anything in the ranges being kept.
 ///
 /// Looked for at three places in each range -- its start, its middle and
@@ -6499,6 +6494,22 @@ fn framing_for(
     })
 }
 
+/// One recording's contribution to an output, and its own kept ranges.
+///
+/// **A cut of one recording is a join of one reel**, which is how this
+/// arrived: the ranges of a single file were already being laid end to end
+/// on one output timeline, each anchored to the instant its own pictures
+/// start, so that an error at one seam cannot reach the next. Ranges from
+/// *different* files ask nothing more of that machinery than ranges from the
+/// same one -- every segment opens the file it reads for itself, and always
+/// did.
+///
+/// What is new is everything the output has only one of. A stream is
+/// declared before the first packet is written and cannot be taken back, so
+/// one reel is the master and the file is its shape: its size, its rate, its
+/// codec, its sound tracks, its tables. Every other reel either matches the
+/// master and is copied, or does not and is written afresh. See
+/// [`crate::conform`], which is where that is decided.
 pub struct Reel<'a> {
     pub src: &'a Source,
     pub plans: &'a [RangePlan],
@@ -7949,8 +7960,19 @@ fn cut_into(
                 // The throttle is on the job's figure, since that is what a
                 // bar is drawn from; the pass's own is worked back out of it
                 // so that both describe the same moment. See [`Pass`].
+                // A pass given none of the job -- the tables of a cut whose
+                // writing is the whole of it, where only the map is corrected
+                // -- is over as soon as it is anywhere: nought over nought is
+                // not a figure a screen can draw.
+                let within = |d: f64| {
+                    if span > 0.0 {
+                        ((d - base) / span).clamp(0.0, 1.0)
+                    } else {
+                        1.0
+                    }
+                };
                 told.lock().unwrap().at(
-                    Some(&|d: f64| p(pass, d, ((d - base) / span).clamp(0.0, 1.0))),
+                    Some(&|d: f64| p(pass, d, within(d))),
                     done,
                 );
             }) as Box<dyn Fn(f64) + Send + Sync>

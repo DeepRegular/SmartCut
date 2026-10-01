@@ -455,6 +455,10 @@ impl Reader {
                     });
                 }
                 Some(decoder) => {
+                    // Not decoded at all: see `pgs::oversized`.
+                    if kind == Kind::Graphics && crate::pgs::oversized(data) {
+                        continue;
+                    }
                     let mut sub = ff::codec::subtitle::Subtitle::new();
                     if !decoder.decode(&packet, &mut sub).unwrap_or(false) {
                         // A DVD's unit with nothing to show is one that takes
@@ -708,6 +712,8 @@ mod tests {
             pictures_decoder(ff::codec::Id::HDMV_PGS_SUBTITLE, uhd, None).expect("a decoder");
         let mut sub = ff::codec::subtitle::Subtitle::new();
         let packet = ff::Packet::copy(&set((1920, 1080), 64, 8));
+        assert!(!crate::pgs::oversized(packet.data().expect("data")));
+        assert!(crate::pgs::oversized(&set((16000, 16000), 5000, 8)));
         assert!(decoder.decode(&packet, &mut sub).expect("decodes"));
         let drawn = vobsub::drawn_from(&sub).expect("draws");
         assert_eq!((drawn.x, drawn.y, drawn.width), (100, 900, 64));

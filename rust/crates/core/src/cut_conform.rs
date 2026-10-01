@@ -301,7 +301,14 @@ fn pictures_afresh(
                             drain_encoder_shown(enc, ctx.reframe, &placed, shown.as_ref(), writer)?;
                         }
                         Pictures::Vc1(enc) => {
-                            let packet = encode_vc1(enc, picture, per_frame)?;
+                            // In fields, as [`encode_vc1`] counts them: every
+                            // frame here is one frame of the master's, shown
+                            // for two. `per_frame` is in the timeline's
+                            // units, which on a variable-rate master are a
+                            // thirty-second of a field, and handed over as
+                            // fields it said each picture was repeated three
+                            // times over.
+                            let packet = encode_vc1(enc, picture, 2)?;
                             writer.push(Emitted {
                                 packet,
                                 display,
@@ -438,6 +445,24 @@ fn pictures_afresh(
     Ok(span)
 }
 
+/// The master's pixel format, where its parameters state one.
+///
+/// **Not every recording does.** A Blu-ray's VC-1 can be probed without a
+/// picture being decoded, and its parameters then say `AV_PIX_FMT_NONE`:
+/// handed to the scaler as the format to make, that is an assertion inside
+/// libswscale and the whole program aborted -- every transition and every
+/// reel written afresh into such a master. `None` then, and the caller
+/// keeps the format the pictures decode to.
+fn master_pixels(into: &Shaped) -> Option<ff::format::Pixel> {
+    if into.video.shape.pix_fmt < 0 {
+        return None;
+    }
+    let raw = unsafe {
+        std::mem::transmute::<i32, ff::ffi::AVPixelFormat>(into.video.shape.pix_fmt)
+    };
+    Some(ff::format::Pixel::from(raw))
+}
+
 /// One decoded picture in the master's size and pixel format.
 ///
 /// A picture that is already the right shape is handed back as it is: the
@@ -449,10 +474,7 @@ fn reshape(
     into: &Shaped,
     rescale: &mut Option<Rescale>,
 ) -> Result<ff::frame::Video> {
-    let want_pix = unsafe {
-        std::mem::transmute::<i32, ff::ffi::AVPixelFormat>(into.video.shape.pix_fmt)
-    };
-    let want = ff::format::Pixel::from(want_pix);
+    let want = master_pixels(into).unwrap_or(frame.format());
     // Whether the samples are full range, the picture's and the master's.
     // A clip on the other side from the master is converted on the way
     // through: `conform` calls that a colour difference, and the reel is
@@ -644,7 +666,16 @@ impl FarSide {
                 let t = pts as f64 * self.in_tb - self.start_time;
                 return Ok(Some((t, reshape(&frame, into, &mut self.rescale)?)));
             }
-            let Some((stream, packet)) = self.ictx.read_packets().next() else {
+            let (read, ended) = {
+                let mut packets = self.ictx.read_packets();
+                let read = packets.next().map(|(stream, packet)| (stream.index(), packet));
+                (read, packets.finished())
+            };
+            let Some((index, packet)) = read else {
+                // A read that failed is not the end of the clip: taken for
+                // one, the crossing froze on the last picture it had and the
+                // cut said it had succeeded. See [`crate::input::Packets`].
+                ended?;
                 // Nothing left to read. Whatever the decoder is still
                 // holding comes out now, and after that there is nothing.
                 if !self.drained {
@@ -654,7 +685,7 @@ impl FarSide {
                 }
                 return Ok(None);
             };
-            if stream.index() != self.ist {
+            if index != self.ist {
                 continue;
             }
             // A packet the decoder will not take is not a reason to stop
@@ -668,11 +699,10 @@ impl FarSide {
 /// in. The reading of it is in [`crate::blend`], where the window that sets
 /// the transition reads it too.
 fn read_overlay(path: &str, into: &Shaped) -> Result<crate::blend::Laid> {
-    let want = unsafe {
-        ff::format::Pixel::from(std::mem::transmute::<i32, ff::ffi::AVPixelFormat>(
-            into.video.shape.pix_fmt,
-        ))
-    };
+    // A master that never stated its format is decoded as 4:2:0, which is
+    // what every one met so far turned out to be; a picture that is not
+    // meets [`crate::blend::over`]'s refusal rather than a scaler's abort.
+    let want = master_pixels(into).unwrap_or(ff::format::Pixel::YUV420P);
     crate::blend::read_laid(
         path,
         into.video.width,

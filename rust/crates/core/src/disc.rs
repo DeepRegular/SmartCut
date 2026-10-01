@@ -1442,15 +1442,54 @@ fn disc_name(xml: &str) -> Option<String> {
         let open = rest[..at].ends_with('<') || rest[..at].ends_with(':');
         if open {
             if let Some(end) = after.find("</") {
-                let text = after[..end].trim();
+                let text = xml_text(after[..end].trim());
                 if !text.is_empty() {
-                    return Some(arib::one_line(text));
+                    return Some(arib::one_line(&text));
                 }
             }
         }
         rest = after;
     }
     None
+}
+
+/// The text of an element, with the references XML writes in place of `&`,
+/// `<` and the rest put back: a disc called `A & B` writes `A &amp; B`, and
+/// taken as it lies that was the name in the list and in every file cut
+/// from the disc. A reference this does not know is left as written.
+fn xml_text(raw: &str) -> String {
+    let mut out = String::with_capacity(raw.len());
+    let mut rest = raw;
+    while let Some(at) = rest.find('&') {
+        out.push_str(&rest[..at]);
+        rest = &rest[at..];
+        let named = rest.find(';').and_then(|end| {
+            let c = match &rest[1..end] {
+                "amp" => '&',
+                "lt" => '<',
+                "gt" => '>',
+                "quot" => '"',
+                "apos" => '\'',
+                n => match n.strip_prefix("#x").or_else(|| n.strip_prefix("#X")) {
+                    Some(hex) => char::from_u32(u32::from_str_radix(hex, 16).ok()?)?,
+                    None => char::from_u32(n.strip_prefix('#')?.parse().ok()?)?,
+                },
+            };
+            (!c.is_control()).then_some((c, end))
+        });
+        match named {
+            Some((c, end)) => {
+                out.push(c);
+                rest = &rest[end + 1..];
+            }
+            None => {
+                out.push('&');
+                rest = &rest[1..];
+            }
+        }
+    }
+    out.push_str(rest);
+    out
 }
 
 /// Read text a recorder wrote into its index, in whichever of the two
@@ -2679,6 +2718,15 @@ mod tests {
             table_of_playlists(&raw),
             ["00001.rpls", "00002.rpls", "00003.rpls"]
         );
+    }
+
+    /// What a pressed disc calls itself, with the references XML writes for
+    /// the characters it reserves put back.
+    #[test]
+    fn a_disc_name_reads_through_its_references() {
+        let xml = "<di:title><di:name>A &amp; B &lt;3&gt; &#x41;&#66; &bogus; R&D</di:name></di:title>";
+        assert_eq!(disc_name(xml).as_deref(), Some("A & B <3> AB &bogus; R&D"));
+        assert_eq!(xml_text("&#0;&#x1b;"), "&#0;&#x1b;");
     }
 
     #[test]

@@ -633,7 +633,9 @@ fn read(
         let Some(&cell) = bytes.get(at) else {
             return bytes.len();
         };
-        run_macro(cell, state);
+        // In the graphic-left form, as every other cell is read: the macro
+        // set invoked over the right range (LS3R) sends `E0` for `60`.
+        run_macro(cell & 0x7F, state);
         return at + 1;
     }
     at_char(scratch, bytes, at, state.sets[slot], visit)
@@ -1230,6 +1232,21 @@ mod tests {
         // The three cells the broadcaster drew: the brackets around the
         // line and the letter the alphanumerics do not have.
         assert_eq!(glyphs, [0x4121, 0x4123, 0x4122]);
+    }
+
+    /// The macro set invoked over the right range runs the same macros: `E1`
+    /// there is `61`, which puts the katakana in G1.
+    #[test]
+    fn a_macro_invoked_over_the_right_range_is_run() {
+        // LS3R, the macro in its right-range form, then LS1 and one cell.
+        let raw = [0x1B, 0x7C, 0xE1, 0x0E, 0x22];
+        let mut out = String::new();
+        walk_from(Start::Caption, &raw, &mut |step| {
+            if let Step::Text(text, _) = step {
+                out.push_str(text);
+            }
+        });
+        assert_eq!(out, "ア");
     }
 
     /// Which cell of which downloaded set a caption asked for.

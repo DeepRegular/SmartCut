@@ -727,6 +727,10 @@ pub struct Reencoder {
     /// Whether the encoder has a frame length of its own. LPCM has none: it
     /// writes back whatever it is handed, whole frames or not.
     fixed: bool,
+    /// Whether the last frame may be short of the rest. FLAC's may, and a
+    /// lossless track padded up to a whole block ended in up to 4096 samples
+    /// of silence the recording never had: a `.flac` up to 0.09 s too long.
+    short_last: bool,
     /// How the encoder wants its channels arranged, which is not always the
     /// arrangement libav hands back as the default for that many. See
     /// [`encoder_layout`].
@@ -763,6 +767,7 @@ impl Reencoder {
         let frame_size = frame_size_of(&encoder);
         let enc_format = encoder.format();
         let fixed = encoder.frame_size() > 0;
+        let short_last = target == ff::codec::Id::FLAC;
         let layout = encoder.channel_layout();
         // What the encoder settled on, which is the rate asked for wherever
         // the codec has it and the nearest it does have otherwise.
@@ -820,6 +825,7 @@ impl Reencoder {
             to_encoder: None,
             feeding: ff::frame::Audio::empty(),
             fixed,
+            short_last,
             layout,
         })
     }
@@ -1209,7 +1215,7 @@ impl Reencoder {
         self.flush_resampler()?;
         self.drain(out)?;
         if !self.ready[0].is_empty() {
-            if self.fixed {
+            if self.fixed && !self.short_last {
                 let short = self.frame_size - self.ready[0].len();
                 for ch in 0..self.channels {
                     self.ready[ch].extend(std::iter::repeat_n(0.0, short));

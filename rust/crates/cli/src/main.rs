@@ -656,7 +656,9 @@ fn run() -> Result<()> {
             // this wants the text, not an argument three places later being
             // held against them.
             "--help" | "-h" => {
-                print!("{}", help());
+                // Not `print!`, which panics once standard output has gone.
+                use std::io::Write as _;
+                let _ = write!(std::io::stdout().lock(), "{}", help());
                 return Ok(());
             }
             "--keep" => {
@@ -1174,7 +1176,13 @@ fn run() -> Result<()> {
             || !cuts.is_empty()
             || !joined.is_empty()
             || bdav.is_some()
-            || sound_only;
+            || sound_only
+            // What only a cut being written reads: `--preview 60 --fit bd25`
+            // ended well with the size never looked at.
+            || fit.is_some()
+            || video_share.is_some()
+            || poster_at.is_some()
+            || audio_es;
         if cutting {
             bail!("{first} ends the run without writing a cut: run the cut on its own");
         }
@@ -1972,9 +1980,13 @@ fn run() -> Result<()> {
             &opts,
             &smartcut_core::ThumbOptions::default(),
             Some(Box::new(|f| {
-                eprint!("\r  proxy {:5.1}%", f * 100.0);
+                // Not `eprint!`, which panics once standard error has gone
+                // (`2>&1 | head`): the run died at the first percentage, with no
+                // proxy. See `log::line`.
                 use std::io::Write as _;
-                let _ = std::io::stderr().flush();
+                let mut err = std::io::stderr().lock();
+                let _ = write!(err, "\r  proxy {:5.1}%", f * 100.0);
+                let _ = err.flush();
             })),
             None,
             None,

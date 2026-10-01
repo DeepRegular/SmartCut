@@ -346,6 +346,16 @@ impl Transrater {
                 let (dl, dz) = (lift - l0, (size as f64 / z0).ln());
                 if dl.abs() > 1e-6 && dz.abs() > 1e-6 {
                     slope = (-dz / dl).clamp(0.02, 2.0);
+                } else if dz.abs() <= 1e-6 {
+                    // Nothing gave at all. The low end of the pressure drops
+                    // nothing on broadcast material -- below about three it
+                    // is the same bytes -- and a slope that stays where it
+                    // was guessed creeps through that a fifth of a code a
+                    // try when a tenth is asked for: the run was seeded at
+                    // the first try and wrote its first five seconds at
+                    // full size. So a try that bought nothing makes the
+                    // next step twice as long.
+                    slope = (slope / 2.0).max(0.02);
                 }
             }
             last = Some((lift, size as f64));

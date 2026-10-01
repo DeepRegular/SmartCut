@@ -327,8 +327,15 @@ fn write_to(
     let plan = lay_out(&mut tree, access)?;
     let meta = metadata_image(&tree, &plan, revision, access, &now, label)?;
 
-    let dst =
-        std::fs::File::create(to).with_context(|| format!("cannot write {}", to.display()))?;
+    // Made afresh rather than opened through whatever has the name: a
+    // `<image>.part` that was a link into the folder truncated the file it
+    // pointed at -- one of the disc's own streams -- before it was read.
+    let _ = std::fs::remove_file(to);
+    let dst = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(to)
+        .with_context(|| format!("cannot write {}", to.display()))?;
     make_sparse(&dst);
     let mut out = Writer {
         to: BufWriter::with_capacity(1 << 20, dst),

@@ -299,6 +299,19 @@ fn run(
             }
         }
     }
+    // A FLAC frame numbers its own first sample, and a `.flac` opens on the
+    // stream's STREAMINFO, which states the recording's length and the
+    // checksum of all its samples. Copied, ten seconds out of a forty second
+    // recording were a file that said it was forty seconds long, began ten
+    // seconds in and failed its own checksum. FLAC re-encoded loses nothing,
+    // and the encoder numbers its frames from nought and states what it wrote.
+    if setup.target == ff::codec::Id::FLAC
+        && octx.format().name() == "flac"
+        && setup.mode != AudioMode::Reencode
+    {
+        setup.mode = AudioMode::Reencode;
+        setup.frame_as = None;
+    }
 
     // A container that has no box for the codec says so only as "Invalid
     // argument", once the header is being written. Asked first, so the run
@@ -324,11 +337,23 @@ fn run(
     // for anything but its own codec, and the FLAC and Opus ones then turn
     // the rest away at the header as "Invalid argument" -- AC-3 asked for as
     // `.flac` or AAC as `.opus` ended on that and nothing else. They take
-    // their own codec and only that. Not `.ogg` or `.oga`, which answer the
-    // same and take Vorbis, FLAC and Opus alike.
+    // their own codec and only that. `.ogg`, `.oga` and `.spx` answer the
+    // same and take Vorbis, Speex, FLAC and Opus alike (libavformat's
+    // `ogg_init`), and turned MP2 or AAC away just as bare; the LATM muxer
+    // takes AAC either way it is framed, and AMR's its two kinds.
     let own = unsafe { (*(*octx.as_ptr()).oformat).audio_codec };
-    if holds < 0 && matches!(octx.format().name(), "flac" | "opus") {
-        holds = i32::from(ff::codec::Id::from(own) == declared);
+    if holds < 0 {
+        use ff::codec::Id;
+        let takes: Option<&[Id]> = match octx.format().name() {
+            "flac" | "opus" => Some(&[]),
+            "ogg" | "oga" | "spx" => Some(&[Id::VORBIS, Id::SPEEX, Id::FLAC, Id::OPUS]),
+            "latm" => Some(&[Id::AAC, Id::AAC_LATM]),
+            "amr" => Some(&[Id::AMR_NB, Id::AMR_WB]),
+            _ => None,
+        };
+        if let Some(takes) = takes {
+            holds = i32::from(Id::from(own) == declared || takes.contains(&declared));
+        }
     }
     // LATM is a framing and has no file of its own that anything plays:
     // a 4K recording's sound asked for as `.aac`, `.m4a` or `.mp4` -- the

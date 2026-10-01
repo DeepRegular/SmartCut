@@ -220,7 +220,9 @@ unsafe extern "C" fn libav_line(
     let _ = err.write_all(text.as_bytes());
     let _ = err.flush();
     if is_open() {
-        PARTIAL.with(|partial| {
+        // `try_with`: a thread on its way out has no storage left, and
+        // `with` would panic -- here, an abort.
+        let _ = PARTIAL.try_with(|partial| {
             let mut partial = partial.borrow_mut();
             partial.push_str(&text);
             while let Some(end) = partial.find('\n') {

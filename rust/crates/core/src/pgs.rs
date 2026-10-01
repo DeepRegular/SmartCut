@@ -97,6 +97,32 @@ pub fn segments(data: &[u8]) -> impl Iterator<Item = (u8, &[u8])> {
     })
 }
 
+/// The widest and tallest picture a display set may carry here, which is
+/// what [`crate::vobsub::drawn_from`] takes out of a decoder: a disc composes
+/// on 1920 x 1080.
+const MOST_DOTS: u16 = 4096;
+
+/// Whether this packet carries a picture bigger than any disc draws.
+///
+/// The decoder takes the screen a composition names as its own limit, so a
+/// crafted set can name 16000 dots square and an object that size -- and
+/// libavcodec lays that out as one byte a dot before anything here can turn
+/// it away: a quarter of a gigabyte per set, from a set of a few kilobytes
+/// of long runs. Such a packet is not handed to the decoder at all.
+pub fn oversized(data: &[u8]) -> bool {
+    segments(data).any(|(kind, body)| {
+        // The shape is in the first segment of an object only: its id, its
+        // version, the flags, three bytes of length, then the width and
+        // height.
+        kind == write::ODS
+            && body.get(3).is_some_and(|flags| flags & 0x80 != 0)
+            && body.get(7..11).is_some_and(|shape| {
+                u16::from_be_bytes([shape[0], shape[1]]) > MOST_DOTS
+                    || u16::from_be_bytes([shape[2], shape[3]]) > MOST_DOTS
+            })
+    })
+}
+
 /// What a composition says about itself.
 ///
 /// Only the three fields a cut has to act on, out of the eleven bytes every
@@ -492,6 +518,9 @@ pub mod read {
         /// the decoder wants them: it reads a run of segments and answers at
         /// the END that finishes them.
         pub fn read(&mut self, set: &[u8]) -> Result<Option<crate::vobsub::Drawn>> {
+            if super::oversized(set) {
+                anyhow::bail!("a picture bigger than any disc draws");
+            }
             let packet = ff::Packet::copy(set);
             let mut sub = ff::codec::subtitle::Subtitle::new();
             if !self.decoder.decode(&packet, &mut sub)? {

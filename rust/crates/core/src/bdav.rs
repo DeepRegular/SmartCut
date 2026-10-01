@@ -814,7 +814,18 @@ pub fn stamp(path: &Path, on: Option<&(dyn Fn(f64) + Sync)>) -> Result<Timing> {
     let temp = path.with_extension("m2ts.ats");
     let done = (|| -> Result<u32> {
         let mut src = BufReader::with_capacity(1 << 20, std::fs::File::open(path)?);
-        let mut dst = BufWriter::with_capacity(1 << 20, std::fs::File::create(&temp)?);
+        // Made afresh and never opened through what is there. The number is
+        // reserved by its stream alone, so a disc folder that arrived with a
+        // `00007.m2ts.ats` linked to a file elsewhere had that file truncated
+        // and filled with this recording.
+        let _ = std::fs::remove_file(&temp);
+        let mut dst = BufWriter::with_capacity(
+            1 << 20,
+            std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&temp)?,
+        );
         let mut frame = [0u8; SOURCE_PACKET];
         let mut i = 0u32;
         let mut next = 0usize;
