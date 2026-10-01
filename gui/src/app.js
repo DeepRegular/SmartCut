@@ -20,7 +20,7 @@
 // lanes here and a window of its own, and the passes hold themselves to part
 // of the machine while that window is up.
 
-import { fmt, clock, coarse, chLabel, cmNote, esc, size, blankKey, flatKey, noBrowserMenu, noNativeDrag, wireDrops, adoptDrop }
+import { fmt, clock, coarse, chLabel, cmNote, esc, size, blankKey, flatKey, noBrowserMenu, noNativeDrag, wireDrops, adoptDrop, dialogOver }
   from "./shared.js";
 import { t, applyStatic, preference, currentLang, setLang, onLangChange, tellBackend, confirmWithOs }
   from "./i18n.js";
@@ -30,7 +30,7 @@ const T = window.__TAURI__ || {};
 const invoke = T.core && T.core.invoke;
 const listen = T.event && T.event.listen;
 const emit = T.event && T.event.emit;
-const dialog = T.dialog;
+const dialog = dialogOver(T);
 const jlog = (m) => invoke && invoke("log", { msg: String(m) });
 const el = (id) => document.getElementById(id);
 

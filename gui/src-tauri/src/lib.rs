@@ -7925,6 +7925,79 @@ fn show_folder_now(path: &str) -> Result<(), String> {
         .map_err(|e| format!("{opener}: {e}"))
 }
 
+/// A yes-or-no question, over the window that asks it. `None` is "ask the
+/// dialog plugin": everywhere but Linux it already does this.
+///
+/// On Linux the plugin's dialogs come from rfd, which drops the parent it is
+/// given: the question is a window of its own, and a modal one, so it holds
+/// every other window of this program while nothing keeps it above them.
+/// Switch to another program and back, and the window comes up over the
+/// question -- which is then nowhere to be seen, with the window under it
+/// taking no clicks and no keys. Found with 自動保存の復旧 at start-up, the
+/// question somebody is likeliest to leave sitting. This one is made
+/// transient for the window, so the desktop keeps it on top and brings it
+/// back with the window.
+#[tauri::command]
+async fn ask_over(
+    window: tauri::WebviewWindow,
+    message: String,
+    title: Option<String>,
+    kind: Option<String>,
+    ok: Option<String>,
+    cancel: Option<String>,
+) -> Result<Option<bool>, String> {
+    #[cfg(target_os = "linux")]
+    {
+        let (tx, rx) = std::sync::mpsc::channel::<bool>();
+        let on = window.clone();
+        on.run_on_main_thread(move || {
+            use gtk::prelude::*;
+            let parent = window.gtk_window().ok();
+            let style = match kind.as_deref() {
+                Some("warning") => gtk::MessageType::Warning,
+                Some("error") => gtk::MessageType::Error,
+                _ => gtk::MessageType::Info,
+            };
+            // The plugin's own buttons when it is not told what to call
+            // them, so that a question looks as it did.
+            let named = ok.is_some() || cancel.is_some();
+            let buttons = if named { gtk::ButtonsType::None } else { gtk::ButtonsType::YesNo };
+            let d = gtk::MessageDialog::new(
+                parent.as_ref(),
+                gtk::DialogFlags::MODAL | gtk::DialogFlags::DESTROY_WITH_PARENT,
+                style,
+                buttons,
+                &message,
+            );
+            if let Some(title) = &title {
+                d.set_title(title);
+            }
+            if named {
+                d.add_button(cancel.as_deref().unwrap_or("Cancel"), gtk::ResponseType::Cancel);
+                d.add_button(ok.as_deref().unwrap_or("OK"), gtk::ResponseType::Ok);
+            }
+            // Answered once: closing it says "no", and so does a window that
+            // takes it down with it, by dropping `tx` unsent.
+            d.connect_response(move |d, r| {
+                let _ = tx.send(matches!(r, gtk::ResponseType::Yes | gtk::ResponseType::Ok));
+                d.close();
+            });
+            d.show_all();
+        })
+        .map_err(|e| e.to_string())?;
+        // Off the runtime's threads: the answer can be hours coming.
+        let said = tauri::async_runtime::spawn_blocking(move || rx.recv().unwrap_or(false))
+            .await
+            .map_err(|e| e.to_string())?;
+        Ok(Some(said))
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = (window, message, title, kind, ok, cancel);
+        Ok(None)
+    }
+}
+
 /// Which of the two this window is: the list window, or the batch tool.
 ///
 /// The frontend is the same page either way -- the tool needs the list and
@@ -8512,6 +8585,7 @@ pub fn run() {
             export_joined,
             verify_output,
             stop_verify,
+            ask_over,
             runlog::run_log_open,
             runlog::run_log_line,
             runlog::run_log_close,

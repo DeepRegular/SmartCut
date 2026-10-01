@@ -25,11 +25,11 @@ const T = window.__TAURI__ || {};
 const invoke = T.core && T.core.invoke;
 const listen = T.event && T.event.listen;
 const emit = T.event && T.event.emit;
-const dialog = T.dialog;
+const dialog = dialogOver(T);
 const jlog = (m) => invoke && invoke("log", { msg: String(m) });
 jlog("main.js start");
 
-import { fmt, chLabel, cmNote, blankKey, noBrowserMenu, noNativeDrag, notch } from "./shared.js";
+import { fmt, chLabel, cmNote, blankKey, noBrowserMenu, noNativeDrag, notch, dialogOver } from "./shared.js";
 import { t as tr, applyStatic, setLang, onLangChange, confirmWithOs } from "./i18n.js";
 import * as prefs from "./prefs.js";
 

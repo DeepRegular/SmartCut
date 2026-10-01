@@ -425,3 +425,33 @@ export function wireDrops() {
   // out from under it would leave it standing over nothing.
   window.addEventListener("scroll", (ev) => inDropMenu(ev) || closeDrop(), true);
 }
+
+/// The dialog plugin, with its yes-or-no question asked over the window that
+/// asks it. On Linux the plugin's own leaves the question free to go behind
+/// the window it holds, which then takes no clicks; see `ask_over`. Where the
+/// backend says the plugin is fine as it is, or cannot be asked, it is the
+/// plugin's.
+export function dialogOver(T) {
+  const d = T.dialog;
+  const invoke = T.core && T.core.invoke;
+  if (!d || !invoke) return d;
+  return {
+    ...d,
+    async ask(message, options = {}) {
+      const o = typeof options === "string" ? { title: options } : options || {};
+      let said = null;
+      try {
+        said = await invoke("ask_over", {
+          message: String(message),
+          title: o.title ?? null,
+          kind: o.kind ?? null,
+          ok: o.okLabel ?? null,
+          cancel: o.cancelLabel ?? null,
+        });
+      } catch {
+        said = null;
+      }
+      return said ?? d.ask(message, options);
+    },
+  };
+}
