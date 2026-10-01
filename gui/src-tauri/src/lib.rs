@@ -7710,7 +7710,9 @@ fn open_batch_tool(app: tauri::AppHandle) -> Result<bool, String> {
         return Ok(false);
     }
     let exe = std::env::current_exe().map_err(|e| e.to_string())?;
-    let child = std::process::Command::new(exe)
+    let mut run = std::process::Command::new(exe);
+    im_as_before(&mut run);
+    let child = run
         .arg("--batch")
         .spawn()
         .map_err(|e| e.to_string())?;
@@ -7741,6 +7743,22 @@ fn reap(mut child: std::process::Child) {
 /// inside is "it was not set".
 static IM_BEFORE: std::sync::OnceLock<Option<std::ffi::OsString>> = std::sync::OnceLock::new();
 
+/// Give `run` the `GTK_IM_MODULE` this process was started with.
+///
+/// Set here for this window's sake, and wrong for anybody else's: a GTK
+/// file manager started with it could not use the IME at all. This program
+/// started again wants it back too: it decides for itself from what it
+/// finds, and finding this one's choice it would leave nothing to put back
+/// for the folder the batch tool shows.
+fn im_as_before(run: &mut std::process::Command) {
+    if let Some(before) = IM_BEFORE.get() {
+        match before {
+            Some(v) => run.env("GTK_IM_MODULE", v),
+            None => run.env_remove("GTK_IM_MODULE"),
+        };
+    }
+}
+
 /// A program of the desktop's rather than this one's -- the file manager, the
 /// text editor, `systemctl` -- to be started as the desktop would start it.
 ///
@@ -7756,14 +7774,7 @@ static IM_BEFORE: std::sync::OnceLock<Option<std::ffi::OsString>> = std::sync::O
 /// Not for starting this program again: that one wants the bundle.
 fn desktop_command(program: &str) -> std::process::Command {
     let mut run = std::process::Command::new(program);
-    // Set here for this window's sake, and wrong for anybody else's: a GTK
-    // file manager started with it could not use the IME at all.
-    if let Some(before) = IM_BEFORE.get() {
-        match before {
-            Some(v) => run.env("GTK_IM_MODULE", v),
-            None => run.env_remove("GTK_IM_MODULE"),
-        };
-    }
+    im_as_before(&mut run);
     let Some(root) = std::env::var_os("APPDIR").filter(|r| !r.is_empty()) else {
         return run;
     };
@@ -7856,6 +7867,7 @@ fn center_window(app: tauri::AppHandle, role: State<Role>) {
 fn open_project_window(path: String, queued: bool) -> Result<(), String> {
     let exe = std::env::current_exe().map_err(|e| e.to_string())?;
     let mut run = std::process::Command::new(exe);
+    im_as_before(&mut run);
     run.arg(path);
     // Which is the whole of the difference: the same list window, told that
     // the project it is opening is a job somebody has queued. What it does

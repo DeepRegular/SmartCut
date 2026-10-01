@@ -6134,10 +6134,15 @@ async function openPath(picked, saved, side, name, chapters, dropPids, detected)
 /// be opened in this window while the first one's walk is still running, and
 /// the answer then belongs to nobody.
 async function pointsArrived(exact, picked) {
+  const gen = openGen;
   let full;
   try {
     full = await exact;
   } catch (e) {
+    // Overtaken: the backend fails a walk another open has replaced ("another
+    // recording was opened in the meantime"), and that is no news about the
+    // row now up -- written here, it stood on that row's status line.
+    if (gen !== openGen) throw e;
     // The walk is where a recording that cannot be read says so. The outline
     // opened it, so this is rare -- a file removed under the window, a disc
     // ejected -- but it is not a window to go on cutting in.
@@ -7519,14 +7524,18 @@ function captureEdit() {
 }
 
 let syncTimer = null;
+/// Set by キャンセル on its way out; see `cancelEdit`.
+let leaving = false;
 /// Tell the list what the timeline looks like now.
 ///
 /// Coalesced: a cut moves the marks, the plan, the strip and the scrubber,
 /// and each of those would otherwise report the same state again.
 function sync() {
   clearTimeout(syncTimer);
+  if (leaving) return;
   syncTimer = setTimeout(() => {
     syncTimer = null;
+    if (leaving) return;
     const state = captureEdit();
     if (state && emit) emit("editor-state", state);
   }, 150);
@@ -7567,6 +7576,11 @@ el("editor-ok").addEventListener("click", () => {
 /// the button and Escape.
 function cancelEdit() {
   clearTimeout(syncTimer);
+  syncTimer = null;
+  // And nothing after it: a report sent once the list has put the row back
+  // -- a `sync` asked for in the moment before the window goes -- would hand
+  // it the edit that was just dropped.
+  leaving = true;
   if (emit) emit("editor-cancel", editId);
   setTimeout(() => invoke("close_editor"), 80);
 }

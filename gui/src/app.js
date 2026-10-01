@@ -7805,9 +7805,9 @@ if (listen) {
 /// read for damage and length only; pictures written back smaller to fit a
 /// disc are counted but not compared, since none of them is the recording's
 /// any more; and sound alone has no pictures to line up.
-function compareFor(list, share) {
+function compareFor(sent, share) {
   if (soundOnly()) return "none";
-  if (list.length > 1 && list.slice(0, -1).some((c) => c.after && c.after.kind !== "none")) return "none";
+  if (sent.length > 1 && sent.slice(0, -1).some((c) => c.after && c.after.kind !== "none")) return "none";
   return share !== null ? "count" : "pictures";
 }
 
@@ -7815,8 +7815,12 @@ function compareFor(list, share) {
 /// whether the file failed the check.
 ///
 /// `row` is the row whose bar the check moves: the clip, or the first clip
-/// of a join.
-async function verifyWritten(row, out, list, share) {
+/// of a join. `sent` is each clip as the engine was sent it -- its path, its
+/// ranges and what follows it -- and not the rows as they are now: the editor
+/// stays open on the list while a run writes it, and a cut made there during
+/// the minutes a file took to write would have the file checked against
+/// ranges it was never written with, and failed.
+async function verifyWritten(row, out, sent, share) {
   checking = row;
   row.out = { state: "running", progress: 0, note: t("out.verifyPct", { pct: 0 }) };
   el("out-state").textContent = t("out.verifying", { name: nameOf(out) });
@@ -7827,12 +7831,12 @@ async function verifyWritten(row, out, list, share) {
       output: out,
       // With what follows each clip, as `export_joined` was sent it: the
       // last clip's is not. See `CheckClip`.
-      clips: list.map((c, i) => ({
+      clips: sent.map((c, i) => ({
         path: c.path,
-        ranges: rangesOf(c),
-        after: list.length > 1 && i < list.length - 1 ? c.after ?? null : null,
+        ranges: c.ranges,
+        after: sent.length > 1 && i < sent.length - 1 ? c.after ?? null : null,
       })),
-      compare: compareFor(list, share),
+      compare: compareFor(sent, share),
     });
     const said = verdict(r);
     runLogLine(said.detail);
@@ -7954,20 +7958,22 @@ async function writeJoined(list) {
   }
   if (onShow && onShow.r.segs.length) stageShot(0);
   const master = masterClip(list);
+  // Kept for the check after it, which reads the file against what was sent.
+  const sent = list.map((c) => ({
+    path: c.path,
+    ranges: rangesOf(c),
+    dropStreams: c.edit ? c.edit.dropStreams || [] : [],
+    dropPids: c.edit ? [] : c.dropPids,
+    // The last row has nothing to give way to, so whatever it carries is
+    // not sent: the engine would read it as a fade to black at the end
+    // of the file, which is a thing to ask for rather than to inherit
+    // from 一括適用.
+    after: c === list[list.length - 1] ? null : c.after,
+    poster: coverAt(c),
+  }));
   try {
     await invoke("export_joined", {
-      clips: list.map((c) => ({
-        path: c.path,
-        ranges: rangesOf(c),
-        dropStreams: c.edit ? c.edit.dropStreams || [] : [],
-        dropPids: c.edit ? [] : c.dropPids,
-        // The last row has nothing to give way to, so whatever it carries is
-        // not sent: the engine would read it as a fade to black at the end
-        // of the file, which is a thing to ask for rather than to inherit
-        // from 一括適用.
-        after: c === list[list.length - 1] ? null : c.after,
-        poster: coverAt(c),
-      })),
+      clips: sent,
       master: Math.max(0, list.indexOf(master)),
       output: out,
       audioCopy: settings.audio === "copy",
@@ -7992,7 +7998,7 @@ async function writeJoined(list) {
     let extra = "";
     let detail = "";
     if (prefs.get("verify") === true && !abort) {
-      const v = await verifyWritten(list[0], out, list, share);
+      const v = await verifyWritten(list[0], out, sent, share);
       if (v.failed) {
         for (const c of list) c.out = { state: "error", progress: 0, note: v.note };
         return false;
@@ -8231,10 +8237,16 @@ async function startExport() {
     // A second run over a clip already on show would otherwise start from
     // wherever the first one left the stage.
     if (onShow && onShow.r.segs.length) stageShot(0);
+    // Kept for what follows the write -- the check and the marks file -- so
+    // that both are about the file as it was written, not about the edit as
+    // it stands once the minutes of writing are over. See `verifyWritten`.
+    const ranges = rangesOf(clip);
+    const keptSecs = keepsOf(clip).reduce((n, k) => n + (k.b - k.a), 0);
+    const marksSent = settings.keyframes && !disc ? liveMarksOf(clip) : [];
     try {
       await invoke("export", {
         path: clip.path,
-        ranges: rangesOf(clip),
+        ranges,
         output: out,
         audioCopy: settings.audio === "copy",
         // Only the screen's answer. A track the row asked a count of has
@@ -8281,11 +8293,8 @@ async function startExport() {
         // Numbered against the file being written, not the recording.
         // A mark on the very end of the recording rounds onto the frame
         // after the last one, which is not in the file: it is the last one.
-        const lastFrame = Math.max(
-          0,
-          Math.round(keepsOf(clip).reduce((n, k) => n + (k.b - k.a), 0) * clip.info.fps) - 1,
-        );
-        const frames = liveMarksOf(clip)
+        const lastFrame = Math.max(0, Math.round(keptSecs * clip.info.fps) - 1);
+        const frames = marksSent
           .map((o) => Math.min(Math.round(o * clip.info.fps), lastFrame))
           // Two marks more than half a frame apart can still round onto one
           // frame, and marks either side of a cut can land together in the
@@ -8313,7 +8322,7 @@ async function startExport() {
       // that does not match what was asked for is not done.
       let detail = "";
       if (prefs.get("verify") === true && !abort) {
-        const v = await verifyWritten(clip, out, [clip], share);
+        const v = await verifyWritten(clip, out, [{ path: clip.path, ranges, after: null }], share);
         if (v.failed) {
           // Still indexed on a disc, as a file that failed the check is
           // still kept: the stream is written whole, and a disc pass that
@@ -8930,6 +8939,15 @@ let keepSafeTimer = null;
 /// The shape last written, so that a repaint that changed nothing writes
 /// nothing; "" for none written, or taken away since.
 let keptShape = "";
+/// Every write and removal of the copy, one after another: two commands sent
+/// at once are not answered in order, and a write still on its way when the
+/// list was saved landed after the removal, leaving a copy of saved work for
+/// the next start to offer back.
+let keptQueue = Promise.resolve();
+function keptInOrder(job) {
+  keptQueue = keptQueue.then(job, job);
+  return keptQueue;
+}
 
 function keepSafe(unsaved) {
   // The batch tool's jobs are files already, and a queue it did not finish
@@ -8940,7 +8958,7 @@ function keepSafe(unsaved) {
     keepSafeTimer = null;
     if (keptShape) {
       keptShape = "";
-      invoke("recovery_drop").catch(() => {});
+      keptInOrder(() => invoke("recovery_drop")).catch(() => {});
     }
     return;
   }
@@ -8958,7 +8976,7 @@ function keepSafe(unsaved) {
     if (shape === keptShape) return;
     keptShape = shape;
     const body = JSON.stringify({ recovered: 1, project: projectPath, doc: captureProject() });
-    invoke("recovery_put", { body }).catch((e) => {
+    keptInOrder(() => invoke("recovery_put", { body })).catch((e) => {
       keptShape = "";
       jlog(`autosave: ${e}`);
     });
@@ -9028,9 +9046,8 @@ async function offerRecovery() {
     // window closes, and is offered again.
     try {
       keptShape = shapeOf();
-      await invoke("recovery_put", {
-        body: JSON.stringify({ recovered: 1, project: projectPath, doc: captureProject() }),
-      });
+      const body = JSON.stringify({ recovered: 1, project: projectPath, doc: captureProject() });
+      await keptInOrder(() => invoke("recovery_put", { body }));
     } catch (e) {
       keptShape = "";
       jlog(`recovery: ${e}`);
@@ -9768,6 +9785,11 @@ async function lookAtJobs() {
       doc = null;
     }
     const settings = (doc && doc.settings) || {};
+    // Read here without `loadProject`'s checks, from a file that can be
+    // anybody's: a number where a folder belongs threw in `jobPath` on every
+    // drawing of the queue, and in `filenameSafe` before the rest of the
+    // jobs were looked at.
+    const text = (v) => (typeof v === "string" ? v : "");
     const held = doc && Array.isArray(doc.clips) ? doc.clips : [];
     // Where a project with no folder of its own writes: beside each recording,
     // which is `home` for one read off a disc and the recording's own folder
@@ -9785,7 +9807,7 @@ async function lookAtJobs() {
     // off called it, else the file. See `makeClip`.
     const lead = held.find((c) => c && typeof c.path === "string" && c.path);
     const look = {
-      dir: settings.dir || "",
+      dir: text(settings.dir),
       beside,
       // "" is a folder somebody emptied on purpose, which is no folder at
       // all. One nobody has settled is one the run will name itself -- after
@@ -9797,14 +9819,15 @@ async function lookAtJobs() {
       sub:
         settings.mode !== "bdav" && settings.joinAll
           ? ""
-          : settings.subfolder ??
-            (settings.mode === "bdav"
-              ? filenameSafe(settings.discTitle || "")
+          : typeof settings.subfolder === "string"
+            ? settings.subfolder
+            : (settings.mode === "bdav"
+              ? filenameSafe(text(settings.discTitle))
               : held.length > 1
                 ? filenameSafe(stemOf(job.path))
                 : ""),
       disc: settings.mode === "bdav",
-      image: settings.image || "",
+      image: text(settings.image),
       clips: held.length,
       lead: lead ? lead.renamed || lead.name || nameOf(lead.path) : "",
       poster: "",
