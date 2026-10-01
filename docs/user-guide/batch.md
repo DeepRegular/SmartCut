@@ -106,6 +106,8 @@ other goes back to its unnumbered name.
 
 ### Dividing a clip into parts
 
+![Dividing a clip](../images/usage-divide.png)
+
 **÷ Divide clip…** (also on the right-click menu) makes one row into several:
 a number of equal parts, a part every so long, or a part every so many bytes.
 Each part is a row of its own, the same recording with everything but its part
@@ -126,7 +128,8 @@ other row, and gets `_1`, `_2` the way duplicates do.
   pictures of an open GOP. Turned off, a division falls on the exact frame and a
   GOP either side of it is re-encoded. The box says how many divisions could not
   be put on a lossless point.
-- The box lists each part's length, and its size, before anything changes.
+- With one row to divide, the box lists each part's length, and its size, before
+  anything changes.
   Choose several rows and each is divided the same way.
 - **Undo divide** (or `Ctrl+Z`) makes the parts one row again, with the edit it
   had.

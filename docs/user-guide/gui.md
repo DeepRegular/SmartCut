@@ -616,6 +616,20 @@ On a recording with no sound the scale stands empty. **Preferences →
 Windows** puts the whole column away, and an editor already open follows at
 once.
 
+### Seeing the waveform
+
+![The waveform under the scrubber](../images/usage-wave.png)
+
+Turn on **Show the waveform under the cut editor's timeline** in Preferences,
+or **Waveform** in the **View** menu at the foot of the editor, and the sound's
+outline is drawn right under the scrubber's green band (off by default). It is
+on the scrubber's scale, with what is cut away closed up.
+
+A stretch quieter than the silence detection's level gets a green mark at the
+foot of the waveform, so a commercial junction's quiet shows before anything has
+been detected: a quick way to find roughly where to start stepping with the
+meter.
+
 ### Looking closely
 
 ![The magnifier](../images/usage-zoom.png)

@@ -146,7 +146,7 @@ Every build bundles FFmpeg, so there is nothing else to install.
 |---|---|---|
 | **Linux** | `SmartCut_0.8.19_amd64.AppImage` | Make it executable and run it |
 | **Linux** | `SmartCut-0.8.19-linux-x86_64.tar.gz` | Unpack and run `./smartcut`. Use this if you would rather not deal with FUSE |
-| **Linux (Debian/Ubuntu)** | `smartcut_0.8.19_amd64.deb` | `sudo apt install ./smartcut_0.8.19_amd64.deb`. 28.3 MB, because GTK and WebKitGTK come from your system |
+| **Linux (Debian/Ubuntu)** | `smartcut_0.8.19_amd64.deb` | `sudo apt install ./smartcut_0.8.19_amd64.deb`. 29.2 MB, because GTK and WebKitGTK come from your system |
 | **Windows** | `SmartCut_0.8.19_x64-setup.exe` | Installer. The command-line tool, `smartcut-cli.exe`, goes into the same folder |
 | **Windows** | `smartcut-portable-x64-0.8.19.zip` | Unzip and run `smartcut.exe`. The command-line tool is `smartcut-cli.exe` |
 
@@ -246,7 +246,9 @@ mean writing several kinds of table SmartCut does not write.
 **Files it can write:** MPEG-TS, M2TS, MP4, Matroska, WebM, QuickTime — or a
 **BDAV disc**, a folder of recordings with an index a player reads as a list of
 programmes, optionally wrapped in a `.iso`. By default the output uses the same
-format and folder as the input.
+format and folder as the input. An MP4, Matroska, WebM or QuickTime file gets a
+chapter where each kept range begins and on every mark that survives the cut,
+and a recording can be divided into parts by count, length or size.
 
 **Several recordings into one file.** Tick one box on the output settings
 screen and the list is written as a single output instead of one per row —

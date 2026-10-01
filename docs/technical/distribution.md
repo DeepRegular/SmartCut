@@ -147,8 +147,8 @@ only). The bundle *files* Tauri writes are named after `productName` instead —
 
 | Artifact | Size | FFmpeg | Requires |
 |---|---|---|---|
-| `SmartCut-0.8.19-linux-x86_64.tar.gz` | 191.4 MB | Bundled | glibc 2.35 or newer. No FUSE needed |
-| `smartcut_0.8.19_amd64.deb` | 28.3 MB | Bundled (`/usr/lib/smartcut`) | Ubuntu 22.04 or later, Debian 13 or later |
+| `SmartCut-0.8.19-linux-x86_64.tar.gz` | 192.6 MB | Bundled | glibc 2.35 or newer. No FUSE needed |
+| `smartcut_0.8.19_amd64.deb` | 29.2 MB | Bundled (`/usr/lib/smartcut`) | Ubuntu 22.04 or later, Debian 13 or later |
 
 **The tar.gz contains the same AppDir as the AppImage, extracted.** The 633 libraries
 linuxdeploy gathered by following `ldd` sit in `app/` as they are, `./smartcut` is a
@@ -240,8 +240,8 @@ Cross-built from the Linux development VM to `x86_64-pc-windows-msvc`.
 
 | Artifact | Size | Contents |
 |---|---|---|
-| NSIS installer | 55.5 MB | 178.3 MB installed (the GUI's exe, the CLI's exe and 8 FFmpeg DLLs) |
-| Portable zip | 68.8 MB | The same set. Unzip and run `smartcut.exe` for the GUI, `smartcut-cli.exe` for the command line |
+| NSIS installer | 55.6 MB | 179.0 MB installed (the GUI's exe, the CLI's exe and 8 FFmpeg DLLs) |
+| Portable zip | 69.6 MB | The same set. Unzip and run `smartcut.exe` for the GUI, `smartcut-cli.exe` for the command line |
 
 **The command-line tool ships under the name the Linux packages give it.** Its cargo
 binary is called `smartcut`, which on Windows is the GUI's name, so the script builds it

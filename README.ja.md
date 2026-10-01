@@ -139,7 +139,7 @@ CM 自動検出で決めた 5 区間・22 分の書き出しでは、**40589 フ
 |---|---|---|
 | **Linux** | `SmartCut_0.8.19_amd64.AppImage` | 実行権限を付けて起動します |
 | **Linux** | `SmartCut-0.8.19-linux-x86_64.tar.gz` | 展開して `./smartcut` を実行します。FUSE を使いたくない場合はこちらです |
-| **Linux (Debian/Ubuntu)** | `smartcut_0.8.19_amd64.deb` | `sudo apt install ./smartcut_0.8.19_amd64.deb`。GTK や WebKitGTK はシステムのものを使うので 28.3 MB で済みます |
+| **Linux (Debian/Ubuntu)** | `smartcut_0.8.19_amd64.deb` | `sudo apt install ./smartcut_0.8.19_amd64.deb`。GTK や WebKitGTK はシステムのものを使うので 29.2 MB で済みます |
 | **Windows** | `SmartCut_0.8.19_x64-setup.exe` | インストーラ。コマンドライン版の `smartcut-cli.exe` も同じフォルダーに入ります |
 | **Windows** | `smartcut-portable-x64-0.8.19.zip` | 展開して `smartcut.exe` を実行します。コマンドライン版は `smartcut-cli.exe` です |
 
@@ -237,7 +237,9 @@ DVD の形式に戻すには SmartCut が書かないテーブルがいくつも
 **書けるファイル:** MPEG-TS / M2TS / MP4 / Matroska / WebM / QuickTime、または
 BDAV ディスク（プレーヤーが番組の一覧として読む索引の付いた録画フォルダー。
 `.iso` にもまとめられます）。既定では、入力と同じ形式・同じフォルダーに
-書き出します。
+書き出します。MP4・Matroska・WebM・QuickTime には、残した区間の先頭と、
+カットのあとに残ったキーフレームの位置にチャプターを入れます。1 本の録画を
+本数・長さ・サイズで分けて書き出すこともできます。
 
 **複数の録画を 1 つのファイルにまとめられます。** 出力設定でチェックを 1 つ
 入れると、リストが 1 行ずつではなく 1 本のファイルとして書き出されます。

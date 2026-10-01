@@ -149,8 +149,8 @@ cargo のクレート名は `gui` なので、放っておくと Tauri はその
 
 | 成果物 | サイズ | FFmpeg | 必要条件 |
 |---|---|---|---|
-| `SmartCut-0.8.19-linux-x86_64.tar.gz` | 191.4 MB | 同梱 | glibc 2.35 以上。FUSE 不要 |
-| `smartcut_0.8.19_amd64.deb` | 28.3 MB | 同梱（`/usr/lib/smartcut`） | Ubuntu 22.04 以降、Debian 13 以降 |
+| `SmartCut-0.8.19-linux-x86_64.tar.gz` | 192.6 MB | 同梱 | glibc 2.35 以上。FUSE 不要 |
+| `smartcut_0.8.19_amd64.deb` | 29.2 MB | 同梱（`/usr/lib/smartcut`） | Ubuntu 22.04 以降、Debian 13 以降 |
 
 tar.gz の中身は、AppImage と同じ AppDir を展開したものである。linuxdeploy が
 `ldd` を辿って集めた 633 個のライブラリがそのまま `app/` にある。`./smartcut` は
@@ -244,8 +244,8 @@ Linux の開発 VM から `x86_64-pc-windows-msvc` へクロスビルドして�
 
 | 成果物 | サイズ | 内容 |
 |---|---|---|
-| NSIS インストーラ | 55.5 MB | インストール後 178.3 MB（GUI の exe、CLI の exe、FFmpeg の DLL 8 個） |
-| ポータブル zip | 68.8 MB | 同じ一式。GUI は `smartcut.exe`、コマンドライン版は `smartcut-cli.exe` を実行する |
+| NSIS インストーラ | 55.6 MB | インストール後 179.0 MB（GUI の exe、CLI の exe、FFmpeg の DLL 8 個） |
+| ポータブル zip | 69.6 MB | 同じ一式。GUI は `smartcut.exe`、コマンドライン版は `smartcut-cli.exe` を実行する |
 
 **コマンドライン版は、Linux のパッケージと同じ `smartcut-cli` という名前で
 入れている。** cargo が作る CLI のバイナリ名は `smartcut` で、Windows では GUI と
