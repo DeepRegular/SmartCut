@@ -753,8 +753,11 @@ three seconds for either pass out of the box, and -50 dB for the sound.
   the output.
 
 Marks can also arrive without your placing any: from a detection, from a
-`.keyframe` or a saved detection next to the recording, and — for a recording
-opened off a **disc** — from the chapters the recorder itself set.
+`.keyframe` or a saved detection next to the recording, and from the chapters
+the recording came with — the ones the recorder set, for a recording opened off
+a **disc**, and the file's own chapter list for an `.mp4` or an `.mkv` that has
+one. Chapters are put down only the first time the recording is opened, and not
+where a mark file next to it was read instead.
 
 ### Reading the marks in, and writing them down
 
@@ -772,7 +775,7 @@ the marks.
 | **Save the keyframe list…** | Writes the marks beside the recording (`Ctrl+H`) |
 | **Save the cuts as an AviSynth Trim…** | Writes the surviving ranges as `Trim` calls (`Ctrl+Shift+H`) |
 | **Save the detection…** | Writes the detection now on screen (`Ctrl+Alt+H`). Greyed where nothing has been detected |
-| **Turn the disc's chapters into keyframes** | Puts them back after a clear. Greyed on anything but a disc |
+| **Turn the chapters into keyframes** | Puts the disc's or the file's own chapters back after a clear. Greyed where the recording has none |
 | **Turn the detection into keyframes** | Marks the detection now on screen. Greyed where nothing has been detected |
 | **Turn the blank stretches into keyframes** | Marks both ends of every blank stretch now on screen. Named after the shades actually there — *black* or *white* where only one of them is |
 | **Turn the silent stretches into keyframes** | Marks both ends of every silent stretch now on screen. Greyed where nothing has been detected |
@@ -1639,9 +1642,10 @@ standing answer, not something a project carries.
 
 **Write chapters into MP4 and MKV** gives an `.mp4`, `.m4v`, `.mov`, `.mkv`
 or `.webm` a chapter list: one chapter where each kept range begins, and one on
-every keyframe that survives the cut — the same points a disc's playlist gets
-(see [Writing a BDAV disc](#writing-a-bdav-disc)). Joined files get one where
-each clip begins as well. **On** to begin with. A cut that keeps one range and
+every keyframe that survives the cut — an input's own chapters among them, since
+they arrive as keyframes. The same points a disc's playlist gets (see
+[Writing a BDAV disc](#writing-a-bdav-disc)). Joined files get one where each
+clip begins as well. **On** to begin with. A cut that keeps one range and
 has no marks in it gets no chapter list at all, since a single chapter covering
 the whole file tells a player nothing. A disc gets its chapters whatever this
 says, and a `.ts` has nowhere to put them. Only here, like the box above.

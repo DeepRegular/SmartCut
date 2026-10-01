@@ -92,14 +92,15 @@ let pickedKeys = [];
 /// timeline -- so the one the list is holding is the same news arriving
 /// twice. See the `editor-open` handler.
 let markFileKind = null;
-/// The chapter points the disc this recording came off carries, on the
-/// stream's own clock. Put down when the recording is opened; kept because
-/// they are the one source of marks that cannot be asked for again -- the
-/// disc is not read a second time from in here. Empty for a plain file.
+/// The chapter points the recording came with, on the stream's own clock:
+/// the disc's index for a recording off a disc, and otherwise the file's own
+/// chapter list -- an MP4's or a Matroska file's. Put down when the recording
+/// is opened; kept so that the menu can put them down again after a clear.
+/// Empty for a file that has none, which is every broadcast `.ts`.
 let discChapters = [];
-/// Whether the disc's chapters are still to be put down on this visit: from
-/// the moment a first visit opens a disc title until the walk has finished
-/// and they are on the timeline. An OK in between used to hand the list an
+/// Whether those chapters are still to be put down on this visit: from the
+/// moment a first visit opens the recording until the walk has finished and
+/// they are on the timeline. An OK in between used to hand the list an
 /// edit with no marks in it, which the list then took at its word -- and the
 /// row lost the chapters it would have kept had nobody opened it at all.
 let chaptersDue = false;
@@ -6410,6 +6411,13 @@ async function openPath(picked, saved, side, name, chapters, dropPids, detected)
     const outline = await invoke("open_outline", { path: picked });
     if (overtaken()) return;
     src = outline;
+    // A recording that did not come off a disc brings its own chapters, if
+    // its container has any, and they are owed on the same terms a disc's
+    // are: on a first visit, and on the visit after one left early.
+    if (!discChapters.length && Array.isArray(src.chapters) && src.chapters.length) {
+      discChapters = src.chapters.filter((c) => Number.isFinite(c));
+      chaptersDue = (!saved || !!saved.chaptersDue) && discChapters.length > 0;
+    }
     shownName = named;
     inbound = false;
     tailSrc = null;

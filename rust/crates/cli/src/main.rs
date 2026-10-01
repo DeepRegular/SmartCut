@@ -401,7 +401,7 @@ const HELP: &[(&str, &[(&str, &str)])] = &[
             (
                 "--no-chapters",
                 "Leave the chapter list out of an .mp4, .m4v, .mov or .mkv (otherwise one \
-                 where each kept range begins, and the disc's own)",
+                 where each kept range begins, and the recording's own)",
             ),
             (
                 "--sound-only",
@@ -1572,6 +1572,10 @@ fn run() -> Result<()> {
     );
     // Where the recorder set its chapters, in the recording's own seconds --
     // which is what the editor draws them at, and what `--cut` would take.
+    // A file's own chapter list where it did not come off a disc.
+    if chapters.is_empty() {
+        chapters = src.chapters.clone();
+    }
     if !chapters.is_empty() {
         let shown: Vec<String> = chapters
             .iter()
@@ -2696,6 +2700,14 @@ fn run() -> Result<()> {
     // carries them, and so does an MP4 or a Matroska file. Worked out before
     // the cut because the second kind is written into the file's header.
     let was = off_a_disc.as_ref();
+    // The chapters the recording came with, on the stream's own clock: the
+    // disc's index for a recording off a disc, and otherwise the container's
+    // own list -- an MP4 or a Matroska file cut again keeps the chapters it
+    // had, where they are still in what is kept.
+    let came_with: Vec<f64> = match was {
+        Some(e) => e.marks.iter().map(|m| e.start + m).collect(),
+        None => src.chapters.clone(),
+    };
     // Where each kept range begins is where the cuts are: the one place a
     // viewer would want to skip to.
     let mut at_out = 0.0;
@@ -2703,15 +2715,15 @@ fn run() -> Result<()> {
     let mut chapters = Vec::new();
     for plan in &plans {
         marks.push(at_out);
-        // And the chapters of the disc it came off, where they are still
-        // in what is kept. A disc read and written straight back used to
+        // And the chapters it came with, where they are still in what is
+        // kept. A disc read and written straight back used to
         // come out with one chapter where it had gone in with a dozen.
         // Off the stream's clock the way the editor takes them off it
         // (`applyDiscChapters`), a mark just ahead of the first picture
         // moved onto it.
         let first = plans.first().map_or(0.0, |p| p.t_in);
-        for m in was.map_or(&[][..], |e| &e.marks[..]) {
-            let s = was.map_or(0.0, |e| e.start) + m - src.start_time;
+        for m in &came_with {
+            let s = m - src.start_time;
             let s = if s < first && s >= first - 0.5 { first } else { s };
             if s >= plan.t_in && s < plan.t_out {
                 chapters.push(at_out + (s - plan.t_in));
@@ -2733,8 +2745,8 @@ fn run() -> Result<()> {
     };
     let mut before = plans.last();
     // Where the first recording's own pictures end: the end of the
-    // output, or where it gives way to the second. The disc's chapters
-    // are all the first recording's, and one in the stretch a crossing
+    // output, or where it gives way to the second. The chapters it came
+    // with are all the first recording's, and one in the stretch a crossing
     // overlaps is past that point -- a dissolve took the last second of
     // the first range, and a chapter in that second came out a second
     // into the recording after it. Nor is a chapter a moment before the

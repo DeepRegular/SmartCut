@@ -554,6 +554,11 @@ pub struct Source {
     pub duration: f64,
     /// Container start time. MPEG-TS does not begin at zero.
     pub start_time: f64,
+    /// The chapter points the container itself carries, in seconds on the
+    /// stream's own clock (not rebased by `start_time`, the same as a disc's
+    /// chapters). Matroska and MP4 have a list of them; a transport stream
+    /// has none, and a disc's are in its index, not in the stream.
+    pub chapters: Vec<f64>,
     pub points: Vec<AccessPoint>,
     /// Whether the index could speak for the leading pictures. A precomputed
     /// index cannot; call [`index::refine_leading`] before planning.
@@ -1200,6 +1205,7 @@ fn assemble(
         dropped,
         duration,
         start_time,
+        chapters,
         byte_seekable,
         on_a_ts,
         mut joins,
@@ -1300,6 +1306,7 @@ fn assemble(
         video,
         duration,
         start_time,
+        chapters,
         points,
         leading_known: idx.leading_known,
         index_name,
@@ -1342,6 +1349,11 @@ pub struct Outline {
     pub duration: f64,
     /// Container start time. MPEG-TS does not begin at zero.
     pub start_time: f64,
+    /// The chapter points the container itself carries, in seconds on the
+    /// stream's own clock (not rebased by `start_time`, the same as a disc's
+    /// chapters). Matroska and MP4 have a list of them; a transport stream
+    /// has none, and a disc's are in its index, not in the stream.
+    pub chapters: Vec<f64>,
     pub byte_seekable: bool,
     /// Whether a track's `pid` is really a PID. See [`Source::on_a_ts`].
     pub on_a_ts: bool,
@@ -1386,6 +1398,7 @@ impl Outline {
             dropped: self.dropped,
             duration: self.duration,
             start_time: self.start_time,
+            chapters: self.chapters,
             byte_seekable: self.byte_seekable,
             on_a_ts: self.on_a_ts,
             points: Vec::new(),
@@ -1454,6 +1467,15 @@ fn outline_of(path: &str) -> Result<(Outline, input::Demux)> {
         .name()
         .split(',')
         .any(|n| BYTE_SEEKABLE.contains(&n.trim()));
+    // The container's own chapter list, where it has one. Only the starts:
+    // they become marks, and a mark is an instant.
+    let mut chapters: Vec<f64> = ictx
+        .chapters()
+        .map(|c| c.start() as f64 * f64::from(c.time_base()))
+        .filter(|t| t.is_finite())
+        .collect();
+    chapters.sort_by(f64::total_cmp);
+    chapters.dedup();
     // Whether a stream's id is a PID. See [`one_track_per_pid`].
     let on_a_ts = ictx
         .format()
@@ -1957,6 +1979,7 @@ fn outline_of(path: &str) -> Result<(Outline, input::Demux)> {
         dropped,
         duration,
         start_time,
+        chapters,
         byte_seekable,
         on_a_ts,
         // Filled by [`outline_with_head`] alone. See [`first_picture`].

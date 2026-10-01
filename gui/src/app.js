@@ -200,10 +200,11 @@ function makeClip(found) {
     /// path cannot answer either. Null for an ordinary file.
     stem: typeof stem === "string" && stem ? stem : null,
     home: typeof home === "string" && home ? home : null,
-    /// The chapter points the disc's index carried, on the recording's own
-    /// clock. Held here rather than turned into marks on the spot: only the
-    /// editor knows where the container's clock begins, and it is the one
-    /// that owns marks. Empty for an ordinary file.
+    /// The chapter points the recording came with, on its own clock: the
+    /// disc's index carried them, or -- for a file, once it has been read --
+    /// its container did. Held here rather than turned into marks on the
+    /// spot: only the editor knows where the container's clock begins, and it
+    /// is the one that owns marks. Empty for a file with no chapter list.
     chapters: Array.isArray(chapters) ? chapters.filter((c) => Number.isFinite(c)) : [],
     /// Streams switched off when the disc was read, by PID.
     ///
@@ -1499,6 +1500,13 @@ async function runIndex(clip) {
   const was = cutsSig(clip);
   try {
     clip.info = await invoke("index_clip", { path: clip.path, keeps });
+    // A file's own chapter list, for a row that brought none off a disc: it
+    // is held the way a disc's chapters are, so that the row counts them and
+    // a cut of it nobody opened the editor on still writes them. See
+    // `marksOf`, and `openPath` in `main.js` for the editor's side.
+    if (!clip.chapters.length && Array.isArray(clip.info.chapters)) {
+      clip.chapters = clip.info.chapters.filter((c) => Number.isFinite(c));
+    }
     clip.state = "ready";
     clip.progress = 1;
     clip.phase = indexNote(clip);

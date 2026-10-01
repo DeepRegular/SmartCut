@@ -234,7 +234,7 @@ const CATALOG = {
       "データ放送は録画の 1〜20% を占めるので、外せばその分だけ小さくなります。",
     "prefs.chapters": "MP4・MKV にチャプターを書く",
     "prefs.chaptersNote":
-      "残した区間の始まりごとにチャプターを打ちます。編集画面で打ったキーフレームのうち、" +
+      "残した区間の始まりごとにチャプターを打ちます。キーフレームのうち、" +
       "カットのあとに残ったものもチャプターになります。対象は .mp4・.m4v・.mov・.mkv・.webm です。" +
       "BDAV に書き出すときは、この設定に関係なくプレイリストにチャプターが入ります。",
     "prefs.verify": "出力後にベリファイする",
@@ -1311,7 +1311,7 @@ const CATALOG = {
     "keyframes.read": "キーフレーム {n} 個を {file} から読み込みました",
     "cue.read": "{file} のトラックの開始位置 {n} か所をキーフレームにしました",
     "cue.readFailed": "CUE シートを読み込めません: {e}",
-    "keyframes.chapters": "ディスクのチャプター {n} 個をキーフレームにしました",
+    "keyframes.chapters": "チャプター {n} 個をキーフレームにしました",
     "editor.more.title":
       "印の読み書き、ディスクのチャプター、キーフレームの全消去。" +
       "キーフレーム情報（.keyframe）は印の位置だけ、AviSynth スクリプト（.trim.avs）は残る区間そのもの、" +
@@ -1325,7 +1325,7 @@ const CATALOG = {
     "marks.load.cm": "CM 検出結果を読み込む",
     "marks.load.cue": "CUE シートからキーフレームを読み込む",
     "marks.readNone": "{file} には読み込めるものがありませんでした",
-    "editor.chapterKeys": "ディスクのチャプターをキーフレームにする",
+    "editor.chapterKeys": "チャプターをキーフレームにする",
     "editor.cmKeys": "CM 検出結果をキーフレームにする",
     // ≡ メニューの 2 行。{what} には「黒白の区間」「無音の区間」が入ります。
     "editor.flatKeys": "{what}をキーフレームにする",
@@ -1555,7 +1555,7 @@ const CATALOG = {
       "hundredth and a fifth of what a multiplex spends, so clearing this is what makes the file smaller.",
     "prefs.chapters": "Write chapters into MP4 and MKV",
     "prefs.chaptersNote":
-      "Puts a chapter where each kept range begins, and one on every keyframe set in the cut editor " +
+      "Puts a chapter where each kept range begins, and one on every keyframe " +
       "that survives the cut. For .mp4, .m4v, .mov, .mkv and .webm. A disc of recordings gets its " +
       "chapters in its playlist whatever this says.",
     "prefs.verify": "Check each file against the recording once it is written",
@@ -2586,7 +2586,7 @@ const CATALOG = {
     "keyframes.read": "Read {n} keyframe{n?s} from {file}",
     "cue.read": "Marked the start of {n} track{n?s} from {file}",
     "cue.readFailed": "Cannot read the CUE sheet: {e}",
-    "keyframes.chapters": "Read {n} chapter{n?s} off the disc as keyframes",
+    "keyframes.chapters": "Turned {n} chapter{n?s} into keyframes",
     "editor.more.title":
       "The mark files, the disc's chapters, and clearing the marks. A keyframe list (.keyframe) " +
       "is the marks alone, an AviSynth script (.trim.avs) is the ranges that survive, a saved " +
@@ -2600,7 +2600,7 @@ const CATALOG = {
     "marks.load.cm": "Read a saved detection…",
     "marks.load.cue": "Read keyframes from a CUE sheet…",
     "marks.readNone": "Nothing to read in {file}",
-    "editor.chapterKeys": "Turn the disc's chapters into keyframes",
+    "editor.chapterKeys": "Turn the chapters into keyframes",
     "editor.cmKeys": "Turn the detection into keyframes",
     "editor.flatKeys": "Turn the {what} stretches into keyframes",
     "editor.clearKeys": "Remove every keyframe",

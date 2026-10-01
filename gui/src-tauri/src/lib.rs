@@ -373,6 +373,11 @@ struct SourceInfo {
     /// written on the stream's own clock, and this is what puts them on the
     /// timeline the editor draws.
     start_time: f64,
+    /// The chapter points the file itself carries -- an MP4's or a Matroska
+    /// file's own list -- on the stream's own clock, like a disc's. The
+    /// editor puts them down as marks on a first visit where the row brought
+    /// no disc chapters with it. See [`smartcut_core::Source::chapters`].
+    chapters: Vec<f64>,
 }
 
 /// One row of the clip list, once the recording behind it has been read.
@@ -416,6 +421,9 @@ struct ClipInfo {
     /// as marks. A row nobody opens the editor on still has to hand them to
     /// its output. See [`SourceInfo::start_time`] and `marksOf` in `app.js`.
     start_time: f64,
+    /// The file's own chapter points, for a row that did not come off a
+    /// disc. See [`SourceInfo::chapters`].
+    chapters: Vec<f64>,
     /// The pictures, where this read produced them. Present only on the
     /// one-read path -- a recording on a share, where reading it twice would
     /// be transferring it twice -- and `None` where the list is to ask for
@@ -1005,6 +1013,7 @@ async fn open_outline(path: String) -> Result<SourceInfo, String> {
             unusable_points: 0,
             head: o.head,
             start_time: o.start_time,
+            chapters: o.chapters.clone(),
         })
     })
     .await
@@ -1263,6 +1272,7 @@ fn info_of(src: &Source) -> SourceInfo {
         // not asked for.
         head: None,
         start_time: src.start_time,
+        chapters: src.chapters.clone(),
     }
 }
 
@@ -3099,6 +3109,7 @@ fn clip_info_of(path: &str, src: &Source, cached: bool, seconds: f64) -> ClipInf
         // Where the material actually begins; nothing before it decodes.
         first_point: src.points.first().map_or(0.0, |p| p.time),
         start_time: src.start_time,
+        chapters: src.chapters.clone(),
         pictures: None,
         cached,
         seconds,
