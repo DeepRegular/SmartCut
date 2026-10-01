@@ -1590,9 +1590,15 @@ impl Writer {
             }
         };
         let pending = aside.pending.take();
+        let screen = drawn.as_ref().and(aside.reader.screen());
         let Some(subs) = self.subpictures.as_mut() else {
             return Ok(());
         };
+        // Placed on the screen the set was composed for, which is not always
+        // the recording's: see `pgs::read::Reader::screen`.
+        if let Some((w, h)) = screen {
+            subs.side.resize(w, h);
+        }
         // Whatever was on screen ends where this set begins -- it is either
         // replaced by it or cleared by it -- and now that that is known the
         // unit can be written saying so itself.

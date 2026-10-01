@@ -631,7 +631,11 @@ pub(crate) fn note_once(line: String) {
         .lock()
         .map_or(true, |mut said| said.insert(line.clone()));
     if fresh {
-        eprintln!("{line}");
+        // As `log::line` prints: a note now names the recording, whose name
+        // is the file's own words, and `eprintln!` panics once standard
+        // error has gone.
+        use std::io::Write as _;
+        let _ = writeln!(std::io::stderr().lock(), "{}", crate::log::plain(&line));
     }
     // Into each run's log once, whether or not the terminal has had it: the
     // window is one process for many runs.
@@ -1633,11 +1637,15 @@ fn outline_of(path: &str) -> Result<(Outline, input::Demux)> {
             else {
                 continue;
             };
+            // Named: the note is said once a line, and two recordings off
+            // the same channel open the same way on the same PIDs -- the
+            // second, under a name-less line, was never said at all, in
+            // the terminal or in the run's log.
             note_once(format!(
-                "note: the sound on {} is {} channel(s) at {} Hz where this recording opens, \
-                 and {channels} at {sample_rate} Hz through the rest of it -- the opening \
-                 belongs to the programme before this one, which a tuner told to start \
-                 early records the end of. The recording's own is followed.",
+                "note: the sound on {} of {path} is {} channel(s) at {} Hz where this \
+                 recording opens, and {channels} at {sample_rate} Hz through the rest of it \
+                 -- the opening belongs to the programme before this one, which a tuner told \
+                 to start early records the end of. The recording's own is followed.",
                 track_name(on_a_ts, a.pid, a.stream_index),
                 a.channels,
                 a.sample_rate,
@@ -2019,9 +2027,14 @@ fn first_picture(ictx: &mut input::Demux, video: &VideoInfo, start_time: f64) ->
 
 /// How long the container says the recording is, in seconds; nought where
 /// it will not say.
+///
+/// And nought where what it says is less than nothing. The figure is the
+/// file's own word -- a Matroska `Duration` is a float the file writes, an
+/// MP4's is a 64-bit count read as signed -- and a Matroska written with
+/// -5000 there was handed on as a recording minus five seconds long.
 pub(crate) fn container_duration(ictx: &input::Demux) -> f64 {
     let d = unsafe { (*ictx.as_ptr()).duration };
-    if d == ff::ffi::AV_NOPTS_VALUE {
+    if d == ff::ffi::AV_NOPTS_VALUE || d < 0 {
         0.0
     } else {
         d as f64 / ff::ffi::AV_TIME_BASE as f64

@@ -6,12 +6,18 @@ use smartcut_core::{index, plan_on, CutOptions, PlanOptions};
 /// tracks, what was written -- and a log without it is a log of the notes.
 macro_rules! tell {
     () => {{
-        println!();
+        use std::io::Write as _;
+        let _ = writeln!(std::io::stdout().lock());
         smartcut_core::log::write_only("");
     }};
     ($($arg:tt)*) => {{
+        use std::io::Write as _;
         let line = format!($($arg)*);
-        println!("{line}");
+        // Names off the disc or out of the file among them: no escape
+        // sequence of theirs reaches the terminal. See `log::plain`. And not
+        // `println!`, which panics once standard output has gone -- `| head`
+        // took the run down mid-cut, its file half written.
+        let _ = writeln!(std::io::stdout().lock(), "{}", smartcut_core::log::plain(&line));
         smartcut_core::log::write_only(&line);
     }};
 }
@@ -301,7 +307,7 @@ fn check_output_crossed(
         bail!("verify: {out} does not match what was asked for");
     }
     if !report.sound_off().is_empty() {
-        smartcut_core::say!("verify: the sound does not run as long as the pictures; check it");
+        smartcut_core::say!("verify: the sound and the pictures do not run the same length; check it");
     } else {
         smartcut_core::say!("verify: OK");
     }
@@ -515,7 +521,14 @@ fn main() -> Result<()> {
     // on its way out by the runtime, it reached the terminal and not the
     // log, and a log of a run that failed did not say why.
     if let Err(e) = &run {
-        smartcut_core::log::write_only(&format!("Error: {e:?}"));
+        let said = format!("Error: {e:?}");
+        smartcut_core::log::write_only(&said);
+        // Printed here, as the runtime would have, but as every other line
+        // is: an error names the recording, and an escape sequence in its
+        // name is not for the terminal (see `log::plain`).
+        use std::io::Write as _;
+        let _ = writeln!(std::io::stderr().lock(), "{}", smartcut_core::log::plain(&said));
+        std::process::exit(1);
     }
     run
 }
@@ -1141,6 +1154,12 @@ fn run() -> Result<()> {
         if analyze {
             bail!("--verify reads a cut back, and --analyze writes none");
         }
+        // Nowhere to write is a run that writes nothing, and it ended well
+        // with "(no -o given; nothing written)" -- a check asked for, never
+        // made, and an exit a script read as the cut having passed it.
+        if output.is_none() && bdav.is_none() {
+            bail!("--verify reads a cut back, and without -o or --bdav none is written");
+        }
     }
     let mut stopping = stops.iter().filter(|(_, given)| *given).map(|(name, _)| *name);
     let stopping_at = stops.iter().find(|(_, given)| *given).map(|(name, _)| *name);
@@ -1170,7 +1189,9 @@ fn run() -> Result<()> {
     if !sound_only && stopping_at.is_none() {
         let sound_file = output.as_deref().and_then(|o| {
             let ext = std::path::Path::new(o).extension()?.to_str()?.to_ascii_lowercase();
-            ["aac", "ac3", "mp2", "mp3", "dts", "wav"].contains(&ext.as_str()).then_some(ext)
+            ["aac", "ac3", "eac3", "thd", "mp2", "mp3", "dts", "opus", "wav", "flac", "aiff"]
+                .contains(&ext.as_str())
+                .then_some(ext)
         });
         if let Some(ext) = sound_file {
             bail!("a .{ext} holds sound and no pictures: add --sound-only to write the sound alone");
@@ -1273,6 +1294,16 @@ fn run() -> Result<()> {
         );
         if let Some(out) = output.as_ref().filter(|_| audio_es) {
             taken.push(std::path::Path::new(out).with_extension("aac"));
+        }
+        // And what `--preview` and `--proxy` write when `-o` does not say:
+        // `--preview 60 --log preview.jpg` wrote the picture over the log.
+        if output.is_none() {
+            if preview_at.is_some() {
+                taken.push("preview.jpg".into());
+            }
+            if make_proxy {
+                taken.push(std::path::Path::new(&input).with_extension("proxy.mp4"));
+            }
         }
         if let (Some(at), Some(_)) = (&bdav, iso) {
             taken.extend(image_beside(std::path::Path::new(at)));
@@ -2978,11 +3009,6 @@ mod tests {
     }
 }
 
-/// The image of a disc folder: beside it, under the folder's name. Appended
-/// to the name rather than `with_extension`, which would take a folder called
-/// `2026.09` and write `2026.iso`, and put beside the folder by path rather
-/// than by string: `out/` and `out/.` are the folder `out` too, and
-/// `out/.iso` was inside the very folder the image is made of.
 /// Whether two paths name one file, including one neither run has written
 /// yet. Neither there, [`smartcut_core::input::same_file`] cannot say, and
 /// `-o cut.ts --seek-index ./cut.ts` went through as two files; so each is
@@ -3007,6 +3033,11 @@ fn one_place(a: &str, b: &str) -> bool {
     }
 }
 
+/// The image of a disc folder: beside it, under the folder's name. Appended
+/// to the name rather than `with_extension`, which would take a folder called
+/// `2026.09` and write `2026.iso`, and put beside the folder by path rather
+/// than by string: `out/` and `out/.` are the folder `out` too, and
+/// `out/.iso` was inside the very folder the image is made of.
 fn image_beside(at: &std::path::Path) -> Result<std::path::PathBuf> {
     let Some(name) = at.file_name() else {
         bail!("{}: an image goes beside the disc's folder, and this has nothing beside it", at.display());

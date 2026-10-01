@@ -223,6 +223,12 @@ struct Feed {
     /// What [`settle`] has had to do, for the log. Here rather than beside
     /// the ring because it is written under the same lock.
     tally: Tally,
+    /// Errors the output stream has reported since it last asked for a
+    /// buffer, and in all. See [`Feed::failed`].
+    failures: u32,
+    errors: u32,
+    /// Set once the output has stopped for good, with what it said.
+    lost: Option<String>,
 }
 
 impl Feed {
@@ -252,6 +258,43 @@ impl Feed {
         let n = (frames * channels).min(self.samples.len());
         self.samples.drain(..n);
         self.pass(frames, rate, |_| {});
+    }
+
+    /// The output stream reported an error.
+    ///
+    /// **A device that has gone is not one error but an endless run of
+    /// them.** cpal's ALSA worker answers a failed write by reporting it and
+    /// writing again, at once, for as long as the stream lives -- an unplugged
+    /// headset or a restarted sound server was a core spinning on this
+    /// callback and a line per turn, into the run's log file as well when one
+    /// was open. WASAPI and CoreAudio say `DeviceNotAvailable` once and stop
+    /// asking for buffers. Either way nothing drains the ring again, and the
+    /// decode side waited on it in silence until the pictures ended.
+    ///
+    /// So the first few are said, and a device that is gone -- said so, or a
+    /// long run of errors with no buffer asked for between them -- ends the
+    /// playback with the reason, which the window shows.
+    ///
+    /// The lines to say are handed back rather than said here, so that they
+    /// are said with the ring's lock let go.
+    fn failed(&mut self, e: &cpal::StreamError) -> Vec<String> {
+        /// Errors in a row, with no buffer between, that are a device gone.
+        const GONE: u32 = 100;
+        /// How many are said at all.
+        const SAID: u32 = 3;
+        let mut say = Vec::new();
+        self.failures = self.failures.saturating_add(1);
+        self.errors = self.errors.saturating_add(1);
+        if self.errors <= SAID {
+            say.push(format!("audio output error: {e}"));
+        }
+        if self.lost.is_none()
+            && (matches!(e, cpal::StreamError::DeviceNotAvailable) || self.failures >= GONE)
+        {
+            say.push(format!("audio output lost after {} error(s): {e}", self.errors));
+            self.lost = Some(e.to_string());
+        }
+        say
     }
 }
 
@@ -423,6 +466,10 @@ fn push(
         }
         {
             let mut q = ring.lock().unwrap();
+            // Nothing will ever take it. See [`Feed::failed`].
+            if q.lost.is_some() {
+                return false;
+            }
             if q.samples.len() + samples.len() <= cap || q.samples.is_empty() {
                 q.samples.extend(samples);
                 q.bites.push_back(bite);
@@ -717,6 +764,7 @@ fn build_stream(
     start: &Start,
 ) -> Result<cpal::Stream, cpal::BuildStreamError> {
     let feed = ring.clone();
+    let failing = ring.clone();
     let level = volume.clone();
     let meter = levels.clone();
     let start = start.clone();
@@ -729,6 +777,8 @@ fn build_stream(
             let want = level.get();
             let frames = (data.len() / channels).max(1);
             let mut q = feed.lock().unwrap();
+            // Asked for a buffer, so whatever went wrong before has passed.
+            q.failures = 0;
             // Kept to the clock once there is one. Until then nothing has
             // been handed over, and there is nothing to keep in time.
             let lead = match start.get() {
@@ -760,7 +810,12 @@ fn build_stream(
             drop(q);
             was = want;
         },
-        |e| crate::say!("audio output error: {e}"),
+        move |e| {
+            let said = failing.lock().map(|mut q| q.failed(&e)).unwrap_or_default();
+            for line in said {
+                crate::say!("{line}");
+            }
+        },
         None,
     )
 }
@@ -1040,8 +1095,9 @@ pub fn play_audio_across(
     // Where on the output's clock each part begins: the one after the other,
     // as the pictures are laid out.
     let mut base = 0.0;
+    let lost = || ring.lock().unwrap().lost.clone();
     for part in parts {
-        if stop() {
+        if stop() || lost().is_some() {
             break;
         }
         feed_from(part, rate, channels, cap, &ring, fold, &mut base, start, &stop)?;
@@ -1050,8 +1106,11 @@ pub fn play_audio_across(
     // Let the tail play out rather than cutting it off the instant decoding
     // catches up with the ranges.
     while !stop() {
-        if ring.lock().unwrap().samples.is_empty() {
-            break;
+        {
+            let q = ring.lock().unwrap();
+            if q.samples.is_empty() || q.lost.is_some() {
+                break;
+            }
         }
         std::thread::sleep(Duration::from_millis(20));
     }
@@ -1060,7 +1119,10 @@ pub fn play_audio_across(
     // which reads as a sound that is still playing.
     levels.clear();
     ring.lock().unwrap().tally.say(rate);
-    Ok(())
+    match lost() {
+        Some(why) => Err(anyhow!("the audio output stopped: {why}")),
+        None => Ok(()),
+    }
 }
 
 /// Decode one recording's ranges into an output that is already open.
@@ -1429,6 +1491,31 @@ mod tests {
         let mut q = ring(&[(0.2, 480)]);
         assert_eq!(settle(&mut q, 0.1, RATE, 2, 960), 960);
         assert_eq!(settle(&mut q, 0.18, RATE, 2, 960), 0);
+    }
+
+    #[test]
+    fn a_device_that_keeps_failing_is_gone() {
+        let glitch = || {
+            cpal::StreamError::BackendSpecific {
+                err: cpal::BackendSpecificError { description: "glitch".into() },
+            }
+        };
+        // A stray error between buffers is not a device gone.
+        let mut q = Feed::default();
+        for _ in 0..1000 {
+            q.failed(&glitch());
+            q.failures = 0; // a buffer asked for, as the output callback does
+        }
+        assert!(q.lost.is_none());
+        // An unbroken run of them is: ALSA's worker retries at once, forever.
+        for _ in 0..100 {
+            q.failed(&glitch());
+        }
+        assert!(q.lost.is_some());
+        // And a device that says so is gone at the first word.
+        let mut q = Feed::default();
+        q.failed(&cpal::StreamError::DeviceNotAvailable);
+        assert!(q.lost.is_some());
     }
 
     #[test]

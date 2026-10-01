@@ -561,7 +561,10 @@ pub fn clip_on_a_disc(path: &str) -> Option<(&str, &str)> {
             && if dir.is_dir() {
                 ["PLAYLIST", "playlist"].iter().any(|n| dir.join(n).is_dir())
             } else {
-                inside_image(dir).is_some()
+                // The image itself, too: one whose disc was written without
+                // a directory of its own around it ([`prefix_of`] reads it)
+                // names its clips `x.iso/STREAM/00001.m2ts`.
+                dir.is_file() || inside_image(dir).is_some()
             }
     };
     disc.then_some((root, clip))

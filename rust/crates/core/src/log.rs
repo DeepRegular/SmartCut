@@ -37,8 +37,27 @@ struct Sink {
 ///
 /// Use through [`crate::say!`], which formats like `eprintln!`.
 pub fn line(text: &str) {
-    eprintln!("{text}");
+    // Not `eprintln!`, which panics when standard error has gone -- the
+    // terminal a window was started from, closed with the window still up --
+    // and every line said after that took down the thread saying it, an
+    // export half written among them. See `libav_line`, which says the same.
+    let _ = writeln!(std::io::stderr().lock(), "{}", plain(text));
     write_only(text);
+}
+
+/// `text` with its control characters made `?`, line breaks and tabs apart.
+///
+/// What [`libav_line`] does to libav's lines, done to the engine's: a line
+/// can carry the file's own words -- its name, a track's title, a
+/// broadcast's programme name -- and an escape sequence in one of them is not
+/// to reach the terminal or the log.
+pub fn plain(text: &str) -> std::borrow::Cow<'_, str> {
+    let bad = |c: char| c.is_control() && c != '\n' && c != '\t';
+    if text.contains(bad) {
+        text.chars().map(|c| if bad(c) { '?' } else { c }).collect::<String>().into()
+    } else {
+        text.into()
+    }
 }
 
 /// Write a line into the open log and nowhere else.
@@ -72,7 +91,7 @@ fn put(file: &mut std::fs::File, text: &str) {
     // Each line whole, with its own newline, so that two threads saying
     // something at once leave two lines rather than one interleaved one.
     let mut buf = String::with_capacity(text.len() + 1);
-    buf.push_str(text.trim_end_matches(['\r', '\n']));
+    buf.push_str(&plain(text.trim_end_matches(['\r', '\n'])));
     buf.push('\n');
     let _ = file.write_all(buf.as_bytes());
 }

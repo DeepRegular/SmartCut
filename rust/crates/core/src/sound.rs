@@ -320,6 +320,16 @@ fn run(
         )
     };
     let mut holds = query(declared);
+    // A muxer with no table of its own answers "cannot say" (below nought)
+    // for anything but its own codec, and the FLAC and Opus ones then turn
+    // the rest away at the header as "Invalid argument" -- AC-3 asked for as
+    // `.flac` or AAC as `.opus` ended on that and nothing else. They take
+    // their own codec and only that. Not `.ogg` or `.oga`, which answer the
+    // same and take Vorbis, FLAC and Opus alike.
+    let own = unsafe { (*(*octx.as_ptr()).oformat).audio_codec };
+    if holds < 0 && matches!(octx.format().name(), "flac" | "opus") {
+        holds = i32::from(ff::codec::Id::from(own) == declared);
+    }
     // LATM is a framing and has no file of its own that anything plays:
     // a 4K recording's sound asked for as `.aac`, `.m4a` or `.mp4` -- the
     // names the window gives it -- was refused with advice to name the file

@@ -636,9 +636,6 @@ pub fn build(
     crate::init()?;
     let began = std::time::Instant::now();
     let out_path = PathBuf::from(out);
-    if let Some(dir) = out_path.parent() {
-        std::fs::create_dir_all(dir)?;
-    }
     // Built under another name and renamed at the end: a proxy that was
     // interrupted must not be picked up next time as if it were whole.
     //
@@ -660,6 +657,11 @@ pub fn build(
     crate::input::refuse_url_output(out)?;
     src.input.refuse_as_output(out)?;
     src.input.refuse_as_output(&part.to_string_lossy())?;
+    // Only once the name is known to be one this may write: made first, an
+    // `-o` that was a URL left an `http:` folder behind before it was refused.
+    if let Some(dir) = out_path.parent() {
+        std::fs::create_dir_all(dir)?;
+    }
 
     let mut ictx = crate::input::demux(&src.input.url)?;
     let idx = src.video.stream_index;

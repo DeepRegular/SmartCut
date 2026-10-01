@@ -624,9 +624,22 @@ impl<'a> Iterator for Packets<'a> {
                         if STOP_READS.with(|s| s.borrow().is_some()) {
                             READS_FAILED.with(|s| s.set(true));
                         }
+                        // Which recording, as the demuxer was handed it: the
+                        // note is said once a line, so a second recording
+                        // that failed the same way -- the same share going
+                        // away -- was said nowhere, nor in the run's log.
+                        let url = unsafe {
+                            let u = (*self.ctx.as_ptr()).url;
+                            if u.is_null() {
+                                String::new()
+                            } else {
+                                std::ffi::CStr::from_ptr(u).to_string_lossy().into_owned()
+                            }
+                        };
+                        let of = if url.is_empty() { String::new() } else { format!(" of {url}") };
                         crate::note_once(format!(
-                            "note: reading stopped at an error the recording kept giving ({e}); \
-                             what was read before it is used"
+                            "note: reading{of} stopped at an error the recording kept giving \
+                             ({e}); what was read before it is used"
                         ));
                         return None;
                     }

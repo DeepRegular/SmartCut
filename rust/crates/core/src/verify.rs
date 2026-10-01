@@ -509,6 +509,11 @@ pub fn check_crossed(
         sounds.push((i, dec, 0, 0.0));
     }
     let v_tb = video.and_then(|i| ictx.stream(i)).map(|s| f64::from(s.time_base())).unwrap_or(0.0);
+    // Where the output's clock starts, which is where a player counts from:
+    // a time said in the report is one to go and look at. A transport stream
+    // written here opens at 0.05s and an .m2ts at 0.85s, and the raw times
+    // put the first mismatch that far past where the player shows it.
+    let origin = crate::container_start(&ictx);
 
     // The source side, on a thread of its own, a picture at a time through a
     // short queue.
@@ -606,7 +611,7 @@ pub fn check_crossed(
             // holds VC-1 by its decode times alone, and every picture of one
             // comes out of the decoder without a pts.
             let pts = frame.pts().or_else(|| frame.timestamp());
-            let at = pts.map(|p| p as f64 * v_tb).unwrap_or(0.0);
+            let at = pts.map(|p| (p as f64 * v_tb - origin).max(0.0)).unwrap_or(0.0);
             if let Some(p) = pts {
                 first_pts = Some(first_pts.map_or(p, |f: i64| f.min(p)));
                 last_pts = Some(last_pts.map_or(p, |l: i64| l.max(p)));

@@ -340,6 +340,10 @@ impl Reader {
     }
 }
 
+/// The widest and tallest subtitle picture taken out of a decoder: what a
+/// DVD's twelve-bit corners can reach.
+const MOST_DOTS: usize = 4096;
+
 /// The picture in a decoded subtitle, whichever decoder read it.
 ///
 /// A DVD's units and a Blu-ray's display sets come out of libavcodec in the
@@ -363,6 +367,15 @@ pub(crate) fn drawn_from(sub: &ff::codec::subtitle::Subtitle) -> Option<Drawn> {
             let (w, h) = ((*r).w as usize, (*r).h as usize);
             let stride = (*r).linesize[0] as usize;
             if w == 0 || h == 0 || (*r).data[0].is_null() {
+                continue;
+            }
+            // Neither format draws anything this big -- a DVD states its
+            // corners in twelve bits and a Blu-ray composes on 1920 x 1080
+            // -- but a display set names the screen it is composed for and
+            // the decoder takes that as its limit, so a crafted one can ask
+            // for 16000 dots square. Copied here and drawn out again as a
+            // picture four bytes a dot, that was a gigabyte per subtitle.
+            if w > MOST_DOTS || h > MOST_DOTS {
                 continue;
             }
             let mut indices = Vec::with_capacity(w * h);
@@ -915,6 +928,15 @@ impl Sidecar {
     /// written after that.
     pub fn recolour(&mut self, palette: Palette) {
         self.palette = palette;
+    }
+
+    /// Say the screen the units are placed on, for pictures drawn on one
+    /// other than the recording's own: a UHD disc's graphics are composed for
+    /// 1920 x 1080, and an index saying 3840 x 2160 had every player put them
+    /// at half the size, in the top left quarter.
+    pub fn resize(&mut self, width: u16, height: u16) {
+        self.width = width;
+        self.height = height;
     }
 
     /// Whether anything at all was written. Nothing means no files.

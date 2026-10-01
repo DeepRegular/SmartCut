@@ -549,8 +549,16 @@ pub fn detect_with(
             .collect();
         mag.sort_by(|a, b| b.partial_cmp(a).unwrap_or(std::cmp::Ordering::Equal));
         let cutoff = mag[opts.mask_pixels.min(mag.len().saturating_sub(1))];
+        // Never a sample that is exactly nought. Those are a corner that held
+        // one level through every picture -- a recording off air that is
+        // black throughout, a still on a flat ground -- and where fewer than
+        // `mask_pixels` samples are anything else the cutoff is nought and
+        // took the whole region: on five minutes of black 1080, a hundred
+        // thousand samples a corner scored for every picture, which made the
+        // whole detection three times as long, for a template that
+        // correlates with nothing.
         let picked: Vec<usize> = (0..n)
-            .filter(|&i| inside(i) && tmpl[i].abs() >= cutoff)
+            .filter(|&i| inside(i) && tmpl[i].abs() >= cutoff && tmpl[i] != 0.0)
             .collect();
         // A logo is one mark. Whatever else happened to sit still -- the edge
         // of a caption box, a graphic a commercial holds on screen -- is

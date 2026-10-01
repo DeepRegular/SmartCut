@@ -472,10 +472,11 @@ impl Reader {
                         continue;
                     }
                     let drawn = vobsub::drawn_from(&sub);
+                    let placed = placed_on(decoder, screen);
                     events.push(Event {
                         at,
                         until: drawn.as_ref().and_then(|d| d.until).map(|d| at + d),
-                        shown: drawn.map(|d| picture(screen, &d)).transpose()?,
+                        shown: drawn.map(|d| picture(placed, &d)).transpose()?,
                     });
                 }
             }
@@ -508,6 +509,25 @@ fn picture(screen: (u16, u16), drawn: &Drawn) -> Result<Shown> {
         height: drawn.height,
         png: png(drawn)?,
     })
+}
+
+/// The screen a decoded picture's position is measured against.
+///
+/// Not always the picture the subtitles are drawn over. A display set names
+/// the screen it was composed for, and the decoder takes that on as its own
+/// size: a UHD disc's graphics are composed for 1920 x 1080 over a picture
+/// twice that, and placed against the picture they came out at half the
+/// size, in the top left quarter of it. A DVD's decoder keeps the size it
+/// was opened with, which is the picture's.
+fn placed_on(decoder: &ff::codec::decoder::Subtitle, picture: (u16, u16)) -> (u16, u16) {
+    let (w, h) = unsafe {
+        let p = decoder.as_ptr();
+        ((*p).width, (*p).height)
+    };
+    match (u16::try_from(w), u16::try_from(h)) {
+        (Ok(w), Ok(h)) if w > 0 && h > 0 => (w, h),
+        _ => picture,
+    }
 }
 
 /// A decoder for the pictures one of the disc formats carries.
@@ -659,6 +679,44 @@ mod tests {
                 .collect::<Vec<_>>(),
             [Kind::Ttml, Kind::Superimpose]
         );
+    }
+
+    /// A UHD disc's graphics are composed for 1920 x 1080 over a picture
+    /// twice that, and a subtitle is placed on the screen its set names.
+    /// And a set naming a screen no disc has is not drawn out at that size.
+    #[test]
+    fn a_display_set_is_placed_on_the_screen_it_names() {
+        crate::init().expect("libav");
+        let set = |screen: (u16, u16), width: u16, height: u16| -> Vec<u8> {
+            let indices = vec![1u8; usize::from(width) * usize::from(height)];
+            let palette = [(0, 0, 0, 0), (255, 255, 255, 255)];
+            let picture = crate::pgs::write::Picture {
+                x: 100,
+                y: 900,
+                width,
+                height,
+                indices: &indices,
+                palette: &palette,
+            };
+            crate::pgs::write::draw(screen, 1, 1.0, &picture)
+                .into_iter()
+                .flat_map(|h| h.data)
+                .collect()
+        };
+        let uhd = (3840, 2160);
+        let mut decoder =
+            pictures_decoder(ff::codec::Id::HDMV_PGS_SUBTITLE, uhd, None).expect("a decoder");
+        let mut sub = ff::codec::subtitle::Subtitle::new();
+        let packet = ff::Packet::copy(&set((1920, 1080), 64, 8));
+        assert!(decoder.decode(&packet, &mut sub).expect("decodes"));
+        let drawn = vobsub::drawn_from(&sub).expect("draws");
+        assert_eq!((drawn.x, drawn.y, drawn.width), (100, 900, 64));
+        assert_eq!(placed_on(&decoder, uhd), (1920, 1080));
+
+        let mut sub = ff::codec::subtitle::Subtitle::new();
+        let packet = ff::Packet::copy(&set((16000, 16000), 5000, 5000));
+        assert!(decoder.decode(&packet, &mut sub).expect("decodes"));
+        assert!(vobsub::drawn_from(&sub).is_none(), "5000 dots square is no subtitle");
     }
 
     /// Two tracks of one kind keep the order the recording named them in:

@@ -499,6 +499,21 @@ pub mod read {
             }
             Ok(crate::vobsub::drawn_from(&sub))
         }
+
+        /// The screen the last set read was composed for, which is what the
+        /// position of its picture is measured against: the decoder takes
+        /// each composition's size on as its own, and a UHD disc composes
+        /// for 1920 x 1080 over a picture twice that.
+        pub fn screen(&self) -> Option<(u16, u16)> {
+            let (w, h) = unsafe {
+                let p = self.decoder.as_ptr();
+                ((*p).width, (*p).height)
+            };
+            match (u16::try_from(w), u16::try_from(h)) {
+                (Ok(w), Ok(h)) if w > 0 && h > 0 => Some((w, h)),
+                _ => None,
+            }
+        }
     }
 }
 

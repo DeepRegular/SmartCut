@@ -105,8 +105,11 @@ pub fn media_info(path: &str) -> Result<MediaInfo> {
     // codes in it -- and it is the first programme's, which on a recording
     // of the whole multiplex is as likely to be a neighbour's as its own.
     if format.name().split(',').any(|n| n.trim() == "mpegts") {
+        // Through the same hands as a tag: the name is decoded out of the
+        // broadcast's own bytes, and a control code in them is a line break
+        // in the table and in the text copied out of it.
         if let Some(v) = crate::si::programme(&input, 0).ok().and_then(|p| p.channel) {
-            push(&mut general, "service", v.trim().to_string());
+            push(&mut general, "service", one_line(&v));
         }
     }
 
@@ -287,8 +290,12 @@ fn gcd(a: i64, b: i64) -> i64 {
 /// the file says, and a crafted title of megabytes would go whole to the
 /// window and into the copied text.
 fn text(dict: &ff::DictionaryRef, key: &str) -> Option<String> {
+    Some(one_line(&crate::tag(dict, key)?))
+}
+
+/// What [`text`] makes of a tag, for any text the file wrote.
+fn one_line(v: &str) -> String {
     const MOST: usize = 1000;
-    let v = crate::tag(dict, key)?;
     let mut line: String = v
         .trim()
         .chars()
@@ -298,7 +305,7 @@ fn text(dict: &ff::DictionaryRef, key: &str) -> Option<String> {
     if v.trim().chars().nth(MOST).is_some() {
         line.push('…');
     }
-    Some(line)
+    line
 }
 
 /// A line, where there is something to put on it.
