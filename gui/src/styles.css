@@ -373,7 +373,7 @@ button.brand:hover, button.brand.open { background: #3a3a3a; border-color: #5c5c
 .spacer { flex: 1; }
 /* Empty until the window has something to say, and taking none of the bar's
    gap until then. The same reason `#out-subfolder-note` does it. */
-#outset-note:empty, #batch-note:empty { display: none; }
+#outset-note:empty, #batch-note:empty, #status:empty { display: none; }
 
 /* The two shapes of the output settings screen, chosen the way the screens
    themselves are -- and drawn at that size too. A size down read as a lesser
@@ -1084,31 +1084,23 @@ body.crosswin { padding: 0; }
   pointer-events: none;
 }
 
-/* The badge and the status read left to right from the plan above them; the
-   two buttons that end this window sit in the far corner, paired and the same
-   size, where a dialog's are looked for. */
+/* The badge reads left to right from the plan above it; the two buttons that
+   end this window sit in the far corner, paired and the same size, where a
+   dialog's are looked for. */
 .export { display: flex; align-items: center; gap: 12px; }
-/* The status is the one thing in this row that may give way. Flex takes a
-   shortfall out of every item at once, and the row runs short as soon as the
-   window is near its narrowest and the status has something to say: the badge
-   then breaks over four lines and カウンタ spells itself downwards. Those two
-   are labels the width of their own words -- a measurement and a switch, and
-   neither is readable folded -- while the status was written to be cut short
-   and ends in an ellipsis when it is. */
+/* Nothing in this row folds. Flex takes a shortfall out of every item at
+   once, and near the window's narrowest the badge broke over four lines and
+   表示 spelled itself downwards. They are labels the width of their own
+   words, and neither is readable folded. */
 .export > * { flex: none; }
 /* Except the gap that puts the seam window's two buttons in the corner: the
    rule above is as specific as `.spacer` and later, and left alone it made
    the gap nothing and OK and キャンセル sat at the left. */
 .export > .spacer { flex: 1; }
 .export .badge, .export .mini { white-space: nowrap; }
-.export #status {
-  flex: 1 1000 auto; min-width: 0;
-  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-}
-/* Once the status has nothing left to give -- a long badge and the window at
-   its narrowest -- the shortfall has to land somewhere, and something cut
-   short says more than two buttons pushed off the edge of the window. The
-   status goes first, being written to be cut, and the badge after it. */
+/* At the window's narrowest the shortfall has to land somewhere, and
+   something cut short says more than two buttons pushed off the edge of the
+   window. The badge is the one that gives. */
 .export .badge { flex: 0 1 auto; overflow: hidden; text-overflow: ellipsis; }
 .export .primary {
   background: var(--accent); color: #201400; border: 1px solid var(--accent);

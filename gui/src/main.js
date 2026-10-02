@@ -2670,6 +2670,14 @@ if (typeof ResizeObserver === "function") {
 }
 arrangeRows();
 
+// The status line shares its bar with the recording's details and is cut
+// short with an ellipsis when the two do not fit -- a read's error message
+// most of all. The whole of it is under the pointer. Watched rather than set
+// where it is written: forty places write it.
+new MutationObserver(() => {
+  el("status").title = el("status").textContent;
+}).observe(el("status"), { childList: true, characterData: true, subtree: true });
+
 // --- 音声レベル ----------------------------------------------------------
 //
 // The meter beside the picture, and the two places it gets its numbers from.

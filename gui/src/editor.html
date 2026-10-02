@@ -18,6 +18,13 @@
     <div class="infobar">
       <span id="info">—</span>
       <span class="spacer"></span>
+      <!-- The one line the window says things on -- what a read found, why
+           playback waited, what a detection came to. Up here rather than in
+           the row of OK and キャンセル: that row was where it began, and at
+           half a screen's width the buttons beside it left it a word or two.
+           This bar has nothing between the recording's details and トラック,
+           and what is said here is mostly about the recording too. -->
+      <span id="status"></span>
       <button id="tracks" class="mini wide" data-i18n="tracks.button"
               data-i18n-title="tracks.button.title">トラック</button>
     </div>
@@ -487,10 +494,7 @@
               <input id="volume" class="vslider" type="range" min="0" max="100" step="1"
                      value="100" data-i18n-aria="t.volume.aria" />
             </div>
-            <!-- The one line the window says things on -- what a read found,
-                 why playback waited, what a detection came to. It takes the
-                 rest of the row, up to the two buttons. -->
-            <span class="dim" id="status"></span>
+            <span class="spacer"></span>
             <button id="editor-ok" class="primary wide" data-i18n="editor.ok">OK</button>
             <button id="editor-cancel" class="secondary" data-i18n="editor.cancel">キャンセル</button>
           </div>
