@@ -1988,7 +1988,13 @@ fn remember_index(app: &tauri::AppHandle, src: &Source, index: SeekIndex) -> Opt
     // megabytes. A gigabyte would have held eight of those; two holds a
     // couple of dozen broadcast recordings as before, and does not throw a
     // film's away to make room for them.
-    let _ = seek_index::prune(&dir, 32, 2 << 30);
+    //
+    // Neither limit takes a recording that is in the list. See [`LISTED`].
+    let spare: std::collections::HashSet<std::path::PathBuf> = locked(&LISTED)
+        .iter()
+        .filter_map(|p| seek_index::cache_path(&dir, p).ok())
+        .collect();
+    let _ = seek_index::prune(&dir, 32, 2 << 30, &spare);
     index_info(app, src, false)
 }
 
@@ -3019,12 +3025,26 @@ async fn index_clip(
     off_thread_behind(move || index_clip_now(&path, &keeps, &app)).await
 }
 
+/// Every recording [`index_clip`] has been asked about in this session: the
+/// rows of the list, whose indexes the cache's limits must not take.
+///
+/// They did. The limits went by age, the list is indexed from the top down,
+/// and thirty-odd hour-long recordings come to more than the budget -- so,
+/// with every row analysed and nothing closed or removed, the indexes of the
+/// top dozen were gone and each of those rows was walked again, half a minute
+/// apiece, when it was opened for cutting.
+///
+/// A row taken out of the list stays in here until the program closes. All
+/// that costs is that its index is not the first to go, for this session.
+static LISTED: Mutex<std::collections::BTreeSet<String>> = Mutex::new(std::collections::BTreeSet::new());
+
 fn index_clip_now(
     path: &str,
     keeps: &[(f64, f64)],
     app: &tauri::AppHandle,
 ) -> Result<ClipInfo, String> {
     let began = std::time::Instant::now();
+    locked(&LISTED).insert(path.to_string());
     // What the lane had been asked to stop before this pass existed is not
     // about this pass. See [`BatchStop`].
     let mine = app.state::<BatchStop>().walk.load(Ordering::SeqCst);

@@ -469,7 +469,19 @@ pub fn cache_path(dir: &Path, src_path: &str) -> Result<PathBuf> {
 ///
 /// The most recent is never deleted, however far over budget it is on its
 /// own: it is almost certainly the recording being cut right now.
-pub fn prune(dir: &Path, keep: usize, budget: u64) -> Result<usize> {
+///
+/// Nor is anything in `spare`: the indexes of the recordings in the list.
+/// Age alone took those away -- the list is indexed from the top down, so
+/// the top rows are the oldest -- and a list of thirty-odd hour-long
+/// recordings came to more than the budget, so the top third were walked
+/// again, half a minute apiece, the moment they were opened. They still
+/// count towards `keep` and `budget`, so what goes first is everything else.
+pub fn prune(
+    dir: &Path,
+    keep: usize,
+    budget: u64,
+    spare: &std::collections::HashSet<PathBuf>,
+) -> Result<usize> {
     /// How long a temporary may sit untouched before it is taken for one
     /// whose writer is gone. Writing one takes seconds.
     const ABANDONED: std::time::Duration = std::time::Duration::from_secs(24 * 60 * 60);
@@ -512,7 +524,7 @@ pub fn prune(dir: &Path, keep: usize, budget: u64) -> Result<usize> {
     let mut running = 0u64;
     for (i, (_, bytes, path)) in found.into_iter().enumerate() {
         running = running.saturating_add(bytes);
-        if i == 0 || (i < keep && running <= budget) {
+        if i == 0 || (i < keep && running <= budget) || spare.contains(&path) {
             continue;
         }
         if std::fs::remove_file(&path).is_ok() {
@@ -686,9 +698,34 @@ mod tests {
             .unwrap()
             .set_times(std::fs::FileTimes::new().set_modified(long_ago))
             .unwrap();
-        assert_eq!(prune(&dir, 8, 1 << 20).unwrap(), 1);
+        assert_eq!(prune(&dir, 8, 1 << 20, &Default::default()).unwrap(), 1);
         assert!(!old.exists());
         assert!(new.exists() && done.exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Over the count, the oldest goes -- unless it is one of the list's.
+    #[test]
+    fn the_list_is_spared() {
+        let dir = std::env::temp_dir().join(format!("smartcut-scix-spare-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        let names = ["a-0000000000000001.scix", "b-0000000000000002.scix", "c-0000000000000003.scix"];
+        let paths: Vec<PathBuf> = names.iter().map(|n| dir.join(n)).collect();
+        let now = std::time::SystemTime::now();
+        for (i, p) in paths.iter().enumerate() {
+            std::fs::write(p, b"x").unwrap();
+            let when = now - std::time::Duration::from_secs(60 * (3 - i as u64));
+            std::fs::OpenOptions::new()
+                .write(true)
+                .open(p)
+                .unwrap()
+                .set_times(std::fs::FileTimes::new().set_modified(when))
+                .unwrap();
+        }
+        // Oldest first: a, then b. Keep one; a is in the list.
+        let spare = std::collections::HashSet::from([paths[0].clone()]);
+        assert_eq!(prune(&dir, 1, 1 << 20, &spare).unwrap(), 1);
+        assert!(paths[0].exists() && !paths[1].exists() && paths[2].exists());
         let _ = std::fs::remove_dir_all(&dir);
     }
 
