@@ -128,5 +128,17 @@ mod tests {
         assert!(track_starts(b"Trim(0,100)\n").is_empty());
         assert!(track_starts(b"TRACK 01 AUDIO\nINDEX 01 00:61:00\n").is_empty());
         assert!(track_starts(b"TRACK 01 AUDIO\nINDEX 01 00:00:75\n").is_empty());
+        // An index with no track to belong to, and times that are not three
+        // numbers.
+        assert!(track_starts(b"INDEX 01 00:10:00\n").is_empty());
+        assert!(track_starts(b"TRACK 01 AUDIO\nINDEX 01 00:10\nINDEX 01 -1:00:00\nINDEX 01 1:2:3:4\n").is_empty());
+    }
+
+    /// Old Mac line ends, tracks out of order, and two tracks on the same
+    /// frame: in order, one to an instant.
+    #[test]
+    fn carriage_returns_order_and_duplicates() {
+        let sheet = b"FILE \"a.wav\" WAVE\rTRACK 01 AUDIO\rINDEX 01 02:00:00\rTRACK 02 AUDIO\rINDEX 01 00:00:00\rTRACK 03 AUDIO\rINDEX 01 02:00:00\r";
+        assert_eq!(track_starts(sheet), vec![0.0, 120.0]);
     }
 }

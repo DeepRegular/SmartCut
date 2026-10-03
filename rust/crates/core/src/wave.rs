@@ -309,4 +309,53 @@ mod tests {
         near(most_buckets(f64::NAN), 86_400 * 20);
         near(most_buckets(f64::INFINITY), 86_400 * 20);
     }
+
+    /// Interleaved samples are one sample's channels side by side: element
+    /// `i` is sample `i / channels`, and the loudest of them is the level.
+    #[test]
+    fn packed_channels_fold_into_their_sample() {
+        let layout = ff::channel_layout::ChannelLayout::default(2);
+        let mut frame =
+            ff::frame::Audio::new(ff::format::Sample::I16(ff::format::sample::Type::Packed), 64, layout);
+        frame.data_mut(0).fill(0);
+        // Sample 3, right channel, full scale; sample 10, left, half.
+        frame.data_mut(0)[(3 * 2 + 1) * 2..(3 * 2 + 2) * 2].copy_from_slice(&i16::MIN.to_ne_bytes());
+        frame.data_mut(0)[(10 * 2) * 2..(10 * 2 + 1) * 2].copy_from_slice(&16384i16.to_ne_bytes());
+        let mut out = Vec::new();
+        assert!(sample_levels(&frame, &mut out));
+        assert_eq!(out.len(), 64);
+        assert_eq!(out[3], 1.0);
+        assert_eq!(out[10], 0.5);
+        assert_eq!(out.iter().filter(|&&v| v > 0.0).count(), 2);
+    }
+
+    /// A planar track wider than eight channels is read past the eighth, and
+    /// unsigned bytes are silent at 128.
+    #[test]
+    fn planar_and_unsigned_levels() {
+        let layout = ff::channel_layout::ChannelLayout::default(10);
+        let samples = 32;
+        let mut frame =
+            ff::frame::Audio::new(ff::format::Sample::F32(ff::format::sample::Type::Planar), samples, layout);
+        let mut channel = |p: usize| unsafe {
+            let data = *(*frame.as_mut_ptr()).extended_data.add(p);
+            std::slice::from_raw_parts_mut(data as *mut f32, samples)
+        };
+        for p in 0..10 {
+            channel(p).fill(0.0);
+        }
+        channel(9)[7] = -0.25;
+        let mut out = Vec::new();
+        assert!(sample_levels(&frame, &mut out));
+        assert_eq!(out[7], 0.25);
+        assert_eq!(out.iter().filter(|&&v| v > 0.0).count(), 1);
+
+        let layout = ff::channel_layout::ChannelLayout::default(1);
+        let mut frame =
+            ff::frame::Audio::new(ff::format::Sample::U8(ff::format::sample::Type::Packed), 16, layout);
+        frame.data_mut(0).fill(128);
+        assert!(sample_levels(&frame, &mut out));
+        assert!(out.iter().all(|&v| v == 0.0));
+        assert_eq!(level_byte(f64::from(out[0])), 0);
+    }
 }

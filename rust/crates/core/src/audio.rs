@@ -701,6 +701,9 @@ pub struct Reencoder {
     fed: i64,
     /// Last source packet consumed, so a frame offered twice is ignored.
     last_pts: Option<i64>,
+    /// What that packet decoded to, held for a window that opens inside it.
+    /// See `take`.
+    last_frames: Vec<ff::frame::Audio>,
     /// The window being taken from, and the recording's sample the next one
     /// taken should be. See `take`, where a hole in the sound is filled.
     window: Option<(i64, i64)>,
@@ -826,6 +829,7 @@ impl Reencoder {
             ready: vec![vec![0.0; lead as usize]; channels as usize],
             fed: 0,
             last_pts: None,
+            last_frames: Vec::new(),
             window: None,
             next: 0,
             stage: vec![Vec::new(); channels as usize],
@@ -867,6 +871,7 @@ impl Reencoder {
             .decoder()
             .audio()?;
         self.last_pts = None;
+        self.last_frames.clear();
         // The next recording's windows are counted on its own clock, and can
         // be the same numbers as the last one's.
         self.close_window();
@@ -950,7 +955,8 @@ impl Reencoder {
         fades: Fades,
         at_out: Option<f64>,
     ) -> Result<()> {
-        if self.window != Some(window) {
+        let fresh = self.window != Some(window);
+        if fresh {
             self.close_window();
             self.window = Some(window);
             self.next = window.0;
@@ -961,86 +967,120 @@ impl Reencoder {
         }
         if let (Some(pts), Some(last)) = (packet.pts(), self.last_pts) {
             if pts <= last {
+                // Decoded already, for the window before this one -- but a
+                // window that opens inside the last frame decoded, less than
+                // a frame after the one before closed, has its opening in
+                // that frame and nowhere else. Taken only for that window,
+                // its opening was never taken at all: up to a frame of sound
+                // missing at every such seam, and in a file laid end to end
+                // everything after it that much early.
+                if fresh {
+                    let held = std::mem::take(&mut self.last_frames);
+                    for frame in &held {
+                        self.take_frame(frame, audio, start_time, window, fades)?;
+                    }
+                    self.last_frames = held;
+                }
                 return Ok(());
             }
         }
         self.last_pts = packet.pts().or(self.last_pts);
+        self.last_frames.clear();
         if self.decoder.send_packet(packet).is_err() {
             return Ok(());
         }
         let mut frame = ff::frame::Audio::empty();
         while self.decoder.receive_frame(&mut frame).is_ok() {
-            let Some(pts) = frame.pts() else { continue };
-            // Left as a hole, which the next frame fills with silence. See
-            // [`implausible_rate`]: brought to the track's rate, one such
-            // frame was hundreds of megabytes a channel.
-            if implausible_rate(frame.rate(), self.sample_rate) {
-                continue;
+            self.take_frame(&frame, audio, start_time, window, fades)?;
+            // A reference, not a copy: the decoder hands its next frame over
+            // in a buffer of its own.
+            let mut held = ff::frame::Audio::empty();
+            if unsafe { ff::ffi::av_frame_ref(held.as_mut_ptr(), frame.as_ptr()) } >= 0 {
+                self.last_frames.push(held);
             }
-            let t = pts as f64 * audio.time_base - start_time;
-            // Held well inside i64: a crafted time stamp saturates the cast,
-            // and the frame's length added to it then overflowed.
-            let first = ((t * self.sample_rate as f64).round() as i64).clamp(i64::MIN / 4, i64::MAX / 4);
-            // How long the frame lasts, in the recording's samples. Not its
-            // own count where it arrived at another rate -- the programme
-            // before this one, at the head of a broadcast recording -- or
-            // its samples were laid down as though they were the track's,
-            // and that stretch played fast and pulled the rest of the range
-            // ahead of its pictures.
-            let n = match frame.rate() {
-                r if r > 0 && r != self.sample_rate => {
-                    frame.samples() as i64 * i64::from(self.sample_rate) / i64::from(r)
-                }
-                _ => frame.samples() as i64,
-            };
-            let lo = window.0.max(first);
-            let hi = window.1.min(first + n);
-            if hi <= lo {
-                continue;
-            }
-            // A hole in the track: silence for it, so that what follows
-            // stays where it was. Less than a frame is the timestamps'
-            // own rounding -- a Matroska track keeps milliseconds -- and is
-            // read past, as it always was.
-            let slack = n.max(i64::from(self.sample_rate) / 100);
-            if lo - self.next > slack {
-                self.silence((lo - self.next) as usize);
-            }
-            self.next = self.next.max(hi);
-            let src = conform(
-                &mut self.resampler,
-                &mut self.remixed,
-                &frame,
-                self.layout,
-                PLANAR_F32,
-            )?;
-            let src = if src.rate() > 0 && src.rate() != self.sample_rate {
-                rerate(&mut self.rerate, &mut self.rerated, src, self.sample_rate)?
-            } else {
-                src
-            };
-            // At the recording's rate now, so the window counts in the
-            // frame's own samples; clamped all the same, so a shorter frame
-            // than was asked for cannot index past its buffers.
-            let have = src.samples();
-            let a = ((lo - first) as usize).min(have);
-            let b = ((hi - first) as usize).min(have);
-            take_samples(src, self.channels, &mut self.stage, (a, b));
-            // The fade rides on the samples as they are taken, before the
-            // resampler and before the encoder: what is asked for is a shape
-            // on the recording's sound, and this is the last place the sound
-            // is still the recording's. The fade-in only: the fade-out is
-            // put on when the window closes, where the sound really ended.
-            let head = Fades { head: fades.head, tail: 0 };
-            if head.any() && b > a {
-                let added = b - a;
-                for ch in self.stage.iter_mut().take(self.channels) {
-                    let held = ch.len();
-                    fade_run(&mut ch[held - added..], first + a as i64, window, head);
-                }
-            }
-            self.spill();
         }
+        Ok(())
+    }
+
+    /// Keep whatever of one decoded frame falls inside `window`. See `take`.
+    fn take_frame(
+        &mut self,
+        frame: &ff::frame::Audio,
+        audio: &AudioInfo,
+        start_time: f64,
+        window: (i64, i64),
+        fades: Fades,
+    ) -> Result<()> {
+        let Some(pts) = frame.pts() else { return Ok(()) };
+        // Left as a hole, which the next frame fills with silence. See
+        // [`implausible_rate`]: brought to the track's rate, one such
+        // frame was hundreds of megabytes a channel.
+        if implausible_rate(frame.rate(), self.sample_rate) {
+            return Ok(());
+        }
+        let t = pts as f64 * audio.time_base - start_time;
+        // Held well inside i64: a crafted time stamp saturates the cast,
+        // and the frame's length added to it then overflowed.
+        let first = ((t * self.sample_rate as f64).round() as i64).clamp(i64::MIN / 4, i64::MAX / 4);
+        // How long the frame lasts, in the recording's samples. Not its
+        // own count where it arrived at another rate -- the programme
+        // before this one, at the head of a broadcast recording -- or
+        // its samples were laid down as though they were the track's,
+        // and that stretch played fast and pulled the rest of the range
+        // ahead of its pictures.
+        let n = match frame.rate() {
+            r if r > 0 && r != self.sample_rate => {
+                frame.samples() as i64 * i64::from(self.sample_rate) / i64::from(r)
+            }
+            _ => frame.samples() as i64,
+        };
+        let lo = window.0.max(first);
+        let hi = window.1.min(first + n);
+        if hi <= lo {
+            return Ok(());
+        }
+        // A hole in the track: silence for it, so that what follows
+        // stays where it was. Less than a frame is the timestamps'
+        // own rounding -- a Matroska track keeps milliseconds -- and is
+        // read past, as it always was.
+        let slack = n.max(i64::from(self.sample_rate) / 100);
+        if lo - self.next > slack {
+            self.silence((lo - self.next) as usize);
+        }
+        self.next = self.next.max(hi);
+        let src = conform(
+            &mut self.resampler,
+            &mut self.remixed,
+            frame,
+            self.layout,
+            PLANAR_F32,
+        )?;
+        let src = if src.rate() > 0 && src.rate() != self.sample_rate {
+            rerate(&mut self.rerate, &mut self.rerated, src, self.sample_rate)?
+        } else {
+            src
+        };
+        // At the recording's rate now, so the window counts in the
+        // frame's own samples; clamped all the same, so a shorter frame
+        // than was asked for cannot index past its buffers.
+        let have = src.samples();
+        let a = ((lo - first) as usize).min(have);
+        let b = ((hi - first) as usize).min(have);
+        take_samples(src, self.channels, &mut self.stage, (a, b));
+        // The fade rides on the samples as they are taken, before the
+        // resampler and before the encoder: what is asked for is a shape
+        // on the recording's sound, and this is the last place the sound
+        // is still the recording's. The fade-in only: the fade-out is
+        // put on when the window closes, where the sound really ended.
+        let head = Fades { head: fades.head, tail: 0 };
+        if head.any() && b > a {
+            let added = b - a;
+            for ch in self.stage.iter_mut().take(self.channels) {
+                let held = ch.len();
+                fade_run(&mut ch[held - added..], first + a as i64, window, head);
+            }
+        }
+        self.spill();
         Ok(())
     }
 

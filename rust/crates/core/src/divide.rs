@@ -371,5 +371,23 @@ mod tests {
         assert!(divide(&keeps, &[], Rule::Size(1000), true, FD, 0.0, 0.0).is_err());
         assert!(divide(&[(0.0, 2000.0)], &[], Rule::Every(1.0), true, FD, 0.0, 0.0).is_err());
         assert!(divide(&[], &[], Rule::Parts(2), true, FD, 0.0, 0.0).is_err());
+        assert!(divide(&keeps, &[], Rule::Every(f64::NAN), true, FD, 0.0, 0.0).is_err());
+        assert!(divide(&keeps, &[], Rule::Size(u64::MAX), true, FD, 0.0, f64::NAN).is_err());
+    }
+
+    /// A length longer than what is left is one part, not an error and not
+    /// a loop; a keep of nothing between two others is passed over.
+    #[test]
+    fn degenerate_rules_and_keeps() {
+        let keeps = [(0.0, 30.0)];
+        let d = divide(&keeps, &[], Rule::Every(f64::INFINITY), true, FD, 0.0, 0.0).unwrap();
+        assert!(d.at.is_empty());
+        assert_eq!(d.lengths, vec![30.0]);
+        let keeps = [(0.0, 20.0), (25.0, 25.0), (40.0, 60.0)];
+        let d = divide(&keeps, &[], Rule::Parts(4), false, FD, 0.0, 0.0).unwrap();
+        assert_eq!(d.at.len(), 3);
+        assert!((d.lengths.iter().sum::<f64>() - 40.0).abs() < 1e-9, "{:?}", d.lengths);
+        assert!(d.at.windows(2).all(|w| w[0] < w[1]), "{:?}", d.at);
+        assert!(d.at.iter().all(|&t| (0.0..=20.0).contains(&t) || (40.0..=60.0).contains(&t)), "{:?}", d.at);
     }
 }

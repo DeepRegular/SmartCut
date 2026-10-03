@@ -3829,6 +3829,13 @@ fn declares_dovi(params: &ff::codec::Parameters) -> bool {
 /// becomes ten-bit pictures in no stated colour, which is every picture wrong
 /// to spare the handful a seam rewrites. False where the stream declares no
 /// Dolby Vision.
+///
+/// **Nought is also what libav says where the record never said.** A
+/// transport stream's 0xB0 descriptor may stop before the compatibility byte
+/// -- the profile 4 recording above is written that way -- and the demuxer
+/// then fills in 0. For profiles 7 and 8 that cannot be the answer: a
+/// profile 7 base layer is a Blu-ray's HDR10 by definition, and profile 8
+/// exists only as 8.1, 8.2 and 8.4, each a base layer that stands on its own.
 fn dovi_fallback(params: &ff::codec::Parameters) -> bool {
     unsafe {
         let p = params.as_ptr();
@@ -3838,11 +3845,11 @@ fn dovi_fallback(params: &ff::codec::Parameters) -> bool {
             ff::ffi::AVPacketSideDataType::AV_PKT_DATA_DOVI_CONF,
         );
         // AVDOVIDecoderConfigurationRecord is nine bytes, one per field;
-        // the compatibility id is the eighth.
+        // the profile is the third and the compatibility id the eighth.
         if sd.is_null() || (*sd).data.is_null() || (*sd).size < 8 {
             return false;
         }
-        *(*sd).data.add(7) != 0
+        *(*sd).data.add(7) != 0 || matches!(*(*sd).data.add(2), 7 | 8)
     }
 }
 
@@ -3998,8 +4005,24 @@ fn signalling_of(src: &Source, opts: &CutOptions) -> Signalling {
             // there takes the stream for Dolby Vision regardless. With none,
             // the Dolby Vision is the only colour the recording has, and it
             // stays everywhere a seam did not rewrite.
-            out.strip_dovi = dovi_fallback(&params);
-            if out.strip_dovi {
+            //
+            // Only HEVC's RPUs and enhancement layer can be taken off the
+            // copied pictures ([`crate::bitstream::strip_dolby_vision`]). On
+            // any other codec, dropping the record would leave them in place
+            // under a stream that no longer declares them -- the half-way
+            // state this is here to avoid -- so it is kept, as at nought.
+            let stands = dovi_fallback(&params);
+            out.strip_dovi = stands && src.video.codec == "hevc";
+            if stands && !out.strip_dovi {
+                crate::say!(
+                    "note: this recording is Dolby Vision, and the encoder here will not write \
+                     it ({e}). The pictures rewritten at each seam carry no RPU, so the Dolby \
+                     Vision stops for those pictures; the copied pictures keep theirs, and the \
+                     stream still declares it. Its RPUs can be taken off only HEVC pictures, so \
+                     it is not given up. A range whose ends fall on the recording's own entry \
+                     points is copied whole and comes through intact."
+                );
+            } else if out.strip_dovi {
                 crate::say!(
                     "note: this recording is Dolby Vision, and the encoder here will not write \
                      it ({e}). The pictures rewritten at each seam could carry no RPU, so the \
@@ -6031,6 +6054,7 @@ fn graft_tables(
     on: Option<&(dyn Fn(f64) + Sync)>,
     tables: crate::si::Tables,
     strip_dovi: bool,
+    numbered_from: i32,
 ) -> Result<crate::si::Stats> {
     // Pictures written without their Dolby Vision are not described as
     // having it, in the map any more than in the stream. See
@@ -6077,18 +6101,42 @@ fn graft_tables(
             &crate::bdav::video_attributes(&src.video),
         )
     };
+    // Where each stream really went, and what the map being corrected calls
+    // it. The muxer takes the PID a stream was given (see [`set_pid`]) and
+    // numbers the rest from `numbered_from` by their place in the file,
+    // which is the order they are listed in here. A recording that never
+    // had PIDs -- a Matroska file, an MP4 -- has every stream numbered that
+    // way. Named by their ids of nought instead, a `.ts` cut of one carrying
+    // a disc's subtitles had a map that left the pictures and the sound out
+    // and put the subtitles on the PID of the list of programmes.
+    let placed = |k: usize, given: i32, was: i32| -> (u16, u16) {
+        let pid = if (0x0010..=0x1FFA).contains(&given) {
+            given as u16
+        } else {
+            (numbered_from + k as i32) as u16
+        };
+        let was = if (0x0010..=0x1FFA).contains(&was) || service.stream(was as u16).is_some() {
+            was as u16
+        } else {
+            pid
+        };
+        (pid, was)
+    };
+    let (pid, was) = placed(0, pids.video(video_pid), video_pid);
+    let pictures_on = pid;
     let mut streams = vec![crate::si::GraftStream {
-        pid: pids.video(video_pid) as u16,
-        was: video_pid as u16,
+        pid,
+        was,
         faithful: true,
         declared: None,
         language: None,
         extra: registration,
     }];
     for (nth, setup) in setups.iter().enumerate() {
+        let (pid, was) = placed(streams.len(), pids.audio(nth, setup.info.pid), setup.info.pid);
         streams.push(crate::si::GraftStream {
-            pid: pids.audio(nth, setup.info.pid) as u16,
-            was: setup.info.pid as u16,
+            pid,
+            was,
             // A folded track no longer has the channels the recording's own
             // audio component descriptor names, and saying it does is worse
             // than saying nothing. A track in another codec is further from
@@ -6100,9 +6148,10 @@ fn graft_tables(
         });
     }
     for (nth, c) in captions.iter().enumerate() {
+        let (pid, was) = placed(streams.len(), pids.caption(nth, c.pid), c.pid);
         streams.push(crate::si::GraftStream {
-            pid: pids.caption(nth, c.pid) as u16,
-            was: c.pid as u16,
+            pid,
+            was,
             faithful: true,
             declared: None,
             language: c.language.clone(),
@@ -6120,9 +6169,10 @@ fn graft_tables(
     // registration goes in with it; where the recording's own map already
     // carried one, this adds nothing. See [`crate::si::Declared`].
     for (nth, g) in graphics.iter().enumerate() {
+        let (pid, was) = placed(streams.len(), pids.graphics(nth, g.pid), g.pid);
         streams.push(crate::si::GraftStream {
-            pid: pids.graphics(nth, g.pid) as u16,
-            was: g.pid as u16,
+            pid,
+            was,
             faithful: true,
             declared: Some(crate::si::Declared {
                 stream_type: 0x90,
@@ -6138,9 +6188,10 @@ fn graft_tables(
     // fall back on, since the stream is this program's own. See
     // [`Subtitles`].
     for (nth, c) in converted.iter().enumerate() {
+        let (pid, was) = placed(streams.len(), pids.graphics(graphics.len() + nth, c.id), c.id);
         streams.push(crate::si::GraftStream {
-            pid: pids.graphics(graphics.len() + nth, c.id) as u16,
-            was: c.id as u16,
+            pid,
+            was,
             faithful: true,
             declared: Some(crate::si::Declared {
                 stream_type: 0x90,
@@ -6222,7 +6273,7 @@ fn graft_tables(
         &crate::si::Graft {
             service,
             streams,
-            pcr_pid: pids.video(video_pid) as u16,
+            pcr_pid: pictures_on,
             ranges,
             tables,
             // Always: the programme guide is read out of it as well as the
@@ -6438,14 +6489,20 @@ fn ranges_with_transitions(
                     let body = if fits[n].video {
                         crate::plan::reencode_range(&reel.src.points, body_start, body_end)
                     } else {
-                        crate::plan::plan_range(
+                        let mut body = crate::plan::plan_range(
                             &reel.src.video,
                             reel.src.duration,
                             &reel.src.points,
                             body_start,
                             body_end,
                             &opts.plan,
-                        )
+                        );
+                        // What [`crate::plan::plan_on`] does to every range
+                        // it plans, done here too: without it the clean
+                        // joins asked for held everywhere but at the ranges
+                        // a transition touches.
+                        crate::plan::clean_the_join(reel.src, &mut body, &opts.plan);
+                        body
                     };
                     // The body is planned against its own bounds and can open
                     // or close up to half a frame either side of them -- on
@@ -7244,6 +7301,13 @@ fn cut_into(
 
     // The muxer's options are strings, and have to outlive the dictionary
     // they go into.
+    // Where the muxer numbers a stream that names no PID of its own: from
+    // the recording's first, where that is being kept, and from its own
+    // default otherwise. See [`graft_tables`].
+    let numbered_from = layout
+        .as_ref()
+        .filter(|l| !pids.bluray && l.first_pid > 0)
+        .map_or(0x0100, |l| l.first_pid);
     let first_pid;
     let pmt;
     let service;
@@ -8973,6 +9037,7 @@ fn cut_into(
                 crate::si::Tables::Muxer
             },
             signalling.strip_dovi,
+            numbered_from,
         ) {
             Ok(stats) if std::env::var("SMARTCUT_DEBUG").is_ok() => {
                 crate::say!(

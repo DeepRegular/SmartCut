@@ -1213,6 +1213,19 @@ fn run() -> Result<()> {
             bail!("{first} prints what it finds and writes no file: -o has nothing to name");
         }
     }
+    // Asked here rather than once the recording is open: that is after the
+    // index has been read or the whole recording walked for one, minutes on
+    // a long broadcast, to be told that `-o still.gif` was never possible.
+    if still_at.is_some() {
+        let path = output.as_deref().unwrap_or("still.png");
+        let ext = std::path::Path::new(path)
+            .extension()
+            .map(|e| e.to_string_lossy().to_ascii_lowercase())
+            .unwrap_or_default();
+        if !smartcut_core::STILL_EXTENSIONS.contains(&ext.as_str()) {
+            bail!("--still writes a .png, .jpg or .bmp, not {path}");
+        }
+    }
     // A file that holds sound and nothing else, named for a cut with
     // pictures in it. The muxer turned the pictures down only once the file
     // had been created, with "Invalid argument", and a file already under
@@ -2071,14 +2084,8 @@ fn run() -> Result<()> {
     }
 
     if let Some(at) = still_at {
+        // Its extension was checked with the rest of the command line.
         let path = output.clone().unwrap_or_else(|| "still.png".into());
-        let ext = std::path::Path::new(&path)
-            .extension()
-            .map(|e| e.to_string_lossy().to_ascii_lowercase())
-            .unwrap_or_default();
-        if !smartcut_core::STILL_EXTENSIONS.contains(&ext.as_str()) {
-            bail!("--still writes a .png, .jpg or .bmp, not {path}");
-        }
         src.input.refuse_as_output(&path)?;
         if at > src.duration {
             bail!("--still {} is past the end of the recording ({})", fmt_hms(at), fmt_hms(src.duration));
@@ -2824,8 +2831,14 @@ fn run() -> Result<()> {
             gives_way = at_out;
         }
         before = plans.last();
-        for plan in plans {
+        // One where the recording begins, and none where the planner split
+        // its one whole range at a seam the recorder left: nobody cut there,
+        // as the first recording's loop above says, and a recorder's clip
+        // joined on came out with a chapter at every stop and start.
+        if !plans.is_empty() {
             marks.push(at_out);
+        }
+        for plan in plans {
             at_out += plan.t_out - plan.t_in;
         }
     }

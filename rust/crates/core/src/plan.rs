@@ -590,7 +590,7 @@ fn past_the_seam(
 /// Only a range whose head is already being re-encoded is moved. A range the
 /// caller placed exactly on an entry point is a range the caller meant, and
 /// re-encoding where none was asked for would be a surprise.
-fn clean_the_join(src: &crate::Source, plan: &mut RangePlan, opts: &PlanOptions) {
+pub(crate) fn clean_the_join(src: &crate::Source, plan: &mut RangePlan, opts: &PlanOptions) {
     let Some(budget) = opts.clean_join.filter(|b| *b > 0.0) else {
         return;
     };

@@ -1434,6 +1434,9 @@ fn at_name(dir: &Path, rel: &str) -> PathBuf {
 /// a `titleName` -- the table of contents beside it is a list of the disc's
 /// menu titles, which is not what the disc is called.
 fn disc_name(xml: &str) -> Option<String> {
+    /// What a name is cut to. It is copied into the label of every row of
+    /// the disc, and the file it comes from may be sixty-four megabytes.
+    const LIMIT: usize = 255;
     let mut rest = xml;
     while let Some(at) = rest.find("name>") {
         // `<di:name>` and `<name>` both end in `name>`; `<di:titleName>` ends
@@ -1441,11 +1444,13 @@ fn disc_name(xml: &str) -> Option<String> {
         let after = &rest[at + "name>".len()..];
         let open = rest[..at].ends_with('<') || rest[..at].ends_with(':');
         if open {
-            if let Some(end) = after.find("</") {
-                let text = xml_text(after[..end].trim());
-                if !text.is_empty() {
-                    return Some(arib::one_line(&text));
-                }
+            // No closing tag after this one is none after any later one
+            // either. Looked for again at every opening, a file of nothing
+            // but `<name>` was searched to its end millions of times over.
+            let end = after.find("</")?;
+            let text = xml_text(after[..end].trim());
+            if !text.is_empty() {
+                return Some(arib::one_line(&text).chars().take(LIMIT).collect());
             }
         }
         rest = after;
@@ -1463,7 +1468,11 @@ fn xml_text(raw: &str) -> String {
     while let Some(at) = rest.find('&') {
         out.push_str(&rest[..at]);
         rest = &rest[at..];
-        let named = rest.find(';').and_then(|end| {
+        // The longest reference is ten bytes (`&#x10FFFF;`), and a `;` any
+        // further off belongs to something else: searched for to the end of
+        // the text at every `&`, a name of nothing but them never finished.
+        let semicolon = rest.bytes().take(16).position(|b| b == b';');
+        let named = semicolon.and_then(|end| {
             let c = match &rest[1..end] {
                 "amp" => '&',
                 "lt" => '<',
@@ -2727,6 +2736,21 @@ mod tests {
         let xml = "<di:title><di:name>A &amp; B &lt;3&gt; &#x41;&#66; &bogus; R&D</di:name></di:title>";
         assert_eq!(disc_name(xml).as_deref(), Some("A & B <3> AB &bogus; R&D"));
         assert_eq!(xml_text("&#0;&#x1b;"), "&#0;&#x1b;");
+    }
+
+    /// A name file built to be searched over and over: openings with no
+    /// closing tag, and a name of nothing but `&` with its `;` at the end.
+    /// Both used to scan to the end of the file once per mark, and a few
+    /// megabytes of either took hours. And the name that does come back is
+    /// one a row's label can carry.
+    #[test]
+    fn a_disc_name_built_to_be_rescanned_reads_at_once() {
+        let opened = "<name>".repeat(1 << 20);
+        assert_eq!(disc_name(&opened), None);
+        let started = std::time::Instant::now();
+        let name = disc_name(&format!("<name>{};</name>", "&".repeat(4 << 20))).unwrap();
+        assert!(started.elapsed().as_secs() < 10);
+        assert_eq!(name.chars().count(), 255);
     }
 
     #[test]

@@ -358,6 +358,7 @@ pub(crate) fn drawn_from(sub: &ff::codec::subtitle::Subtitle) -> Option<Drawn> {
         0 | u32::MAX => None,
         ms => Some(ms as f64 / 1000.0),
     };
+    let mut parts: Vec<Drawn> = Vec::new();
     for rect in sub.rects() {
         let ff::codec::subtitle::Rect::Bitmap(bitmap) = rect else {
             continue;
@@ -408,9 +409,84 @@ pub(crate) fn drawn_from(sub: &ff::codec::subtitle::Subtitle) -> Option<Drawn> {
                 until,
             }
         };
-        return Some(drawn);
+        parts.push(drawn);
     }
-    None
+    merged(parts)
+}
+
+/// The pictures of one subtitle as one picture.
+///
+/// A display set may put up more than one object -- a line at the top of
+/// the screen and one at the bottom, or each line of two as an object of
+/// its own -- and the decoder hands back a rectangle for each. Everything
+/// that takes a subtitle from here holds one picture, so taking the first
+/// lost every line after it. They are drawn into the rectangle that holds
+/// them all, on a colour nothing is drawn in; every object of a set is
+/// coloured from the one palette the set names, so their indices mean the
+/// same thing. Where that cannot be done -- the rectangle would be larger
+/// than a subtitle is, the palettes differ, or there is no index left to be
+/// nothing -- the first is what there is, as before.
+fn merged(mut parts: Vec<Drawn>) -> Option<Drawn> {
+    if parts.len() < 2 {
+        return parts.pop();
+    }
+    let first = parts.swap_remove(0);
+    let same: Vec<Drawn> = parts
+        .into_iter()
+        .filter(|p| p.palette == first.palette)
+        .collect();
+    if same.is_empty() {
+        return Some(first);
+    }
+    let left = same.iter().fold(first.x, |m, p| m.min(p.x));
+    let top = same.iter().fold(first.y, |m, p| m.min(p.y));
+    let ends = |p: &Drawn| {
+        (
+            usize::from(p.x) + usize::from(p.width),
+            usize::from(p.y) + usize::from(p.height),
+        )
+    };
+    let (right, bottom) = same
+        .iter()
+        .map(ends)
+        .fold(ends(&first), |(r, b), (x, y)| (r.max(x), b.max(y)));
+    let (w, h) = (right - usize::from(left), bottom - usize::from(top));
+    let mut palette = first.palette.clone();
+    let clear = match palette.iter().position(|c| c.3 == 0) {
+        Some(i) => i,
+        None if palette.len() < 256 => {
+            palette.push((0, 0, 0, 0));
+            palette.len() - 1
+        }
+        None => return Some(first),
+    };
+    if w > MOST_DOTS || h > MOST_DOTS {
+        return Some(first);
+    }
+    let mut indices = vec![clear as u8; w * h];
+    for p in std::iter::once(&first).chain(same.iter()) {
+        let (dx, dy) = (usize::from(p.x - left), usize::from(p.y - top));
+        let pw = usize::from(p.width);
+        for (row, line) in p.indices.chunks_exact(pw).enumerate() {
+            let at = (dy + row) * w + dx;
+            // Only what is drawn: two objects that overlap leave each
+            // other's letters where they are.
+            for (slot, &i) in indices[at..at + pw].iter_mut().zip(line) {
+                if palette.get(usize::from(i)).is_some_and(|c| c.3 > 0) {
+                    *slot = i;
+                }
+            }
+        }
+    }
+    Some(Drawn {
+        x: left,
+        y: top,
+        width: w as u16,
+        height: h as u16,
+        indices,
+        palette,
+        until: first.until,
+    })
 }
 
 /// The sixteen colours a title's subtitles are drawn from.
@@ -1505,5 +1581,65 @@ mod tests {
         assert!((p.0[2] & 0xFFFF) < 0x0808, "and red only");
         // Nothing said about the rest, and something legible written anyway.
         assert_eq!(p.0[15], 0x000000);
+    }
+    /// A display set that puts up two objects -- a line at the top of the
+    /// screen and one at the bottom -- comes out as one picture holding
+    /// both, not as the first of them.
+    #[test]
+    fn a_set_of_two_objects_is_drawn_whole() {
+        crate::init().expect("libav");
+        let seg = |kind: u8, body: &[u8]| {
+            let mut out = vec![kind];
+            out.extend_from_slice(&(body.len() as u16).to_be_bytes());
+            out.extend_from_slice(body);
+            out
+        };
+        // Where the two go and how big each is.
+        let objects: [(u16, u16, u16, u16); 2] = [(100, 100, 20, 4), (300, 900, 30, 6)];
+        let mut pcs = vec![0x07, 0x80, 0x04, 0x38, 0x10, 0x00, 0x01, 0x80, 0x00, 0x00, 2];
+        let mut wds = vec![2u8];
+        for (k, &(x, y, w, h)) in objects.iter().enumerate() {
+            pcs.extend_from_slice(&(k as u16).to_be_bytes());
+            pcs.extend_from_slice(&[k as u8, 0x00]);
+            pcs.extend_from_slice(&x.to_be_bytes());
+            pcs.extend_from_slice(&y.to_be_bytes());
+            wds.push(k as u8);
+            for v in [x, y, w, h] {
+                wds.extend_from_slice(&v.to_be_bytes());
+            }
+        }
+        let mut set = seg(crate::pgs::PCS, &pcs);
+        set.extend(seg(crate::pgs::WDS, &wds));
+        // Entry 1 is solid white; every other entry is nothing.
+        set.extend(seg(crate::pgs::write::PDS, &[0, 0, 1, 235, 128, 128, 255]));
+        for (k, &(_, _, w, h)) in objects.iter().enumerate() {
+            let mut rle = Vec::new();
+            for _ in 0..h {
+                rle.extend_from_slice(&[0x00, 0x80 | w as u8, 0x01, 0x00, 0x00]);
+            }
+            let mut ods = (k as u16).to_be_bytes().to_vec();
+            ods.extend_from_slice(&[0x00, 0xC0]);
+            ods.extend_from_slice(&((rle.len() + 4) as u32).to_be_bytes()[1..]);
+            ods.extend_from_slice(&w.to_be_bytes());
+            ods.extend_from_slice(&h.to_be_bytes());
+            ods.extend_from_slice(&rle);
+            set.extend(seg(crate::pgs::write::ODS, &ods));
+        }
+        set.extend(seg(crate::pgs::END, &[]));
+
+        let mut reader = crate::pgs::read::Reader::open((1920, 1080)).expect("a decoder");
+        let drawn = reader.read(&set).expect("decodes").expect("draws");
+        assert_eq!(
+            (drawn.x, drawn.y, drawn.width, drawn.height),
+            (100, 100, 230, 806),
+            "the rectangle that holds both"
+        );
+        let opaque = |x: usize, y: usize| {
+            let i = drawn.indices[(y - 100) * 230 + (x - 100)];
+            drawn.palette[usize::from(i)].3 > 0
+        };
+        assert!(opaque(100, 100) && opaque(119, 103), "the first line");
+        assert!(opaque(300, 900) && opaque(329, 905), "and the second");
+        assert!(!opaque(200, 500) && !opaque(120, 100), "and nothing between");
     }
 }
