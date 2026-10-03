@@ -397,7 +397,7 @@ function showPlayFrame(run, buf) {
 
 function setPlaying(on) {
   playing = on;
-  el("play").textContent = tr(on ? "t.stop" : "t.play");
+  el("play").textContent = on ? "■" : "▶";
   el("play").title = tr(on ? "t.stop.title" : "t.play.title");
   el("play").classList.toggle("on", on);
 }
@@ -902,7 +902,8 @@ function showVolume(level, silent, remember = true) {
   const v = clamp(Math.round(Number(level)), 0, 100);
   el("volume").value = String(v);
   el("volume").style.setProperty("--at", `${v}%`);
-  el("vol-num").textContent = `${v}%`;
+  // The number, which the bar has no room to carry beside it.
+  el("volume").title = `${tr("t.volume")} (${v}%)`;
   el("mute").classList.toggle("muted", silent);
   el("mute").setAttribute("aria-pressed", silent ? "true" : "false");
   if (invoke) invoke("set_volume", { level: silent ? 0 : gain(v) }).catch(() => {});
@@ -1036,8 +1037,10 @@ if (listen) {
 onLangChange(() => {
   updateReadouts();
   paintNote();
-  // The play button's words are its state's, written by `setPlaying` alone.
+  // The play button's tooltip is its state's, written by `setPlaying` alone,
+  // and the level's carries the number, written by `showVolume`.
   setPlaying(playing);
+  showVolume(el("volume").value, muted(), false);
   const j = join();
   if (j) nameWindow(j);
 });

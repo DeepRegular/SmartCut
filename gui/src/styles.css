@@ -835,7 +835,7 @@ body.crosswin { padding: 0; }
   font-weight: 700; min-width: 96px; margin: 0 3px;
 }
 .transport .cut:hover:not(:disabled) { background: #ffb638; }
-.transport .tool, .player .tool { font-size: 11.5px; }
+.transport .tool { font-size: 11.5px; }
 /* The ≡ at the end of the row. Wider than the glyph needs so that it is a
    button rather than a mark, and lit while its menu is up: the menu opens
    over the timeline, and the button is what says where it came from. */
@@ -843,39 +843,9 @@ body.crosswin { padding: 0; }
 .transport .more.open { background: #3d3d3d; border-color: #5c5c5c; }
 
 /* --- playback --------------------------------------------------------- */
-/* The seam window's playback row. The cut editor's playback controls are in
-   its footer, flat (see `.export .flat` below); what follows was written for
-   the row they used to have, and the seam window's row is that row's
-   copy. */
-/* One cluster, centred under the picture the way the row above it is: the
-   ways of moving while it plays, then the sound, a gap apart and no more,
-   with the readouts either side of it (below). It breaks when the window is
-   too narrow for one line, the way the cutting row breaks between its
-   clusters -- and only then: see `.readout`.
-
-   Two other arrangements were tried and put back. The sound pinned to the
-   right edge, which is where the reference tool keeps its own: across a
-   window this wide that is a reach of half a screen for the thing you turn
-   down while something is playing. And 再生 held in the middle of the window
-   with the rest either side of it: the button lands where the hand expects
-   it, and the row around it then reads as lopsided, which is what the eye
-   sees first. The row is looked at as a whole, so it is placed as a whole. */
-.player {
-  display: flex; align-items: center; justify-content: center;
-  flex-wrap: wrap; row-gap: 4px; column-gap: 18px;
-}
-.player .play { min-width: 68px; }
-/* Wide enough for the speed they carry while they run -- "◀◀ 16×" -- so that
-   the row does not shuffle sideways as one is stepped up. */
-.player .seek { min-width: 70px; }
-/* A mode rather than an action: lit for as long as it holds. The play
-   button's own blue, that being what this window lights a running thing
-   with. */
-.player .tool.on, .player .seek.on { background: #2c5f7a; border-color: #3a7fa0; }
-/* A group by its look -- the ♪ is a transport button like the rest -- but
-   not a cluster of them: the slider beside it is one control with the
-   button, and the three must not be split across a line. */
-.player > .vol { flex-wrap: nowrap; gap: 6px; min-width: 0; }
+/* Both windows keep their playback controls in the footer, flat: see
+   `.export .flat` below. What is here is the sound's own, which is the same
+   wherever it stands. */
 .vol > button { min-width: 30px; font-size: 14px; }
 /* Muted, which is a thing you can see at a glance and is drawn as one: the
    note struck through, and greyed the way everything out of use here is.
