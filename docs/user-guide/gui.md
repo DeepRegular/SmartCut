@@ -296,6 +296,11 @@ bars. It can be changed with the editor open; while playing, the change is
 heard about a second later. A fold asked for by the output settings is heard
 the same way.
 
+Where a recording has more than one sound track, the editor plays the first of
+the tracks being written: the one a player starts on when it opens the output.
+A track switched off in **Tracks** is not heard, and with every track off there
+is no sound and the volume controls are greyed out.
+
 **Picking anything but the default writes that track afresh** —
 nothing else can change the channel count, since copying and smart rendering
 both carry the recording's own frames. A note beside the choice says so. It is
@@ -630,6 +635,9 @@ foot of the waveform, so a commercial junction's quiet shows before anything has
 been detected: a quick way to find roughly where to start stepping with the
 meter.
 
+On a recording with more than one sound track, the waveform and the silence
+detection both read the first track, whether or not it is switched off in **Tracks**.
+
 ### Looking closely
 
 ![The magnifier](../images/usage-zoom.png)
@@ -674,6 +682,9 @@ commercial break, are not things the picture alone will tell you.
   carries a sentence onto the next line, the brackets a speaker's name sits in, the
   `ü` in a German line — are drawn from those dots, in the cell a character would
   have taken.
+- A broadcast's **crawl** can be chosen the same way. It is sent with no time of its
+  own, so it is shown at the picture it arrived with, which can put it a second or
+  so off.
 - A disc's subtitles — **PGS** and a DVD's **subpictures** — are pictures, and what
   the disc drew is what is put on screen.
 - Where a recording carries more than one (a bilingual broadcast, Japanese and English
@@ -1234,20 +1245,31 @@ with their sound. Like the cut editor, it is left with OK or Cancel.
 #### The preview
 
 Three seconds either side of the join, **composited the way the output will
-composite them**. Drag the scrubber and the picture follows; `▶ Play` runs it
-in real time with its sound. The bar under it is in three parts: the clip
+composite them**. Drag the scrubber and the picture follows; `▶` (play) runs
+it in real time with its sound. The bar under it is in three parts: the clip
 before on the left, the clip after on the right, and the coloured stretch
 between them is what the effect covers. With `None` chosen that stretch is a
 single line, because a cut takes no time.
 
-What you hear is what the output will carry: the two clips are not mixed
-(see below).
+The playback controls sit in the middle of the bottom row, the row with OK:
 
-`⟲ Loop` starts again from the top when it reaches the end. A crossing is a
+| Button | Key | |
+|---|---|---|
+| `\|◀` `▶\|` | Home / End | To the start / the end |
+| `◀` `▶` | ← / → | Back / on one frame; hold to keep stepping |
+| `▶` | Space | Play and stop |
+| `⟲` | | Loop (below) |
+| `♪` | M | Mute |
+
+What you hear is what the output will carry. Where there is more than one sound
+track, it is the one the joined file starts on, and a clip with no track in that
+place is silent. The two clips are not mixed (see below).
+
+`⟲` (loop) starts again from the top when it reaches the end. A crossing is a
 second or two, and it gets watched over and over.
 
-**The length of the file depends on which kind you pick**, and the line under
-the buttons says which you are getting:
+**The length of the file depends on which kind you pick**, and the line above
+OK says which you are getting:
 
 - A **fade** takes half its time from the clip before and half from the clip
   after, so the file is as long as it would have been without one.
@@ -1289,7 +1311,7 @@ changes no length.
 frames through, and there is nothing in them to rewrite — set **Audio** on the
 output screen to smart rendering (the default) or to a whole re-encode.
 
-**The preview carries it.** Press `▶ Play` and the sound goes down and comes
+**The preview carries it.** Press `▶` and the sound goes down and comes
 back on the same curve the file is written with — how many seconds is right
 is not a thing anybody can settle by reading, which is the argument this whole
 window is built on.

@@ -425,7 +425,7 @@ hold the two answers together.
 |---|---|---|
 | Composited into | the preview's own size, `yuv420p` | the master clip's shape |
 | Scaler | `FAST_BILINEAR` — a picture is looked at once and dropped | `BICUBIC` — it is paid for the length of the reel |
-| Sound | the two clips in turn to one output device (`play_audio_across`) | the same order, written |
+| Sound | the two clips in turn to one output device (`play_audio_across`), each on the track in the place the master's first kept track holds (`heard_nth`) | the same order and the same track (`Threads`), written |
 
 The composite is done in studio-range `yuv420p` and the conversion to JPEG
 comes after it. The other way round, the studio black `Shade::yuv` gives

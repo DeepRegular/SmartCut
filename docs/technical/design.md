@@ -2078,7 +2078,10 @@ indexed from the top down, so with thirty-odd hour-long recordings in it the top
 were deleted while the rows were still there, and each took half a minute to read again when it
 was opened for cutting. The GUI remembers every recording the list has held in the session —
 told by `list_rows` as rows arrive, so a row still waiting its turn counts — and hands their
-indexes to `prune` to spare.
+indexes to `prune` to spare. They still count towards both limits (0.8.21): counted only where
+they fell in the newest-first order, an old one left room for a full 32 files and 2 GB of others
+on top of it, and the cache could reach nearly twice its size. What is over now comes off the
+recordings the list has not held.
 
 ### Byte offsets — taking the guesswork out of seeking
 
