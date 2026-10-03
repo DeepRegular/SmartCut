@@ -1118,6 +1118,7 @@ const CATALOG = {
     "xw.open": "継ぎ目の設定…",
     "xw.noJoins": "継ぎ目がありません",
     "xw.cannotOpen": "継ぎ目の編集を開けませんでした: {e}",
+    "xw.loop.title": "継ぎ目の前後を繰り返し再生する",
     "zoom.title": "拡大表示",
     "zoom.windowTitle": "拡大表示",
     "zoom.open": "拡大表示",
@@ -2401,7 +2402,7 @@ const CATALOG = {
     "editor.waveReading": "Reading the waveform… {pct}%",
     "editor.waveWaiting": "The waveform is made along with the thumbnails…",
     "editor.view": "View",
-    "editor.view.title": "Choose what is drawn over the picture: the counter, the indicators and the subtitles",
+    "editor.view.title": "Choose what the window shows: the counter, the indicators, the waveform and the subtitles",
 
     // --- the magnifier ----------------------------------------------------
     // --- the seam window ------------------------------------------------
@@ -2429,6 +2430,7 @@ const CATALOG = {
     "xw.open": "Transition…",
     "xw.noJoins": "No joins",
     "xw.cannotOpen": "The seam window would not open: {e}",
+    "xw.loop.title": "Play the seconds around the join over and over",
     "zoom.title": "Magnifier",
     "zoom.windowTitle": "Magnifier",
     "zoom.open": "Magnifier",

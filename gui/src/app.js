@@ -9841,7 +9841,11 @@ async function loadProject(path, given = null) {
   showSettings();
   const taken = [];
   let refused = 0;
-  for (const saved of Array.isArray(doc.clips) ? doc.clips : []) {
+  // The row the file's master position names, found by its place in the
+  // file rather than in the list: a row refused below would otherwise move
+  // the master onto the row after it.
+  let masterRow = null;
+  for (const [at, saved] of (Array.isArray(doc.clips) ? doc.clips : []).entries()) {
     if (!saved || typeof saved.path !== "string") continue;
     // A project is the one thing in the list that can arrive from somebody
     // else, and every row in it is opened without being asked for -- the
@@ -9917,11 +9921,12 @@ async function loadProject(path, given = null) {
     }
     clips.push(clip);
     taken.push([clip, !!saved.cmPending]);
+    if (at === masterAt) masterRow = clip;
   }
   // The rows exist now, so the position the file gave can become the row it
   // names. A list shorter than the file said -- a recording that has moved
   // away -- falls through to the first row, which is what no answer means.
-  settings.master = masterAt !== null && clips[masterAt] ? clips[masterAt].id : null;
+  settings.master = masterRow ? masterRow.id : null;
   listRows(taken.map(([clip]) => clip));
   projectPath = path;
   tempProject = "";

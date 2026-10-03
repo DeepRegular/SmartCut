@@ -501,8 +501,12 @@ async function showJoin() {
   if (run !== joinRun) return;
   facts = got;
   el("note").textContent = "";
-  // The sound is only offered where one of the two has any.
-  const heard = facts.beforeAudio || facts.afterAudio;
+  // The sound is only offered where one of the two has any, and where the
+  // joined file has any: a master that keeps no track is played as silence
+  // (`heard` below 0, see `joinHeard` in the list), and a live slider over
+  // it was a control that did nothing.
+  const silent = typeof j.heard === "number" && j.heard < 0;
+  const heard = (facts.beforeAudio || facts.afterAudio) && !silent;
   for (const id of ["mute", "volume"]) el(id).disabled = !heard;
   await refreshSpan();
   showFrame(0);
@@ -846,8 +850,41 @@ const step = (n) => {
   drawScrub();
   showFrame(head);
 };
-el("step-back").addEventListener("click", () => step(-1));
-el("step-fwd").addEventListener("click", () => step(1));
+/// Held, a step button goes on stepping, as the cut editor's do: the tooltip
+/// the two windows share says so. Nothing waits for the picture of a step
+/// before the next one, since `showFrame` only ever asks for the newest.
+function holdStep(id, dir) {
+  const btn = el(id);
+  let timer = null;
+  const stop = () => {
+    clearTimeout(timer);
+    timer = null;
+  };
+  const again = () => {
+    step(dir);
+    timer = setTimeout(again, 130);
+  };
+  btn.addEventListener("pointerdown", (ev) => {
+    if (ev.button !== 0) return;
+    // Not `preventDefault`: that swallows the `mousedown` the open lists
+    // close on (`pairPicker`, `wireDrops`), and a list left down over a
+    // press here took the next Space as a choice from it.
+    btn.setPointerCapture(ev.pointerId);
+    stop();
+    step(dir);
+    timer = setTimeout(again, 400);
+  });
+  btn.addEventListener("pointerup", stop);
+  btn.addEventListener("pointercancel", stop);
+  window.addEventListener("blur", stop);
+  // A press from the keyboard, which is a click with no pointer behind it.
+  // A pointer's own click has been stepped already, on the way down.
+  btn.addEventListener("click", (ev) => {
+    if (ev.detail === 0) step(dir);
+  });
+}
+holdStep("step-back", -1);
+holdStep("step-fwd", 1);
 el("go-start").addEventListener("click", () => {
   stopPlay(false);
   head = 0;
@@ -950,7 +987,13 @@ el("cross-cancel").addEventListener("click", () => {
 // a field has the focus and something is being typed into it: Enter in the
 // seconds field means "take this number".
 window.addEventListener("keydown", (ev) => {
-  const tag = ev.target && ev.target.tagName;
+  // The volume keeps the keyboard after it is used, and nothing types into
+  // it: holding on to it, it took the arrows, Home, End and M from the
+  // window. It hands the keyboard back at the first key, as the cut editor's
+  // does. The transition's slider keeps its arrows: they set its seconds.
+  const handed = ev.target && ev.target.id === "volume";
+  if (handed) ev.target.blur();
+  const tag = handed ? "BODY" : ev.target && ev.target.tagName;
   const typing = tag === "INPUT" && ev.target.type !== "range";
   // A button or a list that has the focus answers Enter itself: キャンセル
   // with the focus on it is not OK.
@@ -966,6 +1009,22 @@ window.addEventListener("keydown", (ev) => {
     // playback in turn for as long as the key was down.
     ev.preventDefault();
     playing ? stopPlay() : startPlay();
+  } else if (!ev.ctrlKey && !ev.metaKey && !ev.altKey && tag !== "INPUT" && tag !== "SELECT") {
+    // The keys the buttons' tooltips name, which are the cut editor's
+    // tooltips and promised keys this window did not have. Not over a field
+    // or a list, which move their own value with them -- the sliders and the
+    // pickers take the arrows, Home and End.
+    const by = { ArrowLeft: () => step(-1), ArrowRight: () => step(1) }[ev.key];
+    if (by) {
+      ev.preventDefault();
+      by();
+    } else if (ev.key === "Home" || ev.key === "End") {
+      ev.preventDefault();
+      el(ev.key === "Home" ? "go-start" : "go-end").click();
+    } else if ((ev.key === "m" || ev.key === "M") && !ev.repeat) {
+      ev.preventDefault();
+      if (!el("mute").disabled) el("mute").click();
+    }
   }
 });
 

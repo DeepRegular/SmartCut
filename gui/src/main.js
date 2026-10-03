@@ -6325,11 +6325,10 @@ function paintSourceInfo() {
     src.variable ? tr("media.variable") : null,
   ].filter(Boolean);
   const sound = keptAudio();
-  // What the *recording* carries, not what the output is to keep: the
-  // preview plays the recording's own sound whichever tracks are ticked for
-  // writing, so a bilingual programme with its dub left out still has a
-  // level worth setting.
-  for (const id of ["mute", "volume"]) el(id).disabled = !src.has_audio;
+  // The track the output keeps is the one the preview plays (see `play` on
+  // the Rust side), and with every track switched off it plays none: there is
+  // then no level to set.
+  for (const id of ["mute", "volume"]) el(id).disabled = !sound;
   paintTitle();
   el("info").textContent = tr("editor.info", {
     // A dash rather than zero while the walk is still counting them: "無劣化
@@ -7642,10 +7641,23 @@ function renderTracks() {
       dropStreams = box.checked
         ? dropStreams.filter((i) => i !== track.index)
         : dropStreams.concat([track.index]);
+      // Somebody's choice even while the row is still settling, as a cover
+      // set then is (see `setPoster`): counted as what the row arrived with,
+      // Escape dropped it without asking.
+      if (opening !== null || settling) editedWhileArriving = true;
       paintTrackButton();
       // Switching the wider track off makes the narrower one the track the
       // line speaks for.
       paintSourceInfo();
+      // And the track the preview and the meter speak for, which is chosen
+      // when they are asked: a run that is playing goes on playing the track
+      // it started with, and the bars go on reading it, until put down.
+      // Only for a sound track: a caption switched off has nothing to do
+      // with what is heard, and stopping for it put the playback down.
+      if (track.kind === "audio") {
+        if (playing) stopPlay();
+        else scheduleMeterAt();
+      }
       sync();
     });
     const label = document.createElement("label");

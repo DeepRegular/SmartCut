@@ -4866,7 +4866,9 @@ struct WaveOut {
 
 /// Bumped when [`WaveOut`] stops meaning what it used to.
 /// 1: as first written.
-const WAVE_VERSION: u32 = 1;
+/// 2: the first track outlined rather than the main one, which is the track
+///    the editor plays (see [`heard_track`]).
+const WAVE_VERSION: u32 = 2;
 
 /// Where this recording's outline is kept: beside its flat detections.
 fn wave_path(app: &tauri::AppHandle, path: &str) -> Result<std::path::PathBuf, String> {
@@ -4981,7 +4983,10 @@ const FLAT_VERSION: u32 = 2;
 /// change to one is no reason to throw the other away: the pictures' version
 /// 2 would have sent every recording's silences back to be read again, which
 /// off a NAS is a minute a half hour for an answer that had not changed.
-/// 1: as first written.
+/// 1: as first written. Still 1 though the first track is listened to now
+///    rather than the main one (see [`quiet_now`]): the two are one track on
+///    nearly every recording, and a 2 would have sent every list's silences
+///    back to be read for the few where they are not.
 const QUIET_VERSION: u32 = 1;
 
 /// A detection kept on disc: what it was found with, and what it found.
@@ -5268,6 +5273,20 @@ fn quiet_now(
         threshold_db,
         min_silence: min_seconds,
         ..Default::default()
+    };
+    // Listened for on the track the outline is drawn from and the editor
+    // plays with every track kept -- the first -- rather than the main one:
+    // where those two differ, quiet stretches were marked over sound the
+    // waveform showed. See [`heard_track`] and `wave::outlined`.
+    let first;
+    let main = src.audio.as_ref().map(|a| a.stream_index);
+    let src = if src.audios.first().map(|a| a.stream_index) == main {
+        src
+    } else {
+        let mut heard = src.clone();
+        heard_track(&mut heard, &[]);
+        first = heard;
+        &first
     };
     let runs: Vec<FlatRun> = smartcut_core::find_silences_with(src, &opts, Some(Box::new(say)))
         .map_err(|e| e.to_string())?
@@ -6894,8 +6913,13 @@ fn clock_from(start: &smartcut_core::Start, hearing: bool) -> std::time::Instant
 /// metered, through the preview of a cut that leaves it out. The same first
 /// kept track is the one the channel fold is settled for (`audioOf` in the
 /// list window), so what is heard is folded as that track is written.
+///
+/// Also with nothing switched off: the main track need not be the first
+/// (a container's nomination, or libav's widest), and the first is what the
+/// cut writes first, what the fold is settled for, and what the seam window
+/// plays (`heard_nth` 0).
 fn heard_track(src: &mut Source, drop: &[usize]) {
-    if drop.is_empty() || src.audios.is_empty() {
+    if src.audios.is_empty() {
         return;
     }
     src.audio = src

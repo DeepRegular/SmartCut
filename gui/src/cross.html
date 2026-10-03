@@ -241,6 +241,13 @@
                apart; the cut editor never meets this, its steps being in the
                cutting row above. -->
           <div class="export">
+            <!-- Three columns: an empty one as wide as the buttons' corner,
+                 the playback in the middle, under the picture it plays, and
+                 OK and キャンセル in the corner. Where the window is too
+                 narrow for both sides to be equal, the empty one gives way
+                 first and the playback moves left rather than over OK. -->
+            <span class="xside"></span>
+            <div class="xtransport">
             <div class="tgroup flat">
               <button id="go-start" data-i18n-title="t.goStart">|◀</button>
               <button id="step-back" data-i18n-title="t.stepBack">◀</button>
@@ -256,7 +263,7 @@
                    end. A crossing is a second or two and is watched over and
                    over. -->
               <button id="loop" class="tool" type="button" aria-pressed="false"
-                      data-i18n-title="t.loop.title">⟲</button>
+                      data-i18n-title="xw.loop.title">⟲</button>
             </div>
             <!-- The level is in the slider's tooltip, as on the cut editor:
                  the bar says it, and the row has no room for the number. -->
@@ -265,9 +272,11 @@
               <input id="volume" class="vslider" type="range" min="0" max="100" step="1"
                      value="100" data-i18n-aria="t.volume.aria" />
             </div>
-            <span class="spacer"></span>
-            <button id="cross-ok" class="primary wide" data-i18n="editor.ok">OK</button>
-            <button id="cross-cancel" class="secondary" data-i18n="editor.cancel">キャンセル</button>
+            </div>
+            <div class="xside xend">
+              <button id="cross-ok" class="primary wide" data-i18n="editor.ok">OK</button>
+              <button id="cross-cancel" class="secondary" data-i18n="editor.cancel">キャンセル</button>
+            </div>
           </div>
         </footer>
       </div>
