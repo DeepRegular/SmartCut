@@ -1305,6 +1305,17 @@ fn run() -> Result<()> {
     let mut output = written_to(output)?;
     let bdav = written_to(bdav)?;
     let seek_index = written_to(seek_index)?;
+    // The still laid over a crossing is read the same way, and only once the
+    // first crossing is written: a name that was mistyped, or a share named
+    // as it is written down, failed with "No such file or directory" after
+    // the whole of the first recording had been cut, and took the cut with
+    // it.
+    let crossing_image = written_to(crossing_image)?;
+    if let Some(image) = crossing_image.as_deref() {
+        if !std::path::Path::new(image).is_file() {
+            bail!("--transition-image {image}: there is no such file");
+        }
+    }
     // The index is written as soon as the recording is open and the cut over
     // it afterwards, so the run ended well with the index gone -- and the
     // next run with the same line stopped at a seek index that was a cut.
@@ -2506,7 +2517,10 @@ fn run() -> Result<()> {
     // Said out loud only where it is actually going in: asked for on a
     // recording that carries none, or in a shape that cannot hold one, the
     // engine says so itself rather than this promising it here.
+    // Only off a transport stream: the carousel goes in with the broadcast's
+    // own tables, and a DVD's navigation packets are "data" too.
     let data = if data_broadcast != Some(false)
+        && src.on_a_ts
         && smartcut_core::can_carry_data_broadcast(&out, tables)
         && src.dropped.iter().any(|d| d.what == "data")
     {
@@ -2519,7 +2533,10 @@ fn run() -> Result<()> {
          stream(s){graphics}{subpictures}{data}{}",
         src.audios.len(),
         src.captions.len(),
+        // A recording that is not a transport stream has no tables of its
+        // own to keep or to pare down: the muxer writes them whatever was asked.
         match (to_ts, smartcut_core::tables_for(&out, tables)) {
+            (true, _) if !src.on_a_ts => ", tables left to the muxer",
             (true, smartcut_core::si::Tables::Partial) => ", written as a partial transport stream",
             (true, smartcut_core::si::Tables::Broadcast) => ", the broadcast's own tables",
             (true, smartcut_core::si::Tables::Muxer) => ", tables left to the muxer",
@@ -2739,6 +2756,22 @@ fn run() -> Result<()> {
             between.seconds,
         );
     }
+    // The sound the AAC sidecar is written from: the first track the cut
+    // keeps, which is the one `write_audio_es` takes out of the cut (and the
+    // one the editor plays) -- of the recording the output is shaped like.
+    // Asked of the main track instead, `--drop-stream` taking that track
+    // away -- or every track -- or an AC-3 track kept before it left the
+    // sidecar to be written from a track the ADTS muxer cannot take, which
+    // failed once the cut had been written.
+    let shaped_like = match master {
+        0 => &src,
+        n => joined_src.get(n - 1).unwrap_or(&src),
+    };
+    let first_kept_sound: Option<String> = shaped_like
+        .audios
+        .iter()
+        .find(|a| !drop_streams.contains(&a.stream_index))
+        .map(|a| a.codec.clone());
     if reels.len() > 1 {
         tell!(
             "        {} recording(s) into one file, shaped like {}",
@@ -2924,8 +2957,8 @@ fn run() -> Result<()> {
     // nought-byte `.aac` and then stop with "Invalid argument", the muxer
     // having been handed a stream it has no header for.
     let es_is_aac = match audio_codec {
-        smartcut_core::AudioCodec::Aac => true,
-        smartcut_core::AudioCodec::Source => src.audio.as_ref().is_some_and(|a| a.codec == "aac"),
+        smartcut_core::AudioCodec::Aac => first_kept_sound.is_some(),
+        smartcut_core::AudioCodec::Source => first_kept_sound.as_deref() == Some("aac"),
         _ => false,
     };
     if audio_es && es_is_aac {
@@ -2936,11 +2969,8 @@ fn run() -> Result<()> {
         // Named by what it actually is, not by the setting: "source" tells
         // nobody why the sidecar was declined.
         let is = match audio_codec {
-            smartcut_core::AudioCodec::Source => src
-                .audio
-                .as_ref()
-                .map(|a| a.codec.clone())
-                .unwrap_or_else(|| "nothing".into()),
+            _ if first_kept_sound.is_none() => "nothing".to_string(),
+            smartcut_core::AudioCodec::Source => first_kept_sound.clone().unwrap_or_else(|| "nothing".into()),
             other => other.as_str().to_string(),
         };
         smartcut_core::say!(

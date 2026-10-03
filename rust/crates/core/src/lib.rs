@@ -834,8 +834,9 @@ pub fn video_decoder(params: ff::codec::Parameters) -> Result<ff::decoder::Video
 pub(crate) struct Luma8<'a> {
     data: &'a [u8],
     stride: usize,
-    /// Two bytes a sample, and how far to shift one to get eight bits.
-    wide: Option<(u32, bool)>,
+    /// Two bytes a sample: where the sample sits in them, its depth, and
+    /// whether they are big-endian.
+    wide: Option<(u32, u32, bool)>,
     /// Bytes from one sample to the next in a row, and to the first: one and
     /// nought for the planar formats, two and one for packed UYVY.
     step: usize,
@@ -855,7 +856,7 @@ impl<'a> Luma8<'a> {
             let big = d.flags & ff::ffi::AV_PIX_FMT_FLAG_BE as u64 != 0;
             // `shift` is where the bits sit in their two bytes: nought for
             // the planar formats, six for P010's high-aligned samples.
-            (depth > 8).then(|| (d.comp[0].shift as u32 + depth - 8, big))
+            (depth > 8).then(|| (d.comp[0].shift as u32, depth, big))
         });
         let width = if wide.is_some() { 2 } else { 1 };
         let (step, offset, usable) = match desc {
@@ -885,16 +886,21 @@ impl<'a> Luma8<'a> {
         let i = y * self.stride + self.offset + x * self.step;
         match self.wide {
             None => self.data.get(i).copied().unwrap_or(0),
-            Some((shift, big)) => {
+            Some((shift, depth, big)) => {
                 let (Some(&a), Some(&b)) = (self.data.get(i), self.data.get(i + 1)) else {
                     return 0;
                 };
                 let pair = [a, b];
-                let v = if big { u16::from_be_bytes(pair) } else { u16::from_le_bytes(pair) };
+                let v = if big { u16::from_be_bytes(pair) } else { u16::from_le_bytes(pair) } as u32;
+                // Masked to the sample's own bits before it is narrowed: in a
+                // packed format (XV30, V30X) the next component shares the
+                // word, and its bits sat above the luma's and read as white.
                 // Checked: a float format states a depth of 32, which is a
                 // shift past the sixteen bits read here. Nothing sensible can
                 // be read off one this way, and a shift that wide is a panic.
-                v.checked_shr(shift).unwrap_or(0).min(255) as u8
+                let mask = 1u32.checked_shl(depth).map_or(u32::MAX, |m| m - 1);
+                let sample = v.checked_shr(shift).unwrap_or(0) & mask;
+                sample.checked_shr(depth - 8).unwrap_or(0).min(255) as u8
             }
         }
     }

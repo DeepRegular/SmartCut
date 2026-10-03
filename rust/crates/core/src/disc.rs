@@ -1442,15 +1442,30 @@ fn disc_name(xml: &str) -> Option<String> {
         // `<di:name>` and `<name>` both end in `name>`; `<di:titleName>` ends
         // in `Name>` and is passed over by the case-sensitive match above.
         let after = &rest[at + "name>".len()..];
-        let open = rest[..at].ends_with('<') || rest[..at].ends_with(':');
+        // An opening tag, `<name>` or `<di:name>`, and not the closing one:
+        // `</di:name>` ends in `:name>` too, and taken for an opening after
+        // an empty name it gave the disc the next element's markup as its
+        // name -- `<di:numSets>1`.
+        let open = rest[..at].rfind('<').is_some_and(|lt| {
+            let tag = &rest[lt + 1..at];
+            tag.is_empty()
+                || (tag.ends_with(':')
+                    && !tag.starts_with('/')
+                    && !tag.contains(|c: char| c == '>' || c.is_whitespace()))
+        });
         if open {
             // No closing tag after this one is none after any later one
             // either. Looked for again at every opening, a file of nothing
             // but `<name>` was searched to its end millions of times over.
             let end = after.find("</")?;
-            let text = xml_text(after[..end].trim());
-            if !text.is_empty() {
-                return Some(arib::one_line(&text).chars().take(LIMIT).collect());
+            // Asked of the line and not of the text: a name of nothing but
+            // `&#32;` is text, and no name.
+            let line: String = arib::one_line(&xml_text(after[..end].trim()))
+                .chars()
+                .take(LIMIT)
+                .collect();
+            if !line.is_empty() {
+                return Some(line);
             }
         }
         rest = after;
@@ -2736,6 +2751,12 @@ mod tests {
         let xml = "<di:title><di:name>A &amp; B &lt;3&gt; &#x41;&#66; &bogus; R&D</di:name></di:title>";
         assert_eq!(disc_name(xml).as_deref(), Some("A & B <3> AB &bogus; R&D"));
         assert_eq!(xml_text("&#0;&#x1b;"), "&#0;&#x1b;");
+        // A disc left unnamed: the closing tag is not a second opening, and
+        // what follows it is not the name.
+        let empty = "<di:title><di:name></di:name>\n<di:numSets>1</di:numSets></di:title>";
+        assert_eq!(disc_name(empty), None);
+        let blank = "<di:name>&#32;</di:name><di:x>y</di:x><name>Z</name>";
+        assert_eq!(disc_name(blank).as_deref(), Some("Z"));
     }
 
     /// A name file built to be searched over and over: openings with no

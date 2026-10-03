@@ -1,7 +1,7 @@
 //! The sound's outline over the whole recording, for drawing under the
 //! timeline.
 //!
-//! One read of the main audio track, kept as two levels per bucket of
+//! One read of the first audio track, kept as two levels per bucket of
 //! [`STEP`] seconds: the loudest sample in it and its RMS. Both are stored in
 //! dB as a byte each (see [`Wave`]), which is what the drawing wants and is a
 //! quarter of a megabyte for two hours.
@@ -49,7 +49,15 @@ pub fn level_byte(v: f64) -> u8 {
     (((db + FLOOR_DB) / FLOOR_DB) * 255.0).round().clamp(0.0, 255.0) as u8
 }
 
-/// Read the main audio track and outline it, as a pass of its own.
+/// The track the outline is of: the first, which is the one the editor plays
+/// while every track is kept (and the one a player starts on), rather than
+/// the main one -- libav's widest, which need not be first, and then the
+/// editor drew one track and played another.
+fn outlined(src: &Source) -> Option<&crate::AudioInfo> {
+    src.audios.first().or(src.audio.as_ref())
+}
+
+/// Read the first audio track and outline it, as a pass of its own.
 ///
 /// For a recording whose outline was not made on the way past: one opened
 /// before this was written, or one whose pictures were already kept. Where
@@ -57,10 +65,7 @@ pub fn level_byte(v: f64) -> u8 {
 /// this read never happens; see [`crate::thumbs::build_with_sound`].
 pub fn read_wave(src: &Source, mut progress: Option<Box<dyn FnMut(f64) + Send>>) -> Result<Wave> {
     crate::init()?;
-    let audio = src
-        .audio
-        .as_ref()
-        .ok_or_else(|| anyhow!("{} has no audio", src.path))?;
+    let audio = outlined(src).ok_or_else(|| anyhow!("{} has no audio", src.path))?;
     let mut ictx = crate::input::demux(&src.input.url)?;
     // The sound and nothing else: see [`crate::input::keep_only`].
     crate::input::keep_only(&mut ictx, &[audio.stream_index]);
@@ -113,12 +118,9 @@ pub struct WaveBuilder {
 }
 
 impl WaveBuilder {
-    /// For `src`'s main audio track, out of the demuxer the read has open.
+    /// For `src`'s first audio track, out of the demuxer the read has open.
     pub fn new(src: &Source, ictx: &crate::input::Demux) -> Result<Self> {
-        let audio = src
-            .audio
-            .as_ref()
-            .ok_or_else(|| anyhow!("{} has no audio", src.path))?;
+        let audio = outlined(src).ok_or_else(|| anyhow!("{} has no audio", src.path))?;
         let params = ictx
             .stream(audio.stream_index)
             .ok_or_else(|| anyhow!("audio stream vanished"))?
@@ -357,5 +359,31 @@ mod tests {
         assert!(sample_levels(&frame, &mut out));
         assert!(out.iter().all(|&v| v == 0.0));
         assert_eq!(level_byte(f64::from(out[0])), 0);
+    }
+
+    /// A float track's damaged samples: not a number is passed over by the
+    /// fold rather than spreading into the level, and an infinite one is
+    /// full scale, not a byte the drawing cannot place.
+    #[test]
+    fn samples_that_are_not_numbers() {
+        let layout = ff::channel_layout::ChannelLayout::default(2);
+        let samples = 8;
+        let mut frame =
+            ff::frame::Audio::new(ff::format::Sample::F32(ff::format::sample::Type::Planar), samples, layout);
+        let mut channel = |p: usize| unsafe {
+            let data = *(*frame.as_mut_ptr()).extended_data.add(p);
+            std::slice::from_raw_parts_mut(data as *mut f32, samples)
+        };
+        channel(0).fill(f32::NAN);
+        channel(1).fill(0.0);
+        channel(1)[2] = 0.5;
+        channel(0)[5] = f32::NEG_INFINITY;
+        let mut out = Vec::new();
+        assert!(sample_levels(&frame, &mut out));
+        assert!(out.iter().all(|v| !v.is_nan()), "{out:?}");
+        assert_eq!(out[2], 0.5);
+        assert_eq!(level_byte(f64::from(out[5])), 255);
+        assert_eq!(level_byte(f64::NAN), 0);
+        assert_eq!(level_byte(f64::INFINITY), 255);
     }
 }

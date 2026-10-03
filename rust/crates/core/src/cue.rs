@@ -141,4 +141,18 @@ mod tests {
         let sheet = b"FILE \"a.wav\" WAVE\rTRACK 01 AUDIO\rINDEX 01 02:00:00\rTRACK 02 AUDIO\rINDEX 01 00:00:00\rTRACK 03 AUDIO\rINDEX 01 02:00:00\r";
         assert_eq!(track_starts(sheet), vec![0.0, 120.0]);
     }
+
+    /// A track's `01` wins over its `00` whichever comes first; a track with
+    /// neither (only an `02`) starts nowhere; tabs part the words as spaces
+    /// do; and minutes past what fits in a CD are still minutes.
+    #[test]
+    fn index_order_missing_starts_and_long_minutes() {
+        let sheet = b"FILE \"a.wav\" WAVE\nTRACK 01 AUDIO\n\tINDEX\t01\t00:10:00\n\tINDEX\t00\t00:08:00\nTRACK 02 AUDIO\nINDEX 02 00:20:00\nTRACK 03 AUDIO\nINDEX 01 4294967295:59:74 trailing\n";
+        let got = track_starts(sheet);
+        assert_eq!(got.len(), 2, "{got:?}");
+        assert_eq!(got[0], 10.0);
+        assert!((got[1] - (4294967295.0 * 60.0 + 59.0 + 74.0 / 75.0)).abs() < 1.0);
+        // A minute count past u32 is not a time.
+        assert!(track_starts(b"TRACK 01 AUDIO\nINDEX 01 4294967296:00:00\n").is_empty());
+    }
 }

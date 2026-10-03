@@ -304,7 +304,10 @@ impl Luma {
                 u16::from_le_bytes([a, b]) as u32
             }
         };
-        v >> self.shift
+        // Masked to the depth: in a packed 10-bit format the two bytes read
+        // carry the next component's low bits above the luma's (XV30's V,
+        // V30X's), and left in they put every sample past white.
+        (v >> self.shift) & ((1u32 << self.depth) - 1)
     }
 }
 
@@ -726,6 +729,11 @@ mod tests {
         let p010 = Luma::of(ff::format::Pixel::P010LE).unwrap();
         assert_eq!(p010.at(&(64u16 << 6).to_le_bytes(), 0), 64);
         assert!(p010.at(&(64u16 << 6).to_le_bytes(), 0) <= p010.level(0.04));
+        // XV30: U, Y and V in ten bits each of one word, Y read from its
+        // second byte with V's low bits above it.
+        let xv30 = Luma::of(ff::format::Pixel::XV30LE).unwrap();
+        let word: u32 = 512 | (64 << 10) | (1023 << 20);
+        assert_eq!(xv30.at(&word.to_le_bytes(), 0), 64);
         assert!(Luma::of(ff::format::Pixel::MonoBlack).is_err());
     }
 

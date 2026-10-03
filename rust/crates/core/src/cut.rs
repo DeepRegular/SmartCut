@@ -2735,13 +2735,31 @@ fn write_one_track_out(cut: &str, output: &str, aac: AacVersion) -> Result<usize
     crate::init()?;
     crate::input::refuse_url_output(output)?;
     let mut ictx = crate::input::demux(&cut)?;
+    // The cut's first sound track, which is the one the command line asks
+    // about before the cut (`--audio-es` is declined unless that one is AAC)
+    // and the one the editor plays. libav's "best" is the widest instead: a
+    // cut keeping an AAC stereo track first and an AC-3 5.1 one after it had
+    // the AC-3 handed to the ADTS muxer, which refused it.
     let ist = ictx
         .streams()
-        .best(ff::media::Type::Audio)
+        .find(|s| s.parameters().medium() == ff::media::Type::Audio)
         .ok_or_else(|| anyhow!("{cut} has no audio to write out"))?;
     let index = ist.index();
     let params = ist.parameters();
     let in_tb = ist.time_base();
+    // Said in words rather than as the muxer's "Invalid argument", for a cut
+    // whose first track turned out not to be AAC after all (one left out as
+    // silent in the ranges kept, say).
+    if params.id() != ff::codec::Id::AAC
+        && std::path::Path::new(output)
+            .extension()
+            .is_some_and(|e| e.eq_ignore_ascii_case("aac"))
+    {
+        bail!(
+            "the cut's first sound track is {}, not AAC, so it cannot be written out as {output}",
+            params.id().name()
+        );
+    }
 
     let mut octx = ff::format::output(&*crate::input::as_output(output)).map_err(|e| anyhow!("{output}: {e}"))?;
     {
@@ -3572,13 +3590,16 @@ fn copy_segment(
                 (None, Some(_)) => NalFraming::AnnexB,
                 (None, None) => src.video.framing,
             };
+            // A packet of nothing but Dolby Vision (a crafted one: a real
+            // access unit carries its base layer too) is left whole rather
+            // than written as an empty packet.
             match crate::bitstream::strip_dolby_vision(packet.data().unwrap_or(&[]), framing) {
-                Some(data) => {
+                Some(data) if !data.is_empty() => {
                     let mut out = ff::Packet::copy(&data);
                     out.set_flags(packet.flags());
                     out
                 }
-                None => packet,
+                _ => packet,
             }
         } else {
             packet
@@ -5156,26 +5177,53 @@ fn reencode_segment(
 /// written out of a `.mkv` failed that way, while a `.ts` out of the same
 /// file was fine, because a `.ts` keeps what the recording had and a
 /// recording with nothing has nothing to keep.
+///
+/// **And only a recording with PIDs has any to keep.** An MP4 hands over
+/// its track numbers in the same field, and kept as PIDs they met the ones
+/// the muxer gives the streams that name none: track 1 numbered 0x100 by
+/// the muxer and track 256 kept as 0x100, and the cut stopped with
+/// `Invalid argument`. So outside a transport stream and a program stream
+/// -- whose ids a DVD's own tools number its streams by -- the muxer
+/// numbers everything, in the order it is written.
 struct Pids {
     /// Whether the streams are being numbered the way a disc numbers them.
     bluray: bool,
+    /// Whether the recording's ids are left aside for the muxer to number
+    /// over. See above.
+    afresh: bool,
 }
 
 impl Pids {
     /// The recording's own numbering, which is what a `.ts` keeps.
     fn kept() -> Pids {
-        Pids { bluray: false }
+        Pids {
+            bluray: false,
+            afresh: false,
+        }
+    }
+
+    /// The muxer's own numbering, for a recording that has no PIDs.
+    fn afresh() -> Pids {
+        Pids {
+            bluray: false,
+            afresh: true,
+        }
     }
 
     /// Blu-ray's numbering, by the order the streams are written in.
     fn bluray() -> Pids {
-        Pids { bluray: true }
+        Pids {
+            bluray: true,
+            afresh: false,
+        }
     }
 
-    /// Where the pictures go.
+    /// Where the pictures go. Nought is no opinion: see [`set_pid`].
     fn video(&self, was: i32) -> i32 {
         if self.bluray {
             0x1011
+        } else if self.afresh {
+            0
         } else {
             was
         }
@@ -5201,6 +5249,8 @@ impl Pids {
     fn nth(&self, first: i32, nth: usize, was: i32) -> i32 {
         if self.bluray {
             first + nth as i32
+        } else if self.afresh {
+            0
         } else {
             was
         }
@@ -5216,11 +5266,22 @@ impl Pids {
 /// looks -- and what lets a cut written for a disc be numbered the way a
 /// disc is numbered instead; see [`Pids`]. Anything below 16 is not a PID a
 /// stream can sit on and is how libav says it has no opinion.
+///
+/// **Nor is anything below 0x20, here.** 0x0010-0x001F are the PIDs the
+/// network's own tables go out on, and the muxer writes its service
+/// description on 0x11 whatever else is there. No broadcast puts a stream
+/// on one; an MP4 whose track is numbered 17 does, since libavformat hands
+/// the track's number over in the same field -- and its pictures went out
+/// on 0x11 with the muxer's service description sections among them.
+/// Numbered by the muxer instead, as a track of 1 is.
 unsafe fn set_pid(ost: &mut ff::format::stream::StreamMut, to_ts: bool, pid: i32) {
-    if to_ts && (0x0010..=0x1FFA).contains(&pid) {
+    if to_ts && STREAM_PIDS.contains(&pid) {
         (*ost.as_mut_ptr()).id = pid;
     }
 }
+
+/// The PIDs a stream is put on as it arrived. See [`set_pid`].
+const STREAM_PIDS: std::ops::RangeInclusive<i32> = 0x0020..=0x1FFA;
 
 /// What is to become of one sound track, settled before anything is written.
 ///
@@ -6110,12 +6171,17 @@ fn graft_tables(
     // a disc's subtitles had a map that left the pictures and the sound out
     // and put the subtitles on the PID of the list of programmes.
     let placed = |k: usize, given: i32, was: i32| -> (u16, u16) {
-        let pid = if (0x0010..=0x1FFA).contains(&given) {
+        let pid = if STREAM_PIDS.contains(&given) {
             given as u16
         } else {
             (numbered_from + k as i32) as u16
         };
-        let was = if (0x0010..=0x1FFA).contains(&was) || service.stream(was as u16).is_some() {
+        // A recording the muxer numbered afresh has nothing to call a
+        // stream by but where it went: its own ids are track numbers, and
+        // one of them can be the PID another stream was given.
+        let was = if pids.afresh {
+            pid
+        } else if STREAM_PIDS.contains(&was) || service.stream(was as u16).is_some() {
             was as u16
         } else {
             pid
@@ -7124,8 +7190,10 @@ fn cut_into(
     // [`Subtitles`].
     let pids = if writing_m2ts(output) {
         Pids::bluray()
-    } else {
+    } else if src.on_a_ts || ictx.format().name().split(',').any(|n| n.trim() == "mpeg") {
         Pids::kept()
+    } else {
+        Pids::afresh()
     };
     // What each sound track is and what will become of it. Settled before
     // anything is declared, because a stream has to be declared as the thing
@@ -7221,7 +7289,11 @@ fn cut_into(
     // here so that what is read off the recording and what is written back
     // are answering the same question. See [`tables_for`].
     let want = tables_for(output, opts.tables);
-    let wants_tables = to_ts && want != crate::si::Tables::Muxer;
+    // Only of a recording that is a transport stream: anything else has no
+    // tables to read, and asking an MP4 or a DVD's program stream for them
+    // said "not a transport stream" and that the broadcast's own tables were
+    // lost, on every cut of one into a `.ts`.
+    let wants_tables = to_ts && src.on_a_ts && want != crate::si::Tables::Muxer;
     let ours = u16::try_from(video_pid).unwrap_or(0);
     // The data broadcast, which is carried by the table pass rather than by
     // the muxer and so is only possible in the shapes that pass writes; see
@@ -9116,6 +9188,9 @@ mod tests {
         assert_eq!(kept.video(0x100), 0x100);
         assert_eq!(kept.audio(1, 0x101), 0x101);
         assert_eq!(kept.graphics(0, 0), 0);
+        // An MP4's track numbers are not PIDs, and are not kept as them.
+        let afresh = Pids::afresh();
+        assert_eq!((afresh.video(1), afresh.audio(0, 256)), (0, 0));
     }
 
     /// A grid from the two rates and whether the walk called the recording

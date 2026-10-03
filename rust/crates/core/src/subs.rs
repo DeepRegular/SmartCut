@@ -344,6 +344,9 @@ impl Reader {
             )?),
         };
         let mut units: Vec<u8> = Vec::new();
+        // The last picture's time, for a packet that carries none: see the
+        // crawl below.
+        let mut clock: Option<f64> = None;
         // Read through [`crate::input::Packets`], which reads past the
         // "try again" a transport stream answers with over damage: stopping
         // at the first error left everything after a dropout without its
@@ -369,18 +372,34 @@ impl Reader {
                 );
             if !mine {
                 // A picture's entry point, which is here to be a clock.
-                let past = packet
-                    .pts()
-                    .is_some_and(|pts| pts as f64 * tb - start_time > to);
-                if packet.stream() == video && past {
-                    break;
+                if packet.stream() == video {
+                    if let Some(pts) = packet.pts() {
+                        let t = pts as f64 * tb - start_time;
+                        if t > to {
+                            break;
+                        }
+                        clock = Some(t);
+                    }
                 }
                 continue;
             }
-            let (Some(data), Some(pts)) = (packet.data(), packet.pts()) else {
+            let Some(data) = packet.data() else {
                 continue;
             };
-            let at = pts as f64 * tb - start_time;
+            let at = match packet.pts() {
+                Some(pts) => pts as f64 * tb - start_time,
+                // A crawl is sent asynchronously -- a PES packet with no
+                // header and so no time -- and every one of them was passed
+                // over here, so the crawl track never showed anything. A
+                // receiver puts it up as it arrives, so it is timed by the
+                // last picture read before it: within a second or so, which
+                // for a crawl is near enough.
+                None if kind == Kind::Superimpose => match clock {
+                    Some(t) => t,
+                    None => continue,
+                },
+                None => continue,
+            };
             if at > to {
                 break;
             }

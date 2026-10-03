@@ -390,4 +390,29 @@ mod tests {
         assert!(d.at.windows(2).all(|w| w[0] < w[1]), "{:?}", d.at);
         assert!(d.at.iter().all(|&t| (0.0..=20.0).contains(&t) || (40.0..=60.0).contains(&t)), "{:?}", d.at);
     }
+
+    /// A size over several keeps, points every 2 s: every part stays under
+    /// the size, the divisions run forward and fall inside what is kept,
+    /// and the lengths add up to what survives the cuts.
+    #[test]
+    fn a_size_over_joins_stays_a_ceiling() {
+        let keeps = [(0.0, 13.0), (20.0, 27.0), (40.0, 75.0)];
+        let d = divide(&keeps, &points(2.0, 80.0), Rule::Size(9_000_000), true, FD, 0.0, 1e6).unwrap();
+        assert!(d.lengths.iter().all(|&l| l > 0.0 && l <= 9.0 + 1e-9), "{:?}", d.lengths);
+        assert!(d.at.windows(2).all(|w| w[0] < w[1]), "{:?}", d.at);
+        assert!(d.at.iter().all(|&t| keeps.iter().any(|&(a, b)| t >= a && t <= b)), "{:?}", d.at);
+        assert!((d.lengths.iter().sum::<f64>() - 55.0).abs() < 1e-9, "{:?}", d.lengths);
+        assert_eq!(d.off_point, 0);
+    }
+
+    /// Two frames or less left is nothing to divide, whatever the rule;
+    /// a frame duration that is not one falls back to a thirtieth.
+    #[test]
+    fn too_little_and_no_frame() {
+        assert!(divide(&[(0.0, 2.0 * FD)], &[], Rule::Parts(2), false, FD, 0.0, 0.0).is_err());
+        assert!(divide(&[(5.0, 4.0)], &[], Rule::Parts(2), false, FD, 0.0, 0.0).is_err());
+        let d = divide(&[(0.0, 10.0)], &[], Rule::Parts(2), false, f64::NAN, 0.0, 0.0).unwrap();
+        assert_eq!(d.at.len(), 1);
+        assert!((d.at[0] - 5.0).abs() < 1e-9, "{:?}", d.at);
+    }
 }

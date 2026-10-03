@@ -616,7 +616,7 @@ pub fn build_with(
 }
 
 /// As [`build_with`], and where `sound` is asked for, the outline of the
-/// main audio track out of the same read (see [`crate::wave::WaveBuilder`]).
+/// first audio track out of the same read (see [`crate::wave::WaveBuilder`]).
 ///
 /// None where the recording has no sound to outline, or where the decoder
 /// for it could not be opened: the pictures are what this pass is for, and

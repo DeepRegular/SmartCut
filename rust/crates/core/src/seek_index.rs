@@ -521,10 +521,25 @@ pub fn prune(
     }
     found.sort_by_key(|(when, _, _)| std::cmp::Reverse(*when));
 
-    let mut running = 0u64;
+    // The list's are counted before anything else, wherever their age puts
+    // them. Counted where they fell, one older than the rest counted against
+    // nothing: a project of thirty rows put back up, not yet opened and so
+    // the oldest in the folder, left every newer index standing beside them
+    // up to the whole budget again -- twice what the limit says.
+    let (mut held, mut running) = (0usize, 0u64);
+    for (_, bytes, path) in &found {
+        if spare.contains(path) {
+            held += 1;
+            running = running.saturating_add(*bytes);
+        }
+    }
     for (i, (_, bytes, path)) in found.into_iter().enumerate() {
+        if spare.contains(&path) {
+            continue;
+        }
+        held += 1;
         running = running.saturating_add(bytes);
-        if i == 0 || (i < keep && running <= budget) || spare.contains(&path) {
+        if i == 0 || (held <= keep && running <= budget) {
             continue;
         }
         if std::fs::remove_file(&path).is_ok() {
@@ -725,6 +740,18 @@ mod tests {
         // Oldest first: a, then b. Keep one; a is in the list.
         let spare = std::collections::HashSet::from([paths[0].clone()]);
         assert_eq!(prune(&dir, 1, 1 << 20, &spare).unwrap(), 1);
+        assert!(paths[0].exists() && !paths[1].exists() && paths[2].exists());
+
+        // And counted first, however old: room for two, the list's oldest
+        // takes one, the newest the other, and the one between goes.
+        std::fs::write(&paths[1], b"x").unwrap();
+        std::fs::OpenOptions::new()
+            .write(true)
+            .open(&paths[1])
+            .unwrap()
+            .set_times(std::fs::FileTimes::new().set_modified(now - std::time::Duration::from_secs(120)))
+            .unwrap();
+        assert_eq!(prune(&dir, 2, 1 << 20, &spare).unwrap(), 1);
         assert!(paths[0].exists() && !paths[1].exists() && paths[2].exists());
         let _ = std::fs::remove_dir_all(&dir);
     }

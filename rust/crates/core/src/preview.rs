@@ -1151,7 +1151,10 @@ const POSTER_WIDTH: u32 = 1920;
 /// picture nearest `time` is a whole one.
 pub fn poster_at(src: &Source, time: f64) -> Result<crate::cut::Poster> {
     let (_, picture) = picture_in(src, time, false)?;
-    let sar = src.video.sample_aspect_ratio.max(0.01);
+    // Held to one a picture can have before it is halved for a field, as a
+    // still's is: clamped only after halving, a crafted 1:1000 gave a cover
+    // 19 pixels wide, and a crafted 1000:1 one half as tall as the frame's.
+    let sar = credible_sar(src.video.sample_aspect_ratio);
     let (jpeg, width, height) = if picture.is_interlaced() && picture.height() >= 32 {
         // Half the lines, each standing for two: twice as tall a pixel. Sized
         // as the frame it stands for (1080i gives 1920x1080, not 960x540):
@@ -1826,5 +1829,49 @@ mod tests {
         assert_eq!(credible_sar(1.0 / 65535.0), 0.125);
         assert_eq!(credible_sar(65535.0), 8.0);
         assert_eq!(credible_sar(f64::NAN), 1.0);
+    }
+
+    /// Each slot takes the nearest picture inside its window and no other;
+    /// two slots that settle on the same picture keep it once, in the
+    /// earlier slot, and the slots stay where they were put.
+    #[test]
+    fn slots_take_the_nearest_and_never_shift() {
+        let fd = 1.0 / 30.0;
+        let wanted = [1.0, 1.01, 2.0, 9.0];
+        let mut slots: Slots<'_, u32> = Slots::new(&wanted, 0.5);
+        for (n, t) in [0.4, 0.9, 1.02, 1.6, 2.1, 2.05].into_iter().enumerate() {
+            slots.offer(t, "I", || Ok(n as u32)).unwrap();
+        }
+        let got = slots.finish(fd, |n| Ok(vec![n as u8])).unwrap();
+        assert_eq!(got.len(), 4);
+        let at: Vec<Option<f64>> = got.iter().map(|s| s.as_ref().map(|s| s.time)).collect();
+        assert_eq!(at, vec![Some(1.02), None, Some(2.05), None]);
+        assert_eq!(got[0].as_ref().unwrap().jpeg, vec![2]);
+    }
+
+    #[test]
+    fn the_entry_before_and_a_late_landing() {
+        let points: Vec<AccessPoint> = [0.5, 1.0, 1.5]
+            .into_iter()
+            .map(|time| AccessPoint {
+                time,
+                lead_start: time,
+                lead_indices: Vec::new(),
+                droppable: true,
+                pos: -1,
+                measured: true,
+            })
+            .collect();
+        assert_eq!(entry_before(&points, 1.2), 1.0);
+        assert_eq!(entry_before(&points, 1.0), 1.0);
+        // Before the first, or not a number: the front.
+        assert_eq!(entry_before(&points, 0.1), 0.0);
+        assert_eq!(entry_before(&points, f64::NAN), 0.0);
+        assert!(on_point(&points, 1.49, 0.02));
+        assert!(!on_point(&points, 1.2, 0.02));
+        assert!(!on_point(&[], 0.0, 0.02));
+        assert!(landed_late(None, 1.0, 0.1));
+        assert!(landed_late(Some(1.2), 1.0, 0.1));
+        assert!(!landed_late(Some(1.05), 1.0, 0.1));
     }
 }
