@@ -2552,18 +2552,23 @@ async fn cross_play(
     width: u32,
     fps: f64,
     run: u64,
+    heard: Option<i32>,
     frames: tauri::ipc::Channel<tauri::ipc::InvokeResponseBody>,
 ) -> Result<(), String> {
     // The window this plays for may have gone already: see [`CrossUp`].
     if !app.state::<CrossUp>().0.load(Ordering::SeqCst) {
         return Ok(());
     }
-    let (before, after) = {
+    let (mut before, mut after) = {
         let state = app.state::<Crossed>();
         let held = locked(&state.0);
         let pair = held.as_ref().ok_or("no join open")?;
         (pair.before.clone(), pair.after.clone())
     };
+    if let Some(nth) = heard {
+        heard_nth(&mut before, nth);
+        heard_nth(&mut after, nth);
+    }
     app.state::<CrossPlaying>().0.store(run, Ordering::SeqCst);
     // One sound at a time, as before the two were counted apart: the editor's
     // playback stops when a crossing starts, and the other way round (see
@@ -6881,6 +6886,38 @@ fn clock_from(start: &smartcut_core::Start, hearing: bool) -> std::time::Instant
     }
 }
 
+/// Point `src.audio` at the track the editor plays: the first one the track
+/// menu left switched on, and none where every one was switched off.
+///
+/// `src.audio` is the main track, which is whichever libavformat thought
+/// widest -- and a track somebody switched off went on being heard, and
+/// metered, through the preview of a cut that leaves it out. The same first
+/// kept track is the one the channel fold is settled for (`audioOf` in the
+/// list window), so what is heard is folded as that track is written.
+fn heard_track(src: &mut Source, drop: &[usize]) {
+    if drop.is_empty() || src.audios.is_empty() {
+        return;
+    }
+    src.audio = src
+        .audios
+        .iter()
+        .find(|a| !drop.contains(&a.stream_index))
+        .cloned();
+}
+
+/// Point `src.audio` at the `nth` of its sound tracks, the one a join
+/// writes: where the master's first kept track sits among all of the
+/// master's, which is how the cutter takes the same track off every other
+/// clip (see `Threads` in `smartcut_core::cut`). Negative for none, where
+/// the master keeps no sound; and none on a clip with fewer tracks than
+/// that, which the joined file has no sound for either.
+fn heard_nth(src: &mut Source, nth: i32) {
+    if src.audios.is_empty() && nth == 0 {
+        return;
+    }
+    src.audio = usize::try_from(nth).ok().and_then(|n| src.audios.get(n)).cloned();
+}
+
 /// Play the edited timeline back from `from`, as a stream of pictures.
 ///
 /// Paced against a wall clock on the *edited* timeline, so a cut costs no
@@ -6898,6 +6935,7 @@ async fn play(
     width: u32,
     fps: f64,
     run: u64,
+    drop_streams: Option<Vec<usize>>,
     frames: tauri::ipc::Channel<tauri::ipc::InvokeResponseBody>,
 ) -> Result<(), String> {
     // The window this plays for may have gone already: see [`EditorUp`].
@@ -6907,11 +6945,12 @@ async fn play(
     // The pictures come from the proxy when there is one; the sound always
     // comes from the recording, which is where the audio actually is.
     let src = with_pictures(&app, |s, _| Ok(s.clone()))?;
-    let audio_from = {
+    let mut audio_from = {
         let state = app.state::<Opened>();
         let guard = locked(&state.0);
         guard.as_ref().ok_or("no file open")?.clone()
     };
+    heard_track(&mut audio_from, drop_streams.as_deref().unwrap_or_default());
     app.state::<Playing>().0.store(run, Ordering::SeqCst);
     app.state::<CrossPlaying>().0.store(0, Ordering::SeqCst);
     // Both halves play the same stretches, so this is settled before either
@@ -7289,16 +7328,22 @@ fn audio_levels(meter: State<Meter>) -> Vec<f32> {
 /// stage rather than for a stretch around it. Read from the recording -- a
 /// proxy carries no sound to read.
 #[tauri::command]
-async fn audio_peak_at(time: f64, window: f64, app: tauri::AppHandle) -> Result<Vec<f32>, String> {
+async fn audio_peak_at(
+    time: f64,
+    window: f64,
+    drop_streams: Option<Vec<usize>>,
+    app: tauri::AppHandle,
+) -> Result<Vec<f32>, String> {
     off_thread(move || {
         // Cloned, and the lock let go before the read: this runs while the
         // window is otherwise idle, and a detection can be holding the
         // recording for minutes. See [`opened_clone`].
-        let src = {
+        let mut src = {
             let state = app.state::<Opened>();
             let guard = locked(&state.0);
             guard.as_ref().ok_or("no file open")?.clone()
         };
+        heard_track(&mut src, drop_streams.as_deref().unwrap_or_default());
         let fold = app.state::<Folded>().0.clone();
         smartcut_core::peaks_at(&src, time, window, &fold).map_err(|e| e.to_string())
     })

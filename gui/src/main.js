@@ -2880,7 +2880,7 @@ function scheduleMeterAt() {
   meterAsk = setTimeout(async () => {
     const token = ++meterToken;
     try {
-      const peaks = await invoke("audio_peak_at", { time: playhead, window: frame() });
+      const peaks = await invoke("audio_peak_at", { time: playhead, window: frame(), dropStreams });
       if (token !== meterToken || playing) return;
       meterTake(peaks || [], false);
     } catch (e) {
@@ -4692,7 +4692,7 @@ function startPlay() {
   // that window's joins really fall. See `to_play` on the Rust side.
   //
   // not awaited: it resolves when playback ends, and `play-ended` says so
-  invoke("play", { ranges, keeps: outputRanges(), from, width, fps, run, frames }).catch((e) => {
+  invoke("play", { ranges, keeps: outputRanges(), from, width, fps, run, dropStreams, frames }).catch((e) => {
     // A run already left behind -- ループ coming round stops one and starts
     // the next -- failing late is not the playback now running failing.
     if (run !== playRun) return;

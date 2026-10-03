@@ -422,6 +422,7 @@ function startPlay() {
     width: Math.min(stageWidth(), 1280),
     fps: fps(),
     run,
+    heard: join()?.heard ?? null,
     frames,
   }).catch((e) => {
     // A run that has since been stopped and followed by another is not the

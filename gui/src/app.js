@@ -6996,6 +6996,23 @@ let crossPick = 0;
 /// landing meanwhile can be told to be about the window before this one.
 let crossOpening = false;
 
+/// Which of each clip's sound tracks a join is heard on: where the first
+/// track the master keeps sits among all of the master's. The cutter takes
+/// that same place off every other clip (see `Threads` in the engine's
+/// cut.rs), so the seam window plays it too rather than each clip's main
+/// track -- a track switched off was otherwise heard at every seam. -1 where
+/// the master keeps no sound, and so the joined file has none.
+function joinHeard(list) {
+  const master = masterClip(list);
+  const facts = master ? factsOf(master) : null;
+  if (!facts || !facts.has_audio) return -1;
+  const tracks = facts.audio_tracks || [];
+  // Read by a version that did not list the tracks: the main one.
+  if (!tracks.length) return 0;
+  const kept = keptAudio(master)[0];
+  return kept ? tracks.findIndex((a) => a.index === kept.index) : -1;
+}
+
 /// Every join in the list, in the shape the seam window reads.
 ///
 /// The bounds are what is *kept* at the seam: the last surviving range of
@@ -7004,6 +7021,7 @@ let crossOpening = false;
 /// the join really falls. See `keepsOf`.
 function joinsForWindow() {
   const list = ready();
+  const heard = joinHeard(list);
   const out = [];
   for (let i = 0; i + 1 < list.length; i++) {
     const before = list[i];
@@ -7028,6 +7046,7 @@ function joinsForWindow() {
       afterIn: first.a,
       afterOut: first.b,
       after: before.after ? { ...before.after } : null,
+      heard,
     });
   }
   return out;
