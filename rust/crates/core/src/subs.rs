@@ -344,26 +344,24 @@ impl Reader {
             )?),
         };
         let mut units: Vec<u8> = Vec::new();
-        // What each stream is, so a packet can be placed without asking the
-        // context for its stream while the context is being read from.
-        let streams: Vec<(i32, f64, ff::media::Type)> = ictx
-            .streams()
-            .map(|s| {
-                (
-                    s.id(),
-                    f64::from(s.time_base()),
-                    s.parameters().medium(),
-                )
-            })
-            .collect();
         // Read through [`crate::input::Packets`], which reads past the
         // "try again" a transport stream answers with over damage: stopping
         // at the first error left everything after a dropout without its
         // subtitles for as long as the window lasted.
-        for (_, packet) in ictx.read_packets() {
-            let Some(&(stream_id, tb, medium)) = streams.get(packet.stream()) else {
-                continue;
-            };
+        //
+        // Each packet's stream is asked of the packet, not of a list taken
+        // before the read. A DVD's subtitles are not streams until the
+        // demuxer meets their first unit (see [`crate::SubpictureInfo`]). A
+        // list taken up front did not have them, so the first window read
+        // -- the one the playhead was first put down in -- passed every
+        // unit over as nobody's and showed none, and only a window read
+        // after that one found them.
+        for (stream, packet) in ictx.read_packets() {
+            let (stream_id, tb, medium) = (
+                stream.id(),
+                f64::from(stream.time_base()),
+                stream.parameters().medium(),
+            );
             let mine = stream_id == id
                 && matches!(
                     medium,
