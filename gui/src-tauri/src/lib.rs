@@ -1990,10 +1990,17 @@ fn remember_index(app: &tauri::AppHandle, src: &Source, index: SeekIndex) -> Opt
     // film's away to make room for them.
     //
     // Neither limit takes a recording that is in the list. See [`LISTED`].
-    let spare: std::collections::HashSet<std::path::PathBuf> = locked(&LISTED)
-        .iter()
-        .filter_map(|p| seek_index::cache_path(&dir, p).ok())
-        .collect();
+    // Each row's index file is what was written for it, not worked out again
+    // here: that is a stat of every recording in the list, over a share as
+    // often as not, and for one inside a disc image a walk of the image --
+    // on every index written, while the other lane waited on this lock.
+    let spare: std::collections::HashSet<std::path::PathBuf> = {
+        let mut listed = locked(&LISTED);
+        if let Some(row) = listed.get_mut(&src.path) {
+            *row = Some(file.clone());
+        }
+        listed.values().flatten().cloned().collect()
+    };
     let _ = seek_index::prune(&dir, 32, 2 << 30, &spare);
     index_info(app, src, false)
 }
@@ -3036,7 +3043,33 @@ async fn index_clip(
 ///
 /// A row taken out of the list stays in here until the program closes. All
 /// that costs is that its index is not the first to go, for this session.
-static LISTED: Mutex<std::collections::BTreeSet<String>> = Mutex::new(std::collections::BTreeSet::new());
+///
+/// Each one with the cache file its index is kept in, where that is known.
+static LISTED: Mutex<std::collections::BTreeMap<String, Option<std::path::PathBuf>>> =
+    Mutex::new(std::collections::BTreeMap::new());
+
+/// The list's rows, told as they arrive rather than as each one's walk begins.
+///
+/// A row waiting its turn is a row in the list all the same. Told only by
+/// [`index_clip`], a project of forty rows put back up -- most of them with an
+/// index from an earlier session -- lost the indexes of rows near the bottom
+/// to the walks of the new ones above them, before their own turn came.
+#[tauri::command]
+async fn list_rows(paths: Vec<String>, app: tauri::AppHandle) -> Result<(), String> {
+    off_thread_behind(move || {
+        let Ok(dir) = index_dir(&app) else { return Ok(()) };
+        for path in paths {
+            if locked(&LISTED).contains_key(&path) {
+                continue;
+            }
+            // Worked out with nothing held: a stat, or a walk of a disc image.
+            let file = seek_index::cache_path(&dir, &path).ok();
+            locked(&LISTED).entry(path).or_insert(file);
+        }
+        Ok(())
+    })
+    .await
+}
 
 fn index_clip_now(
     path: &str,
@@ -3044,7 +3077,12 @@ fn index_clip_now(
     app: &tauri::AppHandle,
 ) -> Result<ClipInfo, String> {
     let began = std::time::Instant::now();
-    locked(&LISTED).insert(path.to_string());
+    // Its index file as the recording stands now, worked out once here
+    // rather than at every prune; a fresh walk's write puts in the name it
+    // was written under. One kept from an earlier session is never
+    // rewritten, so this is the only place it is learnt.
+    let file = index_dir(app).ok().and_then(|dir| seek_index::cache_path(&dir, path).ok());
+    locked(&LISTED).insert(path.to_string(), file);
     // What the lane had been asked to stop before this pass existed is not
     // about this pass. See [`BatchStop`].
     let mine = app.state::<BatchStop>().walk.load(Ordering::SeqCst);
@@ -8942,6 +8980,7 @@ pub fn run() {
             audio_limits,
             containers_holding,
             index_clip,
+            list_rows,
             clip_outline,
             clip_pictures,
             detect_cm_at,

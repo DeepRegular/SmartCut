@@ -926,8 +926,13 @@ async function done() {
   // list kept the settings it had. The close is what this window is for at
   // this point, so it waits.
   if (emit) {
+    // A join that says nothing goes back as `null`, the way the list sent
+    // it. `crossing` makes an object on every join that is looked at, and
+    // that object handed back was a change to the list's own shape: opening
+    // this window and pressing OK put a `*` on a project nobody had touched.
+    const said = (a) => !!a && (a.kind !== "none" || a.fadeOut > 0 || a.fadeIn > 0);
     await emit("cross-done", {
-      joins: joins.map((j) => ({ id: j.id, after: j.after })),
+      joins: joins.map((j) => ({ id: j.id, after: said(j.after) ? j.after : null })),
     }).catch((e) => jlog(`cross-done: ${e}`));
   }
   invoke && invoke("close_cross");
@@ -977,7 +982,12 @@ if (listen) {
       theirs.every(
         (j, k) => j.beforePath === joins[k].beforePath && j.afterPath === joins[k].afterPath,
       );
-    if (!(changedHere && same)) {
+    if (changedHere && same) {
+      // Only the transitions are this window's. Where each join falls is the
+      // list's, and a cut moved there since put the preview on the old
+      // bounds; the id is the list's too, which `cross-done` answers by.
+      joins = theirs.map((j, k) => ({ ...j, after: joins[k].after }));
+    } else {
       joins = theirs;
       changedHere = false;
     }

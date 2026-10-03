@@ -5277,8 +5277,11 @@ async function refreshPlan() {
   } catch (e) {
     if (run !== planRun) return;
     el("plan-text").textContent = tr("plan.failed", { e });
-    // The last plan's stretches are not this edit's.
+    // The last plan's stretches are not this edit's -- nor its list, nor its
+    // badge, which went on saying 完全ロスレス under the failure.
     paintPlanBar(null);
+    el("segments").innerHTML = "";
+    el("smart-badge").textContent = "—";
   } finally {
     if (run === planRun) planSettled();
   }
@@ -7557,6 +7560,8 @@ async function saveStill() {
       // The dialog asked about the name as typed, not the one with the
       // extension added: one already there is asked about here.
       if (String(e) !== "\u0000exists") throw e;
+      // Another row came up meanwhile: its status line is not this one's.
+      if (gen !== openGen) return;
       el("status").textContent = "";
       const go = await dialog.ask(tr("marks.overwriteBody", { file: leaf(to) }), {
         title: tr("marks.overwriteTitle"),
@@ -8039,6 +8044,10 @@ if (listen) {
   hear("flat-progress", (ev) => {
     const [what, done] = ev.payload;
     const id = what === "quiet" ? "detect-silence" : "detect-blank";
+    // As with the commercial pass below: a tick that arrives after the pass
+    // has answered left the menu line counting and the status line saying
+    // 検出中 over the answer, for good.
+    if (!flatBusy.has(id)) return;
     const pct = Math.round(done * 100);
     detectLabel(id).textContent = tr("editor.detectingPct", { pct });
     // And on the status line, because the line that counts itself up is

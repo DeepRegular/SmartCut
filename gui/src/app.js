@@ -381,6 +381,14 @@ function makeClip(found) {
 }
 
 let clips = [];
+
+// Every row the list takes on, told to the backend as it arrives, so that the
+// index cache's limits spare it before its own walk begins -- a row waiting
+// its turn is still a row in the list. See `list_rows` in lib.rs. Nothing
+// waits on it and nothing is lost if it fails: the walk tells it again.
+function listRows(rows) {
+  if (rows.length) invoke("list_rows", { paths: rows.map((c) => c.path) }).catch(() => {});
+}
 /// Where a range selection counts from -- the last row clicked without shift.
 let anchor = -1;
 const byId = (id) => clips.find((c) => c.id === id);
@@ -871,6 +879,7 @@ async function addPaths(inputs) {
   }
   renderList();
   if (taken.length) taken[0].row.scrollIntoView({ block: "nearest" });
+  listRows(taken);
   // One at a time rather than a hundred at once: each is a stat on whatever
   // the recordings are on, and the answer is wanted before anyone looks at
   // the row rather than this instant.
@@ -3070,20 +3079,28 @@ function divideAsked() {
   }
   if (rule === "every") {
     const secs = readSpan(text);
-    if (!(secs >= 1)) return { why: t("divide.badEvery") };
+    // Finite too: four hundred digits read as Infinity, which goes across
+    // the wire as `null` and came back as a parser's sentence.
+    if (!(secs >= 1) || !Number.isFinite(secs)) return { why: t("divide.badEvery") };
     return { rule, value: secs, onPoints };
   }
   const n = Number(text);
   const unit = el("divide-unit").value === "MiB" ? 2 ** 20 : 2 ** 30;
-  if (!(n > 0)) return { why: t("divide.badSize") };
-  return { rule, value: Math.round(n * unit), onPoints };
+  // The bytes, not only the number typed: 1e300 GiB is finite and its bytes
+  // are not.
+  const bytes = Math.round(n * unit);
+  if (!(n > 0) || !Number.isFinite(bytes)) return { why: t("divide.badSize") };
+  return { rule, value: bytes, onPoints };
 }
 
 /// Ask the engine where each row divides, for what the box says now.
 /// `[clip, division]` for every row that divides into more than one part.
-async function divideAll(rows, asked) {
+async function divideAll(rows, asked, token) {
   const out = [];
   for (const clip of rows) {
+    // Overtaken by a later question, or the box closed: the rest of the rows
+    // would only be asked for an answer nobody will show.
+    if (token !== divideToken) break;
     const d = await invoke("divide_clip", {
       path: clip.path,
       ranges: rangesOf(clip),
@@ -3116,7 +3133,7 @@ async function paintDivide(rows) {
   }
   let found;
   try {
-    found = await divideAll(rows, asked);
+    found = await divideAll(rows, asked, token);
   } catch (e) {
     if (token !== divideToken) return undefined;
     line.textContent = t("divide.failed", { why: String(e) });
@@ -3327,9 +3344,20 @@ function divideRows(found) {
   anchor = clips.indexOf(made[0].clip);
   renderList();
   made[0].clip.row.scrollIntoView({ block: "nearest" });
-  for (const m of made) [m.clip, ...m.rows].forEach((c) => refreshPoster(c));
+  posterInTurn(made.flatMap((m) => [m.clip, ...m.rows]));
   note(t("list.divided", { m: made.length, n: parts }));
   pump();
+}
+
+/// The pictures of `rows`, one after another rather than all at once.
+///
+/// Each one not open in the editor loads its recording's whole index off
+/// the disc, thumbnails and all -- tens of megabytes for half an hour -- and
+/// a division can make hundreds of parts of one recording: asked together,
+/// that was hundreds of copies of the one index in memory at once.
+async function posterInTurn(rows) {
+  // Past a row that has left the list since, a division undone half way.
+  for (const c of rows) if (clips.includes(c)) await refreshPoster(c);
 }
 
 /// Put a division back: the parts after the first go, and the first gets
@@ -3367,7 +3395,7 @@ async function undivide(taken) {
   back.forEach((c) => (c.selected = true));
   anchor = back.length ? clips.indexOf(back[0]) : -1;
   renderList();
-  back.forEach((c) => refreshPoster(c));
+  posterInTurn(back);
   note(t("list.undivided", { n: back.length }));
   paintQueueNote();
   for (const lane of stops) await invoke("stop_batch", { lane });
@@ -9627,6 +9655,10 @@ async function askReplace(title = t("project.replaceTitle"), body = t("project.r
 function dropPendingAdds() {
   listGen += 1;
   closeChooser(false);
+  // And the 分割 box, which Ctrl+N and Ctrl+O reach past: left up, it went
+  // on describing the rows of the list just put down, and its 分割 then
+  // did nothing at all.
+  if (!el("divide").hidden) el("divide-cancel").click();
 }
 
 /// An empty list with nothing behind it: the state the program opens in,
@@ -9871,6 +9903,7 @@ async function loadProject(path, given = null) {
   // names. A list shorter than the file said -- a recording that has moved
   // away -- falls through to the first row, which is what no answer means.
   settings.master = masterAt !== null && clips[masterAt] ? clips[masterAt].id : null;
+  listRows(taken.map(([clip]) => clip));
   projectPath = path;
   tempProject = "";
   // A window opened on a job that has since been pointed at another project
