@@ -3564,6 +3564,25 @@ fn copy_segment(
             }
             _ => packet,
         };
+        // Dolby Vision the output has given up comes off the copied pictures
+        // as well as the stream, framed however they now are.
+        let packet = if ctx.signalling.strip_dovi && src.video.codec == "hevc" {
+            let framing = match (reframe, ctx.unframe) {
+                (Some(r), _) => NalFraming::Length(r.nal_length),
+                (None, Some(_)) => NalFraming::AnnexB,
+                (None, None) => src.video.framing,
+            };
+            match crate::bitstream::strip_dolby_vision(packet.data().unwrap_or(&[]), framing) {
+                Some(data) => {
+                    let mut out = ff::Packet::copy(&data);
+                    out.set_flags(packet.flags());
+                    out
+                }
+                None => packet,
+            }
+        } else {
+            packet
+        };
         // The one place a copied picture is not the recording's own bytes:
         // where the run has to fit a size, every picture goes through the
         // requantiser on its way out. See [`Shrink`].
@@ -3768,6 +3787,11 @@ struct Signalling {
     /// Whether the recording carries Dolby Vision at all, which is what
     /// decides whether `dovi` being false is worth saying out loud.
     has_dovi: bool,
+    /// Whether the output gives up Dolby Vision altogether: the stream's
+    /// record comes off, and so do the RPUs and the enhancement layer of
+    /// every copied picture. Only where the encoder refuses it *and* the
+    /// pictures have something to fall back to. See [`dovi_fallback`].
+    strip_dovi: bool,
     /// The rate and the decoder buffer the recording's own MPEG-2 sequence
     /// header states, in the units it states them in. See
     /// [`crate::bitstream::mpeg2_rate`].
@@ -3790,6 +3814,35 @@ fn declares_dovi(params: &ff::codec::Parameters) -> bool {
             ff::ffi::AVPacketSideDataType::AV_PKT_DATA_DOVI_CONF,
         )
         .is_null()
+    }
+}
+
+/// Whether the pictures under this stream's Dolby Vision mean anything
+/// without it.
+///
+/// **Taking Dolby Vision off is only an improvement where something is left
+/// underneath.** The record's `dv_bl_signal_compatibility_id` says what the
+/// base layer is on its own: HDR10, SDR, HLG, or -- at 0 -- nothing a player
+/// can show, with no colour stated anywhere but in the RPUs. One such
+/// recording measured here, a profile 4 with an enhancement layer, writes no
+/// colour in its sequence header at all. Taken off that, the whole output
+/// becomes ten-bit pictures in no stated colour, which is every picture wrong
+/// to spare the handful a seam rewrites. False where the stream declares no
+/// Dolby Vision.
+fn dovi_fallback(params: &ff::codec::Parameters) -> bool {
+    unsafe {
+        let p = params.as_ptr();
+        let sd = ff::ffi::av_packet_side_data_get(
+            (*p).coded_side_data,
+            (*p).nb_coded_side_data,
+            ff::ffi::AVPacketSideDataType::AV_PKT_DATA_DOVI_CONF,
+        );
+        // AVDOVIDecoderConfigurationRecord is nine bytes, one per field;
+        // the compatibility id is the eighth.
+        if sd.is_null() || (*sd).data.is_null() || (*sd).size < 8 {
+            return false;
+        }
+        *(*sd).data.add(7) != 0
     }
 }
 
@@ -3937,15 +3990,37 @@ fn signalling_of(src: &Source, opts: &CutOptions) -> Signalling {
             out.side.retain(|(kind, _)| {
                 *kind != ff::ffi::AVFrameSideDataType::AV_FRAME_DATA_DOVI_METADATA
             });
-            crate::say!(
-                "note: this recording is Dolby Vision, and the encoder here will not write it \
-                 ({e}). The pictures rewritten at each seam carry no RPU, so the Dolby Vision \
-                 metadata stops where they begin; the copied pictures keep theirs. Where the \
-                 recording declares Dolby Vision at stream level that claim is taken off the \
-                 output too, so nothing is left saying what the pictures cannot back up. A \
-                 range whose ends fall on the recording's own entry points is copied whole and \
-                 comes through intact."
-            );
+            // What happens next turns on what is under the Dolby Vision.
+            // With a base layer that stands on its own, the output becomes
+            // that throughout: the record comes off, and so do the RPUs and
+            // the enhancement layer of the copied pictures -- a transport
+            // stream has no record to take off, and a player finding RPUs
+            // there takes the stream for Dolby Vision regardless. With none,
+            // the Dolby Vision is the only colour the recording has, and it
+            // stays everywhere a seam did not rewrite.
+            out.strip_dovi = dovi_fallback(&params);
+            if out.strip_dovi {
+                crate::say!(
+                    "note: this recording is Dolby Vision, and the encoder here will not write \
+                     it ({e}). The pictures rewritten at each seam could carry no RPU, so the \
+                     output is written without Dolby Vision throughout: the RPUs and the \
+                     enhancement layer come off the copied pictures too, and the stream no \
+                     longer declares it. What remains is the recording's own base layer, which \
+                     stands on its own. A cut whose every range starts and ends on the \
+                     recording's own entry points rewrites nothing, and keeps its Dolby Vision."
+                );
+            } else {
+                crate::say!(
+                    "note: this recording is Dolby Vision, and the encoder here will not write \
+                     it ({e}). The pictures rewritten at each seam carry no RPU, so the Dolby \
+                     Vision stops for those pictures; the copied pictures keep theirs, and the \
+                     stream still declares it. It is kept because this recording's base layer \
+                     means nothing without it: there is no colour stated anywhere else, and \
+                     taking it off would leave every picture wrong rather than a few. A range \
+                     whose ends fall on the recording's own entry points is copied whole and \
+                     comes through intact."
+                );
+            }
         }
     }
     out
@@ -5955,7 +6030,18 @@ fn graft_tables(
     output: &str,
     on: Option<&(dyn Fn(f64) + Sync)>,
     tables: crate::si::Tables,
+    strip_dovi: bool,
 ) -> Result<crate::si::Stats> {
+    // Pictures written without their Dolby Vision are not described as
+    // having it, in the map any more than in the stream. See
+    // [`dovi_fallback`].
+    let stripped;
+    let service = if strip_dovi {
+        stripped = service.without_stream_descriptor(video_pid as u16, 0xB0);
+        &stripped
+    } else {
+        service
+    };
     // A recorder's disc names its recording in its own index and not in the
     // stream; where the stream said nothing, the index is what the tables
     // written here say instead. Not where only the map is being corrected.
@@ -7366,10 +7452,12 @@ fn cut_into(
         ost.set_time_base(grid.time_base());
         unsafe {
             // A stream that says Dolby Vision and hands a player no RPU to
-            // drive it is worse off than one that never said so. Where the
-            // pictures rewritten at a seam cannot carry it, the claim comes
-            // off with them.
-            if signalling.has_dovi && !signalling.dovi {
+            // drive it is worse off than one that never said so -- where
+            // there is something under it to say instead. Where the pictures
+            // rewritten at a seam cannot carry it, the claim comes off with
+            // them, and the copied pictures' RPUs with it. See
+            // [`dovi_fallback`].
+            if signalling.strip_dovi {
                 drop_dovi(ost.parameters().as_mut_ptr());
             }
             // An `hvcC` from a muxer older than the standard says version 0.
@@ -8884,6 +8972,7 @@ fn cut_into(
             } else {
                 crate::si::Tables::Muxer
             },
+            signalling.strip_dovi,
         ) {
             Ok(stats) if std::env::var("SMARTCUT_DEBUG").is_ok() => {
                 crate::say!(

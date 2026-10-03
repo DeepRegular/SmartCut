@@ -397,11 +397,15 @@ These only surfaced on real material:
 - **Dolby Vision survives a copy but not a re-encode.** The RPU on every picture is
   copied with it, so a range whose ends fall on the recording's own entry points comes
   through with all of them; the pictures rewritten at a seam have none, because
-  libavcodec will only configure libx265 for the profiles it can write. The cut says so
-  and takes the recording's stream-level Dolby Vision claim off the output with it, so
-  nothing is left saying what the pictures cannot back up. Measured on a profile 4
-  recording, which libavcodec refuses outright; its GOPs are 4.2 seconds, so a range
-  that misses an entry point re-encodes a long way. See
+  libavcodec will only configure libx265 for the profiles it can write. The cut says so.
+  Where the base layer stands on its own (a compatibility id other than 0), the output
+  gives up Dolby Vision throughout: the stream-level record, the 0xB0 descriptor in a
+  transport stream's map, and the RPUs and enhancement layer of the copied pictures all
+  come off, so nothing is left saying what the pictures cannot back up. Where it does
+  not, all of it stays and only the rewritten pictures go without. Measured on a
+  profile 4 recording, which libavcodec refuses outright; it has an enhancement layer
+  and compatibility id 0, so it keeps its Dolby Vision. Its GOPs are 4.2 seconds, so a
+  range that misses an entry point re-encodes a long way. See
   [the Rust core](rust-core.md#dolby-vision-is-in-the-pictures-and-cannot-be-written-back).
 - **An HLG transfer written the backward-compatible way is only kept for HEVC.** The
   sequence header says `bt2020-10` and an SEI beside it says HLG; both are reproduced

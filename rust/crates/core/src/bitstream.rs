@@ -359,6 +359,33 @@ pub fn length_to_annexb(data: &[u8], n: usize) -> Vec<u8> {
     out
 }
 
+/// An HEVC picture with its Dolby Vision taken out: the RPU (NAL type 62)
+/// and the enhancement layer (63), which no other use of HEVC writes.
+///
+/// For a recording whose base layer stands on its own, once the output has
+/// given up Dolby Vision -- a player that finds RPUs in a stream takes it for
+/// Dolby Vision whatever the container says. `None` where there was nothing
+/// to take out, so a picture without any comes through as its own bytes.
+pub fn strip_dolby_vision(data: &[u8], framing: NalFraming) -> Option<Vec<u8>> {
+    let is_dovi = |nal: &&[u8]| nal.first().is_some_and(|b| matches!((b >> 1) & 0x3F, 62 | 63));
+    let nals = nal_payloads(data, framing);
+    if !nals.iter().any(is_dovi) {
+        return None;
+    }
+    let mut out = Vec::with_capacity(data.len());
+    for nal in nals.iter().filter(|nal| !is_dovi(nal)) {
+        match framing {
+            NalFraming::AnnexB => {
+                out.extend_from_slice(&[0, 0, 0, 1]);
+                out.extend_from_slice(nal);
+            }
+            // The NAL came out of this framing, so its length fits it.
+            NalFraming::Length(n) => push_length_prefixed(&mut out, nal, n).ok()?,
+        }
+    }
+    Some(out)
+}
+
 /// Put the given parameter sets in front of a payload, with start codes.
 ///
 /// An MP4 keeps its parameter sets in the `hvcC`/`avcC` and out of the
@@ -1254,6 +1281,29 @@ mod tests {
         assert!(is_reference(&picture(1), "mpeg1video", none, None));
         assert!(!is_reference(&picture(3), "mpeg1video", none, None));
         assert!(is_reference(&[0x82, 0x49, 0x83, 0, 0, 1, 0x01, 0x00], "vp9", none, None));
+    }
+
+    #[test]
+    fn dolby_vision_comes_out_of_either_framing() {
+        // A trailing picture, its RPU, and one enhancement-layer NAL.
+        let slice = [0x02, 0x01, 0xAA, 0xBB];
+        let rpu = [0x7C, 0x01, 0x19, 0x08];
+        let el = [0x7E, 0x01, 0x02, 0x01, 0xCC];
+        let mut annexb = Vec::new();
+        for nal in [&slice[..], &el, &rpu] {
+            annexb.extend_from_slice(&[0, 0, 0, 1]);
+            annexb.extend_from_slice(nal);
+        }
+        let mut want = vec![0, 0, 0, 1];
+        want.extend_from_slice(&slice);
+        assert_eq!(strip_dolby_vision(&annexb, NalFraming::AnnexB), Some(want));
+        let lengths = annexb_to_length(&annexb, 4).unwrap();
+        assert_eq!(
+            strip_dolby_vision(&lengths, NalFraming::Length(4)),
+            Some(annexb_to_length(&[0, 0, 0, 1, 0x02, 0x01, 0xAA, 0xBB], 4).unwrap())
+        );
+        // Nothing to take out is not a rewrite.
+        assert_eq!(strip_dolby_vision(&annexb[..8], NalFraming::AnnexB), None);
     }
 }
 

@@ -445,6 +445,17 @@ impl Service {
         self.streams.iter().find(|s| s.pid == pid)
     }
 
+    /// The same map with one descriptor gone from one stream's loop, for
+    /// what the recording says about a stream that the cut no longer is --
+    /// the Dolby Vision descriptor, 0xB0, on pictures written without it.
+    pub fn without_stream_descriptor(&self, pid: u16, tag: u8) -> Service {
+        let mut out = self.clone();
+        for es in out.streams.iter_mut().filter(|es| es.pid == pid) {
+            es.descriptors = drop_descriptors(&es.descriptors, &[tag]);
+        }
+        out
+    }
+
     /// Which button on a remote control this transport stream is behind.
     pub fn remote_control_key(&self) -> Option<u8> {
         self.ts_information.as_deref().and_then(remote_control_key)
@@ -684,6 +695,11 @@ fn add_descriptors(into: &mut Vec<u8>, extra: &[u8]) {
 
 /// Copy a descriptor loop, leaving out the tags that must not travel.
 fn keep_descriptors(loop_bytes: &[u8]) -> Vec<u8> {
+    drop_descriptors(loop_bytes, &DROP_DESCRIPTORS)
+}
+
+/// Copy a descriptor loop, leaving out the given tags.
+fn drop_descriptors(loop_bytes: &[u8], drop: &[u8]) -> Vec<u8> {
     let mut out = Vec::with_capacity(loop_bytes.len());
     let mut i = 0;
     while i + 2 <= loop_bytes.len() {
@@ -692,7 +708,7 @@ fn keep_descriptors(loop_bytes: &[u8]) -> Vec<u8> {
         let Some(whole) = loop_bytes.get(i..i + 2 + len) else {
             break;
         };
-        if !DROP_DESCRIPTORS.contains(&tag) {
+        if !drop.contains(&tag) {
             out.extend_from_slice(whole);
         }
         i += 2 + len;

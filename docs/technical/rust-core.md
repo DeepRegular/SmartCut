@@ -181,11 +181,27 @@ Dolby Vision metadata of that profile.
 
 So the attempt is made once, up front, by opening an encoder and seeing
 whether it takes. Where it does not — the profile 4 recording measured here is
-refused outright — the cut says so, and the Dolby Vision the recording
-declares at stream level comes off the output with it. A stream that says
-Dolby Vision and then hands a player no RPU to drive it is worse off than one
-that never said so. The decision is made before the output declares its
-streams, because by the first seam the header has been written.
+refused outright — the cut says so, and what happens next depends on what is
+underneath the Dolby Vision. The record's `dv_bl_signal_compatibility_id`
+says what the base layer is on its own: HDR10, SDR or HLG, or, at 0, nothing a
+player can show.
+
+- **A base layer that stands on its own:** the output becomes that base layer
+  throughout. The stream-level record comes off, so does the Dolby Vision
+  video stream descriptor (0xB0) in a transport stream's map, and so do the
+  RPUs (NAL type 62) and the enhancement layer (63) of every copied picture. A
+  stream that says Dolby Vision and then hands a player no RPU to drive it is
+  worse off than one that never said so, and a `.ts` has no record to take
+  off: a player finding RPUs there takes it for Dolby Vision regardless.
+- **Nothing underneath:** the Dolby Vision stays — record, descriptor and the
+  copied pictures' RPUs — and only the pictures a seam rewrites go without.
+  The profile 4 recording is this case. It carries an enhancement layer and
+  states no colour anywhere but in the RPUs; taking the Dolby Vision off would
+  leave every picture of the output in no stated colour, to spare the few a
+  seam rewrites.
+
+The decision is made before the output declares its streams, because by the
+first seam the header has been written.
 
 ## Fixing the timestamp problem
 
