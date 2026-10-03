@@ -2070,7 +2070,15 @@ Writing goes to `.part.scix` and is renamed into place at the end. Close the app
 Old ones are cut off at **32 files or 1 GB, whichever runs out first** (`prune`). More files and
 a smaller budget than the proxy's eight and 4 GB, because one is three orders of magnitude
 smaller — about 40 MB per half hour, so a gigabyte holds more than twenty. The index for a
-recording finished last week is still worth keeping, which is exactly the point.
+recording finished last week is still worth keeping, which is exactly the point. (The budget
+later went up to 2 GB, when a film's index grew; see above.)
+
+**Neither limit takes the index of a recording that is in the list** (0.8.20). The list is
+indexed from the top down, so with thirty-odd hour-long recordings in it the top rows' indexes
+were deleted while the rows were still there, and each took half a minute to read again when it
+was opened for cutting. The GUI remembers every recording the list has held in the session —
+told by `list_rows` as rows arrive, so a row still waiting its turn counts — and hands their
+indexes to `prune` to spare.
 
 ### Byte offsets — taking the guesswork out of seeking
 

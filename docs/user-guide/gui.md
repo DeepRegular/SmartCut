@@ -477,7 +477,7 @@ frames, and `Snap to lossless` can take those to zero once it lights up.
 | Where | What |
 |---|---|
 | Top line | The recording's whole path. Where the folders will not fit, they are cut short with `…` and the filename is kept whole; hover over it for the rest. A renamed row, or a programme on a disc, has its name in front |
-| Info bar | Lossless points, resolution, fps, scan type, audio, codec. **Tracks** on the right; the three detections are in the `≡` menu at the end of the edit buttons |
+| Info bar | Lossless points, resolution, fps, scan type, audio, codec. **Tracks** on the right, and just left of it whatever the window has to say: a file it read, how far a detection has got — cut short with `…` when it will not fit, and whole when you hover over it; the three detections are in the `≡` menu at the end of the edit buttons |
 | Left column | The **keyframes** — your marks, each with a thumbnail. Click one to jump there; the column stays where it is scrolled to. A mark a detection put down carries `Black`, `White` or `Quiet` under its time |
 | The large picture | The preview. At its foot, in the middle: frame number, timecode, what kind of frame it is, and the current selection. In its top corners, indicators for the frame on screen (below). The **View** menu on the bottom line turns either off |
 | Beside it, on the left | The **audio level meter**: what is being heard while something plays, and the sound under the playhead while nothing does. **Preferences → Windows** turns it off |
@@ -486,7 +486,7 @@ frames, and `Snap to lossless` can take those to zero once it lights up.
 | The button row | **Cut** in the middle, `[ IN` to its left and `OUT ]` to its right, and outwards from there: go to, one frame, lossless point, start and end |
 | The edit row | **Cut outside**, **Snap to lossless**, undo, redo, clear all and the `≡` menu. At the end of the button row where they fit there, and centred on this row where they do not |
 | The band and lines below | **The export plan**. The band is the output on the scrubber's scale: cyan is copied, orange is re-encoded, and each orange stretch sits right under the red line of the join it belongs to, so a join that costs nothing has none. Hover over one for its times and frame count. On the line right under the band: the frame you are on, how many there are, the time, the selection, and what commercial detection found. Where they will not fit, the detection and then the selection are cut short with `…`; hover over either for the whole of it (the detection is in the clip list too). Click the frame number on this line (not the one over the picture), or press `J` (`Ctrl+J`), to type a frame number or a time (`00:01:23.45`) and go there with `Enter`. `Esc` closes the box without going anywhere. The line under that is what will be copied and what will be rebuilt; `▸ Segments` at its right unfolds it segment by segment, and the `?` beside that explains the lossless percentage and breaks down the plan on screen |
-| The bottom line | On the left, what the cut costs, and beside it **View** — a menu of what is shown: the counter, the indicators, the waveform and the subtitles — then the playback buttons (`◀◀` rewind, `▶` play, `▶▶` fast forward, `⟲` loop) and the volume, then whatever the window has to say: a file it read, how far a detection has got. **OK** and **Cancel** on the right |
+| The bottom line | On the left, what the cut costs, and beside it **View** — a menu of what is shown: the counter, the indicators, the waveform and the subtitles — then the playback buttons (`◀◀` rewind, `▶` play, `▶▶` fast forward, `⟲` loop) and the volume. **OK** and **Cancel** on the right |
 
 The indicators in the picture's top corners are there only on a frame they apply to:
 
@@ -910,7 +910,7 @@ timeline, the readout says `Selection —`, and a second `Del` takes nothing.
 Mark IN or OUT again for the next range.
 
 A selection of everything that is left cannot be cut: there would be nothing to
-write. The status line says so and nothing is taken out.
+write. The info bar says so and nothing is taken out.
 
 `Ctrl+Del` is the same cut moved one picture in at each end: **the two frames
 the marks are on stay, and everything between them goes.** With IN on 2392 and

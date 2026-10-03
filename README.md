@@ -299,7 +299,8 @@ through — including the backward-compatible way a 4K broadcast signals HLG,
 where two parts of the stream say different things on purpose.
 **Dolby Vision** is copied intact wherever the pictures are copied; the
 pictures rewritten at a boundary cannot carry it, and a cut that has to rewrite
-any says so.
+any says so. Where the recording's base layer stands on its own, such a cut
+gives Dolby Vision up throughout rather than dropping it only at the seams.
 
 **VP9 and AV1** are cut the same way as the rest, which took less than it
 looked like it would. Neither carries a parameter set the way H.264 does: a VP9

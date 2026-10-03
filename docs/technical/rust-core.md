@@ -171,13 +171,15 @@ so it is the only codec it is done for.
 
 ### Dolby Vision is in the pictures, and cannot be written back
 
-A Dolby Vision recording says nothing about colour in its sequence header at
-all — an RPU on every picture carries it, in a NAL type nothing else uses.
-Copied pictures keep theirs, and a range whose ends fall on entry points comes
-through with every RPU intact, in `.ts`, `.mp4` and `.mkv` alike. A re-encoded
-picture has none: libx265 will write RPUs, but only for the profiles
-libavcodec can configure it for, and only when the pictures handed to it carry
-Dolby Vision metadata of that profile.
+In a Dolby Vision recording the colour is decided by an RPU on every picture,
+in a NAL type nothing else uses; the sequence header describes the base layer
+at most, and in some recordings says nothing about colour at all. Copied
+pictures keep their RPUs, and a range whose ends fall on entry points comes
+through with every one intact, in `.ts`, `.mp4` and `.mkv` alike. A re-encoded
+picture has none: libx265 will write RPUs, but only for the profiles libavcodec
+can configure it for, and only when the pictures handed to it carry Dolby
+Vision metadata of that profile. What then becomes of the Dolby Vision is
+below.
 
 So the attempt is made once, up front, by opening an encoder and seeing
 whether it takes. Where it does not — the profile 4 recording measured here is
@@ -191,14 +193,28 @@ player can show.
   video stream descriptor (0xB0) in a transport stream's map, and so do the
   RPUs (NAL type 62) and the enhancement layer (63) of every copied picture. A
   stream that says Dolby Vision and then hands a player no RPU to drive it is
-  worse off than one that never said so, and a `.ts` has no record to take
-  off: a player finding RPUs there takes it for Dolby Vision regardless.
+  worse off than one that never said so, and a `.ts` has no record of the
+  kind an `.mp4` or `.mkv` carries: a player finding RPUs there takes it for
+  Dolby Vision with or without the descriptor.
 - **Nothing underneath:** the Dolby Vision stays — record, descriptor and the
   copied pictures' RPUs — and only the pictures a seam rewrites go without.
   The profile 4 recording is this case. It carries an enhancement layer and
   states no colour anywhere but in the RPUs; taking the Dolby Vision off would
   leave every picture of the output in no stated colour, to spare the few a
   seam rewrites.
+
+A compatibility id of 0 needs care. A transport stream's 0xB0 descriptor may
+stop before the compatibility byte, and the demuxer then fills in 0 — the
+profile 4 recording is written that way. For profiles 7 and 8, 0 cannot be the
+answer: a profile 7 base layer is a Blu-ray's HDR10 by definition, and profile
+8 exists only as 8.1, 8.2 and 8.4, each a base layer that stands on its own.
+Those two are taken as standing on their own whatever the byte says.
+
+And only HEVC pictures can have their RPUs and enhancement layer taken off.
+On any other codec (AVC's profile 9, AV1's profile 10), dropping the record
+would leave the RPUs in place under a stream that no longer declares them —
+the half-way state all this is meant to avoid — so the Dolby Vision is kept,
+as it is for a compatibility id of 0.
 
 The decision is made before the output declares its streams, because by the
 first seam the header has been written.
