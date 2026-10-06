@@ -625,6 +625,13 @@ exactly where it is. What goes is `BDAV`, and the folder above it only where
 that leaves it empty (`bdav::remove_disc`): a disc written straight into a
 folder of somebody's own is one thing in it, and the rest is not ours to take.
 
+Nor is it ours to put on the disc. The image holds `BDAV` and nothing beside it,
+which is what a recorder's disc holds at its root: a disc written into a folder
+that also holds the recording it came from used to carry that recording into the
+image as well -- gigabytes, and on an image for a recorder to go on editing,
+enough to outgrow the disc. What is imaged and what `--iso-only` takes away are
+now the same thing.
+
 The image is a **UDF** filesystem, at revision 2.50 or 2.60 as the output
 settings screen asks. [`udfw.rs`](../../rust/crates/core/src/udfw.rs) writes
 it, and there is no specification in this project to write it from: every
@@ -746,8 +753,8 @@ listed above.
 
 **A file a UDF volume cannot name is named rather than dropped.** The names
 written here are plain ASCII of 200 characters or fewer, which is what a disc
-of recordings has — the files on one are `00001.m2ts` and `info.bdav` — but the
-folder handed over is whatever the caller named. Anything else is left out of
+of recordings has — the files on one are `00001.m2ts` and `info.bdav` — but
+`BDAV` is a folder anybody can put a file in. Anything else is left out of
 the image, and now said so, with up to four of the names printed the way the
 folder spells them. A dot-file is left out silently, being nobody's recording.
 **A folder that held such a file is not taken away** after the image is made

@@ -253,7 +253,16 @@ impl Node {
     }
 }
 
-/// Write the folder at `from` into a UDF image at `to`.
+/// Write the disc in the folder at `from` into a UDF image at `to`.
+///
+/// The disc is `from/BDAV`, and the image's root holds that and nothing
+/// else, as a recorder's disc does. `from` is whatever folder the disc was
+/// written into, and that can be somebody's own -- `--bdav ~/Videos` put the
+/// recording it was cut from and every other file there into the image,
+/// gigabytes a player never looks at, and an overwritable image of them could
+/// outgrow the disc. [`crate::bdav::remove_disc`] takes `BDAV` away and
+/// leaves the rest for the same reason: the disc is that folder, and the
+/// image and the removal agree on it.
 ///
 /// `label` is what the volume is called -- what a machine that mounts the
 /// image shows. `on` is told how far through the copy it is, because a disc
@@ -318,7 +327,7 @@ fn write_to(
     on: Option<&(dyn Fn(f64) + Sync)>,
 ) -> Result<u64> {
     let mut left_out = Vec::new();
-    let mut tree = read_tree(from, &mut left_out)?;
+    let mut tree = read_disc(from, &mut left_out)?;
     say_what_was_left_out(from, &left_out);
     if tree.len() < 2 {
         bail!("{}: there is nothing here to put on a disc", from.display());
@@ -561,6 +570,43 @@ fn read_tree(from: &Path, left_out: &mut Vec<String>) -> Result<Vec<Node>> {
         unique: 0,
     }];
     fill(from, 0, &mut tree, left_out)?;
+    Ok(tree)
+}
+
+/// Read the disc under `from` -- its `BDAV` folder -- into the tree that will
+/// be written, with the root holding only that.
+///
+/// A `BDAV` that is a link is left out as [`fill`] leaves out any linked
+/// folder, and then there is no disc here: the same answer an image of the
+/// whole folder gave it.
+fn read_disc(from: &Path, left_out: &mut Vec<String>) -> Result<Vec<Node>> {
+    let mut tree = vec![Node {
+        name: String::new(),
+        source: None,
+        size: 0,
+        children: Vec::new(),
+        entry: 0,
+        data: 0,
+        blocks: 0,
+        unique: 0,
+    }];
+    let disc = from.join("BDAV");
+    let is_dir = std::fs::symlink_metadata(&disc).is_ok_and(|m| m.is_dir());
+    if !is_dir {
+        bail!("{}: there is no BDAV folder here to put on a disc", from.display());
+    }
+    tree.push(Node {
+        name: "BDAV".to_string(),
+        source: None,
+        size: 0,
+        children: Vec::new(),
+        entry: 0,
+        data: 0,
+        blocks: 0,
+        unique: 0,
+    });
+    tree[0].children.push(1);
+    fill(&disc, 1, &mut tree, left_out)?;
     Ok(tree)
 }
 
@@ -1657,6 +1703,32 @@ mod tests {
         let beside = PathBuf::from(format!("{}.iso", at.display()));
         assert!(write(&at, &beside, Revision::V250, Access::ReadOnly, "x", None).is_ok());
         let _ = std::fs::remove_file(&beside);
+        let _ = std::fs::remove_dir_all(&at);
+    }
+
+    /// The image holds the disc and not the folder it was written into: a
+    /// disc written into somebody's own folder of videos put every one of
+    /// them into the image. A folder with no disc in it has no image.
+    #[test]
+    fn an_image_holds_only_the_disc() {
+        let at = std::env::temp_dir().join(format!("udfw-only-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&at);
+        std::fs::create_dir_all(at.join("BDAV").join("PLAYLIST")).unwrap();
+        std::fs::create_dir_all(at.join("other")).unwrap();
+        std::fs::write(at.join("BDAV").join("info.bdav"), b"x").unwrap();
+        std::fs::write(at.join("BDAV").join("PLAYLIST").join("00001.rpls"), b"xy").unwrap();
+        std::fs::write(at.join("rec.ts"), b"not the disc").unwrap();
+        std::fs::write(at.join("other").join("notes.txt"), b"not the disc").unwrap();
+        let image = PathBuf::from(format!("{}.iso", at.display()));
+        write(&at, &image, Revision::V250, Access::ReadOnly, "x", None).unwrap();
+        let held = crate::udf::Image::open(&image).unwrap();
+        let mut paths: Vec<&str> = held.files().iter().map(|e| e.path.as_str()).collect();
+        paths.sort();
+        assert_eq!(paths, ["BDAV/PLAYLIST/00001.rpls", "BDAV/info.bdav"]);
+        let _ = std::fs::remove_file(&image);
+        std::fs::remove_dir_all(at.join("BDAV")).unwrap();
+        assert!(write(&at, &image, Revision::V250, Access::ReadOnly, "x", None).is_err());
+        assert!(!image.exists());
         let _ = std::fs::remove_dir_all(&at);
     }
 

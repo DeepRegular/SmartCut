@@ -3075,7 +3075,11 @@ fn run() -> Result<()> {
             // there is an image is the disc lost.
             if iso_only {
                 smartcut_core::bdav::remove_disc(&at)?;
-                tell!("removed {}", at.display());
+                // The folder only where the disc was all it held; out of a
+                // folder of somebody's own only `BDAV` goes, and naming the
+                // folder said their files had gone with it.
+                let gone = if at.exists() { smartcut_core::bdav::root(&at) } else { at.clone() };
+                tell!("removed {}", gone.display());
             }
         }
         return Ok(());
