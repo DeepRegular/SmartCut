@@ -192,7 +192,9 @@ recognise, and saving over it would make that loss permanent. Refusing to open
 is better than quietly throwing away someone's cuts.
 
 Note that **adding** fields does not count as a new version. Fields it does not
-recognise are kept as they are and written back out.
+recognise are kept as they are and written back out. (Up to 0.8.21 they were
+dropped instead.) What carries over between versions, and what does not, is in
+[Compatibility](../technical/compatibility.md).
 
 ---
 

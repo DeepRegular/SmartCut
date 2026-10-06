@@ -59,3 +59,4 @@
 | [設計ノート](technical/design.ja.md) | なぜ Rust コア + Tauri GUI なのか。GUI の作り（フィルムストリップ、シーク用インデックス、プロキシ、再生、多言語対応） |
 | [ビルド](technical/building.ja.md) | 必要なライブラリ、ビルド方法、テストの実行方法 |
 | [配布](technical/distribution.ja.md) | AppImage・tar.gz・deb と Windows インストーラ、それぞれが何を同梱しているか |
+| [互換性](technical/compatibility.ja.md) | 更新しても使い続けられるもの（プロジェクトファイル、コマンドライン、環境設定、キャッシュ）と、1.0 までに直すこと |

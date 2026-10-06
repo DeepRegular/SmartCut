@@ -535,7 +535,7 @@ the switch is at the top of each one.
 | | |
 |---|---|
 | **User guide**<br>How to use it | [Using the GUI](docs/user-guide/gui.md) ・ [Commercial detection](docs/user-guide/cm-detection.md) ・ [Working through a batch](docs/user-guide/batch.md) ・ [Projects](docs/user-guide/projects.md) ・ [Using the command line](docs/user-guide/cli.md) |
-| **Technical**<br>What it does inside | [Algorithm](docs/technical/algorithm.md) ・ [Validation](docs/technical/validation.md) ・ [Audio](docs/technical/audio.md) ・ [Broadcast TS](docs/technical/broadcast-ts.md) ・ [Commercial detection internals](docs/technical/cm-detection.md) ・ [Reading a disc](docs/technical/disc.md) ・ [Writing a disc](docs/technical/bdav.md) ・ [Fitting a disc](docs/technical/transrate.md) ・ [Rust core](docs/technical/rust-core.md) ・ [Design notes](docs/technical/design.md) ・ [Building](docs/technical/building.md) ・ [Distribution](docs/technical/distribution.md) |
+| **Technical**<br>What it does inside | [Algorithm](docs/technical/algorithm.md) ・ [Validation](docs/technical/validation.md) ・ [Audio](docs/technical/audio.md) ・ [Broadcast TS](docs/technical/broadcast-ts.md) ・ [Commercial detection internals](docs/technical/cm-detection.md) ・ [Reading a disc](docs/technical/disc.md) ・ [Writing a disc](docs/technical/bdav.md) ・ [Fitting a disc](docs/technical/transrate.md) ・ [Rust core](docs/technical/rust-core.md) ・ [Design notes](docs/technical/design.md) ・ [Building](docs/technical/building.md) ・ [Distribution](docs/technical/distribution.md) ・ [Compatibility](docs/technical/compatibility.md) |
 
 ## License
 

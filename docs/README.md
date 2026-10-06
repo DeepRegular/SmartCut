@@ -60,3 +60,4 @@ reasons why "just cut on GOP boundaries and concatenate" does not work.
 | [Design notes](technical/design.md) | Why a Rust core with a Tauri GUI, and how the GUI is built: the filmstrip, the seek index, the proxy, playback and the two languages |
 | [Building](technical/building.md) | Required libraries, how to build, how to run the tests |
 | [Distribution](technical/distribution.md) | AppImage, tar.gz and deb, the Windows installer, and what each one bundles |
+| [Compatibility](technical/compatibility.md) | What carries over from one version to the next: project files, the command line, preferences, caches, and what is to change before 1.0 |

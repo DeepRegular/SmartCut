@@ -508,7 +508,7 @@ Python 実装を今も残しているのは、この照合のためです。
 | | |
 |---|---|
 | **ユーザーガイド**<br>使い方 | [GUI の使い方](docs/user-guide/gui.ja.md) ・ [CM 検出](docs/user-guide/cm-detection.ja.md) ・ [まとめて処理する](docs/user-guide/batch.ja.md) ・ [プロジェクト](docs/user-guide/projects.ja.md) ・ [コマンドラインで使う](docs/user-guide/cli.ja.md) |
-| **技術資料**<br>中で何をしているか | [アルゴリズム](docs/technical/algorithm.ja.md) ・ [検証](docs/technical/validation.ja.md) ・ [音声](docs/technical/audio.ja.md) ・ [放送 TS](docs/technical/broadcast-ts.ja.md) ・ [CM 検出の実装](docs/technical/cm-detection.ja.md) ・ [ディスクを読む](docs/technical/disc.ja.md) ・ [ディスクを書く](docs/technical/bdav.ja.md) ・ [ディスク容量に合わせる](docs/technical/transrate.ja.md) ・ [Rust コア](docs/technical/rust-core.ja.md) ・ [設計ノート](docs/technical/design.ja.md) ・ [ビルド](docs/technical/building.ja.md) ・ [配布](docs/technical/distribution.ja.md) |
+| **技術資料**<br>中で何をしているか | [アルゴリズム](docs/technical/algorithm.ja.md) ・ [検証](docs/technical/validation.ja.md) ・ [音声](docs/technical/audio.ja.md) ・ [放送 TS](docs/technical/broadcast-ts.ja.md) ・ [CM 検出の実装](docs/technical/cm-detection.ja.md) ・ [ディスクを読む](docs/technical/disc.ja.md) ・ [ディスクを書く](docs/technical/bdav.ja.md) ・ [ディスク容量に合わせる](docs/technical/transrate.ja.md) ・ [Rust コア](docs/technical/rust-core.ja.md) ・ [設計ノート](docs/technical/design.ja.md) ・ [ビルド](docs/technical/building.ja.md) ・ [配布](docs/technical/distribution.ja.md) ・ [互換性](docs/technical/compatibility.ja.md) |
 
 ## ライセンス
 
