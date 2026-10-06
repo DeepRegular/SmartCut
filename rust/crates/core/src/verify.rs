@@ -514,6 +514,8 @@ pub fn check_crossed(
     // written here opens at 0.05s and an .m2ts at 0.85s, and the raw times
     // put the first mismatch that far past where the player shows it.
     let origin = crate::container_start(&ictx);
+    // Why the output could not be read to its end, where it could not.
+    let mut unread: Option<anyhow::Error> = None;
 
     // The source side, on a thread of its own, a picture at a time through a
     // short queue.
@@ -681,7 +683,8 @@ pub fn check_crossed(
             }
         };
 
-        for (stream, packet) in ictx.read_packets() {
+        let mut packets = ictx.read_packets();
+        for (stream, packet) in packets.by_ref() {
             if stop.load(Ordering::Relaxed) {
                 break;
             }
@@ -714,6 +717,12 @@ pub fn check_crossed(
                 }
             }
         }
+        // A read that gave up at errors -- a share that went away -- is not
+        // a file that is short of pictures: counted as one, the check said a
+        // cut it never read to the end had lost them. Said as what it is,
+        // once the source side has been let finish below.
+        unread = packets.finished().err();
+        drop(packets);
         if let Some(dec) = decoder.as_mut() {
             let _ = dec.send_eof();
             while dec.receive_frame(&mut frame).is_ok() {
@@ -759,6 +768,9 @@ pub fn check_crossed(
 
     if stop.load(Ordering::Relaxed) {
         return Err(anyhow!("stopped"));
+    }
+    if let Some(e) = unread {
+        return Err(anyhow!("reading {output} back: {e}"));
     }
     if let Some(t) = told.as_mut() {
         t(1.0);

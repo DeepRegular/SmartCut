@@ -235,10 +235,13 @@ def vts_ptt_srpt(titles):
     return table
 
 
-def pgc(cells, first, last):
+def pgc(cells, first, last, audios=0):
     """One program chain: the cells it plays, and a program starting at each.
 
-    `first` and `last` count cells from one, inclusive."""
+    `first` and `last` count cells from one, inclusive. `audios` is how many
+    sound tracks the title set declares: the chain says each is present and
+    which substream carries it, the way authoring tools write it, and the
+    reader goes by that rather than by the title set's list."""
     mine = cells[first - 1:last]
     length = sum(c[2] - c[1] for c in mine) / PTM
     n = len(mine)
@@ -249,6 +252,8 @@ def pgc(cells, first, last):
     g[2] = n                                   # programs
     g[3] = n                                   # cells
     put(g, 4, dvd_time(length))
+    for k in range(min(audios, 8)):            # PGC_AST_CTL: present, substream k
+        put(g, 0x0C + 2 * k, be16(0x8000 | (k << 8)))
     put(g, 0xE6, be16(map_at))
     put(g, 0xE8, be16(cells_at))
     put(g, 0xEA, be16(0))
@@ -270,7 +275,7 @@ def vtsi(cells, titles, vobs_sectors, audios):
 
     chains, lengths = [], []
     for first, last in titles_as_runs(titles):
-        raw, length = pgc(cells, first, last)
+        raw, length = pgc(cells, first, last, len(audios))
         chains.append(raw)
         lengths.append(length)
     heads = 8 + 8 * len(chains)

@@ -124,8 +124,11 @@ has "the short title stops a cell early"  "VTS_01_1.VOB@0-$CELL3_END"   "$(input
 
 # --- what the index says it carries --------------------------------------
 has "the picture is read out of the index" "MPEG-2 720x480 NTSC 4:3" "$(rich "$ONE")"
-has "the first sound track is too"         "0x00c0  MPEG-1 audio 2ch 48kHz ja" "$one_folder"
-has "and the second, on its own id"        "0x00c1  MPEG-1 audio 2ch 48kHz ja" "$one_folder"
+# MPEG audio by its whole start code, which is the id libavformat gives the
+# stream -- 0x1c0 rather than 0xc0, or switching it off in the chooser
+# switches off nothing.
+has "the first sound track is too"         "0x01c0  MPEG-1 audio 2ch 48kHz ja" "$one_folder"
+has "and the second, on its own id"        "0x01c1  MPEG-1 audio 2ch 48kHz ja" "$one_folder"
 
 # --- the chapters --------------------------------------------------------
 # One program per cell, so four chapters, and each of them where the cells

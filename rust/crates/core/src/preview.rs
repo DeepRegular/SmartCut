@@ -244,7 +244,7 @@ fn collect_run(
     for (attempt, margin) in [0.0, src.seek_margin].into_iter().enumerate() {
         let mut slots = Slots::new(wanted, window);
         let mut failed = None;
-        let began = walk(src, from, margin, false, true, Cores::One, |t, frame| {
+        let began = walk(src, from, margin, false, true, Cores::One, false, |t, frame| {
             if t > last + fd {
                 return false;
             }
@@ -465,7 +465,7 @@ pub fn play_from(
     let mut stopped = false;
     for (attempt, margin) in [0.0, src.seek_margin].into_iter().enumerate() {
         let mut began_late = true;
-        let first = walk(src, entry, margin, false, true, Cores::All, |t, frame| {
+        let first = walk(src, entry, margin, false, true, Cores::All, false, |t, frame| {
             if t >= until - 1e-6 {
                 // The end of the stretch, which stops the playing -- unless
                 // nothing of it has been played: a seek that landed past the
@@ -548,7 +548,7 @@ fn picture_in(src: &Source, time: f64, woven: bool) -> Result<(f64, ff::frame::V
     for (attempt, margin) in [0.0, src.seek_margin].into_iter().enumerate() {
         let mut hit: Option<(f64, ff::frame::Video)> = None;
         let mut tail: Option<(f64, ff::frame::Video)> = None;
-        let began = walk(src, from, margin, false, woven, Cores::One, |t, frame| {
+        let began = walk(src, from, margin, false, woven, Cores::One, false, |t, frame| {
             // The wanted picture is whichever of the two straddling `time` is
             // nearer -- not "the first one at or after it". Under 2:3
             // pulldown the pictures are 41.7ms apart inside a 29.97 fps
@@ -1304,7 +1304,7 @@ fn still_picture(src: &Source, time: f64) -> Result<ff::frame::Video> {
         // The frame's two fields, by the picture each is taken from and
         // whether it is that picture's top field.
         let mut slots: [Option<(Rc<ff::frame::Video>, bool)>; 2] = [None, None];
-        let began = walk(src, from, margin, false, false, Cores::One, |t, frame| {
+        let began = walk(src, from, margin, false, false, Cores::One, false, |t, frame| {
             let head = *head.get_or_insert(t);
             let first = slot(shown, head);
             let at = slot(t, head);
@@ -1537,6 +1537,7 @@ enum Cores {
 /// and nothing else. `frames` weaves a recording that repeats fields into
 /// the frames a screen shows; see [`crate::weave`]. `visit` returns false to
 /// stop.
+#[allow(clippy::too_many_arguments)]
 fn walk(
     src: &Source,
     from: f64,
@@ -1544,6 +1545,7 @@ fn walk(
     keys: bool,
     frames: bool,
     cores: Cores,
+    whole: bool,
     mut visit: impl FnMut(f64, &ff::frame::Video) -> bool,
 ) -> Result<Option<f64>> {
     let mut ictx = crate::input::demux(&src.input.url)?;
@@ -1596,7 +1598,8 @@ fn walk(
         }
         Ok(true)
     };
-    'outer: for (stream, packet) in ictx.read_packets() {
+    let mut packets = ictx.read_packets();
+    'outer: for (stream, packet) in packets.by_ref() {
         if stream.index() != idx {
             continue;
         }
@@ -1651,6 +1654,17 @@ fn walk(
         }
         if keys {
             decoder.flush();
+        }
+    }
+    // A read that gave up part way, for the one caller that has to know
+    // (`whole`): the pictures it was counting stopped there, not at the end
+    // of what was asked. The others show what they could, as the detections
+    // do.
+    let unread = packets.finished().err();
+    drop(packets);
+    if whole && !stopped {
+        if let Some(e) = unread {
+            return Err(e);
         }
     }
     if !stopped {
@@ -1740,7 +1754,7 @@ pub(crate) fn pictures_in(
         let mut before: Option<(f64, ff::frame::Video)> = None;
         let mut opened = false;
         let mut going = true;
-        walk(src, entry, margin, false, false, Cores::Steady, |t, frame| {
+        walk(src, entry, margin, false, false, Cores::Steady, true, |t, frame| {
             if !seen {
                 seen = true;
                 // Only a walk that has not yet handed anything on can be

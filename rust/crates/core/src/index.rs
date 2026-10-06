@@ -460,6 +460,25 @@ impl IndexSource for ContainerIndex {
             mut ictx,
             ..
         } = input;
+        // **An MPEG program or transport stream keeps no table at all**, so
+        // what libavformat hands over for one is never a table to take --
+        // and [`covers`] cannot tell that where the probe read most of a
+        // short recording. A program stream's "entries" are wherever a packet
+        // carried a decode time: on a nine-second `.mpg` 167 of them, one
+        // every other picture, and a cut starting on one stopped with "passed
+        // without being met". On the short titles of three DVDs measured
+        // here the table began half a second after the first picture and
+        // ended at the container's guess of the length, and the whole title
+        // came out 15 to 27 pictures short. The walk is a second or two on
+        // anything this short, and exact.
+        if ictx
+            .format()
+            .name()
+            .split(',')
+            .any(|n| matches!(n.trim(), "mpeg" | "mpegts"))
+        {
+            bail!("an MPEG program or transport stream keeps no seek table");
+        }
         // How long the recording is, by the container's own reckoning. Only
         // used to ask whether the table below covers it, so a container that
         // will not say how long it is simply asks nothing.

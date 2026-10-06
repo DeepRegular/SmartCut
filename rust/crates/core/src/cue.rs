@@ -25,6 +25,24 @@
 /// The instants the tracks of a cue sheet start at, in seconds from the
 /// start of its file: in order, one to an instant.
 pub fn track_starts(sheet: &[u8]) -> Vec<f64> {
+    // A sheet saved as "Unicode" on Windows is UTF-16 behind its byte order
+    // mark: every keyword is then a letter and a nought byte apiece, and not
+    // one of them was read. Brought to UTF-8 first; an odd last byte is cut.
+    let wide = |be: bool| {
+        let units: Vec<u16> = sheet[2..]
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .map(|&c| if be { u16::from_be_bytes(c) } else { u16::from_le_bytes(c) })
+            .collect();
+        String::from_utf16_lossy(&units).into_bytes()
+    };
+    let decoded = match sheet {
+        [0xFF, 0xFE, ..] => Some(wide(false)),
+        [0xFE, 0xFF, ..] => Some(wide(true)),
+        _ => None,
+    };
+    let sheet = decoded.as_deref().unwrap_or(sheet);
     // A UTF-8 byte order mark, which would make the first line's keyword
     // another word: a sheet that opens on its `FILE` would count none, and
     // read the tracks of its second file as places in the first.
@@ -119,6 +137,28 @@ mod tests {
     fn a_byte_order_mark_hides_no_file() {
         let sheet = b"\xEF\xBB\xBFFILE \"a.wav\" WAVE\nTRACK 01 AUDIO\nINDEX 01 00:00:00\nTRACK 02 AUDIO\nINDEX 01 02:00:00\nFILE \"b.wav\" WAVE\nTRACK 03 AUDIO\nINDEX 01 01:00:00\n";
         assert_eq!(track_starts(sheet), vec![0.0, 120.0]);
+    }
+
+    /// A sheet saved as UTF-16, either way round, behind its byte order
+    /// mark: read as the same sheet in UTF-8 is, and a stray odd byte at the
+    /// end is no reason to read nothing.
+    #[test]
+    fn utf16_sheets() {
+        let text = "FILE \"a.wav\" WAVE\r\nTRACK 01 AUDIO\r\nTITLE \"テスト\"\r\nINDEX 01 00:00:00\r\nTRACK 02 AUDIO\r\nINDEX 01 03:00:37\r\n";
+        let want = track_starts(text.as_bytes());
+        assert_eq!(want.len(), 2);
+        let mut le = vec![0xFF, 0xFE];
+        let mut be = vec![0xFE, 0xFF];
+        for u in text.encode_utf16() {
+            le.extend_from_slice(&u.to_le_bytes());
+            be.extend_from_slice(&u.to_be_bytes());
+        }
+        assert_eq!(track_starts(&le), want);
+        assert_eq!(track_starts(&be), want);
+        le.push(0x41);
+        assert_eq!(track_starts(&le), want);
+        assert!(track_starts(&[0xFF, 0xFE]).is_empty());
+        assert!(track_starts(&[0xFF, 0xFE, 0x00]).is_empty());
     }
 
     /// Not a sheet at all, or a time that cannot be one.

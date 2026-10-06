@@ -79,7 +79,13 @@ static SERIAL: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(
 /// the pictures the recording now decodes to, and the tests against a point
 /// with no tolerance (`p.time <= from + 1e-9`) then took the one before it:
 /// a GOP out.
-pub const VERSION: u32 = 9;
+///
+/// 10: a short program stream -- a DVD title of a few seconds, a `.mpg` off a
+/// camera -- was indexed off libavformat's pseudo-table, which [`index::ContainerIndex`]
+/// now declines for every MPEG stream: entries that were not entry points,
+/// and none for the first half second. As with 4, nothing in the file says
+/// which source made it, and a disc image never changes size or time.
+pub const VERSION: u32 = 10;
 
 const MAGIC: &[u8; 4] = b"SCIX";
 
@@ -543,13 +549,18 @@ pub fn prune(
             running = running.saturating_add(*bytes);
         }
     }
-    for (i, (_, bytes, path)) in found.into_iter().enumerate() {
+    // The newest of the rest, not the newest in the folder: a list row's
+    // index is touched as the row is read, so one of the list's was often
+    // the newest -- and with the list's alone over the count, an index just
+    // written for a recording outside the list was taken at once.
+    let mut newest = true;
+    for (_, bytes, path) in found {
         if spare.contains(&path) {
             continue;
         }
         held += 1;
         running = running.saturating_add(bytes);
-        if i == 0 || (held <= keep && running <= budget) {
+        if std::mem::take(&mut newest) || (held <= keep && running <= budget) {
             continue;
         }
         if std::fs::remove_file(&path).is_ok() {

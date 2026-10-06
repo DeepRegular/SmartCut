@@ -275,6 +275,7 @@ pub fn titles(vol: &mut Volume) -> Result<Vec<Title>> {
             continue;
         };
         if parts.iter().any(|&(n, _)| n != pgcn) {
+            passed_over = true;
             continue;
         }
         let Some(pgc) = set.chains.get(pgcn.wrapping_sub(1)) else {
@@ -282,13 +283,14 @@ pub fn titles(vol: &mut Volume) -> Result<Vec<Title>> {
         };
         let entries: Vec<usize> = parts.iter().map(|&(_, pgn)| pgn).collect();
         passed_over |= pgc.cells.is_empty();
-        out.extend(pieces(vol, vts, i + 1, pgc, &entries, &set.tracks));
+        out.extend(pieces(vol, vts, i + 1, pgc, &entries, &set.ifo));
     }
     if out.is_empty() && passed_over {
         // See [`read_pgc`].
         bail!(
             "none of this disc's titles is laid out in one piece (an angle \
-             block, a seamless branch, or a damaged chain), which this does not read"
+             block, a seamless branch, a title in several chains, or a damaged \
+             chain), which this does not read"
         );
     }
     if out.is_empty() {
@@ -304,7 +306,7 @@ fn pieces(
     number: usize,
     pgc: &Pgc,
     entries: &[usize],
-    tracks: &[Track],
+    ifo: &[u8],
 ) -> Vec<Title> {
     let runs = runs_of(vol, vts, pgc);
     let parts = runs.len();
@@ -342,7 +344,13 @@ fn pieces(
                 first_sector: pgc.cells[run.from].first,
                 last_sector: pgc.cells[run.to - 1].last,
                 start: run.start.unwrap_or(0.0),
-                tracks: tracks.to_vec(),
+                // Asked the way [`subtitles_of`] asks it when the row is cut,
+                // by the sector the row starts at, so that a track switched
+                // off here is the track left out there.
+                tracks: tracks(
+                    ifo,
+                    controls_of(ifo, Some(pgc.cells[run.from].first)).as_ref(),
+                ),
             }
         })
         .collect()
@@ -409,7 +417,9 @@ fn runs_of(vol: &mut Volume, vts: usize, pgc: &Pgc) -> Vec<Run> {
 
 /// What one title set's index says, read once.
 struct TitleSet {
-    tracks: Vec<Track>,
+    /// The index itself, for what it says each title carries: see
+    /// [`tracks`], which needs the chain as well.
+    ifo: Vec<u8>,
     chains: Vec<Pgc>,
     /// For each of the set's titles, the parts it is made of.
     parts: Vec<Vec<(usize, usize)>>,
@@ -421,9 +431,9 @@ fn title_set(vol: &mut Volume, vts: usize) -> Result<TitleSet> {
         bail!("VTS_{vts:02}_0.IFO is not a DVD-Video title set table");
     }
     Ok(TitleSet {
-        tracks: tracks(&ifo),
         chains: program_chains(&ifo)?,
         parts: parts_of_titles(&ifo),
+        ifo,
     })
 }
 
@@ -443,6 +453,41 @@ struct Pgc {
     cells: Vec<Cell>,
     /// The cell each program starts at, counting cells from one.
     programs: Vec<usize>,
+    /// Which substream each of the title set's streams is carried on.
+    controls: Controls,
+}
+
+/// Which substream each stream the title set declares is carried on, as one
+/// chain says.
+///
+/// The title set lists its sound and its subtitles in one order and the
+/// stream numbers them in another, and the chain is what joins the two: a
+/// player asked for the second subtitle plays the substream this names, not
+/// `0x21`. On a widescreen title a subtitle stream is carried up to three
+/// times -- wide, letterboxed and panned -- and the second subtitle is then
+/// `0x23` while `0x21` is the first one again, placed for a letterbox.
+#[derive(Clone)]
+struct Controls {
+    audio: [u16; 8],
+    subpicture: [u32; 32],
+}
+
+impl Controls {
+    /// The table at the head of a chain, which [`read_pgc`] has made sure
+    /// is there.
+    fn read(g: &[u8]) -> Controls {
+        let mut c = Controls {
+            audio: [0; 8],
+            subpicture: [0; 32],
+        };
+        for (i, a) in c.audio.iter_mut().enumerate() {
+            *a = u16be(g, 0x0c + i * 2);
+        }
+        for (i, s) in c.subpicture.iter_mut().enumerate() {
+            *s = u32be(g, 0x1c + i * 4);
+        }
+        c
+    }
 }
 
 /// Every program chain in a title set's index, in its own numbering.
@@ -468,6 +513,7 @@ fn program_chains(ifo: &[u8]) -> Result<Vec<Pgc>> {
         let empty = Pgc {
             cells: Vec::new(),
             programs: Vec::new(),
+            controls: Controls::read(&[]),
         };
         out.push(table.get(start..).and_then(read_pgc).unwrap_or(empty));
     }
@@ -534,7 +580,11 @@ fn read_pgc(g: &[u8]) -> Option<Pgc> {
         }
         programs.push(cell);
     }
-    Some(Pgc { cells, programs })
+    Some(Pgc {
+        cells,
+        programs,
+        controls: Controls::read(g),
+    })
 }
 
 /// For each title in the set, the parts it is made of as `(chain, program)`.
@@ -613,7 +663,7 @@ pub fn subtitles_of(spec: &str) -> Option<Subtitles> {
     if !ifo.starts_with(b"DVDVIDEO-VTS") {
         return None;
     }
-    let streams = tracks(&ifo)
+    let streams = tracks(&ifo, controls_of(&ifo, first).as_ref())
         .into_iter()
         .filter(|t| t.kind == "subtitle")
         .map(|t| (t.pid as u8, t.language))
@@ -683,12 +733,46 @@ fn palette_of(ifo: &[u8], first: Option<u64>) -> Option<crate::vobsub::Palette> 
     fallback
 }
 
+/// The substreams of the chain that plays the sectors a title starts at.
+///
+/// Found the way [`palette_of`] finds the palette, without its fallback: a
+/// chain that does not play the title says nothing about it, and `None` is
+/// the numbering every name had before the chain was asked.
+fn controls_of(ifo: &[u8], first: Option<u64>) -> Option<Controls> {
+    let first = first?;
+    let table_at = u32be(ifo, 0xcc) as usize * SECTOR as usize;
+    let table = ifo.get(table_at..)?;
+    // Asked once a row, so held to the chains a title could play; see
+    // [`program_chains`].
+    let count = (u16be(table, 0) as usize).min(999);
+    for i in 0..count {
+        let at = 8 + i * 8;
+        let Some(entry) = table.get(..at + 8) else { break };
+        let start = u32be(entry, at + 4) as usize;
+        let Some(pgc) = table.get(start..).and_then(read_pgc) else {
+            continue;
+        };
+        if pgc
+            .cells
+            .iter()
+            .any(|c| c.first <= first && first <= c.last)
+        {
+            return Some(pgc.controls);
+        }
+    }
+    None
+}
+
 /// What a title set says it carries.
 ///
 /// Read from the index and not from the stream, for the same reason a
 /// Blu-ray's tracks are: a chooser that had to demux four gigabytes to draw
 /// itself is not a chooser anybody waits for.
-fn tracks(ifo: &[u8]) -> Vec<Track> {
+///
+/// Each stream is named by the substream the chain that plays the title
+/// carries it on, and one the chain does not carry is not listed: see
+/// [`Controls`]. Without a chain, a stream is named by its place in the list.
+fn tracks(ifo: &[u8], controls: Option<&Controls>) -> Vec<Track> {
     let mut out = Vec::new();
     if ifo.len() < 0x256 {
         return out;
@@ -708,15 +792,26 @@ fn tracks(ifo: &[u8]) -> Vec<Track> {
 
     let audios = (ifo[0x203] as usize).min(8);
     for i in 0..audios {
+        // Present, and on which of the eight substreams of its kind.
+        let number = match controls {
+            Some(c) if c.audio[i] & 0x8000 == 0 => continue,
+            Some(c) => i32::from((c.audio[i] >> 8) & 7),
+            None => i as i32,
+        };
         let a = &ifo[0x204 + i * 8..0x204 + i * 8 + 8];
         let format = a[0] >> 5;
+        // The private stream's substream byte for the three that travel in
+        // one, and for MPEG audio, which is a stream of its own, the whole
+        // start code: libavformat names it 0x1C0 as it names the video
+        // 0x1E0, and a track named 0xC0 matched nothing it was asked to
+        // leave out.
         let (name, base) = match format {
             0 => ("AC-3", 0x80),
-            2 => ("MPEG-1 audio", 0xc0),
-            3 => ("MPEG-2 audio", 0xc0),
+            2 => ("MPEG-1 audio", 0x1c0),
+            3 => ("MPEG-2 audio", 0x1c0),
             4 => ("LPCM", 0xa0),
             6 => ("DTS", 0x88),
-            _ => ("audio", 0xc0),
+            _ => ("audio", 0x1c0),
         };
         let channels = (a[1] & 7) + 1;
         let rate = if (a[1] >> 4) & 3 == 0 {
@@ -724,9 +819,13 @@ fn tracks(ifo: &[u8]) -> Vec<Track> {
         } else {
             "96kHz"
         };
+        // Two of the list's streams on one substream are one stream.
+        if out.iter().any(|t| t.pid == base + number) {
+            continue;
+        }
         out.push(Track {
             kind: "audio",
-            pid: base + i as i32,
+            pid: base + number,
             detail: format!("{name} {} {rate}", crate::audio::channels_named(channels as u16)),
             language: language(&a[2..4]),
             coding: 0,
@@ -737,16 +836,27 @@ fn tracks(ifo: &[u8]) -> Vec<Track> {
     }
 
     let subs = (ifo[0x255] as usize).min(32);
+    // A widescreen title's subtitles are the wide ones, which is what a
+    // player shows on a widescreen set.
+    let wide = (ifo[0x200] >> 2) & 3 == 3;
     for i in 0..subs {
+        let number = match controls {
+            Some(c) if c.subpicture[i] & 0x8000_0000 == 0 => continue,
+            Some(c) => (c.subpicture[i] >> if wide { 16 } else { 24 }) as i32 & 0x1f,
+            None => i as i32,
+        };
         // The count is a byte and the table behind it is six bytes an entry,
         // so a title set that stops in the middle of the table names more
         // streams than it carries. Those are not streams.
         let Some(s) = ifo.get(0x256 + i * 6..0x256 + i * 6 + 6) else {
             break;
         };
+        if out.iter().any(|t| t.pid == 0x20 + number) {
+            continue;
+        }
         out.push(Track {
             kind: "subtitle",
-            pid: 0x20 + i as i32,
+            pid: 0x20 + number,
             detail: "subpicture".to_string(),
             language: language(&s[2..4]),
             coding: 0,
@@ -1108,7 +1218,7 @@ mod tests {
         // it names a cell -- and it answers rather than taking the process.
         let chains = program_chains(&ifo).unwrap_or_default();
         assert!(chains.iter().all(|g| g.cells.is_empty()));
-        assert!(tracks(&ifo).is_empty());
+        assert!(tracks(&ifo, None).is_empty());
     }
 
     /// A title set naming more subpicture streams than its table holds.
@@ -1122,7 +1232,7 @@ mod tests {
         ifo[..12].copy_from_slice(b"DVDVIDEO-VTS");
         ifo[0x255] = 32;
         // The video track, and not one subtitle: the table is not there.
-        assert_eq!(tracks(&ifo).len(), 1);
+        assert_eq!(tracks(&ifo, None).len(), 1);
     }
 
     /// A chain table that points past the end of the index it is in.
@@ -1132,6 +1242,47 @@ mod tests {
         ifo[..12].copy_from_slice(b"DVDVIDEO-VTS");
         ifo[0xcc..0xd0].copy_from_slice(&2u32.to_be_bytes());
         assert!(palette_of(&ifo, None).is_none());
+    }
+
+    /// A widescreen title whose two subtitles are each carried three times,
+    /// wide, letterboxed and panned, and whose two sounds are on substreams
+    /// of their own numbering.
+    #[test]
+    fn a_title_names_its_streams_by_the_substreams_its_chain_gives() {
+        let mut ifo = vec![0u8; 0x1000];
+        ifo[..12].copy_from_slice(b"DVDVIDEO-VTS");
+        ifo[0x200] = 0x40 | 0x0c; // MPEG-2, 16:9
+        ifo[0x203] = 3; // AC-3, AC-3, DTS
+        ifo[0x204 + 16] = 6 << 5;
+        ifo[0x255] = 3;
+        ifo[0x256 + 2..0x256 + 4].copy_from_slice(b"ja");
+        ifo[0x256 + 8..0x256 + 10].copy_from_slice(b"en");
+        // The chain table at sector 1, one chain in it.
+        ifo[0xcc..0xd0].copy_from_slice(&1u32.to_be_bytes());
+        let table = 0x800;
+        ifo[table..table + 2].copy_from_slice(&1u16.to_be_bytes());
+        ifo[table + 12..table + 16].copy_from_slice(&16u32.to_be_bytes());
+        let mut g = chain(&[(0, 59808)]);
+        // The second sound is not in this title; the DTS is substream 0.
+        g[0x0c..0x0e].copy_from_slice(&0x8000u16.to_be_bytes());
+        g[0x10..0x12].copy_from_slice(&0x8000u16.to_be_bytes());
+        g[0x1c..0x20].copy_from_slice(&0x8000_0102u32.to_be_bytes());
+        g[0x20..0x24].copy_from_slice(&0x8303_0405u32.to_be_bytes());
+        ifo[table + 16..table + 16 + g.len()].copy_from_slice(&g);
+
+        let named = |t: &[Track], kind: &str| -> Vec<i32> {
+            t.iter().filter(|t| t.kind == kind).map(|t| t.pid).collect()
+        };
+        let carried = tracks(&ifo, controls_of(&ifo, Some(0)).as_ref());
+        assert_eq!(named(&carried, "audio"), vec![0x80, 0x88]);
+        // The second subtitle is the wide 0x23, not the first one's
+        // letterboxed 0x21, and the third is in no stream at all.
+        assert_eq!(named(&carried, "subtitle"), vec![0x20, 0x23]);
+        let second = carried.iter().find(|t| t.pid == 0x23).unwrap();
+        assert_eq!(second.language.as_deref(), Some("en"));
+        // A sector no chain plays leaves the numbering as the list has it.
+        let listed = tracks(&ifo, controls_of(&ifo, Some(99_999)).as_ref());
+        assert_eq!(named(&listed, "subtitle"), vec![0x20, 0x21, 0x22]);
     }
 
     #[test]

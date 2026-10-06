@@ -3199,7 +3199,13 @@ fn shown_at(src: &smartcut_core::Source, t: f64) -> f64 {
     // thousandth of a frame), which keeps a picture a hair before the bound:
     // on a 90 kHz clock a bound between one and three ticks past a picture
     // had it in the cut and the chapter on the picture after it.
-    let tick = src.video.time_base.max(0.0).max(frame * 1e-3).min(frame / 2.0);
+    //
+    // And never coarser than the planner's (`plan::coarse_tick`, a twelfth of
+    // a frame). An AVI counts in whole frames, and held to half of one this
+    // took a time between two pictures for the nearer of them: a range ending
+    // less than half a frame past a picture was measured a frame short, and
+    // every chapter after it was on the last picture of the range before.
+    let tick = src.video.time_base.max(0.0).min(frame / 12.0).max(frame * 1e-3);
     let at = src.points.partition_point(|p| p.time < t);
     let phase = [at.checked_sub(1), Some(at)]
         .into_iter()

@@ -568,6 +568,12 @@ fn frame_peaks(frame: &ff::frame::Audio, out: &mut [f32; METERED]) -> usize {
                         v.unsigned_abs() as f32 / 2147483648.0
                     })
                 }
+                // Eight-bit PCM (a .wav or an old AVI), which is unsigned
+                // around 128 -- read as anything else its silence is half
+                // scale, and as nothing at all it was a full-scale bar.
+                Sample::U8(_) => scan(std::slice::from_raw_parts(data as *const u8, n), of, out, |v| {
+                    (f32::from(v) - 128.0).abs() / 128.0
+                }),
                 // A format nothing here decodes to. Metered as full scale
                 // rather than as silence: a meter that reads zero says the
                 // recording is silent, which is a worse lie than one that

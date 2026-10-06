@@ -663,6 +663,7 @@ fn take_range(
     crate::input::keep_with_pictures(&mut ictx, &[track.stream_index]);
 
     let in_tb = track.time_base;
+    let par = ictx.stream(track.stream_index).map(|s| s.parameters());
     let mut packets = ictx.read_packets();
     for (stream, packet) in packets.by_ref() {
         if stream.index() != track.stream_index {
@@ -680,6 +681,7 @@ fn take_range(
             own if own > 0 => own as f64 * in_tb,
             _ => clock.frame_secs.unwrap_or(0.0),
         };
+        let dur = exact_length(par.as_ref(), &packet, in_tb, dur);
         if t >= range.1 {
             break;
         }
@@ -737,6 +739,36 @@ fn take_range(
     }
     packets.finished()?;
     Ok(written)
+}
+
+/// How long a frame really lasts, where the container's clock is too coarse
+/// to say.
+///
+/// The frames are laid end to end by their lengths, so a length that is out
+/// is out at every frame. Matroska keeps milliseconds: an AAC frame of 1024
+/// samples at 48 kHz, 21.33 ms, comes back as 21, and a hundred seconds of
+/// an .mkv's sound written as an .m4a said it was 98.4 -- every frame
+/// stamped 1.6 % early, which is a track that runs ahead of any picture it
+/// is put back beside. The codec knows the length from the frame itself; it
+/// is taken where it rounds to what the container said, and only where the
+/// container counts more coarsely than one sample, so a transport stream or
+/// an MP4 is laid exactly as it was.
+fn exact_length(par: Option<&ff::codec::Parameters>, packet: &ff::Packet, tb: f64, said: f64) -> f64 {
+    let Some(par) = par else { return said };
+    let (rate, samples) = unsafe {
+        let p = par.as_ptr() as *mut ff::ffi::AVCodecParameters;
+        let size = i32::try_from(packet.size()).unwrap_or(0);
+        ((*p).sample_rate, ff::ffi::av_get_audio_frame_duration2(p, size))
+    };
+    if rate <= 0 || samples <= 0 || tb * f64::from(rate) <= 1.0 {
+        return said;
+    }
+    let exact = f64::from(samples) / f64::from(rate);
+    if (exact - said).abs() < tb {
+        exact
+    } else {
+        said
+    }
 }
 
 /// Write one of the recording's own frames where the sound has reached.

@@ -1121,6 +1121,10 @@ struct GraphicsTrack {
     /// because they are this program's own words rather than the disc's.
     mended: i64,
     plane: crate::pgs::Plane,
+    /// The plane as it stood before the set being read began, for putting
+    /// back when that set turns out to be shown past the range's end. See
+    /// [`take_graphics`].
+    before_set: Option<crate::pgs::Plane>,
     /// The decode time given to the last packet written. Two pieces of one
     /// display set are microseconds apart and the output counts in 90 kHz,
     /// so they can land on the same tick honestly -- and a muxer refuses a
@@ -2627,6 +2631,13 @@ fn take_graphics(
     if arrives >= seg.end && (!plane.building() || arrives >= seg.end + TRAIL) {
         return Ok(true);
     }
+    // What was on screen before this set, for when the set turns out to be
+    // one this range does not carry -- see below.
+    if !plane.building() {
+        let was = plane.clone();
+        writer.graphics[graphics.track].before_set = Some(was);
+    }
+    let plane = &mut writer.graphics[graphics.track].plane;
     let held = crate::pgs::Held {
         pts: t,
         dts,
@@ -2649,6 +2660,21 @@ fn take_graphics(
         if (seg.start..seg.end).contains(&opened) && shown < graphics.ends {
             for held in &set {
                 writer.push_graphics(graphics.track, held, graphics.offset, false)?;
+            }
+        } else if shown >= graphics.ends {
+            // Not carried, so not what is on screen at the range's end
+            // either: the plane goes back to how it stood before the set.
+            // Left fed, a set shown just after the range that takes the
+            // subtitle down told the range's end there was nothing up to
+            // take down -- and on a pressed disc, whose clears sit exactly on
+            // a picture and are decoded a few milliseconds ahead of it, an
+            // OUT on the picture a line goes off on left that line up into
+            // the next range, or to the end of the file. The same as
+            // `read_graphics_before` does with a set shown after its range
+            // opens.
+            let track = &mut writer.graphics[graphics.track];
+            if let Some(was) = track.before_set.take() {
+                track.plane = was;
             }
         }
     }
@@ -3252,6 +3278,9 @@ fn read_graphics_before(
 ) -> Result<Vec<(usize, Vec<crate::pgs::Held>)>> {
     for t in writer.graphics.iter_mut() {
         t.plane.reset();
+        // A previous range's: `take_graphics` puts it back only for the set
+        // it was taken in front of, and a set left part-read here has none.
+        t.before_set = None;
     }
     let wanted: Vec<usize> = writer.graphics.iter().map(|t| t.in_index).collect();
     let mut ictx = crate::input::demux(&src.input.url)?;
@@ -6452,9 +6481,13 @@ fn ranges_with_transitions(
     };
     // Half a range, which is the most either of its ends may give a
     // transition: a transition longer than the clip it is joining is a
-    // transition with nothing left to join.
-    let room =
-        |plan: Option<&RangePlan>| plan.map_or(0.0, |p| ((p.t_out - p.t_in) / 2.0).max(0.0));
+    // transition with nothing left to join. A range the planner found no
+    // picture in -- a sliver left at the end of a recording -- has none to
+    // give, and is not written at all; see below.
+    let room = |plan: Option<&RangePlan>| {
+        plan.filter(|p| !p.segments.is_empty())
+            .map_or(0.0, |p| ((p.t_out - p.t_in) / 2.0).max(0.0))
+    };
     // What each junction really takes from the clip before it and from the
     // clip after it.
     //
@@ -6515,8 +6548,16 @@ fn ranges_with_transitions(
                 // shortest copy worth making -- and a run with no
                 // transition in it would come out planned differently from
                 // the plan it was shown.
+                //
+                // Nor is one the planner found empty -- shorter than a
+                // picture, as a sliver a cut leaves at a recording's end is.
+                // Written afresh as a range of its own, the picture before it
+                // was put in again for it, or, where the sliver was thinner
+                // than a coarse clock's slack, the whole run stopped with
+                // `no pictures decoded`; the same recording as the master
+                // writes nothing there. See [`crate::plan::reencode_range`].
                 if take_head <= 0.0 && take_tail <= 0.0 {
-                    out.push(if fits[n].video {
+                    out.push(if fits[n].video && !plan.segments.is_empty() {
                         crate::plan::reencode_range(&reel.src.points, plan.t_in, plan.t_out)
                     } else {
                         plan.clone()
@@ -8159,6 +8200,7 @@ fn cut_into(
             written: 0,
             mended: 0,
             plane: Default::default(),
+            before_set: None,
             last_out: None,
             aside: None,
         })
@@ -8209,6 +8251,7 @@ fn cut_into(
             written: 0,
             mended: 0,
             plane: Default::default(),
+            before_set: None,
             last_out: None,
             aside: destination,
         });
@@ -8251,6 +8294,7 @@ fn cut_into(
             written: 0,
             mended: 0,
             plane: Default::default(),
+            before_set: None,
             last_out: None,
             aside: Some(destination),
         });

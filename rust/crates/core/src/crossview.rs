@@ -476,13 +476,16 @@ struct Reader {
     ahead: Option<(f64, ff::frame::Video)>,
     rescale: Option<Rescale>,
     shape: (u32, u32),
+    /// How far after an instant a picture may arrive and still be the one on
+    /// screen at it. See [`on_screen_slack`].
+    slack: f64,
     spent: bool,
     /// Whether the decoder has been told the stream is over. See `pull`.
     drained: bool,
 }
 
 impl Reader {
-    fn open(src: &Source, from: f64, shape: (u32, u32)) -> Result<Reader> {
+    fn open(src: &Source, from: f64, shape: (u32, u32), step: f64) -> Result<Reader> {
         let mut ictx = crate::input::demux(&src.input.url)?;
         let ist = src.video.stream_index;
         let stream = ictx
@@ -511,6 +514,7 @@ impl Reader {
             ahead: None,
             rescale: None,
             shape,
+            slack: on_screen_slack(in_tb, step),
             spent: false,
             drained: false,
         })
@@ -520,7 +524,7 @@ impl Reader {
     fn at(&mut self, want: f64) -> Result<Option<&ff::frame::Video>> {
         loop {
             match self.ahead.take() {
-                Some((t, frame)) if t <= want + 1e-9 => self.held = Some(frame),
+                Some((t, frame)) if t <= want + self.slack => self.held = Some(frame),
                 Some(pair) => {
                     self.ahead = Some(pair);
                     break;
@@ -579,6 +583,26 @@ impl Reader {
     }
 }
 
+/// How far after an instant of the preview a clip's picture may arrive and
+/// still be the one on screen at it: the cutter's own answer, so that the
+/// preview of a crossing shows the pictures the output will.
+///
+/// A container that counts in milliseconds stores a picture up to half a
+/// millisecond either side of where it was taken, and the instants here are
+/// counted off exactly. Compared with no slack at all, a 29.97 Matroska clip
+/// showed one picture twice and skipped the next about every third frame.
+/// The same arithmetic as `on_screen_slack` in [`crate::cut_conform`], where
+/// the reasons are given in full; a fine clock -- a transport stream's -- is
+/// compared as it always was.
+fn on_screen_slack(in_tb: f64, step: f64) -> f64 {
+    let fine = step * 1e-3;
+    if in_tb.is_finite() && in_tb > fine {
+        (3.5 * in_tb).min(step / 3.0).max(fine)
+    } else {
+        1e-9
+    }
+}
+
 /// Play the preview from `from`, as a stream of pictures.
 ///
 /// Unlike [`crate::preview::play_from`], which hands over whatever the
@@ -611,7 +635,7 @@ pub fn play(
     // Opened where each clip is first wanted rather than at the head of the
     // preview: the clip after the join is not on screen for the first half of
     // it, and a reader that started there would decode that half to drop it.
-    let mut near = Reader::open(seam.before, window.look(from).near.unwrap_or(0.0), shape)?;
+    let mut near = Reader::open(seam.before, window.look(from).near.unwrap_or(0.0), shape, step)?;
     let mut far: Option<Reader> = None;
     let mut t = from;
     while t < window.seconds - 1e-9 {
@@ -631,7 +655,7 @@ pub fn play(
         let far_frame = match look.far {
             Some(at) => {
                 if far.is_none() {
-                    far = Some(Reader::open(seam.after, at, shape)?);
+                    far = Some(Reader::open(seam.after, at, shape, step)?);
                 }
                 far.as_mut().expect("just set").at(at)?.cloned()
             }
@@ -851,6 +875,18 @@ mod tests {
             (alpha - Easing::parse("quadratic", "in").at(0.5)).abs() < 1e-9,
             "halfway through a quadratic ease-in is {alpha}"
         );
+    }
+
+    /// A clip on a millisecond clock has its pictures taken at the instant
+    /// they belong to, as the cutter takes them; a transport stream's clock
+    /// is compared as it always was.
+    #[test]
+    fn a_coarse_clock_gets_the_cutters_slack() {
+        let step = 1001.0 / 30000.0;
+        assert!((on_screen_slack(1e-3, step) - 3.5e-3).abs() < 1e-12);
+        assert_eq!(on_screen_slack(1.0 / 90_000.0, step), 1e-9);
+        // Never so wide that the picture after is taken for this one.
+        assert!(on_screen_slack(0.1, step) <= step / 3.0);
     }
 
     /// Both clips at a seam come into the preview at studio levels: a
