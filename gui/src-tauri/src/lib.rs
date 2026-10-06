@@ -6420,7 +6420,15 @@ async fn export_joined(
             // The master's own, since the master is the reel the output is
             // declared from and the only one whose stream indices mean
             // anything to it.
-            drop_streams: streams_to_drop(reels[master].src, by_index, by_pid),
+            drop_streams: streams_to_drop(reels[master].src, by_index, by_pid.clone()),
+            // A DVD's subtitles by their substream id, as `export` takes
+            // them: left out here, the ones the chooser switched off on the
+            // master were written into the joined file all the same.
+            drop_subpictures: by_pid
+                .unwrap_or_default()
+                .into_iter()
+                .filter(|pid| reels[master].src.subpictures.iter().any(|s| s.id == *pid))
+                .collect(),
             data_broadcast,
             video_share,
             audio_fade: prefs::audio_fade(),

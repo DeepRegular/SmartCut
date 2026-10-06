@@ -1038,10 +1038,18 @@ if (listen) {
     // Sent again to a window already open -- the list's button pressed a
     // second time. Where it is the same joins, what has been changed in here
     // and not yet OK'd is kept, and only the join picked moves.
+    //
+    // The same rows too, not only the same recordings: the parts of a divided
+    // recording are rows over one path, and two of them swapped in the list
+    // left every path in place while each join's id moved -- the setting made
+    // here for one seam went back in `cross-done` as another's.
     const same =
       theirs.length === joins.length &&
       theirs.every(
-        (j, k) => j.beforePath === joins[k].beforePath && j.afterPath === joins[k].afterPath,
+        (j, k) =>
+          j.id === joins[k].id &&
+          j.beforePath === joins[k].beforePath &&
+          j.afterPath === joins[k].afterPath,
       );
     if (changedHere && same) {
       // Only the transitions are this window's. Where each join falls is the

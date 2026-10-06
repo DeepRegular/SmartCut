@@ -411,6 +411,12 @@ let opening = null;
 /// finding the first did not: the list sends one when a detection lands on
 /// the row being opened. Taken up once the open is done. See `editor-open`.
 let lateOpen = null;
+/// `flat-found`s for the row in `opening` that landed while the row before it
+/// was still in place (`swapping`): put down then, they went onto the old
+/// row's timeline and were replaced with it, and a row that came back with
+/// stretches of its own kept those over the lane's newer answer. Taken up as
+/// soon as the row has replaced it. See `openPath`.
+let lateFlat = [];
 /// Whether the row coming up has yet to replace the one before it: its cuts,
 /// marks and settings. Shorter than `opening`, which lasts through the walk
 /// -- and a cut placed during the walk, which is allowed, has to be sent.
@@ -6627,6 +6633,11 @@ async function openPath(picked, saved, side, name, chapters, dropPids, detected)
     if (marks) chaptersDue = false;
     // Everything the row being left had is replaced by now.
     swapping = false;
+    // A lane's answer that arrived while it was not, onto this row's timeline
+    // as though it had arrived now.
+    const late = lateFlat;
+    lateFlat = [];
+    for (const said of late) if (said.id === editId) takeFlatFound(said);
     paintDetectCm();
     paintDetectFlat();
     await showFrame(!first ? saved.playhead : 0);
@@ -7970,6 +7981,19 @@ function flatSaid(which, n) {
   return tr(flatMarks(which) ? "flat.found" : "flat.foundUnmarked", { n, what });
 }
 
+/// One of the two flat detections, run by the list's lane on the row this
+/// window is on, onto the timeline. See the `flat-found` handler.
+function takeFlatFound(said) {
+  const which = said.which === "quiet" ? "quiet" : "blank";
+  // The lane hands over only an answer to the question in force; one to
+  // an older question goes back in its queue instead.
+  // A partial one replaces the stretches all the same, so what they were
+  // detected with is no longer known.
+  detectedWith[which] = said.partial ? null : prefs.flatAsked(which);
+  putDetected(() => applyFlatRuns(flatKinds(which), said.runs, flatMarks(which)));
+  el("status").textContent = flatSaid(which, said.runs.length);
+}
+
 /// One of the two detections, on the menu line that asks for it.
 ///
 /// Only where this recording has no answer yet to the question 環境設定 puts
@@ -8403,6 +8427,7 @@ if (listen) {
       }
       opening = id;
       lateOpen = null;
+      lateFlat = [];
       swapping = true;
       paintDetectCm();
       paintDetectFlat();
@@ -8545,14 +8570,13 @@ if (listen) {
   hear("flat-found", (ev) => {
     const said = ev.payload || {};
     if (said.id !== editId || !Array.isArray(said.runs)) return;
-    const which = said.which === "quiet" ? "quiet" : "blank";
-    // The lane hands over only an answer to the question in force; one to
-    // an older question goes back in its queue instead.
-    // A partial one replaces the stretches all the same, so what they were
-    // detected with is no longer known.
-    detectedWith[which] = said.partial ? null : prefs.flatAsked(which);
-    putDetected(() => applyFlatRuns(flatKinds(which), said.runs, flatMarks(which)));
-    el("status").textContent = flatSaid(which, said.runs.length);
+    // The row named is on its way in and the one before it is still what
+    // the timeline holds; see `lateFlat`.
+    if (swapping) {
+      lateFlat.push(said);
+      return;
+    }
+    takeFlatFound(said);
   });
   // The list window is where 環境設定 lives, so a language change is news
   // that arrives from there. It carries the language it settled on rather

@@ -456,6 +456,12 @@ let before = null;
 /// ...and whether the row was already marked as edited then, for the same
 /// reason. See `edited` on a clip.
 let editedBefore = false;
+/// The row's commercial answer as it stood before a finding landed on a
+/// first visit that somebody had edited in, for キャンセル to hand back: with
+/// nothing to go back to, the finding would go with the edit, and the row
+/// would neither offer it again nor detect again. See `editor-state` and
+/// `editor-cancel`.
+let owedBack = null;
 
 /// Whether an editor window is being built right now.
 ///
@@ -514,6 +520,7 @@ async function edit(clip) {
   editing = clip;
   before = clip.edit ? JSON.parse(JSON.stringify(clip.edit)) : null;
   editedBefore = clip.edited;
+  owedBack = null;
   // A lane in flight on this very clip is left alone. It used to be stopped
   // here -- the editor is about to make the same pass, and reading one file
   // twice at once is the thing most worth avoiding -- but that traded a real
@@ -688,6 +695,22 @@ if (listen) {
     const known = state.detectedWith || {};
     if (state.cmNote && (landed || !booked)) {
       const had = clip.cmState === "done";
+      // The row's answer as it stood before the first finding to land on
+      // such a visit -- the list's, or one run in there, which went the
+      // same way: the row went on saying "done" and greying the pass over
+      // a timeline that had none of it. Not over a booking, which the lane
+      // answers for itself.
+      if (landed && clip === editing && state.touched && !before && !booked && !owedBack) {
+        owedBack = {
+          id: clip.id,
+          state: clip.cmState,
+          phase: clip.cmPhase,
+          inserts: clip.cmInserts,
+          pending: clip.cmPending,
+          nothing: clip.cmNothingOwed,
+          source: clip.cmSource,
+        };
+      }
       clip.cmPhase = state.cmNote;
       clip.cmState = "done";
       clip.cmPending = false;
@@ -729,7 +752,32 @@ if (listen) {
     // the list and then opening the editor to look and backing out lost the
     // marks -- and lost them for good, since the finding had already been
     // handed over and would not be offered again.
-    if (landed && clip === editing) before = JSON.parse(JSON.stringify(state));
+    //
+    // **Only the detection, though, where somebody has edited in there as
+    // well.** The state it landed in also holds the cuts, the tracks and the
+    // cover chosen before it arrived, and taken whole it made those what
+    // キャンセル went back to: a cut made, then a detection, then Escape and
+    // "discard" -- and the cut stayed on the row and was written. So the
+    // finding and the marks are taken across onto what cancelling already
+    // went back to, and nothing else. A row with nothing to go back to
+    // (opened for the first time) keeps nothing; the marks go with the
+    // rest, as they did before a detection could land at all.
+    if (landed && clip === editing) {
+      const now = JSON.parse(JSON.stringify(state));
+      if (!state.touched) before = now;
+      else if (before) {
+        before = {
+          ...before,
+          keyframes: now.keyframes,
+          activeKey: now.activeKey,
+          cmBlocks: now.cmBlocks,
+          cmNote: now.cmNote,
+          cmFinding: now.cmFinding,
+          detectedWith: now.detectedWith,
+          flatRuns: now.flatRuns,
+        };
+      }
+    }
     paintRow(clip);
     // The detect buttons down the side are about the selection, which this
     // row may be in.
@@ -754,6 +802,18 @@ if (listen) {
     const named = byId(ev.payload);
     const clip = named && named !== editing ? null : named || editing;
     if (clip) clip.edit = before;
+    // Not over a detection booked since, which is the newer question.
+    const rebooked = clip && (clip.cmState === "queued" || clip.cmState === "running");
+    if (clip && !before && owedBack && owedBack.id === clip.id && !rebooked) {
+      clip.cmState = owedBack.state;
+      clip.cmPhase = owedBack.phase;
+      clip.cmInserts = owedBack.inserts;
+      clip.cmPending = owedBack.pending;
+      clip.cmNothingOwed = owedBack.nothing;
+      clip.cmSource = owedBack.source;
+      paintButtons();
+    }
+    owedBack = null;
     // Along with the mark that says the row has been edited: what is being
     // put back is the row as the window found it, and a row cancelled out of
     // has not been edited unless it had been before.
@@ -3770,6 +3830,15 @@ function startRename(clip) {
     field.addEventListener(kind, (ev) => ev.stopPropagation());
   }
   field.addEventListener("keydown", (ev) => {
+    // The input method's own keys, as in the editor's frame box: Enter
+    // settles what is being converted and Esc throws the conversion away.
+    // Taken here, a name typed in Japanese was ended at its first converted
+    // word, and an Esc that only meant to drop a conversion dropped the
+    // whole rename.
+    if (ev.isComposing || ev.keyCode === 229) {
+      ev.stopPropagation();
+      return;
+    }
     if (ev.key === "Enter") {
       ev.preventDefault();
       endRename(true);
@@ -4985,7 +5054,10 @@ function askPresetName() {
     const down = (ev) => { pressedOut = ev.target === box; };
     const click = (ev) => { if (ev.target === box && pressedOut) cancel(); };
     const key = (ev) => {
-      if (ev.key === "Enter" && !ev.isComposing) { ev.preventDefault(); ok(); }
+      // Esc as well as Enter belongs to the input method while it converts:
+      // dropping a conversion closed the box with the name in it.
+      if (ev.isComposing || ev.keyCode === 229) return;
+      if (ev.key === "Enter") { ev.preventDefault(); ok(); }
       else if (ev.key === "Escape") { ev.preventDefault(); ev.stopPropagation(); cancel(); }
     };
     box.addEventListener("mousedown", down);
@@ -6082,6 +6154,22 @@ function marksOf(clip) {
   // `.keyframe`.
   const half = 0.5 / (i.fps > 0 ? i.fps : 30);
   return out.filter((t, k) => k === 0 || t - out[k - 1] > half);
+}
+
+/// The subtitles of a DVD the chooser switched off, out of everything it
+/// switched off.
+///
+/// Sent for a row the editor has been open on as well, where its own track
+/// menu is otherwise the whole answer: a DVD's subtitles are not on that
+/// menu (they are not streams it can switch), so once the row had been
+/// opened nothing carried the chooser's answer about them and a subtitle
+/// switched off there was written all the same. The engine reads these as
+/// subpicture ids only, so the editor's answer about the sound stands.
+function subpictureDrops(clip) {
+  const facts = factsOf(clip);
+  const subs = facts && Array.isArray(facts.subtitles) ? facts.subtitles : [];
+  const ids = new Set(subs.filter((s) => s && s.kind === "subpicture").map((s) => s.id));
+  return (clip.dropPids || []).filter((p) => ids.has(p));
 }
 
 /// Where the chapter points of a recording go, written onto a disc or into a
@@ -8509,7 +8597,7 @@ async function writeJoined(list) {
     path: c.path,
     ranges: rangesOf(c),
     dropStreams: opened(c) ? c.edit.dropStreams || [] : [],
-    dropPids: opened(c) ? [] : c.dropPids,
+    dropPids: opened(c) ? subpictureDrops(c) : c.dropPids,
     // The last row has nothing to give way to, so whatever it carries is
     // not sent: the engine would read it as a fade to black at the end
     // of the file, which is a thing to ask for rather than to inherit
@@ -8815,7 +8903,7 @@ async function startExport() {
         // nobody has opened the editor on. Only then: once there is an edit,
         // the track menu's answer is the answer, and sending both would let a
         // track switched back on in the editor be switched off again here.
-        dropPids: opened(clip) ? [] : clip.dropPids,
+        dropPids: opened(clip) ? subpictureDrops(clip) : clip.dropPids,
         subtitles: settings.subtitles,
         // A standing answer rather than one of this project's: the box is
         // in 環境設定. See `prefs.dataBroadcast`.
@@ -12164,6 +12252,8 @@ prefsPanel.addEventListener("click", (ev) => {
   if (ev.target === prefsPanel && prefsPressedOut) showPrefs(false);
 });
 window.addEventListener("keydown", (ev) => {
+  // Not the Esc that drops a conversion in the name prefix field.
+  if (ev.isComposing || ev.keyCode === 229) return;
   if (ev.key === "Escape" && !prefsPanel.hidden) showPrefs(false);
 });
 
