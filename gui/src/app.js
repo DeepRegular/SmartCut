@@ -297,6 +297,8 @@ function makeClip(found) {
     /// Applied on the next visit to the editor, which is the only place that
     /// knows where the material begins and can turn them into marks.
     cmPending: false,
+    /// A finding of nothing the editor has yet to be shown. See `runCm`.
+    cmNothingOwed: false,
     /// The flat-picture detection and the quiet-sound one: how many stretches
     /// each found, and how far each has got. Two of everything because they
     /// are two lanes -- the pictures are read in a minute and the sound in
@@ -626,6 +628,12 @@ function tellEditor() {
     // The whole finding and not only its blocks: how the detection read the
     // recording is what lets that window say what was found in the language
     // that is up, and write it beside the recording if it is asked to.
+    //
+    // And a detection of the list's that found nothing, until the editor
+    // has met it (`cmNothingOwed`; see `runCm`). Said as nothing, the editor
+    // went on showing the band of an earlier finding -- another inserts
+    // setting, a `.cm.json`, saved with the row's edit -- and its next state
+    // put that finding back on the row over "none found".
     cm:
       editing.cmPending && editing.cm
         ? {
@@ -634,7 +642,17 @@ function tellEditor() {
             resets: editing.cm.resets,
             note: editing.cmPhase,
           }
-        : null,
+        : // Not over a booking, which is the newer question: the sentence
+          // this would put up reads, in `editor-state`, as a detection run
+          // in there and takes the booking back.
+          editing.cmNothingOwed && editing.cm && editing.cmState === "done"
+          ? {
+              blocks: [],
+              logo_found: editing.cm.logo_found,
+              resets: editing.cm.resets,
+              note: editing.cmPhase,
+            }
+          : null,
   });
 }
 
@@ -659,6 +677,7 @@ if (listen) {
     const landed =
       state.cmNote &&
       (clip.cmPending ||
+        (clip.cmNothingOwed && !booked) ||
         state.cmNote !== (booked ? clip.edit && clip.edit.cmNote : clip.cmPhase));
     // Has somebody done something in there? The editor answers it, having
     // the one thing needed to: what the timeline held when the recording
@@ -672,6 +691,7 @@ if (listen) {
       clip.cmPhase = state.cmNote;
       clip.cmState = "done";
       clip.cmPending = false;
+      clip.cmNothingOwed = false;
       clip.cmSource = null;
       // What the finding on the timeline was asked. Only the editor knows
       // for one it ran; for the list's own it says what it was told.
@@ -1771,6 +1791,7 @@ async function restoreCm(clip, pending = null) {
 
 async function runCm(clip) {
   clip.cmState = "running";
+  clip.cmNothingOwed = false;
   clip.cmProgress = 0;
   clip.cmPhase = t("phase.detecting");
   paintRow(clip);
@@ -1787,6 +1808,16 @@ async function runCm(clip) {
     // The marks themselves need to know where the material starts, which is
     // the editor's business; the list only carries the finding across.
     clip.cmPending = res.blocks.length > 0;
+    // A finding of nothing is owed to the editor too, though there are no
+    // blocks to carry: the band of an earlier finding saved with the row's
+    // edit has to go, and the state that comes back has to be taken as this
+    // answer landing (see `editor-state`) -- or キャンセル went back to the
+    // old band, and the next visit put its finding back over "none found".
+    // Owed until met, as `cmPending` is: a window still being built hears
+    // only the second `editor-open`, and a row not open now is opened later.
+    // Only where there is a band to take down, or a window to tell now.
+    const banded = clip.edit && Array.isArray(clip.edit.cmBlocks) && clip.edit.cmBlocks.length > 0;
+    clip.cmNothingOwed = !clip.cmPending && (clip === editing || !!banded);
     // And carries it across *now* if that window is already open on this
     // clip, which it can be: the lanes no longer stand aside for the editor,
     // so a detection can finish while its clip is being cut. `editor-open` is
@@ -9239,7 +9270,20 @@ function rowAsSaved(saved) {
   // `__proto__` assigned set the object's prototype instead of being kept.
   const unknown =
     edit && typeof edit === "object" ? Object.entries(edit).filter(([key]) => !EDIT_KEYS.has(key)) : [];
-  return { row, edit: unknown.length ? Object.fromEntries(unknown) : null };
+  // And of the crossing after the row, the same: `crossingFrom` keeps only
+  // the fields this version has controls for, so a field a later version
+  // added to a transition was otherwise dropped by the row's own `after`
+  // written over the saved one.
+  const after = saved.after;
+  const beyond =
+    after && typeof after === "object" && !Array.isArray(after)
+      ? Object.entries(after).filter(([key]) => !Object.prototype.hasOwnProperty.call(NO_CROSSING, key))
+      : [];
+  return {
+    row,
+    edit: unknown.length ? Object.fromEntries(unknown) : null,
+    after: beyond.length ? Object.fromEntries(beyond) : null,
+  };
 }
 
 /// Every key an edit is written with, by the editor (`captureEdit` in
@@ -9338,7 +9382,7 @@ function captureProject(settled = outputSettled, forRun = false) {
       // What happens where this row gives way to the next, when the list is
       // being written as one file. Left out where nobody has said, which is
       // every row of every list that is not being joined.
-      after: crossingSet(c.after) ? c.after : undefined,
+      after: crossingSet(c.after) ? { ...(c.asSaved && c.asSaved.after), ...c.after } : undefined,
       // Blocks a detection found that the timeline has not been shown yet.
       // The blocks are not written -- they are beside the recording -- but
       // whether they are still owed to the editor is this list's own

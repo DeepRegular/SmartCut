@@ -108,8 +108,17 @@ const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
 /// is, how far it is magnified, and the source pixel under the middle of the
 /// view. The last one is what tells two visits to the same edge apart.
 function paintFoot() {
-  const px = pic ? Math.round(spot.x * pic.naturalWidth) : null;
-  const py = pic ? Math.round(spot.y * pic.naturalHeight) : null;
+  // The middle `paint` actually shows, which is the spot pulled back inside
+  // the picture: a click near the edge of the editor's picture put the view
+  // against that edge and the line named a pixel half a window away from
+  // the middle of it.
+  const centre = (v, room, size) => {
+    const half = Math.min(0.5, room / scale / 2 / size);
+    return Math.round(clamp(v, half, 1 - half) * size);
+  };
+  const box = face.parentElement.getBoundingClientRect();
+  const px = pic && pic.naturalWidth ? centre(spot.x, box.width, pic.naturalWidth) : null;
+  const py = pic && pic.naturalHeight ? centre(spot.y, box.height, pic.naturalHeight) : null;
   el("at").textContent =
     at === null || px === null
       ? "—"

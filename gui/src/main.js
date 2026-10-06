@@ -443,6 +443,24 @@ const settleUnlessTouched = (was) => {
   if (!was) settleMark();
 };
 
+/// Put a detection's answer down by `fn`, settled the way the one above is.
+///
+/// While the row is still arriving it lands as part of what the row arrives
+/// with. A detection can answer then -- the silence pass takes seconds and the
+/// walk over a share most of a minute, and a lane can finish on the row being
+/// opened -- and through `remember` its marks counted as somebody's edit made
+/// during the arrival: the row was badged 編集済み and Escape asked, over a
+/// window nobody had touched.
+function putDetected(fn) {
+  if (opening !== null) {
+    settle(fn);
+    return;
+  }
+  const was = touched();
+  fn();
+  settleUnlessTouched(was);
+}
+
 /// How far back 取消 reaches.
 ///
 /// A step is the cuts, the marks and where the window was looking -- numbers,
@@ -4983,8 +5001,13 @@ async function prepare() {
     renderKeyframes();
     // The picture on screen came from the recording, decoded before any of
     // this existed. Ask again so that what is shown is what the timeline will
-    // keep showing from here on.
-    showFrame(playhead);
+    // keep showing from here on. Not under a playback, which may have been
+    // started while this pass was still running: a still put up in the
+    // middle of it stepped the stage and the playhead back, and in the last
+    // frames of a recording the playhead having moved on read as a step
+    // that came back short and set `tailSrc` early. The stop asks for the
+    // picture anyway.
+    if (!playing) showFrame(playhead);
   } catch (e) {
     // Opening another file supersedes this one; that is not a failure worth
     // showing, because the second file's own pass is already running.
@@ -7834,20 +7857,20 @@ el("detect-cm").addEventListener("click", async () => {
     showCmNote(cmSummary);
     // Whether a detection puts its marks down is 環境設定; off, the band and
     // the sentence are the whole of what it says until the menu is asked.
-    const was = touched();
-    // A pass that found nothing replaces the band too: `applyCmBlocks` puts
-    // down only what there is, and the blocks of an earlier finding (another
-    // inserts setting, a `.cm.json`) went on standing under "none found" and
-    // were sent to the list and saved as this pass's answer.
-    if (!res.blocks || !res.blocks.length) {
-      cmBlocks = [];
-      draw();
-    }
-    applyCmBlocks(res.blocks, prefs.get("cmKeyframes") !== false);
     // Marks a detection put down are the detection's answer and not
     // something anybody did in here; leaving is not losing them. See
-    // `settleUnlessTouched`.
-    settleUnlessTouched(was);
+    // `putDetected`.
+    putDetected(() => {
+      // A pass that found nothing replaces the band too: `applyCmBlocks` puts
+      // down only what there is, and the blocks of an earlier finding (another
+      // inserts setting, a `.cm.json`) went on standing under "none found" and
+      // were sent to the list and saved as this pass's answer.
+      if (!res.blocks || !res.blocks.length) {
+        cmBlocks = [];
+        draw();
+      }
+      applyCmBlocks(res.blocks, prefs.get("cmKeyframes") !== false);
+    });
     // Reported to the clip list too, so the row says what was found and a
     // later visit to this clip does not have to detect it again.
     sync();
@@ -7978,9 +8001,7 @@ async function runFlat(id, label, which, kinds, call) {
     // Not for a read a share cut short: that is shown, and asking again is
     // how to get the rest of it -- nor the answer it replaces on the timeline.
     detectedWith[which] = found.partial ? null : question;
-    const was = touched();
-    applyFlatRuns(kinds, runs, flatMarks(which));
-    settleUnlessTouched(was);
+    putDetected(() => applyFlatRuns(kinds, runs, flatMarks(which)));
     el("status").textContent = flatSaid(which, runs.length);
   } catch (e) {
     if (editId === asked) el("status").textContent = tr("flat.failed", { e });
@@ -8467,6 +8488,25 @@ if (listen) {
       // are held back by an answer somebody has already given, and the band
       // arriving without them is that answer being kept.
       showCmNote(fileWon ? tr("cm.besideMarks", { note: cmSummary }) : cmSummary);
+    } else if (cm && Array.isArray(cm.blocks) && !cm.blocks.length && !(arriving && markFileKind === "cm")) {
+      // The list's detection found nothing: that is the answer now, the way
+      // a pass run in here that finds nothing is (see the detect-cm
+      // handler). The band of an earlier finding goes; marks it put down
+      // stay, being marks. On the way in as well -- the band then is the
+      // one saved with the row's edit, which is that earlier finding -- but
+      // not over a `.cm.json` read on the way in, for the reason the
+      // branch above gives.
+      cmBlocks = [];
+      draw();
+      cmFinding =
+        typeof cm.resets === "number"
+          ? { logo_found: !!cm.logo_found, resets: cm.resets }
+          : null;
+      cmSummary = cm.note || "";
+      const told = ev.payload.detected;
+      detectedWith.cm = told && typeof told.cm === "boolean" ? told.cm : null;
+      paintDetectCm();
+      showCmNote(cmSummary);
     }
     relayout();
     sync();
@@ -8511,9 +8551,7 @@ if (listen) {
     // A partial one replaces the stretches all the same, so what they were
     // detected with is no longer known.
     detectedWith[which] = said.partial ? null : prefs.flatAsked(which);
-    const was = touched();
-    applyFlatRuns(flatKinds(which), said.runs, flatMarks(which));
-    settleUnlessTouched(was);
+    putDetected(() => applyFlatRuns(flatKinds(which), said.runs, flatMarks(which)));
     el("status").textContent = flatSaid(which, said.runs.length);
   });
   // The list window is where 環境設定 lives, so a language change is news
@@ -8585,7 +8623,8 @@ onLangChange(() => {
     // -- is written again. See `sameCards`.
     cardsShown = [];
     renderKeyframes();
-    showFrame(playhead);
+    // Not under a playback, for the reason `prepare` gives.
+    if (!playing) showFrame(playhead);
   }
   // Whatever state it is in -- nothing open, a recording on its way in, a
   // plan -- the band is written again in the language now in force. It is
