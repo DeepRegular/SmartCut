@@ -3290,7 +3290,18 @@ pub fn graft(output: &str, on: Option<&(dyn Fn(f64) + Sync)>, g: &Graft) -> Resu
     let mut read: u64 = 0;
     let outcome = (|| -> Result<()> {
         let mut src = BufReader::with_capacity(1 << 20, std::fs::File::open(output)?);
-        let mut dst = std::io::BufWriter::with_capacity(1 << 20, std::fs::File::create(&temp)?);
+        // Made afresh and never opened through what is there, as the stamp
+        // pass does ([`crate::bdav`]): a `.si` beside the output that is a
+        // link to a file elsewhere would have had that file truncated and
+        // filled with the cut, and then been renamed over the output.
+        let _ = std::fs::remove_file(&temp);
+        let mut dst = std::io::BufWriter::with_capacity(
+            1 << 20,
+            std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&temp)?,
+        );
 
         let components = Components::of(g);
         let pmt_section = build_pmt(g, said_pcr_pid, &components);

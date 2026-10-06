@@ -244,6 +244,9 @@ pub fn titles(vol: &mut Volume) -> Result<Vec<Title>> {
     let mut listed: std::collections::HashSet<(usize, usize)> = Default::default();
     // One title set is read once however many of the disc's titles are in it.
     let mut cache: Vec<(usize, Option<TitleSet>)> = Vec::new();
+    // Whether any title was found and then passed over for how its chain is
+    // laid out, which is not a table that is empty.
+    let mut passed_over = false;
     for i in 0..count {
         let at = 8 + i * 12;
         if srpt.len() < at + 12 {
@@ -278,7 +281,15 @@ pub fn titles(vol: &mut Volume) -> Result<Vec<Title>> {
             continue;
         };
         let entries: Vec<usize> = parts.iter().map(|&(_, pgn)| pgn).collect();
+        passed_over |= pgc.cells.is_empty();
         out.extend(pieces(vol, vts, i + 1, pgc, &entries, &set.tracks));
+    }
+    if out.is_empty() && passed_over {
+        // See [`read_pgc`].
+        bail!(
+            "none of this disc's titles is laid out in one piece (an angle \
+             block, a seamless branch, or a damaged chain), which this does not read"
+        );
     }
     if out.is_empty() {
         bail!("this disc's table of titles is empty");
@@ -489,8 +500,12 @@ fn read_pgc(g: &[u8]) -> Option<Pgc> {
         }
         // A cell in an angle block or an interleaved unit is one of several
         // the player picks between, and laying them end to end would count
-        // the same seconds two or three times over.
-        if g[at] & 0xc0 != 0 {
+        // the same seconds two or three times over. The block mode is the
+        // top two bits and the interleaved flag is 0x04: a seamless branch
+        // (a film's title cards or credits in each language) is interleaved
+        // without being an angle block, and its span holds the other
+        // branches' units between its own.
+        if g[at] & 0xc4 != 0 {
             return None;
         }
         let cell = Cell {
@@ -1188,6 +1203,18 @@ mod tests {
         // span it lies inside is not the title.
         let g = chain(&[(0, 59808), (170544, 229979)]);
         assert!(read_pgc(&g).is_none());
+    }
+
+    #[test]
+    fn a_chain_with_an_interleaved_cell_is_not_offered() {
+        // Cells end to end, but the last is one branch of an interleaved
+        // block: its sectors hold the other branches' units as well.
+        let mut g = chain(&[(0, 59808), (59809, 170543)]);
+        g[0x100 + 24] = 0x04;
+        assert!(read_pgc(&g).is_none());
+        // The seamless-playback flag alone is an ordinary cell.
+        g[0x100 + 24] = 0x08;
+        assert!(read_pgc(&g).is_some());
     }
 
     #[test]

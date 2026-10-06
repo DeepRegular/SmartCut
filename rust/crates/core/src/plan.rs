@@ -222,17 +222,50 @@ pub fn reencode_range(points: &[AccessPoint], t_in: f64, t_out: f64) -> RangePla
 /// `duration` is the recording's length. A range asked for to the end of it
 /// runs past the start of a picture that is not there -- the last one began a
 /// frame before the end -- so the count stops half a frame short of it.
-fn frames_in(points: &[AccessPoint], fps: f64, a: f64, b: f64, duration: f64) -> usize {
+///
+/// `video` says how finely the container keeps time: see [`coarse_tick`].
+fn frames_in(
+    video: &VideoInfo,
+    points: &[AccessPoint],
+    fps: f64,
+    a: f64,
+    b: f64,
+    duration: f64,
+) -> usize {
     let b = if duration > 0.0 { b.min(duration - 0.5 / fps) } else { b };
     if b <= a || fps <= 0.0 {
         return 0;
     }
     let phase = phase_near(points, a);
-    // The first picture at or after `t`. A bound within a hundredth of a
-    // picture of one is taken as that picture, which is what a time read off
-    // a picture comes back as after a trip through floating point.
-    let first = |t: f64| ((t - phase) * fps - 0.01).ceil();
+    // A bound within a hundredth of a picture of one is taken as that
+    // picture, which is what a time read off a picture comes back as after a
+    // trip through floating point. On a coarse clock, within a tick and a
+    // half: an entry point's stored time -- where a copy starts or stops --
+    // and the phase are each rounded to a tick, so a picture sits up to a
+    // tick either side of the grid, and the bounds [`on_the_pictures`] moved
+    // are two ticks ahead of it. With a hundredth, a Matroska file's
+    // leading picture stored 33 ms before its entry point (0.989 of a frame
+    // at 29.97) was counted as the entry point's own, a tail holding just
+    // that picture counted none, and [`plan_range`] dropped it from the cut.
+    let slack = coarse_tick(video).map_or(0.01, |tick| (1.5 * tick * fps).max(0.01));
+    // The first picture at or after `t`.
+    let first = |t: f64| ((t - phase) * fps - slack).ceil();
     (first(b) - first(a)).max(0.0) as usize
+}
+
+/// The container's tick, where it keeps time too coarsely for a picture's
+/// stored time to be told from a bound a fraction of a millisecond away.
+/// See [`on_the_pictures`]. `None` on a fine clock, and on a recording whose
+/// pictures do not come at a rate.
+fn coarse_tick(video: &VideoInfo) -> Option<f64> {
+    let fd = video.frame_duration();
+    // Capped so that the two ticks either side of a grid point stay well
+    // inside a frame: the picture before has to be clear of the moved bound.
+    let tick = video.time_base.min(fd / 12.0);
+    if video.variable_rate || !(tick.is_finite() && fd.is_finite()) || tick <= fd * 0.01 {
+        return None;
+    }
+    Some(tick)
 }
 
 /// The time of the entry point nearest `t`, which is the phase of the grid
@@ -289,18 +322,29 @@ fn on_the_pictures(
     ranges: &[(f64, f64)],
 ) -> Vec<(f64, f64)> {
     let fd = video.frame_duration();
-    // Capped so that the two ticks either side of a grid point stay well
-    // inside a frame: the picture before has to be clear of the moved bound.
-    let tick = video.time_base.min(fd / 12.0);
-    if video.variable_rate || !(tick.is_finite() && fd.is_finite()) || tick <= fd * 0.01 {
+    let Some(tick) = coarse_tick(video) else {
         return ranges.to_vec();
-    }
+    };
+    // The grid is of fields wherever a picture can be held for three of
+    // them: soft telecine (which a remux of MPEG-2 film need not say -- an
+    // index read off the container leaves `pulldown` unset), and an
+    // interlaced broadcast that repeats a field now and then. After such a
+    // picture the ones that follow sit half a frame off the frame grid, and
+    // a bound on one of them was left where it was -- a fraction of a
+    // millisecond past the picture after OUT, which the cut then lost (137
+    // of 1004 OUT positions on a soft-telecine clip remuxed to Matroska).
+    // A field point no picture sits on is half a frame from every picture,
+    // so a bound moved off it by two ticks stays between the same two.
+    let fields = video.pulldown
+        || video.interlaced()
+        || matches!(video.codec.as_str(), "mpeg1video" | "mpeg2video");
+    let step = if fields { fd / 2.0 } else { fd };
     let near = |t: f64| {
         if !t.is_finite() || (duration > 0.0 && t >= duration) {
             return t;
         }
         let phase = phase_near(points, t);
-        let grid = phase + ((t - phase) / fd).round() * fd;
+        let grid = phase + ((t - phase) / step).round() * step;
         if (t - grid).abs() < 2.0 * tick {
             grid - 2.0 * tick
         } else {
@@ -347,7 +391,7 @@ pub fn plan_range(
 
     let finish = |mut segments: Vec<Segment>| -> RangePlan {
         for s in &mut segments {
-            s.frames = frames_in(points, fps, s.start, s.end, duration);
+            s.frames = frames_in(video, points, fps, s.start, s.end, duration);
         }
         // A re-encode window with no picture in it is not a small piece of
         // work, it is an error: the cutter decodes the window, finds nothing
@@ -689,7 +733,7 @@ pub(crate) fn clean_the_join(src: &crate::Source, plan: &mut RangePlan, opts: &P
     } else {
         30.0
     };
-    let frames = |a: f64, b: f64| frames_in(&src.points, fps, a, b, src.duration);
+    let frames = |a: f64, b: f64| frames_in(&src.video, &src.points, fps, a, b, src.duration);
     plan.segments[0].end = clean;
     plan.segments[0].frames = frames(plan.segments[0].start, clean);
     plan.segments[1].start = clean;
@@ -907,8 +951,52 @@ mod tests {
         let same = on_the_pictures(&video, 300.0, &points, &[(stored(46), 3.0)]);
         assert_eq!(same[0].0, a);
         // A bound between two pictures, and one at or past the end, stay.
-        let between = stored(46) + fd / 2.0;
+        // (A quarter of a frame: MPEG-2's grid is of fields, see above.)
+        let between = stored(46) + fd / 4.0;
         assert_eq!(on_the_pictures(&video, 300.0, &points, &[(between, 300.0)]), [(between, 300.0)]);
+    }
+
+    /// A tail of one picture -- an entry point's leading picture, the range
+    /// ending on it -- is counted as one on a coarse clock too, and kept.
+    #[test]
+    fn a_one_picture_tail_on_a_coarse_clock_is_kept() {
+        let mut video = video();
+        video.time_base = 1.0 / 1000.0;
+        let fd = video.frame_duration();
+        let points = stored_points(40, fd);
+        for k in 2..39 {
+            // The editor's bound for the leading picture: one frame after it.
+            let t_out = points[k].lead_start + fd;
+            let ranges = on_the_pictures(&video, 300.0, &points, &[(0.0, t_out)]);
+            let plan = plan_range(&video, 300.0, &points, ranges[0].0, ranges[0].1, &PlanOptions::default());
+            let tail = plan.segments.last().unwrap();
+            assert_eq!(tail.kind, SegmentKind::Reencode, "point {k}: {:?}", plan.segments);
+            assert_eq!(tail.frames, 1, "point {k}: {tail:?}");
+            let count: usize = plan.segments.iter().map(|s| s.frames).sum();
+            assert_eq!(count, 15 * k, "point {k}: {:?}", plan.segments);
+        }
+    }
+
+    /// After a picture held for three fields the next ones sit half a frame
+    /// off the frame grid; a bound on one of them is that picture's too.
+    #[test]
+    fn a_bound_half_a_frame_off_the_grid_is_the_pictures() {
+        let mut video = video();
+        video.time_base = 1.0 / 1000.0;
+        let fd = video.frame_duration();
+        let points = stored_points(40, fd);
+        let ms = |t: f64| (t * 1000.0).round() / 1000.0;
+        // A picture at 0.011 + 45.5 frames, and the editor's bound after the
+        // picture before it, a frame earlier: past the stored time.
+        let picture = ms(0.011 + 45.5 * fd);
+        let bound = ms(0.011 + 44.5 * fd) + fd;
+        let moved = on_the_pictures(&video, 300.0, &points, &[(1.0, bound)]);
+        assert!(moved[0].1 < picture - 0.0009 && moved[0].1 > picture - fd / 2.0, "{moved:?}");
+        // Not where the codec has no fields to repeat.
+        video.codec = "h264".into();
+        video.field_order = 1;
+        let kept = on_the_pictures(&video, 300.0, &points, &[(1.0, bound)]);
+        assert_eq!(kept[0].1, bound);
     }
 
     /// A clock fine enough to tell a bound from a picture leaves every bound

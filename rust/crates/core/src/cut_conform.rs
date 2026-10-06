@@ -154,6 +154,7 @@ fn pictures_afresh(
     let field = ctx.grid.unit();
     let step = into.video.frame_duration();
     let per_frame = ((step / field).round() as i64).max(1);
+    let slack = on_screen_slack(in_tb, step).unwrap_or(step * 1e-3);
     // The clip's own field order, where its lines reach the output as they
     // are: an interlaced clip of the master's height is scaled across only,
     // so its two fields are still its two fields -- and stated in the
@@ -233,7 +234,7 @@ fn pictures_afresh(
         ($before:expr) => {{
             let before = $before;
             if let (Some(a), Some(frame)) = (anchor, held.as_mut()) {
-                while a + made as f64 * step < before - step * 1e-3 {
+                while a + made as f64 * step < before - slack {
                     let display = ctx.display_base + made * per_frame;
                     placed.insert(fed, (display, per_frame));
                     span.fields = span.fields.max(display - ctx.display_base + per_frame);
@@ -447,6 +448,30 @@ fn pictures_afresh(
     Ok(span)
 }
 
+/// How far after an output instant a picture may arrive and still be the one
+/// on screen at it.
+///
+/// **A container that counts in milliseconds stores a picture up to half a
+/// millisecond either side of where it was taken**, and a range bound on such
+/// a clock sits a millisecond or three ahead of its picture on purpose (see
+/// [`crate::plan::plan_on`]). Output instants are counted off exactly, so a
+/// picture of a 29.97 Matroska clip stored at 0.067 for its true 0.0667 came
+/// after the instant it belonged to: that instant was given the picture
+/// before, and the picture itself was replaced before the next instant came.
+/// Every clip written afresh from such a file -- a reel of another shape, any
+/// transition -- showed one picture twice and dropped the next about every
+/// third frame, and a range opening on a moved bound began on the picture
+/// before it.
+///
+/// So the slack is three and a half ticks of the clip's own clock where that
+/// clock is coarser than a thousandth of a frame, held well inside a frame.
+/// `None` for a finer clock -- a transport stream's -- which is compared as
+/// it always was.
+fn on_screen_slack(in_tb: f64, step: f64) -> Option<f64> {
+    let fine = step * 1e-3;
+    (in_tb.is_finite() && in_tb > fine).then(|| (3.5 * in_tb).min(step / 3.0).max(fine))
+}
+
 /// The master's pixel format, where its parameters state one.
 ///
 /// **Not every recording does.** A Blu-ray's VC-1 can be probed without a
@@ -640,9 +665,12 @@ impl FarSide {
     /// crossing.
     fn at(&mut self, into: &Shaped, elapsed: f64) -> Result<Option<&ff::frame::Video>> {
         let want = self.from + elapsed;
+        // The clip's own clock may be too coarse to put a picture exactly on
+        // the instant it belongs to; see [`on_screen_slack`].
+        let slack = on_screen_slack(self.in_tb, into.video.frame_duration()).unwrap_or(1e-9);
         loop {
             match self.ahead.take() {
-                Some((t, frame)) if t <= want + 1e-9 => self.held = Some(frame),
+                Some((t, frame)) if t <= want + slack => self.held = Some(frame),
                 Some(pair) => {
                     self.ahead = Some(pair);
                     break;

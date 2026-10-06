@@ -983,6 +983,17 @@ fn open_sink(
     let rate = ff::Rational::from(fps).reduce();
     let gop = (fps * opts.max_gop).round().clamp(1.0, 600.0) as u32;
 
+    // The name is made afresh before libavformat opens it, which it does
+    // through whatever is there: a link left under it in a folder other
+    // people write in would have had the file it names truncated and filled,
+    // and then been renamed into place as the proxy. See
+    // [`crate::seek_index::SeekIndex::save`].
+    let _ = std::fs::remove_file(part);
+    std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(part)
+        .with_context(|| format!("cannot write {}", part.display()))?;
     let mut octx =
         ff::format::output(&*crate::input::as_output(&part.to_string_lossy())).with_context(|| format!("cannot write {}", part.display()))?;
 

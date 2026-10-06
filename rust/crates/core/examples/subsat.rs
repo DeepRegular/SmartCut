@@ -10,6 +10,10 @@ fn main() -> Result<()> {
     let path = args.get(1).ok_or_else(|| anyhow!("usage: subsat <file> [from] [to] [step]"))?;
     let num = |i: usize, d: f64| args.get(i).and_then(|s| s.parse().ok()).unwrap_or(d);
     let (from, to, step) = (num(2, 0.0), num(3, 600.0), num(4, 1.0));
+    // A step of nothing, or backwards, never reaches `to`.
+    if step.is_nan() || step <= 0.0 {
+        return Err(anyhow!("the step has to be more than zero"));
+    }
     let src = smartcut_core::scan(path)?;
     let tracks = smartcut_core::subs::tracks(&src.captions, &src.graphics, &src.subpictures);
     for track in tracks {
@@ -28,7 +32,13 @@ fn main() -> Result<()> {
                     }
                 }
             }
-            t += step;
+            // A step too small to move `t` -- or a `from` of minus infinity --
+            // would not reach `to` either.
+            let next = t + step;
+            if next <= t {
+                return Err(anyhow!("a step of {step} does not move on from {t}"));
+            }
+            t = next;
         }
         println!("track {:#x} {:?} {:?}: shown at {shown} instants", track.id, track.kind, track.language);
     }

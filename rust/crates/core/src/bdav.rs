@@ -586,7 +586,15 @@ fn write_table(root: &Path, title: &str) -> Result<()> {
     // and writes again until what it moved over is what is there.
     let mut playlists = listed()?;
     for _ in 0..8 {
-        let written = std::fs::write(&temp, info(&playlists, title))
+        // Made afresh, as the stamp pass makes its stream (see [`stamp`]): a
+        // disc folder that arrived holding a link under this name would have
+        // had the file it names truncated and filled with the table.
+        let _ = std::fs::remove_file(&temp);
+        let written = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&temp)
+            .and_then(|mut f| f.write_all(&info(&playlists, title)))
             .and_then(|()| std::fs::rename(&temp, &table));
         if written.is_err() {
             let _ = std::fs::remove_file(&temp);

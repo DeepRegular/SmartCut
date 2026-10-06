@@ -270,7 +270,17 @@ impl SeekIndex {
         //
         // Taken away again where it does not make it into place: `prune`
         // passes over a temporary, so one left by a full disk would stay.
-        let placed = std::fs::write(&part, &w.0)
+        //
+        // Made afresh and never opened through what is there, as
+        // [`crate::bdav`] makes its own: the folder can be one other people
+        // write in, and a link left under this name would have had the file
+        // it names truncated and filled, then renamed into place as the index.
+        let _ = std::fs::remove_file(&part);
+        let placed = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&part)
+            .and_then(|mut f| std::io::Write::write_all(&mut f, &w.0))
             .with_context(|| format!("cannot write {}", part.display()))
             .and_then(|()| {
                 std::fs::rename(&part, path)

@@ -2812,6 +2812,12 @@ fn run() -> Result<()> {
     let mut at_out = 0.0;
     // On the pictures rather than the times asked for: see `shown_at`.
     let on_picture = |t: f64| shown_at(&src, t);
+    // A recording of another shape than the master's is written afresh on
+    // the master's frames: see `kept_length`.
+    let afresh = |s: &smartcut_core::Source| {
+        (reels.len() > 1 && smartcut_core::conform::fit(shaped_like, s).video)
+            .then(|| shaped_like.video.frame_duration())
+    };
     let mut marks = Vec::new();
     let mut chapters = Vec::new();
     for plan in &plans {
@@ -2847,7 +2853,7 @@ fn run() -> Result<()> {
                 chapters.push(at_out + (on_picture(s) - on_picture(plan.t_in)).max(0.0));
             }
         }
-        at_out += kept_length(&src, plan);
+        at_out += kept_length(&src, plan, afresh(&src));
     }
     // And one where each recording of a `--join` begins, which is a cut
     // as much as any range boundary is. Left out, everything after the
@@ -2885,7 +2891,7 @@ fn run() -> Result<()> {
             marks.push(at_out);
         }
         for plan in plans {
-            at_out += kept_length(s, plan);
+            at_out += kept_length(s, plan, afresh(s));
         }
     }
     // A chapter on a range boundary is one chapter, not two -- and the
@@ -3169,10 +3175,6 @@ mod tests {
     }
 }
 
-/// Whether two paths name one file, including one neither run has written
-/// yet. Neither there, [`smartcut_core::input::same_file`] cannot say, and
-/// `-o cut.ts --seek-index ./cut.ts` went through as two files; so each is
-/// also read as the folder it is in, resolved, and the name in it.
 /// A time as the picture that shows at it: the first on or after it, on the
 /// grid the recording's pictures sit on. A time asked for in seconds is
 /// rarely one of them, and measured between the times themselves a
@@ -3193,7 +3195,11 @@ fn shown_at(src: &smartcut_core::Source, t: f64) -> f64 {
     if src.video.variable_rate || !(frame > 0.0 && frame.is_finite() && t.is_finite()) {
         return t;
     }
-    let tick = src.video.time_base.max(0.0).min(frame / 2.0);
+    // Never finer than the cutter's own slack (`cut::reencode_segment`, a
+    // thousandth of a frame), which keeps a picture a hair before the bound:
+    // on a 90 kHz clock a bound between one and three ticks past a picture
+    // had it in the cut and the chapter on the picture after it.
+    let tick = src.video.time_base.max(0.0).max(frame * 1e-3).min(frame / 2.0);
     let at = src.points.partition_point(|p| p.time < t);
     let phase = [at.checked_sub(1), Some(at)]
         .into_iter()
@@ -3215,7 +3221,29 @@ fn shown_at(src: &smartcut_core::Source, t: f64) -> f64 {
 /// range opens on. Taken to the next picture instead, a recording joined on
 /// after one kept to its end was marked up to a frame late, a frame into its
 /// own first picture.
-fn kept_length(src: &smartcut_core::Source, plan: &smartcut_core::RangePlan) -> f64 {
+///
+/// And not at all where the recording is written afresh into the shape of
+/// the `--join` master (`afresh` is then the master's frame): its pictures
+/// are laid on the master's frames counted from where the range opens, every
+/// frame up to the range's end begun (`cut_conform::pictures_afresh`).
+/// Counted on its own pictures instead, a recording of another rate or
+/// aspect joined after it was marked up to a frame early, on the last
+/// picture of the one before.
+fn kept_length(
+    src: &smartcut_core::Source,
+    plan: &smartcut_core::RangePlan,
+    afresh: Option<f64>,
+) -> f64 {
+    if let Some(step) = afresh.filter(|s| *s > 0.0 && s.is_finite()) {
+        let until = if src.duration > 0.0 { plan.t_out.min(src.duration) } else { plan.t_out };
+        // Where `plan::reencode_range` opens the segment, and so the anchor.
+        let a = plan.t_in.max(src.points.first().map_or(plan.t_in, |p| p.time));
+        // `cut_conform::on_screen_slack`, or the thousandth of a frame.
+        let tb = src.video.time_base;
+        let fine = step * 1e-3;
+        let slack = if tb.is_finite() && tb > fine { (3.5 * tb).min(step / 3.0).max(fine) } else { fine };
+        return (((until - slack - a) / step).ceil() * step).max(0.0);
+    }
     let a = shown_at(src, plan.t_in);
     let field = src.video.frame_duration() / 2.0;
     if src.duration > 0.0 && plan.t_out >= src.duration {
@@ -3227,6 +3255,10 @@ fn kept_length(src: &smartcut_core::Source, plan: &smartcut_core::RangePlan) -> 
     (shown_at(src, plan.t_out) - a).max(0.0)
 }
 
+/// Whether two paths name one file, including one neither run has written
+/// yet. Neither there, [`smartcut_core::input::same_file`] cannot say, and
+/// `-o cut.ts --seek-index ./cut.ts` went through as two files; so each is
+/// also read as the folder it is in, resolved, and the name in it.
 fn one_place(a: &str, b: &str) -> bool {
     use std::path::{Path, PathBuf};
     let (a, b) = (Path::new(a), Path::new(b));
