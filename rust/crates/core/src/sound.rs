@@ -663,7 +663,7 @@ fn take_range(
     crate::input::keep_with_pictures(&mut ictx, &[track.stream_index]);
 
     let in_tb = track.time_base;
-    let par = ictx.stream(track.stream_index).map(|s| s.parameters());
+    let mut lengths = Lengths::new(ictx.stream(track.stream_index).map(|s| s.parameters()));
     let mut packets = ictx.read_packets();
     for (stream, packet) in packets.by_ref() {
         if stream.index() != track.stream_index {
@@ -681,7 +681,7 @@ fn take_range(
             own if own > 0 => own as f64 * in_tb,
             _ => clock.frame_secs.unwrap_or(0.0),
         };
-        let dur = exact_length(par.as_ref(), &packet, in_tb, dur);
+        let dur = lengths.of(&packet, in_tb, dur);
         if t >= range.1 {
             break;
         }
@@ -753,22 +753,137 @@ fn take_range(
 /// is taken where it rounds to what the container said, and only where the
 /// container counts more coarsely than one sample, so a transport stream or
 /// an MP4 is laid exactly as it was.
-fn exact_length(par: Option<&ff::codec::Parameters>, packet: &ff::Packet, tb: f64, said: f64) -> f64 {
-    let Some(par) = par else { return said };
-    let (rate, samples) = unsafe {
-        let p = par.as_ptr() as *mut ff::ffi::AVCodecParameters;
-        let size = i32::try_from(packet.size()).unwrap_or(0);
-        ((*p).sample_rate, ff::ffi::av_get_audio_frame_duration2(p, size))
+///
+/// libavcodec answers for the codecs whose frames are all one length. FLAC,
+/// Vorbis and Opus frames are not, and it answers nought for them: the
+/// length is read from the frame here instead -- FLAC's header states its
+/// block size, Opus's first byte its frame size and count, and a Vorbis
+/// packet's mode names one of the two block sizes in the stream's setup
+/// header, overlapped with the block before it. Without, an .mkv's FLAC came
+/// out 0.5 % short of its samples, Vorbis 0.9 % and Opus in 2.5 ms frames a
+/// fifth.
+struct Lengths {
+    par: Option<ff::codec::Parameters>,
+    /// libavcodec's Vorbis parser, which keeps the size of the block before:
+    /// fed every packet in order from wherever the read began.
+    vorbis: *mut ff::ffi::AVVorbisParseContext,
+}
+
+impl Lengths {
+    fn new(par: Option<ff::codec::Parameters>) -> Self {
+        let vorbis = par
+            .as_ref()
+            .filter(|p| p.id() == ff::codec::Id::VORBIS)
+            .map_or(std::ptr::null_mut(), |p| unsafe {
+                let p = p.as_ptr();
+                if (*p).extradata.is_null() || (*p).extradata_size <= 0 {
+                    std::ptr::null_mut()
+                } else {
+                    ff::ffi::av_vorbis_parse_init((*p).extradata, (*p).extradata_size)
+                }
+            });
+        Lengths { par, vorbis }
+    }
+
+    fn of(&mut self, packet: &ff::Packet, tb: f64, said: f64) -> f64 {
+        let Some(par) = self.par.as_ref() else { return said };
+        let (rate, id, fixed) = unsafe {
+            let p = par.as_ptr() as *mut ff::ffi::AVCodecParameters;
+            let size = i32::try_from(packet.size()).unwrap_or(0);
+            ((*p).sample_rate, par.id(), ff::ffi::av_get_audio_frame_duration2(p, size))
+        };
+        if rate <= 0 || tb * f64::from(rate) <= 1.0 {
+            return said;
+        }
+        let data = packet.data().unwrap_or(&[]);
+        // Opus counts its frames at 48 kHz whatever rate the track states.
+        let (samples, rate) = match id {
+            _ if fixed > 0 => (i64::from(fixed), rate),
+            ff::codec::Id::FLAC => (flac_block(data).unwrap_or(0), rate),
+            ff::codec::Id::OPUS => (opus_samples(data).unwrap_or(0), 48_000),
+            ff::codec::Id::VORBIS if !self.vorbis.is_null() && !data.is_empty() => {
+                let mut flags = 0;
+                let n = unsafe {
+                    ff::ffi::av_vorbis_parse_frame_flags(
+                        self.vorbis,
+                        data.as_ptr(),
+                        i32::try_from(data.len()).unwrap_or(i32::MAX),
+                        &mut flags,
+                    )
+                };
+                (i64::from(n), rate)
+            }
+            _ => (0, rate),
+        };
+        if samples <= 0 {
+            return said;
+        }
+        let exact = samples as f64 / f64::from(rate);
+        if (exact - said).abs() < tb {
+            exact
+        } else {
+            said
+        }
+    }
+}
+
+impl Drop for Lengths {
+    fn drop(&mut self) {
+        if !self.vorbis.is_null() {
+            unsafe { ff::ffi::av_vorbis_parse_free(&mut self.vorbis) };
+        }
+    }
+}
+
+/// The samples in a FLAC frame, from its header's block size code.
+fn flac_block(data: &[u8]) -> Option<i64> {
+    // The sync code, fixed or variable blocking.
+    if data.len() < 5 || data[0] != 0xFF || data[1] & 0xFE != 0xF8 {
+        return None;
+    }
+    let code = data[2] >> 4;
+    match code {
+        1 => Some(192),
+        2..=5 => Some(576 << (code - 2)),
+        8..=15 => Some(256 << (code - 8)),
+        6 | 7 => {
+            // Stated after the frame (or sample) number, which is coded the
+            // way UTF-8 codes a character, in one to seven bytes.
+            let lead = data[4];
+            let coded = match lead.leading_ones() {
+                0 => 1,
+                n @ 2..=7 => n as usize,
+                _ => return None,
+            };
+            let at = 4 + coded;
+            if code == 6 {
+                data.get(at).map(|&b| i64::from(b) + 1)
+            } else {
+                let b = data.get(at..at + 2)?;
+                Some(i64::from(u16::from_be_bytes([b[0], b[1]])) + 1)
+            }
+        }
+        _ => None,
+    }
+}
+
+/// The samples in an Opus packet at 48 kHz, from its table-of-contents byte
+/// (RFC 6716, 3.1).
+fn opus_samples(data: &[u8]) -> Option<i64> {
+    let toc = *data.first()?;
+    let config = toc >> 3;
+    let frame: i64 = match config {
+        0..=11 => [480, 960, 1920, 2880][usize::from(config & 3)],
+        12..=15 => [480, 960][usize::from(config & 1)],
+        _ => [120, 240, 480, 960][usize::from(config & 3)],
     };
-    if rate <= 0 || samples <= 0 || tb * f64::from(rate) <= 1.0 {
-        return said;
-    }
-    let exact = f64::from(samples) / f64::from(rate);
-    if (exact - said).abs() < tb {
-        exact
-    } else {
-        said
-    }
+    let frames = match toc & 3 {
+        0 => 1,
+        1 | 2 => 2,
+        _ => i64::from(*data.get(1)? & 0x3F),
+    };
+    // A packet holds at most 120 ms.
+    (frames > 0 && frame * frames <= 5760).then_some(frame * frames)
 }
 
 /// Write one of the recording's own frames where the sound has reached.
@@ -824,4 +939,46 @@ fn write_encoded(
     packet.set_position(-1);
     packet.write_interleaved(octx)?;
     Ok(seconds)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{flac_block, opus_samples};
+
+    #[test]
+    fn flac_block_sizes() {
+        // 4096 (code 12), 44.1 kHz, frame number 0.
+        assert_eq!(flac_block(&[0xFF, 0xF8, 0xC9, 0x18, 0x00, 0xC2]), Some(4096));
+        // 1152 (code 3), variable blocking.
+        assert_eq!(flac_block(&[0xFF, 0xF9, 0x39, 0x18, 0x00, 0x00]), Some(1152));
+        assert_eq!(flac_block(&[0xFF, 0xF8, 0x19, 0x18, 0x00, 0x00]), Some(192));
+        assert_eq!(flac_block(&[0xFF, 0xF8, 0x89, 0x18, 0x00, 0x00]), Some(256));
+        // 8-bit size after a one-byte frame number: the short last block.
+        assert_eq!(flac_block(&[0xFF, 0xF8, 0x69, 0x18, 0x05, 0x9F, 0x00]), Some(160));
+        // 16-bit size after a two-byte frame number (0xC2 0x80 = 128).
+        assert_eq!(flac_block(&[0xFF, 0xF8, 0x79, 0x18, 0xC2, 0x80, 0x0F, 0xFF, 0x00]), Some(4096));
+        // Reserved size, no sync, too short, a stray continuation byte.
+        assert_eq!(flac_block(&[0xFF, 0xF8, 0x09, 0x18, 0x00]), None);
+        assert_eq!(flac_block(&[0xFF, 0xF0, 0xC9, 0x18, 0x00]), None);
+        assert_eq!(flac_block(&[0xFF, 0xF8, 0xC9]), None);
+        assert_eq!(flac_block(&[0xFF, 0xF8, 0x69, 0x18, 0x80, 0x00]), None);
+        assert_eq!(flac_block(&[0xFF, 0xF8, 0x79, 0x18, 0x00, 0x01]), None);
+    }
+
+    #[test]
+    fn opus_packet_samples() {
+        // CELT 20 ms, one frame.
+        assert_eq!(opus_samples(&[31 << 3]), Some(960));
+        // CELT 2.5 ms, one frame.
+        assert_eq!(opus_samples(&[16 << 3]), Some(120));
+        // SILK 60 ms, two frames is 120 ms: the most a packet holds.
+        assert_eq!(opus_samples(&[(3 << 3) | 1]), Some(5760));
+        // Hybrid 10 ms, code 3 with four frames.
+        assert_eq!(opus_samples(&[(12 << 3) | 3, 4]), Some(1920));
+        // Over 120 ms, no frames, nothing at all.
+        assert_eq!(opus_samples(&[(3 << 3) | 3, 3]), None);
+        assert_eq!(opus_samples(&[(31 << 3) | 3, 0]), None);
+        assert_eq!(opus_samples(&[(31 << 3) | 3]), None);
+        assert_eq!(opus_samples(&[]), None);
+    }
 }
