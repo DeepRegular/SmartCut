@@ -964,11 +964,13 @@ impl Volume {
     /// What to call the disc.
     ///
     /// The image or folder's own name, and not the volume identifier inside
-    /// it: `DENSHI_RIKKOKU_01` is what a mastering tool was told to write in
+    /// it: `SERIES_DISC_01` is what a mastering tool was told to write in
     /// 2009, and the file the user has since named the disc after is the name
     /// they will recognise the rows by.
     fn label(&self, at: &Path) -> String {
-        at.file_stem()
+        // The stem of an image and the whole name of a folder, whose dot is
+        // part of its name and not an extension.
+        (if at.is_dir() { at.file_name() } else { at.file_stem() })
             .map(|s| s.to_string_lossy().into_owned())
             .unwrap_or_else(|| "DVD".to_string())
     }

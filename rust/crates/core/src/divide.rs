@@ -415,4 +415,27 @@ mod tests {
         assert_eq!(d.at.len(), 1);
         assert!((d.at[0] - 5.0).abs() < 1e-9, "{:?}", d.at);
     }
+
+    /// A point on a join counts once, and a length that lands on the join
+    /// takes it: the part begins where the keep after it does.
+    #[test]
+    fn a_point_on_a_join_is_the_join() {
+        let keeps = [(0.0, 30.0), (60.0, 90.0)];
+        let d = divide(&keeps, &points(10.0, 90.0), Rule::Every(30.0), true, FD, 0.0, 0.0).unwrap();
+        assert_eq!(d.at, vec![60.0]);
+        assert_eq!(d.lengths, vec![30.0, 30.0]);
+        assert_eq!(d.off_point, 0);
+    }
+
+    /// Off the points, a size is still the most a part comes to, give or
+    /// take the half frame a division is rounded by.
+    #[test]
+    fn a_size_off_the_points() {
+        let keeps = [(0.0, 100.0)];
+        let d = divide(&keeps, &[], Rule::Size(7_000_000), false, FD, 0.0, 1e6).unwrap();
+        assert_eq!(d.at.len(), 14);
+        assert_eq!(d.off_point, 14);
+        assert!(d.lengths.iter().all(|&l| l > 0.0 && l <= 7.0 + FD / 2.0 + 1e-9), "{:?}", d.lengths);
+        assert!(d.at.windows(2).all(|w| w[0] < w[1]), "{:?}", d.at);
+    }
 }

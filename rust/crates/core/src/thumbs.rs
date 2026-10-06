@@ -1170,4 +1170,43 @@ mod tests {
         c.fed = 2;
         assert_eq!(c.min_gap(), 0.0);
     }
+
+    /// No differences is no scenes and the floor as the bar; a recording
+    /// shorter than the spacing still reports its one strongest change, and
+    /// only that.
+    #[test]
+    fn scenes_on_nothing_and_on_a_short_recording() {
+        let opts = ThumbOptions::default();
+        let (scenes, threshold, typical) = mark_scenes(&[], 100.0, &opts);
+        assert!(scenes.is_empty());
+        assert_eq!((threshold, typical), (opts.floor, 0.0));
+        let diffs = [(0.5, 0.01), (1.0, 0.9), (1.5, 0.8), (2.0, 0.02), (2.5, 0.01)];
+        let (scenes, _, _) = mark_scenes(&diffs, 1.0, &opts);
+        assert_eq!(scenes, vec![1.0]);
+        // A length that is not a number is held to one mark, not a panic.
+        let (scenes, _, _) = mark_scenes(&diffs, f64::NAN, &opts);
+        assert_eq!(scenes, vec![1.0]);
+    }
+
+    /// The nearest change over the floor, not the strongest; none over it
+    /// leaves the estimate where it was.
+    #[test]
+    fn the_cut_is_the_nearest_change_over_the_floor() {
+        let seen = [(9.0, 0.9), (10.2, 0.3), (10.4, 0.05), (11.0, 0.8)];
+        assert_eq!(cut_from(&seen, 10.5, 0.2), 10.2);
+        assert_eq!(cut_from(&seen, 10.5, 0.95), 10.5);
+        assert_eq!(cut_from(&[], 3.0, 0.2), 3.0);
+    }
+
+    /// The nearest held picture either side of the instant, and none from an
+    /// empty track; past either end, the end.
+    #[test]
+    fn nearest_from_either_side() {
+        let track = track_at(&[0.0, 1.0, 2.0]);
+        assert_eq!(track.nearest(1.4).map(|t| t.time), Some(1.0));
+        assert_eq!(track.nearest(1.6).map(|t| t.time), Some(2.0));
+        assert_eq!(track.nearest(-5.0).map(|t| t.time), Some(0.0));
+        assert_eq!(track.nearest(50.0).map(|t| t.time), Some(2.0));
+        assert!(track_at(&[]).nearest(1.0).is_none());
+    }
 }

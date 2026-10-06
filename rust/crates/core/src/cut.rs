@@ -4990,6 +4990,13 @@ fn reencode_segment(
                             p as f64 * in_tb - src.start_time + f64::from(shown_for) * fd / 2.0
                         });
                         if own_end.is_none_or(|end| end < t - fd / 4.0) {
+                            // Up from the range's start until `t`, which is
+                            // at least a frame on: a frame is what it is
+                            // written as. A repeat it was coded with ran out
+                            // before the range opened, and kept, it could
+                            // reach past `t` by a field -- a picture of
+                            // film followed by a gap in a damaged stretch.
+                            unsafe { (*held.as_mut_ptr()).repeat_pict = 0 };
                             place!(held, seg.start);
                         }
                     }

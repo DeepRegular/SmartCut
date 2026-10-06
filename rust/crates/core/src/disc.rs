@@ -1188,8 +1188,10 @@ impl Volume {
     /// arrived as is then the only name there is -- which is not a bad one,
     /// since somebody chose it.
     fn label(&mut self, at: &Path) -> String {
-        let fallback = at
-            .file_stem()
+        // The stem of an image and the whole name of a folder: a folder
+        // called `Anime vol.2` was labelled `Anime vol`, and two discs
+        // `.D1` and `.D2` beside each other gave their rows the same names.
+        let fallback = (if at.is_dir() { at.file_name() } else { at.file_stem() })
             .or_else(|| at.file_name())
             .map(|s| s.to_string_lossy().into_owned())
             .unwrap_or_else(|| self.shape().root().to_string());

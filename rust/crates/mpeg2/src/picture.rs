@@ -451,7 +451,10 @@ impl<'a> Picture<'a> {
             } else {
                 scratch.coeffs.len() - from as usize
             };
+            // Both, so the next block's costs sit beside its own
+            // coefficients and not beside this block's dropped tail.
             scratch.coeffs.truncate(from as usize + keep);
+            scratch.bits.truncate(from as usize + keep);
             let to = scratch.coeffs.len() as u32;
             if to > from {
                 pattern |= 1 << (5 - block.which);

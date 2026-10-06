@@ -155,4 +155,12 @@ mod tests {
         // A minute count past u32 is not a time.
         assert!(track_starts(b"TRACK 01 AUDIO\nINDEX 01 4294967296:00:00\n").is_empty());
     }
+
+    /// An index numbered without its leading nought is the same index, and
+    /// two tracks less than half a sector apart are one place.
+    #[test]
+    fn short_numbers_and_near_duplicates() {
+        let sheet = b"FILE \"a.wav\" WAVE\nTRACK 1 AUDIO\nINDEX 1 00:00:00\nTRACK 2 AUDIO\nINDEX 0 00:59:74\nINDEX 1 01:00:00\nTRACK 3 AUDIO\nINDEX 1 01:00:00\n";
+        assert_eq!(track_starts(sheet), vec![0.0, 60.0]);
+    }
 }

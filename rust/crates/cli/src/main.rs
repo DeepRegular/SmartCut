@@ -678,7 +678,8 @@ fn run() -> Result<()> {
                 return Ok(());
             }
             // For a script that has to know which version it is driving. One
-            // line, the version alone, so it can be compared as it stands;
+            // line, `smartcut X.Y.Z` and nothing else, so it can be compared
+            // as it stands;
             // what the rest of this program prints is for a person and is
             // not kept from one version to the next.
             "--version" | "-V" => {
@@ -2450,19 +2451,6 @@ fn run() -> Result<()> {
                 "ts" | "m2ts" | "mts" | "m2t"
             )
         });
-    // A number that names no track that can be dropped would drop nothing,
-    // and the run would go ahead as though it had been obeyed.
-    let droppable = |n: usize| {
-        src.audios.iter().any(|a| a.stream_index == n)
-            || src.captions.iter().any(|c| c.stream_index == n)
-            || src.graphics.iter().any(|g| g.stream_index == n)
-    };
-    if let Some(n) = drop_streams.iter().find(|&&n| !droppable(n)) {
-        bail!(
-            "--drop-stream {n}: {} has no sound, caption or subtitle stream {n} (the pictures cannot be dropped)",
-            src.path
-        );
-    }
     let kept_audio = src
         .audios
         .iter()
@@ -2603,6 +2591,28 @@ fn run() -> Result<()> {
             also.duration,
         );
         joined_src.push(also);
+    }
+    // The recording the output is shaped like, whose stream numbers are the
+    // ones `--drop-stream` names: the engine reads them as the master's
+    // (`cut::cut_into`, `sound::track_of`). Checked against the first
+    // recording instead, `--master 2` refused a track only the second has,
+    // and took one only the first has and dropped nothing.
+    let shaped_like = match master {
+        0 => &src,
+        n => joined_src.get(n - 1).unwrap_or(&src),
+    };
+    // A number that names no track that can be dropped would drop nothing,
+    // and the run would go ahead as though it had been obeyed.
+    let droppable = |n: usize| {
+        shaped_like.audios.iter().any(|a| a.stream_index == n)
+            || shaped_like.captions.iter().any(|c| c.stream_index == n)
+            || shaped_like.graphics.iter().any(|g| g.stream_index == n)
+    };
+    if let Some(n) = drop_streams.iter().find(|&&n| !droppable(n)) {
+        bail!(
+            "--drop-stream {n}: {} has no sound, caption or subtitle stream {n} (the pictures cannot be dropped)",
+            shaped_like.path
+        );
     }
     // The same courtesy `--drop-stream` gets: an id no recording of the run
     // carries -- a typo, or a stream of another disc -- dropped nothing, and
@@ -2772,10 +2782,6 @@ fn run() -> Result<()> {
     // away -- or every track -- or an AC-3 track kept before it left the
     // sidecar to be written from a track the ADTS muxer cannot take, which
     // failed once the cut had been written.
-    let shaped_like = match master {
-        0 => &src,
-        n => joined_src.get(n - 1).unwrap_or(&src),
-    };
     let first_kept_sound: Option<String> = shaped_like
         .audios
         .iter()
@@ -2804,6 +2810,8 @@ fn run() -> Result<()> {
     // Where each kept range begins is where the cuts are: the one place a
     // viewer would want to skip to.
     let mut at_out = 0.0;
+    // On the pictures rather than the times asked for: see `shown_at`.
+    let on_picture = |t: f64| shown_at(&src, t);
     let mut marks = Vec::new();
     let mut chapters = Vec::new();
     for plan in &plans {
@@ -2836,14 +2844,10 @@ fn run() -> Result<()> {
             let s = m - src.start_time;
             let s = if s < first && s >= first - 0.5 { first } else { s };
             if s >= plan.t_in && s < plan.t_out {
-                chapters.push(at_out + (s - plan.t_in));
+                chapters.push(at_out + (on_picture(s) - on_picture(plan.t_in)).max(0.0));
             }
         }
-        // No further than the recording goes: a range asked for past its
-        // end is planned as asked, and the next recording of a join
-        // begins where the pictures stopped.
-        let t_out = if src.duration > 0.0 { plan.t_out.min(src.duration) } else { plan.t_out };
-        at_out += (t_out - plan.t_in).max(0.0);
+        at_out += kept_length(&src, plan);
     }
     // And one where each recording of a `--join` begins, which is a cut
     // as much as any range boundary is. Left out, everything after the
@@ -2864,7 +2868,7 @@ fn run() -> Result<()> {
     // a mark the disc set just after it was a chapter of nothing.
     let mut gives_way = at_out;
     let mut first_join = true;
-    for plans in &joined_plans {
+    for (s, plans) in joined_src.iter().zip(&joined_plans) {
         if between.kind.overlaps() {
             let overlap = between.takes().0.min(half(before)).min(half(plans.first()));
             at_out = (at_out - overlap).max(0.0);
@@ -2881,7 +2885,7 @@ fn run() -> Result<()> {
             marks.push(at_out);
         }
         for plan in plans {
-            at_out += plan.t_out - plan.t_in;
+            at_out += kept_length(s, plan);
         }
     }
     // A chapter on a range boundary is one chapter, not two -- and the
@@ -3169,6 +3173,60 @@ mod tests {
 /// yet. Neither there, [`smartcut_core::input::same_file`] cannot say, and
 /// `-o cut.ts --seek-index ./cut.ts` went through as two files; so each is
 /// also read as the folder it is in, resolved, and the name in it.
+/// A time as the picture that shows at it: the first on or after it, on the
+/// grid the recording's pictures sit on. A time asked for in seconds is
+/// rarely one of them, and measured between the times themselves a
+/// recording whose first picture comes a moment after its start (a Matroska
+/// file remuxed by ffmpeg opens 21 ms in) had every chapter after its first
+/// range land that much early -- on the last picture of the range before.
+///
+/// The grid is the one the nearest entry point sits on, as the planner
+/// counts its frames (`plan::frames_in`): a broadcast's pictures move half a
+/// frame wherever a field is repeated. And a time is on a picture to within
+/// the container's tick: a Matroska file counts in milliseconds, so its
+/// pictures are up to half of one off the grid, and a time given as one of
+/// them (10.455, the grid putting it at 10.4543) was taken as the picture
+/// after it. Not where the recording is known to vary: its pictures are
+/// placed by their own times, and the grid is a number none of them keeps to.
+fn shown_at(src: &smartcut_core::Source, t: f64) -> f64 {
+    let frame = src.video.frame_duration();
+    if src.video.variable_rate || !(frame > 0.0 && frame.is_finite() && t.is_finite()) {
+        return t;
+    }
+    let tick = src.video.time_base.max(0.0).min(frame / 2.0);
+    let at = src.points.partition_point(|p| p.time < t);
+    let phase = [at.checked_sub(1), Some(at)]
+        .into_iter()
+        .flatten()
+        .filter_map(|i| src.points.get(i))
+        .map(|p| p.time)
+        .min_by(|x, y| (x - t).abs().total_cmp(&(y - t).abs()))
+        .unwrap_or(0.0);
+    phase + ((t - phase - tick) / frame - 1e-6).ceil() * frame
+}
+
+/// How long a kept range runs in the output: from the picture it opens on to
+/// the one after its last, which is where the next range (or recording)
+/// begins.
+///
+/// Except at the end of the recording, where there is no picture after the
+/// last: the cut holds the last one up until the recording ends
+/// (`cut::held_to_the_end`), counted in whole fields from the picture the
+/// range opens on. Taken to the next picture instead, a recording joined on
+/// after one kept to its end was marked up to a frame late, a frame into its
+/// own first picture.
+fn kept_length(src: &smartcut_core::Source, plan: &smartcut_core::RangePlan) -> f64 {
+    let a = shown_at(src, plan.t_in);
+    let field = src.video.frame_duration() / 2.0;
+    if src.duration > 0.0 && plan.t_out >= src.duration {
+        if src.video.variable_rate || !(field > 0.0 && field.is_finite()) {
+            return (src.duration - plan.t_in).max(0.0);
+        }
+        return (((src.duration - a) / field).round() * field).max(0.0);
+    }
+    (shown_at(src, plan.t_out) - a).max(0.0)
+}
+
 fn one_place(a: &str, b: &str) -> bool {
     use std::path::{Path, PathBuf};
     let (a, b) = (Path::new(a), Path::new(b));

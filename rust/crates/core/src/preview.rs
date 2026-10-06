@@ -467,7 +467,11 @@ pub fn play_from(
         let mut began_late = true;
         let first = walk(src, entry, margin, false, true, Cores::All, |t, frame| {
             if t >= until - 1e-6 {
-                stopped = true;
+                // The end of the stretch, which stops the playing -- unless
+                // nothing of it has been played: a seek that landed past the
+                // whole of a short range is the late landing below, and is
+                // tried again from further back rather than played as nothing.
+                stopped = !began_late;
                 return false;
             }
             if t < from - fd / 2.0 {

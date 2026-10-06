@@ -227,19 +227,87 @@ fn frames_in(points: &[AccessPoint], fps: f64, a: f64, b: f64, duration: f64) ->
     if b <= a || fps <= 0.0 {
         return 0;
     }
-    let at = points.partition_point(|p| p.time < a);
-    let phase = [at.checked_sub(1), Some(at)]
-        .into_iter()
-        .flatten()
-        .filter_map(|i| points.get(i))
-        .map(|p| p.time)
-        .min_by(|x, y| (x - a).abs().total_cmp(&(y - a).abs()))
-        .unwrap_or(0.0);
+    let phase = phase_near(points, a);
     // The first picture at or after `t`. A bound within a hundredth of a
     // picture of one is taken as that picture, which is what a time read off
     // a picture comes back as after a trip through floating point.
     let first = |t: f64| ((t - phase) * fps - 0.01).ceil();
     (first(b) - first(a)).max(0.0) as usize
+}
+
+/// The time of the entry point nearest `t`, which is the phase of the grid
+/// the pictures around `t` sit on. 0 where there are none.
+fn phase_near(points: &[AccessPoint], t: f64) -> f64 {
+    let at = points.partition_point(|p| p.time < t);
+    [at.checked_sub(1), Some(at)]
+        .into_iter()
+        .flatten()
+        .filter_map(|i| points.get(i))
+        .map(|p| p.time)
+        .min_by(|x, y| (x - t).abs().total_cmp(&(y - t).abs()))
+        .unwrap_or(0.0)
+}
+
+/// The ranges, with every bound that sits on a picture moved to just ahead
+/// of it, where the container keeps time too coarsely for the picture's
+/// stored time and the bound to be told apart.
+///
+/// **Matroska and WebM count in milliseconds**, and so does an MP4 written
+/// with a timescale of 1000. A picture whose true time is 10.0544 is stored
+/// as 10.054, and a bound worked out from the picture before it -- the
+/// editor ends a cut one frame after the picture it was stood on, which is
+/// 10.021 + 1/29.97 = 10.054367 -- lands a third of a millisecond *past* the
+/// picture it means. Everything after this compares the two with a slack
+/// meant for a 90 kHz clock (a thousandth of a frame in the cutter and the
+/// check, a hundredth in [`frames_in`]), so the picture fell out of the range
+/// about half the time, and the check, asking the same question the same
+/// way, agreed with the loss.
+///
+/// So the question is settled once, here, for every one of them: a bound
+/// within two ticks of the clock (`tick` below) of where a picture sits on
+/// the grid the pictures are on is that picture's bound, and is moved to two
+/// ticks ahead of the grid point. A stored time is the true one rounded to a
+/// tick, and the grid's phase is an entry point's stored time, so the
+/// picture is within a tick of the grid point either way: two ticks ahead of
+/// the grid point is ahead of the picture by at least one, and behind the
+/// picture before it by most of a frame. Every comparison after this one
+/// then has a clear answer at its own slack, and the same answer. A bound
+/// further from the grid than that was between two pictures already.
+///
+/// Only where the clock is coarser than a hundredth of a frame, which a
+/// transport stream's, a disc's and an ordinary MP4's are not: their bounds
+/// are passed through as they are. Nor on a recording whose pictures do not
+/// come at a rate (the grid is not where they are), nor at or past the end
+/// of the recording, which means "to the end" and is held to as that.
+///
+/// What moves with the bound is the sound, which is anchored to it: by at
+/// most three ticks against the picture, three milliseconds on Matroska.
+fn on_the_pictures(
+    video: &VideoInfo,
+    duration: f64,
+    points: &[AccessPoint],
+    ranges: &[(f64, f64)],
+) -> Vec<(f64, f64)> {
+    let fd = video.frame_duration();
+    // Capped so that the two ticks either side of a grid point stay well
+    // inside a frame: the picture before has to be clear of the moved bound.
+    let tick = video.time_base.min(fd / 12.0);
+    if video.variable_rate || !(tick.is_finite() && fd.is_finite()) || tick <= fd * 0.01 {
+        return ranges.to_vec();
+    }
+    let near = |t: f64| {
+        if !t.is_finite() || (duration > 0.0 && t >= duration) {
+            return t;
+        }
+        let phase = phase_near(points, t);
+        let grid = phase + ((t - phase) / fd).round() * fd;
+        if (t - grid).abs() < 2.0 * tick {
+            grid - 2.0 * tick
+        } else {
+            t
+        }
+    };
+    ranges.iter().map(|&(a, b)| (near(a), near(b))).collect()
 }
 
 pub fn plan_range(
@@ -429,7 +497,8 @@ pub fn plan(
 /// hand, and [`plan`] stays the arithmetic.
 pub fn plan_on(src: &crate::Source, ranges: &[(f64, f64)], opts: &PlanOptions) -> Vec<RangePlan> {
     let seams = seam_times(&src.joins);
-    let ranges = at_the_seams(ranges, &src.joins);
+    let ranges = on_the_pictures(&src.video, src.duration, &src.points, ranges);
+    let ranges = at_the_seams(&ranges, &src.joins);
     let ranges = past_the_seam(&ranges, &seams, &src.points, &src.video);
     let mut plans = plan(&src.video, src.duration, &src.points, &ranges, opts);
     for p in &mut plans {
@@ -788,6 +857,73 @@ mod tests {
         assert_eq!(tail.kind, SegmentKind::Reencode);
         assert!(tail.frames > 0, "{tail:?}");
         assert!((plan.t_out - t_out).abs() < 1e-9);
+    }
+
+    /// Entry points as Matroska stores them: the true time rounded to the
+    /// millisecond, with the phase the remuxed broadcast had (0.011).
+    fn stored_points(n: usize, fd: f64) -> Vec<AccessPoint> {
+        let ms = |t: f64| (t * 1000.0).round() / 1000.0;
+        points(n, fd)
+            .into_iter()
+            .map(|mut p| {
+                p.time = ms(p.time + 0.011);
+                p.lead_start = ms(p.lead_start + 0.011);
+                p
+            })
+            .collect()
+    }
+
+    /// A bound a fraction of a millisecond past a picture's stored time --
+    /// the editor's one-frame-after-the-picture bound on a Matroska file --
+    /// is that picture's, at both ends of a range, and the plan counts it so.
+    #[test]
+    fn a_bound_on_a_coarse_clock_is_the_pictures() {
+        let mut video = video();
+        video.time_base = 1.0 / 1000.0;
+        let fd = video.frame_duration();
+        let points = stored_points(40, fd);
+        // Pictures sit at 0.011 + n*fd, stored rounded to the millisecond.
+        let stored = |n: usize| ((0.011 + n as f64 * fd) * 1000.0).round() / 1000.0;
+        // 46 is a picture whose stored time is below its true one; the bound
+        // the editor makes for it is the picture before plus a frame.
+        let bound = stored(45) + fd;
+        assert!(bound > stored(46));
+        let moved = on_the_pictures(&video, 300.0, &points, &[(bound, 3.0), (1.0, bound)]);
+        let (a, b) = (moved[0].0, moved[1].1);
+        // Ahead of the picture by at least a tick, behind the one before by
+        // most of a frame: every comparison after this has a clear answer.
+        for t in [a, b] {
+            assert!(t < stored(46) - 0.0009 && t > stored(45) + fd / 2.0, "{t}");
+        }
+        // Counted from the picture it means, and to it at the other end.
+        let first = plan_range(&video, 300.0, &points, a, 3.0, &PlanOptions::default());
+        let last = plan_range(&video, 300.0, &points, 1.0, b, &PlanOptions::default());
+        let count = |p: &RangePlan| p.segments.iter().map(|s| s.frames).sum::<usize>();
+        // The first picture at or after a time that is not one.
+        let from = |t: f64| ((t - 0.011) / fd).ceil() as usize;
+        assert_eq!(count(&first), from(3.0) - 46);
+        assert_eq!(count(&last), 46 - from(1.0));
+        // The picture's own stored time is the same bound.
+        let same = on_the_pictures(&video, 300.0, &points, &[(stored(46), 3.0)]);
+        assert_eq!(same[0].0, a);
+        // A bound between two pictures, and one at or past the end, stay.
+        let between = stored(46) + fd / 2.0;
+        assert_eq!(on_the_pictures(&video, 300.0, &points, &[(between, 300.0)]), [(between, 300.0)]);
+    }
+
+    /// A clock fine enough to tell a bound from a picture leaves every bound
+    /// as it was asked, which keeps every such cut as it was.
+    #[test]
+    fn a_fine_clock_moves_no_bound() {
+        let video = video();
+        let fd = video.frame_duration();
+        let points = stored_points(40, fd);
+        let ranges = [(0.011 + 46.0 * fd + 0.0004, 3.0), (0.5, 0.011 + 10.0 * fd)];
+        assert_eq!(on_the_pictures(&video, 300.0, &points, &ranges), ranges);
+        let mut varies = video.clone();
+        varies.time_base = 1.0 / 1000.0;
+        varies.variable_rate = true;
+        assert_eq!(on_the_pictures(&varies, 300.0, &points, &ranges), ranges);
     }
 
     /// A kept range that runs across a seam is planned as two, because a copy
