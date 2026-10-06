@@ -98,7 +98,7 @@ bash tests/run_join_tests.sh          # several recordings into one file, and th
 `tests/ci.sh` runs every suite above that works on synthetic material, one after
 another, and names the ones that failed at the end. It leaves out the suites that
 only ever read real recordings (`aac`, `audio_content`, `broadcast`, `cm`,
-`pulldown`, `scene`, `ts_layout`) and the VC-1 one, which wants a disc. Name suites
+`preview`, `pulldown`, `scene`, `ts_layout`) and the VC-1 one, which wants a disc. Name suites
 to run only those, as `bash tests/ci.sh join vfr`. The whole set at once is too
 much for a small machine.
 
@@ -200,8 +200,9 @@ TMPDIR=~/tmp bash tests/run_proxy_tests.sh
 
 `run_audio_content_tests.sh`, `run_aac_tests.sh`, `run_preview_tests.sh`,
 `run_index_tests.sh`, `run_proxy_tests.sh`, `run_scene_tests.sh`, `run_cm_tests.sh`,
-`run_ts_layout_tests.sh` and `run_broadcast_tests.sh`. (The preview, index and proxy
-suites also run on synthetic material.)
+`run_ts_layout_tests.sh` and `run_broadcast_tests.sh`. (The index and proxy suites
+also run on synthetic material; the preview suite has nothing to run without real
+recordings.)
 
 They look in `~/media` by default, which `SMARTCUT_MEDIA` overrides. The audio comparison
 needs numpy, and SKIPs without it.

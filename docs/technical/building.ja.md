@@ -99,7 +99,7 @@ bash tests/run_join_tests.sh          # 複数の録画を 1 ファイルに。�
 `tests/ci.sh` は、上のスイートのうち合成素材で動くものを順に回し、
 落ちたものを最後に並べる。
 実素材しか読まないスイート（`aac`・`audio_content`・`broadcast`・`cm`・
-`pulldown`・`scene`・`ts_layout`）と、ディスクが必要な VC-1 のスイートは含めない。
+`preview`・`pulldown`・`scene`・`ts_layout`）と、ディスクが必要な VC-1 のスイートは含めない。
 `bash tests/ci.sh join vfr` のように名前を渡すと、そのスイートだけを回す。
 小さなマシンで全部を一度に回すと負荷が大きすぎる。
 
@@ -206,7 +206,7 @@ TMPDIR=~/tmp bash tests/run_proxy_tests.sh
 `run_audio_content_tests.sh`、`run_aac_tests.sh`、`run_preview_tests.sh`、
 `run_index_tests.sh`、`run_proxy_tests.sh`、`run_scene_tests.sh`、
 `run_cm_tests.sh`、`run_ts_layout_tests.sh`、`run_broadcast_tests.sh` である
-（preview・index・proxy の 3 つは合成素材でも走る）。
+（index と proxy は合成素材でも走る。preview は実素材が無いと何も走らない）。
 
 既定では `~/media` を見る。`SMARTCUT_MEDIA` で変更できる。音声の比較には numpy が
 必要で、無い場合は SKIP になる。

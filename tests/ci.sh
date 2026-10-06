@@ -6,9 +6,10 @@
 #   bash tests/ci.sh join vfr     only these, by the name between run_ and _tests
 #
 # Left out are the suites that only ever read real recordings from ~/media
-# (aac, audio_content, broadcast, cm, pulldown, scene, ts_layout) and the VC-1
-# encoder's (vc1), which wants a disc. Without the material they pass by
-# skipping everything, or in cm's case fail for it, and neither says anything.
+# (aac, audio_content, broadcast, cm, preview, pulldown, scene, ts_layout)
+# and the VC-1 encoder's (vc1), which wants a disc. Without the material they
+# pass by skipping everything, or in cm's case fail for it, and neither says
+# anything.
 # The suites below that also read real material skip that part on their own.
 #
 # Built first, with the examples the suites run. A suite that builds an
@@ -25,7 +26,7 @@ SUITES=(
   tests
   rust audio downmix surround71
   audio_codec audio_smart audio_format audio_head bilingual
-  preview index proxy
+  index proxy
   disc bdav udf dvd bd_audio
   vp9_av1 vfr demux transrate join
 )
