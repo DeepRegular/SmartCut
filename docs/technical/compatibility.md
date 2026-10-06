@@ -56,6 +56,28 @@ It has been 1 since projects were first saved.
 - The number goes up only with `MAJOR`, and the build that raises it still opens
   the files before it.
 
+A field this build does not know is kept at these places, and only these:
+
+| | |
+|---|---|
+| The top of the file | Beside `smartcut`, `saved`, `settings` and `clips` |
+| The output settings | `settings` |
+| A row | Each entry of `clips` |
+| A row's edit | `edit` |
+| A row's transition | `after` |
+
+Two things are not kept, and a later version is written so that neither is needed:
+
+- **A field inside an item of a list** -- a cut range in `cuts`, a block in
+  `cmBlocks`, the answers in `detectedWith`. The editor writes those lists again
+  from what it knows, so a field added to one item is gone once the row has been
+  opened and saved. Something new about a cut belongs in a field of the edit, not
+  in each range.
+- **A value this build does not know, in a field it does.** A transition `kind`
+  added later is read as no transition, and the seam window writes it back as
+  none once its join is opened there and confirmed. A new kind of something is a
+  new field, with the old one written as the nearest thing this build knows.
+
 A crash recovery copy is a `.scproj` wrapped in `{recovered, project, doc}` and
 follows the same rule: one written by a newer build is left where it is and not
 offered ([Projects](../user-guide/projects.md#autosave-and-recovery)).
