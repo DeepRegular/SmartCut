@@ -94,6 +94,27 @@ bash tests/run_join_tests.sh          # 複数の録画を 1 ファイルに。�
 
 **どのスイートも全件通るのが正常である。** 落ちるものがあれば回帰である。
 
+### CI
+
+`tests/ci.sh` は、上のスイートのうち合成素材で動くものを順に回し、
+落ちたものを最後に並べる。
+実素材しか読まないスイート（`aac`・`audio_content`・`broadcast`・`cm`・
+`pulldown`・`scene`・`ts_layout`）と、ディスクが必要な VC-1 のスイートは含めない。
+`bash tests/ci.sh join vfr` のように名前を渡すと、そのスイートだけを回す。
+小さなマシンで全部を一度に回すと負荷が大きすぎる。
+
+GitHub Actions（[ci.yml](../../.github/workflows/ci.yml)）は、`main` への push と
+プルリクエストのたびにこれを回す。
+FFmpeg を 7.1 系にするため Debian 13 のコンテナを使い、
+オーバーフロー検査と debug assertion を有効にしたビルドで回す。
+
+ほかに 2 つのジョブがある。
+
+| ジョブ | 内容 |
+|---|---|
+| linux | clippy と単体テスト。GUI のスクリプトを、読み込まれるときと同じくモジュールとして検査する |
+| windows | CLI と GUI を Windows 向けにビルドし、Linux と同じ合成素材をカットする。2 つの出力はバイト単位で一致しなければならない |
+
 ### フィクスチャ
 
 合成フィクスチャ（H.264 / HEVC / オープン GOP / 29.97 fps / MPEG-2 TS）は

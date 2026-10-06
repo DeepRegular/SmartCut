@@ -1,0 +1,192 @@
+# Build, lint and test on every push to main and every pull request.
+#
+#   linux    clippy and the unit tests for the core, the CLI and the GUI's
+#            backend; the GUI's scripts checked as the modules they load as;
+#            and a cut of a synthetic recording kept for the Windows job
+#   suites   every suite that runs on synthetic material (tests/ci.sh), on a
+#            build with overflow checks and debug assertions on
+#   windows  the CLI and the GUI built for Windows, and the same cut as on
+#            Linux, which has to come out byte for byte the same
+#
+# Linux runs in Debian 13 because FFmpeg has to be the 7.1 series:
+# ffmpeg-sys-next picks its bindings by version, and Ubuntu's is 6.1. Debian 13
+# is also what the development machine runs. See docs/technical/building.md.
+name: CI
+
+on:
+  push:
+    branches: [main]
+    paths-ignore: ["docs/**", "**.md"]
+  pull_request:
+    paths-ignore: ["docs/**", "**.md"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  # What the release is built with; see the table in docs/technical/building.md.
+  RUST_VERSION: "1.98"
+
+jobs:
+  linux:
+    runs-on: ubuntu-latest
+    container: debian:trixie
+    timeout-minutes: 60
+    steps:
+      - name: Packages
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends \
+            ca-certificates curl git build-essential pkg-config cmake clang libclang-dev \
+            libavcodec-dev libavformat-dev libavutil-dev libavfilter-dev libavdevice-dev \
+            libswscale-dev libswresample-dev ffmpeg libasound2-dev \
+            libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev librsvg2-dev \
+            libsoup-3.0-dev libjavascriptcoregtk-4.1-dev nodejs
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            rust -> target
+            gui/src-tauri -> target
+
+      - name: Clippy (core and CLI)
+        working-directory: rust
+        run: cargo clippy --release --locked --workspace --all-targets
+      - name: Unit tests (core and CLI)
+        working-directory: rust
+        run: cargo test --release --locked --workspace
+      - name: Clippy (GUI backend)
+        working-directory: gui/src-tauri
+        run: cargo clippy --release --locked --all-targets
+      - name: Unit tests (GUI backend)
+        working-directory: gui/src-tauri
+        run: cargo test --release --locked
+
+      # `node --check` on a .js file reads it as a script, where a function
+      # defined twice is legal. The window loads these as modules, where it is
+      # a SyntaxError and the window comes up with nothing behind it.
+      - name: GUI scripts, as modules
+        run: |
+          d=$(mktemp -d)
+          for f in gui/src/*.js; do cp "$f" "$d/$(basename "$f" .js).mjs"; done
+          sed -i 's/from "\.\/\([a-z]*\)\.js"/from ".\/\1.mjs"/g' "$d"/*.mjs
+          for f in "$d"/*.mjs; do node --check "$f"; done
+
+      # The cut the Windows job has to match. tests/run_tests.sh makes the
+      # same recording.
+      - name: A cut for Windows to match
+        run: |
+          (cd rust && cargo build --release --locked -p smartcut-cli)
+          mkdir -p parity
+          ffmpeg -hide_banner -loglevel error -y \
+            -f lavfi -i "testsrc=size=720x480:rate=30000/1001:duration=20" \
+            -f lavfi -i "sine=frequency=440:sample_rate=48000:duration=20" -shortest \
+            -c:v mpeg2video -g 15 -bf 2 -b:v 6000k -pix_fmt yuv420p -aspect 16:9 \
+            -c:a mp2 -b:a 192k -f mpegts parity/mpeg2.ts
+          rust/target/release/smartcut parity/mpeg2.ts --cut 5-10 -o parity/linux.ts
+          md5sum parity/linux.ts | cut -d' ' -f1 > parity/linux.md5
+          cat parity/linux.md5
+      - uses: actions/upload-artifact@v4
+        with:
+          name: parity
+          path: |
+            parity/mpeg2.ts
+            parity/linux.md5
+
+  suites:
+    runs-on: ubuntu-latest
+    container: debian:trixie
+    timeout-minutes: 150
+    env:
+      # Overflow checks and debug assertions: what a release build leaves
+      # out, and the cheapest way to find what reading the code would not.
+      # Set for the whole job, so an example a suite builds for itself is
+      # checked too.
+      RUSTFLAGS: "-C overflow-checks=on -C debug-assertions=on"
+    steps:
+      - name: Packages
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends \
+            ca-certificates curl git build-essential pkg-config cmake clang libclang-dev \
+            libavcodec-dev libavformat-dev libavutil-dev libavfilter-dev libavdevice-dev \
+            libswscale-dev libswresample-dev ffmpeg libasound2-dev \
+            python3 python3-numpy genisoimage 7zip
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: rust -> target
+          # Kept apart from the linux job's: RUSTFLAGS changes every
+          # fingerprint, and the two would only evict each other.
+          key: checked
+      - name: Suites
+        run: bash tests/ci.sh
+
+  windows:
+    runs-on: windows-latest
+    needs: linux
+    timeout-minutes: 60
+    defaults:
+      run:
+        shell: bash
+    env:
+      # The same 7.1 series as Linux, from where gui/build-windows.sh takes it:
+      # upstream ships nothing older than 8.1 for Windows now.
+      FFMPEG_VER: "7.1.1"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            rust -> target
+            gui/src-tauri -> target
+      - name: FFmpeg
+        run: |
+          ff="$RUNNER_TEMP/ffmpeg-$FFMPEG_VER-full_build-shared"
+          curl -fsSL -o "$ff.7z" \
+            "https://github.com/GyanD/codexffmpeg/releases/download/$FFMPEG_VER/ffmpeg-$FFMPEG_VER-full_build-shared.7z"
+          7z x -y -o"$RUNNER_TEMP" "$ff.7z" > /dev/null
+          echo "FFMPEG_DIR=$ff" >> "$GITHUB_ENV"
+          echo "$ff/bin" >> "$GITHUB_PATH"
+          echo "LIBCLANG_PATH=C:\\Program Files\\LLVM\\bin" >> "$GITHUB_ENV"
+      - name: CLI
+        working-directory: rust
+        run: cargo build --release --locked -p smartcut-cli
+      # tauri.windows.conf.json names the DLLs and the CLI as resources, and
+      # the build checks they are there.
+      - name: GUI
+        run: |
+          mkdir -p gui/src-tauri/windows-deps
+          cp "$FFMPEG_DIR"/bin/*.dll gui/src-tauri/windows-deps/
+          cp rust/target/release/smartcut.exe gui/src-tauri/windows-deps/smartcut-cli.exe
+          cd gui/src-tauri && cargo clippy --release --locked
+      - uses: actions/download-artifact@v4
+        with:
+          name: parity
+          path: parity
+      - name: The same cut as on Linux
+        run: |
+          rust/target/release/smartcut.exe --version
+          rust/target/release/smartcut.exe parity/mpeg2.ts --cut 5-10 -o parity/windows.ts
+          linux=$(cat parity/linux.md5)
+          windows=$(md5sum parity/windows.ts | cut -d' ' -f1)
+          echo "linux   $linux"
+          echo "windows $windows"
+          [ "$linux" = "$windows" ]

@@ -93,6 +93,22 @@ bash tests/run_join_tests.sh          # several recordings into one file, and th
 
 **Every suite passes whole.** Anything that fails is a regression.
 
+### CI
+
+`tests/ci.sh` runs every suite above that works on synthetic material, one after
+another, and names the ones that failed at the end. It leaves out the suites that
+only ever read real recordings (`aac`, `audio_content`, `broadcast`, `cm`,
+`pulldown`, `scene`, `ts_layout`) and the VC-1 one, which wants a disc. Name suites
+to run only those, as `bash tests/ci.sh join vfr`. The whole set at once is too
+much for a small machine.
+
+GitHub Actions ([ci.yml](../../.github/workflows/ci.yml)) runs it on every push to
+`main` and every pull request, in Debian 13 for the FFmpeg 7.1 above, on a build
+with overflow checks and debug assertions on. Beside it, one job runs clippy and
+the unit tests and checks the GUI's scripts as the modules they load as, and
+another builds the CLI and the GUI for Windows and cuts the same synthetic recording
+as Linux does. The two cuts have to be the same file to the byte.
+
 ### Fixtures
 
 The synthetic fixtures (H.264 / HEVC / open GOP / 29.97 fps / MPEG-2 TS) are generated
