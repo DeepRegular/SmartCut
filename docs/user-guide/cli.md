@@ -31,6 +31,8 @@ smartcut input.ts --cut 8.0-20.0 --bdav ~/disc  # onto a disc instead of a file
   gets rebuilt. Running it first is the safe way to check before committing.
   (What other options write is still written: a `--seek-index` file, say.)
 - `smartcut --help` lists every option, grouped by what it is for.
+- `smartcut --version` prints the version as `smartcut 1.2.3` and nothing else,
+  for a script that has to know which one it is running.
 
 ## Choosing where to cut
 

@@ -7660,6 +7660,10 @@ struct BatchJob {
     /// that edited the file tells the tool that what it kept is stale. See
     /// [`batch_touch`].
     edited: u64,
+    /// Whatever a later version wrote on the job that this one does not know,
+    /// carried through to the next write; see [`BatchQueue::rest`].
+    #[serde(flatten)]
+    rest: serde_json::Map<String, serde_json::Value>,
 }
 
 /// The queue as it sits on disk.
@@ -7669,6 +7673,15 @@ struct BatchQueue {
     jobs: Vec<BatchJob>,
     /// What to do once it is empty: nothing, sleep or shutdown.
     after: String,
+    /// Whatever a later version wrote that this one does not know.
+    ///
+    /// Kept rather than read past: a queue outlives the version that wrote
+    /// it, and the next write here would otherwise put down a file without
+    /// it, under the later version that still wants it. The frontend sends
+    /// back only the fields it knows, so [`batch_write`] puts these back
+    /// from the file. See docs/technical/compatibility.md.
+    #[serde(flatten)]
+    rest: serde_json::Map<String, serde_json::Value>,
 }
 
 /// Spelled out rather than derived, so that a queue written by a window that
@@ -7680,6 +7693,7 @@ impl Default for BatchQueue {
         BatchQueue {
             jobs: Vec::new(),
             after: "nothing".to_string(),
+            rest: serde_json::Map::new(),
         }
     }
 }
@@ -7836,8 +7850,9 @@ fn batch_write(
     let dir = batch_dir(&app)?;
     with_queue_lock(&dir, || {
         let mut queue = queue;
+        let now = read_queue(&dir)?;
+        carry_rest(&mut queue, &now);
         if let Some(known) = known {
-            let now = read_queue(&dir)?;
             for theirs in &now.jobs {
                 match queue.jobs.iter_mut().find(|j| j.path == theirs.path) {
                     Some(mine) => {
@@ -7855,6 +7870,24 @@ fn batch_write(
         }
         put_queue(&dir, &queue)
     })
+}
+
+/// Put back what a later version wrote on the queue and its jobs, which the
+/// frontend never sees and so never sends back. What `queue` already holds
+/// is left as it is. See [`BatchQueue::rest`].
+fn carry_rest(queue: &mut BatchQueue, now: &BatchQueue) {
+    let carry = |mine: &mut serde_json::Map<String, serde_json::Value>,
+                 theirs: &serde_json::Map<String, serde_json::Value>| {
+        for (key, value) in theirs {
+            mine.entry(key.clone()).or_insert_with(|| value.clone());
+        }
+    };
+    carry(&mut queue.rest, &now.rest);
+    for theirs in &now.jobs {
+        if let Some(mine) = queue.jobs.iter_mut().find(|j| j.path == theirs.path) {
+            carry(&mut mine.rest, &theirs.rest);
+        }
+    }
 }
 
 /// The queue off its file, where there is one that reads.
@@ -9137,6 +9170,39 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A queue written by a later version comes through a write from this
+    /// one with what this one does not know still in it: on the queue, and on
+    /// each job that is still there. The frontend sends back only the fields
+    /// it knows, which is the `mine` here.
+    #[test]
+    fn batch_queue_keeps_what_it_does_not_know() {
+        let on_file: BatchQueue = serde_json::from_str(
+            r#"{"jobs":[{"path":"a.scproj","label":"A","state":"waiting","note":"","edited":0,
+                         "priority":3},
+                        {"path":"b.scproj","label":"B","state":"done","note":"","edited":0,
+                         "priority":1}],
+                "after":"sleep","when":"22:00"}"#,
+        )
+        .unwrap();
+        let mut mine: BatchQueue = serde_json::from_str(
+            r#"{"jobs":[{"path":"b.scproj","label":"B","state":"done","note":"","edited":0},
+                        {"path":"c.scproj","label":"C","state":"waiting","note":"","edited":0}],
+                "after":"nothing"}"#,
+        )
+        .unwrap();
+        carry_rest(&mut mine, &on_file);
+        let back: serde_json::Value =
+            serde_json::from_str(&serde_json::to_string(&mine).unwrap()).unwrap();
+        assert_eq!(back["when"], "22:00");
+        // What this side said stands.
+        assert_eq!(back["after"], "nothing");
+        assert_eq!(back["jobs"][0]["priority"], 1);
+        // A job the file did not have has nothing to be given.
+        assert!(back["jobs"][1].get("priority").is_none());
+        // And a job taken out is not brought back by it.
+        assert_eq!(back["jobs"].as_array().unwrap().len(), 2);
+    }
 
     /// A Blu-ray's sound, as the demuxer hands it over: the lossless track
     /// and the AC-3 it is wrapped around arrive as two streams on one PID.

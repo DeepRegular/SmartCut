@@ -321,7 +321,7 @@ fn usage() -> String {
      smartcut <input> [options] --bdav FOLDER\n\
      <input> is a recording, or a disc (a BDAV, BDMV or VIDEO_TS folder, or an .iso\n\
      of one), whose recordings are listed when no --title is given.\n\
-     smartcut --help lists every option."
+     smartcut --help lists every option; smartcut --version prints the version."
         .to_string()
 }
 
@@ -675,6 +675,15 @@ fn run() -> Result<()> {
                 // Not `print!`, which panics once standard output has gone.
                 use std::io::Write as _;
                 let _ = write!(std::io::stdout().lock(), "{}", help());
+                return Ok(());
+            }
+            // For a script that has to know which version it is driving. One
+            // line, the version alone, so it can be compared as it stands;
+            // what the rest of this program prints is for a person and is
+            // not kept from one version to the next.
+            "--version" | "-V" => {
+                use std::io::Write as _;
+                let _ = writeln!(std::io::stdout().lock(), "smartcut {}", smartcut_core::VERSION);
                 return Ok(());
             }
             "--keep" => {

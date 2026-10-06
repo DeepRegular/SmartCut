@@ -4861,7 +4861,11 @@ function presetValues(p) {
     const want = SETTING_DEFAULTS[key];
     const fits = key in p.settings &&
       (want === null ? value === null || typeof value === "string" : typeof value === typeof want);
-    out[key] = fits ? value : standing[key];
+    // A number where the control holds its text is the same answer, as
+    // `loadProject` reads it: an older version's `digits`.
+    if (fits) out[key] = value;
+    else if (typeof want === "string" && typeof value === "number" && Number.isFinite(value)) out[key] = String(value);
+    else out[key] = standing[key];
   }
   return out;
 }
@@ -9197,6 +9201,49 @@ let queuedJob = "";
 /// chosen them by walking past them.
 let outputSettled = false;
 
+/// What the open project's file said that this version does not read: the
+/// top level of it, and its output settings. Written back out under what
+/// this version writes, so that a file from a later version that added a
+/// field comes through being opened and saved here with that field still in
+/// it. The number in `smartcut` stays put for exactly that reason: a field
+/// added is not a new format *because* a reader that has never heard of it
+/// leaves it alone. Rows carry their own; see `rowAsSaved`.
+///
+/// Whole rather than sifted for the keys this version does not know: every
+/// key `captureProject` writes it writes every time, `undefined` included,
+/// so a known one is always written over and only the unknown ones show
+/// through. Null for a list that did not come from a file.
+let projectAsSaved = null;
+let settingsAsSaved = null;
+
+/// What a saved row said that this version does not read, for
+/// `captureProject` to write back out: the row less its edit, and of the
+/// edit only the keys nothing here knows. The edit is sifted where the row is
+/// not because the editor hands back an edit of its own making, with
+/// `partCuts` and `fresh` gone once it has been opened, and the saved ones
+/// shown through would bring a division's cuts back on a row that has since
+/// been edited past it.
+function rowAsSaved(saved) {
+  const { edit, ...row } = saved;
+  let fromEdit = null;
+  if (edit && typeof edit === "object") {
+    for (const [key, value] of Object.entries(edit)) {
+      if (EDIT_KEYS.has(key)) continue;
+      (fromEdit ||= {})[key] = value;
+    }
+  }
+  return { row, edit: fromEdit };
+}
+
+/// Every key an edit is written with, by the editor (`captureEdit` in
+/// main.js) or by a division here. One added there belongs here too, or an
+/// older file's value of it would be written back over the editor's answer.
+const EDIT_KEYS = new Set([
+  "id", "path", "cuts", "keyframes", "activeKey", "cmBlocks", "cmNote", "cmFinding",
+  "detectedWith", "flatRuns", "markFileKind", "chaptersDue", "touched", "dropStreams",
+  "poster", "playhead", "selA", "selB", "selGone", "fresh", "partCuts",
+]);
+
 /// Somebody has just answered for this project's output.
 function settleOutput() {
   outputSettled = true;
@@ -9228,13 +9275,16 @@ function captureProject(settled = outputSettled, forRun = false) {
   // where nobody has chosen, which is the first row either way.
   const at = clips.findIndex((c) => c.id === settings.master);
   kept.master = at < 0 ? null : at;
+  // Under what this version writes, never over it: see `projectAsSaved`.
   return {
+    ...projectAsSaved,
     smartcut: PROJECT_VERSION,
     saved: stampISO(),
     // Left out altogether rather than written empty: a reader has to be able
     // to tell "nobody has said" from "somebody said none of it".
-    settings: settled ? kept : undefined,
+    settings: settled ? { ...settingsAsSaved, ...kept } : undefined,
     clips: clips.map((c) => ({
+      ...(c.asSaved && c.asSaved.row),
       path: c.path,
       // What somebody renamed the row to. The one name in the list that
       // nothing can work out again from the recording.
@@ -9269,7 +9319,7 @@ function captureProject(settled = outputSettled, forRun = false) {
       // What the editor handed back the last time this row was in it: the
       // cuts, the marks, and where the playhead was left. Null for a row
       // nobody has opened yet, which is not the same as a row cut to nothing.
-      edit: c.edit,
+      edit: c.edit && c.asSaved && c.asSaved.edit ? { ...c.asSaved.edit, ...c.edit } : c.edit,
       // ...and whether any of it was somebody's doing rather than a
       // detection's. Left out on a row nobody has been through, which is what
       // a file written before this existed looks like. See `edited`.
@@ -9704,6 +9754,8 @@ async function newProject() {
   // And nobody has answered for this list's output, whatever is in force.
   outputSettled = false;
   filledIn = null;
+  projectAsSaved = null;
+  settingsAsSaved = null;
   showSettings();
   projectPath = "";
   tempProject = "";
@@ -9765,6 +9817,11 @@ async function loadProject(path, given = null) {
   // `outputSettled`.
   const said = doc.settings && typeof doc.settings === "object" ? doc.settings : null;
   outputSettled = !!said;
+  {
+    const { clips: _rows, settings: _settings, ...top } = doc;
+    projectAsSaved = top;
+  }
+  settingsAsSaved = said ? { ...said } : null;
   // Which row the file says the joined output takes its shape from. See
   // `captureProject`, which writes it down as a position.
   let masterAt = null;
@@ -9855,6 +9912,7 @@ async function loadProject(path, given = null) {
       continue;
     }
     const clip = makeClip(saved);
+    clip.asSaved = rowAsSaved(saved);
     // The row's id is this session's counting, so the saved edit is
     // readdressed to the row it has just become. Everything else in it is
     // source time and travels unchanged.

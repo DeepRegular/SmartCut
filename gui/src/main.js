@@ -5512,6 +5512,11 @@ async function loadSidecarCm() {
 /// held nothing this program wrote. Read exactly as a detection that has just
 /// run is read -- it *is* one -- so the band under the timeline, the marks
 /// and the sentence all land the way they would have minutes ago.
+/// The `.cm.json` format's own number, written as `smartcut_cm`. It goes up
+/// only when a field comes to mean something else; a field added is not a new
+/// format. See docs/technical/compatibility.md.
+const CM_FILE_VERSION = 1;
+
 async function readCmFile(path) {
   const gen = openGen;
   let body;
@@ -5529,6 +5534,15 @@ async function readCmFile(path) {
     said = JSON.parse(body);
   } catch (e) {
     el("status").textContent = tr("cm.readFailed", { e });
+    return null;
+  }
+  // A format number past this one's is a file from a later version, which may
+  // mean something else by the fields read below. Read as this version reads
+  // them, its blocks would land in the wrong places without a word; see
+  // docs/technical/compatibility.md. No number at all is a file written by
+  // hand or by something else, and is read as it always was.
+  if (said && typeof said.smartcut_cm === "number" && said.smartcut_cm > CM_FILE_VERSION) {
+    el("status").textContent = tr("cm.wrongFormat", { file: leaf(path) });
     return null;
   }
   // Numbers where numbers are meant, and nothing else: a file written by
@@ -5574,7 +5588,7 @@ async function readCmFile(path) {
 /// here, where a second of the recording's clock is what every block already
 /// speaks in.
 function cmBody() {
-  const said = { smartcut_cm: 1, blocks: cmBlocks, note: cmSummary };
+  const said = { smartcut_cm: CM_FILE_VERSION, blocks: cmBlocks, note: cmSummary };
   if (cmFinding) {
     said.logo_found = cmFinding.logo_found;
     said.resets = cmFinding.resets;
