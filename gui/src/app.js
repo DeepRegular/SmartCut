@@ -7423,7 +7423,17 @@ async function reencodeOf(clip) {
   // the progress reports come in as.
   const keeps = keepsOf(clip);
   const outDur = keeps.reduce((n, k) => n + (k.b - k.a), 0) || 1;
-  const out = segs.map((g) => srcToOut(keeps, g.start) ?? 0);
+  // By the keep the segment is in, read off its middle: the planner moves a
+  // range's bound a few milliseconds ahead of its picture on a source whose
+  // clock is that coarse (`plan::on_the_pictures`), so a head segment starts
+  // just before the keep it opens, and its start alone mapped to nothing --
+  // every range after the first printed 0:00 here, and the screen jumped
+  // to it as soon as writing began.
+  const out = segs.map((g) => {
+    const mid = (g.start + g.end) / 2;
+    const k = keeps.find((k) => mid >= k.a - 1e-9 && mid < k.b);
+    return k ? k.at + clamp(g.start - k.a, 0, k.b - k.a) : srcToOut(keeps, g.start) ?? 0;
+  });
   const at = out.map((o) => o / outDur);
   // And where the picture on the stage is. Not the segment's start, which is
   // what `out` is for: the picture is the middle of the segment, and the
@@ -9225,14 +9235,11 @@ let settingsAsSaved = null;
 /// been edited past it.
 function rowAsSaved(saved) {
   const { edit, ...row } = saved;
-  let fromEdit = null;
-  if (edit && typeof edit === "object") {
-    for (const [key, value] of Object.entries(edit)) {
-      if (EDIT_KEYS.has(key)) continue;
-      (fromEdit ||= {})[key] = value;
-    }
-  }
-  return { row, edit: fromEdit };
+  // Built by `fromEntries` rather than assigned key by key: a key called
+  // `__proto__` assigned set the object's prototype instead of being kept.
+  const unknown =
+    edit && typeof edit === "object" ? Object.entries(edit).filter(([key]) => !EDIT_KEYS.has(key)) : [];
+  return { row, edit: unknown.length ? Object.fromEntries(unknown) : null };
 }
 
 /// Every key an edit is written with, by the editor (`captureEdit` in
@@ -9402,7 +9409,14 @@ function shapeOf() {
       // were is not work -- `editSignature` in the editor says the same.
       // Compared whole, opening a saved row and pressing OK put a `*` up,
       // asked on close, and wrote a recovery copy of a project unchanged.
-      edit: c.edit && { ...c.edit, touched: undefined, playhead: undefined, selA: undefined, selB: undefined, selGone: undefined },
+      // With what a later version wrote in it put back as `captureProject`
+      // puts it back: the editor's edit has none of it, and a row from such
+      // a file opened and left with OK read as changed.
+      edit: c.edit && {
+        ...(c.asSaved && c.asSaved.edit),
+        ...c.edit,
+        touched: undefined, playhead: undefined, selA: undefined, selB: undefined, selGone: undefined,
+      },
       edited: c.edited,
       audioChannels: c.audioChannels,
       after: c.after,
@@ -12498,6 +12512,9 @@ el("pref-forget-output").addEventListener("click", () => {
   // put back to them has no output of its own to write down.
   outputSettled = false;
   filledIn = null;
+  // Nor are the file's settings this version does not read: they were part
+  // of the answer just put back, and settling again brought them back.
+  settingsAsSaved = null;
   // Which writes the defaults back over what was being carried: from here on
   // that is what a restart restores, because it is what is now in force.
   showSettings();

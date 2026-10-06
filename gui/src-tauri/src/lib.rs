@@ -7815,17 +7815,25 @@ fn drop_temp_project(app: tauri::AppHandle, path: String) -> Result<bool, String
 /// A file that will not parse is an empty queue as well. It is a list of work
 /// to do rather than the work itself, and a tool that refused to start
 /// because of it would be a tool nobody could clear.
+///
+/// A file that is there and could not be read this instant is an error, as
+/// it is in [`read_queue`], rather than an empty queue: both windows take
+/// what this answers as the rows, and the next save of a window shown an
+/// empty queue wrote every job it had read away. Both callers keep the rows
+/// they have when this fails.
 // Off the main thread: the queue's lock can be waited on for seconds, and
 // the window does not draw while a plain command runs.
 #[tauri::command(async)]
-fn batch_read(app: tauri::AppHandle) -> BatchQueue {
-    let Ok(dir) = batch_dir(&app) else {
-        return BatchQueue::default();
-    };
-    std::fs::read_to_string(dir.join("batch.json"))
-        .ok()
-        .and_then(|body| serde_json::from_str(&body).ok())
-        .unwrap_or_default()
+fn batch_read(app: tauri::AppHandle) -> Result<BatchQueue, String> {
+    // Nor is a folder that could not be had this instant (a roaming profile
+    // on a share that stalled) an empty queue, for the same reason.
+    let dir = batch_dir(&app)?;
+    let at = dir.join("batch.json");
+    match std::fs::read_to_string(&at) {
+        Ok(body) => Ok(serde_json::from_str(&body).unwrap_or_default()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(BatchQueue::default()),
+        Err(e) => Err(format!("{}: {e}", at.display())),
+    }
 }
 
 /// Put the queue down whole.

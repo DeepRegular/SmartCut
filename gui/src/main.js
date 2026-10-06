@@ -5506,17 +5506,17 @@ async function loadSidecarCm() {
   return (await readCmFile(markPath("cm"))) || 0;
 }
 
+/// The `.cm.json` format's own number, written as `smartcut_cm`. It goes up
+/// only when a field comes to mean something else; a field added is not a new
+/// format. See docs/technical/compatibility.md.
+const CM_FILE_VERSION = 1;
+
 /// A saved finding, wherever it is, onto the timeline.
 ///
 /// How many blocks it put down; `null` where the file could not be read or
 /// held nothing this program wrote. Read exactly as a detection that has just
 /// run is read -- it *is* one -- so the band under the timeline, the marks
 /// and the sentence all land the way they would have minutes ago.
-/// The `.cm.json` format's own number, written as `smartcut_cm`. It goes up
-/// only when a field comes to mean something else; a field added is not a new
-/// format. See docs/technical/compatibility.md.
-const CM_FILE_VERSION = 1;
-
 async function readCmFile(path) {
   const gen = openGen;
   let body;
@@ -7835,6 +7835,14 @@ el("detect-cm").addEventListener("click", async () => {
     // Whether a detection puts its marks down is 環境設定; off, the band and
     // the sentence are the whole of what it says until the menu is asked.
     const was = touched();
+    // A pass that found nothing replaces the band too: `applyCmBlocks` puts
+    // down only what there is, and the blocks of an earlier finding (another
+    // inserts setting, a `.cm.json`) went on standing under "none found" and
+    // were sent to the list and saved as this pass's answer.
+    if (!res.blocks || !res.blocks.length) {
+      cmBlocks = [];
+      draw();
+    }
     applyCmBlocks(res.blocks, prefs.get("cmKeyframes") !== false);
     // Marks a detection put down are the detection's answer and not
     // something anybody did in here; leaving is not losing them. See
