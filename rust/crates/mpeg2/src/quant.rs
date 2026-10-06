@@ -173,6 +173,12 @@ pub struct Ratio {
 }
 
 impl Ratio {
+    /// The step being written at.
+    #[inline]
+    pub fn step(&self) -> u32 {
+        self.new
+    }
+
     /// The level to write instead of this one. Zero means the coefficient
     /// goes.
     #[inline]

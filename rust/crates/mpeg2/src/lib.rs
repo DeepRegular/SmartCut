@@ -161,6 +161,10 @@ pub struct Transrater {
     picture_bytes: f64,
     /// Whether the run has been given its starting scale yet.
     seeded: bool,
+    /// The step the run's pressure is priced at: a slow mean of the steps
+    /// the recording's pictures were written at. See
+    /// [`Picture::typical_step`]. Zero until the first picture is read.
+    reference: f64,
     /// What has been through here, for whoever wants to say so afterwards.
     pub written: Tally,
 }
@@ -203,6 +207,7 @@ impl Transrater {
             debt: 0.0,
             picture_bytes: 0.0,
             seeded: false,
+            reference: 0.0,
             written: Tally::default(),
         }
     }
@@ -242,6 +247,7 @@ impl Transrater {
             let want = (data.len() as f64 * share) as usize;
             let mut shape = self.shape;
             if let Ok(picture) = Picture::read(data, &mut shape) {
+                self.reference = picture.typical_step();
                 self.base = self.seek(&picture, want);
             }
         }
@@ -311,7 +317,16 @@ impl Transrater {
         if shape.chroma_format != 1 {
             return Err(Error::Chroma);
         }
-        let out = picture.write(&self.quantiser, press, &mut self.scratch);
+        let typical = picture.typical_step();
+        if self.reference <= 0.0 {
+            self.reference = typical;
+        }
+        let out = picture.write_against(&self.quantiser, press, self.reference, &mut self.scratch);
+        // A plain mean over the first pictures, so that a run whose first
+        // picture is written unlike the rest -- a coarse I picture, then P
+        // pictures at a third of its step -- is not priced at it for long.
+        let k = (1.0 / self.written.pictures.max(1) as f64).max(REFERENCE_PACE);
+        self.reference += (typical - self.reference) * k;
         if start_codes_differ(data, &out) {
             return Err(Error::WroteAStartCode);
         }
@@ -326,7 +341,8 @@ impl Transrater {
     /// the size and takes the slope from any two tries it has made.
     fn seek(&mut self, picture: &Picture, want: usize) -> f64 {
         let q = self.quantiser;
-        let plain = picture.measure(&q, Squeeze::default(), &mut self.scratch);
+        let reference = self.reference;
+        let plain = picture.measure_against(&q, Squeeze::default(), reference, &mut self.scratch);
         if plain <= want {
             return 0.0;
         }
@@ -335,7 +351,7 @@ impl Transrater {
         let mut last: Option<(f64, f64)> = Some((0.0, plain as f64));
         let mut best: Option<(f64, usize)> = None;
         for _ in 0..TRIES {
-            let size = picture.measure(&q, squeeze_at(lift), &mut self.scratch);
+            let size = picture.measure_against(&q, squeeze_at(lift), reference, &mut self.scratch);
             if best.is_none_or(|(_, b)| better(size, b, want)) {
                 best = Some((lift, size));
             }
@@ -368,6 +384,16 @@ impl Transrater {
         best.map_or(0.0, |(l, _)| l)
     }
 }
+
+/// How fast the step a run's pressure is priced at follows the recording:
+/// about three seconds of video.
+///
+/// Slow enough that the pictures of a GOP are priced against one another --
+/// the B pictures of a dissolve, written coarser than the I and P pictures
+/// around them, keep more of what they carry -- and fast enough that a
+/// recording that changes how finely it is written does not take the
+/// pressure that fits it with it.
+const REFERENCE_PACE: f64 = 0.01;
 
 /// The most this will press on a picture. Past here the coefficients are all
 /// gone and the scale is at the coarsest code there is; nothing above it

@@ -47,15 +47,21 @@ dearest — each is a code of its own, and they are what keeps the end-of-block
 from coming sooner — and they are also its smallest. Where what they are
 worth is less than what they cost, they go. What a coefficient is worth is its
 level times what the quantisation matrix says about its place in the block,
-squared; what it costs is the bits of its own code, counted exactly. Dropping
-a *suffix* leaves every code before it alone, so the saving is known rather
-than estimated.
+squared, and scaled by the step it is written at against the recording's
+usual step; what it costs is the bits of its own code, counted exactly.
+Dropping a *suffix* leaves every code before it alone, so the saving is known
+rather than estimated.
 
-Both are scale-free: the step the macroblock was already written at falls out
-of both sides of the trade. That is deliberate. A recording's own encoder
-wrote a fine scale where the picture was flat and a coarse one where it was
-busy, and the point of this is to be the same recording written less finely,
-not a different one.
+The lift is scale-free -- every macroblock moves by the same ratio, so the
+recording's own encoder's choices of where to be fine and where to be coarse
+stand. The tail is not, and was until 2026-10: a level of one in a coarsely
+quantised macroblock stands for several times the picture that one in a fine
+macroblock does, and weighed the same, the large coarse residual of a dissolve's
+B picture went first -- the old scene's blocks were left in the new one, and a
+picture came out at 19 dB in a run averaging 42. Each coefficient is now priced
+at its macroblock's step squared against a running mean of the pictures' own
+steps (about three seconds' worth), so the pressure means what it did before on
+any recording, and the macroblocks coarser than their neighbours keep more.
 
 ### Which of the two does the work
 

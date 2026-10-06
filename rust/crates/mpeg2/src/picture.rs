@@ -46,11 +46,15 @@ pub struct Squeeze {
     /// What one bit is worth, measured against what a coefficient is worth.
     ///
     /// A block's tail goes where the sum of its coefficients' weights squared
-    /// is less than this times the bits they take. Zero keeps everything. The
-    /// scale the macroblock is written at falls out of both sides, so this
-    /// means the same thing in a finely quantised macroblock as in a coarse
-    /// one -- which is what keeps the recording's own sharing out of
-    /// precision between them.
+    /// is less than this times the bits they take. Zero keeps everything.
+    ///
+    /// The level is counted at the step it is written at, against a
+    /// reference step (see [`Picture::typical_step`]): a level one in a
+    /// macroblock quantised twice as coarsely stands for twice as much
+    /// picture, and goes only for four times the price. Measured against the
+    /// reference rather than in steps outright, the same pressure means about
+    /// the same thing on a recording written finely as on one written
+    /// coarsely.
     pub thin: f64,
 }
 
@@ -155,6 +159,8 @@ struct Pen<'a> {
     slice: &'a Slice,
     map: &'a Map,
     press: Squeeze,
+    /// The step [`Squeeze::thin`] is priced at. See [`Picture::typical_step`].
+    reference: f64,
 }
 
 struct Mb {
@@ -331,28 +337,88 @@ impl<'a> Picture<'a> {
         self.mbs.iter().all(|mb| q.at_the_top(mb.q))
     }
 
+    /// The step this picture was written at, taken over all of its
+    /// macroblocks: the root of the mean of the squares, since what a
+    /// coefficient is worth goes as the square of its step.
+    ///
+    /// What [`Squeeze::thin`] is priced against. A coefficient is worth its
+    /// level times the step in force, so a level in a coarsely quantised
+    /// macroblock is worth more than the same level in a fine one -- and
+    /// measured against a step the recording is running at, rather than
+    /// against a fixed one, the pressure that brings a run to a size stays
+    /// about the same whatever scales the recording happens to use.
+    pub fn typical_step(&self) -> f64 {
+        let mut sum = 0.0f64;
+        let mut n = 0u32;
+        for slice in &self.slices {
+            for mb in &self.mbs[slice.mbs.0 as usize..slice.mbs.1 as usize] {
+                let step = f64::from(Quantiser::step_of(mb.q, slice.q_scale_type));
+                sum += step * step;
+                n += 1;
+            }
+        }
+        if n == 0 {
+            1.0
+        } else {
+            (sum / f64::from(n)).sqrt()
+        }
+    }
+
     /// What the picture would come to under this pressure, in bytes.
     pub fn measure(&self, q: &Quantiser, press: Squeeze, scratch: &mut Scratch) -> usize {
-        let mut sink = crate::bits::Counter::new();
-        self.emit(&mut sink, q, press, scratch);
-        sink.bytes()
+        self.measure_against(q, press, self.typical_step(), scratch)
     }
 
     /// The picture, written back under this pressure.
     pub fn write(&self, q: &Quantiser, press: Squeeze, scratch: &mut Scratch) -> Vec<u8> {
+        self.write_against(q, press, self.typical_step(), scratch)
+    }
+
+    /// [`Picture::measure`], with the bits priced at `reference` rather than
+    /// at this picture's own [`Picture::typical_step`]: what a run of
+    /// pictures uses, so that one picture coarser than its neighbours keeps
+    /// more of what it carries rather than the same share of it.
+    pub fn measure_against(
+        &self,
+        q: &Quantiser,
+        press: Squeeze,
+        reference: f64,
+        scratch: &mut Scratch,
+    ) -> usize {
+        let mut sink = crate::bits::Counter::new();
+        self.emit(&mut sink, q, press, reference, scratch);
+        sink.bytes()
+    }
+
+    /// [`Picture::write`], with the bits priced at `reference`. See
+    /// [`Picture::measure_against`].
+    pub fn write_against(
+        &self,
+        q: &Quantiser,
+        press: Squeeze,
+        reference: f64,
+        scratch: &mut Scratch,
+    ) -> Vec<u8> {
         let mut sink = crate::bits::Writer::with_capacity(self.data.len() + 64);
-        self.emit(&mut sink, q, press, scratch);
+        self.emit(&mut sink, q, press, reference, scratch);
         sink.finish()
     }
 
-    fn emit<S: Sink>(&self, sink: &mut S, q: &Quantiser, press: Squeeze, scratch: &mut Scratch) {
+    fn emit<S: Sink>(
+        &self,
+        sink: &mut S,
+        q: &Quantiser,
+        press: Squeeze,
+        reference: f64,
+        scratch: &mut Scratch,
+    ) {
         for part in &self.parts {
             match *part {
                 Part::Bytes(a, b) => {
                     sink.copy(self.data, a as usize * 8, (b - a) as usize * 8);
                 }
                 Part::Slice(i) => {
-                    self.emit_slice(sink, &self.slices[i as usize], q, press, scratch)
+                    self.emit_slice(sink, &self.slices[i as usize], q, press, reference, scratch)
                 }
             }
         }
@@ -364,6 +430,7 @@ impl<'a> Picture<'a> {
         slice: &Slice,
         q: &Quantiser,
         press: Squeeze,
+        reference: f64,
         scratch: &mut Scratch,
     ) {
         let map = q.map(slice.q_scale_type, press.lift);
@@ -374,7 +441,12 @@ impl<'a> Picture<'a> {
         sink.u(u32::from(map.step(slice.quant, phase(slice.mbs.0))), 5);
         let (a, b) = slice.extra;
         sink.copy(self.data, a as usize, (b - a) as usize);
-        let pen = Pen { slice, map: &map, press };
+        let pen = Pen {
+            slice,
+            map: &map,
+            press,
+            reference,
+        };
         // The phase of whichever wrote the scale in force: the slice, or the
         // last macroblock that carried a scale of its own. A macroblock that
         // carries none is decoded at that scale, so its coefficients have to
@@ -415,6 +487,10 @@ impl<'a> Picture<'a> {
         let intra = mb.flags & flags::INTRA != 0;
         let ratio = map.ratio(mb.q, spread);
         let table = usize::from(intra && slice.intra_vlc_format);
+        // What a bit costs here, in this macroblock's own levels: the price
+        // is set at the reference step, and a level at a step twice that is
+        // worth twice as much, which is four times as much squared.
+        let thin = press.thin * price(pen.reference, ratio.step());
         let weights = &self.weights[usize::from(slice.alternate_scan)][usize::from(intra)];
         let first = mb.blocks.0 as usize;
 
@@ -446,7 +522,7 @@ impl<'a> Picture<'a> {
                     &scratch.coeffs[from as usize..],
                     &scratch.bits[from as usize..],
                     weights,
-                    press.thin,
+                    thin,
                 )
             } else {
                 scratch.coeffs.len() - from as usize
@@ -754,6 +830,22 @@ impl<'a> Picture<'a> {
     }
 }
 
+/// What one bit is worth in a macroblock written at `step`, as a share of
+/// what [`Squeeze::thin`] says it is worth at `reference`.
+///
+/// A level stands for the level times the step, so what dropping it costs
+/// the picture is the square of that. Priced in levels -- the step left out
+/// of both sides -- a level one in a coarsely quantised macroblock went as
+/// cheaply as one in a fine macroblock, though it stood for several times
+/// as much picture. At a dissolve the encoder writes a B picture as the old
+/// scene plus a large, coarsely quantised difference, and dropping that
+/// difference pasted blocks of the old scene into the new one: a picture at
+/// 19 dB in a run at 42.
+fn price(reference: f64, step: u32) -> f64 {
+    let r = reference / f64::from(step.max(1));
+    r * r
+}
+
 /// How much of a block's tail to throw away.
 ///
 /// The last coefficients of a block are the ones worth dropping. They are the
@@ -765,8 +857,9 @@ impl<'a> Picture<'a> {
 ///
 /// What a coefficient is worth is its level times what the quantisation
 /// matrix says about its place in the block, squared. What it costs is the
-/// bits of its own code. The tail goes as far back as that trade stays worth
-/// making.
+/// bits of its own code, at `thin` a bit -- which the caller has already
+/// turned into this macroblock's levels with [`price`]. The tail goes as far
+/// back as that trade stays worth making.
 fn trim(coeffs: &[Coeff], bits: &[u32], weights: &[u16; 64], thin: f64) -> usize {
     let mut worth = 0.0f64;
     let mut cost = 0.0f64;
@@ -1035,6 +1128,7 @@ pub fn first_difference(data: &[u8], shape: &mut Shape) -> Result<Option<String>
                 slice,
                 map: &map,
                 press,
+                reference: 1.0,
             };
             let spread = phase(slice.mbs.0 + k as u32);
             picture.emit_mb(&mut sink, mb, &pen, spread, &mut scratch);
@@ -1209,6 +1303,26 @@ mod tests {
                 Picture::read(&out, &mut shape).expect("reads back");
             }
         }
+    }
+
+    /// A level stands for the level times the step, so the same tail is
+    /// worth more in a coarsely quantised macroblock than in a fine one, and
+    /// keeps more of itself under the same pressure. At the reference step
+    /// the price is what the pressure says.
+    #[test]
+    fn a_coarse_step_keeps_more_of_its_tail() {
+        let coeffs = [
+            Coeff { at: 1, level: 3 },
+            Coeff { at: 5, level: -1 },
+            Coeff { at: 9, level: 1 },
+        ];
+        let bits = [5, 7, 7];
+        let weights = [16u16; 64];
+        let thin = 50.0;
+        assert_eq!(price(8.0, 8), 1.0);
+        let fine = trim(&coeffs, &bits, &weights, thin * price(8.0, 8));
+        let coarse = trim(&coeffs, &bits, &weights, thin * price(8.0, 16));
+        assert_eq!((fine, coarse), (1, 3));
     }
 
     /// Whatever arrives, the walk says no rather than falling over: every
