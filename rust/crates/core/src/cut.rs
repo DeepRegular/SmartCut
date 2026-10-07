@@ -2183,9 +2183,6 @@ mod poc_seam {
             let l = last + shift;
             follows(l, l.rem_euclid(1 << bits), s.lsb, s.bits) - (top + shift)
         };
-        if shown_at(0, bits) > 0 {
-            return None; // already in order
-        }
         // The IDR may be given any order the field holds; every other
         // picture of the head moves with it. Two apart is what one frame
         // is. The field as it is if that will do, a byte wider if not.
@@ -2202,22 +2199,45 @@ mod poc_seam {
         // they were the recording's to the bit. Kept clear where the field
         // allows it; two apart otherwise, which is still every picture.
         let invented = 2 * s.refs.clamp(0, 16);
-        let settle = |bits: usize| {
-            let fits = |k: i64, clear: bool| {
-                let at = shown_at(k, bits);
-                at >= 2 && (!clear || at + top - last_ref > invented)
-            };
-            let best = |clear: bool| {
-                (-idr_lo..(1i64 << bits) - idr_hi)
-                    .filter(|&k| fits(k, clear))
-                    .min_by_key(|&k| shown_at(k, bits))
-            };
-            best(true).or_else(|| best(false))
+        // **In order is not enough; clear is the test.** A copy already
+        // shown after the head was let through as it was, and the invented
+        // pictures above were never asked about: on the recorder's disc, a
+        // range opening on an entry point whose leading pictures are cut
+        // away, after a head of a dozen pictures, had its two B frames
+        // after the I predicted from them (`--verify`: 2 of 1183 copied
+        // frames differ, 28.5 dB).
+        let clear_of_invented = |shift: i64, bits: usize| {
+            shown_at(shift, bits) + top - last_ref > invented
         };
-        let (shift, wider) = match settle(bits) {
-            Some(k) => (k, 0),
-            None if bits + 8 <= 16 => (settle(bits + 8)?, 8),
-            None => return None,
+        let in_order = shown_at(0, bits) > 0;
+        if in_order && clear_of_invented(0, bits) {
+            return None; // already in order, and clear
+        }
+        let settle = |bits: usize, clear: bool| {
+            (-idr_lo..(1i64 << bits) - idr_hi)
+                .filter(|&k| shown_at(k, bits) >= 2 && (!clear || clear_of_invented(k, bits)))
+                .min_by_key(|&k| shown_at(k, bits))
+        };
+        // Clear before merely in order, and a field a byte wider before
+        // either falls back to that. A four-bit field cannot say more than
+        // eight frames ahead, so the head x264 writes in front of the
+        // recorder's eight-bit copy was only ever put in order -- and its
+        // invented pictures were above the copy's I again (2 of 1183 copied
+        // frames differ, 28.5 dB). Already in order, the head is moved only
+        // where that makes it clear, and otherwise left as it was.
+        let wide = bits + 8 <= 16;
+        let (shift, wider) = if let Some(k) = settle(bits, true) {
+            (k, 0)
+        } else if let Some(k) = wide.then(|| settle(bits + 8, true)).flatten() {
+            (k, 8)
+        } else if in_order {
+            return None;
+        } else if let Some(k) = settle(bits, false) {
+            (k, 0)
+        } else if wide {
+            (settle(bits + 8, false)?, 8)
+        } else {
+            return None;
         };
 
         let mut out = Vec::with_capacity(head.len());
@@ -9948,9 +9968,10 @@ mod tests {
     }
 
     /// A head whose last pictures are shown after where the copy's first
-    /// one lands is moved along until the copy comes after all of it; one
-    /// that is already in order, or a copy that opens on an IDR, is left as
-    /// it is.
+    /// one lands -- or whose frames the decoder makes up for the copy's
+    /// frame_num would -- is moved along until the copy comes after all of
+    /// it; one that is already in order and clear, or a copy that opens on
+    /// an IDR, is left as it is.
     #[test]
     fn a_head_hands_the_copy_an_order_it_can_follow() {
         let head = [
@@ -9971,7 +9992,14 @@ mod tests {
         assert_eq!(lsbs, [51, 57, 53, 55]);
         let again: Vec<&[u8]> = moved.iter().map(|p| p.as_slice()).collect();
         assert!(poc_seam::carry_on(&again, annexb, &copy(false, 2), annexb).is_none());
-        assert!(poc_seam::carry_on(&head, annexb, &copy(false, 10), annexb).is_none());
+        // In order and clear of the eight: left as it is.
+        assert!(poc_seam::carry_on(&head, annexb, &copy(false, 16), annexb).is_none());
+        // In order but not clear -- 10 is four past the head's last
+        // reference picture, within the eight -- is moved until it is, and
+        // what that leaves is not moved again.
+        let cleared = poc_seam::carry_on(&head, annexb, &copy(false, 10), annexb).unwrap();
+        let cleared: Vec<&[u8]> = cleared.iter().map(|p| p.as_slice()).collect();
+        assert!(poc_seam::carry_on(&cleared, annexb, &copy(false, 10), annexb).is_none());
         assert!(poc_seam::carry_on(&head, annexb, &copy(true, 0), annexb).is_none());
         // And the same stream counted in lengths, as an MP4 carries it.
         let framed = |p: &[u8]| crate::bitstream::annexb_to_length(p, 4).unwrap();

@@ -34,6 +34,7 @@ pub mod fit;
 pub mod index;
 pub mod input;
 pub mod latm;
+pub(crate) mod leadrefs;
 pub mod log;
 pub mod logo;
 pub mod mediainfo;

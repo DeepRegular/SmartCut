@@ -101,7 +101,15 @@ static SERIAL: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(
 /// for a key picture at 0, and took the next one's place where that one is
 /// decoded at 0: the copy then began a picture late, and the cut lost its
 /// first picture on every open but the first.
-pub const VERSION: u32 = 12;
+///
+/// 13: an H.264 entry point whose leading pictures predict only from one
+/// another is droppable ([`crate::leadrefs`]), where before any leading
+/// picture that was a reference made it one no copy could open on. A
+/// recorder's field-coded recording is built that way at every entry point,
+/// and an index saved before this says so of each point it read, which a
+/// saved index is believed on: each range's head went on being re-encoded
+/// up to the first point nobody had read.
+pub const VERSION: u32 = 13;
 
 const MAGIC: &[u8; 4] = b"SCIX";
 

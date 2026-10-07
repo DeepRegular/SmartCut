@@ -46,7 +46,7 @@ fn is_configuration_record(codec: &str, extradata: &[u8]) -> bool {
 }
 
 /// Offsets of each NAL unit's payload within a packet.
-fn nal_payloads(data: &[u8], framing: NalFraming) -> Vec<&[u8]> {
+pub(crate) fn nal_payloads(data: &[u8], framing: NalFraming) -> Vec<&[u8]> {
     let mut out = Vec::new();
     match framing {
         NalFraming::Length(n) => {
@@ -116,7 +116,7 @@ fn start_codes(data: &[u8]) -> Vec<usize> {
     starts
 }
 
-const H264_VCL: std::ops::RangeInclusive<u8> = 1..=5;
+pub(crate) const H264_VCL: std::ops::RangeInclusive<u8> = 1..=5;
 /// HEVC leading pictures: the `_N` variants are sub-layer non-reference.
 const HEVC_LEADING_NONREF: [u8; 2] = [6, 8]; // RADL_N, RASL_N
 
@@ -859,13 +859,13 @@ fn h264_opens_a_picture(nal: &[u8], shape: &FieldShape) -> Option<bool> {
 /// Every read is fallible and every one is checked, because this reads a
 /// sequence header out of a recording nobody vouched for: a truncated or
 /// mangled one has to come back as "no answer", never as a panic or a loop.
-struct Bits {
+pub(crate) struct Bits {
     data: Vec<u8>,
     pos: usize,
 }
 
 impl Bits {
-    fn new(nal: &[u8]) -> Self {
+    pub(crate) fn new(nal: &[u8]) -> Self {
         let mut data = Vec::with_capacity(nal.len());
         let mut i = 0;
         while i < nal.len() {
@@ -880,7 +880,7 @@ impl Bits {
         Bits { data, pos: 0 }
     }
 
-    fn u(&mut self, n: usize) -> Option<u32> {
+    pub(crate) fn u(&mut self, n: usize) -> Option<u32> {
         let mut v = 0u32;
         for _ in 0..n {
             let byte = *self.data.get(self.pos >> 3)?;
@@ -892,12 +892,12 @@ impl Bits {
 
     /// Step over bits whose value is not wanted -- runs of reserved flags,
     /// chiefly, which are longer than a single read may be.
-    fn skip(&mut self, n: usize) -> Option<()> {
+    pub(crate) fn skip(&mut self, n: usize) -> Option<()> {
         self.pos = self.pos.checked_add(n)?;
         (self.pos <= self.data.len() * 8).then_some(())
     }
 
-    fn ue(&mut self) -> Option<u32> {
+    pub(crate) fn ue(&mut self) -> Option<u32> {
         let mut zeros = 0usize;
         while self.u(1)? == 0 {
             zeros += 1;
@@ -912,7 +912,7 @@ impl Bits {
         ((1u32 << zeros) - 1).checked_add(self.u(zeros)?)
     }
 
-    fn se(&mut self) -> Option<i32> {
+    pub(crate) fn se(&mut self) -> Option<i32> {
         let k = self.ue()?;
         Some(if k % 2 == 1 {
             k.div_ceil(2) as i32

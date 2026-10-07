@@ -195,6 +195,9 @@ pub fn walk(
     // bit of their `frame_num`: no pair was found, and the cut still read as
     // one whose pictures vary. See `copy_segment` in [`crate::cut`].
     let mut shape = video.field_shape;
+    // Whether the leading reference pictures of each entry point are needed
+    // by what follows them; see [`crate::leadrefs`].
+    let mut judge = crate::leadrefs::Judge::new(&codec, framing);
     let mut reading = ictx.read_packets();
     for (s, p) in reading.by_ref() {
         seen += 1;
@@ -238,6 +241,13 @@ pub fn walk(
             half_open = field && !second;
             second
         };
+        // Every packet, a second field with no time of its own as well: the
+        // judge follows the pictures a decoder holds, and a field is one.
+        // An entry point is one only where it has a time, as below.
+        let at = p.pts().map(|pts| pts as f64 * time_base - start_time);
+        if let Some(d) = p.data() {
+            judge.feed(packets.len(), p.is_key() && at.is_some(), at, d);
+        }
         let Some(pts) = p.pts() else { continue };
         let reference = p
             .data()
@@ -259,6 +269,7 @@ pub fn walk(
             key: p.is_key(),
             reference,
             pos: p.position() as i64,
+            unreferenced: None,
         };
         if !second_half {
             shown.push(view.pts);
@@ -267,6 +278,11 @@ pub fn walk(
     }
     let whole = reading.finished().is_ok();
     drop(reading);
+    for (id, free) in judge.finish(whole) {
+        if let Some(p) = packets.get_mut(id).filter(|p| p.key) {
+            p.unreferenced = Some(free);
+        }
+    }
 
     // The last picture to be shown, which is not the last to arrive. Of the
     // frames in `shown`: the second field of the last pair is shown half a
@@ -881,6 +897,11 @@ struct PacketView {
     reference: bool,
     /// Byte offset the packet starts at, or -1 where the demuxer does not say.
     pos: i64,
+    /// On an entry point: whether nothing but its own leading pictures is
+    /// predicted from those of them that are reference pictures, as
+    /// [`crate::leadrefs`] followed the stream. `None` where that was not
+    /// asked or could not be answered.
+    unreferenced: Option<bool>,
 }
 
 /// The access point rooted at `i`, from the packets that follow it.
@@ -888,11 +909,17 @@ struct PacketView {
 /// `always_droppable` is the codec answering for its leading pictures where
 /// it can, rather than each picture answering for itself; see
 /// [`bitstream::leading_always_droppable`].
+///
+/// **A leading picture that is a reference is droppable all the same where
+/// only other leading pictures predict from it** -- the second B of a pair
+/// that predicts from the first. Whether anything else does is what
+/// [`crate::leadrefs`] followed the stream to find (`unreferenced`); where it
+/// could not say, the flag stands as it always has.
 fn point_at(packets: &[PacketView], i: usize, always_droppable: bool) -> AccessPoint {
     let pkt = &packets[i];
     let mut lead_start = pkt.pts;
     let mut lead_indices = Vec::new();
-    let mut droppable = true;
+    let mut referenced = false;
     for (j, next) in packets[i + 1..].iter().enumerate() {
         if next.key {
             break;
@@ -900,9 +927,10 @@ fn point_at(packets: &[PacketView], i: usize, always_droppable: bool) -> AccessP
         if next.pts < pkt.pts {
             lead_start = lead_start.min(next.pts);
             lead_indices.push(j + 1);
-            droppable &= always_droppable || !next.reference;
+            referenced |= next.reference;
         }
     }
+    let droppable = always_droppable || !referenced || pkt.unreferenced == Some(true);
     AccessPoint {
         time: pkt.pts,
         lead_start,
@@ -1355,12 +1383,19 @@ fn window_from(
 ) -> Result<Vec<PacketView>> {
     let mut out = Vec::new();
     let mut target: Option<usize> = None;
+    let mut judge = crate::leadrefs::Judge::new(&video.codec, video.framing);
     let mut reading = ictx.read_packets();
     for (s, p) in reading.by_ref() {
         if s.index() != video.stream_index {
             continue;
         }
-        let Some(pts) = p.pts() else { continue };
+        let Some(pts) = p.pts() else {
+            // Half a picture all the same, to the judge; see [`walk`].
+            if let Some(d) = p.data() {
+                judge.feed(out.len(), false, None, d);
+            }
+            continue;
+        };
         let t = pts as f64 * video.time_base - start_time;
         let d = p.dts().unwrap_or(pts) as f64 * video.time_base - start_time;
         let key = p.is_key();
@@ -1379,12 +1414,16 @@ fn window_from(
             .data()
             .map(|d| bitstream::is_reference(d, &video.codec, video.framing, video.vc1.as_ref()))
             .unwrap_or(true);
+        if let Some(data) = p.data() {
+            judge.feed(out.len(), key, Some(t), data);
+        }
         out.push(PacketView {
             pts: t,
             dts: d,
             key,
             reference,
             pos: p.position() as i64,
+            unreferenced: None,
         });
         // Stop at the *next* access point: everything between it and the
         // target is what the target's leading pictures could be. Matching on
@@ -1406,6 +1445,13 @@ fn window_from(
     // still on it, and the seek index keeps that mark: the guess -- a GOP
     // assumed closed -- stood on every later open.
     reading.finished()?;
+    // The window stops at the next entry point, so a leading picture still
+    // held there is one nothing has been seen to leave alone: needed.
+    for (id, free) in judge.finish(false) {
+        if let Some(p) = out.get_mut(id).filter(|p| p.key) {
+            p.unreferenced = Some(free);
+        }
+    }
     Ok(out)
 }
 
