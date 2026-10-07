@@ -1411,6 +1411,7 @@ impl Writer {
         mut packet: ff::Packet,
         out_start: f64,
         out_dur: f64,
+        cut_away: bool,
     ) -> Result<()> {
         let Some(t) = self.audio.get(track) else {
             return Ok(());
@@ -1463,8 +1464,14 @@ impl Writer {
         let clashes = self.audio[track]
             .last_out
             .is_some_and(|last| if self.into_ts { pts <= last } else { pts < last });
+        // Not counted where the frame is one of the sound the cut took
+        // away, claimed only because the track looked behind: see
+        // `cut_away` in [`take_audio`]. Left out, it is what the cut asked
+        // for, and nothing was lost.
         if clashes {
-            self.audio[track].dropped += 1;
+            if !cut_away {
+                self.audio[track].dropped += 1;
+            }
             return Ok(());
         }
         packet.set_pts(Some(pts));
@@ -2103,6 +2110,28 @@ mod poc_seam {
         Some(byte * 8 + 7 - rbsp[byte].trailing_zeros() as usize)
     }
 
+    /// `max_num_ref_frames` of the sequence header a packet restates ahead
+    /// of its picture, where that picture is not an IDR. `None` for an IDR,
+    /// a packet with no header ahead of its picture, or one this cannot read.
+    /// See [`super::refs_before`].
+    pub(super) fn restated_refs(data: &[u8], framing: NalFraming) -> Option<i64> {
+        let mut refs = None;
+        for (s, e) in nals(data, framing)? {
+            let nal = &data[s..e];
+            match nal.first().map(|b| b & 0x1F) {
+                Some(5) => return None,
+                Some(1) => return refs,
+                Some(7) if refs.is_none() => {
+                    refs = read_sps(&unescape(nal))
+                        .filter(|(_, sps)| sps.lsb_bits.is_some())
+                        .map(|(_, sps)| sps.refs);
+                }
+                _ => {}
+            }
+        }
+        None
+    }
+
     /// The head's packets rewritten so that `copy`, the first packet after
     /// them, is shown after every one of them. `None` where nothing has to
     /// change, or where it cannot be done safely.
@@ -2431,7 +2460,19 @@ fn take_audio(
         None => track.framed(packet),
     };
     writer.audio[audio.track].prev = Some(pts);
-    writer.push_audio(audio.track, packet, t + audio.offset, dur)?;
+    // A frame the range opens on early, more of it before the range's start
+    // than after: claimed only because the sound so far looked short of the
+    // pictures (`pick_from`). Where it clashes with what is already written,
+    // the track was not short, and the frame is sound the cut took away. A
+    // Matroska track sums its frames' lengths in whole milliseconds (a
+    // 1024-sample frame at 48 kHz counts 21 ms of its 21.33), so every
+    // range after the first looked a third of a millisecond short per frame
+    // and opened half a second early on a half-minute range: an ordinary
+    // Vorbis .mkv cut in two places said 22 frames of its sound were lost,
+    // and none were. Only the count is spared; the frame is left out as
+    // before, so what is written is unchanged.
+    let cut_away = first_segment && t + dur / 2.0 <= audio.range_in;
+    writer.push_audio(audio.track, packet, t + audio.offset, dur, cut_away)?;
     Ok(past_end)
 }
 
@@ -3907,7 +3948,7 @@ type Mastering = Vec<(ff::ffi::AVFrameSideDataType, Vec<u8>)>;
 /// Three separate things travel in the pictures rather than the container,
 /// and every one of them is a way for a cut to change how a player fits the
 /// picture to the screen partway through.
-#[derive(Default)]
+#[derive(Default, Clone)]
 struct Signalling {
     /// Mastering display, content light level, and one picture's Dolby
     /// Vision metadata, handed to the encoder as `decoded_side_data` --
@@ -3932,6 +3973,11 @@ struct Signalling {
     /// header states, in the units it states them in. See
     /// [`crate::bitstream::mpeg2_rate`].
     mpeg2_rate: Option<(u32, u32)>,
+    /// The most reference frames an H.264 seam may keep, where the copy it
+    /// stands in front of opens on a picture other than an IDR: that copy's
+    /// own `max_num_ref_frames`. Set per seam, never for the whole cut; see
+    /// [`refs_before`].
+    refs: Option<i64>,
 }
 
 /// Does this stream declare Dolby Vision?
@@ -4312,6 +4358,14 @@ fn open_encoder_as(
             (*e).level = (*p).level;
         }
         (*e).max_b_frames = v.has_b_frames.max(0);
+        // Fewer reference frames than x264's own three (its preset's), and
+        // only where the copy after the seam is to be decoded on from it.
+        // See [`refs_before`].
+        if codec.name() == "libx264" {
+            if let Some(refs) = signalling.refs.filter(|&r| (1..X264_REFS).contains(&r)) {
+                (*e).refs = refs as i32;
+            }
+        }
         if v.interlaced() {
             // Encode fields, not frames. Without this the partial GOPs come
             // out progressive and comb against the copied pictures.
@@ -6549,6 +6603,115 @@ fn fade_lengths(
     out
 }
 
+/// What each reel gives way with, as written.
+///
+/// A reel's own setting, except on the reel written last: there is nothing
+/// to give way to, so a crossing there becomes a fade to black. The
+/// reference tool answers this the same way, and there is no other honest
+/// answer: two pictures cannot be shown together where there is only one.
+fn crossings_of(afters: &[crate::transition::Transition]) -> Vec<crate::transition::Transition> {
+    use crate::transition::{Crossing, Shade};
+    let last = afters.len().saturating_sub(1);
+    afters
+        .iter()
+        .enumerate()
+        .map(|(n, after)| {
+            let mut t = after.clone();
+            if n == last && t.kind.overlaps() {
+                t.kind = Crossing::Fade(Shade::Black);
+            }
+            t
+        })
+        .collect()
+}
+
+/// What each junction really takes from the clip before it and from the clip
+/// after it: `(before, after)` for the junction that follows reel `n`.
+///
+/// **At most half a range**, which is the most either of its ends may give
+/// a transition: a transition longer than the clip it is joining is a
+/// transition with nothing left to join. A range the planner found no
+/// picture in -- a sliver left at the end of a recording -- has none to
+/// give, and is not written at all; see [`ranges_with_transitions`].
+///
+/// **An overlapping crossing takes the same seconds from both**, because
+/// they are the same seconds: the two clips are on screen together, and
+/// what the clip before spends on the crossing is what the clip after gives
+/// up at its head. Capped separately -- each end against half of its own
+/// range -- the two come out different lengths as soon as one of the ranges
+/// is short, and then the clip after either loses material the crossing
+/// never showed or shows its first seconds twice. So the pair is held to
+/// whichever end allows less, which is the answer the window previewing the
+/// seam gives; see [`crate::crossview::Seam::takes`].
+///
+/// A fade is not a pair. Its two halves are written in place, each inside
+/// its own range, and neither costs the other anything, so each is capped
+/// on its own.
+fn takes_at(
+    plans: &[&[RangePlan]],
+    crossings: &[crate::transition::Transition],
+) -> Vec<(f64, f64)> {
+    let room = |plan: Option<&RangePlan>| {
+        plan.filter(|p| !p.segments.is_empty())
+            .map_or(0.0, |p| ((p.t_out - p.t_in) / 2.0).max(0.0))
+    };
+    (0..plans.len())
+        .map(|n| {
+            let t = &crossings[n];
+            let (want_before, want_after) = t.takes();
+            let before = want_before.min(room(plans[n].last()));
+            let after = want_after.min(room(plans.get(n + 1).and_then(|p| p.first())));
+            if t.kind.overlaps() {
+                let both = before.min(after);
+                (both, both)
+            } else {
+                (before, after)
+            }
+        })
+        .collect()
+}
+
+/// The instants inside each reel's ranges where a transition moves an end:
+/// where the copy before a crossing now stops (`t_out` less what the crossing
+/// takes) and where the copy after one now starts (`t_in` plus what it
+/// takes). One list per reel, in the order of `plans`; `afters` is each
+/// reel's [`Reel::after`].
+///
+/// **Measure these before the join is written** when the index did not
+/// say where its points' leading pictures are ([`crate::Source::leading_known`]
+/// false -- a disc's map, a container's table): hand each as `(t, t)` to
+/// [`crate::index::refine_leading`]. The ends the caller asked for were
+/// measured; these are seconds inside the range that nothing else reads,
+/// and [`ranges_with_transitions`] plans a copy to end or begin on them.
+/// Planned on a guess at a point's leading pictures, the copy before a 15 s
+/// dissolve on a disc's clip ended a picture early and the one after a 20 s
+/// one a picture late: a picture lost or shown twice, and the rest of the
+/// join a frame out against its sound. This is the one place the instants
+/// are worked out, so that what is measured is what is planned on.
+pub fn transition_bounds(
+    plans: &[&[RangePlan]],
+    afters: &[crate::transition::Transition],
+) -> Vec<Vec<f64>> {
+    let crossings = crossings_of(afters);
+    let takes = takes_at(plans, &crossings);
+    (0..plans.len())
+        .map(|n| {
+            let mut at = Vec::new();
+            if n > 0 && takes[n - 1].1 > 0.0 {
+                if let Some(first) = plans[n].first() {
+                    at.push(first.t_in + takes[n - 1].1);
+                }
+            }
+            if takes[n].0 > 0.0 {
+                if let Some(last) = plans[n].last() {
+                    at.push(last.t_out - takes[n].0);
+                }
+            }
+            at
+        })
+        .collect()
+}
+
 /// The ranges of every reel, with the transitions cut into them.
 ///
 /// **A transition is a stretch of a range, not a range of its own.** The
@@ -6571,60 +6734,13 @@ fn ranges_with_transitions(
     fits: &[crate::conform::Fit],
     opts: &CutOptions,
 ) -> Vec<Vec<RangePlan>> {
-    use crate::transition::{Crossing, Shade};
-    let last = reels.len().saturating_sub(1);
-    // What each reel gives up at each end. Read here rather than at each
-    // use, because the answer for one reel's head is the previous reel's
-    // setting.
-    let crossing = |n: usize| -> crate::transition::Transition {
-        let mut t = reels[n].after.clone();
-        // Nothing to give way to. The reference tool answers this the same
-        // way, and there is no other honest answer: two pictures cannot be
-        // shown together where there is only one.
-        if n == last && t.kind.overlaps() {
-            t.kind = Crossing::Fade(Shade::Black);
-        }
-        t
-    };
-    // Half a range, which is the most either of its ends may give a
-    // transition: a transition longer than the clip it is joining is a
-    // transition with nothing left to join. A range the planner found no
-    // picture in -- a sliver left at the end of a recording -- has none to
-    // give, and is not written at all; see below.
-    let room = |plan: Option<&RangePlan>| {
-        plan.filter(|p| !p.segments.is_empty())
-            .map_or(0.0, |p| ((p.t_out - p.t_in) / 2.0).max(0.0))
-    };
-    // What each junction really takes from the clip before it and from the
-    // clip after it.
-    //
-    // **An overlapping crossing takes the same seconds from both**, because
-    // they are the same seconds: the two clips are on screen together, and
-    // what the clip before spends on the crossing is what the clip after
-    // gives up at its head. Capped separately -- each end against half of
-    // its own range -- the two come out different lengths as soon as one of
-    // the ranges is short, and then the clip after either loses material the
-    // crossing never showed or shows its first seconds twice. So the pair is
-    // held to whichever end allows less, which is the answer the window
-    // previewing the seam gives; see [`crate::crossview::Seam::takes`].
-    //
-    // A fade is not a pair. Its two halves are written in place, each inside
-    // its own range, and neither costs the other anything, so each is capped
-    // on its own.
-    let takes_at: Vec<(f64, f64)> = (0..reels.len())
-        .map(|n| {
-            let t = crossing(n);
-            let (want_before, want_after) = t.takes();
-            let before = want_before.min(room(reels[n].plans.last()));
-            let after = want_after.min(room(reels.get(n + 1).and_then(|r| r.plans.first())));
-            if t.kind.overlaps() {
-                let both = before.min(after);
-                (both, both)
-            } else {
-                (before, after)
-            }
-        })
-        .collect();
+    use crate::transition::Crossing;
+    let afters: Vec<crate::transition::Transition> =
+        reels.iter().map(|r| r.after.clone()).collect();
+    let crossings = crossings_of(&afters);
+    let crossing = |n: usize| crossings[n].clone();
+    let plans: Vec<&[RangePlan]> = reels.iter().map(|r| r.plans).collect();
+    let takes_at = takes_at(&plans, &crossings);
     reels
         .iter()
         .enumerate()
@@ -6948,6 +7064,55 @@ fn seek_back(points: &[crate::AccessPoint], target: f64) -> f64 {
         0 => 0.0,
         n => earlier[n.saturating_sub(3)],
     }
+}
+
+/// How many reference frames x264 keeps when it is not told: its `medium`
+/// preset's, which is the one a seam is written at.
+const X264_REFS: i64 = 3;
+
+/// The most reference frames an H.264 seam may keep in front of the copy
+/// that opens at `at`, if that copy is to be read on from the seam.
+///
+/// A copy that opens on an IDR starts the decoder's memory afresh, and the
+/// seam in front of it may be whatever the encoder likes. One that opens on
+/// any other picture -- an x264 file with no IDR entry points, a recorder's
+/// recovery point -- is decoded on from the seam, and its sequence header,
+/// restated at that picture, says how many frames it keeps. A head written
+/// with x264's three in front of a copy whose header says two changed the
+/// size of the decoder's memory in the middle of a sequence: libav carried
+/// on, `ffmpeg` warned about it, and a stricter decoder need not do either.
+///
+/// Read off the copy's first picture, as [`crate::plan::clean_start`] reads
+/// it. `None` -- what x264 likes, as before -- for an IDR, for anything but
+/// H.264, and wherever the picture or its header (restated in the picture;
+/// an `.mp4` keeps it in the track's record instead) could not be read.
+fn refs_before(src: &Source, at: f64) -> Option<i64> {
+    if src.video.codec != "h264" {
+        return None;
+    }
+    let eps = src.video.frame_duration() / 2.0;
+    let mut ictx = crate::input::demux(&src.input.url).ok()?;
+    let idx = src.video.stream_index;
+    crate::input::keep_only(&mut ictx, &[idx]);
+    if crate::index::seek_to_entry(&mut ictx, src, at).is_none() {
+        let target = ((at + src.start_time) * ff::ffi::AV_TIME_BASE as f64) as i64;
+        ictx.seek(target, ..target).ok()?;
+    }
+    let tb = src.video.time_base;
+    for (stream, packet) in ictx.read_packets() {
+        if stream.index() != idx {
+            continue;
+        }
+        let Some(pts) = packet.pts() else { continue };
+        let t = pts as f64 * tb - src.start_time;
+        if t > at + eps {
+            return None;
+        }
+        if (t - at).abs() <= eps && packet.is_key() {
+            return poc_seam::restated_refs(packet.data()?, src.video.framing);
+        }
+    }
+    None
 }
 
 /// Whether a sound track has anything in the ranges being kept.
@@ -9026,7 +9191,10 @@ fn cut_into(
             // start codes written raw into a track that counts lengths.
             let afresh = seg.kind == SegmentKind::Reencode
                 && (seg.retouch.is_some() || fits[reel_no].video);
-            let ctx = SegmentCtx {
+            // What the seam is told where the copy after it holds it to
+            // fewer reference frames; see `holding` below.
+            let capped: Signalling;
+            let mut ctx = SegmentCtx {
                 display_base,
                 grid,
                 reframe: if afresh { reframe.as_ref() } else { reframe_here },
@@ -9051,9 +9219,18 @@ fn cut_into(
             // head's picture order has to be moved along. See [`poc_seam`].
             // A range's re-encoded tail is a head the same way to the next
             // range of this recording, where that one opens on a copy.
+            //
+            // The next range that writes anything, as [`open_the_reel`]
+            // reads it: a range thinner than a picture writes nothing, and
+            // asked about instead, it let the copy after it follow the tail
+            // unheld -- `--keep` a sliver between two ranges of an x264
+            // file with no IDR entry points lost 7 of 85 pictures and had
+            // 53 copied ones differ.
             let after = match plan.segments.get(n + 1) {
                 Some(next) => Some(next),
-                None => reel_plans[reel_no].get(plan_no + 1).and_then(|p| p.segments.first()),
+                None => reel_plans[reel_no]
+                    .get(plan_no + 1..)
+                    .and_then(|rest| rest.iter().find_map(|p| p.segments.first())),
             };
             let holding = seg.kind == SegmentKind::Reencode
                 && !fits[reel_no].video
@@ -9070,6 +9247,13 @@ fn cut_into(
                     (None, None) => rsrc.video.framing,
                 };
                 writer.hold(head, copy)?;
+                // And written with no more reference frames than that copy
+                // keeps, where it is decoded on from the head. See
+                // [`refs_before`].
+                if let Some(refs) = after.and_then(|a| refs_before(rsrc, a.start)) {
+                    capped = Signalling { refs: Some(refs), ..signalling.clone() };
+                    ctx.signalling = &capped;
+                }
             }
             // An HEVC range opening on a copy where the copy before it does
             // not run into it opens on a broken link, as a joined reel does.
@@ -9560,6 +9744,50 @@ mod tests {
         assert!(chapter_points(&[], 60.0).is_empty());
     }
 
+    /// The instants a transition moves a copy's end or start to -- which the
+    /// command line and the window measure before a join -- are the ones the
+    /// planner then plans on: half a range at most, an overlapping crossing
+    /// the same from both sides, a crossing on the last reel a fade, a range
+    /// with no pictures giving nothing.
+    #[test]
+    fn transition_bounds_are_what_the_planner_plans_on() {
+        use crate::transition::{Crossing, Transition};
+        let range = |t_in: f64, t_out: f64, pictures: bool| RangePlan {
+            t_in,
+            t_out,
+            segments: if pictures {
+                vec![Segment {
+                    kind: SegmentKind::Copy,
+                    start: t_in,
+                    end: t_out,
+                    frames: 0,
+                    copy_until: None,
+                    seek_from: t_in,
+                    retouch: None,
+                }]
+            } else {
+                Vec::new()
+            },
+        };
+        let crossing = |kind, seconds| Transition { kind, seconds, ..Default::default() };
+        let a = [range(0.0, 10.0, true), range(20.0, 40.0, true)];
+        let b = [range(5.0, 17.0, true)];
+        let plans: Vec<&[RangePlan]> = vec![&a, &b];
+        // A dissolve of 20 s: the clip after it allows 6, so both give 6.
+        let dissolve = [crossing(Crossing::Dissolve, 20.0), Transition::default()];
+        assert_eq!(transition_bounds(&plans, &dissolve), vec![vec![34.0], vec![11.0]]);
+        // A fade: each side half of it, capped on its own.
+        let fade = [crossing(Crossing::Fade(crate::transition::Shade::Black), 16.0), Transition::default()];
+        assert_eq!(transition_bounds(&plans, &fade), vec![vec![32.0], vec![11.0]]);
+        // On the last reel a dissolve is a fade to black at the end.
+        let last = [Transition::default(), crossing(Crossing::Dissolve, 4.0)];
+        assert_eq!(transition_bounds(&plans, &last), vec![vec![], vec![15.0]]);
+        // A sliver with no pictures in it gives the crossing nothing.
+        let sliver = [range(17.0, 17.01, false)];
+        let plans: Vec<&[RangePlan]> = vec![&a, &sliver];
+        assert_eq!(transition_bounds(&plans, &dissolve), vec![Vec::<f64>::new(), vec![]]);
+    }
+
     /// Two streams of a recording that has no PIDs of its own -- a Matroska
     /// file, where libavformat leaves every stream's id at nought -- have to
     /// come out on two PIDs all the same. Asked by the number they arrived
@@ -9965,6 +10193,20 @@ mod tests {
         // (1 bit), frame_num (4), idr_pic_id 0 (1 bit, IDR only).
         let from = if idr { 1 + 7 + 1 + 4 + 1 } else { 1 + 5 + 1 + 4 };
         bits[from..from + 6].iter().fold(0, |a, &b| (a << 1) | u32::from(b))
+    }
+
+    /// The reference frames a copy keeps are read off its restated header
+    /// only where it opens on a picture other than an IDR.
+    #[test]
+    fn a_copy_that_is_not_an_idr_says_how_many_frames_it_keeps() {
+        let annexb = NalFraming::AnnexB;
+        // `sets_with` writes max_num_ref_frames 4.
+        let open = [sps_pps(), picture(false, true, 6, 2)].concat();
+        assert_eq!(poc_seam::restated_refs(&open, annexb), Some(4));
+        let idr = [sps_pps(), picture(true, true, 0, 0)].concat();
+        assert_eq!(poc_seam::restated_refs(&idr, annexb), None);
+        // No header ahead of the picture: nothing to go by.
+        assert_eq!(poc_seam::restated_refs(&picture(false, true, 6, 2), annexb), None);
     }
 
     /// A head whose last pictures are shown after where the copy's first

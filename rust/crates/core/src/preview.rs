@@ -1603,6 +1603,22 @@ fn walk(
     // Where the pictures have got to, in bytes: see `wall`. A second field
     // says nowhere and stands where its first did.
     let mut read_at: Option<u64> = None;
+    // **A recorder's seam is read across as the cut reads it.** The decoder
+    // is drained of the stretch before it, and nothing of the stretch after
+    // it that is stamped before the stretch begins is handed on -- leading
+    // pictures of a GOP the recorder cut, which the cut never writes (see
+    // [`crate::cut`]'s `stretch_bytes`). Fed straight on, the decoder threw
+    // away the last half second of the stretch before: a picture asked for
+    // there, the film strip's cells and playback all answered with one up
+    // to a fifth of a second off, and a frame saved there or a cover taken
+    // there was another picture. `next_seam` is the first seam not yet
+    // passed; `since`, where the stretch being read begins.
+    let mut next_seam = 0usize;
+    let mut since: Option<f64> = None;
+    // Whether the decoder holds anything a drain would hand back.
+    let mut fed = false;
+    let quarter = src.video.frame_duration() / 4.0;
+    let lead = |t: f64, since: Option<f64>| since.is_some_and(|s| t < s - quarter);
     let mut packets = ictx.read_packets();
     'outer: for (stream, packet) in packets.by_ref() {
         if stream.index() != idx {
@@ -1616,6 +1632,35 @@ fn walk(
         // the decoder still holds, as [`crate::cut`]'s re-encode does there.
         if read_at.zip(wall).is_some_and(|(at, w)| at >= w) {
             break;
+        }
+        if let Some(at) = read_at {
+            let was = since;
+            let mut crossed = false;
+            while let Some(j) = src.joins.get(next_seam).filter(|j| at >= j.at) {
+                since = Some(j.time);
+                next_seam += 1;
+                crossed = true;
+            }
+            if crossed && fed {
+                fed = false;
+                let _ = decoder.send_eof();
+                while decoder.receive_frame(&mut frame).is_ok() {
+                    let Some(pts) = frame.pts() else { continue };
+                    let t = pts as f64 * in_tb - src.start_time;
+                    if lead(t, was) {
+                        continue;
+                    }
+                    if first.is_none() {
+                        first = Some(t);
+                    }
+                    if !offer(t, &mut frame, &mut weave)? {
+                        stopped = true;
+                        break 'outer;
+                    }
+                }
+                decoder.flush();
+                entries.broke();
+            }
         }
         // Never handed over rather than decoded and dropped -- and filtered
         // here rather than with `skip_frame`, which is per *picture* and so
@@ -1637,6 +1682,7 @@ fn walk(
             entries.broke();
             continue;
         }
+        fed = true;
         // Half a picture. Nothing can come out yet, and the drain below would
         // throw the half away rather than wait for its partner.
         if step == crate::Step::Half {
@@ -1658,6 +1704,9 @@ fn walk(
         while decoder.receive_frame(&mut frame).is_ok() {
             let Some(pts) = frame.pts() else { continue };
             let t = pts as f64 * in_tb - src.start_time;
+            if lead(t, since) {
+                continue;
+            }
             if first.is_none() {
                 first = Some(t);
             }
@@ -1668,6 +1717,7 @@ fn walk(
         }
         if keys {
             decoder.flush();
+            fed = false;
         }
     }
     // A read that gave up part way, for the one caller that has to know
@@ -1691,6 +1741,9 @@ fn walk(
             let Some(t) = frame.pts().map(|p| p as f64 * in_tb - src.start_time) else {
                 continue;
             };
+            if lead(t, since) {
+                continue;
+            }
             if first.is_none() {
                 first = Some(t);
             }

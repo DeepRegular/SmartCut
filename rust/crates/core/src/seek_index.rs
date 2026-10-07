@@ -109,7 +109,19 @@ static SERIAL: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(
 /// and an index saved before this says so of each point it read, which a
 /// saved index is believed on: each range's head went on being re-encoded
 /// up to the first point nobody had read.
-pub const VERSION: u32 = 13;
+///
+/// 14: a leading reference picture that marks the buffer itself
+/// (`memory_management_control_operation`) makes its entry point one a copy
+/// cannot open on, even where all it unmarks is from before the point. An
+/// index of 13 -- written only by development builds, never a release --
+/// may call such a point droppable, and a copy opened there decoded a B
+/// picture against the wrong list.
+///
+/// 15: a clip on a disc whose container states a length ends where its last
+/// picture does, read off the clip's tail ([`index::DiscIndex`]); the length
+/// libavformat guesses can be a picture short. An index of 14 -- again only
+/// from development builds -- keeps the guess as the clip's end.
+pub const VERSION: u32 = 15;
 
 const MAGIC: &[u8; 4] = b"SCIX";
 

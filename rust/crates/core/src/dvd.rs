@@ -284,7 +284,7 @@ pub fn titles(vol: &mut Volume) -> Result<Vec<Title>> {
         };
         let entries: Vec<usize> = parts.iter().map(|&(_, pgn)| pgn).collect();
         passed_over |= pgc.cells.is_empty();
-        out.extend(pieces(vol, vts, i + 1, pgc, &entries, &set.ifo));
+        out.extend(pieces(vol, vts, i + 1, pgc, &entries, set));
     }
     if out.is_empty() && passed_over {
         // See [`read_pgc`].
@@ -307,7 +307,7 @@ fn pieces(
     number: usize,
     pgc: &Pgc,
     entries: &[usize],
-    ifo: &[u8],
+    set: &TitleSet,
 ) -> Vec<Title> {
     let runs = runs_of(vol, vts, pgc);
     let parts = runs.len();
@@ -331,7 +331,7 @@ fn pieces(
             // other kind. The sum stays as the fallback for a pack that will
             // not read, or one so far from the sum that it is not this run's
             // clock at all.
-            let chapters = entries
+            let mut chapters: Vec<f64> = entries
                 .iter()
                 .filter_map(|&pgn| pgc.programs.get(pgn.checked_sub(1)?).copied())
                 .filter(|&cell| cell > run.from && cell <= run.to)
@@ -351,6 +351,12 @@ fn pieces(
                     }
                 })
                 .collect();
+            // In the order they are shown and each once, as a Blu-ray's are:
+            // the table of parts is walked in its own order, and an index
+            // that lists a program twice, or out of turn, gave a chapter list
+            // that went backwards.
+            chapters.sort_by(f64::total_cmp);
+            chapters.dedup_by(|a, b| (*a - *b).abs() < 0.001);
             Title {
                 number,
                 part: k + 1,
@@ -381,8 +387,8 @@ fn pieces(
                 // by the sector the row starts at, so that a track switched
                 // off here is the track left out there.
                 tracks: tracks(
-                    ifo,
-                    controls_of(ifo, Some(pgc.cells[run.from].first)).as_ref(),
+                    &set.ifo,
+                    controls_in(&set.chains, Some(pgc.cells[run.from].first)).as_ref(),
                 ),
             }
         })
@@ -786,28 +792,22 @@ fn palette_of(ifo: &[u8], first: Option<u64>) -> Option<crate::vobsub::Palette> 
 /// chain that does not play the title says nothing about it, and `None` is
 /// the numbering every name had before the chain was asked.
 fn controls_of(ifo: &[u8], first: Option<u64>) -> Option<Controls> {
+    controls_in(&program_chains(ifo).ok()?, first)
+}
+
+/// The same, of a title set's chains already read.
+///
+/// One search for both sides -- the list asks it of every row, and a cut asks
+/// [`controls_of`] of the row it is cutting -- so that the two cannot name a
+/// track differently. Read once per title set rather than once per row: a
+/// title set of 999 chains, each of a few hundred cells that jump about, was
+/// a minute of re-reading the same index to draw the list.
+fn controls_in(chains: &[Pgc], first: Option<u64>) -> Option<Controls> {
     let first = first?;
-    let table_at = u32be(ifo, 0xcc) as usize * SECTOR as usize;
-    let table = ifo.get(table_at..)?;
-    // Asked once a row, so held to the chains a title could play; see
-    // [`program_chains`].
-    let count = (u16be(table, 0) as usize).min(999);
-    for i in 0..count {
-        let at = 8 + i * 8;
-        let Some(entry) = table.get(..at + 8) else { break };
-        let start = u32be(entry, at + 4) as usize;
-        let Some(pgc) = table.get(start..).and_then(read_pgc) else {
-            continue;
-        };
-        if pgc
-            .cells
-            .iter()
-            .any(|c| c.first <= first && first <= c.last)
-        {
-            return Some(pgc.controls);
-        }
-    }
-    None
+    chains
+        .iter()
+        .find(|pgc| pgc.cells.iter().any(|c| c.first <= first && first <= c.last))
+        .map(|pgc| pgc.controls.clone())
 }
 
 /// What a title set says it carries.

@@ -472,6 +472,22 @@ impl IndexSource for DiscIndex {
                     .map(|t| t + video.frame_duration())
             })
             .flatten();
+        // **Where it has one, the container's length is libavformat's guess
+        // off the stream's last timestamps, and it can be a picture short.**
+        // On an H.264 clip with a deep B pyramid the last picture shown is
+        // not among the last few to arrive, and the guess came out 39.973 s
+        // for pictures that run to 40.007 s: a clip joined to another lost
+        // its last picture and a frame of its sound at the junction, where
+        // the walk over the same clip kept them. So the tail of the clip is
+        // read from its last entry point, and the last picture there stands
+        // as the end the walk would have given -- only ever making the
+        // length longer (see `assemble`). Not asked where the container has
+        // no length: the floor above is what those clips (a recorder's,
+        // whose clock restarts) have always been planned on.
+        let end = match end {
+            None if told => tail_end(&mut ictx, video, start_time, &points),
+            end => end,
+        };
         // What the map cannot say: how much the pictures weigh. Read at a
         // few dozen places rather than guessed at. See [`sample_bit_rate`].
         let bit_rate = sample_bit_rate(&mut ictx, video, &points);
@@ -820,6 +836,81 @@ fn covers(times: &[f64], duration: Option<f64>) -> Result<()> {
         }
     }
     Ok(())
+}
+
+/// How far past a clip's last entry point [`tail_end`] reads before giving
+/// up: several seconds of the fastest disc stream, where the last GOP is a
+/// second or two.
+const TAIL_LIMIT: u64 = 96 << 20;
+
+/// Where the pictures of a clip on a disc end: the last one shown after its
+/// last entry point, plus its frame, as [`walk`] has it -- the second field
+/// of a pair is the first's other half, not a picture of its own. Read from
+/// that entry point's byte to the end of the clip. `None` where the read
+/// does not get there whole: a seek that fails, an error, a tail longer than
+/// [`TAIL_LIMIT`].
+fn tail_end(
+    ictx: &mut ff::format::context::Input,
+    video: &VideoInfo,
+    start_time: f64,
+    points: &[AccessPoint],
+) -> Option<f64> {
+    let last = points.iter().filter(|p| p.pos >= 0).max_by_key(|p| p.pos)?;
+    let from = last.pos as u64;
+    unsafe {
+        if ff::ffi::av_seek_frame(ictx.as_mut_ptr(), -1, from as i64, ff::ffi::AVSEEK_FLAG_BYTE) < 0 {
+            return None;
+        }
+    }
+    let codec = video.codec.as_str();
+    let framing = video.framing;
+    let mut shape = video.field_shape;
+    let mut half_open = false;
+    let mut opened = false;
+    let mut shown = f64::NEG_INFINITY;
+    let mut reading = ictx.read_packets();
+    for (s, p) in reading.by_ref() {
+        if p.position() >= 0 && (p.position() as u64) < from {
+            continue;
+        }
+        if p.position() >= 0 && p.position() as u64 - from > TAIL_LIMIT {
+            return None;
+        }
+        if s.index() != video.stream_index {
+            continue;
+        }
+        // From the entry point's own picture, which is where a pair of
+        // fields can be counted from.
+        if !opened {
+            if !p.is_key() {
+                continue;
+            }
+            opened = true;
+        }
+        let second_half = video.field_shape.is_some() && {
+            if let Some(restated) =
+                p.data().and_then(|d| bitstream::restated_field_shape(codec, d, framing))
+            {
+                shape = restated;
+            }
+            let field = p
+                .data()
+                .is_some_and(|d| bitstream::is_field_picture(d, codec, framing, shape.as_ref()));
+            let second = field && half_open;
+            half_open = field && !second;
+            second
+        };
+        if second_half {
+            continue;
+        }
+        if let Some(pts) = p.pts() {
+            shown = shown.max(pts as f64 * video.time_base - start_time);
+        }
+    }
+    if reading.finished().is_err() {
+        return None;
+    }
+    shown.into_finite().map(|t| t + video.frame_duration())
 }
 
 /// `f64::max` over an empty run gives negative infinity, which is not an

@@ -219,6 +219,9 @@ fn pictures_afresh(
     let mut fed = 0i64;
     let mut span = Span::default();
     let mut damaged = 0usize;
+    // Whether the decoder has taken a key picture of this read yet; see
+    // where `damaged` is counted.
+    let mut keyed = false;
     let mut past_end = false;
     // The instant the range stops asking for pictures. A range may be asked
     // for past where the recording stops, and a last picture written out to
@@ -393,11 +396,19 @@ fn pictures_afresh(
             continue;
         }
         // A packet the decoder will not take is not a reason to stop; see
-        // [`reencode_segment`], where the same is said at more length.
+        // [`reencode_segment`], where the same is said at more length --
+        // and counted on the same terms: a packet of the run-up the seek
+        // lands in, before any key picture, can be refused only for naming
+        // parameter sets that arrive with the key picture after it, and costs
+        // this range nothing.
         if decoder.send_packet(&packet).is_err() {
-            damaged += 1;
+            let at = packet.pts().or(packet.dts()).map(|p| p as f64 * in_tb - src.start_time);
+            if keyed || at.is_none_or(|t| t >= seg.start - slack) {
+                damaged += 1;
+            }
             continue;
         }
+        keyed |= packet.is_key();
         feed!();
     }
     packets.finished()?;

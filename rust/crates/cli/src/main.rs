@@ -2792,21 +2792,52 @@ fn run() -> Result<()> {
         fade_out: join_fade_out,
         fade_in: join_fade_in,
     };
-    let mut reels = vec![smartcut_core::cut::Reel {
-        src: &src,
-        plans: &plans,
-        after: between.clone(),
-    }];
-    for (s, p) in joined_src.iter().zip(&joined_plans) {
-        reels.push(smartcut_core::cut::Reel {
-            src: s,
-            plans: p,
-            after: between.clone(),
-        });
+    let mut afters = vec![between.clone(); joined_src.len() + 1];
+    if let Some(last) = afters.last_mut() {
+        *last = Default::default();
     }
-    if let Some(last) = reels.last_mut() {
-        last.after = Default::default();
+    // And the entry points a transition plans around. A crossing writes the
+    // last seconds of the clip before it and the first of the clip after it
+    // afresh, and the rest of each of those ranges is planned again to end
+    // or begin where the crossing does -- seconds inside the range, where
+    // nothing above measured the points: it measured only around the ends
+    // asked for. Where those instants are is the engine's answer
+    // (`cut::transition_bounds`, the one `cut::ranges_with_transitions`
+    // plans on), taken from the plans the reels are handed below.
+    if between.happens() && !joined_src.is_empty() {
+        let all_plans: Vec<&[smartcut_core::RangePlan]> = std::iter::once(plans.as_slice())
+            .chain(joined_plans.iter().map(Vec::as_slice))
+            .collect();
+        let bounds = smartcut_core::cut::transition_bounds(&all_plans, &afters);
+        for (s, at) in std::iter::once(&mut src).chain(joined_src.iter_mut()).zip(&bounds) {
+            if !s.leading_known && !at.is_empty() {
+                let at: Vec<(f64, f64)> = at.iter().map(|&t| (t, t)).collect();
+                index::refine_leading(
+                    &s.input.url.clone(),
+                    &s.video.clone(),
+                    s.start_time,
+                    s.byte_seekable,
+                    &mut s.points,
+                    &at,
+                    &s.joins.clone(),
+                )?;
+            }
+        }
     }
+    // The master again, as above, now that its points may have been measured.
+    let shaped_like = match master {
+        0 => &src,
+        n => joined_src.get(n - 1).unwrap_or(&src),
+    };
+    let reels: Vec<smartcut_core::cut::Reel> = std::iter::once((&src, &plans))
+        .chain(joined_src.iter().zip(&joined_plans))
+        .zip(&afters)
+        .map(|((src, plans), after)| smartcut_core::cut::Reel {
+            src,
+            plans,
+            after: after.clone(),
+        })
+        .collect();
     if between.happens() && reels.len() > 1 {
         tell!(
             "        {} between the clips, {:.2}s",

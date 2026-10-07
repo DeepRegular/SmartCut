@@ -297,6 +297,22 @@ pub fn write(
             from.display()
         );
     }
+    // Nor over an image of another disc, or over anything that is not an
+    // image of this one. A disc is added to, but a disc whose folder
+    // `--iso-only` took away lives on only in its image: the next run into a
+    // folder of that name -- the series name, which is what the window calls
+    // it -- started a disc afresh at 00001 and wrote its image over the last
+    // one, and every recording that was on it went. A file there that is no
+    // disc of recordings at all -- another disc's image, somebody's own file
+    // that happens to have the name -- is not this program's to replace
+    // either.
+    if let Some(why) = not_this_disc(from, to) {
+        bail!(
+            "{} is already there and {why}: written over, it would be lost. Move it away, or \
+             write the disc into another folder",
+            to.display()
+        );
+    }
     let mut part = to.as_os_str().to_owned();
     part.push(".part");
     let part = PathBuf::from(part);
@@ -316,6 +332,75 @@ pub fn write(
             Err(e)
         }
     }
+}
+
+/// Why what is already at `to` is not an image of the disc in `from` as it
+/// is now -- grown since or not -- if it is not.
+///
+/// A recording is its stream and its clip index, and neither changes once
+/// the disc has it: an image made again of a disc that has grown holds every
+/// one of them as the folder does, and an image of some other disc -- or of
+/// this folder before it was taken away and started again -- does not. The
+/// clip index is compared byte for byte, because two streams of different
+/// recordings can come to the same whole number of the unit a stream is
+/// rounded to. What is not a UDF image, or holds nothing of a disc of
+/// recordings, is not one either.
+///
+/// **What an image holds outside `BDAV` is not asked about.** An image
+/// written before images held the disc alone took the whole folder the disc
+/// was written into -- the recordings it was cut from, notes, whatever was
+/// there -- and those come and go in the folder as they always did. Held to
+/// them, growing such a disc was refused, after the cut, for every file
+/// somebody had since changed or deleted beside it, though the disc itself
+/// had lost nothing; and they were never the disc.
+///
+/// Nothing there, a link to nothing, or a folder (the rename refuses that
+/// itself) is `None`.
+fn not_this_disc(from: &Path, to: &Path) -> Option<String> {
+    // A link that leads nowhere is replaced, not followed: nothing is lost.
+    if std::fs::metadata(to).ok()?.is_dir() {
+        return None;
+    }
+    let what = || "is not an image of a disc of recordings".to_string();
+    let Ok(mut old) = crate::udf::Image::open(to) else {
+        return Some(what());
+    };
+    let in_bdav = |path: &str| path.to_ascii_uppercase().starts_with("BDAV/");
+    if !old.files().iter().any(|e| in_bdav(&e.path)) {
+        return Some(what());
+    }
+    let mut held: Vec<crate::udf::Entry> = old
+        .files()
+        .iter()
+        .filter(|e| {
+            let up = e.path.to_ascii_uppercase();
+            up.starts_with("BDAV/STREAM/") || up.starts_with("BDAV/CLIPINF/")
+        })
+        .cloned()
+        .collect();
+    // A stream named first where one differs: it is the recording.
+    held.sort_by_key(|e| !e.path.to_ascii_uppercase().starts_with("BDAV/STREAM/"));
+    for e in held {
+        let here = e.path.split('/').fold(from.to_path_buf(), |at, part| at.join(part));
+        let same = match std::fs::metadata(&here) {
+            Ok(m) if m.is_file() && m.len() == e.size => {
+                !e.path.to_ascii_uppercase().starts_with("BDAV/CLIPINF/")
+                    || old
+                        .read(&e)
+                        .ok()
+                        .is_some_and(|was| std::fs::read(&here).is_ok_and(|now| was == now))
+            }
+            _ => false,
+        };
+        if !same {
+            return Some(format!(
+                "holds {}, which the disc in {} does not have as it is now",
+                e.path,
+                from.display()
+            ));
+        }
+    }
+    None
 }
 
 fn write_to(
@@ -1729,6 +1814,67 @@ mod tests {
         std::fs::remove_dir_all(at.join("BDAV")).unwrap();
         assert!(write(&at, &image, Revision::V250, Access::ReadOnly, "x", None).is_err());
         assert!(!image.exists());
+        let _ = std::fs::remove_dir_all(&at);
+    }
+
+    /// An image is made again of a disc that has grown, and never written
+    /// over with a disc that lacks what it held: `--iso-only` twice into one
+    /// folder replaced the first disc's only copy with the second's.
+    #[test]
+    fn an_image_of_another_disc_is_not_written_over() {
+        let at = std::env::temp_dir().join(format!("udfw-over-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&at);
+        let disc = |clips: &[(&str, &[u8])]| {
+            let _ = std::fs::remove_dir_all(&at);
+            for dir in ["STREAM", "CLIPINF"] {
+                std::fs::create_dir_all(at.join("BDAV").join(dir)).unwrap();
+            }
+            std::fs::write(at.join("BDAV").join("info.bdav"), b"x").unwrap();
+            for (clip, index) in clips {
+                std::fs::write(at.join("BDAV/STREAM").join(format!("{clip}.m2ts")), [0u8; 192]).unwrap();
+                std::fs::write(at.join("BDAV/CLIPINF").join(format!("{clip}.clpi")), index).unwrap();
+            }
+        };
+        let image = PathBuf::from(format!("{}.iso", at.display()));
+        let _ = std::fs::remove_file(&image);
+        disc(&[("00001", b"first")]);
+        write(&at, &image, Revision::V250, Access::ReadOnly, "x", None).unwrap();
+        // The same disc with a second recording on it: made again.
+        std::fs::write(at.join("BDAV/STREAM/00002.m2ts"), [0u8; 192]).unwrap();
+        std::fs::write(at.join("BDAV/CLIPINF/00002.clpi"), b"second").unwrap();
+        std::fs::write(at.join("BDAV").join("info.bdav"), b"xy").unwrap();
+        write(&at, &image, Revision::V250, Access::ReadOnly, "x", None).unwrap();
+        // The folder started again, its first recording as long as the old
+        // one: refused, and the image is what it was.
+        disc(&[("00001", b"third")]);
+        let e = write(&at, &image, Revision::V250, Access::ReadOnly, "x", None).unwrap_err();
+        assert!(e.to_string().contains("BDAV/STREAM/00002.m2ts"), "{e}");
+        let held = crate::udf::Image::open(&image).unwrap();
+        assert!(held.find("BDAV/STREAM/00002.m2ts").is_some());
+        // And where only the clip index tells the two recordings apart.
+        disc(&[("00001", b"first")]);
+        let _ = std::fs::remove_file(&image);
+        write(&at, &image, Revision::V250, Access::ReadOnly, "x", None).unwrap();
+        disc(&[("00001", b"fifth")]);
+        let e = write(&at, &image, Revision::V250, Access::ReadOnly, "x", None).unwrap_err();
+        assert!(e.to_string().contains("BDAV/CLIPINF/00001.clpi"), "{e}");
+        // And nothing that is not an image of a disc of recordings at all:
+        // somebody's own file, kept as it was.
+        std::fs::write(&image, b"not a disc").unwrap();
+        let e = write(&at, &image, Revision::V250, Access::ReadOnly, "x", None).unwrap_err();
+        assert!(e.to_string().contains("not an image of a disc"), "{e}");
+        assert_eq!(std::fs::read(&image).unwrap(), b"not a disc");
+        // An image of a disc with no recording on it yet (BDAV/info.bdav
+        // alone) has nothing to lose: written over.
+        let other = at.with_file_name(format!("udfw-over-other-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&other);
+        std::fs::create_dir_all(other.join("BDAV")).unwrap();
+        std::fs::write(other.join("BDAV").join("info.bdav"), b"x").unwrap();
+        let _ = std::fs::remove_file(&image);
+        write(&other, &image, Revision::V250, Access::ReadOnly, "x", None).unwrap();
+        let _ = std::fs::remove_dir_all(&other);
+        write(&at, &image, Revision::V250, Access::ReadOnly, "x", None).unwrap();
+        let _ = std::fs::remove_file(&image);
         let _ = std::fs::remove_dir_all(&at);
     }
 

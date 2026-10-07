@@ -687,19 +687,20 @@ impl Open {
                 }
             };
         // A leading reference picture that marks the buffer itself does
-        // what the cut, without it, does not. Where all it unmarks is from
-        // before the entry point, the cut still holds those -- older than
-        // everything after the I, so the window takes them first and no list
-        // of a picture after it is changed by them, and the one place the
-        // frame inferred instead takes from the window is theirs. Anything
-        // else it unmarks, the cut does not: needed.
-        if leading && pic.reference {
-            if let Some(ops) = &pic.marking {
-                if ops.iter().any(|&(op, diff)| op != 1 || self.names_held(pic, diff)) {
-                    self.verdict = Some(false);
-                    return;
-                }
-            }
+        // what the cut, without it, does not -- **even where all it unmarks
+        // is from before the entry point.** The cut still holds what it
+        // unmarked (a frame inferred for its own gap, in a cut), and a held
+        // picture older than the I is not out of the way: by order count it
+        // stands below everything after the I, so in a B picture's list 0 it
+        // comes in front of every picture shown after that B, and a list 0
+        // with nothing below the B left in it is no longer the list 1 it was
+        // the same as (the swap of 8.2.4.2.3). A trailing B reference that
+        // unmarked the I, and the B after it on its default lists: in the
+        // cut its list 0 began with the old frame, and it came out wrong.
+        // So any marking of its own: needed.
+        if leading && pic.reference && pic.marking.is_some() {
+            self.verdict = Some(false);
+            return;
         }
 
         // Gaps in frame_num, as 8.2.5.2 infers them.
@@ -881,23 +882,6 @@ impl Open {
             second,
             leading,
         });
-    }
-
-    /// Whether `memory_management_control_operation` 1 with this
-    /// difference names anything held here.
-    fn names_held(&self, pic: &Picture, diff: u32) -> bool {
-        let cur = pic.frame_num;
-        let current = if pic.field { 2 * i64::from(cur) + 1 } else { i64::from(cur) };
-        let x = current - (i64::from(diff) + 1);
-        let parity = usize::from(pic.bottom);
-        self.dpb.iter().any(|f| {
-            let w = self.wrap(f.frame_num, cur);
-            if !pic.field {
-                w == x && f.held()
-            } else {
-                (2 * w + 1 == x && f.marked[parity]) || (2 * w == x && f.marked[1 - parity])
-            }
-        })
     }
 
     /// `memory_management_control_operation` 1.
@@ -1443,25 +1427,39 @@ mod tests {
         assert_eq!(verdict(4, &[(7.0, p), (5.0, b)], true), Some(true));
     }
 
-    /// A leading reference that unmarks the I does what the cut does not;
-    /// one that unmarks only what came before the entry point does what the
-    /// cut need not.
+    /// A leading reference that marks the buffer does what the cut does not
+    /// -- whatever it unmarks. One that unmarks only what came before the
+    /// entry point leaves that held in the cut, below everything after the
+    /// I: a B picture shown just after the I, once a trailing B reference
+    /// has unmarked the I, has nothing below it in the recording and that
+    /// old frame in front of its list 0 in the cut (and its list 1 no longer
+    /// swapped). Found by editing an x264 stream's headers into this shape;
+    /// decoded with and without the leading pictures, that B differed.
     #[test]
-    fn a_leading_reference_that_marks_the_buffer_is_needed_unless_it_is_the_past() {
-        let with = |diff: u32| {
+    fn a_leading_reference_that_marks_the_buffer_is_needed() {
+        let with = |diff: Option<u32>| {
             let mut packets = vec![(true, Some(4.0), key(4))];
-            packets.push((false, Some(2.0), s(6, true, 1, 4).active(1, 1).unmark(&[diff]).bytes()));
+            let mut lead = s(6, true, 1, 4).active(1, 1);
+            if let Some(d) = diff {
+                lead = lead.unmark(&[d]);
+            }
+            packets.push((false, Some(2.0), lead.bytes()));
             packets.push((false, Some(3.0), s(6, false, 2, 6).active(1, 1).bytes()));
             // The first P unmarks the leading B (2 - 1), as a recorder's does.
             packets.push((false, Some(7.0), p_on_the_i().unmark(&[0]).bytes()));
-            packets.push((false, Some(5.0), b_on_i_and_p().bytes()));
+            // A B reference that unmarks the I (CurrPicNum 3, the I 0).
+            packets.push((false, Some(5.5), s(6, true, 3, 12).active(1, 1).unmark(&[2]).bytes()));
+            // And a B on its default lists, shown before both that is left.
+            packets.push((false, Some(4.5), s(6, false, 4, 10).active(1, 1).bytes()));
             packets.push((true, Some(20.0), key(4)));
             run(&packets, true)
         };
         // CurrPicNum 1: difference 0 is the I (0).
-        assert_eq!(with(0), Some(false));
+        assert_eq!(with(Some(0)), Some(false));
         // Difference 3 is frame_num 253 of the 256: from before the I.
-        assert_eq!(with(3), Some(true));
+        assert_eq!(with(Some(3)), Some(false));
+        // Marking nothing itself, it leaves nothing behind in the cut.
+        assert_eq!(with(None), Some(true));
     }
 
     #[test]
