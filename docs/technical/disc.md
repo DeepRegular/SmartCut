@@ -981,10 +981,14 @@ planner makes afterwards, so the point a range begins at there was never
 asked, and an index that did not read the pictures says every point is safe.
 On a recorder's stream that is often not so: a walk over one of these clips
 calls 5,440 of its 5,444 entry points open with referenced leading pictures.
-Copied from one of those, a decoder shows nothing until it recovers. Measured
-over a whole title: nothing at two of its four seams, 0.067 seconds at the
-third and **0.734 at the fourth** — the packets are written, the pictures are
-simply not ones a decoder will put on screen.
+(That count is the reference flag's. Since 2026-10-07 `leadrefs` builds the
+reference lists of the pictures after each entry point, and on a recorder's
+field-coded BD-RE a leading reference that only the other leading picture uses no
+longer bars a copy; this clip has not been walked again, so the figures here are
+as measured then.) Copied from one of those, a decoder shows nothing until it
+recovers. Measured over a whole title: nothing at two of its four seams, 0.067
+seconds at the third and **0.734 at the fourth** — the packets are written, the
+pictures are simply not ones a decoder will put on screen.
 
 Honouring the measurement at the seams is the obvious answer and is not taken,
 because on this material it is not a small price: a copy can only resume about

@@ -17,7 +17,7 @@ bit-exact.
 | H.264 interval shorter than a GOP | 0/21 — falls back to a full re-encode |
 | HEVC | 300/342 (87.7%) |
 | H.264 29.97 fps | 300/342 (87.7%) |
-| H.264 open GOP (referenced leading pictures) | 0/342 — rejected as a start point, which is the correct behaviour |
+| H.264 open GOP (referenced leading pictures) | 0/342 — rejected as a start point: an MP4 with its parameter sets only in `avcC`, so judged by the reference flag alone ([pitfall 3](algorithm.md#3-leading-pictures--the-heart-of-the-open-gop-problem)) |
 | **MPEG-2 TS open GOP** | **328/342 (95.9%)** |
 | MPEG-2 TS multiple intervals | 296/300 (98.7%) |
 | MPEG-2 TS through to the end | 447/449 (99.6%) |
@@ -285,18 +285,27 @@ These only surfaced on real material:
   Matroska and MPEG-TS reject it, which is why MKV output is remuxed via MP4. From the
   second frame on the spacing is perfectly uniform. This does not happen in the libav
   implementation, which assigns PTS/DTS per packet itself.
-- **An H.264 open GOP whose leading pictures are reference pictures cannot be
-  used as a copy start point** (see [pitfall 3](algorithm.md#3-leading-pictures--the-heart-of-the-open-gop-problem)).
-  HEVC is no longer one of these: its leading pictures are barred from being
-  references for trailing pictures, so a copy may start at any of its entry points.
-  This is inherent: avoiding it would mean keeping the leading pictures in the
-  bitstream and hiding them with an edit list, which the elementary-stream
-  concatenation approach cannot express. It is a non-issue on material with regular
-  IDRs, which covers most broadcast H.264.
+- **An H.264 open GOP whose leading pictures are needed by what follows them
+  cannot be used as a copy start point** (see [pitfall 3](algorithm.md#3-leading-pictures--the-heart-of-the-open-gop-problem)).
+  A leading picture that is a reference is not needed by that alone. Where the
+  parameter sets travel in band (a transport stream, or an MP4 or Matroska file
+  remuxed from one), `leadrefs` builds the reference lists of the pictures after
+  the entry point, and drops the leading pictures where none of them is named and
+  the frame the cut's decoder infers for the `frame_num` gap cannot enter a kept B
+  picture's lists. An MP4 or Matroska file with its parameter sets only in `avcC`,
+  and any stream it cannot follow, is still judged by the reference flag, so there
+  every leading reference picture counts as needed. HEVC is no longer one
+  of these: its leading pictures are barred from being references for trailing
+  pictures, so a copy may start at any of its entry points. Where the pictures
+  really are needed, this is inherent: avoiding it would mean keeping the leading
+  pictures in the bitstream and hiding them with an edit list, which the
+  elementary-stream concatenation approach cannot express. It is a non-issue on
+  material with regular IDRs, which covers most broadcast H.264.
 - **A seam between two reels of a join with no transition is not renumbered**
   (see [pitfall 10](algorithm.md#10-the-picture-order-counts-either-side-of-a-splice-are-not-one-anothers)).
   Within one recording, a re-encoded head followed by a copy that opens on a
-  non-IDR I has its picture order counts moved along where they would run backwards,
+  non-IDR I has its picture order counts moved along where they would run backwards
+  or leave the frames a decoder invents for the `frame_num` gap above the copy's I,
   so libavcodec no longer drops the copy's first pictures. Where one reel's copy meets
   the next reel's with nothing re-encoded between them, nothing is rewritten. HEVC,
   whose CRA entry points could meet the same thing, has not been tried.

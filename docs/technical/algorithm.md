@@ -88,8 +88,9 @@ itself a reference picture**:
 - **MPEG-2**: B pictures are never referenced, so leading pictures can simply be
   dropped. Even an open GOP works as a copy start point.
 - **H.264** (x264's `open-gop` and equivalents): B pyramids mean a leading picture can
-  be a reference picture. Drop it and every later frame that referenced it breaks,
-  taking the whole GOP with it.
+  be a reference picture. Drop one that a later frame predicts from and that frame
+  breaks, taking the rest of the GOP with it. Being a reference does not by itself
+  mean anything after the entry point uses it, though; see below.
 - **HEVC**: leading pictures are RADL and RASL, and the standard forbids either from
   being a reference for the trailing pictures of the same entry point. So they can
   always be dropped, whatever the encoder did — and RASL pictures *must* be, since
@@ -108,14 +109,68 @@ itself a reference picture**:
   treats every picture as a reference. The only cost of that is losing the chance to
   start a copy at an open GOP.
 
-This was confirmed by measurement. Dropping leading pictures on x264 open-gop
-material made all 60 frames of the first GOP of the copy region mismatch; keeping
-them, they matched.
-
 So SmartCut reads `nal_ref_idc` (H.264), the NAL type (HEVC) or `picture_coding_type`
-(MPEG-2) out of the bitstream to decide whether the picture is referenced, and if it
-is, that point is not used as a copy start point. As a copy *end* point an open GOP
-is fine either way — the display range simply ends at `lead_start`.
+(MPEG-2) out of the bitstream to tell whether a leading picture is a reference at
+all. Where none is, the point is a copy start point. For H.264 a leading reference
+picture no longer settles it. [`leadrefs`](../../rust/crates/core/src/leadrefs.rs)
+answers it the way a decoder would have to: it follows the short-term reference
+pictures from the entry point on (sliding window, `frame_num` gaps,
+`memory_management_control_operation` 1) and builds the reference lists of every
+slice of every picture that is not a leading one, as 8.2.4 of the standard does —
+the initial order, the field alternation, the modifications, the active length.
+
+**Nothing naming a leading picture is not enough, because the cut is not the
+recording.** Dropping a leading reference picture leaves a gap in `frame_num`, and
+the cut's decoder infers a frame to fill it. That frame takes the dropped picture's
+slot in the sliding window and in a P picture's list, but its order count is the
+decoder's choice and lands above the I, so it enters a B picture's *default* lists
+where the dropped picture never stood. So the leading pictures are dropped only
+where all of these hold:
+
+- No list of a kept picture names a leading picture while it is still held.
+- While a leading reference picture, or a frame inferred after one, is held, every
+  B slice the copy keeps names every active entry of both its lists through
+  `ref_pic_list_modification`. A list left at its default, even partly, makes the
+  point needed.
+- A leading reference picture's `memory_management_control_operation`, if any, is
+  operation 1 and unmarks only pictures from before the entry point.
+- No leading reference field is held without its other field.
+- The key picture itself is a reference picture.
+
+Every doubt is answered "needed", which is the flag's old answer: long-term
+references, any other memory management operation, `pic_order_cnt_type` 1, a
+parameter set it has not been shown, a slice it cannot read, or a point still
+undecided after a thousand pictures. Only H.264 whose parameter sets travel in band
+is followed. A transport stream or `.m2ts` always qualifies, and so does an MP4 or
+Matroska file remuxed from one, which keeps its SPS and PPS in the key packets. An
+MP4 or Matroska file whose parameter sets live only in `avcC` keeps the flag's
+answer. The index stores the answer per entry point (`seek_index::VERSION` 13).
+
+The B-list condition was found the hard way. A first version without it marked
+entry points droppable on a clip shaped like a pressed Blu-ray's (23.976p H.264:
+an I, a leading B that is a reference, a leading B that is not). The trailing B
+named the I explicitly in list 0 but left list 1 at its default length, and the
+cut failed `--verify`: two frames off, 16.2 dB. The condition rejects it.
+
+The prototype once measured the opposite of all this: dropping the leading pictures
+of x264 open-gop material made all 60 frames of the copy's first GOP mismatch, and
+keeping them made them match. That has not been reproduced. Twenty x264 transport
+stream variants were tried (b-pyramid normal and strict, 16 references, 8 and 16 B
+frames, MBAFF top and bottom field first, bluray-compat with 4 slices, weightp 2 and
+others), each with the leading pictures cut out and decoded from the key, and none
+of them came out wrong. The case that does fail is the one above, which the rule now
+rejects.
+
+The material that needed it is a recorder's field-coded BD-RE. Each GOP has two
+leading B frames in front of its I, and the first is a reference for the second and
+for nothing else: the P pictures name the I's fields through an explicit reordering
+that steps over the pair, and the trailing B pictures' lists are too short to
+reach back past the I. Judged by the flag, no entry point of such a recording could
+start a copy, so each range's head was re-encoded up to the first point nobody had
+read. Titles of that disc went from 90–111 seconds of re-encoding to 5.5–10.
+
+As a copy *end* point an open GOP is fine either way — the display range simply ends
+at `lead_start`.
 
 Removing leading pictures cannot be expressed in the container (it would need an edit
 list), so the Annex-B access unit boundaries are parsed by hand and the pictures cut
@@ -225,9 +280,19 @@ and on the recorder's disc two apart still left 2 of 718 copied frames wrong. Th
 differences between the head's own pictures stay what they were, and the copy is
 not touched.
 
+**In order is not enough; clear of the invented frames is the test.** A copy that
+already came after the head used to be let through as it was, and the margin was
+never checked: a range opening on an entry point whose leading pictures are dropped,
+after a head of a dozen pictures, had its two B frames predicted from invented
+frames (`--verify`: 2 of 1183 copied frames differ, 28.5 dB). So the shift is chosen
+in this order: clear at the field's own width, clear at a byte wider, and only then
+merely in order. A copy that is already in order and cannot be made clear is left
+as it is.
+
 The field is sometimes too narrow to say it. x264 writes as few bits of order as its
 own pictures need: on the recorder's disc, where the head is MBAFF, four against the
-recording's eight; there the head's SPS widens
+recording's eight, which cannot reach more than eight frames ahead. Where only a
+wider field makes the copy clear, the head's SPS widens
 `log2_max_pic_order_cnt_lsb` by 8 and every head slice's field grows by a byte. A
 whole byte, because an arithmetic-coded slice starts its data on a byte boundary, and
 moving everything after the field by exactly one byte keeps that boundary without
@@ -239,8 +304,9 @@ picture, so the writer holds every write to the muxer — sound included — fro
 start of the head until that picture arrives, and lets them go in the order they
 were made; a cut that needs no renumbering is byte-identical to one made without any
 of this. An earlier attempt (2026-09-09) rewrote the head's counts unconditionally,
-made things worse, and was dropped; this one acts only where the reversal is derived,
-and was measured never to lower a decoded count. Not covered: the seam between two
+made things worse, and was dropped; this one acts only where the reversal, or an
+invented frame above the copy's I, is derived, and was measured never to lower a
+decoded count. Not covered: the seam between two
 reels of a join with no transition, and HEVC, whose CRA entry points have not been
 tried.
 

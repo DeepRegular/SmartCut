@@ -18,7 +18,9 @@ prototype's approach of shelling out to ffmpeg:
 
 - Timestamps are assigned by us, so the seam problem disappears by construction.
 - `nal_ref_idc` can be read straight off the packet, so the reference test does not
-  have to sample one place in the file and assume the rest
+  have to sample one place in the file and assume the rest; for H.264 whose
+  parameter sets travel in band, the reference lists of the pictures that follow can
+  be built during the same scan as well
   ([pitfall 3](algorithm.md#3-leading-pictures--the-heart-of-the-open-gop-problem)).
 - No intermediate files, and no repeated ffprobe passes.
 

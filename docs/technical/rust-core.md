@@ -264,6 +264,14 @@ place in the file and applied the result to the whole thing**.
 In Rust, `nal_ref_idc` can be read while the packets are already being scanned, so the
 test is **evaluated exactly, per access point**. No extra pass, and no extra cost.
 
+The flag has since stopped being the last word for H.264 whose parameter sets
+travel in band. [`leadrefs`](../../rust/crates/core/src/leadrefs.rs) follows the
+reference buffer from each entry point during the same scan and builds the
+reference lists of the pictures after it, so a leading reference picture that only
+other leading pictures predict from no longer bars a copy by itself. The conditions,
+including the one the `frame_num` gap adds, are in
+[pitfall 3](algorithm.md#3-leading-pictures--the-heart-of-the-open-gop-problem).
+
 ## MPEG-2: the encoder that decodes nothing
 
 `rust/crates/mpeg2` is unlike anything else here. It is neither a decoder nor
