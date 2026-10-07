@@ -257,6 +257,15 @@ fn run(
         setup.frame_as = None;
     }
     let fades = fade_lengths(pieces, opts);
+    // TrueHD (and MLP) frames are read against the last major sync, so a
+    // range copied on from anywhere else is decoded against a header from
+    // another part of the recording: noise, or frames thrown away. The
+    // picture writer waits for a sync at the head of every range after the
+    // first (`need_sync` in [`crate::cut`]); without the same wait here a
+    // sound-only .mka of a Blu-ray's TrueHD failed to decode for a stretch
+    // at every seam.
+    let joins_at_sync = setup.mode != AudioMode::Reencode
+        && matches!(setup.target, ff::codec::Id::TRUEHD | ff::codec::Id::MLP);
 
     let mut octx = ff::format::output(&*crate::input::as_output(output)).map_err(|e| anyhow!("{output}: {e}"))?;
     // Which way round this container writes samples. `carriage` answers for
@@ -578,6 +587,7 @@ fn run(
                 &mut octx,
                 Clock { tb: out_tb, rate: out_rate, frame_secs: setup.frame_secs },
                 written,
+                joins_at_sync && at > 0,
             )?;
             ranges_done += 1;
             say(ranges_done);
@@ -640,6 +650,7 @@ fn take_range(
     octx: &mut ff::format::context::Output,
     clock: Clock,
     mut written: f64,
+    mut need_sync: bool,
 ) -> Result<f64> {
     let mut ictx = crate::input::demux(&src.input.url)?;
     // Half a second before the range, so the frame it opens on has been
@@ -717,6 +728,16 @@ fn take_range(
             // A frame with no length is a frame there is nowhere to put:
             // what follows would land on top of it.
             continue;
+        }
+        if need_sync {
+            if !opens_on_sync(packet.data()) {
+                // Left out, but its instant is still spent, so what follows
+                // stays where the recording had it -- as the picture writer
+                // counts it.
+                written += dur;
+                continue;
+            }
+            need_sync = false;
         }
         // The frame a boundary falls inside, re-encoded beforehand with the
         // material outside the range silenced and the fade ridden over what
@@ -884,6 +905,12 @@ fn opus_samples(data: &[u8]) -> Option<i64> {
     };
     // A packet holds at most 120 ms.
     (frames > 0 && frame * frames <= 5760).then_some(frame * frames)
+}
+
+/// Whether a TrueHD or MLP frame opens on a major sync, which a range may
+/// open on. See `opens_a_truehd_track` in [`crate::cut`].
+fn opens_on_sync(data: Option<&[u8]>) -> bool {
+    data.is_some_and(|d| d.len() >= 8 && d[4..7] == [0xF8, 0x72, 0x6F] && matches!(d[7], 0xBA | 0xBB))
 }
 
 /// Write one of the recording's own frames where the sound has reached.

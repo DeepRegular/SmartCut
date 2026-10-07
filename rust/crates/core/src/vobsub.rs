@@ -1107,11 +1107,19 @@ impl Sidecar {
         out.push_str(&format!("size: {}x{}\n", self.width, self.height));
         let colours: Vec<String> = self.palette.0.iter().map(|c| format!("{c:06x}")).collect();
         out.push_str(&format!("palette: {}\n", colours.join(", ")));
-        out.push_str("langidx: 0\n");
-        for (index, s) in self.streams.iter().enumerate() {
+        // A stream's index is its substream number, not its place in this
+        // list: a reader takes the units of `index: N` from the packets whose
+        // substream is 0x20 + N, and passes every other one over. Numbered
+        // by place, a widescreen title's subtitles -- numbered by the wide
+        // field -- or a pair with a stream left out of it read back as
+        // nothing at all.
+        let index = |s: &Stream| s.id & 0x1F;
+        let first = self.streams.first().map_or(0, index);
+        out.push_str(&format!("langidx: {first}\n"));
+        for s in &self.streams {
             // Two letters is what the format takes, and a disc says three.
             let lang = s.language.as_deref().map_or_else(|| "--".to_string(), two_letters);
-            out.push_str(&format!("\nid: {lang}, index: {index}\n"));
+            out.push_str(&format!("\nid: {lang}, index: {}\n", index(s)));
             for &(at, filepos) in &s.at {
                 out.push_str(&format!(
                     "timestamp: {}, filepos: {filepos:09x}\n",
@@ -1368,6 +1376,40 @@ mod tests {
         assert!(idx.contains("id: en, index: 0"), "{idx}");
         assert!(idx.contains("id: ja, index: 1"), "{idx}");
         assert!(!side.is_empty());
+    }
+
+    /// A stream's `index` is its substream number, not its place in the
+    /// list: a reader takes the units of `index: N` from the packets whose
+    /// substream is 0x20 + N. A widescreen title numbers its subtitles by
+    /// the wide field, and a stream left out of the cut leaves a gap, so
+    /// the streams of a pair need not run 0x20, 0x21 and on.
+    #[test]
+    fn a_stream_is_indexed_by_its_substream() {
+        crate::init().expect("libav");
+        let at = std::env::temp_dir().join(format!("smartcut-idx-test-{}", std::process::id()));
+        std::fs::create_dir_all(&at).expect("a place to write");
+        let cut = at.join("cut.ts").to_string_lossy().into_owned();
+        let mut side = Sidecar::new(720, 480, Palette::grey());
+        side.declare(0x21, Some("eng".into()));
+        side.declare(0x23, Some("jpn".into()));
+        for (k, id) in [0x21u8, 0x23, 0x21, 0x23].into_iter().enumerate() {
+            side.add(id, 1.0 + k as f64, &standing(64));
+        }
+        let idx = side.index();
+        assert!(idx.contains("langidx: 1\n"), "{idx}");
+        assert!(idx.contains("id: en, index: 1\n"), "{idx}");
+        assert!(idx.contains("id: ja, index: 3\n"), "{idx}");
+        let (idx, _) = side.write(&cut).expect("writes");
+        // Read back by libavformat's own reader of the pair.
+        let mut ictx = ff::format::input(&idx).expect("opens");
+        let mut read = std::collections::HashMap::<usize, usize>::new();
+        for (stream, packet) in ictx.packets() {
+            if packet.size() > 0 {
+                *read.entry(stream.index()).or_default() += 1;
+            }
+        }
+        let _ = std::fs::remove_dir_all(&at);
+        assert_eq!(read.values().copied().collect::<Vec<_>>(), [2, 2], "{read:?}");
     }
 
     /// A picture, in the shape a decoder hands one over: four colours, one

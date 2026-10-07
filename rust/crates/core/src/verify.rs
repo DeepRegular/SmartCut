@@ -90,6 +90,14 @@ pub struct Sound {
     /// nought seconds long, and it is not reported as that. A track the cut
     /// declared and wrote nothing into is refused by the cut itself.
     pub measured: bool,
+    /// How much shorter than the pictures this track may rightly run:
+    /// [`Report::sound_short`], and with it every piece of a join whose
+    /// recording has no track in this one's place. The cut pairs a clip's
+    /// tracks with the master's by their order and leaves a gap where a
+    /// clip has fewer (see [`crate::conform::Fit::audio`]): a bilingual
+    /// recording joined with a single-track one has a second track that
+    /// stops where the first recording does, which is what was asked for.
+    pub short: f64,
 }
 
 /// What reading the output back found.
@@ -192,8 +200,9 @@ impl Report {
         self.sounds
             .iter()
             .filter(|s| s.measured)
-            .map(|s| (s.index, s.seconds - self.seconds))
-            .filter(|&(_, d)| d > SOUND_SLACK || d < -(self.sound_short + SOUND_SLACK))
+            .map(|s| (s.index, s.seconds - self.seconds, s.short))
+            .filter(|&(_, d, short)| d > SOUND_SLACK || d < -(short + SOUND_SLACK))
+            .map(|(index, d, _)| (index, d))
             .collect()
     }
 
@@ -268,15 +277,15 @@ impl Report {
                 continue;
             }
             let d = s.seconds - self.seconds;
-            let off = d > SOUND_SLACK || d < -(self.sound_short + SOUND_SLACK);
+            let off = d > SOUND_SLACK || d < -(s.short + SOUND_SLACK);
             out.push(format!(
                 "sound #{}: {:.3}s against {:.3}s{}  {}",
                 s.index,
                 s.seconds,
                 self.seconds,
                 // Not for a sliver that prints as nought.
-                if self.sound_short >= 0.0005 {
-                    format!(" (the recording's own sound {:.3}s less)", self.sound_short)
+                if s.short >= 0.0005 {
+                    format!(" (the recording's own sound {:.3}s less)", s.short)
                 } else {
                     String::new()
                 },
@@ -539,9 +548,19 @@ pub fn check_crossed(
                 // and the pictures between the seam and the next entry
                 // point, which cannot be decoded, are left out of the cut.
                 // The plans are what was written, whenever there are any.
+                //
+                // A plan with no segments wrote nothing: a range thinner
+                // than a picture, or one [`crate::plan::plan_on`] emptied
+                // because it lay between a recorder's seam and the next
+                // entry point. Asked for its pictures anyway, the source
+                // side handed on the picture still up from before it --
+                // across the seam, the last of the previous stretch, which
+                // the range before already holds -- and the check counted
+                // one picture more than the cut wrote.
                 let ranges = if !p.plans.is_empty() {
                     p.plans
                         .iter()
+                        .filter(|r| !r.segments.is_empty())
                         .map(|r| {
                             let copies = r
                                 .segments
@@ -738,8 +757,11 @@ pub fn check_crossed(
             }
         }
         // Whatever the source still has queued is pictures the output does
-        // not have. Counted, which also lets the source side finish.
-        if report.compared && !stop.load(Ordering::Relaxed) {
+        // not have. Counted, which also lets the source side finish -- but
+        // not after an output that could not be read to its end: the count
+        // is not going to be reported, and draining decoded the rest of
+        // every range of the source before saying so.
+        if report.compared && !stop.load(Ordering::Relaxed) && unread.is_none() {
             while let Ok(seen) = rx.recv() {
                 report.expected += 1;
                 if seen.damaged {
@@ -758,9 +780,27 @@ pub fn check_crossed(
             kept
         };
         report.sound_short = sound_short;
+        // Each track's place among the master's, for [`Sound::short`]:
+        // counted over the tracks that had packets of their own, since the
+        // AC-3 a TrueHD track is wrapped around is declared as a stream of
+        // its own and is no track of the master's.
+        let mut place = 0usize;
         report.sounds = sounds
             .iter()
-            .map(|s| Sound { index: s.0, seconds: s.3, measured: s.3 > 0.0 })
+            .map(|s| {
+                let at = place;
+                if s.2 > 0 {
+                    place += 1;
+                }
+                // A recording with no sound at all is in `sound_short`
+                // already.
+                let gap: f64 = pieces
+                    .iter()
+                    .filter(|p| !p.src.audios.is_empty() && p.src.audios.len() <= at)
+                    .flat_map(|p| p.ranges.iter().map(move |r| within(p, r)))
+                    .sum();
+                Sound { index: s.0, seconds: s.3, measured: s.3 > 0.0, short: sound_short + gap }
+            })
             .collect();
         source_side.join().map_err(|_| anyhow!("the source side of the check stopped"))??;
         Ok(())

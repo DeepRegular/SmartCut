@@ -1056,6 +1056,7 @@ impl Bridge {
             unsafe { ff::ffi::avio_seek(self.under, at - past as i64, SEEK_SET) };
         }
         let mut got = 0usize;
+        let mut failed = None;
         while got < want {
             let n = unsafe {
                 ff::ffi::avio_read(
@@ -1065,12 +1066,22 @@ impl Bridge {
                 )
             };
             if n <= 0 {
+                if n < 0 && n != ff::ffi::AVERROR_EOF {
+                    failed = Some(n);
+                }
                 break;
             }
             got += n as usize;
         }
+        // A read that failed is handed up as the failure it is, not as the
+        // end of the stream: said as the end, a share that went away part way
+        // through a recorder's clip was a clip that ended there -- the cut
+        // stopped short and said it had succeeded, and the walk's half was
+        // kept as the clip's index under an image that never changes.
+        // Whatever was read before the failure is handed over first; the
+        // next read meets the failure again.
         if got <= past {
-            return ff::ffi::AVERROR_EOF;
+            return failed.unwrap_or(ff::ffi::AVERROR_EOF);
         }
         self.table.apply(at as u64 - past as u64, &mut self.scratch[..got]);
         let mut n = (got - past).min(size);
@@ -1653,5 +1664,70 @@ mod tests {
         let n = r.read(&mut buf).unwrap();
         assert_eq!(&buf[..n], b"world");
         let _ = std::fs::remove_file(&path);
+    }
+
+    /// A reader underneath that fails part way through: the bytes before
+    /// the failure are handed over, and then the failure itself rather than
+    /// the end of the stream, again on every read after it.
+    #[test]
+    fn a_failed_read_is_not_the_end() {
+        const HAS: usize = 1000;
+        const FAIL: c_int = -5;
+        struct Fake {
+            at: usize,
+        }
+        unsafe extern "C" fn fake_read(opaque: *mut c_void, out: *mut u8, size: c_int) -> c_int {
+            let fake = &mut *(opaque as *mut Fake);
+            let n = (size.max(0) as usize).min(HAS.saturating_sub(fake.at));
+            if n == 0 {
+                return FAIL;
+            }
+            ptr::write_bytes(out, 0x47, n);
+            fake.at += n;
+            n as c_int
+        }
+        unsafe extern "C" fn fake_seek(opaque: *mut c_void, to: i64, whence: c_int) -> i64 {
+            if whence & AVSEEK_SIZE != 0 {
+                return -1;
+            }
+            (*(opaque as *mut Fake)).at = to as usize;
+            to
+        }
+        let mut fake = Fake { at: 0 };
+        let mut bridge = unsafe {
+            let buffer = ff::ffi::av_malloc(4096) as *mut u8;
+            Bridge {
+                under: ff::ffi::avio_alloc_context(
+                    buffer,
+                    4096,
+                    0,
+                    &mut fake as *mut Fake as *mut c_void,
+                    Some(fake_read),
+                    None,
+                    Some(fake_seek),
+                ),
+                table: Restamp::default(),
+                scratch: Vec::new(),
+            }
+        };
+        let mut out = vec![0u8; 768];
+        let mut total = 0usize;
+        let last = loop {
+            let n = bridge.read(out.as_mut_ptr(), out.len() as c_int);
+            if n <= 0 || total > HAS {
+                break n;
+            }
+            total += n as usize;
+        };
+        let again = bridge.read(out.as_mut_ptr(), out.len() as c_int);
+        // Not a context `avio_closep` may close, its opaque being no URL:
+        // taken apart here, before anything can fail and drop it.
+        unsafe {
+            ff::ffi::av_freep(std::ptr::addr_of_mut!((*bridge.under).buffer) as *mut c_void);
+            ff::ffi::avio_context_free(&mut bridge.under);
+        }
+        assert_eq!(total, HAS);
+        assert_eq!(last, FAIL);
+        assert_eq!(again, FAIL);
     }
 }

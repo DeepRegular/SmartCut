@@ -2570,6 +2570,15 @@ fn run() -> Result<()> {
             Err(_) => smartcut_core::scan_with(&at, &index::ContainerIndex)
                 .or_else(|_| smartcut_core::scan_with(&at, &index::PacketScan))?,
         };
+        // As the first recording's walk says it (above): one that stopped at
+        // read errors is planned on the entry points of what was read, and
+        // for a recording joined on nothing said so.
+        if !also.read_whole {
+            smartcut_core::say!(
+                "note: {} was not read to its end, so only what was read is indexed",
+                also.path
+            );
+        }
         let whole = vec![(0.0, also.duration)];
         if !also.leading_known {
             index::refine_leading(
@@ -2850,7 +2859,19 @@ fn run() -> Result<()> {
             let s = m - src.start_time;
             let s = if s < first && s >= first - 0.5 { first } else { s };
             if s >= plan.t_in && s < plan.t_out {
-                chapters.push(at_out + (on_picture(s) - on_picture(plan.t_in)).max(0.0));
+                // Written afresh on the master's frames, the picture a mark
+                // is on is the master frame that is showing at it, counted as
+                // `kept_length` counts the range; on its own pictures it was
+                // up to a frame off.
+                let into = match afresh(&src) {
+                    Some(step) => kept_length(
+                        &src,
+                        &smartcut_core::RangePlan { t_out: s, ..plan.clone() },
+                        Some(step),
+                    ),
+                    None => (on_picture(s) - on_picture(plan.t_in)).max(0.0),
+                };
+                chapters.push(at_out + into);
             }
         }
         at_out += kept_length(&src, plan, afresh(&src));
@@ -2860,8 +2881,13 @@ fn run() -> Result<()> {
     // first recording was one long chapter. A crossing that has both
     // clips up at once takes its length out of the join, held to half
     // of the shorter range beside it the way the cut holds it.
+    // A range the planner found no picture in -- the sliver a `--cut` a
+    // moment short of the end leaves -- has none to give (`cut.rs`, `room`
+    // in `ranges_with_transitions`): the crossing is not made, and taken out
+    // here it put the next recording's chapter on the last picture before it.
     let half = |p: Option<&smartcut_core::RangePlan>| {
-        p.map_or(0.0, |p| ((p.t_out - p.t_in) / 2.0).max(0.0))
+        p.filter(|p| !p.segments.is_empty())
+            .map_or(0.0, |p| ((p.t_out - p.t_in) / 2.0).max(0.0))
     };
     let mut before = plans.last();
     // Where the first recording's own pictures end: the end of the
@@ -3244,6 +3270,12 @@ fn kept_length(
     plan: &smartcut_core::RangePlan,
     afresh: Option<f64>,
 ) -> f64 {
+    // A range the planner found no picture in is not written at all (see
+    // `cut::ranges_with_transitions`). Counted, a sliver at a recording's
+    // end came to a frame on the master's grid, or a field held to the end.
+    if plan.segments.is_empty() {
+        return 0.0;
+    }
     if let Some(step) = afresh.filter(|s| *s > 0.0 && s.is_finite()) {
         let until = if src.duration > 0.0 { plan.t_out.min(src.duration) } else { plan.t_out };
         // Where `plan::reencode_range` opens the segment, and so the anchor.

@@ -427,6 +427,54 @@ mod tests {
         assert_eq!(d.off_point, 0);
     }
 
+    /// Whatever the keeps, points and rule: the divisions run forward, each
+    /// inside what is kept, every part has some length, the parts add up to
+    /// what survives the cuts, and a size is still a ceiling.
+    #[test]
+    fn any_division_holds_together() {
+        let mut seed = 0x2545_f491_4f6c_dd1du64;
+        let mut next = move || {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            (seed >> 11) as f64 / (1u64 << 53) as f64
+        };
+        for _ in 0..3000 {
+            let mut keeps = Vec::new();
+            let mut t = next() * 5.0;
+            for _ in 0..1 + (next() * 4.0) as usize {
+                let b = t + next() * 60.0;
+                keeps.push((t, b));
+                t = b + next() * 30.0;
+            }
+            let gop = 0.2 + next() * 3.0;
+            let points = points(gop, t);
+            let total: f64 = keeps.iter().map(|&(a, b)| b - a).sum();
+            let rule = match (next() * 3.0) as u32 {
+                0 => Rule::Parts(2 + (next() * 6.0) as usize),
+                1 => Rule::Every(1.0 + next() * 20.0),
+                _ => Rule::Size((1e6 * (1.0 + next() * 20.0)) as u64),
+            };
+            let on = next() < 0.7;
+            let Ok(d) = divide(&keeps, &points, rule, on, FD, 0.0, 1e6) else { continue };
+            let why = format!("{keeps:?} {rule:?} on {on}: {d:?}");
+            assert_eq!(d.lengths.len(), d.at.len() + 1, "{why}");
+            assert!(d.at.windows(2).all(|w| w[0] < w[1]), "{why}");
+            assert!(d.lengths.iter().all(|&l| l > 0.0), "{why}");
+            assert!((d.lengths.iter().sum::<f64>() - total).abs() < 1e-6, "{why}");
+            assert!(
+                d.at.iter().all(|&s| keeps.iter().any(|&(a, b)| s >= a - FD && s <= b + FD)),
+                "{why}"
+            );
+            // Over by less than the frame the last part is allowed to be
+            // left with rather than made a part of its own.
+            if let Rule::Size(bytes) = rule {
+                let most = bytes as f64 / 1e6 + FD + 1e-9;
+                assert!(d.lengths.iter().all(|&l| l <= most), "{why}");
+            }
+        }
+    }
+
     /// Off the points, a size is still the most a part comes to, give or
     /// take the half frame a division is rounded by.
     #[test]

@@ -2435,7 +2435,10 @@ fn take_audio(
 /// which is the smallest price available while the cut lands where the
 /// pictures say. Landing it on a sync instead is a question for the planner.
 fn opens_a_truehd_track(data: Option<&[u8]>) -> bool {
-    data.is_some_and(|d| d.len() >= 8 && d[4..8] == [0xF8, 0x72, 0x6F, 0xBA])
+    // TrueHD's major sync ends in BA and MLP's in BB. The wait is set for
+    // both (`joins_at_sync`), and answered for TrueHD alone it never ended
+    // on an MLP track: every frame after the first range was left out.
+    data.is_some_and(|d| d.len() >= 8 && matches!(d[4..8], [0xF8, 0x72, 0x6F, 0xBA | 0xBB]))
 }
 
 /// Emit a caption statement if it falls inside this segment's stretch.
@@ -6735,7 +6738,16 @@ fn heard_in(src: &Source, stream_index: usize, plans: &[RangePlan]) -> bool {
                     continue;
                 };
                 if stream.index() == stream_index {
-                    if t >= at - 1.0 && t < b + 1.0 {
+                    // Inside the range itself, by the middle of the frame:
+                    // what a cut writes of a frame across either end. Taken
+                    // from a second either side, a track that stopped with
+                    // the programme before was "heard" in a range opening
+                    // within a second of where it stopped, nothing of it was
+                    // written, and the check at the end refused the whole
+                    // cut for it after writing all of it.
+                    let d = packet.duration().max(0) as f64 * f64::from(stream.time_base());
+                    let middle = t + d / 2.0;
+                    if middle >= a && middle < b {
                         return true;
                     }
                     continue;
